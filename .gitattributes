@@ -1,0 +1,9 @@
+# Dotfiles are sourced by a real bash: force LF regardless of the user's
+# core.autocrlf setting, so a checkout never reintroduces the CRLF corruption
+# that broke backslash line-continuations in windows-git-bash/.bashrc.
+windows-git-bash/.bashrc text eol=lf
+windows-git-bash/.bash_profile text eol=lf
+
+# Shell scripts everywhere else in the repo are also only ever run by bash.
+*.sh text eol=lf
+*.zsh text eol=lf

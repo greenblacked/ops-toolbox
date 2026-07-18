@@ -19,6 +19,7 @@ on reducing repeat manual work.
 - [Script guidelines](#script-guidelines)
 - [Git scripts at a glance](#git-scripts-at-a-glance)
 - [macOS setup at a glance](#macos-setup-at-a-glance)
+- [Windows Git Bash dotfiles at a glance](#windows-git-bash-dotfiles-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Testing (Docker)](#testing-docker)
 
@@ -28,6 +29,7 @@ on reducing repeat manual work.
 | --- | --- |
 | [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
+| [`windows-git-bash/`](windows-git-bash/) | `.bashrc` / `.bash_profile` for Git Bash on Windows — persistent shared `ssh-agent`, history, prompt, PATH hygiene, and aliases. |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
 
 ## Quick start
@@ -58,6 +60,19 @@ These are RouterOS scripts, not shell scripts — paste each file into the
 bot token, then schedule the rest via `/system scheduler`. The full runbook,
 policy bits, and suggested cadence live in
 [`mikrotik/README.md`](mikrotik/README.md).
+
+### Windows (Git Bash)
+
+Drop the dotfiles into your home directory, then open a new Git Bash window:
+
+```bash
+cp windows-git-bash/.bashrc windows-git-bash/.bash_profile "$HOME/"
+```
+
+If you already have either file, diff first and merge by hand — see
+[`windows-git-bash/README.md`](windows-git-bash/README.md) for what changed
+and why (mainly: one shared `ssh-agent` across windows instead of one leaked
+per terminal).
 
 ### Git
 
@@ -144,6 +159,26 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
 
 See [`macos-initial-setup/README.md`](macos-initial-setup/README.md) for the
 full runbook and all options.
+
+## Windows Git Bash dotfiles at a glance
+
+The Windows package is [`windows-git-bash/`](windows-git-bash/):
+
+- `.bashrc` — persistent shared `ssh-agent` (loads/reuses one agent across
+  every Git Bash window instead of spawning a new one per terminal), history
+  settings, a Git-aware prompt, PATH deduplication, common aliases
+  (`ll`, `grep --color`, `clear`/`cls`/`c` that also drop the scrollback,
+  `open` for Explorer), small helpers (`mkcd`, `ff`), plain Git aliases
+  (`gs`, `gco`, `gp`, ...), a `glopen` function to open the current repo's
+  remote in a browser, and `glab` CLI shortcuts (`mrl`, `mrv`, `pipe`, ...)
+  when `glab` is installed. Sources `~/.bashrc.local` at the end for
+  machine-specific overrides that shouldn't be committed.
+- `.bash_profile` — sources `.bashrc`; needed because Git Bash opens new
+  windows as login shells, which read `.bash_profile`, not `.bashrc`, by
+  default.
+
+See [`windows-git-bash/README.md`](windows-git-bash/README.md) for install
+steps and the reasoning behind the `ssh-agent` handling.
 
 ## MikroTik scripts at a glance
 
