@@ -1,17 +1,18 @@
 # Windows Git Bash Dotfiles
 
-A `.bashrc` / `.bash_profile` pair for Git Bash (MSYS2) on Windows, built up
-from a minimal SSH-agent-loading snippet into a fuller set of interactive-shell
-defaults. Safe to source more than once and safe to drop into an existing
-`$HOME` — nothing here overwrites machine-specific config, and secrets/local
-tweaks stay out of the committed files.
+A `.bashrc` / `.bash_profile` / `.aliases` set for Git Bash (MSYS2) on
+Windows, built up from a minimal SSH-agent-loading snippet into a fuller set
+of interactive-shell defaults. Safe to source more than once and safe to
+drop into an existing `$HOME` — nothing here overwrites machine-specific
+config, and secrets/local tweaks stay out of the committed files.
 
 ## What's here
 
 | File | Purpose |
 | --- | --- |
-| `.bashrc` | Default working directory, history, prompt (with Git branch), PATH dedup, persistent `ssh-agent` with fingerprint-checked key loading, aliases, and small helper functions. |
+| `.bashrc` | Default working directory, history, prompt (with Git branch), PATH dedup, persistent `ssh-agent` with fingerprint-checked key loading, editor/pager defaults. Sources `.aliases` near the end. |
 | `.bash_profile` | Sources `.bashrc`. Required because Git Bash opens new windows as **login** shells, which read `.bash_profile`/`.profile`, not `.bashrc`, by default. |
+| `.aliases` | ~190 aliases and functions: Git, GitLab CLI (`glab`), Docker, Kubernetes, Terraform, Windows-style commands, navigation, safer file ops. Kept separate so it can be edited or swapped out without touching shell/environment setup in `.bashrc`. |
 
 ## Install
 
@@ -20,12 +21,13 @@ Git Bash — it can differ from the Windows profile folder if `HOME` is set in
 the environment).
 
 ```bash
-cp windows-git-bash/.bashrc windows-git-bash/.bash_profile "$HOME/"
+cp windows-git-bash/.bashrc windows-git-bash/.bash_profile windows-git-bash/.aliases "$HOME/"
 ```
 
-If you already have a `~/.bashrc` or `~/.bash_profile`, diff first and merge
-by hand instead of overwriting — in particular, keep anything you have under
-a "local overrides" section, or move it into `~/.bashrc.local` (see below).
+If you already have a `~/.bashrc`, `~/.bash_profile`, or `~/.aliases`, diff
+first and merge by hand instead of overwriting — in particular, keep
+anything you have under a "local overrides" section, or move it into
+`~/.bashrc.local` (see below).
 
 Then open a new Git Bash window (or `source ~/.bash_profile` in the current
 one) to pick up the changes.
@@ -56,21 +58,48 @@ If you instead edited `~/.bash_profile` — rare, since it only sources
 `.bashrc` — `source ~/.bash_profile` also works and re-sources `.bashrc` as
 part of it.
 
-## Git & GitLab shortcuts
+## What's in `.aliases`
 
-`.bashrc` includes a small set of plain Git aliases (`gs`, `ga`, `gaa`, `gc`,
-`gco`, `gb`, `gp`, `gl`, `gd`) plus:
+Too many aliases to enumerate here — open the file directly, it's organized
+under `# ---` section headers. By category:
 
-- `glopen [remote]` — opens the current repo's remote (GitLab, GitHub, ...) in
-  your default browser, converting an SSH remote
-  (`git@gitlab.com:group/project.git`) to its `https://` URL first. Defaults
-  to `origin`.
-- `mrl`, `mrv`, `mrc`, `mrco`, `pipe`, `pipes`, `issues` — thin wrappers
-  around [GitLab's `glab` CLI](https://gitlab.com/gitlab-org/cli) (`mr list`,
-  `mr view --web`, `mr create --web`, `mr checkout`, `pipeline ci view`,
-  `pipeline list --limit 10`, `issue list`). These are only defined if `glab`
-  is actually installed, so they never dangle as broken aliases on a machine
-  without it.
+- **Windows-style commands** — `e`/`open` (Explorer here), `codehere` (VS
+  Code here), `notepad`, `pwdw` (Windows-style path), `copypwd`.
+- **Navigation** — `..`/`.../..../.....`, `home`, `coding`/`sshdir` (reuse
+  `$CODING_DIR` from `.bashrc`, see below), `mkcd`, `croot` (cd to repo
+  root).
+- **Listing/search** — `ls`/`ll`/`la`/`l`/`lt`/`lsize`, `grep`/`egrep`/`fgrep`,
+  `ff` (find by filename), `ftext` (grep recursively, skipping `.git`/
+  `node_modules`).
+- **Shell config** — `clear`/`cls`/`cl`/`c` (also drop scrollback, see
+  below), `src`/`reload`, `editaliases`/`editbashrc`/`editprofile`/`editssh`
+  (open in Notepad), `path` (print `$PATH` one entry per line).
+- **Git** — ~70 aliases (`gs`, `ga`/`gaa`, `gc`/`gcm`, `gd`, `gco`/`gcob`,
+  `gsw*`, `gr*` (rebase), `gstash*`, `glog*`, ...) plus functions `gbranch`,
+  `gnew`, `gpublish`, `gchanged`, `gupdatemain`, `gacp` (stage all, commit
+  with a `[branch] ` prefix, push — **not** the same thing as
+  [`../git/gacp.sh`](../git/gacp.sh): that script supports `--dry-run`/
+  `--no-push` and doesn't prefix the message; this is the quick interactive
+  shortcut), and `glopen [remote]` (opens the current repo's remote —
+  GitLab, GitHub, anything — in your browser, converting an SSH remote to
+  `https://` first; works without `glab` installed).
+- **GitLab CLI (`glab`)** — `glmr*`, `gli*` (issues), `glpipe*`/`glci*`,
+  `glrelease*`, `glvar*`, `glapi`, and functions `glmrcreate`/`glmrdraft`/
+  `glpipeline`/`glrun` (all branch-aware: they read the current branch so
+  you don't type it). This whole block is only defined **if `glab` is
+  installed**, so none of it dangles as broken aliases otherwise.
+- **Docker / Kubernetes / Terraform** — `d*`/`dc*`, `k`/`kg*`/`kd*`, `tf*`.
+- **SSH** — `sshkeys`, `sshadd`/`sshremove` (reuse `$SSH_KEY` from
+  `.bashrc`), `sshtestgithub`/`sshtestgitlab`.
+- **Windows networking** — `ipconfig`, `flushdns`, `ports`, `listening`,
+  `tasks`.
+- **Safer file ops** — `rm`/`cp`/`mv` aliased to their `-i` (confirm-before-
+  overwrite/delete) forms.
+
+`$SSH_KEY` and `$CODING_DIR` are set in `.bashrc` but deliberately **not**
+`unset` afterward (everything else internal to the ssh-agent/PATH setup is),
+specifically so `.aliases` can reuse them instead of hardcoding the same
+path twice.
 
 ## Key differences from a minimal SSH-agent-only `.bashrc`
 
@@ -147,6 +176,7 @@ gets committed here.
 | **Git for Windows** | Ships MSYS2 Bash, `ssh-agent`, `ssh-add`, `ssh-keygen`. Tested against a current Git for Windows release. |
 | **An SSH key** | Defaults to `~/.ssh/id_ed25519`; override by exporting `SSH_KEY=/path/to/key` before `.bashrc` runs, or edit the default in `.bashrc`. Missing key/`.pub` prints a message instead of failing silently. |
 | **`CODING_DIR`** (optional) | Defaults to `/d/Coding`; if the directory exists, new shells `cd` there instead of staying in `$HOME`. No-op elsewhere — override via `CODING_DIR=/other/path` or delete the block in `.bashrc` if you don't want it. |
+| **`$EDITOR`** | Defaults to `nano` (override by exporting `EDITOR` before `.bashrc` runs). `$VISUAL` and `$GIT_PAGER` follow. |
 
 ## Not covered here
 
@@ -156,3 +186,7 @@ gets committed here.
 - Git identity/profile management is in [`../git/`](../git/)
   (`set_git_profile.sh`, `git_whoami.sh`); this folder only sets shell
   defaults, not Git config.
+- `default-git-bash/` next to this folder was an earlier personal draft;
+  its content has been merged into `.bashrc`/`.aliases` here (naming
+  collisions resolved — see git history/PR discussion for what changed and
+  why). It's kept around as-is but superseded.

@@ -29,7 +29,7 @@ on reducing repeat manual work.
 | --- | --- |
 | [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
-| [`windows-git-bash/`](windows-git-bash/) | `.bashrc` / `.bash_profile` for Git Bash on Windows — persistent shared `ssh-agent`, history, prompt, PATH hygiene, and aliases. |
+| [`windows-git-bash/`](windows-git-bash/) | `.bashrc` / `.bash_profile` / `.aliases` for Git Bash on Windows — persistent shared `ssh-agent`, history, prompt, PATH hygiene, and ~190 aliases (Git, GitLab CLI, Docker, Kubernetes, Terraform, Windows commands). |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
 
 ## Quick start
@@ -66,7 +66,7 @@ policy bits, and suggested cadence live in
 Drop the dotfiles into your home directory, then open a new Git Bash window:
 
 ```bash
-cp windows-git-bash/.bashrc windows-git-bash/.bash_profile "$HOME/"
+cp windows-git-bash/.bashrc windows-git-bash/.bash_profile windows-git-bash/.aliases "$HOME/"
 ```
 
 If you already have either file, diff first and merge by hand — see
@@ -166,19 +166,20 @@ The Windows package is [`windows-git-bash/`](windows-git-bash/):
 
 - `.bashrc` — persistent shared `ssh-agent` (loads/reuses one agent across
   every Git Bash window instead of spawning a new one per terminal), history
-  settings, a Git-aware prompt, PATH deduplication, common aliases
-  (`ll`, `grep --color`, `clear`/`cls`/`c` that also drop the scrollback,
-  `open` for Explorer), small helpers (`mkcd`, `ff`), plain Git aliases
-  (`gs`, `gco`, `gp`, ...), a `glopen` function to open the current repo's
-  remote in a browser, and `glab` CLI shortcuts (`mrl`, `mrv`, `pipe`, ...)
-  when `glab` is installed. Sources `~/.bashrc.local` at the end for
-  machine-specific overrides that shouldn't be committed.
+  settings, a Git-aware prompt, PATH deduplication, editor/pager defaults.
+  Sources `.aliases` and (for machine-specific overrides that shouldn't be
+  committed) `~/.bashrc.local`.
 - `.bash_profile` — sources `.bashrc`; needed because Git Bash opens new
   windows as login shells, which read `.bash_profile`, not `.bashrc`, by
   default.
+- `.aliases` — ~190 aliases/functions: Git (`gs`, `gco`, `gcm`, `gacp`,
+  `glopen`, ...), `glab` CLI shortcuts when installed, Docker, Kubernetes,
+  Terraform, Windows-style commands (`open`, `codehere`, ...), and
+  `clear`/`cls`/`c` that also drop the scrollback.
 
 See [`windows-git-bash/README.md`](windows-git-bash/README.md) for install
-steps and the reasoning behind the `ssh-agent` handling.
+steps, the full alias breakdown, and the reasoning behind the `ssh-agent`
+handling.
 
 ## MikroTik scripts at a glance
 

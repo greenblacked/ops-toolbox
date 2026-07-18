@@ -4,6 +4,9 @@
 # which reads ~/.bash_profile (or ~/.profile), NOT ~/.bashrc, unless
 # .bash_profile explicitly sources it. See .bash_profile in this folder.
 #
+# Aliases and functions live in .aliases (sourced near the end of this file),
+# not here — keeps this file focused on shell/environment setup.
+#
 # Safe to source more than once (no duplicate PATH entries, no duplicate
 # ssh-agent processes across terminal tabs).
 
@@ -20,11 +23,11 @@ esac
 # Personal convenience: land in a projects folder instead of $HOME on every
 # new window. No-op (and harmless) on any machine where CODING_DIR doesn't
 # exist, so it's safe to leave in even if you don't use this layout.
+# Left set (not unset) on purpose: .aliases' `coding`/`sshdir` aliases reuse it.
 CODING_DIR="${CODING_DIR:-/d/Coding}"
 if [ -d "$CODING_DIR" ]; then
     cd "$CODING_DIR" || true
 fi
-unset CODING_DIR
 
 # ---------------------------------------------------------------------------
 # History
@@ -60,6 +63,11 @@ shopt -s cdspell 2>/dev/null
 # ---------------------------------------------------------------------------
 # PATH hygiene
 # ---------------------------------------------------------------------------
+# Personal bin dirs, prepended before deduping below so re-sourcing this file
+# never grows PATH (unlike a plain `export PATH="$HOME/bin:...:$PATH"`, which
+# duplicates its own entries on every re-source).
+PATH="$HOME/bin:$HOME/.local/bin:$PATH"
+
 # Sourcing .bashrc more than once (e.g. from a nested shell) duplicates PATH
 # entries over time. Dedup while preserving order.
 dedup_path() {
@@ -128,7 +136,9 @@ if [ -f "$SSH_KEY" ]; then
 else
     printf 'ssh-agent: key not found: %s\n' "$SSH_KEY" >&2
 fi
-unset SSH_ENV SSH_KEY KEY_FINGERPRINT
+unset SSH_ENV KEY_FINGERPRINT
+# SSH_KEY stays set (not unset) on purpose: .aliases' sshadd/sshremove reuse
+# it instead of hardcoding the path a second time.
 
 # ---------------------------------------------------------------------------
 # Prompt (user@host, cwd, git branch, exit-status-aware color)
@@ -153,85 +163,22 @@ PS1='\[\e[32m\]\u@\h\[\e[0m\] \[\e[34m\]\w\[\e[33m\]$(__git_branch)\[\e[0m\]
 # ---------------------------------------------------------------------------
 # Editor & pager defaults
 # ---------------------------------------------------------------------------
-export EDITOR="${EDITOR:-vim}"
+export EDITOR="${EDITOR:-nano}"
 export VISUAL="$EDITOR"
+export GIT_PAGER="less"
 # -R shows color escape codes instead of raw garbage; -F exits immediately if
 # output fits on one screen (mimics `cat` for short output).
 export LESS="-R -F -X"
 
 # ---------------------------------------------------------------------------
-# Aliases
+# Aliases and functions
 # ---------------------------------------------------------------------------
-alias ls='ls -F --color=auto --group-directories-first'
-alias ll='ls -lAh'
-alias la='ls -A'
-alias grep='grep --color=auto'
-alias ..='cd ..'
-alias ...='cd ../..'
-# Plain `clear` in Windows Terminal/ConHost only blanks the visible screen —
-# scrolling up still shows everything. `\e[3J` also drops the scrollback, so
-# `clear`/`cls`/`c` behave like cmd.exe's `cls`.
-alias clear='command clear; printf "\e[3J"'
-alias cls='clear'
-alias c='clear'
-# Reload this file without opening a new window.
-alias src='source "$HOME/.bashrc"'
-# `explorer .` from Git Bash needs the Windows path, not the MSYS one.
-alias open='explorer.exe "$(pwd -W 2>/dev/null || pwd)"'
-
-# ---------------------------------------------------------------------------
-# Git & GitLab shortcuts
-# ---------------------------------------------------------------------------
-alias gs='git status -sb'
-alias ga='git add'
-alias gaa='git add --all'
-alias gc='git commit -m'
-alias gco='git checkout'
-alias gb='git branch'
-alias gp='git push'
-alias gl='git pull'
-alias gd='git diff'
-
-# Open the current repo's remote (GitLab, GitHub, ...) in the default
-# browser, converting an SSH remote (git@host:owner/repo.git) to https first.
-# Usage: glopen [remote]   (defaults to "origin")
-glopen() {
-    local remote url host path
-    remote="${1:-origin}"
-    url=$(git remote get-url "$remote" 2>/dev/null) || {
-        echo "glopen: no remote named '$remote' in this repo" >&2
-        return 1
-    }
-    url=${url%.git}
-    if [[ $url == git@*:* ]]; then
-        host=${url#git@}
-        host=${host%%:*}
-        path=${url#*:}
-        url="https://$host/$path"
-    fi
-    explorer.exe "$url" >/dev/null 2>&1
-}
-
-# Shortcuts for GitLab's official CLI (https://gitlab.com/gitlab-org/cli),
-# only defined if `glab` is actually installed so they don't dangle otherwise.
-if command -v glab >/dev/null 2>&1; then
-    alias mrl='glab mr list'
-    alias mrv='glab mr view --web'
-    alias mrc='glab mr create --web'
-    alias mrco='glab mr checkout'
-    alias pipe='glab pipeline ci view'
-    alias pipes='glab pipeline list --limit 10'
-    alias issues='glab issue list'
+# Kept in a separate file so it can be edited (or entirely swapped out) as a
+# unit — see .aliases next to this file.
+if [ -f "$HOME/.aliases" ]; then
+    # shellcheck source=/dev/null
+    source "$HOME/.aliases"
 fi
-
-# ---------------------------------------------------------------------------
-# Small utility functions
-# ---------------------------------------------------------------------------
-# Create a directory and cd into it in one step.
-mkcd() { mkdir -p -- "$1" && cd -- "$1" || return; }
-
-# Find files by name under the current directory without memorizing find(1) flags.
-ff() { find . -iname "*${1}*" 2>/dev/null; }
 
 # ---------------------------------------------------------------------------
 # Local, machine-specific overrides (not committed — see .gitignore below)
