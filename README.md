@@ -1,5 +1,7 @@
 # Pretty Useful Scripts
 
+[![CI](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml/badge.svg)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml)
+
 Helper scripts for setting up, maintaining, and working on the small set of
 machines I touch regularly — currently macOS workstations and a MikroTik
 router, plus everyday Git helpers. The repository is intentionally small:
@@ -21,6 +23,7 @@ on reducing repeat manual work.
 - [macOS setup at a glance](#macos-setup-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Testing (Docker)](#testing-docker)
+- [Contributing](#contributing)
 
 ## What's here
 
@@ -197,3 +200,14 @@ RouterOS install.
 | [`git/`](git/) | **Static + behavior** checks for Git helper scripts (syntax, ShellCheck, `--help`, profile state, `gacp`, status, cleanup, recent branches, and sync against local temporary repos/remotes). | [`git/README.md#tests`](git/README.md#tests) — `./git/tests/run.sh` |
 | [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases). Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
+
+GitHub Actions runs Bash syntax checks, ShellCheck, yamllint, markdownlint, and
+the `git/` and `macos-initial-setup/` Docker suites for pushes and pull
+requests targeting `master`. The RouterOS/QEMU suite is available as an
+opt-in manual job because it is considerably heavier than the portable test
+suites.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for branch conventions, local lint and
+test commands, and instructions for starting the optional RouterOS CI job.
