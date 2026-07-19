@@ -494,6 +494,28 @@ alias sshtestgithub='ssh -T git@github.com'
 alias sshtestgitlab='ssh -T git@gitlab.com'
 
 # ---------------------------------------------------------------------------
+# WSL (only when installed)
+# ---------------------------------------------------------------------------
+if command -v wsl.exe >/dev/null 2>&1; then
+    alias wsls='wsl.exe --list --verbose'
+    alias wslsh='wsl.exe --shutdown'
+    alias wslup='wsl.exe --update'
+    alias wslstatus='wsl.exe --status'
+
+    # Run one command in the default distro: wslr df -h
+    wslr() {
+        if [ "$#" -eq 0 ]; then
+            printf 'Usage: wslr <command> [args...]\n'
+            return 1
+        fi
+        wsl.exe -- "$@"
+    }
+
+    # Deeper maintenance (backup/compact/sparse) lives in
+    # windows/wsl/wsl_manage.ps1 in the pretty-useful-scripts repo.
+fi
+
+# ---------------------------------------------------------------------------
 # Windows networking
 # ---------------------------------------------------------------------------
 alias ipconfig='ipconfig.exe'

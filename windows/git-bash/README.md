@@ -21,7 +21,7 @@ Git Bash — it can differ from the Windows profile folder if `HOME` is set in
 the environment).
 
 ```bash
-cp windows-git-bash/.bashrc windows-git-bash/.bash_profile windows-git-bash/.aliases "$HOME/"
+cp windows/git-bash/.bashrc windows/git-bash/.bash_profile windows/git-bash/.aliases "$HOME/"
 ```
 
 If you already have a `~/.bashrc`, `~/.bash_profile`, or `~/.aliases`, diff
@@ -77,7 +77,7 @@ under `# ---` section headers. By category:
 - **Git** — ~70 aliases (`gs`, `ga`/`gaa`, `gc`/`gcm`, `gd`, `gco`/`gcob`,
   `gsw*`, `gr*` (rebase), `gstash*`, `glog*`, ...) plus functions `gbranch`,
   `gnew`, `gpublish`, `gchanged`, `gupdatemain`, `gacp` (stage all, commit
-  with a `[branch] ` prefix, push — **not** the same thing as
+  with a `[branch]` prefix, push — **not** the same thing as
   [`../git/gacp.sh`](../git/gacp.sh): that script supports `--dry-run`/
   `--no-push` and doesn't prefix the message; this is the quick interactive
   shortcut), and `glopen [remote]` (opens the current repo's remote —
@@ -129,7 +129,7 @@ simply empty.
 
 ## Troubleshooting
 
-**`bash: command substitution: line N: syntax error near unexpected token `)'` /
+**``bash: command substitution: line N: syntax error near unexpected token `)'`` /
 `` `__git_branch)' ``, thrown on every prompt redraw.**
 
 Two distinct causes have hit this exact error while developing this file —
