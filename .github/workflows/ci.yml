@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push: {}
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      run_routeros:
+        description: Run the RouterOS CHR integration suite
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install linters
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes shellcheck yamllint
+
+      - name: Check Bash syntax
+        shell: bash
+        run: |
+          mapfile -d '' scripts < <(git ls-files -z '*.sh')
+          bash -n "${scripts[@]}"
+
+      - name: Run ShellCheck
+        shell: bash
+        run: |
+          mapfile -d '' scripts < <(git ls-files -z '*.sh')
+          shellcheck --severity=error --shell=bash "${scripts[@]}"
+
+      - name: Lint YAML
+        run: yamllint --config-file .yamllint.yml .
+
+      - name: Lint Markdown
+        uses: DavidAnson/markdownlint-cli2-action@v23
+        with:
+          config: .markdownlint-cli2.yaml
+          globs: '**/*.md'
+
+  test:
+    name: Test / ${{ matrix.suite }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        suite:
+          - git
+          - macos-initial-setup
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run ${{ matrix.suite }} suite
+        run: ./${{ matrix.suite }}/tests/run.sh
+
+  routeros-integration:
+    name: Test / RouterOS integration
+    if: github.event_name == 'workflow_dispatch' && inputs.run_routeros
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run RouterOS CHR suite
+        run: ./mikrotik/tests/run.sh

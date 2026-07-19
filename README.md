@@ -7,8 +7,11 @@ each folder should be easy to inspect, safe to run more than once, and focused
 on reducing repeat manual work.
 
 **Targets:**
+
 - Git repositories on macOS or Linux — scripts use `bash`; aliases use `zsh`.
 - macOS 12+ (Apple Silicon and Intel) — scripts use `bash`, aliases use `zsh`.
+- Windows 10/11 — Git Bash (MSYS2) dotfiles plus PowerShell 5+/7 scripts for
+  WSL maintenance and disk cleanup.
 - MikroTik RouterOS 7.22 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
 
@@ -19,6 +22,7 @@ on reducing repeat manual work.
 - [Script guidelines](#script-guidelines)
 - [Git scripts at a glance](#git-scripts-at-a-glance)
 - [macOS setup at a glance](#macos-setup-at-a-glance)
+- [Windows at a glance](#windows-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Testing (Docker)](#testing-docker)
 
@@ -28,6 +32,7 @@ on reducing repeat manual work.
 | --- | --- |
 | [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
+| [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
 
 ## Quick start
@@ -58,6 +63,26 @@ These are RouterOS scripts, not shell scripts — paste each file into the
 bot token, then schedule the rest via `/system scheduler`. The full runbook,
 policy bits, and suggested cadence live in
 [`mikrotik/README.md`](mikrotik/README.md).
+
+### Windows
+
+Git Bash dotfiles — drop into your home directory, then open a new window:
+
+```bash
+cp windows/git-bash/.bashrc windows/git-bash/.bash_profile windows/git-bash/.aliases "$HOME/"
+```
+
+If you already have either file, diff first and merge by hand — see
+[`windows/git-bash/README.md`](windows/git-bash/README.md) for what changed
+and why (mainly: one shared `ssh-agent` across windows instead of one leaked
+per terminal).
+
+Maintenance (PowerShell — both are read-only/dry-run in these forms):
+
+```powershell
+.\windows\cleanup\clean_disk_c.ps1 -DryRun   # what would cleanup free?
+.\windows\wsl\wsl_manage.ps1 list            # WSL distros + real disk usage
+```
 
 ### Git
 
@@ -145,6 +170,29 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
 See [`macos-initial-setup/README.md`](macos-initial-setup/README.md) for the
 full runbook and all options.
 
+## Windows at a glance
+
+The Windows package is [`windows/`](windows/):
+
+- [`git-bash/`](windows/git-bash/) — `.bashrc` (persistent shared
+  `ssh-agent` — one agent across every Git Bash window instead of one leaked
+  per terminal — history, Git-aware prompt, PATH dedup), `.bash_profile`
+  (sources `.bashrc`; Git Bash windows are login shells), and `.aliases`
+  (~190 aliases/functions: Git, `glab` CLI when installed, Docker,
+  Kubernetes, Terraform, WSL when installed, Windows-style commands, and
+  `clear`/`cls`/`c` that also drop the scrollback).
+- [`wsl/`](windows/wsl/) — `wsl_manage.ps1`: distro list with real VHDX
+  disk usage, dated `.tar` backups, `compact`/`sparse` to reclaim the disk
+  space WSL2 never returns on its own, shutdown.
+- [`cleanup/`](windows/cleanup/) — `clean_disk_c.ps1`: frees C: space
+  safely (aged temp files, WER, Delivery Optimization, thumbnails), with
+  explicit opt-in flags for Recycle Bin, Windows Update cache, dev caches,
+  and Docker. `-DryRun` reports sizes without deleting.
+
+See [`windows/README.md`](windows/README.md) and the per-folder READMEs for
+install steps, the full alias breakdown, and PowerShell execution-policy
+notes.
+
 ## MikroTik scripts at a glance
 
 The MikroTik package is [`mikrotik/`](mikrotik/), verified against
@@ -176,7 +224,7 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   removals, or critical-rule reordering; the helper script clears the
   baseline after intentional changes.
 - `mac_allowlist_dhcp.lua` — flags (and optionally blocks via address-list
-  + filter rule) DHCP leases whose MAC is not on `:global MAC_ALLOWLIST`.
+  plus filter rule) DHCP leases whose MAC is not on `:global MAC_ALLOWLIST`.
   Fail-safe: refuses to act when the allowlist is empty.
 - `rogue_dns_check.lua` — verifies upstream DNS sanity and detects clients
   using non-approved DNS resolvers; tags offenders into

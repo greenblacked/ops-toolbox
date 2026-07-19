@@ -28,7 +28,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
 - [What this changes on your machine](#what-this-changes-on-your-machine)
-- [Development: Docker checks](#development--docker-checks)
+- [Development: Docker checks](#development-docker-checks)
 
 ## TL;DR
 
@@ -60,7 +60,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. |
 | `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions. |
-| `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development--docker-checks). |
+| `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development-docker-checks). |
 
 ## Lifecycle: when to run what
 
