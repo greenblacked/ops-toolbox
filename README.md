@@ -202,10 +202,9 @@ RouterOS install.
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 GitHub Actions runs Bash syntax checks, ShellCheck, yamllint, markdownlint, and
-the `git/` and `macos-initial-setup/` Docker suites for pushes and pull
-requests targeting `master`. The RouterOS/QEMU suite is available as an
-opt-in manual job because it is considerably heavier than the portable test
-suites.
+the `git/` and `macos-initial-setup/` Docker suites for every push and for pull
+requests targeting `master`. The RouterOS/QEMU suite is available as an opt-in
+manual job because it is considerably heavier than the portable test suites.
 
 ## Contributing
 
