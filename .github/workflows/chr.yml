@@ -1,0 +1,58 @@
+# RouterOS CHR integration tests.
+#
+# Kept off the push/PR path on purpose: CHR is an x86_64 disk image booted under
+# QEMU, and first boot is measured in minutes. GitHub's ubuntu-latest runners are
+# amd64 with /dev/kvm available, so this is far faster here than on an Apple
+# Silicon laptop — but it is still too slow to gate a pull request on.
+name: chr
+
+on:
+  schedule:
+    # 04:17 UTC daily. Off the hour to avoid the top-of-hour scheduling backlog.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      pytest_args:
+        description: "Extra arguments passed through to pytest (e.g. -k version_matches -vv)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  chr:
+    name: RouterOS CHR 7.22
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # The compose file ships the KVM device block commented out, since a Mac
+      # has no /dev/kvm. On this runner it exists and cuts boot roughly 10x.
+      - name: Enable KVM passthrough
+        run: |
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            sed -i 's|^\( *\)# devices:|\1devices:|; s|^\( *\)#   - /dev/kvm|\1  - /dev/kvm|' \
+              mikrotik/tests/docker-compose.yml
+            echo "KVM enabled:"
+            grep -n -A2 'devices:' mikrotik/tests/docker-compose.yml || true
+          else
+            echo "no /dev/kvm on this runner — falling back to TCG (slow)"
+          fi
+
+      - name: Run CHR integration suite
+        run: ./mikrotik/tests/run.sh ${{ github.event.inputs.pytest_args }}
+
+      # run.sh dumps compose logs on failure, but the tester's own output is the
+      # part worth keeping around after the runner is torn down.
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chr-logs
+          path: |
+            mikrotik/tests/*.log
+          if-no-files-found: ignore
+          retention-days: 7

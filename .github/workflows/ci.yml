@@ -1,0 +1,79 @@
+# Fast checks on every push and pull request.
+#
+# Each job invokes the same tests/run.sh a developer runs locally, so CI and
+# local results cannot drift. The RouterOS CHR integration suite is deliberately
+# absent — it needs amd64 emulation and minutes of boot time; see chr.yml.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to the same branch makes the in-flight run obsolete.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  git-scripts:
+    name: git helper scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run git script suite
+        run: ./git/tests/run.sh
+
+  macos-scripts:
+    name: macOS setup scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run macOS script suite
+        run: ./macos-initial-setup/tests/run.sh
+
+  python:
+    name: python libs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # 3.9 is what /usr/bin/python3 provides on macOS, and the runtime helpers
+      # are called with that interpreter. Testing on anything newer would let
+      # 3.10+ syntax through and break on the machines this repo targets.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Run python suite
+        run: ./test-env/python/run.sh
+
+  shell-lint:
+    name: shellcheck (all tracked scripts)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+      # Repo-wide backstop: the per-folder suites only check the scripts they
+      # know about, so anything new is covered here from the moment it lands.
+      - name: bash -n every tracked shell script
+        run: |
+          rc=0
+          while IFS= read -r -d '' f; do
+            bash -n "$f" || { echo "::error file=$f::bash -n failed"; rc=1; }
+          done < <(git ls-files -z '*.sh')
+          exit $rc
+      - name: shellcheck every tracked shell script
+        run: |
+          rc=0
+          while IFS= read -r -d '' f; do
+            shellcheck --severity=error -x -s bash "$f" || { echo "::error file=$f::shellcheck failed"; rc=1; }
+          done < <(git ls-files -z '*.sh')
+          exit $rc
