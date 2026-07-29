@@ -176,7 +176,7 @@ while (( $# > 0 )); do
     --skip-syscaches)  SKIP_SYSCACHES=1 ;;
     --skip-usercaches) SKIP_USERCACHES=1 ;;
     --skip-appcaches)  SKIP_APPCACHES=1 ;;
-    --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1 ;;
+    --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1 ;;`
     --skip-trash)      SKIP_TRASH=1 ;;
     --skip-brew)       SKIP_BREW=1 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
