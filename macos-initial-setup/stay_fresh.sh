@@ -5,6 +5,7 @@
 #   - flush DNS caches
 #   - clear /Library/Caches and writable /System/Library/Caches
 #   - clear ~/Library caches (Caches, Logs, Saved State, Xcode DerivedData, ...)
+#   - clear Electron / Chromium per-app caches under ~/Library/Application Support
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, gem, go)
 #   - prune Docker / OrbStack (images, containers, volumes, builder cache)
@@ -17,8 +18,8 @@
 # Usage:
 #   ./stay_fresh.sh [--dry-run] [--yes] [--verbose]
 #                   [--skip-memory] [--skip-dns] [--skip-syscaches]
-#                   [--skip-usercaches] [--skip-trash] [--skip-brew]
-#                   [--skip-devcaches] [--skip-docker]
+#                   [--skip-usercaches] [--skip-appcaches] [--skip-trash]
+#                   [--skip-brew] [--skip-devcaches] [--skip-docker]
 #                   [--skip-xcode] [--skip-diagnostics]
 #                   [--no-sudo] [--help]
 #
@@ -68,6 +69,7 @@ SKIP_MEMORY=0
 SKIP_DNS=0
 SKIP_SYSCACHES=0
 SKIP_USERCACHES=0
+SKIP_APPCACHES=0
 SKIP_TRASH=0
 SKIP_BREW=0
 SKIP_DEVCACHES=0
@@ -115,6 +117,7 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-dns             Don't flush DNS caches
   --skip-syscaches       Don't touch /Library/Caches or /System/Library/Caches
   --skip-usercaches      Don't clear ~/Library/Caches et al.
+  --skip-appcaches       Don't clear Electron/Chromium per-app caches (see Notes)
   --skip-trash           Don't empty ~/.Trash
   --skip-brew            Don't run Homebrew maintenance (see Notes)
   --brew-greedy          Also upgrade casks with 'auto_updates true' / 'version :latest'
@@ -131,6 +134,13 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
 
 ${C_BOLD}Notes:${C_RESET}
+  Electron/Chromium app caches: sweeps ~/Library/Application Support for
+  Chromium-internal cache dirs (Cache, Code Cache, GPUCache, Service Worker,
+  blob_storage, ...) belonging to Claude, Slack, VS Code, Chrome, Brave, and
+  friends. These always regenerate, but quit the apps first — a running app
+  rewrites them mid-sweep. Also clears the aerial-wallpaper video cache
+  (com.apple.wallpaper/aerials), which re-downloads on demand.
+
   Diagnostic / crash reports: always runs as your user (clears
   ~/Library/Logs/DiagnosticReports and ~/Library/DiagnosticReports). With sudo
   (default), also clears /Library/Logs/DiagnosticReports and
@@ -154,6 +164,7 @@ while (( $# > 0 )); do
     --skip-dns)        SKIP_DNS=1 ;;
     --skip-syscaches)  SKIP_SYSCACHES=1 ;;
     --skip-usercaches) SKIP_USERCACHES=1 ;;
+    --skip-appcaches)  SKIP_APPCACHES=1 ;;
     --skip-trash)      SKIP_TRASH=1 ;;
     --skip-brew)       SKIP_BREW=1 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
@@ -438,6 +449,7 @@ plan_line "purge inactive memory"             "$(( 1 - SKIP_MEMORY      ))" "sud
 plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dscacheutil + mDNSResponder"
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Logs, DerivedData, ..."
+plan_line "clear app caches"                  "$(( 1 - SKIP_APPCACHES   ))" "Electron/Chromium, aerial wallpapers"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 plan_line "docker / orbstack prune"           "$(( 1 - SKIP_DOCKER      ))" "images, containers, volumes, builder"
 plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "Archives, DeviceSupport, simulators"
@@ -538,6 +550,92 @@ step_usercaches() {
   for d in "${targets[@]}"; do
     clear_dir "$d"
   done
+}
+
+# Electron / Chromium apps (Claude, Slack, VS Code, Cursor, Chrome, Brave, ...)
+# keep their disposable caches inside their own Application Support directory,
+# not in ~/Library/Caches — so step_usercaches above never touches them. On a
+# developer machine this is routinely several GB.
+#
+# The matched names are Chromium-internal and are recreated on next launch.
+# We match by directory name rather than by an app allow-list so that apps not
+# yet on anyone's list are covered too; "Cache"/"GPUCache"/"blob_storage" are
+# unambiguous enough that a generic sweep is safe.
+step_appcaches() {
+  local root="$HOME/Library/Application Support"
+  if [[ ! -d "$root" ]]; then
+    warn "$root not found"
+    return 0
+  fi
+
+  # A live Chromium process rewrites these dirs while we delete them, which can
+  # leave its profile inconsistent. Warn, but don't refuse — the caches rebuild.
+  local -a running=()
+  local proc
+  for proc in "Claude" "Slack" "Code" "Cursor" "Notion" "Obsidian" "Signal" \
+              "Discord" "Google Chrome" "Brave Browser" "Vivaldi" "Zed" "Void"; do
+    if pgrep -x "$proc" >/dev/null 2>&1; then
+      running+=("$proc")
+    fi
+  done
+  if (( ${#running[@]} > 0 )); then
+    warn "running now: ${running[*]} — quit them first for a clean sweep"
+  fi
+
+  # -prune keeps find from descending into a directory it already matched, so
+  # nested hits aren't reported (and re-deleted) twice.
+  local -a hits=()
+  while IFS= read -r -d '' d; do
+    hits+=("$d")
+  done < <(find "$root" -maxdepth 5 -type d \( \
+             -iname "Cache"              -o \
+             -iname "CachedData"         -o \
+             -iname "Code Cache"         -o \
+             -iname "GPUCache"           -o \
+             -iname "Service Worker"     -o \
+             -iname "blob_storage"       -o \
+             -iname "DawnCache"          -o \
+             -iname "DawnGraphiteCache"  -o \
+             -iname "DawnWebGPUCache"    -o \
+             -iname "ShaderCache"        -o \
+             -iname "GrShaderCache"      \
+           \) -prune -print0 2>>"$LOG_FILE")
+
+  if (( ${#hits[@]} == 0 )); then
+    info "no Electron/Chromium app caches found"
+    return 0
+  fi
+
+  local d before_b after_b delta total_b=0
+  for d in "${hits[@]}"; do
+    before_b="$(path_bytes "$d")"
+    total_b=$(( total_b + before_b ))
+    if (( VERBOSE )); then
+      printf "  %s %s(%s)%s\n" "${d#"$root"/}" "$C_DIM" "$(human_bytes "$before_b")" "$C_RESET"
+    fi
+  done
+  printf "  %d cache dir(s), %s%s%s total\n" \
+    "${#hits[@]}" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
+
+  if (( DRY_RUN )); then
+    printf "  %s(dry-run) would remove %d cache dir(s)%s\n" \
+      "$C_DIM" "${#hits[@]}" "$C_RESET"
+  else
+    rm -rf "${hits[@]}" 2>>"$LOG_FILE" || true
+
+    after_b=0
+    for d in "${hits[@]}"; do
+      after_b=$(( after_b + $(path_bytes "$d") ))
+    done
+    delta=$(( total_b - after_b ))
+    (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
+    printf "  %s->%s freed %s from app caches\n" "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")"
+  fi
+
+  # Apple's aerial wallpaper videos: pure cache, re-downloaded on demand.
+  # Only aerials/ — the sibling Store/Index.plist is the wallpaper *config*,
+  # and removing it resets the user's chosen desktop background.
+  clear_dir "$root/com.apple.wallpaper/aerials"
 }
 
 step_trash() {
@@ -914,6 +1012,7 @@ run_or_skip "Purge inactive memory"                "$SKIP_MEMORY"      step_memo
 run_or_skip "Flush DNS cache"                      "$SKIP_DNS"         step_dns
 run_or_skip "Clear system caches"                  "$SKIP_SYSCACHES"   step_syscaches
 run_or_skip "Clear user caches"                    "$SKIP_USERCACHES"  step_usercaches
+run_or_skip "Clear Electron / app caches"          "$SKIP_APPCACHES"   step_appcaches
 run_or_skip "Empty trash"                          "$SKIP_TRASH"       step_trash
 run_or_skip "Docker / OrbStack prune"              "$SKIP_DOCKER"      step_docker
 run_or_skip "Xcode extras"                         "$SKIP_XCODE"       step_xcode
