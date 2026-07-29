@@ -38,6 +38,16 @@
 set -u
 set -o pipefail
 
+# Where this script lives, so it can find lib/ regardless of the caller's cwd or
+# whether it was invoked through a symlink on PATH.
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+
 # ---------------------------------------------------------------------------
 # output helpers (TTY-aware colors)
 # ---------------------------------------------------------------------------
@@ -727,46 +737,64 @@ step_appcaches() {
 # opened and never remove it — state DBs, extension scratch data, language-server
 # indexes. Entries outlive the projects they belong to indefinitely.
 #
-# An entry is only dropped when its workspace.json names a local path that no
-# longer exists. Anything we can't positively resolve as gone — remote/virtual
-# URIs, missing or unparsable workspace.json, a path that still exists in either
-# decoded or raw form — is kept. Errors therefore cost disk, never data.
+# Classification lives in lib/workspace_scan.py rather than here. Deciding which
+# entries are dead means parsing JSON, percent-decoding a URI, and asking whether
+# a path's volume is even attached — none of which shell does well, and the cost
+# of getting it wrong is somebody's project state. The scanner is unit-tested
+# against fixtures covering each of those cases; see test-env/python/tests.
+#
+# An entry is dropped only when its recorded path is provably gone. Remote or
+# virtual URIs, missing or unparsable workspace.json, and paths on a volume that
+# is not currently mounted are all kept, so errors cost disk, never data.
 step_workspacestorage() {
   local root="$HOME/Library/Application Support"
-  local ed ws dir f uri raw path
+  local ed ws rec status dir reason
   local live=0 unresolved=0
-  local -a stale=()
+  local -a roots=() stale=()
 
   for ed in "${VSCODE_FAMILY[@]}"; do
     ws="$root/$ed/User/workspaceStorage"
-    [[ -d "$ws" ]] || continue
-    for dir in "$ws"/*/; do
-      [[ -d "$dir" ]] || continue
-      f="${dir}workspace.json"
-      if [[ ! -f "$f" ]]; then
-        unresolved=$(( unresolved + 1 )); continue
-      fi
-      uri="$(sed -nE 's/.*"(folder|workspace)": *"([^"]*)".*/\2/p' "$f" 2>/dev/null | head -1)"
-      # Only reason about local files; remote/virtual workspaces are left alone.
-      if [[ "$uri" != file://* ]]; then
-        unresolved=$(( unresolved + 1 )); continue
-      fi
-      raw="${uri#file://}"
-      # Percent-decode (%20 -> space). A path containing a literal '%' can decode
-      # to garbage, so the raw form is checked too — a bad decode keeps the entry.
-      path="$(printf '%b' "${raw//%/\\x}" 2>/dev/null)"
-      if [[ -e "$path" || -e "$raw" ]]; then
-        live=$(( live + 1 ))
-      else
-        stale+=("$dir")
-      fi
-    done
+    [[ -d "$ws" ]] && roots+=("$ws")
   done
-
-  if (( live + unresolved + ${#stale[@]} == 0 )); then
+  if (( ${#roots[@]} == 0 )); then
     info "no editor workspace storage found"
     return 0
   fi
+
+  # Absolute path, not `python3`: on a developer machine a bare python3 resolves
+  # to whichever pyenv shim or activated virtualenv happens to be first on PATH,
+  # and this has to be the interpreter that is always present.
+  local py=/usr/bin/python3
+  local scanner="$SCRIPT_DIR/lib/workspace_scan.py"
+  if [[ ! -x "$py" || ! -f "$scanner" ]]; then
+    warn_step "workspace scanner unavailable — keeping all entries"
+    return 0
+  fi
+
+  # Records are NUL-delimited because macOS paths may contain newlines.
+  while IFS= read -r -d '' rec; do
+    status="${rec%%$'\t'*}"
+    rec="${rec#*$'\t'}"
+    dir="${rec%%$'\t'*}"
+    rec="${rec#*$'\t'}"
+    reason="${rec%%$'\t'*}"
+    case "$status" in
+      live)  live=$(( live + 1 )) ;;
+      stale) stale+=("$dir") ;;
+      *)
+        unresolved=$(( unresolved + 1 ))
+        (( VERBOSE )) && printf "      %skept: %s%s\n" "$C_DIM" "$reason" "$C_RESET"
+        ;;
+    esac
+  done < <("$py" "$scanner" "${roots[@]}" 2>>"$LOG_FILE")
+
+  # A scanner that failed outright yields no records at all. Deleting nothing is
+  # the correct response; reporting [ ok ] for it is not.
+  if (( live + unresolved + ${#stale[@]} == 0 )); then
+    warn_step "workspace scan returned nothing — keeping all entries (see log)"
+    return 0
+  fi
+
   printf "  %d live · %d stale · %d unresolved %s(kept)%s\n" \
     "$live" "${#stale[@]}" "$unresolved" "$C_DIM" "$C_RESET"
   clear_paths "stale workspace storage" dir ${stale[@]+"${stale[@]}"}
