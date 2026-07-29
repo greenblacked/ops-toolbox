@@ -5,6 +5,10 @@
 #   - flush DNS caches
 #   - clear /Library/Caches and writable /System/Library/Caches
 #   - clear ~/Library caches (Caches, Logs, Saved State, Xcode DerivedData, ...)
+#   - clear per-app caches missed by the above: Chromium/Electron dirs under
+#     Application Support, sandboxed app caches in ~/Library/Containers,
+#     cached extension .vsix archives, aerial wallpaper videos
+#   - prune VS Code / Cursor workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, gem, go)
 #   - prune Docker / OrbStack (images, containers, volumes, builder cache)
@@ -17,8 +21,8 @@
 # Usage:
 #   ./stay_fresh.sh [--dry-run] [--yes] [--verbose]
 #                   [--skip-memory] [--skip-dns] [--skip-syscaches]
-#                   [--skip-usercaches] [--skip-trash] [--skip-brew]
-#                   [--skip-devcaches] [--skip-docker]
+#                   [--skip-usercaches] [--skip-appcaches] [--skip-trash]
+#                   [--skip-brew] [--skip-devcaches] [--skip-docker]
 #                   [--skip-xcode] [--skip-diagnostics]
 #                   [--no-sudo] [--help]
 #
@@ -68,6 +72,8 @@ SKIP_MEMORY=0
 SKIP_DNS=0
 SKIP_SYSCACHES=0
 SKIP_USERCACHES=0
+SKIP_APPCACHES=0
+SKIP_WORKSPACESTORAGE=0
 SKIP_TRASH=0
 SKIP_BREW=0
 SKIP_DEVCACHES=0
@@ -115,6 +121,9 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-dns             Don't flush DNS caches
   --skip-syscaches       Don't touch /Library/Caches or /System/Library/Caches
   --skip-usercaches      Don't clear ~/Library/Caches et al.
+  --skip-appcaches       Don't clear per-app caches (see Notes)
+  --skip-workspacestorage
+                         Don't prune stale VS Code / Cursor workspace storage
   --skip-trash           Don't empty ~/.Trash
   --skip-brew            Don't run Homebrew maintenance (see Notes)
   --brew-greedy          Also upgrade casks with 'auto_updates true' / 'version :latest'
@@ -131,6 +140,18 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
 
 ${C_BOLD}Notes:${C_RESET}
+  Per-app caches: covers the disposable data that lives outside ~/Library/Caches
+  and so is missed by --skip-usercaches' step — Chromium-internal dirs (Cache,
+  Code Cache, GPUCache, Service Worker, blob_storage) under Application Support,
+  the private Caches dir inside each sandboxed app's container, cached extension
+  .vsix archives, and the aerial-wallpaper videos. All of it regenerates, but
+  quit the apps first — a running app rewrites its caches mid-sweep.
+
+  Workspace storage: VS Code and its forks keep a workspaceStorage entry per
+  folder ever opened and never garbage-collect them. Only entries whose recorded
+  path no longer exists are removed; remote workspaces and anything unparsable
+  are kept.
+
   Diagnostic / crash reports: always runs as your user (clears
   ~/Library/Logs/DiagnosticReports and ~/Library/DiagnosticReports). With sudo
   (default), also clears /Library/Logs/DiagnosticReports and
@@ -154,6 +175,8 @@ while (( $# > 0 )); do
     --skip-dns)        SKIP_DNS=1 ;;
     --skip-syscaches)  SKIP_SYSCACHES=1 ;;
     --skip-usercaches) SKIP_USERCACHES=1 ;;
+    --skip-appcaches)  SKIP_APPCACHES=1 ;;
+    --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1 ;;
     --skip-trash)      SKIP_TRASH=1 ;;
     --skip-brew)       SKIP_BREW=1 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
@@ -178,6 +201,20 @@ if (( SKIP_DEVTOOLS )); then
   SKIP_GCLOUD=1
   SKIP_VERSIONS=1
 fi
+
+# VS Code forks all inherit the same Application Support layout
+# (CachedExtensionVSIXs, User/workspaceStorage, ...), so the cache steps below
+# iterate this list rather than special-casing each editor.
+VSCODE_FAMILY=(
+  "Code"
+  "Code - Insiders"
+  "VSCodium"
+  "Cursor"
+  "Windsurf"
+  "Void"
+  "Trae"
+  "Positron"
+)
 
 # ---------------------------------------------------------------------------
 # utility helpers
@@ -291,6 +328,54 @@ clear_dir() {
   delta=$(( before_b - after_b ))
   (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
   printf "  %s->%s freed %s from %s\n" "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$dir"
+}
+
+# Bulk-remove many paths with a single aggregate size report, honoring
+# --dry-run. Per-path sizes are only printed under --verbose; a sweep can match
+# a few hundred directories and one line each drowns the summary.
+#   mode "dir"      -> remove the directories themselves
+#   mode "contents" -> keep each directory, remove what is inside it
+# Usage: clear_paths <label> <dir|contents> <path>...
+clear_paths() {
+  local label="$1" mode="$2"; shift 2
+  if (( $# == 0 )); then
+    printf "  %s- no %s found%s\n" "$C_DIM" "$label" "$C_RESET"
+    return 0
+  fi
+
+  local p before_b after_b delta total_b=0 count=$#
+  for p in "$@"; do
+    before_b="$(path_bytes "$p")"
+    total_b=$(( total_b + before_b ))
+    if (( VERBOSE )); then
+      printf "      %s %s(%s)%s\n" \
+        "${p#"$HOME"/}" "$C_DIM" "$(human_bytes "$before_b")" "$C_RESET"
+    fi
+  done
+  printf "  %s: %d path(s), %s%s%s\n" \
+    "$label" "$count" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
+
+  if (( DRY_RUN )); then
+    printf "  %s(dry-run) would clear %d path(s)%s\n" "$C_DIM" "$count" "$C_RESET"
+    return 0
+  fi
+
+  if [[ "$mode" == "contents" ]]; then
+    for p in "$@"; do
+      find "$p" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>>"$LOG_FILE" || true
+    done
+  else
+    rm -rf "$@" 2>>"$LOG_FILE" || true
+  fi
+
+  after_b=0
+  for p in "$@"; do
+    after_b=$(( after_b + $(path_bytes "$p") ))
+  done
+  delta=$(( total_b - after_b ))
+  (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
+  printf "  %s->%s freed %s %s(%s)%s\n" \
+    "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$C_DIM" "$label" "$C_RESET"
 }
 
 # ---------------------------------------------------------------------------
@@ -438,6 +523,8 @@ plan_line "purge inactive memory"             "$(( 1 - SKIP_MEMORY      ))" "sud
 plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dscacheutil + mDNSResponder"
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Logs, DerivedData, ..."
+plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed, VSIX, wallpapers"
+plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code / Cursor, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 plan_line "docker / orbstack prune"           "$(( 1 - SKIP_DOCKER      ))" "images, containers, volumes, builder"
 plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "Archives, DeviceSupport, simulators"
@@ -538,6 +625,136 @@ step_usercaches() {
   for d in "${targets[@]}"; do
     clear_dir "$d"
   done
+}
+
+# Electron / Chromium apps (Claude, Slack, VS Code, Cursor, Chrome, Brave, ...)
+# keep their disposable caches inside their own Application Support directory,
+# not in ~/Library/Caches — so step_usercaches above never touches them. On a
+# developer machine this is routinely several GB.
+#
+# The matched names are Chromium-internal and are recreated on next launch.
+# We match by directory name rather than by an app allow-list so that apps not
+# yet on anyone's list are covered too; "Cache"/"GPUCache"/"blob_storage" are
+# unambiguous enough that a generic sweep is safe.
+step_appcaches() {
+  local root="$HOME/Library/Application Support"
+  if [[ ! -d "$root" ]]; then
+    warn "$root not found"
+    return 0
+  fi
+
+  # A live Chromium process rewrites these dirs while we delete them, which can
+  # leave its profile inconsistent. Warn, but don't refuse — the caches rebuild.
+  local -a running=()
+  local proc
+  for proc in "Claude" "Slack" "Code" "Cursor" "Notion" "Obsidian" "Signal" \
+              "Discord" "Google Chrome" "Brave Browser" "Vivaldi" "Zed" "Void"; do
+    if pgrep -x "$proc" >/dev/null 2>&1; then
+      running+=("$proc")
+    fi
+  done
+  if (( ${#running[@]} > 0 )); then
+    warn "running now: ${running[*]} — quit them first for a clean sweep"
+  fi
+
+  # -prune keeps find from descending into a directory it already matched, so
+  # nested hits aren't reported (and re-deleted) twice.
+  local -a hits=()
+  while IFS= read -r -d '' d; do
+    hits+=("$d")
+  done < <(find "$root" -maxdepth 5 -type d \( \
+             -iname "Cache"              -o \
+             -iname "CachedData"         -o \
+             -iname "Code Cache"         -o \
+             -iname "GPUCache"           -o \
+             -iname "Service Worker"     -o \
+             -iname "blob_storage"       -o \
+             -iname "DawnCache"          -o \
+             -iname "DawnGraphiteCache"  -o \
+             -iname "DawnWebGPUCache"    -o \
+             -iname "ShaderCache"        -o \
+             -iname "GrShaderCache"      \
+           \) -prune -print0 2>>"$LOG_FILE")
+
+  clear_paths "Electron/Chromium caches" dir ${hits[@]+"${hits[@]}"}
+
+  # Sandboxed apps (Teams, Outlook, Mail, Weather, ...) can't see ~/Library,
+  # so macOS gives each one a private Caches dir inside its container. Same
+  # disposable data as ~/Library/Caches, invisible to step_usercaches.
+  # Contents only: the Caches dir itself carries sandbox ACLs worth keeping.
+  local containers="$HOME/Library/Containers"
+  local -a ccaches=()
+  if [[ -d "$containers" ]]; then
+    while IFS= read -r -d '' d; do
+      ccaches+=("$d")
+    done < <(find "$containers" -maxdepth 4 -type d -path "*/Data/Library/Caches" \
+               -print0 2>>"$LOG_FILE")
+  fi
+  clear_paths "sandboxed app caches" contents ${ccaches[@]+"${ccaches[@]}"}
+
+  # VS Code-family editors keep the downloaded .vsix archive for every extension
+  # after installing it. Purely a download cache; the installed extension lives
+  # in ~/.vscode/extensions (or the editor's equivalent) and is untouched.
+  local ed
+  local -a vsix=()
+  for ed in "${VSCODE_FAMILY[@]}"; do
+    [[ -d "$root/$ed/CachedExtensionVSIXs" ]] && vsix+=("$root/$ed/CachedExtensionVSIXs")
+  done
+  clear_paths "extension VSIX cache" contents ${vsix[@]+"${vsix[@]}"}
+
+  # Apple's aerial wallpaper videos: pure cache, re-downloaded on demand.
+  # Only aerials/ — the sibling Store/Index.plist is the wallpaper *config*,
+  # and removing it resets the user's chosen desktop background.
+  clear_dir "$root/com.apple.wallpaper/aerials"
+}
+
+# VS Code-family editors create workspaceStorage/<hash>/ for every folder ever
+# opened and never remove it — state DBs, extension scratch data, language-server
+# indexes. Entries outlive the projects they belong to indefinitely.
+#
+# An entry is only dropped when its workspace.json names a local path that no
+# longer exists. Anything we can't positively resolve as gone — remote/virtual
+# URIs, missing or unparsable workspace.json, a path that still exists in either
+# decoded or raw form — is kept. Errors therefore cost disk, never data.
+step_workspacestorage() {
+  local root="$HOME/Library/Application Support"
+  local ed ws dir f uri raw path
+  local live=0 unresolved=0
+  local -a stale=()
+
+  for ed in "${VSCODE_FAMILY[@]}"; do
+    ws="$root/$ed/User/workspaceStorage"
+    [[ -d "$ws" ]] || continue
+    for dir in "$ws"/*/; do
+      [[ -d "$dir" ]] || continue
+      f="${dir}workspace.json"
+      if [[ ! -f "$f" ]]; then
+        unresolved=$(( unresolved + 1 )); continue
+      fi
+      uri="$(sed -nE 's/.*"(folder|workspace)": *"([^"]*)".*/\2/p' "$f" 2>/dev/null | head -1)"
+      # Only reason about local files; remote/virtual workspaces are left alone.
+      if [[ "$uri" != file://* ]]; then
+        unresolved=$(( unresolved + 1 )); continue
+      fi
+      raw="${uri#file://}"
+      # Percent-decode (%20 -> space). A path containing a literal '%' can decode
+      # to garbage, so the raw form is checked too — a bad decode keeps the entry.
+      path="$(printf '%b' "${raw//%/\\x}" 2>/dev/null)"
+      if [[ -e "$path" || -e "$raw" ]]; then
+        live=$(( live + 1 ))
+      else
+        stale+=("$dir")
+      fi
+    done
+  done
+
+  if (( live + unresolved + ${#stale[@]} == 0 )); then
+    info "no editor workspace storage found"
+    return 0
+  fi
+  printf "  %d live · %d stale · %d unresolved %s(kept)%s\n" \
+    "$live" "${#stale[@]}" "$unresolved" "$C_DIM" "$C_RESET"
+  clear_paths "stale workspace storage" dir ${stale[@]+"${stale[@]}"}
 }
 
 step_trash() {
@@ -914,6 +1131,8 @@ run_or_skip "Purge inactive memory"                "$SKIP_MEMORY"      step_memo
 run_or_skip "Flush DNS cache"                      "$SKIP_DNS"         step_dns
 run_or_skip "Clear system caches"                  "$SKIP_SYSCACHES"   step_syscaches
 run_or_skip "Clear user caches"                    "$SKIP_USERCACHES"  step_usercaches
+run_or_skip "Clear per-app caches"                 "$SKIP_APPCACHES"   step_appcaches
+run_or_skip "Prune stale workspace storage"        "$SKIP_WORKSPACESTORAGE" step_workspacestorage
 run_or_skip "Empty trash"                          "$SKIP_TRASH"       step_trash
 run_or_skip "Docker / OrbStack prune"              "$SKIP_DOCKER"      step_docker
 run_or_skip "Xcode extras"                         "$SKIP_XCODE"       step_xcode
