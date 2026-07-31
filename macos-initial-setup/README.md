@@ -26,9 +26,11 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`install_devtools.sh`](#install_devtoolssh)
 - [`stay_fresh.sh`](#stay_freshsh)
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
+- [`brewfile.sh`](#brewfilesh)
+- [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
 - [What this changes on your machine](#what-this-changes-on-your-machine)
-- [Development: Docker checks](#development--docker-checks)
+- [Development: Docker checks](#development-docker-checks)
 
 ## TL;DR
 
@@ -59,8 +61,11 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `install_devtools.sh` | Language and infrastructure toolchains: Python, Terraform, Go, Helm, and version managers. |
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. |
+| `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
+| `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
+| `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
 | `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions. |
-| `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development--docker-checks). |
+| `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development-docker-checks). |
 
 ## Lifecycle: when to run what
 
@@ -461,6 +466,74 @@ are required. A failing step never aborts the remainder of the run.
 
 If you need hard-fail semantics on per-step failures, use
 `stay_fresh.sh` instead.
+
+---
+
+## `brewfile.sh`
+
+`install_apps.sh` and `install_devtools.sh` install a list decided in advance —
+the *intent*. `brewfile.sh` records what a machine actually has right now — the
+*fact*. The two drift apart quietly: a formula installed by hand for one task is
+invisible to the curated scripts and lost on the next machine.
+
+```bash
+./brewfile.sh dump              # write ./Brewfile from this machine
+./brewfile.sh diff              # what would dump change? (writes nothing)
+./brewfile.sh dump --force      # accept those changes
+./brewfile.sh check             # is everything in the Brewfile installed?
+./brewfile.sh install           # install whatever is missing
+./brewfile.sh install --dry-run # list what install would add
+```
+
+Commit the resulting `Brewfile` and a new machine reproduces this one with
+`./brewfile.sh install`.
+
+`dump` refuses to overwrite an existing `Brewfile` without `--force`, pointing
+you at `diff` first — otherwise a machine missing half your tools would quietly
+erase the record of them. `install` passes `--no-upgrade`, so applying a
+Brewfile never silently upgrades packages you did not ask about.
+
+**Exit codes:** `0` success (for `check`: everything present) · `1` failed (for
+`check`: something missing) · `2` preflight failed · `3` bad arguments.
+
+---
+
+## `launchd/stay_fresh_agent.sh`
+
+Maintenance that depends on remembering to run it does not happen. This installs
+a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
+
+```bash
+./launchd/stay_fresh_agent.sh install                      # Mondays, 10:30
+./launchd/stay_fresh_agent.sh install --weekday daily --hour 3
+./launchd/stay_fresh_agent.sh install --dry-run            # agent previews only
+./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
+./launchd/stay_fresh_agent.sh status
+./launchd/stay_fresh_agent.sh run-now
+./launchd/stay_fresh_agent.sh uninstall
+```
+
+**The agent cannot use `sudo`, and that is not a limitation to work around.** A
+LaunchAgent runs in your GUI login session with no terminal attached, so a
+password prompt has nothing to prompt and would hang or fail silently. The agent
+therefore always runs `--no-sudo --yes`, which means these steps are **skipped**
+on every scheduled run:
+
+- memory purge
+- DNS flush
+- system caches (`/Library/Caches`, `/System/Library/Caches`)
+- system diagnostic and crash reports
+
+Everything else — user caches, per-app caches, workspace storage, trash,
+Homebrew, Docker, Xcode extras, dev-tool caches — runs normally. Run
+`stay_fresh.sh` by hand when you want the root-owned steps too.
+
+The agent is `ProcessType Background` with `LowPriorityIO` and `Nice 10`, so it
+never competes with interactive work, and `StartCalendarIntervalRunMissed`
+catches a run missed because the Mac was asleep — once, not once per missed
+interval.
+
+Logs go to `~/Library/Logs/stay_fresh/agent.{out,err}.log`.
 
 ---
 

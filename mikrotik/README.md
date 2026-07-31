@@ -26,6 +26,7 @@ live in `/system script` on the router and are run either manually or from
 | `firewall_drift_baseline.lua`   | Manual helper that re-arms `firewall_drift` after intentional changes.  |
 | `mac_allowlist_dhcp.lua`        | Flags (and optionally blocks) DHCP leases for non-allowlisted MACs.     |
 | `rogue_dns_check.lua`           | Detects DNS upstream hijack and clients using non-approved resolvers.   |
+| `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
 
 ## Installation
 
@@ -206,6 +207,39 @@ source IP, and (with `Enforce=true`, default) tags those source IPs into
 address-list `rogue-dns-clients` with a 1-hour timeout. Pair with a
 documented filter rule to redirect or drop their port-53 traffic (see
 [Security action surface](#security-action-surface) below).
+
+### `export_config.py`
+
+**Runs on your machine, not on the router** — it is the only file here that is
+not a RouterOS script.
+
+`firewall_drift.lua` compares the live firewall against a baseline maintained by
+hand, so drift is only ever measured against whatever someone last remembered to
+write down. This exports the real configuration and commits it, giving that
+baseline actual history and turning any change — intended or not — into a diff.
+
+```bash
+./export_config.py --host 192.168.88.1
+./export_config.py --host router.lan --identity ~/.ssh/keys/projects/mikrotik/mikrotik_rsa
+./export_config.py --host router.lan --commit     # commit if it changed
+./export_config.py --host router.lan --stdout     # print, write nothing
+```
+
+Transport is ssh, so it needs **nothing installed**: no `routeros-api`, no pip,
+no venv. (The suite in [`tests/`](tests/) uses the API because it drives the
+router; this only reads.) Output lands in `config-history/<host>.rsc`.
+
+The normalisation step is the point. `/export` stamps a header with the export
+time and hardware identity, so two exports of an unchanged router differ — left
+alone, every commit is noise and a real change is invisible among it. Only
+provably volatile lines are stripped (timestamp, `software id`, `model`, `serial
+number`); anything more would hide a genuine edit. Rule `comment=` values are
+kept, since those are configuration rather than header. Pass `--no-normalise` to
+see the raw export.
+
+`--show-sensitive` together with `--commit` is **refused before the router is
+contacted** — writing router secrets into git history is not something to do by
+accident.
 
 ## Security action surface
 

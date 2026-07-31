@@ -20,7 +20,8 @@ on reducing repeat manual work.
 - [Git scripts at a glance](#git-scripts-at-a-glance)
 - [macOS setup at a glance](#macos-setup-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
-- [Testing (Docker)](#testing-docker)
+- [Testing](#testing)
+- [Continuous integration](#continuous-integration)
 
 ## What's here
 
@@ -122,6 +123,12 @@ repositories and local bare remotes:
   default, with explicit options for `--mixed` and forced `--hard`.
 - `git_amend_last.sh` — amends the previous commit with staged changes, or
   stages everything first with `--add-all`.
+- `git_ssh_doctor.py` — explains `Permission denied (publickey)`. Takes the
+  effective config from `ssh -G`, then reports what `ssh -G` cannot: `Include`
+  globs that match only directories (which ssh skips without a word), keys with
+  permissions ssh refuses, and an empty agent. `--test-auth` tries each
+  discovered key against the host and prints the `Host` block that fixes it.
+  Read-only — it never edits config or touches the agent.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.
@@ -139,6 +146,20 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   reporting.
 - `v1_stay_fresh.sh` is a legacy, flag-free minimal maintenance flow kept for
   reference; prefer `stay_fresh.sh` for new use.
+- `brewfile.sh` captures the Homebrew state of a machine into a versioned
+  `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
+  to see what `dump` would change before overwriting anything. The curated
+  installers above are the intent; the Brewfile is the fact.
+- `launchd/stay_fresh_agent.sh` installs a per-user LaunchAgent that runs
+  `stay_fresh.sh` on a weekly or daily schedule. The agent has no terminal, so
+  it cannot answer a sudo prompt and always runs `--no-sudo --yes`; the
+  root-owned steps stay manual. `--print-only` shows the plist without
+  installing it.
+- `lib/workspace_scan.py` decides which VS Code / Cursor `workspaceStorage`
+  entries belong to projects that are genuinely gone. Called by `stay_fresh.sh`
+  via `/usr/bin/python3`; stdlib-only and unit-tested. It refuses to call an
+  entry stale when its volume is not mounted, so an unplugged drive is never
+  mistaken for a deleted project.
 - `zsh_aliases.zsh` provides guarded aliases and helper functions for daily
   shell work.
 
@@ -182,18 +203,55 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   using non-approved DNS resolvers; tags offenders into
   `rogue-dns-clients`.
 
+Run from your machine rather than on the router:
+
+- `export_config.py` — pulls `/export` over ssh and versions it in
+  `config-history/`, so `firewall_drift.lua` has real history to diff against
+  instead of a hand-maintained baseline. Strips the volatile export header
+  (timestamp, serial, software id) so an unchanged router produces an identical
+  file and only genuine changes appear as diffs. Needs no `routeros-api`, no
+  pip, no venv. Refuses `--show-sensitive` together with `--commit`.
+
 See [`mikrotik/README.md`](mikrotik/README.md) for installation, policy
 flags, suggested scheduler entries, and RouterOS 7.22-specific gotchas
 (TLS CAs, `:global` lifetime, `wifi` vs `wireless`, etc.).
 
-## Testing (Docker)
+## Testing
 
-Three folders ship **self-contained** Docker-based checks. You only need the
-Docker Engine and Compose v2 on the host — no local Python, shellcheck, or
-RouterOS install.
+Run everything with one command:
+
+```bash
+./run-tests.sh            # git + macos + python  (the fast default)
+./run-tests.sh all        # the above, plus the RouterOS CHR suite
+./run-tests.sh macos      # a single suite
+```
+
+`run-tests.sh` delegates to the per-folder runners below rather than
+reimplementing them, and prints a pass/fail/skip matrix. CI invokes this same
+script, so a green run locally and a green run in CI mean the same thing.
 
 | Package | What runs | How |
 | --- | --- | --- |
 | [`git/`](git/) | **Static + behavior** checks for Git helper scripts (syntax, ShellCheck, `--help`, profile state, `gacp`, status, cleanup, recent branches, and sync against local temporary repos/remotes). | [`git/README.md#tests`](git/README.md#tests) — `./git/tests/run.sh` |
-| [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases). Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
-| [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
+| [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
+| [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
+| [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
+
+The three Docker suites are self-contained: you need only Docker Engine and
+Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
+Python suite deliberately needs none of that either, since the modules it tests
+are invoked by `/usr/bin/python3` on a bare macOS machine.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS and
+Python suites on every push and pull request, plus a repo-wide `bash -n` and
+ShellCheck pass over every tracked `*.sh` so new scripts are covered from the
+moment they land. The Python job is pinned to 3.9 — the version
+`/usr/bin/python3` provides on macOS — so 3.10+ syntax cannot slip into a helper
+that has to run there.
+
+[`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the RouterOS
+integration suite nightly and on demand. It is kept off the pull-request path
+because CHR is an x86_64 image under QEMU and first boot takes minutes; the
+Linux runner has `/dev/kvm`, which the workflow enables.
