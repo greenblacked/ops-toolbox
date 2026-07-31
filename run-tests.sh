@@ -68,6 +68,17 @@ if (( ${#suites[@]} == 0 )); then
   suites=(git macos python)
 fi
 
+# `run-tests.sh all git` or `fast python` would otherwise run a suite twice.
+deduped=()
+for s in "${suites[@]}"; do
+  seen=0
+  for d in ${deduped[@]+"${deduped[@]}"}; do
+    [[ "$d" == "$s" ]] && { seen=1; break; }
+  done
+  (( seen )) || deduped+=("$s")
+done
+suites=("${deduped[@]}")
+
 need_docker=0
 for s in "${suites[@]}"; do
   [[ "$s" == "python" ]] || need_docker=1

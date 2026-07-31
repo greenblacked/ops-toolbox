@@ -85,10 +85,19 @@ def extract_uri(data):
 def decode_file_uri(uri: str):
     """Return (decoded_path, raw_path) for a file:// URI, or None if not local.
 
-    Both forms come back because percent-decoding is ambiguous: a path
-    containing a literal '%' can decode into something else entirely. The caller
-    treats the entry as live if *either* form exists, so a bad decode keeps the
-    entry rather than deleting the wrong thing.
+    Returns every plausible spelling of the path, most-likely first, or None if
+    the URI is not a local file. The caller treats the entry as live if *any*
+    candidate exists on disk.
+
+    There are two independent ambiguities, and both are resolved by widening the
+    candidate list rather than by picking a winner:
+
+    - Percent-decoding. A path containing a literal '%' decodes into something
+      else entirely, so the raw spelling is kept alongside the decoded one.
+    - '?' and '#'. In a URI these introduce a query and a fragment, but macOS
+      allows both in filenames. Truncating at them turns a live '/x/my#proj'
+      into '/x/my', which does not exist, which reads as a deleted project.
+      So the untruncated spelling is a candidate too.
     """
     if not uri.startswith("file://"):
         return None
@@ -100,15 +109,23 @@ def decode_file_uri(uri: str):
     raw = uri[len("file://") :]
     if parsed.netloc:
         raw = raw[len(parsed.netloc) :]
-    # Strip a query/fragment the URI parser found; they are not part of a path.
-    for sep in ("?", "#"):
-        idx = raw.find(sep)
-        if idx != -1:
-            raw = raw[:idx]
     if not raw:
         return None
-    decoded = unquote(raw, errors="replace")
-    return decoded, raw
+
+    trimmed = raw
+    for sep in ("?", "#"):
+        idx = trimmed.find(sep)
+        if idx != -1:
+            trimmed = trimmed[:idx]
+
+    candidates = []
+    for form in (trimmed, raw):
+        if not form:
+            continue
+        for spelling in (unquote(form, errors="replace"), form):
+            if spelling and spelling not in candidates:
+                candidates.append(spelling)
+    return candidates or None
 
 
 def classify_entry(entry_dir: str, mounted: frozenset):
@@ -132,30 +149,34 @@ def classify_entry(entry_dir: str, mounted: frozenset):
     if uri is None:
         return UNRESOLVED, "no folder/workspace key", ""
 
-    decoded = decode_file_uri(uri)
-    if decoded is None:
+    candidates = decode_file_uri(uri)
+    if candidates is None:
         # vscode-remote://, vscode-vfs://, ssh://, a UNC host — all real
         # workspaces that simply are not on this filesystem.
         scheme = uri.split(":", 1)[0] or "unknown"
         return UNRESOLVED, "non-local workspace (%s)" % scheme, ""
 
-    path, raw = decoded
+    # The most likely spelling, used for display and for the volume message.
+    path = candidates[0]
 
     # The volume check has to come before the existence check. A workspace on an
     # unplugged SSD or an unmounted share does not exist right now, and is
-    # otherwise indistinguishable from a deleted one.
-    #
-    # Both the decoded and raw spellings are considered, because percent-decoding
-    # is ambiguous and a volume may legitimately contain '%' in its name. We only
-    # proceed to the existence check if at least one spelling names a volume that
-    # is attached; otherwise the entry is kept.
+    # otherwise indistinguishable from a deleted one. Every candidate spelling
+    # is considered; we proceed only if at least one names an attached volume.
     if not path.startswith(_ALWAYS_MOUNTED_PREFIXES):
-        candidates = [v for v in (_volume_of(path), _volume_of(raw)) if v is not None]
-        if candidates and not any(v in mounted for v in candidates):
-            return UNRESOLVED, "volume not mounted (%s)" % candidates[0], path
+        volumes = []
+        for candidate in candidates:
+            volume = _volume_of(candidate)
+            if volume is not None and volume not in volumes:
+                volumes.append(volume)
+        if volumes and not any(v in mounted for v in volumes):
+            return UNRESOLVED, "volume not mounted (%s)" % volumes[0], path
 
-    if os.path.exists(path) or os.path.exists(raw):
-        return LIVE, "", path
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            # Report the spelling that actually matched, not the first guess —
+            # this string is what --verbose and --json show.
+            return LIVE, "", candidate
 
     return STALE, "path gone", path
 

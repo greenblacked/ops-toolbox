@@ -164,6 +164,41 @@ class ScanTestCase(unittest.TestCase):
         status, _, _ = self.classify(entry)
         self.assertEqual(status, LIVE)
 
+    def test_hash_in_path_is_not_truncated(self):
+        # '#' starts a fragment in a URI but is a legal filename character on
+        # macOS. Truncating there turns a live '/x/my#proj' into '/x/my', which
+        # does not exist, which reads as a deleted project.
+        project = self.make_project("my#project")
+        entry = self.make_entry({"folder": "file://" + project})
+        status, _, path = self.classify(entry)
+        self.assertEqual(status, LIVE, "a live project was classified stale")
+        # The reported path must be the spelling that matched, since that is
+        # what --verbose and --json show.
+        self.assertEqual(path, project)
+
+    def test_question_mark_in_path_is_not_truncated(self):
+        project = self.make_project("what?now")
+        entry = self.make_entry({"folder": "file://" + project})
+        status, _, _ = self.classify(entry)
+        self.assertEqual(status, LIVE, "a live project was classified stale")
+
+    def test_percent_encoded_hash_still_resolves(self):
+        # The spelling VS Code actually writes.
+        project = self.make_project("my#project")
+        entry = self.make_entry(
+            {"folder": "file://" + project.replace("#", "%23")}
+        )
+        status, _, _ = self.classify(entry)
+        self.assertEqual(status, LIVE)
+
+    def test_genuinely_missing_path_with_hash_is_stale(self):
+        # The widened candidate list must not make everything look live.
+        entry = self.make_entry(
+            {"folder": "file://" + os.path.join(self.tmp, "gone#nope")}
+        )
+        status, _, _ = self.classify(entry)
+        self.assertEqual(status, STALE)
+
     def test_malformed_escape_on_missing_path_is_still_stale(self):
         entry = self.make_entry(
             {"folder": "file://" + os.path.join(self.tmp, "nope%zz")}

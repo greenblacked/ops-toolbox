@@ -42,8 +42,16 @@ jobs:
             echo "no /dev/kvm on this runner — falling back to TCG (slow)"
           fi
 
+      # The dispatch input goes through the environment rather than being
+      # interpolated straight into the command line: ${{ }} substitution happens
+      # before the shell sees the script, so the input would be parsed as shell
+      # syntax rather than as arguments.
       - name: Run CHR integration suite
-        run: ./mikrotik/tests/run.sh ${{ github.event.inputs.pytest_args }}
+        env:
+          PYTEST_ARGS: ${{ github.event.inputs.pytest_args }}
+        run: |
+          # shellcheck disable=SC2086 — word splitting is the point here.
+          ./mikrotik/tests/run.sh $PYTEST_ARGS
 
       # run.sh dumps compose logs on failure, but the tester's own output is the
       # part worth keeping around after the runner is torn down.
