@@ -72,6 +72,26 @@ jobs:
       - name: Run ${{ matrix.suite }} suite
         run: ./${{ matrix.suite }}/tests/run.sh
 
+  python:
+    name: Test / python helpers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      # 3.9 is what /usr/bin/python3 provides on macOS, and it is the
+      # interpreter stay_fresh.sh invokes lib/workspace_scan.py with. Testing on
+      # anything newer would let 3.10+ syntax through and break on the machines
+      # these scripts target.
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Run python suite
+        run: ./test-env/python/run.sh
+
   routeros-integration:
     name: Test / RouterOS integration
     if: github.event_name == 'workflow_dispatch' && inputs.run_routeros

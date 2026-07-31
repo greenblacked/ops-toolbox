@@ -91,6 +91,52 @@ else
   ok "skipping Linux preflight assertions (unusual host OS: $(uname -s))"
 fi
 
+# --- lib/: stay_fresh.sh hard-depends on the scanner at runtime ---
+# The dependency is invoked by absolute path from a step that only runs on
+# macOS, so nothing else in this suite would notice the file being renamed,
+# moved or broken. Check it here.
+scanner="$M/lib/workspace_scan.py"
+if [[ -f "$scanner" ]]; then
+  ok "lib/workspace_scan.py present"
+  if command -v python3 >/dev/null 2>&1; then
+    # Compile to an explicit cfile under /tmp. `python3 -m py_compile` writes a
+    # __pycache__ next to the source, and the repo is mounted read-only here —
+    # which fails with EROFS and looks exactly like a syntax error.
+    if python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile="/tmp/ws_scan.pyc", doraise=True)' \
+         "$scanner" 2>/dev/null; then
+      ok "lib/workspace_scan.py compiles"
+    else
+      err "lib/workspace_scan.py does not compile"
+      python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile="/tmp/ws_scan.pyc", doraise=True)' \
+        "$scanner" 2>&1 | tail -3 >&2
+    fi
+    # stay_fresh.sh reads the NUL-delimited form; a change to the record shape
+    # silently breaks the shell side, which cannot be seen from bash -n.
+    scan_tmp="$(mktemp -d)"
+    mkdir -p "$scan_tmp/ws/entry"
+    printf '{"folder": "file://%s/gone"}' "$scan_tmp" >"$scan_tmp/ws/entry/workspace.json"
+    if python3 "$scanner" "$scan_tmp/ws" --volumes-dir "$scan_tmp/vol" \
+         | tr '\0' '\n' | grep -q "^stale	"; then
+      ok "lib/workspace_scan.py emits NUL-delimited stale records"
+    else
+      err "lib/workspace_scan.py output shape changed"
+    fi
+    rm -rf "$scan_tmp"
+  else
+    ok "python3 absent in this image — skipped scanner compile check"
+  fi
+else
+  err "missing $scanner (stay_fresh.sh invokes it at runtime)"
+fi
+
+# The step must name the interpreter absolutely: a bare `python3` picks up
+# whichever pyenv shim or activated virtualenv is first on a developer's PATH.
+if grep -q 'local py=/usr/bin/python3' "$M/stay_fresh.sh"; then
+  ok "stay_fresh.sh pins /usr/bin/python3"
+else
+  err "stay_fresh.sh no longer pins an absolute interpreter path"
+fi
+
 # --- zsh_aliases: must source cleanly in zsh (Linux) ---
 if zsh -f -c "source '$M/zsh_aliases.zsh'"; then
   ok "zsh: source zsh_aliases.zsh"

@@ -7,7 +7,7 @@
 #   - clear ~/Library caches (Caches, Logs, Saved State, Xcode DerivedData, ...)
 #   - clear per-app caches missed by the above: Chromium/Electron dirs under
 #     Application Support, sandboxed app caches in ~/Library/Containers,
-#     cached extension .vsix archives, aerial wallpaper videos
+#     cached extension .vsix archives
 #   - prune VS Code / Cursor workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, gem, go)
@@ -21,8 +21,11 @@
 # Usage:
 #   ./stay_fresh.sh [--dry-run] [--yes] [--verbose]
 #                   [--skip-memory] [--skip-dns] [--skip-syscaches]
-#                   [--skip-usercaches] [--skip-appcaches] [--skip-trash]
-#                   [--skip-brew] [--skip-devcaches] [--skip-docker]
+#                   [--skip-usercaches] [--skip-appcaches]
+#                   [--skip-workspacestorage] [--skip-trash]
+#                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
+#                   [--skip-devtools] [--skip-helm-plugins] [--skip-gcloud]
+#                   [--skip-versions] [--skip-docker]
 #                   [--skip-xcode] [--skip-diagnostics]
 #                   [--no-sudo] [--help]
 #
@@ -34,6 +37,16 @@
 
 set -u
 set -o pipefail
+
+# Where this script lives, so it can find lib/ regardless of the caller's cwd or
+# whether it was invoked through a symlink on PATH.
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_SOURCE" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ "$SCRIPT_SOURCE" != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" && pwd)"
 
 # ---------------------------------------------------------------------------
 # output helpers (TTY-aware colors)
@@ -56,6 +69,17 @@ bold()  { printf "%s%s%s\n" "$C_BOLD"    "$*" "$C_RESET"; }
 info()  { printf "%s[info]%s %s\n"  "$C_BLUE"   "$C_RESET" "$*"; }
 ok()    { printf "%s[ ok ]%s %s\n"  "$C_GREEN"  "$C_RESET" "$*"; }
 warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; }
+# warn() only prints. Inside a step that is not enough: do_step decides OK vs
+# WARN from STEP_WARN_COUNT, so a bare warn leaves the step reporting [ ok ] and
+# landing in STEPS_OK however loudly it complained.
+#
+# Use warn_step only when the step could not do the work it was asked to do —
+# a broken toolchain, a prune skipped because the target is remote, an upgrade
+# that errored. Not for conditions that hold on a perfectly healthy machine:
+# a tool that simply is not installed, or apps being open during a cache sweep.
+# Those stay plain warn. A step that reports WARN on every ordinary run trains
+# you to stop reading the summary, which costs more than it catches.
+warn_step() { warn "$*"; STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); }
 err()   { printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; }
 step()  { printf "\n%s==>%s %s%s%s\n" "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
 hr()    { printf "%s%s%s\n" "$C_DIM" "--------------------------------------------------------------" "$C_RESET"; }
@@ -143,9 +167,9 @@ ${C_BOLD}Notes:${C_RESET}
   Per-app caches: covers the disposable data that lives outside ~/Library/Caches
   and so is missed by --skip-usercaches' step — Chromium-internal dirs (Cache,
   Code Cache, GPUCache, Service Worker, blob_storage) under Application Support,
-  the private Caches dir inside each sandboxed app's container, cached extension
-  .vsix archives, and the aerial-wallpaper videos. All of it regenerates, but
-  quit the apps first — a running app rewrites its caches mid-sweep.
+  the private Caches dir inside each sandboxed app's container, and cached
+  extension .vsix archives. All of it regenerates, but quit the apps first — a
+  running app rewrites its caches mid-sweep.
 
   Workspace storage: VS Code and its forks keep a workspaceStorage entry per
   folder ever opened and never garbage-collect them. Only entries whose recorded
@@ -244,10 +268,13 @@ disk_free_bytes() {
 }
 
 # Size of a path in bytes (0 if missing). Best-effort (ignores permission errors).
+# Always prints a base-10 integer, never the empty string. `du` writes nothing
+# to stdout for a path it cannot read (or one that disappears mid-walk), and an
+# empty result poisons every `$(( ... ))` this feeds, so END is unconditional.
 path_bytes() {
   local p="$1"
   [[ -e "$p" ]] || { echo 0; return; }
-  du -sk "$p" 2>/dev/null | awk '{printf "%.0f", $1 * 1024}'
+  du -sk "$p" 2>/dev/null | awk 'NR==1 { b = $1 * 1024 } END { printf "%.0f", b + 0 }'
 }
 
 # Run a command; honor --dry-run and --verbose; log output to $LOG_FILE.
@@ -368,9 +395,15 @@ clear_paths() {
     rm -rf "$@" 2>>"$LOG_FILE" || true
   fi
 
+  # Assign first, then add. Inlining the command substitution into the
+  # arithmetic breaks when BSD `du -sk` prints nothing for a path that vanished
+  # mid-sweep: the expression becomes `after_b + ` and bash reports
+  # "operand expected" while the freed-bytes total silently inflates.
+  local remaining_b
   after_b=0
   for p in "$@"; do
-    after_b=$(( after_b + $(path_bytes "$p") ))
+    remaining_b="$(path_bytes "$p")"
+    after_b=$(( after_b + remaining_b ))
   done
   delta=$(( total_b - after_b ))
   (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
@@ -523,7 +556,7 @@ plan_line "purge inactive memory"             "$(( 1 - SKIP_MEMORY      ))" "sud
 plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dscacheutil + mDNSResponder"
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Logs, DerivedData, ..."
-plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed, VSIX, wallpapers"
+plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed containers, VSIX"
 plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code / Cursor, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 plan_line "docker / orbstack prune"           "$(( 1 - SKIP_DOCKER      ))" "images, containers, volumes, builder"
@@ -654,6 +687,10 @@ step_appcaches() {
     fi
   done
   if (( ${#running[@]} > 0 )); then
+    # Plain warn, deliberately: this does not change the step's verdict. The
+    # caches regenerate, the sweep still succeeds, and you almost always have
+    # some of these apps open — escalating here would paint the step yellow on
+    # essentially every run, which teaches you to ignore the colour.
     warn "running now: ${running[*]} — quit them first for a clean sweep"
   fi
 
@@ -702,56 +739,81 @@ step_appcaches() {
   done
   clear_paths "extension VSIX cache" contents ${vsix[@]+"${vsix[@]}"}
 
-  # Apple's aerial wallpaper videos: pure cache, re-downloaded on demand.
-  # Only aerials/ — the sibling Store/Index.plist is the wallpaper *config*,
-  # and removing it resets the user's chosen desktop background.
-  clear_dir "$root/com.apple.wallpaper/aerials"
 }
 
 # VS Code-family editors create workspaceStorage/<hash>/ for every folder ever
 # opened and never remove it — state DBs, extension scratch data, language-server
 # indexes. Entries outlive the projects they belong to indefinitely.
 #
-# An entry is only dropped when its workspace.json names a local path that no
-# longer exists. Anything we can't positively resolve as gone — remote/virtual
-# URIs, missing or unparsable workspace.json, a path that still exists in either
-# decoded or raw form — is kept. Errors therefore cost disk, never data.
+# Classification lives in lib/workspace_scan.py rather than here. Deciding which
+# entries are dead means parsing JSON, percent-decoding a URI, and asking whether
+# a path's volume is even attached — none of which shell does well, and the cost
+# of getting it wrong is somebody's project state. The scanner is unit-tested
+# against fixtures covering each of those cases; see test-env/python/tests.
+#
+# An entry is dropped only when its recorded path is provably gone. Remote or
+# virtual URIs, missing or unparsable workspace.json, and paths on a volume that
+# is not currently mounted are all kept, so errors cost disk, never data.
 step_workspacestorage() {
   local root="$HOME/Library/Application Support"
-  local ed ws dir f uri raw path
+  local ed ws rec status dir reason
   local live=0 unresolved=0
-  local -a stale=()
+  local -a roots=() stale=()
 
   for ed in "${VSCODE_FAMILY[@]}"; do
     ws="$root/$ed/User/workspaceStorage"
-    [[ -d "$ws" ]] || continue
-    for dir in "$ws"/*/; do
-      [[ -d "$dir" ]] || continue
-      f="${dir}workspace.json"
-      if [[ ! -f "$f" ]]; then
-        unresolved=$(( unresolved + 1 )); continue
-      fi
-      uri="$(sed -nE 's/.*"(folder|workspace)": *"([^"]*)".*/\2/p' "$f" 2>/dev/null | head -1)"
-      # Only reason about local files; remote/virtual workspaces are left alone.
-      if [[ "$uri" != file://* ]]; then
-        unresolved=$(( unresolved + 1 )); continue
-      fi
-      raw="${uri#file://}"
-      # Percent-decode (%20 -> space). A path containing a literal '%' can decode
-      # to garbage, so the raw form is checked too — a bad decode keeps the entry.
-      path="$(printf '%b' "${raw//%/\\x}" 2>/dev/null)"
-      if [[ -e "$path" || -e "$raw" ]]; then
-        live=$(( live + 1 ))
-      else
-        stale+=("$dir")
-      fi
-    done
+    [[ -d "$ws" ]] && roots+=("$ws")
   done
-
-  if (( live + unresolved + ${#stale[@]} == 0 )); then
+  if (( ${#roots[@]} == 0 )); then
     info "no editor workspace storage found"
     return 0
   fi
+
+  # Absolute path, not `python3`: on a developer machine a bare python3 resolves
+  # to whichever pyenv shim or activated virtualenv happens to be first on PATH,
+  # and this has to be the interpreter that is always present.
+  local py=/usr/bin/python3
+  local scanner="$SCRIPT_DIR/lib/workspace_scan.py"
+  if [[ ! -x "$py" || ! -f "$scanner" ]]; then
+    warn_step "workspace scanner unavailable — keeping all entries"
+    return 0
+  fi
+
+  # Run to a file rather than straight into the loop: with process substitution
+  # the scanner's exit status is unreachable, and "the scanner crashed" and
+  # "this machine has no workspaces yet" both look like zero records. The first
+  # deserves a warning, the second is a perfectly ordinary [ ok ].
+  local scan_out
+  scan_out="$(mktemp)"
+  if ! "$py" "$scanner" "${roots[@]}" >"$scan_out" 2>>"$LOG_FILE"; then
+    rm -f "$scan_out"
+    warn_step "workspace scanner failed — keeping all entries (see log)"
+    return 0
+  fi
+
+  # Records are NUL-delimited because macOS paths may contain newlines.
+  while IFS= read -r -d '' rec; do
+    status="${rec%%$'\t'*}"
+    rec="${rec#*$'\t'}"
+    dir="${rec%%$'\t'*}"
+    rec="${rec#*$'\t'}"
+    reason="${rec%%$'\t'*}"
+    case "$status" in
+      live)  live=$(( live + 1 )) ;;
+      stale) stale+=("$dir") ;;
+      *)
+        unresolved=$(( unresolved + 1 ))
+        (( VERBOSE )) && printf "      %skept: %s%s\n" "$C_DIM" "$reason" "$C_RESET"
+        ;;
+    esac
+  done < "$scan_out"
+  rm -f "$scan_out"
+
+  if (( live + unresolved + ${#stale[@]} == 0 )); then
+    info "no editor workspace storage entries"
+    return 0
+  fi
+
   printf "  %d live · %d stale · %d unresolved %s(kept)%s\n" \
     "$live" "${#stale[@]}" "$unresolved" "$C_DIM" "$C_RESET"
   clear_paths "stale workspace storage" dir ${stale[@]+"${stale[@]}"}
@@ -793,7 +855,7 @@ step_devcaches() {
     if (( node_ok )); then
       run_cmd "npm cache clean --force" npm cache clean --force || warn "'npm cache clean' failed"
     else
-      warn "node is not runnable; skipping npm cache clean (try: brew reinstall node)"
+      warn_step "node is not runnable; skipping npm cache clean (try: brew reinstall node)"
     fi
   fi
 
@@ -804,7 +866,7 @@ step_devcaches() {
     if (( node_ok )); then
       run_cmd "yarn cache clean" yarn cache clean || warn "'yarn cache clean' failed"
     else
-      warn "node is not runnable; skipping yarn cache clean (try: brew reinstall node)"
+      warn_step "node is not runnable; skipping yarn cache clean (try: brew reinstall node)"
     fi
   fi
 
@@ -813,7 +875,7 @@ step_devcaches() {
     if (( node_ok )); then
       run_cmd "pnpm store prune" pnpm store prune || warn "'pnpm store prune' failed"
     else
-      warn "node is not runnable; skipping pnpm store prune (try: brew reinstall node)"
+      warn_step "node is not runnable; skipping pnpm store prune (try: brew reinstall node)"
     fi
   fi
 
@@ -883,7 +945,7 @@ step_docker() {
   ctx="$(docker context show 2>/dev/null || true)"
   host="$(docker context inspect "${ctx:-default}" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null || true)"
   if [[ -n "$host" ]] && [[ "$host" != unix://* ]]; then
-    warn "docker context '${ctx:-?}' points to non-local host (${host}) — skipping prune"
+    warn_step "docker context '${ctx:-?}' points to non-local host (${host}) — skipping prune"
     return 0
   fi
 
@@ -981,6 +1043,9 @@ step_brew() {
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
   # Cask upgrades may prompt for sudo; run attached to the TTY so the prompt
   # is visible and the user can answer it.
+  # Plain warn, not warn_step: run_cmd_tty has already counted this failure.
+  # Adding warn_step here would report one failed upgrade as two warnings, and
+  # the CLT hint below as a third.
   if ! run_cmd_tty "brew upgrade" brew upgrade; then
     warn "'brew upgrade' had issues"
     if grep -q "Command Line Tools are too outdated" "$LOG_FILE" 2>/dev/null; then

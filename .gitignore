@@ -1,4 +1,10 @@
 **/__pycache__/
 *.py[cod]
-.pytest_cache/
 .DS_Store
+
+# Tool caches. Anchored with **/ so they are ignored wherever they appear —
+# test-env/python/ is a tracked directory that these otherwise buried.
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+.venv/

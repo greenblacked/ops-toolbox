@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     shellcheck \
     zsh \
+    python3 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV REPO_ROOT=/repo

@@ -27,6 +27,7 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | `git_diff_branch.sh` | Diff or diffstat of your branch since diverging from `main` or `master`. |
 | `git_undo_last_commit.sh` | Undo the last commit (`reset --soft` by default; `--hard` needs `--force`). |
 | `git_amend_last.sh` | Amend the last commit with `--no-edit`, optionally after `git add --all`. |
+| `git_ssh_doctor.py` | Diagnose `Permission denied (publickey)` and print the fix. Read-only. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -226,6 +227,31 @@ Runs **`git commit --amend --no-edit`**: fold staged changes into the previous c
 ```
 
 **Exit code `4`** if nothing is staged (and you did not use `--add-all`, or there were no changes to stage).
+
+---
+
+## `git_ssh_doctor.py`
+
+Answers the question `Permission denied (publickey)` refuses to: *which* of the things involved actually went wrong.
+
+```bash
+./git/git_ssh_doctor.py                  # check this repo's SSH remotes
+./git/git_ssh_doctor.py --host github.com
+./git/git_ssh_doctor.py --test-auth      # try every key, report which one works
+```
+
+The effective configuration comes from **`ssh -G`** — OpenSSH resolving its own config, rather than a second implementation that can disagree with it. On top of that it reports what `ssh -G` cannot explain:
+
+- **`Include` globs that match only directories.** ssh does not descend into a directory and prints no error, so every config file inside is silently ignored. This is why a `Host` block you wrote may never be read.
+- **`Include` globs that match nothing.**
+- **Keys with permissions ssh will refuse** (group- or world-readable).
+- **An empty agent**, and which configured identity files do not exist on disk.
+
+With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure.
+
+Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
+
+**Exit code `1`** if any checked host fails to authenticate.
 
 ---
 
