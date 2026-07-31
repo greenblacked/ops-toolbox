@@ -9,6 +9,8 @@ anything.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
 import unittest
@@ -98,10 +100,13 @@ class ArgumentGuardTestCase(unittest.TestCase):
     def test_sensitive_plus_commit_is_refused(self):
         # Writing router secrets into git history is not something to do by
         # accident, so it fails before it ever contacts the router.
-        rc = export_config.main(
-            ["--host", "192.0.2.1", "--show-sensitive", "--commit"]
-        )
+        out, errout = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            rc = export_config.main(
+                ["--host", "192.0.2.1", "--show-sensitive", "--commit"]
+            )
         self.assertEqual(rc, 2)
+        self.assertIn("secrets", (out.getvalue() + errout.getvalue()).lower())
 
 
 if __name__ == "__main__":

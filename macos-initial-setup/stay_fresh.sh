@@ -71,10 +71,14 @@ ok()    { printf "%s[ ok ]%s %s\n"  "$C_GREEN"  "$C_RESET" "$*"; }
 warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; }
 # warn() only prints. Inside a step that is not enough: do_step decides OK vs
 # WARN from STEP_WARN_COUNT, so a bare warn leaves the step reporting [ ok ] and
-# landing in STEPS_OK however loudly it complained. Use warn_step when the step
-# could not do its job, or did it under conditions that make the result
-# untrustworthy. A missing tool is not that — there is simply nothing to do, and
-# plain warn is right.
+# landing in STEPS_OK however loudly it complained.
+#
+# Use warn_step only when the step could not do the work it was asked to do —
+# a broken toolchain, a prune skipped because the target is remote, an upgrade
+# that errored. Not for conditions that hold on a perfectly healthy machine:
+# a tool that simply is not installed, or apps being open during a cache sweep.
+# Those stay plain warn. A step that reports WARN on every ordinary run trains
+# you to stop reading the summary, which costs more than it catches.
 warn_step() { warn "$*"; STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); }
 err()   { printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; }
 step()  { printf "\n%s==>%s %s%s%s\n" "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
@@ -683,7 +687,11 @@ step_appcaches() {
     fi
   done
   if (( ${#running[@]} > 0 )); then
-    warn_step "running now: ${running[*]} — quit them first for a clean sweep"
+    # Plain warn, deliberately: this does not change the step's verdict. The
+    # caches regenerate, the sweep still succeeds, and you almost always have
+    # some of these apps open — escalating here would paint the step yellow on
+    # essentially every run, which teaches you to ignore the colour.
+    warn "running now: ${running[*]} — quit them first for a clean sweep"
   fi
 
   # -prune keeps find from descending into a directory it already matched, so

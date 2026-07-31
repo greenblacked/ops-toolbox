@@ -99,10 +99,16 @@ scanner="$M/lib/workspace_scan.py"
 if [[ -f "$scanner" ]]; then
   ok "lib/workspace_scan.py present"
   if command -v python3 >/dev/null 2>&1; then
-    if python3 -m py_compile "$scanner" 2>/dev/null; then
+    # Compile to an explicit cfile under /tmp. `python3 -m py_compile` writes a
+    # __pycache__ next to the source, and the repo is mounted read-only here —
+    # which fails with EROFS and looks exactly like a syntax error.
+    if python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile="/tmp/ws_scan.pyc", doraise=True)' \
+         "$scanner" 2>/dev/null; then
       ok "lib/workspace_scan.py compiles"
     else
       err "lib/workspace_scan.py does not compile"
+      python3 -c 'import py_compile,sys; py_compile.compile(sys.argv[1], cfile="/tmp/ws_scan.pyc", doraise=True)' \
+        "$scanner" 2>&1 | tail -3 >&2
     fi
     # stay_fresh.sh reads the NUL-delimited form; a change to the record shape
     # silently breaks the shell side, which cannot be seen from bash -n.
