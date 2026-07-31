@@ -15,7 +15,7 @@ live in `/system script` on the router and are run either manually or from
 | ------------------------------- | ----------------------------------------------------------------------- |
 | `tg_send.lua`                   | Generic Telegram text-message helper used by every other script.        |
 | `backup.lua`                    | Daily binary + export backup with Telegram confirmation.                |
-| `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.          |
+| `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
 | `health_check.lua`              | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
 | `update_check.lua`              | Notifies once when a newer RouterOS version appears on your channel.    |
 | `wan_failover_notify.lua`       | One-shot Telegram alert on built-in WAN-detect state transitions.       |
@@ -59,18 +59,18 @@ live in `/system script` on the router and are run either manually or from
 
 Add via **System → Scheduler** (use the same policy set as the scripts):
 
-| Script                | Trigger / interval         |
-| --------------------- | -------------------------- |
-| `backup`              | `1d` at `04:00:00`         |
-| `change_WIFI_pw`      | `30d` (or on demand)       |
-| `health_check`        | `5m`                       |
-| `update_check`        | `1d`                       |
-| `wan_failover_notify` | `1m`                       |
-| `dhcp_lease_watch`    | `5m`                       |
-| `firewall_drift`      | `15m`                      |
-| `mac_allowlist_dhcp`  | `5m`                       |
-| `rogue_dns_check`     | `10m`                      |
-| `notify-boot` (inline)| `start-time=startup` — see [Reboot notifications](#reboot-notifications) |
+| Script                 | Trigger / interval                                                       |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `backup`               | `1d` at `04:00:00`                                                       |
+| `change_WIFI_pw`       | `30d` (or on demand)                                                     |
+| `health_check`         | `5m`                                                                     |
+| `update_check`         | `1d`                                                                     |
+| `wan_failover_notify`  | `1m`                                                                     |
+| `dhcp_lease_watch`     | `5m`                                                                     |
+| `firewall_drift`       | `15m`                                                                    |
+| `mac_allowlist_dhcp`   | `5m`                                                                     |
+| `rogue_dns_check`      | `10m`                                                                    |
+| `notify-boot` (inline) | `start-time=startup` — see [Reboot notifications](#reboot-notifications) |
 
 `detect_internet`, `reboot-and-flush`, and `firewall_drift_baseline` are
 intentionally manual / on-demand — don't schedule them.
@@ -93,6 +93,7 @@ to reach Telegram.
 ## Script details
 
 ### `tg_send.lua`
+
 Generic Telegram text-message helper. All other scripts call it via
 `[:parse [/system script get tg_send source]]`. Posts to `sendMessage` with
 HTML parse mode using `application/x-www-form-urlencoded`, retries up to 3×
@@ -101,6 +102,7 @@ limit. Reads `:global TG_BOT_TOKEN` / `:global TG_CHAT_ID` if defined so
 secrets can stay out of the script body.
 
 ### `backup.lua`
+
 Creates a binary backup (`.backup`) and a config export (`.rsc`) and sends a
 Telegram notification with the resulting filename. Optional binary-backup
 encryption via `BackupPassword`. Sanitizes the date so non-ISO `date-format`
@@ -109,6 +111,7 @@ sub-folders on disk). Files accumulate in `/file` — clean them up manually
 or via a separate scheduler if needed.
 
 ### `change_WIFI_pw.lua`
+
 Generates fresh random passwords for the 2.4 GHz and 5 GHz security profiles
 and announces the new credentials via Telegram. Uses the SCEP-OTP generator
 when the certificate package supports it and falls back to `:rndnum`
@@ -117,28 +120,33 @@ otherwise. Set `UseWifiWave2` to `true` for routers using the new
 `/interface wireless`.
 
 ### `reboot-and-flush.lua`
+
 Flushes DNS cache + connection tracking and reboots after a 1-second grace
 period. Use sparingly — flushing connection tracking drops every active
 session. Intentionally has no Telegram step; pair it with the `notify-boot`
 scheduler entry above for a "back online" alert after each reboot.
 
 ### `detect_internet.lua`
+
 Forces RouterOS to re-run its WAN/LAN role auto-detection by toggling
 `detect-interface-list`. Helpful after ISP outages where interfaces stay
 tagged `unknown`. Also enables detect-internet on **all** interfaces, which
 is the prerequisite for `wan_failover_notify`.
 
 ### `health_check.lua`
+
 Reads CPU / memory / disk / temperature, compares against thresholds (default
 85 % / 85 % / 90 % / 75 °C) and only Telegrams when something is wrong.
 Temperature lookup iterates `/system health` entries (`temperature`,
 `cpu-temperature`, `board-temperature`) so it works across hardware lines.
 
 ### `update_check.lua`
+
 Asks the official update server whether a newer RouterOS version exists on
 your channel, and notifies once when one appears. Does **not** auto-install.
 
 ### `wan_failover_notify.lua`
+
 Polls the WAN interface's built-in `detect-internet-state` property and sends
 a Telegram message **only on transitions** (e.g. `internet → no-link`). State
 is held in `:global WAN_LAST_STATE` so consecutive runs stay quiet while the
@@ -156,6 +164,7 @@ Edit `WanInterface` at the top of the script if your WAN port isn't
 `ether1`.
 
 ### `dhcp_lease_watch.lua`
+
 Periodically scans `/ip dhcp-server lease` and alerts on three conditions:
 new MACs not seen before (relative to `:global DHCP_KNOWN_MACS`), the same
 hostname showing up under multiple MACs, and lease-count churn beyond
@@ -167,6 +176,7 @@ and `DHCP_CHURN_FLAG` suppress repeat alerts while the same condition
 persists.
 
 ### `firewall_drift.lua`
+
 Stores a signature string of every `/ip firewall filter` and `/ip firewall
 nat` rule (`chain|action|src-address|dst-port|protocol|comment`) in
 `:global FW_BASELINE` on first run, then alerts when later runs see
@@ -178,12 +188,14 @@ after intentional firewall changes to clear the global; the next
 `firewall_drift` run silently re-baselines.
 
 ### `firewall_drift_baseline.lua`
+
 Manual helper. Sets `:global FW_BASELINE` to empty string. Does not touch
 firewall rules. Run after intentional firewall edits before the next
 scheduled `firewall_drift` run, otherwise the change will be reported as
 drift.
 
 ### `mac_allowlist_dhcp.lua`
+
 Iterates `/ip dhcp-server lease` and flags any lease whose MAC is not on the
 allowlist. The allowlist comes from `:global MAC_ALLOWLIST` (delimited
 string, e.g. `";aa:bb:..;cc:dd:..;"`) or from a per-lease comment containing
@@ -197,6 +209,7 @@ to avoid accidentally locking every device out of an unconfigured router.
 Re-alerts only when the set of unknown MACs changes between runs.
 
 ### `rogue_dns_check.lua`
+
 Two checks per run. First, it `:resolve`s a control hostname (default
 `dns.cloudflare.com`) and warns if the answer is not in `:global
 DNS_EXPECTED` — a sign of upstream DNS hijack or a wrong/leaking resolver
@@ -246,12 +259,12 @@ accident.
 The four security scripts above keep their actions on a small, reversible
 surface so a noisy detector cannot brick the router:
 
-| Address-list          | Populated by              | Purpose                                                |
-| --------------------- | ------------------------- | ------------------------------------------------------ |
-| `dhcp-watch-new`      | `dhcp_lease_watch`        | New DHCP lease IPs (informational; tag for ad-hoc rules). |
-| `dhcp-unknown`        | `mac_allowlist_dhcp`      | DHCP lease IPs whose MAC is not on the allowlist.      |
-| `fw-drift-events`     | `firewall_drift`          | Sentinel marker `127.0.0.1` per drift event (audit trail). |
-| `rogue-dns-clients`   | `rogue_dns_check`         | Source IPs caught using non-approved DNS resolvers.    |
+| Address-list        | Populated by         | Purpose                                                    |
+| ------------------- | -------------------- | ---------------------------------------------------------- |
+| `dhcp-watch-new`    | `dhcp_lease_watch`   | New DHCP lease IPs (informational; tag for ad-hoc rules).  |
+| `dhcp-unknown`      | `mac_allowlist_dhcp` | DHCP lease IPs whose MAC is not on the allowlist.          |
+| `fw-drift-events`   | `firewall_drift`     | Sentinel marker `127.0.0.1` per drift event (audit trail). |
+| `rogue-dns-clients` | `rogue_dns_check`    | Source IPs caught using non-approved DNS resolvers.        |
 
 Optional filter rule templates (commented out on purpose — review first,
 then apply if you want enforcement). All of them assume the lists above are

@@ -75,7 +75,7 @@ update probe), `change_WIFI_pw` (touches wireless profiles), `backup`
 ## Environment
 
 | Variable | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `ROUTEROS_VERSION` | `7.22` | CHR version to download (also used for image tag) |
 | `ROUTEROS_HOST` | `chr` (in tester), `127.0.0.1` (host) | API host |
 | `ROUTEROS_PORT` | `8728` | API port |
