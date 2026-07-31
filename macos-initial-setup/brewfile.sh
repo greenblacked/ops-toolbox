@@ -102,8 +102,12 @@ case "$CMD" in
     fi
     mv "$tmp" "$FILE"
     ok "wrote $FILE"
-    printf "  %s%s%s\n" "$C_DIM" \
-      "$(grep -c '^tap '  "$FILE" 2>/dev/null || echo 0) taps · $(grep -c '^brew ' "$FILE" 2>/dev/null || echo 0) formulae · $(grep -c '^cask ' "$FILE" 2>/dev/null || echo 0) casks" \
+    # `grep -c` already prints 0 when nothing matches; it just exits 1 doing so.
+    # A `|| echo 0` fallback therefore appends a *second* zero and the summary
+    # reads "0 0 taps".
+    count_lines() { grep -c "$1" "$FILE" 2>/dev/null || true; }
+    printf "  %s%s taps · %s formulae · %s casks%s\n" "$C_DIM" \
+      "$(count_lines '^tap ')" "$(count_lines '^brew ')" "$(count_lines '^cask ')" \
       "$C_RESET"
     ;;
 

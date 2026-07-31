@@ -779,6 +779,18 @@ step_workspacestorage() {
     return 0
   fi
 
+  # Run to a file rather than straight into the loop: with process substitution
+  # the scanner's exit status is unreachable, and "the scanner crashed" and
+  # "this machine has no workspaces yet" both look like zero records. The first
+  # deserves a warning, the second is a perfectly ordinary [ ok ].
+  local scan_out
+  scan_out="$(mktemp)"
+  if ! "$py" "$scanner" "${roots[@]}" >"$scan_out" 2>>"$LOG_FILE"; then
+    rm -f "$scan_out"
+    warn_step "workspace scanner failed — keeping all entries (see log)"
+    return 0
+  fi
+
   # Records are NUL-delimited because macOS paths may contain newlines.
   while IFS= read -r -d '' rec; do
     status="${rec%%$'\t'*}"
@@ -794,12 +806,11 @@ step_workspacestorage() {
         (( VERBOSE )) && printf "      %skept: %s%s\n" "$C_DIM" "$reason" "$C_RESET"
         ;;
     esac
-  done < <("$py" "$scanner" "${roots[@]}" 2>>"$LOG_FILE")
+  done < "$scan_out"
+  rm -f "$scan_out"
 
-  # A scanner that failed outright yields no records at all. Deleting nothing is
-  # the correct response; reporting [ ok ] for it is not.
   if (( live + unresolved + ${#stale[@]} == 0 )); then
-    warn_step "workspace scan returned nothing — keeping all entries (see log)"
+    info "no editor workspace storage entries"
     return 0
   fi
 

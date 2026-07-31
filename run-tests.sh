@@ -14,7 +14,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-cd "$HERE"
+cd "$HERE" || { echo "cannot enter $HERE" >&2; exit 1; }
 
 C_RESET=""; C_RED=""; C_GREEN=""; C_YELLOW=""; C_DIM=""; C_BOLD=""
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
