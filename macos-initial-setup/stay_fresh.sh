@@ -556,7 +556,7 @@ plan_line "purge inactive memory"             "$(( 1 - SKIP_MEMORY      ))" "sud
 plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dscacheutil + mDNSResponder"
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Logs, DerivedData, ..."
-plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed, VSIX, wallpapers"
+plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed containers, VSIX"
 plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code / Cursor, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 plan_line "docker / orbstack prune"           "$(( 1 - SKIP_DOCKER      ))" "images, containers, volumes, builder"
@@ -1043,10 +1043,13 @@ step_brew() {
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
   # Cask upgrades may prompt for sudo; run attached to the TTY so the prompt
   # is visible and the user can answer it.
+  # Plain warn, not warn_step: run_cmd_tty has already counted this failure.
+  # Adding warn_step here would report one failed upgrade as two warnings, and
+  # the CLT hint below as a third.
   if ! run_cmd_tty "brew upgrade" brew upgrade; then
-    warn_step "'brew upgrade' had issues"
+    warn "'brew upgrade' had issues"
     if grep -q "Command Line Tools are too outdated" "$LOG_FILE" 2>/dev/null; then
-      warn_step "Homebrew reports Xcode Command Line Tools are outdated. Update via System Settings → Software Update, or: sudo rm -rf /Library/Developer/CommandLineTools && sudo xcode-select --install"
+      warn "Homebrew reports Xcode Command Line Tools are outdated. Update via System Settings → Software Update, or: sudo rm -rf /Library/Developer/CommandLineTools && sudo xcode-select --install"
     fi
   fi
 
