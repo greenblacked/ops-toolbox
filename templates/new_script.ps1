@@ -26,7 +26,10 @@ $ErrorActionPreference = 'Stop'
 $script:TotalFreed = 0L
 
 # Byte-identical to the copies in windows/cleanup/clean_disk_c.ps1 and
-# windows/wsl/wsl_manage.ps1 — see CONTRIBUTING.md for why this is duplicated.
+# windows/wsl/wsl_manage.ps1 - see CONTRIBUTING.md for why this is duplicated.
+# Keep PowerShell sources pure ASCII: PSUseBOMForUnicodeEncodedFile fires on a
+# non-ASCII file with no BOM, and a BOM would fight the LF pinning in
+# .gitattributes.
 function Format-Size {
     param([long]$Bytes)
     if ($Bytes -ge 1GB) { return '{0:N2} GB' -f ($Bytes / 1GB) }

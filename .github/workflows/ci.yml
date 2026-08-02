@@ -5,13 +5,7 @@ on:
   pull_request:
     branches:
       - master
-  workflow_dispatch:
-    inputs:
-      run_routeros:
-        description: Run the RouterOS CHR integration suite
-        required: false
-        default: false
-        type: boolean
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -34,17 +28,55 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes shellcheck yamllint
 
+      # The Git Bash dotfiles have no .sh extension, so a plain '*.sh' glob has
+      # never covered them. They are real bash and they pass, so list them.
+      # ShellCheck needs --shell=bash for them: with no shebang it cannot detect
+      # the dialect and SC2148 fires at error severity.
       - name: Check Bash syntax
         shell: bash
         run: |
-          mapfile -d '' scripts < <(git ls-files -z '*.sh')
+          mapfile -d '' scripts < <(git ls-files -z '*.sh' \
+            'windows/git-bash/.bashrc' \
+            'windows/git-bash/.bash_profile' \
+            'windows/git-bash/.aliases' \
+            'windows/git-bash/default-git-bash/.bashrc' \
+            'windows/git-bash/default-git-bash/.bash_profile' \
+            'windows/git-bash/default-git-bash/.aliases')
+          printf 'checking %d files\n' "${#scripts[@]}"
           bash -n "${scripts[@]}"
 
+      # -x follows `source` directives, matching what the Docker suites already
+      # do. Without it, sourced files are invisible to the analysis.
       - name: Run ShellCheck
         shell: bash
         run: |
-          mapfile -d '' scripts < <(git ls-files -z '*.sh')
-          shellcheck --severity=error --shell=bash "${scripts[@]}"
+          mapfile -d '' scripts < <(git ls-files -z '*.sh' \
+            'windows/git-bash/.bashrc' \
+            'windows/git-bash/.bash_profile' \
+            'windows/git-bash/.aliases' \
+            'windows/git-bash/default-git-bash/.bashrc' \
+            'windows/git-bash/default-git-bash/.bash_profile' \
+            'windows/git-bash/default-git-bash/.aliases')
+          shellcheck --severity=error -x --shell=bash "${scripts[@]}"
+
+      # Pinned for the same reason the CHR image, ruff's target-version and the
+      # tester images are pinned: an analyzer release should not turn a green
+      # repository red on someone else's schedule.
+      - name: Run PSScriptAnalyzer
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Force -Scope CurrentUser
+          $files = git ls-files '*.ps1' '*.psm1'
+          if (-not $files) { Write-Host 'no PowerShell files'; exit 0 }
+          $found = @()
+          foreach ($f in $files) {
+            $found += Invoke-ScriptAnalyzer -Path $f -Settings ./PSScriptAnalyzerSettings.psd1
+          }
+          if ($found.Count) {
+            $found | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message
+            exit 1
+          }
+          Write-Host ('PSScriptAnalyzer clean over {0} files' -f $files.Count)
 
       - name: Lint YAML
         run: yamllint --config-file .yamllint.yml .
@@ -55,6 +87,10 @@ jobs:
           config: .markdownlint-cli2.yaml
           globs: '**/*.md'
 
+  # Suites go through run-tests.sh rather than calling each tests/run.sh
+  # directly, so the aggregator is exercised by CI too and "it passed locally"
+  # and "it passed in CI" mean the same thing. Matrix values are run-tests.sh
+  # suite names, not directory names.
   test:
     name: Test / ${{ matrix.suite }}
     runs-on: ubuntu-latest
@@ -64,13 +100,13 @@ jobs:
       matrix:
         suite:
           - git
-          - macos-initial-setup
+          - macos
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Run ${{ matrix.suite }} suite
-        run: ./${{ matrix.suite }}/tests/run.sh
+        run: ./run-tests.sh ${{ matrix.suite }}
 
   python:
     name: Test / python helpers
@@ -89,17 +125,10 @@ jobs:
         with:
           python-version: '3.9'
 
+      # test-env/python/run.sh reports ruff as "skipped" and still exits 0 when
+      # it is absent, so without this step the lint silently never ran.
+      - name: Install ruff
+        run: pipx install ruff==0.15.8
+
       - name: Run python suite
-        run: ./test-env/python/run.sh
-
-  routeros-integration:
-    name: Test / RouterOS integration
-    if: github.event_name == 'workflow_dispatch' && inputs.run_routeros
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Run RouterOS CHR suite
-        run: ./mikrotik/tests/run.sh
+        run: ./run-tests.sh python
