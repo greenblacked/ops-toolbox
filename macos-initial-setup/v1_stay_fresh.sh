@@ -87,7 +87,7 @@ EOF
 case "${1:-}" in
   -h|--help) usage; exit 0 ;;
   "")        ;;
-  *)         printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 2 ;;
+  *)         printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 3 ;;
 esac
 
 # Resolve the invoking user's real home directory, independent of $HOME —

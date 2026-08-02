@@ -33,9 +33,15 @@ dropped into a `PATH` directory; the MikroTik scripts are pasted into a router's
 `source "$SCRIPT_DIR/../lib/common.sh"` breaks all three.
 
 So: **duplication across scripts is deliberate, not technical debt.**
-`require_value()` is byte-identical in five files. `Format-Size` is
-byte-identical in two `.ps1` files. Leave them that way and copy the canonical
-block from [`templates/`](templates/) when writing a new script.
+`require_value()` appears in seven scripts and `Format-Size` in two `.ps1`
+files. Leave them that way and copy the canonical block from
+[`templates/`](templates/) when writing a new script.
+
+What is asserted about the copies is their **contract**, not byte-identity:
+the same guard condition, `exit 3`, and a message on stderr. They already
+differ in defensible ways — `git/set_git_profile.sh` reports through its own
+`err()` helper rather than an inline `printf`, because it has one — and a check
+demanding identical bytes would only push people to make the copies worse.
 
 Shared code is permitted in exactly one shape: **a substantial program with its
 own tests, invoked as a subprocess by absolute path.**

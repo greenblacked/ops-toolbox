@@ -5,10 +5,10 @@
 # the same thing. Each suite is delegated to its own tests/run.sh rather than
 # reimplemented here — this file only selects, sequences, and reports.
 #
-#   ./run-tests.sh              # git + macos + python  (the fast default)
+#   ./run-tests.sh              # the fast default
 #   ./run-tests.sh all          # the above, plus the CHR integration suite
 #   ./run-tests.sh git macos    # an explicit subset
-#   ./run-tests.sh mikrotik -k version_matches   # trailing args go to the suite
+#   ./run-tests.sh mikrotik -- -k version_matches   # trailing args go to the suite
 #
 # Exit code is 0 only if every selected suite passed.
 set -uo pipefail
@@ -22,24 +22,71 @@ if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_YELLOW=$'\033[33m'; C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'
 fi
 
+# --- the suite table -------------------------------------------------------
+# One place to add a suite. Everything below — the help text, the argument
+# validation, the fast/all sets, the Docker preflight and the dispatch — is
+# derived from these four definitions rather than repeating the list.
+#
+# Kept as space-separated strings and case statements because these scripts
+# must run under the Bash 3.2 that ships on macOS, which has no associative
+# arrays. See CONTRIBUTING.md.
+
+SUITE_ALL="git macos python static mikrotik"
+SUITE_FAST="git macos python static"
+
+suite_runner() {
+  case "$1" in
+    git)      printf '%s\n' "$HERE/git/tests/run.sh" ;;
+    macos)    printf '%s\n' "$HERE/macos-initial-setup/tests/run.sh" ;;
+    python)   printf '%s\n' "$HERE/test-env/python/run.sh" ;;
+    static)   printf '%s\n' "$HERE/test-env/static/run.sh" ;;
+    mikrotik) printf '%s\n' "$HERE/mikrotik/tests/run.sh" ;;
+  esac
+}
+
+# Whether a suite needs a working Docker daemon. This used to be decided by
+# name — `[[ "$s" == "python" ]] || need_docker=1` — which meant every suite
+# added afterwards was assumed to need Docker and would hard-fail on a host
+# without it, even when it needed nothing but bash.
+suite_needs_docker() {
+  case "$1" in
+    git|macos|mikrotik) return 0 ;;
+    *)                  return 1 ;;
+  esac
+}
+
+suite_blurb() {
+  case "$1" in
+    git)      printf '%s\n' "Git helper scripts        (Docker, ~30s)" ;;
+    macos)    printf '%s\n' "macOS setup scripts       (Docker, ~30s)" ;;
+    python)   printf '%s\n' "Python libs: ruff + pytest (host python3, no Docker)" ;;
+    static)   printf '%s\n' "Repo-wide conventions     (bash + git only, no Docker)" ;;
+    mikrotik) printf '%s\n' "RouterOS CHR integration  (Docker + QEMU, minutes — not in default)" ;;
+  esac
+}
+
+suite_is_known() {
+  local candidate="$1" s
+  for s in $SUITE_ALL; do
+    [[ "$s" == "$candidate" ]] && return 0
+  done
+  return 1
+}
+
 usage() {
-  cat <<'EOF'
-Usage: run-tests.sh [suite...] [-- suite-args...]
-
-Suites:
-  git        Git helper scripts        (Docker, ~30s)
-  macos      macOS setup scripts       (Docker, ~30s)
-  python     Python libs: ruff + pytest (host /usr/bin/python3, no Docker)
-  mikrotik   RouterOS CHR integration  (Docker + QEMU, minutes — not in default)
-
-  fast       git + macos + python  (the default when no suite is named)
-  all        fast + mikrotik
-
-Options:
-  -h, --help   Show this help
-
-Any arguments after a lone `--` are forwarded to the last named suite.
-EOF
+  local s
+  printf 'Usage: run-tests.sh [suite...] [-- suite-args...]\n\n'
+  printf 'Suites:\n'
+  for s in $SUITE_ALL; do
+    printf '  %-9s %s\n' "$s" "$(suite_blurb "$s")"
+  done
+  printf '\n'
+  printf '  %-9s %s\n' "fast" "$SUITE_FAST  (the default when no suite is named)"
+  printf '  %-9s %s\n' "all"  "fast + mikrotik"
+  printf '\n'
+  printf 'Options:\n'
+  printf '  -h, --help   Show this help\n\n'
+  printf 'Any arguments after a lone `--` are forwarded to the last named suite.\n'
 }
 
 # --- suite selection -------------------------------------------------------
@@ -53,19 +100,22 @@ for arg in "$@"; do
   case "$arg" in
     -h|--help) usage; exit 0 ;;
     --)        seen_ddash=1 ;;
-    fast)      suites+=(git macos python) ;;
-    all)       suites+=(git macos python mikrotik) ;;
-    git|macos|python|mikrotik) suites+=("$arg") ;;
+    fast)      for s in $SUITE_FAST; do suites+=("$s"); done ;;
+    all)       for s in $SUITE_ALL;  do suites+=("$s"); done ;;
     *)
-      echo "unknown suite: $arg" >&2
-      echo >&2
-      usage >&2
-      exit 3
+      if suite_is_known "$arg"; then
+        suites+=("$arg")
+      else
+        echo "unknown suite: $arg" >&2
+        echo >&2
+        usage >&2
+        exit 3
+      fi
       ;;
   esac
 done
 if (( ${#suites[@]} == 0 )); then
-  suites=(git macos python)
+  for s in $SUITE_FAST; do suites+=("$s"); done
 fi
 
 # `run-tests.sh all git` or `fast python` would otherwise run a suite twice.
@@ -81,7 +131,7 @@ suites=("${deduped[@]}")
 
 need_docker=0
 for s in "${suites[@]}"; do
-  [[ "$s" == "python" ]] || need_docker=1
+  suite_needs_docker "$s" && need_docker=1
 done
 if (( need_docker )); then
   if ! command -v docker >/dev/null 2>&1; then
@@ -129,13 +179,16 @@ run_suite() {
   return 0
 }
 
-for s in "${suites[@]}"; do
-  case "$s" in
-    git)      run_suite "git"      "$HERE/git/tests/run.sh" ;;
-    macos)    run_suite "macos"    "$HERE/macos-initial-setup/tests/run.sh" ;;
-    python)   run_suite "python"   "$HERE/test-env/python/run.sh" ;;
-    mikrotik) run_suite "mikrotik" "$HERE/mikrotik/tests/run.sh" ${passthru[@]+"${passthru[@]}"} ;;
-  esac
+# Trailing args go to the last named suite, which is what --help has always
+# promised. Suites that take no arguments ignore them.
+last_index=$(( ${#suites[@]} - 1 ))
+for i in "${!suites[@]}"; do
+  s="${suites[$i]}"
+  if (( i == last_index )); then
+    run_suite "$s" "$(suite_runner "$s")" ${passthru[@]+"${passthru[@]}"}
+  else
+    run_suite "$s" "$(suite_runner "$s")"
+  fi
 done
 
 printf "\n%s=== summary ===%s\n" "$C_BOLD" "$C_RESET"

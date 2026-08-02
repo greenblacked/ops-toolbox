@@ -132,3 +132,19 @@ jobs:
 
       - name: Run python suite
         run: ./run-tests.sh python
+
+  # Repository-wide convention checks: the --help and unknown-flag contracts,
+  # shebangs, file modes, .gitattributes coverage, Bash 3.2 constructs and the
+  # deliberately-duplicated blocks. Needs nothing but bash and git, and it
+  # discovers its own subjects so a new script is covered by the commit that
+  # adds it.
+  static:
+    name: Test / conventions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Run static suite
+        run: ./run-tests.sh static

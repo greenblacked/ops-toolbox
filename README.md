@@ -269,7 +269,7 @@ flags, suggested scheduler entries, and RouterOS 7.22-specific gotchas
 Run everything with one command:
 
 ```bash
-./run-tests.sh            # git + macos + python  (the fast default)
+./run-tests.sh            # git + macos + python + static  (the fast default)
 ./run-tests.sh all        # the above, plus the RouterOS CHR suite
 ./run-tests.sh macos      # a single suite
 ```
@@ -278,28 +278,51 @@ Run everything with one command:
 reimplementing them, and prints a pass/fail/skip matrix. CI invokes this same
 script, so a green run locally and a green run in CI mean the same thing.
 
+Suites that need Docker say so in `./run-tests.sh --help`, and the Docker
+preflight only runs when one of them is actually selected — so
+`./run-tests.sh python static` works on a machine with no Docker at all.
+
 | Package | What runs | How |
 | --- | --- | --- |
 | [`git/`](git/) | **Static + behavior** checks for Git helper scripts (syntax, ShellCheck, `--help`, profile state, `gacp`, status, cleanup, recent branches, and sync against local temporary repos/remotes). | [`git/README.md#tests`](git/README.md#tests) — `./git/tests/run.sh` |
 | [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
 | [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
+| [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and
 Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
-Python suite deliberately needs none of that either, since the modules it tests
-are invoked by `/usr/bin/python3` on a bare macOS machine.
+Python and static suites deliberately need none of that either: the Python
+modules are invoked by `/usr/bin/python3` on a bare macOS machine, and the
+static checks have to keep working on a host where Docker is unavailable.
 
 ### Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS and
-Python suites on every push and pull request, plus a repo-wide `bash -n` and
-ShellCheck pass over every tracked `*.sh` so new scripts are covered from the
-moment they land. The Python job is pinned to 3.9 — the version
-`/usr/bin/python3` provides on macOS — so 3.10+ syntax cannot slip into a helper
-that has to run there.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS,
+Python and static suites on every push and pull request — through
+`run-tests.sh`, so the aggregator is exercised too. Alongside them the lint job
+runs, over every tracked file of each kind:
+
+- `bash -n` and ShellCheck (`--severity=error -x --shell=bash`) over every
+  `*.sh` **and** the Git Bash dotfiles, which have no `.sh` extension and so
+  went unchecked for a long time. `--shell=bash` is required for them: with no
+  shebang ShellCheck cannot detect the dialect.
+- PSScriptAnalyzer over every `*.ps1`, gated at Error **and** Warning severity.
+  Mirroring `--severity=error` literally would find almost nothing, since
+  nearly every PowerShell rule is Warning. The one excluded rule and the reason
+  for it are in
+  [`PSScriptAnalyzerSettings.psd1`](PSScriptAnalyzerSettings.psd1).
+- `yamllint` and `markdownlint`.
+
+The Python job is pinned to 3.9 — the version `/usr/bin/python3` provides on
+macOS — so 3.10+ syntax cannot slip into a helper that has to run there, and it
+installs a pinned `ruff`, without which `test-env/python/run.sh` reports the
+lint as "skipped" and still exits 0.
 
 [`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the RouterOS
-integration suite nightly and on demand. It is kept off the pull-request path
-because CHR is an x86_64 image under QEMU and first boot takes minutes; the
-Linux runner has `/dev/kvm`, which the workflow enables.
+integration suite nightly at 03:00 UTC and on demand. It is kept off the
+pull-request path because CHR is an x86_64 image under QEMU and first boot takes
+minutes. The Linux runner has `/dev/kvm`, which
+[`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
+`docker-compose.kvm.yml` on top — a separate file because compose fails hard on
+a device that does not exist, which would break the suite for everyone on macOS.
