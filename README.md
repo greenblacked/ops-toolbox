@@ -345,9 +345,9 @@ static checks have to keep working on a host where Docker is unavailable.
 ### Continuous integration
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS,
-Python and static suites on every push and pull request — through
-`run-tests.sh`, so the aggregator is exercised too. Alongside them the lint job
-runs, over every tracked file of each kind:
+Python and static suites — through `run-tests.sh`, so the aggregator is
+exercised too. Alongside them the lint job runs, over every tracked file of
+each kind:
 
 - `bash -n` and ShellCheck (`--severity=error -x --shell=bash`) over every
   `*.sh` **and** the Git Bash dotfiles, which have no `.sh` extension and so
@@ -364,6 +364,60 @@ The Python job is pinned to 3.9 — the version `/usr/bin/python3` provides on
 macOS — so 3.10+ syntax cannot slip into a helper that has to run there, and it
 installs a pinned `ruff`, without which `test-env/python/run.sh` reports the
 lint as "skipped" and still exits 0.
+
+Every job writes the `run-tests.sh` pass/fail/skip matrix into the run summary,
+so a verdict is one click away rather than buried in a log.
+
+#### When CI runs
+
+Branches follow the typed-prefix convention — `feature/`, `ci/`, `chore/`,
+`fix/` — and each event owns exactly one path, so a change is built once:
+
+- **`pull_request`** — every pull request, targeting `master` or another typed
+  branch (stacked PRs). This is the main gate; it tests the *merge result*,
+  which a branch push cannot.
+- **`push`** — `master` only, where there is no pull request to do it.
+- **`workflow_dispatch`** — on demand.
+
+The tradeoff, stated plainly: **a typed branch with no pull request open gets no
+CI.** Open the PR as a draft, or run the workflow manually, if you want a
+verdict before review. This is what removed the old double-run, where an open
+PR built everything twice — once for `push`, once for `pull_request`.
+
+#### What CI runs
+
+A `changes` job diffs the pull request against its base and turns the result
+into per-language and per-suite flags, so a README-only change no longer builds
+and boots the Docker suites. Two rules keep that safe:
+
+- It **fails open.** No usable base diff, or a change under `.github/`, to
+  `run-tests.sh`, or to `test-env/lib/` means "everything changed". A bug in the
+  filter can only make CI do more work, never less.
+- Jobs are **never skipped at the job level**, only at the step level. A job
+  skipped by GitHub reports `skipped` rather than `success`, and a required
+  status check that never reports leaves a pull request unmergeable forever.
+  Every job name therefore always reports green, at the cost of roughly twenty
+  seconds of runner start-up for a job with nothing to do.
+
+The conventions suite has no filter at all: its subjects are the whole
+repository, and it costs seconds.
+
+#### Pinning and caching
+
+Every tool CI installs is pinned to an exact version in the `env:` block at the
+top of the workflow — ShellCheck, yamllint, ruff and PSScriptAnalyzer — and each
+install asserts the version it got. ShellCheck and ruff come from their upstream
+release tarballs rather than `apt`/`pipx`, which is both pinnable and faster
+than an `apt-get update` that costs twenty seconds before it downloads
+anything. The runner image is pinned too (`ubuntu-24.04`, not `ubuntu-latest`).
+
+Actions are pinned to commit SHAs with the tag in a trailing comment, because a
+tag is mutable and a SHA is what actually runs.
+[`.github/dependabot.yml`](.github/dependabot.yml) re-resolves them monthly in a
+single grouped pull request, so the pins stay current instead of rotting.
+
+PSScriptAnalyzer — by far the slowest install, and the only one that has to come
+from PowerShell Gallery — is cached against its pinned version.
 
 [`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the RouterOS
 integration suite nightly at 03:00 UTC and on demand. It is kept off the

@@ -1,71 +1,300 @@
 name: CI
 
+# Triggers follow the repository's typed-branch convention — feature/, ci/,
+# chore/, fix/ — and are arranged so a change is built once rather than twice.
+#
+# `push` was previously unfiltered, so a branch with an open pull request ran
+# the whole matrix on the push event and then again on the pull_request event.
+# Each event now owns one path: `pull_request` covers development branches (and
+# tests the *merge result*, which a branch push cannot), and `push` covers only
+# master, where there is no pull request to do it.
+#
+# The tradeoff, stated plainly: a typed branch with no pull request open gets no
+# CI. Open the PR as a draft, or use `workflow_dispatch` (Actions -> CI -> Run
+# workflow) if you want a verdict before review.
 on:
-  push: {}
-  pull_request:
+  push:
     branches:
       - master
+  pull_request:
+    # These are *target* branches, not source branches. master is the ordinary
+    # case; the typed prefixes are listed so a stacked pull request onto another
+    # feature branch is checked too, instead of silently running nothing.
+    branches:
+      - master
+      - 'feature/**'
+      - 'ci/**'
+      - 'chore/**'
+      - 'fix/**'
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # Superseded pull-request pushes are worth cancelling. Runs on master are not:
+  # every commit that lands on the default branch should get its own verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every external tool this workflow installs is pinned, for the same reason the
+# CHR image, ruff's target-version and the tester images are: a release on
+# somebody else's schedule should not turn a green repository red. Bumping one
+# of these is a deliberate commit with a test run behind it.
+#
+# The GitHub Actions used below are pinned to commit SHAs rather than moving
+# tags, with the tag in a trailing comment. A tag is mutable; a SHA is what
+# actually gets executed. .github/dependabot.yml keeps them current.
+env:
+  SHELLCHECK_VERSION: '0.10.0'
+  YAMLLINT_VERSION: '1.38.0'
+  RUFF_VERSION: '0.15.8'
+  PSSA_VERSION: '1.23.0'
 
 jobs:
+  # Which parts of the repository a change actually touches.
+  #
+  # Every output below is consumed by a *step-level* `if`, never a job-level
+  # one. That is deliberate: a job skipped at the job level reports "skipped"
+  # rather than "success", and a required status check that never reports leaves
+  # a pull request unmergeable forever. Skipping at the step level keeps every
+  # job name reporting green with no branch-protection changes needed, at the
+  # cost of ~20s of runner start-up for a job with nothing to do. The saving
+  # this buys is the part that matters: a README-only change no longer builds
+  # and boots the Docker suites.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      shell: ${{ steps.filter.outputs.shell }}
+      powershell: ${{ steps.filter.outputs.powershell }}
+      markdown: ${{ steps.filter.outputs.markdown }}
+      yaml: ${{ steps.filter.outputs.yaml }}
+      python: ${{ steps.filter.outputs.python }}
+      suite_git: ${{ steps.filter.outputs.suite_git }}
+      suite_macos: ${{ steps.filter.outputs.suite_macos }}
+      suite_windows: ${{ steps.filter.outputs.suite_windows }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          # The diff needs the base commit, which a default depth-1 clone does
+          # not have. This repository is small enough that a full clone costs
+          # about a second.
+          fetch-depth: 0
+
+      - name: Work out what changed
+        id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Fail open. Anything this step is not certain about is reported as
+          # "changed", so a bug here can only ever make CI do more work than it
+          # needs to, never less. That is the only safe direction for a filter
+          # sitting in front of the test suites.
+          full=1
+          files=''
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              if [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+                files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+                full=0
+              fi
+              ;;
+            push)
+              zero=0000000000000000000000000000000000000000
+              if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "$zero" ] &&
+                 git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+                files="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA")"
+                full=0
+              fi
+              ;;
+          esac
+
+          # A change to CI itself, to the aggregator, or to the shared test
+          # helpers invalidates every assumption below it, so treat it as a
+          # change to everything.
+          if [ "$full" -eq 0 ] && printf '%s\n' "$files" |
+              grep -Eq '^(\.github/|run-tests\.sh$|test-env/lib/)'; then
+            full=1
+          fi
+
+          if [ "$full" -eq 1 ]; then
+            echo "no usable base diff, or CI/aggregator changed — running everything"
+          else
+            echo "changed files:"
+            printf '%s\n' "$files" | sed 's/^/  /'
+          fi
+
+          emit() {
+            local name="$1" pattern="$2" value=false
+            if [ "$full" -eq 1 ] || printf '%s\n' "$files" | grep -Eq "$pattern"; then
+              value=true
+            fi
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+            printf '  %-14s %s\n' "$name" "$value"
+          }
+
+          echo
+          echo "filters:"
+          # The shell filter covers the Git Bash dotfiles by name as well as by
+          # extension, for the same reason the lint job lists them explicitly:
+          # they are real bash with no .sh on the end.
+          emit shell         '(\.sh|\.zsh|\.bashrc|\.bash_profile|\.aliases)$'
+          emit powershell    '(\.ps1|\.psm1|\.psd1)$'
+          emit markdown      '(\.md$|markdownlint)'
+          emit yaml          '\.ya?ml$'
+          emit python        '(\.py$|^pyproject\.toml$|^test-env/python/)'
+          emit suite_git     '^git/'
+          emit suite_macos   '^macos-initial-setup/'
+          emit suite_windows '^windows/'
+          # Seam for the `linux` suite being built on feature/linux-package.
+          # When it lands, add:  emit suite_linux '^linux/'
+          # and the matching `suite_linux` entry under `outputs:` above.
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf '### Change filters\n\n'
+            printf '| filter | runs |\n| --- | --- |\n'
+            printf '| shell | %s |\n'      '${{ steps.filter.outputs.shell }}'
+            printf '| powershell | %s |\n' '${{ steps.filter.outputs.powershell }}'
+            printf '| markdown | %s |\n'   '${{ steps.filter.outputs.markdown }}'
+            printf '| yaml | %s |\n'       '${{ steps.filter.outputs.yaml }}'
+            printf '| python | %s |\n'     '${{ steps.filter.outputs.python }}'
+            printf '| git suite | %s |\n'     '${{ steps.filter.outputs.suite_git }}'
+            printf '| macos suite | %s |\n'   '${{ steps.filter.outputs.suite_macos }}'
+            printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
   lint:
     name: Lint
-    runs-on: ubuntu-latest
+    needs: changes
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
-      - name: Install linters
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes shellcheck yamllint
-
-      # The Git Bash dotfiles have no .sh extension, so a plain '*.sh' glob has
-      # never covered them. They are real bash and they pass, so list them.
-      # ShellCheck needs --shell=bash for them: with no shebang it cannot detect
-      # the dialect and SC2148 fires at error severity.
-      - name: Check Bash syntax
+      # The file list the Bash checks operate on, built once and reused.
+      #
+      # It used to be duplicated verbatim in the `bash -n` step and the
+      # ShellCheck step, which is exactly the shape of thing that drifts: drop a
+      # path from one copy and the other still looks right. It is built here,
+      # NUL-delimited, and both consumers read it.
+      #
+      # The six Git Bash dotfiles have no .sh extension, so a plain '*.sh' glob
+      # has never covered them. They are real bash and they pass, so they are
+      # listed by name — and the presence of every one of them is asserted,
+      # because a silently shrinking file list is a silently weakening gate.
+      - name: Collect Bash sources
+        if: needs.changes.outputs.shell == 'true'
         shell: bash
         run: |
-          mapfile -d '' scripts < <(git ls-files -z '*.sh' \
-            'windows/git-bash/.bashrc' \
-            'windows/git-bash/.bash_profile' \
-            'windows/git-bash/.aliases' \
-            'windows/git-bash/default-git-bash/.bashrc' \
-            'windows/git-bash/default-git-bash/.bash_profile' \
-            'windows/git-bash/default-git-bash/.aliases')
-          printf 'checking %d files\n' "${#scripts[@]}"
+          set -euo pipefail
+          dotfiles=(
+            windows/git-bash/.bashrc
+            windows/git-bash/.bash_profile
+            windows/git-bash/.aliases
+            windows/git-bash/default-git-bash/.bashrc
+            windows/git-bash/default-git-bash/.bash_profile
+            windows/git-bash/default-git-bash/.aliases
+          )
+          git ls-files -z '*.sh' "${dotfiles[@]}" > "$RUNNER_TEMP/bash-sources"
+          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
+
+          for want in "${dotfiles[@]}"; do
+            found=0
+            for got in "${scripts[@]}"; do
+              [ "$got" = "$want" ] && { found=1; break; }
+            done
+            if [ "$found" -eq 0 ]; then
+              echo "::error::$want is not in the ShellCheck file list — it was renamed, moved or deleted, and the linter would silently stop covering it"
+              exit 1
+            fi
+          done
+
+          printf 'collected %d bash sources (%d of them dotfiles)\n' \
+            "${#scripts[@]}" "${#dotfiles[@]}"
+
+      - name: Check Bash syntax
+        if: needs.changes.outputs.shell == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
           bash -n "${scripts[@]}"
+
+      # Fetched from the upstream release rather than apt. apt-get update alone
+      # costs ~20s before a byte of the tool is downloaded, and it leaves the
+      # Ubuntu image deciding the analyser version — the one unpinned tool in a
+      # repository that pins everything else. This is both pinned and faster.
+      - name: Install ShellCheck
+        if: needs.changes.outputs.shell == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/koalaman/shellcheck/releases/download
+          url="$base/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          sudo install -m 0755 \
+            "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
+            /usr/local/bin/shellcheck
+          # Assert the pin took, so a redirected or stale download cannot
+          # quietly downgrade the gate.
+          got="$(shellcheck --version | awk '/^version:/ { print $2 }')"
+          if [ "$got" != "$SHELLCHECK_VERSION" ]; then
+            echo "::error::wanted ShellCheck $SHELLCHECK_VERSION, got '$got'"
+            exit 1
+          fi
 
       # -x follows `source` directives, matching what the Docker suites already
       # do. Without it, sourced files are invisible to the analysis.
+      # --shell=bash is required for the dotfiles: with no shebang ShellCheck
+      # cannot detect the dialect and SC2148 fires at error severity.
       - name: Run ShellCheck
+        if: needs.changes.outputs.shell == 'true'
         shell: bash
         run: |
-          mapfile -d '' scripts < <(git ls-files -z '*.sh' \
-            'windows/git-bash/.bashrc' \
-            'windows/git-bash/.bash_profile' \
-            'windows/git-bash/.aliases' \
-            'windows/git-bash/default-git-bash/.bashrc' \
-            'windows/git-bash/default-git-bash/.bash_profile' \
-            'windows/git-bash/default-git-bash/.aliases')
+          set -euo pipefail
+          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
           shellcheck --severity=error -x --shell=bash "${scripts[@]}"
 
-      # Pinned for the same reason the CHR image, ruff's target-version and the
-      # tester images are pinned: an analyzer release should not turn a green
-      # repository red on someone else's schedule.
-      - name: Run PSScriptAnalyzer
+      # PSGallery installs are the slowest thing in this job by a wide margin,
+      # and the module is pinned, so the cache key is exact and never stale.
+      - name: Cache PSScriptAnalyzer
+        id: pssa-cache
+        if: needs.changes.outputs.powershell == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
+          key: pssa-${{ runner.os }}-${{ env.PSSA_VERSION }}
+
+      - name: Install PSScriptAnalyzer
+        if: needs.changes.outputs.powershell == 'true' && steps.pssa-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Force -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION `
+            -Force -Scope CurrentUser -AllowClobber
+
+      # Gated at Error *and* Warning; see PSScriptAnalyzerSettings.psd1 for why
+      # mirroring `shellcheck --severity=error` literally would find nothing.
+      - name: Run PSScriptAnalyzer
+        if: needs.changes.outputs.powershell == 'true'
+        shell: pwsh
+        run: |
+          # -RequiredVersion so a cached or preinstalled copy of a different
+          # version fails loudly instead of silently changing the ruleset.
+          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION -ErrorAction Stop
           $files = git ls-files '*.ps1' '*.psm1'
           if (-not $files) { Write-Host 'no PowerShell files'; exit 0 }
           $found = @()
@@ -78,14 +307,53 @@ jobs:
           }
           Write-Host ('PSScriptAnalyzer clean over {0} files' -f $files.Count)
 
+      - name: Cache pip downloads
+        if: needs.changes.outputs.yaml == 'true'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: ~/.cache/pip
+          key: pip-lint-${{ runner.os }}-yamllint-${{ env.YAMLLINT_VERSION }}
+
+      # pipx rather than pip: the runner's system Python is externally managed,
+      # and pipx is preinstalled. This is also how the python job installs ruff.
+      - name: Install yamllint
+        if: needs.changes.outputs.yaml == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pipx install "yamllint==${YAMLLINT_VERSION}"
+          got="$(yamllint --version)"
+          if [ "$got" != "yamllint ${YAMLLINT_VERSION}" ]; then
+            echo "::error::wanted yamllint $YAMLLINT_VERSION, got '$got'"
+            exit 1
+          fi
+
       - name: Lint YAML
+        if: needs.changes.outputs.yaml == 'true'
         run: yamllint --config-file .yamllint.yml .
 
       - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v23
+        if: needs.changes.outputs.markdown == 'true'
+        uses: DavidAnson/markdownlint-cli2-action@fa0cd0f1a052f54da593c83860f2292982f5d142  # v23.2.0
         with:
           config: .markdownlint-cli2.yaml
           globs: '**/*.md'
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf '### Lint\n\n'
+            printf '| check | ran |\n| --- | --- |\n'
+            printf '| bash -n + ShellCheck %s | %s |\n' \
+              "$SHELLCHECK_VERSION" '${{ needs.changes.outputs.shell }}'
+            printf '| PSScriptAnalyzer %s | %s |\n' \
+              "$PSSA_VERSION" '${{ needs.changes.outputs.powershell }}'
+            printf '| yamllint %s | %s |\n' \
+              "$YAMLLINT_VERSION" '${{ needs.changes.outputs.yaml }}'
+            printf '| markdownlint | %s |\n' '${{ needs.changes.outputs.markdown }}'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # Suites go through run-tests.sh rather than calling each tests/run.sh
   # directly, so the aggregator is exercised by CI too and "it passed locally"
@@ -93,61 +361,176 @@ jobs:
   # suite names, not directory names.
   test:
     name: Test / ${{ matrix.suite }}
-    runs-on: ubuntu-latest
+    needs: changes
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        suite:
-          - git
-          - macos
-          # Needs pwsh, which ubuntu-latest ships preinstalled. The suite skips
-          # itself with exit 0 on a host without it.
-          - windows
+        # `include` rather than a bare list so each entry can carry its own
+        # change filter. `changed` is read by the step-level `if` below, which
+        # keeps the job reporting success when there is nothing to do.
+        include:
+          # Seam for the `linux` suite being built on feature/linux-package.
+          # It does not exist on this branch and run-tests.sh would reject the
+          # name, so it is not enabled here. When the suite lands, add an entry
+          #   - suite: linux
+          #     changed: ${{ needs.changes.outputs.suite_linux }}
+          # alongside the ones below, together with the `suite_linux` filter in
+          # the `changes` job.
+          - suite: git
+            changed: ${{ needs.changes.outputs.suite_git }}
+          - suite: macos
+            changed: ${{ needs.changes.outputs.suite_macos }}
+          # Needs pwsh, which the ubuntu image ships preinstalled. The suite
+          # skips itself with exit 0 on a host without it, so the job asserts
+          # pwsh is really there rather than trusting a green tick.
+          - suite: windows
+            changed: ${{ needs.changes.outputs.suite_windows }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        if: matrix.changed == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
-      - name: Run ${{ matrix.suite }} suite
-        run: ./run-tests.sh ${{ matrix.suite }}
+      - name: Require pwsh
+        if: matrix.changed == 'true' && matrix.suite == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "::error::pwsh is missing from this runner — windows/tests/run.sh would skip itself and exit 0, and the gate would pass without checking anything"
+            exit 1
+          fi
+          pwsh --version
+
+      - name: Run suite
+        if: matrix.changed == 'true'
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/$SUITE.log"
+          # `shell: bash` runs with -e, which would abort the step on a failing
+          # suite before the summary is written. Take the exit code by hand.
+          set +e
+          ./run-tests.sh "$SUITE" 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          # run-tests.sh already prints a pass/fail/skip matrix; lift it into
+          # the run summary so the verdict is visible without opening logs.
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh %s`\n\n' "$SUITE"
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Report skip
+        if: matrix.changed != 'true'
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          printf '### `run-tests.sh %s`\n\nSkipped — nothing in this change touches it.\n' \
+            "$SUITE" >> "$GITHUB_STEP_SUMMARY"
 
   python:
     name: Test / python helpers
-    runs-on: ubuntu-latest
+    needs: changes
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        if: needs.changes.outputs.python == 'true'
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
       # 3.9 is what /usr/bin/python3 provides on macOS, and it is the
       # interpreter stay_fresh.sh invokes lib/workspace_scan.py with. Testing on
       # anything newer would let 3.10+ syntax through and break on the machines
       # these scripts target.
       - name: Set up Python 3.9
-        uses: actions/setup-python@v5
+        if: needs.changes.outputs.python == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
         with:
           python-version: '3.9'
 
       # test-env/python/run.sh reports ruff as "skipped" and still exits 0 when
-      # it is absent, so without this step the lint silently never ran.
+      # it is absent, so without this step the lint silently never ran. ruff
+      # ships a static binary, which is both pinned and faster than resolving it
+      # through pipx — and it is a standalone tool, so it does not need to live
+      # in the 3.9 environment under test.
       - name: Install ruff
-        run: pipx install ruff==0.15.8
+        if: needs.changes.outputs.python == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$RUNNER_TEMP/ruff.tar.gz"
+          tar -xzf "$RUNNER_TEMP/ruff.tar.gz" -C "$RUNNER_TEMP"
+          sudo install -m 0755 \
+            "$RUNNER_TEMP/ruff-x86_64-unknown-linux-gnu/ruff" /usr/local/bin/ruff
+          got="$(ruff --version)"
+          if [ "$got" != "ruff ${RUFF_VERSION}" ]; then
+            echo "::error::wanted ruff $RUFF_VERSION, got '$got'"
+            exit 1
+          fi
 
       - name: Run python suite
-        run: ./run-tests.sh python
+        if: needs.changes.outputs.python == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/python.log"
+          set +e
+          ./run-tests.sh python 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh python`\n\n'
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Report skip
+        if: needs.changes.outputs.python != 'true'
+        run: |
+          printf '### `run-tests.sh python`\n\nSkipped — no Python changed.\n' \
+            >> "$GITHUB_STEP_SUMMARY"
 
   # Repository-wide convention checks: the --help and unknown-flag contracts,
   # shebangs, file modes, .gitattributes coverage, Bash 3.2 constructs and the
   # deliberately-duplicated blocks. Needs nothing but bash and git, and it
   # discovers its own subjects so a new script is covered by the commit that
   # adds it.
+  #
+  # Deliberately has no change filter. Its subjects are the whole repository —
+  # a new file extension, a mode change or a renamed script can break it without
+  # touching anything the filters above would notice — and it costs seconds.
   static:
     name: Test / conventions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
       - name: Run static suite
-        run: ./run-tests.sh static
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/static.log"
+          set +e
+          ./run-tests.sh static 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh static`\n\n'
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"

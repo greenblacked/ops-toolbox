@@ -26,11 +26,14 @@ concurrency:
 jobs:
   routeros-integration:
     name: Test / RouterOS integration
-    runs-on: ubuntu-latest
+    # Pinned rather than ubuntu-latest: this job depends on the runner exposing
+    # /dev/kvm and on a QEMU new enough to boot CHR, and an image rollover is
+    # not something anyone wants to discover from a 45-minute nightly timeout.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Check out repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
 
       # The runner exposes /dev/kvm, which run.sh detects and layers
       # docker-compose.kvm.yml on top for. Without it CHR boots under TCG
@@ -44,4 +47,23 @@ jobs:
           fi
 
       - name: Run RouterOS CHR suite
-        run: ./run-tests.sh mikrotik
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/mikrotik.log"
+          # `shell: bash` runs with -e, which would abort the step on a failing
+          # suite before the summary is written. Take the exit code by hand.
+          set +e
+          ./run-tests.sh mikrotik 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          # run-tests.sh already prints a pass/fail/skip matrix; lift it into
+          # the run summary. This one matters more than most: nobody is watching
+          # a 03:00 run, and the failure notification links here.
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh mikrotik`\n\n'
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
