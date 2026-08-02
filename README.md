@@ -230,6 +230,12 @@ The Windows package is [`windows/`](windows/):
   safely (aged temp files, WER, Delivery Optimization, thumbnails), with
   explicit opt-in flags for Recycle Bin, Windows Update cache, dev caches,
   and Docker. `-DryRun` reports sizes without deleting.
+- [`setup/`](windows/setup/) — `winget_bootstrap.ps1`: the Windows
+  counterpart of `brewfile.sh`, with the same `export`/`check`/`import`/`diff`
+  verbs and the same exit codes. Captures the installed package list to a
+  versioned JSON file so a machine can be rebuilt from it; `diff` shows what
+  has drifted before you accept it, and `import -DryRun` lists what it would
+  install.
 
 See [`windows/README.md`](windows/README.md) and the per-folder READMEs for
 install steps, the full alias breakdown, and PowerShell execution-policy
@@ -309,6 +315,7 @@ preflight only runs when one of them is actually selected — so
 | [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
 | [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
 | [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
+| [`windows/`](windows/) | **Contract** checks on the PowerShell scripts: they parse, comment-based help is complete, anything that changes a machine can be previewed first, and every flag the READMEs document actually exists. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and

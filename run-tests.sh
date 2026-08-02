@@ -31,8 +31,8 @@ fi
 # must run under the Bash 3.2 that ships on macOS, which has no associative
 # arrays. See CONTRIBUTING.md.
 
-SUITE_ALL="git macos python static mikrotik"
-SUITE_FAST="git macos python static"
+SUITE_ALL="git macos python static windows mikrotik"
+SUITE_FAST="git macos python static windows"
 
 suite_runner() {
   case "$1" in
@@ -40,6 +40,7 @@ suite_runner() {
     macos)    printf '%s\n' "$HERE/macos-initial-setup/tests/run.sh" ;;
     python)   printf '%s\n' "$HERE/test-env/python/run.sh" ;;
     static)   printf '%s\n' "$HERE/test-env/static/run.sh" ;;
+    windows)  printf '%s\n' "$HERE/windows/tests/run.sh" ;;
     mikrotik) printf '%s\n' "$HERE/mikrotik/tests/run.sh" ;;
   esac
 }
@@ -61,6 +62,7 @@ suite_blurb() {
     macos)    printf '%s\n' "macOS setup scripts       (Docker, ~30s)" ;;
     python)   printf '%s\n' "Python libs: ruff + pytest (host python3, no Docker)" ;;
     static)   printf '%s\n' "Repo-wide conventions     (bash + git only, no Docker)" ;;
+    windows)  printf '%s\n' "PowerShell contract checks (pwsh, no Docker; skipped without it)" ;;
     mikrotik) printf '%s\n' "RouterOS CHR integration  (Docker + QEMU, minutes — not in default)" ;;
   esac
 }

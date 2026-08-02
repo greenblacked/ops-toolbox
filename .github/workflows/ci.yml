@@ -101,6 +101,9 @@ jobs:
         suite:
           - git
           - macos
+          # Needs pwsh, which ubuntu-latest ships preinstalled. The suite skips
+          # itself with exit 0 on a host without it.
+          - windows
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
