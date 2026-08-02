@@ -139,7 +139,7 @@ def classify_entry(entry_dir: str, mounted: frozenset):
         return UNRESOLVED, "no workspace.json", ""
 
     try:
-        with open(manifest, "r", encoding="utf-8", errors="replace") as fh:
+        with open(manifest, encoding="utf-8", errors="replace") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         # Unreadable or malformed. We know nothing, so we keep it.

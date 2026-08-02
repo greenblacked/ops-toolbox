@@ -11,11 +11,11 @@ Tunables (env):
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import sys
 import time
-from typing import Optional
 
 import routeros_api
 from routeros_api import exceptions as ros_exc
@@ -32,7 +32,7 @@ def _now() -> float:
 
 
 def _wait_tcp(deadline: float) -> None:
-    last: Optional[BaseException] = None
+    last: BaseException | None = None
     while _now() < deadline:
         try:
             with socket.create_connection((HOST, PORT), timeout=5):
@@ -44,7 +44,7 @@ def _wait_tcp(deadline: float) -> None:
 
 
 def _wait_login(deadline: float) -> None:
-    last: Optional[BaseException] = None
+    last: BaseException | None = None
     attempts = 0
     while _now() < deadline:
         attempts += 1
@@ -75,10 +75,8 @@ def _wait_login(deadline: float) -> None:
             time.sleep(3)
         finally:
             if pool is not None:
-                try:
+                with contextlib.suppress(Exception):
                     pool.disconnect()
-                except Exception:
-                    pass
     raise TimeoutError(f"API login never succeeded after {attempts} attempts: {last!r}")
 
 

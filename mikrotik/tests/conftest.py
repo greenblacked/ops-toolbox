@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import time
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 import pytest
 import routeros_api
@@ -55,10 +57,8 @@ def ros_pool() -> Iterator[routeros_api.RouterOsApiPool]:
     try:
         yield pool
     finally:
-        try:
+        with contextlib.suppress(Exception):
             pool.disconnect()
-        except Exception:
-            pass
 
 
 @pytest.fixture(scope="session")
@@ -134,10 +134,8 @@ def _remove_globals(api: Any, names) -> None:
     rows = list(res.get())
     for row in rows:
         if _row_str(row, "name") in names:
-            try:
+            with contextlib.suppress(ros_exc.RouterOsApiError):
                 res.call("remove", {".id": _row_id(row)})
-            except ros_exc.RouterOsApiError:
-                pass
 
 
 @pytest.fixture(scope="session", autouse=True)
