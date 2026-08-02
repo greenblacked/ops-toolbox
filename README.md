@@ -6,6 +6,9 @@
 [![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
 [![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS-lightgrey.svg)](#whats-here)
+[![Test suites](https://img.shields.io/badge/test%20suites-7-blue.svg)](#testing)
+[![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/pretty-useful-scripts/blob/master/.github/workflows/ci.yml)
+[![RouterOS](https://img.shields.io/badge/RouterOS-7.22-blue.svg)](mikrotik/README.md)
 
 **CI** covers the git, macOS, Linux, Windows, Python and conventions suites on
 every pull request, plus repo-wide ShellCheck, PSScriptAnalyzer, yamllint and
@@ -398,10 +401,25 @@ static checks have to keep working on a host where Docker is unavailable.
 
 ### Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS,
-Python and static suites — through `run-tests.sh`, so the aggregator is
-exercised too. Alongside them the lint job runs, over every tracked file of
-each kind:
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs every suite except
+the RouterOS one — through `run-tests.sh`, so the aggregator is exercised too
+rather than being a convenience nobody tests.
+
+| Job | What it proves | Runs on |
+| --- | --- | --- |
+| `Detect changes` | Which languages and suites a change actually touches. Fails open — anything it is unsure about runs everything. | every event |
+| `Lint` | ShellCheck, PSScriptAnalyzer, yamllint, markdownlint | every event |
+| `Test / git` | Git helpers against throwaway repos and bare remotes (Docker) | `git/` changes |
+| `Test / macos` | Static checks on the macOS scripts (Docker) | `macos-initial-setup/` changes |
+| `Test / linux` | The Linux scripts **executed** in a pinned Debian container | `linux/` changes |
+| `Test / windows` | PowerShell contract checks under `pwsh` | `windows/` changes |
+| `Test / python helpers` | 101 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
+| `Test / conventions` | The repo-wide contracts, on every change | always |
+
+Nothing is skipped at the *job* level, only inside a job, so every job still
+reports success and no required check can leave a pull request unmergeable.
+
+The lint job covers every tracked file of each kind:
 
 - `bash -n` and ShellCheck (`--severity=error -x --shell=bash`) over every
   `*.sh` **and** the Git Bash dotfiles, which have no `.sh` extension and so
