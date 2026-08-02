@@ -1,5 +1,21 @@
 # Pretty Useful Scripts
 
+[![CI](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml?query=branch%3Amaster)
+[![RouterOS CHR](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/chr.yml/badge.svg)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/chr.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
+[![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS-lightgrey.svg)](#whats-here)
+
+**CI** covers the git, macOS, Linux, Windows, Python and conventions suites on
+every pull request, plus repo-wide ShellCheck, PSScriptAnalyzer, yamllint and
+markdownlint. **RouterOS CHR** is separate because it boots a real router under
+QEMU: it runs nightly rather than on the pull-request path, so a red badge
+there does not necessarily mean a red pull request.
+
+The two lint badges are static labels for the gates CI enforces, not live
+results — the CI badge is the one that reflects the current state of `master`.
+
 Helper scripts for setting up, maintaining, and working on the small set of
 machines I touch regularly — macOS workstations, a Windows dev machine, and a
 MikroTik router, plus everyday Git helpers. The repository is intentionally
