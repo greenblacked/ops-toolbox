@@ -23,9 +23,10 @@ services:
       - "127.0.0.1:8728:8728"
       - "127.0.0.1:2222:22"
       - "127.0.0.1:8080:80"
-    # On Linux CI hosts with KVM, uncomment for ~10x faster boot:
-    # devices:
-    #   - /dev/kvm
+    # Hardware acceleration lives in docker-compose.kvm.yml, which run.sh
+    # layers on when the host has a usable /dev/kvm. It is kept out of this
+    # file because compose fails hard on a device that does not exist, which
+    # would break every macOS and Docker Desktop developer.
     healthcheck:
       test: ["CMD", "nc", "-z", "-w", "1", "127.0.0.1", "8728"]
       interval: 5s

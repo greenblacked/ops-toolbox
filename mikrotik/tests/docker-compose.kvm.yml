@@ -1,0 +1,17 @@
+# Overlay that hands /dev/kvm to the CHR container, cutting first boot from
+# minutes of TCG emulation to roughly ten times faster.
+#
+# It is a separate file because compose has no way to add a device
+# conditionally, and naming a device that does not exist is a hard failure —
+# putting it in the base file would break the suite for every developer on
+# macOS or Docker Desktop, which is most of the people who run it locally.
+#
+# run.sh layers this on automatically when /dev/kvm is present. Set CHR_KVM=0
+# to force it off.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.kvm.yml run --rm tester
+
+services:
+  chr:
+    devices:
+      - /dev/kvm
