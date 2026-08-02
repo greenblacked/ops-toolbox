@@ -348,9 +348,27 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 - `rogue_dns_check.lua` — verifies upstream DNS sanity and detects clients
   using non-approved DNS resolvers; tags offenders into
   `rogue-dns-clients`.
+- `cert_expiry_watch.lua` — alerts when any non-disabled certificate is expired
+  or expires within `WarnDays`. Schedule at most daily; the alert is not
+  transition-gated, so a shorter interval repeats it.
+- `wireguard_watch.lua` — alerts when the tunnel is down or a peer handshake
+  goes stale, on the transition only, via `:global WGHEALTHLAST`.
+- `wan_link_flap_notify.lua` — alerts on WAN link up/down at layer 1.
+  Complements `wan_failover_notify.lua`, which watches
+  `detect-internet-state`: a cable pulled out and an upstream outage are
+  different events and this catches the first.
+- `netwatch_notify.lua` — summarises `/tool netwatch` host status and alerts
+  when the snapshot changes. First run records a baseline silently.
+- `backup_file_cleanup.lua` — removes `backup-*` files older than
+  `RetentionDays` from `/file`, so flash does not fill with stale
+  `.backup`/`.rsc` pairs. Pair it with `backup.lua`, which creates them and
+  prunes nothing.
 
 Run from your machine rather than on the router:
 
+- `pull_router_backups.sh` — copies `backup-*.backup` and `backup-*.rsc` off
+  the router over SFTP/SCP into a local directory. Needs RouterOS 7+ SFTP and
+  key-based SSH; `BatchMode=yes` means it fails rather than prompting.
 - `export_config.py` — pulls `/export` over ssh and versions it in
   `config-history/`, so `firewall_drift.lua` has real history to diff against
   instead of a hand-maintained baseline. Strips the volatile export header
