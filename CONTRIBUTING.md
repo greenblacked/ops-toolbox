@@ -21,6 +21,7 @@ rule is wrong. Fix it or delete it.
 - [Python helpers](#python-helpers)
 - [Tests](#tests)
 - [File modes and line endings](#file-modes-and-line-endings)
+- [Repository settings](#repository-settings)
 
 ## The one architectural rule
 
@@ -323,3 +324,40 @@ creates it.
   `windows/git-bash/default-git-bash/`.
 
 Both are asserted by the static suite.
+
+## Repository settings
+
+A few things live in GitHub's settings rather than in the tree, so no pull
+request can fix them and no test can catch them missing. This is the owner's
+checklist — a contributor cannot do any of it, but can point at this section in
+an issue.
+
+- [ ] **Description.** The one line under the repository name is what shows up
+      in search results and on a profile. Something concrete, for example:
+      "Helper scripts for macOS, Linux, Windows and MikroTik RouterOS — every
+      script has `--help`, a documented exit code, and a dry run that writes
+      nothing."
+- [ ] **Topics.** These are how the repository is found at all; without them it
+      is reachable only by name. Suggested set: `bash`, `shell-scripts`,
+      `powershell`, `macos`, `linux`, `windows`, `routeros`, `mikrotik`,
+      `devops`, `dotfiles`, `shellcheck`, `automation`.
+- [ ] **Website field.** Leave it empty rather than pointing it at the
+      repository itself.
+- [ ] **Discussions.** Enable them (*Settings → General → Features*). Issues here
+      are for a specific bug or a specific script request — the two templates in
+      [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do
+      you handle X on your machines" has nowhere else to go today.
+- [ ] **Releases.** The sidebar shows a Releases panel only once a tag exists,
+      and a repository with no releases reads as unmaintained regardless of how
+      recent the commits are. [`CHANGELOG.md`](CHANGELOG.md) is the groundwork:
+      cut the first tag from its `[Unreleased]` section and paste that section
+      in as the release notes.
+- [ ] **Branch protection on `master`.** Require the CI checks that already run,
+      so the gates in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) are
+      binding rather than advisory. Note the constraint recorded there: jobs are
+      never skipped at the job level, precisely so a required check always
+      reports.
+- [ ] **Labels.** At minimum `good first issue` and `help wanted` — GitHub
+      surfaces both in its own contributor-facing views, and
+      [`docs/good-first-issues.md`](docs/good-first-issues.md) is a list of
+      candidates waiting to be filed under them.
