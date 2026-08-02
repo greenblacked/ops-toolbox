@@ -1,0 +1,69 @@
+# Common Chef test-env tasks. Run `just` (or `just -l`) to list.
+# All recipes run inside the Docker runner so the host stays clean.
+
+set shell := ["bash", "-uc"]
+
+run := "./run.sh"
+
+# Default: show available recipes.
+default:
+    @just --list
+
+# Start the long-running runner container in the background.
+up:
+    {{run}} up
+
+# Stop and remove the runner container.
+down:
+    {{run}} down
+
+# Container status.
+ps:
+    {{run}} ps
+
+# Build / rebuild the runner image (after Gemfile or Dockerfile change).
+rebuild:
+    {{run}} --rebuild
+
+# Lint cookbooks with Cookstyle.
+lint:
+    {{run}} cookstyle --display-cop-names cookbooks
+
+# Auto-fix Cookstyle violations where possible.
+fix:
+    {{run}} cookstyle -a cookbooks
+
+# Lint YAML files.
+yamllint:
+    {{run}} yamllint -c .yamllint .
+
+# Lint the test-env scaffolding itself (shell scripts + Dockerfile + YAML).
+lint-env:
+    {{run}} shellcheck run.sh docker/entrypoint.sh
+    {{run}} hadolint docker/Dockerfile
+    {{run}} yamllint -c .yamllint docker/docker-compose.yml kitchen.yml
+
+# Run ChefSpec unit tests (fast — no containers spun up).
+spec:
+    {{run}} rspec cookbooks
+
+# Test Kitchen actions.
+list:
+    {{run}} kitchen list
+
+converge SUITE="all":
+    {{run}} kitchen converge {{SUITE}}
+
+verify SUITE="all":
+    {{run}} kitchen verify {{SUITE}}
+
+destroy SUITE="all":
+    {{run}} kitchen destroy {{SUITE}}
+
+# Full local CI loop: env-lint → lint → yamllint → spec → kitchen verify.
+ci: lint-env lint yamllint spec
+    {{run}} kitchen verify ubuntu-2204
+
+# Interactive shell inside the running container.
+shell:
+    {{run}} shell

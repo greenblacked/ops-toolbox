@@ -1,0 +1,23 @@
+{
+  "name": "chef-kitchen",
+  "dockerComposeFile": "../docker/docker-compose.yml",
+  "service": "kitchen",
+  "workspaceFolder": "/chef",
+  "overrideCommand": true,
+  "remoteUser": "root",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Shopify.ruby-lsp",
+        "chef-software.Chef",
+        "redhat.vscode-yaml",
+        "EditorConfig.EditorConfig"
+      ],
+      "settings": {
+        "[ruby]": { "editor.formatOnSave": true },
+        "rubyLsp.formatter": "rubocop",
+        "files.eol": "\n"
+      }
+    }
+  }
+}

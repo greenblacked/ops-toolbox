@@ -1,0 +1,25 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k8s-toolbox-job
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: k8s-toolbox
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: toolbox
+          image: k8s-toolbox:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -lc
+            - |
+              set -euo pipefail
+              echo "kubectl:" && kubectl version --client=true --short || true
+              echo "helm:" && helm version || true
+              echo "kustomize:" && kustomize version || true
+              echo "gcloud:" && gcloud --version | head -n 5 || true

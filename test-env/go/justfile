@@ -1,0 +1,84 @@
+# Go test-env tasks. Run `just` (or `just -l`) to list.
+# Recipes exec inside a long-running dev container — fast iteration.
+
+set shell := ["bash", "-uc"]
+
+run := "./run.sh"
+
+# Default: show available recipes.
+default:
+    @just --list
+
+# Start the long-running dev container in the background.
+up:
+    {{run}} up
+
+# Stop and remove the dev container.
+down:
+    {{run}} down
+
+# Container status.
+ps:
+    {{run}} ps
+
+# Build / rebuild the runner image.
+rebuild:
+    {{run}} --rebuild
+
+# go build all packages.
+build:
+    {{run}} go build ./...
+
+# go test (race detector + verbose on failures only via -count=1).
+test:
+    {{run}} go test -race -count=1 ./...
+
+# go test with coverage report.
+cov:
+    {{run}} go test -race -coverprofile=coverage.out -covermode=atomic ./...
+    {{run}} go tool cover -func=coverage.out
+
+# go vet.
+vet:
+    {{run}} go vet ./...
+
+# golangci-lint.
+lint:
+    {{run}} golangci-lint run
+
+# Lint the test-env scaffolding (shell scripts + Dockerfile + YAML).
+lint-env:
+    {{run}} shellcheck run.sh
+    {{run}} hadolint docker/Dockerfile
+    {{run}} yamllint docker/docker-compose.yml .golangci.yml
+
+# golangci-lint with autofix where possible.
+fix:
+    {{run}} golangci-lint run --fix
+
+# gofmt / goimports check (CI-style).
+format-check:
+    {{run}} bash -c 'diff -u <(echo -n) <(goimports -l -local github.com/pretty-useful-scripts .)'
+
+# Apply gofmt / goimports.
+format:
+    {{run}} goimports -w -local github.com/pretty-useful-scripts .
+
+# Vulnerability scan.
+vuln:
+    {{run}} govulncheck ./...
+
+# go mod tidy.
+tidy:
+    {{run}} go mod tidy
+
+# Run the sample binary.
+hello *ARGS:
+    {{run}} go run ./cmd/hello {{ARGS}}
+
+# Full local CI loop.
+ci: lint-env vet lint format-check test vuln
+
+# Interactive shell inside the running container.
+shell:
+    {{run}} shell
