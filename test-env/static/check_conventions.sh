@@ -39,6 +39,27 @@ if (( ${#clis[@]} == 0 )); then
 fi
 ok "discovered ${#clis[@]} command-line scripts"
 
+# A test harness that discovers itself will invoke itself, and this suite once
+# did exactly that: check_conventions.sh --help re-entered the whole run and
+# recursed until CI timed out. Assert the exclusion directly, because the
+# symptom of losing it is a hang rather than a failure.
+for f in "${clis[@]}"; do
+  case "$f" in
+    test-env/*|*/tests/*)
+      err "$f is test infrastructure and must not be discovered as a CLI"
+      ;;
+  esac
+done
+
+# Everything below runs discovered scripts. A script that blocks on input would
+# otherwise hang the suite instead of failing it. macOS has no timeout(1), so
+# fall back to running directly there — CI is Linux and stays protected.
+if command -v timeout >/dev/null 2>&1; then
+  guard() { timeout 20 "$@"; }
+else
+  guard() { "$@"; }
+fi
+
 # --------------------------------------------------------------------------
 head_ "--help contract"
 # --help must work before any preflight check, which is what lets a macOS-only
@@ -47,7 +68,7 @@ for f in "${clis[@]}"; do
   checked=$((checked + 1))
   out=""
   rc=0
-  out="$("./$f" --help 2>&1)"
+  out="$(guard "./$f" --help 2>&1)"
   rc=$?
   if (( rc != 0 )); then
     err "$f --help exited $rc, expected 0"
@@ -66,7 +87,7 @@ head_ "unknown-flag contract"
 for f in "${clis[@]}"; do
   case "$f" in *.py) continue ;; esac
   rc=0
-  "./$f" --definitely-not-a-valid-flag-12345 >/dev/null 2>&1
+  guard "./$f" --definitely-not-a-valid-flag-12345 >/dev/null 2>&1
   rc=$?
   if (( rc == 3 )); then
     ok "$f unknown flag -> 3"

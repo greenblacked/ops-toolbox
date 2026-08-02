@@ -19,6 +19,12 @@
 #        scripts and the Git Bash dotfiles are not in the glob.
 #   3. not a test harness or a suite runner
 #
+# Leg 3 must exclude test-env/ *wholesale*, not just the runners. The narrower
+# form let check_conventions.sh discover itself the moment it became tracked,
+# and calling it with --help re-entered the whole suite — an infinite recursion
+# that only surfaced as a timeout. Nothing under test-env/ is a shipped
+# command-line script, so the broad rule is also the correct one.
+#
 # Usage:
 #   . "$REPO_ROOT/test-env/lib/discover_clis.sh"
 #   while IFS= read -r -d '' f; do ...; done < <(discover_clis "$REPO_ROOT")
@@ -36,9 +42,8 @@ discover_clis() {
       [ "$mode" = "100755" ] || continue
 
       case "$path" in
-        */tests/*)          continue ;;  # test bodies and their fixtures
-        test-env/*/run.sh)  continue ;;  # suite runners
-        test-env/lib/*)     continue ;;  # sourced helpers like this one
+        */tests/*)  continue ;;  # test bodies and their fixtures
+        test-env/*) continue ;;  # test infrastructure: runners, harnesses, helpers
       esac
 
       head -n 1 -- "$path" | grep -q '^#!' || continue
