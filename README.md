@@ -184,6 +184,15 @@ repositories and local bare remotes:
   permissions ssh refuses, and an empty agent. `--test-auth` tries each
   discovered key against the host and prints the `Host` block that fixes it.
   Read-only — it never edits config or touches the agent.
+- `git_signing_doctor.py` — explains `gpg failed to sign the data`, and the
+  quieter failure where a commit signs fine but the forge still calls it
+  Unverified. Covers all three backends (`openpgp`, `ssh`, `x509`) — it is not
+  named for gpg because SSH signing is the one people are adopting, and nobody
+  with `gpg.format=ssh` would run a script called gpg-something. Reports which
+  config file each value came from, so a repo-local override beating your
+  global one is visible. `--test-sign` attempts one real signature with
+  pinentry disabled, so a passphrase-protected key fails instead of hanging.
+  Read-only.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.

@@ -30,6 +30,7 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | `git_undo_last_commit.sh` | Undo the last commit (`reset --soft` by default; `--hard` needs `--force`). |
 | `git_amend_last.sh` | Amend the last commit with `--no-edit`, optionally after `git add --all`. |
 | `git_ssh_doctor.py` | Diagnose `Permission denied (publickey)` and print the fix. Read-only. |
+| `git_signing_doctor.py` | Diagnose commit-signing failures across the gpg, ssh and x509 backends. Read-only. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
