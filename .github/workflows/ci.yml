@@ -78,7 +78,7 @@ jobs:
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # The diff needs the base commit, which a default depth-1 clone does
           # not have. This repository is small enough that a full clone costs
@@ -182,7 +182,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # The file list the Bash checks operate on, built once and reused.
       #
@@ -274,7 +274,7 @@ jobs:
       - name: Cache PSScriptAnalyzer
         id: pssa-cache
         if: needs.changes.outputs.powershell == 'true'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
           key: pssa-${{ runner.os }}-${{ env.PSSA_VERSION }}
@@ -309,7 +309,7 @@ jobs:
 
       - name: Cache pip downloads
         if: needs.changes.outputs.yaml == 'true'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.cache/pip
           key: pip-lint-${{ runner.os }}-yamllint-${{ env.YAMLLINT_VERSION }}
@@ -334,7 +334,7 @@ jobs:
 
       - name: Lint Markdown
         if: needs.changes.outputs.markdown == 'true'
-        uses: DavidAnson/markdownlint-cli2-action@fa0cd0f1a052f54da593c83860f2292982f5d142  # v23.2.0
+        uses: DavidAnson/markdownlint-cli2-action@ded1f9488f68a970bc66ea5619e13e9b52e601cd  # v23.2.0
         with:
           config: .markdownlint-cli2.yaml
           globs: '**/*.md'
@@ -388,7 +388,7 @@ jobs:
     steps:
       - name: Check out repository
         if: matrix.changed == 'true'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Require pwsh
         if: matrix.changed == 'true' && matrix.suite == 'windows'
@@ -442,7 +442,7 @@ jobs:
     steps:
       - name: Check out repository
         if: needs.changes.outputs.python == 'true'
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # 3.9 is what /usr/bin/python3 provides on macOS, and it is the
       # interpreter stay_fresh.sh invokes lib/workspace_scan.py with. Testing on
@@ -450,7 +450,7 @@ jobs:
       # these scripts target.
       - name: Set up Python 3.9
         if: needs.changes.outputs.python == 'true'
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: '3.9'
 
@@ -514,7 +514,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Check out repository
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run static suite
         shell: bash
