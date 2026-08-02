@@ -22,12 +22,15 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | `git_status_summary.sh` | Compact status: branch, upstream, ahead/behind, changed-file counts. |
 | `git_sync_default.sh` | Fetch and fast-forward the default branch (`--dry-run` supported). |
 | `git_cleanup_merged.sh` | Delete local branches already merged into a base branch (`--dry-run`, `--force`). |
+| `git_prune_gone.sh` | Delete local branches whose upstream was deleted on the remote — the squash-merge case `git_cleanup_merged.sh` cannot see. |
+| `git_size_report.sh` | Read-only: what is making the repository big, by path across all history. |
 | `git_recent_branches.sh` | List recently updated local branches, or switch to one by index. |
 | `git_repo_root.sh` | Print the repository root path (`rev-parse --show-toplevel`). |
 | `git_diff_branch.sh` | Diff or diffstat of your branch since diverging from `main` or `master`. |
 | `git_undo_last_commit.sh` | Undo the last commit (`reset --soft` by default; `--hard` needs `--force`). |
 | `git_amend_last.sh` | Amend the last commit with `--no-edit`, optionally after `git add --all`. |
 | `git_ssh_doctor.py` | Diagnose `Permission denied (publickey)` and print the fix. Read-only. |
+| `git_signing_doctor.py` | Diagnose commit-signing failures across the gpg, ssh and x509 backends. Read-only. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)

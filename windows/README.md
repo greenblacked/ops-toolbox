@@ -9,6 +9,8 @@ full details.
 | [`git-bash/`](git-bash/) | `.bashrc` / `.bash_profile` / `.aliases` for Git Bash (MSYS2) — persistent shared `ssh-agent`, Git-aware prompt, PATH hygiene, and ~190 aliases (Git, GitLab CLI, Docker, Kubernetes, Terraform, WSL, Windows commands). |
 | [`wsl/`](wsl/) | `wsl_manage.ps1` — list distros with real disk usage, dated `.tar` backups, shrink ballooned VHDX disks (compact/sparse), shutdown. |
 | [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, and Docker. `-DryRun` first. |
+| [`setup/`](setup/) | `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine. `export` / `check` / `import` / `diff`, mirroring `brewfile.sh`. |
+| [`tests/`](tests/) | Contract checks over every script here: parse, comment-based help, preview-before-changing, and that documented flags exist. |
 
 ## Quick start
 
@@ -18,6 +20,9 @@ full details.
 
 # WSL disk usage overview:
 .\wsl\wsl_manage.ps1 list
+
+# What has changed in the installed package list since it was captured?
+.\setup\winget_bootstrap.ps1 diff
 ```
 
 ```bash

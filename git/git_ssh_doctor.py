@@ -79,8 +79,7 @@ def run(cmd, timeout=15):
     try:
         p = subprocess.run(
             cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout,
         )
         return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode(
@@ -151,7 +150,7 @@ def parse_includes(path, depth=0, seen=None):
     loaded.append(path)
 
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.readlines()
     except OSError:
         return loaded, problems

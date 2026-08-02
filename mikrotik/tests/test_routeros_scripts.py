@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import re
@@ -105,10 +106,8 @@ def _unset_global(api: Any, name: str) -> None:
     res = api.get_binary_resource("/system/script/environment")
     for row in res.get():
         if _row_str(row, "name") == name:
-            try:
+            with contextlib.suppress(ros_exc.RouterOsApiError):
                 res.call("remove", {".id": _row_id(row)})
-            except ros_exc.RouterOsApiError:
-                pass
             return
 
 
@@ -116,10 +115,8 @@ def _remove_address_list_entries(api: Any, list_name: str) -> None:
     res = api.get_binary_resource("/ip/firewall/address-list")
     for row in res.get():
         if _row_str(row, "list") == list_name:
-            try:
+            with contextlib.suppress(ros_exc.RouterOsApiError):
                 res.call("remove", {".id": _row_id(row)})
-            except ros_exc.RouterOsApiError:
-                pass
 
 
 @pytest.mark.skipif(not SCRIPT_FILES, reason="no .lua files under mikrotik/")
@@ -235,12 +232,10 @@ def test_firewall_drift_detects_added_rule(api: Any, script_resource: Any) -> No
         assert markers, "firewall_drift did not add a marker entry to fw-drift-events"
     finally:
         if test_rule_id is not None:
-            try:
+            with contextlib.suppress(ros_exc.RouterOsApiError):
                 api.get_binary_resource("/ip/firewall/filter").call(
                     "remove", {".id": test_rule_id}
                 )
-            except ros_exc.RouterOsApiError:
-                pass
         _remove_address_list_entries(api, "fw-drift-events")
         _remove_by_name(script_resource, "firewall_drift")
         _remove_by_name(script_resource, "firewall_drift_baseline")

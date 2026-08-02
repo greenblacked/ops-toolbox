@@ -329,8 +329,7 @@ class CliTestCase(unittest.TestCase):
         return subprocess.run(
             [sys.executable, SCANNER, self.root, "--volumes-dir", self.volumes]
             + list(args),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=True,
         )
 

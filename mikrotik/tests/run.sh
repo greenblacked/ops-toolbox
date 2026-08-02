@@ -8,6 +8,16 @@ COMPOSE_FILE="$HERE/docker-compose.yml"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pretty-useful-mikrotik}"
 export COMPOSE_PROJECT_NAME
 
+# CHR boots under QEMU. With /dev/kvm it takes a minute; without it, TCG
+# emulation takes many. The device cannot be declared conditionally in compose
+# and naming a missing one is fatal, so it lives in an overlay we add only when
+# the host actually has it — Linux CI does, macOS and Docker Desktop do not.
+COMPOSE_FILES=(-f "$COMPOSE_FILE")
+if [ "${CHR_KVM:-1}" = "1" ] && [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+  COMPOSE_FILES+=(-f "$HERE/docker-compose.kvm.yml")
+  echo "=== /dev/kvm present — enabling hardware acceleration ==="
+fi
+
 cd "$HERE"
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -43,10 +53,10 @@ trap_cleanup() {
   if [ "${KEEP_CHR:-0}" != "1" ]; then
     if [ "$exit_code" -ne 0 ]; then
       echo "=== docker compose logs (last 200 lines) ==="
-      docker compose -f "$COMPOSE_FILE" logs --no-color --tail=200 || true
+      docker compose "${COMPOSE_FILES[@]}" logs --no-color --tail=200 || true
     fi
     echo "=== Stopping stack ==="
-    docker compose -f "$COMPOSE_FILE" down -v --remove-orphans || true
+    docker compose "${COMPOSE_FILES[@]}" down -v --remove-orphans || true
   else
     echo "KEEP_CHR=1 — leaving the chr container running."
   fi
@@ -55,11 +65,11 @@ trap_cleanup() {
 trap trap_cleanup EXIT INT TERM
 
 echo "=== Building images (downloads CHR 7.22 on first build) ==="
-docker compose -f "$COMPOSE_FILE" build
+docker compose "${COMPOSE_FILES[@]}" build
 
 echo "=== Starting CHR (waiting for healthy state)… ==="
 # --wait blocks until all started services are healthy or it times out.
-docker compose -f "$COMPOSE_FILE" up -d --wait --wait-timeout 1800 chr
+docker compose "${COMPOSE_FILES[@]}" up -d --wait --wait-timeout 1800 chr
 
 echo "=== Running pytest (in tester container) ==="
-docker compose -f "$COMPOSE_FILE" run --rm tester "$@"
+docker compose "${COMPOSE_FILES[@]}" run --rm tester "$@"

@@ -1,0 +1,22 @@
+version: 2
+
+# The workflows pin every action to a commit SHA rather than a moving tag,
+# because a tag is mutable and a SHA is what actually runs. A SHA pin with no
+# update mechanism just rots, so this is the other half of that decision:
+# Dependabot re-resolves the tags monthly and opens one grouped pull request,
+# with the new version in the trailing comment it maintains for us.
+#
+# Pull requests land on master, which is where CI's `pull_request` trigger
+# points, so they get the full gate like any other change.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns:
+          - '*'

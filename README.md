@@ -1,10 +1,38 @@
 # Pretty Useful Scripts
 
+[![CI](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml?query=branch%3Amaster)
+[![RouterOS CHR](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/chr.yml/badge.svg)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/chr.yml)
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+[![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
+[![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS-lightgrey.svg)](#whats-here)
+
+**CI** covers the git, macOS, Linux, Windows, Python and conventions suites on
+every pull request, plus repo-wide ShellCheck, PSScriptAnalyzer, yamllint and
+markdownlint. **RouterOS CHR** is separate because it boots a real router under
+QEMU: it runs nightly rather than on the pull-request path, so a red badge
+there does not necessarily mean a red pull request.
+
+The two lint badges are static labels for the gates CI enforces, not live
+results — the CI badge is the one that reflects the current state of `master`.
+
 Helper scripts for setting up, maintaining, and working on the small set of
-machines I touch regularly — currently macOS workstations and a MikroTik
-router, plus everyday Git helpers. The repository is intentionally small:
-each folder should be easy to inspect, safe to run more than once, and focused
-on reducing repeat manual work.
+machines I touch regularly — macOS workstations, a Windows dev machine, and a
+MikroTik router, plus everyday Git helpers. The repository is intentionally
+small: each folder should be easy to inspect, safe to run more than once, and
+focused on reducing repeat manual work.
+
+Three rules hold everywhere, and the test suites enforce them:
+
+- **`--help` works before anything else**, including on a machine the script
+  refuses to run on. An unrecognised flag exits `3`.
+- **A dry run writes nothing.** Anything that changes a machine supports
+  `--dry-run` (or `-DryRun`), and anything destructive is behind an explicit
+  opt-in flag.
+- **Every script stands alone.** You can copy one file into `~/bin` — or paste
+  one RouterOS script into a router — and it works, with no shared library to
+  bring along. That is why some blocks are duplicated on purpose;
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) explains the trade-off.
 
 **Targets:**
 
@@ -12,6 +40,8 @@ on reducing repeat manual work.
 - macOS 12+ (Apple Silicon and Intel) — scripts use `bash`, aliases use `zsh`.
 - Windows 10/11 — Git Bash (MSYS2) dotfiles plus PowerShell 5+/7 scripts for
   WSL maintenance and disk cleanup.
+- Linux servers and workstations — Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`)
+  and Arch (`pacman`); scripts use `bash`.
 - MikroTik RouterOS 7.22 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
 
@@ -23,9 +53,11 @@ on reducing repeat manual work.
 - [Git scripts at a glance](#git-scripts-at-a-glance)
 - [macOS setup at a glance](#macos-setup-at-a-glance)
 - [Windows at a glance](#windows-at-a-glance)
+- [Linux at a glance](#linux-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
+- [Contributing](#contributing)
 
 ## What's here
 
@@ -34,7 +66,10 @@ on reducing repeat manual work.
 | [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
+| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, and capture/restore its package set. |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
+| [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
+| [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
 
 ## Quick start
 
@@ -118,6 +153,12 @@ gacp "update scripts"
 - For MikroTik scripts, treat all changes through the router's own
   `/log print` and Telegram notifications — there is no host-side logfile.
 
+Exit codes are consistent across the Bash and PowerShell scripts, so they can
+be used from other automation: `0` success, `1` the work ran and some of it
+failed, `2` wrong environment (not a git repo, not macOS), `3` invalid usage,
+`4` nothing to do. Individual scripts may implement a subset and document it in
+their own `--help`.
+
 ## Git scripts at a glance
 
 The Git package is [`git/`](git/), tested in Docker against temporary local
@@ -138,6 +179,15 @@ repositories and local bare remotes:
   to run with a dirty working tree and supports `--dry-run`.
 - `git_cleanup_merged.sh` — deletes local branches already merged into a base
   branch; protects common branch names unless `--force` is passed.
+- `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
+  the remote. This is the squash-merge case: a squash-merged branch leaves no
+  merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects
+  that is most branches. Deletion is recoverable by design — every removal
+  prints the commit it pointed at and the command to restore it.
+- `git_size_report.sh` — read-only report of what is making the repository
+  big, aggregated per path across all history rather than per object, since a
+  sha alone tells you nothing about what to delete. `--fast` skips the history
+  walk.
 - `git_recent_branches.sh` — lists local branches by recent activity and can
   switch by list index.
 - `git_repo_root.sh` — prints the repository root path for the current Git
@@ -154,6 +204,15 @@ repositories and local bare remotes:
   permissions ssh refuses, and an empty agent. `--test-auth` tries each
   discovered key against the host and prints the `Host` block that fixes it.
   Read-only — it never edits config or touches the agent.
+- `git_signing_doctor.py` — explains `gpg failed to sign the data`, and the
+  quieter failure where a commit signs fine but the forge still calls it
+  Unverified. Covers all three backends (`openpgp`, `ssh`, `x509`) — it is not
+  named for gpg because SSH signing is the one people are adopting, and nobody
+  with `gpg.format=ssh` would run a script called gpg-something. Reports which
+  config file each value came from, so a repo-local override beating your
+  global one is visible. `--test-sign` attempts one real signature with
+  pinentry disabled, so a passphrase-protected key fails instead of hanging.
+  Read-only.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.
@@ -185,6 +244,14 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   via `/usr/bin/python3`; stdlib-only and unit-tested. It refuses to call an
   entry stale when its volume is not mounted, so an unplugged drive is never
   mistaken for a deleted project.
+- `macos_defaults.sh` sets the system preferences worth changing on a new Mac
+  (Finder, Dock, key repeat, screenshot location). **Read-only by default**:
+  with no flags it prints current versus desired and writes nothing, `--apply`
+  writes, and every apply captures the previous values so `--revert` can put
+  them back. That default is deliberate — `defaults` keys are undocumented,
+  move between releases, and a growing number are SIP/TCC-protected and
+  silently do nothing while reporting success. Every row names the macOS
+  version it was verified against.
 - `zsh_aliases.zsh` provides guarded aliases and helper functions for daily
   shell work.
 
@@ -209,10 +276,41 @@ The Windows package is [`windows/`](windows/):
   safely (aged temp files, WER, Delivery Optimization, thumbnails), with
   explicit opt-in flags for Recycle Bin, Windows Update cache, dev caches,
   and Docker. `-DryRun` reports sizes without deleting.
+- [`setup/`](windows/setup/) — `winget_bootstrap.ps1`: the Windows
+  counterpart of `brewfile.sh`, with the same `export`/`check`/`import`/`diff`
+  verbs and the same exit codes. Captures the installed package list to a
+  versioned JSON file so a machine can be rebuilt from it; `diff` shows what
+  has drifted before you accept it, and `import -DryRun` lists what it would
+  install.
 
 See [`windows/README.md`](windows/README.md) and the per-folder READMEs for
 install steps, the full alias breakdown, and PowerShell execution-policy
 notes.
+
+## Linux at a glance
+
+The Linux package is [`linux/`](linux/), and it is the only one whose tests
+**run** the scripts rather than only parsing them — the container is the target
+OS, so behaviour is actually exercised across all three package managers:
+
+- `install_devtools.sh` — Python, Go, Terraform, Helm and the DevOps CLIs.
+  Defaults to `mise` rather than the distro, because the upstream instructions
+  for these tools are `curl | bash` and this repository does not do that;
+  `--manager distro` uses signed distribution packages instead and says plainly
+  when a tool is not in the default repositories.
+- `stay_fresh.sh` — upgrades honouring holds, journal vacuum, user caches,
+  container prune (**never** volumes), flatpak/snap, and a reboot-pending
+  report. A missing tool is a note; a step that runs and fails is an error.
+- `packages.sh` — `dump`/`check`/`install`/`diff` over *explicitly installed*
+  packages, the `brewfile.sh` counterpart. Only manual packages are recorded:
+  capturing dependencies too produces a file that is huge, unstable across
+  releases and useless for rebuilding.
+- `bash_aliases.sh` — guarded aliases; every alias for a tool that may be
+  absent is conditional, because an alias to a missing binary fails later, in
+  the middle of something else.
+
+There is deliberately no `install_apps.sh`: Homebrew Cask has no Linux
+equivalent worth mirroring. See [`linux/README.md`](linux/README.md).
 
 ## MikroTik scripts at a glance
 
@@ -269,7 +367,7 @@ flags, suggested scheduler entries, and RouterOS 7.22-specific gotchas
 Run everything with one command:
 
 ```bash
-./run-tests.sh            # git + macos + python  (the fast default)
+./run-tests.sh            # git + macos + python + static  (the fast default)
 ./run-tests.sh all        # the above, plus the RouterOS CHR suite
 ./run-tests.sh macos      # a single suite
 ```
@@ -278,28 +376,130 @@ Run everything with one command:
 reimplementing them, and prints a pass/fail/skip matrix. CI invokes this same
 script, so a green run locally and a green run in CI mean the same thing.
 
+Suites that need Docker say so in `./run-tests.sh --help`, and the Docker
+preflight only runs when one of them is actually selected — so
+`./run-tests.sh python static` works on a machine with no Docker at all.
+
 | Package | What runs | How |
 | --- | --- | --- |
 | [`git/`](git/) | **Static + behavior** checks for Git helper scripts (syntax, ShellCheck, `--help`, profile state, `gacp`, status, cleanup, recent branches, and sync against local temporary repos/remotes). | [`git/README.md#tests`](git/README.md#tests) — `./git/tests/run.sh` |
 | [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
 | [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
+| [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
+| [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
+| [`windows/`](windows/) | **Contract** checks on the PowerShell scripts: they parse, comment-based help is complete, anything that changes a machine can be previewed first, and every flag the READMEs document actually exists. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and
 Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
-Python suite deliberately needs none of that either, since the modules it tests
-are invoked by `/usr/bin/python3` on a bare macOS machine.
+Python and static suites deliberately need none of that either: the Python
+modules are invoked by `/usr/bin/python3` on a bare macOS machine, and the
+static checks have to keep working on a host where Docker is unavailable.
 
 ### Continuous integration
 
-[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS and
-Python suites on every push and pull request, plus a repo-wide `bash -n` and
-ShellCheck pass over every tracked `*.sh` so new scripts are covered from the
-moment they land. The Python job is pinned to 3.9 — the version
-`/usr/bin/python3` provides on macOS — so 3.10+ syntax cannot slip into a helper
-that has to run there.
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the git, macOS,
+Python and static suites — through `run-tests.sh`, so the aggregator is
+exercised too. Alongside them the lint job runs, over every tracked file of
+each kind:
+
+- `bash -n` and ShellCheck (`--severity=error -x --shell=bash`) over every
+  `*.sh` **and** the Git Bash dotfiles, which have no `.sh` extension and so
+  went unchecked for a long time. `--shell=bash` is required for them: with no
+  shebang ShellCheck cannot detect the dialect.
+- PSScriptAnalyzer over every `*.ps1`, gated at Error **and** Warning severity.
+  Mirroring `--severity=error` literally would find almost nothing, since
+  nearly every PowerShell rule is Warning. The one excluded rule and the reason
+  for it are in
+  [`PSScriptAnalyzerSettings.psd1`](PSScriptAnalyzerSettings.psd1).
+- `yamllint` and `markdownlint`.
+
+The Python job is pinned to 3.9 — the version `/usr/bin/python3` provides on
+macOS — so 3.10+ syntax cannot slip into a helper that has to run there, and it
+installs a pinned `ruff`, without which `test-env/python/run.sh` reports the
+lint as "skipped" and still exits 0.
+
+Every job writes the `run-tests.sh` pass/fail/skip matrix into the run summary,
+so a verdict is one click away rather than buried in a log.
+
+#### When CI runs
+
+Branches follow the typed-prefix convention — `feature/`, `ci/`, `chore/`,
+`fix/` — and each event owns exactly one path, so a change is built once:
+
+- **`pull_request`** — every pull request, targeting `master` or another typed
+  branch (stacked PRs). This is the main gate; it tests the *merge result*,
+  which a branch push cannot.
+- **`push`** — `master` only, where there is no pull request to do it.
+- **`workflow_dispatch`** — on demand.
+
+The tradeoff, stated plainly: **a typed branch with no pull request open gets no
+CI.** Open the PR as a draft, or run the workflow manually, if you want a
+verdict before review. This is what removed the old double-run, where an open
+PR built everything twice — once for `push`, once for `pull_request`.
+
+#### What CI runs
+
+A `changes` job diffs the pull request against its base and turns the result
+into per-language and per-suite flags, so a README-only change no longer builds
+and boots the Docker suites. Two rules keep that safe:
+
+- It **fails open.** No usable base diff, or a change under `.github/`, to
+  `run-tests.sh`, or to `test-env/lib/` means "everything changed". A bug in the
+  filter can only make CI do more work, never less.
+- Jobs are **never skipped at the job level**, only at the step level. A job
+  skipped by GitHub reports `skipped` rather than `success`, and a required
+  status check that never reports leaves a pull request unmergeable forever.
+  Every job name therefore always reports green, at the cost of roughly twenty
+  seconds of runner start-up for a job with nothing to do.
+
+The conventions suite has no filter at all: its subjects are the whole
+repository, and it costs seconds.
+
+#### Pinning and caching
+
+Every tool CI installs is pinned to an exact version in the `env:` block at the
+top of the workflow — ShellCheck, yamllint, ruff and PSScriptAnalyzer — and each
+install asserts the version it got. ShellCheck and ruff come from their upstream
+release tarballs rather than `apt`/`pipx`, which is both pinnable and faster
+than an `apt-get update` that costs twenty seconds before it downloads
+anything. The runner image is pinned too (`ubuntu-24.04`, not `ubuntu-latest`).
+
+Actions are pinned to commit SHAs with the tag in a trailing comment, because a
+tag is mutable and a SHA is what actually runs.
+[`.github/dependabot.yml`](.github/dependabot.yml) re-resolves them monthly in a
+single grouped pull request, so the pins stay current instead of rotting.
+
+PSScriptAnalyzer — by far the slowest install, and the only one that has to come
+from PowerShell Gallery — is cached against its pinned version.
 
 [`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the RouterOS
-integration suite nightly and on demand. It is kept off the pull-request path
-because CHR is an x86_64 image under QEMU and first boot takes minutes; the
-Linux runner has `/dev/kvm`, which the workflow enables.
+integration suite nightly at 03:00 UTC and on demand. It is kept off the
+pull-request path because CHR is an x86_64 image under QEMU and first boot takes
+minutes. The Linux runner has `/dev/kvm`, which
+[`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
+`docker-compose.kvm.yml` on top — a separate file because compose fails hard on
+a device that does not exist, which would break the suite for everyone on macOS.
+
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) documents the conventions every script
+here follows, with the file and line that establishes each one — the `set`
+dialect to use per package, the `--help` and exit-code contracts, the two
+dry-run output grammars, the logging helpers, and why some blocks are
+duplicated rather than shared.
+
+The fastest start is to copy a template, which is a working script rather than
+a sketch:
+
+```bash
+cp templates/new_script.sh git/git_my_helper.sh
+chmod +x git/git_my_helper.sh
+./run-tests.sh static
+```
+
+The static suite discovers scripts by role, so a new one is checked from its
+first commit without being added to any list.
+
+Licensed under the [MIT licence](LICENSE). Security reporting is covered in
+[`SECURITY.md`](SECURITY.md).

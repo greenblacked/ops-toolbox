@@ -1,10 +1,29 @@
 # Dotfiles are sourced by a real bash: force LF regardless of the user's
 # core.autocrlf setting, so a checkout never reintroduces the CRLF corruption
 # that broke backslash line-continuations in windows/git-bash/.bashrc.
+#
+# These patterns contain a slash, so git anchors them to the repository root and
+# they do NOT match the nested copies under default-git-bash/ — those need their
+# own rules, below. `git check-attr eol -- <path>` is the way to confirm.
 windows/git-bash/.bashrc text eol=lf
 windows/git-bash/.bash_profile text eol=lf
 windows/git-bash/.aliases text eol=lf
 
+windows/git-bash/default-git-bash/.bashrc text eol=lf
+windows/git-bash/default-git-bash/.bash_profile text eol=lf
+windows/git-bash/default-git-bash/.aliases text eol=lf
+
 # Shell scripts everywhere else in the repo are also only ever run by bash.
 *.sh text eol=lf
 *.zsh text eol=lf
+
+# PowerShell 5.1 and 7 both read LF fine, and pinning it keeps diffs clean on a
+# repository edited from macOS and Linux as well as Windows.
+*.ps1 text eol=lf
+*.psd1 text eol=lf
+*.psm1 text eol=lf
+
+# RouterOS pastes the script body into a device; the Python helpers run from
+# /usr/bin/python3 on macOS.
+*.lua text eol=lf
+*.py text eol=lf

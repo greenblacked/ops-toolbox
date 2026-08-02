@@ -98,9 +98,7 @@ def fetch_export(host, user, identity, port, timeout, sensitive):
     cmd.append("/export show-sensitive" if sensitive else "/export")
 
     try:
-        p = subprocess.run(
-            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout
-        )
+        p = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 255, "", str(exc)
     return (
@@ -111,9 +109,7 @@ def fetch_export(host, user, identity, port, timeout, sensitive):
 
 
 def git(args, cwd):
-    p = subprocess.run(
-        ["git"] + args, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
+    p = subprocess.run(["git"] + args, cwd=cwd, capture_output=True)
     return (
         p.returncode,
         p.stdout.decode("utf-8", "replace"),
@@ -178,7 +174,7 @@ def main(argv=None):
     previous = None
     if os.path.exists(dest):
         try:
-            with open(dest, "r", encoding="utf-8") as fh:
+            with open(dest, encoding="utf-8") as fh:
                 previous = fh.read()
         except OSError:
             previous = None
