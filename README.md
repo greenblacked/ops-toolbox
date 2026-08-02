@@ -24,6 +24,8 @@ Three rules hold everywhere, and the test suites enforce them:
 - macOS 12+ (Apple Silicon and Intel) — scripts use `bash`, aliases use `zsh`.
 - Windows 10/11 — Git Bash (MSYS2) dotfiles plus PowerShell 5+/7 scripts for
   WSL maintenance and disk cleanup.
+- Linux servers and workstations — Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`)
+  and Arch (`pacman`); scripts use `bash`.
 - MikroTik RouterOS 7.22 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
 
@@ -35,6 +37,7 @@ Three rules hold everywhere, and the test suites enforce them:
 - [Git scripts at a glance](#git-scripts-at-a-glance)
 - [macOS setup at a glance](#macos-setup-at-a-glance)
 - [Windows at a glance](#windows-at-a-glance)
+- [Linux at a glance](#linux-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
@@ -47,6 +50,7 @@ Three rules hold everywhere, and the test suites enforce them:
 | [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
+| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, and capture/restore its package set. |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
 | [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
 | [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
@@ -267,6 +271,31 @@ See [`windows/README.md`](windows/README.md) and the per-folder READMEs for
 install steps, the full alias breakdown, and PowerShell execution-policy
 notes.
 
+## Linux at a glance
+
+The Linux package is [`linux/`](linux/), and it is the only one whose tests
+**run** the scripts rather than only parsing them — the container is the target
+OS, so behaviour is actually exercised across all three package managers:
+
+- `install_devtools.sh` — Python, Go, Terraform, Helm and the DevOps CLIs.
+  Defaults to `mise` rather than the distro, because the upstream instructions
+  for these tools are `curl | bash` and this repository does not do that;
+  `--manager distro` uses signed distribution packages instead and says plainly
+  when a tool is not in the default repositories.
+- `stay_fresh.sh` — upgrades honouring holds, journal vacuum, user caches,
+  container prune (**never** volumes), flatpak/snap, and a reboot-pending
+  report. A missing tool is a note; a step that runs and fails is an error.
+- `packages.sh` — `dump`/`check`/`install`/`diff` over *explicitly installed*
+  packages, the `brewfile.sh` counterpart. Only manual packages are recorded:
+  capturing dependencies too produces a file that is huge, unstable across
+  releases and useless for rebuilding.
+- `bash_aliases.sh` — guarded aliases; every alias for a tool that may be
+  absent is conditional, because an alias to a missing binary fails later, in
+  the middle of something else.
+
+There is deliberately no `install_apps.sh`: Homebrew Cask has no Linux
+equivalent worth mirroring. See [`linux/README.md`](linux/README.md).
+
 ## MikroTik scripts at a glance
 
 The MikroTik package is [`mikrotik/`](mikrotik/), verified against
@@ -341,6 +370,7 @@ preflight only runs when one of them is actually selected — so
 | [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
 | [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
 | [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
+| [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
 | [`windows/`](windows/) | **Contract** checks on the PowerShell scripts: they parse, comment-based help is complete, anything that changes a machine can be previewed first, and every flag the READMEs document actually exists. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 

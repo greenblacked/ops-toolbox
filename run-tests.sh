@@ -31,13 +31,14 @@ fi
 # must run under the Bash 3.2 that ships on macOS, which has no associative
 # arrays. See CONTRIBUTING.md.
 
-SUITE_ALL="git macos python static windows mikrotik"
-SUITE_FAST="git macos python static windows"
+SUITE_ALL="git macos linux python static windows mikrotik"
+SUITE_FAST="git macos linux python static windows"
 
 suite_runner() {
   case "$1" in
     git)      printf '%s\n' "$HERE/git/tests/run.sh" ;;
     macos)    printf '%s\n' "$HERE/macos-initial-setup/tests/run.sh" ;;
+    linux)    printf '%s\n' "$HERE/linux/tests/run.sh" ;;
     python)   printf '%s\n' "$HERE/test-env/python/run.sh" ;;
     static)   printf '%s\n' "$HERE/test-env/static/run.sh" ;;
     windows)  printf '%s\n' "$HERE/windows/tests/run.sh" ;;
@@ -51,7 +52,7 @@ suite_runner() {
 # without it, even when it needed nothing but bash.
 suite_needs_docker() {
   case "$1" in
-    git|macos|mikrotik) return 0 ;;
+    git|macos|linux|mikrotik) return 0 ;;
     *)                  return 1 ;;
   esac
 }
@@ -60,6 +61,7 @@ suite_blurb() {
   case "$1" in
     git)      printf '%s\n' "Git helper scripts        (Docker, ~30s)" ;;
     macos)    printf '%s\n' "macOS setup scripts       (Docker, ~30s)" ;;
+    linux)    printf '%s\n' "Linux scripts, run for real (Docker; LINUX_DISTROS=all for 3 distros)" ;;
     python)   printf '%s\n' "Python libs: ruff + pytest (host python3, no Docker)" ;;
     static)   printf '%s\n' "Repo-wide conventions     (bash + git only, no Docker)" ;;
     windows)  printf '%s\n' "PowerShell contract checks (pwsh, no Docker; skipped without it)" ;;
