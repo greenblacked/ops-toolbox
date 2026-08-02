@@ -1,0 +1,319 @@
+# Contributing
+
+These conventions are not aspirations — they were extracted from the scripts
+already in this repository, with the file and line that establishes each one.
+New code conforms to them; it does not invent new patterns.
+
+If you find a rule here that the existing scripts do not actually follow, the
+rule is wrong. Fix it or delete it.
+
+## Contents
+
+- [The one architectural rule](#the-one-architectural-rule)
+- [Bash scripts](#bash-scripts)
+- [Help and argument parsing](#help-and-argument-parsing)
+- [Dry runs](#dry-runs)
+- [Output](#output)
+- [Exit codes](#exit-codes)
+- [Log files](#log-files)
+- [PowerShell scripts](#powershell-scripts)
+- [RouterOS scripts](#routeros-scripts)
+- [Python helpers](#python-helpers)
+- [Tests](#tests)
+- [File modes and line endings](#file-modes-and-line-endings)
+
+## The one architectural rule
+
+**A script must still work when copied on its own into `~/bin`.**
+
+That is the distribution model this repository is built around. The README tells
+you to `cp windows/git-bash/.bashrc "$HOME/"`; the Git helpers are meant to be
+dropped into a `PATH` directory; the MikroTik scripts are pasted into a router's
+*Source* field one at a time. A script that begins with
+`source "$SCRIPT_DIR/../lib/common.sh"` breaks all three.
+
+So: **duplication across scripts is deliberate, not technical debt.**
+`require_value()` is byte-identical in five files. `Format-Size` is
+byte-identical in two `.ps1` files. Leave them that way and copy the canonical
+block from [`templates/`](templates/) when writing a new script.
+
+Shared code is permitted in exactly one shape: **a substantial program with its
+own tests, invoked as a subprocess by absolute path.**
+[`macos-initial-setup/lib/workspace_scan.py`](macos-initial-setup/lib/workspace_scan.py)
+is the only thing that clears that bar today — 247 lines of classification logic
+called via `/usr/bin/python3`, unit-tested on its own. Note what it cost:
+`macos-initial-setup/stay_fresh.sh:40-45` carries a nine-line symlink-resolving
+preamble whose sole job is finding it. That price is worth paying once for a
+real program, never for a seven-line validator.
+
+Divergence between copies is a *test* problem, not a factoring problem. The
+static suite asserts that every copy of `require_value()` is byte-identical, so
+you get the safety of a shared library with none of the coupling.
+
+## Bash scripts
+
+Line 1 is `#!/usr/bin/env bash`. Line 2 is a `#` comment saying what the script
+is for. Then a blank line, then the `set` line.
+
+Three `set` dialects, chosen by role — do not mix them:
+
+| Dialect | Used by | Why |
+| --- | --- | --- |
+| `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. |
+| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. Reasoning is written out at `macos-initial-setup/v1_stay_fresh.sh:24-29`. |
+| `set -uo pipefail` | `run-tests.sh`, `test-env/*/run.sh` | Aggregators that must keep going after a failing child and report a summary. |
+
+### Bash 3.2 compatibility
+
+`git/`, `macos-initial-setup/` and `linux/` must run under the Bash 3.2 that
+ships as `/bin/bash` on macOS. No `mapfile`/`readarray`, no `declare -A` or
+`local -A`, no `${x,,}`/`${x^^}`, no `coproc`, no `&>>`. Build lists with a
+`while IFS= read -r` loop instead — there is a worked example and an explanatory
+comment at `git/git_recent_branches.sh:78`.
+
+**This rule is directory-scoped, not repository-wide.** `windows/git-bash/`
+targets Git Bash, which ships Bash 5 — `.bashrc:74` uses `local -A` and `:59`
+uses `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
+and runs on Ubuntu. Do not "fix" either.
+
+### Duplicated blocks
+
+Copy these verbatim rather than inventing a variant. The canonical copy of
+`require_value()` is `git/git_sync_default.sh:25-33`:
+
+```bash
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    printf "%s requires a value\n" "$option" >&2
+    exit 3
+  fi
+}
+```
+
+## Help and argument parsing
+
+Every command-line script defines a `usage()` function **before** the argument
+loop, and handles `-h|--help` **before any preflight check**. That ordering is
+not cosmetic: it is what lets `./install_apps.sh --help` work on Linux for a
+macOS-only script, and it is asserted by the test suites.
+
+- `-h|--help` → `usage; exit 0`. Always zero.
+- Unknown flag → message to stderr, then `usage`, then `exit 3`.
+- Support both `--flag VALUE` and `--flag=VALUE`.
+
+The help body is a heredoc with these sections in this order — see
+`git/gacp.sh:12-31` for the canonical example:
+
+```text
+<name> - one-line summary
+
+Usage:
+  ...
+
+Options:
+  ...
+
+Exit codes: 0 success, 2 not a git repo, 3 usage, ...
+```
+
+`macos-initial-setup/brewfile.sh:47-51` uses a different implementation — an
+`awk` filter that reflects the script's own header comment instead of
+duplicating it. Either is fine; the comment above it explains the trade-off.
+
+## Dry runs
+
+`--dry-run` is an **integer** flag: `DRY_RUN=0` in the variable block, set to `1`
+by the flag, tested in arithmetic context as `(( DRY_RUN == 1 ))` or
+`(( DRY_RUN ))`. Never a string, never `[[ ]]`.
+
+Pick one of four sanctioned mechanisms:
+
+| Mechanism | Reference | Use when |
+| --- | --- | --- |
+| Bare `run()` wrapper | `git/git_sync_default.sh:94-99` | Arguments have no spaces. |
+| `run()` with `printf %q` quoting | `git/gacp.sh:33-57` | Arguments may contain spaces (commit messages). |
+| Labelled `run_cmd "label" cmd…` | `macos-initial-setup/stay_fresh.sh:284-305` | The script also writes a log file. `run_cmd_tty()` is its sibling for anything that must keep a terminal (sudo, cask prompts). |
+| Inline per-branch | `git/git_amend_last.sh:66-79` | The "command" is not a single exec. |
+
+### There are two output grammars — pick by package, do not mix
+
+The `git/` package prints:
+
+```text
+dry-run: would run: git fetch origin main
+dry-run complete; no changes written
+```
+
+The `macos-initial-setup/` package prints a dimmed, two-space-indented form with
+no terminal summary line (`stay_fresh.sh:287,314,346,386`):
+
+```text
+  (dry-run) brew upgrade [homebrew upgrade]
+  (dry-run) would remove contents of /Users/x/Library/Caches/foo
+```
+
+Match the package you are writing in. A new top-level package picks one in its
+README and sticks to it.
+
+Whichever you use, the contract is absolute: **a dry run writes nothing.** The
+test suites assert this by snapshotting state before and after.
+
+## Output
+
+Colours are `C_<COLOUR>` constants defined under a TTY guard with an
+empty-string `else` branch. New scripts also honour `NO_COLOR`; today only
+`run-tests.sh:20` and the Python helpers do, and the stricter form is the one to
+copy:
+
+```bash
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
+  C_RESET=$'\033[0m'; C_RED=$'\033[31m'; C_GREEN=$'\033[32m'
+else
+  C_RESET=''; C_RED=''; C_GREEN=''
+fi
+```
+
+Level helpers use six-character padded labels so output columns line up
+(`macos-initial-setup/brewfile.sh:38-42`):
+
+```bash
+info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
+ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
+warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
+```
+
+`info`, `ok` and `warn` go to stdout; **only `err` goes to stderr**. Prefer
+`printf` over `echo`. The colour block itself is allowed to vary in which
+colours it defines — the level-helper grammar is not.
+
+## Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Success, including every `--help`. |
+| `1` | Generic failure — the work ran and some of it did not succeed. |
+| `2` | Wrong environment — not a git repo, not macOS, no `git` on `PATH`. |
+| `3` | Invalid usage — unknown flag, missing flag value, failed validation. |
+| `4` | Domain no-op — nothing to commit, no base branch, dirty tree, index out of range. |
+| `5` | Reserved to `gacp.sh` (push from detached HEAD). Do not reuse. |
+
+A script may implement a subset. The `macos-initial-setup/` package narrows `1`
+to "one or more installs failed" and `2` to "preflight checks failed", and
+documents that in each file's header — do the same if you narrow a meaning.
+
+## Log files
+
+Only heavyweight install and maintenance scripts write logs; `git/*.sh` write
+none. The pattern (`macos-initial-setup/stay_fresh.sh:113-114`):
+
+```bash
+LOG_DIR="${TMPDIR:-/tmp}"
+LOG_FILE="$LOG_DIR/stay_fresh-$(date +%Y%m%d-%H%M%S).log"
+```
+
+Truncate and write a header line at startup, print the path inside `usage()` and
+again at the end, and have `--verbose` switch from `>>"$LOG_FILE" 2>&1` to
+`2>&1 | tee -a "$LOG_FILE"` with `rc="${PIPESTATUS[0]}"` to keep the real exit
+status.
+
+## PowerShell scripts
+
+Comment-based help (`.SYNOPSIS`, `.DESCRIPTION`, `.EXAMPLE`), then
+`[CmdletBinding()]`, then `param()`, then `$ErrorActionPreference`.
+
+Use a hand-rolled `[switch]$DryRun` — **not** `-WhatIf`/`SupportsShouldProcess`.
+This is a deliberate divergence from PowerShell convention so the Windows
+scripts read the same as the Bash ones, and because the dry-run modes here
+accumulate and report a total (bytes that *would* be freed) which
+`ShouldProcess` cannot express. `windows/README.md:29-31` states the rule.
+
+Output is `Write-Host -ForegroundColor`, in a fixed column grammar
+(`windows/cleanup/clean_disk_c.ps1:71`):
+
+```powershell
+Write-Host ('SKIP  {0,-38} {1,10}' -f $Label, (Format-Size $Bytes)) -ForegroundColor Yellow
+```
+
+Verbs are `WOULD` / `CLEAN` / `SKIP`. Both `PSAvoidUsingWriteHost` and
+`PSUseShouldProcessForStateChangingFunctions` are excluded repository-wide in
+`PSScriptAnalyzerSettings.psd1`, with the reasoning written there. Everything
+else PSScriptAnalyzer reports at `Warning` or above is a real finding — fix it.
+
+For a genuine one-off exception use
+`[Diagnostics.CodeAnalysis.SuppressMessageAttribute()]` at the site, with a
+non-empty `Justification` string. Repository-wide policy belongs in the settings
+file instead, where it gets explained once.
+
+## RouterOS scripts
+
+The `.lua` extension is for editor highlighting only — these are RouterOS
+scripting language, not Lua.
+
+- **Secrets never appear in a script body.** Read them from `:global` variables
+  set once at boot, the way `mikrotik/tg_send.lua:5-20` reads `TG_BOT_TOKEN`
+  and `TG_CHAT_ID`.
+- Send notifications through `tg_send`, wrapped so a missing helper degrades to
+  a log line instead of an error (`mikrotik/backup.lua:44-49`).
+- **Alert on transitions, not on every run.** Keep the previous state in a
+  `:global` and compare — `wan_failover_notify.lua` is the reference. A script
+  that alerts every five minutes gets muted, which makes it worse than nothing.
+- First run establishes a baseline silently.
+- Always `:log` as well as notifying; the router log is the source of truth.
+- **Fail safe when unconfigured.** `mac_allowlist_dhcp.lua` refuses to act on an
+  empty allowlist rather than blocking every client. Any script that deletes or
+  blocks needs an equivalent floor, and that floor should be its first test.
+
+## Python helpers
+
+Standard library only, and they must run under the Python 3.9 that
+`/usr/bin/python3` provides on macOS — that is what CI pins. Ruff enforces
+`E,F,I,B,UP,SIM` with `UP031`/`UP032` ignored, so percent-formatting is fine.
+
+Diagnostic tools are **read-only**: they explain and print the command that
+fixes the problem, they never edit config or touch an agent
+(`git/git_ssh_doctor.py`).
+
+Structure them so the interesting logic is pure and takes its input as a
+string — parsers get unit tests with fixture data, and anything that shells out
+stays untested by design. Inject anything ambient (a `PATH` string, a
+directory, the current time) as a parameter so tests do not depend on the host
+or rot with the calendar.
+
+## Tests
+
+Every package has a `tests/run.sh` that takes no required arguments, is
+executable, and exits non-zero on failure. `run-tests.sh` is the single
+entry point and CI calls it, so a green run locally and a green run in CI mean
+the same thing.
+
+The Docker suites mount the repository **read-only** at `/repo`, so all scratch
+state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses —
+`failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `# --- section ---`
+comments — see `git/tests/test_git_scripts.sh`. No framework.
+
+Because `set -e` is on in test bodies, assert exit codes with the sandwich:
+
+```bash
+set +e
+out="$("$SCRIPT" --bad-flag 2>&1)"; rc=$?
+set -e
+```
+
+Do not add a new hardcoded list of scripts to a test. The static suite discovers
+command-line scripts by role, so a new script is covered by the commit that
+creates it.
+
+## File modes and line endings
+
+- Executable scripts are mode `755`; sourced files (`*.zsh`, `*.aliases`) and
+  documentation are `644`. A sourced file has no shebang and must not be
+  executable.
+- Every text file type is pinned to LF in `.gitattributes`. If you add a new
+  file extension, add a rule. The patterns are path-anchored — a pattern
+  matching `windows/git-bash/.bashrc` does **not** match a nested copy under
+  `windows/git-bash/default-git-bash/`.
+
+Both are asserted by the static suite.
