@@ -1,10 +1,22 @@
 # Pretty Useful Scripts
 
 Helper scripts for setting up, maintaining, and working on the small set of
-machines I touch regularly — currently macOS workstations and a MikroTik
-router, plus everyday Git helpers. The repository is intentionally small:
-each folder should be easy to inspect, safe to run more than once, and focused
-on reducing repeat manual work.
+machines I touch regularly — macOS workstations, a Windows dev machine, and a
+MikroTik router, plus everyday Git helpers. The repository is intentionally
+small: each folder should be easy to inspect, safe to run more than once, and
+focused on reducing repeat manual work.
+
+Three rules hold everywhere, and the test suites enforce them:
+
+- **`--help` works before anything else**, including on a machine the script
+  refuses to run on. An unrecognised flag exits `3`.
+- **A dry run writes nothing.** Anything that changes a machine supports
+  `--dry-run` (or `-DryRun`), and anything destructive is behind an explicit
+  opt-in flag.
+- **Every script stands alone.** You can copy one file into `~/bin` — or paste
+  one RouterOS script into a router — and it works, with no shared library to
+  bring along. That is why some blocks are duplicated on purpose;
+  [`CONTRIBUTING.md`](CONTRIBUTING.md) explains the trade-off.
 
 **Targets:**
 
@@ -26,6 +38,7 @@ on reducing repeat manual work.
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
+- [Contributing](#contributing)
 
 ## What's here
 
@@ -35,6 +48,8 @@ on reducing repeat manual work.
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
+| [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
+| [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
 
 ## Quick start
 
@@ -117,6 +132,12 @@ gacp "update scripts"
   perform non-trivial work.
 - For MikroTik scripts, treat all changes through the router's own
   `/log print` and Telegram notifications — there is no host-side logfile.
+
+Exit codes are consistent across the Bash and PowerShell scripts, so they can
+be used from other automation: `0` success, `1` the work ran and some of it
+failed, `2` wrong environment (not a git repo, not macOS), `3` invalid usage,
+`4` nothing to do. Individual scripts may implement a subset and document it in
+their own `--help`.
 
 ## Git scripts at a glance
 
@@ -326,3 +347,26 @@ minutes. The Linux runner has `/dev/kvm`, which
 [`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
 `docker-compose.kvm.yml` on top — a separate file because compose fails hard on
 a device that does not exist, which would break the suite for everyone on macOS.
+
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) documents the conventions every script
+here follows, with the file and line that establishes each one — the `set`
+dialect to use per package, the `--help` and exit-code contracts, the two
+dry-run output grammars, the logging helpers, and why some blocks are
+duplicated rather than shared.
+
+The fastest start is to copy a template, which is a working script rather than
+a sketch:
+
+```bash
+cp templates/new_script.sh git/git_my_helper.sh
+chmod +x git/git_my_helper.sh
+./run-tests.sh static
+```
+
+The static suite discovers scripts by role, so a new one is checked from its
+first commit without being added to any list.
+
+Licensed under the [MIT licence](LICENSE). Security reporting is covered in
+[`SECURITY.md`](SECURITY.md).
