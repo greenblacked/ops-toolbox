@@ -224,6 +224,14 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   via `/usr/bin/python3`; stdlib-only and unit-tested. It refuses to call an
   entry stale when its volume is not mounted, so an unplugged drive is never
   mistaken for a deleted project.
+- `macos_defaults.sh` sets the system preferences worth changing on a new Mac
+  (Finder, Dock, key repeat, screenshot location). **Read-only by default**:
+  with no flags it prints current versus desired and writes nothing, `--apply`
+  writes, and every apply captures the previous values so `--revert` can put
+  them back. That default is deliberate — `defaults` keys are undocumented,
+  move between releases, and a growing number are SIP/TCC-protected and
+  silently do nothing while reporting success. Every row names the macOS
+  version it was verified against.
 - `zsh_aliases.zsh` provides guarded aliases and helper functions for daily
   shell work.
 
