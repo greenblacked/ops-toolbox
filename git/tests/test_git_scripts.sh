@@ -84,19 +84,21 @@ run_with_home() {
 }
 
 # --- static checks ---
-sh_scripts=(
-  "$SET"
-  "$GACP"
-  "$WHO"
-  "$STATUS"
-  "$SYNC"
-  "$CLEANUP"
-  "$RECENT"
-  "$ROOT"
-  "$DIFFBR"
-  "$UNDO"
-  "$AMEND"
-)
+# Discovered rather than listed. A hardcoded array only covers a new script if
+# someone remembers to add it, and the macOS suite proves how that ends: its
+# list has silently never included brewfile.sh or launchd/stay_fresh_agent.sh.
+# Built without mapfile so this still runs under Bash 3.2 (see CONTRIBUTING.md).
+sh_scripts=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  sh_scripts+=("$f")
+done < <(find "$G" -maxdepth 1 -name '*.sh' -type f | sort)
+
+if (( ${#sh_scripts[@]} == 0 )); then
+  echo "discovered no scripts under $G — discovery is broken" >&2
+  exit 1
+fi
+ok "discovered ${#sh_scripts[@]} scripts under git/"
 for f in "${sh_scripts[@]}"; do
   rel="${f#"$REPO_ROOT/"}"
   if bash -n "$f"; then

@@ -159,6 +159,15 @@ repositories and local bare remotes:
   to run with a dirty working tree and supports `--dry-run`.
 - `git_cleanup_merged.sh` — deletes local branches already merged into a base
   branch; protects common branch names unless `--force` is passed.
+- `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
+  the remote. This is the squash-merge case: a squash-merged branch leaves no
+  merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects
+  that is most branches. Deletion is recoverable by design — every removal
+  prints the commit it pointed at and the command to restore it.
+- `git_size_report.sh` — read-only report of what is making the repository
+  big, aggregated per path across all history rather than per object, since a
+  sha alone tells you nothing about what to delete. `--fast` skips the history
+  walk.
 - `git_recent_branches.sh` — lists local branches by recent activity and can
   switch by list index.
 - `git_repo_root.sh` — prints the repository root path for the current Git
