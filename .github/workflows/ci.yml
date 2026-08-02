@@ -74,6 +74,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       suite_git: ${{ steps.filter.outputs.suite_git }}
       suite_macos: ${{ steps.filter.outputs.suite_macos }}
+      suite_linux: ${{ steps.filter.outputs.suite_linux }}
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
     steps:
       - name: Check out repository
@@ -153,10 +154,8 @@ jobs:
           emit python        '(\.py$|^pyproject\.toml$|^test-env/python/)'
           emit suite_git     '^git/'
           emit suite_macos   '^macos-initial-setup/'
+          emit suite_linux   '^linux/'
           emit suite_windows '^windows/'
-          # Seam for the `linux` suite being built on feature/linux-package.
-          # When it lands, add:  emit suite_linux '^linux/'
-          # and the matching `suite_linux` entry under `outputs:` above.
 
       - name: Summarise
         if: always()
@@ -172,6 +171,7 @@ jobs:
             printf '| python | %s |\n'     '${{ steps.filter.outputs.python }}'
             printf '| git suite | %s |\n'     '${{ steps.filter.outputs.suite_git }}'
             printf '| macos suite | %s |\n'   '${{ steps.filter.outputs.suite_macos }}'
+            printf '| linux suite | %s |\n'   '${{ steps.filter.outputs.suite_linux }}'
             printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -371,17 +371,15 @@ jobs:
         # change filter. `changed` is read by the step-level `if` below, which
         # keeps the job reporting success when there is nothing to do.
         include:
-          # Seam for the `linux` suite being built on feature/linux-package.
-          # It does not exist on this branch and run-tests.sh would reject the
-          # name, so it is not enabled here. When the suite lands, add an entry
-          #   - suite: linux
-          #     changed: ${{ needs.changes.outputs.suite_linux }}
-          # alongside the ones below, together with the `suite_linux` filter in
-          # the `changes` job.
           - suite: git
             changed: ${{ needs.changes.outputs.suite_git }}
           - suite: macos
             changed: ${{ needs.changes.outputs.suite_macos }}
+          # Runs the debian service only. LINUX_DISTROS=all adds fedora and
+          # arch; those images are pinned but rolling upstream, so they are kept
+          # off the pull-request path and out of the default selection.
+          - suite: linux
+            changed: ${{ needs.changes.outputs.suite_linux }}
           # Needs pwsh, which the ubuntu image ships preinstalled. The suite
           # skips itself with exit 0 on a host without it, so the job asserts
           # pwsh is really there rather than trusting a green tick.
