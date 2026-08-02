@@ -370,7 +370,7 @@ flags, suggested scheduler entries, and RouterOS 7.22-specific gotchas
 Run everything with one command:
 
 ```bash
-./run-tests.sh            # git + macos + python + static  (the fast default)
+./run-tests.sh            # git + macos + linux + python + static + windows  (the fast default)
 ./run-tests.sh all        # the above, plus the RouterOS CHR suite
 ./run-tests.sh macos      # a single suite
 ```
