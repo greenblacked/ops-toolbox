@@ -9,8 +9,8 @@
 **/.mypy_cache/
 .venv/
 
-# Isolated git worktrees created by Claude Code subagents. Transient, and each
-# one is a full second checkout of this repository — never commit them.
-# Scoped to worktrees/ rather than all of .claude/ so project-level config
-# (settings.json, agents, skills) can still be tracked deliberately.
+# Isolated worktrees created by AI coding assistants that support them.
+# Transient, and each one is a full second checkout of this repository — never
+# commit them. Scoped to worktrees/ rather than all of .claude/ so project-level
+# config (settings.json, agents, skills) can still be tracked deliberately.
 .claude/worktrees/
