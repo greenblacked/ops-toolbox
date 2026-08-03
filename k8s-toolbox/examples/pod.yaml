@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-toolbox
+  labels:
+    app: k8s-toolbox
+spec:
+  restartPolicy: Always
+  containers:
+    - name: toolbox
+      image: k8s-toolbox:local
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-lc", "sleep infinity"]
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false

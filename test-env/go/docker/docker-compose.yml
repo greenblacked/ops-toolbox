@@ -1,0 +1,42 @@
+# Go dev/test runner: host only needs Docker + Compose v2.
+# Use ../run.sh as the entry point.
+#
+# Long-running model (preferred):
+#   ./run.sh up                 # background dev container
+#   ./run.sh go test ./...      # exec inside it
+#   ./run.sh golangci-lint run
+#   ./run.sh shell
+#   ./run.sh down
+#
+# One-shot: ./run.sh --once <cmd>
+name: pretty-useful-go-dev
+
+services:
+  dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: pretty-useful-go-dev
+    init: true
+    tty: true
+    stdin_open: true
+    working_dir: /go/src/app
+    command: ["sleep", "infinity"]
+    environment:
+      CGO_ENABLED: "0"
+      GOFLAGS: "-buildvcs=false"
+      GOMODCACHE: /go/pkg/mod
+      GOCACHE: /root/.cache/go-build
+    volumes:
+      - ..:/go/src/app:rw
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    healthcheck:
+      test: ["CMD", "go", "version"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  go-mod-cache:
+  go-build-cache:

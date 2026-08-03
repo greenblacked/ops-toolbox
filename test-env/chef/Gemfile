@@ -1,0 +1,16 @@
+# frozen_string_literal: true
+
+source "https://rubygems.org"
+
+gem "test-kitchen",   "~> 3.6"
+gem "kitchen-dokken", "~> 2.20"
+gem "kitchen-inspec", "~> 2.6"
+
+group :lint do
+  gem "cookstyle", "~> 8.1"
+end
+
+group :test do
+  gem "chefspec",  "~> 9.3"
+  gem "berkshelf", "~> 8.0"
+end
