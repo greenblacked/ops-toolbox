@@ -48,8 +48,23 @@ Three rules hold everywhere, and the test suites enforce them:
 - MikroTik RouterOS 7.22 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
 
+## Why this exists
+
+Most personal script collections are read-only artefacts: you can look at one,
+but running it on a machine you care about means reading it line by line first,
+because nothing in it tells you what it is about to touch. This is the version
+of that collection I was willing to hand to someone else. The three rules above
+are the difference, and they are asserted by the test suites rather than
+promised in prose — including a Linux suite that runs the scripts for real
+inside pinned Debian, Fedora and Arch containers instead of only parsing them.
+Because scripts are standalone, the useful unit is one file rather than the
+whole repository: take `git_prune_gone.sh`, or one RouterOS script, and leave
+the rest. It is aimed at people who look after a handful of machines by hand,
+not at anyone shopping for a dotfiles framework to adopt.
+
 ## Contents
 
+- [Why this exists](#why-this-exists)
 - [What's here](#whats-here)
 - [Quick start](#quick-start)
 - [Script guidelines](#script-guidelines)
@@ -519,5 +534,11 @@ chmod +x git/git_my_helper.sh
 The static suite discovers scripts by role, so a new one is checked from its
 first commit without being added to any list.
 
+If you are looking for somewhere to start,
+[`docs/good-first-issues.md`](docs/good-first-issues.md) lists small tasks that
+each name the file to change and how to check the result.
+
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
-[`SECURITY.md`](SECURITY.md).
+[`SECURITY.md`](SECURITY.md), behaviour in
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and what changed when in
+[`CHANGELOG.md`](CHANGELOG.md).
