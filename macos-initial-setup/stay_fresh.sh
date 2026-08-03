@@ -660,7 +660,7 @@ step_usercaches() {
   done
 }
 
-# Electron / Chromium apps (Claude, Slack, VS Code, Cursor, Chrome, Brave, ...)
+# Electron / Chromium apps (Slack, VS Code, Cursor, Chrome, Brave, ...)
 # keep their disposable caches inside their own Application Support directory,
 # not in ~/Library/Caches — so step_usercaches above never touches them. On a
 # developer machine this is routinely several GB.
@@ -680,7 +680,7 @@ step_appcaches() {
   # leave its profile inconsistent. Warn, but don't refuse — the caches rebuild.
   local -a running=()
   local proc
-  for proc in "Claude" "Slack" "Code" "Cursor" "Notion" "Obsidian" "Signal" \
+  for proc in "Slack" "Code" "Cursor" "Notion" "Obsidian" "Signal" \
               "Discord" "Google Chrome" "Brave Browser" "Vivaldi" "Zed" "Void"; do
     if pgrep -x "$proc" >/dev/null 2>&1; then
       running+=("$proc")
