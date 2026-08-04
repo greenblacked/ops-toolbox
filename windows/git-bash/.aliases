@@ -512,7 +512,7 @@ if command -v wsl.exe >/dev/null 2>&1; then
     }
 
     # Deeper maintenance (backup/compact/sparse) lives in
-    # windows/wsl/wsl_manage.ps1 in the pretty-useful-scripts repo.
+    # windows/wsl/wsl_manage.ps1 in the ops-toolbox repo.
 fi
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,22 @@ entry here belongs to a version.
 
 ## [Unreleased]
 
+### Changed
+
+- **The repository was renamed from `pretty-useful-scripts` to `ops-toolbox`.**
+  GitHub redirects the old URLs, so existing clones and links keep working;
+  run `git remote set-url origin` to stop git warning on every fetch. Creating
+  a new repository under the old name would break those redirects permanently.
+- `set_git_profile.sh` now stores profiles under
+  `${XDG_CONFIG_HOME:-$HOME/.config}/ops-toolbox/git-profiles.conf`. Profiles
+  saved under the old directory are still read when the new path does not
+  exist, and `--show` prints the command to migrate them. Nothing has to be
+  moved by hand, and nothing is moved automatically.
+- `git_hooks_install.sh` backs foreign hooks up to `.hooks-install-backup`
+  rather than `.pre-pus-backup`, which abbreviated the old repository name.
+- The Go test module is now `github.com/greenblacked/ops-toolbox/test-env/go`,
+  which also adds the owner segment the old path was missing.
+
 ### Added
 
 - `CHANGELOG.md` — this file.

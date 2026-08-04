@@ -71,7 +71,7 @@ Stages everything (`git add --all`), commits with `-m`, and pushes. If there is 
 **zsh alias**
 
 ```bash
-source /path/to/pretty-useful-scripts/git/git_aliases.zsh
+source /path/to/ops-toolbox/git/git_aliases.zsh
 gacp "update git scripts"
 ```
 
@@ -86,10 +86,16 @@ Manages **global** `user.name` and `user.email` and optional **named profiles** 
 **State file**
 
 ```text
-${XDG_CONFIG_HOME:-$HOME/.config}/pretty-useful-scripts/git-profiles.conf
+${XDG_CONFIG_HOME:-$HOME/.config}/ops-toolbox/git-profiles.conf
 ```
 
 Profiles are stored as `profile.<name>.name` and `profile.<name>.email`. Override the path with `--state-file`.
+
+This repository used to be called `pretty-useful-scripts`, and profiles saved
+before the rename live under a directory of that name. They are still found:
+if the path above does not exist and the old one does, the old one is used and
+`--show` prints the `mv` that migrates it. Once the new path exists it always
+wins, so a migrated machine is never pulled back to the stale file.
 
 **Examples**
 

@@ -1,13 +1,13 @@
-# Pretty Useful Scripts
+# Ops Toolbox
 
-[![CI](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/ci.yml?query=branch%3Amaster)
-[![RouterOS CHR](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/chr.yml/badge.svg)](https://github.com/greenblacked/pretty-useful-scripts/actions/workflows/chr.yml)
+[![CI](https://github.com/greenblacked/ops-toolbox/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/greenblacked/ops-toolbox/actions/workflows/ci.yml?query=branch%3Amaster)
+[![RouterOS CHR](https://github.com/greenblacked/ops-toolbox/actions/workflows/chr.yml/badge.svg)](https://github.com/greenblacked/ops-toolbox/actions/workflows/chr.yml)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
 [![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS-lightgrey.svg)](#whats-here)
 [![Test suites](https://img.shields.io/badge/test%20suites-7-blue.svg)](#testing)
-[![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/pretty-useful-scripts/blob/master/.github/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.22-blue.svg)](mikrotik/README.md)
 
 **CI** covers the git, macOS, Linux, Windows, Python and conventions suites on
@@ -188,7 +188,7 @@ repositories and local bare remotes:
 - `git_aliases.zsh` — defines `gacp` for zsh by pointing at `gacp.sh`.
 - `set_git_profile.sh` — manages global `user.name` / `user.email`, plus
   named profiles stored under
-  `${XDG_CONFIG_HOME:-$HOME/.config}/pretty-useful-scripts/git-profiles.conf`.
+  `${XDG_CONFIG_HOME:-$HOME/.config}/ops-toolbox/git-profiles.conf`.
 - `git_whoami.sh` — shows the effective Git identity for the current directory
   and the global fallback when it differs.
 - `git_status_summary.sh` — prints branch, upstream, ahead/behind, and

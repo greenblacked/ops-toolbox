@@ -120,8 +120,8 @@ manually from <https://brew.sh>.
 On a fresh machine:
 
 ```bash
-git clone https://github.com/greenblacked/pretty-useful-scripts.git
-cd pretty-useful-scripts/macos-initial-setup
+git clone https://github.com/greenblacked/ops-toolbox.git
+cd ops-toolbox/macos-initial-setup
 
 ./install_apps.sh     --dry-run --verbose
 ./install_devtools.sh --dry-run --verbose
