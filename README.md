@@ -197,6 +197,12 @@ repositories and local bare remotes:
   to run with a dirty working tree and supports `--dry-run`.
 - `git_cleanup_merged.sh` — deletes local branches already merged into a base
   branch; protects common branch names unless `--force` is passed.
+- `git_hooks_install.sh` — installs a pre-commit hook that refuses commits
+  containing files over a size limit, leftover merge-conflict markers, or a
+  private key. The hook body is embedded in the script rather than copied from
+  a directory, so it keeps working after the script is gone. `status` reports
+  whether it is installed and current; an existing unrelated hook is backed up
+  rather than clobbered, and restored on `uninstall`.
 - `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
   the remote. This is the squash-merge case: a squash-merged branch leaves no
   merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects
@@ -319,6 +325,13 @@ OS, so behaviour is actually exercised across all three package managers:
 - `stay_fresh.sh` — upgrades honouring holds, journal vacuum, user caches,
   container prune (**never** volumes), flatpak/snap, and a reboot-pending
   report. A missing tool is a note; a step that runs and fails is an error.
+- `hardening_audit.sh` — read-only security audit across sshd, accounts,
+  listening sockets, file modes and update configuration. There is deliberately
+  no `--apply`: every finding has a context where the insecure-looking answer is
+  correct, so it prints the finding and the fixing command and leaves the
+  decision to you. Reads the *effective* sshd config via `sshd -T` rather than
+  grepping `sshd_config`, which gets the wrong answer when an `Include` overrides
+  it.
 - `packages.sh` — `dump`/`check`/`install`/`diff` over *explicitly installed*
   packages, the `brewfile.sh` counterpart. Only manual packages are recorded:
   capturing dependencies too produces a file that is huge, unstable across
