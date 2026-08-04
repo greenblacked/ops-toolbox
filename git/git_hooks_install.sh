@@ -112,7 +112,7 @@ BACKUP="$HOOK.pre-pus-backup"
 
 # Bumped whenever the hook body below changes, so `status` can tell an
 # out-of-date hook from a current one instead of just reporting "present".
-HOOK_VERSION=1
+HOOK_VERSION=2
 MARKER="# managed by git_hooks_install.sh v"
 
 hook_body() {
@@ -130,10 +130,18 @@ failed=0
 
 # Staged, non-deleted paths, NUL-delimited so spaces and newlines survive.
 while IFS= read -r -d '' path; do
-  [ -f "\$path" ] || continue
+  # Every check below reads the *staged blob*, never the working tree. The two
+  # diverge constantly — \`git add -p\` stages one hunk of a dirty file, and
+  # editing a file after adding it leaves the index behind — and it is the
+  # staged content that is about to become a commit. Reading the working tree
+  # instead both misses real problems and blocks clean commits.
+  blob="\$(git rev-parse --verify --quiet ":\$path")" || continue
+  [ -n "\$blob" ] || continue
+  # Submodule pointers resolve to a commit, not a blob; nothing to inspect.
+  [ "\$(git cat-file -t "\$blob" 2>/dev/null)" = "blob" ] || continue
 
   # --- size ---
-  size_kb=\$(( \$(wc -c < "\$path") / 1024 ))
+  size_kb=\$(( \$(git cat-file -s "\$blob") / 1024 ))
   if (( size_kb > max_kb )); then
     printf 'pre-commit: %s is %s KB, over the %s KB limit\n' "\$path" "\$size_kb" "\$max_kb" >&2
     failed=1
@@ -142,16 +150,22 @@ while IFS= read -r -d '' path; do
   # --- conflict markers ---
   # Anchored to line start and requiring 7 characters, so ordinary prose
   # containing "<<<" or a diff quoted in a commit does not trip it.
-  if grep -qE '^(<{7}|={7}|>{7})( |\$)' "\$path" 2>/dev/null; then
+  # grep -c rather than -q: -q stops reading on the first match, which closes
+  # the pipe under the script's own pipefail and turns a hit into a miss.
+  markers="\$(git cat-file blob "\$blob" 2>/dev/null | grep -cE '^(<{7}|={7}|>{7})( |\$)')" || true
+  if [ "\${markers:-0}" -gt 0 ]; then
     printf 'pre-commit: %s contains a merge conflict marker\n' "\$path" >&2
     failed=1
   fi
 
   # --- private keys ---
-  if head -c 100 "\$path" 2>/dev/null | grep -q -- '-----BEGIN .*PRIVATE KEY-----'; then
-    printf 'pre-commit: %s looks like a private key\n' "\$path" >&2
-    failed=1
-  fi
+  head="\$(git cat-file blob "\$blob" 2>/dev/null | head -c 100)" || true
+  case "\$head" in
+    *"-----BEGIN "*"PRIVATE KEY-----"*)
+      printf 'pre-commit: %s looks like a private key\n' "\$path" >&2
+      failed=1
+      ;;
+  esac
 done < <(git diff --cached --name-only --diff-filter=d -z)
 
 if (( failed )); then

@@ -15,6 +15,7 @@ ROOT="$G/git_repo_root.sh"
 DIFFBR="$G/git_diff_branch.sh"
 UNDO="$G/git_undo_last_commit.sh"
 AMEND="$G/git_amend_last.sh"
+HOOKS="$G/git_hooks_install.sh"
 
 if [[ ! -d "$G" ]]; then
   echo "expected git scripts at $G" >&2
@@ -430,6 +431,115 @@ out="$(cd "$repo" && "$AMEND" 2>&1)"
 rc=$?
 set -e
 if [[ "$rc" -eq 4 ]]; then ok "amend without staged changes -> exit 4"; else err "amend empty: expected exit 4, got $rc: $out"; fi
+
+# --- git_hooks_install.sh ---
+# The hook must judge the *staged blob*, never the working tree. The first
+# version of it read the working tree, which failed in both directions: a
+# private key staged and then deleted from disk was committed, and a clean
+# staged file whose worktree copy had since gained a conflict marker was
+# blocked. Both are asserted below because neither is caught by any check that
+# only ever stages and commits in one step.
+commit_rc() {
+  local repo="$1" msg="$2" rc
+  set +e
+  git -C "$repo" commit -q -m "$msg" >/dev/null 2>&1
+  rc=$?
+  set -e
+  printf '%s\n' "$rc"
+}
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install 2>&1)"
+assert_contains "$out" "installed pre-commit hook" "hooks install reports success"
+if [[ -x "$repo/.git/hooks/pre-commit" ]]; then
+  ok "hooks install wrote an executable hook"
+else
+  err "hooks install left no executable hook"
+fi
+
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "installed and current" "hooks status reports current"
+
+# The hook body must survive the installer going away, which is the reason it
+# is embedded rather than copied from a path on disk.
+assert_not_contains "$(cat "$repo/.git/hooks/pre-commit")" "$HOOKS" \
+  "the installed hook does not reference the installer's path"
+
+printf 'a\n<<<<<<< HEAD\n' >"$repo/bad.txt"
+git -C "$repo" add bad.txt
+assert_eq "$(commit_rc "$repo" "marker")" "1" "staged conflict marker is refused"
+git -C "$repo" reset -q; rm -f "$repo/bad.txt"
+
+# Prose is not a conflict. A hook with false positives gets --no-verify'd once
+# and then never runs again, so this matters as much as the catch above.
+printf 'use <<< for here-strings, and <<<<<<<<<<< as a rule\n' >"$repo/prose.txt"
+git -C "$repo" add prose.txt
+assert_eq "$(commit_rc "$repo" "prose")" "0" "prose containing <<< is allowed"
+
+# Staged, then removed from disk: the working tree cannot answer this.
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nx\n' >"$repo/leak.pem"
+git -C "$repo" add leak.pem
+rm -f "$repo/leak.pem"
+assert_eq "$(commit_rc "$repo" "key")" "1" "a staged private key is refused even with no file on disk"
+git -C "$repo" reset -q
+
+# Clean in the index, dirty in the working tree: must not block.
+printf 'clean\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+printf 'clean\n<<<<<<< HEAD\n' >"$repo/notes.txt"
+assert_eq "$(commit_rc "$repo" "clean index")" "0" "an unstaged conflict marker does not block the commit"
+
+# 2 MB, comfortably over the 1024 KB default.
+head -c 2000000 /dev/zero >"$repo/big.bin"
+git -C "$repo" add big.bin
+assert_eq "$(commit_rc "$repo" "big")" "1" "a staged file over --max-size is refused"
+out="$(cd "$repo" && "$HOOKS" install --force --max-size 4096 2>&1)"
+assert_contains "$out" "max-size 4096" "--max-size is reflected in the installed hook"
+assert_eq "$(commit_rc "$repo" "big under raised limit")" "0" "the same file passes once --max-size allows it"
+
+# A hook this script did not write is somebody else's; clobbering it silently
+# would be the worst thing an installer can do.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+chmod +x "$repo/.git/hooks/pre-commit"
+set +e
+out="$(cd "$repo" && "$HOOKS" install 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "1" "install refuses to clobber a foreign hook -> exit 1"
+assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "the foreign hook is left untouched"
+
+(cd "$repo" && "$HOOKS" install --force) >/dev/null
+if [[ -f "$repo/.git/hooks/pre-commit.pre-pus-backup" ]]; then
+  ok "--force backs the foreign hook up"
+else
+  err "--force did not back the foreign hook up"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null
+assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "uninstall restores the backed-up hook"
+
+# The restored hook is now foreign again, so a second uninstall must refuse it
+# rather than delete somebody else's work.
+set +e
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "uninstall refuses to remove a hook it did not install"
+
+repo="$(new_repo)"
+set +e
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "4" "uninstall with nothing installed -> exit 4"
+
+out="$(cd "$repo" && "$HOOKS" install --dry-run 2>&1)"
+assert_contains "$out" "no changes written" "hooks install --dry-run says so"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "install --dry-run wrote a hook"
+else
+  ok "install --dry-run wrote nothing"
+fi
 
 if (( failures )); then
   echo "=== $failures test(s) failed ===" >&2

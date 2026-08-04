@@ -218,11 +218,18 @@ fi
 if want network; then
   group "network"
   if command -v ss >/dev/null 2>&1; then
+    # ss is run on its own first so its exit status is visible. Folding it into
+    # the pipeline below would turn a failed ss — -H is not in older iproute2 —
+    # into empty output, and empty output reads as "nothing is listening": a
+    # clean bill of health for a check that never ran.
+    sockets="$(ss -tulnH 2>/dev/null)"; ss_rc=$?
     # Bound to all interfaces rather than loopback. Not wrong by itself; it is
     # the list worth knowing, because everything on it is reachable from
     # wherever this machine is routable.
-    listening="$(ss -tulnH 2>/dev/null | awk '$5 ~ /^(0\.0\.0\.0|\*|\[::\]):/ { print $1, $5 }' | sort -u)"
-    if [[ -z "$listening" ]]; then
+    listening="$(printf '%s\n' "$sockets" | awk '$5 ~ /^(0\.0\.0\.0|\*|\[::\]):/ { print $1, $5 }' | sort -u)"
+    if (( ss_rc != 0 )); then
+      skip "ss failed (exit $ss_rc); listening sockets not checked"
+    elif [[ -z "$listening" ]]; then
       pass "nothing listening on all interfaces"
     else
       count="$(printf '%s\n' "$listening" | grep -c .)"
@@ -233,17 +240,36 @@ if want network; then
     skip "ss not available"
   fi
 
+  # Each probe captures its output and then matches, rather than piping into
+  # `grep -q`. grep -q stops reading at its first match, the producer dies of
+  # SIGPIPE, and under `set -o pipefail` the pipeline reports 141 — so a large
+  # nftables ruleset would be read as "no firewall". A false all-clear is the
+  # worst thing this script can print.
   fw="none"
-  command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active' && fw="ufw"
-  command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q running && fw="firewalld"
+  if command -v ufw >/dev/null 2>&1; then
+    case "$(ufw status 2>/dev/null || true)" in *"Status: active"*) fw="ufw" ;; esac
+  fi
+  if [[ "$fw" == "none" ]] && command -v firewall-cmd >/dev/null 2>&1; then
+    case "$(firewall-cmd --state 2>/dev/null || true)" in *running*) fw="firewalld" ;; esac
+  fi
   if [[ "$fw" == "none" ]] && command -v nft >/dev/null 2>&1; then
-    nft list ruleset 2>/dev/null | grep -q . && fw="nftables"
+    rules="$(nft list ruleset 2>/dev/null || true)"
+    [[ -n "${rules//[[:space:]]/}" ]] && fw="nftables"
   fi
   if [[ "$fw" == "none" ]] && command -v iptables >/dev/null 2>&1; then
-    iptables -S 2>/dev/null | grep -qvE '^-P (INPUT|FORWARD|OUTPUT) ACCEPT$' && fw="iptables"
+    rules="$(iptables -S 2>/dev/null || true)"
+    # grep -c reads to EOF, so it has none of the early-exit problem above.
+    non_default="$(printf '%s\n' "$rules" | grep -cvE '^(-P (INPUT|FORWARD|OUTPUT) ACCEPT)?$' || true)"
+    [[ -n "$rules" ]] && [[ "${non_default:-0}" != "0" ]] && fw="iptables"
   fi
   if [[ "$fw" == "none" ]]; then
-    warn "no active host firewall detected" "fine if the network filters for you; otherwise: ufw enable, or firewall-cmd --state"
+    # Reading rules needs root; without it this cannot tell "no firewall" from
+    # "not allowed to look", and saying so beats implying the machine is bare.
+    if [[ "$(id -u)" != "0" ]]; then
+      skip "no firewall detected, but reading rules needs root — rerun with sudo"
+    else
+      warn "no active host firewall detected" "fine if the network filters for you; otherwise: ufw enable, or firewall-cmd --state"
+    fi
   else
     pass "host firewall active ($fw)"
   fi
@@ -272,7 +298,7 @@ if want files; then
     if [[ "$mode" =~ ^[0-6][04]0$ ]]; then
       pass "$f mode $mode"
     else
-      fail "$f mode $mode" "should not be group- or world-readable: chmod 640 $f"
+      fail "$f mode $mode" "expected owner-read plus at most group-read, and never executable: chmod 640 $f"
     fi
   done
 fi
