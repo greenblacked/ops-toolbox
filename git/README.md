@@ -22,6 +22,7 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | `git_status_summary.sh` | Compact status: branch, upstream, ahead/behind, changed-file counts. |
 | `git_sync_default.sh` | Fetch and fast-forward the default branch (`--dry-run` supported). |
 | `git_cleanup_merged.sh` | Delete local branches already merged into a base branch (`--dry-run`, `--force`). |
+| `git_hooks_install.sh` | Install a pre-commit hook that blocks large files, conflict markers and private keys. |
 | `git_prune_gone.sh` | Delete local branches whose upstream was deleted on the remote — the squash-merge case `git_cleanup_merged.sh` cannot see. |
 | `git_size_report.sh` | Read-only: what is making the repository big, by path across all history. |
 | `git_recent_branches.sh` | List recently updated local branches, or switch to one by index. |

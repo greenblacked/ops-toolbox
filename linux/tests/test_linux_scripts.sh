@@ -41,7 +41,23 @@ assert_contains() {
   fi
 }
 
-scripts=("$L/install_devtools.sh" "$L/stay_fresh.sh" "$L/packages.sh")
+# Discovered rather than listed. A hardcoded array only covers a new script if
+# someone remembers to add it, which is how the macOS suite silently stopped
+# covering two of its own scripts. bash_aliases.sh is excluded deliberately: it
+# is sourced, not run, so the --help and unknown-flag contracts do not apply to
+# it. Built without mapfile to stay Bash 3.2-clean (see CONTRIBUTING.md).
+scripts=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  case "${f##*/}" in bash_aliases.sh) continue ;; esac
+  scripts+=("$f")
+done < <(find "$L" -maxdepth 1 -name '*.sh' -type f | sort)
+
+if (( ${#scripts[@]} == 0 )); then
+  echo "discovered no scripts under $L — discovery is broken" >&2
+  exit 1
+fi
+ok "discovered ${#scripts[@]} scripts under linux/"
 
 echo "=== distro: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '\"') (expecting $EXPECT_PKG_MGR) ==="
 
@@ -189,6 +205,43 @@ rc=$?
 set -e
 assert_eq "stay_fresh survives missing optional tools" "0" "$rc"
 assert_contains "stay_fresh reports the run finished" "$out" "done"
+
+# --- hardening_audit is read-only and grades correctly ---
+# The whole value of this script is that it never changes the machine, so that
+# is asserted directly rather than assumed: snapshot the files it inspects and
+# require them to be untouched.
+before="$( { stat -c '%a %Y' /etc/shadow /etc/passwd 2>/dev/null; ls /etc/ssh 2>/dev/null; } || true )"
+set +e
+out="$("$L/hardening_audit.sh" 2>&1)"
+rc=$?
+set -e
+after="$( { stat -c '%a %Y' /etc/shadow /etc/passwd 2>/dev/null; ls /etc/ssh 2>/dev/null; } || true )"
+assert_eq "hardening_audit changed nothing it inspected" "$before" "$after"
+assert_contains "hardening_audit prints a summary" "$out" "== summary =="
+
+# A container has no firewall and no sshd, so a clean exit here proves absent
+# tooling is reported rather than treated as a crash.
+if [[ "$rc" == "0" || "$rc" == "1" ]]; then
+  ok "hardening_audit exits 0 or 1, not an error ($rc)"
+else
+  err "hardening_audit exited $rc; expected 0 or 1"
+fi
+
+# --fail-on warn must be stricter than the default, never looser.
+set +e
+"$L/hardening_audit.sh" >/dev/null 2>&1; rc_default=$?
+"$L/hardening_audit.sh" --fail-on warn >/dev/null 2>&1; rc_strict=$?
+set -e
+if (( rc_strict >= rc_default )); then
+  ok "--fail-on warn is at least as strict as the default ($rc_default -> $rc_strict)"
+else
+  err "--fail-on warn ($rc_strict) was looser than the default ($rc_default)"
+fi
+
+set +e
+"$L/hardening_audit.sh" --only nosuchgroup >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "hardening_audit rejects an unknown group -> 3" "3" "$rc"
 
 echo
 if (( failures > 0 )); then

@@ -12,6 +12,7 @@ scripts exit `2` off macOS.
 | --- | --- |
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
+| [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, updates |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
 | [`tests/`](tests/) | Docker checks that **run** the scripts, across all three distros |
