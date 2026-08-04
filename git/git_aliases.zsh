@@ -1,7 +1,7 @@
 # Git helper aliases for zsh.
 #
 # Usage:
-#   source /path/to/pretty-useful-scripts/git/git_aliases.zsh
+#   source /path/to/ops-toolbox/git/git_aliases.zsh
 
 _pretty_git_aliases_file="${(%):-%N}"
 _pretty_git_aliases_dir="${${_pretty_git_aliases_file:A}:h}"

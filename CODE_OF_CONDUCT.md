@@ -61,7 +61,7 @@ representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the maintainer using the private route described in
 [`SECURITY.md`](SECURITY.md): open a
-[private security advisory](https://github.com/greenblacked/pretty-useful-scripts/security/advisories/new)
+[private security advisory](https://github.com/greenblacked/ops-toolbox/security/advisories/new)
 and say in the report that it concerns conduct rather than a vulnerability. That
 form is used here because it is the only reporting channel on this repository
 that is not public.

@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Open a [private security advisory](https://github.com/greenblacked/pretty-useful-scripts/security/advisories/new)
+Open a [private security advisory](https://github.com/greenblacked/ops-toolbox/security/advisories/new)
 rather than a public issue. Please include the script, the command you ran, and
 what happened.
 

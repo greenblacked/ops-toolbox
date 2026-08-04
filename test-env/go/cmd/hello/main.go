@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/pretty-useful-scripts/test-env/go/internal/sample"
+	"github.com/greenblacked/ops-toolbox/test-env/go/internal/sample"
 )
 
 func main() {

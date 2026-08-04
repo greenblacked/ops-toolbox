@@ -1,3 +1,3 @@
-module github.com/pretty-useful-scripts/test-env/go
+module github.com/greenblacked/ops-toolbox/test-env/go
 
 go 1.23

@@ -108,7 +108,10 @@ fi
 # .git is a file pointing elsewhere rather than a directory.
 HOOK_DIR="$(git rev-parse --git-path hooks)"
 HOOK="$HOOK_DIR/pre-commit"
-BACKUP="$HOOK.pre-pus-backup"
+# Named after the tool that writes it, not after this repository — a stranger
+# finding the file needs to know what to run to undo it, and a repository name
+# is the one thing about a copied script that will not travel with it.
+BACKUP="$HOOK.hooks-install-backup"
 
 # Bumped whenever the hook body below changes, so `status` can tell an
 # out-of-date hook from a current one instead of just reporting "present".

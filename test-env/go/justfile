@@ -58,11 +58,11 @@ fix:
 
 # gofmt / goimports check (CI-style).
 format-check:
-    {{run}} bash -c 'diff -u <(echo -n) <(goimports -l -local github.com/pretty-useful-scripts .)'
+    {{run}} bash -c 'diff -u <(echo -n) <(goimports -l -local github.com/greenblacked/ops-toolbox .)'
 
 # Apply gofmt / goimports.
 format:
-    {{run}} goimports -w -local github.com/pretty-useful-scripts .
+    {{run}} goimports -w -local github.com/greenblacked/ops-toolbox .
 
 # Vulnerability scan.
 vuln:

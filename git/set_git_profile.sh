@@ -19,11 +19,34 @@ info() { printf "%s[info]%s %s\n" "$C_BLUE" "$C_RESET" "$*"; }
 ok() { printf "%s[ ok ]%s %s\n" "$C_GREEN" "$C_RESET" "$*"; }
 err() { printf "%s[err ]%s %s\n" "$C_RED" "$C_RESET" "$*" 1>&2; }
 
-default_state_file() {
+# The directory this repository used to be called. Profiles saved before the
+# rename live under it, and silently not finding somebody's saved identities is
+# far worse than carrying one extra lookup: the script would report no profiles
+# and cheerfully save a new empty set over the top of a working setup.
+LEGACY_DIR_NAME="pretty-useful-scripts"
+STATE_DIR_NAME="ops-toolbox"
+
+config_home() {
   if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
-    printf "%s/pretty-useful-scripts/git-profiles.conf\n" "$XDG_CONFIG_HOME"
+    printf "%s\n" "$XDG_CONFIG_HOME"
   else
-    printf "%s/.config/pretty-useful-scripts/git-profiles.conf\n" "$HOME"
+    printf "%s/.config\n" "$HOME"
+  fi
+}
+
+default_state_file() {
+  local base current legacy
+  base="$(config_home)"
+  current="$base/$STATE_DIR_NAME/git-profiles.conf"
+  legacy="$base/$LEGACY_DIR_NAME/git-profiles.conf"
+
+  # Prefer the current path. Fall back to the legacy one only when it exists
+  # and the current one does not, so a machine that has migrated never gets
+  # pulled back to the old file.
+  if [[ ! -e "$current" && -e "$legacy" ]]; then
+    printf "%s\n" "$legacy"
+  else
+    printf "%s\n" "$current"
   fi
 }
 
@@ -147,6 +170,15 @@ show_state() {
   show_global_profile
   printf "\nSaved profile state:\n"
   printf "  file: %s\n" "$STATE_FILE"
+  # Say so rather than leaving it to be noticed. The fallback is meant to be
+  # invisible in operation but obvious when inspected.
+  case "$STATE_FILE" in
+    */"$LEGACY_DIR_NAME"/git-profiles.conf)
+      printf "  note: this is the pre-rename location; move it with\n"
+      printf "        mv %s/%s %s/%s\n" \
+        "$(config_home)" "$LEGACY_DIR_NAME" "$(config_home)" "$STATE_DIR_NAME"
+      ;;
+  esac
   if [[ -f "$STATE_FILE" ]]; then
     list_profiles
   else

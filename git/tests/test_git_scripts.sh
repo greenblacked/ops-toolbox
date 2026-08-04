@@ -174,7 +174,7 @@ assert_eq "$actual_email" "sergey@example.com" "direct set writes user.email"
 
 # --- save named profile and apply it ---
 home="$(new_home)"
-state="$home/.config/pretty-useful-scripts/git-profiles.conf"
+state="$home/.config/ops-toolbox/git-profiles.conf"
 out="$(run_with_home "$home" "$SET" --save personal --name "Sergey" --email "sergey@example.com")"
 assert_contains "$out" "saved Git profile 'personal'" "save profile reports success"
 saved_name="$(run_with_home "$home" git config --file "$state" --get profile.personal.name)"
@@ -196,7 +196,7 @@ assert_contains "$out" "personal: Sergey <sergey@example.com>" "list shows saved
 home="$(new_home)"
 run_with_home "$home" git config --global user.name "Work Sergey"
 run_with_home "$home" git config --global user.email "work@example.com"
-state="$home/.config/pretty-useful-scripts/git-profiles.conf"
+state="$home/.config/ops-toolbox/git-profiles.conf"
 out="$(run_with_home "$home" "$SET" --save-current work)"
 assert_contains "$out" "saved current Git profile as 'work'" "save-current reports success"
 saved_name="$(run_with_home "$home" git config --file "$state" --get profile.work.name)"
@@ -204,9 +204,40 @@ saved_email="$(run_with_home "$home" git config --file "$state" --get profile.wo
 assert_eq "$saved_name" "Work Sergey" "save-current writes name"
 assert_eq "$saved_email" "work@example.com" "save-current writes email"
 
+# --- profiles saved before the repository was renamed are still found ---
+# This is the only part of the rename that could destroy someone's data: if the
+# lookup missed the old path, --list would report no profiles and the next
+# --save would write a fresh file, leaving the real one orphaned and invisible.
+home="$(new_home)"
+legacy="$home/.config/pretty-useful-scripts/git-profiles.conf"
+mkdir -p "$(dirname "$legacy")"
+git config --file "$legacy" profile.old.name "Legacy Sergey"
+git config --file "$legacy" profile.old.email "legacy@example.com"
+
+out="$(run_with_home "$home" "$SET" --list)"
+assert_contains "$out" "old: Legacy Sergey <legacy@example.com>" "a pre-rename profile is still listed"
+
+out="$(run_with_home "$home" "$SET" --profile old)"
+assert_contains "$out" "applying saved Git profile: old" "a pre-rename profile can still be applied"
+assert_eq "$(run_with_home "$home" git config --global --get user.email)" \
+  "legacy@example.com" "applying a pre-rename profile writes the right identity"
+
+out="$(run_with_home "$home" "$SET" --show)"
+assert_contains "$out" "pre-rename location" "--show flags that the old path is in use"
+
+# Once the new path exists it wins, so a migrated machine is never dragged back
+# to the stale file.
+current="$home/.config/ops-toolbox/git-profiles.conf"
+mkdir -p "$(dirname "$current")"
+git config --file "$current" profile.new.name "Current Sergey"
+git config --file "$current" profile.new.email "current@example.com"
+out="$(run_with_home "$home" "$SET" --list)"
+assert_contains "$out" "new: Current Sergey <current@example.com>" "the current path wins once it exists"
+assert_not_contains "$out" "Legacy Sergey" "the legacy file is not consulted after migration"
+
 # --- dry-run must not write state or global config ---
 home="$(new_home)"
-state="$home/.config/pretty-useful-scripts/git-profiles.conf"
+state="$home/.config/ops-toolbox/git-profiles.conf"
 out="$(run_with_home "$home" "$SET" --dry-run --save personal --name "Dry Sergey" --email "dry@example.com")"
 assert_contains "$out" "dry-run: would save profile 'personal'" "dry-run save previews state write"
 assert_contains "$out" "dry-run complete; no changes written" "dry-run save reports no writes"
@@ -510,7 +541,7 @@ assert_eq "$rc" "1" "install refuses to clobber a foreign hook -> exit 1"
 assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "the foreign hook is left untouched"
 
 (cd "$repo" && "$HOOKS" install --force) >/dev/null
-if [[ -f "$repo/.git/hooks/pre-commit.pre-pus-backup" ]]; then
+if [[ -f "$repo/.git/hooks/pre-commit.hooks-install-backup" ]]; then
   ok "--force backs the foreign hook up"
 else
   err "--force did not back the foreign hook up"

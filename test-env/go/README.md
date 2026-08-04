@@ -20,7 +20,7 @@ The stack keeps a **long-running dev container** so every `run.sh` invocation
 | [`docker/Dockerfile`](docker/Dockerfile) | `golang:1.23-bookworm` + golangci-lint + goimports + govulncheck + **shellcheck / hadolint / yamllint** |
 | [`docker/docker-compose.yml`](docker/docker-compose.yml) | Long-running `dev` service, `go-mod-cache` + `go-build-cache` volumes |
 | [`.golangci.yml`](.golangci.yml) | Lint config (errcheck, staticcheck, gosec, revive, …) |
-| [`go.mod`](go.mod) | Module — `github.com/pretty-useful-scripts/test-env/go` |
+| [`go.mod`](go.mod) | Module — `github.com/greenblacked/ops-toolbox/test-env/go` |
 | [`internal/sample/`](internal/sample/) | Sample package with table test |
 | [`cmd/hello/`](cmd/hello/) | Sample binary that prints `sample.Greet(...)` |
 | [`.devcontainer/`](.devcontainer/) | VS Code / Cursor dev container (same image) |
