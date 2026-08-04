@@ -510,7 +510,7 @@ assert_eq "$rc" "1" "install refuses to clobber a foreign hook -> exit 1"
 assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "the foreign hook is left untouched"
 
 (cd "$repo" && "$HOOKS" install --force) >/dev/null
-if [[ -f "$repo/.git/hooks/pre-commit.pre-pus-backup" ]]; then
+if [[ -f "$repo/.git/hooks/pre-commit.hooks-install-backup" ]]; then
   ok "--force backs the foreign hook up"
 else
   err "--force did not back the foreign hook up"
