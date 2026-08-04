@@ -8,7 +8,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS-lightgrey.svg)](#whats-here)
 [![Test suites](https://img.shields.io/badge/test%20suites-7-blue.svg)](#testing)
 [![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
-[![RouterOS](https://img.shields.io/badge/RouterOS-7.22-blue.svg)](mikrotik/README.md)
+[![RouterOS](https://img.shields.io/badge/RouterOS-7.23.3-blue.svg)](mikrotik/README.md)
 
 **CI** covers the git, macOS, Linux, Windows, Python and conventions suites on
 every pull request, plus repo-wide ShellCheck, PSScriptAnalyzer, yamllint and
@@ -45,7 +45,7 @@ Three rules hold everywhere, and the test suites enforce them:
   WSL maintenance and disk cleanup.
 - Linux servers and workstations — Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`)
   and Arch (`pacman`); scripts use `bash`.
-- MikroTik RouterOS 7.22 — scripts are RouterOS scripting language (`.lua`
+- MikroTik RouterOS 7.23.3 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
 
 ## Why this exists
@@ -346,7 +346,7 @@ equivalent worth mirroring. See [`linux/README.md`](linux/README.md).
 ## MikroTik scripts at a glance
 
 The MikroTik package is [`mikrotik/`](mikrotik/), verified against
-**RouterOS 7.22**:
+**RouterOS 7.23.3**:
 
 - `tg_send.lua` — generic Telegram text helper used by every other script;
   reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
@@ -408,7 +408,7 @@ Run from your machine rather than on the router:
   pip, no venv. Refuses `--show-sensitive` together with `--commit`.
 
 See [`mikrotik/README.md`](mikrotik/README.md) for installation, policy
-flags, suggested scheduler entries, and RouterOS 7.22-specific gotchas
+flags, suggested scheduler entries, and RouterOS 7.23.3-specific gotchas
 (TLS CAs, `:global` lifetime, `wifi` vs `wireless`, etc.).
 
 ## Testing
@@ -437,7 +437,7 @@ preflight only runs when one of them is actually selected — so
 | [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
 | [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
 | [`windows/`](windows/) | **Contract** checks on the PowerShell scripts: they parse, comment-based help is complete, anything that changes a machine can be previewed first, and every flag the READMEs document actually exists. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
-| [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.22 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
+| [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.23.3 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and
 Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
@@ -537,13 +537,23 @@ single grouped pull request, so the pins stay current instead of rotting.
 PSScriptAnalyzer — by far the slowest install, and the only one that has to come
 from PowerShell Gallery — is cached against its pinned version.
 
-[`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the RouterOS
+[`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the pinned RouterOS
 integration suite nightly at 03:00 UTC and on demand. It is kept off the
 pull-request path because CHR is an x86_64 image under QEMU and first boot takes
 minutes. The Linux runner has `/dev/kvm`, which
 [`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
 `docker-compose.kvm.yml` on top — a separate file because compose fails hard on
 a device that does not exist, which would break the suite for everyone on macOS.
+
+[`routeros-version.yml`](.github/workflows/routeros-version.yml) checks
+MikroTik's official release feed every Monday and Thursday at 03:00 UTC, and
+also supports manual runs with a channel, explicit version, or check-only mode.
+A newer CHR image must boot and pass the complete MikroTik suite before the
+workflow updates the version and documentation on a `chore/routeros-VERSION`
+branch and opens a pull request. It never commits directly to `master`; an
+existing open bump pull request is reused rather than duplicated. Because bot
+events do not recursively start workflows, the version workflow explicitly
+dispatches the standard CI workflow for the bump branch before opening its PR.
 
 ## Contributing
 

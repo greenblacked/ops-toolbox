@@ -1,9 +1,9 @@
-# MikroTik script tests (RouterOS 7.22)
+# MikroTik script tests (RouterOS 7.23.3)
 
-Integration tests that run **real RouterOS CHR 7.22** in QEMU inside Docker and
+Integration tests that run **real RouterOS CHR 7.23.3** in QEMU inside Docker and
 exercise every `*.lua` in `../`. Two services run side by side:
 
-- `chr` — Alpine + QEMU + the official CHR 7.22 disk (talks to host on
+- `chr` — Alpine + QEMU + the official CHR 7.23.3 disk (talks to host on
   `127.0.0.1:8728` for ad‑hoc inspection).
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
@@ -34,20 +34,36 @@ to pytest:
 ./mikrotik/tests/run.sh -k version_matches -vv
 ```
 
+The checked-in version lives in `routeros-version.env`. To test a candidate
+without changing tracked files, override it for one run:
+
+```bash
+ROUTEROS_VERSION=7.23.3 ./mikrotik/tests/run.sh
+```
+
+`EXPECT_ROUTEROS_VERSION` follows `ROUTEROS_VERSION` automatically, so the
+suite proves that the requested image is the image that actually booted.
+
 To keep `chr` running between iterations (e.g. while debugging tests):
 
 ```bash
 KEEP_CHR=1 ./mikrotik/tests/run.sh
 # then iterate quickly:
-docker compose -f mikrotik/tests/docker-compose.yml run --rm tester -k some_test
+docker compose --env-file mikrotik/tests/routeros-version.env \
+  -f mikrotik/tests/docker-compose.yml run --rm tester -k some_test
 # stop when done:
-docker compose -f mikrotik/tests/docker-compose.yml down -v
+docker compose --env-file mikrotik/tests/routeros-version.env \
+  -f mikrotik/tests/docker-compose.yml down -v
 ```
 
 Manual flow (if you don't want the wrapper):
 
 ```bash
 cd mikrotik/tests
+set -a
+. ./routeros-version.env
+set +a
+export EXPECT_ROUTEROS_VERSION="$ROUTEROS_VERSION"
 docker compose build
 docker compose up -d --wait --wait-timeout 1800 chr
 docker compose run --rm tester
@@ -56,11 +72,11 @@ docker compose down -v
 
 ## What is tested
 
-1. **Version** — `/system resource` `version` starts with `7.22` (so `7.22.1`
-   passes but `7.221` does not).
+1. **Version** — `/system resource` `version` starts with the exact requested
+   release (a patch suffix is accepted only when the requested version omits it).
 2. **Source acceptance** — every `mikrotik/*.lua` is added as a
    `/system script` and removed. RouterOS rejects malformed source at `add`
-   time, so this catches syntax issues against the live 7.22 parser.
+   time, so this catches syntax issues against the live 7.23.3 parser.
 3. **Safe execution** — `wan_failover_notify`, `health_check`, and
    `detect_internet` are loaded under their production names and executed.
    `tg_send` is replaced with a **stub** for the test session that records
@@ -76,13 +92,13 @@ update probe), `change_WIFI_pw` (touches wireless profiles), `backup`
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `ROUTEROS_VERSION` | `7.22` | CHR version to download (also used for image tag) |
+| `ROUTEROS_VERSION` | value in `routeros-version.env` | CHR version to download and image tag |
 | `ROUTEROS_HOST` | `chr` (in tester), `127.0.0.1` (host) | API host |
 | `ROUTEROS_PORT` | `8728` | API port |
 | `ROUTEROS_USER` | `admin` | API user |
 | `ROUTEROS_PASSWORD` | empty | API password (default CHR has none) |
 | `ROUTEROS_WAIT_SEC` | `180` | API readiness budget after `chr` is healthy |
-| `EXPECT_ROUTEROS_VERSION` | `7.22` | Major.minor expected from `/system/resource` |
+| `EXPECT_ROUTEROS_VERSION` | `ROUTEROS_VERSION` | Version expected from `/system/resource` |
 | `KEEP_CHR` | `0` | If `1`, `run.sh` leaves CHR running on exit |
 | `CHR_MEM_MB` | `512` | RAM passed to QEMU (`-m`) |
 
@@ -98,6 +114,25 @@ update probe), `change_WIFI_pw` (touches wireless profiles), `backup`
   pass `ROUTEROS_PASSWORD=…` to `run.sh`.
 - **macOS Docker Desktop slow** — enable Rosetta in Docker Desktop settings
   (Settings → General → "Use Rosetta for x86/amd64 emulation on Apple Silicon").
+
+## Release checks and version bumps
+
+`routeros_version.py` reads MikroTik's official stable or long-term RSS feed,
+validates the release number, and confirms that the matching CHR VDI archive is
+available. Its `check` command does not modify files:
+
+```bash
+python3 mikrotik/tests/routeros_version.py check
+python3 mikrotik/tests/routeros_version.py check --channel long-term
+python3 mikrotik/tests/routeros_version.py check --version 7.23.3
+```
+
+The `RouterOS version check` GitHub Actions workflow runs every Monday and
+Thursday at 03:00 UTC and can also be started manually. When it finds a newer
+release it boots that candidate in Docker first. Only a passing candidate is
+written to `routeros-version.env`, propagated through the documentation, and
+proposed in a `chore/routeros-VERSION` pull request. `check_only` runs the same
+test without creating a branch or pull request.
 
 ## License
 

@@ -1,0 +1,204 @@
+name: RouterOS version check
+
+# Check MikroTik's official release feed twice a week and on demand. A release
+# is recorded only after the real CHR image boots and the integration suite
+# passes; automation opens a pull request and never writes to master directly.
+on:
+  schedule:
+    # Monday and Thursday at 03:00 UTC.
+    - cron: '0 3 * * 1,4'
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: RouterOS release channel
+        required: true
+        default: stable
+        type: choice
+        options:
+          - stable
+          - long-term
+      version:
+        description: Explicit RouterOS version (leave empty to use the release feed)
+        required: false
+        type: string
+      check_only:
+        description: Test the candidate without changing files or opening a PR
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: routeros-version-check
+  cancel-in-progress: false
+
+jobs:
+  check-test-and-propose:
+    name: Check, test, and propose RouterOS bump
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    env:
+      RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
+      REQUESTED_VERSION: ${{ inputs.version || '' }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - name: Resolve candidate release
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(check --channel "$RELEASE_CHANNEL" --format github)
+          if [ -n "$REQUESTED_VERSION" ]; then
+            args+=(--version "$REQUESTED_VERSION")
+          fi
+          python3 mikrotik/tests/routeros_version.py "${args[@]}" >> "$GITHUB_OUTPUT"
+
+      - name: Check for an existing bump pull request
+        id: existing
+        if: steps.release.outputs.update_available == 'true' && inputs.check_only != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -euo pipefail
+          branch="chore/routeros-${TARGET_VERSION}"
+          url="$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // ""')"
+          if [ -n "$url" ]; then
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+            echo "Existing pull request: $url"
+          fi
+
+      - name: Report KVM availability
+        if: >-
+          (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
+          steps.existing.outputs.url == ''
+        run: |
+          if [ -e /dev/kvm ]; then
+            ls -l /dev/kvm
+          else
+            echo "no /dev/kvm on this runner — CHR will boot under TCG emulation"
+          fi
+
+      - name: Test candidate on RouterOS CHR
+        if: >-
+          (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
+          steps.existing.outputs.url == ''
+        shell: bash
+        env:
+          ROUTEROS_VERSION: ${{ steps.release.outputs.latest }}
+          EXPECT_ROUTEROS_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/mikrotik-version.log"
+          set +e
+          ./run-tests.sh mikrotik 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### RouterOS %s candidate test\n\n' "$ROUTEROS_VERSION"
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Bump version and documentation
+        if: >-
+          steps.release.outputs.update_available == 'true' &&
+          steps.existing.outputs.url == '' &&
+          inputs.check_only != true
+        env:
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION"
+
+      - name: Commit bump branch
+        id: commit
+        if: >-
+          steps.release.outputs.update_available == 'true' &&
+          steps.existing.outputs.url == '' &&
+          inputs.check_only != true
+        shell: bash
+        env:
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -euo pipefail
+          branch="chore/routeros-${TARGET_VERSION}"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git switch -C "$branch"
+          git add \
+            mikrotik/tests/routeros-version.env \
+            README.md mikrotik/README.md mikrotik/tests/README.md \
+            .github/workflows/chr.yml CHANGELOG.md
+          git commit -m "chore(mikrotik): test against RouterOS ${TARGET_VERSION}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch:refs/remotes/origin/$branch"
+          fi
+          git push --force-with-lease --set-upstream origin "$branch"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      # Events created by GITHUB_TOKEN do not recursively start workflows.
+      # Dispatch CI explicitly so the bot branch still receives the repository's
+      # ordinary lint and test checks before it is merged.
+      - name: Dispatch standard CI for bump branch
+        if: steps.commit.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP_BRANCH: ${{ steps.commit.outputs.branch }}
+        run: gh workflow run ci.yml --ref "$BUMP_BRANCH"
+
+      - name: Open bump pull request
+        id: pull_request
+        if: steps.commit.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+          BUMP_BRANCH: ${{ steps.commit.outputs.branch }}
+        run: |
+          set -euo pipefail
+          body="$(cat <<EOF
+          The official RouterOS release feed reports ${TARGET_VERSION}.
+
+          This pull request was created only after the CHR ${TARGET_VERSION} image booted and the full MikroTik Docker integration suite passed.
+
+          Trigger: ${GITHUB_EVENT_NAME}
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          )"
+          url="$(gh pr create \
+            --base master \
+            --head "$BUMP_BRANCH" \
+            --title "chore(mikrotik): test against RouterOS ${TARGET_VERSION}" \
+            --body "$body")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise release check
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf '### RouterOS release check\n\n'
+            printf '| item | value |\n| --- | --- |\n'
+            printf '| channel | `%s` |\n' '${{ steps.release.outputs.channel }}'
+            printf '| pinned | `%s` |\n' '${{ steps.release.outputs.current }}'
+            printf '| candidate | `%s` |\n' '${{ steps.release.outputs.latest }}'
+            printf '| update available | `%s` |\n' '${{ steps.release.outputs.update_available }}'
+            if [ -n '${{ steps.existing.outputs.url }}' ]; then
+              printf '\nExisting pull request: %s\n' '${{ steps.existing.outputs.url }}'
+            elif [ -n '${{ steps.pull_request.outputs.url }}' ]; then
+              printf '\nCreated pull request: %s\n' '${{ steps.pull_request.outputs.url }}'
+            elif [ '${{ inputs.check_only }}' = 'true' ]; then
+              printf '\nCheck-only mode: no repository changes were made.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

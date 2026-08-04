@@ -16,6 +16,7 @@ entry here belongs to a version.
 
 ### Changed
 
+- RouterOS CHR compatibility was bumped from 7.22 to 7.23.3 after the full Docker integration suite passed.
 - **The repository was renamed from `pretty-useful-scripts` to `ops-toolbox`.**
   GitHub redirects the old URLs, so existing clones and links keep working;
   run `git remote set-url origin` to stop git warning on every fetch. Creating
@@ -32,6 +33,13 @@ entry here belongs to a version.
 
 ### Added
 
+- `mikrotik/tests/routeros_version.py` and a twice-weekly/manual GitHub Actions
+  workflow that detect official RouterOS releases, test the candidate CHR image
+  in Docker, and open a version/documentation bump pull request only after the
+  integration suite passes. Bot branches explicitly dispatch standard CI so
+  required checks still run despite GitHub token recursion protection.
+- `mikrotik/tests/routeros-version.env` as the canonical CHR compatibility
+  version shared by the Docker build, test runner, and automated bump flow.
 - `CHANGELOG.md` — this file.
 - `CODE_OF_CONDUCT.md` — Contributor Covenant 2.1, reported through the same
   private route as a security issue.

@@ -357,6 +357,11 @@ an issue.
       binding rather than advisory. Note the constraint recorded there: jobs are
       never skipped at the job level, precisely so a required check always
       reports.
+- [ ] **Workflow pull requests.** Enable *Settings → Actions → General →
+      Workflow permissions → Allow GitHub Actions to create and approve pull
+      requests*. The twice-weekly RouterOS version workflow needs this to open
+      its tested `chore/routeros-VERSION` bump PR; it still cannot bypass branch
+      protection or write directly to `master`.
 - [ ] **Labels.** At minimum `good first issue` and `help wanted` — GitHub
       surfaces both in its own contributor-facing views, and
       [`docs/good-first-issues.md`](docs/good-first-issues.md) is a list of

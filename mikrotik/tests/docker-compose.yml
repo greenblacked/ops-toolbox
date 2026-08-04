@@ -1,7 +1,8 @@
-# RouterOS CHR 7.22 in QEMU + a test runner that talks to it on the Docker network.
+# Pinned RouterOS CHR in QEMU + a test runner that talks to it on the Docker network.
 # Run from anywhere with:
 #
-#   docker compose -f mikrotik/tests/docker-compose.yml run --rm tester
+#   docker compose --env-file mikrotik/tests/routeros-version.env \
+#     -f mikrotik/tests/docker-compose.yml run --rm tester
 #
 # or use ./mikrotik/tests/run.sh which adds log capture and cleanup.
 
@@ -13,8 +14,8 @@ services:
       context: ./chr
       dockerfile: Dockerfile
       args:
-        ROUTEROS_VERSION: "${ROUTEROS_VERSION:-7.22}"
-    image: pretty-useful-mikrotik-chr:${ROUTEROS_VERSION:-7.22}
+        ROUTEROS_VERSION: "${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}"
+    image: pretty-useful-mikrotik-chr:${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}
     container_name: pretty-useful-mikrotik-chr
     platform: linux/amd64
     restart: "no"
@@ -49,7 +50,7 @@ services:
       ROUTEROS_USER: "${ROUTEROS_USER:-admin}"
       ROUTEROS_PASSWORD: "${ROUTEROS_PASSWORD:-}"
       ROUTEROS_WAIT_SEC: "${ROUTEROS_WAIT_SEC:-180}"
-      EXPECT_ROUTEROS_VERSION: "${EXPECT_ROUTEROS_VERSION:-7.22}"
+      EXPECT_ROUTEROS_VERSION: "${EXPECT_ROUTEROS_VERSION:-${ROUTEROS_VERSION:?set ROUTEROS_VERSION}}"
       PYTHONUNBUFFERED: "1"
       PYTHONDONTWRITEBYTECODE: "1"
     volumes:
