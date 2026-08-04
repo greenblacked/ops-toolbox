@@ -159,8 +159,8 @@ while IFS= read -r -d '' path; do
   fi
 
   # --- private keys ---
-  head="\$(git cat-file blob "\$blob" 2>/dev/null | head -c 100)" || true
-  case "\$head" in
+  first_bytes="\$(git cat-file blob "\$blob" 2>/dev/null | head -c 100)" || true
+  case "\$first_bytes" in
     *"-----BEGIN "*"PRIVATE KEY-----"*)
       printf 'pre-commit: %s looks like a private key\n' "\$path" >&2
       failed=1
