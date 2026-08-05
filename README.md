@@ -488,7 +488,7 @@ so a verdict is one click away rather than buried in a log.
 
 #### When CI runs
 
-Branches follow the typed-prefix convention — `feature/`, `ci/`, `chore/`,
+Branches follow the typed-prefix convention — `feat/`, `ci/`, `chore/`,
 `fix/` — and each event owns exactly one path, so a change is built once:
 
 - **`pull_request`** — every pull request, targeting `master` or another typed
