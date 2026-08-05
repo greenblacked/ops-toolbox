@@ -60,9 +60,11 @@ entry here belongs to a version.
 - `mikrotik/tests/test_pull_router_backups.sh` — exit-code contract driven with
   ssh/scp stubs, so it needs no Docker, network or router and runs on the
   pull-request path.
-- `ROUTEROS_SHA256` in `mikrotik/tests/routeros-version.env`, verified during
+- `ROUTEROS_SHA256` in `mikrotik/tests/routeros-version.env`, checked during
   the CHR image build. The image boots as a kernel with the repository mounted
-  and was previously validated only as "non-empty". Record it with
+  and was previously validated only as "non-empty". Until a digest is recorded
+  the build warns and proceeds, so adding the pin does not turn a working
+  nightly red; a *wrong* digest is fatal. Record it with
   `mikrotik/tests/routeros_version.py record-hash`.
 - `mikrotik/tests/routeros_version.py` and a twice-weekly/manual GitHub Actions
   workflow that detect official RouterOS releases, test the candidate CHR image

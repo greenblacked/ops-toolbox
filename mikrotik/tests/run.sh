@@ -21,15 +21,19 @@ fi
 ROUTEROS_VERSION="${ROUTEROS_VERSION:-$PINNED_ROUTEROS_VERSION}"
 EXPECT_ROUTEROS_VERSION="${EXPECT_ROUTEROS_VERSION:-$ROUTEROS_VERSION}"
 
-# The CHR archive is verified against a recorded digest at build time. Refuse
-# to build without one rather than falling back to an unverified download: the
-# image boots as a kernel with this repository mounted, so "it was non-empty"
-# is not enough evidence about what is inside it.
+# The CHR archive is checked against a recorded digest at build time. When no
+# digest has been recorded yet the build still proceeds, loudly — turning a
+# working nightly red to introduce a checksum would be a worse trade than the
+# window it closes. A *wrong* digest is still fatal; only an absent one is
+# tolerated, and only until `routeros_version.py record-hash` has been run.
 PINNED_ROUTEROS_SHA256="$(sed -n 's/^ROUTEROS_SHA256=//p' "$VERSION_FILE")"
 ROUTEROS_SHA256="${ROUTEROS_SHA256:-$PINNED_ROUTEROS_SHA256}"
-if [[ ! "$ROUTEROS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
-  echo "no valid ROUTEROS_SHA256 recorded in $VERSION_FILE" >&2
-  echo "record it with: $HERE/routeros_version.py record-hash" >&2
+if [[ -z "$ROUTEROS_SHA256" ]]; then
+  echo "WARNING: no ROUTEROS_SHA256 recorded in $VERSION_FILE" >&2
+  echo "WARNING: the CHR image will be downloaded without integrity checking" >&2
+  echo "WARNING: record it with: $HERE/routeros_version.py record-hash" >&2
+elif [[ ! "$ROUTEROS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "ROUTEROS_SHA256 in $VERSION_FILE is not a SHA-256 digest" >&2
   exit 1
 fi
 

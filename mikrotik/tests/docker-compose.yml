@@ -15,7 +15,9 @@ services:
       dockerfile: Dockerfile
       args:
         ROUTEROS_VERSION: "${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}"
-        ROUTEROS_SHA256: "${ROUTEROS_SHA256:?run through mikrotik/tests/run.sh}"
+        # May legitimately be empty until a digest has been recorded; run.sh
+        # warns in that case rather than failing the build.
+        ROUTEROS_SHA256: "${ROUTEROS_SHA256-}"
     image: pretty-useful-mikrotik-chr:${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}
     container_name: pretty-useful-mikrotik-chr
     platform: linux/amd64

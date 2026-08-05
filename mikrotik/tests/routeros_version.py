@@ -85,17 +85,24 @@ def _write_pinned_sha256(digest: str, path: Path = VERSION_FILE) -> None:
 
 
 def compute_sha256(version: str, timeout: int = 300) -> str:
-    """Stream the CHR archive and hash it without holding it in memory."""
-    url = chr_download_url(version)
-    request = urllib.request.Request(url, headers={"User-Agent": "ops-toolbox/1"})
-    digest = hashlib.sha256()
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            for chunk in iter(lambda: response.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except (OSError, urllib.error.URLError) as exc:
-        raise ReleaseError(f"cannot download {url}: {exc}") from exc
-    return digest.hexdigest()
+    """Stream the CHR archive and hash it without holding it in memory.
+
+    Tries the same hosts as the Dockerfile, in the same order, so a digest can
+    be recorded for anything the build is capable of downloading.
+    """
+    errors = []
+    for url in chr_download_urls(version):
+        request = urllib.request.Request(url, headers={"User-Agent": "ops-toolbox/1"})
+        digest = hashlib.sha256()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except (OSError, urllib.error.URLError) as exc:
+            errors.append(f"{url}: {exc}")
+            continue
+        return digest.hexdigest()
+    raise ReleaseError("cannot download the CHR archive: " + "; ".join(errors))
 
 
 def version_key(value: str) -> tuple[int, int, int]:
@@ -151,9 +158,22 @@ def fetch_latest_version(channel: str, timeout: int = 30) -> str:
     return parse_release_feed(payload, channel)
 
 
-def chr_download_url(version: str) -> str:
+def chr_download_urls(version: str) -> list[str]:
+    """Both hosts the Dockerfile tries, in the same order.
+
+    The build falls back to the CDN for rc/beta builds, so hashing only the
+    primary host would fail to record a digest for an archive the build would
+    happily have used.
+    """
     checked = validate_version(version)
-    return f"https://download.mikrotik.com/routeros/{checked}/chr-{checked}.vdi.zip"
+    return [
+        f"https://{host}/routeros/{checked}/chr-{checked}.vdi.zip"
+        for host in ("download.mikrotik.com", "cdn.mikrotik.com")
+    ]
+
+
+def chr_download_url(version: str) -> str:
+    return chr_download_urls(version)[0]
 
 
 def verify_chr_download(version: str, timeout: int = 30) -> None:

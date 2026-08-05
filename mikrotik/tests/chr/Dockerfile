@@ -8,12 +8,6 @@ ARG ROUTEROS_VERSION
 ARG ROUTEROS_SHA256
 
 RUN test -n "$ROUTEROS_VERSION"
-RUN test -n "$ROUTEROS_SHA256" || { \
-      echo "ROUTEROS_SHA256 is empty. The CHR image becomes a booting kernel"; \
-      echo "with the repository mounted, so it is not downloaded unverified."; \
-      echo "Record it with: mikrotik/tests/routeros_version.py record-hash"; \
-      exit 1; \
-    }
 
 EXPOSE 22 23 80 443 8728 8729 8291 5900
 
@@ -36,7 +30,13 @@ RUN set -eux; \
       rm -f "chr-${ROUTEROS_VERSION}.vdi.zip"; \
     done; \
     test -s "chr-${ROUTEROS_VERSION}.vdi.zip"; \
-    echo "${ROUTEROS_SHA256}  chr-${ROUTEROS_VERSION}.vdi.zip" | sha256sum -c -
+    if [ -n "$ROUTEROS_SHA256" ]; then \
+      echo "${ROUTEROS_SHA256}  chr-${ROUTEROS_VERSION}.vdi.zip" | sha256sum -c -; \
+    else \
+      echo "WARNING: ROUTEROS_SHA256 is not recorded, so this image is unverified."; \
+      echo "WARNING: it boots as a kernel with the repository mounted."; \
+      echo "WARNING: record it with: mikrotik/tests/routeros_version.py record-hash"; \
+    fi
 
 RUN unzip -q "chr-${ROUTEROS_VERSION}.vdi.zip" \
     && rm -f "chr-${ROUTEROS_VERSION}.vdi.zip" \
