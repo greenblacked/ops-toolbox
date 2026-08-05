@@ -1,6 +1,6 @@
 name: CI
 
-# Triggers follow the repository's typed-branch convention — feature/, ci/,
+# Triggers follow the repository's typed-branch convention — feat/, ci/,
 # chore/, fix/ — and are arranged so a change is built once rather than twice.
 #
 # `push` was previously unfiltered, so a branch with an open pull request ran
@@ -22,6 +22,13 @@ on:
     # feature branch is checked too, instead of silently running nothing.
     branches:
       - master
+      # feat/, not feature/ — the convention changed after this list was
+      # written, so a pull request stacked onto a feat/ branch matched nothing
+      # and ran no checks at all. A target branch that matches no pattern does
+      # not fail the pull request; it merges green because nothing ever ran,
+      # which is the worst way for a filter to be wrong. feature/ is kept so
+      # the older prefix does not silently lose coverage either.
+      - 'feat/**'
       - 'feature/**'
       - 'ci/**'
       - 'chore/**'

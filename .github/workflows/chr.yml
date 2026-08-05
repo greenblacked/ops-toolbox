@@ -12,8 +12,12 @@ name: RouterOS CHR
 
 on:
   schedule:
-    # 03:00 UTC daily.
-    - cron: '0 3 * * *'
+    # 03:37 UTC daily. The odd minute is deliberate: GitHub queues scheduled
+    # workflows and the top of the hour is heavily contended, so '0 3 * * *'
+    # was landing between 05:44 and 06:21 — up to three hours late, and under
+    # enough load a run is dropped rather than merely delayed. An off-round
+    # minute competes with far less and lands close to the requested time.
+    - cron: '37 3 * * *'
   workflow_dispatch: {}
 
 permissions:
