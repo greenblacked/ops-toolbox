@@ -1,6 +1,6 @@
 name: RouterOS CHR
 
-# The RouterOS integration suite boots a real CHR 7.22 under QEMU, so it is far
+# The RouterOS integration suite boots a real CHR 7.23.3 under QEMU, so it is far
 # too slow for the pull-request path. It runs nightly instead, plus on demand.
 #
 # Two things worth knowing if this starts looking flaky:

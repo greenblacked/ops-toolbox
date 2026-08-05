@@ -1,10 +1,12 @@
-# MikroTik Cloud Hosted Router (CHR) — same major.minor as production (7.22).
+# MikroTik Cloud Hosted Router (CHR), version supplied by the test harness.
 # Build downloads the official VDI from MikroTik and converts it to qcow2 for QEMU.
-# Build with: docker compose -f mikrotik/tests/docker-compose.yml build chr
+# Build through mikrotik/tests/run.sh, which supplies the pinned version.
 # RouterOS is proprietary; use per MikroTik CHR license terms.
 FROM alpine:3.21.3
 
-ARG ROUTEROS_VERSION=7.22
+ARG ROUTEROS_VERSION
+
+RUN test -n "$ROUTEROS_VERSION"
 
 EXPOSE 22 23 80 443 8728 8729 8291 5900
 

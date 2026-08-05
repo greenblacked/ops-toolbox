@@ -1,12 +1,26 @@
 #!/usr/bin/env bash
-# Run the MikroTik script integration tests against RouterOS CHR 7.22 in Docker.
+# Run the MikroTik script integration tests against the pinned RouterOS CHR in Docker.
 # Host requirement: Docker (with compose v2). No host Python or pip needed.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 COMPOSE_FILE="$HERE/docker-compose.yml"
+VERSION_FILE="$HERE/routeros-version.env"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-pretty-useful-mikrotik}"
 export COMPOSE_PROJECT_NAME
+
+if [ ! -f "$VERSION_FILE" ]; then
+  echo "missing RouterOS version file: $VERSION_FILE" >&2
+  exit 1
+fi
+PINNED_ROUTEROS_VERSION="$(sed -n 's/^ROUTEROS_VERSION=//p' "$VERSION_FILE")"
+if [[ ! "$PINNED_ROUTEROS_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "invalid ROUTEROS_VERSION in $VERSION_FILE" >&2
+  exit 1
+fi
+ROUTEROS_VERSION="${ROUTEROS_VERSION:-$PINNED_ROUTEROS_VERSION}"
+EXPECT_ROUTEROS_VERSION="${EXPECT_ROUTEROS_VERSION:-$ROUTEROS_VERSION}"
+export ROUTEROS_VERSION EXPECT_ROUTEROS_VERSION
 
 # CHR boots under QEMU. With /dev/kvm it takes a minute; without it, TCG
 # emulation takes many. The device cannot be declared conditionally in compose
@@ -64,7 +78,7 @@ trap_cleanup() {
 }
 trap trap_cleanup EXIT INT TERM
 
-echo "=== Building images (downloads CHR 7.22 on first build) ==="
+echo "=== Building images (downloads CHR $ROUTEROS_VERSION on first build) ==="
 docker compose "${COMPOSE_FILES[@]}" build
 
 echo "=== Starting CHR (waiting for healthy state)… ==="

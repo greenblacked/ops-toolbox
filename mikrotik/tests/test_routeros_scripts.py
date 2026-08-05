@@ -10,7 +10,7 @@ import pytest
 from routeros_api import exceptions as ros_exc
 
 MIKROTIK_DIR = pathlib.Path(__file__).resolve().parent.parent
-EXPECT_VER = os.environ.get("EXPECT_ROUTEROS_VERSION", "7.22")
+EXPECT_VER = os.environ["EXPECT_ROUTEROS_VERSION"]
 SCRIPT_FILES = sorted(p for p in MIKROTIK_DIR.glob("*.lua") if p.is_file())
 
 # Scripts safe to load+run during tests (no reboot, no upstream calls).
@@ -27,7 +27,7 @@ RUNNABLE_SCRIPTS = (
     # test_script_add_remove_roundtrip below.
 )
 
-# RouterOS 7.22 Cloud Hosted Router (e.g. x86_64 under QEMU/TCG on Apple Silicon):
+# RouterOS CHR (e.g. x86_64 under QEMU/TCG on Apple Silicon) can expose a
 # /system/script/run uses a parser that rejects '_' in :local and :global names
 # ("expected end of command" at the underscore). The same source runs via
 # :parse, /execute, and script add. Not a bug in the repo .lua files.
@@ -35,7 +35,8 @@ RUNNABLE_SCRIPTS = (
 # exercised via /system/script/run on CHR.
 XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
     reason=(
-        "RouterOS 7.22 CHR (QEMU/TCG): /system/script/run misparses '_' in :local/:global "
+        f"RouterOS {EXPECT_VER} CHR (QEMU/TCG): /system/script/run misparses '_' in "
+        ":local/:global "
         "names; :parse, /execute, and script add are fine. Not a .lua source bug."
     ),
     strict=False,
