@@ -546,8 +546,11 @@ minutes. The Linux runner has `/dev/kvm`, which
 a device that does not exist, which would break the suite for everyone on macOS.
 
 [`routeros-version.yml`](.github/workflows/routeros-version.yml) checks
-MikroTik's official release feed every Monday and Thursday at 03:00 UTC, and
-also supports manual runs with a channel, explicit version, or check-only mode.
+MikroTik's official stable release feed every Monday and Thursday at 03:00 UTC,
+and also supports manual runs with an explicit version or check-only mode.
+Long-term releases can be exercised manually in check-only mode, but cannot
+replace the canonical stable compatibility pin merely because their version is
+lower.
 A newer CHR image must boot and pass the complete MikroTik suite before the
 workflow updates the version and documentation on a `chore/routeros-VERSION`
 branch and opens a pull request. It never commits directly to `master`; an

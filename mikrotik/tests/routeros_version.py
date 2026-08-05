@@ -19,6 +19,7 @@ CHANNEL_FEEDS = {
     "stable": "https://download.mikrotik.com/routeros/latest-stable.rss",
     "long-term": "https://download.mikrotik.com/routeros/latest-long-term.rss",
 }
+PROMOTABLE_CHANNEL = "stable"
 DOCUMENTATION_FILES = (
     Path("README.md"),
     Path("mikrotik/README.md"),
@@ -47,6 +48,15 @@ def version_key(value: str) -> tuple[int, int, int]:
     parts = [int(part) for part in validate_version(value).split(".")]
     parts.extend([0] * (3 - len(parts)))
     return parts[0], parts[1], parts[2]
+
+
+def require_promotable_channel(channel: str) -> None:
+    """Reject channels that must not replace the canonical compatibility pin."""
+    if channel != PROMOTABLE_CHANNEL:
+        raise ReleaseError(
+            f"channel {channel!r} is available only for check-only testing; "
+            f"version bumps must use {PROMOTABLE_CHANNEL!r}"
+        )
 
 
 def read_pinned_version(path: Path = VERSION_FILE) -> str:
@@ -157,6 +167,8 @@ def bump_version(target: str, repo_root: Path = REPO_ROOT) -> None:
 
 
 def _check(args: argparse.Namespace) -> int:
+    if args.for_version_bump:
+        require_promotable_channel(args.channel)
     current = read_pinned_version()
     latest = validate_version(args.version) if args.version else fetch_latest_version(args.channel)
     if not args.skip_download_check:
@@ -168,7 +180,7 @@ def _check(args: argparse.Namespace) -> int:
         print(f"update_available={str(update_available).lower()}")
         print(f"channel={args.channel}")
     else:
-        state = "update available" if update_available else "already current"
+        state = "newer release available" if update_available else "no newer release"
         print(f"RouterOS {args.channel}: current={current} latest={latest} ({state})")
         print(f"CHR archive: {chr_download_url(latest)}")
     return 0
@@ -183,6 +195,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--version", help="test an explicit version instead of reading RSS")
     check.add_argument("--skip-download-check", action="store_true")
     check.add_argument("--format", choices=("text", "github"), default="text")
+    check.add_argument(
+        "--for-version-bump",
+        action="store_true",
+        help="require a channel allowed to replace the canonical version pin",
+    )
     check.set_defaults(func=_check)
 
     bump = subparsers.add_parser("bump", help="update the pinned and documented version")

@@ -16,6 +16,9 @@ entry here belongs to a version.
 
 ### Changed
 
+- Long-term RouterOS workflow runs are now explicitly check-only; attempts to
+  use that channel for the canonical stable version bump fail clearly instead
+  of silently reporting an older long-term release as current.
 - RouterOS CHR compatibility was bumped from 7.22 to 7.23.3 after the full Docker integration suite passed.
 - **The repository was renamed from `pretty-useful-scripts` to `ops-toolbox`.**
   GitHub redirects the old URLs, so existing clones and links keep working;

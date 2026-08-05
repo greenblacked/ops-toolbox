@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: RouterOS release channel
+        description: RouterOS channel (long-term requires check-only mode)
         required: true
         default: stable
         type: choice
@@ -44,6 +44,7 @@ jobs:
     env:
       RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
       REQUESTED_VERSION: ${{ inputs.version || '' }}
+      CHECK_ONLY: ${{ inputs.check_only == true }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
@@ -58,6 +59,9 @@ jobs:
           args=(check --channel "$RELEASE_CHANNEL" --format github)
           if [ -n "$REQUESTED_VERSION" ]; then
             args+=(--version "$REQUESTED_VERSION")
+          fi
+          if [ "$CHECK_ONLY" != "true" ]; then
+            args+=(--for-version-bump)
           fi
           python3 mikrotik/tests/routeros_version.py "${args[@]}" >> "$GITHUB_OUTPUT"
 

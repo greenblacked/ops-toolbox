@@ -42,6 +42,11 @@ class RouterOSVersionTests(unittest.TestCase):
             (7, 22, 0),
         )
 
+    def test_only_stable_channel_can_replace_canonical_pin(self) -> None:
+        routeros_version.require_promotable_channel("stable")
+        with self.assertRaisesRegex(routeros_version.ReleaseError, "check-only"):
+            routeros_version.require_promotable_channel("long-term")
+
     def test_bump_updates_canonical_docs_and_changelog(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
