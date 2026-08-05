@@ -260,10 +260,17 @@ append_rc_block() {
 # preflight
 # ---------------------------------------------------------------------------
 bold "=== install_devtools: preflight checks ==="
-mkdir -p "$LOG_DIR"
-: > "$LOG_FILE"
-echo "install_devtools.sh log - $(date)" >> "$LOG_FILE"
-info "log file: $C_DIM$LOG_FILE$C_RESET"
+# A dry run writes nothing — including this script's own log. Creating it
+# unconditionally left one orphan per preview and contradicted the promise
+# README.md makes. run_cmd() already skips the appends.
+if (( DRY_RUN == 1 )); then
+  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  mkdir -p "$LOG_DIR"
+  : > "$LOG_FILE"
+  echo "install_devtools.sh log - $(date)" >> "$LOG_FILE"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
 
 # OS
 if [[ "$(uname -s)" != "Darwin" ]]; then

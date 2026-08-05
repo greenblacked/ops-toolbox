@@ -126,10 +126,17 @@ case "$PKG_MGR" in
     ;;
 esac
 
-: > "$LOG_FILE"
-printf 'linux stay_fresh.sh log - %s\n' "$(date)" >> "$LOG_FILE"
-info "package manager: $PKG_MGR"
-info "log file: $C_DIM$LOG_FILE$C_RESET"
+# A dry run writes nothing — including this script's own log. See the same
+# guard in install_devtools.sh; run_cmd() already skips the appends.
+if (( DRY_RUN == 1 )); then
+  info "package manager: $PKG_MGR"
+  info "dry-run: would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  : > "$LOG_FILE"
+  printf 'linux stay_fresh.sh log - %s\n' "$(date)" >> "$LOG_FILE"
+  info "package manager: $PKG_MGR"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
 
 # Root already has everything; treating that as "sudo missing" is the mistake
 # that breaks this script inside a container, which is exactly where the tests

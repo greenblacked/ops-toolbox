@@ -285,11 +285,16 @@ clean_broken_gcloud_virtenv() {
 # ---------------------------------------------------------------------------
 bold "=== install_apps: preflight checks ==="
 
-# Start the log
-mkdir -p "$LOG_DIR"
-: > "$LOG_FILE"
-echo "install_apps.sh log - $(date)" >> "$LOG_FILE"
-info "log file: $C_DIM$LOG_FILE$C_RESET"
+# Start the log. A dry run writes nothing — including this — so the file is
+# only created on a real run. See the same guard in install_devtools.sh.
+if (( DRY_RUN == 1 )); then
+  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  mkdir -p "$LOG_DIR"
+  : > "$LOG_FILE"
+  echo "install_apps.sh log - $(date)" >> "$LOG_FILE"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
 
 # 1. OS check
 if [[ "$(uname -s)" != "Darwin" ]]; then

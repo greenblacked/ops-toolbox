@@ -20,7 +20,20 @@ if [[ ! "$PINNED_ROUTEROS_VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
 fi
 ROUTEROS_VERSION="${ROUTEROS_VERSION:-$PINNED_ROUTEROS_VERSION}"
 EXPECT_ROUTEROS_VERSION="${EXPECT_ROUTEROS_VERSION:-$ROUTEROS_VERSION}"
-export ROUTEROS_VERSION EXPECT_ROUTEROS_VERSION
+
+# The CHR archive is verified against a recorded digest at build time. Refuse
+# to build without one rather than falling back to an unverified download: the
+# image boots as a kernel with this repository mounted, so "it was non-empty"
+# is not enough evidence about what is inside it.
+PINNED_ROUTEROS_SHA256="$(sed -n 's/^ROUTEROS_SHA256=//p' "$VERSION_FILE")"
+ROUTEROS_SHA256="${ROUTEROS_SHA256:-$PINNED_ROUTEROS_SHA256}"
+if [[ ! "$ROUTEROS_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "no valid ROUTEROS_SHA256 recorded in $VERSION_FILE" >&2
+  echo "record it with: $HERE/routeros_version.py record-hash" >&2
+  exit 1
+fi
+
+export ROUTEROS_VERSION EXPECT_ROUTEROS_VERSION ROUTEROS_SHA256
 
 # CHR boots under QEMU. With /dev/kvm it takes a minute; without it, TCG
 # emulation takes many. The device cannot be declared conditionally in compose

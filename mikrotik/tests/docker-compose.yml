@@ -15,6 +15,7 @@ services:
       dockerfile: Dockerfile
       args:
         ROUTEROS_VERSION: "${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}"
+        ROUTEROS_SHA256: "${ROUTEROS_SHA256:?run through mikrotik/tests/run.sh}"
     image: pretty-useful-mikrotik-chr:${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}
     container_name: pretty-useful-mikrotik-chr
     platform: linux/amd64
