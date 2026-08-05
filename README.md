@@ -19,11 +19,11 @@ there does not necessarily mean a red pull request.
 The two lint badges are static labels for the gates CI enforces, not live
 results — the CI badge is the one that reflects the current state of `master`.
 
-Helper scripts for setting up, maintaining, and working on the small set of
-machines I touch regularly — macOS workstations, a Windows dev machine, and a
-MikroTik router, plus everyday Git helpers. The repository is intentionally
-small: each folder should be easy to inspect, safe to run more than once, and
-focused on reducing repeat manual work.
+Helper scripts for setting up, maintaining, and working on the machines I touch
+regularly — macOS workstations, Linux servers and workstations, a Windows dev
+machine, and a MikroTik router, plus everyday Git helpers and a portable
+Kubernetes toolbox. Each folder should be easy to inspect, safe to run more
+than once, and focused on reducing repeat manual work.
 
 Three rules hold everywhere, and the test suites enforce them:
 
