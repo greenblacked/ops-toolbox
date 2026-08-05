@@ -26,6 +26,18 @@ live in `/system script` on the router and are run either manually or from
 | `firewall_drift_baseline.lua`   | Manual helper that re-arms `firewall_drift` after intentional changes.  |
 | `mac_allowlist_dhcp.lua`        | Flags (and optionally blocks) DHCP leases for non-allowlisted MACs.     |
 | `rogue_dns_check.lua`           | Detects DNS upstream hijack and clients using non-approved resolvers.   |
+| `backup_file_cleanup.lua`       | Prunes old backup/export files so flash does not silently fill up.      |
+| `cert_expiry_watch.lua`         | Warns before a certificate expires, while there is still time to act.   |
+| `ddns_update.lua`               | Pushes the current WAN address to Cloudflare DNS when it changes.       |
+| `netwatch_notify.lua`           | Turns RouterOS netwatch up/down events into Telegram alerts.            |
+| `wan_link_flap_notify.lua`      | Alerts on a WAN link flapping, which a plain up/down check misses.      |
+| `latency_monitor.lua`           | Tracks RTT to chosen targets and alerts on sustained degradation.       |
+| `bandwidth_spike.lua`           | Alerts when interface throughput jumps well above its recent norm.      |
+| `traffic_quota.lua`             | Tracks monthly volume per interface and warns before a cap is hit.      |
+| `brute_force_block.lua`         | Detects repeated auth failures and adds the source to a block list.     |
+| `vpn_health.lua`                | Watches IPsec / OVPN / L2TP sessions and alerts on state changes.       |
+| `wireguard_watch.lua`           | Alerts when a WireGuard peer stops handshaking.                         |
+| `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
 
 ## Installation

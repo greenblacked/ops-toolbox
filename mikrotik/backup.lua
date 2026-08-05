@@ -20,7 +20,16 @@
 :local Filename "backup-$DeviceName-$Date-$Ver";
 
 # Optional password for the binary backup. Leave empty to disable encryption.
+#
+# Set it from a :global at boot rather than typing it here — this file is
+# tracked, so a password written into it lands in the next commit. Same
+# mechanism tg_send.lua and ddns_update.lua use:
+#
+#     /system script add name=startup source={:global BACKUP_PASSWORD "s3cret";}
+#     /system scheduler add name=startup on-event=startup start-time=startup
 :local BackupPassword "";
+:global BACKUP_PASSWORD;
+:if ([:len $BACKUP_PASSWORD] > 0) do={ :set BackupPassword $BACKUP_PASSWORD; }
 
 :do {
     :if ([:len $BackupPassword] > 0) do={
@@ -36,7 +45,12 @@
         :local ErrText "\E2\9D\8C <b>$DeviceName:</b> backup FAILED at <code>$Date $Time</code>.";
         :local Send [:parse [/system script get tg_send source]];
         $Send MessageText=$ErrText;
-    } on-error={};
+    } on-error={
+        # Without this the backup-failed alert can itself fail — no route
+        # out, wrong token, tg_send not installed — and nothing anywhere
+        # would record that the backup failed OR that the alert did.
+        :log error "backup: could not send the failure notification (is tg_send installed?)";
+    };
     :error "backup failed";
 }
 

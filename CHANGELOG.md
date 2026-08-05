@@ -27,6 +27,13 @@ entry here belongs to a version.
   channel to long-term made `latest` older than `installed`, and the script
   announced it as an available update — advertising a downgrade. It now gates
   on RouterOS's own `status` verdict.
+- `mikrotik/backup.lua` had no way to set the backup password except editing
+  the tracked script, unlike every other secret in the package. It now reads a
+  `BACKUP_PASSWORD` global, matching `tg_send.lua` and `ddns_update.lua`.
+- `backup.lua`, `detect_internet.lua` and `update_check.lua` swallowed a failed
+  Telegram send with a bare `on-error={}`. A notification that never arrives and
+  leaves no log makes the whole package silently decorative; all three now log.
+- Twelve RouterOS scripts were missing from `mikrotik/README.md`.
 - `--dry-run` created a timestamped log file in five scripts, contradicting the
   first promise in `README.md`. Log creation is now guarded, and the path that
   *would* be written is printed instead.
@@ -53,6 +60,10 @@ entry here belongs to a version.
 
 ### Added
 
+- `mikrotik/tests/test_lua_conventions.sh` — RouterOS script conventions checked
+  without a router, so they run on the pull-request path rather than waiting for
+  the nightly CHR suite. 14 of the 25 scripts had no test of any kind, and a
+  batch of twelve had landed with neither tests nor a README entry.
 - `test-env/static/check_conventions.sh` asserts "a dry run writes nothing"
   against the filesystem for every `--dry-run`-capable CLI, running each under
   a scratch `HOME` and `TMPDIR`. The previous check read the script's own

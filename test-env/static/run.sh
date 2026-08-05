@@ -31,4 +31,7 @@ rc=0
 printf '\n--- pull_router_backups.sh exit codes ---\n'
 "$REPO_ROOT/mikrotik/tests/test_pull_router_backups.sh" || rc=1
 
+printf '\n--- RouterOS script conventions ---\n'
+"$REPO_ROOT/mikrotik/tests/test_lua_conventions.sh" || rc=1
+
 exit "$rc"

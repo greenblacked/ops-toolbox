@@ -14,4 +14,6 @@
     :local MessageText "\F0\9F\94\8E <b>$DeviceName:</b> WAN detection refreshed.";
     :local Send [:parse [/system script get tg_send source]];
     $Send MessageText=$MessageText;
-} on-error={};
+} on-error={
+    :log warning "detect_internet: could not send notification (is tg_send installed?)";
+};

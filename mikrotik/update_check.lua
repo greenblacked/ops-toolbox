@@ -35,7 +35,9 @@
     :do {
         :local Send [:parse [/system script get tg_send source]];
         $Send MessageText=$MessageText;
-    } on-error={};
+    } on-error={
+        :log warning "update_check: could not send notification (is tg_send installed?)";
+    };
 } else={
     # Differing versions with no "new version available" verdict is the
     # channel-switch case: worth a log line, never a notification telling
