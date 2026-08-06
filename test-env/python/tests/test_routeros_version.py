@@ -14,6 +14,9 @@ assert SPEC is not None and SPEC.loader is not None
 routeros_version = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(routeros_version)
 
+# Any valid-shaped digest; these tests never touch the network.
+DIGEST = "a" * 64
+
 
 class RouterOSVersionTests(unittest.TestCase):
     def test_parse_stable_release_feed(self) -> None:
@@ -62,7 +65,7 @@ class RouterOSVersionTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            routeros_version.bump_version("7.23.3", root)
+            routeros_version.bump_version("7.23.3", root, digest=DIGEST)
 
             self.assertIn("ROUTEROS_VERSION=7.23.3", version_file.read_text())
             for relative in routeros_version.DOCUMENTATION_FILES:
@@ -79,7 +82,57 @@ class RouterOSVersionTests(unittest.TestCase):
             version_file.parent.mkdir(parents=True)
             version_file.write_text("ROUTEROS_VERSION=7.22\n", encoding="utf-8")
             with self.assertRaises(routeros_version.ReleaseError):
-                routeros_version.bump_version("7.22", root)
+                routeros_version.bump_version("7.22", root, digest=DIGEST)
+
+    def test_documented_version_replacement_is_anchored(self) -> None:
+        """A two-part pin must not rewrite the longer versions around it.
+
+        An unanchored str.replace of "7.23" also turns "7.23.3" into "7.24.3"
+        and "17.23" into "17.24" — silent corruption in four documents.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            doc = root / "doc.md"
+            doc.write_text("CHR 7.23, CHR 7.23.3, build 17.23\n", encoding="utf-8")
+            routeros_version._replace_documented_version(
+                root, "7.23", "7.24", files=[Path("doc.md")]
+            )
+            self.assertEqual(doc.read_text(encoding="utf-8").strip(),
+                             "CHR 7.24, CHR 7.23.3, build 17.23")
+
+    def test_validate_sha256(self) -> None:
+        self.assertEqual(routeros_version.validate_sha256("A" * 64), "a" * 64)
+        for bad in ("", "abc", "z" * 64, "a" * 63, "a" * 65):
+            with self.assertRaises(routeros_version.ReleaseError):
+                routeros_version.validate_sha256(bad)
+
+    def test_sha256_round_trip_leaves_version_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            env = Path(temp_dir) / "routeros-version.env"
+            env.write_text("ROUTEROS_VERSION=7.23.3\nROUTEROS_SHA256=\n", encoding="utf-8")
+            self.assertEqual(routeros_version.read_pinned_sha256(env), "")
+            routeros_version._write_pinned_sha256(DIGEST, env)
+            self.assertEqual(routeros_version.read_pinned_sha256(env), DIGEST)
+            self.assertEqual(routeros_version.read_pinned_version(env), "7.23.3")
+
+    def test_bump_records_the_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            version_file = root / "mikrotik/tests/routeros-version.env"
+            version_file.parent.mkdir(parents=True)
+            version_file.write_text(
+                "ROUTEROS_VERSION=7.22\nROUTEROS_SHA256=" + ("b" * 64) + "\n",
+                encoding="utf-8",
+            )
+            for relative in routeros_version.DOCUMENTATION_FILES:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("RouterOS 7.22\n", encoding="utf-8")
+            (root / "CHANGELOG.md").write_text(
+                "## [Unreleased]\n\n### Changed\n\n", encoding="utf-8"
+            )
+            routeros_version.bump_version("7.23.3", root, digest=DIGEST)
+            self.assertEqual(routeros_version.read_pinned_sha256(version_file), DIGEST)
 
 
 if __name__ == "__main__":

@@ -226,6 +226,27 @@ again at the end, and have `--verbose` switch from `>>"$LOG_FILE" 2>&1` to
 `2>&1 | tee -a "$LOG_FILE"` with `rc="${PIPESTATUS[0]}"` to keep the real exit
 status.
 
+**Guard all of that behind `(( DRY_RUN == 1 ))`.** A dry run writes nothing, and
+the log is not an exception — this sentence used to say "truncate at startup"
+with no qualifier, and five scripts duly created a timestamped file on every
+preview, leaving orphans in `TMPDIR` and contradicting the first promise in
+`README.md`. Under a dry run, print the path you *would* have written instead:
+
+```bash
+if (( DRY_RUN == 1 )); then
+  info "dry-run: would write log: $LOG_FILE"
+else
+  : > "$LOG_FILE"
+  printf 'stay_fresh.sh log - %s\n' "$(date)" >> "$LOG_FILE"
+  info "log file: $LOG_FILE"
+fi
+```
+
+`test-env/static/check_conventions.sh` asserts this by running every
+`--dry-run`-capable CLI against a scratch `HOME` and `TMPDIR` and failing on any
+filesystem change, so a regression here is caught by CI rather than by someone
+noticing stray files months later.
+
 ## PowerShell scripts
 
 Comment-based help (`.SYNOPSIS`, `.DESCRIPTION`, `.EXAMPLE`), then

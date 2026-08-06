@@ -14,6 +14,30 @@ entry here belongs to a version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `mikrotik/pull_router_backups.sh` exited `0` when it could not reach the
+  router at all. An unreachable host, a rejected key or SFTP switched off in
+  IP → Services were indistinguishable from "no backups yet", so a cron job
+  reported success while backups silently stopped. It now probes reachability
+  first and separates *could not connect* (`2`) from *reached it but the
+  transfer failed* (`1`) from *connected, nothing to pull yet* (`0`).
+- `mikrotik/update_check.lua` compared installed and latest versions with `!=`,
+  which only answers "are these different". Switching a router from the stable
+  channel to long-term made `latest` older than `installed`, and the script
+  announced it as an available update — advertising a downgrade. It now gates
+  on RouterOS's own `status` verdict.
+- `mikrotik/backup.lua` had no way to set the backup password except editing
+  the tracked script, unlike every other secret in the package. It now reads a
+  `BACKUP_PASSWORD` global, matching `tg_send.lua` and `ddns_update.lua`.
+- `backup.lua`, `detect_internet.lua` and `update_check.lua` swallowed a failed
+  Telegram send with a bare `on-error={}`. A notification that never arrives and
+  leaves no log makes the whole package silently decorative; all three now log.
+- Twelve RouterOS scripts were missing from `mikrotik/README.md`.
+- `--dry-run` created a timestamped log file in five scripts, contradicting the
+  first promise in `README.md`. Log creation is now guarded, and the path that
+  *would* be written is printed instead.
+
 ### Changed
 
 - Long-term RouterOS workflow runs are now explicitly check-only; attempts to
@@ -36,6 +60,23 @@ entry here belongs to a version.
 
 ### Added
 
+- `mikrotik/tests/test_lua_conventions.sh` — RouterOS script conventions checked
+  without a router, so they run on the pull-request path rather than waiting for
+  the nightly CHR suite. 14 of the 25 scripts had no test of any kind, and a
+  batch of twelve had landed with neither tests nor a README entry.
+- `test-env/static/check_conventions.sh` asserts "a dry run writes nothing"
+  against the filesystem for every `--dry-run`-capable CLI, running each under
+  a scratch `HOME` and `TMPDIR`. The previous check read the script's own
+  "no changes written" output, which stayed green while files were created.
+- `mikrotik/tests/test_pull_router_backups.sh` — exit-code contract driven with
+  ssh/scp stubs, so it needs no Docker, network or router and runs on the
+  pull-request path.
+- `ROUTEROS_SHA256` in `mikrotik/tests/routeros-version.env`, checked during
+  the CHR image build. The image boots as a kernel with the repository mounted
+  and was previously validated only as "non-empty". Until a digest is recorded
+  the build warns and proceeds, so adding the pin does not turn a working
+  nightly red; a *wrong* digest is fatal. Record it with
+  `mikrotik/tests/routeros_version.py record-hash`.
 - `mikrotik/tests/routeros_version.py` and a twice-weekly/manual GitHub Actions
   workflow that detect official RouterOS releases, test the candidate CHR image
   in Docker, and open a version/documentation bump pull request only after the

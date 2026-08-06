@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 import urllib.error
@@ -27,6 +28,7 @@ DOCUMENTATION_FILES = (
     Path(".github/workflows/chr.yml"),
 )
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 RSS_TITLE_RE = re.compile(
     r"^RouterOS (?P<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?) "
     r"\[(?P<channel>stable|long-term)\]$"
@@ -42,6 +44,65 @@ def validate_version(value: str) -> str:
     if not VERSION_RE.fullmatch(value):
         raise ReleaseError(f"invalid RouterOS version: {value!r}")
     return value
+
+
+def validate_sha256(value: str) -> str:
+    value = value.strip().lower()
+    if not SHA256_RE.fullmatch(value):
+        raise ReleaseError(f"invalid SHA-256 digest: {value!r}")
+    return value
+
+
+def read_pinned_sha256(path: Path = VERSION_FILE) -> str:
+    """The recorded digest, or '' when none has been recorded yet."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise ReleaseError(f"cannot read {path}: {exc}") from exc
+    values = [line.split("=", 1)[1] for line in lines if line.startswith("ROUTEROS_SHA256=")]
+    if len(values) > 1:
+        raise ReleaseError(f"{path} must contain at most one ROUTEROS_SHA256 entry")
+    if not values or not values[0].strip():
+        return ""
+    return validate_sha256(values[0])
+
+
+def _write_pinned_sha256(digest: str, path: Path = VERSION_FILE) -> None:
+    digest = validate_sha256(digest)
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if any(line.startswith("ROUTEROS_SHA256=") for line in lines):
+        lines = [
+            f"ROUTEROS_SHA256={digest}" if line.startswith("ROUTEROS_SHA256=") else line
+            for line in lines
+        ]
+    else:
+        # Appended rather than rejected: a version file predating the checksum
+        # pin is still valid input, and refusing it would strand the very bump
+        # that introduces the digest.
+        lines.append(f"ROUTEROS_SHA256={digest}")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def compute_sha256(version: str, timeout: int = 300) -> str:
+    """Stream the CHR archive and hash it without holding it in memory.
+
+    Tries the same hosts as the Dockerfile, in the same order, so a digest can
+    be recorded for anything the build is capable of downloading.
+    """
+    errors = []
+    for url in chr_download_urls(version):
+        request = urllib.request.Request(url, headers={"User-Agent": "ops-toolbox/1"})
+        digest = hashlib.sha256()
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except (OSError, urllib.error.URLError) as exc:
+            errors.append(f"{url}: {exc}")
+            continue
+        return digest.hexdigest()
+    raise ReleaseError("cannot download the CHR archive: " + "; ".join(errors))
 
 
 def version_key(value: str) -> tuple[int, int, int]:
@@ -97,9 +158,22 @@ def fetch_latest_version(channel: str, timeout: int = 30) -> str:
     return parse_release_feed(payload, channel)
 
 
-def chr_download_url(version: str) -> str:
+def chr_download_urls(version: str) -> list[str]:
+    """Both hosts the Dockerfile tries, in the same order.
+
+    The build falls back to the CDN for rc/beta builds, so hashing only the
+    primary host would fail to record a digest for an archive the build would
+    happily have used.
+    """
     checked = validate_version(version)
-    return f"https://download.mikrotik.com/routeros/{checked}/chr-{checked}.vdi.zip"
+    return [
+        f"https://{host}/routeros/{checked}/chr-{checked}.vdi.zip"
+        for host in ("download.mikrotik.com", "cdn.mikrotik.com")
+    ]
+
+
+def chr_download_url(version: str) -> str:
+    return chr_download_urls(version)[0]
 
 
 def verify_chr_download(version: str, timeout: int = 30) -> None:
@@ -123,13 +197,18 @@ def _replace_documented_version(
     target: str,
     files: Iterable[Path] = DOCUMENTATION_FILES,
 ) -> None:
+    # Anchored, not a bare str.replace. An unanchored replace of a two-part pin
+    # such as "7.23" also rewrites the "7.23.3" occurrences around it, turning
+    # them into "7.24.3". The lookahead stops the match at a version boundary
+    # while still allowing "7.23." followed by nothing version-like.
+    pattern = re.compile(rf"(?<![0-9.]){re.escape(current)}(?![0-9.])")
     updates = []
     for relative in files:
         path = repo_root / relative
         text = path.read_text(encoding="utf-8")
-        if current not in text:
+        if not pattern.search(text):
             raise ReleaseError(f"expected {current!r} in {relative}; refusing partial bump")
-        updates.append((path, text.replace(current, target)))
+        updates.append((path, pattern.sub(target, text)))
     for path, text in updates:
         path.write_text(text, encoding="utf-8")
 
@@ -147,7 +226,12 @@ def _add_changelog_entry(repo_root: Path, current: str, target: str) -> None:
     path.write_text(text.replace(marker, marker + entry, 1), encoding="utf-8")
 
 
-def bump_version(target: str, repo_root: Path = REPO_ROOT) -> None:
+def bump_version(target: str, repo_root: Path = REPO_ROOT, digest: str | None = None) -> None:
+    """Bump the pin, the docs and the changelog.
+
+    `digest` exists so this stays unit-testable: passing one skips the download,
+    which is the only part of a bump that needs the network.
+    """
     target = validate_version(target)
     version_file = repo_root / VERSION_FILE.relative_to(REPO_ROOT)
     current = read_pinned_version(version_file)
@@ -157,6 +241,11 @@ def bump_version(target: str, repo_root: Path = REPO_ROOT) -> None:
     changelog_marker = "## [Unreleased]\n\n### Changed\n\n"
     if changelog_marker not in changelog.read_text(encoding="utf-8"):
         raise ReleaseError("CHANGELOG.md has no Unreleased/Changed insertion point")
+    # Hash the new archive before touching anything. A bump that moved the
+    # version but left the old digest behind would fail every subsequent CHR
+    # build with a checksum mismatch that looks like a supply-chain alarm.
+    digest = validate_sha256(digest) if digest else compute_sha256(target)
+
     _replace_documented_version(repo_root, current, target)
     _add_changelog_entry(repo_root, current, target)
     text = version_file.read_text(encoding="utf-8")
@@ -164,6 +253,7 @@ def bump_version(target: str, repo_root: Path = REPO_ROOT) -> None:
         text.replace(f"ROUTEROS_VERSION={current}", f"ROUTEROS_VERSION={target}"),
         encoding="utf-8",
     )
+    _write_pinned_sha256(digest, version_file)
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -186,6 +276,14 @@ def _check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _record_hash(args: argparse.Namespace) -> int:
+    version = validate_version(args.version) if args.version else read_pinned_version()
+    digest = compute_sha256(version)
+    _write_pinned_sha256(digest)
+    print(f"recorded SHA-256 for RouterOS {version}: {digest}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -205,6 +303,16 @@ def build_parser() -> argparse.ArgumentParser:
     bump = subparsers.add_parser("bump", help="update the pinned and documented version")
     bump.add_argument("version")
     bump.set_defaults(func=lambda args: (bump_version(args.version), 0)[1])
+
+    record = subparsers.add_parser(
+        "record-hash",
+        help="download the pinned CHR archive and record its SHA-256",
+    )
+    record.add_argument(
+        "--version",
+        help="hash this version instead of the currently pinned one",
+    )
+    record.set_defaults(func=_record_hash)
     return parser
 
 

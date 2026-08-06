@@ -416,10 +416,16 @@ clear_paths() {
 # ---------------------------------------------------------------------------
 bold "=== stay_fresh: preflight checks ==="
 
-mkdir -p "$LOG_DIR"
-: > "$LOG_FILE"
-echo "stay_fresh.sh log - $(date)" >> "$LOG_FILE"
-info "log file: $C_DIM$LOG_FILE$C_RESET"
+# A dry run writes nothing — including this script's own log. See the same
+# guard in install_devtools.sh; run_cmd() already skips the appends.
+if (( DRY_RUN == 1 )); then
+  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  mkdir -p "$LOG_DIR"
+  : > "$LOG_FILE"
+  echo "stay_fresh.sh log - $(date)" >> "$LOG_FILE"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
 
 # 1. macOS only
 if [[ "$(uname -s)" != "Darwin" ]]; then

@@ -253,6 +253,83 @@ done < <(git ls-files -z -- '*.sh')
 (( bad_err == 0 )) && ok "every err() writes to stderr"
 
 # --------------------------------------------------------------------------
+head_ "a dry run writes nothing"
+# README.md's second rule, asserted against the filesystem rather than against
+# the script's own output. That distinction is the whole point: the linux suite
+# already checked for the string "dry-run complete; no changes written", and
+# passed for months while five scripts created a timestamped log file on every
+# preview. A test that reads the claim instead of checking it proves nothing.
+#
+# Each script runs with HOME and TMPDIR pointed at fresh scratch directories,
+# which are compared before and after. Anything created, removed or touched is
+# a failure.
+#
+# Scripts needing more than --dry-run to reach their main path are listed here.
+# A discovered script that is neither listed nor skippable fails loudly, so this
+# table cannot quietly rot the way a hardcoded subject list does.
+dry_run_args() {
+  case "$1" in
+    macos-initial-setup/install_devtools.sh) printf '%s\n' "--dry-run" ;;
+    macos-initial-setup/install_apps.sh)     printf '%s\n' "--dry-run" ;;
+    linux/install_devtools.sh)               printf '%s\n' "--dry-run --yes" ;;
+    linux/stay_fresh.sh)                     printf '%s\n' "--dry-run --yes --no-sudo" ;;
+    *)                                       printf '%s\n' "--dry-run" ;;
+  esac
+}
+
+# Paths written by a third-party tool as a side effect of being *asked its
+# version*, not by the script storing anything. Go 1.23+ drops telemetry
+# counters into $HOME on every `go` invocation, and install_devtools.sh prints
+# a version table. Excluded because the alternative is contorting the scripts
+# to work around another project's defaults — but named here, and reported
+# when it fires, because a silent exclusion list is how coverage rots.
+IGNORE_RE='/\.config(/go(/.*)?)?( |$)'
+
+snapshot() {
+  # Names plus mtimes, so a rewritten file is caught as well as a new one.
+  find "$1" "$2" -mindepth 1 -printf '%p %T@\n' 2>/dev/null | sort
+}
+
+filtered_snapshot() {
+  snapshot "$1" "$2" | grep -vE "$IGNORE_RE"
+}
+
+dry_checked=0
+for f in "${clis[@]}"; do
+  # Only scripts that advertise --dry-run are in scope.
+  help_out="$(guard "./$f" --help 2>&1)" || continue
+  case "$help_out" in *--dry-run*) ;; *) continue ;; esac
+
+  scratch="$(mktemp -d)"
+  mkdir -p "$scratch/home" "$scratch/tmp"
+
+  before="$(filtered_snapshot "$scratch/home" "$scratch/tmp")"
+  # shellcheck disable=SC2046  # word splitting of the argument list is intended
+  HOME="$scratch/home" TMPDIR="$scratch/tmp" \
+    guard "./$f" $(dry_run_args "$f") >/dev/null 2>&1
+  after="$(filtered_snapshot "$scratch/home" "$scratch/tmp")"
+
+  ignored="$(snapshot "$scratch/home" "$scratch/tmp" | grep -cE "$IGNORE_RE")"
+  (( ignored > 0 )) && printf '       (ignored %s third-party telemetry path(s) under %s)\n' \
+    "$ignored" "$f"
+
+  dry_checked=$((dry_checked + 1))
+  if [[ "$before" == "$after" ]]; then
+    ok "$f --dry-run wrote nothing"
+  else
+    err "$f --dry-run modified the filesystem:"
+    diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed 's/^/       /' >&2
+  fi
+  rm -rf "$scratch"
+done
+
+if (( dry_checked == 0 )); then
+  err "no --dry-run-capable script was found — this check has stopped checking"
+else
+  ok "checked $dry_checked --dry-run-capable scripts"
+fi
+
+# --------------------------------------------------------------------------
 printf '\n'
 if (( failures > 0 )); then
   printf '%d convention check(s) failed\n' "$failures" >&2

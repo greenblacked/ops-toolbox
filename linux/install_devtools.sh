@@ -140,10 +140,19 @@ case "$PKG_MGR" in
     ;;
 esac
 
-: > "$LOG_FILE"
-printf 'linux install_devtools.sh log - %s\n' "$(date)" >> "$LOG_FILE"
-info "package manager: $PKG_MGR, toolchain manager: $MANAGER"
-info "log file: $C_DIM$LOG_FILE$C_RESET"
+# A dry run writes nothing — including this script's own log. Creating the
+# file here unconditionally left one orphan in TMPDIR per preview and quietly
+# contradicted the promise README.md makes. run_cmd() already skips the
+# appends, so there was never anything in these files but the header.
+if (( DRY_RUN == 1 )); then
+  info "package manager: $PKG_MGR, toolchain manager: $MANAGER"
+  info "dry-run: would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  : > "$LOG_FILE"
+  printf 'linux install_devtools.sh log - %s\n' "$(date)" >> "$LOG_FILE"
+  info "package manager: $PKG_MGR, toolchain manager: $MANAGER"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
 
 SUDO=""
 [[ "$(id -u)" == "0" ]] || SUDO="sudo"
