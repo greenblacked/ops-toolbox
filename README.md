@@ -538,7 +538,7 @@ PSScriptAnalyzer — by far the slowest install, and the only one that has to co
 from PowerShell Gallery — is cached against its pinned version.
 
 [`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the pinned RouterOS
-integration suite nightly at 03:00 UTC and on demand. It is kept off the
+integration suite nightly at 03:37 UTC and on demand. It is kept off the
 pull-request path because CHR is an x86_64 image under QEMU and first boot takes
 minutes. The Linux runner has `/dev/kvm`, which
 [`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
@@ -546,7 +546,7 @@ minutes. The Linux runner has `/dev/kvm`, which
 a device that does not exist, which would break the suite for everyone on macOS.
 
 [`routeros-version.yml`](.github/workflows/routeros-version.yml) checks
-MikroTik's official stable release feed every Monday and Thursday at 03:00 UTC,
+MikroTik's official stable release feed every Monday and Thursday at 04:19 UTC,
 and also supports manual runs with an explicit version or check-only mode.
 Long-term releases can be exercised manually in check-only mode, but cannot
 replace the canonical stable compatibility pin merely because their version is
