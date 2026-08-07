@@ -16,6 +16,17 @@ entry here belongs to a version.
 
 ### Fixed
 
+- The RouterOS version workflow pushed its bump branch with a
+  `--force-with-lease` that could never fire. The bare form compares against the
+  remote-tracking ref, and the step fetched that ref immediately before pushing,
+  refreshing the lease to the current remote tip — so it behaved as a plain
+  `--force` and would silently discard a fix hand-pushed onto the bot branch.
+  The remote SHA is now read before any local work and passed to the lease
+  explicitly.
+- The RouterOS version workflow was scheduled at `0 3 * * 1,4`. Minute 0 is the
+  contended slot that `chr.yml` was already moved off in #22, and the first
+  scheduled run fired at 05:37 rather than 03:00. It now runs at 04:19, on an
+  odd minute distinct from the nightly's.
 - `mikrotik/pull_router_backups.sh` exited `0` when it could not reach the
   router at all. An unreachable host, a rejected key or SFTP switched off in
   IP → Services were indistinguishable from "no backups yet", so a cron job

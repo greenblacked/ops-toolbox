@@ -5,8 +5,13 @@ name: RouterOS version check
 # passes; automation opens a pull request and never writes to master directly.
 on:
   schedule:
-    # Monday and Thursday at 03:00 UTC.
-    - cron: '0 3 * * 1,4'
+    # Monday and Thursday at 04:19 UTC. The odd minute is deliberate, for the
+    # same reason chr.yml uses 03:37 — GitHub queues scheduled workflows and the
+    # top of the hour is heavily contended. This workflow was written with
+    # '0 3 * * 1,4' and its first run fired at 05:37, 2h37m late. A different
+    # minute from chr.yml's keeps the two out of the same queue slot, and 04:19
+    # is late enough that the nightly CHR suite has normally finished.
+    - cron: '19 4 * * 1,4'
   workflow_dispatch:
     inputs:
       channel:
@@ -138,16 +143,36 @@ jobs:
           branch="chore/routeros-${TARGET_VERSION}"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          # Read the remote tip *before* doing any local work, and pass it to
+          # --force-with-lease explicitly. Bare --force-with-lease compares
+          # against the remote-tracking ref, so fetching that ref just before
+          # the push refreshes the lease to whatever is on the remote right
+          # then — the check can never fire and the push is a plain --force.
+          # Capturing the SHA up front is what makes the lease mean something:
+          # a hand-pushed fix that lands on this branch mid-run aborts the push
+          # instead of being silently overwritten.
+          remote_sha=""
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch:refs/remotes/origin/$branch"
+            remote_sha="$(git rev-parse "refs/remotes/origin/$branch")"
+          fi
+
           git switch -C "$branch"
           git add \
             mikrotik/tests/routeros-version.env \
             README.md mikrotik/README.md mikrotik/tests/README.md \
             .github/workflows/chr.yml CHANGELOG.md
           git commit -m "chore(mikrotik): test against RouterOS ${TARGET_VERSION}"
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            git fetch origin "$branch:refs/remotes/origin/$branch"
+
+          if [ -n "$remote_sha" ]; then
+            git push --force-with-lease="refs/heads/$branch:$remote_sha" \
+              --set-upstream origin "$branch"
+          else
+            # The branch did not exist when we looked. A plain push is the
+            # right lease here: it is rejected if someone created it meanwhile.
+            git push --set-upstream origin "$branch"
           fi
-          git push --force-with-lease --set-upstream origin "$branch"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       # Events created by GITHUB_TOKEN do not recursively start workflows.
