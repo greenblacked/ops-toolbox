@@ -128,7 +128,7 @@ python3 mikrotik/tests/routeros_version.py check --version 7.23.3
 ```
 
 The `RouterOS version check` GitHub Actions workflow runs every Monday and
-Thursday at 03:00 UTC and can also be started manually. When it finds a newer
+Thursday at 04:19 UTC and can also be started manually. When it finds a newer
 stable release it boots that candidate in Docker first. Only a passing candidate is
 written to `routeros-version.env`, propagated through the documentation, and
 proposed in a `chore/routeros-VERSION` pull request. `check_only` runs the same

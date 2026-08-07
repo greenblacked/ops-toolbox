@@ -27,6 +27,9 @@ entry here belongs to a version.
   contended slot that `chr.yml` was already moved off in #22, and the first
   scheduled run fired at 05:37 rather than 03:00. It now runs at 04:19, on an
   odd minute distinct from the nightly's.
+- The root README described the nightly CHR suite as running at 03:00 UTC. It
+  has run at 03:37 since #22 moved it off the contended slot; only the workflow
+  comment was updated at the time.
 - `mikrotik/pull_router_backups.sh` exited `0` when it could not reach the
   router at all. An unreachable host, a rejected key or SFTP switched off in
   IP → Services were indistinguishable from "no backups yet", so a cron job
