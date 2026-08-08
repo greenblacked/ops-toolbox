@@ -74,6 +74,29 @@ entry here belongs to a version.
 
 ### Added
 
+- `mikrotik/print_schedulers.sh` — prints the `/system scheduler add` command
+  for every RouterOS script here that is meant to run unattended, ready to
+  review and paste. Installing a script is the easy half; scheduling it is where
+  the package went quiet, because a script nobody scheduled looks exactly like a
+  script with nothing to report, and you find that out in the month you needed
+  the backup. Twenty scripts are meant to run on a timer and only eight had an
+  interval written down — the other twelve take the one already named in their
+  own header comment. It contacts nothing, writes nothing, and emits valid
+  RouterOS input including its commentary, so the output can be kept in a file
+  and diffed later.
+- `mikrotik/router_doctor.py` — read-only audit over ssh of which scripts are in
+  `/system script`, which of them a `/system scheduler` entry actually runs, and
+  whether the globals they need are set. A script installed under the wrong
+  name, a script scheduled nowhere and an unset `TG_BOT_TOKEN` all look
+  identical to a router with nothing to report. The globals check asks the
+  router for the *length* of `TG_BOT_TOKEN` and `TG_CHAT_ID` and never for the
+  value, so the report can say set or empty without a token crossing the wire.
+  A script that is simply not installed is reported as context rather than as a
+  problem — nobody wants `ddns_update` without Cloudflare.
+- `mikrotik/tests/test_lua_conventions.sh` now checks the scheduler coverage in
+  both directions: every unattended script has a line in `print_schedulers.sh`,
+  and none of the manual-only ones does. Putting `reboot-and-flush` on a timer
+  is a surprise nobody wants twice.
 - `windows/setup/stay_fresh.ps1` — the Windows counterpart of
   `linux/stay_fresh.sh` and `macos-initial-setup/stay_fresh.sh`, down to the
   exit codes: a winget source refresh and `upgrade --all`, `wsl --update`, and
@@ -130,10 +153,12 @@ entry here belongs to a version.
   pull-request path.
 - `ROUTEROS_SHA256` in `mikrotik/tests/routeros-version.env`, checked during
   the CHR image build. The image boots as a kernel with the repository mounted
-  and was previously validated only as "non-empty". Until a digest is recorded
-  the build warns and proceeds, so adding the pin does not turn a working
-  nightly red; a *wrong* digest is fatal. Record it with
-  `mikrotik/tests/routeros_version.py record-hash`.
+  and was previously validated only as "non-empty", which a hijacked mirror or
+  a TLS-terminating proxy also satisfies. The digest for 7.23.3 is recorded, and
+  `mikrotik/tests/run.sh` now refuses to start without one rather than warning
+  and continuing: a version bump hashes the new archive before it moves the
+  version, so an empty value can only mean the pin was lost. Record or refresh
+  it with `mikrotik/tests/routeros_version.py record-hash`.
 - `mikrotik/tests/routeros_version.py` and a twice-weekly/manual GitHub Actions
   workflow that detect official RouterOS releases, test the candidate CHR image
   in Docker, and open a version/documentation bump pull request only after the
