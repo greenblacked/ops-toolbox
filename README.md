@@ -84,7 +84,7 @@ not at anyone shopping for a dotfiles framework to adopt.
 
 | Folder | Purpose |
 | --- | --- |
-| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
+| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
 | [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, and capture/restore its package set. |
@@ -189,7 +189,10 @@ repositories and local bare remotes:
 - `gacp.sh` — stages all changes, commits with a required message, and pushes.
   Supports `--dry-run`, `--no-push`, and first-push options (`--remote`,
   `--branch`).
-- `git_aliases.zsh` — defines `gacp` for zsh by pointing at `gacp.sh`.
+- `git_aliases.zsh` / `git_aliases.sh` — the same short aliases for every
+  script here, for zsh and for bash. Each one is defined only if its script is
+  actually installed, so a missing script leaves you without an alias rather
+  than with one that fails later.
 - `set_git_profile.sh` — manages global `user.name` / `user.email`, plus
   named profiles stored under
   `${XDG_CONFIG_HOME:-$HOME/.config}/ops-toolbox/git-profiles.conf`.
@@ -206,12 +209,18 @@ repositories and local bare remotes:
   private key. The hook body is embedded in the script rather than copied from
   a directory, so it keeps working after the script is gone. `status` reports
   whether it is installed and current; an existing unrelated hook is backed up
-  rather than clobbered, and restored on `uninstall`.
+  rather than clobbered, and restored on `uninstall`. `--commit-msg` adds an
+  opt-in Conventional Commits hook, exempting the messages git writes itself.
 - `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
   the remote. This is the squash-merge case: a squash-merged branch leaves no
   merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects
   that is most branches. Deletion is recoverable by design — every removal
   prints the commit it pointed at and the command to restore it.
+- `git_stale_branches.sh` — read-only report of branches nobody has touched in
+  `--days` (default 90), oldest first, with the last author and a label saying
+  which of the two cleanup scripts can act on each: `gone`, `merged`, or
+  `unmerged` — squash-merged and forgotten, or abandoned, which cannot be told
+  apart from here. Exits `4` when there is nothing to report.
 - `git_size_report.sh` — read-only report of what is making the repository
   big, aggregated per path across all history rather than per object, since a
   sha alone tells you nothing about what to delete. `--fast` skips the history
@@ -241,6 +250,13 @@ repositories and local bare remotes:
   global one is visible. `--test-sign` attempts one real signature with
   pinentry disabled, so a passphrase-protected key fails instead of hanging.
   Read-only.
+- `git_remote_doctor.py` — explains where a push actually goes, and why it
+  asks for a password. Covers the URL itself (ssh fetch with an https push,
+  read-only `git://`, and a port written after the colon of an scp-like URL,
+  where it is a directory name), the `insteadOf` and `pushInsteadOf` rewrites
+  that make `git remote -v` disagree with what git dials, and credential
+  helpers — which accumulate across scopes and are emptied by a single blank
+  value. Passwords in URLs are redacted before anything is printed. Read-only.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.

@@ -144,6 +144,61 @@ entry here belongs to a version.
 
 ### Added
 
+- `git/git_remote_doctor.py` — the third read-only diagnostic, covering the
+  layer the other two step over: the URL git actually dials, and how it finds
+  a password when that URL is HTTP. Three things decide both, and none of them
+  is visible in `git remote -v`. The URL itself, where a fetch over ssh with a
+  push over https is why a pull is silent and a push prompts, `git://` cannot
+  carry a push at all, and a port written after the colon of an scp-like URL
+  is a directory name — `git@host:2222/o/r.git` asks for a repository called
+  `2222/o/r.git`, and the error saying it does not exist is correct. The
+  `insteadOf` and `pushInsteadOf` rewrites, which mean the configured URL is
+  not the dialled one, resolved the way git resolves them: longest match wins,
+  and one rewrite rather than a chain, so a rewrite whose result matches
+  another pattern is reported as the dead end it is. And credential helpers,
+  which accumulate across scopes unlike almost every other key, and which a
+  single empty value empties — the documented way to ignore a system-wide
+  helper, and the undocumented way to lose your keychain by pasting a config
+  snippet. Helpers resolve against git's exec path as well as `PATH`, because
+  `git-credential-store` lives in `/usr/lib/git-core` and calling it missing
+  would be a false alarm on almost every machine. Everything printed is
+  redacted first: `https://x-access-token:TOKEN@github.com/` is an ordinary
+  rewrite base in CI, and a diagnostic whose output gets pasted into an issue
+  must not be the thing that leaks it.
+- `git/git_stale_branches.sh` — read-only report of branches nobody has
+  touched in `--days` (default 90), oldest first, with the last author.
+  `git_prune_gone.sh` only sees branches whose upstream is gone and
+  `git_cleanup_merged.sh` only sees branches with a real merge commit; neither
+  says how old anything is, and age is what decides whether a branch is worth
+  reading at all. Each one is labelled `gone`, `merged` or `unmerged`, so the
+  list hands off to whichever script can act on it — `unmerged` being the one
+  to read by hand, since squash-merged work and an abandoned branch are
+  indistinguishable from here. It does not fetch: a report that quietly
+  rewrites remote-tracking refs is not read-only, and the closing notes name
+  the command that does. Exits `4` when nothing is older than the threshold.
+- `git/git_aliases.sh` — the bash half of `git_aliases.zsh`, sourced the way
+  `linux/bash_aliases.sh` is and with the same guard against being run
+  instead. Both files now cover the package rather than `gacp` alone, which is
+  where the long names are: `git_status_summary.sh`, `git_prune_gone.sh`,
+  `git_signing_doctor.py`. Every alias is defined only if its script is
+  actually there — beside the file, or on `PATH` for anyone who copied the
+  scripts into `~/bin` — because an alias to a script that is not installed
+  fails at use time, in the middle of something else, with a message about a
+  missing file rather than about the alias. The names avoid the two-letter git
+  aliases `linux/bash_aliases.sh` already defines, so one shell can source
+  both.
+- An opt-in `commit-msg` hook in `git/git_hooks_install.sh`, behind
+  `--commit-msg` on install, refusing a subject that is not a Conventional
+  Commit. The default install is unchanged and still writes `pre-commit`
+  alone: a message convention is a team decision, and a hook that imposes one
+  on a repository that has not agreed to it gets `--no-verify`d on its first
+  use and then never runs again. Messages git writes itself — merges, reverts,
+  `fixup!` and `squash!` — are exempt, because rejecting those breaks a rebase
+  rather than improving a changelog, and the subject is taken as the first
+  line that is neither blank nor a comment, so a message written under
+  `commit.verbose` or from a template is judged on the line the author wrote.
+  `status` and `uninstall` handle both hooks, versioned separately so adding
+  this one does not report every existing installation as out of date.
 - `windows/wsl/wsl_manage.ps1` gained four actions and a `-DryRun` switch.
   `restore` imports a `.tar` back as a new distro and checks the two things
   that make `wsl --import` surprising before it starts: the name has to be
