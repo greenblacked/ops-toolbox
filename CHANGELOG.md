@@ -16,6 +16,27 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `k8s-toolbox/examples/job.yaml` ran `kubectl version --client=true --short`.
+  That flag was removed in kubectl 1.28, so against the version this image pins
+  the job failed on its first line — a smoke test that could only ever report a
+  problem with itself.
+- `--dry-run` in `k8s-toolbox/build.sh` and `run.sh` exited `2` when Docker was
+  not installed, before printing anything. A preview touches nothing, so it
+  should answer on a machine that could not run the real thing; that is the
+  same reasoning that puts `--help` ahead of every preflight check. The same
+  now goes for `debug_pod.sh` without `kubectl`.
+- `k8s-toolbox/run.sh` mounted the kubeconfig at `/home/toolbox/.kube` even
+  under `--root`, where `$HOME` is `/root`. The mount was there and the running
+  user never looked at it, which surfaces as an unexplained connection refused.
+- `--tag` and `--platform` in `k8s-toolbox/build.sh` and `run.sh` were written
+  as `"${2:?missing value}"`, which exits `1` where the repository contract says
+  a usage error is `3`, and — worse — happily accepts the next flag as the
+  value: `--tag --push` built an image tagged `--push` and pushed nothing. They
+  use the same `require_value` as the rest of the repository now.
+- `k8s-toolbox/build.sh` used the repository root as the build context, so
+  every file in the repository was uploaded to the Docker daemon on each build.
+  The Dockerfile copies nothing from the context; it is now the package
+  directory, trimmed by a `.dockerignore` to the two files that matter.
 - The RouterOS version workflow pushed its bump branch with a
   `--force-with-lease` that could never fire. The bare form compares against the
   remote-tracking ref, and the step fetched that ref immediately before pushing,
@@ -74,6 +95,56 @@ entry here belongs to a version.
 
 ### Added
 
+- `k8s-toolbox/versions.env` pins `yq`, `kubectl`, `helm`, `kustomize` and
+  `gcloud`, and is now the only place those versions are written down.
+  `build.sh` passes each one as a build ARG and the Dockerfile asserts the
+  version it actually installed, so a moved release or a redirected download
+  fails the build instead of quietly shipping something else. I also replaced
+  the Google Cloud SDK's `curl … | bash` installer with its versioned tarball:
+  the convenience script always fetches the current release, which would have
+  made the pin decorative — and piping an installer into a shell is a posture
+  this repository takes nowhere else.
+- `k8s-toolbox/kubectl_pod_diag.sh` — read-only cluster triage in one pass:
+  pods that are not Running, plus Running pods whose containers are in
+  `CrashLoopBackOff` or `ImagePullBackOff`, because a pod can be Running and
+  completely broken. Then the last hour of `Warning` events, unbound PVCs, and
+  nodes reporting memory, disk or PID pressure. For a crash-looping pod it also
+  prints the *previous* container's logs, which is where the reason is — the
+  current one has usually not got far enough to say anything. "Nothing found"
+  exits `4` rather than `0`, so a scheduled check can act on the code instead
+  of parsing output.
+- `k8s-toolbox/debug_pod.sh` — wraps `kubectl debug` to attach the toolbox
+  image to a running pod as an ephemeral container. This is what I wanted the
+  first time I met a distroless container with no shell in it: the application
+  keeps running, nothing about it is modified, and `--target` shares its
+  process namespace so its `/proc` is visible.
+- `k8s-toolbox/tests/`, wired in as the `k8s` suite in `run-tests.sh` and CI.
+  It checks contracts and deliberately does not build the image: five pinned
+  toolchains fetched from five hosts is minutes of network per run, and what
+  regresses is the scripts that drive the build, not the build. So it needs
+  nothing but bash and runs everywhere the conventions suite does, including
+  in front of a pull request. It covers `--help`, unknown flags, flags given no
+  value, the dry-run promise checked against the filesystem rather than against
+  the script's own claim, and exit `2` when Docker or `kubectl` is missing —
+  arranged by emptying `PATH` down to a single symlink to bash, since the
+  runner has both installed. It also holds `versions.env`, the Dockerfile's
+  `ARG`s and `build.sh` to agreement: a version pinned in one of the three but
+  missing from another is a pin with no effect, which is worse than no pin.
+  `K8S_IMAGE_SMOKE=1` opts into the real build and asserts the container runs
+  as uid 1000 with every CLI on `PATH`.
+- `k8s-toolbox/examples/kustomization.yaml` retags the example manifests
+  instead of editing them. They name `k8s-toolbox:local`, which exists only on
+  a machine that has run `build.sh`; anyone pushing to a registry had to
+  hand-edit two files or keep a `sed` line in a runbook.
+- The `k8s-toolbox/` example manifests now pass the **restricted** Pod Security
+  Standard unchanged — an explicit non-root uid, all capabilities dropped, the
+  `RuntimeDefault` seccomp profile, requests and limits — and no longer mount a
+  service-account token. An example is the file that gets copied, and a
+  debugging shell that can reach the API server as the namespace default
+  service account is a larger hole than whatever it was opened to investigate.
+  `readOnlyRootFilesystem` is the one thing left off, with the reason written
+  down: `gcloud` writes to its config directory on first use, and a toolbox
+  that cannot run `gcloud auth` is not a toolbox.
 - `mikrotik/print_schedulers.sh` — prints the `/system scheduler add` command
   for every RouterOS script here that is meant to run unattended, ready to
   review and paste. Installing a script is the easy half; scheduling it is where
