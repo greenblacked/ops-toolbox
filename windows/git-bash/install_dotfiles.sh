@@ -185,6 +185,13 @@ for name in $DOTFILES; do
   fi
 
   if [[ -e "$dest" ]]; then
+    # The file being replaced can carry CRLF of its own, from an earlier copy
+    # made through an editor or a chat client. Say so: it is the likeliest
+    # reason the shell you are replacing was throwing a syntax error on every
+    # prompt, and the backup keeps a copy of it in that state.
+    if [[ -f "$dest" ]] && has_crlf "$dest"; then
+      warn "the $name already in $HOME_DIR has CRLF line endings; replacing it with the LF copy"
+    fi
     run cp -p "$dest" "$dest.backup-$STAMP"
     info "backed up $name to $name.backup-$STAMP"
   fi

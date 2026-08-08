@@ -39,6 +39,7 @@ live in `/system script` on the router and are run either manually or from
 | `wireguard_watch.lua`           | Alerts when a WireGuard peer stops handshaking.                         |
 | `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
+| `pull_router_backups.sh`        | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
 ## Installation
 
@@ -265,6 +266,25 @@ see the raw export.
 `--show-sensitive` together with `--commit` is **refused before the router is
 contacted** — writing router secrets into git history is not something to do by
 accident.
+
+### `pull_router_backups.sh`
+
+**Runs on your machine, not on the router.** Copies the files `backup.lua`
+creates — `backup-*.backup` and `backup-*.rsc` — off the router into a local
+directory over SFTP/SCP.
+
+```bash
+./pull_router_backups.sh admin@192.168.88.1
+./pull_router_backups.sh admin@router.lan ~/Archive/mikrotik-backups
+```
+
+Needs RouterOS 7+ SFTP (**IP → Services**) and key-based ssh: `BatchMode=yes`
+means it fails rather than prompting. It proves the router is reachable before
+an empty result is allowed to mean "no backups yet", because those two used to
+be indistinguishable — an unreachable host, a rejected key and SFTP switched off
+all exited `0`, so a cron job reported success while backups had silently
+stopped for months. Exit codes: `0` files pulled or none exist yet, `1` reached
+the router but the transfer failed, `2` could not reach it, `3` usage.
 
 ## Security action surface
 

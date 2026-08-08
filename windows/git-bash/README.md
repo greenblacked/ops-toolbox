@@ -67,6 +67,10 @@ those two checks in front of it.
   It refuses rather than converting because the file it would be rewriting is
   one you are about to live in, and silently editing your input is a worse
   habit than stopping.
+- **CRLF in the file being replaced is reported, not refused.** That one is
+  about to be overwritten by the LF copy anyway, so it only earns a warning —
+  but it is usually the answer to "why has this shell been throwing a syntax
+  error at me", and the backup preserves it exactly as it was.
 - **`--source` is for the copied-alone case.** Dropped into `~/bin` on its own,
   the script has no dotfiles next to it; point `--source` at a checkout.
 
