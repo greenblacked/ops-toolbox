@@ -112,7 +112,7 @@ if [[ "$mount_kubeconfig" == "true" && -d "${HOME}/.kube" ]]; then
     args+=(-v "${HOME}/.kube:/home/toolbox/.kube:ro")
   fi
 elif [[ "$mount_kubeconfig" == "true" ]]; then
-  warn "~/.kube not found; continuing without a kubeconfig mount"
+  warn "${HOME}/.kube not found; continuing without a kubeconfig mount"
 fi
 
 docker_cmd=(docker "${args[@]}" "$tag" "${cmd[@]}")
