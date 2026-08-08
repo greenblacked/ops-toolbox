@@ -92,6 +92,10 @@ run_with_home() {
 sh_scripts=()
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
+  # git_aliases.sh is sourced, not run, so the --help and unknown-flag
+  # contracts do not apply to it. It is still syntax-checked and shellchecked
+  # below, and its own behaviour is asserted further down.
+  case "${f##*/}" in git_aliases.sh) continue ;; esac
   sh_scripts+=("$f")
 done < <(find "$G" -maxdepth 1 -name '*.sh' -type f | sort)
 
@@ -100,7 +104,7 @@ if (( ${#sh_scripts[@]} == 0 )); then
   exit 1
 fi
 ok "discovered ${#sh_scripts[@]} scripts under git/"
-for f in "${sh_scripts[@]}"; do
+for f in "${sh_scripts[@]}" "$G/git_aliases.sh"; do
   rel="${f#"$REPO_ROOT/"}"
   if bash -n "$f"; then
     ok "bash -n $rel"
@@ -141,6 +145,36 @@ if zsh -f -c "source '$G/git_aliases.zsh'; alias gacp | grep -Fq '$G/gacp.sh'"; 
 else
   err "git_aliases.zsh defines gacp"
 fi
+if zsh -f -c "source '$G/git_aliases.zsh'; alias gstale | grep -Fq '$G/git_stale_branches.sh'"; then
+  ok "git_aliases.zsh covers more than gacp"
+else
+  err "git_aliases.zsh covers more than gacp"
+fi
+
+# --- git_aliases.sh (bash) ---
+if bash -c ". '$G/git_aliases.sh'" >/dev/null 2>&1; then
+  ok "git_aliases.sh sources cleanly"
+else
+  err "git_aliases.sh failed to source"
+fi
+
+alias_out="$(bash -c ". '$G/git_aliases.sh'; alias" 2>/dev/null)"
+assert_contains "$alias_out" "$G/gacp.sh" "git_aliases.sh points gacp at the script beside it"
+assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers the other helpers"
+
+# The guard is the point of the file: copied somewhere the scripts are not,
+# and with nothing of that name on PATH, it must define no aliases at all
+# rather than ones that fail later with a confusing message.
+guard_dir="$(mktemp -d /tmp/git-aliases-guard.XXXXXX)"
+cp "$G/git_aliases.sh" "$guard_dir/"
+alias_out="$(bash -c ". '$guard_dir/git_aliases.sh'; alias" 2>/dev/null)"
+assert_not_contains "$alias_out" "gacp" "no alias is defined for a script that is not installed"
+
+set +e
+bash "$G/git_aliases.sh" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "3" "git_aliases.sh executed directly -> exit 3"
 
 home="$(new_home)"
 set +e
