@@ -12,6 +12,7 @@ scripts exit `2` off macOS.
 | --- | --- |
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
+| [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, reboot, services, firewall, containers, load |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, updates |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
@@ -37,6 +38,13 @@ Capture what a machine has, commit it, rebuild elsewhere:
 ./packages.sh diff          # what has drifted since
 ./packages.sh install --dry-run
 ./packages.sh install --yes
+```
+
+Read the machine without touching it:
+
+```bash
+./system_doctor.sh          # is this machine well?
+./hardening_audit.sh        # is this machine safe?
 ```
 
 Aliases:
@@ -97,6 +105,63 @@ A missing tool is a note, not a failure. `journalctl` is absent in a container
 and `snap` on most servers; neither should turn a maintenance run red. A step
 that runs and *fails* does count, and the script exits `1`.
 
+## The two read-only reports
+
+`system_doctor.sh` and `hardening_audit.sh` both change nothing and both look at
+some of the same subsystems, so it is worth being clear about which one you
+want:
+
+| | `system_doctor.sh` | `hardening_audit.sh` |
+| --- | --- | --- |
+| Question | Is this machine **well**? | Is this machine **safe**? |
+| Output | A narrative report | Graded findings, each with its fix |
+| Firewall | Says which one is in charge | Grades "none" as a finding |
+| sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords |
+| Exit code | Always `0`; findings are to be read | `1` at or above `--fail-on`, so it can gate a pipeline |
+
+The counterpart on the other side of the repository is
+[`macos-initial-setup/workstation_doctor.sh`](../macos-initial-setup/workstation_doctor.sh)
+and [`macos-initial-setup/hardening_audit.sh`](../macos-initial-setup/hardening_audit.sh),
+which split the same way.
+
+## `system_doctor.sh`
+
+The first thing to run on a box someone has just handed you, and the thing to
+run after `install_devtools.sh` to confirm the bootstrap took. It reads and
+prints; there is no `--apply`.
+
+```bash
+./system_doctor.sh                       # the whole report
+./system_doctor.sh --quiet               # only the warnings
+./system_doctor.sh --min-free 25         # warn below 25% free on /
+./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
+sudo ./system_doctor.sh                  # firewall rules need root to read
+```
+
+Eight sections: **system** (distribution, kernel, uptime, virtualisation),
+**packages** (which manager owns the box, and how old its index is),
+**disk** (free space and *inodes* on `/`, plus any other block-device mount
+below the threshold), **updates** (reboot pending), **services** (sshd, and
+`systemctl --failed` where there is a systemd to ask), **network** (which host
+firewall is active, global addresses), **containers** (docker/podman), and
+**load** (one-minute average per core).
+
+Three of those exist because the ordinary tools hide them:
+
+- **Inodes.** A filesystem out of inodes looks completely healthy in `df -h`,
+  and "no space left on device" with gigabytes free is a confusing hour the
+  first time.
+- **Package index age.** Answered from the local index, so it needs no network.
+  A machine whose index is months old reports itself up to date and is not.
+- **A container engine that is installed but unreachable.** A stopped daemon
+  and a user who is not in the `docker` group both look exactly like "no
+  Docker here" until you try to use it.
+
+Warnings do not change the exit code — it is `0` unless the machine is not
+Linux (`2`) or you mistyped a flag (`3`). Something that fails a pipeline is
+`hardening_audit.sh --fail-on warn`, which is why this script does not
+duplicate it.
+
 ## `systemd/stay_fresh_timer.sh`
 
 Maintenance that depends on remembering to run it does not happen. This writes a
@@ -151,9 +216,12 @@ Output goes to the journal: `journalctl --user -u ops-toolbox-stay-fresh.service
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | One or more steps failed |
-| `2` | Preflight failed — unsupported distribution, or no systemd user manager for the timer |
+| `1` | One or more steps failed, or `hardening_audit.sh` found something at or above `--fail-on` |
+| `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install was requested without `--yes` |
+
+`system_doctor.sh` never returns `1`: it reports, and what it finds is for you
+to read rather than for a pipeline to act on.
 
 ## Tests
 

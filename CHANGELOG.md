@@ -16,6 +16,26 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `macos-initial-setup/tests/test_macos_initial_setup.sh` checked a hardcoded
+  list of four scripts while the package had grown to nine, so `brewfile.sh`,
+  `macos_defaults.sh`, `workstation_doctor.sh` and
+  `launchd/stay_fresh_agent.sh` had no syntax, ShellCheck, `--help` or
+  unknown-flag coverage there at all — the omission this repository already
+  quotes as a cautionary tale in two other files. It discovers its subjects
+  with `find` now, two levels deep so `launchd/` is included, and applies the
+  `--help`, unknown-flag and platform-guard contracts to every one of them.
+  `zsh_aliases.zsh` stays out of those contracts, because it is sourced rather
+  than run, and is still ShellCheck'd and sourced under `zsh`.
+- `macos-initial-setup/README.md` documented a `mise self-update` step and a
+  `--skip-mise` flag that `stay_fresh.sh` does not have — passing it exits `3`
+  — while two steps the script really does run, the per-app cache sweep and the
+  VS Code / Cursor workspace-storage prune, appeared nowhere. Both were added
+  along with their `--skip-appcaches` and `--skip-workspacestorage` flags, and
+  the step list now matches the order the script executes.
+- `macos-initial-setup/workstation_doctor.sh` was in the folder and in no part
+  of the package README: not the table of contents, not the folder map, and
+  with no section of its own while every other script had one. It has all
+  three now, as does the new `hardening_audit.sh`.
 - `k8s-toolbox/examples/job.yaml` ran `kubectl version --client=true --short`.
   That flag was removed in kubectl 1.28, so against the version this image pins
   the job failed on its first line — a smoke test that could only ever report a
@@ -95,6 +115,30 @@ entry here belongs to a version.
 
 ### Added
 
+- `linux/system_doctor.sh` — the Linux counterpart of
+  `macos-initial-setup/workstation_doctor.sh`, and the narrative half of a pair
+  with `hardening_audit.sh` next to it. The audit asks whether a machine is
+  safe and grades what it finds; this asks whether it is well and describes it:
+  distribution and uptime, which package manager owns the box and how old its
+  index is, free space, a pending reboot, sshd, failed `systemd` units, which
+  host firewall is in charge, container engines, and load per core. Three of
+  its checks exist because the ordinary tools hide them — inode exhaustion
+  looks completely healthy in `df -h`, a package index months out of date makes
+  a machine report itself current, and a container engine that is installed but
+  unreachable is indistinguishable from one that is not installed until you try
+  to use it. It never returns `1`: gating a pipeline is what
+  `hardening_audit.sh --fail-on warn` is for, and duplicating that here would
+  only give two answers to one question.
+- `macos-initial-setup/hardening_audit.sh` — the macOS half of
+  `linux/hardening_audit.sh`, with the same flags (`--only`, `--fail-on`,
+  `--quiet`, `--list-groups`) and the same exit codes. Six groups: sharing
+  services, the Application Firewall and its stealth mode, the software-update
+  settings, FileVault, SIP and Gatekeeper. Like its Linux counterpart it has no
+  `--apply`, because every finding has a context where the insecure-looking
+  answer is the right one. The sharing checks ask `netstat` which ports are
+  listening rather than `systemsetup`, which needs root: an audit you have to
+  `sudo` is an audit nobody runs. Loopback-only listeners are ignored, so an
+  ssh tunnel endpoint on `127.0.0.1` is not reported as File Sharing being on.
 - `k8s-toolbox/versions.env` pins `yq`, `kubectl`, `helm`, `kustomize` and
   `gcloud`, and is now the only place those versions are written down.
   `build.sh` passes each one as a build ARG and the Dockerfile asserts the

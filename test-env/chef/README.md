@@ -11,6 +11,12 @@ Kitchen) lint and test the cookbooks themselves. Meta-linters **shellcheck**,
 Dockerfile, compose, kitchen.yml) honest. Everything runs in the same
 **Docker runner**; the host only needs **Docker Engine + Compose v2**.
 
+This is a **local sandbox**. `../../run-tests.sh` has no `chef` suite and CI
+never runs `just ci` here, so nothing below is checked by opening a pull
+request — only the scaffolding as text, through the repository-wide ShellCheck,
+yamllint and markdownlint job. Run `just ci` yourself after changing anything
+here.
+
 ---
 
 ## Layout

@@ -262,6 +262,16 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
   to see what `dump` would change before overwriting anything. The curated
   installers above are the intent; the Brewfile is the fact.
+- `workstation_doctor.sh` is the read-only health report — is this Mac *well*?
+  Security posture, free space, Command Line Tools, Homebrew, SSH keys and
+  agent, Git identity, Time Machine, log footprint, LaunchAgents and login
+  items. Nothing it does changes the machine, which makes it the safe first
+  thing to run on one you have just been handed.
+- `hardening_audit.sh` is the read-only security audit — is this Mac *safe*?
+  Sharing services, the Application Firewall, software-update settings,
+  FileVault, SIP and Gatekeeper, each finding printed with the command that
+  addresses it. Same flags and exit codes as `linux/hardening_audit.sh`, and
+  the same refusal to have an `--apply`.
 - `launchd/stay_fresh_agent.sh` installs a per-user LaunchAgent that runs
   `stay_fresh.sh` on a weekly or daily schedule. The agent has no terminal, so
   it cannot answer a sudo prompt and always runs `--no-sudo --yes`; the
@@ -329,6 +339,12 @@ OS, so behaviour is actually exercised across all three package managers:
 - `stay_fresh.sh` — upgrades honouring holds, journal vacuum, user caches,
   container prune (**never** volumes), flatpak/snap, and a reboot-pending
   report. A missing tool is a note; a step that runs and fails is an error.
+- `system_doctor.sh` — read-only health report: distribution and uptime, how
+  old the package index is, free space *and inodes*, a pending reboot, sshd,
+  failed `systemd` units, which host firewall is in charge, container engines,
+  and load per core. The counterpart of `macos-initial-setup/workstation_doctor.sh`,
+  and the narrative half of a pair with the audit below: the audit grades a
+  missing firewall as a finding, this reports which one is running.
 - `hardening_audit.sh` — read-only security audit across sshd, accounts,
   listening sockets, file modes and update configuration. There is deliberately
   no `--apply`: every finding has a context where the insecure-looking answer is

@@ -27,6 +27,8 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`stay_fresh.sh`](#stay_freshsh)
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`brewfile.sh`](#brewfilesh)
+- [`workstation_doctor.sh`](#workstation_doctorsh)
+- [`hardening_audit.sh`](#hardening_auditsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
 - [What this changes on your machine](#what-this-changes-on-your-machine)
@@ -48,6 +50,10 @@ For returning users. Every command is idempotent.
 # One-off previews
 ./install_apps.sh     --dry-run --verbose
 ./install_devtools.sh --dry-run --verbose
+
+# Read the machine, change nothing
+./workstation_doctor.sh                  # is this Mac well?
+./hardening_audit.sh                     # is this Mac safe?
 ```
 
 After linking `zsh_aliases.zsh`, the same three are available as
@@ -62,6 +68,8 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
+| `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
+| `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
 | `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions. |
@@ -79,6 +87,8 @@ than memorizing flags.
 | **Bootstrap** | `install_devtools.sh` | Once per machine (+ version bumps) | `~/.pyenv`, `~/.goenv`, `$(brew --prefix)/bin`, optionally `~/.zshrc` |
 | **Ambient** | `zsh_aliases.zsh` | Sourced on every interactive shell (after wiring into `~/.zshrc`) | Your shell only — no disk writes |
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | Caches, Homebrew, Docker, Xcode, toolchains |
+| **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
+| **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand | Minimal subset of the above; no flags |
 
 The two bootstrap scripts are independent — you can run either one
@@ -332,25 +342,39 @@ path is protected by System Integrity Protection.
 
 ### Steps
 
+In the order they run:
+
 1. Purge inactive memory (`sudo purge`).
 2. Flush the DNS cache (`dscacheutil`, `mDNSResponder`).
 3. Clear system caches (`/Library/Caches` and writable entries under
    `/System/Library/Caches`).
 4. Clear user caches (`~/Library/Caches`, Logs, Saved State, Xcode
    DerivedData, and related paths).
-5. Empty `~/.Trash`.
-6. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `gem`,
-   `go`, `cargo`).
-7. Prune Docker / OrbStack (containers, networks, volumes, builder
+5. Clear **per-app caches** — the disposable data that lives outside
+   `~/Library/Caches` and is therefore invisible to step 4: the
+   Chromium-internal directories (`Cache`, `Code Cache`, `GPUCache`,
+   `Service Worker`, `blob_storage`) that Electron apps keep under
+   Application Support, the private `Caches` directory inside each
+   sandboxed app's container, and downloaded extension `.vsix` archives.
+   Quit the apps first — a running app rewrites its caches mid-sweep.
+6. Prune **stale workspace storage**. VS Code and its forks (Cursor,
+   VSCodium, Windsurf, and the rest) keep a `workspaceStorage` entry for
+   every folder ever opened and never garbage-collect them. Only entries
+   whose recorded path no longer exists are removed; remote workspaces
+   and anything unparsable are kept. The classification is done by
+   [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
+7. Empty `~/.Trash`.
+8. Prune Docker / OrbStack (containers, networks, volumes, builder
    cache, and **dangling images only** — tagged images are kept).
-8. Clean Xcode extras (Archives, DeviceSupport, obsolete simulators).
-9. Remove diagnostic and crash reports (user and system).
-10. Update and upgrade Homebrew (formulae and casks), run `cleanup` and
-    `autoremove`.
-11. Run `mise self-update`, update plugins, and upgrade tools.
-12. Update installed Helm plugins.
-13. Run `gcloud components update`.
-14. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
+9. Clean Xcode extras (Archives, DeviceSupport, obsolete simulators).
+10. Remove diagnostic and crash reports (user, plus system with `sudo`).
+11. Update and upgrade Homebrew (formulae and casks), run `cleanup -s`
+    and `autoremove`.
+12. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `gem`,
+    `go`).
+13. Update installed Helm plugins.
+14. Run `gcloud components update`.
+15. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     and `gcloud`.
 
 ### Usage
@@ -373,18 +397,19 @@ path is protected by System Integrity Protection.
 | `-v`, `--verbose` | Stream per-step output live. |
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, and system diagnostics. |
 | `--brew-greedy` | Upgrade casks that self-update (`auto_updates true`, `:latest`). |
-| `--skip-devtools` | Shorthand for `--skip-mise --skip-helm-plugins --skip-gcloud --skip-versions`. |
+| `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-gcloud --skip-versions`. |
 | `--skip-memory` | Skip the `sudo purge` step. |
 | `--skip-dns` | Skip the DNS cache flush. |
 | `--skip-syscaches` | Skip system-cache cleanup. |
 | `--skip-usercaches` | Skip user-cache cleanup. |
+| `--skip-appcaches` | Skip per-app caches (step 5: Chromium/Electron directories, sandboxed containers, `.vsix`). |
+| `--skip-workspacestorage` | Skip pruning stale VS Code / Cursor workspace storage (step 6). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
-| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`gem`/`go`/`cargo` cache cleanup. |
+| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`gem`/`go` cache cleanup. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
-| `--skip-mise` | Skip `mise` update. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
 | `--skip-gcloud` | Skip `gcloud components update`. |
 | `--skip-versions` | Skip the final version report. |
@@ -498,6 +523,137 @@ Brewfile never silently upgrades packages you did not ask about.
 
 ---
 
+## `workstation_doctor.sh`
+
+The safe first thing to run on a Mac — after a bootstrap to confirm it took, or
+on a machine someone has just handed you. It reads and prints; nothing here
+installs, upgrades or deletes, so there is no `--dry-run` because there is
+nothing to preview.
+
+It answers **is this Mac well?** For **is this Mac safe?**, see
+[`hardening_audit.sh`](#hardening_auditsh) below. The two overlap on FileVault,
+SIP and Gatekeeper and treat them differently on purpose: the doctor states
+what it found, the audit grades it and prints the fix.
+
+### Usage
+
+```bash
+./workstation_doctor.sh                     # the whole report
+./workstation_doctor.sh --skip-brew-doctor  # 'brew doctor' is the slow part
+./workstation_doctor.sh --verbose           # also log full command output
+```
+
+### What it reports
+
+| Section | Contents |
+| --- | --- |
+| Preflight | macOS version, build and architecture. |
+| Security | FileVault, Gatekeeper, SIP, and whether Rosetta is available on Apple Silicon. |
+| Disk | Free space on `/`. |
+| Xcode CLT | Selected path and the installed package version. |
+| Homebrew | Version and prefix, then `brew doctor` unless skipped. |
+| SSH | Public keys in `~/.ssh` and how many keys the agent holds. |
+| Git identity | Global `user.name` and `user.email`. |
+| Time Machine | `tmutil status`, the latest backup, and local APFS snapshot count. |
+| Logs | Sizes of `~/Library/Logs`, its `DiagnosticReports`, and `/Library/Logs`. |
+| LaunchAgents | The `.plist` files in `~/Library/LaunchAgents`. |
+| Login items | Read through AppleScript, so it may prompt for Automation access. |
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `-v`, `--verbose` | Log full command output to the log file. |
+| `--skip-brew-doctor` | Skip `brew doctor`, comfortably the slowest check. |
+| `--skip-login-items` | Skip the AppleScript login-item listing (it can prompt for Automation permission). |
+| `--skip-time-machine` | Skip the Time Machine / `tmutil` section. |
+| `--skip-log-sizes` | Skip the log and diagnostic size estimates. |
+| `--skip-launchd` | Skip the LaunchAgents listing. |
+| `-h`, `--help` | Show the built-in help. |
+
+The report is written to `$TMPDIR/workstation_doctor-YYYYMMDD-HHMMSS.log` as
+well as to the terminal.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report ran. Warnings in the output do not change this. |
+| `2` | Preflight failed — not macOS, or running as `root`. |
+| `3` | Invalid arguments. |
+
+The Windows counterpart is
+[`windows/setup/workstation_doctor.ps1`](../windows/setup/workstation_doctor.ps1)
+and the Linux one is [`linux/system_doctor.sh`](../linux/system_doctor.sh).
+
+---
+
+## `hardening_audit.sh`
+
+Read-only security audit, and the macOS half of
+[`linux/hardening_audit.sh`](../linux/hardening_audit.sh) down to the flags and
+the exit codes.
+
+**There is no `--apply` and no `--fix`, deliberately.** Every finding it prints
+has a context where the "insecure" answer is the correct one — SIP off on a
+machine that develops kernel extensions, Remote Login on for a Mac you actually
+`ssh` into. A script that hardened automatically would be wrong often enough to
+be dangerous, so this one hands you the finding and the command and lets you
+decide.
+
+### Usage
+
+```bash
+./hardening_audit.sh                        # every group
+./hardening_audit.sh --list-groups
+./hardening_audit.sh --only firewall,disk   # a subset
+./hardening_audit.sh --quiet                # warnings and failures only
+./hardening_audit.sh --fail-on warn         # exit 1 on a warning too
+sudo ./hardening_audit.sh                   # a few probes read more as root
+```
+
+### Groups
+
+| Group | Checks |
+| --- | --- |
+| `sharing` | Remote Login (ssh), Screen Sharing, File Sharing. |
+| `firewall` | Application Firewall state, and stealth mode when it is on. |
+| `updates` | Automatic check, download, security-response and macOS-update settings, plus how long since the last successful check. |
+| `disk` | FileVault, including the deferred-enablement state that looks enabled and is not. |
+| `sip` | System Integrity Protection, including a partially-disabled custom configuration. |
+| `gatekeeper` | Whether assessments are enabled. |
+
+The `sharing` checks ask `netstat` which ports are listening rather than
+`systemsetup`, which needs root: an audit you have to `sudo` is an audit nobody
+runs. Loopback-only listeners are ignored, so an ssh tunnel endpoint on
+`127.0.0.1` is not reported as File Sharing being switched on.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--only GROUPS` | Comma-separated subset (see `--list-groups`). |
+| `--fail-on LEVEL` | Exit `1` on `fail` (default) or on `warn` and above. |
+| `--quiet` | Print only warnings and failures. |
+| `--list-groups` | Print the group names and exit. |
+| `-h`, `--help` | Show the built-in help. |
+
+Every finding is one line — verdict, what was checked, and for anything that is
+not a `pass`, the command that addresses it. A check that cannot answer says
+`skip` rather than guessing: a false all-clear is the worst thing an audit can
+print.
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing at or above the failure threshold. |
+| `1` | One or more findings at or above `--fail-on`. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments. |
+
+---
+
 ## `launchd/stay_fresh_agent.sh`
 
 Maintenance that depends on remembering to run it does not happen. This installs
@@ -608,13 +764,22 @@ The `tester` image (`tests/tester/Dockerfile`) installs `bash`, `shellcheck`,
 and `zsh`, mounts the repo read-only at `/repo`, and runs
 `tests/test_macos_initial_setup.sh`.
 
+The subjects are **discovered** with `find`, two levels deep so `launchd/` is
+covered, rather than listed in the harness. The list they replaced named four
+scripts while the package grew to nine, so `brewfile.sh`, `macos_defaults.sh`,
+`workstation_doctor.sh` and `launchd/stay_fresh_agent.sh` went unchecked here
+for a long time — the drift that
+[`test-env/lib/discover_clis.sh`](../test-env/lib/discover_clis.sh) was
+written to stop. A new script is now covered by the commit that adds it.
+
 | Check | Notes |
 | --- | --- |
-| `bash -n` | All `*.sh` in this directory. |
+| `bash -n` | Every discovered `*.sh`. |
 | ShellCheck | `--severity=error` for the bash scripts. Debian’s stock ShellCheck may not ship a `zsh` dialect — the harness then **skips** `zsh` ShellCheck but still **sources** `zsh_aliases.zsh` in `zsh`. |
-| CLI | `--help` succeeds for `install_*.sh`, `stay_fresh.sh`, and `v1_stay_fresh.sh`; an unknown `install_apps.sh` flag returns exit **3** (before preflight). |
-| Platform guard | On Linux, `install_apps.sh`, `install_devtools.sh`, and `stay_fresh.sh` exit **2** with a “macOS only” message even with `--dry-run` — preflight always runs first. |
-| `zsh_aliases.zsh` | `zsh -f -c "source …"` must not error. |
+| CLI | `--help` exits **0** and an unknown flag exits **3**, for every discovered script — both before any preflight check. |
+| Platform guard | On Linux every script with a platform guard exits **2** with a “macOS only” message. `v1_stay_fresh.sh` is the one exception, and is skipped by name: it is the preserved original and has no guard. |
+| `hardening_audit.sh` | `--list-groups` and group validation answer ahead of the macOS-only probes, the same ordering `--help` has to keep. |
+| `zsh_aliases.zsh` | Not in the `--help` contract — it is sourced, not run — but it is ShellCheck'd and must `source` cleanly under `zsh -f`. |
 
 This is **not** a substitute for `--dry-run` on a real Mac: there is no
 Homebrew, no installs, and no execution of `stay_fresh` steps. For
@@ -663,9 +828,16 @@ Homebrew / `pyenv` / `goenv` commands.
   `/Library/Caches`, writable entries of `/System/Library/Caches`,
   `~/Library/Caches`, Logs, Saved State, Xcode DerivedData, and related
   paths.
+- Deletes per-app cache contents outside `~/Library/Caches`: the
+  Chromium-internal directories under `~/Library/Application Support`,
+  the `Data/Library/Caches` directory inside each sandboxed app's
+  container, and downloaded `.vsix` archives.
+- Removes VS Code / Cursor `workspaceStorage` entries whose project
+  folder no longer exists. Remote workspaces and unreadable entries are
+  left alone.
 - Empties `~/.Trash`.
 - Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `gem`,
-  `go`, `cargo`).
+  `go`).
 - Prunes Docker resources when Docker is available:
   - Containers (`docker container prune -f`)
   - Networks (`docker network prune -f`)
@@ -676,9 +848,11 @@ Homebrew / `pyenv` / `goenv` commands.
     daemon (non-`unix://…` host), to avoid cleaning a remote engine by mistake.
 - Upgrades Homebrew formulae and casks (greedy upgrade only with
   `--brew-greedy`).
-- Updates `mise`, Helm plugins, and `gcloud` components when those
-  tools are installed.
-- Writes `/tmp/stay_fresh-YYYYMMDD-HHMMSS.log`.
+- Updates Helm plugins and `gcloud` components when those tools are
+  installed.
+- Writes `$TMPDIR/stay_fresh-YYYYMMDD-HHMMSS.log` during the run. A
+  clean run discards it; a run with warnings or failures keeps it under
+  `~/Library/Logs/stay_fresh/`, pruned to the ten most recent.
 - Does **not** modify any shell configuration files.
 
 ### `v1_stay_fresh.sh`

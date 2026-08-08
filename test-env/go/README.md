@@ -9,6 +9,11 @@ in named Compose volumes so recompiles are quick.
 The stack keeps a **long-running dev container** so every `run.sh` invocation
 `docker compose exec`s into it — milliseconds, not seconds.
 
+This is a **local sandbox**. `../../run-tests.sh` has no `go` suite and CI never
+runs `just ci` here, so nothing below is checked by opening a pull request —
+only the scaffolding as text, through the repository-wide ShellCheck, yamllint
+and markdownlint job. Run `just ci` yourself after changing anything here.
+
 ---
 
 ## Layout

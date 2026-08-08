@@ -1,71 +1,73 @@
 # test-env
 
-Sandboxes for automated checks that do not live inside the main script trees
-(`git/`, `macos-initial-setup/`, `mikrotik/`). Each subfolder (`chef/`, `python/`,
-`go/`) is self-contained: Docker on the host, optional `just`, and its own README.
+Test machinery that does not live inside a script package. Two different kinds
+of thing share this folder, and the difference matters:
 
-Every sandbox lints two layers:
+| Path | What it is | Run by `./run-tests.sh`? |
+| --- | --- | --- |
+| [`static/`](static/) | The repository-wide convention checks (`./run-tests.sh static`) | **yes**, and by CI |
+| [`python/`](python/) | The unit tests for the Python helpers (`./run-tests.sh python`) | **yes**, and by CI |
+| [`lib/`](lib/) | `discover_clis.sh`, the shared "which tracked files are command-line scripts" rule both of the above build on | sourced by them |
+| [`chef/`](chef/) | A self-contained Chef cookbook sandbox | **no** |
+| [`go/`](go/) | A self-contained Go sandbox | **no** |
 
-1. **Target code** — Cookstyle (Chef), Ruff (Python), golangci-lint (Go).
-2. **Test-env scaffolding** — `shellcheck` on `run.sh`, `hadolint` on the
-   `Dockerfile`, `yamllint` on compose / config YAML. Exposed everywhere as
-   `just lint-env`, and wired into `just ci`.
+## The suites that run
 
-The runner images bake all linters in; `./run.sh shellcheck ...` /
-`./run.sh hadolint ...` work in any of the three envs.
+**[`static/`](static/)** — `check_conventions.sh` plus the two RouterOS checks
+that need no Docker. It discovers its own subjects from the git index rather
+than keeping a list, so a new script is covered by the commit that adds it:
+the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes`
+coverage, Bash 3.2 constructs, the deliberately-duplicated blocks, and the
+dry-run promise checked against the filesystem. **bash + git only** — no
+Docker, no network, no Python.
 
-## Chef (`chef/`)
+**[`python/`](python/)** — `run.sh` runs the helpers' unit tests under stdlib
+`unittest` with whichever `python3` it finds (`/usr/bin/python3` on macOS,
+because that is the interpreter the shell scripts call), then `ruff check` over
+the repository if ruff is installed and says it skipped the lint if not. There
+is **no Docker image, no `justfile` and no dev container here** — the modules
+under test import nothing outside the standard library, so the sandbox one
+would provide buys nothing.
 
-**[`chef/`](chef/)** — Chef Infra cookbook toolchain in one place:
+Both are called through [`../run-tests.sh`](../run-tests.sh), which CI calls in
+turn, so a green run locally and a green run in CI mean the same thing.
 
-- **Docker runner** — [`chef/run.sh`](chef/run.sh) starts a Compose service with
-  Ruby, gems, the Docker CLI, **yamllint**, **shellcheck**, and **hadolint**;
-  mounts this repo at `/chef` and the host **`/var/run/docker.sock`** so
-  [kitchen-dokken](https://github.com/test-kitchen/kitchen-dokken) can start
-  converge containers on your machine.
-- **Linters** — Cookstyle on cookbooks; shellcheck/hadolint/yamllint on the
-  scaffolding via `just lint-env`. ChefSpec for unit tests, Kitchen + InSpec
-  for integration.
-- **Tasks** — [`chef/justfile`](chef/justfile): `just lint`, `just lint-env`,
-  `just yamllint`, `just spec`, `just verify`, `just ci`, …
-- **Editor** — [`.devcontainer/`](chef/.devcontainer/) reuses the same image
-  for VS Code / Cursor.
+## The sandboxes that do not
 
-Full commands, layout table, and cookbook authoring notes:
+`chef/` and `go/` are **local playgrounds for writing Chef cookbooks and Go
+code**, kept here because they are useful and self-contained. They are not part
+of this repository's test run:
+
+- `./run-tests.sh` has no `chef` or `go` suite. Nothing in
+  [`.github/workflows/`](../.github/workflows/) invokes their `run.sh` or their
+  `just ci`. Those run when you run them, on your machine, with Docker up.
+- What CI *does* cover is the scaffolding as text, through the repository-wide
+  lint job: ShellCheck over every tracked `*.sh` (so both `run.sh` files),
+  yamllint over the compose and config YAML, markdownlint over the READMEs.
+  The `Dockerfile`s are linted by `just lint-env` inside the sandbox and by
+  nothing else — CI has no hadolint step.
+
+So a change to `chef/` or `go/` that breaks a converge or a test will not be
+caught by opening a pull request. Run `just ci` in the folder you touched.
+
+Both share the same shape: a Docker runner (`run.sh` with
+`up`/`down`/`logs`/`ps`/`shell`, `--once`, `--rebuild`), a `justfile` of
+shortcuts, a dev container reusing the same image, and two layers of linting —
+the target code (Cookstyle, golangci-lint) and the scaffolding itself
+(`shellcheck`, `hadolint`, `yamllint`, exposed as `just lint-env` and included
+in `just ci`).
+
+### Chef (`chef/`)
+
+Chef Infra cookbook toolchain in one place: [Test Kitchen](https://kitchen.ci/)
+with the [kitchen-dokken](https://github.com/test-kitchen/kitchen-dokken)
+driver, so converges run in containers on the host's Docker socket, plus
+Cookstyle for lint, ChefSpec for unit tests and InSpec for integration. Full
+commands, layout table, and cookbook authoring notes:
 **[`chef/README.md`](chef/README.md)**.
 
-## Python (`python/`)
+### Go (`go/`)
 
-**[`python/`](python/)** — Python 3.12 in Docker with **Ruff** (lint + format),
-**pytest**, and **mypy**:
-
-- **Docker runner** — [`python/run.sh`](python/run.sh) starts a long-running
-  Compose `dev` service, mounts `test-env/python` at `/python`, and `exec`s
-  commands so repeated runs stay fast.
-- **Linters** — Ruff on source; **shellcheck**, **hadolint**, and **yamllint**
-  on the scaffolding via `just lint-env`. mypy for typing.
-- **Tasks** — [`python/justfile`](python/justfile): `just lint`,
-  `just lint-env`, `just format-check`, `just typecheck`, `just test`,
-  `just ci`, …
-- **Editor** — [`.devcontainer/`](python/.devcontainer/) reuses the same image
-  for VS Code / Cursor.
-
-Details and layout table: **[`python/README.md`](python/README.md)**.
-
-## Go (`go/`)
-
-**[`go/`](go/)** — Go 1.23 in Docker with **golangci-lint**, **goimports**, and
-**govulncheck**:
-
-- **Docker runner** — [`go/run.sh`](go/run.sh) starts a long-running Compose
-  `dev` service; module and build caches live in named volumes so rebuilds are
-  fast.
-- **Linters** — golangci-lint + `go vet` on source; govulncheck for CVEs;
-  **shellcheck**, **hadolint**, and **yamllint** on the scaffolding via
-  `just lint-env`.
-- **Tasks** — [`go/justfile`](go/justfile): `just test`, `just lint`,
-  `just lint-env`, `just vet`, `just cov`, `just vuln`, `just ci`, …
-- **Editor** — [`.devcontainer/`](go/.devcontainer/) reuses the same image
-  for VS Code / Cursor.
-
-Details and layout table: **[`go/README.md`](go/README.md)**.
+Go 1.23 in Docker with **golangci-lint**, **goimports** and **govulncheck**;
+module and build caches live in named volumes so rebuilds are fast. Details and
+layout table: **[`go/README.md`](go/README.md)**.

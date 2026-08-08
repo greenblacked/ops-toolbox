@@ -294,6 +294,48 @@ set +e
 set -e
 assert_eq "hardening_audit rejects an unknown group -> 3" "3" "$rc"
 
+# --- system_doctor reports rather than grades ------------------------------
+# A container has no systemd, no sshd, no firewall and no container engine, so
+# this is the environment where a health report is most likely to trip over
+# something absent. Exiting 0 here is the assertion: every probe has to degrade
+# to a note.
+scratch_home="$(mktemp -d)"
+set +e
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$L/system_doctor.sh" 2>&1)"; rc=$?
+set -e
+assert_eq "system_doctor exits 0 with almost nothing installed" "0" "$rc"
+assert_contains "system_doctor prints a summary" "$out" "== summary =="
+assert_contains "system_doctor names the package manager" "$out" "package manager: $EXPECT_PKG_MGR"
+
+# Read-only means it writes nothing at all, not even a log — the sibling
+# maintenance scripts do write one, so this is worth asserting rather than
+# assuming.
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "system_doctor wrote nothing"
+else
+  err "system_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+# --quiet must drop the healthy lines and keep the rest; a --quiet that still
+# printed everything would be discovered by nobody.
+out="$("$L/system_doctor.sh" --quiet 2>&1)"
+if grep -q '\[ ok \]' <<<"$out"; then
+  err "system_doctor --quiet still printed [ ok ] lines"
+else
+  ok "system_doctor --quiet drops the healthy lines"
+fi
+assert_contains "system_doctor --quiet still summarises" "$out" "== summary =="
+
+for bad in "--min-free 101" "--min-free notanumber"; do
+  set +e
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$L/system_doctor.sh" $bad >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "system_doctor rejects $bad -> 3" "3" "$rc"
+done
+
 echo
 if (( failures > 0 )); then
   echo "$failures linux script check(s) failed" >&2
