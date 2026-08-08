@@ -19,15 +19,26 @@
 
 :local DeviceName    [/system identity get name];
 
+# Override from globals when set. MaxFailures < 1 is refused below — that is
+# the floor: a threshold of 0 would block every source IP that appears once.
 :local MaxFailures   5;
 :local BlockTimeout  "1d";
 :local ListName      "brute-force-block";
+:global BF_MAX_FAILURES;
+:if ([:typeof $BF_MAX_FAILURES] = "num") do={ :set MaxFailures $BF_MAX_FAILURES; }
 
 # Keywords that indicate a failed login attempt in RouterOS log.
 :local Keywords {"login failure";"login failed";"invalid user"};
 
 :global BF_SEEN_LINES;
 :if ([:typeof $BF_SEEN_LINES] != "num") do={ :set BF_SEEN_LINES 0; }
+
+# Fail safe when unconfigured. MaxFailures < 1 would treat every failed
+# login as grounds to block, which bricks remote admin on a noisy log.
+:if ($MaxFailures < 1) do={
+    :log warning "brute_force_block: MaxFailures < 1 - skipping (fail-safe)";
+    :return "";
+}
 
 # Tally source IPs from log messages matching any keyword.
 # RouterOS log entries contain the source IP as "from X.X.X.X" or "<X.X.X.X>".

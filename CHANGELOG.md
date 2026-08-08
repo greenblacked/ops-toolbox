@@ -14,6 +14,14 @@ entry here belongs to a version.
 
 ## [Unreleased]
 
+### Added
+
+- `brute_force_block.lua` refuses to act when `BF_MAX_FAILURES` (or the local
+  default) is less than 1 — a threshold of 0 would block every source IP that
+  appears once in the log. The floor has a CHR behavioural test and a
+  convention check on the pull-request path, matching what
+  `mac_allowlist_dhcp.lua` already does for an empty allowlist.
+
 ### Fixed
 
 - `windows/wsl/wsl_manage.ps1` reported exit `1` on a machine without WSL where

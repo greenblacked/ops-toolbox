@@ -108,6 +108,7 @@ _PRODUCTION_NAMED_TEST_SCRIPTS = {
     "firewall_drift",
     "firewall_drift_baseline",
     "mac_allowlist_dhcp",
+    "brute_force_block",
     "rogue_dns_check",
 }
 
@@ -123,6 +124,8 @@ _TEST_OWNED_GLOBALS = (
     "DHCP_DUPS_FLAG",
     "MAC_ALLOWLIST",
     "MACALLOW_LAST_FLAG",
+    "BF_MAX_FAILURES",
+    "BF_SEEN_LINES",
     "DNS_EXPECTED",
     "DNS_ALLOWED_RESOLVERS",
     "RDNS_LAST_FLAG",

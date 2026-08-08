@@ -180,6 +180,23 @@ else
   (( unscheduled == 0 )) && ok "print_schedulers.sh covers every unattended script"
 fi
 
+# --- blocking scripts keep their fail-safe floor ---------------------------
+# CONTRIBUTING.md: any script that deletes or blocks needs a floor, and that
+# floor should be its first test. The behavioural tests live in the CHR suite;
+# these string checks keep the floor itself from disappearing on the PR path.
+if grep -q 'MaxFailures < 1' "$PKG/brute_force_block.lua" \
+   && grep -q 'skipping (fail-safe)' "$PKG/brute_force_block.lua"; then
+  ok "brute_force_block.lua refuses MaxFailures < 1"
+else
+  err "brute_force_block.lua is missing its MaxFailures < 1 fail-safe"
+fi
+if grep -q 'MAC_ALLOWLIST empty' "$PKG/mac_allowlist_dhcp.lua" \
+   && grep -q 'fail-safe' "$PKG/mac_allowlist_dhcp.lua"; then
+  ok "mac_allowlist_dhcp.lua refuses an empty allowlist"
+else
+  err "mac_allowlist_dhcp.lua is missing its empty-allowlist fail-safe"
+fi
+
 echo
 if (( failures > 0 )); then
   echo "$failures RouterOS convention check(s) failed" >&2
