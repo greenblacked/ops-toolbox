@@ -40,6 +40,7 @@ live in `/system script` on the router and are run either manually or from
 | `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
 | `print_schedulers.sh`           | Host-side: prints the `/system scheduler add` lines for these scripts.  |
+| `router_doctor.py`              | Host-side: read-only audit of what is installed, scheduled and set.     |
 | `pull_router_backups.sh`        | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
 ## Installation
@@ -306,6 +307,35 @@ scripts — `tg_send`, `detect_internet`, `reboot-and-flush`,
 Everything it emits is valid RouterOS input, commentary included (the notes are
 `#` comment lines, and the colour only appears on a terminal), so the output can
 go into a file and be pasted from there.
+
+### `router_doctor.py`
+
+**Runs on your machine, not on the router.** Read-only, like the other
+diagnostics in this repository: it asks a router over ssh which of these scripts
+are in `/system script`, which of them a `/system scheduler` entry actually
+runs, and whether the globals they need are set — then prints the command that
+fixes what it found.
+
+```bash
+./router_doctor.py --host 192.168.88.1
+./router_doctor.py --host router.lan --identity ~/.ssh/keys/projects/mikrotik/mikrotik_rsa
+./router_doctor.py --host router.lan --port 2222
+```
+
+Secrets stay on the router. The check on `TG_BOT_TOKEN` and `TG_CHAT_ID` asks
+for the **length** of each global and never for the value, so no token crosses
+the wire or reaches your terminal — the report can say `set` or `empty`, and
+that is all it knows.
+
+Not installing a script is a choice — nobody wants `ddns_update` without
+Cloudflare — so a missing one is reported as context rather than as a problem.
+Three things are real findings: a scheduler that runs a script which is not
+installed (it fails at every run, and only `/log` says so), a script installed
+but scheduled nowhere, and a manual-only script somebody put on a timer.
+
+Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
+`--port`). Exit codes: `0` findings printed, `1` connected but the probe failed,
+`2` could not connect, `4` nothing wrong.
 
 ### `pull_router_backups.sh`
 
