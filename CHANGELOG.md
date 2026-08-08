@@ -74,6 +74,38 @@ entry here belongs to a version.
 
 ### Added
 
+- `windows/setup/stay_fresh.ps1` — the Windows counterpart of
+  `linux/stay_fresh.sh` and `macos-initial-setup/stay_fresh.sh`, down to the
+  exit codes: a winget source refresh and `upgrade --all`, `wsl --update`, and
+  a pending-reboot and free-space report, with `-DryRun` printing the whole run
+  before any of it happens. `--include-unknown` is passed deliberately —
+  without it winget skips every package whose installed version it cannot read,
+  which is the usual reason a machine reports itself up to date and is not.
+  Microsoft Store apps are left alone on purpose: their agreements have to be
+  accepted interactively, so an unattended run cannot honestly claim to have
+  updated them, and the script prints the command that does instead.
+- `windows/setup/workstation_doctor.ps1` — the Windows half of
+  `macos-initial-setup/workstation_doctor.sh`. BitLocker, Defender, the
+  pending-reboot flags, free space on `C:`, WSL and its distros, and the
+  effective execution policy, all read-only, which makes it the safe first
+  thing to run on a machine someone has just handed you. Every probe is
+  best-effort, because `Get-BitLockerVolume` does not exist on Home editions
+  and `Get-MpComputerStatus` is missing wherever Defender has been replaced:
+  a probe that cannot answer says so and the report carries on rather than
+  dying before the section you needed.
+- `windows/git-bash/install_dotfiles.sh` — copies `.bashrc`, `.bash_profile`
+  and `.aliases` into `$HOME`, with the two checks the README's plain `cp`
+  cannot do for you. It backs up whatever it replaces under one timestamp per
+  run, leaves a file that already matches the source alone, and refuses to
+  install a source file carrying CRLF line endings — printing the `sed` that
+  fixes it rather than rewriting a file you are about to live in. CRLF in the
+  file being replaced is reported too; that is usually the answer to the
+  broken-prompt syntax error in the troubleshooting section.
+- `windows/setup/winget-packages.example.json` — a worked example of what
+  `winget_bootstrap.ps1 export` writes, so the `import`/`diff` documentation
+  can be read without a Windows machine to hand. The same part
+  `Brewfile.example` plays next to `brewfile.sh`, and it is a valid import
+  file: `import -DryRun -File .\winget-packages.example.json` works against it.
 - `linux/systemd/stay_fresh_timer.sh` — the Linux counterpart of
   `macos-initial-setup/launchd/stay_fresh_agent.sh`: `install`, `uninstall`,
   `status` and `run-now` for a `systemd` user timer that runs `stay_fresh.sh`
