@@ -54,8 +54,9 @@ preamble whose sole job is finding it. That price is worth paying once for a
 real program, never for a seven-line validator.
 
 Divergence between copies is a *test* problem, not a factoring problem. The
-static suite asserts that every copy of `require_value()` is byte-identical, so
-you get the safety of a shared library with none of the coupling.
+static suite asserts the **contract** of every `require_value()` copy (same
+guard, exit 3, message on stderr), so you get the safety of a shared library
+with none of the coupling.
 
 ## Bash scripts
 
@@ -170,9 +171,8 @@ test suites assert this by snapshotting state before and after.
 ## Output
 
 Colours are `C_<COLOUR>` constants defined under a TTY guard with an
-empty-string `else` branch. New scripts also honour `NO_COLOR`; today only
-`run-tests.sh:20` and the Python helpers do, and the stricter form is the one to
-copy:
+empty-string `else` branch. Every Bash script honours `NO_COLOR`; copy this
+form:
 
 ```bash
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then

@@ -8,9 +8,9 @@
 
 <!-- Delete the ones you did not run. CI runs the same ./run-tests.sh. -->
 
-- [ ] `./run-tests.sh` (git + macos + python + static)
-- [ ] `./run-tests.sh windows`
+- [ ] `./run-tests.sh` (git + macos + linux + python + static + windows)
 - [ ] `./run-tests.sh linux`
+- [ ] `./run-tests.sh windows`
 - [ ] `./run-tests.sh all` (adds the RouterOS CHR suite)
 - [ ] Not applicable — documentation only
 

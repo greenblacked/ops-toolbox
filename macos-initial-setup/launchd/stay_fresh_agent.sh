@@ -37,7 +37,7 @@ LABEL="com.pretty-useful.stay-fresh"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_DIR="$HOME/Library/Logs/stay_fresh"
 
-if [[ -t 1 ]]; then
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_DIM=$'\033[2m'
   C_RED=$'\033[1;31m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'; C_BLUE=$'\033[1;34m'
 else
