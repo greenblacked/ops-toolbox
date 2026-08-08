@@ -10,7 +10,7 @@ full details.
 | [`wsl/`](wsl/) | `wsl_manage.ps1` — list distros with real disk usage, `df` for allocated-vs-used, dated `.tar` backups and the `restore` that brings one back, `prune-backups` retention over the export folder, shrink ballooned VHDX disks (compact/sparse), terminate one distro or shut all of WSL down. |
 | [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, and Docker. `-DryRun` first. |
 | [`setup/`](setup/) | `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy. |
-| [`tests/`](tests/) | Contract checks over every script here: parse, comment-based help, preview-before-changing, and that documented flags exist. |
+| [`tests/`](tests/) | Contract checks over every script here and in [`../templates/`](../templates/): parse, comment-based help, preview-before-changing, that documented flags exist, and that a `-DryRun` writes nothing. |
 
 ## Quick start
 
