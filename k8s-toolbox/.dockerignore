@@ -1,0 +1,5 @@
+# The Dockerfile copies nothing from the build context — only the pinned
+# versions.env is needed next to it. Keep the daemon upload tiny.
+*
+!versions.env
+!Dockerfile
