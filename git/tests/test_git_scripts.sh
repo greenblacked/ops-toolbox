@@ -606,6 +606,99 @@ else
   ok "install --dry-run wrote nothing"
 fi
 
+# --- the optional commit-msg hook ---
+# Opt-in, and the default install must stay exactly what it was: a message
+# convention imposed on a repository that did not ask for one is a hook that
+# gets --no-verify'd on its first use and never runs again.
+assert_contains "$("$HOOKS" --help)" "--commit-msg" "--help documents --commit-msg"
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install --commit-msg --dry-run 2>&1)"
+assert_contains "$out" "commit-msg" "install --commit-msg --dry-run previews the second hook"
+assert_contains "$out" "no changes written" "install --commit-msg --dry-run says so"
+if [[ -e "$repo/.git/hooks/commit-msg" ]]; then
+  err "install --commit-msg --dry-run wrote a hook"
+else
+  ok "install --commit-msg --dry-run wrote nothing"
+fi
+
+repo="$(new_repo)"
+(cd "$repo" && "$HOOKS" install) >/dev/null
+if [[ -e "$repo/.git/hooks/commit-msg" ]]; then
+  err "a plain install wrote a commit-msg hook"
+else
+  ok "a plain install leaves commit-msg alone"
+fi
+printf 'not conventional at all\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "whatever I like")" "0" \
+  "without the flag any commit message is accepted"
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install --commit-msg 2>&1)"
+assert_contains "$out" "installed commit-msg hook" "install --commit-msg reports the second hook"
+if [[ -x "$repo/.git/hooks/commit-msg" ]]; then
+  ok "install --commit-msg wrote an executable hook"
+else
+  err "install --commit-msg left no executable hook"
+fi
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "pre-commit hook installed and current" "status reports pre-commit"
+assert_contains "$out" "commit-msg hook installed and current" "status reports commit-msg"
+
+printf 'one\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "updated some things")" "1" \
+  "a subject that is not a Conventional Commit is refused"
+assert_eq "$(commit_rc "$repo" "feat(git): add a thing")" "0" \
+  "a conventional subject with a scope is accepted"
+
+printf 'two\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "fix!: a breaking change")" "0" \
+  "the breaking-change marker is accepted"
+
+# Messages git writes itself must pass, or every rebase and merge turns into a
+# fight with the hook.
+printf 'three\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "fixup! feat(git): add a thing")" "0" \
+  "a fixup! message is exempt"
+git -C "$repo" switch -q -c conventional-side
+printf 'side\n' >"$repo/side.txt"
+git -C "$repo" add side.txt
+git -C "$repo" commit -q -m "chore: side work"
+git -C "$repo" switch -q main
+set +e
+git -C "$repo" merge -q --no-ff -m "Merge branch 'conventional-side'" conventional-side >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "0" "a merge message is exempt"
+
+out="$(cd "$repo" && "$HOOKS" uninstall 2>&1)"
+assert_contains "$out" "removed the commit-msg hook" "uninstall removes the commit-msg hook"
+if [[ -e "$repo/.git/hooks/commit-msg" || -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "uninstall left a hook behind"
+else
+  ok "uninstall removes both hooks"
+fi
+
+# A foreign commit-msg hook must stop the install before the pre-commit hook is
+# written: a half-installed pair is worse than neither.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/commit-msg"
+chmod +x "$repo/.git/hooks/commit-msg"
+set +e
+out="$(cd "$repo" && "$HOOKS" install --commit-msg 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "1" "a foreign commit-msg hook refuses the install -> exit 1"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "the refused install still wrote the pre-commit hook"
+else
+  ok "the refused install wrote nothing"
+fi
+
 if (( failures )); then
   echo "=== $failures test(s) failed ===" >&2
   exit 1
