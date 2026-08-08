@@ -339,6 +339,12 @@ OS, so behaviour is actually exercised across all three package managers:
 - `bash_aliases.sh` — guarded aliases; every alias for a tool that may be
   absent is conditional, because an alias to a missing binary fails later, in
   the middle of something else.
+- `systemd/stay_fresh_timer.sh` — installs a `systemd` **user** timer that runs
+  `stay_fresh.sh` weekly or daily. It has no terminal, so it cannot answer a
+  sudo prompt and always runs `--yes --no-sudo`; package upgrades and the
+  journal vacuum stay manual. The units are checked with `systemd-analyze
+  verify` before anything is written, and `--print-only` shows them without
+  installing.
 
 There is deliberately no `install_apps.sh`: Homebrew Cask has no Linux
 equivalent worth mirroring. See [`linux/README.md`](linux/README.md).

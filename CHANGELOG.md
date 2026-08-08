@@ -74,6 +74,17 @@ entry here belongs to a version.
 
 ### Added
 
+- `linux/systemd/stay_fresh_timer.sh` — the Linux counterpart of
+  `macos-initial-setup/launchd/stay_fresh_agent.sh`: `install`, `uninstall`,
+  `status` and `run-now` for a `systemd` user timer that runs `stay_fresh.sh`
+  on a schedule. The generated units are checked with `systemd-analyze verify`
+  before anything is written, the way the macOS script lints its plist, and
+  `--print-only` renders them without installing. Like the timer itself, the
+  unit has no terminal to answer a sudo prompt from, so it always passes
+  `--yes --no-sudo`.
+- `linux/tests/test_linux_scripts.sh` now discovers scripts two levels deep, so
+  anything under `linux/systemd/` gets the same `bash -n`, `--help` and
+  unknown-flag coverage as the top-level scripts without being listed by hand.
 - `mikrotik/tests/test_lua_conventions.sh` — RouterOS script conventions checked
   without a router, so they run on the pull-request path rather than waiting for
   the nightly CHR suite. 14 of the 25 scripts had no test of any kind, and a

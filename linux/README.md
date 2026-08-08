@@ -15,6 +15,7 @@ scripts exit `2` off macOS.
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, updates |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
+| [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh) | Install a user timer so `stay_fresh.sh` runs on a schedule |
 | [`tests/`](tests/) | Docker checks that **run** the scripts, across all three distros |
 
 ## Quick start
@@ -96,13 +97,62 @@ A missing tool is a note, not a failure. `journalctl` is absent in a container
 and `snap` on most servers; neither should turn a maintenance run red. A step
 that runs and *fails* does count, and the script exits `1`.
 
+## `systemd/stay_fresh_timer.sh`
+
+Maintenance that depends on remembering to run it does not happen. This writes a
+`ops-toolbox-stay-fresh` service and timer into
+`~/.config/systemd/user/` and enables them, the counterpart of
+[`launchd/stay_fresh_agent.sh`](../macos-initial-setup/launchd/stay_fresh_agent.sh)
+on macOS:
+
+```bash
+./systemd/stay_fresh_timer.sh install                      # Mondays, 10:30
+./systemd/stay_fresh_timer.sh install --weekday daily --hour 3
+./systemd/stay_fresh_timer.sh install --dry-run            # the timer previews only
+./systemd/stay_fresh_timer.sh install --print-only         # show the units, write nothing
+./systemd/stay_fresh_timer.sh status
+./systemd/stay_fresh_timer.sh run-now
+./systemd/stay_fresh_timer.sh uninstall
+```
+
+**A user timer cannot use `sudo`, and that is not a limitation to work around.**
+It runs with no terminal attached, so a password prompt has nothing to prompt
+and would fail or hang. The unit therefore always runs `--yes --no-sudo`, which
+means these steps are **skipped** on every scheduled run:
+
+- the package upgrade, autoremove and clean
+- `journalctl --vacuum-time=14d`
+
+Everything else — user caches, trash, `docker`/`podman` prune, flatpak and
+snap — runs normally. Run `stay_fresh.sh` by hand when you want the root-owned
+steps, or leave package updates to `unattended-upgrades` / `dnf-automatic.timer`,
+which [`hardening_audit.sh`](hardening_audit.sh) already checks for.
+
+Three details worth knowing:
+
+- The units are checked with `systemd-analyze verify` **before** anything is
+  written, so a malformed schedule never lands in `~/.config/systemd/user/`
+  where systemd would complain about it on every reload.
+- `Persistent=true` catches a run missed because the machine was off — once,
+  not once per missed interval. `TimeoutStartSec=1h` overrides the 90-second
+  default for a `oneshot` service, which would otherwise kill a real
+  maintenance run part-way through. `Nice=10` with idle CPU and IO scheduling
+  keeps it away from interactive work.
+- A user timer only runs while you have a session, so `install` says so and
+  prints the `loginctl enable-linger` command when lingering is off. On a
+  headless box that step is the difference between a timer that fires and one
+  that never does.
+
+Output goes to the journal: `journalctl --user -u ops-toolbox-stay-fresh.service`.
+`stay_fresh.sh` still writes its own log under `$TMPDIR`.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
 | `1` | One or more steps failed |
-| `2` | Preflight failed — unsupported distribution |
+| `2` | Preflight failed — unsupported distribution, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install was requested without `--yes` |
 
 ## Tests
@@ -120,6 +170,11 @@ that `--dry-run` leaves the package count byte-identical, that `packages.sh`
 round-trips through a real package database and is stable across runs, that
 requesting an install without `--yes` refuses, and that a missing optional tool
 degrades to a warning instead of a failure.
+
+Discovery is by `find`, two levels deep, so `systemd/` is covered as well.
+A container has no user manager, so the timer can only be exercised through
+`--print-only` — which is precisely why that flag exists: on the images that
+ship `systemd-analyze`, printing the units also verifies them.
 
 Image tags are pinned. Arch is rolling and Fedora moves quickly; an unpinned
 base would let an upstream change redden an unrelated pull request.
