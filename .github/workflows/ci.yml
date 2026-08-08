@@ -83,6 +83,7 @@ jobs:
       suite_macos: ${{ steps.filter.outputs.suite_macos }}
       suite_linux: ${{ steps.filter.outputs.suite_linux }}
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
+      suite_k8s: ${{ steps.filter.outputs.suite_k8s }}
     steps:
       - name: Check out repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
@@ -163,6 +164,7 @@ jobs:
           emit suite_macos   '^macos-initial-setup/'
           emit suite_linux   '^linux/'
           emit suite_windows '^windows/'
+          emit suite_k8s     '^k8s-toolbox/'
 
       - name: Summarise
         if: always()
@@ -180,6 +182,7 @@ jobs:
             printf '| macos suite | %s |\n'   '${{ steps.filter.outputs.suite_macos }}'
             printf '| linux suite | %s |\n'   '${{ steps.filter.outputs.suite_linux }}'
             printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
+            printf '| k8s suite | %s |\n'     '${{ steps.filter.outputs.suite_k8s }}'
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
@@ -392,6 +395,13 @@ jobs:
           # pwsh is really there rather than trusting a green tick.
           - suite: windows
             changed: ${{ needs.changes.outputs.suite_windows }}
+          # Contract checks on the k8s-toolbox scripts; needs nothing but bash.
+          # It deliberately does not build the image — five pinned toolchains
+          # pulled from five hosts is minutes of network per run, and the
+          # scripts that drive the build are what regress. K8S_IMAGE_SMOKE=1
+          # runs the real build when that is what you want to verify.
+          - suite: k8s
+            changed: ${{ needs.changes.outputs.suite_k8s }}
     steps:
       - name: Check out repository
         if: matrix.changed == 'true'
