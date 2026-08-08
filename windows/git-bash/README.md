@@ -13,6 +13,7 @@ config, and secrets/local tweaks stay out of the committed files.
 | `.bashrc` | Default working directory, history, prompt (with Git branch), PATH dedup, persistent `ssh-agent` with fingerprint-checked key loading, editor/pager defaults. Sources `.aliases` near the end. |
 | `.bash_profile` | Sources `.bashrc`. Required because Git Bash opens new windows as **login** shells, which read `.bash_profile`/`.profile`, not `.bashrc`, by default. |
 | `.aliases` | ~190 aliases and functions: Git, GitLab CLI (`glab`), Docker, Kubernetes, Terraform, Windows-style commands, navigation, safer file ops. Kept separate so it can be edited or swapped out without touching shell/environment setup in `.bashrc`. |
+| `install_dotfiles.sh` | Copies the three files above into `$HOME`, backing up what was there and refusing to install anything with CRLF line endings. |
 
 ## Install
 
@@ -21,16 +22,60 @@ Git Bash — it can differ from the Windows profile folder if `HOME` is set in
 the environment).
 
 ```bash
+# From a Git Bash window, in a checkout of this repository:
+./windows/git-bash/install_dotfiles.sh --dry-run
+./windows/git-bash/install_dotfiles.sh
+```
+
+Or copy them by hand, which is all the script does when nothing is in the way:
+
+```bash
 cp windows/git-bash/.bashrc windows/git-bash/.bash_profile windows/git-bash/.aliases "$HOME/"
 ```
 
 If you already have a `~/.bashrc`, `~/.bash_profile`, or `~/.aliases`, diff
 first and merge by hand instead of overwriting — in particular, keep
 anything you have under a "local overrides" section, or move it into
-`~/.bashrc.local` (see below).
+`~/.bashrc.local` (see below). The script keeps a timestamped backup of
+anything it replaces, but a backup is not a merge.
 
 Then open a new Git Bash window (or `source ~/.bash_profile` in the current
 one) to pick up the changes.
+
+### `install_dotfiles.sh`
+
+The plain `cp` above has two failure modes that are only obvious after they
+have bitten you: it overwrites an existing `~/.bashrc` with nothing kept, and
+it will happily install a file with CRLF line endings — the corruption the
+troubleshooting section below exists for. The script is the same copy with
+those two checks in front of it.
+
+| Option | Effect |
+| --- | --- |
+| `--dry-run` | Print what would be copied and backed up; write nothing |
+| `--force` | Install even when a source file has CRLF line endings |
+| `--source DIR` | Copy from `DIR` instead of the folder holding the script |
+| `--home DIR` | Copy into `DIR` instead of `$HOME` |
+| `-h`, `--help` | Show the help |
+
+- **Backups are timestamped and share one stamp per run**, so a set taken
+  together is obvious from the names: `.bashrc.backup-20250131-142530`.
+- **A file that already matches the source is left alone.** Re-running is a
+  no-op, not three new copies of identical files.
+- **CRLF is refused, not fixed.** The script prints the `sed` command that
+  fixes each offending file and exits `1`; `--force` installs them as they are.
+  It refuses rather than converting because the file it would be rewriting is
+  one you are about to live in, and silently editing your input is a worse
+  habit than stopping.
+- **CRLF in the file being replaced is reported, not refused.** That one is
+  about to be overwritten by the LF copy anyway, so it only earns a warning —
+  but it is usually the answer to "why has this shell been throwing a syntax
+  error at me", and the backup preserves it exactly as it was.
+- **`--source` is for the copied-alone case.** Dropped into `~/bin` on its own,
+  the script has no dotfiles next to it; point `--source` at a checkout.
+
+Exit codes: `0` success, `1` CRLF line endings in a source file, `2` wrong
+environment (no source files, or no target directory), `3` usage.
 
 ## Applying changes after editing
 
@@ -144,7 +189,9 @@ worth knowing both if you see it again after editing `PS1` or `__git_branch`:
    window. `.gitattributes` in the repo root now forces LF on these two
    files on checkout regardless of your `core.autocrlf` setting, so pulling
    from this repo shouldn't reintroduce it — but a save from an editor
-   configured for CRLF still can.
+   configured for CRLF still can, and so can a copy made through an IDE or a
+   chat client. `install_dotfiles.sh` refuses to install a file in that state,
+   which is the one part of this the plain `cp` cannot do for you.
 2. **A `$(...)` followed later by the `\n` prompt escape.** Independent of
    the above, this Git Bash's bash has a prompt-decoding bug: if `PS1`
    contains a `$(command substitution)` and, anywhere after it in the same

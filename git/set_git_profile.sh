@@ -5,7 +5,7 @@ set -e
 set -u
 set -o pipefail
 
-if [[ -t 1 ]]; then
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'
   C_BOLD=$'\033[1m'
   C_RED=$'\033[1;31m'

@@ -8,7 +8,8 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | --- | --- |
 | **Bash** | 3.2 or newer (`/bin/bash` on macOS is enough). |
 | **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). |
-| **zsh** | Optional; only needed if you `source git_aliases.zsh`. |
+| **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
+| **Python 3.9+** | Optional; only for the three `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
 
 ## Scripts overview
@@ -16,14 +17,16 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | File | Purpose |
 | --- | --- |
 | `gacp.sh` | Stage all changes, commit with a message, and push. |
-| `git_aliases.zsh` | zsh aliases for Git helper scripts, including `gacp`. |
+| `git_aliases.zsh` | zsh aliases for every helper here, each guarded on the script being installed. |
+| `git_aliases.sh` | The same aliases for bash. Sourced, not run. |
 | `set_git_profile.sh` | Set global `user.name` / `user.email`, save named profiles, apply them later. |
 | `git_whoami.sh` | Show the Git identity that applies in the current directory (effective vs global). |
 | `git_status_summary.sh` | Compact status: branch, upstream, ahead/behind, changed-file counts. |
 | `git_sync_default.sh` | Fetch and fast-forward the default branch (`--dry-run` supported). |
 | `git_cleanup_merged.sh` | Delete local branches already merged into a base branch (`--dry-run`, `--force`). |
-| `git_hooks_install.sh` | Install a pre-commit hook that blocks large files, conflict markers and private keys. |
+| `git_hooks_install.sh` | Install a pre-commit hook that blocks large files, conflict markers and private keys; `--commit-msg` adds a Conventional Commits hook. |
 | `git_prune_gone.sh` | Delete local branches whose upstream was deleted on the remote — the squash-merge case `git_cleanup_merged.sh` cannot see. |
+| `git_stale_branches.sh` | Read-only: branches nobody has touched in a while, with their last author and what can remove them. |
 | `git_size_report.sh` | Read-only: what is making the repository big, by path across all history. |
 | `git_recent_branches.sh` | List recently updated local branches, or switch to one by index. |
 | `git_repo_root.sh` | Print the repository root path (`rev-parse --show-toplevel`). |
@@ -32,6 +35,7 @@ Small Bash helpers for everyday Git configuration, quick commits, and repository
 | `git_amend_last.sh` | Amend the last commit with `--no-edit`, optionally after `git add --all`. |
 | `git_ssh_doctor.py` | Diagnose `Permission denied (publickey)` and print the fix. Read-only. |
 | `git_signing_doctor.py` | Diagnose commit-signing failures across the gpg, ssh and x509 backends. Read-only. |
+| `git_remote_doctor.py` | Diagnose remote URLs, `insteadOf` rewrites and credential helpers. Read-only. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -48,6 +52,39 @@ Across these scripts, exit statuses are used consistently where it helps automat
 | `5` | `gacp.sh` only: push requested from a detached HEAD. |
 
 Scripts that do not need the full table may use a smaller subset (for example `git_whoami.sh` only cares about `2` for missing `git`).
+
+---
+
+## Aliases
+
+Two files, the same names in both:
+
+```bash
+# zsh
+echo 'source /path/to/ops-toolbox/git/git_aliases.zsh' >> ~/.zshrc
+
+# bash
+echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
+```
+
+| Alias | Script | Alias | Script |
+| --- | --- | --- | --- |
+| `gacp` | `gacp.sh` | `gsync` | `git_sync_default.sh` |
+| `gamend` | `git_amend_last.sh` | `gmerged` | `git_cleanup_merged.sh` |
+| `gundo` | `git_undo_last_commit.sh` | `ggone` | `git_prune_gone.sh` |
+| `gsum` | `git_status_summary.sh` | `gstale` | `git_stale_branches.sh` |
+| `gdiffb` | `git_diff_branch.sh` | `gsize` | `git_size_report.sh` |
+| `grecent` | `git_recent_branches.sh` | `ghooks` | `git_hooks_install.sh` |
+| `groot` | `git_repo_root.sh` | `gprofile` | `set_git_profile.sh` |
+| `gwho` | `git_whoami.sh` | `gssh` | `git_ssh_doctor.py` |
+| | | `gsign` | `git_signing_doctor.py` |
+| | | `gremote` | `git_remote_doctor.py` |
+
+Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
+
+The names avoid the two-letter Git aliases in [`linux/bash_aliases.sh`](../linux/bash_aliases.sh) (`gs`, `gd`, `gl`, `gp`, `gb`), so a bash user can source both files.
+
+Both are **sourced, not executed**. `git_aliases.sh` carries a `.sh` extension rather than being a dotfile so it is covered by the repository's `bash -n` and ShellCheck passes; running it directly prints the line to add to `~/.bashrc` and exits `3`.
 
 ---
 
@@ -68,14 +105,7 @@ Stages everything (`git add --all`), commits with `-m`, and pushes. If there is 
 - `4` — working tree clean (nothing to commit).
 - `5` — detached HEAD and push not disabled (use `--no-push` or check out a branch).
 
-**zsh alias**
-
-```bash
-source /path/to/ops-toolbox/git/git_aliases.zsh
-gacp "update git scripts"
-```
-
-The alias points at the `gacp.sh` next to `git_aliases.zsh` when that file is executable.
+**Alias:** `gacp "update git scripts"` — see [Aliases](#aliases).
 
 ---
 
@@ -174,6 +204,31 @@ Deletes **local** branches that are already merged into `--base` (default: curre
 
 ---
 
+## `git_stale_branches.sh`
+
+Read-only. Lists branches whose last commit is older than `--days` (default 90), oldest first, with the last author and a label saying what can act on each one:
+
+| Label | Meaning | What removes it |
+| --- | --- | --- |
+| `gone` | The upstream was deleted on the remote. | `git_prune_gone.sh` |
+| `merged` | Reachable from `HEAD`. | `git_cleanup_merged.sh` |
+| `unmerged` | Neither — squash-merged and forgotten, or abandoned. | Read it first: `git log --oneline main..<branch>` |
+
+```bash
+./git/git_stale_branches.sh
+./git/git_stale_branches.sh --days 30
+./git/git_stale_branches.sh --remote          # every remote as well
+./git/git_stale_branches.sh --remote upstream # just that one
+```
+
+Age is the last commit date of the branch tip, because that is the only date Git keeps: a branch created yesterday from a year-old commit reads as a year old.
+
+It does not fetch. Remote-tracking refs are therefore only as fresh as your last `git fetch --prune`, which the closing notes say out loud — a read-only report that quietly rewrites refs is not read-only.
+
+**Exit code `4`** when nothing is older than the threshold, so a scheduled check can act on the code rather than parse the output.
+
+---
+
 ## `git_recent_branches.sh`
 
 Lists local branches by last commit date (newest first), with relative time and subject. With `--switch N`, checks out the *N*th line in that listing.
@@ -240,6 +295,37 @@ Runs **`git commit --amend --no-edit`**: fold staged changes into the previous c
 
 ---
 
+## `git_hooks_install.sh`
+
+Writes hooks into `.git/hooks` of the current repository. Each body is embedded in this script rather than copied from a directory, so a hook keeps working after the script is deleted, moved, or was never checked out beside the repository it installed into.
+
+```bash
+./git/git_hooks_install.sh install                 # pre-commit only
+./git/git_hooks_install.sh install --commit-msg    # and the message hook
+./git/git_hooks_install.sh install --max-size 4096
+./git/git_hooks_install.sh status
+./git/git_hooks_install.sh uninstall
+```
+
+**`pre-commit`** (always) refuses a commit with a staged file over `--max-size` (default 1024 KB), a leftover conflict marker, or a PEM private key. Every check reads the *staged blob*, never the working tree: `git add -p` stages one hunk of a dirty file, and it is the staged content that is about to become a commit.
+
+**`commit-msg`** (only with `--commit-msg`) refuses a subject that is not a Conventional Commit — `type(optional scope): subject`, with an optional `!` for a breaking change:
+
+```text
+feat(git): add a stale branch report
+fix!: stop pushing tags by default
+```
+
+Types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`. Messages git writes itself — merges, reverts, and `fixup!`/`squash!` — are exempt, because rejecting those breaks a rebase rather than improving a changelog. The subject is the first line that is neither blank nor a comment, so a message written under `commit.verbose` or from a template is judged on the line you wrote.
+
+It is off by default deliberately: a message convention is a team decision, and a hook that imposes one on a repository that has not agreed to it gets bypassed on its first use and then never runs again.
+
+An existing hook this script did not write is backed up rather than clobbered, and only with `--force`; `uninstall` restores it. Hook versions are tracked per hook, so `status` can tell an out-of-date hook from a current one.
+
+**Exit codes:** `1` refused to act (a foreign hook is in the way), `4` nothing to uninstall.
+
+---
+
 ## `git_ssh_doctor.py`
 
 Answers the question `Permission denied (publickey)` refuses to: *which* of the things involved actually went wrong.
@@ -262,6 +348,28 @@ With **`--test-auth`** it tries each discovered private key against the host and
 Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
 **Exit code `1`** if any checked host fails to authenticate.
+
+---
+
+## `git_remote_doctor.py`
+
+The third read-only diagnostic, and the layer the other two step over: the URL git actually dials, and how it finds a password when that URL is HTTP.
+
+```bash
+./git/git_remote_doctor.py                 # this repository's remotes
+./git/git_remote_doctor.py --remote origin
+./git/git_remote_doctor.py --url https://github.com/owner/repo.git
+```
+
+Three things decide both, and none of them is visible in `git remote -v`:
+
+- **The URL.** A fetch URL over ssh with a push URL over https is why a pull is silent and a push prompts. `git://` is unauthenticated and read-only, so a push over it can never work. And in scp-like syntax the part after the colon is a *path*, not a port — `git@host:2222/owner/repo.git` asks for a repository called `2222/owner/repo.git`, and the error says it does not exist, which is true.
+- **`insteadOf` rewrites.** `git remote -v` prints what is in the config file, not what git dials. A `url.<base>.insteadOf` can send every fetch to a mirror, and `pushInsteadOf` can send pushes somewhere else again with no `remote.pushurl` set anywhere. Longest match wins, and git applies one rewrite rather than a chain — a rewrite whose result matches another pattern looks like a chain and behaves like a dead end, so it is reported.
+- **Credential helpers.** `credential.helper` is multi-valued and *accumulates* across scopes, unlike almost every other key, and an empty value discards everything configured before it — the documented way to ignore a system-wide helper, and the undocumented way to lose your keychain by pasting a config snippet. Helpers are resolved against git's exec path as well as `PATH`, because `git-credential-store` lives in `/usr/lib/git-core` and reporting it missing would be a false alarm on almost every machine.
+
+Anything it prints is redacted first: `https://x-access-token:TOKEN@github.com/` is a normal thing to find in a rewrite base, and a diagnostic whose output gets pasted into an issue must not be what leaks it.
+
+**Exit codes:** `1` problems found, `2` `git config` unavailable, `4` no remotes here and no `--url` given.
 
 ---
 
@@ -291,9 +399,12 @@ All paths below assume the repo root is your current directory.
 ./git/git_sync_default.sh --dry-run
 ./git/git_cleanup_merged.sh --dry-run --base main
 ./git/git_recent_branches.sh --switch 1
+./git/git_stale_branches.sh --days 120
 cd "$(./git/git_repo_root.sh)"
 ./git/git_diff_branch.sh --stat
 ./git/git_undo_last_commit.sh --dry-run
 ./git/git_amend_last.sh --add-all
-source ./git/git_aliases.zsh
+./git/git_hooks_install.sh install --commit-msg
+./git/git_remote_doctor.py
+source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

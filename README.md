@@ -5,14 +5,14 @@
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
 [![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
-[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS-lightgrey.svg)](#whats-here)
-[![Test suites](https://img.shields.io/badge/test%20suites-7-blue.svg)](#testing)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS%20%7C%20Kubernetes-lightgrey.svg)](#whats-here)
+[![Test suites](https://img.shields.io/badge/test%20suites-8-blue.svg)](#testing)
 [![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.23.3-blue.svg)](mikrotik/README.md)
 
-**CI** covers the git, macOS, Linux, Windows, Python and conventions suites on
-every pull request, plus repo-wide ShellCheck, PSScriptAnalyzer, yamllint and
-markdownlint. **RouterOS CHR** is separate because it boots a real router under
+**CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
+conventions suites on every pull request, plus repo-wide ShellCheck,
+PSScriptAnalyzer, yamllint and markdownlint. **RouterOS CHR** is separate because it boots a real router under
 QEMU: it runs nightly rather than on the pull-request path, so a red badge
 there does not necessarily mean a red pull request.
 
@@ -47,6 +47,8 @@ Three rules hold everywhere, and the test suites enforce them:
   and Arch (`pacman`); scripts use `bash`.
 - MikroTik RouterOS 7.23.3 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
+- Kubernetes clusters, GKE in particular — a Debian-based toolbox image with
+  pinned CLIs, driven by `bash` scripts from macOS or Linux.
 
 ## Why this exists
 
@@ -73,6 +75,7 @@ not at anyone shopping for a dotfiles framework to adopt.
 - [Windows at a glance](#windows-at-a-glance)
 - [Linux at a glance](#linux-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
+- [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
 - [Contributing](#contributing)
@@ -81,11 +84,12 @@ not at anyone shopping for a dotfiles framework to adopt.
 
 | Folder | Purpose |
 | --- | --- |
-| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup, and local Docker-based checks. |
+| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
 | [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, and capture/restore its package set. |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
+| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
 | [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
 | [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
 
@@ -185,7 +189,10 @@ repositories and local bare remotes:
 - `gacp.sh` — stages all changes, commits with a required message, and pushes.
   Supports `--dry-run`, `--no-push`, and first-push options (`--remote`,
   `--branch`).
-- `git_aliases.zsh` — defines `gacp` for zsh by pointing at `gacp.sh`.
+- `git_aliases.zsh` / `git_aliases.sh` — the same short aliases for every
+  script here, for zsh and for bash. Each one is defined only if its script is
+  actually installed, so a missing script leaves you without an alias rather
+  than with one that fails later.
 - `set_git_profile.sh` — manages global `user.name` / `user.email`, plus
   named profiles stored under
   `${XDG_CONFIG_HOME:-$HOME/.config}/ops-toolbox/git-profiles.conf`.
@@ -202,12 +209,18 @@ repositories and local bare remotes:
   private key. The hook body is embedded in the script rather than copied from
   a directory, so it keeps working after the script is gone. `status` reports
   whether it is installed and current; an existing unrelated hook is backed up
-  rather than clobbered, and restored on `uninstall`.
+  rather than clobbered, and restored on `uninstall`. `--commit-msg` adds an
+  opt-in Conventional Commits hook, exempting the messages git writes itself.
 - `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
   the remote. This is the squash-merge case: a squash-merged branch leaves no
   merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects
   that is most branches. Deletion is recoverable by design — every removal
   prints the commit it pointed at and the command to restore it.
+- `git_stale_branches.sh` — read-only report of branches nobody has touched in
+  `--days` (default 90), oldest first, with the last author and a label saying
+  which of the two cleanup scripts can act on each: `gone`, `merged`, or
+  `unmerged` — squash-merged and forgotten, or abandoned, which cannot be told
+  apart from here. Exits `4` when there is nothing to report.
 - `git_size_report.sh` — read-only report of what is making the repository
   big, aggregated per path across all history rather than per object, since a
   sha alone tells you nothing about what to delete. `--fast` skips the history
@@ -237,6 +250,13 @@ repositories and local bare remotes:
   global one is visible. `--test-sign` attempts one real signature with
   pinentry disabled, so a passphrase-protected key fails instead of hanging.
   Read-only.
+- `git_remote_doctor.py` — explains where a push actually goes, and why it
+  asks for a password. Covers the URL itself (ssh fetch with an https push,
+  read-only `git://`, and a port written after the colon of an scp-like URL,
+  where it is a directory name), the `insteadOf` and `pushInsteadOf` rewrites
+  that make `git remote -v` disagree with what git dials, and credential
+  helpers — which accumulate across scopes and are emptied by a single blank
+  value. Passwords in URLs are redacted before anything is printed. Read-only.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.
@@ -258,6 +278,16 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
   to see what `dump` would change before overwriting anything. The curated
   installers above are the intent; the Brewfile is the fact.
+- `workstation_doctor.sh` is the read-only health report — is this Mac *well*?
+  Security posture, free space, Command Line Tools, Homebrew, SSH keys and
+  agent, Git identity, Time Machine, log footprint, LaunchAgents and login
+  items. Nothing it does changes the machine, which makes it the safe first
+  thing to run on one you have just been handed.
+- `hardening_audit.sh` is the read-only security audit — is this Mac *safe*?
+  Sharing services, the Application Firewall, software-update settings,
+  FileVault, SIP and Gatekeeper, each finding printed with the command that
+  addresses it. Same flags and exit codes as `linux/hardening_audit.sh`, and
+  the same refusal to have an `--apply`.
 - `launchd/stay_fresh_agent.sh` installs a per-user LaunchAgent that runs
   `stay_fresh.sh` on a weekly or daily schedule. The agent has no terminal, so
   it cannot answer a sudo prompt and always runs `--no-sudo --yes`; the
@@ -325,6 +355,12 @@ OS, so behaviour is actually exercised across all three package managers:
 - `stay_fresh.sh` — upgrades honouring holds, journal vacuum, user caches,
   container prune (**never** volumes), flatpak/snap, and a reboot-pending
   report. A missing tool is a note; a step that runs and fails is an error.
+- `system_doctor.sh` — read-only health report: distribution and uptime, how
+  old the package index is, free space *and inodes*, a pending reboot, sshd,
+  failed `systemd` units, which host firewall is in charge, container engines,
+  and load per core. The counterpart of `macos-initial-setup/workstation_doctor.sh`,
+  and the narrative half of a pair with the audit below: the audit grades a
+  missing firewall as a finding, this reports which one is running.
 - `hardening_audit.sh` — read-only security audit across sshd, accounts,
   listening sockets, file modes and update configuration. There is deliberately
   no `--apply`: every finding has a context where the insecure-looking answer is
@@ -339,6 +375,12 @@ OS, so behaviour is actually exercised across all three package managers:
 - `bash_aliases.sh` — guarded aliases; every alias for a tool that may be
   absent is conditional, because an alias to a missing binary fails later, in
   the middle of something else.
+- `systemd/stay_fresh_timer.sh` — installs a `systemd` **user** timer that runs
+  `stay_fresh.sh` weekly or daily. It has no terminal, so it cannot answer a
+  sudo prompt and always runs `--yes --no-sudo`; package upgrades and the
+  journal vacuum stay manual. The units are checked with `systemd-analyze
+  verify` before anything is written, and `--print-only` shows them without
+  installing.
 
 There is deliberately no `install_apps.sh`: Homebrew Cask has no Linux
 equivalent worth mirroring. See [`linux/README.md`](linux/README.md).
@@ -411,12 +453,51 @@ See [`mikrotik/README.md`](mikrotik/README.md) for installation, policy
 flags, suggested scheduler entries, and RouterOS 7.23.3-specific gotchas
 (TLS CAs, `:global` lifetime, `wifi` vs `wireless`, etc.).
 
+## Kubernetes toolbox at a glance
+
+The Kubernetes package is [`k8s-toolbox/`](k8s-toolbox/): a container image
+with the CLIs already in it, and the scripts around it. It exists because the
+alternative is `kubectl run -it --rm --image=alpine` followed by twenty minutes
+of `apk add`, on a pod that will be gone before you finish.
+
+- `versions.env` — the pinned versions of `yq`, `kubectl`, `helm`, `kustomize`
+  and `gcloud`, and the only place they are written down. `build.sh` passes
+  each as a build ARG and the Dockerfile asserts the version it actually
+  installed, so a moved release fails the build rather than quietly shipping
+  something else. The Google Cloud SDK comes from its versioned tarball, not
+  from `curl … | bash`, which would always fetch the current release and make
+  the pin decorative.
+- `build.sh` — builds the image with those pins. Single-platform and `--load`ed
+  by default, because a multi-arch build cannot be loaded into the local
+  daemon; `--push` builds all of them.
+- `run.sh` — runs it locally with the working directory at `/work` and
+  `~/.kube` mounted **read-only**: a container you are debugging in should not
+  be able to rewrite the credentials of the cluster you are debugging. Under
+  `--root` the kubeconfig follows uid 0 to `/root/.kube`.
+- `kubectl_pod_diag.sh` — read-only triage in one pass: pods that are not
+  Running, plus Running pods whose containers are in `CrashLoopBackOff`
+  (a pod can be Running and completely broken), the last hour of `Warning`
+  events, unbound PVCs, and nodes under memory/disk/PID pressure. For a
+  crash-looping pod it prints the *previous* container's logs, which is where
+  the reason actually is. Exit `4` means nothing found, distinct from `0`, so
+  it can drive a scheduled check without parsing output.
+- `debug_pod.sh` — wraps `kubectl debug` to attach the image to a running pod
+  as an ephemeral container. This is the answer for a distroless or scratch
+  container with no shell of its own: the application keeps running and nothing
+  about it is modified.
+- `examples/` — a pod, a job and a kustomization to retag them. Written to pass
+  the **restricted** Pod Security Standard unchanged, because an example is
+  what gets copied.
+
+See [`k8s-toolbox/README.md`](k8s-toolbox/README.md) for the build and run
+options, GKE auth, and what the suite checks.
+
 ## Testing
 
 Run everything with one command:
 
 ```bash
-./run-tests.sh            # git + macos + linux + python + static + windows  (the fast default)
+./run-tests.sh            # git + macos + linux + k8s + python + static + windows  (the fast default)
 ./run-tests.sh all        # the above, plus the RouterOS CHR suite
 ./run-tests.sh macos      # a single suite
 ```
@@ -436,14 +517,17 @@ preflight only runs when one of them is actually selected — so
 | [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
 | [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
 | [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
-| [`windows/`](windows/) | **Contract** checks on the PowerShell scripts: they parse, comment-based help is complete, anything that changes a machine can be previewed first, and every flag the READMEs document actually exists. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
+| [`windows/`](windows/) | **Contract** checks on the PowerShell scripts in `windows/` and `templates/`: they parse, comment-based help is complete, anything that changes a machine can be previewed first, every flag the READMEs document actually exists, and each `-DryRun` run leaves a scratch `HOME` and `TEMP` untouched. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
+| [`k8s-toolbox/`](k8s-toolbox/) | **Contract** checks on the toolbox scripts: `--help`, unknown flags, flags that require a value, the dry-run promise checked against the filesystem, exit `2` when Docker or `kubectl` is missing, and agreement between `versions.env`, the Dockerfile and `build.sh`. Deliberately does **not** build the image — `K8S_IMAGE_SMOKE=1` does that. **bash only.** | [`k8s-toolbox/README.md#tests`](k8s-toolbox/README.md#tests) — `./k8s-toolbox/tests/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.23.3 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and
 Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
-Python and static suites deliberately need none of that either: the Python
+Python, static and k8s suites deliberately need none of that either: the Python
 modules are invoked by `/usr/bin/python3` on a bare macOS machine, and the
-static checks have to keep working on a host where Docker is unavailable.
+static and k8s checks have to keep working on a host where Docker is
+unavailable. The k8s one is the pointed case — it checks the scripts that build
+a container image, and needs no container to do it.
 
 ### Continuous integration
 
@@ -459,6 +543,7 @@ rather than being a convenience nobody tests.
 | `Test / macos` | Static checks on the macOS scripts (Docker) | `macos-initial-setup/` changes |
 | `Test / linux` | The Linux scripts **executed** in a pinned Debian container | `linux/` changes |
 | `Test / windows` | PowerShell contract checks under `pwsh` | `windows/` changes |
+| `Test / k8s` | The k8s-toolbox script contracts, without building the image | `k8s-toolbox/` changes |
 | `Test / python helpers` | 101 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
 | `Test / conventions` | The repo-wide contracts, on every change | always |
 

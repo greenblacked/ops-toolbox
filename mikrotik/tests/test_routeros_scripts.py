@@ -277,6 +277,46 @@ def test_mac_allowlist_dhcp_failsafe_empty_list(api: Any, script_resource: Any) 
 
 
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
+def test_brute_force_block_failsafe_zero_threshold(
+    api: Any, script_resource: Any
+) -> None:
+    """With BF_MAX_FAILURES=0 the script must refuse to block anyone."""
+    src = (MIKROTIK_DIR / "brute_force_block.lua").read_text(encoding="utf-8")
+    try:
+        _add_script(script_resource, "brute_force_block", src)
+        _unset_global(api, "BF_MAX_FAILURES")
+        _unset_global(api, "BF_SEEN_LINES")
+        _unset_global(api, "pu_TG_LAST_MESSAGE")
+        _remove_address_list_entries(api, "brute-force-block")
+
+        # Set the threshold to 0 the same way an operator would — a :global.
+        api.get_binary_resource("/").call(
+            "execute",
+            {"script": b":global BF_MAX_FAILURES 0"},
+        )
+
+        _run_named(api, "brute_force_block")
+
+        msg = _read_global(api, "pu_TG_LAST_MESSAGE")
+        assert "brute force blocked" not in msg, (
+            f"brute_force_block must be silent when MaxFailures < 1: {msg!r}"
+        )
+        addr_res = api.get_binary_resource("/ip/firewall/address-list")
+        blocked = [
+            r for r in addr_res.get() if _row_str(r, "list") == "brute-force-block"
+        ]
+        assert not blocked, (
+            "brute_force_block must not populate brute-force-block when MaxFailures < 1"
+        )
+    finally:
+        _remove_address_list_entries(api, "brute-force-block")
+        _remove_by_name(script_resource, "brute_force_block")
+        _unset_global(api, "BF_MAX_FAILURES")
+        _unset_global(api, "BF_SEEN_LINES")
+        _unset_global(api, "pu_TG_LAST_MESSAGE")
+
+
+@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_dhcp_lease_watch_baseline_silent(api: Any, script_resource: Any) -> None:
     """First run on a clean router establishes the baseline silently (no alert)."""
     src = (MIKROTIK_DIR / "dhcp_lease_watch.lua").read_text(encoding="utf-8")

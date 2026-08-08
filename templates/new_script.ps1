@@ -72,7 +72,10 @@ if ($DryRun) {
 }
 Write-Host ''
 
-Invoke-Step -Label 'example target' -Path (Join-Path $env:TEMP 'pretty-useful-example')
+# [IO.Path]::GetTempPath() rather than $env:TEMP: it resolves to the same
+# directory on Windows and is defined on every platform, so the contract suite
+# can run this template's dry run through to the end on its Linux runner.
+Invoke-Step -Label 'example target' -Path (Join-Path ([IO.Path]::GetTempPath()) 'pretty-useful-example')
 
 Write-Host ''
 if ($DryRun) {

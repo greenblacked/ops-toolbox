@@ -46,12 +46,17 @@ assert_contains() {
 # covering two of its own scripts. bash_aliases.sh is excluded deliberately: it
 # is sourced, not run, so the --help and unknown-flag contracts do not apply to
 # it. Built without mapfile to stay Bash 3.2-clean (see CONTRIBUTING.md).
+#
+# Depth 2 so subdirectories such as systemd/ are covered too; tests/ is the one
+# subdirectory left out, because this file lives in it. A script that needs a
+# running systemd fails its own preflight in these containers, which is exactly
+# why --help and the unknown-flag contract have to hold *before* preflight.
 scripts=()
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
   case "${f##*/}" in bash_aliases.sh) continue ;; esac
   scripts+=("$f")
-done < <(find "$L" -maxdepth 1 -name '*.sh' -type f | sort)
+done < <(find "$L" -maxdepth 2 -name '*.sh' -type f ! -path "$L/tests/*" | sort)
 
 if (( ${#scripts[@]} == 0 )); then
   echo "discovered no scripts under $L — discovery is broken" >&2
@@ -206,6 +211,52 @@ set -e
 assert_eq "stay_fresh survives missing optional tools" "0" "$rc"
 assert_contains "stay_fresh reports the run finished" "$out" "done"
 
+# --- the systemd timer builds its units without a running systemd ---
+# --print-only is the seam that makes this testable at all: a container has no
+# user manager, so install can never get past preflight here. Where
+# systemd-analyze exists (fedora, arch) the script verifies the units before
+# printing them, so a zero exit below is a real validation, not just a render.
+TIMER="$L/systemd/stay_fresh_timer.sh"
+set +e
+out="$("$TIMER" install --print-only 2>&1)"; rc=$?
+set -e
+assert_eq "timer --print-only exits 0" "0" "$rc"
+assert_contains "timer defaults to Monday 10:30" "$out" "OnCalendar=Mon *-*-* 10:30:00"
+assert_contains "timer runs stay_fresh.sh" "$out" "$L/stay_fresh.sh\" --yes --no-sudo"
+assert_contains "timer installs a [Timer] section" "$out" "[Timer]"
+
+out="$("$TIMER" install --print-only --weekday daily --hour 3 --minute 5 --dry-run 2>&1)"
+assert_contains "timer honours daily and the clock" "$out" "OnCalendar=*-*-* 03:05:00"
+assert_contains "timer passes --dry-run through" "$out" "--yes --no-sudo --dry-run"
+
+# --print-only must write nothing, the same promise --dry-run makes elsewhere.
+scratch_home="$(mktemp -d)"
+HOME="$scratch_home" XDG_CONFIG_HOME="$scratch_home/.config" \
+  "$TIMER" install --print-only >/dev/null 2>&1
+if [[ -e "$scratch_home/.config/systemd" ]]; then
+  err "timer --print-only wrote into HOME"
+else
+  ok "timer --print-only wrote nothing"
+fi
+rm -rf "$scratch_home"
+
+for bad in "--weekday 9" "--hour 24" "--minute 60"; do
+  set +e
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$TIMER" install $bad >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "timer rejects $bad -> 3" "3" "$rc"
+done
+
+# No user manager in a container, so a real install must report the wrong
+# environment rather than half-writing units.
+set +e
+"$TIMER" install >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "timer install without systemd -> 2" "2" "$rc"
+
 # --- hardening_audit is read-only and grades correctly ---
 # The whole value of this script is that it never changes the machine, so that
 # is asserted directly rather than assumed: snapshot the files it inspects and
@@ -242,6 +293,48 @@ set +e
 "$L/hardening_audit.sh" --only nosuchgroup >/dev/null 2>&1; rc=$?
 set -e
 assert_eq "hardening_audit rejects an unknown group -> 3" "3" "$rc"
+
+# --- system_doctor reports rather than grades ------------------------------
+# A container has no systemd, no sshd, no firewall and no container engine, so
+# this is the environment where a health report is most likely to trip over
+# something absent. Exiting 0 here is the assertion: every probe has to degrade
+# to a note.
+scratch_home="$(mktemp -d)"
+set +e
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$L/system_doctor.sh" 2>&1)"; rc=$?
+set -e
+assert_eq "system_doctor exits 0 with almost nothing installed" "0" "$rc"
+assert_contains "system_doctor prints a summary" "$out" "== summary =="
+assert_contains "system_doctor names the package manager" "$out" "package manager: $EXPECT_PKG_MGR"
+
+# Read-only means it writes nothing at all, not even a log — the sibling
+# maintenance scripts do write one, so this is worth asserting rather than
+# assuming.
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "system_doctor wrote nothing"
+else
+  err "system_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+# --quiet must drop the healthy lines and keep the rest; a --quiet that still
+# printed everything would be discovered by nobody.
+out="$("$L/system_doctor.sh" --quiet 2>&1)"
+if grep -q '\[ ok \]' <<<"$out"; then
+  err "system_doctor --quiet still printed [ ok ] lines"
+else
+  ok "system_doctor --quiet drops the healthy lines"
+fi
+assert_contains "system_doctor --quiet still summarises" "$out" "== summary =="
+
+for bad in "--min-free 101" "--min-free notanumber"; do
+  set +e
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$L/system_doctor.sh" $bad >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "system_doctor rejects $bad -> 3" "3" "$rc"
+done
 
 echo
 if (( failures > 0 )); then

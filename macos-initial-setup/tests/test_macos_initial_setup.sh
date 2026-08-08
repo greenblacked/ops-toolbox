@@ -14,13 +14,50 @@ failures=0
 ok()  { echo "[ ok ] $*"; }
 err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
 
+assert_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    ok "$label"
+  else
+    err "$label (expected '$expected', got '$actual')"
+  fi
+}
+
+assert_contains() {
+  local label="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    ok "$label"
+  else
+    err "$label (missing '$needle')"
+    printf '%s\n' "$haystack" | head -20 >&2
+  fi
+}
+
+# --- discovery -------------------------------------------------------------
+# Discovered rather than listed. The hardcoded array this replaced named four
+# scripts and the package has grown to nine, so brewfile.sh, macos_defaults.sh,
+# workstation_doctor.sh and launchd/stay_fresh_agent.sh had no coverage here at
+# all — for long enough that the omission is quoted as the cautionary tale in
+# git/tests and test-env/lib/discover_clis.sh.
+#
+# Depth 2 so launchd/ is included; tests/ is the one subdirectory left out,
+# because this file lives in it. zsh_aliases.zsh is not in the glob and is
+# handled separately below: it is sourced, not run, so the --help and
+# unknown-flag contracts do not apply to it. Built without mapfile to stay
+# Bash 3.2-clean (see CONTRIBUTING.md).
+sh_scripts=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  sh_scripts+=("$f")
+done < <(find "$M" -maxdepth 2 -name '*.sh' -type f ! -path "$M/tests/*" | sort)
+
+if (( ${#sh_scripts[@]} == 0 )); then
+  echo "discovered no scripts under $M — discovery is broken" >&2
+  exit 1
+fi
+ok "discovered ${#sh_scripts[@]} scripts under macos-initial-setup/"
+
 # --- bash -n (syntax) ---
-sh_scripts=(
-  "$M/install_apps.sh"
-  "$M/install_devtools.sh"
-  "$M/stay_fresh.sh"
-  "$M/v1_stay_fresh.sh"
-)
 for f in "${sh_scripts[@]}"; do
   if bash -n "$f"; then
     ok "bash -n ${f#"$REPO_ROOT/"}"
@@ -58,37 +95,90 @@ else
 fi
 
 # --- --help (must work before macOS preflight) ---
-if "$M/install_apps.sh" --help >/dev/null; then ok "install_apps.sh --help"; else err "install_apps.sh --help"; fi
-if "$M/install_devtools.sh" --help >/dev/null; then ok "install_devtools.sh --help"; else err "install_devtools.sh --help"; fi
-if "$M/stay_fresh.sh" --help >/dev/null; then ok "stay_fresh.sh --help"; else err "stay_fresh.sh --help"; fi
-if "$M/v1_stay_fresh.sh" --help >/dev/null; then ok "v1_stay_fresh.sh --help"; else err "v1_stay_fresh.sh --help"; fi
+for f in "${sh_scripts[@]}"; do
+  if "$f" --help >/dev/null 2>&1; then
+    ok "${f#"$M/"} --help"
+  else
+    err "${f#"$M/"} --help"
+  fi
+done
 
 # --- unknown CLI -> exit 3 (parsed before preflight) ---
-set +e
-out_ia="$("$M/install_apps.sh" --definitely-not-a-valid-flag-12345 2>&1)"; rc_ia=$?
-set -e
-if [[ "$rc_ia" -eq 3 ]]; then
-  ok "install_apps.sh unknown flag -> exit 3"
-else
-  err "install_apps.sh unknown flag: expected exit 3, got $rc_ia: $out_ia"
-fi
+for f in "${sh_scripts[@]}"; do
+  set +e
+  out="$("$f" --definitely-not-a-valid-flag-12345 2>&1)"; rc=$?
+  set -e
+  if [[ "$rc" -eq 3 ]]; then
+    ok "${f#"$M/"} unknown flag -> exit 3"
+  else
+    err "${f#"$M/"} unknown flag: expected exit 3, got $rc: $(printf '%s' "$out" | head -3)"
+  fi
+done
 
 # --- Linux / non-Darwin: preflight should reject (documented exit 2) ---
+# Discovery again, with a table for the two scripts that need an argument to
+# reach their preflight at all. Naming exceptions rather than subjects is what
+# keeps this from rotting the way the old list did: a new script is covered the
+# day it lands, and only a script that genuinely differs has to be touched.
+preflight_args() {
+  case "${1##*/}" in
+    brewfile.sh)         printf '%s\n' "check" ;;
+    stay_fresh_agent.sh) printf '%s\n' "status" ;;
+    *)                   printf '%s\n' "" ;;
+  esac
+}
+
 if [[ "$(uname -s)" == "Linux" ]]; then
-  for script in install_apps.sh install_devtools.sh stay_fresh.sh; do
+  for f in "${sh_scripts[@]}"; do
+    name="${f##*/}"
+    # v1_stay_fresh.sh has no platform guard by design: it is the preserved
+    # original and its documented exit codes are 0, 1 (no usable home) and 2
+    # (bad arguments), with no 'wrong OS' among them.
+    if [[ "$name" == "v1_stay_fresh.sh" ]]; then
+      ok "$name: skipped, it has no platform guard by design"
+      continue
+    fi
     set +e
-    out="$("$M/$script" --dry-run 2>&1)"; rc=$?
+    # shellcheck disable=SC2046  # an empty argument list must vanish, not become ''
+    out="$("$f" $(preflight_args "$f") 2>&1)"; rc=$?
     set -e
     if [[ "$rc" -ne 2 ]]; then
-      err "$script: expected exit 2 on Linux, got $rc"
+      err "$name: expected exit 2 on Linux, got $rc"
     elif ! grep -q "macOS" <<<"$out"; then
-      err "$script: expected 'macOS' in stderr on Linux"
+      err "$name: expected 'macOS' in the output on Linux"
     else
-      ok "$script: Linux preflight -> exit 2 (macOS only)"
+      ok "$name: Linux preflight -> exit 2 (macOS only)"
     fi
   done
 else
   ok "skipping Linux preflight assertions (unusual host OS: $(uname -s))"
+fi
+
+# --- hardening_audit: the group flags answer before preflight ---
+# --list-groups and group validation are the two things this suite can check
+# about the audit on Linux, and they are the two worth checking: both have to
+# happen ahead of the macOS-only probes, exactly like --help does.
+AUDIT="$M/hardening_audit.sh"
+if [[ -x "$AUDIT" ]]; then
+  set +e
+  groups_out="$("$AUDIT" --list-groups 2>&1)"; rc=$?
+  set -e
+  assert_eq "hardening_audit --list-groups exits 0" "0" "$rc"
+  for g in sharing firewall updates disk sip gatekeeper; do
+    assert_contains "hardening_audit lists the $g group" "$groups_out" "$g"
+  done
+
+  set +e
+  "$AUDIT" --only nosuchgroup >/dev/null 2>&1; rc=$?
+  set -e
+  assert_eq "hardening_audit rejects an unknown group -> 3" "3" "$rc"
+
+  set +e
+  "$AUDIT" --fail-on sometimes >/dev/null 2>&1; rc=$?
+  set -e
+  assert_eq "hardening_audit rejects a bad --fail-on -> 3" "3" "$rc"
+else
+  err "missing $AUDIT"
 fi
 
 # --- lib/: stay_fresh.sh hard-depends on the scanner at runtime ---

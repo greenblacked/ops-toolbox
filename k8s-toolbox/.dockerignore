@@ -1,0 +1,7 @@
+# The Dockerfile fetches every tool from upstream and copies nothing, so the
+# context exists only to be uploaded. Send the two files that describe the
+# image and nothing else — the tests, examples and README have no business
+# crossing to the daemon on every build.
+*
+!Dockerfile
+!versions.env

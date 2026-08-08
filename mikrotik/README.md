@@ -39,6 +39,9 @@ live in `/system script` on the router and are run either manually or from
 | `wireguard_watch.lua`           | Alerts when a WireGuard peer stops handshaking.                         |
 | `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
+| `print_schedulers.sh`           | Host-side: prints the `/system scheduler add` lines for these scripts.  |
+| `router_doctor.py`              | Host-side: read-only audit of what is installed, scheduled and set.     |
+| `pull_router_backups.sh`        | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
 ## Installation
 
@@ -86,6 +89,15 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 
 `detect_internet`, `reboot-and-flush`, and `firewall_drift_baseline` are
 intentionally manual / on-demand — don't schedule them.
+
+[`print_schedulers.sh`](#print_schedulerssh) prints all of this as ready-to-paste
+`/system scheduler add` commands, including the twelve scripts the table above
+does not cover:
+
+```bash
+./print_schedulers.sh                          # review, then paste
+./print_schedulers.sh --include-notify-boot    # with the startup notifier below
+```
 
 ### Reboot notifications
 
@@ -265,6 +277,84 @@ see the raw export.
 `--show-sensitive` together with `--commit` is **refused before the router is
 contacted** — writing router secrets into git history is not something to do by
 accident.
+
+### `print_schedulers.sh`
+
+**Runs on your machine, not on the router**, and contacts nothing at all: it
+prints the `/system scheduler add` command for every script here that is meant
+to run unattended — the eight intervals from the table above, and for the twelve
+scripts that table omits, the interval named in each script's own header comment
+— and you paste what you agree with.
+
+Installing a script is the easy half. Scheduling it is where this package goes
+quiet, because a script that was never scheduled looks exactly like a script
+with nothing to report, and you find that out in the month you needed the
+backup.
+
+```bash
+./print_schedulers.sh                        # read it, then paste it
+./print_schedulers.sh --include-notify-boot  # add the startup notifier
+./print_schedulers.sh --policy read,test     # a narrower policy set
+./print_schedulers.sh > schedulers.rsc       # keep it, diff it later
+```
+
+The daily entries carry an explicit `start-time`, staggered across the small
+hours: `interval=1d` on its own anchors to the moment the entry was created, so
+a router rebuilt at 19:40 would take its nightly backup at 19:40. The manual
+scripts — `tg_send`, `detect_internet`, `reboot-and-flush`,
+`firewall_drift_baseline`, `change_WIFI_pw` — are never printed.
+
+Everything it emits is valid RouterOS input, commentary included (the notes are
+`#` comment lines, and the colour only appears on a terminal), so the output can
+go into a file and be pasted from there.
+
+### `router_doctor.py`
+
+**Runs on your machine, not on the router.** Read-only, like the other
+diagnostics in this repository: it asks a router over ssh which of these scripts
+are in `/system script`, which of them a `/system scheduler` entry actually
+runs, and whether the globals they need are set — then prints the command that
+fixes what it found.
+
+```bash
+./router_doctor.py --host 192.168.88.1
+./router_doctor.py --host router.lan --identity ~/.ssh/keys/projects/mikrotik/mikrotik_rsa
+./router_doctor.py --host router.lan --port 2222
+```
+
+Secrets stay on the router. The check on `TG_BOT_TOKEN` and `TG_CHAT_ID` asks
+for the **length** of each global and never for the value, so no token crosses
+the wire or reaches your terminal — the report can say `set` or `empty`, and
+that is all it knows.
+
+Not installing a script is a choice — nobody wants `ddns_update` without
+Cloudflare — so a missing one is reported as context rather than as a problem.
+Three things are real findings: a scheduler that runs a script which is not
+installed (it fails at every run, and only `/log` says so), a script installed
+but scheduled nowhere, and a manual-only script somebody put on a timer.
+
+Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
+`--port`). Exit codes: `0` findings printed, `1` connected but the probe failed,
+`2` could not connect, `4` nothing wrong.
+
+### `pull_router_backups.sh`
+
+**Runs on your machine, not on the router.** Copies the files `backup.lua`
+creates — `backup-*.backup` and `backup-*.rsc` — off the router into a local
+directory over SFTP/SCP.
+
+```bash
+./pull_router_backups.sh admin@192.168.88.1
+./pull_router_backups.sh admin@router.lan ~/Archive/mikrotik-backups
+```
+
+Needs RouterOS 7+ SFTP (**IP → Services**) and key-based ssh: `BatchMode=yes`
+means it fails rather than prompting. It proves the router is reachable before
+an empty result is allowed to mean "no backups yet", because those two used to
+be indistinguishable — an unreachable host, a rejected key and SFTP switched off
+all exited `0`, so a cron job reported success while backups had silently
+stopped for months. Exit codes: `0` files pulled or none exist yet, `1` reached
+the router but the transfer failed, `2` could not reach it, `3` usage.
 
 ## Security action surface
 

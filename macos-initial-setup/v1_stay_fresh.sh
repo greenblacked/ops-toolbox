@@ -123,8 +123,10 @@ umask 022
 RES_COL=60
 MOVE_TO_COL=$'\033[60G'
 
-# Use colors only when stdout is a TTY and terminfo promises at least 8.
-if [ -t 1 ] && command -v tput >/dev/null 2>&1 \
+# Use colors only when stdout is a TTY, NO_COLOR is unset, and terminfo
+# promises at least 8 colours.
+if [ -t 1 ] && [ "${NO_COLOR:-}" = "" ] \
+   && command -v tput >/dev/null 2>&1 \
    && [ "$(tput colors 2>/dev/null || echo 0)" -ge 8 ]; then
   USE_COLOR=true
   C_BOLD=$'\033[1m'

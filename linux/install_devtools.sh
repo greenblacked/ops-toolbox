@@ -268,7 +268,16 @@ else
     dnf)    (( SKIP_PYTHON == 0 )) && pkg_install python3 python3-pip ;;
     pacman) (( SKIP_PYTHON == 0 )) && pkg_install python python-pip ;;
   esac
-  (( SKIP_GO == 0 )) && pkg_install go 2>/dev/null || (( SKIP_GO == 1 )) || pkg_install golang
+  # pkg_install always returns 0 (run_cmd records failures without aborting),
+  # so a `go || golang` chain never reaches the fallback. Use the real package
+  # name per distro instead.
+  if (( SKIP_GO == 0 )); then
+    case "$PKG_MGR" in
+      apt)    pkg_install golang ;;
+      dnf)    pkg_install golang ;;
+      pacman) pkg_install go ;;
+    esac
+  fi
   for tool in terraform helm; do
     case "$tool" in
       terraform) (( SKIP_TERRAFORM == 1 )) && continue ;;

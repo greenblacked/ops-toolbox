@@ -12,9 +12,11 @@ scripts exit `2` off macOS.
 | --- | --- |
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
+| [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, reboot, services, firewall, containers, load |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, updates |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
+| [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh) | Install a user timer so `stay_fresh.sh` runs on a schedule |
 | [`tests/`](tests/) | Docker checks that **run** the scripts, across all three distros |
 
 ## Quick start
@@ -36,6 +38,13 @@ Capture what a machine has, commit it, rebuild elsewhere:
 ./packages.sh diff          # what has drifted since
 ./packages.sh install --dry-run
 ./packages.sh install --yes
+```
+
+Read the machine without touching it:
+
+```bash
+./system_doctor.sh          # is this machine well?
+./hardening_audit.sh        # is this machine safe?
 ```
 
 Aliases:
@@ -96,14 +105,123 @@ A missing tool is a note, not a failure. `journalctl` is absent in a container
 and `snap` on most servers; neither should turn a maintenance run red. A step
 that runs and *fails* does count, and the script exits `1`.
 
+## The two read-only reports
+
+`system_doctor.sh` and `hardening_audit.sh` both change nothing and both look at
+some of the same subsystems, so it is worth being clear about which one you
+want:
+
+| | `system_doctor.sh` | `hardening_audit.sh` |
+| --- | --- | --- |
+| Question | Is this machine **well**? | Is this machine **safe**? |
+| Output | A narrative report | Graded findings, each with its fix |
+| Firewall | Says which one is in charge | Grades "none" as a finding |
+| sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords |
+| Exit code | Always `0`; findings are to be read | `1` at or above `--fail-on`, so it can gate a pipeline |
+
+The counterpart on the other side of the repository is
+[`macos-initial-setup/workstation_doctor.sh`](../macos-initial-setup/workstation_doctor.sh)
+and [`macos-initial-setup/hardening_audit.sh`](../macos-initial-setup/hardening_audit.sh),
+which split the same way.
+
+## `system_doctor.sh`
+
+The first thing to run on a box someone has just handed you, and the thing to
+run after `install_devtools.sh` to confirm the bootstrap took. It reads and
+prints; there is no `--apply`.
+
+```bash
+./system_doctor.sh                       # the whole report
+./system_doctor.sh --quiet               # only the warnings
+./system_doctor.sh --min-free 25         # warn below 25% free on /
+./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
+sudo ./system_doctor.sh                  # firewall rules need root to read
+```
+
+Eight sections: **system** (distribution, kernel, uptime, virtualisation),
+**packages** (which manager owns the box, and how old its index is),
+**disk** (free space and *inodes* on `/`, plus any other block-device mount
+below the threshold), **updates** (reboot pending), **services** (sshd, and
+`systemctl --failed` where there is a systemd to ask), **network** (which host
+firewall is active, global addresses), **containers** (docker/podman), and
+**load** (one-minute average per core).
+
+Three of those exist because the ordinary tools hide them:
+
+- **Inodes.** A filesystem out of inodes looks completely healthy in `df -h`,
+  and "no space left on device" with gigabytes free is a confusing hour the
+  first time.
+- **Package index age.** Answered from the local index, so it needs no network.
+  A machine whose index is months old reports itself up to date and is not.
+- **A container engine that is installed but unreachable.** A stopped daemon
+  and a user who is not in the `docker` group both look exactly like "no
+  Docker here" until you try to use it.
+
+Warnings do not change the exit code — it is `0` unless the machine is not
+Linux (`2`) or you mistyped a flag (`3`). Something that fails a pipeline is
+`hardening_audit.sh --fail-on warn`, which is why this script does not
+duplicate it.
+
+## `systemd/stay_fresh_timer.sh`
+
+Maintenance that depends on remembering to run it does not happen. This writes a
+`ops-toolbox-stay-fresh` service and timer into
+`~/.config/systemd/user/` and enables them, the counterpart of
+[`launchd/stay_fresh_agent.sh`](../macos-initial-setup/launchd/stay_fresh_agent.sh)
+on macOS:
+
+```bash
+./systemd/stay_fresh_timer.sh install                      # Mondays, 10:30
+./systemd/stay_fresh_timer.sh install --weekday daily --hour 3
+./systemd/stay_fresh_timer.sh install --dry-run            # the timer previews only
+./systemd/stay_fresh_timer.sh install --print-only         # show the units, write nothing
+./systemd/stay_fresh_timer.sh status
+./systemd/stay_fresh_timer.sh run-now
+./systemd/stay_fresh_timer.sh uninstall
+```
+
+**A user timer cannot use `sudo`, and that is not a limitation to work around.**
+It runs with no terminal attached, so a password prompt has nothing to prompt
+and would fail or hang. The unit therefore always runs `--yes --no-sudo`, which
+means these steps are **skipped** on every scheduled run:
+
+- the package upgrade, autoremove and clean
+- `journalctl --vacuum-time=14d`
+
+Everything else — user caches, trash, `docker`/`podman` prune, flatpak and
+snap — runs normally. Run `stay_fresh.sh` by hand when you want the root-owned
+steps, or leave package updates to `unattended-upgrades` / `dnf-automatic.timer`,
+which [`hardening_audit.sh`](hardening_audit.sh) already checks for.
+
+Three details worth knowing:
+
+- The units are checked with `systemd-analyze verify` **before** anything is
+  written, so a malformed schedule never lands in `~/.config/systemd/user/`
+  where systemd would complain about it on every reload.
+- `Persistent=true` catches a run missed because the machine was off — once,
+  not once per missed interval. `TimeoutStartSec=1h` overrides the 90-second
+  default for a `oneshot` service, which would otherwise kill a real
+  maintenance run part-way through. `Nice=10` with idle CPU and IO scheduling
+  keeps it away from interactive work.
+- A user timer only runs while you have a session, so `install` says so and
+  prints the `loginctl enable-linger` command when lingering is off. On a
+  headless box that step is the difference between a timer that fires and one
+  that never does.
+
+Output goes to the journal: `journalctl --user -u ops-toolbox-stay-fresh.service`.
+`stay_fresh.sh` still writes its own log under `$TMPDIR`.
+
 ## Exit codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | One or more steps failed |
-| `2` | Preflight failed — unsupported distribution |
+| `1` | One or more steps failed, or `hardening_audit.sh` found something at or above `--fail-on` |
+| `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install was requested without `--yes` |
+
+`system_doctor.sh` never returns `1`: it reports, and what it finds is for you
+to read rather than for a pipeline to act on.
 
 ## Tests
 
@@ -120,6 +238,11 @@ that `--dry-run` leaves the package count byte-identical, that `packages.sh`
 round-trips through a real package database and is stable across runs, that
 requesting an install without `--yes` refuses, and that a missing optional tool
 degrades to a warning instead of a failure.
+
+Discovery is by `find`, two levels deep, so `systemd/` is covered as well.
+A container has no user manager, so the timer can only be exercised through
+`--print-only` — which is precisely why that flag exists: on the images that
+ship `systemd-analyze`, printing the units also verifies them.
 
 Image tags are pinned. Arch is rolling and Fedora moves quickly; an unpinned
 base would let an upstream change redden an unrelated pull request.
