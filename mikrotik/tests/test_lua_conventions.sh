@@ -141,6 +141,45 @@ else
   (( missing == 0 )) && ok "every script named in the README exists"
 fi
 
+# --- every unattended script has a scheduler line --------------------------
+# The intervals live in print_schedulers.sh and nowhere else, so a new .lua that
+# lands without a line there is a script somebody installs and that then never
+# runs — the same drift the README check above exists for, with a quieter
+# failure. The manual scripts are checked in the other direction: putting
+# reboot-and-flush on a timer is a surprise nobody wants twice.
+PRINTER="$PKG/print_schedulers.sh"
+MANUAL_ONLY="tg_send detect_internet reboot-and-flush firewall_drift_baseline change_WIFI_pw"
+
+is_manual() {
+  local candidate="$1" name
+  for name in $MANUAL_ONLY; do
+    [ "$name" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
+if [[ ! -x "$PRINTER" ]]; then
+  err "expected an executable at $PRINTER"
+else
+  printed="$(NO_COLOR=1 "$PRINTER")"
+  unscheduled=0
+  for f in "${scripts[@]}"; do
+    n="$(basename "$f" .lua)"
+    # The trailing space matters: `name=backup ` must not match
+    # `name=backup_file_cleanup `.
+    if is_manual "$n"; then
+      if grep -q "name=$n " <<<"$printed"; then
+        err "$n is meant to be run by hand, but print_schedulers.sh schedules it"
+        unscheduled=$((unscheduled + 1))
+      fi
+    elif ! grep -q "name=$n " <<<"$printed"; then
+      err "$n has no /system scheduler line in print_schedulers.sh"
+      unscheduled=$((unscheduled + 1))
+    fi
+  done
+  (( unscheduled == 0 )) && ok "print_schedulers.sh covers every unattended script"
+fi
+
 echo
 if (( failures > 0 )); then
   echo "$failures RouterOS convention check(s) failed" >&2

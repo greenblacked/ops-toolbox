@@ -15,10 +15,11 @@
 #
 # No router is contacted and nothing is written — this only prints text.
 #
-# The intervals come from README.md's "Suggested schedules" table, plus a
-# default for every other script meant to run on a timer. The deliberately
-# manual ones are never printed: tg_send (a library, called by the others),
-# detect_internet, reboot-and-flush, firewall_drift_baseline and change_WIFI_pw.
+# The intervals come from README.md's "Suggested schedules" table, and for the
+# twelve scripts that table omits, from each script's own header comment — which
+# is where its author already wrote one down. The deliberately manual ones are
+# never printed: tg_send (a library, called by the others), detect_internet,
+# reboot-and-flush, firewall_drift_baseline and change_WIFI_pw.
 
 set -euo pipefail
 
@@ -58,9 +59,9 @@ Usage:
   $(basename "$0") [--policy LIST] [--include-notify-boot] [--dry-run]
 
 Prints one \`/system scheduler add\` command per script that is meant to run
-unattended, using the intervals from README.md's suggested-schedules table and a
-sensible default for the scripts that table does not cover. No router is
-contacted: read the output, then paste it into a RouterOS terminal.
+unattended, using the intervals from README.md's suggested-schedules table and,
+for the scripts that table omits, the one in each script's own header. No router
+is contacted: read the output, then paste it into a RouterOS terminal.
 
 Options:
   --policy LIST          Scheduler policy set
@@ -172,23 +173,24 @@ mac_allowlist_dhcp   5m
 rogue_dns_check      10m
 EOF
 
-comment "--- not in that table; the intervals below are this script's defaults ---"
+comment "--- not in that table; taken from each script's own header comment ---"
 comment
-comment "Chosen to match what each script does: transition watchers poll often"
-comment "because they are cheap and a missed transition is missed for good; the"
-comment "counters and the certificate check have nothing to gain from running more"
-comment "than once an hour or once a day. backup_file_cleanup runs after backup,"
-comment "since it exists to prune what backup leaves behind."
+comment "Eight of these name an interval outright and it is used as written."
+comment "netwatch_notify and wireguard_watch each ask for \"1-5m\", where the slower"
+comment "end is the safer default to paste. The last two are the ones whose headers"
+comment "describe rather than specify: backup_file_cleanup says \"weekly or after"
+comment "backup jobs\", so it runs 40 minutes after backup does, and cert_expiry_watch"
+comment "asks for at most once a day."
 comment
 emit_table <<'EOF'
 wan_link_flap_notify   1m
 netwatch_notify        5m
 latency_monitor        5m
 bandwidth_spike        5m
-brute_force_block      5m
-vpn_health             5m
+brute_force_block      1m
+vpn_health             2m
 wireguard_watch        5m
-wireless_client_watch  5m
+wireless_client_watch  1m
 ddns_update            5m
 traffic_quota          1h
 backup_file_cleanup    1d   04:40:00

@@ -39,6 +39,7 @@ live in `/system script` on the router and are run either manually or from
 | `wireguard_watch.lua`           | Alerts when a WireGuard peer stops handshaking.                         |
 | `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
+| `print_schedulers.sh`           | Host-side: prints the `/system scheduler add` lines for these scripts.  |
 | `pull_router_backups.sh`        | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
 ## Installation
@@ -87,6 +88,15 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 
 `detect_internet`, `reboot-and-flush`, and `firewall_drift_baseline` are
 intentionally manual / on-demand — don't schedule them.
+
+[`print_schedulers.sh`](#print_schedulerssh) prints all of this as ready-to-paste
+`/system scheduler add` commands, including the twelve scripts the table above
+does not cover:
+
+```bash
+./print_schedulers.sh                          # review, then paste
+./print_schedulers.sh --include-notify-boot    # with the startup notifier below
+```
 
 ### Reboot notifications
 
@@ -266,6 +276,36 @@ see the raw export.
 `--show-sensitive` together with `--commit` is **refused before the router is
 contacted** — writing router secrets into git history is not something to do by
 accident.
+
+### `print_schedulers.sh`
+
+**Runs on your machine, not on the router**, and contacts nothing at all: it
+prints the `/system scheduler add` command for every script here that is meant
+to run unattended — the eight intervals from the table above, and for the twelve
+scripts that table omits, the interval named in each script's own header comment
+— and you paste what you agree with.
+
+Installing a script is the easy half. Scheduling it is where this package goes
+quiet, because a script that was never scheduled looks exactly like a script
+with nothing to report, and you find that out in the month you needed the
+backup.
+
+```bash
+./print_schedulers.sh                        # read it, then paste it
+./print_schedulers.sh --include-notify-boot  # add the startup notifier
+./print_schedulers.sh --policy read,test     # a narrower policy set
+./print_schedulers.sh > schedulers.rsc       # keep it, diff it later
+```
+
+The daily entries carry an explicit `start-time`, staggered across the small
+hours: `interval=1d` on its own anchors to the moment the entry was created, so
+a router rebuilt at 19:40 would take its nightly backup at 19:40. The manual
+scripts — `tg_send`, `detect_internet`, `reboot-and-flush`,
+`firewall_drift_baseline`, `change_WIFI_pw` — are never printed.
+
+Everything it emits is valid RouterOS input, commentary included (the notes are
+`#` comment lines, and the colour only appears on a terminal), so the output can
+go into a file and be pasted from there.
 
 ### `pull_router_backups.sh`
 
