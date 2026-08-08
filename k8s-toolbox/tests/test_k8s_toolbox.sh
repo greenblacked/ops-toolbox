@@ -57,11 +57,22 @@ if (( ${#scripts[@]} == 0 )); then
 fi
 ok "discovered ${#scripts[@]} scripts under k8s-toolbox/"
 
+# The mode has to be right in the index, not just in this working tree: a
+# clone gets its permissions from git, and a script that arrives 644 is one
+# nobody can run without knowing to chmod it first.
 for f in "${scripts[@]}"; do
-  if [[ -x "$f" ]]; then
-    ok "${f##*/} is executable"
+  name="${f##*/}"
+  if [[ ! -x "$f" ]]; then
+    err "$name is not executable — chmod +x, and commit the mode"
+    continue
+  fi
+  record="$(git -C "$REPO_ROOT" ls-files -s -- "$f" 2>/dev/null)"
+  if [[ -z "$record" ]]; then
+    ok "$name is executable (not tracked yet, so no index mode to check)"
+  elif [[ "${record%% *}" == "100755" ]]; then
+    ok "$name is executable, in this tree and in the index"
   else
-    err "${f##*/} is not executable (chmod +x, and commit the mode)"
+    err "$name is 755 here but ${record%% *} in the index — git update-index --chmod=+x"
   fi
 done
 
