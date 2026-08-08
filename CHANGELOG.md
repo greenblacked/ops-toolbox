@@ -16,6 +16,30 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `windows/wsl/wsl_manage.ps1` reported exit `1` on a machine without WSL where
+  it means exit `2`. `Write-Error` is a terminating error while
+  `$ErrorActionPreference` is `'Stop'`, so the `exit 2` written two lines below
+  it was never reached. PowerShell 7.3 and later do the same to a native
+  command that exits non-zero, which would have skipped every `$LASTEXITCODE`
+  check in the file.
+- `templates/new_script.ps1` built its example path from `$env:TEMP`, which is
+  undefined off Windows, so the template's own dry run could not run to the end
+  anywhere else. It uses `[IO.Path]::GetTempPath()` — the same directory on
+  Windows, and defined everywhere.
+- `test-env/README.md` credited the Python sandbox with a Docker runner, a
+  Dockerfile, a justfile, a dev container and mypy. None of them exist: there
+  is a `run.sh`, stdlib `unittest`, and `ruff` when ruff happens to be
+  installed. It also implied `chef/` and `go/` were part of the test run —
+  `run-tests.sh` has no suite for either and no workflow invokes their
+  `just ci`, so a change that breaks a converge is caught by nobody until
+  somebody runs it by hand. All three READMEs say so now, along with what CI
+  does cover (the scaffolding as text, and not the `Dockerfile`s: there is no
+  hadolint step).
+- `.github/pull_request_template.md` listed the fast suite selection without
+  `k8s`, which `run-tests.sh` has run since the Kubernetes toolbox landed.
+- `docs/good-first-issues.md` carried four entries that were already done. The
+  premise of that file is that every entry is a real gap, so they moved to a
+  short Resolved section instead of sitting there being wrong.
 - `macos-initial-setup/tests/test_macos_initial_setup.sh` checked a hardcoded
   list of four scripts while the package had grown to nine, so `brewfile.sh`,
   `macos_defaults.sh`, `workstation_doctor.sh` and
@@ -95,6 +119,11 @@ entry here belongs to a version.
 
 ### Changed
 
+- `windows/tests/contract.ps1` discovers `templates/*.ps1` as well as
+  `windows/**`. The templates exist so the conventions cannot drift away from
+  them, which only works if the same checks run against them, and
+  `new_script.ps1` was covered by repository-wide PSScriptAnalyzer and by
+  nothing that read its help or ran it.
 - Long-term RouterOS workflow runs are now explicitly check-only; attempts to
   use that channel for the canonical stable version bump fail clearly instead
   of silently reporting an older long-term release as current.
@@ -115,6 +144,37 @@ entry here belongs to a version.
 
 ### Added
 
+- `windows/wsl/wsl_manage.ps1` gained four actions and a `-DryRun` switch.
+  `restore` imports a `.tar` back as a new distro and checks the two things
+  that make `wsl --import` surprising before it starts: the name has to be
+  free, because import cannot replace a distro in place, and the restored copy
+  boots as root, because the default user is recorded inside the distro and is
+  not carried over. `df` puts a number on the question `compact` exists for —
+  the VHDX file on the Windows side against `df` inside the distro, with the
+  gap between them being what compacting would give back; measuring a stopped
+  distro starts it, so that stays behind `-Force` rather than happening in a
+  read-only report. `terminate` stops one distro where `shutdown` stops all of
+  them and the utility VM with them. `prune-backups` applies age and count
+  retention to the export folder, which otherwise accumulates full filesystem
+  copies nobody deletes: it considers only files named the way `backup` writes
+  them, prints the `KEEP`/`PRUNE` list first, and asks before deleting unless
+  `-Force`.
+- `templates/new_helper.py` — the starting point for a Python helper, the one
+  shape in this repository that had no template. It is a working no-op in the
+  form the existing helpers share: standard library only and 3.9-clean because
+  `/usr/bin/python3` on macOS is 3.9, `argparse`, colour behind a
+  terminal-and-`NO_COLOR` guard, read-only because a diagnostic prints the
+  command that fixes the problem rather than running it, and pure functions
+  that take the `PATH` string and the command output as parameters so their
+  tests are fixture data rather than a description of the machine they ran on.
+- `windows/tests/contract.ps1` runs every `-DryRun` script as a child process
+  against a scratch `HOME` and `TEMP` and fails if the filesystem changed —
+  the assertion `test-env/static/check_conventions.sh` already makes for the
+  Bash scripts, for the reason recorded there: reading a script's own claim
+  that it changed nothing proves nothing. On Windows that exercises the whole
+  dry-run path. On Linux the subjects stop at their platform check, which is
+  still where a stray log file or scratch directory would appear, and the
+  template runs its dry run to the end anywhere.
 - `linux/system_doctor.sh` — the Linux counterpart of
   `macos-initial-setup/workstation_doctor.sh`, and the narrative half of a pair
   with `hardening_audit.sh` next to it. The audit asks whether a machine is
