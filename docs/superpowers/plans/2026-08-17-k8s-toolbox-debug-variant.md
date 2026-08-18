@@ -43,10 +43,12 @@
 ### Task 1: `build.sh --variant`
 
 **Files:**
+
 - Modify: `k8s-toolbox/tests/test_k8s_toolbox.sh`
 - Modify: `k8s-toolbox/build.sh`
 
 **Interfaces:**
+
 - Consumes: existing `require_value`, `--dry-run`, `--tag`
 - Produces: `--variant toolbox|debug` (default `toolbox`); default tags `k8s-toolbox:local` / `k8s-toolbox:debug`; every buildx command includes `--target` matching the variant; `--tag` wins over the default tag
 
@@ -222,10 +224,12 @@ EOF
 ### Task 2: Dockerfile `debug` stage
 
 **Files:**
+
 - Modify: `k8s-toolbox/tests/test_k8s_toolbox.sh`
 - Modify: `k8s-toolbox/Dockerfile`
 
 **Interfaces:**
+
 - Consumes: Task 1 `--target toolbox|debug`
 - Produces: named stages `toolbox` and `debug`; debug stage installs the spec package list and returns to `USER toolbox`; still exactly one `CMD ["bash"]` and no `ENTRYPOINT`
 
@@ -324,12 +328,14 @@ EOF
 ### Task 3: `k8s-toolbox/debug/` manifests
 
 **Files:**
+
 - Modify: `k8s-toolbox/tests/test_k8s_toolbox.sh`
 - Create: `k8s-toolbox/debug/pod.yaml`
 - Create: `k8s-toolbox/debug/job.yaml`
 - Create: `k8s-toolbox/debug/kustomization.yaml`
 
 **Interfaces:**
+
 - Consumes: image tag `k8s-toolbox:debug` from Task 1
 - Produces: a long-running pod `k8s-toolbox-debug` and a job that prints `command -v` for every debug binary; both drop ALL then add `NET_RAW`, `NET_ADMIN`, `SYS_PTRACE`
 
@@ -509,11 +515,13 @@ EOF
 ### Task 4: Docs
 
 **Files:**
+
 - Modify: `k8s-toolbox/README.md`
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
 
 **Interfaces:**
+
 - Consumes: `--variant`, `k8s-toolbox:debug`, `k8s-toolbox/debug/`
 - Produces: documented build/run/apply paths; changelog Added entry
 
@@ -596,10 +604,12 @@ EOF
 This task is not optional. The contract suite never builds the image; the last-stage footgun (`tcpdump` present on `k8s-toolbox:local`) is only visible by building both tags.
 
 **Files:**
+
 - Modify: `k8s-toolbox/tests/test_k8s_toolbox.sh` (smoke block only)
 - Unchanged: `.github/workflows/k8s-image-smoke.yml` (already runs `K8S_IMAGE_SMOKE=1`)
 
 **Interfaces:**
+
 - Consumes: `build.sh --tag` (toolbox) and `build.sh --variant debug --tag` (debug)
 - Produces: smoke that builds `k8s-toolbox:ci-smoke` and `k8s-toolbox:ci-smoke-debug`, asserts uid 1000, asserts toolbox has the CLIs and **not** `tcpdump`, asserts debug has every extra binary
 
