@@ -1,0 +1,44 @@
+name: Kubernetes image smoke
+
+on:
+  schedule:
+    # The image pulls five independently hosted, pinned toolchains. Running it
+    # weekly catches upstream disappearance and build drift without adding
+    # several minutes of network work to every pull request.
+    - cron: '17 4 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: k8s-image-smoke
+  cancel-in-progress: false
+
+jobs:
+  image-smoke:
+    name: Build and probe image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+
+      - name: Build image and verify pinned tools
+        shell: bash
+        env:
+          K8S_IMAGE_SMOKE: '1'
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/k8s-image-smoke.log"
+          set +e
+          ./run-tests.sh k8s 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 30 "$log")"
+          {
+            printf '### Kubernetes toolbox image smoke\n\n'
+            printf '```text\n%s\n```\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"

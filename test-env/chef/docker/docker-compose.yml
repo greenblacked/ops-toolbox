@@ -1,0 +1,36 @@
+# Run Test Kitchen from Docker (host only needs Docker + Compose v2).
+# Use ../run.sh as the entry point.
+#
+# Long-running model (preferred):
+#   ./run.sh up                      # start container in the background
+#   ./run.sh cookstyle cookbooks     # exec inside the running container
+#   ./run.sh kitchen verify          # exec — kitchen-dokken talks to host docker
+#   ./run.sh shell                   # interactive bash in the running container
+#   ./run.sh down                    # tear down
+#
+# One-shot: ./run.sh --once <cmd>
+name: pretty-useful-chef-kitchen
+
+services:
+  kitchen:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: pretty-useful-chef-kitchen
+    init: true
+    tty: true
+    stdin_open: true
+    working_dir: /chef
+    # Stay alive so `docker compose exec` is cheap.
+    command: ["sleep", "infinity"]
+    environment:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      KITCHEN_LOG: info
+    volumes:
+      - ..:/chef:rw
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD", "docker", "version", "--format", "{{.Server.Version}}"]
+      interval: 30s
+      timeout: 3s
+      retries: 3

@@ -1,0 +1,63 @@
+---
+# A one-off job that prints the debug binaries baked into the image.
+#
+# This directory does not pass the restricted Pod Security Standard.
+# Useful as a smoke test after pushing a new debug tag to a registry: it
+# proves the image runs on the cluster's nodes and that every debug CLI is
+# on PATH, without leaving anything behind. Same extra capabilities as
+# pod.yaml — tcpdump/strace need them to be present, not just installed.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k8s-toolbox-debug-job
+spec:
+  backoffLimit: 0
+  # Without this the failed pods of a job hang around indefinitely; an hour is
+  # long enough to read the logs and short enough to forget about.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: k8s-toolbox-debug
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: toolbox
+          image: k8s-toolbox:debug
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -lc
+            - |
+              set -euo pipefail
+              for bin in htop iperf3 ping lsof ltrace mtr nc socat strace tcpdump traceroute; do
+                command -v "$bin"
+              done
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_RAW
+                - NET_ADMIN
+                - SYS_PTRACE
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

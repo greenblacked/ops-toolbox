@@ -1,0 +1,4 @@
+.kitchen/
+vendor/
+.git/
+**/.DS_Store

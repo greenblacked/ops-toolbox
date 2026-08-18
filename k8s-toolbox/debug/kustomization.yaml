@@ -1,0 +1,22 @@
+---
+# Retag the debug manifests without editing them.
+#
+#   kustomize edit set image k8s-toolbox:debug=REGISTRY/k8s-toolbox:1.2.3-debug
+#   kubectl apply -k k8s-toolbox/debug/
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - pod.yaml
+  - job.yaml
+
+images:
+  - name: k8s-toolbox:debug
+    newName: k8s-toolbox
+    newTag: debug
+
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: k8s-toolbox
+      app.kubernetes.io/component: debug-tools

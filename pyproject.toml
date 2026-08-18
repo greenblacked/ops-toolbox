@@ -1,0 +1,36 @@
+# Tooling config only — this repository is a collection of scripts, not a
+# distributable package, so there is no [project] table and nothing to build.
+
+[tool.ruff]
+# The runtime helpers are executed by /usr/bin/python3, which is 3.9 on macOS.
+# Pinning here stops ruff from suggesting 3.10+ syntax that would break on the
+# machines these scripts actually run on.
+target-version = "py39"
+line-length = 100
+extend-exclude = [".venv", "*/.pytest_cache", "*/.ruff_cache"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle
+    "F",   # pyflakes
+    "I",   # import sorting
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "SIM", # simplify
+]
+ignore = [
+    # Percent-formatting is deliberate in modules that must stay 3.9-clean and
+    # readable next to the shell scripts that call them.
+    "UP031",
+    "UP032",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests insert the lib dir on sys.path before importing what they test; the
+# import cannot move to the top of the file.
+"test-env/python/tests/*" = ["E402"]
+
+[tool.pytest.ini_options]
+# pytest is optional here (the suite runs under stdlib unittest), but if it is
+# installed these settings make it find the same tests.
+testpaths = ["test-env/python/tests", "mikrotik/tests"]

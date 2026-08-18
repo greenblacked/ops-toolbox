@@ -1,0 +1,188 @@
+#cloud-config
+# First-boot initialization for a local, cloud-init-capable Kali Linux VM.
+# Supply this complete file as the VM's cloud-config user data.
+#
+# OrbStack note: its kali:current image did not contain cloud-init when tested
+# with OrbStack 2.2.3 on 2026-08-12. See linux/README.md before using `orbctl
+# create --user-data`; the YAML itself is valid, but that image cannot consume
+# cloud-config until cloud-init is installed in a reusable base image.
+
+timezone: Europe/Kyiv
+
+# The VM disk is sized by the local hypervisor. Avoid cloud-init grow/resize
+# modules, which are intended for cloud images and fail on OrbStack's managed
+# filesystem even though the requested disk size is already available.
+growpart:
+  mode: 'off'
+resize_rootfs: false
+
+# OrbStack injects access for the user selected with `orbctl create --user`.
+# Keep password authentication and direct root login disabled.
+ssh_pwauth: false
+disable_root: true
+
+write_files:
+  - path: /etc/apt/apt.conf.d/99ops-toolbox-timeouts
+    owner: root:root
+    permissions: '0644'
+    content: |
+      Acquire::http::Timeout "30";
+      Acquire::https::Timeout "30";
+      Acquire::Retries "3";
+      Dpkg::Lock::Timeout "120";
+
+  - path: /etc/ssh/sshd_config.d/99-local-lab.conf
+    owner: root:root
+    permissions: '0644'
+    content: |
+      PermitRootLogin no
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      MaxAuthTries 5
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+
+  - path: /usr/local/sbin/ops-toolbox-kali-finalize
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+
+      LOG_FILE=/var/log/ops-toolbox-kali-init.log
+      exec > >(tee -a "$LOG_FILE") 2>&1
+
+      log() {
+        printf '%s [info] %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$*"
+      }
+
+      export DEBIAN_FRONTEND=noninteractive
+      APT_OPTIONS=(
+        '-o' 'Acquire::http::Timeout=30'
+        '-o' 'Acquire::https::Timeout=30'
+        '-o' 'Acquire::Retries=3'
+        '-o' 'Dpkg::Lock::Timeout=120'
+      )
+
+      log "updating Kali and installing lab packages"
+      apt-get "${APT_OPTIONS[@]}" update
+      apt-get "${APT_OPTIONS[@]}" full-upgrade --yes
+      apt-get "${APT_OPTIONS[@]}" install --yes --no-install-recommends \
+        seclists tmux htop git curl wget jq python3-pip python3-venv \
+        build-essential net-tools dnsutils whois tree unzip p7zip-full \
+        vim nano plocate openssh-server ufw \
+        iputils-ping traceroute mtr-tiny nmap tcpdump tshark netcat-openbsd \
+        socat ethtool iproute2 nftables conntrack \
+        kali-tools-information-gathering kali-tools-vulnerability \
+        kali-tools-sniffing-spoofing kali-tools-exploitation \
+        kali-tools-post-exploitation kali-tools-detect kali-tools-protect \
+        kali-tools-respond kali-tools-forensics
+
+      log "validating and enabling OpenSSH"
+      sshd -t
+      systemctl enable ssh
+      systemctl restart ssh
+
+      log "configuring UFW without enabling it"
+      ufw default deny incoming
+      ufw default allow outgoing
+      ufw allow OpenSSH
+
+      log "removing obsolete packages and cleaning apt cache"
+      apt-get "${APT_OPTIONS[@]}" autoremove --yes
+      apt-get "${APT_OPTIONS[@]}" autoclean --yes
+
+      install -d -m 0755 /var/lib/ops-toolbox
+      printf '%s\n' "$(date --iso-8601=seconds)" \
+        > /var/lib/ops-toolbox/kali-vm-init.complete
+      log "Kali VM initialization complete; reboot and take a clean snapshot"
+
+  - path: /etc/systemd/system/ops-toolbox-kali-init.service
+    owner: root:root
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Ops Toolbox Kali first-boot initialization
+      Wants=network-online.target
+      After=network-online.target cloud-final.service
+      ConditionPathExists=!/var/lib/ops-toolbox/kali-vm-init.complete
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/sbin/ops-toolbox-kali-finalize
+      TimeoutStartSec=1h
+      RemainAfterExit=yes
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /usr/local/bin/kali-lab-status
+    owner: root:root
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Read-only progress and readiness summary for the long first-boot job.
+      set -u
+
+      usage() {
+        cat <<'EOF'
+      kali-lab-status - read-only Kali lab initialization status
+
+      Usage: kali-lab-status [--help]
+
+      Exit codes: 0 complete, 1 initializer failed, 3 usage, 4 still running
+      EOF
+      }
+
+      case "${1:-}" in
+        -h|--help) usage; exit 0 ;;
+        '') ;;
+        *) printf 'unknown argument: %s\n' "$1" >&2; usage >&2; exit 3 ;;
+      esac
+      if (( $# > 1 )); then
+        printf 'too many arguments\n' >&2
+        usage >&2
+        exit 3
+      fi
+
+      marker=/var/lib/ops-toolbox/kali-vm-init.complete
+      unit=ops-toolbox-kali-init.service
+      state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+      result="$(systemctl show "$unit" -p Result --value 2>/dev/null || true)"
+
+      printf 'initializer: %s (result: %s)\n' "${state:-unknown}" "${result:-unknown}"
+      if [[ -r "$marker" ]]; then
+        printf 'completed:   %s\n' "$(cat "$marker")"
+      else
+        printf 'completed:   no\n'
+      fi
+      printf 'disk:        '
+      df -h / | awk 'NR == 2 { print $4 " free of " $2 " (" $5 " used)" }'
+      printf 'ssh:         %s\n' "$(systemctl is-active ssh 2>/dev/null || true)"
+      printf 'ufw:         %s\n' "$(ufw status 2>/dev/null | head -n 1 || true)"
+      printf 'tool smoke:  '
+      missing=0
+      for tool in ping nmap tcpdump msfconsole sentrypeer clamscan autopsy; do
+        if ! command -v "$tool" >/dev/null 2>&1; then
+          printf '%s ' "$tool"
+          missing=$((missing + 1))
+        fi
+      done
+      if (( missing == 0 )); then printf 'all present\n'; else printf 'missing\n'; fi
+
+      [[ -r "$marker" ]] && exit 0
+      [[ "$state" == "failed" ]] && exit 1
+      exit 4
+
+runcmd:
+  # Do not block cloud-init on a multi-minute Kali upgrade: OrbStack expects the
+  # machine to become reachable quickly and otherwise removes it after timeout.
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, ops-toolbox-kali-init.service]
+  - [systemctl, start, --no-block, ops-toolbox-kali-init.service]
+
+final_message: >-
+  Kali VM cloud-init handoff completed after $UPTIME seconds. Follow progress
+  with systemctl status ops-toolbox-kali-init.service and review
+  /var/log/cloud-init-output.log and /var/log/ops-toolbox-kali-init.log,
+  then reboot and take a clean snapshot.

@@ -1,0 +1,507 @@
+# ~/.aliases
+
+# ============================================================
+# Windows-style commands
+# ============================================================
+
+alias cls='clear'
+alias cl='clear'
+alias e='explorer.exe .'
+alias open='explorer.exe .'
+alias explorer='explorer.exe'
+alias codehere='code.exe .'
+alias c='code.exe .'
+alias notepad='notepad.exe'
+alias pwdw='pwd -W'
+alias copypwd='pwd -W | clip.exe'
+
+# ============================================================
+# Navigation
+# ============================================================
+
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias .....='cd ../../../..'
+
+alias home='cd "$HOME"'
+alias coding='cd /d/Coding'
+alias sshdir='cd /d/Coding/ssh'
+alias desktop='cd "$HOME/Desktop"'
+alias downloads='cd "$HOME/Downloads"'
+
+mkcd() {
+    if [ "$#" -ne 1 ]; then
+        printf 'Usage: mkcd <directory>\n'
+        return 1
+    fi
+
+    mkdir -p "$1" && cd "$1"
+}
+
+croot() {
+    local root
+
+    root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+        printf 'Not inside a Git repository.\n'
+        return 1
+    }
+
+    cd "$root"
+}
+
+# ============================================================
+# File listing and search
+# ============================================================
+
+alias ls='ls --color=auto'
+alias ll='ls -alF'
+alias la='ls -A'
+alias l='ls -CF'
+alias lt='ls -laht'
+alias lsize='ls -lahS'
+
+alias grep='grep --color=auto'
+alias egrep='grep -E --color=auto'
+alias fgrep='grep -F --color=auto'
+
+ff() {
+    if [ "$#" -eq 0 ]; then
+        printf 'Usage: ff <filename>\n'
+        return 1
+    fi
+
+    find . -type f -iname "*$1*" 2>/dev/null
+}
+
+ftext() {
+    if [ "$#" -eq 0 ]; then
+        printf 'Usage: ftext <text>\n'
+        return 1
+    fi
+
+    grep -RIn \
+        --exclude-dir=.git \
+        --exclude-dir=node_modules \
+        -- "$1" .
+}
+
+# ============================================================
+# Shell configuration
+# ============================================================
+
+alias reload='source "$HOME/.bashrc"'
+alias editaliases='notepad.exe "$HOME/.aliases"'
+alias editbashrc='notepad.exe "$HOME/.bashrc"'
+alias editprofile='notepad.exe "$HOME/.bash_profile"'
+alias editssh='notepad.exe "$HOME/.ssh/config"'
+alias path='printf "%s\n" "$PATH" | tr ":" "\n"'
+
+# ============================================================
+# Git
+# ============================================================
+
+alias g='git'
+alias gs='git status --short --branch'
+alias gst='git status'
+
+alias ga='git add'
+alias gaa='git add --all'
+alias gap='git add --patch'
+alias gau='git add --update'
+
+alias gc='git commit'
+alias gcm='git commit -m'
+alias gca='git commit --amend'
+alias gcan='git commit --amend --no-edit'
+
+alias gd='git diff'
+alias gds='git diff --staged'
+alias gdw='git diff --word-diff'
+
+alias gf='git fetch'
+alias gfa='git fetch --all --prune'
+alias gfp='git fetch --prune'
+
+alias gl='git pull --rebase'
+alias gpl='git pull'
+alias gpr='git pull --rebase'
+
+alias gp='git push'
+alias gpu='git push --set-upstream origin HEAD'
+alias gpf='git push --force-with-lease'
+
+alias gb='git branch'
+alias gba='git branch --all'
+alias gbv='git branch --verbose --verbose'
+alias gbd='git branch --delete'
+alias gbD='git branch --delete --force'
+
+alias gco='git checkout'
+alias gcob='git checkout -b'
+
+alias gsw='git switch'
+alias gswc='git switch --create'
+alias gswm='git switch main'
+alias gswd='git switch develop'
+alias gswp='git switch -'
+
+alias gm='git merge'
+alias gma='git merge --abort'
+alias gmc='git merge --continue'
+alias gmff='git merge --ff-only'
+alias gmnoff='git merge --no-ff'
+
+alias gr='git rebase'
+alias gri='git rebase --interactive'
+alias gra='git rebase --abort'
+alias grc='git rebase --continue'
+alias grs='git rebase --skip'
+alias grm='git rebase main'
+alias gro='git rebase origin/main'
+
+alias grst='git restore'
+alias grsts='git restore --staged'
+alias grstp='git restore --patch'
+
+alias grh='git reset HEAD'
+alias grhs='git reset --soft HEAD~1'
+alias grhm='git reset --mixed HEAD~1'
+
+alias gclean='git clean -nd'
+alias gcleanf='git clean -fd'
+
+alias gsh='git show'
+alias gshow='git show --stat'
+alias glast='git log -1 --stat'
+alias gone='git log -1 --oneline'
+
+alias glog='git log --graph --decorate --oneline --all'
+alias gloga='git log --graph --decorate --oneline --all --stat'
+alias glogp='git log --graph --decorate --oneline --all --patch'
+
+alias gstash='git stash push'
+alias gstashm='git stash push -m'
+alias gstashu='git stash push --include-untracked'
+alias gstashl='git stash list'
+alias gstashp='git stash pop'
+alias gstasha='git stash apply'
+alias gstashd='git stash drop'
+alias gstashs='git stash show --patch'
+
+alias gremote='git remote --verbose'
+alias gorigin='git remote get-url origin'
+
+alias gtag='git tag'
+alias gtags='git tag --sort=-version:refname'
+alias gtagp='git push origin --tags'
+
+alias gcherry='git cherry-pick'
+alias gcherrya='git cherry-pick --abort'
+alias gcherryc='git cherry-pick --continue'
+
+alias gsub='git submodule'
+alias gsubu='git submodule update --init --recursive'
+
+gbranch() {
+    git branch --show-current
+}
+
+gnew() {
+    if [ "$#" -ne 1 ]; then
+        printf 'Usage: gnew <branch-name>\n'
+        return 1
+    fi
+
+    git switch --create "$1"
+}
+
+gpublish() {
+    local branch
+
+    branch="$(git branch --show-current)"
+
+    if [ -z "$branch" ]; then
+        printf 'Cannot determine current branch.\n'
+        return 1
+    fi
+
+    git push --set-upstream origin "$branch"
+}
+
+gchanged() {
+    git diff --name-status main...HEAD
+}
+
+gupdatemain() {
+    local current_branch
+
+    current_branch="$(git branch --show-current)"
+
+    git switch main || return 1
+    git pull --rebase origin main || return 1
+
+    if [ "$current_branch" != "main" ]; then
+        git switch "$current_branch"
+    fi
+}
+
+# ============================================================
+# GitLab CLI: glab
+# ============================================================
+
+alias glabv='glab version'
+alias glauth='glab auth status'
+alias glauthlogin='glab auth login'
+
+alias glrepo='glab repo view'
+alias glrepow='glab repo view --web'
+alias glclone='glab repo clone'
+
+alias glmr='glab mr'
+alias glmrl='glab mr list'
+alias glmra='glab mr list --assignee=@me'
+alias glmrr='glab mr list --reviewer=@me'
+alias glmrm='glab mr list --mine'
+alias glmrv='glab mr view'
+alias glmrw='glab mr view --web'
+alias glmrc='glab mr create'
+alias glmrd='glab mr diff'
+alias glmrapprove='glab mr approve'
+alias glmrmerge='glab mr merge'
+alias glmrclose='glab mr close'
+alias glmrreopen='glab mr reopen'
+alias glmrcheckout='glab mr checkout'
+alias glmrnote='glab mr note'
+
+alias gli='glab issue'
+alias glil='glab issue list'
+alias gliassigned='glab issue list --assignee=@me'
+alias glic='glab issue create'
+alias gliv='glab issue view'
+alias gliw='glab issue view --web'
+alias gliclose='glab issue close'
+alias glireopen='glab issue reopen'
+alias glinote='glab issue note'
+
+alias glpipe='glab pipeline'
+alias glpl='glab pipeline list'
+alias glpv='glab pipeline view'
+alias glprun='glab pipeline run'
+alias glpretry='glab pipeline retry'
+alias glpcancel='glab pipeline cancel'
+alias glpstatus='glab ci status'
+
+alias glci='glab ci'
+alias glciv='glab ci view'
+alias glcitrace='glab ci trace'
+alias glcilint='glab ci lint'
+
+alias glrelease='glab release'
+alias glreleasel='glab release list'
+alias glreleasev='glab release view'
+alias glreleasec='glab release create'
+
+alias glvar='glab variable'
+alias glvarl='glab variable list'
+alias glvarg='glab variable get'
+alias glvars='glab variable set'
+
+alias glapi='glab api'
+
+glopen() {
+    glab repo view --web
+}
+
+glmrcreate() {
+    local branch
+
+    branch="$(git branch --show-current)"
+
+    if [ -z "$branch" ]; then
+        printf 'Cannot determine current branch.\n'
+        return 1
+    fi
+
+    glab mr create \
+        --source-branch "$branch" \
+        --target-branch main \
+        --fill
+}
+
+glmrdraft() {
+    local branch
+
+    branch="$(git branch --show-current)"
+
+    if [ -z "$branch" ]; then
+        printf 'Cannot determine current branch.\n'
+        return 1
+    fi
+
+    glab mr create \
+        --source-branch "$branch" \
+        --target-branch main \
+        --fill \
+        --draft
+}
+
+glpipeline() {
+    local branch
+
+    branch="$(git branch --show-current)"
+
+    if [ -z "$branch" ]; then
+        printf 'Cannot determine current branch.\n'
+        return 1
+    fi
+
+    glab pipeline list --branch "$branch"
+}
+
+glrun() {
+    local branch
+
+    branch="$(git branch --show-current)"
+
+    if [ -z "$branch" ]; then
+        printf 'Cannot determine current branch.\n'
+        return 1
+    fi
+
+    glab pipeline run --branch "$branch"
+}
+
+# ============================================================
+# Docker
+# ============================================================
+
+alias d='docker'
+alias dps='docker ps'
+alias dpa='docker ps --all'
+alias di='docker images'
+alias dsystem='docker system df'
+alias dprune='docker system prune'
+
+alias dc='docker compose'
+alias dcu='docker compose up'
+alias dcud='docker compose up --detach'
+alias dcd='docker compose down'
+alias dcr='docker compose restart'
+alias dcb='docker compose build'
+alias dcpull='docker compose pull'
+alias dcps='docker compose ps'
+alias dcl='docker compose logs'
+alias dclf='docker compose logs --follow'
+alias dce='docker compose exec'
+
+# ============================================================
+# Kubernetes
+# ============================================================
+
+alias k='kubectl'
+alias kg='kubectl get'
+alias kgp='kubectl get pods'
+alias kgpa='kubectl get pods --all-namespaces'
+alias kgs='kubectl get services'
+alias kgd='kubectl get deployments'
+alias kgsts='kubectl get statefulsets'
+alias kgds='kubectl get daemonsets'
+alias kgn='kubectl get nodes'
+alias kgi='kubectl get ingress'
+alias kgns='kubectl get namespaces'
+alias kgcm='kubectl get configmaps'
+alias kgsec='kubectl get secrets'
+
+alias kd='kubectl describe'
+alias kdp='kubectl describe pod'
+alias kdd='kubectl describe deployment'
+alias kdn='kubectl describe node'
+
+alias kl='kubectl logs'
+alias klf='kubectl logs --follow'
+alias kexec='kubectl exec -it'
+alias kapply='kubectl apply -f'
+alias kdelete='kubectl delete -f'
+
+alias kctx='kubectl config current-context'
+alias kctxs='kubectl config get-contexts'
+
+# ============================================================
+# Terraform
+# ============================================================
+
+alias tf='terraform'
+alias tfi='terraform init'
+alias tfiu='terraform init -upgrade'
+alias tfp='terraform plan'
+alias tfpo='terraform plan -out=tfplan'
+alias tfa='terraform apply'
+alias tfaa='terraform apply -auto-approve'
+alias tfd='terraform destroy'
+alias tfda='terraform destroy -auto-approve'
+alias tff='terraform fmt -recursive'
+alias tffcheck='terraform fmt -recursive -check'
+alias tfv='terraform validate'
+alias tfwl='terraform workspace list'
+alias tfws='terraform workspace show'
+alias tfo='terraform output'
+alias tfsl='terraform state list'
+
+# ============================================================
+# SSH
+# ============================================================
+
+alias sshkeys='ssh-add -l'
+alias sshadd='ssh-add "/d/Coding/ssh/ed25519"'
+alias sshremove='ssh-add -d "/d/Coding/ssh/ed25519"'
+alias sshremoveall='ssh-add -D'
+alias sshtestgithub='ssh -T git@github.com'
+alias sshtestgitlab='ssh -T git@gitlab.com'
+
+# ============================================================
+# Windows networking
+# ============================================================
+
+alias ipconfig='ipconfig.exe'
+alias flushdns='ipconfig.exe /flushdns'
+alias ports='netstat.exe -ano'
+alias listening='netstat.exe -ano | grep LISTENING'
+alias tasks='tasklist.exe'
+
+# ============================================================
+# Safer file operations
+# ============================================================
+
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+
+# Add all changes, commit with branch prefix, and push
+gacp() {
+    local branch
+    local message
+
+    branch="$(git branch --show-current 2>/dev/null)"
+
+    if [ -z "$branch" ]; then
+        printf 'Error: not inside a Git repository or currently in detached HEAD state.\n'
+        return 1
+    fi
+
+    if [ "$#" -eq 0 ]; then
+        printf 'Usage: gacp "commit message"\n'
+        return 1
+    fi
+
+    message="$*"
+
+    git add --all || return 1
+    git commit -m "[$branch] $message" || return 1
+
+    if git rev-parse --abbrev-ref '@{upstream}' >/dev/null 2>&1; then
+        git push
+    else
+        git push --set-upstream origin "$branch"
+    fi
+}

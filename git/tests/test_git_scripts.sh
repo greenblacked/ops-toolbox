@@ -1,0 +1,1022 @@
+#!/usr/bin/env bash
+# Run from the Linux tester container; repo root is mounted read-only at /repo.
+set -euo pipefail
+
+REPO_ROOT="${REPO_ROOT:-/repo}"
+G="$REPO_ROOT/git"
+GACP="$G/gacp.sh"
+SET="$G/set_git_profile.sh"
+WHO="$G/git_whoami.sh"
+STATUS="$G/git_status_summary.sh"
+SYNC="$G/git_sync_default.sh"
+CLEANUP="$G/git_cleanup_merged.sh"
+RECENT="$G/git_recent_branches.sh"
+ROOT="$G/git_repo_root.sh"
+DIFFBR="$G/git_diff_branch.sh"
+UNDO="$G/git_undo_last_commit.sh"
+AMEND="$G/git_amend_last.sh"
+HOOKS="$G/git_hooks_install.sh"
+PRUNE="$G/git_prune_gone.sh"
+STALE="$G/git_stale_branches.sh"
+SIZE="$G/git_size_report.sh"
+SSH_DOCTOR="$G/git_ssh_doctor.py"
+SIGNING_DOCTOR="$G/git_signing_doctor.py"
+REMOTE_DOCTOR="$G/git_remote_doctor.py"
+BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
+PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
+
+if [[ ! -d "$G" ]]; then
+  echo "expected git scripts at $G" >&2
+  exit 1
+fi
+
+failures=0
+ok() { echo "[ ok ] $*"; }
+err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
+
+assert_contains() {
+  local haystack="$1"
+  local needle="$2"
+  local label="$3"
+
+  if grep -Fq -- "$needle" <<<"$haystack"; then
+    ok "$label"
+  else
+    err "$label: expected output to contain '$needle'; got: $haystack"
+  fi
+}
+
+assert_eq() {
+  local actual="$1"
+  local expected="$2"
+  local label="$3"
+
+  if [[ "$actual" == "$expected" ]]; then
+    ok "$label"
+  else
+    err "$label: expected '$expected', got '$actual'"
+  fi
+}
+
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  local label="$3"
+
+  if grep -Fq -- "$needle" <<<"$haystack"; then
+    err "$label: expected output not to contain '$needle'; got: $haystack"
+  else
+    ok "$label"
+  fi
+}
+
+new_home() {
+  mktemp -d /tmp/git-profile-home.XXXXXX
+}
+
+new_repo() {
+  local repo
+  repo="$(mktemp -d /tmp/git-script-repo.XXXXXX)"
+  git init -q -b main "$repo"
+  git -C "$repo" config user.name "Test User"
+  git -C "$repo" config user.email "test@example.com"
+  printf "initial\n" >"$repo/file.txt"
+  git -C "$repo" add file.txt
+  git -C "$repo" commit -m "initial commit" >/dev/null
+  printf "%s\n" "$repo"
+}
+
+run_with_home() {
+  local home_dir="$1"
+  shift
+  HOME="$home_dir" XDG_CONFIG_HOME="$home_dir/.config" "$@"
+}
+
+# --- static checks ---
+# Discovered rather than listed. A hardcoded array only covers a new script if
+# someone remembers to add it, and the macOS suite proves how that ends: its
+# list has silently never included brewfile.sh or launchd/stay_fresh_agent.sh.
+# Built without mapfile so this still runs under Bash 3.2 (see CONTRIBUTING.md).
+sh_scripts=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  # git_aliases.sh is sourced, not run, so the --help and unknown-flag
+  # contracts do not apply to it. It is still syntax-checked and shellchecked
+  # below, and its own behaviour is asserted further down.
+  case "${f##*/}" in git_aliases.sh) continue ;; esac
+  sh_scripts+=("$f")
+done < <(find "$G" -maxdepth 1 -name '*.sh' -type f | sort)
+
+if (( ${#sh_scripts[@]} == 0 )); then
+  echo "discovered no scripts under $G — discovery is broken" >&2
+  exit 1
+fi
+ok "discovered ${#sh_scripts[@]} scripts under git/"
+for f in "${sh_scripts[@]}" "$G/git_aliases.sh"; do
+  rel="${f#"$REPO_ROOT/"}"
+  if bash -n "$f"; then
+    ok "bash -n $rel"
+  else
+    err "bash -n $rel"
+  fi
+
+  if shellcheck --severity=error -x -s bash "$f"; then
+    ok "shellcheck $rel"
+  else
+    err "shellcheck $rel"
+  fi
+done
+
+set +e
+sc_err="$(shellcheck --severity=error -s zsh "$G/git_aliases.zsh" 2>&1)"
+sc_rc=$?
+set -e
+if [[ "$sc_rc" -eq 0 ]]; then
+  ok "shellcheck git/git_aliases.zsh"
+elif grep -q "Unknown shell" <<<"$sc_err"; then
+  ok "shellcheck git/git_aliases.zsh skipped (no zsh in this shellcheck build)"
+else
+  echo "$sc_err" >&2
+  err "shellcheck git/git_aliases.zsh"
+fi
+
+# --- help and validation ---
+for f in "${sh_scripts[@]}"; do
+  rel="${f#"$G/"}"
+  if "$f" --help >/dev/null; then ok "$rel --help"; else err "$rel --help"; fi
+done
+
+repo="$(new_repo)"
+if (cd "$repo" && "$WHO" >/dev/null); then ok "git_whoami.sh runs inside repo"; else err "git_whoami.sh runs inside repo"; fi
+if zsh -f -c "source '$G/git_aliases.zsh'; alias gacp | grep -Fq '$G/gacp.sh'"; then
+  ok "git_aliases.zsh defines gacp"
+else
+  err "git_aliases.zsh defines gacp"
+fi
+if zsh -f -c "source '$G/git_aliases.zsh'; alias gstale | grep -Fq '$G/git_stale_branches.sh'"; then
+  ok "git_aliases.zsh covers more than gacp"
+else
+  err "git_aliases.zsh covers more than gacp"
+fi
+
+# --- git_aliases.sh (bash) ---
+if bash -c ". '$G/git_aliases.sh'" >/dev/null 2>&1; then
+  ok "git_aliases.sh sources cleanly"
+else
+  err "git_aliases.sh failed to source"
+fi
+
+alias_out="$(bash -c ". '$G/git_aliases.sh'; alias" 2>/dev/null)"
+assert_contains "$alias_out" "$G/gacp.sh" "git_aliases.sh points gacp at the script beside it"
+assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers the other helpers"
+
+# The guard is the point of the file: copied somewhere the scripts are not,
+# and with nothing of that name on PATH, it must define no aliases at all
+# rather than ones that fail later with a confusing message.
+guard_dir="$(mktemp -d /tmp/git-aliases-guard.XXXXXX)"
+cp "$G/git_aliases.sh" "$guard_dir/"
+alias_out="$(bash -c ". '$guard_dir/git_aliases.sh'; alias" 2>/dev/null)"
+assert_not_contains "$alias_out" "gacp" "no alias is defined for a script that is not installed"
+
+set +e
+bash "$G/git_aliases.sh" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "3" "git_aliases.sh executed directly -> exit 3"
+
+home="$(new_home)"
+set +e
+out="$(run_with_home "$home" "$SET" --definitely-invalid 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 3 ]]; then ok "unknown flag -> exit 3"; else err "unknown flag: expected exit 3, got $rc: $out"; fi
+
+for flag in --name --email --profile --save --save-current --state-file; do
+  home="$(new_home)"
+  set +e
+  out="$(run_with_home "$home" "$SET" "$flag" 2>&1)"
+  rc=$?
+  set -e
+  if [[ "$rc" -eq 3 ]]; then
+    ok "$flag without value -> exit 3"
+  else
+    err "$flag without value: expected exit 3, got $rc: $out"
+  fi
+  assert_contains "$out" "$flag requires a value" "$flag without value explains error"
+done
+
+# --- direct global set ---
+home="$(new_home)"
+out="$(run_with_home "$home" "$SET" --name "Sergey" --email "sergey@example.com")"
+assert_contains "$out" "Git global profile updated" "direct set reports success"
+actual_name="$(run_with_home "$home" git config --global --get user.name)"
+actual_email="$(run_with_home "$home" git config --global --get user.email)"
+assert_eq "$actual_name" "Sergey" "direct set writes user.name"
+assert_eq "$actual_email" "sergey@example.com" "direct set writes user.email"
+
+# --- save named profile and apply it ---
+home="$(new_home)"
+state="$home/.config/ops-toolbox/git-profiles.conf"
+out="$(run_with_home "$home" "$SET" --save personal --name "Sergey" --email "sergey@example.com")"
+assert_contains "$out" "saved Git profile 'personal'" "save profile reports success"
+saved_name="$(run_with_home "$home" git config --file "$state" --get profile.personal.name)"
+saved_email="$(run_with_home "$home" git config --file "$state" --get profile.personal.email)"
+assert_eq "$saved_name" "Sergey" "save profile writes name to state"
+assert_eq "$saved_email" "sergey@example.com" "save profile writes email to state"
+
+out="$(run_with_home "$home" "$SET" --profile personal)"
+assert_contains "$out" "applying saved Git profile: personal" "apply profile reports profile"
+actual_name="$(run_with_home "$home" git config --global --get user.name)"
+actual_email="$(run_with_home "$home" git config --global --get user.email)"
+assert_eq "$actual_name" "Sergey" "apply profile writes user.name"
+assert_eq "$actual_email" "sergey@example.com" "apply profile writes user.email"
+
+out="$(run_with_home "$home" "$SET" --list)"
+assert_contains "$out" "personal: Sergey <sergey@example.com>" "list shows saved profile"
+
+# A saved identity can be scoped to one checkout without replacing the global
+# identity used everywhere else.
+repo="$(new_repo)"
+run_with_home "$home" git config --global user.name "Global Sergey"
+run_with_home "$home" git config --global user.email "global@example.com"
+out="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+  "$SET" --local --profile personal)"
+assert_contains "$out" "repository-local profile updated" "--local reports repository scope"
+assert_eq "$(git -C "$repo" config --local --get user.email)" "sergey@example.com" \
+  "--local applies the saved email to the repository"
+assert_eq "$(run_with_home "$home" git config --global --get user.email)" "global@example.com" \
+  "--local leaves the global identity unchanged"
+
+before_local="$(git -C "$repo" config --local --get user.email)"
+out="$(cd "$repo" && HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+  "$SET" --dry-run --local --name "Dry Local" --email "dry-local@example.com")"
+assert_contains "$out" "git config --local user.email" "--local dry-run previews local config"
+assert_eq "$(git -C "$repo" config --local --get user.email)" "$before_local" \
+  "--local dry-run writes nothing"
+
+# --- save current identity as named profile ---
+home="$(new_home)"
+run_with_home "$home" git config --global user.name "Work Sergey"
+run_with_home "$home" git config --global user.email "work@example.com"
+state="$home/.config/ops-toolbox/git-profiles.conf"
+out="$(run_with_home "$home" "$SET" --save-current work)"
+assert_contains "$out" "saved current Git profile as 'work'" "save-current reports success"
+saved_name="$(run_with_home "$home" git config --file "$state" --get profile.work.name)"
+saved_email="$(run_with_home "$home" git config --file "$state" --get profile.work.email)"
+assert_eq "$saved_name" "Work Sergey" "save-current writes name"
+assert_eq "$saved_email" "work@example.com" "save-current writes email"
+
+# --- profiles saved before the repository was renamed are still found ---
+# This is the only part of the rename that could destroy someone's data: if the
+# lookup missed the old path, --list would report no profiles and the next
+# --save would write a fresh file, leaving the real one orphaned and invisible.
+home="$(new_home)"
+legacy="$home/.config/pretty-useful-scripts/git-profiles.conf"
+mkdir -p "$(dirname "$legacy")"
+git config --file "$legacy" profile.old.name "Legacy Sergey"
+git config --file "$legacy" profile.old.email "legacy@example.com"
+
+out="$(run_with_home "$home" "$SET" --list)"
+assert_contains "$out" "old: Legacy Sergey <legacy@example.com>" "a pre-rename profile is still listed"
+
+out="$(run_with_home "$home" "$SET" --profile old)"
+assert_contains "$out" "applying saved Git profile: old" "a pre-rename profile can still be applied"
+assert_eq "$(run_with_home "$home" git config --global --get user.email)" \
+  "legacy@example.com" "applying a pre-rename profile writes the right identity"
+
+out="$(run_with_home "$home" "$SET" --show)"
+assert_contains "$out" "pre-rename location" "--show flags that the old path is in use"
+
+# Once the new path exists it wins, so a migrated machine is never dragged back
+# to the stale file.
+current="$home/.config/ops-toolbox/git-profiles.conf"
+mkdir -p "$(dirname "$current")"
+git config --file "$current" profile.new.name "Current Sergey"
+git config --file "$current" profile.new.email "current@example.com"
+out="$(run_with_home "$home" "$SET" --list)"
+assert_contains "$out" "new: Current Sergey <current@example.com>" "the current path wins once it exists"
+assert_not_contains "$out" "Legacy Sergey" "the legacy file is not consulted after migration"
+
+# --- dry-run must not write state or global config ---
+home="$(new_home)"
+state="$home/.config/ops-toolbox/git-profiles.conf"
+out="$(run_with_home "$home" "$SET" --dry-run --save personal --name "Dry Sergey" --email "dry@example.com")"
+assert_contains "$out" "dry-run: would save profile 'personal'" "dry-run save previews state write"
+assert_contains "$out" "dry-run complete; no changes written" "dry-run save reports no writes"
+assert_not_contains "$out" "saved Git profile 'personal'" "dry-run save does not report saved"
+if [[ ! -e "$state" ]]; then ok "dry-run save does not create state file"; else err "dry-run save created state file"; fi
+
+run_with_home "$home" git config --global user.name "Before"
+run_with_home "$home" git config --global user.email "before@example.com"
+run_with_home "$home" "$SET" --save personal --name "After" --email "after@example.com" >/dev/null
+out="$(run_with_home "$home" "$SET" --dry-run --profile personal)"
+assert_contains "$out" "dry-run: would run: git config --global user.name \"After\"" "dry-run apply previews name write"
+assert_contains "$out" "dry-run complete; no changes written" "dry-run apply reports no writes"
+assert_not_contains "$out" "Git global profile updated" "dry-run apply does not report updated"
+actual_name="$(run_with_home "$home" git config --global --get user.name)"
+actual_email="$(run_with_home "$home" git config --global --get user.email)"
+assert_eq "$actual_name" "Before" "dry-run apply keeps existing user.name"
+assert_eq "$actual_email" "before@example.com" "dry-run apply keeps existing user.email"
+
+out="$(run_with_home "$home" "$SET" --dry-run --name "Direct Dry" --email "direct-dry@example.com")"
+assert_contains "$out" "dry-run: would run: git config --global user.name \"Direct Dry\"" "dry-run direct set previews name write"
+assert_contains "$out" "dry-run complete; no changes written" "dry-run direct set reports no writes"
+assert_not_contains "$out" "Git global profile updated" "dry-run direct set does not report updated"
+actual_name="$(run_with_home "$home" git config --global --get user.name)"
+actual_email="$(run_with_home "$home" git config --global --get user.email)"
+assert_eq "$actual_name" "Before" "dry-run direct set keeps existing user.name"
+assert_eq "$actual_email" "before@example.com" "dry-run direct set keeps existing user.email"
+
+# --- missing saved profile ---
+home="$(new_home)"
+set +e
+out="$(run_with_home "$home" "$SET" --profile missing 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 4 ]]; then ok "missing profile -> exit 4"; else err "missing profile: expected exit 4, got $rc: $out"; fi
+
+# --- gacp ---
+repo="$(new_repo)"
+printf "dry\n" >>"$repo/file.txt"
+before_head="$(git -C "$repo" rev-parse HEAD)"
+out="$(cd "$repo" && "$GACP" --dry-run -m "dry commit")"
+assert_contains "$out" "dry-run: would run: git add --all" "gacp dry-run previews add"
+assert_contains "$out" "dry-run: would run: git commit -m" "gacp dry-run previews commit"
+assert_contains "$out" "dry-run complete; no changes written" "gacp dry-run reports no writes"
+after_head="$(git -C "$repo" rev-parse HEAD)"
+assert_eq "$after_head" "$before_head" "gacp dry-run keeps HEAD"
+
+out="$(cd "$repo" && "$GACP" --no-push -m "local commit")"
+assert_contains "$out" "committed without push: local commit" "gacp can commit without push"
+last_subject="$(git -C "$repo" log -1 --format=%s)"
+assert_eq "$last_subject" "local commit" "gacp writes commit message"
+
+repo="$(new_repo)"
+printf "staged\n" >"$repo/staged.txt"
+printf "unstaged\n" >"$repo/unstaged.txt"
+git -C "$repo" add staged.txt
+out="$(cd "$repo" && "$GACP" --staged-only --no-push -m "staged only")"
+assert_contains "$out" "committed without push" "gacp --staged-only commits successfully"
+assert_contains "$(git -C "$repo" show --name-only --format= HEAD)" "staged.txt" \
+  "gacp --staged-only includes the existing index"
+assert_not_contains "$(git -C "$repo" show --name-only --format= HEAD)" "unstaged.txt" \
+  "gacp --staged-only excludes unstaged paths"
+if [[ -f "$repo/unstaged.txt" ]]; then
+  ok "gacp --staged-only leaves unstaged work in place"
+else
+  err "gacp --staged-only removed unstaged work"
+fi
+
+remote="$(mktemp -d /tmp/gacp-remote.XXXXXX)/origin.git"
+work="$(mktemp -d /tmp/gacp-work.XXXXXX)"
+git init -q --bare -b main "$remote"
+git clone -q "$remote" "$work" 2>/dev/null
+git -C "$work" switch -q -c main
+git -C "$work" config user.name "Test User"
+git -C "$work" config user.email "test@example.com"
+printf "one\n" >"$work/file.txt"
+git -C "$work" add file.txt
+git -C "$work" commit -m "initial" >/dev/null
+git -C "$work" push -q -u origin main
+printf "two\n" >>"$work/file.txt"
+out="$(cd "$work" && "$GACP" -m "push commit")"
+assert_contains "$out" "committed and pushed: push commit" "gacp commits and pushes"
+remote_subject="$(git --git-dir="$remote" log -1 --format=%s main)"
+assert_eq "$remote_subject" "push commit" "gacp updates remote branch"
+
+repo="$(new_repo)"
+set +e
+out="$(cd "$repo" && "$GACP" -m "nothing to do" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 4 ]]; then ok "gacp clean tree -> exit 4"; else err "gacp clean tree: expected exit 4, got $rc: $out"; fi
+
+repo="$(new_repo)"
+git -C "$repo" switch -q --detach HEAD
+printf "detached\n" >>"$repo/file.txt"
+set +e
+out="$(cd "$repo" && "$GACP" -m "from detached" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 5 ]]; then ok "gacp detached HEAD with push -> exit 5"; else err "gacp detached HEAD: expected exit 5, got $rc: $out"; fi
+
+# --- status summary ---
+repo="$(new_repo)"
+printf "dirty\n" >>"$repo/file.txt"
+printf "new\n" >"$repo/new.txt"
+out="$(cd "$repo" && "$STATUS")"
+assert_contains "$out" "branch:    main" "status summary shows branch"
+assert_contains "$out" "changed:   2" "status summary counts changed files"
+assert_contains "$out" "unstaged:  1" "status summary counts unstaged files"
+assert_contains "$out" "untracked: 1" "status summary counts untracked files"
+
+out="$(cd "$repo" && "$STATUS" --porcelain)"
+assert_contains "$out" $'branch\tmain' "status --porcelain emits a stable branch field"
+assert_contains "$out" $'changed\t2' "status --porcelain emits numeric counts"
+assert_not_contains "$out" "Repository status:" "status --porcelain omits presentation text"
+
+if (cd "$repo" && "$WHO" --expect-email test@example.com >/dev/null); then
+  ok "git_whoami accepts an expected effective email"
+else
+  err "git_whoami rejected the configured effective email"
+fi
+set +e
+out="$(cd "$repo" && "$WHO" --expect-email wrong@example.com 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "1" "git_whoami mismatched expected email -> exit 1"
+assert_contains "$out" "not in the expected set" "git_whoami explains an identity mismatch"
+
+# --- cleanup merged branches ---
+repo="$(new_repo)"
+git -C "$repo" switch -q -c merged-feature
+printf "merged\n" >>"$repo/file.txt"
+git -C "$repo" add file.txt
+git -C "$repo" commit -m "merged feature" >/dev/null
+git -C "$repo" switch -q main
+git -C "$repo" merge -q --ff-only merged-feature
+git -C "$repo" switch -q -c unmerged-feature
+printf "unmerged\n" >"$repo/unmerged.txt"
+git -C "$repo" add unmerged.txt
+git -C "$repo" commit -m "unmerged feature" >/dev/null
+git -C "$repo" switch -q main
+
+out="$(cd "$repo" && "$CLEANUP" --dry-run --base main)"
+assert_contains "$out" "dry-run: would delete branch: merged-feature" "cleanup dry-run previews merged branch"
+if git -C "$repo" show-ref --verify --quiet refs/heads/merged-feature; then ok "cleanup dry-run keeps merged branch"; else err "cleanup dry-run deleted merged branch"; fi
+
+out="$(cd "$repo" && "$CLEANUP" --base main)"
+assert_contains "$out" "deleted 1 merged local branch(es)" "cleanup deletes merged branch"
+if ! git -C "$repo" show-ref --verify --quiet refs/heads/merged-feature; then ok "cleanup removed merged branch"; else err "cleanup did not remove merged branch"; fi
+if git -C "$repo" show-ref --verify --quiet refs/heads/unmerged-feature; then ok "cleanup keeps unmerged branch"; else err "cleanup removed unmerged branch"; fi
+
+repo="$(new_repo)"
+git -C "$repo" branch feature-delete
+git -C "$repo" branch feature-keep
+git -C "$repo" branch unrelated-merged
+out="$(cd "$repo" && "$CLEANUP" --dry-run --base main \
+  --include 'feature-*' --exclude '*-keep')"
+assert_contains "$out" "feature-delete" "cleanup include filter selects matching branch"
+assert_not_contains "$out" "feature-keep" "cleanup exclude filter wins over include"
+assert_not_contains "$out" "unrelated-merged" "cleanup include filter skips non-matches"
+(cd "$repo" && "$CLEANUP" --base main --include 'feature-*' --exclude '*-keep') >/dev/null
+if ! git -C "$repo" show-ref --verify --quiet refs/heads/feature-delete; then
+  ok "cleanup filters apply to real deletion"
+else
+  err "cleanup filtered deletion left the selected branch"
+fi
+if git -C "$repo" show-ref --verify --quiet refs/heads/feature-keep; then
+  ok "cleanup filtered deletion preserves excluded branch"
+else
+  err "cleanup filtered deletion removed excluded branch"
+fi
+
+# --- recent branches ---
+repo="$(new_repo)"
+git -C "$repo" switch -q -c alpha
+printf "alpha\n" >"$repo/alpha.txt"
+git -C "$repo" add alpha.txt
+git -C "$repo" commit -m "alpha branch" >/dev/null
+git -C "$repo" switch -q main
+git -C "$repo" switch -q -c beta
+printf "beta\n" >"$repo/beta.txt"
+git -C "$repo" add beta.txt
+git -C "$repo" commit -m "beta branch" >/dev/null
+
+out="$(cd "$repo" && "$RECENT" --limit 2)"
+assert_contains "$out" "Recent local branches:" "recent branches prints header"
+assert_contains "$out" "beta" "recent branches includes beta"
+out="$(cd "$repo" && "$RECENT" --limit 2 --names-only)"
+assert_contains "$out" "beta" "recent --names-only includes branch names"
+assert_not_contains "$out" "Recent local branches:" "recent --names-only omits the human header"
+assert_not_contains "$out" "beta branch" "recent --names-only omits commit subjects"
+git -C "$repo" branch 'feat|pipe'
+out="$(cd "$repo" && "$RECENT" --limit 10 --names-only)"
+assert_contains "$out" "feat|pipe" "recent --names-only preserves pipe characters in refs"
+out="$(cd "$repo" && "$RECENT" --switch 2)"
+assert_contains "$out" "switched to" "recent branches can switch by index"
+
+# --- sync default branch with local bare remote ---
+remote="$(mktemp -d /tmp/git-script-remote.XXXXXX)/origin.git"
+seed="$(mktemp -d /tmp/git-script-seed.XXXXXX)"
+work="$(mktemp -d /tmp/git-script-work.XXXXXX)"
+updater="$(mktemp -d /tmp/git-script-updater.XXXXXX)"
+git init -q --bare -b main "$remote"
+git init -q -b main "$seed"
+git -C "$seed" config user.name "Test User"
+git -C "$seed" config user.email "test@example.com"
+printf "one\n" >"$seed/file.txt"
+git -C "$seed" add file.txt
+git -C "$seed" commit -m "one" >/dev/null
+git -C "$seed" remote add origin "$remote"
+git -C "$seed" push -q -u origin main
+git -C "$remote" symbolic-ref HEAD refs/heads/main
+git clone -q --branch main "$remote" "$work"
+git clone -q --branch main "$remote" "$updater"
+git -C "$work" config user.name "Test User"
+git -C "$work" config user.email "test@example.com"
+git -C "$updater" config user.name "Test User"
+git -C "$updater" config user.email "test@example.com"
+printf "two\n" >>"$updater/file.txt"
+git -C "$updater" add file.txt
+git -C "$updater" commit -m "two" >/dev/null
+git -C "$updater" push -q origin main
+
+before_head="$(git -C "$work" rev-parse HEAD)"
+out="$(cd "$work" && "$SYNC" --dry-run --branch main)"
+assert_contains "$out" "dry-run: would run: git fetch origin main" "sync dry-run previews fetch"
+after_dry_head="$(git -C "$work" rev-parse HEAD)"
+assert_eq "$after_dry_head" "$before_head" "sync dry-run keeps HEAD"
+
+out="$(cd "$work" && "$SYNC" --branch main)"
+assert_contains "$out" "synced main with origin/main" "sync fast-forwards default branch"
+after_sync_head="$(git -C "$work" rev-parse HEAD)"
+remote_head="$(git -C "$updater" rev-parse HEAD)"
+assert_eq "$after_sync_head" "$remote_head" "sync updates HEAD to remote"
+
+git -C "$work" switch -q -c local-feature
+printf "three\n" >>"$updater/file.txt"
+git -C "$updater" add file.txt
+git -C "$updater" commit -m "three" >/dev/null
+git -C "$updater" push -q origin main
+out="$(cd "$work" && "$SYNC" --branch main --restore)"
+assert_contains "$out" "restored local-feature" "sync --restore reports the original branch"
+assert_eq "$(git -C "$work" branch --show-current)" "local-feature" \
+  "sync --restore returns to the original branch"
+assert_eq "$(git -C "$work" rev-parse main)" "$(git -C "$updater" rev-parse main)" \
+  "sync --restore still updates the default branch"
+
+# A failed fast-forward happens after the helper has switched to main. The
+# restoration promise matters most on this path: an automation failure should
+# not also strand the operator on a different branch.
+git -C "$work" switch -q main
+printf "local divergence\n" >"$work/local-divergence.txt"
+git -C "$work" add local-divergence.txt
+git -C "$work" commit -m "local divergence" >/dev/null
+git -C "$work" switch -q local-feature
+printf "remote divergence\n" >"$updater/remote-divergence.txt"
+git -C "$updater" add remote-divergence.txt
+git -C "$updater" commit -m "remote divergence" >/dev/null
+git -C "$updater" push -q origin main
+set +e
+out="$(cd "$work" && "$SYNC" --branch main --restore 2>&1)"
+rc=$?
+set -e
+if (( rc != 0 )); then
+  ok "sync --restore preserves the fast-forward failure"
+else
+  err "sync --restore unexpectedly accepted divergent main history"
+fi
+assert_contains "$out" "restored local-feature" \
+  "sync --restore reports restoration after a failed update"
+assert_eq "$(git -C "$work" branch --show-current)" "local-feature" \
+  "sync --restore returns to the original branch after a failed update"
+
+# --- repo root ---
+repo="$(new_repo)"
+mkdir -p "$repo/nested/dir"
+got="$(cd "$repo/nested/dir" && "$ROOT")"
+assert_eq "$got" "$repo" "git_repo_root prints toplevel from subdirectory"
+got="$(cd "$repo/nested/dir" && "$ROOT" --git-dir)"
+assert_eq "$got" "$repo/.git" "git_repo_root --git-dir prints absolute metadata path"
+
+# --- diff branch ---
+repo="$(new_repo)"
+git -C "$repo" switch -q -c feature
+printf "extra\n" >"$repo/feature.txt"
+git -C "$repo" add feature.txt
+git -C "$repo" commit -m "feature commit" >/dev/null
+out="$(cd "$repo" && "$DIFFBR" --stat --base main)"
+assert_contains "$out" "feature.txt" "git_diff_branch shows new file in stat"
+printf "local only\n" >"$repo/local.txt"
+out="$(cd "$repo" && "$DIFFBR" --stat --base main)"
+assert_not_contains "$out" "local.txt" "git_diff_branch default excludes uncommitted work"
+git -C "$repo" add local.txt
+out="$(cd "$repo" && "$DIFFBR" --stat --base main --working-tree)"
+assert_contains "$out" "local.txt" "git_diff_branch --working-tree includes staged work"
+
+# --- undo last commit ---
+repo="$(new_repo)"
+printf "second\n" >>"$repo/file.txt"
+git -C "$repo" add file.txt
+git -C "$repo" commit -m "second commit" >/dev/null
+parent="$(git -C "$repo" rev-parse HEAD~1)"
+before_undo="$(git -C "$repo" rev-parse HEAD)"
+out="$(cd "$repo" && "$UNDO" --dry-run)"
+assert_contains "$out" "git reset --soft HEAD~1" "undo dry-run shows soft reset"
+after_dry="$(git -C "$repo" rev-parse HEAD)"
+assert_eq "$after_dry" "$before_undo" "undo dry-run keeps HEAD"
+(cd "$repo" && "$UNDO") >/dev/null
+after_undo="$(git -C "$repo" rev-parse HEAD)"
+assert_eq "$after_undo" "$parent" "undo soft moves HEAD to parent"
+
+repo="$(new_repo)"
+set +e
+out="$(cd "$repo" && "$UNDO" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 4 ]]; then ok "undo with single commit -> exit 4"; else err "undo single commit: expected exit 4, got $rc: $out"; fi
+
+repo="$(new_repo)"
+printf "second\n" >>"$repo/file.txt"
+git -C "$repo" add file.txt
+git -C "$repo" commit -m "second commit" >/dev/null
+out="$(cd "$repo" && "$UNDO" --revert)"
+assert_contains "$out" "history-preserving" "undo --revert reports safe history behavior"
+assert_eq "$(git -C "$repo" rev-list --count HEAD)" "3" \
+  "undo --revert creates a new commit instead of rewriting history"
+assert_eq "$(cat "$repo/file.txt")" "initial" "undo --revert restores the previous tree"
+
+printf "dirty\n" >>"$repo/file.txt"
+set +e
+out="$(cd "$repo" && "$UNDO" --revert 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "4" "undo --revert refuses a dirty tree -> exit 4"
+
+# --- amend last ---
+repo="$(new_repo)"
+printf "amendment\n" >>"$repo/file.txt"
+(cd "$repo" && "$AMEND" --add-all) >/dev/null
+count="$(git -C "$repo" rev-list --count HEAD)"
+assert_eq "$count" "1" "amend keeps single commit"
+last_line="$(git -C "$repo" show -s --format=%B HEAD | head -1)"
+assert_eq "$last_line" "initial commit" "amend preserves commit message"
+assert_contains "$(git -C "$repo" show --stat HEAD)" "file.txt" "amend includes file change"
+
+repo="$(new_repo)"
+set +e
+out="$(cd "$repo" && "$AMEND" 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 4 ]]; then ok "amend without staged changes -> exit 4"; else err "amend empty: expected exit 4, got $rc: $out"; fi
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$AMEND" --message "renamed initial commit")"
+assert_contains "$out" "message updated" "amend --message reports the changed subject"
+assert_eq "$(git -C "$repo" log -1 --format=%s)" "renamed initial commit" \
+  "amend --message updates a commit without requiring staged changes"
+assert_eq "$(git -C "$repo" rev-list --count HEAD)" "1" \
+  "amend --message keeps history length unchanged"
+
+# --- prune gone filters ---
+repo="$(new_repo)"
+remote="$(mktemp -d /tmp/git-prune-remote.XXXXXX)/origin.git"
+git init -q --bare -b main "$remote"
+git -C "$repo" remote add origin "$remote"
+git -C "$repo" push -q -u origin main
+for branch in gone-delete gone-keep; do
+  git -C "$repo" switch -q -c "$branch" main
+  git -C "$repo" push -q -u origin "$branch"
+done
+git -C "$repo" switch -q main
+git --git-dir="$remote" update-ref -d refs/heads/gone-delete
+git --git-dir="$remote" update-ref -d refs/heads/gone-keep
+git -C "$repo" fetch -q --prune origin
+
+# A plain dry-run must not fetch. Advance origin/main from another clone so a
+# fetch would visibly rewrite this repository's remote-tracking ref.
+prune_updater="$(mktemp -d /tmp/git-prune-updater.XXXXXX)"
+git clone -q --branch main "$remote" "$prune_updater"
+git -C "$prune_updater" config user.name "Test User"
+git -C "$prune_updater" config user.email "test@example.com"
+printf "remote update\n" >"$prune_updater/remote-update.txt"
+git -C "$prune_updater" add remote-update.txt
+git -C "$prune_updater" commit -m "remote update" >/dev/null
+git -C "$prune_updater" push -q origin main
+tracking_before="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
+out="$(cd "$repo" && "$PRUNE" --dry-run)"
+assert_contains "$out" "no remote-tracking refs were changed" \
+  "prune plain dry-run reports its no-fetch contract"
+tracking_after="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
+assert_eq "$tracking_after" "$tracking_before" \
+  "prune plain dry-run leaves the remote-tracking ref SHA unchanged"
+
+out="$(cd "$repo" && "$PRUNE" --no-fetch --dry-run \
+  --include 'gone-*' --exclude '*-keep')"
+assert_contains "$out" "gone-delete" "prune include filter selects a gone branch"
+assert_not_contains "$out" "gone-keep" "prune exclude filter preserves a gone branch"
+(cd "$repo" && "$PRUNE" --no-fetch --include 'gone-*' --exclude '*-keep') >/dev/null
+if ! git -C "$repo" show-ref --verify --quiet refs/heads/gone-delete; then
+  ok "prune filters apply to real deletion"
+else
+  err "prune filtered deletion left the selected branch"
+fi
+if git -C "$repo" show-ref --verify --quiet refs/heads/gone-keep; then
+  ok "prune filtered deletion preserves excluded branch"
+else
+  err "prune filtered deletion removed excluded branch"
+fi
+
+# --- stale branch state filter ---
+repo="$(new_repo)"
+git -C "$repo" branch old-merged
+git -C "$repo" switch -q -c old-unmerged
+printf "unmerged\n" >"$repo/unmerged.txt"
+git -C "$repo" add unmerged.txt
+git -C "$repo" commit -m "unmerged work" >/dev/null
+git -C "$repo" switch -q main
+out="$(cd "$repo" && "$STALE" --days 0 --state unmerged)"
+assert_contains "$out" "old-unmerged" "stale --state selects the requested state"
+assert_not_contains "$out" "old-merged" "stale --state omits other branch states"
+
+set +e
+out="$(cd "$repo" && "$STALE" --days 0 --state impossible 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "3" "stale rejects an invalid state -> exit 3"
+
+# --- size report ref scope ---
+repo="$(new_repo)"
+git -C "$repo" switch -q -c big-history
+head -c 4096 /dev/zero >"$repo/only-big.bin"
+git -C "$repo" add only-big.bin
+git -C "$repo" commit -m "large branch object" >/dev/null
+git -C "$repo" switch -q main
+out="$(cd "$repo" && "$SIZE" --threshold 1000 --ref main)"
+assert_not_contains "$out" "only-big.bin" "size --ref excludes unreachable branch history"
+out="$(cd "$repo" && "$SIZE" --threshold 1000 --ref big-history)"
+assert_contains "$out" "only-big.bin" "size --ref includes objects reachable from the ref"
+set +e
+out="$(cd "$repo" && "$SIZE" --ref does-not-exist 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "4" "size missing ref -> exit 4"
+
+out="$(cd "$repo" && "$SIZE" --fast)"
+assert_contains "$out" "on disk" "size --fast still prints on-disk totals"
+assert_contains "$out" "skipping the history walk" "size --fast skips the history walk"
+assert_not_contains "$out" "largest objects in history" "size --fast does not walk history"
+
+# --- quiet doctor mode ---
+repo="$(new_repo)"
+set +e
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --quiet \
+  --url git@example.com:owner/repo.git 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "0" "remote doctor --quiet preserves a healthy exit code"
+assert_eq "$out" "" "remote doctor --quiet suppresses its report"
+
+empty_ssh="$(mktemp -d /tmp/git-doctor-ssh.XXXXXX)"
+set +e
+out="$(cd "$repo" && "$SSH_DOCTOR" --quiet --ssh-dir "$empty_ssh" \
+  --host example.invalid 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "1" "ssh doctor --quiet preserves a failed verdict"
+assert_eq "$out" "" "ssh doctor --quiet suppresses its report"
+
+set +e
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --quiet 2>&1)"
+rc=$?
+set -e
+if [[ "$rc" -eq 0 || "$rc" -eq 1 ]]; then
+  ok "signing doctor --quiet preserves a diagnostic verdict"
+else
+  err "signing doctor --quiet returned unexpected exit $rc"
+fi
+assert_eq "$out" "" "signing doctor --quiet suppresses its report"
+
+# --- templates model the new automation controls ---
+empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
+out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"
+if printf '%s' "$out" | python3 -c \
+  'import json, sys; d=json.load(sys.stdin); assert d["target"] == "definitely-missing"; assert d["has_problems"] is True'; then
+  ok "Python helper template emits valid structured JSON"
+else
+  err "Python helper template JSON is invalid: $out"
+fi
+
+out="$("$BASH_TEMPLATE" --quiet)"
+assert_eq "$out" "" "Bash template --quiet suppresses successful informational output"
+out="$("$BASH_TEMPLATE" --quiet --dry-run)"
+assert_contains "$out" "dry-run: would run" "Bash template quiet dry-run still shows planned changes"
+
+# --- git_hooks_install.sh ---
+# The hook must judge the *staged blob*, never the working tree. The first
+# version of it read the working tree, which failed in both directions: a
+# private key staged and then deleted from disk was committed, and a clean
+# staged file whose worktree copy had since gained a conflict marker was
+# blocked. Both are asserted below because neither is caught by any check that
+# only ever stages and commits in one step.
+commit_rc() {
+  local repo="$1" msg="$2" rc
+  set +e
+  git -C "$repo" commit -q -m "$msg" >/dev/null 2>&1
+  rc=$?
+  set -e
+  printf '%s\n' "$rc"
+}
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install 2>&1)"
+assert_contains "$out" "installed pre-commit hook" "hooks install reports success"
+if [[ -x "$repo/.git/hooks/pre-commit" ]]; then
+  ok "hooks install wrote an executable hook"
+else
+  err "hooks install left no executable hook"
+fi
+
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "installed and current" "hooks status reports current"
+
+# The hook body must survive the installer going away, which is the reason it
+# is embedded rather than copied from a path on disk.
+assert_not_contains "$(cat "$repo/.git/hooks/pre-commit")" "$HOOKS" \
+  "the installed hook does not reference the installer's path"
+
+printf 'a\n<<<<<<< HEAD\n' >"$repo/bad.txt"
+git -C "$repo" add bad.txt
+assert_eq "$(commit_rc "$repo" "marker")" "1" "staged conflict marker is refused"
+git -C "$repo" reset -q; rm -f "$repo/bad.txt"
+
+# Prose is not a conflict. A hook with false positives gets --no-verify'd once
+# and then never runs again, so this matters as much as the catch above.
+printf 'use <<< for here-strings, and <<<<<<<<<<< as a rule\n' >"$repo/prose.txt"
+git -C "$repo" add prose.txt
+assert_eq "$(commit_rc "$repo" "prose")" "0" "prose containing <<< is allowed"
+
+# Staged, then removed from disk: the working tree cannot answer this.
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nx\n' >"$repo/leak.pem"
+git -C "$repo" add leak.pem
+rm -f "$repo/leak.pem"
+assert_eq "$(commit_rc "$repo" "key")" "1" "a staged private key is refused even with no file on disk"
+git -C "$repo" reset -q
+
+# Clean in the index, dirty in the working tree: must not block.
+printf 'clean\n' >"$repo/notes.txt"
+git -C "$repo" add notes.txt
+printf 'clean\n<<<<<<< HEAD\n' >"$repo/notes.txt"
+assert_eq "$(commit_rc "$repo" "clean index")" "0" "an unstaged conflict marker does not block the commit"
+
+# 2 MB, comfortably over the 1024 KB default.
+head -c 2000000 /dev/zero >"$repo/big.bin"
+git -C "$repo" add big.bin
+assert_eq "$(commit_rc "$repo" "big")" "1" "a staged file over --max-size is refused"
+out="$(cd "$repo" && "$HOOKS" install --force --max-size 4096 2>&1)"
+assert_contains "$out" "max-size 4096" "--max-size is reflected in the installed hook"
+assert_eq "$(commit_rc "$repo" "big under raised limit")" "0" "the same file passes once --max-size allows it"
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install --token-scan 2>&1)"
+assert_contains "$out" "token-scan enabled" "hooks install reports opt-in token scanning"
+printf 'token=ghp_abcdefghijklmnopqrstuvwxyzABCDEFGHIJ\n' >"$repo/secret.txt"
+git -C "$repo" add secret.txt
+assert_eq "$(commit_rc "$repo" "token")" "1" \
+  "the opt-in hook refuses a staged high-confidence access token"
+git -C "$repo" reset -q
+rm -f "$repo/secret.txt"
+printf 'documentation mentions ghp_example but contains no real-shaped token\n' >"$repo/example.txt"
+git -C "$repo" add example.txt
+assert_eq "$(commit_rc "$repo" "example")" "0" \
+  "the token scan avoids short documentation examples"
+git -C "$repo" reset -q
+printf 'AWS example access key id: AKIAIOSFODNN7EXAMPLE\n' >"$repo/aws-doc.txt"
+git -C "$repo" add aws-doc.txt
+assert_eq "$(commit_rc "$repo" "aws identifier docs")" "0" \
+  "the token scan does not treat an AWS access-key identifier as a secret"
+
+# A hook this script did not write is somebody else's; clobbering it silently
+# would be the worst thing an installer can do.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+chmod +x "$repo/.git/hooks/pre-commit"
+set +e
+out="$(cd "$repo" && "$HOOKS" install 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "1" "install refuses to clobber a foreign hook -> exit 1"
+assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "the foreign hook is left untouched"
+
+(cd "$repo" && "$HOOKS" install --force) >/dev/null
+if [[ -f "$repo/.git/hooks/pre-commit.hooks-install-backup" ]]; then
+  ok "--force backs the foreign hook up"
+else
+  err "--force did not back the foreign hook up"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null
+assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "uninstall restores the backed-up hook"
+
+# The restored hook is now foreign again, so a second uninstall must refuse it
+# rather than delete somebody else's work.
+set +e
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "1" "uninstall refuses to remove a hook it did not install"
+
+repo="$(new_repo)"
+set +e
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "4" "uninstall with nothing installed -> exit 4"
+
+out="$(cd "$repo" && "$HOOKS" install --dry-run 2>&1)"
+assert_contains "$out" "no changes written" "hooks install --dry-run says so"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "install --dry-run wrote a hook"
+else
+  ok "install --dry-run wrote nothing"
+fi
+
+# --- the optional commit-msg hook ---
+# Opt-in, and the default install must stay exactly what it was: a message
+# convention imposed on a repository that did not ask for one is a hook that
+# gets --no-verify'd on its first use and never runs again.
+assert_contains "$("$HOOKS" --help)" "--commit-msg" "--help documents --commit-msg"
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install --commit-msg --dry-run 2>&1)"
+assert_contains "$out" "commit-msg" "install --commit-msg --dry-run previews the second hook"
+assert_contains "$out" "no changes written" "install --commit-msg --dry-run says so"
+if [[ -e "$repo/.git/hooks/commit-msg" ]]; then
+  err "install --commit-msg --dry-run wrote a hook"
+else
+  ok "install --commit-msg --dry-run wrote nothing"
+fi
+
+repo="$(new_repo)"
+(cd "$repo" && "$HOOKS" install) >/dev/null
+if [[ -e "$repo/.git/hooks/commit-msg" ]]; then
+  err "a plain install wrote a commit-msg hook"
+else
+  ok "a plain install leaves commit-msg alone"
+fi
+printf 'not conventional at all\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "whatever I like")" "0" \
+  "without the flag any commit message is accepted"
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS" install --commit-msg 2>&1)"
+assert_contains "$out" "installed commit-msg hook" "install --commit-msg reports the second hook"
+if [[ -x "$repo/.git/hooks/commit-msg" ]]; then
+  ok "install --commit-msg wrote an executable hook"
+else
+  err "install --commit-msg left no executable hook"
+fi
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "pre-commit hook installed and current" "status reports pre-commit"
+assert_contains "$out" "commit-msg hook installed and current" "status reports commit-msg"
+
+printf 'one\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "updated some things")" "1" \
+  "a subject that is not a Conventional Commit is refused"
+assert_eq "$(commit_rc "$repo" "feat(git): add a thing")" "0" \
+  "a conventional subject with a scope is accepted"
+
+printf 'two\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "fix!: a breaking change")" "0" \
+  "the breaking-change marker is accepted"
+
+# Messages git writes itself must pass, or every rebase and merge turns into a
+# fight with the hook.
+printf 'three\n' >>"$repo/file.txt"
+git -C "$repo" add file.txt
+assert_eq "$(commit_rc "$repo" "fixup! feat(git): add a thing")" "0" \
+  "a fixup! message is exempt"
+git -C "$repo" switch -q -c conventional-side
+printf 'side\n' >"$repo/side.txt"
+git -C "$repo" add side.txt
+git -C "$repo" commit -q -m "chore: side work"
+git -C "$repo" switch -q main
+set +e
+git -C "$repo" merge -q --no-ff -m "Merge branch 'conventional-side'" conventional-side >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "$rc" "0" "a merge message is exempt"
+
+out="$(cd "$repo" && "$HOOKS" uninstall 2>&1)"
+assert_contains "$out" "removed the commit-msg hook" "uninstall removes the commit-msg hook"
+if [[ -e "$repo/.git/hooks/commit-msg" || -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "uninstall left a hook behind"
+else
+  ok "uninstall removes both hooks"
+fi
+
+# A foreign commit-msg hook must stop the install before the pre-commit hook is
+# written: a half-installed pair is worse than neither.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/commit-msg"
+chmod +x "$repo/.git/hooks/commit-msg"
+set +e
+out="$(cd "$repo" && "$HOOKS" install --commit-msg 2>&1)"
+rc=$?
+set -e
+assert_eq "$rc" "1" "a foreign commit-msg hook refuses the install -> exit 1"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "the refused install still wrote the pre-commit hook"
+else
+  ok "the refused install wrote nothing"
+fi
+
+if (( failures )); then
+  echo "=== $failures test(s) failed ===" >&2
+  exit 1
+fi
+
+echo "=== all git script (docker) checks passed ==="
