@@ -384,6 +384,4 @@ an issue.
       its tested `chore/routeros-VERSION` bump PR; it still cannot bypass branch
       protection or write directly to `master`.
 - [ ] **Labels.** At minimum `good first issue` and `help wanted` — GitHub
-      surfaces both in its own contributor-facing views, and
-      [`docs/good-first-issues.md`](docs/good-first-issues.md) is a list of
-      candidates waiting to be filed under them.
+      surfaces both in its own contributor-facing views.

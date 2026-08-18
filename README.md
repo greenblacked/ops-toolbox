@@ -738,10 +738,6 @@ chmod +x git/git_my_helper.sh
 The static suite discovers scripts by role, so a new one is checked from its
 first commit without being added to any list.
 
-If you are looking for somewhere to start,
-[`docs/good-first-issues.md`](docs/good-first-issues.md) lists small tasks that
-each name the file to change and how to check the result.
-
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and what changed when in
