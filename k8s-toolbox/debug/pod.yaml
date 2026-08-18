@@ -1,0 +1,50 @@
+---
+# A long-running debug toolbox pod to exec into.
+#
+# This directory does not pass the restricted Pod Security Standard.
+# tcpdump and ping need NET_RAW/NET_ADMIN; strace and ltrace need
+# SYS_PTRACE. Copy examples/ when you want restricted; copy this when
+# you need those tools to actually work.
+#
+# Delete it when you are done: `kubectl delete pod k8s-toolbox-debug`.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-toolbox-debug
+  labels:
+    app: k8s-toolbox-debug
+spec:
+  restartPolicy: Always
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: toolbox
+      image: k8s-toolbox:debug
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-lc", "sleep infinity"]
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop:
+            - ALL
+          add:
+            - NET_RAW
+            - NET_ADMIN
+            - SYS_PTRACE
+        seccompProfile:
+          type: RuntimeDefault
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi

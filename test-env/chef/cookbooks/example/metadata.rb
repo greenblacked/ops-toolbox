@@ -1,0 +1,7 @@
+name             "example"
+maintainer       "test-env"
+maintainer_email "none@local"
+license          "Apache-2.0"
+description      "Minimal cookbook to validate Test Kitchen wiring"
+version          "0.1.0"
+chef_version     ">= 16.0"

@@ -1,0 +1,56 @@
+---
+# A long-running toolbox pod to exec into.
+#
+# Written to pass the *restricted* Pod Security Standard as-is, because this is
+# the file people copy: a namespace labelled
+# `pod-security.kubernetes.io/enforce=restricted` will admit it unchanged. The
+# service-account token is not mounted — a shell that can reach the API server
+# with the namespace default service account is a bigger hole than the debugging
+# it was opened for. Add one back deliberately if you need `kubectl` from inside.
+#
+# Delete it when you are done: `kubectl delete pod k8s-toolbox`.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: k8s-toolbox
+  labels:
+    app: k8s-toolbox
+spec:
+  restartPolicy: Always
+  automountServiceAccountToken: false
+  # Applies to every container, so a container that forgets its own
+  # securityContext still lands non-root with the default seccomp profile.
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: toolbox
+      image: k8s-toolbox:local
+      imagePullPolicy: IfNotPresent
+      command: ["bash", "-lc", "sleep infinity"]
+      securityContext:
+        runAsNonRoot: true
+        allowPrivilegeEscalation: false
+        # readOnlyRootFilesystem is deliberately left at its default. gcloud
+        # writes to its config directory on first use, and a toolbox that
+        # cannot run `gcloud auth` is not a toolbox. Mount an emptyDir over
+        # ~/.config and turn it on if your policy requires it.
+        readOnlyRootFilesystem: false
+        capabilities:
+          drop:
+            - ALL
+        seccompProfile:
+          type: RuntimeDefault
+      # An idle debugging pod with no limits is the one most likely to be
+      # evicted, and the one least likely to be noticed doing it.
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi

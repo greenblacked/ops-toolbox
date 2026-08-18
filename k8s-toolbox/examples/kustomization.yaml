@@ -1,0 +1,32 @@
+---
+# Retag the examples without editing them.
+#
+# The manifests name `k8s-toolbox:local`, which only exists on a machine that
+# ran build.sh. Pushing to a registry gives it a different name, and the answer
+# to that is not a sed one-liner in a runbook: point `newName`/`newTag` at your
+# image and apply this directory instead.
+#
+#   kustomize edit set image k8s-toolbox:local=REGISTRY/k8s-toolbox:1.2.3
+#   kubectl apply -k k8s-toolbox/examples/
+#
+# `kubectl apply -k` uses the kustomize built into kubectl; the standalone
+# binary in the image is the same tool and is pinned in versions.env.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - pod.yaml
+  - job.yaml
+
+images:
+  - name: k8s-toolbox:local
+    newName: k8s-toolbox
+    newTag: local
+
+# `labels`, not the older `commonLabels`, which kustomize 5 deprecated. Job
+# selectors are generated and immutable, so this must not write into them.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/name: k8s-toolbox
+      app.kubernetes.io/component: debug

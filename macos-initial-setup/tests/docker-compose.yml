@@ -1,0 +1,24 @@
+# Static + portable tests for macos-initial-setup (bash -n, shellcheck, --help, Linux preflight, zsh).
+# From repo root or this directory:
+#
+#   docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm tester
+#
+# or: ./macos-initial-setup/tests/run.sh
+
+name: pretty-useful-macos-setup
+
+services:
+  tester:
+    build:
+      context: ./tester
+      dockerfile: Dockerfile
+    image: pretty-useful-macos-setup-tester:1
+    container_name: pretty-useful-macos-setup-tester
+    environment:
+      REPO_ROOT: /repo
+    volumes:
+      - ../../:/repo:ro
+    working_dir: /repo
+    command:
+      - /bin/bash
+      - /repo/macos-initial-setup/tests/test_macos_initial_setup.sh

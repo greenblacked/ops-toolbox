@@ -1,0 +1,8 @@
+# Example Brewfile for forks — copy to Brewfile and run:
+#   brew bundle install [--file=Brewfile]
+# Or: brew bundle dump --file=Brewfile --force  (to capture current machine)
+#
+# tap "homebrew/cask"
+# brew "jq"
+# brew "ripgrep"
+# cask "visual-studio-code"

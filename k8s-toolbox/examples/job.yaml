@@ -1,0 +1,59 @@
+---
+# A one-off job that prints the toolchain versions baked into the image.
+#
+# Useful as a smoke test after pushing a new tag to a registry: it proves the
+# image runs on the cluster's nodes and that every CLI is on PATH, without
+# leaving anything behind. Same restricted Pod Security posture as pod.yaml.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: k8s-toolbox-job
+spec:
+  backoffLimit: 0
+  # Without this the failed pods of a job hang around indefinitely; an hour is
+  # long enough to read the logs and short enough to forget about.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: k8s-toolbox
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: toolbox
+          image: k8s-toolbox:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - bash
+            - -lc
+            - |
+              set -euo pipefail
+              echo "kubectl:"   && kubectl version --client=true -o yaml
+              echo "helm:"      && helm version --short
+              echo "kustomize:" && kustomize version
+              echo "yq:"        && yq --version
+              echo "gcloud:"    && gcloud --version | head -n 5
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi

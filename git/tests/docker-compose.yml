@@ -1,0 +1,26 @@
+# Static and behavior tests for git helper scripts.
+# From repo root:
+#
+#   ./git/tests/run.sh
+#
+# or:
+#
+#   docker compose -f git/tests/docker-compose.yml run --rm tester
+
+name: pretty-useful-git-scripts
+
+services:
+  tester:
+    build:
+      context: ./tester
+      dockerfile: Dockerfile
+    image: pretty-useful-git-scripts-tester:1
+    container_name: pretty-useful-git-scripts-tester
+    environment:
+      REPO_ROOT: /repo
+    volumes:
+      - ../../:/repo:ro
+    working_dir: /repo
+    command:
+      - /bin/bash
+      - /repo/git/tests/test_git_scripts.sh

@@ -1,0 +1,15 @@
+---
+extends: default
+
+rules:
+  line-length:
+    max: 140
+    level: warning
+  document-start: disable
+  truthy:
+    check-keys: false
+
+ignore: |
+  .kitchen/
+  vendor/
+  cookbooks/*/Berksfile.lock

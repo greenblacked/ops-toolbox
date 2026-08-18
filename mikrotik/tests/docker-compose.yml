@@ -1,0 +1,62 @@
+# Pinned RouterOS CHR in QEMU + a test runner that talks to it on the Docker network.
+# Run from anywhere with:
+#
+#   docker compose --env-file mikrotik/tests/routeros-version.env \
+#     -f mikrotik/tests/docker-compose.yml run --rm tester
+#
+# or use ./mikrotik/tests/run.sh which adds log capture and cleanup.
+
+name: pretty-useful-mikrotik
+
+services:
+  chr:
+    build:
+      context: ./chr
+      dockerfile: Dockerfile
+      args:
+        ROUTEROS_VERSION: "${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}"
+        # Required, like the version: every documented entry point either goes
+        # through run.sh or sources routeros-version.env, and both carry it.
+        ROUTEROS_SHA256: "${ROUTEROS_SHA256:?run through mikrotik/tests/run.sh}"
+    image: pretty-useful-mikrotik-chr:${ROUTEROS_VERSION:?run through mikrotik/tests/run.sh}
+    container_name: pretty-useful-mikrotik-chr
+    platform: linux/amd64
+    restart: "no"
+    # Bind only to localhost on the host so a developer machine doesn't expose CHR.
+    ports:
+      - "127.0.0.1:8728:8728"
+      - "127.0.0.1:2222:22"
+      - "127.0.0.1:8080:80"
+    # Hardware acceleration lives in docker-compose.kvm.yml, which run.sh
+    # layers on when the host has a usable /dev/kvm. It is kept out of this
+    # file because compose fails hard on a device that does not exist, which
+    # would break every macOS and Docker Desktop developer.
+    healthcheck:
+      test: ["CMD", "nc", "-z", "-w", "1", "127.0.0.1", "8728"]
+      interval: 5s
+      timeout: 3s
+      retries: 240          # 240 * 5s = up to 20 min, covers TCG-on-Rosetta first boot
+      start_period: 30s
+
+  tester:
+    build:
+      context: ./
+      dockerfile: tester/Dockerfile
+    image: pretty-useful-mikrotik-tester:1
+    container_name: pretty-useful-mikrotik-tester
+    depends_on:
+      chr:
+        condition: service_healthy
+    environment:
+      ROUTEROS_HOST: "chr"
+      ROUTEROS_PORT: "8728"
+      ROUTEROS_USER: "${ROUTEROS_USER:-admin}"
+      ROUTEROS_PASSWORD: "${ROUTEROS_PASSWORD:-}"
+      ROUTEROS_WAIT_SEC: "${ROUTEROS_WAIT_SEC:-180}"
+      EXPECT_ROUTEROS_VERSION: "${EXPECT_ROUTEROS_VERSION:-${ROUTEROS_VERSION:?set ROUTEROS_VERSION}}"
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      # Repo root is mounted read-only; tests read scripts from it.
+      - ../../:/repo:ro
+    working_dir: /repo

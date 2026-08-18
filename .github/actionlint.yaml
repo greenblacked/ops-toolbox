@@ -1,0 +1,8 @@
+# GitHub expands ${{ ... }} expressions before a run block reaches the shell.
+# Quoting those substitutions is intentional, but ShellCheck sees only the
+# generated shell fragment and reports SC2016 at info severity. Keep every
+# other actionlint/ShellCheck finding active.
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      - 'shellcheck reported issue in this script: SC2016:info:.+'

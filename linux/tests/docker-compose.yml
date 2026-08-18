@@ -1,0 +1,62 @@
+# The linux/ scripts target the same OS the container runs, so these tests
+# execute them rather than only parsing them — behavioural coverage the macOS
+# suite structurally cannot have.
+#
+# Three services, one per package manager. run.sh starts only `debian` by
+# default so the suite stays fast enough for the default selection; set
+# LINUX_DISTROS=all to add fedora and arch.
+
+name: pretty-useful-linux-scripts
+
+services:
+  debian:
+    build:
+      context: ./tester
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: "debian:bookworm-slim"
+    image: pretty-useful-linux-tester-debian:1
+    container_name: pretty-useful-linux-debian
+    environment:
+      REPO_ROOT: /repo
+      EXPECT_PKG_MGR: apt
+    volumes:
+      - ../../:/repo:ro
+    working_dir: /repo
+    command: ["/bin/bash", "/repo/linux/tests/test_linux_scripts.sh"]
+
+  fedora:
+    build:
+      context: ./tester
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: "fedora:41"
+    image: pretty-useful-linux-tester-fedora:1
+    container_name: pretty-useful-linux-fedora
+    environment:
+      REPO_ROOT: /repo
+      EXPECT_PKG_MGR: dnf
+    volumes:
+      - ../../:/repo:ro
+    working_dir: /repo
+    command: ["/bin/bash", "/repo/linux/tests/test_linux_scripts.sh"]
+
+  arch:
+    platform: linux/amd64
+    build:
+      context: ./tester
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: "archlinux:base@sha256:b0deabeb3d283da2c7f7dbf0eea051b7b2cd0554e0b737cc457fd21683bdcdd1"
+    image: pretty-useful-linux-tester-arch:1
+    container_name: pretty-useful-linux-arch
+    environment:
+      REPO_ROOT: /repo
+      EXPECT_PKG_MGR: pacman
+      # systemd-analyze cannot inspect amd64 executables under OrbStack's
+      # Apple Silicon emulation; Fedora still tests the real validator path.
+      SYSTEMD_ANALYZE_CMD: systemd-analyze-disabled-under-emulation
+    volumes:
+      - ../../:/repo:ro
+    working_dir: /repo
+    command: ["/bin/bash", "/repo/linux/tests/test_linux_scripts.sh"]
