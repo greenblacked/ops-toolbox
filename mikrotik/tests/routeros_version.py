@@ -29,9 +29,14 @@ DOCUMENTATION_FILES = (
 )
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# The bracket holds every channel the release currently sits in, not one. A
+# release is promoted through them over time, so 7.24 was published as
+# "RouterOS 7.24 [stable, testing, development]" and this pattern — which
+# demanded a single token — failed the whole workflow at its first step.
+# Capture the list and check membership rather than equality.
 RSS_TITLE_RE = re.compile(
     r"^RouterOS (?P<version>[0-9]+\.[0-9]+(?:\.[0-9]+)?) "
-    r"\[(?P<channel>stable|long-term)\]$"
+    r"\[(?P<channels>[a-z][a-z0-9 ,-]*)\]$"
 )
 
 
@@ -140,9 +145,10 @@ def parse_release_feed(payload: bytes, channel: str) -> str:
     match = RSS_TITLE_RE.fullmatch(title)
     if not match:
         raise ReleaseError(f"unexpected RouterOS release title: {title!r}")
-    if match.group("channel") != channel:
+    channels = {c.strip() for c in match.group("channels").split(",") if c.strip()}
+    if channel not in channels:
         raise ReleaseError(
-            f"release feed returned channel {match.group('channel')!r}, expected {channel!r}"
+            f"release feed returned channels {sorted(channels)!r}, expected {channel!r}"
         )
     return validate_version(match.group("version"))
 

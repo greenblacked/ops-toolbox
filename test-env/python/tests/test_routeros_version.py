@@ -28,6 +28,38 @@ class RouterOSVersionTests(unittest.TestCase):
             "7.23.3",
         )
 
+    def test_parse_release_feed_accepts_multiple_channels(self) -> None:
+        # A release sits in every channel it has been promoted through, so the
+        # title carries a list rather than one name. 7.24 shipped as
+        # "[stable, testing, development]" and the single-token pattern that
+        # preceded this failed the scheduled workflow at its first step, before
+        # any version was resolved.
+        payload = (
+            b"<rss><channel><item>"
+            b"<title>RouterOS 7.24 [stable, testing, development]</title>"
+            b"</item></channel></rss>"
+        )
+        self.assertEqual(routeros_version.parse_release_feed(payload, "stable"), "7.24")
+
+    def test_parse_release_feed_accepts_channels_without_spaces(self) -> None:
+        payload = (
+            b"<rss><channel><item>"
+            b"<title>RouterOS 7.24 [stable,testing]</title>"
+            b"</item></channel></rss>"
+        )
+        self.assertEqual(routeros_version.parse_release_feed(payload, "stable"), "7.24")
+
+    def test_parse_release_feed_rejects_channel_absent_from_the_list(self) -> None:
+        # Widening the pattern must not widen what counts as a match: a release
+        # that is not in the requested channel is still refused.
+        payload = (
+            b"<rss><channel><item>"
+            b"<title>RouterOS 7.24 [testing, development]</title>"
+            b"</item></channel></rss>"
+        )
+        with self.assertRaises(routeros_version.ReleaseError):
+            routeros_version.parse_release_feed(payload, "stable")
+
     def test_parse_release_feed_rejects_wrong_channel(self) -> None:
         payload = b"""<rss><channel><item>
         <title>RouterOS 7.23.3 [stable]</title>
