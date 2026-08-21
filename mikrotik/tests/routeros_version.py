@@ -21,11 +21,19 @@ CHANNEL_FEEDS = {
     "long-term": "https://download.mikrotik.com/routeros/latest-long-term.rss",
 }
 PROMOTABLE_CHANNEL = "stable"
+# Files the bump rewrites when the pin moves.
+#
+# Nothing under .github/workflows/ may be listed here. GITHUB_TOKEN is refused
+# when it pushes a branch touching a workflow file - "refusing to allow a GitHub
+# App to create or update workflow ... without `workflows` permission` - and
+# that permission cannot be granted from a workflow's own permissions block. A
+# single version number in a chr.yml comment was enough to stop the bump branch
+# from being pushed at all. Version references belong in documentation, or in
+# routeros-version.env, which is the pin itself.
 DOCUMENTATION_FILES = (
     Path("README.md"),
     Path("mikrotik/README.md"),
     Path("mikrotik/tests/README.md"),
-    Path(".github/workflows/chr.yml"),
 )
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")

@@ -1,7 +1,10 @@
 name: RouterOS CHR
 
-# The RouterOS integration suite boots a real CHR 7.23.3 under QEMU, so it is far
+# The RouterOS integration suite boots a real CHR image under QEMU, so it is far
 # too slow for the pull-request path. It runs nightly instead, plus on demand.
+# The version is pinned in mikrotik/tests/routeros-version.env and is deliberately
+# not repeated here: GITHUB_TOKEN cannot push changes to .github/workflows, so a
+# version named in this file blocks the automated bump from opening its branch.
 #
 # Two things worth knowing if this starts looking flaky:
 #   - The CHR image is downloaded from download.mikrotik.com at build time, so a
