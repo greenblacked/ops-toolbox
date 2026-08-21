@@ -718,8 +718,7 @@ entry here belongs to a version.
   install are not the package's to delete. Flag names and step numbering are
   unchanged, so no invocation breaks; a machine with a fork installed simply
   keeps its caches now.
-- `.mailmap` collapses the alias identities in `git log` — including the
-  `Cursor Agent <cursoragent@cursor.com>` commit — onto
+- `.mailmap` collapses the alias identities in `git log` onto
   `Serhii Zolotov <zolotov.98@gmail.com>`. Committed history is untouched;
   `git shortlog -sne` and `git log` read through the mapping, so the identity
   is normalised without a rewrite that would invalidate every clone.
