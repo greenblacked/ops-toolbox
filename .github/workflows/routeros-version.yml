@@ -98,6 +98,7 @@ jobs:
           fi
 
       - name: Test candidate on RouterOS CHR
+        id: candidate
         if: >-
           (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
           steps.existing.outputs.url == ''
@@ -107,6 +108,28 @@ jobs:
           EXPECT_ROUTEROS_VERSION: ${{ steps.release.outputs.latest }}
         run: |
           set -uo pipefail
+          # The candidate is a version this repository has never pinned, so the
+          # recorded ROUTEROS_SHA256 is the *previous* version's. Building the
+          # candidate with it made the download fail its checksum every time -
+          # the same mismatch bump_version's docstring warns about, one step
+          # earlier, and the reason no candidate has ever got past this step.
+          # run.sh already prefers an exported digest over the pinned one, so
+          # resolving the candidate's own is all that was missing.
+          #
+          # This is a first observation, not an independent verification:
+          # nothing publishes a checksum to check it against. It catches a
+          # truncated or corrupted download and a mirror serving two different
+          # bodies. It becomes a real anchor only when 'bump' commits it, which
+          # is why that digest is carried forward rather than recomputed.
+          if ! ROUTEROS_SHA256="$(python3 mikrotik/tests/routeros_version.py \
+                record-hash --version "$ROUTEROS_VERSION" --print)"; then
+            echo "could not resolve a SHA-256 for RouterOS $ROUTEROS_VERSION" >&2
+            exit 1
+          fi
+          export ROUTEROS_SHA256
+          echo "candidate digest: $ROUTEROS_SHA256"
+          echo "digest=$ROUTEROS_SHA256" >> "$GITHUB_OUTPUT"
+
           log="$RUNNER_TEMP/mikrotik-version.log"
           set +e
           ./run-tests.sh mikrotik 2>&1 | tee "$log"
@@ -127,7 +150,17 @@ jobs:
           inputs.check_only != true
         env:
           TARGET_VERSION: ${{ steps.release.outputs.latest }}
-        run: python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION"
+          TESTED_DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          set -euo pipefail
+          # Pin the digest the candidate test actually ran against. Recomputing
+          # here would re-download, and a republished artifact would pin bytes
+          # nothing has booted.
+          if [ -n "$TESTED_DIGEST" ]; then
+            python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION" --digest "$TESTED_DIGEST"
+          else
+            python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION"
+          fi
 
       - name: Commit bump branch
         id: commit

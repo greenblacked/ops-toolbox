@@ -16,6 +16,43 @@ entry here belongs to a version.
 
 ### Added
 
+- The RouterOS candidate test can pass. It never could: the workflow overrode
+  `ROUTEROS_VERSION` to the candidate but left `ROUTEROS_SHA256` at the pinned
+  version's digest, so the CHR build downloaded the new archive and verified it
+  against the old one's hash. Every candidate failed its checksum, which reads
+  like a supply-chain alarm and is exactly what `bump_version`'s docstring
+  warns about - the guard was on the bump path but not on the test that runs
+  before it.
+
+  `record-hash --print` resolves a digest without rewriting the pin, which is
+  what check-only mode needs. `run.sh` already preferred an exported
+  `ROUTEROS_SHA256` over the file, so that seam is all the workflow was
+  missing. `bump --digest` then pins the digest the test actually ran against
+  instead of re-downloading, so a republished artifact cannot pin bytes nothing
+  has booted.
+
+  This is a first observation of the candidate's digest, not an independent
+  verification - nothing publishes a checksum to compare against. It catches a
+  truncated download and a mirror serving two different bodies; it becomes a
+  real anchor when the bump commits it.
+
+  Confirmed against the live feed on a manual `check_only` run, which also
+  showed the multi-channel RSS fix working: `pinned 7.23.3, candidate 7.24`.
+
+- Two Windows checks that run on Linux, where the whole class was previously
+  invisible. Every script under `windows/` exits at its `$IsWindows` guard
+  before its preview runs, so `./run-tests.sh windows` was silent about what
+  the preview does - which is how a Chocolatey dry run that wrote two
+  directories reached `master`, and how an em dash reached it before that.
+
+  `windows/tests/contract.ps1` now rejects non-ASCII bytes and a UTF-8 BOM in
+  any `.ps1`, naming the line, and asserts that a preview never invokes its
+  packaging tool. The second runs the script with the platform guard removed
+  from a copy and the tools replaced on `PATH` by shims that record being
+  called. If the guard text ever stops matching, the check fails loudly rather
+  than skipping - a harness that quietly stops transforming is one that quietly
+  stops checking.
+
 - Review pass over the WinGet migration, fixing four defects in it and closing
   the gap that let the worst of them through.
 
