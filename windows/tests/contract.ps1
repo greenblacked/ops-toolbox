@@ -408,6 +408,120 @@ if ($dryChecked -eq 0) {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'ASCII source, no BOM'
+# PSScriptAnalyzer catches this as PSUseBOMForUnicodeEncodedFile, but it runs
+# only in CI's Lint job, which run-tests.sh does not invoke. A single em dash
+# pasted into wsl_manage.ps1 turned master red that way. The check costs
+# milliseconds and belongs where the author will actually see it.
+foreach ($s in $scripts) {
+    $rel = Get-RelativePath $s.FullName
+    $bytes = [IO.File]::ReadAllBytes($s.FullName)
+
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        Test-Fail "$rel starts with a UTF-8 BOM; .gitattributes pins these files to LF without one"
+        continue
+    }
+
+    # Report the first offender with its line and character, so the fix does
+    # not start with a hunt through the file.
+    $bad = $null
+    $line = 1
+    foreach ($b in $bytes) {
+        if ($b -eq 0x0A) { $line++; continue }
+        if ($b -gt 0x7F) { $bad = $line; break }
+    }
+    if ($bad) {
+        Test-Fail "$rel has a non-ASCII byte on line $bad (an em dash or smart quote, usually)"
+    } else {
+        Test-Ok "$rel is ASCII with no BOM"
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'a preview does not invoke its packaging tool'
+# The section above proves a dry run writes nothing. On Windows that is the
+# real thing. On Linux every one of these scripts exits at its $IsWindows
+# guard first, so "wrote nothing" is true of a run that never reached the
+# preview - and choco_bootstrap.ps1 install -DryRun passed here for a whole
+# commit while calling `choco list` on Windows, which creates %TEMP%\chocolatey
+# and touches %APPDATA%.
+#
+# This closes that gap without a Windows machine. The platform guard is removed
+# from a copy, the packaging tools are replaced on PATH by shims that record
+# being called, and the preview is required not to call them. It says nothing
+# about what the tools would do; it says the preview does not reach them, which
+# is the property that was actually broken.
+if ($onWindows) {
+    Test-Skip 'the filesystem check above covers this natively on Windows'
+} else {
+    $guard = @'
+if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
+    Write-Err 'this script targets Windows'
+    exit 2
+}
+'@ -replace "`r`n", "`n"
+
+    # Only scripts that shell out to a packaging tool are in scope.
+    $tools = @{
+        'winget_bootstrap.ps1' = 'winget'
+        'winget_configure.ps1' = 'winget'
+        'choco_bootstrap.ps1'  = 'choco'
+        'stay_fresh.ps1'       = 'winget'
+    }
+
+    $previewChecked = 0
+    foreach ($s in $dryRunScripts) {
+        if (-not $tools.ContainsKey($s.Name)) { continue }
+        $rel = Get-RelativePath $s.FullName
+
+        $body = (Get-Content -Path $s.FullName -Raw) -replace "`r`n", "`n"
+        if ($body -notmatch [regex]::Escape($guard)) {
+            # Loud, not silent. A harness that quietly stops transforming is a
+            # harness that quietly stops checking - which is how the first
+            # version of this idea "passed" a file that still had the bug.
+            Test-Fail "$rel : platform guard not found verbatim, so this check could not run; update the guard text in contract.ps1"
+            continue
+        }
+
+        $sandbox = Join-Path ([IO.Path]::GetTempPath()) ('winpreview_' + [Guid]::NewGuid().ToString('N'))
+        $binDir = Join-Path $sandbox 'bin'
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        $marker = Join-Path $sandbox 'invoked.log'
+        $copy = Join-Path $sandbox $s.Name
+        Set-Content -Path $copy -Value ($body -replace [regex]::Escape($guard), '# platform guard removed by contract.ps1') -NoNewline
+
+        foreach ($tool in @('winget.exe', 'choco.exe')) {
+            $shim = Join-Path $binDir $tool
+            Set-Content -Path $shim -Value "#!/bin/sh`necho `"`$0 `$*`" >> '$marker'`nexit 0`n" -NoNewline
+            & chmod +x $shim
+        }
+
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = $binDir + [IO.Path]::PathSeparator + $savedPath
+            & $pwshExe -NoProfile -File $copy @(Get-DryRunArgument $s) *> $null
+        } finally {
+            $env:PATH = $savedPath
+        }
+
+        $previewChecked++
+        if (Test-Path $marker) {
+            Test-Fail "$rel : its preview invoked $($tools[$s.Name]); even read-only calls create state under TEMP and LOCALAPPDATA"
+            foreach ($call in (Get-Content $marker | Select-Object -First 3)) {
+                Write-Host "       $call" -ForegroundColor Red
+            }
+        } else {
+            Test-Ok "$rel preview never invoked $($tools[$s.Name])"
+        }
+        Remove-Item -Path $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($previewChecked -eq 0) {
+        Test-Fail 'no packaging-tool preview was checked - this check has stopped checking'
+    }
+}
+
+# --------------------------------------------------------------------------
 Write-Host ''
 if ($failures -gt 0) {
     Write-Host "$failures contract check(s) failed" -ForegroundColor Red
