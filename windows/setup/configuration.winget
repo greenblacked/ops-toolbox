@@ -34,9 +34,15 @@ properties:
   configurationVersion: 0.2.0
 
   assertions:
+    # 10.0.22000 is Windows 11 21H2, not Windows 10 21H2 (which is 10.0.19044).
+    # The floor is deliberately Windows 11: Windows 10 left support in October
+    # 2025, so a machine below this build is not one to be installing a fresh
+    # workstation onto. Lower it to 10.0.19044 if you must target Windows 10,
+    # and change this description with it - the two disagreeing is how the
+    # wrong floor ships unnoticed.
     - resource: Microsoft.Windows.Developer/OsVersion
       directives:
-        description: Windows 10 21H2 or newer
+        description: Windows 11 21H2 (build 22000) or newer
         allowPrerelease: true
       settings:
         MinVersion: '10.0.22000'
@@ -46,94 +52,166 @@ properties:
     # --- core ---------------------------------------------------------------
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: sevenzip
-      directives: { description: '7-Zip', allowPrerelease: true }
-      settings: { id: 7zip.7zip, source: winget }
+      directives:
+        description: 7-Zip
+        allowPrerelease: true
+      settings:
+        id: 7zip.7zip
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: firefox
-      directives: { description: 'Firefox', allowPrerelease: true }
-      settings: { id: Mozilla.Firefox, source: winget }
+      directives:
+        description: Firefox
+        allowPrerelease: true
+      settings:
+        id: Mozilla.Firefox
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: terminal
-      directives: { description: 'Windows Terminal - replaces ConEmu', allowPrerelease: true }
-      settings: { id: Microsoft.WindowsTerminal, source: winget }
+      directives:
+        description: Windows Terminal - replaces ConEmu
+        allowPrerelease: true
+      settings:
+        id: Microsoft.WindowsTerminal
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: pwsh
-      directives: { description: 'PowerShell 7', allowPrerelease: true }
-      settings: { id: Microsoft.PowerShell, source: winget }
+      directives:
+        description: PowerShell 7
+        allowPrerelease: true
+      settings:
+        id: Microsoft.PowerShell
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: bitwarden
-      directives: { description: 'Bitwarden - the one password manager', allowPrerelease: true }
-      settings: { id: Bitwarden.Bitwarden, source: winget }
+      directives:
+        description: Bitwarden - the one password manager
+        allowPrerelease: true
+      settings:
+        id: Bitwarden.Bitwarden
+        source: winget
 
     # --- work ---------------------------------------------------------------
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: git
-      directives: { description: 'Git', allowPrerelease: true }
-      settings: { id: Git.Git, source: winget }
+      directives:
+        description: Git
+        allowPrerelease: true
+      settings:
+        id: Git.Git
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: vscode
-      directives: { description: 'Visual Studio Code', allowPrerelease: true }
-      settings: { id: Microsoft.VisualStudioCode, source: winget }
+      directives:
+        description: Visual Studio Code
+        allowPrerelease: true
+      settings:
+        id: Microsoft.VisualStudioCode
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: python
-      directives: { description: 'Python 3', allowPrerelease: true }
-      settings: { id: Python.Python.3.12, source: winget }
+      directives:
+        description: Python 3
+        allowPrerelease: true
+      settings:
+        id: Python.Python.3.12
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: temurin
-      directives: { description: 'Temurin JDK 21 - one JVM, not three', allowPrerelease: true }
-      settings: { id: EclipseAdoptium.Temurin.21.JDK, source: winget }
+      directives:
+        description: Temurin JDK 21 - one JVM, not three
+        allowPrerelease: true
+      settings:
+        id: EclipseAdoptium.Temurin.21.JDK
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: dbeaver
-      directives: { description: 'DBeaver', allowPrerelease: true }
-      settings: { id: dbeaver.dbeaver, source: winget }
+      directives:
+        description: DBeaver
+        allowPrerelease: true
+      settings:
+        id: dbeaver.dbeaver
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: postman
-      directives: { description: 'Postman', allowPrerelease: true }
-      settings: { id: Postman.Postman, source: winget }
+      directives:
+        description: Postman
+        allowPrerelease: true
+      settings:
+        id: Postman.Postman
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: openvpn
-      directives: { description: 'OpenVPN', allowPrerelease: true }
-      settings: { id: OpenVPNTechnologies.OpenVPN, source: winget }
+      directives:
+        description: OpenVPN
+        allowPrerelease: true
+      settings:
+        id: OpenVPNTechnologies.OpenVPN
+        source: winget
 
     # --- communication ------------------------------------------------------
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: slack
-      directives: { description: 'Slack', allowPrerelease: true }
-      settings: { id: SlackTechnologies.Slack, source: winget }
+      directives:
+        description: Slack
+        allowPrerelease: true
+      settings:
+        id: SlackTechnologies.Slack
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: telegram
-      directives: { description: 'Telegram', allowPrerelease: true }
-      settings: { id: Telegram.TelegramDesktop, source: winget }
+      directives:
+        description: Telegram
+        allowPrerelease: true
+      settings:
+        id: Telegram.TelegramDesktop
+        source: winget
 
     # --- media --------------------------------------------------------------
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: spotify
-      directives: { description: 'Spotify', allowPrerelease: true }
-      settings: { id: Spotify.Spotify, source: winget }
+      directives:
+        description: Spotify
+        allowPrerelease: true
+      settings:
+        id: Spotify.Spotify
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: sharex
-      directives: { description: 'ShareX - replaces Lightshot', allowPrerelease: true }
-      settings: { id: ShareX.ShareX, source: winget }
+      directives:
+        description: ShareX - replaces Lightshot
+        allowPrerelease: true
+      settings:
+        id: ShareX.ShareX
+        source: winget
 
     # --- utilities ----------------------------------------------------------
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: everything
-      directives: { description: 'Everything search', allowPrerelease: true }
-      settings: { id: voidtools.Everything, source: winget }
+      directives:
+        description: Everything search
+        allowPrerelease: true
+      settings:
+        id: voidtools.Everything
+        source: winget
 
     - resource: Microsoft.WinGet.DSC/WinGetPackage
       id: notepadplusplus
-      directives: { description: 'Notepad++', allowPrerelease: true }
-      settings: { id: Notepad++.Notepad++, source: winget }
+      directives:
+        description: Notepad++
+        allowPrerelease: true
+      settings:
+        id: Notepad++.Notepad++
+        source: winget

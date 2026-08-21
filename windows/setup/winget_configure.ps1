@@ -79,9 +79,16 @@ if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
     Write-Err 'this script targets Windows'
     exit 2
 }
-if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
-    Write-Err 'winget is not installed or not on PATH - install "App Installer" from the Microsoft Store'
-    exit 2
+
+# Checked at the point of use rather than here, because the apply preview reads
+# the configuration and never runs winget. Demanding the tool up front would
+# fail the one command it is safe to run first on a machine that does not have
+# App Installer yet.
+function Assert-WinGetPresent {
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+        Write-Err 'winget is not installed or not on PATH - install "App Installer" from the Microsoft Store'
+        exit 2
+    }
 }
 
 # winget prints its version as "v1.8.1911". Anything that does not look like a
@@ -109,9 +116,16 @@ function Assert-WinGetVersion {
     }
 }
 
-if (-not (Test-Path $File)) {
-    Write-Err "$File does not exist"
-    exit 1
+# Test-Path alone is true for a directory, so -File pointing at a folder
+# reached Get-Content and surfaced a raw PowerShell exception instead of a
+# usage error. Either way it is a bad argument: exit 3.
+if (-not (Test-Path -LiteralPath $File -PathType Leaf)) {
+    if (Test-Path -LiteralPath $File) {
+        Write-Err "$File is a directory, not a configuration file"
+    } else {
+        Write-Err "$File does not exist"
+    }
+    exit 3
 }
 
 # Every configure verb wants these; keeping them in one place stops one verb
@@ -128,6 +142,7 @@ $commonArguments = @(
 function Invoke-WinGetConfigure {
     param([string[]]$Arguments)
 
+    Assert-WinGetPresent
     Assert-WinGetVersion
     & winget.exe configure @Arguments
     return $LASTEXITCODE
@@ -202,6 +217,17 @@ switch ($Action) {
                 if ($m.Success -and -not $current.Description) {
                     $current.Description = $m.Groups['value'].Value.Trim()
                 }
+            }
+
+            # Without this an empty file, or -File pointed at the wrong YAML,
+            # printed "would apply" and exited 0 having found nothing. A
+            # preview that cannot say what it would do has failed, and saying
+            # so is the whole reason to run it first.
+            $work = @($entries | Where-Object { $_.Kind -ne 'assertion' })
+            if (-not $work) {
+                Write-Err "$File declares no resources to apply"
+                Write-Info "check the path, and that the file has a 'resources:' block"
+                exit 1
             }
 
             Write-Info "(dry-run) would apply $File"

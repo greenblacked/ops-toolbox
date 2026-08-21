@@ -379,6 +379,33 @@ else
 fi
 
 # --------------------------------------------------------------------------
+head_ "winget configuration files"
+# yamllint covers the syntax of these. It cannot cover the shape, and the shape
+# is where the real defect was: an unquoted description containing a comma
+# ended its value inside an inline map and turned the remainder into a stray
+# directive key. That file was still perfectly valid YAML, so a syntax linter
+# passed it and winget would have been handed a directive nobody wrote.
+winget_configs=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && winget_configs+=("$f")
+done < <(git ls-files '*.winget')
+
+if (( ${#winget_configs[@]} == 0 )); then
+  ok "no .winget configuration files to check"
+elif ! python3 -c 'import yaml' 2>/dev/null; then
+  warn "python3 yaml module not installed — .winget shape checks skipped"
+  warn "       install with: python3 -m pip install pyyaml"
+else
+  for f in "${winget_configs[@]}"; do
+    if msg="$(python3 "$HERE/winget_config_shape.py" "$f" 2>&1)"; then
+      ok "$f ($msg)"
+    else
+      err "$f: $msg"
+    fi
+  done
+fi
+
+# --------------------------------------------------------------------------
 printf '\n'
 if (( failures > 0 )); then
   printf '%d convention check(s) failed\n' "$failures" >&2

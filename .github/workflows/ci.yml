@@ -165,7 +165,7 @@ jobs:
           emit shell         '(\.sh|\.zsh|\.bashrc|\.bash_profile|\.aliases)$'
           emit powershell    '(\.ps1|\.psm1|\.psd1)$'
           emit markdown      '(\.md$|markdownlint)'
-          emit yaml          '\.ya?ml$'
+          emit yaml          '(\.ya?ml|\.winget)$'
           emit python        '(\.py$|^pyproject\.toml$|^test-env/python/)'
           emit workflow      '^\.github/workflows/.*\.ya?ml$'
           emit dockerfile    '(^|/)Dockerfile$'
