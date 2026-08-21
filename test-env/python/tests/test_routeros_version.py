@@ -319,5 +319,47 @@ class ChangelogInsertionTests(unittest.TestCase):
                 routeros_version._add_changelog_entry(root, "7.23.3", "7.24")
 
 
+class BumpablePathsTests(unittest.TestCase):
+    """The bump must never need to rewrite a workflow file.
+
+    GITHUB_TOKEN is refused when it pushes a branch touching .github/workflows -
+    "refusing to allow a GitHub App to create or update workflow ... without
+    `workflows` permission" - and that permission cannot be granted from a
+    workflow's own permissions block. One version number in a chr.yml comment
+    was enough to stop the bump branch from being pushed at all, after the CHR
+    suite had already passed.
+    """
+
+    def test_no_workflow_file_is_rewritten_by_a_bump(self) -> None:
+        offenders = [
+            str(path)
+            for path in routeros_version.DOCUMENTATION_FILES
+            if str(path).startswith(".github/workflows/")
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "GITHUB_TOKEN cannot push a branch that edits these; keep the "
+            "version out of workflow files",
+        )
+
+    def test_no_workflow_file_names_the_pinned_version(self) -> None:
+        # The other half: the list above can only stay empty if nothing under
+        # .github/workflows/ mentions the pin in the first place.
+        workflows = REPO_ROOT / ".github" / "workflows"
+        pinned = routeros_version.read_pinned_version()
+        naming = [
+            path.name
+            for path in sorted(workflows.glob("*.yml"))
+            if pinned in path.read_text(encoding="utf-8")
+        ]
+        self.assertEqual(
+            naming,
+            [],
+            f"{naming} name RouterOS {pinned}; the bump would have to rewrite "
+            "them and its push would be rejected",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

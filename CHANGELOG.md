@@ -16,6 +16,20 @@ entry here belongs to a version.
 
 ### Added
 
+- The RouterOS bump can push its branch. `GITHUB_TOKEN` is refused when it
+  pushes a branch touching `.github/workflows/`, and that permission cannot be
+  granted from a workflow's own `permissions:` block - it is not one of the
+  keys GitHub accepts there. `chr.yml` named the pinned version in a prose
+  comment, and that one number was enough to put a workflow file in the bump's
+  edit set, so the branch push was rejected after the CHR suite had already
+  passed.
+
+  The comment no longer names a version and points at
+  `mikrotik/tests/routeros-version.env` instead, which is the pin. Two tests
+  keep it that way: no workflow path may appear in `DOCUMENTATION_FILES`, and
+  no workflow file may contain the pinned version. Both fail if either is
+  reintroduced.
+
 - The RouterOS bump step can find its insertion point. It required the literal
   `## [Unreleased]\n\n### Changed\n\n`, so `### Changed` had to be the *first*
   subsection under Unreleased. This changelog has never been shaped that way,
