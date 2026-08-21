@@ -285,6 +285,12 @@ def _check(args: argparse.Namespace) -> int:
 def _record_hash(args: argparse.Namespace) -> int:
     version = validate_version(args.version) if args.version else read_pinned_version()
     digest = compute_sha256(version)
+    # --print exists for the candidate test, which needs the digest of a version
+    # this repository has never pinned and must not rewrite the pin to get it.
+    # Bare digest on stdout so a caller can assign it directly.
+    if args.print_only:
+        print(digest)
+        return 0
     _write_pinned_sha256(digest)
     print(f"recorded SHA-256 for RouterOS {version}: {digest}")
     return 0
@@ -308,7 +314,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     bump = subparsers.add_parser("bump", help="update the pinned and documented version")
     bump.add_argument("version")
-    bump.set_defaults(func=lambda args: (bump_version(args.version), 0)[1])
+    bump.add_argument(
+        "--digest",
+        help="record this SHA-256 instead of downloading again; pass the digest "
+        "the candidate test actually ran against",
+    )
+    bump.set_defaults(func=lambda args: (bump_version(args.version, digest=args.digest), 0)[1])
 
     record = subparsers.add_parser(
         "record-hash",
@@ -317,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument(
         "--version",
         help="hash this version instead of the currently pinned one",
+    )
+    record.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="print the digest instead of writing it to the version file",
     )
     record.set_defaults(func=_record_hash)
     return parser

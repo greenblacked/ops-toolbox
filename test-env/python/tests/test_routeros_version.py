@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = REPO_ROOT / "mikrotik" / "tests" / "routeros_version.py"
@@ -165,6 +168,83 @@ class RouterOSVersionTests(unittest.TestCase):
             )
             routeros_version.bump_version("7.23.3", root, digest=DIGEST)
             self.assertEqual(routeros_version.read_pinned_sha256(version_file), DIGEST)
+
+
+class RecordHashCliTests(unittest.TestCase):
+    """--print must resolve a digest without touching the pin.
+
+    The candidate test needs the digest of a version this repository has never
+    pinned. Before --print existed the workflow had no way to get one, so it
+    built the candidate against the *previous* version's digest and the
+    download failed its checksum every time.
+
+    These patch _write_pinned_sha256 rather than VERSION_FILE. That is not a
+    style preference: the path is a default argument bound at import, so
+    patching the module attribute does not reach it and the write lands on the
+    real repository file. Writing this test the obvious way overwrote the live
+    pin with a dummy digest.
+    """
+
+    CANDIDATE = "c" * 64
+
+    def test_print_emits_the_digest_and_writes_nothing(self) -> None:
+        with mock.patch.object(
+            routeros_version, "compute_sha256", return_value=self.CANDIDATE
+        ), mock.patch.object(routeros_version, "_write_pinned_sha256") as writer:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = routeros_version.main(
+                    ["record-hash", "--version", "7.24", "--print"]
+                )
+
+        self.assertEqual(rc, 0)
+        # Bare digest on stdout, so a shell can assign it directly.
+        self.assertEqual(out.getvalue().strip(), self.CANDIDATE)
+        writer.assert_not_called()
+
+    def test_without_print_the_digest_is_written(self) -> None:
+        # The negative half. Without it the test above would pass even if
+        # --print had no effect and nothing ever wrote.
+        with mock.patch.object(
+            routeros_version, "compute_sha256", return_value=self.CANDIDATE
+        ), mock.patch.object(
+            routeros_version, "_write_pinned_sha256"
+        ) as writer, contextlib.redirect_stdout(io.StringIO()):
+            rc = routeros_version.main(["record-hash", "--version", "7.24"])
+
+        self.assertEqual(rc, 0)
+        writer.assert_called_once_with(self.CANDIDATE)
+
+    def test_bump_with_a_digest_does_not_download(self) -> None:
+        # The bump pins what the candidate test ran against rather than
+        # re-downloading, so a republished artifact cannot pin bytes that
+        # nothing has booted.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            version_file = root / "mikrotik/tests/routeros-version.env"
+            version_file.parent.mkdir(parents=True)
+            version_file.write_text(
+                "ROUTEROS_VERSION=7.22\nROUTEROS_SHA256=" + ("b" * 64) + "\n",
+                encoding="utf-8",
+            )
+            for relative in routeros_version.DOCUMENTATION_FILES:
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("RouterOS 7.22\n", encoding="utf-8")
+            (root / "CHANGELOG.md").write_text(
+                "## [Unreleased]\n\n### Changed\n\n", encoding="utf-8"
+            )
+
+            with mock.patch.object(
+                routeros_version,
+                "compute_sha256",
+                side_effect=AssertionError("bump re-downloaded despite --digest"),
+            ):
+                routeros_version.bump_version("7.24", root, digest=self.CANDIDATE)
+
+            self.assertEqual(
+                routeros_version.read_pinned_sha256(version_file), self.CANDIDATE
+            )
 
 
 if __name__ == "__main__":
