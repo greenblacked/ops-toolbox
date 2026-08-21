@@ -219,17 +219,74 @@ def _replace_documented_version(
         path.write_text(text, encoding="utf-8")
 
 
+# Keep a Changelog's section order. Used to place a "### Changed" heading among
+# whatever the Unreleased section already has, rather than demanding it be first.
+CHANGELOG_SECTIONS = (
+    "Added",
+    "Changed",
+    "Deprecated",
+    "Removed",
+    "Fixed",
+    "Security",
+)
+
+
+def _unreleased_span(text: str) -> tuple[int, int]:
+    """Character range of the Unreleased section body, heading excluded."""
+    # [ \t]* not \s*: the latter is greedy across newlines, so end() lands past
+    # the blank lines and the caller reinserts its own, producing two in a row.
+    heading = re.search(r"^## \[Unreleased\][ \t]*$", text, re.MULTILINE)
+    if not heading:
+        raise ReleaseError("CHANGELOG.md has no '## [Unreleased]' heading")
+    start = heading.end()
+    following = re.search(r"^## ", text[start:], re.MULTILINE)
+    return start, start + following.start() if following else len(text)
+
+
 def _add_changelog_entry(repo_root: Path, current: str, target: str) -> None:
     path = repo_root / "CHANGELOG.md"
     text = path.read_text(encoding="utf-8")
-    marker = "## [Unreleased]\n\n### Changed\n\n"
-    if marker not in text:
-        raise ReleaseError("CHANGELOG.md has no Unreleased/Changed insertion point")
     entry = (
         f"- RouterOS CHR compatibility was bumped from {current} to {target} after "
         "the full Docker integration suite passed.\n"
     )
-    path.write_text(text.replace(marker, marker + entry, 1), encoding="utf-8")
+
+    # This used to require the literal "## [Unreleased]\n\n### Changed\n\n",
+    # which meant Changed had to be the *first* subsection. It never was, so the
+    # bump step could not have worked even once the candidate test was fixed -
+    # any ordinary "### Added" entry above it was enough to break the release
+    # automation. Find the section wherever it sits, and create it in Keep a
+    # Changelog order when it is absent.
+    start, end = _unreleased_span(text)
+    body = text[start:end]
+
+    # [ \t]* rather than \s*, so end() lands at the end of the heading line
+    # instead of somewhere inside the blank lines after it. Getting that wrong
+    # put a blank line between two list items, which markdownlint fails as
+    # MD012 - a bump that turns the repository red is not a working bump.
+    existing = re.search(r"^### Changed[ \t]*$", body, re.MULTILINE)
+    if existing:
+        rest = body[existing.end() :].lstrip("\n")
+        # A blank line after the heading, the entry, then whatever was there.
+        # A following heading needs its own blank line; a bullet must not have
+        # one, or the list splits in two.
+        separator = "\n" if rest.startswith("#") or not rest else ""
+        new_body = body[: existing.end()] + "\n\n" + entry + separator + rest
+    else:
+        section = "### Changed\n\n" + entry
+        later = None
+        for name in CHANGELOG_SECTIONS[CHANGELOG_SECTIONS.index("Changed") + 1 :]:
+            later = re.search(rf"^### {name}[ \t]*$", body, re.MULTILINE)
+            if later:
+                break
+        if later:
+            new_body = body[: later.start()] + section + "\n" + body[later.start() :]
+        else:
+            new_body = body.rstrip("\n") + "\n\n" + section
+            if end < len(text):
+                new_body += "\n"
+
+    path.write_text(text[:start] + new_body + text[end:], encoding="utf-8")
 
 
 def bump_version(target: str, repo_root: Path = REPO_ROOT, digest: str | None = None) -> None:
@@ -244,9 +301,9 @@ def bump_version(target: str, repo_root: Path = REPO_ROOT, digest: str | None = 
     if version_key(target) <= version_key(current):
         raise ReleaseError(f"target {target} must be newer than the pinned version {current}")
     changelog = repo_root / "CHANGELOG.md"
-    changelog_marker = "## [Unreleased]\n\n### Changed\n\n"
-    if changelog_marker not in changelog.read_text(encoding="utf-8"):
-        raise ReleaseError("CHANGELOG.md has no Unreleased/Changed insertion point")
+    # Fail before the download rather than after it. Only the heading is
+    # required now; the Changed section is created if it is not there.
+    _unreleased_span(changelog.read_text(encoding="utf-8"))
     # Hash the new archive before touching anything. A bump that moved the
     # version but left the old digest behind would fail every subsequent CHR
     # build with a checksum mismatch that looks like a supply-chain alarm.
