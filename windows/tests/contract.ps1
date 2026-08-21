@@ -289,6 +289,12 @@ function Get-DryRunArgument {
         return @('install', '-DryRun', '-File',
             (Join-Path $repoRoot (Join-Path 'windows' (Join-Path 'setup' 'choco-packages.example.config'))))
     }
+    if ($Script.Name -eq 'winget_configure.ps1') {
+        # apply is the only verb that writes, and the file it reads has to
+        # exist or the script exits 1 before reaching the preview path.
+        return @('apply', '-DryRun', '-File',
+            (Join-Path $repoRoot (Join-Path 'windows' (Join-Path 'setup' 'configuration.winget'))))
+    }
     return @('-DryRun')
 }
 

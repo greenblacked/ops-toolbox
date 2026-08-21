@@ -6,17 +6,26 @@ reproduce it elsewhere — and then keep it healthy.
 | File | Purpose |
 | --- | --- |
 | [`winget_bootstrap.ps1`](winget_bootstrap.ps1) | `export` / `list` / `check` / `import` / `diff` over the winget package list |
+| [`winget_configure.ps1`](winget_configure.ps1) | `validate` / `show` / `test` / `apply` over [`configuration.winget`](configuration.winget), the curated machine definition |
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
+| [`configuration.winget`](configuration.winget) | The curated list itself: what a workstation should have, in six commentable groups |
 | [`winget-packages.example.json`](winget-packages.example.json) | A worked example of the export format, for reading before you have one |
 | [`choco-packages.example.config`](choco-packages.example.config) | The same, in Chocolatey's own `packages.config` format |
 | `winget-packages.json` | Written by `export`; commit it |
 
-The three scripts split the same way their Unix counterparts do: one captures
-and restores the machine, one keeps it current, one only looks. Nothing in
-`workstation_doctor.ps1` changes anything, which is why it is the safe first
-thing to run on a machine you have just been handed.
+The scripts split the same way their Unix counterparts do: one builds the
+machine, one captures and restores it, one keeps it current, one only looks.
+Nothing in `workstation_doctor.ps1` changes anything, which is why it is the
+safe first thing to run on a machine you have just been handed.
+
+The distinction between the first two is the one worth reading twice.
+`configuration.winget` is the *intent*: a short curated list, reviewed like
+code, that says what a workstation should have. `winget-packages.json` is the
+*fact*: everything one particular box happens to have, exported from it. Use
+`winget_configure.ps1` to build a machine and `winget_bootstrap.ps1` to record
+one. Neither replaces the other.
 
 ## winget_bootstrap.ps1
 
@@ -192,10 +201,96 @@ Behaviour has to be checked on a real Windows machine. `workstation_doctor.ps1`,
 `winget_bootstrap.ps1 diff` / `check`, and `stay_fresh.ps1 -DryRun` are all
 read-only, so they are safe places to start.
 
+## winget_configure.ps1
+
+`winget_bootstrap.ps1` captures a machine. This one applies one, from
+[`configuration.winget`](configuration.winget).
+
+```powershell
+# Does the file parse and do its resources resolve? (read-only)
+.\winget_configure.ps1 validate
+
+# What is in it? (read-only)
+.\winget_configure.ps1 show
+
+# Does this machine already match it? (read-only, exits 1 if it has drifted)
+.\winget_configure.ps1 test
+
+# Preview, then build
+.\winget_configure.ps1 apply -DryRun
+.\winget_configure.ps1 apply
+```
+
+`-File PATH` points any verb at a different configuration, the same way
+`winget_bootstrap.ps1` takes one.
+
+`test` is the verb worth putting on a schedule. It answers "has this machine
+drifted from the list we agreed on" with an exit code rather than with prose -
+the same shape as `winget_bootstrap.ps1 check` and `brewfile.sh check`, so all
+three drive the same automation.
+
+The `apply -DryRun` preview reads the configuration and lists what it would
+ensure. It does not call winget, for the reason the import preview does not:
+even winget's read-only paths populate source caches under `LOCALAPPDATA`,
+which would make a supposedly no-write dry run mutate the machine.
+
+### The configuration file
+
+Six groups - core, work, communication, media, utilities, plus one OS-version
+assertion - so a machine can be provisioned partially by commenting a block
+out rather than by editing a flat list.
+
+What is deliberately *not* in it is as much of the point as what is:
+
+- **Linux tooling** (`kubectl`, `helm`, `k9s`, `jq`, `yq`, Terraform, Go,
+  `awscli`, `azure-cli`) belongs inside WSL, where [`linux/`](../../linux/)
+  already installs and tests it. A second native copy on the Windows side only
+  drifts from the one you actually use.
+- **VS Code extensions** are not applications. VS Code's own settings sync is
+  the right mechanism; a package manager is not.
+- **Chocolatey's own tooling** is meaningless without Chocolatey.
+
+The schema is `0.2`, not v3, and that is a decision rather than an oversight.
+The v3 schema needs WinGet 1.11 or newer with the `dscv3` processor - a much
+narrower floor than this repository targets - and a machine below it fails with
+a DSC error rather than a clear one. Moving to v3 is a one-file change once
+1.11+ is a safe assumption.
+
+### Requirements
+
+WinGet 1.6 or newer: `winget configure` does not exist before it. The preflight
+checks `winget --version` and exits 2 with the reason, rather than letting
+winget fail with an unrecognised-argument error that reads like a bug in this
+script. A version string it cannot parse is treated as unknown and allowed
+through - refusing to run because a future winget changed its banner format
+would be the worse failure.
+
+### Exit codes
+
+Matching `winget_bootstrap.ps1`:
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success; for `test`, the machine matches the file |
+| 1 | Command failed; for `test`, the machine has drifted |
+| 2 | Preflight failed (not Windows, no winget, winget too old) |
+| 3 | Bad arguments |
+
+`test` collapses winget's several non-zero HRESULTs into 1 and prints the raw
+code alongside it. "Not in desired state" and "could not tell" mean the same
+thing to a caller - do not trust this machine to match the file - and the
+distinction is preserved in the output rather than in the exit status.
+
 ## choco_bootstrap.ps1
 
 The Chocolatey counterpart of `winget_bootstrap.ps1`. Same five verbs, same
-exit codes, so it does not matter which package manager a given machine uses:
+exit codes, so it does not matter which package manager a given machine uses.
+
+winget is the primary one here: it ships with Windows, needs no bootstrap, and
+`winget configure` gives a declarative machine definition Chocolatey has no
+equivalent for. Chocolatey stays because it genuinely covers packages winget
+does not, and because machines already managed with it should not have to be
+rebuilt to be usable with this repository.
 
 ```powershell
 .\choco_bootstrap.ps1 list            # installed ids, read-only

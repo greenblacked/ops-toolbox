@@ -16,6 +16,27 @@ entry here belongs to a version.
 
 ### Added
 
+- `windows/setup/configuration.winget` and `winget_configure.ps1`, making
+  winget the primary Windows package manager: a curated, reviewed, declarative
+  list of what a workstation should have, applied with `winget configure`. The
+  verbs are `validate` / `show` / `test` / `apply`, and `test` reports drift
+  through an exit code the same way `winget_bootstrap.ps1 check` and
+  `brewfile.sh check` do, so all three drive the same automation.
+
+  This is a complement to the export, not a replacement: the configuration is
+  the intent, `winget-packages.json` is the fact. The list is the ported
+  Chocolatey one curated down to 18 - ConEmu gives way to Windows Terminal,
+  Lightshot to ShareX, two password managers to one, three JVMs to one LTS -
+  and it deliberately omits Linux tooling that belongs in WSL, VS Code
+  extensions that are not applications, and Chocolatey's own tooling.
+
+  The schema is `0.2` rather than v3 on purpose: v3 requires WinGet 1.11+ with
+  the `dscv3` processor, a much narrower floor than this repository targets,
+  and a machine below it fails with a DSC error rather than a clear one. The
+  preflight checks `winget --version` against 1.6 and exits 2 with the reason.
+  Chocolatey stays as the documented fallback for packages winget lacks and for
+  machines already managed with it.
+
 - `k8s-toolbox` now has a `debug` image stage, selected with
   `build.sh --variant debug`, tagged `k8s-toolbox:debug` by default.
   It adds tcpdump, strace, htop and the other in-pod network/process

@@ -332,12 +332,17 @@ The Windows package is [`windows/`](windows/):
   safely (aged temp files, WER, Delivery Optimization, thumbnails), with
   explicit opt-in flags for Recycle Bin, Windows Update cache, dev caches,
   and Docker. `-DryRun` reports sizes without deleting.
-- [`setup/`](windows/setup/) — `winget_bootstrap.ps1`: the Windows
+- [`setup/`](windows/setup/) — `winget_configure.ps1`: builds a machine from
+  `configuration.winget`, a curated declarative list of what a workstation
+  should have, in groups you can comment out. `validate`/`show`/`test` are
+  read-only; `test` answers "has this machine drifted" with an exit code, and
+  `apply -DryRun` lists what it would install. `winget_bootstrap.ps1`: the Windows
   counterpart of `brewfile.sh`, with the same `export`/`check`/`import`/`diff`
   verbs and the same exit codes. Captures the installed package list to a
   versioned JSON file so a machine can be rebuilt from it; `diff` shows what
   has drifted before you accept it, and `import -DryRun` lists what it would
-  install. `choco_bootstrap.ps1` is the same five verbs over a Chocolatey
+  install. The two are complements: the configuration is the intent, the
+  export is the fact. `choco_bootstrap.ps1` is the same five verbs over a Chocolatey
   `packages.config`, for a machine managed with choco instead; the file it
   writes is Chocolatey's own format, so `choco install packages.config -y`
   reads it without this script.
