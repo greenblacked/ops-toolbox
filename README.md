@@ -337,7 +337,10 @@ The Windows package is [`windows/`](windows/):
   verbs and the same exit codes. Captures the installed package list to a
   versioned JSON file so a machine can be rebuilt from it; `diff` shows what
   has drifted before you accept it, and `import -DryRun` lists what it would
-  install.
+  install. `choco_bootstrap.ps1` is the same five verbs over a Chocolatey
+  `packages.config`, for a machine managed with choco instead; the file it
+  writes is Chocolatey's own format, so `choco install packages.config -y`
+  reads it without this script.
 
 See [`windows/README.md`](windows/README.md) and the per-folder READMEs for
 install steps, the full alias breakdown, and PowerShell execution-policy

@@ -8,7 +8,9 @@ reproduce it elsewhere — and then keep it healthy.
 | [`winget_bootstrap.ps1`](winget_bootstrap.ps1) | `export` / `list` / `check` / `import` / `diff` over the winget package list |
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
+| [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
 | [`winget-packages.example.json`](winget-packages.example.json) | A worked example of the export format, for reading before you have one |
+| [`choco-packages.example.config`](choco-packages.example.config) | The same, in Chocolatey's own `packages.config` format |
 | `winget-packages.json` | Written by `export`; commit it |
 
 The three scripts split the same way their Unix counterparts do: one captures
@@ -189,3 +191,46 @@ documented above actually exists in a `param()` block. See
 Behaviour has to be checked on a real Windows machine. `workstation_doctor.ps1`,
 `winget_bootstrap.ps1 diff` / `check`, and `stay_fresh.ps1 -DryRun` are all
 read-only, so they are safe places to start.
+
+## choco_bootstrap.ps1
+
+The Chocolatey counterpart of `winget_bootstrap.ps1`. Same five verbs, same
+exit codes, so it does not matter which package manager a given machine uses:
+
+```powershell
+.\choco_bootstrap.ps1 list            # installed ids, read-only
+.\choco_bootstrap.ps1 check           # is everything in the file installed?
+.\choco_bootstrap.ps1 diff            # what export would change
+.\choco_bootstrap.ps1 install -DryRun # what install would add
+.\choco_bootstrap.ps1 install
+.\choco_bootstrap.ps1 export -Force
+```
+
+The file it reads and writes is `packages.config`, Chocolatey's own format, so
+it is also usable without this script:
+
+```powershell
+choco install choco-packages.config -y
+```
+
+Copy [`choco-packages.example.config`](choco-packages.example.config) to
+`choco-packages.config` and edit. The example is a ported version of an older
+work-environment list; the comment at the top of it records the four entries
+that had to change, and why -- classic Teams was retired, Sublime Text moved to
+4, three JVMs collapse to one current LTS, and a decade-old Pester pin went.
+
+`install` does not bootstrap Chocolatey itself. That means running a remote
+script from an elevated shell, which is a decision worth making deliberately
+rather than as a side effect of asking what is installed, so the script reports
+the official command and stops when `choco` is missing.
+
+Useful alongside it:
+
+```powershell
+choco upgrade all -y                    # upgrade everything
+choco uninstall <package-name>          # remove one
+```
+
+Note `choco list --local-only` from older guides: v2 removed that flag and made
+local listing the default, so it now errors. `choco list` is the current
+spelling, and `choco list -r` is the machine-readable one this script parses.

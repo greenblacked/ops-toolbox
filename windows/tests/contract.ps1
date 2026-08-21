@@ -280,6 +280,15 @@ function Get-DryRunArgument {
         return @('import', '-DryRun', '-File',
             (Join-Path $repoRoot (Join-Path 'windows' (Join-Path 'setup' 'winget-packages.example.json'))))
     }
+    if ($Script.Name -eq 'choco_bootstrap.ps1') {
+        # Same shape as winget_bootstrap.ps1: the action is mandatory, install
+        # is the verb that writes, and it needs a real packages.config to read.
+        # Without this the script exits 3 at the help-on-no-action branch, and
+        # "wrote nothing" would be true of a run that never reached the code
+        # that could write.
+        return @('install', '-DryRun', '-File',
+            (Join-Path $repoRoot (Join-Path 'windows' (Join-Path 'setup' 'choco-packages.example.config'))))
+    }
     return @('-DryRun')
 }
 
