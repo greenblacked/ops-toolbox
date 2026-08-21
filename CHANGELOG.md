@@ -16,6 +16,38 @@ entry here belongs to a version.
 
 ### Added
 
+- Review pass over the WinGet migration, fixing four defects in it and closing
+  the gap that let the worst of them through.
+
+  The OS assertion in `configuration.winget` demanded build `10.0.22000` while
+  describing itself as "Windows 10 21H2 or newer". `10.0.22000` is Windows 11
+  21H2; Windows 10 21H2 is `10.0.19044`. Every Windows 10 machine would have
+  failed the assertion and been told it needed a version it already had. The
+  floor stays at Windows 11 - Windows 10 left support in October 2025 - and the
+  description now says so.
+
+  `winget_configure.ps1 apply -DryRun` accepted a directory as `-File` and
+  surfaced a raw `Get-Content` exception instead of a usage error, and printed
+  "would apply" and exited 0 for an empty file or one pointed at the wrong
+  YAML. A preview that cannot say what it would do has failed. Both are now
+  refused, with 3 for a bad path and 1 for a file declaring no resources.
+  `winget_bootstrap.ps1` had the same directory-as-a-file hole in four places.
+
+  The winget presence and version checks moved to the point of invocation, so
+  `apply -DryRun` no longer requires App Installer to be present. Previewing a
+  configuration is the first thing worth running on a fresh machine, and it
+  reads the file rather than asking winget anything.
+
+  Nothing validated `configuration.winget` at all: `yamllint .` discovers only
+  `*.yml` and `*.yaml`. It is now named in `yaml-files` and covered by the
+  change filter. Syntax alone is not enough, though - an unquoted description
+  containing a comma ends its value inside an inline map and turns the
+  remainder into a directive key nobody wrote, producing valid YAML and the
+  wrong document. `test-env/static/winget_config_shape.py` checks the shape:
+  resources present, ids unique, no unknown directive keys. Verified against a
+  reconstruction of that exact bug, on which yamllint reports nothing. The
+  resource maps are also block-style now, where a comma is harmless.
+
 - `choco_bootstrap.ps1 install -DryRun` no longer calls Chocolatey. It asked
   the machine which packages were missing, and `choco list` creates
   `%TEMP%\chocolatey` and touches `%APPDATA%` doing it - so the preview wrote

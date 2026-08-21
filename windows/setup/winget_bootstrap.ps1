@@ -145,7 +145,7 @@ switch ($Action) {
     }
 
     'diff' {
-        if (-not (Test-Path $File)) {
+        if (-not (Test-Path -LiteralPath $File -PathType Leaf)) {
             Write-Err "$File does not exist - run 'export' first"
             exit 1
         }
@@ -173,7 +173,7 @@ switch ($Action) {
     }
 
     'check' {
-        if (-not (Test-Path $File)) {
+        if (-not (Test-Path -LiteralPath $File -PathType Leaf)) {
             Write-Err "$File does not exist"
             exit 1
         }
@@ -202,7 +202,7 @@ switch ($Action) {
     }
 
     'import' {
-        if (-not (Test-Path $File)) {
+        if (-not (Test-Path -LiteralPath $File -PathType Leaf)) {
             Write-Err "$File does not exist"
             exit 1
         }

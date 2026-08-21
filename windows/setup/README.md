@@ -197,6 +197,15 @@ that each one offers `-DryRun` or a validated `-Action`, and that every flag
 documented above actually exists in a `param()` block. See
 [`../tests/`](../tests/).
 
+`configuration.winget` is checked by two different things, because they catch
+different failures. yamllint covers its syntax (it is discovered as YAML via
+`yaml-files` in `.yamllint.yml`). The static suite additionally checks its
+*shape* - that it declares resources, that ids are unique, and that no
+directive key exists which nobody wrote. That second check is the one that
+matters: an unquoted description containing a comma ends its value inside an
+inline map and turns the rest into a stray key, producing a file that is
+perfectly valid YAML and the wrong document. yamllint passes it without a word.
+
 Behaviour has to be checked on a real Windows machine. `workstation_doctor.ps1`,
 `winget_bootstrap.ps1 diff` / `check`, and `stay_fresh.ps1 -DryRun` are all
 read-only, so they are safe places to start.
@@ -240,6 +249,14 @@ Six groups - core, work, communication, media, utilities, plus one OS-version
 assertion - so a machine can be provisioned partially by commenting a block
 out rather than by editing a flat list.
 
+The assertion floor is **Windows 11 21H2** (build `10.0.22000`). Note that
+`10.0.22000` is Windows 11's first build, not Windows 10 21H2, which is
+`10.0.19044` - the two are easy to confuse and the file says which it means.
+The floor is deliberate: Windows 10 left support in October 2025, so a machine
+below it is not one to be installing a fresh workstation onto. Lower it to
+`10.0.19044` if you must target Windows 10, and change the description with
+it.
+
 What is deliberately *not* in it is as much of the point as what is:
 
 - **Linux tooling** (`kubectl`, `helm`, `k9s`, `jq`, `yq`, Terraform, Go,
@@ -264,6 +281,11 @@ winget fail with an unrecognised-argument error that reads like a bug in this
 script. A version string it cannot parse is treated as unknown and allowed
 through - refusing to run because a future winget changed its banner format
 would be the worse failure.
+
+Both the presence and version checks run at the point winget is invoked, not at
+startup, so `apply -DryRun` works on a machine that does not have App Installer
+yet. Previewing what a configuration would do is the first thing worth running
+on a fresh box, and it reads the file rather than asking winget anything.
 
 ### Exit codes
 

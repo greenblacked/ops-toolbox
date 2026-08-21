@@ -1,5 +1,15 @@
 extends: default
 
+# yamllint only discovers *.yml and *.yaml on its own, so windows/setup's
+# configuration.winget - which is YAML - was linted by nothing. Naming the
+# extensions here means `yamllint .` covers it for CI and by hand alike.
+# Overriding this key replaces the default list, so the defaults are repeated.
+yaml-files:
+  - '*.yaml'
+  - '*.yml'
+  - '.yamllint'
+  - '*.winget'
+
 rules:
   document-start: disable
   line-length: disable
