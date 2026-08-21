@@ -4,6 +4,4 @@
 # author, so `git shortlog -sne` collapses to one name without rewriting a
 # single commit. Committed history stays byte-identical; only its presentation
 # changes. Format: <canonical name> <canonical email> <matched name> <matched email>
-Serhii Zolotov <zolotov.98@gmail.com> <cursoragent@cursor.com>
 Serhii Zolotov <zolotov.98@gmail.com> greenblacked <zolotov.98@gmail.com>
-Serhii Zolotov <zolotov.98@gmail.com> Serhii <zolotov@gmail.com>
