@@ -247,5 +247,77 @@ class RecordHashCliTests(unittest.TestCase):
             )
 
 
+class ChangelogInsertionTests(unittest.TestCase):
+    """The bump must find "### Changed" wherever it sits, and not corrupt it.
+
+    The original required the literal "## [Unreleased]\\n\\n### Changed\\n\\n", so
+    Changed had to be the *first* subsection. This repository's changelog has
+    never been shaped that way, which means the bump step could not have
+    succeeded even once the candidate test was fixed - any ordinary "### Added"
+    entry above it was enough to break the release automation.
+    """
+
+    HEADER = "# Changelog\n\nblurb\n\n"
+    FOOTER = "\n## [2026-08-01]\n\n### Fixed\n\n- old\n"
+    SHAPES = {
+        "added_only": "## [Unreleased]\n\n### Added\n\n- a\n",
+        "changed_first": "## [Unreleased]\n\n### Changed\n\n- existing\n",
+        "changed_empty": "## [Unreleased]\n\n### Changed\n\n### Fixed\n\n- y\n",
+        "added_then_fixed": "## [Unreleased]\n\n### Added\n\n- x\n\n### Fixed\n\n- y\n",
+        "unreleased_empty": "## [Unreleased]\n",
+    }
+
+    def _bump_into(self, shape: str) -> str:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "CHANGELOG.md").write_text(
+                self.HEADER + shape + self.FOOTER, encoding="utf-8"
+            )
+            routeros_version._add_changelog_entry(root, "7.23.3", "7.24")
+            return (root / "CHANGELOG.md").read_text(encoding="utf-8")
+
+    def test_entry_lands_in_every_shape(self) -> None:
+        for name, shape in self.SHAPES.items():
+            with self.subTest(shape=name):
+                self.assertIn("bumped from 7.23.3 to 7.24", self._bump_into(shape))
+
+    def test_no_double_blank_lines(self) -> None:
+        # markdownlint MD012. A bump that turns the repository red on the
+        # commit it just made is not a working bump, and two of the three
+        # regexes here produced exactly that by using \s* where the newlines
+        # had to be preserved.
+        for name, shape in self.SHAPES.items():
+            with self.subTest(shape=name):
+                self.assertNotIn("\n\n\n", self._bump_into(shape))
+
+    def test_the_entry_joins_the_existing_list(self) -> None:
+        # Not separated from it by a blank line, which would split one list
+        # into two.
+        out = self._bump_into(self.SHAPES["changed_first"])
+        self.assertIn(
+            "- RouterOS CHR compatibility was bumped from 7.23.3 to 7.24 after "
+            "the full Docker integration suite passed.\n- existing\n",
+            out,
+        )
+
+    def test_changed_is_created_in_keep_a_changelog_order(self) -> None:
+        out = self._bump_into(self.SHAPES["added_then_fixed"])
+        body = out[out.index("## [Unreleased]") : out.index("## [2026-08-01]")]
+        self.assertEqual(
+            [line[4:] for line in body.splitlines() if line.startswith("### ")],
+            ["Added", "Changed", "Fixed"],
+        )
+
+    def test_missing_unreleased_heading_is_an_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            (root / "CHANGELOG.md").write_text(
+                "# Changelog\n\n## [2026-08-01]\n\n### Fixed\n\n- old\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(routeros_version.ReleaseError):
+                routeros_version._add_changelog_entry(root, "7.23.3", "7.24")
+
+
 if __name__ == "__main__":
     unittest.main()

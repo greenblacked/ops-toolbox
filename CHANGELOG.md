@@ -16,6 +16,24 @@ entry here belongs to a version.
 
 ### Added
 
+- The RouterOS bump step can find its insertion point. It required the literal
+  `## [Unreleased]\n\n### Changed\n\n`, so `### Changed` had to be the *first*
+  subsection under Unreleased. This changelog has never been shaped that way,
+  which means the bump could not have run even after the candidate test was
+  fixed - an ordinary `### Added` entry above it was enough to stop the release
+  automation, and it failed in under a second with a message about a missing
+  insertion point.
+
+  The section is now located wherever it sits, and created in Keep a Changelog
+  order when absent. Two of the three regexes involved used `\s*` to match the
+  end of a heading line, which is greedy across newlines and left the caller
+  reinserting blank lines that were already there - producing `MD012` and a
+  bump whose own commit turned the repository red. They match `[ \t]*` now.
+
+  Seven changelog shapes are covered, each checked for the entry, for markdown
+  that lints clean, and for joining the existing list rather than splitting it.
+  Ten of them fail against the previous implementation.
+
 - The RouterOS candidate test can pass. It never could: the workflow overrode
   `ROUTEROS_VERSION` to the candidate but left `ROUTEROS_SHA256` at the pinned
   version's digest, so the CHR build downloaded the new archive and verified it
