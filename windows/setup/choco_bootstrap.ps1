@@ -182,21 +182,28 @@ switch ($Action) {
     }
 
     'install' {
+        if ($DryRun) {
+            # Deliberately does not call choco, which is why this branch reads
+            # the file and stops rather than diffing against the machine.
+            # Even `choco list` creates %TEMP%\chocolatey and touches %APPDATA%,
+            # so a preview that asked "what is missing" would make this
+            # script's own "no changes written" claim false - and did, on the
+            # native Windows runner, where the contract suite caught it.
+            # 'check' answers the missing-package question; it talks to
+            # Chocolatey and is not held to this contract.
+            $wanted = @(Get-WantedPackage -Path $File)
+            Write-Info "(dry-run) would ensure $($wanted.Count) package(s) from $File are installed"
+            foreach ($id in $wanted) { Write-Host "WOULD    $id" -ForegroundColor Cyan }
+            Write-Info 'dry run complete; no changes written'
+            exit 0
+        }
+
         $wanted = @(Get-WantedPackage -Path $File)
         $have = @(Get-InstalledPackage)
         $missing = @($wanted | Where-Object { $_ -notin $have })
 
         if (-not $missing) {
             Write-Ok ('nothing to do; all {0} package(s) are installed' -f $wanted.Count)
-            exit 0
-        }
-
-        if ($DryRun) {
-            foreach ($m in $missing) {
-                Write-Host ('WOULD install {0}' -f $m) -ForegroundColor Cyan
-            }
-            Write-Host ('WOULD run: choco install {0} -y' -f ($missing -join ' ')) -ForegroundColor Cyan
-            Write-Host 'Dry run complete; no changes written.' -ForegroundColor Yellow
             exit 0
         }
 

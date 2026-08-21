@@ -16,6 +16,20 @@ entry here belongs to a version.
 
 ### Added
 
+- `choco_bootstrap.ps1 install -DryRun` no longer calls Chocolatey. It asked
+  the machine which packages were missing, and `choco list` creates
+  `%TEMP%\chocolatey` and touches `%APPDATA%` doing it - so the preview wrote
+  two directories while printing that it had written none. It now reads the
+  `packages.config` and reports what the file asks for; `check` still answers
+  the missing-package question and is allowed to talk to Chocolatey.
+
+  Caught by the `windows-2025` contract job, not locally: on Linux the script
+  exits at its `$IsWindows` guard before the preview path runs, so the whole
+  class of bug is invisible to `./run-tests.sh windows` there. `winget --version`
+  measured writing nothing on the same runner, but `winget_configure.ps1` now
+  defers its version preflight to the point of use anyway, so its preview
+  invokes nothing at all.
+
 - `windows/setup/configuration.winget` and `winget_configure.ps1`, making
   winget the primary Windows package manager: a curated, reviewed, declarative
   list of what a workstation should have, applied with `winget configure`. The

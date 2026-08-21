@@ -87,20 +87,26 @@ if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
 # winget prints its version as "v1.8.1911". Anything that does not look like a
 # version is treated as unknown rather than as too old: refusing to run because
 # a future winget changed its banner format would be worse than trying.
-function Get-WinGetVersion {
+#
+# Called at the point of use rather than up here with the rest of the
+# preflight, so the apply preview never runs winget at all. On windows-2025
+# `winget --version` was measured writing nothing, so this is precaution
+# rather than a fix for an observed failure - but `choco list` in
+# choco_bootstrap.ps1's preview did create two directories, and the cheapest
+# way not to repeat that is for a preview to invoke nothing.
+function Assert-WinGetVersion {
     $raw = (& winget.exe --version 2>&1 | Out-String).Trim()
     $m = [regex]::Match($raw, 'v?(?<version>\d+\.\d+(\.\d+)?)')
-    if (-not $m.Success) { return $null }
-    return [version]$m.Groups['version'].Value
-}
-
-$wingetVersion = Get-WinGetVersion
-if ($null -eq $wingetVersion) {
-    Write-Warn "could not read a version from 'winget --version'; continuing"
-} elseif ($wingetVersion -lt $MinimumWinGetVersion) {
-    Write-Err "winget $wingetVersion is too old - 'winget configure' needs $MinimumWinGetVersion or newer"
-    Write-Info 'update "App Installer" from the Microsoft Store, then re-run'
-    exit 2
+    if (-not $m.Success) {
+        Write-Warn "could not read a version from 'winget --version'; continuing"
+        return
+    }
+    $found = [version]$m.Groups['version'].Value
+    if ($found -lt $MinimumWinGetVersion) {
+        Write-Err "winget $found is too old - 'winget configure' needs $MinimumWinGetVersion or newer"
+        Write-Info 'update "App Installer" from the Microsoft Store, then re-run'
+        exit 2
+    }
 }
 
 if (-not (Test-Path $File)) {
@@ -122,6 +128,7 @@ $commonArguments = @(
 function Invoke-WinGetConfigure {
     param([string[]]$Arguments)
 
+    Assert-WinGetVersion
     & winget.exe configure @Arguments
     return $LASTEXITCODE
 }
@@ -163,10 +170,11 @@ switch ($Action) {
 
     'apply' {
         if ($DryRun) {
-            # Deliberately not 'winget configure test' here. test contacts the
-            # winget sources and populates caches under LOCALAPPDATA, which
-            # would make this script's "no changes written" contract false. A
-            # preview reads the file and says what it would do.
+            # Deliberately does not call winget at all - not 'configure test',
+            # not even '--version'. Both contact or initialise winget state
+            # under LOCALAPPDATA and TEMP, which would make this script's "no
+            # changes written" contract false. A preview reads the file and
+            # says what it would do.
             # Both YAML styles the file uses: a description on its own line
             # under directives:, and one inside an inline { } map. Anything
             # before the first '- resource:' is header commentary, and

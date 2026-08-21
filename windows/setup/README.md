@@ -296,10 +296,17 @@ rebuilt to be usable with this repository.
 .\choco_bootstrap.ps1 list            # installed ids, read-only
 .\choco_bootstrap.ps1 check           # is everything in the file installed?
 .\choco_bootstrap.ps1 diff            # what export would change
-.\choco_bootstrap.ps1 install -DryRun # what install would add
+.\choco_bootstrap.ps1 install -DryRun # what the file asks for
 .\choco_bootstrap.ps1 install
 .\choco_bootstrap.ps1 export -Force
 ```
+
+The `install -DryRun` preview reads the file and stops there; it does not ask
+Chocolatey what is already installed. Even `choco list` creates
+`%TEMP%\chocolatey` and touches `%APPDATA%`, so a preview that diffed against
+the machine would make the script's own no-write claim false - and did, until
+the native Windows runner caught it. `check` answers the "what is missing"
+question and is allowed to talk to Chocolatey.
 
 The file it reads and writes is `packages.config`, Chocolatey's own format, so
 it is also usable without this script:

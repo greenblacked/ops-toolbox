@@ -75,6 +75,23 @@ arguments to reach its write path, add it to `Get-DryRunArgument` in
 script exits at its usage branch, and "wrote nothing" is true of a run that
 never reached the code that writes.
 
+**A preview must not invoke the packaging tool.** These tools initialise state
+under `%TEMP%` and `%LOCALAPPDATA%` on invocations that look read-only:
+`choco list` creates `%TEMP%\chocolatey` and touches `%APPDATA%`, which is
+what made `choco_bootstrap.ps1 install -DryRun` write two directories while
+claiming it had written none. A `-DryRun` that asks the machine what it
+already has cannot keep that promise. Read the file and report what it asks
+for; leave "what is actually missing" to `check`, which is allowed to talk to
+the tool. `winget --version` was measured writing nothing on `windows-2025`,
+so a version preflight is not known to break this - but call it at the point
+of use anyway, so the preview path invokes nothing at all.
+
+Note where this is caught. On Linux every one of these scripts exits at its
+`$IsWindows` guard before the preview path runs, so a green local
+`./run-tests.sh windows` proves nothing about it. The `windows-2025` runner is
+the only gate that executes the dry run for real - which is why a Windows
+change is worth waiting for CI on rather than pushing behind.
+
 ## Writing a test that is worth having
 
 The recurring defect here is not a missing test - it is a test that asserts the
@@ -84,6 +101,9 @@ shape its author had in mind:
   directory and were not, and each reached a recursive delete.
 - `--dry-run` was covered; `install --dry-run` was not, and it wrote two
   systemd units and started a timer.
+- A PowerShell `install -DryRun` was covered on Linux, where the platform guard
+  fires first; on Windows it called `choco list` to work out what was missing
+  and created two directories doing it.
 - `--list` was covered with its exit status discarded, so it could have
   regressed to exit 3 and still passed.
 - A release-feed title was matched against one channel name; the feed lists
