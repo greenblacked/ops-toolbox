@@ -27,6 +27,9 @@ setopt HIST_VERIFY           # don't immediately execute from history expansion
 setopt SHARE_HISTORY         # share history between sessions
 setopt AUTO_CD               # `cd` by typing directory name
 setopt INTERACTIVE_COMMENTS  # allow `# comments` in interactive shell
+setopt EXTENDED_HISTORY      # record timestamps: "when did I run that apply"
+setopt HIST_EXPIRE_DUPS_FIRST
+setopt HIST_REDUCE_BLANKS
 
 HISTSIZE=50000
 SAVEHIST=50000
@@ -69,19 +72,19 @@ else
 fi
 
 # ================================ better tools =============================
+# Only tools that accept the same flags as what they replace are allowed to
+# shadow it. fd and rg deliberately do not: `find . -name '*.log'` is an error
+# under fd, and `grep -rn pattern dir` means something different under rg - so
+# a command copied out of a runbook or an incident doc breaks on the machine
+# that aliased them. Use fd and rg by their own names.
 command -v bat  >/dev/null 2>&1 && alias cat='bat --paging=never'
-command -v fd   >/dev/null 2>&1 && alias find='fd'
-command -v rg   >/dev/null 2>&1 && alias grep='rg'
 command -v htop >/dev/null 2>&1 && alias top='htop'
 command -v duf  >/dev/null 2>&1 && alias df='duf'
 command -v dust >/dev/null 2>&1 && alias du='dust'
 
-# Plain grep fallback with color if ripgrep isn't installed.
-if ! command -v rg >/dev/null 2>&1; then
-  alias grep='grep --color=auto'
-  alias egrep='egrep --color=auto'
-  alias fgrep='fgrep --color=auto'
-fi
+alias grep='grep --color=auto'
+alias egrep='egrep --color=auto'
+alias fgrep='fgrep --color=auto'
 
 # ================================ convenience =============================
 # Keep `h` free for Helm shortcuts below.
@@ -92,7 +95,24 @@ alias reload='exec zsh'
 alias path='echo -e ${PATH//:/\\n}'
 alias ports='lsof -i -P -n | grep LISTEN'
 alias myip='curl -s https://api.ipify.org && echo'
-alias localip="ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1"
+
+# ipconfig is macOS-only; `ip route` is the Linux spelling. Without the split
+# this alias was registered everywhere and failed everywhere but a Mac.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  alias localip='ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1'
+else
+  # The address is the token after "src"; its field number shifts depending on
+  # whether the route has a via hop, so scan rather than count.
+  localip() {
+    ip -4 route get 1.1.1.1 2>/dev/null \
+      | awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i + 1); exit}}'
+  }
+fi
+
+# The trailing space makes the next word eligible for alias expansion, so
+# `sudo sc restart foo` and `watch kgp` work instead of "command not found".
+alias sudo='sudo '
+command -v watch >/dev/null 2>&1 && alias watch='watch '
 alias week='date +%V'
 alias now='date +"%Y-%m-%d %H:%M:%S"'
 
@@ -159,8 +179,17 @@ if command -v docker >/dev/null 2>&1; then
   alias di='docker images'
   alias dex='docker exec -it'
   alias dlogs='docker logs -f'
+  alias dstats='docker stats --no-stream'
+  # Deliberately loud name: -af --volumes removes every stopped container,
+  # every unused image and every unused volume, including data you meant to
+  # keep. There is no undo.
   alias dprune='docker system prune -af --volumes'
+  # Container IPs without remembering the Go template.
+  dip() {
+    docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$@"
+  }
 fi
+command -v lazydocker >/dev/null 2>&1 && alias lzd='lazydocker'
 
 if command -v docker-compose >/dev/null 2>&1 || docker compose version >/dev/null 2>&1; then
   alias dc='docker compose'
@@ -178,6 +207,64 @@ if command -v kubectl >/dev/null 2>&1; then
   alias kl='kubectl logs -f'
   alias kx='kubectl exec -it'
   alias kns='kubectl config set-context --current --namespace'
+
+  # The gets you type all day.
+  alias kgp='kubectl get pods'
+  alias kgpa='kubectl get pods -A'
+  alias kgpw='kubectl get pods -o wide'
+  alias kgs='kubectl get svc'
+  alias kgd='kubectl get deploy'
+  alias kgn='kubectl get nodes -o wide'
+  alias kga='kubectl get all'
+
+  alias kaf='kubectl apply -f'
+  # Server-side dry run: the manifest is validated by the real admission
+  # chain, which catches what a client-side parse cannot.
+  alias kdry='kubectl apply --dry-run=server -f'
+  alias kdelf='kubectl delete -f'
+
+  alias kpf='kubectl port-forward'
+  alias ktop='kubectl top pods'
+  alias krr='kubectl rollout restart'
+  alias krs='kubectl rollout status'
+  # Events in the order things happened, which is never the default order.
+  alias kev='kubectl get events --sort-by=.lastTimestamp'
+
+  # kctx: show the current context, or switch to the one named.
+  kctx() {
+    if [[ -z "${1:-}" ]]; then
+      kubectl config get-contexts
+    else
+      kubectl config use-context "$1"
+    fi
+  }
+fi
+command -v k9s >/dev/null 2>&1 && alias k9='k9s'
+
+# ================================ aws ======================================
+if command -v aws >/dev/null 2>&1; then
+  # The first question on any misbehaving credential chain.
+  alias aws-whoami='aws sts get-caller-identity'
+
+  # awsp: show profiles, or export AWS_PROFILE for this shell.
+  awsp() {
+    if [[ -z "${1:-}" ]]; then
+      aws configure list-profiles
+      [[ -n "${AWS_PROFILE:-}" ]] && echo "current: $AWS_PROFILE"
+    else
+      export AWS_PROFILE="$1"
+      echo "AWS_PROFILE=$AWS_PROFILE"
+    fi
+  }
+fi
+
+# ================================ ansible ==================================
+if command -v ansible-playbook >/dev/null 2>&1; then
+  alias ap='ansible-playbook'
+  # Check mode with a diff is the plan step ansible does not foreground.
+  alias apc='ansible-playbook --check --diff'
+  alias av='ansible-vault'
+  alias ainv='ansible-inventory --graph'
 fi
 
 # ================================ homebrew =================================
@@ -200,7 +287,6 @@ fi
 
 if command -v python3 >/dev/null 2>&1 || command -v python >/dev/null 2>&1; then
   alias py='python3'
-  alias py2='python2'
   alias py3='python3'
   alias pipup='python3 -m pip install --upgrade pip setuptools wheel'
   # Create (or reuse) a .venv in the current directory and activate it.
@@ -252,6 +338,7 @@ if command -v terraform >/dev/null 2>&1; then
   alias tfo='terraform output'
   alias tfs='terraform state'
   alias tfsl='terraform state list'
+  alias tfsh='terraform state show'
   alias tfw='terraform workspace'
   alias tfws='terraform workspace select'
   alias tfwl='terraform workspace list'
@@ -428,3 +515,40 @@ weather() {
   local city="${1:-}"
   curl -s "https://wttr.in/${city}?format=3"
 }
+
+# retry <n> <command...>: run a command up to n times with exponential backoff.
+# The loop every ops shell ends up needing for a flaky endpoint or an API that
+# has not converged yet. Returns the command's last exit code, so it composes:
+#   retry 5 curl -fsS https://service/healthz
+retry() {
+  local attempts="${1:-}"
+  if [[ ! "$attempts" == <1-> || $# -lt 2 ]]; then
+    echo "usage: retry <attempts> <command...>" >&2
+    return 2
+  fi
+  shift
+  local n=1 delay=2 rc=0
+  while true; do
+    "$@" && return 0
+    rc=$?
+    if (( n >= attempts )); then
+      echo "retry: failed after $attempts attempt(s): $*" >&2
+      return $rc
+    fi
+    echo "retry: attempt $n/$attempts failed (exit $rc); sleeping ${delay}s" >&2
+    sleep "$delay"
+    (( n++, delay *= 2 ))
+  done
+}
+
+# ================================ completion ===============================
+# Give the short aliases the completion of the command they stand for - but
+# only when the user's own zshrc has already run compinit. Forcing compinit
+# from an aliases file would change completion behaviour they did not ask for.
+if (( ${+functions[compdef]} )); then
+  compdef k=kubectl 2>/dev/null
+  compdef g=git 2>/dev/null
+  compdef tf=terraform 2>/dev/null
+  compdef h=helm 2>/dev/null
+  compdef d=docker 2>/dev/null
+fi

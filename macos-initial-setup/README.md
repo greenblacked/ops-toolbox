@@ -76,7 +76,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
-| `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions. |
+| `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions: git, docker, kubernetes (with server-side dry-run and completion for `k`), terraform, helm, aws profile switching, ansible, and a `retry` helper with exponential backoff. `find` and `grep` are deliberately never shadowed by `fd`/`rg` - the flags differ, and a command copied from a runbook has to work as written. |
 | `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development-docker-checks). |
 
 ## Lifecycle: when to run what
