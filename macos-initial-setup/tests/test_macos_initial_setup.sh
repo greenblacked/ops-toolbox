@@ -720,6 +720,37 @@ assert_contains "zsh aliases expose scheduled-run logs" "$aliases_out" "stay-fre
 assert_contains "toolbox-help makes guarded shortcuts discoverable" "$aliases_out" \
   "macOS toolbox commands available"
 
+# A shadow is only allowed when the replacement accepts the same flags. fd and
+# rg do not - `find . -name` errors under fd, `grep -rn pattern dir` changes
+# meaning under rg - so a command copied from a runbook breaks exactly on the
+# machine that aliased them. Checked as text because the aliases are guarded:
+# in a container without fd installed they would never register, and a
+# behavioural test here would pass whether or not the shadow existed.
+if grep -qE "alias (find|grep)='(fd|rg)'" "$M/zsh_aliases.zsh"; then
+  err "zsh_aliases.zsh shadows find or grep with a flag-incompatible tool"
+else
+  ok "zsh: find and grep are not shadowed by fd/rg"
+fi
+
+# sudo's trailing space makes the word after it eligible for alias expansion,
+# which is what lets `sudo <alias>` work at all.
+sudo_alias="$(zsh -f -c "source '$M/zsh_aliases.zsh'; alias sudo")"
+if [ "$sudo_alias" = "sudo='sudo '" ]; then
+  ok "zsh: sudo alias keeps its trailing space"
+else
+  err "zsh: sudo alias lost its trailing space: $sudo_alias"
+fi
+
+# retry is unguarded, so it must exist and keep its contract everywhere:
+# 0 on success, the command's own exit code on exhaustion, 2 on bad usage.
+retry_out="$(zsh -f -c "source '$M/zsh_aliases.zsh'
+retry 1 true; echo rc_ok=\$?
+retry 2 false 2>/dev/null; echo rc_fail=\$?
+retry x true 2>/dev/null; echo rc_usage=\$?")"
+assert_contains "retry returns 0 on success" "$retry_out" "rc_ok=0"
+assert_contains "retry surfaces the command's exit code" "$retry_out" "rc_fail=1"
+assert_contains "retry rejects bad usage with 3-adjacent code 2" "$retry_out" "rc_usage=2"
+
 if (( failures )); then
   echo "=== $failures test(s) failed ===" >&2
   exit 1

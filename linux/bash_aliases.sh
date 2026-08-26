@@ -54,7 +54,10 @@ alias du='du -h'
 alias free='free -h'
 
 # --- grep / find -----------------------------------------------------------
-_pus_have rg && alias grep='rg'
+# rg is not aliased over grep: the flags differ (`grep -rn pattern dir` means
+# something else under rg), so a command copied from a runbook breaks on the
+# one machine that has the alias. rg keeps its own name.
+alias grep='grep --color=auto'
 if _pus_have fdfind; then
   alias fd='fdfind'   # Debian and Ubuntu ship fd as fdfind
 fi

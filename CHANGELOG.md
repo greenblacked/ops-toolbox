@@ -16,6 +16,35 @@ entry here belongs to a version.
 
 ### Added
 
+- DevOps coverage in `macos-initial-setup/zsh_aliases.zsh`: the kubectl
+  section grows from six aliases to the working set (`kgp`/`kgpa`/`kgs`/`kgd`/
+  `kgn`, `kaf`, `kdelf`, `kpf`, `krr`/`krs`, `ktop`, `kev` sorted by the time
+  things actually happened, and `kdry` for a server-side dry run that goes
+  through real admission), a `kctx` show-or-switch helper, new aws
+  (`aws-whoami`, `awsp` profile switcher) and ansible (`ap`, `apc`
+  check-with-diff, `av`, `ainv`) sections, `docker stats`/container-IP
+  helpers, `terraform state show`, a `retry` function with exponential
+  backoff that preserves the failing command's exit code, alias-aware
+  `sudo`/`watch` (trailing space, so the next word alias-expands), completion mapped onto the short aliases when the user's
+  own `compinit` has run, and history timestamps (`EXTENDED_HISTORY`) so
+  "when did I run that apply" has an answer.
+
+  Two shadows were removed rather than added: `find` is no longer aliased to
+  `fd`, and `grep` no longer to `rg` (in `linux/bash_aliases.sh` too). The
+  flags differ - `find . -name` errors under fd, `grep -rn pattern dir`
+  changes meaning under rg - so a command copied from a runbook broke exactly
+  on the machine that had the alias. Both tools keep their own names. Also
+  fixed: `localip` was registered on every OS but called macOS-only
+  `ipconfig`; on Linux it now reads the `src` token from `ip route get`
+  (scanned, not counted - the field number shifts when the route has no via
+  hop). The dead `py2` alias is gone.
+
+  The suite now asserts the shadows stay gone (as text, because the aliases
+  were guarded - in a container without fd installed a behavioural check
+  passes whether or not the shadow exists), that `sudo` keeps its trailing
+  space, and `retry`'s exit-code contract; all three fail against the
+  previous file.
+
 - The RouterOS bump can push its branch. `GITHUB_TOKEN` is refused when it
   pushes a branch touching `.github/workflows/`, and that permission cannot be
   granted from a workflow's own `permissions:` block - it is not one of the
