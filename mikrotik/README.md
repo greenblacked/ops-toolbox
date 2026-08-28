@@ -1,6 +1,6 @@
 # MikroTik RouterOS scripts
 
-A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.23.3**)
+A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24**)
 for backups, WiFi rotation, monitoring and Telegram notifications. All scripts
 live in `/system script` on the router and are run either manually or from
 `/system scheduler`.
@@ -439,9 +439,9 @@ To re-baseline the firewall drift detector after an intentional change,
 either run `/system script run firewall_drift_baseline` from the terminal or
 schedule it manually before applying the change.
 
-## Docker integration tests (CHR 7.23.3)
+## Docker integration tests (CHR 7.24)
 
-To validate all scripts on **real RouterOS 7.23.3** inside Docker (QEMU + official CHR
+To validate all scripts on **real RouterOS 7.24** inside Docker (QEMU + official CHR
 image), use [`tests/README.md`](tests/README.md) and from the repo root run
 `./mikrotik/tests/run.sh`. This is the closest practical “emulation” of your router:
 MikroTik does not ship a standalone script interpreter, so the tests talk to a live
@@ -458,7 +458,7 @@ The macOS setup scripts in this repo have a **separate** lightweight Docker
 harness (syntax + ShellCheck only, no Homebrew) — see
 [`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development--docker-checks).
 
-## RouterOS 7.23.3 notes & gotchas
+## RouterOS 7.24 notes & gotchas
 
 - RouterOS scripts use `/` for paths and `:` for built-in commands
   (`:local`, `:if`, `:foreach`). `:interface ...` is **not** valid syntax —
