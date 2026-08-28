@@ -73,9 +73,10 @@ genuinely cannot move to the top of the file.
 ## The one place shared Python code is allowed
 
 `macos-initial-setup/lib/workspace_scan.py` is a substantial program with its
-own tests, invoked as a subprocess by absolute path. That is the only sanctioned
-shape for shared code in this repository, and note what it costs the caller:
-`macos-initial-setup/stay_fresh.sh:44-50` carries a seven-line
-symlink-resolving preamble whose only job is finding it. Worth paying once for
-a real program with real tests; never for a small validator, which gets
-duplicated instead.
+own tests - just under 300 lines of classification logic - invoked as a
+subprocess by absolute path. That is the only sanctioned shape for shared code
+in this repository, and note what it costs the caller: the `SCRIPT_SOURCE` /
+`readlink` preamble at the top of `macos-initial-setup/stay_fresh.sh` exists
+only to find it through a symlink on `PATH`. Worth paying once for a real
+program with real tests; never for a small validator, which gets duplicated
+instead.

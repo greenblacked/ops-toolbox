@@ -22,7 +22,7 @@ Do not mix them, and do not "upgrade" a package to `-e` because it looks safer.
 | Dialect | Used by | Why |
 | --- | --- | --- |
 | `set -euo pipefail` | `git/*.sh`, `k8s-toolbox/*.sh` | Short, single-purpose. Any failure should stop everything. |
-| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. The reasoning is written out at `macos-initial-setup/v1_stay_fresh.sh:24-29`. |
+| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. The reasoning is written out in the header comment of `macos-initial-setup/v1_stay_fresh.sh` ("-e is intentionally omitted"). |
 | `set -uo pipefail` | `run-tests.sh`, `test-env/*/run.sh` | Aggregators that must keep going after a failing child and report a summary. |
 
 ## Bash 3.2 compatibility
@@ -30,8 +30,9 @@ Do not mix them, and do not "upgrade" a package to `-e` because it looks safer.
 `git/`, `macos-initial-setup/` and `linux/` must run under the Bash 3.2 that
 ships as `/bin/bash` on macOS. No `mapfile`/`readarray`, no `declare -A` or
 `local -A`, no `${x,,}`/`${x^^}`, no `coproc`, no `&>>`. Build lists with a
-`while IFS= read -r` loop - there is a worked example and an explanatory
-comment at `git/git_recent_branches.sh:78`.
+`while IFS= read -r` loop - `git/git_recent_branches.sh` has a worked example
+under the comment "Build the list without mapfile so this script runs on Bash
+3.2".
 
 The rule is **directory-scoped, not repository-wide**. `windows/git-bash/`
 targets Git Bash, which ships Bash 5, and legitimately uses `local -A` and
@@ -50,8 +51,8 @@ CLI.
 - Unknown flag - message to stderr, then `usage`, then `exit 3`.
 - Support both `--flag VALUE` and `--flag=VALUE`.
 
-The help body is a heredoc with these sections in this order - see
-`git/gacp.sh:12-31`:
+The help body is a heredoc with these sections in this order - see `usage()`
+in `git/gacp.sh`:
 
 ```text
 <name> - one-line summary
@@ -65,13 +66,14 @@ Options:
 Exit codes: 0 success, 2 not a git repo, 3 usage, ...
 ```
 
-`macos-initial-setup/brewfile.sh:47-51` uses an `awk` filter over the script's
-own header instead of duplicating it. Either is fine; the comment above it
-explains the trade-off.
+`usage()` in `macos-initial-setup/brewfile.sh` uses an `awk` filter over the
+script's own header instead of duplicating it. Either is fine; the comment
+above it explains the trade-off.
 
 ## The duplicated value guard
 
-Copy this verbatim. The canonical copy is `git/git_sync_default.sh:25-33`:
+Copy this verbatim. The canonical copy is `require_value()` in
+`git/git_sync_default.sh`:
 
 ```bash
 require_value() {
@@ -97,10 +99,10 @@ Four sanctioned mechanisms:
 
 | Mechanism | Reference | Use when |
 | --- | --- | --- |
-| Bare `run()` wrapper | `git/git_sync_default.sh:94-99` | Arguments have no spaces. |
-| `run()` with `printf %q` quoting | `git/gacp.sh:33-57` | Arguments may contain spaces (commit messages). |
-| Labelled `run_cmd "label" cmd...` | `macos-initial-setup/stay_fresh.sh:357-405` | The script also writes a log file. `run_cmd_tty()` is its sibling for anything needing a terminal (sudo, cask prompts). |
-| Inline per-branch | `git/git_amend_last.sh:66-79` | The "command" is not a single exec. |
+| Bare `run()` wrapper | `run()` in `git/git_sync_default.sh` | Arguments have no spaces. |
+| `run()` with `printf %q` quoting | `quote_arg()`, `print_cmd()` and `run()` in `git/gacp.sh` | Arguments may contain spaces (commit messages). |
+| Labelled `run_cmd "label" cmd...` | `run_cmd()` in `macos-initial-setup/stay_fresh.sh` | The script also writes a log file. `run_cmd_tty()` is its sibling for anything needing a terminal (sudo, cask prompts). |
+| Inline per-branch | the `if (( DRY_RUN == 1 ))` block in `git/git_amend_last.sh` | The "command" is not a single exec. |
 
 ### Two output grammars - pick by package, never mix
 
@@ -112,7 +114,8 @@ dry-run complete; no changes written
 ```
 
 `macos-initial-setup/` prints a dimmed, two-space-indented form with no
-terminal summary line (`stay_fresh.sh:360,387,420,467`):
+terminal summary line (`run_cmd()` and the per-step previews in
+`stay_fresh.sh`):
 
 ```text
   (dry-run) brew upgrade [homebrew upgrade]
@@ -155,8 +158,8 @@ else
 fi
 ```
 
-Level helpers use six-character padded labels so columns line up
-(`macos-initial-setup/brewfile.sh:38-42`):
+Level helpers use six-character padded labels so columns line up (the block
+above `usage()` in `macos-initial-setup/brewfile.sh`):
 
 ```bash
 info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
@@ -174,7 +177,7 @@ not.
 ## Log files
 
 Only heavyweight install and maintenance scripts write logs; `git/*.sh` write
-none. The pattern (`macos-initial-setup/stay_fresh.sh:118-119`):
+none. The pattern (`macos-initial-setup/stay_fresh.sh`):
 
 ```bash
 LOG_DIR="${TMPDIR:-/tmp}"

@@ -18,21 +18,25 @@ document actually exists.
 ## `-DryRun`, not `-WhatIf`
 
 Use a hand-rolled `[switch]$DryRun`. This is a deliberate divergence from
-PowerShell convention, stated at `windows/README.md:29-31`, for two reasons:
-the Windows scripts should read the same as the Bash ones, and the dry-run
-modes here accumulate and report a total - bytes that *would* be freed - which
-`ShouldProcess` cannot express.
+PowerShell convention, recorded in `CONTRIBUTING.md` and in the reasoning block
+of `PSScriptAnalyzerSettings.psd1`, for two reasons: the Windows scripts should
+read the same as the Bash ones, and the dry-run modes here accumulate and
+report a total - bytes that *would* be freed - which `ShouldProcess` cannot
+express.
 
 ## Output grammar
 
 `Write-Host -ForegroundColor`, in a fixed column layout
-(`windows/cleanup/clean_disk_c.ps1:71`):
+(`windows/cleanup/clean_disk_c.ps1`):
 
 ```powershell
-Write-Host ('SKIP  {0,-38} {1,10}' -f $Label, (Format-Size $Bytes)) -ForegroundColor Yellow
+Write-Host ('WOULD {0,-38} {1,10}  ({2} files)' -f $Label, (Format-Size $size), $files.Count)
+Write-Host ('CLEAN {0,-38} {1,10}' -f $Label, (Format-Size $size)) -ForegroundColor Green
+Write-Host ('SKIP  {0,-38} (not found)' -f $Label) -ForegroundColor DarkGray
 ```
 
-The verbs are `WOULD` / `CLEAN` / `SKIP`.
+The verbs are `WOULD` / `CLEAN` / `SKIP`: the label is padded to 38 and a size
+to 10, and a `SKIP` carries the reason it was skipped in place of the size.
 
 ## Encoding
 
@@ -43,10 +47,26 @@ into a `.DESCRIPTION`, use a hyphen.
 
 ## PSScriptAnalyzer policy
 
-`PSAvoidUsingWriteHost` and `PSUseShouldProcessForStateChangingFunctions` are
-excluded repository-wide in `PSScriptAnalyzerSettings.psd1`, with the reasoning
-recorded there. Everything else it reports at `Warning` or above is a real
-finding - fix it rather than widening the exclusions.
+The gate is `Severity = @('Error', 'Warning')`, not errors only: almost every
+built-in rule is Warning severity, so an Error-only gate would pass a script
+with real defects and report nothing.
+
+**`PSAvoidUsingWriteHost` is the only rule excluded repository-wide**, because
+these are interactive operator tools whose whole output is a colour-coded human
+report - `Write-Output` would put that on the pipeline and `Write-Information`
+is off by default.
+
+`PSUseShouldProcessForStateChangingFunctions` is **not** excluded, which
+surprises people given the hand-rolled `-DryRun`. It was expected to fire and
+does not: the rule needs `[CmdletBinding()]` on the function itself, and the
+state-changing helpers declare a bare `param()`. It stays enabled deliberately,
+to catch a future function that does take `CmdletBinding` without a dry-run
+story - so if you add one and the analyzer complains, give it a dry-run path
+rather than widening the exclusions. Everything else reported at `Warning` or
+above is a real finding.
+
+`PSUseBOMForUnicodeEncodedFile` is likewise kept on purpose, as the guard
+behind the ASCII rule above.
 
 For a genuine one-off, use `[Diagnostics.CodeAnalysis.SuppressMessageAttribute()]`
 at the site with a non-empty `Justification`. Repository-wide policy belongs in
