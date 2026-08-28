@@ -272,10 +272,23 @@ docker_fake() {
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "docker step succeeds against a local daemon" "0" "$rc"
-for sub in "container prune -f" "network prune -f" "volume prune -f" \
+for sub in "container prune -f" "network prune -f" \
            "image prune -f" "builder prune -af"; do
   assert_called "docker step runs $sub" "$d/calls" "docker $sub"
 done
+# Volumes hold data, not cache, and the LaunchAgent runs with --yes — an
+# unattended volume prune deletes a stopped project's database volume. The
+# default run must not touch them; --prune-docker-volumes is the opt-in.
+assert_not_called "docker volumes are untouched by default" "$d/calls" \
+  "docker volume prune"
+assert_contains "the run says why volumes were kept" "$out" "volumes kept"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
+out="$(run_sf "$d" --yes --only docker --prune-docker-volumes)"; rc=$?
+assert_eq "docker step succeeds with --prune-docker-volumes" "0" "$rc"
+assert_called "--prune-docker-volumes runs volume prune -f" "$d/calls" \
+  "docker volume prune -f"
 rm -rf "$d"
 
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
