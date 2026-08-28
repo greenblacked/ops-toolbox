@@ -16,6 +16,14 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh --prune-docker-volumes`. Volume pruning was part of the
+  default Docker step; volumes hold data, not cache — a stopped project's
+  database volume counts as "unused" the moment its container is removed, and
+  the LaunchAgent runs the script with `--yes`, so every scheduled run deleted
+  such volumes unattended. Containers, networks, dangling images and builder
+  cache still prune by default; volumes now need the flag, and the plan line
+  says which of the two the run will do.
+
 - Two Docker suites that run `stay_fresh.sh` for real, which the existing
   `tester` job never did. `test_macos_initial_setup.sh` covers `--help`,
   argument rejection, plans and dry runs; a step that deletes things was
@@ -576,6 +584,19 @@ entry here belongs to a version.
   repository cannot set for itself.
 
 ### Fixed
+
+- The `stay_fresh.sh` run lock actually excludes the LaunchAgent. It lived
+  under `"${TMPDIR:-/tmp}"`, and the agent's plist sets only `PATH` — so an
+  agent run resolved that to `/tmp` while a terminal run resolved it to the
+  per-user `/var/folders/...` directory: two different lock directories, and
+  the manual-vs-agent overlap the lock's own comment promises to prevent went
+  unprevented. The lock now lives under
+  `$HOME/Library/Application Support/stay_fresh`, identical in both contexts
+  (`STAY_FRESH_LOCK_DIR` is the test seam). The suite plants a lock and
+  asserts rejection from a *different* TMPDIR, which the previous code let
+  straight through; the voided-`--only` docker tests also stop depending on
+  docker being absent from PATH, which held in the CI container and nowhere
+  with a `/usr/bin/docker`.
 
 - `--no-sudo` no longer rewrites steps that were already off. Memory is opt-in,
   and `--only` / `--skip-*` have already taken others off the list, but
