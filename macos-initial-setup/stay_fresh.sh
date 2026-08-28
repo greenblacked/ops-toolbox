@@ -11,7 +11,8 @@
 #   - prune VS Code workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, gem, go)
-#   - prune Docker / OrbStack (images, containers, volumes, builder cache)
+#   - prune Docker / OrbStack (images, containers, builder cache; volumes
+#     only with --prune-docker-volumes, because volumes hold data)
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
 #   - clean diagnostic / crash reports (as user; system dirs if sudo)
 #   - Homebrew: update, upgrade (formulae + casks), cleanup -s, autoremove
@@ -26,7 +27,7 @@
 #                   [--skip-workspacestorage] [--skip-trash]
 #                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-gcloud]
-#                   [--skip-versions] [--skip-docker]
+#                   [--skip-versions] [--skip-docker] [--prune-docker-volumes]
 #                   [--skip-xcode] [--prune-xcode-archives-days N]
 #                   [--force-active-app-caches] [--skip-diagnostics]
 #                   [--no-sudo] [--help]
@@ -61,10 +62,9 @@ if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_GREEN=$'\033[1;32m'
   C_YELLOW=$'\033[1;33m'
   C_BLUE=$'\033[1;34m'
-  C_MAGENTA=$'\033[1;35m'
   C_CYAN=$'\033[1;36m'
 else
-  C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_MAGENTA='' C_CYAN=''
+  C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_CYAN=''
 fi
 
 bold()  { printf "%s%s%s\n" "$C_BOLD"    "$*" "$C_RESET"; }
@@ -110,6 +110,7 @@ SKIP_HELM_PLUGINS=0
 SKIP_GCLOUD=0
 SKIP_VERSIONS=0
 SKIP_DOCKER=0
+PRUNE_DOCKER_VOLUMES=0
 SKIP_XCODE=0
 SKIP_DIAGNOSTICS=0
 BREW_GREEDY=0
@@ -143,9 +144,18 @@ TOTAL_FREED_B=0
 STEP_WARN_COUNT=0
 
 # A manual invocation and the LaunchAgent can otherwise overlap and run package
-# upgrades or delete the same cache tree concurrently. The per-user TMPDIR is a
-# safe place for an atomic lock that does not need sudo.
-LOCK_DIR="${TMPDIR:-/tmp}/stay_fresh-${UID}.lock"
+# upgrades or delete the same cache tree concurrently.
+#
+# Deliberately NOT under TMPDIR. The LaunchAgent's environment carries only
+# PATH, so an agent run resolved "${TMPDIR:-/tmp}" to /tmp while a terminal
+# run resolved it to the per-user /var/folders/... directory - two different
+# lock directories, and the exact overlap this lock exists to prevent went
+# unprevented. HOME is identical in both contexts. Application Support is
+# safe from this script's own sweeps: user-caches clears only its four listed
+# targets and app-caches walks only known application roots. The override
+# exists for tests, which must not share a lock with a real run.
+LOCK_PARENT="${STAY_FRESH_LOCK_DIR:-$HOME/Library/Application Support/stay_fresh}"
+LOCK_DIR="$LOCK_PARENT/run.lock"
 LOCK_HELD=0
 SUDO_KEEPALIVE_PID=""
 
@@ -162,11 +172,11 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 
 acquire_lock() {
-  # The lock sits in TMPDIR, which is not guaranteed to exist: a launchd job or
-  # an explicit `TMPDIR=... stay_fresh.sh` can name a directory nobody has
-  # created yet. Create it here rather than at log setup, which runs later.
-  if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
-    err "cannot create $LOG_DIR to hold the run lock"
+  # The parent is created separately: mkdir -p on the lock directory itself
+  # would report success for one that already exists, which is exactly the
+  # atomicity the bare mkdir below provides.
+  if ! mkdir -p "$LOCK_PARENT" 2>/dev/null; then
+    err "cannot create $LOCK_PARENT to hold the run lock"
     return 1
   fi
   if mkdir "$LOCK_DIR" 2>/dev/null; then
@@ -274,6 +284,8 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-versions        Don't print active pyenv/goenv/tfenv/tenv/helm/gcloud
                          versions
   --skip-docker          Don't prune Docker / OrbStack
+  --prune-docker-volumes Also remove unused Docker volumes (they hold data,
+                         not cache, so the default keeps them)
   --skip-xcode           Don't clean Xcode DeviceSupport/simulators/old Archives
   --prune-xcode-archives-days N
                          Remove only .xcarchive bundles older than N days
@@ -343,6 +355,7 @@ while (( $# > 0 )); do
     --skip-gcloud)     SKIP_GCLOUD=1; EXPLICIT_SKIP=1 ;;
     --skip-versions)   SKIP_VERSIONS=1; EXPLICIT_SKIP=1 ;;
     --skip-docker)     SKIP_DOCKER=1; EXPLICIT_SKIP=1 ;;
+    --prune-docker-volumes) PRUNE_DOCKER_VOLUMES=1 ;;
     --skip-xcode)      SKIP_XCODE=1; EXPLICIT_SKIP=1 ;;
     --prune-xcode-archives-days)
       shift
@@ -897,7 +910,12 @@ plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/L
 plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed containers, VSIX"
 plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
-plan_line "docker / orbstack prune"           "$(( 1 - SKIP_DOCKER      ))" "images, containers, volumes, builder"
+if (( PRUNE_DOCKER_VOLUMES )); then
+  docker_plan="images, containers, builder + unused volumes"
+else
+  docker_plan="images, containers, builder; volumes kept"
+fi
+plan_line "docker / orbstack prune"           "$(( 1 - SKIP_DOCKER      ))" "$docker_plan"
 if [[ -n "$XCODE_ARCHIVE_DAYS" ]]; then
   xcode_plan="DeviceSupport, simulators, Archives older than ${XCODE_ARCHIVE_DAYS}d"
 else
@@ -1137,7 +1155,7 @@ step_appcaches() {
 # is not currently mounted are all kept, so errors cost disk, never data.
 step_workspacestorage() {
   local root="$HOME/Library/Application Support"
-  local ed ws status dir reason workspace_path
+  local ed ws status dir reason
   local live=0 unresolved=0
   local -a roots=() stale=()
 
@@ -1177,7 +1195,7 @@ step_workspacestorage() {
   while IFS= read -r -d '' status \
     && IFS= read -r -d '' dir \
     && IFS= read -r -d '' reason \
-    && IFS= read -r -d '' workspace_path; do
+    && IFS= read -r -d '' _; do   # 4th field consumed to keep records aligned
     case "$status" in
       live)  live=$(( live + 1 )) ;;
       stale) stale+=("$dir") ;;
@@ -1344,8 +1362,17 @@ step_docker() {
     || warn "'docker container prune' failed"
   run_cmd "docker network prune -f" docker network prune -f \
     || warn "'docker network prune' failed"
-  run_cmd "docker volume prune -f" docker volume prune -f \
-    || warn "'docker volume prune' failed"
+  # Volumes are data, not cache: a stopped project's database volume counts
+  # as "unused" the moment its container is removed, and the LaunchAgent runs
+  # this script with --yes, so a default volume prune would delete it
+  # unattended. Everything else pruned here is reproducible; volumes are the
+  # one thing that is not, so they sit behind their own flag.
+  if (( PRUNE_DOCKER_VOLUMES )); then
+    run_cmd "docker volume prune -f" docker volume prune -f \
+      || warn "'docker volume prune' failed"
+  else
+    info "volumes kept (data, not cache) — pass --prune-docker-volumes to remove unused ones"
+  fi
   run_cmd "docker image prune -f" docker image prune -f \
     || warn "'docker image prune' failed"
   run_cmd "docker builder prune -af"          docker builder prune -af \
