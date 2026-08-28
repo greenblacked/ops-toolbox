@@ -8,7 +8,7 @@
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS%20%7C%20Kubernetes-lightgrey.svg)](#whats-here)
 [![Test suites](https://img.shields.io/badge/test%20suites-8-blue.svg)](#testing)
 [![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
-[![RouterOS](https://img.shields.io/badge/RouterOS-7.24-blue.svg)](mikrotik/README.md)
+[![RouterOS](https://img.shields.io/badge/RouterOS-7.24.1-blue.svg)](mikrotik/README.md)
 
 **CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
 conventions suites on every pull request, including native macOS and Windows
@@ -46,7 +46,7 @@ Three rules hold everywhere, and the test suites enforce them:
   WSL maintenance and disk cleanup.
 - Linux servers and workstations — Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`)
   and Arch (`pacman`); scripts use `bash`.
-- MikroTik RouterOS 7.24 — scripts are RouterOS scripting language (`.lua`
+- MikroTik RouterOS 7.24.1 — scripts are RouterOS scripting language (`.lua`
   extension is just for editor highlighting).
 - Kubernetes clusters, GKE in particular — a Debian-based toolbox image with
   pinned CLIs, driven by `bash` scripts from macOS or Linux.
@@ -436,7 +436,7 @@ equivalent worth mirroring. See [`linux/README.md`](linux/README.md).
 ## MikroTik scripts at a glance
 
 The MikroTik package is [`mikrotik/`](mikrotik/), verified against
-**RouterOS 7.24**:
+**RouterOS 7.24.1**:
 
 - `tg_send.lua` — generic Telegram text helper used by every other script;
   reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
@@ -498,7 +498,7 @@ Run from your machine rather than on the router:
   pip, no venv. Refuses `--show-sensitive` together with `--commit`.
 
 See [`mikrotik/README.md`](mikrotik/README.md) for installation, policy
-flags, suggested scheduler entries, and RouterOS 7.24-specific gotchas
+flags, suggested scheduler entries, and RouterOS 7.24.1-specific gotchas
 (TLS CAs, `:global` lifetime, `wifi` vs `wireless`, etc.).
 
 ## Kubernetes toolbox at a glance
@@ -575,7 +575,7 @@ preflight only runs when one of them is actually selected — so
 | [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
 | [`windows/`](windows/) | **Contract** checks on the PowerShell scripts in `windows/` and `templates/`: they parse, comment-based help is complete, anything that changes a machine can be previewed first, every flag the READMEs document actually exists, and each `-DryRun` run leaves a scratch `HOME` and `TEMP` untouched. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
 | [`k8s-toolbox/`](k8s-toolbox/) | **Contract** checks on the toolbox scripts: `--help`, unknown flags, flags that require a value, the dry-run promise checked against the filesystem, exit `2` when Docker or `kubectl` is missing, and agreement between `versions.env`, the Dockerfile and `build.sh`. Deliberately does **not** build the image — `K8S_IMAGE_SMOKE=1` does that. **bash only.** | [`k8s-toolbox/README.md#tests`](k8s-toolbox/README.md#tests) — `./k8s-toolbox/tests/run.sh` |
-| [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.24 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
+| [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.24.1 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and
 Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
