@@ -10,6 +10,13 @@ of small, composable scripts that are safe to run today, next month, and on
 the next machine. Every change is previewable with `--dry-run`, logged to
 `$TMPDIR`, and opt-out at a per-feature level.
 
+The conventions these scripts follow — the `set -u` / `set -o pipefail`
+dialect, Bash 3.2 only, the indented `(dry-run)` output grammar, and the
+rule that a preview does not even create its own log file — are collected in
+[`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md),
+with [`adding-a-script`](../.claude/skills/adding-a-script/SKILL.md) as the
+checklist for a new one.
+
 **Platform:** macOS 12+ (Monterey through the current release) on Apple
 Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 `zsh` for the aliases file.
@@ -394,8 +401,11 @@ In the order they run:
    and anything unparsable are kept. The classification is done by
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
 7. Empty `~/.Trash`.
-8. Prune Docker / OrbStack (containers, networks, volumes, builder
-   cache, and **dangling images only** — tagged images are kept).
+8. Prune Docker / OrbStack (containers, networks, builder cache, and
+   **dangling images only** — tagged images are kept). Unused volumes are
+   kept unless `--prune-docker-volumes` is passed: volumes hold data, not
+   cache, and a stopped project's database volume counts as "unused" the
+   moment its container is removed.
 9. Clean Xcode DeviceSupport and obsolete simulators. Archives are kept unless
    an age threshold is explicitly set with `--prune-xcode-archives-days N`.
 10. Remove diagnostic and crash reports (user, plus system with `sudo`).
@@ -446,6 +456,7 @@ In the order they run:
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`gem`/`go` cache cleanup. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
+| `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
@@ -458,6 +469,13 @@ In the order they run:
 skipped, then enables exactly the requested ids. The `memory` id remains
 double-gated and is rejected unless `--purge-memory` is also present. Existing
 skip flags remain unchanged for full maintenance runs.
+
+Preflight can disable a step the machine cannot run — no Homebrew, no Docker
+daemon, no Xcode data, or `--no-sudo` against a root-owned step. When that
+happens to a step you named in `--only`, the run says which selection was lost
+and why. If it takes out *every* id you asked for, the run stops with exit `2`
+rather than reaching the summary having done nothing and reporting success;
+`--dry-run` previews it as a warning instead, like every other preflight check.
 
 The workspace classifier remains read-only when invoked directly. `--json`
 lists individual classifications; `--summary` instead emits JSON counts and
@@ -482,7 +500,9 @@ accounting, and closes with a summary that includes:
 - Elapsed wall-clock time.
 - `df` delta on `/`.
 - Sum of per-step deltas (more precise than `df` alone).
-- Which steps passed, warned, were skipped, or failed.
+- Which steps passed, warned, were skipped, or failed. A step preflight
+  disabled carries its reason, e.g. `Docker / OrbStack prune (the Docker
+  daemon is unreachable)`.
 - Path to the full log file when warnings or failures caused it to be retained.
 
 ### Exit codes
@@ -869,25 +889,47 @@ scripts actually present in the checkout.
 ## Development: Docker checks
 
 These scripts target macOS, but a **small Linux container** can still verify
-syntax, ShellCheck, `--help`, the documented exit codes, and that
-`zsh_aliases.zsh` sources cleanly in `zsh`. You need **Docker** with the
-**Compose v2** plugin; nothing else on the host.
+syntax, ShellCheck, `--help`, the documented exit codes, that
+`zsh_aliases.zsh` sources cleanly in `zsh`, and — with the host commands faked —
+what each `stay_fresh.sh` step actually deletes and keeps. You need **Docker**
+with the **Compose v2** plugin; nothing else on the host.
 
 From the **repository root**:
 
 ```bash
-./macos-initial-setup/tests/run.sh
+./macos-initial-setup/tests/run.sh          # all three suites
+./macos-initial-setup/tests/run.sh steps    # just one
 ```
 
-Same thing without the wrapper:
+Every suite runs even if an earlier one fails, so one invocation reports
+everything that is broken. Without the wrapper:
 
 ```bash
-docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm tester
+docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm -T tester
 ```
 
 The `tester` image (`tests/tester/Dockerfile`) installs `bash`, `shellcheck`,
-and `zsh`, mounts the repo read-only at `/repo`, and runs
-`tests/test_macos_initial_setup.sh`.
+`zsh` and `python3`, mounts the repo read-only at `/repo`, and backs three
+suites:
+
+| Suite | File | Scope |
+| --- | --- | --- |
+| `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the fifteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
+
+The `steps` suite fakes only the commands that identify the host or that the
+step drives (`uname`, `pgrep`, `sudo`, `brew`, `docker`, `helm`, …). `find`,
+`rm` and `du` are the real thing, so deletion is really deletion and the
+assertions are about what survived. Two steps clear absolute system paths
+(`/Library/Caches`, `/Library/Logs/DiagnosticReports`); in a disposable
+container those are ours to destroy, and the suite **refuses to start** outside
+one, because on a real Mac it would clear the caller's system caches.
+
+A container is also the only place some of this is observable at all. It has no
+controlling terminal — the state a launchd-scheduled run is in — and its
+root-owned `/rootonly` and `/rootlocked` make `mkdir(2)` genuinely return
+`EACCES`. Both cases caught bugs a macOS host would have hidden.
 
 The subjects are **discovered** with `find`, two levels deep so `launchd/` is
 covered, rather than listed in the harness. The list they replaced named four
@@ -907,8 +949,9 @@ written to stop. A new script is now covered by the commit that adds it.
 | `zsh_aliases.zsh` | Not in the `--help` contract — it is sourced, not run — but it is ShellCheck'd and must `source` cleanly under `zsh -f`. |
 
 This is **not** a substitute for `--dry-run` on a real Mac: there is no
-Homebrew, no installs, and no execution of `stay_fresh` steps. For
-RouterOS script integration tests in the same repository, see
+Homebrew and no installs. The `steps` suite executes `stay_fresh.sh` against
+faked host binaries, not against Apple APIs. For RouterOS script integration
+tests in the same repository, see
 [`mikrotik/tests/README.md`](../mikrotik/tests/README.md).
 
 ---
@@ -985,7 +1028,9 @@ Homebrew / `pyenv` / `goenv` commands.
 - Prunes Docker resources when Docker is available:
   - Containers (`docker container prune -f`)
   - Networks (`docker network prune -f`)
-  - Volumes (`docker volume prune -f`)
+  - Volumes only with `--prune-docker-volumes` — they hold data, and the
+    LaunchAgent runs with `--yes`, so a default volume prune would delete a
+    stopped project's database volume unattended
   - **Dangling images only** (`docker image prune -f`) — keeps tagged images
   - Builder cache (`docker builder prune -af`)
   - Skips pruning entirely when the active Docker context points to a non-local

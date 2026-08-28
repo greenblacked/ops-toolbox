@@ -16,6 +16,52 @@ entry here belongs to a version.
 
 ### Added
 
+- Task-scoped conventions under `.claude/skills/`, so an automated coding
+  agent working here loads the rules for the file in front of it instead of
+  skimming `CONTRIBUTING.md` and acting on the half it remembered. Ten skills:
+  one entry point, one per language (`bash`, PowerShell, RouterOS, Python), and
+  one each for adding a script, running the suites, the pre-push lint gates,
+  documentation and the changelog, and commits and pull requests.
+
+  Nothing in them is new policy — every rule is lifted from a script or from
+  the check that enforces it, and each skill names that check, because a rule
+  documented away from its enforcement is the one that drifts. The failures
+  that shaped this repository are stated as failures: the preview that wrote a
+  log file, the `install --dry-run` that wrote two systemd units, the
+  PowerShell dry run that was only ever exercised on a platform where it exits
+  at a guard. `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and the package
+  READMEs point at the relevant skill from where the same subject already comes
+  up.
+
+- `stay_fresh.sh --prune-docker-volumes`. Volume pruning was part of the
+  default Docker step; volumes hold data, not cache — a stopped project's
+  database volume counts as "unused" the moment its container is removed, and
+  the LaunchAgent runs the script with `--yes`, so every scheduled run deleted
+  such volumes unattended. Containers, networks, dangling images and builder
+  cache still prune by default; volumes now need the flag, and the plan line
+  says which of the two the run will do.
+
+- Two Docker suites that run `stay_fresh.sh` for real, which the existing
+  `tester` job never did. `test_macos_initial_setup.sh` covers `--help`,
+  argument rejection, plans and dry runs; a step that deletes things was
+  unreachable there, so a sudo keep-alive that blocked captured callers, a
+  TTY check that asked `access(2)` instead of opening `/dev/tty`, and a lock
+  that blamed a missing `TMPDIR` on a stale run all reached `master`.
+
+  `test_stay_fresh_steps.sh` executes each of the fifteen steps against a
+  scratch `HOME` and faked host binaries; `find`/`rm`/`du` are the real thing,
+  so the assertions are about what survived. It refuses to start outside a
+  container because two of those steps clear `/Library/Caches` and
+  `/Library/Logs/DiagnosticReports`. `test_stay_fresh_unprivileged.sh` runs as
+  uid 1000 against root-owned `/rootonly` and `/rootlocked`, the only way to
+  make `mkdir(2)` and `unlink(2)` actually return `EACCES`.
+
+  `macos-initial-setup/tests/run.sh` now builds once and runs all three, even
+  if an earlier suite fails. It passes `compose run -T`: without that, a host
+  with a TTY hands the container a controlling terminal, which is the state a
+  launchd job is not in, and the cask-skip assertion would pass for the wrong
+  reason.
+
 - DevOps coverage in `macos-initial-setup/zsh_aliases.zsh`: the kubectl
   section grows from six aliases to the working set (`kgp`/`kgpa`/`kgs`/`kgd`/
   `kgn`, `kaf`, `kdelf`, `kpf`, `krr`/`krs`, `ktop`, `kev` sorted by the time
@@ -595,6 +641,50 @@ entry here belongs to a version.
 - macOS alias table still advertised `find→fd` / `grep→rg` after those shadows
   were removed; the row matches the file and the suite. Linux now asserts the
   same shadows stay gone (the changelog already claimed it did).
+- The `stay_fresh.sh` run lock actually excludes the LaunchAgent. It lived
+  under `"${TMPDIR:-/tmp}"`, and the agent's plist sets only `PATH` — so an
+  agent run resolved that to `/tmp` while a terminal run resolved it to the
+  per-user `/var/folders/...` directory: two different lock directories, and
+  the manual-vs-agent overlap the lock's own comment promises to prevent went
+  unprevented. The lock now lives under
+  `$HOME/Library/Application Support/stay_fresh`, identical in both contexts
+  (`STAY_FRESH_LOCK_DIR` is the test seam). The suite plants a lock and
+  asserts rejection from a *different* TMPDIR, which the previous code let
+  straight through; the voided-`--only` docker tests also stop depending on
+  docker being absent from PATH, which held in the CI container and nowhere
+  with a `/usr/bin/docker`.
+
+- `--no-sudo` no longer rewrites steps that were already off. Memory is opt-in,
+  and `--only` / `--skip-*` have already taken others off the list, but
+  preflight still tagged all three root-owned steps as skipped because
+  `--no-sudo` was passed. A `--only versions --no-sudo` run then listed DNS and
+  system caches as refused, and every `--no-sudo` run blamed the unused memory
+  purge on the flag. The reason is recorded only for a step that was still going
+  to run; the `--no-sudo` warning is silent when none were. The tester suite
+  asserts both, and both fail against the previous file.
+
+- `stay_fresh.sh --only` no longer reports success after preflight has taken
+  every named step back off the list. `--only docker` on a machine without
+  Docker, or `--only system-caches --no-sudo`, reached the summary having done
+  nothing and exited 0. A fully voided selection now fails preflight with
+  exit 2 and names the step and the reason; a partial one warns and runs what
+  is left; `--dry-run` previews the stop as a warning, like every other
+  preflight check. Auto-skipped steps are also booked once: the summary used
+  to claim 16 skips for 15 steps and list Homebrew under two names.
+
+  A missing `TMPDIR` is created rather than announced as a stale lock. An
+  unwritable one says it could not take the lock, not that another run held
+  it. `have_tty` opens `/dev/tty` instead of asking `access(2)`, which is
+  true of the device node even when a launchd job has no controlling terminal.
+  The sudo keep-alive detaches from the script's stdio and re-checks the
+  parent every five seconds, so a captured `out="$(stay_fresh ...)"` no longer
+  blocks on an orphaned `sleep`.
+
+  The tester suite asserts the `--only` and `TMPDIR` contracts; the new step
+  and unprivileged suites assert the keep-alive, the TTY-less cask skip, and
+  both EACCES lock branches. The steps suite refuses to start if `/dev/tty`
+  can be opened, so a `compose run` that forgot `-T` fails at the door rather
+  than on the cask assertions. Several of those fail against the previous file.
 
 - The `ssh_keys` exemption added to `linux/hardening_audit.sh` trusted the
   group *name* and never looked at its membership. The Fedora and RHEL

@@ -1,24 +1,48 @@
-# Static + portable tests for macos-initial-setup (bash -n, shellcheck, --help, Linux preflight, zsh).
-# From repo root or this directory:
+# Portable tests for macos-initial-setup. Three suites share one image:
 #
-#   docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm tester
+#   tester        static checks (bash -n, shellcheck) and the CLI surface of
+#                 every script — help, argument rejection, plans, dry runs
+#   steps         each stay_fresh.sh step run for real against a scratch HOME
+#                 and faked host binaries; needs root to own /Library/Caches
+#   unprivileged  the permission-denied branches, as uid 1000, which root
+#                 cannot reach
 #
-# or: ./macos-initial-setup/tests/run.sh
+# Run them all with ./run.sh, or one at a time:
+#
+#   docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm steps
 
 name: pretty-useful-macos-setup
 
+x-tester: &tester
+  build:
+    context: ./tester
+    dockerfile: Dockerfile
+  image: pretty-useful-macos-setup-tester:2
+  environment:
+    REPO_ROOT: /repo
+  volumes:
+    - ../../:/repo:ro
+  working_dir: /repo
+
 services:
   tester:
-    build:
-      context: ./tester
-      dockerfile: Dockerfile
-    image: pretty-useful-macos-setup-tester:1
+    <<: *tester
     container_name: pretty-useful-macos-setup-tester
-    environment:
-      REPO_ROOT: /repo
-    volumes:
-      - ../../:/repo:ro
-    working_dir: /repo
     command:
       - /bin/bash
       - /repo/macos-initial-setup/tests/test_macos_initial_setup.sh
+
+  steps:
+    <<: *tester
+    container_name: pretty-useful-macos-setup-steps
+    command:
+      - /bin/bash
+      - /repo/macos-initial-setup/tests/test_stay_fresh_steps.sh
+
+  unprivileged:
+    <<: *tester
+    container_name: pretty-useful-macos-setup-unprivileged
+    user: "1000:1000"
+    command:
+      - /bin/bash
+      - /repo/macos-initial-setup/tests/test_stay_fresh_unprivileged.sh

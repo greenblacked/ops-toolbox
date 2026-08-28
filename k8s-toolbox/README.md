@@ -247,6 +247,13 @@ The four scripts follow the same rules as everything else in this repository:
   report.
 - `NO_COLOR` is honoured, and `err()` writes to stderr.
 
+They also use `set -euo pipefail`, like the short single-purpose scripts in
+[`git/`](../git/), and pin every toolchain version in
+[`versions.env`](versions.env) so a release on somebody else's schedule cannot
+turn this repository red.
+[`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md)
+has the shell rules in full.
+
 ## Tests
 
 ```bash

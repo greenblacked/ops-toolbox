@@ -4,6 +4,21 @@ Notes for an automated coding agent. Everything about *how the scripts are
 written* lives in [`CONTRIBUTING.md`](CONTRIBUTING.md) - read that first and
 follow it. This file covers only what an agent gets wrong by default.
 
+## Skills
+
+[`.claude/skills/`](.claude/skills/) carries the same material cut by task, so
+the rules for the file in front of you arrive without the rest:
+`bash-script-conventions`, `powershell-script-conventions`,
+`routeros-script-conventions` and `python-helper-conventions` for a script
+body; `adding-a-script` for a new file end to end; `running-tests`,
+`pre-push-gates`, `docs-and-changelog` and `commits-and-prs` for everything
+around it. `ops-toolbox-conventions` is the entry point and routes to the rest.
+[`.claude/skills/README.md`](.claude/skills/README.md) is the index.
+
+They restate this repository, they do not extend it. A skill that contradicts
+the scripts is wrong and should be fixed in the same commit as whatever
+revealed it - the same rule `CONTRIBUTING.md` states about itself.
+
 ## Attribution
 
 Commits are authored and committed as the repository owner:
