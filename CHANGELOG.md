@@ -577,6 +577,15 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `--no-sudo` no longer rewrites steps that were already off. Memory is opt-in,
+  and `--only` / `--skip-*` have already taken others off the list, but
+  preflight still tagged all three root-owned steps as skipped because
+  `--no-sudo` was passed. A `--only versions --no-sudo` run then listed DNS and
+  system caches as refused, and every `--no-sudo` run blamed the unused memory
+  purge on the flag. The reason is recorded only for a step that was still going
+  to run; the `--no-sudo` warning is silent when none were. The tester suite
+  asserts both, and both fail against the previous file.
+
 - `stay_fresh.sh --only` no longer reports success after preflight has taken
   every named step back off the list. `--only docker` on a machine without
   Docker, or `--only system-caches --no-sudo`, reached the summary having done

@@ -425,6 +425,25 @@ assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
   "brew (not installed)"
 assert_contains "a skipped step reports why it was skipped" "$out" \
   "Homebrew update / upgrade / cleanup (Homebrew is not installed)"
+assert_not_contains "opt-in memory is not blamed on --no-sudo" "$out" \
+  "Purge inactive memory (--no-sudo was passed)"
+
+# --only already took every unnamed step off the list. Tagging those with
+# "--no-sudo was passed" makes a versions-only run look like three root-owned
+# steps were refused, when they were never selected.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only versions 2>&1)"
+rc=$?
+set -e
+assert_eq "--only versions under --no-sudo still runs" "0" "$rc"
+assert_not_contains "--only does not blame unselected dns on --no-sudo" "$out" \
+  "Flush DNS cache (--no-sudo was passed)"
+assert_not_contains "--only does not blame unselected system-caches on --no-sudo" "$out" \
+  "Clear system caches (--no-sudo was passed)"
+assert_not_contains "an --only run does not warn about unselected sudo steps" "$out" \
+  "--no-sudo set:"
 
 # Force find(1) to fail during a real cleanup confined to the scratch HOME. The
 # target must remain and the step must be yellow, not falsely green.

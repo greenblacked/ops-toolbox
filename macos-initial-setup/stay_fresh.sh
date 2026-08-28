@@ -794,15 +794,21 @@ NEEDS_SUDO=0
 (( SKIP_DIAGNOSTICS == 0 )) && NEEDS_SUDO=1
 
 if (( USE_SUDO == 0 )); then
-  warn "--no-sudo set: memory purge, DNS flush, system caches, and system diagnostics will be skipped"
+  # Only the steps that were still going to run belong in this explanation.
+  # Memory is opt-in, and --only / --skip-* have already taken others off the
+  # list; blaming those on --no-sudo makes a versions-only run look like three
+  # root-owned steps were refused.
+  if (( SKIP_MEMORY == 0 || SKIP_DNS == 0 || SKIP_SYSCACHES == 0 || SKIP_DIAGNOSTICS == 0 )); then
+    warn "--no-sudo set: memory purge, DNS flush, system caches, and system diagnostics will be skipped"
+  fi
+  (( SKIP_MEMORY == 0 ))    && note_auto_skip memory        "--no-sudo was passed"
+  (( SKIP_DNS == 0 ))       && note_auto_skip dns           "--no-sudo was passed"
+  (( SKIP_SYSCACHES == 0 )) && note_auto_skip system-caches "--no-sudo was passed"
   SKIP_MEMORY=1
   SKIP_DNS=1
   SKIP_SYSCACHES=1
   SKIP_DIAGNOSTICS_SYS=1
   NEEDS_SUDO=0
-  note_auto_skip memory        "--no-sudo was passed"
-  note_auto_skip dns           "--no-sudo was passed"
-  note_auto_skip system-caches "--no-sudo was passed"
 fi
 
 if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
@@ -832,13 +838,13 @@ if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
     disown "$SUDO_KEEPALIVE_PID" 2>/dev/null || disown || true
   else
     err "sudo authentication failed — disabling sudo-requiring steps"
+    (( SKIP_MEMORY == 0 ))    && note_auto_skip memory        "sudo authentication failed"
+    (( SKIP_DNS == 0 ))       && note_auto_skip dns           "sudo authentication failed"
+    (( SKIP_SYSCACHES == 0 )) && note_auto_skip system-caches "sudo authentication failed"
     SKIP_MEMORY=1
     SKIP_DNS=1
     SKIP_SYSCACHES=1
     SKIP_DIAGNOSTICS_SYS=1
-    note_auto_skip memory        "sudo authentication failed"
-    note_auto_skip dns           "sudo authentication failed"
-    note_auto_skip system-caches "sudo authentication failed"
   fi
 elif (( DRY_RUN && NEEDS_SUDO )); then
   info "(dry-run) would request sudo for memory/DNS/system-caches/diagnostics steps"
