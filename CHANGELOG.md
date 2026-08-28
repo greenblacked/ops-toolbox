@@ -16,6 +16,27 @@ entry here belongs to a version.
 
 ### Added
 
+- Two Docker suites that run `stay_fresh.sh` for real, which the existing
+  `tester` job never did. `test_macos_initial_setup.sh` covers `--help`,
+  argument rejection, plans and dry runs; a step that deletes things was
+  unreachable there, so a sudo keep-alive that blocked captured callers, a
+  TTY check that asked `access(2)` instead of opening `/dev/tty`, and a lock
+  that blamed a missing `TMPDIR` on a stale run all reached `master`.
+
+  `test_stay_fresh_steps.sh` executes each of the fifteen steps against a
+  scratch `HOME` and faked host binaries; `find`/`rm`/`du` are the real thing,
+  so the assertions are about what survived. It refuses to start outside a
+  container because two of those steps clear `/Library/Caches` and
+  `/Library/Logs/DiagnosticReports`. `test_stay_fresh_unprivileged.sh` runs as
+  uid 1000 against root-owned `/rootonly` and `/rootlocked`, the only way to
+  make `mkdir(2)` and `unlink(2)` actually return `EACCES`.
+
+  `macos-initial-setup/tests/run.sh` now builds once and runs all three, even
+  if an earlier suite fails. It passes `compose run -T`: without that, a host
+  with a TTY hands the container a controlling terminal, which is the state a
+  launchd job is not in, and the cask-skip assertion would pass for the wrong
+  reason.
+
 - DevOps coverage in `macos-initial-setup/zsh_aliases.zsh`: the kubectl
   section grows from six aliases to the working set (`kgp`/`kgpa`/`kgs`/`kgd`/
   `kgn`, `kaf`, `kdelf`, `kpf`, `krr`/`krs`, `ktop`, `kev` sorted by the time
@@ -555,6 +576,29 @@ entry here belongs to a version.
   repository cannot set for itself.
 
 ### Fixed
+
+- `stay_fresh.sh --only` no longer reports success after preflight has taken
+  every named step back off the list. `--only docker` on a machine without
+  Docker, or `--only system-caches --no-sudo`, reached the summary having done
+  nothing and exited 0. A fully voided selection now fails preflight with
+  exit 2 and names the step and the reason; a partial one warns and runs what
+  is left; `--dry-run` previews the stop as a warning, like every other
+  preflight check. Auto-skipped steps are also booked once: the summary used
+  to claim 16 skips for 15 steps and list Homebrew under two names.
+
+  A missing `TMPDIR` is created rather than announced as a stale lock. An
+  unwritable one says it could not take the lock, not that another run held
+  it. `have_tty` opens `/dev/tty` instead of asking `access(2)`, which is
+  true of the device node even when a launchd job has no controlling terminal.
+  The sudo keep-alive detaches from the script's stdio and re-checks the
+  parent every five seconds, so a captured `out="$(stay_fresh ...)"` no longer
+  blocks on an orphaned `sleep`.
+
+  The tester suite asserts the `--only` and `TMPDIR` contracts; the new step
+  and unprivileged suites assert the keep-alive, the TTY-less cask skip, and
+  both EACCES lock branches. The steps suite refuses to start if `/dev/tty`
+  can be opened, so a `compose run` that forgot `-T` fails at the door rather
+  than on the cask assertions. Several of those fail against the previous file.
 
 - The `ssh_keys` exemption added to `linux/hardening_audit.sh` trusted the
   group *name* and never looked at its membership. The Fedora and RHEL
