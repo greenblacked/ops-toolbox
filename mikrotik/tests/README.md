@@ -1,9 +1,9 @@
-# MikroTik script tests (RouterOS 7.24)
+# MikroTik script tests (RouterOS 7.24.1)
 
-Integration tests that run **real RouterOS CHR 7.24** in QEMU inside Docker and
+Integration tests that run **real RouterOS CHR 7.24.1** in QEMU inside Docker and
 exercise every `*.lua` in `../`. Two services run side by side:
 
-- `chr` — Alpine + QEMU + the official CHR 7.24 disk (talks to host on
+- `chr` — Alpine + QEMU + the official CHR 7.24.1 disk (talks to host on
   `127.0.0.1:8728` for ad‑hoc inspection).
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
@@ -38,7 +38,7 @@ The checked-in version lives in `routeros-version.env`. To test a candidate
 without changing tracked files, override it for one run:
 
 ```bash
-ROUTEROS_VERSION=7.24 ./mikrotik/tests/run.sh
+ROUTEROS_VERSION=7.24.1 ./mikrotik/tests/run.sh
 ```
 
 `EXPECT_ROUTEROS_VERSION` follows `ROUTEROS_VERSION` automatically, so the
@@ -76,7 +76,7 @@ docker compose down -v
    release (a patch suffix is accepted only when the requested version omits it).
 2. **Source acceptance** — every `mikrotik/*.lua` is added as a
    `/system script` and removed. RouterOS rejects malformed source at `add`
-   time, so this catches syntax issues against the live 7.24 parser.
+   time, so this catches syntax issues against the live 7.24.1 parser.
 3. **Safe execution** — `wan_failover_notify`, `health_check`, and
    `detect_internet` are loaded under their production names and executed.
    `tg_send` is replaced with a **stub** for the test session that records
@@ -124,7 +124,7 @@ available. Its `check` command does not modify files:
 ```bash
 python3 mikrotik/tests/routeros_version.py check
 python3 mikrotik/tests/routeros_version.py check --channel long-term
-python3 mikrotik/tests/routeros_version.py check --version 7.24
+python3 mikrotik/tests/routeros_version.py check --version 7.24.1
 ```
 
 The `RouterOS version check` GitHub Actions workflow runs every Monday and
