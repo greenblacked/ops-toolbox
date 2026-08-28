@@ -66,13 +66,17 @@ run_sf() {
 }
 
 echo "--- run lock under EACCES ---"
-# /rootonly is mode 700 and owned by root, so `mkdir -p` of anything beneath it
-# fails outright. The run must say it could not create the directory, not blame
-# a lock.
-out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions)"; rc=$?
-assert_eq "an uncreatable TMPDIR fails preflight -> 2" "2" "$rc"
-assert_contains "an uncreatable TMPDIR is named" "$out" "to hold the run lock"
-assert_not_contains "an uncreatable TMPDIR is not blamed on a stale lock" "$out" \
+# The lock lives under HOME (STAY_FRESH_LOCK_DIR is the test seam), not
+# TMPDIR: the LaunchAgent environment carries only PATH, so a TMPDIR lock
+# split into two different directories between agent and terminal runs.
+# /rootonly is mode 700 and owned by root, so `mkdir -p` of anything beneath
+# it fails outright. The run must say it could not create the directory, not
+# blame a lock.
+out="$(STAY_FRESH_LOCK_DIR=/rootonly/scratch \
+  run_sf "$d/tmp" --yes --no-sudo --only versions)"; rc=$?
+assert_eq "an uncreatable lock dir fails preflight -> 2" "2" "$rc"
+assert_contains "an uncreatable lock dir is named" "$out" "to hold the run lock"
+assert_not_contains "an uncreatable lock dir is not blamed on a stale lock" "$out" \
   "stale stay_fresh lock"
 
 # /rootlocked exists and is traversable but not writable by us, so `mkdir -p`
@@ -80,11 +84,26 @@ assert_not_contains "an uncreatable TMPDIR is not blamed on a stale lock" "$out"
 # This is the branch that distinguishes "someone else holds the lock" from "we
 # cannot create one": before, any mkdir failure was read as contention and the
 # recovery path announced a stale lock that never existed.
-out="$(run_sf /rootlocked --yes --no-sudo --only versions)"; rc=$?
-assert_eq "an unwritable TMPDIR fails preflight -> 2" "2" "$rc"
-assert_contains "an unwritable TMPDIR reports the lock it could not take" "$out" \
+out="$(STAY_FRESH_LOCK_DIR=/rootlocked \
+  run_sf "$d/tmp" --yes --no-sudo --only versions)"; rc=$?
+assert_eq "an unwritable lock dir fails preflight -> 2" "2" "$rc"
+assert_contains "an unwritable lock dir reports the lock it could not take" "$out" \
   "cannot acquire run lock"
-assert_not_contains "an unwritable TMPDIR is not blamed on a stale lock" "$out" \
+assert_not_contains "an unwritable lock dir is not blamed on a stale lock" "$out" \
+  "stale stay_fresh lock"
+
+# TMPDIR failures are now the log's problem, not the lock's: with the lock
+# under HOME, an unusable TMPDIR surfaces at log initialization, after the
+# lock is held, and the lock must still be released on the way out.
+out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions)"; rc=$?
+assert_eq "an uncreatable TMPDIR fails at log init -> 2" "2" "$rc"
+assert_contains "an uncreatable TMPDIR names the log file" "$out" \
+  "cannot initialize log file"
+assert_not_contains "an uncreatable TMPDIR does not implicate the lock" "$out" \
+  "run lock"
+out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions)"; rc=$?
+assert_eq "the lock is released after a log-init failure" "2" "$rc"
+assert_not_contains "no stale lock is left behind by a failed run" "$out" \
   "stale stay_fresh lock"
 
 echo "--- cache deletion that the filesystem refuses ---"

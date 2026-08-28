@@ -394,8 +394,11 @@ In the order they run:
    and anything unparsable are kept. The classification is done by
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
 7. Empty `~/.Trash`.
-8. Prune Docker / OrbStack (containers, networks, volumes, builder
-   cache, and **dangling images only** — tagged images are kept).
+8. Prune Docker / OrbStack (containers, networks, builder cache, and
+   **dangling images only** — tagged images are kept). Unused volumes are
+   kept unless `--prune-docker-volumes` is passed: volumes hold data, not
+   cache, and a stopped project's database volume counts as "unused" the
+   moment its container is removed.
 9. Clean Xcode DeviceSupport and obsolete simulators. Archives are kept unless
    an age threshold is explicitly set with `--prune-xcode-archives-days N`.
 10. Remove diagnostic and crash reports (user, plus system with `sudo`).
@@ -446,6 +449,7 @@ In the order they run:
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`gem`/`go` cache cleanup. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
+| `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
@@ -1017,7 +1021,9 @@ Homebrew / `pyenv` / `goenv` commands.
 - Prunes Docker resources when Docker is available:
   - Containers (`docker container prune -f`)
   - Networks (`docker network prune -f`)
-  - Volumes (`docker volume prune -f`)
+  - Volumes only with `--prune-docker-volumes` — they hold data, and the
+    LaunchAgent runs with `--yes`, so a default volume prune would delete a
+    stopped project's database volume unattended
   - **Dangling images only** (`docker image prune -f`) — keeps tagged images
   - Builder cache (`docker builder prune -af`)
   - Skips pruning entirely when the active Docker context points to a non-local
