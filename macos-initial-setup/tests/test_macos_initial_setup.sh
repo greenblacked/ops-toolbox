@@ -752,6 +752,62 @@ assert_contains "agent logs command identifies the newest log" "$out" \
   "agent-20260102-000000-2.log"
 assert_contains "agent logs command tails requested lines" "$out" $'two\nthree'
 
+# Command-specific option validation prevents a familiar-looking --dry-run from
+# being silently ignored by a destructive subcommand.
+agent="$M/launchd/stay_fresh_agent.sh"
+agent_calls="$fake_macos/launchctl.calls"
+agent_bootstrap_n="$fake_macos/bootstrap.n"
+printf '%s\n' '#!/bin/sh' \
+  'printf "%s\n" "$*" >> "$AGENT_CALLS"' \
+  'case "${1:-}" in' \
+  '  print) [ "${AGENT_LOADED:-0}" = 1 ] ;;' \
+  '  bootout) exit "${AGENT_BOOTOUT_RC:-0}" ;;' \
+  '  bootstrap)' \
+  '    n=$(cat "$AGENT_BOOTSTRAP_N" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$AGENT_BOOTSTRAP_N"' \
+  '    [ "${AGENT_BOOTSTRAP_FAIL_ONCE:-0}" = 1 ] && [ "$n" -eq 1 ] && exit 1' \
+  '    exit "${AGENT_BOOTSTRAP_RC:-0}" ;;' \
+  '  kickstart) exit 0 ;;' \
+  'esac' \
+  'exit 0' > "$fake_macos/bin/launchctl"
+chmod +x "$fake_macos/bin/launchctl"
+
+agent_plist="$fake_macos/home/Library/LaunchAgents/com.pretty-useful.stay-fresh.plist"
+mkdir -p "$(dirname "$agent_plist")"
+printf 'original plist\n' > "$agent_plist"
+: > "$agent_calls"
+AGENT_CALLS="$agent_calls" AGENT_LOADED=1 \
+  HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
+  "$agent" uninstall --dry-run >/dev/null 2>&1
+assert_eq "agent uninstall --dry-run keeps the plist" "original plist" \
+  "$(cat "$agent_plist")"
+assert_eq "agent uninstall --dry-run does not call launchctl" "0" \
+  "$(wc -l < "$agent_calls" | tr -d ' ')"
+
+set +e
+AGENT_CALLS="$agent_calls" HOME="$fake_macos/home" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" run-now --dry-run >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "run-now rejects an ambiguous --dry-run -> 3" "3" "$rc"
+
+# A failed replacement bootstrap restores both the old plist and the old loaded
+# job. The first bootstrap is the new job and fails; the second is rollback.
+: > "$agent_calls"
+rm -f "$agent_bootstrap_n"
+set +e
+AGENT_CALLS="$agent_calls" AGENT_BOOTSTRAP_N="$agent_bootstrap_n" \
+  AGENT_BOOTSTRAP_FAIL_ONCE=1 AGENT_LOADED=1 \
+  HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" \
+  "$agent" install --profile full --hour 4 >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "a failed replacement install exits 1" "1" "$rc"
+assert_eq "a failed replacement restores the old plist" "original plist" \
+  "$(cat "$agent_plist")"
+assert_eq "a failed replacement bootstraps the rollback" "2" \
+  "$(grep -c '^bootstrap ' "$agent_calls")"
+
 rm -rf "$fake_macos"
 
 # --- LaunchAgent plist semantics ------------------------------------------
@@ -767,7 +823,7 @@ with open(sys.argv[1], "rb") as fh:
     data = plistlib.load(fh)
 
 assert data["ProgramArguments"][0] == "/bin/bash"
-assert data["ProgramArguments"][-2:] == ["run-scheduled", "--dry-run"]
+assert data["ProgramArguments"][-3:] == ["run-scheduled", "--profile", "safe"]
 assert data["StartCalendarInterval"] == {"Hour": 3, "Minute": 5}
 assert "/opt/homebrew/bin" in data["EnvironmentVariables"]["PATH"].split(":")
 assert data["StandardOutPath"] == "/dev/null"

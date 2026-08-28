@@ -142,18 +142,15 @@ print_header() {
 }
 
 # `%(committerdate:unix)` is the tip's own date; ordering by it puts the
-# stalest first, which is the order you want to read the list in. The free-form
-# author name is last so a '|' inside it cannot shift the other fields.
+# stalest first, which is the order you want to read the list in. Fields are
+# tab-separated: a '|' is a legal character in a ref name (see
+# git_recent_branches.sh), and putting the free-form author name last still
+# keeps a tab inside the author from shifting the other columns.
 scan_refs() {
   local namespace="$1" kind="$2"
-  local line branch rest unix when track author age state colour flag
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-
-    branch="${line%%|*}"; rest="${line#*|}"
-    unix="${rest%%|*}"; rest="${rest#*|}"
-    when="${rest%%|*}"; rest="${rest#*|}"
-    track="${rest%%|*}"; author="${rest#*|}"
+  local line branch unix when track author age state colour flag
+  while IFS=$'\t' read -r branch unix when track author; do
+    [[ -n "$branch" ]] || continue
 
     [[ -n "$unix" ]] || continue
     # A remote's HEAD is a symbolic pointer at another branch in this list.
@@ -194,7 +191,7 @@ scan_refs() {
       "$C_YELLOW" "$age" "$C_RESET" "$when" "$author" \
       "$colour" "$state" "$C_RESET" "$branch" "$flag"
   done < <(git for-each-ref --sort=committerdate \
-    --format='%(refname:short)|%(committerdate:unix)|%(committerdate:short)|%(upstream:track)|%(authorname)' \
+    --format=$'%(refname:short)%09%(committerdate:unix)%09%(committerdate:short)%09%(upstream:track)%09%(authorname)' \
     "$namespace")
 }
 

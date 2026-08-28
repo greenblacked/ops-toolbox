@@ -197,6 +197,15 @@ class RedactTestCase(unittest.TestCase):
             doctor.redact_url("https://github.com/o/r.git"), "https://github.com/o/r.git"
         )
 
+    def test_shell_helper_password_is_redacted(self):
+        raw = "!f() { echo username=bot; echo password=super-secret-token; }; f"
+        shown = doctor.redact_helper(raw)
+        self.assertNotIn("super-secret-token", shown)
+        self.assertIn("password=***", shown)
+
+    def test_named_helper_is_untouched(self):
+        self.assertEqual(doctor.redact_helper("osxkeychain"), "osxkeychain")
+
 
 class CollectRemotesTestCase(unittest.TestCase):
     def test_url_and_pushurl(self):

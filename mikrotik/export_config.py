@@ -143,7 +143,7 @@ def main(argv=None):
     parser.add_argument(
         "--show-sensitive",
         action="store_true",
-        help="include secrets. Do NOT combine with --commit unless the repo is private.",
+        help="include secrets. Do NOT combine with --commit; secrets do not belong in git history.",
     )
     parser.add_argument("--stdout", action="store_true", help="print, write nothing")
     parser.add_argument(

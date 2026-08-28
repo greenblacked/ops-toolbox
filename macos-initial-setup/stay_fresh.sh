@@ -10,7 +10,8 @@
 #     sandboxed app caches require an explicit force flag
 #   - prune VS Code workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
-#   - clean developer tool caches (npm, yarn, pnpm, pip, gem, go)
+#   - clean developer tool caches (npm, yarn, pnpm, pip, go); uninstall old gem
+#     versions only when explicitly requested
 #   - prune Docker / OrbStack (images, containers, builder cache; volumes
 #     only with --prune-docker-volumes, because volumes hold data)
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
@@ -26,6 +27,7 @@
 #                   [--skip-usercaches] [--skip-appcaches]
 #                   [--skip-workspacestorage] [--skip-trash]
 #                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
+#                   [--cleanup-old-gems] [--fail-on-warn]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-gcloud]
 #                   [--skip-versions] [--skip-docker] [--prune-docker-volumes]
 #                   [--skip-xcode] [--prune-xcode-archives-days N]
@@ -34,7 +36,7 @@
 #
 # Exit codes:
 #   0   housekeeping finished (possibly with non-fatal warnings)
-#   1   one or more steps hard-failed
+#   1   one or more steps hard-failed, or a warning occurred with --fail-on-warn
 #   2   preflight checks failed
 #   3   bad CLI arguments
 
@@ -93,6 +95,7 @@ DRY_RUN=0
 ASSUME_YES=0
 VERBOSE=0
 USE_SUDO=1
+FAIL_ON_WARN=0
 
 # `purge` approximates a cold-cache boot for performance analysis; it is not
 # routine memory maintenance, so it is deliberately opt-in.
@@ -114,6 +117,7 @@ PRUNE_DOCKER_VOLUMES=0
 SKIP_XCODE=0
 SKIP_DIAGNOSTICS=0
 BREW_GREEDY=0
+CLEANUP_OLD_GEMS=0
 FORCE_ACTIVE_APP_CACHES=0
 XCODE_ARCHIVE_DAYS=""
 ONLY_STEPS=""
@@ -256,6 +260,7 @@ ${C_BOLD}General options:${C_RESET}
   --dry-run              Preview actions, change nothing
   --yes, -y              Authorize non-interactive mutation; suppress prompts
   --verbose, -v          Stream command output (default: captured to log)
+  --fail-on-warn         Exit 1 when any step finishes with a real warning
   --no-sudo              Skip root-owned steps and Homebrew cask upgrades
   --only STEP1,STEP2     Run only the named steps (see --list-steps)
   --list-steps           Print stable step ids and exit
@@ -276,7 +281,9 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-brew            Don't run Homebrew maintenance (see Notes)
   --brew-greedy          Also upgrade casks with 'auto_updates true' / 'version :latest'
                          (may prompt for sudo during cask postinstalls)
-  --skip-devcaches       Don't clean npm/yarn/pnpm/pip/gem/go caches
+  --skip-devcaches       Don't clean npm/yarn/pnpm/pip/go caches
+  --cleanup-old-gems     Uninstall old gem versions during dev-cache cleanup
+                         (off by default; this changes installed packages)
   --skip-devtools        Shorthand: skip all dev-tool refresh steps below
                          (--skip-helm-plugins --skip-gcloud --skip-versions)
   --skip-helm-plugins    Don't run 'helm plugin update' for installed plugins
@@ -327,6 +334,7 @@ while (( $# > 0 )); do
     --dry-run)         DRY_RUN=1 ;;
     -y|--yes)          ASSUME_YES=1 ;;
     -v|--verbose)      VERBOSE=1 ;;
+    --fail-on-warn)    FAIL_ON_WARN=1 ;;
     --no-sudo)         USE_SUDO=0 ;;
     --only)
       shift
@@ -350,6 +358,7 @@ while (( $# > 0 )); do
     --skip-brew)       SKIP_BREW=1; EXPLICIT_SKIP=1 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
     --skip-devcaches)  SKIP_DEVCACHES=1; EXPLICIT_SKIP=1 ;;
+    --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
     --skip-devtools)   SKIP_DEVTOOLS=1; EXPLICIT_SKIP=1 ;;
     --skip-helm-plugins) SKIP_HELM_PLUGINS=1; EXPLICIT_SKIP=1 ;;
     --skip-gcloud)     SKIP_GCLOUD=1; EXPLICIT_SKIP=1 ;;
@@ -924,7 +933,12 @@ fi
 plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "$xcode_plan"
 plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "user (+ system if sudo)"
 plan_line "homebrew update/upgrade/cleanup"   "$(( 1 - SKIP_BREW        ))" "brew update · upgrade · cleanup -s · autoremove"
-plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "npm/yarn/pnpm/pip/gem/go"
+if (( CLEANUP_OLD_GEMS )); then
+  devcache_plan="npm/yarn/pnpm/pip/go caches + old installed gems"
+else
+  devcache_plan="npm/yarn/pnpm/pip/go caches; installed gems kept"
+fi
+plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
 plan_line "gcloud components update"          "$(( 1 - SKIP_GCLOUD      ))" "non-brew gcloud components"
 plan_line "report active versions"            "$(( 1 - SKIP_VERSIONS    ))" "pyenv/goenv/tfenv/tenv/helm/gcloud"
@@ -1314,7 +1328,13 @@ step_devcaches() {
 
   if command -v gem >/dev/null 2>&1; then
     any=1
-    run_cmd "gem cleanup" gem cleanup || warn "'gem cleanup' failed"
+    if (( CLEANUP_OLD_GEMS )); then
+      # `gem cleanup` uninstalls old versions from GEM_HOME; it is package
+      # maintenance, not cache cleanup, so it must never happen implicitly.
+      run_cmd "gem cleanup" gem cleanup || warn "'gem cleanup' failed"
+    else
+      info "old installed gem versions kept; pass --cleanup-old-gems to remove them"
+    fi
   fi
 
   if command -v go >/dev/null 2>&1; then
@@ -1345,9 +1365,16 @@ step_docker() {
 
   # Safety: avoid pruning a remote Docker context.
   local ctx host
-  ctx="$(docker context show 2>/dev/null || true)"
-  host="$(docker context inspect "${ctx:-default}" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null || true)"
-  if [[ -n "$host" ]] && [[ "$host" != unix://* ]]; then
+  if ! ctx="$(docker context show 2>>"$LOG_SINK")" || [[ -z "$ctx" ]]; then
+    warn_step "cannot resolve the active Docker context — skipping prune"
+    return 0
+  fi
+  if ! host="$(docker context inspect "$ctx" --format '{{ (index .Endpoints "docker").Host }}' 2>>"$LOG_SINK")" \
+     || [[ -z "$host" ]]; then
+    warn_step "cannot resolve the Docker endpoint for context '$ctx' — skipping prune"
+    return 0
+  fi
+  if [[ "$host" != unix://* ]]; then
     warn_step "docker context '${ctx:-?}' points to non-local host (${host}) — skipping prune"
     return 0
   fi
@@ -1727,6 +1754,11 @@ else
 fi
 
 if (( ${#STEPS_FAIL[@]} > 0 )); then
+  exit 1
+fi
+
+if (( FAIL_ON_WARN )) && (( ${#STEPS_WARN[@]} > 0 )); then
+  err "warnings are fatal because --fail-on-warn was requested"
   exit 1
 fi
 

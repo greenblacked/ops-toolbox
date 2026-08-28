@@ -298,6 +298,18 @@ else
   err "bash_aliases.sh failed to source"
 fi
 
+# A shadow is only allowed when the replacement accepts the same flags. fd and
+# rg do not - `find . -name` errors under fd, `grep -rn pattern dir` changes
+# meaning under rg - so a command copied from a runbook breaks exactly on the
+# machine that has the alias. Asserted as text because the aliases were
+# guarded: in a container without fd installed they would never register, and a
+# behavioural check would pass whether or not the shadow exists.
+if grep -qE "alias (find|grep)='(fd|rg)'" "$L/bash_aliases.sh"; then
+  err "bash_aliases.sh must not shadow find/grep with fd/rg"
+else
+  ok "bash_aliases: find and grep are not shadowed by fd/rg"
+fi
+
 # An alias to a binary that is not installed is worse than no alias, so the
 # guards must actually guard.
 out="$(bash -c ". $L/bash_aliases.sh; alias" 2>/dev/null)"
