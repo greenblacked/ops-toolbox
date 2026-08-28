@@ -244,11 +244,49 @@ if grep -q 'MaxFailures < 1' "$PKG/brute_force_block.lua" \
 else
   err "brute_force_block.lua is missing its MaxFailures < 1 fail-safe"
 fi
+# The tally stores ";IP:COUNT;". Looking up ";IP;" never matches an existing
+# entry, so the counter stays at 1 and MaxFailures is never reached.
+if grep -qF '";" . $ip . ":"' "$PKG/brute_force_block.lua"; then
+  ok "brute_force_block.lua looks up tally entries as IP:COUNT"
+else
+  err "brute_force_block.lua tally lookup must include the colon before COUNT"
+fi
 if grep -q 'MAC_ALLOWLIST empty' "$PKG/mac_allowlist_dhcp.lua" \
    && grep -q 'fail-safe' "$PKG/mac_allowlist_dhcp.lua"; then
   ok "mac_allowlist_dhcp.lua refuses an empty allowlist"
 else
   err "mac_allowlist_dhcp.lua is missing its empty-allowlist fail-safe"
+fi
+
+# --- HTTPS fetches verify TLS certificates ---------------------------------
+# /tool fetch defaults check-certificate to no. A script that posts a bot or
+# API token without enabling it will hand the secret to any MITM.
+for f in "$PKG/tg_send.lua" "$PKG/ddns_update.lua"; do
+  n="$(basename "$f")"
+  if grep -q 'check-certificate=yes' "$f"; then
+    ok "$n enables check-certificate on HTTPS fetch"
+  else
+    err "$n posts secrets over HTTPS without check-certificate=yes"
+  fi
+done
+
+# --- defaults that must not false-alarm or ignore their own knobs ----------
+if grep -qE ':local[[:space:]]+CtrlHost[[:space:]]+"one\.one\.one\.one"' "$PKG/rogue_dns_check.lua"; then
+  ok "rogue_dns_check.lua uses one.one.one.one as the control hostname"
+else
+  err "rogue_dns_check.lua must default CtrlHost to one.one.one.one (not dns.cloudflare.com)"
+fi
+if grep -q 'RetentionDays \* 1d\|\$RetentionDays \* 1d' "$PKG/backup_file_cleanup.lua" \
+   && grep -qF 'name~"^backup-"' "$PKG/backup_file_cleanup.lua"; then
+  ok "backup_file_cleanup.lua honours RetentionDays and prefixes backup-"
+else
+  err "backup_file_cleanup.lua must use RetentionDays and a ^backup- prefix match"
+fi
+if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
+   && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
+  ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"
+else
+  err "traffic_quota.lua must parse yyyy-MM-dd and baseline PREV on rollover"
 fi
 
 echo

@@ -53,6 +53,15 @@
 :local logIds [/log find];
 :local totalLines [:len $logIds];
 
+# Log rotation (or a truncated ring) can shrink the line count below the cursor
+# from the previous run. Restarting from zero rescans recent lines once rather
+# than silently skipping the shortened log forever.
+:if ($BF_SEEN_LINES > $totalLines) do={
+    :log info ("brute_force_block: log shrank (" . $BF_SEEN_LINES . " -> " . \
+               $totalLines . "); resetting scan cursor");
+    :set BF_SEEN_LINES 0;
+}
+
 :local i $BF_SEEN_LINES;
 :while ($i < $totalLines) do={
     :local lid ($logIds->$i);
@@ -96,21 +105,24 @@
         }
 
         # Only act on plausible IPv4 addresses (contains at least one dot).
+        # Tally entries are always ";IP:COUNT;" - the lookup key must include
+        # the colon or a second failure never finds the first and the counter
+        # stays at 1 forever (so MaxFailures is never reached).
         :if (([:len $ip] > 6) and ([:find $ip "."] != nil)) do={
-            :local key (";" . $ip . ";");
+            :local key (";" . $ip . ":");
             :local existing [:find $tally $key];
             :if ($existing = nil) do={
                 :set tally ($tally . $ip . ":1;");
             } else={
                 # Increment the counter stored as "IP:COUNT" in the tally string.
-                :local startCount ($existing + [:len $key] - 1);
+                :local startCount ($existing + 1);
                 :local endCount [:find $tally ";" ($startCount + 1)];
                 :if ($endCount != nil) do={
-                    :local countStr [:pick $tally ($startCount + 1) $endCount];
-                    :local colon2 [:find $countStr ":"];
+                    :local entry [:pick $tally $startCount $endCount];
+                    :local colon2 [:find $entry ":"];
                     :if ($colon2 != nil) do={
-                        :local n ([:tonum [:pick $countStr ($colon2 + 1) [:len $countStr]]] + 1);
-                        :set tally ([:pick $tally 0 ($startCount + $colon2 + 2)] . $n . \
+                        :local n ([:tonum [:pick $entry ($colon2 + 1) [:len $entry]]] + 1);
+                        :set tally ([:pick $tally 0 ($startCount + $colon2 + 1)] . $n . \
                                     [:pick $tally $endCount [:len $tally]]);
                     }
                 }

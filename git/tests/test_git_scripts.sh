@@ -726,6 +726,14 @@ rc=$?
 set -e
 assert_eq "$rc" "3" "stale rejects an invalid state -> exit 3"
 
+# A '|' is legal in a ref name. The previous '|' field separator treated
+# feat|pipe as two columns and crashed under set -u when the unix field was
+# the word "pipe". Tab-separated fields (same as git_recent_branches.sh) keep
+# the ref intact.
+git -C "$repo" branch 'feat|pipe'
+out="$(cd "$repo" && "$STALE" --days 0)"
+assert_contains "$out" "feat|pipe" "stale preserves pipe characters in refs"
+
 # --- size report ref scope ---
 repo="$(new_repo)"
 git -C "$repo" switch -q -c big-history

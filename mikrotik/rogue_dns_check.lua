@@ -1,5 +1,5 @@
 # Rogue DNS detector. Two checks per run:
-#   1. Upstream sanity: resolve a control hostname (default "dns.cloudflare.com")
+#   1. Upstream sanity: resolve a control hostname (default "one.one.one.one")
 #      and verify it resolves to an IP listed in :global DNS_EXPECTED. A
 #      mismatch suggests upstream hijack, DoH/DoT leak, or a wrong resolver.
 #   2. Client behavior: scan /ip firewall connection for outbound dst-port=53
@@ -28,7 +28,9 @@
 :local DeviceName [/system identity get name];
 
 :local Enforce      true;
-:local CtrlHost     "dns.cloudflare.com";
+# one.one.one.one is Cloudflare's anycast name for 1.1.1.1 / 1.0.0.1.
+# dns.cloudflare.com resolves elsewhere and false-alarms on a healthy resolver.
+:local CtrlHost     "one.one.one.one";
 :local ListName     "rogue-dns-clients";
 :local ListTimeout  "1h";
 :local TopN         5;

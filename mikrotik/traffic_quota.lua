@@ -45,17 +45,25 @@
 :if ([:typeof $QUOTA_PREV_TX]  != "num") do={ :set QUOTA_PREV_TX 0; }
 :if ([:typeof $QUOTA_ALERTED]  != "str") do={ :set QUOTA_ALERTED ";"; }
 
-# Read current month as YYYY-MM using /system clock.
+# Read current month as YYYY-MM. RouterOS 7.10+ defaults to iso (yyyy-MM-dd);
+# older date-format values still produce "Mmm/dd/yyyy" and are handled too.
 :local now [/system clock get date];
-:local nowYear  [:pick $now 7 11];
-:local nowMonth [:pick $now 0 3];
-:local monthStr ($nowYear . "-" . $nowMonth);
+:local monthStr "";
+:if ([:find $now "-"] != nil) do={
+    # iso: yyyy-MM-dd
+    :set monthStr [:pick $now 0 7];
+} else={
+    # legacy: Mmm/dd/yyyy -> yyyy-Mmm (stable key across the month)
+    :local nowYear  [:pick $now 7 11];
+    :local nowMonth [:pick $now 0 3];
+    :set monthStr ($nowYear . "-" . $nowMonth);
+}
 
 # On first run after boot, try to restore accumulators from the state file.
 :if ($firstRun) do={
     :do {
         :local content [/file get [find name=$StateFile] contents];
-        # Format: "YYYY-MMM RX TX ALERTED"
+        # Format: "YYYY-MM RX TX ALERTED"
         :local sp1 [:find $content " "];
         :if ($sp1 != nil) do={
             :local savedMonth [:pick $content 0 $sp1];
@@ -88,18 +96,8 @@
     :set QUOTA_MONTH $monthStr;
 }
 
-# Reset accumulators on month rollover.
-:if ($monthStr != $QUOTA_MONTH) do={
-    :log info ("traffic_quota: month changed " . $QUOTA_MONTH . " -> " . $monthStr . "; resetting");
-    :set QUOTA_RX 0;
-    :set QUOTA_TX 0;
-    :set QUOTA_PREV_RX 0;
-    :set QUOTA_PREV_TX 0;
-    :set QUOTA_ALERTED ";";
-    :set QUOTA_MONTH $monthStr;
-}
-
-# Read current interface counters.
+# Read current interface counters before any month rollover so a reset of
+# QUOTA_PREV_* does not treat the whole uptime counter as new-month traffic.
 :local rawRx 0;
 :local rawTx 0;
 :do {
@@ -108,6 +106,19 @@
 } on-error={
     :log error ("traffic_quota: interface not found: " . $WanInterface);
     :return "";
+}
+
+# Reset accumulators on month rollover. Baseline PREV at the current counters
+# so the first delta of the new month starts at zero rather than the full
+# interface total since last reboot.
+:if ($monthStr != $QUOTA_MONTH) do={
+    :log info ("traffic_quota: month changed " . $QUOTA_MONTH . " -> " . $monthStr . "; resetting");
+    :set QUOTA_RX 0;
+    :set QUOTA_TX 0;
+    :set QUOTA_PREV_RX $rawRx;
+    :set QUOTA_PREV_TX $rawTx;
+    :set QUOTA_ALERTED ";";
+    :set QUOTA_MONTH $monthStr;
 }
 
 # Accumulate delta (skip negative deltas from counter resets on reboot).
