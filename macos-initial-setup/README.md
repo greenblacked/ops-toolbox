@@ -13,9 +13,7 @@ the next machine. Every change is previewable with `--dry-run`, logged to
 The conventions these scripts follow — the `set -u` / `set -o pipefail`
 dialect, Bash 3.2 only, the indented `(dry-run)` output grammar, and the
 rule that a preview does not even create its own log file — are collected in
-[`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md),
-with [`adding-a-script`](../.claude/skills/adding-a-script/SKILL.md) as the
-checklist for a new one.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 **Platform:** macOS 12+ (Monterey through the current release) on Apple
 Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),

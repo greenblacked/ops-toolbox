@@ -6,14 +6,10 @@ follow it. This file covers only what an agent gets wrong by default.
 
 ## Skills
 
-[`.claude/skills/`](.claude/skills/) carries the same material cut by task, so
-the rules for the file in front of you arrive without the rest:
-`bash-script-conventions`, `powershell-script-conventions`,
-`routeros-script-conventions` and `python-helper-conventions` for a script
-body; `adding-a-script` for a new file end to end; `running-tests`,
-`pre-push-gates`, `docs-and-changelog` and `commits-and-prs` for everything
-around it. `ops-toolbox-conventions` is the entry point and routes to the rest.
-[`.claude/skills/README.md`](.claude/skills/README.md) is the index.
+Task-scoped copies of these conventions live under `.claude/skills/` on a
+local checkout. That directory is gitignored: it is for the coding agent on
+this machine, not for GitHub. The published reference is this file and
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 They restate this repository, they do not extend it. A skill that contradicts
 the scripts is wrong and should be fixed in the same commit as whatever

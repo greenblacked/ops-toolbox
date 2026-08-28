@@ -11,9 +11,7 @@ scripts exit `2` off macOS.
 Scripts here use `set -u` plus `set -o pipefail` on separate lines and no `-e`,
 because a long maintenance run records a missing tool and skips it rather than
 dying on it, and they must stay Bash 3.2-clean like the macOS package.
-[`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md)
-has the full set; [`adding-a-script`](../.claude/skills/adding-a-script/SKILL.md)
-is the checklist for a new one.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) has the full set.
 
 ## Contents
 

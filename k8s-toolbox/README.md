@@ -251,8 +251,7 @@ They also use `set -euo pipefail`, like the short single-purpose scripts in
 [`git/`](../git/), and pin every toolchain version in
 [`versions.env`](versions.env) so a release on somebody else's schedule cannot
 turn this repository red.
-[`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md)
-has the shell rules in full.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) has the shell rules in full.
 
 ## Tests
 
