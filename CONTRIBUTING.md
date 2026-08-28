@@ -1,7 +1,7 @@
 # Contributing
 
 These conventions are not aspirations — they were extracted from the scripts
-already in this repository, with the file and line that establishes each one.
+already in this repository, with the file that establishes each one.
 New code conforms to them; it does not invent new patterns.
 
 If you find a rule here that the existing scripts do not actually follow, the
@@ -40,9 +40,13 @@ dropped into a `PATH` directory; the MikroTik scripts are pasted into a router's
 `source "$SCRIPT_DIR/../lib/common.sh"` breaks all three.
 
 So: **duplication across scripts is deliberate, not technical debt.**
-`require_value()` appears in seven scripts and `Format-Size` in two `.ps1`
-files. Leave them that way and copy the canonical block from
-[`templates/`](templates/) when writing a new script.
+`require_value()` is copied across the Bash packages — git, linux,
+macos-initial-setup, k8s-toolbox, windows and mikrotik — and
+`Format-Size` across the PowerShell scripts that print sizes. Leave
+them that way and copy the canonical block from
+[`templates/`](templates/) when writing a new script. Do not count the
+copies here: the number moves the moment a script is added, and a stale
+count is how this paragraph already went wrong once.
 
 What is asserted about the copies is their **contract**, not byte-identity:
 the same guard condition, `exit 3`, and a message on stderr. They already
@@ -53,11 +57,11 @@ demanding identical bytes would only push people to make the copies worse.
 Shared code is permitted in exactly one shape: **a substantial program with its
 own tests, invoked as a subprocess by absolute path.**
 [`macos-initial-setup/lib/workspace_scan.py`](macos-initial-setup/lib/workspace_scan.py)
-is the only thing that clears that bar today — 247 lines of classification logic
+is the only thing that clears that bar today — classification logic
 called via `/usr/bin/python3`, unit-tested on its own. Note what it cost:
-`macos-initial-setup/stay_fresh.sh:44-50` carries a seven-line symlink-resolving
-preamble whose sole job is finding it. That price is worth paying once for a
-real program, never for a seven-line validator.
+`stay_fresh.sh` carries a symlink-resolving preamble whose sole job is
+finding it. That price is worth paying once for a real program, never for
+a seven-line validator.
 
 Divergence between copies is a *test* problem, not a factoring problem. The
 static suite asserts the **contract** of every `require_value()` copy (same
@@ -74,7 +78,7 @@ Three `set` dialects, chosen by role — do not mix them:
 | Dialect | Used by | Why |
 | --- | --- | --- |
 | `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. |
-| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. Reasoning is written out at `macos-initial-setup/v1_stay_fresh.sh:24-29`. |
+| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. Reasoning is written out at the top of `macos-initial-setup/v1_stay_fresh.sh`. |
 | `set -uo pipefail` | `run-tests.sh`, `test-env/*/run.sh` | Aggregators that must keep going after a failing child and report a summary. |
 
 ### Bash 3.2 compatibility
@@ -83,17 +87,17 @@ Three `set` dialects, chosen by role — do not mix them:
 ships as `/bin/bash` on macOS. No `mapfile`/`readarray`, no `declare -A` or
 `local -A`, no `${x,,}`/`${x^^}`, no `coproc`, no `&>>`. Build lists with a
 `while IFS= read -r` loop instead — there is a worked example and an explanatory
-comment at `git/git_recent_branches.sh:78`.
+comment above the `branches=()` loop in `git/git_recent_branches.sh`.
 
 **This rule is directory-scoped, not repository-wide.** `windows/git-bash/`
-targets Git Bash, which ships Bash 5 — `.bashrc:74` uses `local -A` and `:59`
-uses `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
+targets Git Bash, which ships Bash 5 — `windows/git-bash/.bashrc` uses `local -A`
+and `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
 and runs on Ubuntu. Do not "fix" either.
 
 ### Duplicated blocks
 
 Copy these verbatim rather than inventing a variant. The canonical copy of
-`require_value()` is `git/git_sync_default.sh:25-33`:
+`require_value()` is in `git/git_sync_default.sh`:
 
 ```bash
 require_value() {
@@ -118,7 +122,7 @@ macOS-only script, and it is asserted by the test suites.
 - Support both `--flag VALUE` and `--flag=VALUE`.
 
 The help body is a heredoc with these sections in this order — see
-`git/gacp.sh:12-31` for the canonical example:
+`usage()` in `git/gacp.sh` for the canonical example:
 
 ```text
 <name> - one-line summary
@@ -132,7 +136,7 @@ Options:
 Exit codes: 0 success, 2 not a git repo, 3 usage, ...
 ```
 
-`macos-initial-setup/brewfile.sh:47-51` uses a different implementation — an
+`macos-initial-setup/brewfile.sh` uses a different implementation — an
 `awk` filter that reflects the script's own header comment instead of
 duplicating it. Either is fine; the comment above it explains the trade-off.
 
@@ -146,10 +150,10 @@ Pick one of four sanctioned mechanisms:
 
 | Mechanism | Reference | Use when |
 | --- | --- | --- |
-| Bare `run()` wrapper | `git/git_sync_default.sh:94-99` | Arguments have no spaces. |
-| `run()` with `printf %q` quoting | `git/gacp.sh:33-57` | Arguments may contain spaces (commit messages). |
-| Labelled `run_cmd "label" cmd…` | `macos-initial-setup/stay_fresh.sh:357-405` | The script also writes a log file. `run_cmd_tty()` is its sibling for anything that must keep a terminal (sudo, cask prompts). |
-| Inline per-branch | `git/git_amend_last.sh:66-79` | The "command" is not a single exec. |
+| Bare `run()` wrapper | `run()` in `git/git_sync_default.sh` | Arguments have no spaces. |
+| `run()` with `printf %q` quoting | `run()` in `git/gacp.sh` | Arguments may contain spaces (commit messages). |
+| Labelled `run_cmd "label" cmd…` | `run_cmd()` in `macos-initial-setup/stay_fresh.sh` | The script also writes a log file. `run_cmd_tty()` is its sibling for anything that must keep a terminal (sudo, cask prompts). |
+| Inline per-branch | `git/git_amend_last.sh` | The "command" is not a single exec. |
 
 ### There are two output grammars — pick by package, do not mix
 
@@ -161,7 +165,7 @@ dry-run complete; no changes written
 ```
 
 The `macos-initial-setup/` package prints a dimmed, two-space-indented form with
-no terminal summary line (`stay_fresh.sh:360,387,420,467`):
+no terminal summary line (`run_cmd()` in `stay_fresh.sh`):
 
 ```text
   (dry-run) brew upgrade [homebrew upgrade]
@@ -189,7 +193,7 @@ fi
 ```
 
 Level helpers use six-character padded labels so output columns line up
-(`macos-initial-setup/brewfile.sh:38-42`):
+(`info`/`ok`/`warn`/`err` in `macos-initial-setup/brewfile.sh`):
 
 ```bash
 info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
@@ -220,7 +224,7 @@ documents that in each file's header — do the same if you narrow a meaning.
 ## Log files
 
 Only heavyweight install and maintenance scripts write logs; `git/*.sh` write
-none. The pattern (`macos-initial-setup/stay_fresh.sh:118-119`):
+none. The pattern (`LOG_FILE` in `macos-initial-setup/stay_fresh.sh`):
 
 ```bash
 LOG_DIR="${TMPDIR:-/tmp}"
@@ -262,19 +266,27 @@ Use a hand-rolled `[switch]$DryRun` — **not** `-WhatIf`/`SupportsShouldProcess
 This is a deliberate divergence from PowerShell convention so the Windows
 scripts read the same as the Bash ones, and because the dry-run modes here
 accumulate and report a total (bytes that *would* be freed) which
-`ShouldProcess` cannot express. `windows/README.md:29-31` states the rule.
+`ShouldProcess` cannot express. This section is the rule; the Windows README
+points here.
 
 Output is `Write-Host -ForegroundColor`, in a fixed column grammar
-(`windows/cleanup/clean_disk_c.ps1:71`):
+(`Clear-Target` in `windows/cleanup/clean_disk_c.ps1`):
 
 ```powershell
 Write-Host ('SKIP  {0,-38} {1,10}' -f $Label, (Format-Size $Bytes)) -ForegroundColor Yellow
 ```
 
-Verbs are `WOULD` / `CLEAN` / `SKIP`. Both `PSAvoidUsingWriteHost` and
-`PSUseShouldProcessForStateChangingFunctions` are excluded repository-wide in
-`PSScriptAnalyzerSettings.psd1`, with the reasoning written there. Everything
-else PSScriptAnalyzer reports at `Warning` or above is a real finding — fix it.
+Verbs are `WOULD` / `CLEAN` / `SKIP`. `PSScriptAnalyzerSettings.psd1` excludes
+exactly one rule: `PSAvoidUsingWriteHost`, because these are interactive
+operator scripts whose output is a colour-coded human report. Everything else
+PSScriptAnalyzer reports at `Warning` or above is a real finding — fix it.
+
+`PSUseShouldProcessForStateChangingFunctions` is deliberately **not** excluded.
+It does not fire on the current helpers, because they declare a bare `param()`
+rather than `CmdletBinding` on the function itself. Leave it enabled so it
+catches a future function that takes `CmdletBinding` without a dry-run story.
+A document that claimed it was excluded would have someone widen the settings
+file instead of writing the dry run.
 
 For a genuine one-off exception use
 `[Diagnostics.CodeAnalysis.SuppressMessageAttribute()]` at the site, with a
@@ -287,10 +299,10 @@ The `.lua` extension is for editor highlighting only — these are RouterOS
 scripting language, not Lua.
 
 - **Secrets never appear in a script body.** Read them from `:global` variables
-  set once at boot, the way `mikrotik/tg_send.lua:5-20` reads `TG_BOT_TOKEN`
+  set once at boot, the way `mikrotik/tg_send.lua` reads `TG_BOT_TOKEN`
   and `TG_CHAT_ID`.
 - Send notifications through `tg_send`, wrapped so a missing helper degrades to
-  a log line instead of an error (`mikrotik/backup.lua:44-49`).
+  a log line instead of an error (`mikrotik/backup.lua`).
 - **Alert on transitions, not on every run.** Keep the previous state in a
   `:global` and compare — `wan_failover_notify.lua` is the reference. A script
   that alerts every five minutes gets muted, which makes it worse than nothing.
