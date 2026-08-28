@@ -47,10 +47,13 @@ definition of done for a script change. It checks:
 ## The conventions the suite cannot check
 
 - **Secrets never appear in a script body.** Read them from `:global` variables
-  set once at boot, the way `mikrotik/tg_send.lua:5-20` reads `TG_BOT_TOKEN`
-  and `TG_CHAT_ID` over its placeholder defaults.
+  set once at boot, the way `mikrotik/tg_send.lua` overrides its placeholder
+  `BotToken` / `ChatID` locals from `TG_BOT_TOKEN` and `TG_CHAT_ID`.
 - **Send notifications through `tg_send`**, wrapped so a missing helper
-  degrades to a log line instead of an error (`mikrotik/backup.lua:44-49`).
+  degrades to a log line instead of an error - `mikrotik/backup.lua` ends its
+  send with `on-error={ :log warning "tg_send not available - skipping
+  notification"; }`, and logs an error rather than nothing when the *failure*
+  notification is the thing that could not be sent.
 - **Alert on transitions, not on every run.** Keep the previous state in a
   `:global` and compare - `wan_failover_notify.lua` is the reference. A script
   that alerts every five minutes gets muted, which makes it worse than nothing.

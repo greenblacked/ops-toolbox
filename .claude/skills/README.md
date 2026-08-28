@@ -35,3 +35,13 @@ cites the check that would fail — `test-env/static/check_conventions.sh`,
 `windows/tests/contract.ps1`, `mikrotik/tests/test_lua_conventions.sh`. When a
 check changes, update the skill that quotes it in the same commit, the same way
 a changed flag updates both READMEs.
+
+These files cite a **function name or a quoted line**, never a line number.
+That is not a style preference. The first draft copied `CONTRIBUTING.md`'s
+`file:line` citations wholesale, and checking them found most had rotted:
+`require_value()` had moved from line 25 to 27, the bare `run()` wrapper from
+94 to 124, the `stay_fresh.sh` log block from 118 to 130, and
+`windows/README.md:29-31` pointed at a quick-start example rather than the rule
+it was cited for. A `grep -n 'run_cmd() {'` costs the reader one command and
+survives every edit above it; a line number is wrong the next time somebody
+inserts a paragraph.

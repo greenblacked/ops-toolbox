@@ -28,10 +28,14 @@ by prose. Breaking one is a failing build, not a style disagreement.
 
 ## The architectural rule that surprises people
 
-**Duplication across scripts is deliberate.** `require_value()` appears in
-seven scripts; `Format-Size` in two `.ps1` files. Do not factor them into a
-shared library - `source "$SCRIPT_DIR/../lib/common.sh"` breaks the entire
-distribution model, which is promise 3 above.
+**Duplication across scripts is deliberate.** `require_value()` is defined in
+34 scripts across six packages; `Format-Size` in five `.ps1` files. Do not
+factor them into a shared library - `source "$SCRIPT_DIR/../lib/common.sh"`
+breaks the entire distribution model, which is promise 3 above.
+
+```bash
+grep -rl '^require_value() {' --include='*.sh' .   # the copies, if you want the count today
+```
 
 What is asserted about the copies is their **contract**, not byte-identity:
 the same guard condition, `exit 3`, and a message on stderr. Copies differ
@@ -42,9 +46,11 @@ because it has one). See the "duplicated blocks keep their contract" section of
 Shared code is permitted in exactly one shape: a substantial program with its
 own tests, invoked as a subprocess by absolute path.
 `macos-initial-setup/lib/workspace_scan.py` is the only thing that clears that
-bar, and `macos-initial-setup/stay_fresh.sh:44-50` pays a seven-line
-symlink-resolving preamble for the privilege. Worth it once for a real program;
-never for a seven-line validator.
+bar - just under 300 lines of classification logic with its own unit tests -
+and its caller pays for the privilege: the `SCRIPT_SOURCE` / `readlink`
+preamble at the top of `macos-initial-setup/stay_fresh.sh` exists solely to
+find it through a symlink on `PATH`. Worth it once for a real program; never
+for a seven-line validator.
 
 If you catch yourself proposing a refactor that consolidates duplication here,
 you have found the one change this repository will always reject. Propose a

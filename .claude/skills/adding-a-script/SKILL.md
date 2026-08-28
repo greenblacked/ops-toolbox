@@ -52,8 +52,8 @@ needs more than a bare `--dry-run` to get past argument parsing - a subcommand,
 a required `--file`, a target argument - add an entry to `dry_run_args()`:
 
 ```bash
-git/git_hooks_install.sh)   printf '%s\n' "install --dry-run" ;;
-macos-initial-setup/brewfile.sh) printf '%s\n' "dump --file @SCRATCH@/Brewfile --dry-run" ;;
+git/git_hooks_install.sh)                printf '%s\n' "install --dry-run" ;;
+macos-initial-setup/brewfile.sh)         printf '%s\n' "dump --file @SCRATCH@/Brewfile --dry-run" ;;
 ```
 
 `@SCRATCH@` expands to the scratch `TMPDIR`, so an output path stays inside the
