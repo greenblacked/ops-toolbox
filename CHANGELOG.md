@@ -823,7 +823,8 @@ entry here belongs to a version.
 
 ### Changed
 
-- RouterOS CHR compatibility was bumped from 7.23.3 to 7.24.1 after the full Docker integration suite passed.
+- RouterOS CHR compatibility was bumped from 7.24 to 7.24.1 after the full Docker integration suite passed.
+- RouterOS CHR compatibility was bumped from 7.23.3 to 7.24 after the full Docker integration suite passed.
 - `linux/disk_cleanup.sh --days 0 --include-journal` now says that it removes
   the entire journal, including the entries describing whatever filled the disk.
   The combination stays available; it just is not a surprise any more.
