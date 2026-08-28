@@ -600,12 +600,6 @@ entry here belongs to a version.
 - A **Repository settings** checklist in `CONTRIBUTING.md` for the settings a
   repository cannot set for itself.
 
-### Changed
-
-- `.claude/skills/` is local-only. The directory is gitignored and no longer
-  published on GitHub; `CONTRIBUTING.md` is the public reference. Package
-  READMEs that pointed at a skill now point at that file instead.
-
 ### Fixed
 
 - LaunchAgent options are command-scoped. `uninstall --dry-run` is a real
@@ -966,6 +960,10 @@ entry here belongs to a version.
   is normalised without a rewrite that would invalidate every clone.
 
 ### Changed
+
+- `.claude/skills/` is local-only. The directory is gitignored and no longer
+  published on GitHub; `CONTRIBUTING.md` is the public reference. Package
+  READMEs that pointed at a skill now point at that file instead.
 
 - macOS scheduled maintenance now defaults to a conservative `safe` profile:
   protected per-app caches, provably stale workspace storage and version
