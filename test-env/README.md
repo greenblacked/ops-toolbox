@@ -3,6 +3,10 @@
 Test machinery that does not live inside a script package. Two different kinds
 of thing share this folder, and the difference matters:
 
+[`.claude/skills/running-tests`](../.claude/skills/running-tests/SKILL.md)
+describes how to work with all of this — the suite table, the hand-rolled
+harness style, and the defects that shaped what a test here has to assert.
+
 | Path | What it is | Run by `./run-tests.sh`? |
 | --- | --- | --- |
 | [`static/`](static/) | The repository-wide convention checks (`./run-tests.sh static`) | **yes**, and by CI |

@@ -305,8 +305,12 @@ else
   err "populated dry run modified TMPDIR"
 fi
 
-mkdir -p "$fake_macos/tmp/stay_fresh-${UID}.lock"
-printf '%s\n' "$$" > "$fake_macos/tmp/stay_fresh-${UID}.lock/pid"
+# The lock lives under HOME, not TMPDIR. The LaunchAgent's environment
+# carries only PATH, so a TMPDIR-based lock resolved to /tmp for the agent
+# and /var/folders/... for a terminal — two different directories, and the
+# manual-vs-agent overlap the lock exists to prevent went unprevented.
+mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
+printf '%s\n' "$$" > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
 set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
@@ -316,22 +320,203 @@ set -e
 assert_eq "overlapping stay_fresh run is rejected" "2" "$rc"
 assert_contains "overlap refusal identifies the active run" "$out" \
   "another stay_fresh run is active"
-rm -f "$fake_macos/tmp/stay_fresh-${UID}.lock/pid"
-rmdir "$fake_macos/tmp/stay_fresh-${UID}.lock"
+
+# The case the TMPDIR lock could not catch: same machine, different TMPDIR —
+# exactly what an agent-context run looks like next to a terminal run.
+mkdir -p "$fake_macos/tmp2"
+set +e
+HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp2" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  "${skip_for_plan[@]}" >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "overlap is rejected even from a different TMPDIR" "2" "$rc"
+rm -f "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
+rmdir "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 
 # A kill can land after mkdir(2) but before the pid file is written. That empty
 # directory is stale and must not disable maintenance forever.
-mkdir -p "$fake_macos/tmp/stay_fresh-${UID}.lock"
+mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${skip_for_plan[@]}" 2>&1)"
 assert_contains "empty stale lock is recovered" "$out" \
   "removing stale stay_fresh lock without a live pid"
-if [[ ! -d "$fake_macos/tmp/stay_fresh-${UID}.lock" ]]; then
+if [[ ! -d "$fake_macos/home/Library/Application Support/stay_fresh/run.lock" ]]; then
   ok "recovered stale lock is released after the run"
 else
   err "recovered stale lock remained after the run"
 fi
+
+# Volumes hold data, not cache: the LaunchAgent runs this script with --yes,
+# so a default `docker volume prune` would delete a stopped project's database
+# volume unattended. The stub is a healthy local docker so the step actually
+# plans; both assertions are against the dry-run plan output.
+cat > "$fake_macos/bin/docker" <<'DOCKER_EOF'
+#!/bin/sh
+case "$1" in
+  info) exit 0 ;;
+  context)
+    case "$2" in
+      show)    echo default ;;
+      inspect) echo "unix:///var/run/docker.sock" ;;
+    esac ;;
+  *) exit 0 ;;
+esac
+DOCKER_EOF
+chmod +x "$fake_macos/bin/docker"
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --dry-run --yes \
+  --only docker 2>&1)"
+if grep -q "docker volume prune" <<<"$out"; then
+  err "docker volume prune is planned without --prune-docker-volumes"
+else
+  ok "docker volumes are kept by default"
+fi
+assert_contains "the plan says volumes are kept" "$out" "volumes kept"
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --dry-run --yes \
+  --only docker --prune-docker-volumes 2>&1)"
+assert_contains "--prune-docker-volumes plans the volume prune" "$out" \
+  "docker volume prune -f"
+rm -f "$fake_macos/bin/docker"
+
+# Every id printed by --list-steps must be accepted by --only, or the two
+# halves of the interface drift apart: a step gets renamed in one place and
+# the documented spelling starts exiting 3.
+while IFS= read -r step_id; do
+  [[ -n "$step_id" ]] || continue
+  extra=()
+  [[ "$step_id" == memory ]] && extra=(--purge-memory)
+  if HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+    PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --dry-run --yes \
+    --only "$step_id" ${extra[@]+"${extra[@]}"} >/dev/null 2>&1; then
+    ok "--only accepts listed step id: $step_id"
+  else
+    err "--only rejects a step id that --list-steps advertises: $step_id"
+  fi
+done < <("$M/stay_fresh.sh" --list-steps | awk '{print $1}')
+
+# TMPDIR is where both the log and the run lock live, and nothing guarantees it
+# exists: launchd hands a job its own per-user temp dir, and `TMPDIR=... stay_fresh`
+# is a normal thing to type. The lock used to be the first thing to touch that
+# path, so a missing TMPDIR surfaced as "removing stale stay_fresh lock" followed
+# by a refusal to run — a lock that never existed, blamed for a directory that
+# was simply not there.
+missing_tmp="$fake_macos/tmp/not/created/yet"
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$missing_tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only versions 2>&1)"
+rc=$?
+set -e
+assert_eq "stay_fresh creates a missing TMPDIR rather than failing the lock" "0" "$rc"
+assert_not_contains "missing TMPDIR is not misreported as a stale lock" "$out" \
+  "stale stay_fresh lock"
+if [[ -d "$missing_tmp" ]]; then
+  ok "stay_fresh created the missing TMPDIR"
+else
+  err "stay_fresh did not create the missing TMPDIR"
+fi
+rm -rf "$fake_macos/tmp/not"
+
+# --only names the work you want done. Preflight can take a step straight back
+# off that list (no Homebrew, no Docker daemon, --no-sudo), and the run then
+# reached the summary having done nothing at all while exiting 0 — a silent
+# no-op that reads as success.
+#
+# The docker stub answers `command -v` but fails `docker info`, pinning the
+# auto-skip reason to "daemon unreachable" on every machine. The previous
+# version relied on docker being absent from PATH, which held in the CI
+# container and nowhere that has a docker CLI at /usr/bin — the same suite
+# then failed on a developer machine for reasons that had nothing to do with
+# the code under test.
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_macos/bin/docker"
+chmod +x "$fake_macos/bin/docker"
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only docker 2>&1)"
+rc=$?
+set -e
+assert_eq "a fully voided --only selection fails preflight -> 2" "2" "$rc"
+assert_contains "voided --only names the step that cannot run" "$out" \
+  "--only docker: the Docker daemon is unreachable"
+
+# The same reconciliation must respect --no-sudo, which disables root-owned
+# steps just as effectively as a missing binary does.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only system-caches 2>&1)"
+rc=$?
+set -e
+assert_eq "--only system-caches under --no-sudo fails preflight -> 2" "2" "$rc"
+assert_contains "--no-sudo explains the voided selection" "$out" \
+  "--only system-caches: --no-sudo was passed"
+
+# A partially voided selection is a warning, not a failure: the steps that can
+# run still should.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only docker,versions 2>&1)"
+rc=$?
+set -e
+assert_eq "a partially voided --only still runs the rest" "0" "$rc"
+assert_contains "partially voided --only warns about the lost step" "$out" \
+  "--only docker: the Docker daemon is unreachable"
+assert_contains "partially voided --only runs the surviving step" "$out" \
+  "Active tool versions"
+rm -f "$fake_macos/bin/docker"
+
+# A dry run previews rather than stopping, matching every other preflight check.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --dry-run --yes \
+  --only docker 2>&1)"
+rc=$?
+set -e
+assert_eq "a voided --only still previews under --dry-run" "0" "$rc"
+assert_contains "the dry-run preview says a real run would stop" "$out" \
+  "a real run would stop here"
+
+# An auto-skipped step was booked twice: once by preflight pushing its own
+# STEPS_SKIP entry and again by run_or_skip, so the summary claimed 16 skips
+# for 15 steps and listed Homebrew under two different names.
+brew_absent_skip=(
+  --skip-dns --skip-syscaches --skip-usercaches --skip-appcaches
+  --skip-workspacestorage --skip-trash --skip-devcaches --skip-docker
+  --skip-xcode --skip-diagnostics --skip-devtools
+)
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  "${brew_absent_skip[@]}" 2>&1)"
+assert_contains "an all-skipped run counts each step exactly once" "$out" \
+  "skipped:     15"
+assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
+  "brew (not installed)"
+assert_contains "a skipped step reports why it was skipped" "$out" \
+  "Homebrew update / upgrade / cleanup (Homebrew is not installed)"
+assert_not_contains "opt-in memory is not blamed on --no-sudo" "$out" \
+  "Purge inactive memory (--no-sudo was passed)"
+
+# --only already took every unnamed step off the list. Tagging those with
+# "--no-sudo was passed" makes a versions-only run look like three root-owned
+# steps were refused, when they were never selected.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only versions 2>&1)"
+rc=$?
+set -e
+assert_eq "--only versions under --no-sudo still runs" "0" "$rc"
+assert_not_contains "--only does not blame unselected dns on --no-sudo" "$out" \
+  "Flush DNS cache (--no-sudo was passed)"
+assert_not_contains "--only does not blame unselected system-caches on --no-sudo" "$out" \
+  "Clear system caches (--no-sudo was passed)"
+assert_not_contains "an --only run does not warn about unselected sudo steps" "$out" \
+  "--no-sudo set:"
 
 # Force find(1) to fail during a real cleanup confined to the scratch HOME. The
 # target must remain and the step must be yellow, not falsely green.
