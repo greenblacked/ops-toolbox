@@ -12,9 +12,8 @@ live in `/system script` on the router and are run either manually or from
 Writing or changing one? The conventions the convention suite enforces — the
 `OpsToolboxPaused` guard, secrets read from `:global`, alerting on transitions
 rather than every run, and never swallowing a failed notification — are
-collected in
-[`.claude/skills/routeros-script-conventions`](../.claude/skills/routeros-script-conventions/SKILL.md),
-together with how the pinned CHR version and its digest are bumped.
+collected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), together with how the
+pinned CHR version and its digest are bumped.
 
 ## Files at a glance
 

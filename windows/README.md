@@ -7,9 +7,8 @@ full details.
 Editing a `.ps1` here? The static suite does not cover PowerShell at all —
 [`tests/contract.ps1`](tests/contract.ps1) is the only place these contracts are
 checked, and on Linux every script stops at its `$IsWindows` guard first.
-[`.claude/skills/powershell-script-conventions`](../.claude/skills/powershell-script-conventions/SKILL.md)
-collects that, the hand-rolled `-DryRun`, the `WOULD`/`CLEAN`/`SKIP` grammar and
-the ASCII-with-no-BOM rule.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that, the hand-rolled
+`-DryRun`, the `WOULD`/`CLEAN`/`SKIP` grammar and the ASCII-with-no-BOM rule.
 
 | Folder | Purpose |
 | --- | --- |

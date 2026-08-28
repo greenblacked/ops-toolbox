@@ -16,12 +16,14 @@ entry here belongs to a version.
 
 ### Added
 
-- Task-scoped conventions under `.claude/skills/`, so an automated coding
-  agent working here loads the rules for the file in front of it instead of
-  skimming `CONTRIBUTING.md` and acting on the half it remembered. Ten skills:
-  one entry point, one per language (`bash`, PowerShell, RouterOS, Python), and
-  one each for adding a script, running the suites, the pre-push lint gates,
-  documentation and the changelog, and commits and pull requests.
+- Task-scoped conventions under `.claude/skills/` on a local checkout, so an
+  automated coding agent working here loads the rules for the file in front of
+  it instead of skimming `CONTRIBUTING.md` and acting on the half it remembered.
+  Ten skills: one entry point, one per language (`bash`, PowerShell, RouterOS,
+  Python), and one each for adding a script, running the suites, the pre-push
+  lint gates, documentation and the changelog, and commits and pull requests.
+  The directory is gitignored and is not on GitHub; `CONTRIBUTING.md` stays the
+  published reference.
 
   Nothing in them is new policy — every rule is lifted from a script or from
   the check that enforces it, and each skill names that check, because a rule
@@ -29,9 +31,7 @@ entry here belongs to a version.
   that shaped this repository are stated as failures: the preview that wrote a
   log file, the `install --dry-run` that wrote two systemd units, the
   PowerShell dry run that was only ever exercised on a platform where it exits
-  at a guard. `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and the package
-  READMEs point at the relevant skill from where the same subject already comes
-  up.
+  at a guard.
 
 - `stay_fresh.sh --prune-docker-volumes`. Volume pruning was part of the
   default Docker step; volumes hold data, not cache — a stopped project's
@@ -599,6 +599,12 @@ entry here belongs to a version.
 - A **Why this exists** section in `README.md`.
 - A **Repository settings** checklist in `CONTRIBUTING.md` for the settings a
   repository cannot set for itself.
+
+### Changed
+
+- `.claude/skills/` is local-only. The directory is gitignored and no longer
+  published on GitHub; `CONTRIBUTING.md` is the public reference. Package
+  READMEs that pointed at a skill now point at that file instead.
 
 ### Fixed
 

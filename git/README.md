@@ -2,7 +2,7 @@
 
 Small Bash helpers for everyday Git configuration, quick commits, and repository housekeeping. They are written for portability: POSIX-minded patterns where possible, and **compatible with the Bash 3.2** that ships on macOS (no `mapfile` or other Bash 4-only features in these scripts).
 
-Writing one? These scripts use `set -euo pipefail`, the `git/` dry-run output grammar (`dry-run: would run: ...`, then `dry-run complete; no changes written`), and no log file at all. [`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md) collects that with the rest of the shell rules, and [`adding-a-script`](../.claude/skills/adding-a-script/SKILL.md) is the checklist for a new file.
+Writing one? These scripts use `set -euo pipefail`, the `git/` dry-run output grammar (`dry-run: would run: ...`, then `dry-run complete; no changes written`), and no log file at all. [`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that with the rest of the shell rules.
 
 ## Contents
 

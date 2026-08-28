@@ -14,3 +14,7 @@
 # them. Scoped to the worktrees directory rather than the whole config dir,
 # so project-level config can still be tracked deliberately.
 */worktrees/
+
+# Local coding-agent skills. They restate CONTRIBUTING.md and stay on the
+# machine that uses them; they are not part of the published tree.
+.claude/
