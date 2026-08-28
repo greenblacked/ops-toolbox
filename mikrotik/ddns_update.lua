@@ -23,7 +23,6 @@
 :local CfZoneId    "";
 :local CfRecordId  "";
 :local CfRecordName "";
-:local CfTtl       60;
 
 :global CF_API_TOKEN;
 :global CF_ZONE_ID;
@@ -45,9 +44,17 @@
 }
 
 # Resolve current WAN IP from the interface address (strips the prefix length).
+# Prefer a dynamic address: DHCP / PPPoE WANs are the common DDNS case, and
+# filtering them out with !dynamic left the updater with nothing to send.
 :local wanIp "";
 :do {
-    :local addr [/ip address get [find interface=$WanInterface !dynamic] address];
+    :local addr "";
+    :do {
+        :set addr [/ip address get [find interface=$WanInterface dynamic] address];
+    } on-error={};
+    :if ([:len $addr] = 0) do={
+        :set addr [/ip address get [find interface=$WanInterface] address];
+    }
     :local slash [:find $addr "/"];
     :if ($slash != nil) do={ :set wanIp [:pick $addr 0 $slash]; } else={ :set wanIp $addr; }
 } on-error={
@@ -64,20 +71,20 @@
     :return "";
 }
 
-# PATCH the A record via Cloudflare API v4.
+# PATCH only the address field. PUT replaces the whole record and resets
+# omitted fields (proxied, comment, tags) to Cloudflare defaults.
 :local apiUrl ("https://api.cloudflare.com/client/v4/zones/" . $CfZoneId . \
                "/dns_records/" . $CfRecordId);
-:local body ("{\"type\":\"A\",\"name\":\"" . $CfRecordName . \
-             "\",\"content\":\"" . $wanIp . "\",\"ttl\":" . $CfTtl . "}");
+:local body ("{\"content\":\"" . $wanIp . "\"}");
 
 :local ok false;
 :local attempt 0;
 :while (($attempt < 3) and (!$ok)) do={
     :do {
-        /tool fetch http-method=put url=$apiUrl \
+        /tool fetch http-method=patch url=$apiUrl \
             http-header-field=("Authorization: Bearer " . $CfApiToken . \
                                ",Content-Type: application/json") \
-            http-data=$body keep-result=no;
+            http-data=$body check-certificate=yes keep-result=no;
         :set ok true;
     } on-error={
         :set attempt ($attempt + 1);

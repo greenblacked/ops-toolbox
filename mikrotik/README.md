@@ -35,7 +35,7 @@ live in `/system script` on the router and are run either manually or from
 | `bandwidth_spike.lua`           | Alerts when interface throughput jumps well above its recent norm.      |
 | `traffic_quota.lua`             | Tracks monthly volume per interface and warns before a cap is hit.      |
 | `brute_force_block.lua`         | Detects repeated auth failures and adds the source to a block list.     |
-| `vpn_health.lua`                | Watches IPsec / OVPN / L2TP sessions and alerts on state changes.       |
+| `vpn_health.lua`                | Watches IPsec / OVPN / WireGuard sessions and alerts on state changes.  |
 | `wireguard_watch.lua`           | Alerts when a WireGuard peer stops handshaking.                         |
 | `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
@@ -162,8 +162,9 @@ Creates a binary backup (`.backup`) and a config export (`.rsc`) and sends a
 Telegram notification with the resulting filename. Optional binary-backup
 encryption via `BackupPassword`. Sanitizes the date so non-ISO `date-format`
 settings don't accidentally produce filenames with `/` (which would create
-sub-folders on disk). Files accumulate in `/file` — clean them up manually
-or via a separate scheduler if needed.
+sub-folders on disk). Files accumulate in `/file` — pair with
+`backup_file_cleanup.lua` (default retention 30 days; see
+`print_schedulers.sh`) so flash does not fill with stale pairs.
 
 ### `change_WIFI_pw.lua`
 

@@ -14,6 +14,48 @@ entry here belongs to a version.
 
 ## [Unreleased]
 
+### Fixed
+
+- `brute_force_block.lua` never reached its default threshold: the tally stored
+  `;IP:COUNT;` but looked up `;IP;`, so every failure was recorded as a fresh
+  count of 1. The lookup key now includes the colon. A shrink in `/log` (ring
+  buffer rotation) also resets the scan cursor instead of skipping the shortened
+  log forever.
+- `rogue_dns_check.lua` defaulted the control hostname to `dns.cloudflare.com`,
+  which does not resolve to `1.1.1.1` / `1.0.0.1` and false-alarmed on a healthy
+  resolver. The default is now `one.one.one.one`.
+- `traffic_quota.lua` parsed the pre-7.10 `Mmm/dd/yyyy` date layout against the
+  pinned RouterOS iso `yyyy-MM-dd`, so the "month" key changed daily. It also
+  reset `QUOTA_PREV_*` to 0 on rollover and then treated the whole interface
+  counter as new-month traffic. ISO dates are parsed; PREV is baselined at the
+  current counters on rollover.
+- `backup_file_cleanup.lua` exposed `RetentionDays` but hardcoded `30d`, and
+  matched `name~"backup-"` unanchored. Retention now drives the cutoff, and the
+  match is `^backup-`.
+- `ddns_update.lua` skipped DHCP/PPPoE WAN addresses (`!dynamic`), claimed PATCH
+  while issuing PUT (which resets omitted Cloudflare fields), and fetched
+  without `check-certificate`. It now prefers a dynamic address, PATCHes only
+  `content`, and verifies TLS. `tg_send.lua` likewise enables
+  `check-certificate=yes`.
+- `vpn_health.lua` / `wireguard_watch.lua` treated WireGuard `last-handshake`
+  incorrectly: any nonempty value was "up forever", and the watch compared
+  elapsed handshake time to wall-clock time. Both now treat it as elapsed time
+  against a stale threshold; never-handshaked peers count as stale.
+- `mac_allowlist_dhcp.lua` compared MACs case-sensitively while README examples
+  are lowercase and RouterOS leases are commonly uppercase. Both sides are
+  lowercased when `:convert transform=lc` is available.
+- `git_stale_branches.sh` crashed on a ref containing `|` (legal in Git) because
+  fields were `|`-delimited. It now uses tabs, matching `git_recent_branches.sh`.
+- `git_remote_doctor.py` printed shell `credential.helper` bodies verbatim,
+  including `password=…` tokens, and recommended plaintext `store` on Linux. Shell
+  helpers are redacted; the Linux hint prefers `libsecret`.
+- `kubectl_pod_diag.sh` discarded kubectl get failures with `|| true`, counted
+  them as findings, and exited 0. Failed queries now exit 1; missing `python3`
+  is exit 2 like a missing kubectl.
+- macOS alias table still advertised `find→fd` / `grep→rg` after those shadows
+  were removed; the row matches the file and the suite. Linux now asserts the
+  same shadows stay gone (the changelog already claimed it did).
+
 ### Added
 
 - DevOps coverage in `macos-initial-setup/zsh_aliases.zsh`: the kubectl

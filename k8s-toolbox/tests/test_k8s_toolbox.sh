@@ -328,6 +328,30 @@ else
 fi
 rm -rf "$mock_bin"
 
+# A partial kubectl failure must be exit 1, not a successful "finding". The
+# previous path discarded every get exit status with || true and counted the
+# empty result as a finding, then exited 0.
+fail_bin="$(mktemp -d)"
+cat > "$fail_bin/kubectl" <<'MOCK_FAIL'
+#!/usr/bin/env bash
+set -u
+case " $* " in
+  *" cluster-info "*) exit 0 ;;
+  *" get pods "*) exit 1 ;;
+  *" get events "*|*" get pvc "*|*" get nodes "*) printf '{"items":[]}'; exit 0 ;;
+  *) printf 'unexpected mock kubectl command: %s\n' "$*" >&2; exit 1 ;;
+esac
+MOCK_FAIL
+chmod +x "$fail_bin/kubectl"
+out="$(PATH="$fail_bin:$PATH" guard "$K/kubectl_pod_diag.sh" --since 30m 2>&1)"
+rc=$?
+if (( rc == 1 )) && [[ "$out" == *"could not list pods"* ]]; then
+  ok "kubectl_pod_diag.sh treats a failed get as exit 1"
+else
+  err "kubectl_pod_diag.sh did not exit 1 on a failed get (exit $rc)"
+fi
+rm -rf "$fail_bin"
+
 # --------------------------------------------------------------------------
 head_ "missing tooling is exit 2, not a crash"
 # The runner may well have kubectl and docker installed — GitHub's does — so

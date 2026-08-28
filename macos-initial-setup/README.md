@@ -845,7 +845,7 @@ only once.
 | Safety | `cp`, `mv`, `rm` default to `-i` (use `\rm` to bypass). |
 | Navigation | `..`, `...`, `....`, `.....`, `-`, `~`, `mkcd`, `up N`. |
 | Listing | `ls`, `l`, `ll`, `la`, `lt` prefer `eza` when available. |
-| Modern replacements | `cat`→`bat`, `find`→`fd`, `grep`→`rg`, `top`→`htop`, `df`→`duf`, `du`→`dust`. |
+| Modern replacements | `cat`→`bat`, `top`→`htop`, `df`→`duf`, `du`→`dust`. `fd` and `rg` keep their own names — they are never aliased over `find`/`grep` (the flags differ). |
 | Git | `gs`, `gaa`, `gcm`, `gco`, `gcb`, `gp`, `gpl`, `gl`, plus `gwip` (stage + checkpoint) and `gprune` (delete merged branches). |
 | Docker / Compose | `d`, `dps`, `dprune`, `dc`, `dcu`, `dcd`, `dcl`. |
 | Kubernetes | `k`, `kg`, `kd`, `kl`, `kx`, `kns`. |
