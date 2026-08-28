@@ -34,6 +34,7 @@ import argparse
 import contextlib
 import io
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -237,6 +238,31 @@ def redact_url(url):
     elif len(userinfo) >= 20:
         userinfo = "***"
     return "%s://%s@%s%s%s" % (scheme, userinfo, hostport, sep, tail)
+
+
+def redact_helper(value):
+    """Blank credential-like tokens out of a credential.helper value.
+
+    Shell helpers (`!f() { echo password=…; }; f`) are ordinary in CI and in
+    personal configs. Printing the body verbatim is how a "read-only doctor"
+    becomes the thing that pastes a secret into an issue.
+    """
+    raw = value or ""
+    if not raw.startswith("!"):
+        return raw
+    redacted = re.sub(
+        r"(?i)\b(password|token|secret|authorization)=(\S+)",
+        r"\1=***",
+        raw,
+    )
+    if redacted != raw:
+        return redacted
+    # No named key matched, but the body may still embed a long token-like
+    # string. Collapse long shell helpers to a short marker rather than print
+    # the whole command.
+    if len(raw) > 48:
+        return "!<shell credential helper>"
+    return raw
 
 
 def url_problems(parts):
@@ -617,8 +643,14 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
                 % len(http_urls))
             info("every fetch and push will prompt, and fail outright where "
                  "nothing can prompt — a hook, an editor, CI")
-            info("fix: git config --global credential.helper "
-                 + ("osxkeychain" if sys.platform == "darwin" else "store"))
+            if sys.platform == "darwin":
+                info("fix: git config --global credential.helper osxkeychain")
+            elif sys.platform.startswith("win"):
+                info("fix: git config --global credential.helper manager")
+            else:
+                info("fix: git config --global credential.helper libsecret")
+                info("credential.helper store keeps passwords in a plaintext "
+                     "file under ~/.git-credentials — prefer a keyring helper")
             problems += 1
         else:
             info("no credential helper configured; no HTTP remote needs one")
@@ -627,7 +659,8 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
     for value, origin, scope in helpers:
         kind, resolved, problem = classify_helper(value, path_env, exec_path)
         origin = shorten(origin.replace("file:", ""))
-        print("        %-24s %s(%s, %s)%s" % (value, C_DIM, scope, origin, C_RESET))
+        shown = redact_helper(value)
+        print("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
         if problem:
             bad(problem)
             info("this is what a keychain helper copied between an old machine "
@@ -663,7 +696,7 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
         value = entries[key][-1][0]
         url = key[len("credential."):-len(".helper")]
         info("credential.%s.helper = %s applies only to URLs under %s"
-             % (redact_url(url), value, redact_url(url)))
+             % (redact_url(url), redact_helper(value), redact_url(url)))
 
     return problems
 

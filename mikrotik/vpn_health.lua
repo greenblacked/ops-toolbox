@@ -71,8 +71,12 @@
         :if ([:len $pub] > 8) do={ :set pub [:pick $pub 0 8]; }
         :local lastHs "";
         :do { :set lastHs [/interface wireguard peers get $wid last-handshake]; } on-error={};
+        # last-handshake is elapsed time since the last successful handshake
+        # (empty = never). A nonempty value is not "up forever".
         :local state "down";
-        :if ([:len $lastHs] > 0) do={ :set state "up"; }
+        :if ([:len $lastHs] > 0) do={
+            :if ($lastHs > 300s) do={ :set state "stale"; } else={ :set state "up"; }
+        }
         :set currentSig ($currentSig . ";wg-" . $iface . "-" . $pub . "=" . $state);
     }
 } on-error={};

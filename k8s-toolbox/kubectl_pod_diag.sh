@@ -92,6 +92,11 @@ if ! command -v kubectl >/dev/null 2>&1; then
   exit 2
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  err "python3 is not installed or not on PATH"
+  exit 2
+fi
+
 if [[ -n "$CONTEXT" ]]; then
   KUBECTL+=(--context "$CONTEXT")
 fi
@@ -110,11 +115,15 @@ fi
 
 section() { printf "\n%s== %s ==%s\n" "$C_BOLD" "$*" "$C_RESET"; }
 
+KUBECTL_ERRORS=0
+
 section "Non-Running pods"
-pod_json="$("${KUBECTL[@]}" get pods "${ns_args[@]}" -o json 2>/dev/null || true)"
-if [[ -z "$pod_json" ]]; then
+pod_json=""
+pod_rc=0
+pod_json="$("${KUBECTL[@]}" get pods "${ns_args[@]}" -o json 2>/dev/null)" || pod_rc=$?
+if (( pod_rc != 0 )) || [[ -z "$pod_json" ]]; then
   warn "could not list pods"
-  FINDINGS=$((FINDINGS + 1))
+  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
 else
   bad_pods="$(printf '%s' "$pod_json" | python3 -c '
 import json,sys
@@ -161,10 +170,12 @@ print("\n".join(rows))
 fi
 
 section "Warning events (last $SINCE)"
-event_json="$("${KUBECTL[@]}" get events "${ns_args[@]}" --field-selector type=Warning -o json 2>/dev/null || true)"
-if [[ -z "$event_json" ]]; then
+event_json=""
+event_rc=0
+event_json="$("${KUBECTL[@]}" get events "${ns_args[@]}" --field-selector type=Warning -o json 2>/dev/null)" || event_rc=$?
+if (( event_rc != 0 )) || [[ -z "$event_json" ]]; then
   warn "could not list events"
-  FINDINGS=$((FINDINGS + 1))
+  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
 else
   warns="$(printf '%s' "$event_json" | python3 -c '
 import json,sys,datetime
@@ -205,10 +216,12 @@ print("\n".join(rows[:40]))
 fi
 
 section "Unbound PVCs"
-pvc_json="$("${KUBECTL[@]}" get pvc "${ns_args[@]}" -o json 2>/dev/null || true)"
-if [[ -z "$pvc_json" ]]; then
+pvc_json=""
+pvc_rc=0
+pvc_json="$("${KUBECTL[@]}" get pvc "${ns_args[@]}" -o json 2>/dev/null)" || pvc_rc=$?
+if (( pvc_rc != 0 )) || [[ -z "$pvc_json" ]]; then
   warn "could not list PVCs"
-  FINDINGS=$((FINDINGS + 1))
+  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
 else
   unbound="$(printf '%s' "$pvc_json" | python3 -c '
 import json,sys
@@ -235,10 +248,12 @@ print("\n".join(rows))
 fi
 
 section "Node pressure"
-node_json="$("${KUBECTL[@]}" get nodes -o json 2>/dev/null || true)"
-if [[ -z "$node_json" ]]; then
+node_json=""
+node_rc=0
+node_json="$("${KUBECTL[@]}" get nodes -o json 2>/dev/null)" || node_rc=$?
+if (( node_rc != 0 )) || [[ -z "$node_json" ]]; then
   warn "could not list nodes"
-  FINDINGS=$((FINDINGS + 1))
+  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
 else
   pressure="$(printf '%s' "$node_json" | python3 -c '
 import json,sys
@@ -267,6 +282,10 @@ print("\n".join(rows))
 fi
 
 printf "\n"
+if (( KUBECTL_ERRORS > 0 )); then
+  err "${KUBECTL_ERRORS} kubectl query(ies) failed"
+  exit 1
+fi
 if (( FINDINGS == 0 )); then
   ok "cluster looks quiet"
   exit 4

@@ -16,12 +16,14 @@ entry here belongs to a version.
 
 ### Added
 
-- Task-scoped conventions under `.claude/skills/`, so an automated coding
-  agent working here loads the rules for the file in front of it instead of
-  skimming `CONTRIBUTING.md` and acting on the half it remembered. Ten skills:
-  one entry point, one per language (`bash`, PowerShell, RouterOS, Python), and
-  one each for adding a script, running the suites, the pre-push lint gates,
-  documentation and the changelog, and commits and pull requests.
+- Task-scoped conventions under `.claude/skills/` on a local checkout, so an
+  automated coding agent working here loads the rules for the file in front of
+  it instead of skimming `CONTRIBUTING.md` and acting on the half it remembered.
+  Ten skills: one entry point, one per language (`bash`, PowerShell, RouterOS,
+  Python), and one each for adding a script, running the suites, the pre-push
+  lint gates, documentation and the changelog, and commits and pull requests.
+  The directory is gitignored and is not on GitHub; `CONTRIBUTING.md` stays the
+  published reference.
 
   Nothing in them is new policy — every rule is lifted from a script or from
   the check that enforces it, and each skill names that check, because a rule
@@ -29,9 +31,7 @@ entry here belongs to a version.
   that shaped this repository are stated as failures: the preview that wrote a
   log file, the `install --dry-run` that wrote two systemd units, the
   PowerShell dry run that was only ever exercised on a platform where it exits
-  at a guard. `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and the package
-  READMEs point at the relevant skill from where the same subject already comes
-  up.
+  at a guard.
 
 - `stay_fresh.sh --prune-docker-volumes`. Volume pruning was part of the
   default Docker step; volumes hold data, not cache — a stopped project's
@@ -602,6 +602,53 @@ entry here belongs to a version.
 
 ### Fixed
 
+- LaunchAgent options are command-scoped. `uninstall --dry-run` is a real
+  no-write preview, while ambiguous combinations such as `run-now --dry-run`
+  fail with exit `3` instead of silently ignoring the flag.
+- LaunchAgent installation stages and validates its plist atomically, checks
+  bootout/write/removal failures, and restores the previous plist and loaded
+  job when replacement bootstrap fails.
+- Docker pruning now fails closed when the active context or endpoint cannot be
+  resolved, instead of treating an inspection error as permission to prune.
+- `brute_force_block.lua` never reached its default threshold: the tally stored
+  `;IP:COUNT;` but looked up `;IP;`, so every failure was recorded as a fresh
+  count of 1. The lookup key now includes the colon. A shrink in `/log` (ring
+  buffer rotation) also resets the scan cursor instead of skipping the shortened
+  log forever.
+- `rogue_dns_check.lua` defaulted the control hostname to `dns.cloudflare.com`,
+  which does not resolve to `1.1.1.1` / `1.0.0.1` and false-alarmed on a healthy
+  resolver. The default is now `one.one.one.one`.
+- `traffic_quota.lua` parsed the pre-7.10 `Mmm/dd/yyyy` date layout against the
+  pinned RouterOS iso `yyyy-MM-dd`, so the "month" key changed daily. It also
+  reset `QUOTA_PREV_*` to 0 on rollover and then treated the whole interface
+  counter as new-month traffic. ISO dates are parsed; PREV is baselined at the
+  current counters on rollover.
+- `backup_file_cleanup.lua` exposed `RetentionDays` but hardcoded `30d`, and
+  matched `name~"backup-"` unanchored. Retention now drives the cutoff, and the
+  match is `^backup-`.
+- `ddns_update.lua` skipped DHCP/PPPoE WAN addresses (`!dynamic`), claimed PATCH
+  while issuing PUT (which resets omitted Cloudflare fields), and fetched
+  without `check-certificate`. It now prefers a dynamic address, PATCHes only
+  `content`, and verifies TLS. `tg_send.lua` likewise enables
+  `check-certificate=yes`.
+- `vpn_health.lua` / `wireguard_watch.lua` treated WireGuard `last-handshake`
+  incorrectly: any nonempty value was "up forever", and the watch compared
+  elapsed handshake time to wall-clock time. Both now treat it as elapsed time
+  against a stale threshold; never-handshaked peers count as stale.
+- `mac_allowlist_dhcp.lua` compared MACs case-sensitively while README examples
+  are lowercase and RouterOS leases are commonly uppercase. Both sides are
+  lowercased when `:convert transform=lc` is available.
+- `git_stale_branches.sh` crashed on a ref containing `|` (legal in Git) because
+  fields were `|`-delimited. It now uses tabs, matching `git_recent_branches.sh`.
+- `git_remote_doctor.py` printed shell `credential.helper` bodies verbatim,
+  including `password=…` tokens, and recommended plaintext `store` on Linux. Shell
+  helpers are redacted; the Linux hint prefers `libsecret`.
+- `kubectl_pod_diag.sh` discarded kubectl get failures with `|| true`, counted
+  them as findings, and exited 0. Failed queries now exit 1; missing `python3`
+  is exit 2 like a missing kubectl.
+- macOS alias table still advertised `find→fd` / `grep→rg` after those shadows
+  were removed; the row matches the file and the suite. Linux now asserts the
+  same shadows stay gone (the changelog already claimed it did).
 - The `stay_fresh.sh` run lock actually excludes the LaunchAgent. It lived
   under `"${TMPDIR:-/tmp}"`, and the agent's plist sets only `PATH` — so an
   agent run resolved that to `/tmp` while a terminal run resolved it to the
@@ -913,6 +960,18 @@ entry here belongs to a version.
   is normalised without a rewrite that would invalidate every clone.
 
 ### Changed
+
+- `.claude/skills/` is local-only. The directory is gitignored and no longer
+  published on GitHub; `CONTRIBUTING.md` is the public reference. Package
+  READMEs that pointed at a skill now point at that file instead.
+
+- macOS scheduled maintenance now defaults to a conservative `safe` profile:
+  protected per-app caches, provably stale workspace storage and version
+  reporting. `stay_fresh_agent.sh install --profile full` retains the previous
+  broad behavior. Scheduled runs pass `--fail-on-warn`, so partial failures are
+  visible in launchd's last exit status.
+- `gem cleanup` is no longer presented or executed as cache cleanup. Old
+  installed gem versions are kept unless `--cleanup-old-gems` is explicit.
 
 - RouterOS CHR compatibility was bumped from 7.24 to 7.24.1 after the full Docker integration suite passed.
 - RouterOS CHR compatibility was bumped from 7.23.3 to 7.24 after the full Docker integration suite passed.

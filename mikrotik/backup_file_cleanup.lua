@@ -9,13 +9,15 @@
 :if (([:typeof $OpsToolboxPaused] = "bool") and $OpsToolboxPaused) do={ :return ""; }
 
 :local RetentionDays 30;
-:local cutoff ([/system clock get date] - 30d);
+:local cutoff ([/system clock get date] - ($RetentionDays * 1d));
 
 :log info ("backup_file_cleanup: removing backup-* files older than " . $RetentionDays . " days");
 
 :local removed 0;
 
-:foreach f in=[/file find where name~"backup-"] do={
+# Prefix match only. name~"backup-" is unanchored and would also match a file
+# that merely contains the substring somewhere in the middle of its name.
+:foreach f in=[/file find where name~"^backup-"] do={
     :do {
         :local ct [/file get $f creation-time];
         :if ($ct < $cutoff) do={

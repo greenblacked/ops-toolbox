@@ -13,9 +13,7 @@ the next machine. Every change is previewable with `--dry-run`, logged to
 The conventions these scripts follow — the `set -u` / `set -o pipefail`
 dialect, Bash 3.2 only, the indented `(dry-run)` output grammar, and the
 rule that a preview does not even create its own log file — are collected in
-[`.claude/skills/bash-script-conventions`](../.claude/skills/bash-script-conventions/SKILL.md),
-with [`adding-a-script`](../.claude/skills/adding-a-script/SKILL.md) as the
-checklist for a new one.
+[`CONTRIBUTING.md`](../CONTRIBUTING.md).
 
 **Platform:** macOS 12+ (Monterey through the current release) on Apple
 Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
@@ -411,8 +409,9 @@ In the order they run:
 10. Remove diagnostic and crash reports (user, plus system with `sudo`).
 11. Update and upgrade Homebrew formulae, then casks once when an interactive
     sudo-capable run permits them; run `cleanup -s` and `autoremove`.
-12. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `gem`,
-    `go`).
+12. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Old
+    installed gem versions are package state, not cache, and are kept unless
+    `--cleanup-old-gems` is explicit.
 13. Update installed Helm plugins.
 14. Run `gcloud components update`.
 15. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
@@ -429,6 +428,8 @@ In the order they run:
 ./stay_fresh.sh --purge-memory     # explicit cold-cache troubleshooting
 ./stay_fresh.sh --only brew,versions
 ./stay_fresh.sh --prune-xcode-archives-days 90
+./stay_fresh.sh --cleanup-old-gems # opt-in removal of old installed gem versions
+./stay_fresh.sh --fail-on-warn     # useful for schedulers and monitoring
 ./stay_fresh.sh --skip-devtools   # skip all dev-tool refresh steps at once
 ```
 
@@ -439,6 +440,7 @@ In the order they run:
 | `--dry-run` | Show the plan; change nothing. |
 | `-y`, `--yes` | Authorize a non-interactive real run and suppress supported command prompts. Required when stdin is not a TTY. |
 | `-v`, `--verbose` | Stream per-step output live. |
+| `--fail-on-warn` | Exit `1` when a step records a real warning; scheduled runs enable this. |
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, system diagnostics, and Homebrew cask upgrades. |
 | `--only STEP1,STEP2` | Run only named stable step ids; use `--list-steps`. Cannot be mixed with individual `--skip-*` flags. |
 | `--list-steps` | List every selectable step id and exit before preflight. |
@@ -454,7 +456,8 @@ In the order they run:
 | `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 6). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
-| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`gem`/`go` cache cleanup. |
+| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`go` cache cleanup. |
+| `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
@@ -510,7 +513,7 @@ accounting, and closes with a summary that includes:
 | Code | Meaning |
 | --- | --- |
 | `0` | Completed (possibly with warnings). |
-| `1` | One or more steps hard-failed. |
+| `1` | One or more steps hard-failed, or a step warned under `--fail-on-warn`. |
 | `2` | Preflight checks failed, another run is active, or a non-interactive real run omitted `--yes`. |
 | `3` | Invalid arguments. |
 
@@ -798,13 +801,20 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ```bash
 ./launchd/stay_fresh_agent.sh install                      # Mondays, 10:30
 ./launchd/stay_fresh_agent.sh install --weekday daily --hour 3
-./launchd/stay_fresh_agent.sh install --dry-run            # agent previews only
+./launchd/stay_fresh_agent.sh install --profile full       # original broad maintenance
+./launchd/stay_fresh_agent.sh install --dry-run            # preview install only
 ./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
 ./launchd/stay_fresh_agent.sh status
 ./launchd/stay_fresh_agent.sh run-now
 ./launchd/stay_fresh_agent.sh logs --tail 120
 ./launchd/stay_fresh_agent.sh uninstall
 ```
+
+The default `safe` profile runs only protected per-app cache cleanup,
+conservative stale-workspace cleanup and version reporting. It does not empty
+Trash, prune Docker, remove broad user/Xcode/developer caches, upgrade packages,
+or update plugins. Pass `install --profile full` to retain the previous broad
+scheduled behavior.
 
 **The agent cannot use `sudo`, and that is not a limitation to work around.** A
 LaunchAgent runs in your GUI login session with no terminal attached, so a
@@ -817,10 +827,17 @@ on every scheduled run:
 - system caches (`/Library/Caches`, `/System/Library/Caches`)
 - system diagnostic and crash reports
 
-Everything else — user caches, safe per-app caches, workspace storage, trash,
-Homebrew formulae, Docker, Xcode extras, and dev-tool caches — runs normally.
-Cask upgrades are skipped because they may invoke an interactive sudo prompt.
-Run `stay_fresh.sh` by hand for root-owned steps and casks.
+With `--profile full`, everything else — user caches, safe per-app caches,
+workspace storage, trash, Homebrew formulae, Docker, Xcode extras, and dev-tool
+caches — runs normally. Cask upgrades are skipped because they may invoke an
+interactive sudo prompt. Run `stay_fresh.sh` by hand for root-owned steps and
+casks.
+
+Every scheduled run passes `--fail-on-warn`, so incomplete cleanup or a failed
+update produces a non-zero launchd exit status instead of appearing healthy.
+Install and replacement are transactional: a failed bootstrap restores the
+previous plist and restarts the old job. `uninstall --dry-run` previews removal;
+options that do not belong to a command are rejected with exit `3`.
 
 The generated plist supplies a controlled PATH containing Apple system paths
 and both Homebrew locations. The agent is `ProcessType Background` with
@@ -865,7 +882,7 @@ only once.
 | Safety | `cp`, `mv`, `rm` default to `-i` (use `\rm` to bypass). |
 | Navigation | `..`, `...`, `....`, `.....`, `-`, `~`, `mkcd`, `up N`. |
 | Listing | `ls`, `l`, `ll`, `la`, `lt` prefer `eza` when available. |
-| Modern replacements | `cat`→`bat`, `find`→`fd`, `grep`→`rg`, `top`→`htop`, `df`→`duf`, `du`→`dust`. |
+| Modern replacements | `cat`→`bat`, `top`→`htop`, `df`→`duf`, `du`→`dust`. `fd` and `rg` keep their own names — they are never aliased over `find`/`grep` (the flags differ). |
 | Git | `gs`, `gaa`, `gcm`, `gco`, `gcb`, `gp`, `gpl`, `gl`, plus `gwip` (stage + checkpoint) and `gprune` (delete merged branches). |
 | Docker / Compose | `d`, `dps`, `dprune`, `dc`, `dcu`, `dcd`, `dcl`. |
 | Kubernetes | `k`, `kg`, `kd`, `kl`, `kx`, `kns`. |
@@ -1023,8 +1040,8 @@ Homebrew / `pyenv` / `goenv` commands.
   folder no longer exists. Remote workspaces and unreadable entries are
   left alone.
 - Empties `~/.Trash`.
-- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `gem`,
-  `go`).
+- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Installed
+  gem versions are kept unless `--cleanup-old-gems` is explicit.
 - Prunes Docker resources when Docker is available:
   - Containers (`docker container prune -f`)
   - Networks (`docker network prune -f`)
@@ -1034,7 +1051,8 @@ Homebrew / `pyenv` / `goenv` commands.
   - **Dangling images only** (`docker image prune -f`) — keeps tagged images
   - Builder cache (`docker builder prune -af`)
   - Skips pruning entirely when the active Docker context points to a non-local
-    daemon (non-`unix://…` host), to avoid cleaning a remote engine by mistake.
+    daemon (non-`unix://…` host), or when the endpoint cannot be resolved, to
+    avoid cleaning a remote engine by mistake.
 - Upgrades Homebrew formulae and casks (greedy upgrade only with
   `--brew-greedy`).
 - Updates Helm plugins and `gcloud` components when those tools are

@@ -3,8 +3,9 @@
 # ("ok", "down", "stale") to alert only on transitions; first unhealthy baseline
 # sends one message.
 #
-# Schedule every 1–5m. Handshake math is wrapped in on-error — tune on hardware
-# if your RouterOS build reports last-handshake differently.
+# Schedule every 1–5m. last-handshake is elapsed time since the last successful
+# handshake (MikroTik docs); empty means never. Compare that duration to the
+# stale threshold — do not subtract from wall-clock time.
 
 # Fleet-wide maintenance switch; router_doctor.py reports when it is active.
 :global OpsToolboxPaused;
@@ -12,7 +13,8 @@
 
 :local DeviceName [/system identity get name];
 :local Iface "wireguard1";
-# Handshake stale threshold: 300s below (tune both comment and - 300s).
+# Handshake stale threshold (elapsed seconds). Tune StaleSec and the comparison.
+:local StaleSec 300;
 
 :global WGHEALTHLAST;
 
@@ -37,8 +39,12 @@
     :foreach p in=[/interface wireguard peers find where interface=$Iface and !disabled] do={
         :do {
             :local lh [/interface wireguard peers get $p last-handshake];
-            :if ($lh < ([/system clock get time] - 300s)) do={
+            :if ([:len $lh] = 0) do={
                 :set st "stale";
+            } else={
+                :if ($lh > ($StaleSec * 1s)) do={
+                    :set st "stale";
+                }
             }
         } on-error={
             :log warning "wireguard_watch: handshake check skipped for a peer";

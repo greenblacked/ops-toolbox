@@ -39,9 +39,11 @@
 :local sent false;
 :while (($attempt < 3) and (!$sent)) do={
     :do {
+        # check-certificate defaults to no on /tool fetch; leaving it off would
+        # send the bot token to any MITM that presents a cert.
         /tool fetch http-method=post url=$tgUrl http-data=$body \
             http-header-field="Content-Type: application/x-www-form-urlencoded" \
-            keep-result=no;
+            check-certificate=yes keep-result=no;
         :set sent true;
     } on-error={
         :set attempt ($attempt + 1);

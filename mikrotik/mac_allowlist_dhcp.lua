@@ -47,6 +47,9 @@
 }
 
 :local normAllow $MAC_ALLOWLIST;
+# Lease MAC addresses are commonly uppercase; README examples are often
+# lowercase. Compare case-insensitively so either spelling works.
+:do { :set normAllow [:convert $normAllow transform=lc]; } on-error={};
 :if ([:pick $normAllow 0 1] != ";") do={ :set normAllow (";" . $normAllow); }
 :if ([:pick $normAllow ([:len $normAllow] - 1) [:len $normAllow]] != ";") do={ :set normAllow ($normAllow . ";"); }
 
@@ -63,8 +66,11 @@
         :local cmt "";
         :do { :set cmt [/ip dhcp-server lease get $lid comment]; } on-error={};
 
+        :local macCanon $mac;
+        :do { :set macCanon [:convert $mac transform=lc]; } on-error={};
+
         :local allowed false;
-        :if ([:find $normAllow (";" . $mac . ";")] != nil) do={ :set allowed true; }
+        :if ([:find $normAllow (";" . $macCanon . ";")] != nil) do={ :set allowed true; }
         :if ([:find $cmt "#allow"] != nil) do={ :set allowed true; }
 
         :if (!$allowed) do={
