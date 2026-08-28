@@ -293,9 +293,12 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
 - `launchd/stay_fresh_agent.sh` installs a per-user LaunchAgent that runs
   `stay_fresh.sh` on a weekly or daily schedule. The agent has no terminal, so
   it cannot answer a sudo prompt and always runs `--no-sudo --yes`; root-owned
-  steps and Homebrew casks stay manual, while formulae update unattended. Its
-  plist supplies a controlled Homebrew/system PATH and retains ten dated logs.
-  `--print-only` shows the plist without installing it.
+  steps and Homebrew casks stay manual. Its default safe profile limits work to
+  protected app caches, provably stale workspace storage and version reporting;
+  `--profile full` enables the original broad maintenance set. Scheduled
+  warnings produce a non-zero exit, plist replacement rolls back on failure,
+  and ten dated logs are retained. `--print-only` shows the plist without
+  installing it.
 - `lib/workspace_scan.py` decides which VS Code `workspaceStorage`
   entries belong to projects that are genuinely gone. Called by `stay_fresh.sh`
   via `/usr/bin/python3`; stdlib-only and unit-tested. It refuses to call an
