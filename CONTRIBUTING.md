@@ -273,10 +273,15 @@ Output is `Write-Host -ForegroundColor`, in a fixed column grammar
 (`Clear-Target` in `windows/cleanup/clean_disk_c.ps1`):
 
 ```powershell
-Write-Host ('SKIP  {0,-38} {1,10}' -f $Label, (Format-Size $Bytes)) -ForegroundColor Yellow
+Write-Host ('WOULD {0,-38} {1,10}  ({2} files)' -f $Label, (Format-Size $size), $files.Count)
+Write-Host ('CLEAN {0,-38} {1,10}' -f $Label, (Format-Size $size)) -ForegroundColor Green
+Write-Host ('SKIP  {0,-38} (not found)' -f $Label) -ForegroundColor DarkGray
 ```
 
-Verbs are `WOULD` / `CLEAN` / `SKIP`. `PSScriptAnalyzerSettings.psd1` excludes
+Verbs are `WOULD` / `CLEAN` / `SKIP`, the label padded to 38. A `WOULD` or
+`CLEAN` carries the size in the next 10 columns; a `SKIP` carries the reason it
+was skipped instead, because there is no size to report for work that did not
+happen. `PSScriptAnalyzerSettings.psd1` excludes
 exactly one rule: `PSAvoidUsingWriteHost`, because these are interactive
 operator scripts whose output is a colour-coded human report. Everything else
 PSScriptAnalyzer reports at `Warning` or above is a real finding — fix it.
