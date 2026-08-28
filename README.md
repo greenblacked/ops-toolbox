@@ -79,6 +79,7 @@ not at anyone shopping for a dotfiles framework to adopt.
 - [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
+- [Agent skills](#agent-skills)
 - [Contributing](#contributing)
 
 ## What's here
@@ -726,6 +727,35 @@ existing open bump pull request is reused rather than duplicated. Because bot
 events do not recursively start workflows, the version workflow explicitly
 dispatches the standard CI workflow for the bump branch before opening its PR.
 
+## Agent skills
+
+[`.claude/skills/`](.claude/skills/) holds the same conventions as
+[`CONTRIBUTING.md`](CONTRIBUTING.md), cut into ten task-scoped files so an
+automated coding agent loads the ones matching the file it is editing rather
+than skimming one long document. They are plain Markdown with a short front
+matter block, so they read fine without any tooling.
+
+| Skill | Covers |
+| --- | --- |
+| [`ops-toolbox-conventions`](.claude/skills/ops-toolbox-conventions/SKILL.md) | The three promises, the exit-code table, the package map, and why duplication here is deliberate |
+| [`bash-script-conventions`](.claude/skills/bash-script-conventions/SKILL.md) | The three `set` dialects, Bash 3.2, `usage()`, the four dry-run mechanisms, output and logging |
+| [`powershell-script-conventions`](.claude/skills/powershell-script-conventions/SKILL.md) | `-DryRun` over `ShouldProcess`, the `WOULD`/`CLEAN`/`SKIP` grammar, ASCII with no BOM, `Get-DryRunArgument` |
+| [`routeros-script-conventions`](.claude/skills/routeros-script-conventions/SKILL.md) | `OpsToolboxPaused`, secrets via `:global`, alerting on transitions, the pinned CHR digest |
+| [`python-helper-conventions`](.claude/skills/python-helper-conventions/SKILL.md) | Standard library only, 3.9-clean, read-only diagnostics, pure logic with injected ambient state |
+| [`adding-a-script`](.claude/skills/adding-a-script/SKILL.md) | The end-to-end checklist for a new script, including the `dry_run_args()` entry and both READMEs |
+| [`running-tests`](.claude/skills/running-tests/SKILL.md) | `run-tests.sh`, which suites need Docker, the harness style, and what makes a test worth having |
+| [`pre-push-gates`](.claude/skills/pre-push-gates/SKILL.md) | The four lint gates `run-tests.sh` does not cover, and how CI's path filters are wired |
+| [`docs-and-changelog`](.claude/skills/docs-and-changelog/SKILL.md) | The two-level README rule, the changelog voice, and `MD024: siblings_only` |
+| [`commits-and-prs`](.claude/skills/commits-and-prs/SKILL.md) | Attribution, the `type(scope):` subject format, the typed branch prefixes CI filters on |
+
+They exist because the recurring defect here is confident work that was never
+exercised — a preview that writes a log file, a suite claimed in a pull request
+that could not run on that machine. Each skill therefore names the check that
+would catch it, so a rule and its enforcement stay in one place, and each is
+extracted from the scripts rather than invented: where a skill and the scripts
+disagree, the scripts are right. [`AGENTS.md`](AGENTS.md) is still the short
+brief to read first.
+
 ## Contributing
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) documents the conventions every script
@@ -745,6 +775,9 @@ chmod +x git/git_my_helper.sh
 
 The static suite discovers scripts by role, so a new one is checked from its
 first commit without being added to any list.
+[`.claude/skills/adding-a-script`](.claude/skills/adding-a-script/SKILL.md)
+writes that path out as a checklist, including the two documentation entries a
+new script is not finished without.
 
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in

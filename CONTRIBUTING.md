@@ -7,6 +7,12 @@ New code conforms to them; it does not invent new patterns.
 If you find a rule here that the existing scripts do not actually follow, the
 rule is wrong. Fix it or delete it.
 
+The same conventions are also published as task-scoped skills under
+[`.claude/skills/`](.claude/skills/), for an automated agent that would rather
+load the rules for the file it is editing than read this document end to end.
+They are derived from this file and from the checks that enforce it; this
+document stays the reference.
+
 ## Contents
 
 - [The one architectural rule](#the-one-architectural-rule)
