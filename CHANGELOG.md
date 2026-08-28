@@ -602,6 +602,14 @@ entry here belongs to a version.
 
 ### Fixed
 
+- LaunchAgent options are command-scoped. `uninstall --dry-run` is a real
+  no-write preview, while ambiguous combinations such as `run-now --dry-run`
+  fail with exit `3` instead of silently ignoring the flag.
+- LaunchAgent installation stages and validates its plist atomically, checks
+  bootout/write/removal failures, and restores the previous plist and loaded
+  job when replacement bootstrap fails.
+- Docker pruning now fails closed when the active context or endpoint cannot be
+  resolved, instead of treating an inspection error as permission to prune.
 - `brute_force_block.lua` never reached its default threshold: the tally stored
   `;IP:COUNT;` but looked up `;IP;`, so every failure was recorded as a fresh
   count of 1. The lookup key now includes the colon. A shrink in `/log` (ring
@@ -952,6 +960,14 @@ entry here belongs to a version.
   is normalised without a rewrite that would invalidate every clone.
 
 ### Changed
+
+- macOS scheduled maintenance now defaults to a conservative `safe` profile:
+  protected per-app caches, provably stale workspace storage and version
+  reporting. `stay_fresh_agent.sh install --profile full` retains the previous
+  broad behavior. Scheduled runs pass `--fail-on-warn`, so partial failures are
+  visible in launchd's last exit status.
+- `gem cleanup` is no longer presented or executed as cache cleanup. Old
+  installed gem versions are kept unless `--cleanup-old-gems` is explicit.
 
 - RouterOS CHR compatibility was bumped from 7.24 to 7.24.1 after the full Docker integration suite passed.
 - RouterOS CHR compatibility was bumped from 7.23.3 to 7.24 after the full Docker integration suite passed.

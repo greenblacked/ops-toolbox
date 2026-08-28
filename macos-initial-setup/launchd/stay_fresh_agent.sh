@@ -9,8 +9,9 @@
 # --no-sudo --yes. Run stay_fresh.sh by hand when you want the root-owned steps.
 #
 # Usage:
-#   ./stay_fresh_agent.sh install [--weekday N] [--hour N] [--minute N] [--dry-run]
-#   ./stay_fresh_agent.sh uninstall
+#   ./stay_fresh_agent.sh install [--weekday N] [--hour N] [--minute N]
+#                                 [--profile safe|full] [--dry-run]
+#   ./stay_fresh_agent.sh uninstall [--dry-run]
 #   ./stay_fresh_agent.sh status
 #   ./stay_fresh_agent.sh run-now
 #   ./stay_fresh_agent.sh logs [--tail N]
@@ -19,7 +20,10 @@
 #   --weekday N   0-7, Sunday is 0 or 7 (default 1, Monday). 'daily' for every day
 #   --hour N      0-23 (default 10)
 #   --minute N    0-59 (default 30)
-#   --dry-run     Make the agent invoke stay_fresh.sh with --dry-run
+#   --profile P   'safe' runs protected app-cache/workspace cleanup and version
+#                 reporting; 'full' keeps the original broad behavior
+#                 (default safe)
+#   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
 #                 nothing and loading nothing
 #   --tail N      With 'logs', print the last N lines of the newest log
@@ -72,6 +76,9 @@ MINUTE=30
 DAILY=0
 AGENT_DRY_RUN=0
 PRINT_ONLY=0
+PROFILE="safe"
+PROFILE_SET=0
+SCHEDULE_SET=0
 TAIL_LINES=80
 TAIL_SET=0
 
@@ -83,9 +90,11 @@ while (( $# > 0 )); do
       ;;
     --weekday)
       shift; [[ $# -gt 0 ]] || { err "--weekday needs a value"; exit 3; }
+      SCHEDULE_SET=1
       if [[ "$1" == "daily" ]]; then
         DAILY=1
       elif [[ "$1" =~ ^[0-7]$ ]]; then
+        DAILY=0
         WEEKDAY="$1"
       else
         err "--weekday must be 0-7 or 'daily'"; exit 3
@@ -94,12 +103,21 @@ while (( $# > 0 )); do
     --hour)
       shift; [[ $# -gt 0 ]] || { err "--hour needs a value"; exit 3; }
       [[ "$1" =~ ^([0-9]|1[0-9]|2[0-3])$ ]] || { err "--hour must be 0-23"; exit 3; }
+      SCHEDULE_SET=1
       HOUR="$1"
       ;;
     --minute)
       shift; [[ $# -gt 0 ]] || { err "--minute needs a value"; exit 3; }
       [[ "$1" =~ ^([0-9]|[1-5][0-9])$ ]] || { err "--minute must be 0-59"; exit 3; }
+      SCHEDULE_SET=1
       MINUTE="$1"
+      ;;
+    --profile)
+      shift; [[ $# -gt 0 ]] || { err "--profile needs a value"; exit 3; }
+      [[ "$1" == "safe" || "$1" == "full" ]] \
+        || { err "--profile must be 'safe' or 'full'"; exit 3; }
+      PROFILE="$1"
+      PROFILE_SET=1
       ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
     --print-only) PRINT_ONLY=1 ;;
@@ -122,15 +140,34 @@ done
 
 [[ -n "$CMD" ]] || { usage; exit 3; }
 
-if [[ "$CMD" != "logs" ]] && (( TAIL_SET )); then
-  err "--tail is only valid with the logs command"
-  exit 3
-fi
+case "$CMD" in
+  install)
+    (( TAIL_SET == 0 )) || { err "--tail is only valid with logs"; exit 3; }
+    ;;
+  uninstall)
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
+      || { err "uninstall accepts only --dry-run"; exit 3; }
+    ;;
+  logs)
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
+      || { err "logs accepts only --tail"; exit 3; }
+    ;;
+  status|run-now)
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && PRINT_ONLY == 0 \
+       && AGENT_DRY_RUN == 0 && TAIL_SET == 0 )) \
+      || { err "$CMD does not accept options"; exit 3; }
+    ;;
+  run-scheduled)
+    (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
+      || { err "run-scheduled accepts only --profile and --dry-run"; exit 3; }
+    ;;
+esac
 
 # `install --print-only` is deliberately portable so CI can parse and inspect
 # the exact plist without pretending a Linux container has launchd.
 if [[ "$(uname -s)" != "Darwin" ]] \
-   && ! { [[ "$CMD" == "install" ]] && (( PRINT_ONLY || AGENT_DRY_RUN )); }; then
+   && ! { [[ "$CMD" == "install" ]] && (( PRINT_ONLY || AGENT_DRY_RUN )); } \
+   && ! { [[ "$CMD" == "uninstall" ]] && (( AGENT_DRY_RUN )); }; then
   err "launchd is macOS-only"
   exit 2
 fi
@@ -176,7 +213,13 @@ run_scheduled() {
   mkdir -p "$LOG_DIR" || { err "cannot create log directory: $LOG_DIR"; return 1; }
 
   local run_log="$LOG_DIR/agent-$(date +%Y%m%d-%H%M%S)-$$.log"
-  local -a args=(--yes --no-sudo)
+  local -a args=(--yes --no-sudo --fail-on-warn)
+  if [[ "$PROFILE" == "safe" ]]; then
+    # Scheduled cleanup must be conservative by default. These steps protect
+    # active/unknown application state and remove workspace data only when the
+    # recorded local project path is provably gone.
+    args+=(--only app-caches,workspace-storage,versions)
+  fi
   (( AGENT_DRY_RUN )) && args+=(--dry-run)
 
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
@@ -208,14 +251,15 @@ case "$CMD" in
       exit 2
     fi
     if (( PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )); then
-      mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"
+      if ! mkdir -p "$(dirname "$PLIST")" "$LOG_DIR"; then
+        err "cannot create LaunchAgent or log directory"
+        exit 1
+      fi
     fi
 
-    args="        <string>run-scheduled</string>"
-    if (( AGENT_DRY_RUN )); then
-      args="$args
-        <string>--dry-run</string>"
-    fi
+    args="        <string>run-scheduled</string>
+        <string>--profile</string>
+        <string>$PROFILE</string>"
 
     if (( DAILY )); then
       schedule="    <key>StartCalendarInterval</key>
@@ -275,8 +319,15 @@ PLIST_EOF
 
     # Validate before writing, so a malformed template never lands in
     # ~/Library/LaunchAgents where launchd would keep complaining about it.
-    lint_tmp="$(mktemp)"
-    printf '%s\n' "$plist_body" >"$lint_tmp"
+    if ! lint_tmp="$(mktemp)"; then
+      err "cannot create temporary plist for validation"
+      exit 1
+    fi
+    if ! printf '%s\n' "$plist_body" >"$lint_tmp"; then
+      rm -f "$lint_tmp"
+      err "cannot write temporary plist for validation"
+      exit 1
+    fi
     if ! validate_plist "$lint_tmp"; then
       err "generated plist could not be validated — refusing to install"
       if command -v plutil >/dev/null 2>&1; then
@@ -292,11 +343,8 @@ PLIST_EOF
       exit 0
     fi
 
-    # AGENT_DRY_RUN was parsed and then only ever used to add --dry-run to the
-    # plist's own arguments, so `install --dry-run` booted out the running
-    # agent, wrote the plist and bootstrapped it — exactly what
-    # systemd/stay_fresh_timer.sh did on Linux. --print-only was the only
-    # no-write path, and it is a different flag with a different output.
+    # Previewing an install must not alter the installed command either: this
+    # plist is the exact real configuration, shown before any launchctl action.
     if (( AGENT_DRY_RUN )); then
       printf "  %s(dry-run)%s would write %s\n" "$C_DIM" "$C_RESET" "$PLIST"
       printf '%s\n' "$plist_body" | sed 's/^/           /'
@@ -308,35 +356,108 @@ PLIST_EOF
       exit 0
     fi
 
-    # Replacing an existing agent means booting the old one out first;
-    # bootstrap onto a loaded label fails with a bare "Input/output error".
-    if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-      launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+    # Stage in the destination directory so the final rename is atomic. Keep a
+    # byte-for-byte backup until the new job has bootstrapped; an update failure
+    # must leave the previous schedule running, not merely leave a valid file.
+    agent_dir="$(dirname "$PLIST")"
+    if ! staged_plist="$(mktemp "$agent_dir/.${LABEL}.new.XXXXXX")"; then
+      err "cannot stage LaunchAgent plist in $agent_dir"
+      exit 1
     fi
-
-    printf '%s\n' "$plist_body" >"$PLIST"
-
-    if ! launchctl bootstrap "$DOMAIN" "$PLIST" 2>/dev/null; then
-      err "launchctl bootstrap failed for $LABEL"
-      info "inspect with: launchctl print $DOMAIN/$LABEL"
+    if ! printf '%s\n' "$plist_body" >"$staged_plist"; then
+      rm -f "$staged_plist"
+      err "cannot write staged LaunchAgent plist"
       exit 1
     fi
 
-    ok "installed $LABEL — runs $when"
+    backup_plist=""
+    if [[ -f "$PLIST" ]]; then
+      if ! backup_plist="$(mktemp "$agent_dir/.${LABEL}.old.XXXXXX")" \
+         || ! cp -p "$PLIST" "$backup_plist"; then
+        rm -f "$staged_plist" ${backup_plist:+"$backup_plist"}
+        err "cannot back up the existing LaunchAgent plist"
+        exit 1
+      fi
+    fi
+
+    was_loaded=0
+    if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+      was_loaded=1
+      if ! launchctl bootout "$DOMAIN/$LABEL"; then
+        rm -f "$staged_plist" ${backup_plist:+"$backup_plist"}
+        err "could not stop the existing $LABEL job; configuration was not changed"
+        exit 1
+      fi
+    fi
+
+    if ! mv -f "$staged_plist" "$PLIST"; then
+      (( was_loaded )) && launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1
+      rm -f "$staged_plist" ${backup_plist:+"$backup_plist"}
+      err "could not install the new LaunchAgent plist"
+      exit 1
+    fi
+
+    if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
+      err "launchctl bootstrap failed for $LABEL; restoring the previous configuration"
+      rm -f "$PLIST"
+      rollback_ok=1
+      if [[ -n "$backup_plist" ]]; then
+        if mv -f "$backup_plist" "$PLIST"; then
+          backup_plist=""
+        else
+          rollback_ok=0
+          err "could not restore the previous plist"
+        fi
+      fi
+      if (( was_loaded )) && [[ -f "$PLIST" ]]; then
+        if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
+          rollback_ok=0
+          err "could not restart the previous $LABEL job"
+        fi
+      fi
+      rm -f ${backup_plist:+"$backup_plist"}
+      (( rollback_ok )) || err "manual recovery is required: inspect $PLIST"
+      exit 1
+    fi
+    rm -f ${backup_plist:+"$backup_plist"}
+
+    ok "installed $LABEL — runs $when (profile: $PROFILE)"
     info "as you, without sudo: memory purge, DNS flush, system caches and"
     info "system diagnostics are skipped. Run stay_fresh.sh by hand for those."
-    info "cask upgrades are skipped; Homebrew formulae still update unattended"
+    if [[ "$PROFILE" == "safe" ]]; then
+      info "safe profile: app caches, stale workspace storage and versions only"
+    else
+      info "full profile: cask upgrades are skipped; formulae update unattended"
+    fi
     printf "  %slogs: %s%s\n" "$C_DIM" "$LOG_DIR/agent-<timestamp>-<pid>.log (10 kept)" "$C_RESET"
     ;;
 
   uninstall)
+    if (( AGENT_DRY_RUN )); then
+      printf "  %s(dry-run)%s would run launchctl bootout %s/%s (if loaded)\n" \
+        "$C_DIM" "$C_RESET" "$DOMAIN" "$LABEL"
+      printf "  %s(dry-run)%s would remove %s (if present)\n" \
+        "$C_DIM" "$C_RESET" "$PLIST"
+      printf "dry-run complete; no changes written\n"
+      exit 0
+    fi
+
     removed=0
     if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-      launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || true
+      if ! launchctl bootout "$DOMAIN/$LABEL"; then
+        err "could not stop $LABEL; plist was not removed"
+        exit 1
+      fi
       removed=1
     fi
     if [[ -f "$PLIST" ]]; then
-      rm -f "$PLIST"
+      if ! rm -f "$PLIST"; then
+        err "could not remove $PLIST"
+        # If bootout succeeded but deletion did not, put the still-present
+        # configuration back into service rather than silently disabling it.
+        (( removed )) && launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1
+        exit 1
+      fi
       removed=1
     fi
     if (( removed )); then

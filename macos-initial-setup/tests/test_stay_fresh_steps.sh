@@ -263,7 +263,10 @@ docker_fake() {
     '    fi' \
     '    exit 0 ;;' \
     '  context)' \
-    '    case "${2:-}" in show) echo default ;; inspect) echo "$DOCKER_ENDPOINT" ;; esac' \
+    '    case "${2:-}" in' \
+    '      show) echo default ;;' \
+    '      inspect) [ -n "${DOCKER_INSPECT_FAIL:-}" ] && exit 1; echo "$DOCKER_ENDPOINT" ;;' \
+    '    esac' \
     '    exit 0 ;;' \
     '  system) printf "Images\t1.5GB\n"; exit 0 ;;' \
     'esac' \
@@ -296,6 +299,14 @@ DOCKER_ENDPOINT="tcp://build-farm.internal:2375" out="$(run_sf "$d" --yes --only
 assert_eq "a remote docker context does not fail the run" "0" "$rc"
 assert_contains "a remote docker context is refused" "$out" "points to non-local host"
 assert_not_called "nothing is pruned on a remote context" "$d/calls" "prune"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
+DOCKER_INSPECT_FAIL=1 out="$(DOCKER_INSPECT_FAIL=1 run_sf "$d" --yes --only docker)"; rc=$?
+assert_eq "an unresolved docker endpoint does not fail the broad run" "0" "$rc"
+assert_contains "an unresolved docker endpoint is refused" "$out" \
+  "cannot resolve the Docker endpoint"
+assert_not_called "nothing is pruned when endpoint inspection fails" "$d/calls" "prune"
 rm -rf "$d"
 
 # A daemon that answers preflight and then goes away is the case that has to
@@ -412,8 +423,16 @@ assert_called "npm cache is cleaned"   "$d/calls" "npm cache clean --force"
 assert_called "yarn cache is cleaned"  "$d/calls" "yarn cache clean"
 assert_called "pnpm store is pruned"   "$d/calls" "pnpm store prune"
 assert_called "pip cache is purged"    "$d/calls" "pip3 cache purge"
-assert_called "gem cache is cleaned"   "$d/calls" "gem cleanup"
+assert_not_called "installed gems are kept by default" "$d/calls" "gem cleanup"
+assert_contains "the run explains how to clean old gems explicitly" "$out" \
+  "pass --cleanup-old-gems"
 assert_called "go caches are cleaned"  "$d/calls" "go clean -cache -modcache -testcache"
+rm -rf "$d"
+
+d="$(devcache_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only dev-caches --cleanup-old-gems)"; rc=$?
+assert_eq "explicit old-gem cleanup succeeds" "0" "$rc"
+assert_called "explicit old-gem cleanup runs gem cleanup" "$d/calls" "gem cleanup"
 rm -rf "$d"
 
 # A node that is on PATH but cannot run is the common broken-Homebrew state.
@@ -527,6 +546,19 @@ assert_contains "a failed plugin update warns" "$out" "warn steps:  1"
 assert_contains "the log is retained after a warning" "$out" "log saved:"
 kept="$(find "$d/home/Library/Logs/stay_fresh" -name 'stay_fresh-*.log' | wc -l | tr -d ' ')"
 assert_eq "log retention keeps ten files" "10" "$kept"
+rm -rf "$d"
+
+# Scheduled runs opt into strict warning handling so launchd reports partial
+# maintenance failures instead of recording a successful last exit status.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+                    '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+                    '  "plugin update") exit 1 ;;' \
+                    'esac; exit 0'
+out="$(run_sf "$d" --yes --fail-on-warn --only helm-plugins)"; rc=$?
+assert_eq "--fail-on-warn turns a warned step into exit 1" "1" "$rc"
+assert_contains "strict warning failure is explained" "$out" \
+  "warnings are fatal because --fail-on-warn was requested"
 rm -rf "$d"
 
 # ===========================================================================
