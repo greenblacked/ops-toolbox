@@ -116,6 +116,12 @@ BREW_GREEDY=0
 FORCE_ACTIVE_APP_CACHES=0
 XCODE_ARCHIVE_DAYS=""
 ONLY_STEPS=""
+# Step ids named by --only, and the subset of those that preflight went on to
+# disable. A step the user asked for by name and did not get is a different
+# outcome from one they never mentioned, and the summary has to say so.
+ONLY_SELECTED=()
+AUTO_SKIPPED_IDS=()
+AUTO_SKIPPED_WHY=()
 LIST_STEPS=0
 EXPLICIT_SKIP=0
 PURGE_MEMORY_EXPLICIT=0
@@ -156,6 +162,13 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 
 acquire_lock() {
+  # The lock sits in TMPDIR, which is not guaranteed to exist: a launchd job or
+  # an explicit `TMPDIR=... stay_fresh.sh` can name a directory nobody has
+  # created yet. Create it here rather than at log setup, which runs later.
+  if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+    err "cannot create $LOG_DIR to hold the run lock"
+    return 1
+  fi
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     if ! printf '%s\n' "$$" > "$LOCK_DIR/pid"; then
       rmdir "$LOCK_DIR" 2>/dev/null || true
@@ -164,6 +177,15 @@ acquire_lock() {
     fi
     LOCK_HELD=1
     return 0
+  fi
+
+  # A failed mkdir is not proof that another run holds the lock — ENOENT and
+  # EACCES land here too. The stale-lock recovery below would then announce a
+  # lock that never existed and try to delete it, burying the real cause under
+  # a fabricated one. Only an existing directory means contention.
+  if [[ ! -d "$LOCK_DIR" ]]; then
+    err "cannot acquire run lock at $LOCK_DIR"
+    return 1
   fi
 
   local existing_pid=""
@@ -258,6 +280,11 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
 
 ${C_BOLD}Notes:${C_RESET}
+  --only: preflight can still disable a step the machine cannot run (no
+  Homebrew, no Docker daemon, no Xcode data, --no-sudo against a root-owned
+  step). Such a selection is reported by name; if every id you named is
+  disabled the run stops with exit 2 instead of doing nothing quietly.
+
   Per-app caches: covers Chromium-internal dirs (Cache, Code Cache, GPUCache,
   Service Worker, blob_storage) under known Application Support roots, plus
   cached extension .vsix archives. Roots belonging to running applications are
@@ -387,6 +414,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
       "")                continue ;;
       *) err "unknown step in --only: $step_id (see --list-steps)"; exit 3 ;;
     esac
+    ONLY_SELECTED+=("$step_id")
     selected=$((selected + 1))
   done
   (( selected > 0 )) || { err "--only needs at least one step id"; exit 3; }
@@ -478,6 +506,18 @@ run_cmd() {
   return "$rc"
 }
 
+# Is there a controlling terminal we can actually talk to?
+#
+# `[[ -r /dev/tty ]]` is the wrong question: it asks access(2) about the device
+# node, which exists and is mode 666 even in a session that has no controlling
+# terminal. Opening it there fails with ENXIO. That is precisely the state a
+# launchd-scheduled run is in, so the access(2) test reported a usable terminal
+# and the cask upgrade below went down the interactive path, failed on the
+# redirect, and warned — the outcome the guard exists to avoid. Test the open.
+have_tty() {
+  { : < /dev/tty; } >/dev/null 2>&1 && { : > /dev/tty; } >/dev/null 2>&1
+}
+
 # Like run_cmd, but keeps the command attached to the controlling TTY so
 # interactive prompts (e.g. sudo password, cask installer UI) are visible and
 # answerable. Output is still teed to the log file.
@@ -492,7 +532,7 @@ run_cmd_tty() {
   printf "  %s->%s %s\n" "$C_CYAN" "$C_RESET" "$label"
   echo "# $(date '+%H:%M:%S') [$label] >> $*" >>"$LOG_FILE"
   local rc=0
-  if [[ -r /dev/tty && -w /dev/tty ]]; then
+  if have_tty; then
     "$@" </dev/tty 2>&1 | tee -a "$LOG_FILE"
     rc="${PIPESTATUS[0]}"
   else
@@ -610,6 +650,27 @@ clear_paths() {
 # ---------------------------------------------------------------------------
 bold "=== stay_fresh: preflight checks ==="
 
+# Record a step that preflight turned off because the machine cannot run it —
+# no Homebrew, no Docker daemon, no sudo. Callers still set the SKIP_ flag
+# themselves; this only keeps the reason, so the summary and the --only
+# reconciliation below can name it.
+note_auto_skip() {
+  AUTO_SKIPPED_IDS+=("$1")
+  AUTO_SKIPPED_WHY+=("$2")
+}
+
+# The reason a given step id was auto-skipped, or the empty string.
+auto_skip_reason() {
+  local want="$1" i
+  for (( i=0; i<${#AUTO_SKIPPED_IDS[@]}; i++ )); do
+    if [[ "${AUTO_SKIPPED_IDS[$i]}" == "$want" ]]; then
+      printf '%s' "${AUTO_SKIPPED_WHY[$i]}"
+      return 0
+    fi
+  done
+  printf ''
+}
+
 # A dry run writes nothing, so like --help it answers on a machine that could
 # not do the real work — which is what makes the plan reviewable from wherever
 # you happen to be. A real run still exits 2 at each of these. The
@@ -674,7 +735,7 @@ if (( SKIP_BREW == 0 )); then
   else
     warn "Homebrew not installed — brew step will be skipped"
     SKIP_BREW=1
-    STEPS_SKIP+=("brew (not installed)")
+    note_auto_skip brew "Homebrew is not installed"
   fi
 fi
 
@@ -705,9 +766,11 @@ if (( SKIP_DOCKER == 0 )); then
   if ! command -v docker >/dev/null 2>&1; then
     info "Docker CLI not found — docker-prune step will be skipped"
     SKIP_DOCKER=1
+    note_auto_skip docker "the Docker CLI is not installed"
   elif ! docker info >/dev/null 2>&1; then
     warn "Docker CLI present but daemon unreachable — docker-prune step will be skipped"
     SKIP_DOCKER=1
+    note_auto_skip docker "the Docker daemon is unreachable"
   else
     ok "Docker daemon reachable"
   fi
@@ -718,6 +781,7 @@ if (( SKIP_XCODE == 0 )); then
   if [[ ! -d "$HOME/Library/Developer/Xcode" ]] && ! command -v xcrun >/dev/null 2>&1; then
     info "No Xcode data found — xcode-extras step will be skipped"
     SKIP_XCODE=1
+    note_auto_skip xcode "no Xcode data is present"
   fi
 fi
 
@@ -736,6 +800,9 @@ if (( USE_SUDO == 0 )); then
   SKIP_SYSCACHES=1
   SKIP_DIAGNOSTICS_SYS=1
   NEEDS_SUDO=0
+  note_auto_skip memory        "--no-sudo was passed"
+  note_auto_skip dns           "--no-sudo was passed"
+  note_auto_skip system-caches "--no-sudo was passed"
 fi
 
 if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
@@ -743,8 +810,24 @@ if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
   if sudo -v; then
     SUDO_AVAILABLE=1
     ok "sudo authenticated"
-    # keep-alive (disown so EXIT kill does not print bash job "Terminated: 15" noise)
-    ( while true; do sudo -n true; sleep 60; kill -0 "$$" 2>/dev/null || exit; done ) &
+    # Keep the sudo timestamp warm for the length of the run. Disowned so the
+    # EXIT kill does not print bash's "Terminated: 15" job noise.
+    #
+    # Two details are load-bearing. The redirections detach this subshell from
+    # the script's stdio: it forks `sleep`, the trap below kills the subshell
+    # but not that grandchild, and an orphaned `sleep` holding the write end of
+    # the caller's pipe blocks every caller that captures output —
+    # `out="$(stay_fresh ...)"`, a CI step, the LaunchAgent's log redirect —
+    # until it finally expires. And the wait is broken into short naps that
+    # re-check the parent, so the orphan window is seconds rather than a full
+    # minute.
+    ( while kill -0 "$$" 2>/dev/null; do
+        sudo -n true 2>/dev/null || exit
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
+          sleep 5
+          kill -0 "$$" 2>/dev/null || exit
+        done
+      done ) </dev/null >/dev/null 2>&1 &
     SUDO_KEEPALIVE_PID=$!
     disown "$SUDO_KEEPALIVE_PID" 2>/dev/null || disown || true
   else
@@ -753,12 +836,38 @@ if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
     SKIP_DNS=1
     SKIP_SYSCACHES=1
     SKIP_DIAGNOSTICS_SYS=1
+    note_auto_skip memory        "sudo authentication failed"
+    note_auto_skip dns           "sudo authentication failed"
+    note_auto_skip system-caches "sudo authentication failed"
   fi
 elif (( DRY_RUN && NEEDS_SUDO )); then
   info "(dry-run) would request sudo for memory/DNS/system-caches/diagnostics steps"
 fi
 
 SKIP_DIAGNOSTICS_SYS="${SKIP_DIAGNOSTICS_SYS:-0}"
+
+# --only names the work you want done. Preflight can quietly take a step back
+# off that list — no Homebrew, no Docker daemon, --no-sudo — and the run then
+# reaches the summary having done nothing while still exiting 0, which reads as
+# success. Reconcile the two lists and say plainly what is left.
+if (( ${#ONLY_SELECTED[@]} > 0 )); then
+  only_voided=()
+  only_voided_why=()
+  for step_id in "${ONLY_SELECTED[@]}"; do
+    why="$(auto_skip_reason "$step_id")"
+    [[ -n "$why" ]] || continue
+    only_voided+=("$step_id")
+    only_voided_why+=("$why")
+  done
+  if (( ${#only_voided[@]} > 0 )); then
+    for (( i=0; i<${#only_voided[@]}; i++ )); do
+      warn "--only ${only_voided[$i]}: ${only_voided_why[$i]} — that step cannot run here"
+    done
+    if (( ${#only_voided[@]} == ${#ONLY_SELECTED[@]} )); then
+      preflight_fail "every step named by --only was disabled by preflight; nothing to do"
+    fi
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # plan + confirmation
@@ -1022,7 +1131,7 @@ step_appcaches() {
 # is not currently mounted are all kept, so errors cost disk, never data.
 step_workspacestorage() {
   local root="$HOME/Library/Application Support"
-  local ed ws rec status dir reason
+  local ed ws status dir reason workspace_path
   local live=0 unresolved=0
   local -a roots=() stale=()
 
@@ -1348,7 +1457,7 @@ step_brew() {
 
   # A cask postinstall can invoke sudo even though Homebrew itself is running as
   # the user. Never attempt that from --no-sudo or without a controlling TTY.
-  if (( USE_SUDO == 0 )) || { (( DRY_RUN == 0 )) && [[ ! -r /dev/tty || ! -w /dev/tty ]]; }; then
+  if (( USE_SUDO == 0 )) || { (( DRY_RUN == 0 )) && ! have_tty; }; then
     info "skipping cask upgrades: they may require an interactive sudo prompt"
   elif (( BREW_GREEDY )); then
     run_cmd_tty "brew upgrade --cask --greedy" brew upgrade --cask --greedy \
@@ -1490,31 +1599,37 @@ step_versions() {
 START_ALL=$(date +%s)
 
 run_or_skip() {
-  local label="$1" skip_flag="$2" fn="$3"
+  local label="$1" skip_flag="$2" fn="$3" step_id="${4:-}" why=""
   if (( skip_flag )); then
+    [[ -n "$step_id" ]] && why="$(auto_skip_reason "$step_id")"
     step "$label"
-    printf "  %sskipped%s\n" "$C_DIM" "$C_RESET"
-    STEPS_SKIP+=("$label")
+    if [[ -n "$why" ]]; then
+      printf "  %sskipped — %s%s\n" "$C_DIM" "$why" "$C_RESET"
+      STEPS_SKIP+=("$label ($why)")
+    else
+      printf "  %sskipped%s\n" "$C_DIM" "$C_RESET"
+      STEPS_SKIP+=("$label")
+    fi
     return 0
   fi
   do_step "$label" "$fn"
 }
 
-run_or_skip "Purge inactive memory"                "$SKIP_MEMORY"      step_memory
-run_or_skip "Flush DNS cache"                      "$SKIP_DNS"         step_dns
-run_or_skip "Clear system caches"                  "$SKIP_SYSCACHES"   step_syscaches
-run_or_skip "Clear user caches"                    "$SKIP_USERCACHES"  step_usercaches
-run_or_skip "Clear per-app caches"                 "$SKIP_APPCACHES"   step_appcaches
-run_or_skip "Prune stale workspace storage"        "$SKIP_WORKSPACESTORAGE" step_workspacestorage
-run_or_skip "Empty trash"                          "$SKIP_TRASH"       step_trash
-run_or_skip "Docker / OrbStack prune"              "$SKIP_DOCKER"      step_docker
-run_or_skip "Xcode extras"                         "$SKIP_XCODE"       step_xcode
-run_or_skip "Diagnostic / crash reports"           "$SKIP_DIAGNOSTICS" step_diagnostics
-run_or_skip "Homebrew update / upgrade / cleanup"  "$SKIP_BREW"         step_brew
-run_or_skip "Dev-tool caches"                      "$SKIP_DEVCACHES"   step_devcaches
-run_or_skip "Helm plugin refresh"                  "$SKIP_HELM_PLUGINS" step_helm_plugins
-run_or_skip "gcloud components update"             "$SKIP_GCLOUD"       step_gcloud
-run_or_skip "Active tool versions"                 "$SKIP_VERSIONS"     step_versions
+run_or_skip "Purge inactive memory"                "$SKIP_MEMORY"      step_memory memory
+run_or_skip "Flush DNS cache"                      "$SKIP_DNS"         step_dns dns
+run_or_skip "Clear system caches"                  "$SKIP_SYSCACHES"   step_syscaches system-caches
+run_or_skip "Clear user caches"                    "$SKIP_USERCACHES"  step_usercaches user-caches
+run_or_skip "Clear per-app caches"                 "$SKIP_APPCACHES"   step_appcaches app-caches
+run_or_skip "Prune stale workspace storage"        "$SKIP_WORKSPACESTORAGE" step_workspacestorage workspace-storage
+run_or_skip "Empty trash"                          "$SKIP_TRASH"       step_trash trash
+run_or_skip "Docker / OrbStack prune"              "$SKIP_DOCKER"      step_docker docker
+run_or_skip "Xcode extras"                         "$SKIP_XCODE"       step_xcode xcode
+run_or_skip "Diagnostic / crash reports"           "$SKIP_DIAGNOSTICS" step_diagnostics diagnostics
+run_or_skip "Homebrew update / upgrade / cleanup"  "$SKIP_BREW"         step_brew brew
+run_or_skip "Dev-tool caches"                      "$SKIP_DEVCACHES"   step_devcaches dev-caches
+run_or_skip "Helm plugin refresh"                  "$SKIP_HELM_PLUGINS" step_helm_plugins helm-plugins
+run_or_skip "gcloud components update"             "$SKIP_GCLOUD"       step_gcloud gcloud
+run_or_skip "Active tool versions"                 "$SKIP_VERSIONS"     step_versions versions
 
 ELAPSED=$(( $(date +%s) - START_ALL ))
 FREE_AFTER_B="$(disk_free_bytes)"
@@ -1541,6 +1656,7 @@ print_group() {
   local title="$1" color="$2"; shift 2
   (( $# == 0 )) && return 0
   printf "\n%s%s:%s\n" "$color" "$title" "$C_RESET"
+  local item
   for item in "$@"; do printf "  - %s\n" "$item"; done
 }
 

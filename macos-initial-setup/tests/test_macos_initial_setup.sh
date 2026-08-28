@@ -333,6 +333,99 @@ else
   err "recovered stale lock remained after the run"
 fi
 
+# TMPDIR is where both the log and the run lock live, and nothing guarantees it
+# exists: launchd hands a job its own per-user temp dir, and `TMPDIR=... stay_fresh`
+# is a normal thing to type. The lock used to be the first thing to touch that
+# path, so a missing TMPDIR surfaced as "removing stale stay_fresh lock" followed
+# by a refusal to run — a lock that never existed, blamed for a directory that
+# was simply not there.
+missing_tmp="$fake_macos/tmp/not/created/yet"
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$missing_tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only versions 2>&1)"
+rc=$?
+set -e
+assert_eq "stay_fresh creates a missing TMPDIR rather than failing the lock" "0" "$rc"
+assert_not_contains "missing TMPDIR is not misreported as a stale lock" "$out" \
+  "stale stay_fresh lock"
+if [[ -d "$missing_tmp" ]]; then
+  ok "stay_fresh created the missing TMPDIR"
+else
+  err "stay_fresh did not create the missing TMPDIR"
+fi
+rm -rf "$fake_macos/tmp/not"
+
+# --only names the work you want done. Preflight can take a step straight back
+# off that list (no Homebrew, no Docker daemon, --no-sudo), and the run then
+# reached the summary having done nothing at all while exiting 0 — a silent
+# no-op that reads as success. There is no docker or brew on the fake PATH yet,
+# which is exactly the machine this has to be right on.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only docker 2>&1)"
+rc=$?
+set -e
+assert_eq "a fully voided --only selection fails preflight -> 2" "2" "$rc"
+assert_contains "voided --only names the step that cannot run" "$out" \
+  "--only docker: the Docker CLI is not installed"
+
+# The same reconciliation must respect --no-sudo, which disables root-owned
+# steps just as effectively as a missing binary does.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only system-caches 2>&1)"
+rc=$?
+set -e
+assert_eq "--only system-caches under --no-sudo fails preflight -> 2" "2" "$rc"
+assert_contains "--no-sudo explains the voided selection" "$out" \
+  "--only system-caches: --no-sudo was passed"
+
+# A partially voided selection is a warning, not a failure: the steps that can
+# run still should.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  --only docker,versions 2>&1)"
+rc=$?
+set -e
+assert_eq "a partially voided --only still runs the rest" "0" "$rc"
+assert_contains "partially voided --only warns about the lost step" "$out" \
+  "--only docker: the Docker CLI is not installed"
+assert_contains "partially voided --only runs the surviving step" "$out" \
+  "Active tool versions"
+
+# A dry run previews rather than stopping, matching every other preflight check.
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --dry-run --yes \
+  --only docker 2>&1)"
+rc=$?
+set -e
+assert_eq "a voided --only still previews under --dry-run" "0" "$rc"
+assert_contains "the dry-run preview says a real run would stop" "$out" \
+  "a real run would stop here"
+
+# An auto-skipped step was booked twice: once by preflight pushing its own
+# STEPS_SKIP entry and again by run_or_skip, so the summary claimed 16 skips
+# for 15 steps and listed Homebrew under two different names.
+brew_absent_skip=(
+  --skip-dns --skip-syscaches --skip-usercaches --skip-appcaches
+  --skip-workspacestorage --skip-trash --skip-devcaches --skip-docker
+  --skip-xcode --skip-diagnostics --skip-devtools
+)
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  "${brew_absent_skip[@]}" 2>&1)"
+assert_contains "an all-skipped run counts each step exactly once" "$out" \
+  "skipped:     15"
+assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
+  "brew (not installed)"
+assert_contains "a skipped step reports why it was skipped" "$out" \
+  "Homebrew update / upgrade / cleanup (Homebrew is not installed)"
+
 # Force find(1) to fail during a real cleanup confined to the scratch HOME. The
 # target must remain and the step must be yellow, not falsely green.
 mkdir -p "$fake_macos/failbin" "$fake_macos/home/Library/Caches/protected"

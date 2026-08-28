@@ -459,6 +459,13 @@ skipped, then enables exactly the requested ids. The `memory` id remains
 double-gated and is rejected unless `--purge-memory` is also present. Existing
 skip flags remain unchanged for full maintenance runs.
 
+Preflight can disable a step the machine cannot run — no Homebrew, no Docker
+daemon, no Xcode data, or `--no-sudo` against a root-owned step. When that
+happens to a step you named in `--only`, the run says which selection was lost
+and why. If it takes out *every* id you asked for, the run stops with exit `2`
+rather than reaching the summary having done nothing and reporting success;
+`--dry-run` previews it as a warning instead, like every other preflight check.
+
 The workspace classifier remains read-only when invoked directly. `--json`
 lists individual classifications; `--summary` instead emits JSON counts and
 best-effort byte totals for live, stale and unresolved entries:
@@ -482,7 +489,9 @@ accounting, and closes with a summary that includes:
 - Elapsed wall-clock time.
 - `df` delta on `/`.
 - Sum of per-step deltas (more precise than `df` alone).
-- Which steps passed, warned, were skipped, or failed.
+- Which steps passed, warned, were skipped, or failed. A step preflight
+  disabled carries its reason, e.g. `Docker / OrbStack prune (the Docker
+  daemon is unreachable)`.
 - Path to the full log file when warnings or failures caused it to be retained.
 
 ### Exit codes
@@ -869,25 +878,47 @@ scripts actually present in the checkout.
 ## Development: Docker checks
 
 These scripts target macOS, but a **small Linux container** can still verify
-syntax, ShellCheck, `--help`, the documented exit codes, and that
-`zsh_aliases.zsh` sources cleanly in `zsh`. You need **Docker** with the
-**Compose v2** plugin; nothing else on the host.
+syntax, ShellCheck, `--help`, the documented exit codes, that
+`zsh_aliases.zsh` sources cleanly in `zsh`, and — with the host commands faked —
+what each `stay_fresh.sh` step actually deletes and keeps. You need **Docker**
+with the **Compose v2** plugin; nothing else on the host.
 
 From the **repository root**:
 
 ```bash
-./macos-initial-setup/tests/run.sh
+./macos-initial-setup/tests/run.sh          # all three suites
+./macos-initial-setup/tests/run.sh steps    # just one
 ```
 
-Same thing without the wrapper:
+Every suite runs even if an earlier one fails, so one invocation reports
+everything that is broken. Without the wrapper:
 
 ```bash
-docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm tester
+docker compose -f macos-initial-setup/tests/docker-compose.yml run --rm -T tester
 ```
 
 The `tester` image (`tests/tester/Dockerfile`) installs `bash`, `shellcheck`,
-and `zsh`, mounts the repo read-only at `/repo`, and runs
-`tests/test_macos_initial_setup.sh`.
+`zsh` and `python3`, mounts the repo read-only at `/repo`, and backs three
+suites:
+
+| Suite | File | Scope |
+| --- | --- | --- |
+| `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the fifteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
+
+The `steps` suite fakes only the commands that identify the host or that the
+step drives (`uname`, `pgrep`, `sudo`, `brew`, `docker`, `helm`, …). `find`,
+`rm` and `du` are the real thing, so deletion is really deletion and the
+assertions are about what survived. Two steps clear absolute system paths
+(`/Library/Caches`, `/Library/Logs/DiagnosticReports`); in a disposable
+container those are ours to destroy, and the suite **refuses to start** outside
+one, because on a real Mac it would clear the caller's system caches.
+
+A container is also the only place some of this is observable at all. It has no
+controlling terminal — the state a launchd-scheduled run is in — and its
+root-owned `/rootonly` and `/rootlocked` make `mkdir(2)` genuinely return
+`EACCES`. Both cases caught bugs a macOS host would have hidden.
 
 The subjects are **discovered** with `find`, two levels deep so `launchd/` is
 covered, rather than listed in the harness. The list they replaced named four
@@ -907,8 +938,9 @@ written to stop. A new script is now covered by the commit that adds it.
 | `zsh_aliases.zsh` | Not in the `--help` contract — it is sourced, not run — but it is ShellCheck'd and must `source` cleanly under `zsh -f`. |
 
 This is **not** a substitute for `--dry-run` on a real Mac: there is no
-Homebrew, no installs, and no execution of `stay_fresh` steps. For
-RouterOS script integration tests in the same repository, see
+Homebrew and no installs. The `steps` suite executes `stay_fresh.sh` against
+faked host binaries, not against Apple APIs. For RouterOS script integration
+tests in the same repository, see
 [`mikrotik/tests/README.md`](../mikrotik/tests/README.md).
 
 ---
