@@ -1,7 +1,9 @@
 # Templates
 
 Starting points for new scripts. Copy one, rename it, delete what you do not
-need.
+need. [`.claude/skills/adding-a-script`](../.claude/skills/adding-a-script/SKILL.md)
+walks the rest of the way — discovery, the dry-run argument tables, tests, and
+the two documentation entries a new script is not finished without.
 
 | File | For |
 | --- | --- |

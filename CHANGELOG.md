@@ -16,6 +16,23 @@ entry here belongs to a version.
 
 ### Added
 
+- Task-scoped conventions under `.claude/skills/`, so an automated coding
+  agent working here loads the rules for the file in front of it instead of
+  skimming `CONTRIBUTING.md` and acting on the half it remembered. Ten skills:
+  one entry point, one per language (`bash`, PowerShell, RouterOS, Python), and
+  one each for adding a script, running the suites, the pre-push lint gates,
+  documentation and the changelog, and commits and pull requests.
+
+  Nothing in them is new policy — every rule is lifted from a script or from
+  the check that enforces it, and each skill names that check, because a rule
+  documented away from its enforcement is the one that drifts. The failures
+  that shaped this repository are stated as failures: the preview that wrote a
+  log file, the `install --dry-run` that wrote two systemd units, the
+  PowerShell dry run that was only ever exercised on a platform where it exits
+  at a guard. `README.md`, `AGENTS.md`, `CONTRIBUTING.md` and the package
+  READMEs point at the relevant skill from where the same subject already comes
+  up.
+
 - `stay_fresh.sh --prune-docker-volumes`. Volume pruning was part of the
   default Docker step; volumes hold data, not cache — a stopped project's
   database volume counts as "unused" the moment its container is removed, and
