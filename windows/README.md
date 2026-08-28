@@ -4,6 +4,13 @@ Everything for keeping a Windows dev machine pleasant: Git Bash dotfiles,
 WSL maintenance, and disk cleanup. Each subfolder has its own README with
 full details.
 
+Editing a `.ps1` here? The static suite does not cover PowerShell at all —
+[`tests/contract.ps1`](tests/contract.ps1) is the only place these contracts are
+checked, and on Linux every script stops at its `$IsWindows` guard first.
+[`.claude/skills/powershell-script-conventions`](../.claude/skills/powershell-script-conventions/SKILL.md)
+collects that, the hand-rolled `-DryRun`, the `WOULD`/`CLEAN`/`SKIP` grammar and
+the ASCII-with-no-BOM rule.
+
 | Folder | Purpose |
 | --- | --- |
 | [`git-bash/`](git-bash/) | `.bashrc` / `.bash_profile` / `.aliases` for Git Bash (MSYS2) — persistent shared `ssh-agent`, Git-aware prompt, PATH hygiene, and ~190 aliases (Git, GitLab CLI, Docker, Kubernetes, Terraform, WSL, Windows commands). `install_dotfiles.sh` copies them into `$HOME` with a backup, and refuses anything carrying CRLF line endings. |
