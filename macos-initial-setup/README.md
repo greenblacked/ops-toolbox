@@ -392,29 +392,35 @@ In the order they run:
    Cache roots for running applications are kept. Sandboxed-container caches,
    whose activity cannot be mapped reliably, are kept unless
    `--force-active-app-caches` is explicitly passed.
-6. Prune **stale workspace storage**. VS Code (stable and Insiders) keeps
+6. Clear **AI tool caches** for Claude, Codex, ChatGPT, Cursor, and Windsurf
+   when the matching process is confirmed not running. If process state cannot
+   be checked, the caches are kept. Only exact browser-cache
+   directories, known macOS bundle caches, `~/.claude/cache`, and
+   `~/.codex/tmp` are removed. Credentials, settings, conversations/sessions,
+   projects, extensions, Codex runtimes, and Ollama/downloaded models are kept.
+7. Prune **stale workspace storage**. VS Code (stable and Insiders) keeps
    a `workspaceStorage` entry for every folder ever opened and never
    garbage-collects them. Only entries
    whose recorded path no longer exists are removed; remote workspaces
    and anything unparsable are kept. The classification is done by
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
-7. Empty `~/.Trash`.
-8. Prune Docker / OrbStack (containers, networks, builder cache, and
+8. Empty `~/.Trash`.
+9. Prune Docker / OrbStack (containers, networks, builder cache, and
    **dangling images only** — tagged images are kept). Unused volumes are
    kept unless `--prune-docker-volumes` is passed: volumes hold data, not
    cache, and a stopped project's database volume counts as "unused" the
    moment its container is removed.
-9. Clean Xcode DeviceSupport and obsolete simulators. Archives are kept unless
+10. Clean Xcode DeviceSupport and obsolete simulators. Archives are kept unless
    an age threshold is explicitly set with `--prune-xcode-archives-days N`.
-10. Remove diagnostic and crash reports (user, plus system with `sudo`).
-11. Update and upgrade Homebrew formulae, then casks once when an interactive
+11. Remove diagnostic and crash reports (user, plus system with `sudo`).
+12. Update and upgrade Homebrew formulae, then casks once when an interactive
     sudo-capable run permits them; run `cleanup -s` and `autoremove`.
-12. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Old
+13. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Old
     installed gem versions are package state, not cache, and are kept unless
     `--cleanup-old-gems` is explicit.
-13. Update installed Helm plugins.
-14. Run `gcloud components update`.
-15. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
+14. Update installed Helm plugins.
+15. Run `gcloud components update`.
+16. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     and `gcloud`.
 
 ### Usage
@@ -427,6 +433,7 @@ In the order they run:
 ./stay_fresh.sh --no-sudo         # skip every step that requires sudo
 ./stay_fresh.sh --purge-memory     # explicit cold-cache troubleshooting
 ./stay_fresh.sh --only brew,versions
+./stay_fresh.sh --only ai-caches  # clean AI caches, preserve sessions/models
 ./stay_fresh.sh --prune-xcode-archives-days 90
 ./stay_fresh.sh --cleanup-old-gems # opt-in removal of old installed gem versions
 ./stay_fresh.sh --fail-on-warn     # useful for schedulers and monitoring
@@ -453,7 +460,8 @@ In the order they run:
 | `--skip-usercaches` | Skip user-cache cleanup. |
 | `--skip-appcaches` | Skip per-app caches (step 5: Chromium/Electron directories, sandboxed containers, `.vsix`). |
 | `--force-active-app-caches` | Also clear running known-app roots and generic sandbox-container caches. |
-| `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 6). |
+| `--skip-aicaches` | Skip Claude/Codex/ChatGPT/Cursor/Windsurf temporary-cache cleanup. |
+| `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 7). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`go` cache cleanup. |
@@ -810,7 +818,7 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ./launchd/stay_fresh_agent.sh uninstall
 ```
 
-The default `safe` profile runs only protected per-app cache cleanup,
+The default `safe` profile runs only protected per-app and AI cache cleanup,
 conservative stale-workspace cleanup and version reporting. It does not empty
 Trash, prune Docker, remove broad user/Xcode/developer caches, upgrade packages,
 or update plugins. Pass `install --profile full` to retain the previous broad
@@ -932,7 +940,7 @@ suites:
 | Suite | File | Scope |
 | --- | --- | --- |
 | `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
-| `steps` | `test_stay_fresh_steps.sh` | Each of the fifteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the sixteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
 | `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
 
 The `steps` suite fakes only the commands that identify the host or that the
@@ -1034,6 +1042,11 @@ Homebrew / `pyenv` / `goenv` commands.
   Chromium-internal directories under known Application Support roots and
   downloaded `.vsix` archives. Running application roots are skipped;
   sandbox-container caches require `--force-active-app-caches`.
+- Deletes exact disposable cache directories for idle Claude, Codex, ChatGPT,
+  Cursor, and Windsurf installations, plus their known bundle caches and CLI
+  temp roots. Active or unknown process state keeps the cache. It preserves
+  credentials, settings, conversations/sessions, project state, extensions,
+  Codex runtimes, and downloaded models.
 - Keeps Xcode Archives by default. `--prune-xcode-archives-days N` removes only
   old `.xcarchive` bundles matching the explicit retention threshold.
 - Removes VS Code `workspaceStorage` entries whose project

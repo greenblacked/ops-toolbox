@@ -20,8 +20,8 @@
 #   --weekday N   0-7, Sunday is 0 or 7 (default 1, Monday). 'daily' for every day
 #   --hour N      0-23 (default 10)
 #   --minute N    0-59 (default 30)
-#   --profile P   'safe' runs protected app-cache/workspace cleanup and version
-#                 reporting; 'full' keeps the original broad behavior
+#   --profile P   'safe' runs protected app/AI-cache cleanup, workspace cleanup,
+#                 and version reporting; 'full' keeps the original broad behavior
 #                 (default safe)
 #   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
@@ -218,7 +218,7 @@ run_scheduled() {
     # Scheduled cleanup must be conservative by default. These steps protect
     # active/unknown application state and remove workspace data only when the
     # recorded local project path is provably gone.
-    args+=(--only app-caches,workspace-storage,versions)
+    args+=(--only app-caches,ai-caches,workspace-storage,versions)
   fi
   (( AGENT_DRY_RUN )) && args+=(--dry-run)
 
@@ -425,7 +425,7 @@ PLIST_EOF
     info "as you, without sudo: memory purge, DNS flush, system caches and"
     info "system diagnostics are skipped. Run stay_fresh.sh by hand for those."
     if [[ "$PROFILE" == "safe" ]]; then
-      info "safe profile: app caches, stale workspace storage and versions only"
+      info "safe profile: app/AI caches, stale workspace storage and versions only"
     else
       info "full profile: cask upgrades are skipped; formulae update unattended"
     fi

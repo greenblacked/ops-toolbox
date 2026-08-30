@@ -16,6 +16,14 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh --only ai-caches` clears disposable Claude, Codex, ChatGPT,
+  Cursor, and Windsurf caches without treating all AI data as temporary. It
+  skips a tool while its process is active, fails closed when process state
+  cannot be inspected, and preserves credentials, settings, conversations and
+  project sessions, extensions, Codex runtimes, and local models. The
+  LaunchAgent's conservative profile includes the step, so these caches are
+  handled on schedule without broad user-cache deletion.
+
 - Task-scoped conventions under `.claude/skills/` on a local checkout, so an
   automated coding agent working here loads the rules for the file in front of
   it instead of skimming `CONTRIBUTING.md` and acting on the half it remembered.
@@ -48,7 +56,7 @@ entry here belongs to a version.
   TTY check that asked `access(2)` instead of opening `/dev/tty`, and a lock
   that blamed a missing `TMPDIR` on a stale run all reached `master`.
 
-  `test_stay_fresh_steps.sh` executes each of the fifteen steps against a
+  `test_stay_fresh_steps.sh` executes each of the sixteen steps against a
   scratch `HOME` and faked host binaries; `find`/`rm`/`du` are the real thing,
   so the assertions are about what survived. It refuses to start outside a
   container because two of those steps clear `/Library/Caches` and

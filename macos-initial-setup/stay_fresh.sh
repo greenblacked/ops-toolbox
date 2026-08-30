@@ -8,6 +8,8 @@
 #   - clear per-app caches missed by the above: Chromium/Electron dirs under
 #     known Application Support roots and cached extension .vsix archives;
 #     sandboxed app caches require an explicit force flag
+#   - clear disposable AI desktop/CLI caches while preserving sessions,
+#     credentials, projects, extensions, runtimes, and downloaded models
 #   - prune VS Code workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, go); uninstall old gem
@@ -25,6 +27,7 @@
 #                   [--only STEP1,STEP2] [--list-steps]
 #                   [--purge-memory] [--skip-memory] [--skip-dns] [--skip-syscaches]
 #                   [--skip-usercaches] [--skip-appcaches]
+#                   [--skip-aicaches]
 #                   [--skip-workspacestorage] [--skip-trash]
 #                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
 #                   [--cleanup-old-gems] [--fail-on-warn]
@@ -104,6 +107,7 @@ SKIP_DNS=0
 SKIP_SYSCACHES=0
 SKIP_USERCACHES=0
 SKIP_APPCACHES=0
+SKIP_AICACHES=0
 SKIP_WORKSPACESTORAGE=0
 SKIP_TRASH=0
 SKIP_BREW=0
@@ -236,6 +240,7 @@ dns               flush DNS caches
 system-caches     clear root-owned macOS caches
 user-caches       clear user caches
 app-caches        clear disposable per-app caches
+ai-caches         clear disposable AI tool caches
 workspace-storage prune stale editor workspace storage
 trash             empty the user's Trash
 docker            prune local Docker / OrbStack resources
@@ -275,6 +280,7 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-appcaches       Don't clear per-app caches (see Notes)
   --force-active-app-caches
                          Also clear running known-app and sandboxed-app caches
+  --skip-aicaches        Don't clear AI desktop/CLI temporary caches
   --skip-workspacestorage
                          Don't prune stale VS Code workspace storage
   --skip-trash           Don't empty ~/.Trash
@@ -309,6 +315,12 @@ ${C_BOLD}Notes:${C_RESET}
   cached extension .vsix archives. Roots belonging to running applications are
   kept. Sandboxed-container caches cannot be mapped reliably to process state,
   so they are also kept unless --force-active-app-caches is explicit.
+
+  AI caches: clears disposable caches for Claude, Codex, ChatGPT, Cursor, and
+  Windsurf only while the matching tool is confirmed not running. If process
+  state cannot be checked, caches are kept. Credentials, settings,
+  conversations/sessions, projects, extensions, runtimes, and local models are
+  always kept.
 
   Workspace storage: VS Code and its forks keep a workspaceStorage entry per
   folder ever opened and never garbage-collect them. Only entries whose recorded
@@ -352,6 +364,7 @@ while (( $# > 0 )); do
     --skip-syscaches)  SKIP_SYSCACHES=1; EXPLICIT_SKIP=1 ;;
     --skip-usercaches) SKIP_USERCACHES=1; EXPLICIT_SKIP=1 ;;
     --skip-appcaches)  SKIP_APPCACHES=1; EXPLICIT_SKIP=1 ;;
+    --skip-aicaches)   SKIP_AICACHES=1; EXPLICIT_SKIP=1 ;;
     --force-active-app-caches) FORCE_ACTIVE_APP_CACHES=1 ;;
     --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1; EXPLICIT_SKIP=1 ;;
     --skip-trash)      SKIP_TRASH=1; EXPLICIT_SKIP=1 ;;
@@ -397,6 +410,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
   SKIP_SYSCACHES=1
   SKIP_USERCACHES=1
   SKIP_APPCACHES=1
+  SKIP_AICACHES=1
   SKIP_WORKSPACESTORAGE=1
   SKIP_TRASH=1
   SKIP_BREW=1
@@ -423,6 +437,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
       system-caches)     SKIP_SYSCACHES=0 ;;
       user-caches)       SKIP_USERCACHES=0 ;;
       app-caches)        SKIP_APPCACHES=0 ;;
+      ai-caches)         SKIP_AICACHES=0 ;;
       workspace-storage) SKIP_WORKSPACESTORAGE=0 ;;
       trash)             SKIP_TRASH=0 ;;
       brew)              SKIP_BREW=0 ;;
@@ -917,6 +932,7 @@ plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dsc
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Saved State, DerivedData, ..."
 plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed containers, VSIX"
+plan_line "clear AI tool caches"              "$(( 1 - SKIP_AICACHES    ))" "Claude, Codex, ChatGPT, Cursor, Windsurf"
 plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 if (( PRUNE_DOCKER_VOLUMES )); then
@@ -1154,10 +1170,147 @@ step_appcaches() {
 
 }
 
-# VS Code creates workspaceStorage/<hash>/ for every folder ever
-# opened and never remove it — state DBs, extension scratch data, language-server
+# AI tools keep large disposable browser caches beside persistent application
+# state. Restrict this step to exact cache directory names and known bundle
+# cache roots: broad deletion under these products would remove conversations,
+# project sessions, credentials, extensions, runtimes, or downloaded models.
+ai_process_running() {
+  local process rc process_check_failed=0
+  for process in "$@"; do
+    pgrep -x "$process" >/dev/null 2>&1
+    rc=$?
+    (( rc == 0 )) && return 0
+    (( rc == 1 )) || process_check_failed=1
+  done
+  (( process_check_failed == 0 )) || return 2
+  return 1
+}
+
+clear_ai_support_caches() {
+  local label="$1" root="$2"; shift 2
+  [[ -d "$root" ]] || return 0
+  AI_CACHE_FOUND=1
+
+  ai_process_running "$@"
+  case $? in
+    0)
+      warn "$label is running - keeping its caches"
+      return 0
+      ;;
+    2)
+      warn_step "cannot determine whether $label is running - keeping its caches"
+      return 0
+      ;;
+  esac
+
+  local scan_out d
+  local -a hits=()
+  if (( DRY_RUN )); then
+    # Process substitution keeps preview discovery read-only. The real path
+    # below uses a temporary file so it can retain find's exit status.
+    while IFS= read -r -d '' d; do hits+=("$d"); done < <(
+      find "$root" -maxdepth 4 -type d \( \
+        -name "Cache"              -o \
+        -name "Code Cache"         -o \
+        -name "GPUCache"           -o \
+        -name "DawnGraphiteCache"  -o \
+        -name "DawnWebGPUCache"    -o \
+        -name "GraphiteDawnCache"  -o \
+        -name "blob_storage" \
+      \) -prune -print0 2>>"$LOG_SINK"
+    )
+  else
+    scan_out="$(mktemp)"
+    if ! find "$root" -maxdepth 4 -type d \( \
+         -name "Cache"              -o \
+         -name "Code Cache"         -o \
+         -name "GPUCache"           -o \
+         -name "DawnGraphiteCache"  -o \
+         -name "DawnWebGPUCache"    -o \
+         -name "GraphiteDawnCache"  -o \
+         -name "blob_storage" \
+       \) -prune -print0 >"$scan_out" 2>>"$LOG_SINK"; then
+      warn_step "could not scan $label application caches"
+    fi
+    while IFS= read -r -d '' d; do hits+=("$d"); done < "$scan_out"
+    rm -f "$scan_out"
+  fi
+  clear_paths "$label application caches" dir ${hits[@]+"${hits[@]}"}
+}
+
+clear_ai_cache_roots() {
+  local label="$1" process_list="$2"; shift 2
+  local -a processes=()
+  local process root roots_found=0
+  while IFS= read -r process; do
+    [[ -n "$process" ]] && processes+=("$process")
+  done <<< "$process_list"
+
+  for root in "$@"; do
+    if [[ -d "$root" ]]; then
+      AI_CACHE_FOUND=1
+      roots_found=1
+    fi
+  done
+  (( roots_found )) || return 0
+
+  ai_process_running "${processes[@]}"
+  case $? in
+    0)
+      warn "$label is running - keeping its caches"
+      return 0
+      ;;
+    2)
+      warn_step "cannot determine whether $label is running - keeping its caches"
+      return 0
+      ;;
+  esac
+  for root in "$@"; do
+    [[ -d "$root" ]] || continue
+    clear_dir "$root"
+  done
+}
+
+step_aicaches() {
+  AI_CACHE_FOUND=0
+
+  clear_ai_support_caches "Claude" \
+    "$HOME/Library/Application Support/Claude" Claude claude
+  clear_ai_support_caches "Codex" \
+    "$HOME/Library/Application Support/Codex" ChatGPT Codex codex
+  clear_ai_support_caches "ChatGPT" \
+    "$HOME/Library/Application Support/com.openai.chat" ChatGPT
+  clear_ai_support_caches "Cursor" \
+    "$HOME/Library/Application Support/Cursor" Cursor
+  clear_ai_support_caches "Windsurf" \
+    "$HOME/Library/Application Support/Windsurf" Windsurf
+
+  clear_ai_cache_roots "Claude" $'Claude\nclaude' \
+    "$HOME/Library/Caches/com.anthropic.claudefordesktop" \
+    "$HOME/Library/Caches/com.anthropic.claudefordesktop.ShipIt" \
+    "$HOME/.claude/cache"
+  clear_ai_cache_roots "Codex" $'ChatGPT\nCodex\ncodex' \
+    "$HOME/Library/Caches/Codex" \
+    "$HOME/Library/Caches/com.openai.codex" \
+    "$HOME/Library/Caches/com.openai.sky.CUAService" \
+    "$HOME/.codex/tmp"
+  clear_ai_cache_roots "ChatGPT" "ChatGPT" \
+    "$HOME/Library/Caches/com.openai.chat"
+  clear_ai_cache_roots "Cursor" "Cursor" \
+    "$HOME/Library/Caches/com.todesktop.230313mzl4w4u92"
+  clear_ai_cache_roots "Windsurf" "Windsurf" \
+    "$HOME/Library/Caches/com.exafunction.windsurf"
+
+  if (( AI_CACHE_FOUND == 0 )); then
+    info "no supported AI tool caches found"
+  else
+    info "AI credentials, settings, sessions, projects, extensions, runtimes, and models kept"
+  fi
+}
+
+# VS Code creates workspaceStorage/<hash>/ for every folder ever opened and
+# never removes it - state DBs, extension scratch data, and language-server
 # indexes. Entries outlive the projects they belong to indefinitely.
-#
 # Classification lives in lib/workspace_scan.py rather than here. Deciding which
 # entries are dead means parsing JSON, percent-decoding a URI, and asking whether
 # a path's volume is even attached — none of which shell does well, and the cost
@@ -1680,6 +1833,7 @@ run_or_skip "Flush DNS cache"                      "$SKIP_DNS"         step_dns 
 run_or_skip "Clear system caches"                  "$SKIP_SYSCACHES"   step_syscaches system-caches
 run_or_skip "Clear user caches"                    "$SKIP_USERCACHES"  step_usercaches user-caches
 run_or_skip "Clear per-app caches"                 "$SKIP_APPCACHES"   step_appcaches app-caches
+run_or_skip "Clear AI tool caches"                 "$SKIP_AICACHES"    step_aicaches ai-caches
 run_or_skip "Prune stale workspace storage"        "$SKIP_WORKSPACESTORAGE" step_workspacestorage workspace-storage
 run_or_skip "Empty trash"                          "$SKIP_TRASH"       step_trash trash
 run_or_skip "Docker / OrbStack prune"              "$SKIP_DOCKER"      step_docker docker

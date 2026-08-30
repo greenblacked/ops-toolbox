@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the fifteen steps for real against a scratch HOME and a faked set of
+# each of the sixteen steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -94,6 +94,7 @@ new_env() {
   mkbin "$d/bin/df" 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
                     'echo "/dev/test 1000000 200000 800000 20% /"'
   mkbin "$d/bin/pgrep" 'for a in "$@"; do' \
+                       '  [ -n "${PGREP_RC:-}" ] && exit "$PGREP_RC"' \
                        '  case " ${RUNNING_APPS:-} " in *" $a "*) exit 0 ;; esac' \
                        'done; exit 1'
   mkbin "$d/bin/xcode-select" 'case "${1:-}" in -p) echo /Library/Developer/CommandLineTools ;; esac; exit 0'
@@ -116,6 +117,7 @@ run_sf() {
   HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" \
     CALLS="$d/calls" NO_COLOR=1 \
     RUNNING_APPS="${RUNNING_APPS:-}" \
+    PGREP_RC="${PGREP_RC:-}" \
     DOCKER_ENDPOINT="${DOCKER_ENDPOINT:-unix:///var/run/docker.sock}" \
     DOCKER_INFO_FAIL_AFTER="${DOCKER_INFO_FAIL_AFTER:-}" \
     DOCKER_INFO_N="$d/docker.info.n" \
@@ -217,6 +219,90 @@ assert_gone "--force-active-app-caches clears sandbox containers" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 assert_exists "the sandbox Caches directory itself is kept" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches"
+rm -rf "$d"
+
+# ===========================================================================
+section "ai-caches (temporary data only, active tools kept)"
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$as/Claude/Local Storage" \
+         "$as/Codex/Default/GPUCache" "$as/Codex/Default/Session Storage" \
+         "$as/Cursor/Code Cache" "$d/home/Library/Caches/Codex" \
+         "$d/home/.claude/cache" "$d/home/.claude/projects/kept" \
+         "$d/home/.codex/tmp" "$d/home/.codex/sessions/kept" \
+         "$d/home/.cache/codex-runtimes/kept" \
+         "$as/Ollama/models/kept"
+: > "$as/Claude/Cache/data"
+: > "$as/Claude/Local Storage/state"
+: > "$as/Codex/Default/GPUCache/data"
+: > "$as/Codex/Default/Session Storage/state"
+: > "$as/Cursor/Code Cache/data"
+: > "$d/home/Library/Caches/Codex/data"
+: > "$d/home/.claude/cache/data"
+: > "$d/home/.claude/projects/kept/session"
+: > "$d/home/.codex/tmp/data"
+: > "$d/home/.codex/sessions/kept/session"
+: > "$d/home/.cache/codex-runtimes/kept/runtime"
+: > "$as/Ollama/models/kept/model"
+out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "ai-caches step succeeds" "0" "$rc"
+assert_gone "Claude's disposable cache is removed" "$as/Claude/Cache"
+assert_gone "Codex's disposable GPU cache is removed" "$as/Codex/Default/GPUCache"
+assert_gone "Cursor's disposable code cache is removed" "$as/Cursor/Code Cache"
+assert_gone "Codex bundle cache contents are removed" "$d/home/Library/Caches/Codex/data"
+assert_gone "Claude CLI cache contents are removed" "$d/home/.claude/cache/data"
+assert_gone "Codex CLI tmp contents are removed" "$d/home/.codex/tmp/data"
+assert_exists "Claude local state is kept" "$as/Claude/Local Storage/state"
+assert_exists "Codex session storage is kept" "$as/Codex/Default/Session Storage/state"
+assert_exists "Claude project sessions are kept" "$d/home/.claude/projects/kept/session"
+assert_exists "Codex sessions are kept" "$d/home/.codex/sessions/kept/session"
+assert_exists "Codex runtimes are kept" "$d/home/.cache/codex-runtimes/kept/runtime"
+assert_exists "Ollama models are kept" "$as/Ollama/models/kept/model"
+assert_contains "the run states which AI data is preserved" "$out" \
+  "credentials, settings, sessions, projects, extensions, runtimes, and models kept"
+
+mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only ai-caches)"; rc=$?
+assert_eq "ai-caches dry run succeeds" "0" "$rc"
+assert_not_called "ai-caches dry run creates no scanner temporary file" \
+  "$d/calls" "mktemp"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$d/home/.claude/cache"
+: > "$as/Claude/Cache/data"
+: > "$d/home/.claude/cache/data"
+RUNNING_APPS="Claude" out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "a running AI tool does not fail cleanup" "0" "$rc"
+assert_exists "a running Claude app keeps its cache" "$as/Claude/Cache/data"
+assert_exists "a running Claude app keeps its CLI cache" "$d/home/.claude/cache/data"
+assert_contains "the run explains why active AI caches were kept" "$out" \
+  "Claude is running - keeping its caches"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Codex/Default/GPUCache"
+: > "$as/Codex/Default/GPUCache/data"
+RUNNING_APPS="ChatGPT" out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "active ChatGPT does not fail Codex cache cleanup" "0" "$rc"
+assert_exists "active ChatGPT keeps its Codex data-directory cache" \
+  "$as/Codex/Default/GPUCache/data"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache"
+: > "$as/Claude/Cache/data"
+PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "an unavailable process check keeps AI cleanup non-fatal" "0" "$rc"
+assert_exists "an unavailable process check fails closed" "$as/Claude/Cache/data"
+assert_contains "an unavailable process check explains the safe refusal" "$out" \
+  "cannot determine whether Claude is running - keeping its caches"
+assert_contains "an unavailable process check records a warning" "$out" \
+  "warn steps:  1"
 rm -rf "$d"
 
 # ===========================================================================
