@@ -629,6 +629,19 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `CONTRIBUTING.md` called the `linux/` dry-run output one script's lapse and
+  named `stay_fresh.sh` as the offender. All eight `linux/` scripts with a dry
+  run print `git/`'s closing summary line, so the deviation was the package's
+  norm rather than one file's mistake. The section now documents three
+  grammars, with a rendering taken from a real `run_cmd` call, and states
+  plainly where `linux/` is not uniform above that closing line:
+  `config_backup.sh` previews through `info()` without the indent, and
+  `packages.sh` mixes in the `dry-run: would run:` form the same section
+  forbids — with a `printf` missing its trailing newline, so the summary is
+  glued onto it. It also no longer claims the suite enforces the closing line;
+  the four assertions name three scripts individually, and a new script
+  omitting it would pass.
+
 - LaunchAgent options are command-scoped. `uninstall --dry-run` is a real
   no-write preview, while ambiguous combinations such as `run-now --dry-run`
   fail with exit `3` instead of silently ignoring the flag.
