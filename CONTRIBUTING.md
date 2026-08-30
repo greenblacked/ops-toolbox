@@ -155,7 +155,7 @@ Pick one of four sanctioned mechanisms:
 | Labelled `run_cmd "label" cmd…` | `run_cmd()` in `macos-initial-setup/stay_fresh.sh` | The script also writes a log file. `run_cmd_tty()` is its sibling for anything that must keep a terminal (sudo, cask prompts). |
 | Inline per-branch | `git/git_amend_last.sh` | The "command" is not a single exec. |
 
-### There are two output grammars — pick by package, do not mix
+### There are three output grammars — pick by package, do not mix
 
 The `git/` package prints:
 
@@ -173,14 +173,40 @@ the second, both in `macos-initial-setup/stay_fresh.sh`:
   (dry-run) would remove contents of /Users/x/Library/Caches/foo
 ```
 
+The `linux/` package closes with `git/`'s summary line while previewing actions
+in the indented form, for example from `run_cmd()` in `linux/stay_fresh.sh`:
+
+```text
+  (dry-run) pip3 cache purge [pip cache purge]
+dry-run complete; no changes written
+```
+
+Take that as the shape to copy, not as a description of what every `linux/`
+script already does. The closing line is the one settled part: all eight
+`linux/` scripts with a dry run print it. Above it the package is not uniform,
+and a new script should not read the variation as licence:
+
+- The indented `(dry-run)` prefix comes from `run_cmd()` in
+  `linux/stay_fresh.sh` and `linux/install_devtools.sh`;
+  `linux/disk_cleanup.sh` renders through `run_root()`, and the rest use bare
+  `printf` or `info`.
+- `config_backup.sh` previews with `info "would create …"` — unindented, no
+  `(dry-run)` prefix — and prints its summary through `info` too, so the line
+  arrives as `[info] dry-run complete; no changes written`.
+- `packages.sh` mixes three forms in one preview path, including `git/`'s
+  `dry-run: would run:` that this section tells you not to mix. Its `printf`
+  there also omits the trailing newline, so the summary line is appended to it
+  on the same line. That is a defect, not a fourth grammar.
+
+Nothing enforces the closing line generically: the four assertions in
+`linux/tests/test_linux_scripts.sh` name `install_devtools.sh`,
+`disk_cleanup.sh` and `config_backup.sh` individually, and the repository-wide
+dry-run check compares filesystem state rather than output. A new `linux/`
+script that omitted the line would pass CI, so this is a convention you keep by
+reading, not one the suite keeps for you.
+
 Match the package you are writing in. A new top-level package picks one in its
 README and sticks to it.
-
-One script already breaks this and is worth knowing about rather than copying:
-`linux/stay_fresh.sh` prints the indented `(dry-run)` form from its own
-`run_cmd()` and *also* closes with `git/`'s `dry-run complete; no changes
-written`. It is the exception the rule is written against, not a second
-sanctioned style.
 
 Whichever you use, the contract is absolute: **a dry run writes nothing.** The
 test suites assert this by snapshotting state before and after.
