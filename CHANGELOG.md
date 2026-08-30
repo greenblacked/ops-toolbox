@@ -630,9 +630,9 @@ entry here belongs to a version.
 ### Fixed
 
 - `CONTRIBUTING.md` called the `linux/` dry-run output one script's lapse and
-  named `stay_fresh.sh` as the offender. All eight `linux/` scripts with a dry
-  run print `git/`'s closing summary line, so the deviation was the package's
-  norm rather than one file's mistake. The section now documents three
+  named `stay_fresh.sh` as the offender. All seven `linux/` scripts that take
+  `--dry-run` print `git/`'s closing summary line, so the deviation was the
+  package's norm rather than one file's mistake. The section now documents three
   grammars, with a rendering taken from a real `run_cmd` call, and states
   plainly where `linux/` is not uniform above that closing line:
   `config_backup.sh` previews through `info()` without the indent, and

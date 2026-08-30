@@ -182,9 +182,9 @@ dry-run complete; no changes written
 ```
 
 Take that as the shape to copy, not as a description of what every `linux/`
-script already does. The closing line is the one settled part: all eight
-`linux/` scripts with a dry run print it. Above it the package is not uniform,
-and a new script should not read the variation as licence:
+script already does. The closing line is the one settled part: all seven
+`linux/` scripts that take `--dry-run` print it. Above it the package is not
+uniform, and a new script should not read the variation as licence:
 
 - The indented `(dry-run)` prefix comes from `run_cmd()` in
   `linux/stay_fresh.sh` and `linux/install_devtools.sh`;
