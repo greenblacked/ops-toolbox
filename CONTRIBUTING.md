@@ -59,8 +59,8 @@ own tests, invoked as a subprocess by absolute path.**
 [`macos-initial-setup/lib/workspace_scan.py`](macos-initial-setup/lib/workspace_scan.py)
 is the only thing that clears that bar today — classification logic
 called via `/usr/bin/python3`, unit-tested on its own. Note what it cost:
-`stay_fresh.sh` carries a symlink-resolving preamble whose sole job is
-finding it. That price is worth paying once for a real program, never for
+`macos-initial-setup/stay_fresh.sh` carries a symlink-resolving preamble
+whose sole job is finding it. That price is worth paying once for a real program, never for
 a seven-line validator.
 
 Divergence between copies is a *test* problem, not a factoring problem. The
@@ -78,7 +78,7 @@ Three `set` dialects, chosen by role — do not mix them:
 | Dialect | Used by | Why |
 | --- | --- | --- |
 | `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. |
-| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. Reasoning is written out at the top of `macos-initial-setup/v1_stay_fresh.sh`. |
+| `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. `macos-initial-setup/stay_fresh.sh` and `linux/stay_fresh.sh` are the reference. The header comment of `macos-initial-setup/v1_stay_fresh.sh` explains why `-e` is omitted — that script itself predates the convention and sets only `-o pipefail`, so read it for the reasoning, not as the pattern. |
 | `set -uo pipefail` | `run-tests.sh`, `test-env/*/run.sh` | Aggregators that must keep going after a failing child and report a summary. |
 
 ### Bash 3.2 compatibility
@@ -165,7 +165,8 @@ dry-run complete; no changes written
 ```
 
 The `macos-initial-setup/` package prints a dimmed, two-space-indented form with
-no terminal summary line (`run_cmd()` in `stay_fresh.sh`):
+no terminal summary line — `run_cmd()` prints the first shape and `clear_dir()`
+the second, both in `macos-initial-setup/stay_fresh.sh`:
 
 ```text
   (dry-run) brew upgrade [homebrew upgrade]
@@ -174,6 +175,12 @@ no terminal summary line (`run_cmd()` in `stay_fresh.sh`):
 
 Match the package you are writing in. A new top-level package picks one in its
 README and sticks to it.
+
+One script already breaks this and is worth knowing about rather than copying:
+`linux/stay_fresh.sh` prints the indented `(dry-run)` form from its own
+`run_cmd()` and *also* closes with `git/`'s `dry-run complete; no changes
+written`. It is the exception the rule is written against, not a second
+sanctioned style.
 
 Whichever you use, the contract is absolute: **a dry run writes nothing.** The
 test suites assert this by snapshotting state before and after.
@@ -269,22 +276,34 @@ accumulate and report a total (bytes that *would* be freed) which
 `ShouldProcess` cannot express. This section is the rule; the Windows README
 points here.
 
-Output is `Write-Host -ForegroundColor`, in a fixed column grammar
-(`Clear-Target` in `windows/cleanup/clean_disk_c.ps1`):
+Output is `Write-Host -ForegroundColor`, one line per item, opening with a
+fixed-width verb and a padded label. `templates/new_script.ps1` is the shape to
+copy:
 
 ```powershell
-Write-Host ('WOULD {0,-38} {1,10}  ({2} files)' -f $Label, (Format-Size $size), $files.Count)
-Write-Host ('CLEAN {0,-38} {1,10}' -f $Label, (Format-Size $size)) -ForegroundColor Green
-Write-Host ('SKIP  {0,-38} (not found)' -f $Label) -ForegroundColor DarkGray
+Write-Host ('WOULD {0,-38} {1,10}' -f $Label, (Format-Size $bytes)) -ForegroundColor Cyan
+Write-Host ('CLEAN {0,-38} {1,10}' -f $Label, (Format-Size $bytes)) -ForegroundColor Green
+Write-Host ('SKIP  {0,-38} {1,10}' -f $Label, '(not found)') -ForegroundColor DarkGray
+Write-Host ('FAIL  {0,-38} {1}' -f $Label, $_.Exception.Message) -ForegroundColor Red
 ```
 
-Verbs are `WOULD` / `CLEAN` / `SKIP`, the label padded to 38. A `WOULD` or
-`CLEAN` carries the size in the next 10 columns; a `SKIP` carries the reason it
-was skipped instead, because there is no size to report for work that did not
-happen. `PSScriptAnalyzerSettings.psd1` excludes
-exactly one rule: `PSAvoidUsingWriteHost`, because these are interactive
-operator scripts whose output is a colour-coded human report. Everything else
-PSScriptAnalyzer reports at `Warning` or above is a real finding — fix it.
+What is actually fixed is the verb column: five characters, so `SKIP` and
+`FAIL` carry a trailing space and every label starts in the same place. The
+`{1,10}` field holds a size where there is one and a right-aligned reason where
+there is not.
+
+Do not read more uniformity into it than exists. The verb set is open — the
+template adds `FAIL`, and `windows/wsl/wsl_manage.ps1` uses `KEEP` and `PRUNE`
+for a retention report. Widths follow the content: `wsl_manage.ps1` pads its
+label to 44 because distro names are longer, and several lines in
+`clean_disk_c.ps1` drop the size field or spell the reason inline rather than
+in the 10-wide column. Match the file you are editing; when writing a new one,
+start from the template.
+
+`PSScriptAnalyzerSettings.psd1` excludes exactly one rule:
+`PSAvoidUsingWriteHost`, because these are interactive operator scripts whose
+output is a colour-coded human report. Everything else PSScriptAnalyzer reports
+at `Warning` or above is a real finding — fix it.
 
 `PSUseShouldProcessForStateChangingFunctions` is deliberately **not** excluded.
 It does not fire on the current helpers, because they declare a bare `param()`
