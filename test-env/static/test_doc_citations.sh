@@ -11,6 +11,8 @@
 #   1. no line-number citations at all — they are the format that rots
 #   2. every relative link resolves
 #   3. every "`fn()` in `path`" citation resolves to a function in that file
+#   4. every package README names the scripts beside it, and documents no
+#      script that is not there
 #
 # What is deliberately NOT checked: a bare `name.sh` written in prose. The
 # first draft did check those and flagged `formulae.brew.sh` (a hostname) and
@@ -96,6 +98,56 @@ if (( checked_fn == 0 )); then
 elif (( bad_fn == 0 )); then
   ok "all $checked_fn function citations resolve"
 fi
+
+# --------------------------------------------------------------------------
+head_ "package READMEs name their scripts"
+# Both directions, because both have failed here. Forward: mikrotik once took a
+# batch of twelve scripts with no README entry, which is why that package grew
+# its own drift check. Reverse: a heading for a script somebody deleted outlives
+# the script, and markdownlint has no opinion about it.
+#
+# Packages are discovered, not listed. A hardcoded package list is the thing
+# that rots — the macOS suite's hardcoded script list silently stopped covering
+# launchd/stay_fresh_agent.sh, which is the defect this whole family of checks
+# exists to prevent. Anything with a README and a script beside it is in scope;
+# test-env/ is excluded wholesale, the same rule discover_clis.sh uses.
+fwd_missing=0
+rev_missing=0
+pkgs=0
+scripts_seen=0
+while IFS= read -r readme; do
+  pkg="$(dirname "$readme")"
+  # The root README is an index of packages, not a package README; holding it
+  # to "name every script beside you" would mean every script in the tree.
+  case "$pkg" in .|test-env|test-env/*) continue ;; esac
+
+  pkg_scripts=""
+  while IFS= read -r f; do
+    case "$f" in */tests/*) continue ;; esac
+    pkg_scripts="$pkg_scripts ${f##*/}"
+  done < <(git ls-files "$pkg/*.sh" "$pkg/*.py" "$pkg/*.lua" "$pkg/*.ps1")
+  [ -n "$pkg_scripts" ] || continue
+  pkgs=$((pkgs + 1))
+
+  for base in $pkg_scripts; do
+    scripts_seen=$((scripts_seen + 1))
+    grep -qF -- "$base" "$readme" && continue
+    err "$readme does not mention $base, which ships beside it"
+    fwd_missing=$((fwd_missing + 1))
+  done
+
+  # A heading is a stronger claim than a mention: it documents the script.
+  while IFS= read -r named; do
+    [ -n "$named" ] || continue
+    case " $pkg_scripts " in *" $named "*) continue ;; esac
+    err "$readme has a section for $named, which is not in $pkg/"
+    rev_missing=$((rev_missing + 1))
+  done < <(grep -hoE '^#+ `[A-Za-z0-9_.-]+\.(sh|py|lua|ps1)`' "$readme" \
+             | sed 's/^#* *//; s/`//g')
+done < <(git ls-files '*README.md')
+
+(( fwd_missing == 0 )) && ok "every script is named in its package README ($scripts_seen across $pkgs packages)"
+(( rev_missing == 0 )) && ok "every documented script section has a script"
 
 # --------------------------------------------------------------------------
 printf '\n'

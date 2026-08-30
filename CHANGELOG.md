@@ -16,6 +16,21 @@ entry here belongs to a version.
 
 ### Added
 
+- Drift checks between the package READMEs and the scripts beside them, in
+  `test-env/static/test_doc_citations.sh`. Both directions have failed here
+  before: a batch of twelve RouterOS scripts landed with no README entry, which
+  is why that package grew its own check, and a section heading for a deleted
+  script outlives the script with markdownlint reporting nothing. Every script
+  in a package must be named in that package's README, and a README section
+  naming a script must have a script to name. 96 scripts across 11 packages
+  pass today, so the rule needs no exemption list.
+
+  Packages are discovered rather than listed, because a hardcoded package list
+  is the thing that rots — the macOS suite's hardcoded script list is how
+  `launchd/stay_fresh_agent.sh` stopped being covered. The repository root is
+  excluded: `README.md` is an index of packages, and holding it to "name every
+  script beside you" would mean every script in the tree.
+
 - `stay_fresh.sh --only ai-caches` clears disposable Claude, Codex, ChatGPT,
   Cursor, and Windsurf caches without treating all AI data as temporary. It
   skips a tool while its process is active, fails closed when process state
