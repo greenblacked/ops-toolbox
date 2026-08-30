@@ -126,7 +126,7 @@ under `# ---` section headers. By category:
   `gsw*`, `gr*` (rebase), `gstash*`, `glog*`, ...) plus functions `gbranch`,
   `gnew`, `gpublish`, `gchanged`, `gupdatemain`, `gacp` (stage all, commit
   with a `[branch]` prefix, push — **not** the same thing as
-  [`../git/gacp.sh`](../git/gacp.sh): that script supports `--dry-run`/
+  [`../../git/gacp.sh`](../../git/gacp.sh): that script supports `--dry-run`/
   `--no-push` and doesn't prefix the message; this is the quick interactive
   shortcut), and `glopen [remote]` (opens the current repo's remote —
   GitLab, GitHub, anything — in your browser, converting an SSH remote to
@@ -233,9 +233,9 @@ gets committed here.
 ## Not covered here
 
 - macOS shell setup lives in
-  [`../macos-initial-setup/zsh_aliases.zsh`](../macos-initial-setup/zsh_aliases.zsh) —
+  [`../../macos-initial-setup/zsh_aliases.zsh`](../../macos-initial-setup/zsh_aliases.zsh) —
   this folder is Windows/Git-Bash-specific.
-- Git identity/profile management is in [`../git/`](../git/)
+- Git identity/profile management is in [`../../git/`](../../git/)
   (`set_git_profile.sh`, `git_whoami.sh`); this folder only sets shell
   defaults, not Git config.
 - `default-git-bash/` next to this folder was an earlier personal draft;
