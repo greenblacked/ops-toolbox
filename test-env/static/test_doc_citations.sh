@@ -106,48 +106,72 @@ head_ "package READMEs name their scripts"
 # its own drift check. Reverse: a heading for a script somebody deleted outlives
 # the script, and markdownlint has no opinion about it.
 #
-# Packages are discovered, not listed. A hardcoded package list is the thing
-# that rots — the macOS suite's hardcoded script list silently stopped covering
-# launchd/stay_fresh_agent.sh, which is the defect this whole family of checks
-# exists to prevent. Anything with a README and a script beside it is in scope;
-# test-env/ is excluded wholesale, the same rule discover_clis.sh uses.
+# A script belongs to the NEAREST README above it, not to every README above it.
+# The first draft used `git ls-files "$pkg/*.sh"`, and git pathspec globs cross
+# directory boundaries: windows/README.md was silently held to naming the eight
+# scripts under windows/setup/ and windows/wsl/, each was counted twice, and
+# both error messages named the wrong directory.
+#
+# Packages are discovered, not listed. The macOS suite's hardcoded script list
+# is how launchd/stay_fresh_agent.sh stopped being covered. test-env/ is
+# excluded wholesale, the same rule discover_clis.sh uses; so is the repository
+# root, whose README is an index of packages rather than a package README.
+readmes="$(mktemp)"; mentions="$(mktemp)"
+trap 'rm -f "$readmes" "$mentions"' EXIT
+git ls-files '*README.md' | while IFS= read -r r; do
+  d="$(dirname "$r")"
+  case "$d" in .|test-env|test-env/*) continue ;; esac
+  printf '%s\n' "$d"
+done > "$readmes"
+
 fwd_missing=0
 rev_missing=0
-pkgs=0
 scripts_seen=0
-while IFS= read -r readme; do
-  pkg="$(dirname "$readme")"
-  # The root README is an index of packages, not a package README; holding it
-  # to "name every script beside you" would mean every script in the tree.
-  case "$pkg" in .|test-env|test-env/*) continue ;; esac
+pkgs="$(wc -l < "$readmes" | tr -d ' ')"
 
-  pkg_scripts=""
-  while IFS= read -r f; do
-    case "$f" in */tests/*) continue ;; esac
-    pkg_scripts="$pkg_scripts ${f##*/}"
-  done < <(git ls-files "$pkg/*.sh" "$pkg/*.py" "$pkg/*.lua" "$pkg/*.ps1")
-  [ -n "$pkg_scripts" ] || continue
-  pkgs=$((pkgs + 1))
-
-  for base in $pkg_scripts; do
-    scripts_seen=$((scripts_seen + 1))
-    grep -qF -- "$base" "$readme" && continue
-    err "$readme does not mention $base, which ships beside it"
-    fwd_missing=$((fwd_missing + 1))
+# Forward: every script is named in the README of its nearest package.
+while IFS= read -r f; do
+  case "$f" in */tests/*|test-env/*|run-tests.sh) continue ;; esac
+  owner=""
+  d="$(dirname "$f")"
+  while [ "$d" != "." ] && [ -n "$d" ]; do
+    if grep -qx "$d" "$readmes"; then owner="$d"; break; fi
+    d="$(dirname "$d")"
   done
+  [ -n "$owner" ] || continue
+  scripts_seen=$((scripts_seen + 1))
+  base="${f##*/}"
+  # Whole-token match, not substring: `v1_stay_fresh.sh` in the prose must not
+  # count as a mention of `stay_fresh.sh`.
+  grep -oE '[A-Za-z0-9_./-]+\.(sh|py|lua|ps1)' "$owner/README.md" \
+    | sed 's#.*/##' | sort -u > "$mentions"
+  grep -qx "$base" "$mentions" && continue
+  err "$owner/README.md does not mention $base, which ships beside it"
+  fwd_missing=$((fwd_missing + 1))
+done < <(git ls-files '*.sh' '*.py' '*.lua' '*.ps1')
 
-  # A heading is a stronger claim than a mention: it documents the script.
+# Reverse: a heading naming a script is a claim that the script is there. The
+# name may carry a path — `## `launchd/stay_fresh_agent.sh`` — so the pattern
+# has to allow a slash. Leaving it out exempted the two scripts documented that
+# way, one of them the file this block's own comment cites as the reason it
+# exists. Run for every package README, including one whose scripts have all
+# been deleted: that is precisely when a heading is left orphaned.
+while IFS= read -r pkg; do
   while IFS= read -r named; do
     [ -n "$named" ] || continue
-    case " $pkg_scripts " in *" $named "*) continue ;; esac
-    err "$readme has a section for $named, which is not in $pkg/"
+    [ -f "$pkg/$named" ] && continue
+    err "$pkg/README.md has a section for $named, which is not in $pkg/"
     rev_missing=$((rev_missing + 1))
-  done < <(grep -hoE '^#+ `[A-Za-z0-9_.-]+\.(sh|py|lua|ps1)`' "$readme" \
+  done < <(grep -hoE '^#+ `[A-Za-z0-9_./-]+\.(sh|py|lua|ps1)`' "$pkg/README.md" \
              | sed 's/^#* *//; s/`//g')
-done < <(git ls-files '*README.md')
+done < "$readmes"
 
-(( fwd_missing == 0 )) && ok "every script is named in its package README ($scripts_seen across $pkgs packages)"
-(( rev_missing == 0 )) && ok "every documented script section has a script"
+if (( pkgs == 0 || scripts_seen == 0 )); then
+  err "discovered $pkgs package README(s) and $scripts_seen script(s) — this check has stopped checking"
+else
+  (( fwd_missing == 0 )) && ok "every script is named in its package README ($scripts_seen across $pkgs packages)"
+  (( rev_missing == 0 )) && ok "every documented script section has a script"
+fi
 
 # --------------------------------------------------------------------------
 printf '\n'

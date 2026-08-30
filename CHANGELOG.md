@@ -22,14 +22,18 @@ entry here belongs to a version.
   is why that package grew its own check, and a section heading for a deleted
   script outlives the script with markdownlint reporting nothing. Every script
   in a package must be named in that package's README, and a README section
-  naming a script must have a script to name. 96 scripts across 11 packages
+  naming a script must have a script to name. 88 scripts across 13 packages
   pass today, so the rule needs no exemption list.
 
-  Packages are discovered rather than listed, because a hardcoded package list
-  is the thing that rots — the macOS suite's hardcoded script list is how
-  `launchd/stay_fresh_agent.sh` stopped being covered. The repository root is
-  excluded: `README.md` is an index of packages, and holding it to "name every
-  script beside you" would mean every script in the tree.
+  A script belongs to the nearest README above it, not to every README above
+  it: git pathspec globs cross directory boundaries, so a first draft held
+  `windows/README.md` to naming the eight scripts under its subdirectories and
+  counted each of them twice. Packages are discovered rather than listed,
+  because a hardcoded package list is the thing that rots — the macOS suite's
+  hardcoded script list is how `launchd/stay_fresh_agent.sh` stopped being
+  covered. The repository root is excluded: `README.md` is an index of
+  packages, and holding it to "name every script beside you" would mean every
+  script in the tree.
 
 - `stay_fresh.sh --only ai-caches` clears disposable Claude, Codex, ChatGPT,
   Cursor, and Windsurf caches without treating all AI data as temporary. It
