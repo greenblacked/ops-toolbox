@@ -21,3 +21,4 @@
 
 # Local agent instructions belong to the machine running them, not the repo.
 AGENTS.md
+WS/*
