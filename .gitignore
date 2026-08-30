@@ -22,3 +22,6 @@
 # Local agent instructions belong to the machine running them, not the repo.
 AGENTS.md
 WS/*
+
+# Local scratch workspace; its directory name begins with a space.
+[ ]WS/
