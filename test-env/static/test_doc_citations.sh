@@ -118,7 +118,13 @@ head_ "package READMEs name their scripts"
 # root, whose README is an index of packages rather than a package README.
 readmes="$(mktemp)"; mentions="$(mktemp)"
 trap 'rm -f "$readmes" "$mentions"' EXIT
+# The pathspec is a glob over the whole path, so '*README.md' also matches
+# LEGACY_README.md and DESIGN_README.md. The first invented a second entry for
+# a package that already had one (orphan headings reported twice) and the
+# second invented a package whose README.md does not exist, so the reverse loop
+# grepped a missing file. Match the basename exactly.
 git ls-files '*README.md' | while IFS= read -r r; do
+  [ "${r##*/}" = "README.md" ] || continue
   d="$(dirname "$r")"
   case "$d" in .|test-env|test-env/*) continue ;; esac
   printf '%s\n' "$d"
@@ -135,17 +141,28 @@ while IFS= read -r f; do
   owner=""
   d="$(dirname "$f")"
   while [ "$d" != "." ] && [ -n "$d" ]; do
-    if grep -qx "$d" "$readmes"; then owner="$d"; break; fi
+    if grep -qxF "$d" "$readmes"; then owner="$d"; break; fi
     d="$(dirname "$d")"
   done
-  [ -n "$owner" ] || continue
+  # Skipping this silently was the largest hole: a brand-new package, or one
+  # whose README was deleted, took its scripts out of coverage and left the
+  # suite green. Every shipped script lives in a package that documents it.
+  if [ -z "$owner" ]; then
+    err "$f has no package README above it; add one, or move the script into a package"
+    fwd_missing=$((fwd_missing + 1))
+    continue
+  fi
   scripts_seen=$((scripts_seen + 1))
   base="${f##*/}"
-  # Whole-token match, not substring: `v1_stay_fresh.sh` in the prose must not
-  # count as a mention of `stay_fresh.sh`.
-  grep -oE '[A-Za-z0-9_./-]+\.(sh|py|lua|ps1)' "$owner/README.md" \
-    | sed 's#.*/##' | sort -u > "$mentions"
-  grep -qx "$base" "$mentions" && continue
+  # Whole-token match at both ends. Without the left boundary the class
+  # provides, `v1_stay_fresh.sh` in the prose counts as `stay_fresh.sh`;
+  # without the right one, prose about `deploy.shtml` counts as `deploy.sh`.
+  # The trailing boundary character, when there is one, is then stripped.
+  grep -oE '[A-Za-z0-9_./-]+\.(sh|py|lua|ps1)([^A-Za-z0-9_]|$)' "$owner/README.md" \
+    | sed 's/[^A-Za-z0-9]$//; s#.*/##' | sort -u > "$mentions"
+  # -F, because the filename is data: an undocumented `bash.aliases.sh` used as
+  # a pattern matches the documented `bash_aliases.sh`.
+  grep -qxF "$base" "$mentions" && continue
   err "$owner/README.md does not mention $base, which ships beside it"
   fwd_missing=$((fwd_missing + 1))
 done < <(git ls-files '*.sh' '*.py' '*.lua' '*.ps1')

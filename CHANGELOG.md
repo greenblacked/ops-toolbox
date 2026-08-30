@@ -22,8 +22,10 @@ entry here belongs to a version.
   is why that package grew its own check, and a section heading for a deleted
   script outlives the script with markdownlint reporting nothing. Every script
   in a package must be named in that package's README, and a README section
-  naming a script must have a script to name. 88 scripts across 13 packages
-  pass today, so the rule needs no exemption list.
+  naming a script must have a script to name, and a script with no package
+  README above it fails rather than dropping out of coverage — a new package,
+  or one whose README was deleted, took its scripts with it. 88 scripts across
+  13 packages pass today, so the rule needs no exemption list.
 
   A script belongs to the nearest README above it, not to every README above
   it: git pathspec globs cross directory boundaries, so a first draft held
@@ -630,12 +632,12 @@ entry here belongs to a version.
 ### Fixed
 
 - `CONTRIBUTING.md` called the `linux/` dry-run output one script's lapse and
-  named `stay_fresh.sh` as the offender. All seven `linux/` scripts that take
-  `--dry-run` print `git/`'s closing summary line, so the deviation was the
-  package's norm rather than one file's mistake. The section now documents three
-  grammars, with a rendering taken from a real `run_cmd` call, and states
-  plainly where `linux/` is not uniform above that closing line:
-  `config_backup.sh` previews through `info()` without the indent, and
+  named `stay_fresh.sh` as the offender. All eight `linux/` scripts that take
+  `--dry-run` print `git/`'s closing summary line and six also print the
+  indented preview above it, so the deviation was the package's norm rather
+  than one file's mistake. The section now documents three grammars, with a
+  rendering taken from a real `run_cmd` call, and names the two scripts that
+  do deviate: `config_backup.sh` previews through `info()` without the indent, and
   `packages.sh` mixes in the `dry-run: would run:` form the same section
   forbids — with a `printf` missing its trailing newline, so the summary is
   glued onto it. It also no longer claims the suite enforces the closing line;

@@ -181,15 +181,17 @@ in the indented form, for example from `run_cmd()` in `linux/stay_fresh.sh`:
 dry-run complete; no changes written
 ```
 
-Take that as the shape to copy, not as a description of what every `linux/`
-script already does. The closing line is the one settled part: all seven
-`linux/` scripts that take `--dry-run` print it. Above it the package is not
-uniform, and a new script should not read the variation as licence:
+All eight `linux/` scripts that take `--dry-run` print that closing line, and
+six of the eight also produce the indented `(dry-run)` preview above it. So the
+shape above is the package norm, not one script's habit. What varies is only
+how a script gets there, and two scripts genuinely deviate:
 
-- The indented `(dry-run)` prefix comes from `run_cmd()` in
-  `linux/stay_fresh.sh` and `linux/install_devtools.sh`;
-  `linux/disk_cleanup.sh` renders through `run_root()`, and the rest use bare
-  `printf` or `info`.
+- The indented prefix is emitted three ways, all rendering the same: `run_cmd()`
+  in `linux/stay_fresh.sh` and `linux/install_devtools.sh`, `run_root()` in
+  `linux/disk_cleanup.sh`, and bare `printf` in `linux/install_aliases.sh`,
+  `linux/sysctl_defaults.sh` and `linux/systemd/stay_fresh_timer.sh`. Reach for
+  `run_cmd()` when a preview wraps a real command; a `printf` is fine when it
+  does not.
 - `config_backup.sh` previews with `info "would create …"` — unindented, no
   `(dry-run)` prefix — and prints its summary through `info` too, so the line
   arrives as `[info] dry-run complete; no changes written`.
