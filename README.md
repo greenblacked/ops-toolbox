@@ -737,7 +737,8 @@ dispatches the standard CI workflow for the bump branch before opening its PR.
 Task-scoped copies of the same material live under `.claude/skills/` on a
 local checkout so an automated coding agent can load the rules for the file
 it is editing. That directory is gitignored and is not on GitHub.
-[`AGENTS.md`](AGENTS.md) is the short brief to read first.
+Automation should read `CONTRIBUTING.md` first; any machine-local instructions
+are intentionally not part of the repository.
 
 ## Contributing
 
