@@ -11,6 +11,8 @@
 #   1. no line-number citations at all — they are the format that rots
 #   2. every relative link resolves
 #   3. every "`fn()` in `path`" citation resolves to a function in that file
+#   4. every package README names the scripts beside it, and documents no
+#      script that is not there
 #
 # What is deliberately NOT checked: a bare `name.sh` written in prose. The
 # first draft did check those and flagged `formulae.brew.sh` (a hostname) and
@@ -95,6 +97,97 @@ if (( checked_fn == 0 )); then
   ok "no function citations to check"
 elif (( bad_fn == 0 )); then
   ok "all $checked_fn function citations resolve"
+fi
+
+# --------------------------------------------------------------------------
+head_ "package READMEs name their scripts"
+# Both directions, because both have failed here. Forward: mikrotik once took a
+# batch of twelve scripts with no README entry, which is why that package grew
+# its own drift check. Reverse: a heading for a script somebody deleted outlives
+# the script, and markdownlint has no opinion about it.
+#
+# A script belongs to the NEAREST README above it, not to every README above it.
+# The first draft used `git ls-files "$pkg/*.sh"`, and git pathspec globs cross
+# directory boundaries: windows/README.md was silently held to naming the eight
+# scripts under windows/setup/ and windows/wsl/, each was counted twice, and
+# both error messages named the wrong directory.
+#
+# Packages are discovered, not listed. The macOS suite's hardcoded script list
+# is how launchd/stay_fresh_agent.sh stopped being covered. test-env/ is
+# excluded wholesale, the same rule discover_clis.sh uses; so is the repository
+# root, whose README is an index of packages rather than a package README.
+readmes="$(mktemp)"; mentions="$(mktemp)"
+trap 'rm -f "$readmes" "$mentions"' EXIT
+# The pathspec is a glob over the whole path, so '*README.md' also matches
+# LEGACY_README.md and DESIGN_README.md. The first invented a second entry for
+# a package that already had one (orphan headings reported twice) and the
+# second invented a package whose README.md does not exist, so the reverse loop
+# grepped a missing file. Match the basename exactly.
+git ls-files '*README.md' | while IFS= read -r r; do
+  [ "${r##*/}" = "README.md" ] || continue
+  d="$(dirname "$r")"
+  case "$d" in .|test-env|test-env/*) continue ;; esac
+  printf '%s\n' "$d"
+done > "$readmes"
+
+fwd_missing=0
+rev_missing=0
+scripts_seen=0
+pkgs="$(wc -l < "$readmes" | tr -d ' ')"
+
+# Forward: every script is named in the README of its nearest package.
+while IFS= read -r f; do
+  case "$f" in */tests/*|test-env/*|run-tests.sh) continue ;; esac
+  owner=""
+  d="$(dirname "$f")"
+  while [ "$d" != "." ] && [ -n "$d" ]; do
+    if grep -qxF "$d" "$readmes"; then owner="$d"; break; fi
+    d="$(dirname "$d")"
+  done
+  # Skipping this silently was the largest hole: a brand-new package, or one
+  # whose README was deleted, took its scripts out of coverage and left the
+  # suite green. Every shipped script lives in a package that documents it.
+  if [ -z "$owner" ]; then
+    err "$f has no package README above it; add one, or move the script into a package"
+    fwd_missing=$((fwd_missing + 1))
+    continue
+  fi
+  scripts_seen=$((scripts_seen + 1))
+  base="${f##*/}"
+  # Whole-token match at both ends. Without the left boundary the class
+  # provides, `v1_stay_fresh.sh` in the prose counts as `stay_fresh.sh`;
+  # without the right one, prose about `deploy.shtml` counts as `deploy.sh`.
+  # The trailing boundary character, when there is one, is then stripped.
+  grep -oE '[A-Za-z0-9_./-]+\.(sh|py|lua|ps1)([^A-Za-z0-9_]|$)' "$owner/README.md" \
+    | sed 's/[^A-Za-z0-9]$//; s#.*/##' | sort -u > "$mentions"
+  # -F, because the filename is data: an undocumented `bash.aliases.sh` used as
+  # a pattern matches the documented `bash_aliases.sh`.
+  grep -qxF "$base" "$mentions" && continue
+  err "$owner/README.md does not mention $base, which ships beside it"
+  fwd_missing=$((fwd_missing + 1))
+done < <(git ls-files '*.sh' '*.py' '*.lua' '*.ps1')
+
+# Reverse: a heading naming a script is a claim that the script is there. The
+# name may carry a path — `## `launchd/stay_fresh_agent.sh`` — so the pattern
+# has to allow a slash. Leaving it out exempted the two scripts documented that
+# way, one of them the file this block's own comment cites as the reason it
+# exists. Run for every package README, including one whose scripts have all
+# been deleted: that is precisely when a heading is left orphaned.
+while IFS= read -r pkg; do
+  while IFS= read -r named; do
+    [ -n "$named" ] || continue
+    [ -f "$pkg/$named" ] && continue
+    err "$pkg/README.md has a section for $named, which is not in $pkg/"
+    rev_missing=$((rev_missing + 1))
+  done < <(grep -hoE '^#+ `[A-Za-z0-9_./-]+\.(sh|py|lua|ps1)`' "$pkg/README.md" \
+             | sed 's/^#* *//; s/`//g')
+done < "$readmes"
+
+if (( pkgs == 0 || scripts_seen == 0 )); then
+  err "discovered $pkgs package README(s) and $scripts_seen script(s) — this check has stopped checking"
+else
+  (( fwd_missing == 0 )) && ok "every script is named in its package README ($scripts_seen across $pkgs packages)"
+  (( rev_missing == 0 )) && ok "every documented script section has a script"
 fi
 
 # --------------------------------------------------------------------------

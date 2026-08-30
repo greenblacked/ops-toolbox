@@ -16,6 +16,27 @@ entry here belongs to a version.
 
 ### Added
 
+- Drift checks between the package READMEs and the scripts beside them, in
+  `test-env/static/test_doc_citations.sh`. Both directions have failed here
+  before: a batch of twelve RouterOS scripts landed with no README entry, which
+  is why that package grew its own check, and a section heading for a deleted
+  script outlives the script with markdownlint reporting nothing. Every script
+  in a package must be named in that package's README, and a README section
+  naming a script must have a script to name, and a script with no package
+  README above it fails rather than dropping out of coverage — a new package,
+  or one whose README was deleted, took its scripts with it. 88 scripts across
+  13 packages pass today, so the rule needs no exemption list.
+
+  A script belongs to the nearest README above it, not to every README above
+  it: git pathspec globs cross directory boundaries, so a first draft held
+  `windows/README.md` to naming the eight scripts under its subdirectories and
+  counted each of them twice. Packages are discovered rather than listed,
+  because a hardcoded package list is the thing that rots — the macOS suite's
+  hardcoded script list is how `launchd/stay_fresh_agent.sh` stopped being
+  covered. The repository root is excluded: `README.md` is an index of
+  packages, and holding it to "name every script beside you" would mean every
+  script in the tree.
+
 - `stay_fresh.sh --only ai-caches` clears disposable Claude, Codex, ChatGPT,
   Cursor, and Windsurf caches without treating all AI data as temporary. It
   skips a tool while its process is active, fails closed when process state
@@ -609,6 +630,19 @@ entry here belongs to a version.
   repository cannot set for itself.
 
 ### Fixed
+
+- `CONTRIBUTING.md` called the `linux/` dry-run output one script's lapse and
+  named `stay_fresh.sh` as the offender. All eight `linux/` scripts that take
+  `--dry-run` print `git/`'s closing summary line and six also print the
+  indented preview above it, so the deviation was the package's norm rather
+  than one file's mistake. The section now documents three grammars, with a
+  rendering taken from a real `run_cmd` call, and names the two scripts that
+  do deviate: `config_backup.sh` previews through `info()` without the indent, and
+  `packages.sh` mixes in the `dry-run: would run:` form the same section
+  forbids — with a `printf` missing its trailing newline, so the summary is
+  glued onto it. It also no longer claims the suite enforces the closing line;
+  the four assertions name three scripts individually, and a new script
+  omitting it would pass.
 
 - LaunchAgent options are command-scoped. `uninstall --dry-run` is a real
   no-write preview, while ambiguous combinations such as `run-now --dry-run`
