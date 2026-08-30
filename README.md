@@ -271,9 +271,10 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   platform/DevOps CLI formulae, and Google Cloud SDK components.
 - `install_devtools.sh` installs Python, Terraform, Go, Helm, and optional shell
   initialization using version managers.
-- `stay_fresh.sh` handles recurring maintenance: caches, Homebrew upgrades,
-  Docker/OrbStack cleanup, Xcode extras, Helm plugins, `gcloud`, and version
-  reporting.
+- `stay_fresh.sh` handles recurring maintenance: system, application, and AI
+  tool caches; Homebrew upgrades; Docker/OrbStack cleanup; Xcode extras; Helm
+  plugins; `gcloud`; and version reporting. AI credentials, sessions, runtimes,
+  and downloaded models are kept.
 - `v1_stay_fresh.sh` is a legacy, flag-free minimal maintenance flow kept for
   reference; prefer `stay_fresh.sh` for new use.
 - `brewfile.sh` captures the Homebrew state of a machine into a versioned
@@ -294,7 +295,7 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   `stay_fresh.sh` on a weekly or daily schedule. The agent has no terminal, so
   it cannot answer a sudo prompt and always runs `--no-sudo --yes`; root-owned
   steps and Homebrew casks stay manual. Its default safe profile limits work to
-  protected app caches, provably stale workspace storage and version reporting;
+  protected app and AI caches, provably stale workspace storage and version reporting;
   `--profile full` enables the original broad maintenance set. Scheduled
   warnings produce a non-zero exit, plist replacement rolls back on failure,
   and ten dated logs are retained. `--print-only` shows the plist without
