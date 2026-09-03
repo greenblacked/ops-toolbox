@@ -14,9 +14,14 @@ exercise every `*.lua` in `../`. Two services run side by side:
   on Docker Engine on Linux.
 - On Apple Silicon: CHR is x86_64, so the `chr` service is pinned to
   `linux/amd64` and runs through Rosetta + QEMU TCG. First boot can take
-  several minutes — the harness waits up to 30 minutes by default.
-- On Linux CI, uncomment `devices: [/dev/kvm]` in `docker-compose.yml` for
-  ~10x faster boot.
+  several minutes. The effective ceiling is the healthcheck's, 20 minutes;
+  `run.sh --wait-timeout` defaults to 1800 s and never binds first.
+- Hardware acceleration needs no edit. `run.sh` layers `docker-compose.kvm.yml`
+  on automatically when `/dev/kvm` is present and readable and writable, which
+  is ~10x faster and is what Linux CI gets. The device is kept out of
+  `docker-compose.yml` because compose fails hard on a device that does not
+  exist, which would break every macOS and Docker Desktop developer. Set
+  `CHR_KVM=0` to force it off.
 
 ## Run
 

@@ -672,8 +672,12 @@ PR built everything twice — once for `push`, once for `pull_request`.
 #### What CI runs
 
 A `changes` job diffs the pull request against its base and turns the result
-into per-language and per-suite flags, so a README-only change no longer builds
-and boots the Docker suites. Two rules keep that safe:
+into per-language and per-suite flags, so a change to the top-level documents
+no longer builds and boots the Docker suites. The per-suite filters are path
+prefixes with no extension test — `^linux/`, `^git/` — so editing a *package*
+README does boot that package's suite. That is deliberate: a README in a
+package is usually edited alongside the scripts it documents. Two rules keep
+the whole thing safe:
 
 - It **fails open.** No usable base diff, or a change under `.github/`, to
   `run-tests.sh`, or to `test-env/lib/` means "everything changed". A bug in the
@@ -757,13 +761,16 @@ a sketch:
 ```bash
 cp templates/new_script.sh git/git_my_helper.sh
 chmod +x git/git_my_helper.sh
+git add git/git_my_helper.sh
 ./run-tests.sh static
 ```
 
-The static suite discovers scripts by role, so a new one is checked from its
-first commit without being added to any list. The checklist for a new script,
-including the two documentation entries it is not finished without, is in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+The `git add` is not optional. The static suite discovers its subjects from the
+git index rather than from a list, so a script that is not staged is checked
+zero times and the suite passes without having looked at it. Staged, it is
+covered from that moment on. The checklist for a new script, including the two
+documentation entries it is not finished without, is
+[in `CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-script).
 
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in
