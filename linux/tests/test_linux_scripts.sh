@@ -298,15 +298,23 @@ assert_contains "install --dry-run reports no changes" "$out" "dry-run complete;
 assert_contains "install --dry-run uses the linux indented form" "$out" "(dry-run)"
 assert_not_contains "install --dry-run does not mix git grammar" "$out" "dry-run: would run:"
 
-# dump --dry-run must preview and leave the file byte-identical.
-before_dump="$(cksum "$dump")"
+# dump --dry-run must preview against a path that does not exist yet.
+# dump refuses an existing --file when FORCE==0 before it consults DRY_RUN,
+# so pointing at the already-written $dump would exit 1 without --force —
+# leave that semantics alone and use a fresh absent path instead.
+dump_preview="$(mktemp /tmp/packages-dump-dry-run.XXXXXX)"
+rm -f "$dump_preview"
 set +e
-out="$("$L/packages.sh" dump --file "$dump" --dry-run 2>&1)"
+out="$("$L/packages.sh" dump --file "$dump_preview" --dry-run 2>&1)"
 rc=$?
 set -e
 assert_eq "dump --dry-run exits 0" "0" "$rc"
 assert_contains "dump --dry-run reports no changes" "$out" "dry-run complete; no changes written"
-assert_eq "dump --dry-run wrote nothing" "$before_dump" "$(cksum "$dump")"
+if [[ -e "$dump_preview" ]]; then
+  err "dump --dry-run created $dump_preview"
+else
+  ok "dump --dry-run left the path absent"
+fi
 
 set +e
 "$L/packages.sh" dump --file --force >/dev/null 2>&1
