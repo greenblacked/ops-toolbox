@@ -303,6 +303,18 @@ baseline actual history and turning any change — intended or not — into a di
 ./export_config.py --host router.lan --diff       # compare live vs stored; write nothing
 ```
 
+The connection flags are `--host` (the only required one), `--user` (default
+`admin`), `--identity`, `--port` (22) and `--timeout` (60 s). Where the export
+lands is `--out`, the output directory, and `--name`, the basename, which
+defaults to the host.
+
+`--stdout`, `--diff` and `--commit` are mutually exclusive and the script exits
+`2` if you pass more than one. Two flags change the export itself:
+`--no-normalise` keeps the volatile header that would otherwise make every run
+differ, and `--show-sensitive` keeps the secrets that are stripped by default.
+`--show-sensitive` with `--commit` is refused outright, also exit `2` — that
+combination writes router credentials into git history.
+
 Transport is ssh, so it needs **nothing installed**: no `routeros-api`, no pip,
 no venv. (The suite in [`tests/`](tests/) uses the API because it drives the
 router; this only reads.) Output lands in `config-history/<host>.rsc`.
@@ -400,7 +412,11 @@ directory over SFTP/SCP.
 ./pull_router_backups.sh admin@router.lan ~/Archive/mikrotik-backups
 ./pull_router_backups.sh --port 2222 --identity ~/.ssh/router admin@router.lan
 ./pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
+./pull_router_backups.sh --timeout 30 admin@router.lan   # slow link or a WAN hop
 ```
+
+`--timeout SECONDS` is the ssh connect timeout, 10 by default; a non-integer is
+usage, exit `3`.
 
 Needs RouterOS 7+ SFTP (**IP → Services**) and key-based ssh: `BatchMode=yes`
 means it fails rather than prompting. It proves the router is reachable before

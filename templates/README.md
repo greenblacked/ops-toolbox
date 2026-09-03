@@ -11,6 +11,10 @@ entries a new script is not finished without.
 | [`new_script.ps1`](new_script.ps1) | A PowerShell script in `windows/` |
 | [`new_helper.py`](new_helper.py) | A Python diagnostic, alongside `git_ssh_doctor.py` and `router_doctor.py` |
 
+`new_script.ps1` takes `-Target All|Caches|Logs` alongside `-DryRun` and
+`-PassThru`; the `ValidateSet` is there to be the example of a validated
+argument, so replace the values rather than the mechanism.
+
 All three are **working no-ops**, not sketches. They are tracked, so the
 repository's own checks run against them: `new_script.sh` and `new_helper.py`
 get the same `--help` contract every other script is held to (plus ShellCheck

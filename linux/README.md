@@ -283,6 +283,7 @@ prints; there is no `--apply`.
 ./system_doctor.sh --min-free 25         # warn below 25% free on /
 ./system_doctor.sh --min-memory 20       # warn below 20% available RAM
 ./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
+./system_doctor.sh --skip-units          # don't run 'systemctl --failed'
 sudo ./system_doctor.sh                  # firewall rules need root to read
 ```
 
@@ -430,6 +431,9 @@ A real run requires `--yes`, the same gate `install_devtools.sh` uses.
 machine whose `/tmp` is not disposable can point at one directory.
 `--include-coredumps` age-filters `/var/lib/systemd/coredump` and
 `/var/crash`; `--coredump-dir DIR` replaces that list (and `/` is refused).
+`--include-docker` prunes dangling images, stopped containers and build cache —
+never volumes, for the reason `stay_fresh.sh` gives. `--home DIR` points the
+user-owned targets at a home directory other than the caller's.
 
 ## `net_doctor.sh`
 
@@ -471,7 +475,14 @@ RAM. Kernel networking tweaks and container-host `max_map_count` stay out.
 ./sysctl_defaults.sh --apply --dry-run
 sudo ./sysctl_defaults.sh --apply
 sudo ./sysctl_defaults.sh --revert
+sudo ./sysctl_defaults.sh --apply --backup-file /root/sysctl.before
+sudo ./sysctl_defaults.sh --revert-from /root/sysctl.before
 ```
+
+`--backup-file PATH` puts the pre-apply backup somewhere other than the default,
+and `--revert-from PATH` restores from a named one instead of the last apply's.
+Both exist so a revert can be run from a machine image or a runbook that keeps
+the backup alongside its own state.
 
 `SYSCTL_D` and `PROC_SYS` are honoured so the apply path is testable
 without writing into `/etc`. `--apply` without root exits `2`; preview
@@ -511,7 +522,11 @@ copy, not a restore: it never writes back into the paths it archives.
 ./config_backup.sh --yes
 ./config_backup.sh --list
 ./config_backup.sh --yes --paths /etc/ssh,/etc/nginx --dest ~/ops-toolbox-backups --keep 5
+./config_backup.sh --yes --prefix nginx-pre-upgrade
 ```
+
+`--prefix NAME` replaces `config` in the archive name, which is what `--keep`
+counts within — two prefixes retain independently.
 
 A real run requires `--yes`. `--list` shows the newest archive (or a named
 file) and writes nothing. `--keep 0` disables rotation. Archives land in

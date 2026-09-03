@@ -40,11 +40,20 @@ to pytest:
 ```
 
 The checked-in version lives in `routeros-version.env`. To test a candidate
-without changing tracked files, override it for one run:
+without changing tracked files, override it for one run — and override the
+digest with it:
 
 ```bash
-ROUTEROS_VERSION=7.24.1 ./mikrotik/tests/run.sh
+ROUTEROS_VERSION=7.24.1 \
+ROUTEROS_SHA256=<digest of that image> ./mikrotik/tests/run.sh
 ```
+
+`ROUTEROS_SHA256` falls back to the pinned digest, which belongs to the pinned
+version, so overriding the version alone fails the image build on a checksum
+mismatch rather than testing the candidate. `routeros_version.py record-hash`
+prints the digest for a version. The digest is mandatory and an empty one is
+fatal: the CHR image boots as a kernel with this repository mounted, so it is
+never downloaded without an integrity check.
 
 `EXPECT_ROUTEROS_VERSION` follows `ROUTEROS_VERSION` automatically, so the
 suite proves that the requested image is the image that actually booted.
@@ -98,6 +107,8 @@ update probe), `change_WIFI_pw` (touches wireless profiles), `backup`
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `ROUTEROS_VERSION` | value in `routeros-version.env` | CHR version to download and image tag |
+| `ROUTEROS_SHA256` | value in `routeros-version.env` | SHA-256 of that image. Mandatory; an empty or malformed value exits `1` |
+| `CHR_KVM` | `1` | Set `0` to refuse hardware acceleration even where `/dev/kvm` is usable |
 | `ROUTEROS_HOST` | `chr` (in tester), `127.0.0.1` (host) | API host |
 | `ROUTEROS_PORT` | `8728` | API port |
 | `ROUTEROS_USER` | `admin` | API user |
