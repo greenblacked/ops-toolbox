@@ -20,3 +20,32 @@ updates:
       actions:
         patterns:
           - '*'
+
+  # Every suite that runs anything builds it on a base image, and those were
+  # watched by nothing. The argument is the one the block above makes for
+  # actions: a floating tag is mutable, so `alpine:3.21.3` today is not
+  # necessarily the same bytes next month, and an unwatched base image drifts
+  # until something breaks or a CVE lands in it.
+  #
+  # `directories` globs rather than listing, for the reason the README drift
+  # check gives for discovering packages: a hardcoded list is the thing that
+  # rots. A Dockerfile added later is covered by the commit that adds it.
+  #
+  # Coverage is real but partial, and worth knowing rather than assuming:
+  # Dependabot updates version-like tags, so alpine, python, ruby and golang
+  # move, while `debian:bookworm-slim` is a codename with no version to
+  # compare and stays put. `linux/tests/tester` takes its base from a
+  # ${BASE_IMAGE} build argument, so there is no literal for Dependabot to
+  # read at all - that one is the linux matrix's business, set in ci.yml.
+  - package-ecosystem: docker
+    directories:
+      - '/**/*'
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: chore
+    groups:
+      docker:
+        patterns:
+          - '*'
