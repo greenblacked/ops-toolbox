@@ -16,6 +16,16 @@ entry here belongs to a version.
 
 ### Added
 
+- Dependabot watches the Docker base images as well as the actions. Every suite
+  that runs anything builds it on one, and they were watched by nothing — the
+  same mutable-tag argument the actions entry already makes, applied to the
+  images the tests stand on. The entry globs directories rather than listing
+  them, so a Dockerfile added later is covered by the commit that adds it.
+  Coverage is partial by nature: Dependabot compares version-like tags, so
+  `alpine`, `python`, `ruby` and `golang` move, `debian:bookworm-slim` is a
+  codename with nothing to compare, and `linux/tests/tester` takes its base
+  from a build argument that has no literal to read.
+
 - Drift checks between the package READMEs and the scripts beside them, in
   `test-env/static/test_doc_citations.sh`. Both directions have failed here
   before: a batch of twelve RouterOS scripts landed with no README entry, which
