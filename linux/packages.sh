@@ -243,9 +243,17 @@ case "$CMD" in
     fi
 
     if (( DRY_RUN == 1 )); then
-      info "(dry-run) would install $# package(s) from $FILE:"
-      for pkg in "$@"; do printf "  would install %s\n" "$pkg"; done
-      printf "dry-run: would run: %s" "$(install_cmd "$@")"
+      # Same linux/ grammar as dump above: indented dimmed (dry-run) previews,
+      # every printf ends with a newline, then the standalone closing summary.
+      # Do not mix git/'s "dry-run: would run:" form on this path.
+      printf "  %s(dry-run)%s would install %s package(s) from %s:\n" \
+        "$C_DIM" "$C_RESET" "$#" "$FILE"
+      for pkg in "$@"; do
+        printf "  %s(dry-run)%s would install %s\n" "$C_DIM" "$C_RESET" "$pkg"
+      done
+      # install_cmd's format string already ends with \n; strip it so the
+      # preview line does not leave a blank line before the summary.
+      printf "  %s(dry-run)%s %s\n" "$C_DIM" "$C_RESET" "$(install_cmd "$@" | tr -d '\n')"
       printf "dry-run complete; no changes written\n"
       exit 0
     fi
