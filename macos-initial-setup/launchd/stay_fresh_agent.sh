@@ -100,11 +100,27 @@ while (( $# > 0 )); do
         err "--weekday must be 0-7 or 'daily'"; exit 3
       fi
       ;;
+    --weekday=*)
+      SCHEDULE_SET=1
+      if [[ "${1#*=}" == "daily" ]]; then
+        DAILY=1
+      elif [[ "${1#*=}" =~ ^[0-7]$ ]]; then
+        DAILY=0
+        WEEKDAY="${1#*=}"
+      else
+        err "--weekday must be 0-7 or 'daily'"; exit 3
+      fi
+      ;;
     --hour)
       shift; [[ $# -gt 0 ]] || { err "--hour needs a value"; exit 3; }
       [[ "$1" =~ ^([0-9]|1[0-9]|2[0-3])$ ]] || { err "--hour must be 0-23"; exit 3; }
       SCHEDULE_SET=1
       HOUR="$1"
+      ;;
+    --hour=*)
+      HOUR="${1#*=}"
+      [[ "$HOUR" =~ ^([0-9]|1[0-9]|2[0-3])$ ]] || { err "--hour must be 0-23"; exit 3; }
+      SCHEDULE_SET=1
       ;;
     --minute)
       shift; [[ $# -gt 0 ]] || { err "--minute needs a value"; exit 3; }
@@ -112,11 +128,22 @@ while (( $# > 0 )); do
       SCHEDULE_SET=1
       MINUTE="$1"
       ;;
+    --minute=*)
+      MINUTE="${1#*=}"
+      [[ "$MINUTE" =~ ^([0-9]|[1-5][0-9])$ ]] || { err "--minute must be 0-59"; exit 3; }
+      SCHEDULE_SET=1
+      ;;
     --profile)
       shift; [[ $# -gt 0 ]] || { err "--profile needs a value"; exit 3; }
       [[ "$1" == "safe" || "$1" == "full" ]] \
         || { err "--profile must be 'safe' or 'full'"; exit 3; }
       PROFILE="$1"
+      PROFILE_SET=1
+      ;;
+    --profile=*)
+      PROFILE="${1#*=}"
+      [[ "$PROFILE" == "safe" || "$PROFILE" == "full" ]] \
+        || { err "--profile must be 'safe' or 'full'"; exit 3; }
       PROFILE_SET=1
       ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;

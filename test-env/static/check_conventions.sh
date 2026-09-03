@@ -98,6 +98,60 @@ for f in "${clis[@]}"; do
 done
 
 # --------------------------------------------------------------------------
+head_ "both --flag VALUE and --flag=VALUE"
+# CONTRIBUTING.md asks for both spellings of every value-taking flag, and until
+# this check existed nothing held anyone to it: the launchd agent accepted
+# --tail=80 but rejected --weekday=Mon, --hour, --minute and --profile, while
+# its linux counterpart took the equals form for all four. A rule documented and
+# unenforced is the drift this repository keeps rediscovering.
+#
+# Static rather than executed, because proving the accepting half means running
+# a script with a real value, and these scripts change machines.
+both_forms_awk='
+function flush(   i, n, parts) {
+  if (arm != "" && body ~ /require_value|needs a value/) {
+    n = split(arm, parts, "|")
+    for (i = 1; i <= n; i++)
+      if (parts[i] ~ /^--/) print parts[i]
+  }
+  arm = ""; body = ""
+}
+/^[[:space:]]*(-{1,2}[A-Za-z][A-Za-z0-9-]*\|)*-{1,2}[A-Za-z*][A-Za-z0-9-]*(=\*)?\)/ {
+  flush()
+  line = $0
+  sub(/^[[:space:]]*/, "", line)
+  sub(/\).*$/, "", line)
+  if (line ~ /=\*$/) next
+  arm = line
+  body = $0
+  if ($0 ~ /;;/) flush()
+  next
+}
+arm != "" { body = body "\n" $0; if ($0 ~ /;;/) flush() }
+END { flush() }
+'
+missing_forms=0
+checked_forms=0
+for f in "${clis[@]}"; do
+  case "$f" in *.py) continue ;; esac
+  equals_arms="$(grep -oE '^[[:space:]]*--[a-zA-Z0-9-]+=\*\)' "$f" \
+    | grep -oE '\--[a-zA-Z0-9-]+' | sort -u)"
+  while IFS= read -r flag; do
+    [ -n "$flag" ] || continue
+    checked_forms=$((checked_forms + 1))
+    if ! printf '%s\n' "$equals_arms" | grep -qx -- "$flag"; then
+      err "$f accepts '$flag VALUE' but not '$flag=VALUE'"
+      missing_forms=$((missing_forms + 1))
+    fi
+  done < <(awk "$both_forms_awk" "$f" | sort -u)
+done
+if (( checked_forms == 0 )); then
+  err "found no value-taking flags at all — this check has stopped checking"
+elif (( missing_forms == 0 )); then
+  ok "every value-taking flag takes both forms ($checked_forms across the tree)"
+fi
+
+# --------------------------------------------------------------------------
 head_ "shebangs"
 for f in "${clis[@]}"; do
   first="$(head -n 1 -- "$f")"
