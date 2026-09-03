@@ -631,6 +631,42 @@ entry here belongs to a version.
 
 ### Fixed
 
+- A documentation audit against the scripts, run as a reader test rather than a
+  proofread: answer a newcomer's questions from the documents alone, then check
+  each answer against the code. Twenty-odd claims did not survive it, and none
+  were catchable by CI — the citation check, the README drift check and
+  markdownlint all pass on text that says the wrong thing.
+
+  The ones that would have cost someone real time: `mikrotik/README.md` named
+  `dns.cloudflare.com` as the `rogue_dns_check.lua` control host, which the
+  script moved away from because it false-alarms on a healthy resolver;
+  `windows/wsl/README.md` said a backup with no `.sha256` sidecar restores with
+  a warning, when it is refused outright; and the quick start told a newcomer to
+  copy a template, `chmod +x` it and run the static suite, which discovers its
+  subjects from the git index and therefore checks an unstaged script zero times
+  while reporting a pass. `git add` is now in the recipe with the reason beside
+  it.
+
+  Four exit codes were wrong: `v1_stay_fresh.sh` invalid arguments is `3` not
+  `2`, `system_doctor.sh` is not "always `0`", the `linux/` table had no row for
+  the `4` that `install_aliases.sh --status` returns, and the two package
+  bootstrappers on Windows do not share exit codes the way their READMEs
+  claimed. Several blanket quantifiers were majorities rather than rules —
+  "each script reads `/etc/os-release`" is five of fourteen, "every non-trivial
+  script writes a log" is four of eight, "every script stops at its
+  `$IsWindows` guard" is five of seven — and are now scoped to the scripts they
+  describe. Around twenty flags and environment variables that the scripts
+  accept were documented nowhere, including the mandatory `ROUTEROS_SHA256`,
+  whose absence made the candidate-testing recipe fail on a checksum mismatch.
+
+  `CONTRIBUTING.md` gains the "Adding a script" checklist that `README.md` has
+  been pointing at, including which of its steps CI enforces and which two are
+  kept by reading: the package README entry is checked both directions, the root
+  README row is checked by nothing because the citation check excludes the
+  repository root, and the `set` dialect and dry-run grammar are checked by
+  nobody, which is why the template ships the `git/` pair and has to be adjusted
+  by hand outside `git/`.
+
 - `CONTRIBUTING.md` called the `linux/` dry-run output one script's lapse and
   named `stay_fresh.sh` as the offender. All eight `linux/` scripts that take
   `--dry-run` print `git/`'s closing summary line and six also print the
