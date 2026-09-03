@@ -26,6 +26,13 @@ entry here belongs to a version.
   codename with nothing to compare, and `linux/tests/tester` takes its base
   from a build argument that has no literal to read.
 
+- A static check that every value-taking flag accepts both `--flag VALUE` and
+  `--flag=VALUE`, in `test-env/static/check_conventions.sh`. `CONTRIBUTING.md`
+  has asked for both spellings all along and nothing held anyone to it, which is
+  how the divergence below survived. It is static rather than executed because
+  proving the accepting half means running a script with a real value, and these
+  scripts change machines. 94 flags across the tree pass.
+
 - Drift checks between the package READMEs and the scripts beside them, in
   `test-env/static/test_doc_citations.sh`. Both directions have failed here
   before: a batch of twelve RouterOS scripts landed with no README entry, which
@@ -640,6 +647,15 @@ entry here belongs to a version.
   repository cannot set for itself.
 
 ### Fixed
+
+- `launchd/stay_fresh_agent.sh` rejected `--weekday=`, `--hour=`, `--minute=`
+  and `--profile=` as unknown arguments, and `stay_fresh.sh` did the same for
+  `--prune-xcode-archives-days=`. The equals form is half of the documented
+  argument contract, and the divergence ran along the platform seam: the agent
+  already took `--tail=80`, and `linux/systemd/stay_fresh_timer.sh` took the
+  equals form for all four of its own flags, so the same flag on the same
+  conceptual tool behaved differently depending on the machine. Both forms now
+  produce a byte-identical plist, and an invalid value still exits `3`.
 
 - A documentation audit against the scripts, run as a reader test rather than a
   proofread: answer a newcomer's questions from the documents alone, then check
