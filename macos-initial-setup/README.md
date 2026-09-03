@@ -116,7 +116,7 @@ code looks the way it does.
 | **Idempotent** | Re-running a script upgrades in place. No duplicate installs, no appended shell-rc blocks, no runaway cache. |
 | **Fail-soft** | One failing step never aborts the rest of the run. Missing tools are skipped with a note, not treated as errors. |
 | **Dry-run first** | `--dry-run` is supported on every script that mutates state (except the explicitly minimal `v1_stay_fresh.sh`). No `sudo` prompt is triggered in dry-run. |
-| **Logged** | Every non-trivial script writes a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. |
+| **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh` and `v1_stay_fresh.sh` write none. |
 | **No hidden writes** | Shell rc files are modified only when you pass `--setup-shell`. Every such block is bracketed by markers so it can be found and removed. |
 | **Opt-out, not opt-in** | `stay_fresh.sh` has a skip flag for every step. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
 | **Sudo only when needed** | Scripts request `sudo` once at startup, keep it warm for the run, and release it on exit. Running as `root` is refused. |
@@ -582,7 +582,7 @@ are required. A failing step never aborts the remainder of the run.
 | --- | --- |
 | `0` | Completed normally, including `--help`. Per-step failures are reported in the output but do not change this. |
 | `1` | Bootstrap failure: cannot determine a usable home directory. |
-| `2` | Invalid arguments. |
+| `3` | Invalid arguments. |
 
 If you need hard-fail semantics on per-step failures, use
 `stay_fresh.sh` instead.
@@ -1095,9 +1095,14 @@ Homebrew / `pyenv` / `goenv` commands.
 
 ### Privileged operations
 
-The three top-level scripts request `sudo` only for the operations
-below. They refuse to run as `root`, prompt once at the start, and
-release the credential on exit.
+These scripts request `sudo` only for the operations below. They prompt once
+at the start and release the credential on exit.
+
+Refusing to run as `root` is not universal: `install_apps.sh`,
+`install_devtools.sh`, `stay_fresh.sh` and `workstation_doctor.sh` refuse.
+`v1_stay_fresh.sh` does the opposite — it resolves `${SUDO_USER:-$(id -un)}`
+and expects to be run under `sudo`. `hardening_audit.sh` has no check either
+way and is meant to be run with `sudo` for the checks that need it.
 
 | Script | Uses `sudo` for |
 | --- | --- |

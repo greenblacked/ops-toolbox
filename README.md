@@ -29,7 +29,10 @@ than once, and focused on reducing repeat manual work.
 Three rules hold everywhere, and the test suites enforce them:
 
 - **`--help` works before anything else**, including on a machine the script
-  refuses to run on. An unrecognised flag exits `3`.
+  refuses to run on. An unrecognised flag exits `3` — from the Bash and
+  PowerShell scripts. The four Python CLIs use `argparse`, which exits `2` by
+  its own convention; `check_conventions.sh` exempts them by extension rather
+  than fighting it.
 - **A dry run writes nothing.** Anything that changes a machine supports
   `--dry-run` (or `-DryRun`), and anything destructive is behind an explicit
   opt-in flag.
@@ -610,7 +613,7 @@ rather than being a convenience nobody tests.
 | `Test / windows` | PowerShell contract checks under `pwsh` | `windows/` changes |
 | `Test / windows native` | Git Bash and PowerShell contracts on Windows | `windows/` changes |
 | `Test / k8s` | The k8s-toolbox script contracts, without building the image | `k8s-toolbox/` changes |
-| `Test / python helpers` | 101 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
+| `Test / python helpers` | 231 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
 | `Test / conventions` | The repo-wide contracts, on every change | always |
 
 Nothing is skipped at the *job* level, only inside a job, so every job still
@@ -669,8 +672,12 @@ PR built everything twice — once for `push`, once for `pull_request`.
 #### What CI runs
 
 A `changes` job diffs the pull request against its base and turns the result
-into per-language and per-suite flags, so a README-only change no longer builds
-and boots the Docker suites. Two rules keep that safe:
+into per-language and per-suite flags, so a change to the top-level documents
+no longer builds and boots the Docker suites. The per-suite filters are path
+prefixes with no extension test — `^linux/`, `^git/` — so editing a *package*
+README does boot that package's suite. That is deliberate: a README in a
+package is usually edited alongside the scripts it documents. Two rules keep
+the whole thing safe:
 
 - It **fails open.** No usable base diff, or a change under `.github/`, to
   `run-tests.sh`, or to `test-env/lib/` means "everything changed". A bug in the
@@ -754,13 +761,16 @@ a sketch:
 ```bash
 cp templates/new_script.sh git/git_my_helper.sh
 chmod +x git/git_my_helper.sh
+git add git/git_my_helper.sh
 ./run-tests.sh static
 ```
 
-The static suite discovers scripts by role, so a new one is checked from its
-first commit without being added to any list. The checklist for a new script,
-including the two documentation entries it is not finished without, is in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+The `git add` is not optional. The static suite discovers its subjects from the
+git index rather than from a list, so a script that is not staged is checked
+zero times and the suite passes without having looked at it. Staged, it is
+covered from that moment on. The checklist for a new script, including the two
+documentation entries it is not finished without, is
+[in `CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-script).
 
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in

@@ -6,7 +6,7 @@ full details.
 
 Editing a `.ps1` here? The static suite does not cover PowerShell at all —
 [`tests/contract.ps1`](tests/contract.ps1) is the only place these contracts are
-checked, and on Linux every script stops at its `$IsWindows` guard first.
+checked, and on Linux five of the seven stop at an `$IsWindows` guard, `wsl_manage.ps1` at its `wsl.exe` probe, and `clean_disk_c.ps1` throws at script scope before it reads `-DryRun` — which is why the contract suite skips it there.
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that, the hand-rolled
 `-DryRun`, the `WOULD`/`CLEAN`/`SKIP` grammar and the ASCII-with-no-BOM rule.
 
@@ -15,7 +15,7 @@ checked, and on Linux every script stops at its `$IsWindows` guard first.
 | [`git-bash/`](git-bash/) | `.bashrc` / `.bash_profile` / `.aliases` for Git Bash (MSYS2) — persistent shared `ssh-agent`, Git-aware prompt, PATH hygiene, and ~190 aliases (Git, GitLab CLI, Docker, Kubernetes, Terraform, WSL, Windows commands). `install_dotfiles.sh` copies them into `$HOME` with a backup, and refuses anything carrying CRLF line endings. |
 | [`wsl/`](wsl/) | `wsl_manage.ps1` — list distros with real disk usage, `df` for allocated-vs-used, dated `.tar` backups and the `restore` that brings one back, `prune-backups` retention over the export folder, shrink ballooned VHDX disks (compact/sparse), terminate one distro or shut all of WSL down. |
 | [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, and Docker. `-DryRun` first. |
-| [`setup/`](setup/) | `winget_configure.ps1` — build a machine from [`configuration.winget`](setup/configuration.winget), a curated declarative list (`validate` / `show` / `test` / `apply`). `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy. `choco_bootstrap.ps1` — the same five verbs over a Chocolatey `packages.config`, for machines managed with choco rather than winget. |
+| [`setup/`](setup/) | `winget_configure.ps1` — build a machine from [`configuration.winget`](setup/configuration.winget), a curated declarative list (`validate` / `show` / `test` / `apply`). `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `list` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy. `choco_bootstrap.ps1` — five verbs over a Chocolatey `packages.config`, the same set with `install` in place of `import`, for machines managed with choco rather than winget. |
 | [`tests/`](tests/) | Contract checks over every script here and in [`../templates/`](../templates/): parse, comment-based help, preview-before-changing, that documented flags exist, and that a `-DryRun` writes nothing. |
 
 ## Quick start

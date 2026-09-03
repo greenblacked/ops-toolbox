@@ -201,7 +201,8 @@ documented above actually exists in a `param()` block. See
 different failures. yamllint covers its syntax (it is discovered as YAML via
 `yaml-files` in `.yamllint.yml`). The static suite additionally checks its
 *shape* - that it declares resources, that ids are unique, and that no
-directive key exists which nobody wrote. That second check is the one that
+directive key exists which nobody wrote - when `python3` and PyYAML are both
+available, and prints a `warn` and skips the check when they are not. That second check is the one that
 matters: an unquoted description containing a comma ends its value inside an
 inline map and turns the rest into a stray key, producing a file that is
 perfectly valid YAML and the wrong document. yamllint passes it without a word.
@@ -305,8 +306,17 @@ distinction is preserved in the output rather than in the exit status.
 
 ## choco_bootstrap.ps1
 
-The Chocolatey counterpart of `winget_bootstrap.ps1`. Same five verbs, same
-exit codes, so it does not matter which package manager a given machine uses.
+The Chocolatey counterpart of `winget_bootstrap.ps1`. Five verbs, the same set
+with `install` in place of `import`, so it mostly does not matter which package
+manager a given machine uses.
+
+Two exit codes do differ, and the divergence is real rather than documented
+intent: refusing to overwrite an existing file on `export` exits `3` from
+`choco_bootstrap.ps1` and `1` from `winget_bootstrap.ps1`, and a missing
+package file exits `3` from `Get-WantedPackage` in the first against `1` from
+the second. Under the table above that reads as "bad arguments" from one
+script and "command failed" from the other for the same situation. Branch on
+the message, not the code, until one of the two is changed.
 
 winget is the primary one here: it ships with Windows, needs no bootstrap, and
 `winget configure` gives a declarative machine definition Chocolatey has no

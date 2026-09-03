@@ -146,7 +146,11 @@ anything — it answers "what is unhappy here" in one pass:
 ./kubectl_pod_diag.sh --namespace prod
 ./kubectl_pod_diag.sh --context staging -n api
 ./kubectl_pod_diag.sh --since 30m             # event lookback; also accepts h/d
+./kubectl_pod_diag.sh -A                      # back to every namespace explicitly
 ```
+
+`-A` / `--all-namespaces` is the default and only needs stating to undo an
+earlier `--namespace` in a wrapper or an alias.
 
 It reports, in order:
 
@@ -164,6 +168,9 @@ current container has usually not got far enough to say anything.
 
 Exit code `4` means nothing was found. That is distinct from `0` (findings
 reported) on purpose, so it can drive a scheduled check without parsing output.
+Exit `2` covers both halves of the environment this script needs: no `kubectl`,
+and no `python3` — the JSON from each `kubectl get` is reduced by a
+standard-library `python3 -c` filter.
 
 ## Debug a running pod
 

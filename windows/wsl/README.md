@@ -78,9 +78,9 @@ compacting is safe and routine, but it is still a disk-level operation on
 the only copy of that filesystem.
 
 Every new backup has a neighboring `<name>.tar.sha256` file. `restore` verifies
-it automatically when present and refuses a mismatch; older exports without a
-sidecar remain restorable with a visible warning. Keep the tar and sidecar
-together when copying them. `prune-backups` removes a pruned tar's sidecar too,
+it automatically and refuses both a mismatch and a missing sidecar, exiting `1`
+either way; an older export without one needs `-AllowUnverified`. Keep the tar
+and sidecar together when copying them. `prune-backups` removes a pruned tar's sidecar too,
 so retention does not leave checksum files behind.
 
 ## Restoring

@@ -5,8 +5,12 @@ Bootstrap and maintenance for a Linux machine — the counterpart of
 rather than a Mac.
 
 **Targets:** Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`) and Arch (`pacman`).
-Anything else exits `2` and says what it detected, the same way the macOS
-scripts exit `2` off macOS.
+The three scripts that install packages — `stay_fresh.sh`,
+`install_devtools.sh`, `packages.sh` — exit `2` on anything else and say what
+they detected, the same way the macOS scripts exit `2` off macOS. The two that
+read rather than install carry on: `disk_cleanup.sh` warns and skips package
+caches, `system_doctor.sh` prints a `skip` line and reports everything else.
+Every script exits `2` off Linux.
 
 Scripts here use `set -u` plus `set -o pipefail` on separate lines and no `-e`,
 because a long maintenance run records a missing tool and skips it rather than
@@ -21,7 +25,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [Two decisions worth knowing](#two-decisions-worth-knowing)
 - [Distro detection](#distro-detection)
 - [What `stay_fresh.sh` does](#what-stay_freshsh-does)
-- [The two read-only reports](#the-two-read-only-reports)
+- [The two overlapping reports](#the-two-overlapping-reports)
 - [`system_doctor.sh`](#system_doctorsh)
 - [`systemd/stay_fresh_timer.sh`](#systemdstay_fresh_timersh)
 - [`install_aliases.sh`](#install_aliasessh)
@@ -213,8 +217,10 @@ half lives in `install_devtools.sh` and GUI apps are left to you.
 
 ## Distro detection
 
-Each script reads `/etc/os-release` and maps `ID`/`ID_LIKE` onto a package
-manager. The lookup is duplicated in each script rather than shared, for the
+The five scripts that need a package manager — `disk_cleanup.sh`,
+`install_devtools.sh`, `packages.sh`, `stay_fresh.sh`, `system_doctor.sh` —
+read `/etc/os-release` and map `ID`/`ID_LIKE` onto one. The other nine never
+ask. The lookup is duplicated in each script rather than shared, for the
 reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script has to work when
 copied on its own onto a box.
 
@@ -246,7 +252,7 @@ A missing tool is a note, not a failure. `journalctl` is absent in a container
 and `snap` on most servers; neither should turn a maintenance run red. A step
 that runs and *fails* does count, and the script exits `1`.
 
-## The two read-only reports
+## The two overlapping reports
 
 `system_doctor.sh` and `hardening_audit.sh` both change nothing and both look at
 some of the same subsystems, so it is worth being clear about which one you
@@ -258,7 +264,7 @@ want:
 | Output | A narrative report | Graded findings, each with its fix |
 | Firewall | Says which one is in charge | Grades "none" as a finding |
 | sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords |
-| Exit code | Always `0`; findings are to be read | `1` at or above `--fail-on`, so it can gate a pipeline |
+| Exit code | Never `1` — findings are to be read. Still `2` off Linux and `3` on bad usage | `1` at or above `--fail-on`, so it can gate a pipeline |
 
 The counterpart on the other side of the repository is
 [`macos-initial-setup/workstation_doctor.sh`](../macos-initial-setup/workstation_doctor.sh)
@@ -277,6 +283,7 @@ prints; there is no `--apply`.
 ./system_doctor.sh --min-free 25         # warn below 25% free on /
 ./system_doctor.sh --min-memory 20       # warn below 20% available RAM
 ./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
+./system_doctor.sh --skip-units          # don't run 'systemctl --failed'
 sudo ./system_doctor.sh                  # firewall rules need root to read
 ```
 
@@ -424,6 +431,9 @@ A real run requires `--yes`, the same gate `install_devtools.sh` uses.
 machine whose `/tmp` is not disposable can point at one directory.
 `--include-coredumps` age-filters `/var/lib/systemd/coredump` and
 `/var/crash`; `--coredump-dir DIR` replaces that list (and `/` is refused).
+`--include-docker` prunes dangling images, stopped containers and build cache —
+never volumes, for the reason `stay_fresh.sh` gives. `--home DIR` points the
+user-owned targets at a home directory other than the caller's.
 
 ## `net_doctor.sh`
 
@@ -465,7 +475,14 @@ RAM. Kernel networking tweaks and container-host `max_map_count` stay out.
 ./sysctl_defaults.sh --apply --dry-run
 sudo ./sysctl_defaults.sh --apply
 sudo ./sysctl_defaults.sh --revert
+sudo ./sysctl_defaults.sh --apply --backup-file /root/sysctl.before
+sudo ./sysctl_defaults.sh --revert-from /root/sysctl.before
 ```
+
+`--backup-file PATH` puts the pre-apply backup somewhere other than the default,
+and `--revert-from PATH` restores from a named one instead of the last apply's.
+Both exist so a revert can be run from a machine image or a runbook that keeps
+the backup alongside its own state.
 
 `SYSCTL_D` and `PROC_SYS` are honoured so the apply path is testable
 without writing into `/etc`. `--apply` without root exits `2`; preview
@@ -505,7 +522,11 @@ copy, not a restore: it never writes back into the paths it archives.
 ./config_backup.sh --yes
 ./config_backup.sh --list
 ./config_backup.sh --yes --paths /etc/ssh,/etc/nginx --dest ~/ops-toolbox-backups --keep 5
+./config_backup.sh --yes --prefix nginx-pre-upgrade
 ```
+
+`--prefix NAME` replaces `config` in the archive name, which is what `--keep`
+counts within — two prefixes retain independently.
 
 A real run requires `--yes`. `--list` shows the newest archive (or a named
 file) and writes nothing. `--keep 0` disables rotation. Archives land in
@@ -564,6 +585,7 @@ permissive development host can validly differ from a server baseline.
 | `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on` |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install was requested without `--yes` |
+| `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove |
 
 `system_doctor.sh` never returns `1`: it reports, and what it finds is for you
 to read rather than for a pipeline to act on.

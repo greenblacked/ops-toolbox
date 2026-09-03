@@ -26,6 +26,7 @@ the checks that enforce it; this document stays the published reference.
 - [RouterOS scripts](#routeros-scripts)
 - [Python helpers](#python-helpers)
 - [Tests](#tests)
+- [Adding a script](#adding-a-script)
 - [File modes and line endings](#file-modes-and-line-endings)
 - [Repository settings](#repository-settings)
 
@@ -77,7 +78,7 @@ Three `set` dialects, chosen by role — do not mix them:
 
 | Dialect | Used by | Why |
 | --- | --- | --- |
-| `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. |
+| `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. Two predate the rule and are left alone: `git/set_git_profile.sh` splits it across three lines, and `git/git_whoami.sh` omits `-e` because it reports on a repository rather than changing one. |
 | `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. `macos-initial-setup/stay_fresh.sh` and `linux/stay_fresh.sh` are the reference. The header comment of `macos-initial-setup/v1_stay_fresh.sh` explains why `-e` is omitted — that script itself predates the convention and sets only `-o pipefail`, so read it for the reasoning, not as the pattern. |
 | `set -uo pipefail` | `run-tests.sh`, `test-env/*/run.sh` | Aggregators that must keep going after a failing child and report a summary. |
 
@@ -182,16 +183,17 @@ dry-run complete; no changes written
 ```
 
 All eight `linux/` scripts that take `--dry-run` print that closing line, and
-six of the eight also produce the indented `(dry-run)` preview above it. So the
+seven of the eight produce the indented `(dry-run)` preview above it. So the
 shape above is the package norm, not one script's habit. What varies is only
-how a script gets there, and two scripts genuinely deviate:
+how a script gets there, and `config_backup.sh` is the single script that does
+not produce it at all:
 
 - The indented prefix is emitted three ways, all rendering the same: `run_cmd()`
   in `linux/stay_fresh.sh` and `linux/install_devtools.sh`, `run_root()` in
   `linux/disk_cleanup.sh`, and bare `printf` in `linux/install_aliases.sh`,
-  `linux/sysctl_defaults.sh` and `linux/systemd/stay_fresh_timer.sh`. Reach for
-  `run_cmd()` when a preview wraps a real command; a `printf` is fine when it
-  does not.
+  `linux/packages.sh`, `linux/sysctl_defaults.sh` and
+  `linux/systemd/stay_fresh_timer.sh`. Reach for `run_cmd()` when a preview
+  wraps a real command; a `printf` is fine when it does not.
 - `config_backup.sh` previews with `info "would create …"` — unindented, no
   `(dry-run)` prefix — and prints its summary through `info` too, so the line
   arrives as `[info] dry-run complete; no changes written`.
@@ -403,6 +405,48 @@ set -e
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that
 creates it.
+
+## Adding a script
+
+The rules above are per-topic. This is the order to do them in, and the two
+documentation entries a script is not finished without.
+
+1. **Copy a template.** `templates/new_script.sh`, `new_script.ps1` or
+   `new_helper.py` are working no-ops, not sketches. Put the copy in the
+   package it belongs to; the repository root is not a package.
+2. **Fix the dialect the template cannot guess.** `new_script.sh` ships
+   `set -euo pipefail` and the `git/` dry-run grammar. Outside `git/` both are
+   wrong: take the `set` line for your package from the table under
+   [Bash scripts](#bash-scripts) and the output grammar from
+   [Dry runs](#dry-runs). Nothing in CI checks either, so this is the step
+   worth being deliberate about.
+3. **`chmod +x` and `git add` it.** Both matter, and the second is the one
+   people miss. The static suite discovers its subjects from the git index
+   (`git ls-files -s`, mode `100755`, a shebang on line 1), so an unstaged
+   script is not checked at all and the suite passes green without having seen
+   it.
+4. **Run `./run-tests.sh static`.** It checks `--help` before preflight, the
+   unknown-flag exit, the shebang, the file mode, `.gitattributes` coverage,
+   Bash 3.2 constructs where they apply, and that a dry run writes nothing
+   under `HOME` or `TMPDIR`.
+5. **Write the package README section.** A level-two heading naming the script,
+   with its flags and its exit codes. This one is enforced:
+   `test-env/static/test_doc_citations.sh` fails if a shipped script has no
+   mention in the README beside it, and fails the other way if a heading names
+   a script that is not there.
+6. **Add the root README "at a glance" row.** One line in the section for that
+   package. Nothing enforces this one — the citation check excludes the
+   repository root, because holding an index of packages to "name every script
+   beside you" would mean naming every script in the tree. It is still half of
+   what the pull request template means by "the folder README and the root
+   README were updated".
+7. **Add a `CHANGELOG.md` entry** under `[Unreleased]`, in the voice the
+   entries around it use: what changed and why it mattered, not a commit
+   subject.
+
+A script that touches a machine also needs `--dry-run` before it needs
+anything else. That is the promise this repository makes, and it is the one
+thing a reviewer will check by hand.
 
 ## File modes and line endings
 

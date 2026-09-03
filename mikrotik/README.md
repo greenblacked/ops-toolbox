@@ -273,7 +273,9 @@ Re-alerts only when the set of unknown MACs changes between runs.
 ### `rogue_dns_check.lua`
 
 Two checks per run. First, it `:resolve`s a control hostname (default
-`dns.cloudflare.com`) and warns if the answer is not in `:global
+`one.one.one.one`, Cloudflare's anycast name for 1.1.1.1 / 1.0.0.1 —
+`dns.cloudflare.com` resolves elsewhere and false-alarms on a healthy
+resolver) and warns if the answer is not in `:global
 DNS_EXPECTED` — a sign of upstream DNS hijack or a wrong/leaking resolver
 config. Second, it walks `/ip firewall connection` for outbound
 UDP/TCP `dst-port=53` flows whose destination is neither a router-self IP
@@ -300,6 +302,18 @@ baseline actual history and turning any change — intended or not — into a di
 ./export_config.py --host router.lan --stdout     # print, write nothing
 ./export_config.py --host router.lan --diff       # compare live vs stored; write nothing
 ```
+
+The connection flags are `--host` (the only required one), `--user` (default
+`admin`), `--identity`, `--port` (22) and `--timeout` (60 s). Where the export
+lands is `--out`, the output directory, and `--name`, the basename, which
+defaults to the host.
+
+`--stdout`, `--diff` and `--commit` are mutually exclusive and the script exits
+`2` if you pass more than one. Two flags change the export itself:
+`--no-normalise` keeps the volatile header that would otherwise make every run
+differ, and `--show-sensitive` keeps the secrets that are stripped by default.
+`--show-sensitive` with `--commit` is refused outright, also exit `2` — that
+combination writes router credentials into git history.
 
 Transport is ssh, so it needs **nothing installed**: no `routeros-api`, no pip,
 no venv. (The suite in [`tests/`](tests/) uses the API because it drives the
@@ -398,7 +412,11 @@ directory over SFTP/SCP.
 ./pull_router_backups.sh admin@router.lan ~/Archive/mikrotik-backups
 ./pull_router_backups.sh --port 2222 --identity ~/.ssh/router admin@router.lan
 ./pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
+./pull_router_backups.sh --timeout 30 admin@router.lan   # slow link or a WAN hop
 ```
+
+`--timeout SECONDS` is the ssh connect timeout, 10 by default; a non-integer is
+usage, exit `3`.
 
 Needs RouterOS 7+ SFTP (**IP → Services**) and key-based ssh: `BatchMode=yes`
 means it fails rather than prompting. It proves the router is reachable before
