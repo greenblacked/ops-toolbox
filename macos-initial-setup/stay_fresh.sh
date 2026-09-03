@@ -379,6 +379,13 @@ while (( $# > 0 )); do
     --skip-docker)     SKIP_DOCKER=1; EXPLICIT_SKIP=1 ;;
     --prune-docker-volumes) PRUNE_DOCKER_VOLUMES=1 ;;
     --skip-xcode)      SKIP_XCODE=1; EXPLICIT_SKIP=1 ;;
+    --prune-xcode-archives-days=*)
+      XCODE_ARCHIVE_DAYS="${1#*=}"
+      [[ "$XCODE_ARCHIVE_DAYS" =~ ^[1-9][0-9]*$ ]] || {
+        err "--prune-xcode-archives-days must be a positive integer"
+        exit 3
+      }
+      ;;
     --prune-xcode-archives-days)
       shift
       [[ $# -gt 0 ]] || { err "--prune-xcode-archives-days needs a value"; exit 3; }
