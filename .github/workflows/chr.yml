@@ -14,6 +14,17 @@ name: RouterOS CHR
 #     60 days, and does not run them in forks at all.
 
 on:
+  # CHR base image / entrypoint changes must rebuild the QEMU image. The PR CI
+  # path only hadolints Dockerfiles and skips the suite (~25s), so push on these
+  # paths is what actually verifies alpine/CHR bumps before they land.
+  push:
+    paths:
+      - 'mikrotik/tests/chr/**'
+      - 'mikrotik/tests/docker-compose.yml'
+      - 'mikrotik/tests/docker-compose.kvm.yml'
+      - 'mikrotik/tests/run.sh'
+      - 'mikrotik/tests/routeros-version.env'
+      - '.github/workflows/chr.yml'
   schedule:
     # 03:37 UTC daily. The odd minute is deliberate: GitHub queues scheduled
     # workflows and the top of the hour is heavily contended, so '0 3 * * *'
