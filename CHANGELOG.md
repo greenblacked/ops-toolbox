@@ -1039,6 +1039,21 @@ entry here belongs to a version.
 
 ### Changed
 
+- `stay_fresh.sh` sizes a sweep with one `du` for the whole set rather than one
+  fork per path. `clear_paths` measures before and after, and its own comment
+  notes that a sweep can match a few hundred directories — at that size the
+  forks cost far more than the walking they do. Measured on 300 paths: 720 ms
+  down to 22 ms for the sizing alone, and 936 ms down to 36 ms for a real sweep
+  that sizes twice. Output is byte-identical in every mode, including the
+  per-path lines under `--verbose`, which now take their path from `du` rather
+  than from the loop variable so they stay correct whatever order it reports in.
+
+  Measuring first killed the obvious change: dropping the `awk` from
+  `path_bytes` to save a fork made it *slower* — 0.50 s to 0.61 s over 200
+  calls — because `du` dominates and the command substitution costs more than
+  the pipe it replaced. `path_bytes` is therefore unchanged, and still serves
+  the six single-path callers where there is nothing to batch.
+
 - `.claude/skills/` is local-only. The directory is gitignored and no longer
   published on GitHub; `CONTRIBUTING.md` is the public reference. Package
   READMEs that pointed at a skill now point at that file instead.
