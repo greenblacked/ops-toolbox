@@ -41,6 +41,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local label="$1" haystack="$2" needle="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    err "$label (unexpected '$needle')"
+    printf '%s\n' "$haystack" | head -20 >&2
+  else
+    ok "$label"
+  fi
+}
+
 # Discovered rather than listed. A hardcoded array only covers a new script if
 # someone remembers to add it, which is how the macOS suite silently stopped
 # covering two of its own scripts. bash_aliases.sh is excluded deliberately: it
@@ -284,6 +294,19 @@ rc=$?
 set -e
 assert_eq "install --dry-run exits 0" "0" "$rc"
 assert_contains "install --dry-run names the missing package" "$out" "definitely-not-a-real-package-12345"
+assert_contains "install --dry-run reports no changes" "$out" "dry-run complete; no changes written"
+assert_contains "install --dry-run uses the linux indented form" "$out" "(dry-run)"
+assert_not_contains "install --dry-run does not mix git grammar" "$out" "dry-run: would run:"
+
+# dump --dry-run must preview and leave the file byte-identical.
+before_dump="$(cksum "$dump")"
+set +e
+out="$("$L/packages.sh" dump --file "$dump" --dry-run 2>&1)"
+rc=$?
+set -e
+assert_eq "dump --dry-run exits 0" "0" "$rc"
+assert_contains "dump --dry-run reports no changes" "$out" "dry-run complete; no changes written"
+assert_eq "dump --dry-run wrote nothing" "$before_dump" "$(cksum "$dump")"
 
 set +e
 "$L/packages.sh" dump --file --force >/dev/null 2>&1

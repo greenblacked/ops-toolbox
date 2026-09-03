@@ -193,21 +193,21 @@ not produce it at all:
   `linux/disk_cleanup.sh`, and bare `printf` in `linux/install_aliases.sh`,
   `linux/packages.sh`, `linux/sysctl_defaults.sh` and
   `linux/systemd/stay_fresh_timer.sh`. Reach for `run_cmd()` when a preview
-  wraps a real command; a `printf` is fine when it does not.
+  wraps a real command; a `printf` is fine when it does not. `packages.sh`
+  install and dump both print the indented `(dry-run)` previews and the
+  closing summary this way — no `git/` `dry-run: would run:` mix, and every
+  preview line ends with its own newline before the summary.
 - `config_backup.sh` previews with `info "would create …"` — unindented, no
   `(dry-run)` prefix — and prints its summary through `info` too, so the line
-  arrives as `[info] dry-run complete; no changes written`.
-- `packages.sh` mixes three forms in one preview path, including `git/`'s
-  `dry-run: would run:` that this section tells you not to mix. Its `printf`
-  there also omits the trailing newline, so the summary line is appended to it
-  on the same line. That is a defect, not a fourth grammar.
+  arrives as `[info] dry-run complete; no changes written`. That is the single
+  documented exception; do not copy it into a new `linux/` script.
 
-Nothing enforces the closing line generically: the four assertions in
-`linux/tests/test_linux_scripts.sh` name `install_devtools.sh`,
-`disk_cleanup.sh` and `config_backup.sh` individually, and the repository-wide
-dry-run check compares filesystem state rather than output. A new `linux/`
-script that omitted the line would pass CI, so this is a convention you keep by
-reading, not one the suite keeps for you.
+Nothing enforces the closing line generically: the assertions in
+`linux/tests/test_linux_scripts.sh` name individual scripts
+(`install_devtools.sh`, `disk_cleanup.sh`, `config_backup.sh`, `packages.sh`
+and others), and the repository-wide dry-run check compares filesystem state
+rather than output. A new `linux/` script that omitted the line would pass CI,
+so this is a convention you keep by reading, not one the suite keeps for you.
 
 Match the package you are writing in. A new top-level package picks one in its
 README and sticks to it.
