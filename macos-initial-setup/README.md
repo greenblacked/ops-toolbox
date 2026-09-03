@@ -582,7 +582,7 @@ are required. A failing step never aborts the remainder of the run.
 | --- | --- |
 | `0` | Completed normally, including `--help`. Per-step failures are reported in the output but do not change this. |
 | `1` | Bootstrap failure: cannot determine a usable home directory. |
-| `2` | Invalid arguments. |
+| `3` | Invalid arguments. |
 
 If you need hard-fail semantics on per-step failures, use
 `stay_fresh.sh` instead.

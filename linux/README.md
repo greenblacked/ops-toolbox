@@ -258,7 +258,7 @@ want:
 | Output | A narrative report | Graded findings, each with its fix |
 | Firewall | Says which one is in charge | Grades "none" as a finding |
 | sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords |
-| Exit code | Always `0`; findings are to be read | `1` at or above `--fail-on`, so it can gate a pipeline |
+| Exit code | Never `1` — findings are to be read. Still `2` off Linux and `3` on bad usage | `1` at or above `--fail-on`, so it can gate a pipeline |
 
 The counterpart on the other side of the repository is
 [`macos-initial-setup/workstation_doctor.sh`](../macos-initial-setup/workstation_doctor.sh)
@@ -564,6 +564,7 @@ permissive development host can validly differ from a server baseline.
 | `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on` |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install was requested without `--yes` |
+| `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove |
 
 `system_doctor.sh` never returns `1`: it reports, and what it finds is for you
 to read rather than for a pipeline to act on.

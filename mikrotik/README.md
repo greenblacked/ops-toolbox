@@ -273,7 +273,9 @@ Re-alerts only when the set of unknown MACs changes between runs.
 ### `rogue_dns_check.lua`
 
 Two checks per run. First, it `:resolve`s a control hostname (default
-`dns.cloudflare.com`) and warns if the answer is not in `:global
+`one.one.one.one`, Cloudflare's anycast name for 1.1.1.1 / 1.0.0.1 —
+`dns.cloudflare.com` resolves elsewhere and false-alarms on a healthy
+resolver) and warns if the answer is not in `:global
 DNS_EXPECTED` — a sign of upstream DNS hijack or a wrong/leaking resolver
 config. Second, it walks `/ip firewall connection` for outbound
 UDP/TCP `dst-port=53` flows whose destination is neither a router-self IP

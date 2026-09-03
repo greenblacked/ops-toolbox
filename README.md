@@ -610,7 +610,7 @@ rather than being a convenience nobody tests.
 | `Test / windows` | PowerShell contract checks under `pwsh` | `windows/` changes |
 | `Test / windows native` | Git Bash and PowerShell contracts on Windows | `windows/` changes |
 | `Test / k8s` | The k8s-toolbox script contracts, without building the image | `k8s-toolbox/` changes |
-| `Test / python helpers` | 101 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
+| `Test / python helpers` | 231 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
 | `Test / conventions` | The repo-wide contracts, on every change | always |
 
 Nothing is skipped at the *job* level, only inside a job, so every job still

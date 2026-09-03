@@ -305,8 +305,17 @@ distinction is preserved in the output rather than in the exit status.
 
 ## choco_bootstrap.ps1
 
-The Chocolatey counterpart of `winget_bootstrap.ps1`. Same five verbs, same
-exit codes, so it does not matter which package manager a given machine uses.
+The Chocolatey counterpart of `winget_bootstrap.ps1`. Five verbs, the same set
+with `install` in place of `import`, so it mostly does not matter which package
+manager a given machine uses.
+
+Two exit codes do differ, and the divergence is real rather than documented
+intent: refusing to overwrite an existing file on `export` exits `3` from
+`choco_bootstrap.ps1` and `1` from `winget_bootstrap.ps1`, and a missing
+package file exits `3` from `Get-WantedPackage` in the first against `1` from
+the second. Under the table above that reads as "bad arguments" from one
+script and "command failed" from the other for the same situation. Branch on
+the message, not the code, until one of the two is changed.
 
 winget is the primary one here: it ships with Windows, needs no bootstrap, and
 `winget configure` gives a declarative machine definition Chocolatey has no
