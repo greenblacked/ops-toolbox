@@ -29,7 +29,10 @@ than once, and focused on reducing repeat manual work.
 Three rules hold everywhere, and the test suites enforce them:
 
 - **`--help` works before anything else**, including on a machine the script
-  refuses to run on. An unrecognised flag exits `3`.
+  refuses to run on. An unrecognised flag exits `3` — from the Bash and
+  PowerShell scripts. The four Python CLIs use `argparse`, which exits `2` by
+  its own convention; `check_conventions.sh` exempts them by extension rather
+  than fighting it.
 - **A dry run writes nothing.** Anything that changes a machine supports
   `--dry-run` (or `-DryRun`), and anything destructive is behind an explicit
   opt-in flag.

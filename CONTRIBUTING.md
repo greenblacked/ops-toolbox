@@ -77,7 +77,7 @@ Three `set` dialects, chosen by role — do not mix them:
 
 | Dialect | Used by | Why |
 | --- | --- | --- |
-| `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. |
+| `set -euo pipefail` | `git/*.sh` | Short, single-purpose scripts. Any failure should stop everything. Two predate the rule and are left alone: `git/set_git_profile.sh` splits it across three lines, and `git/git_whoami.sh` omits `-e` because it reports on a repository rather than changing one. |
 | `set -u` then `set -o pipefail` on separate lines, no `-e` | `macos-initial-setup/*.sh`, `linux/*.sh` | Long maintenance runs where a missing tool must be *recorded* and skipped, not fatal. `macos-initial-setup/stay_fresh.sh` and `linux/stay_fresh.sh` are the reference. The header comment of `macos-initial-setup/v1_stay_fresh.sh` explains why `-e` is omitted — that script itself predates the convention and sets only `-o pipefail`, so read it for the reasoning, not as the pattern. |
 | `set -uo pipefail` | `run-tests.sh`, `test-env/*/run.sh` | Aggregators that must keep going after a failing child and report a summary. |
 
@@ -182,16 +182,17 @@ dry-run complete; no changes written
 ```
 
 All eight `linux/` scripts that take `--dry-run` print that closing line, and
-six of the eight also produce the indented `(dry-run)` preview above it. So the
+seven of the eight produce the indented `(dry-run)` preview above it. So the
 shape above is the package norm, not one script's habit. What varies is only
-how a script gets there, and two scripts genuinely deviate:
+how a script gets there, and `config_backup.sh` is the single script that does
+not produce it at all:
 
 - The indented prefix is emitted three ways, all rendering the same: `run_cmd()`
   in `linux/stay_fresh.sh` and `linux/install_devtools.sh`, `run_root()` in
   `linux/disk_cleanup.sh`, and bare `printf` in `linux/install_aliases.sh`,
-  `linux/sysctl_defaults.sh` and `linux/systemd/stay_fresh_timer.sh`. Reach for
-  `run_cmd()` when a preview wraps a real command; a `printf` is fine when it
-  does not.
+  `linux/packages.sh`, `linux/sysctl_defaults.sh` and
+  `linux/systemd/stay_fresh_timer.sh`. Reach for `run_cmd()` when a preview
+  wraps a real command; a `printf` is fine when it does not.
 - `config_backup.sh` previews with `info "would create …"` — unindented, no
   `(dry-run)` prefix — and prints its summary through `info` too, so the line
   arrives as `[info] dry-run complete; no changes written`.

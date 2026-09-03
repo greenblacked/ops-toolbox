@@ -5,8 +5,12 @@ Bootstrap and maintenance for a Linux machine — the counterpart of
 rather than a Mac.
 
 **Targets:** Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`) and Arch (`pacman`).
-Anything else exits `2` and says what it detected, the same way the macOS
-scripts exit `2` off macOS.
+The three scripts that install packages — `stay_fresh.sh`,
+`install_devtools.sh`, `packages.sh` — exit `2` on anything else and say what
+they detected, the same way the macOS scripts exit `2` off macOS. The two that
+read rather than install carry on: `disk_cleanup.sh` warns and skips package
+caches, `system_doctor.sh` prints a `skip` line and reports everything else.
+Every script exits `2` off Linux.
 
 Scripts here use `set -u` plus `set -o pipefail` on separate lines and no `-e`,
 because a long maintenance run records a missing tool and skips it rather than
@@ -21,7 +25,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [Two decisions worth knowing](#two-decisions-worth-knowing)
 - [Distro detection](#distro-detection)
 - [What `stay_fresh.sh` does](#what-stay_freshsh-does)
-- [The two read-only reports](#the-two-read-only-reports)
+- [The two overlapping reports](#the-two-overlapping-reports)
 - [`system_doctor.sh`](#system_doctorsh)
 - [`systemd/stay_fresh_timer.sh`](#systemdstay_fresh_timersh)
 - [`install_aliases.sh`](#install_aliasessh)
@@ -213,8 +217,10 @@ half lives in `install_devtools.sh` and GUI apps are left to you.
 
 ## Distro detection
 
-Each script reads `/etc/os-release` and maps `ID`/`ID_LIKE` onto a package
-manager. The lookup is duplicated in each script rather than shared, for the
+The five scripts that need a package manager — `disk_cleanup.sh`,
+`install_devtools.sh`, `packages.sh`, `stay_fresh.sh`, `system_doctor.sh` —
+read `/etc/os-release` and map `ID`/`ID_LIKE` onto one. The other nine never
+ask. The lookup is duplicated in each script rather than shared, for the
 reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script has to work when
 copied on its own onto a box.
 
@@ -246,7 +252,7 @@ A missing tool is a note, not a failure. `journalctl` is absent in a container
 and `snap` on most servers; neither should turn a maintenance run red. A step
 that runs and *fails* does count, and the script exits `1`.
 
-## The two read-only reports
+## The two overlapping reports
 
 `system_doctor.sh` and `hardening_audit.sh` both change nothing and both look at
 some of the same subsystems, so it is worth being clear about which one you

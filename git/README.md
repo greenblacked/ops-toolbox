@@ -2,7 +2,7 @@
 
 Small Bash helpers for everyday Git configuration, quick commits, and repository housekeeping. They are written for portability: POSIX-minded patterns where possible, and **compatible with the Bash 3.2** that ships on macOS (no `mapfile` or other Bash 4-only features in these scripts).
 
-Writing one? These scripts use `set -euo pipefail`, the `git/` dry-run output grammar (`dry-run: would run: ...`, then `dry-run complete; no changes written`), and no log file at all. [`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that with the rest of the shell rules.
+Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, which omits `-e`, and `set_git_profile.sh`, which splits the same three options across three lines — the `git/` dry-run output grammar (`dry-run: would run: ...`, then `dry-run complete; no changes written`), and no log file at all. The grammar is not universal either: the branch-deleting scripts close with `dry-run complete; no branches deleted`, and `git_undo_last_commit.sh` and `git_amend_last.sh` print the `would run:` line with no closing line at all. [`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that with the rest of the shell rules.
 
 ## Contents
 

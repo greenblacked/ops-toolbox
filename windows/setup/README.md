@@ -201,7 +201,8 @@ documented above actually exists in a `param()` block. See
 different failures. yamllint covers its syntax (it is discovered as YAML via
 `yaml-files` in `.yamllint.yml`). The static suite additionally checks its
 *shape* - that it declares resources, that ids are unique, and that no
-directive key exists which nobody wrote. That second check is the one that
+directive key exists which nobody wrote - when `python3` and PyYAML are both
+available, and prints a `warn` and skips the check when they are not. That second check is the one that
 matters: an unquoted description containing a comma ends its value inside an
 inline map and turns the rest into a stray key, producing a file that is
 perfectly valid YAML and the wrong document. yamllint passes it without a word.
