@@ -458,9 +458,9 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 - `health_check.lua` — CPU / RAM / disk / temperature watchdog; only alerts
   on threshold violations.
 - `update_check.lua` — daily check against MikroTik's update server; pings
-  Telegram once per new version and takes a pre-upgrade backup first. Reports
-  firmware, board, uptime and resource figures with it, and says so when the
-  check itself fails.
+  Telegram once per new version and takes a pre-upgrade backup first, named
+  after the date and the version it would restore. Reports firmware, board,
+  uptime and resource figures with it, and says so when the check itself fails.
 - `wan_failover_notify.lua` — polls the built-in `detect-internet-state`
   property on the WAN interface and notifies only on transitions.
 - `detect_internet.lua` — manual nudge that re-runs RouterOS WAN/LAN

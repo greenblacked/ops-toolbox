@@ -61,13 +61,40 @@ entry here belongs to a version.
   `:global UPDATE_CHECK_NOTIFY_FAILURE false` turns it off.
 
 - `update_check.lua` takes a backup before it tells you an upgrade is
-  available, and reports whether it succeeded in the same message. The snapshot
+  available, and names the resulting file in the same message. The snapshot
   worth having is one taken while the router still runs the version being
   replaced, and it needs to exist by the time somebody reads the notification
-  rather than depending on them remembering. `:global UPDATE_CHECK_BACKUP false`
-  goes back to notify-only. A failed backup does not suppress the update
-  notification: it is reported, because "there is nothing to roll back to" is
-  the thing you most need to know before upgrading.
+  rather than depending on them remembering. The save is inline rather than a
+  call out to the `backup` script, so a router where only this script was
+  pasted still gets a rollback point instead of a message saying the backup
+  failed; the name is `backup-IDENTITY-DATE-VERSION-pre-upgrade`, carrying the
+  date and the running version, which is the release the file restores. The
+  `backup-` prefix is kept so `pull_router_backups.sh` still collects the pair
+  and `backup_file_cleanup.lua` still ages it out — a differently-named file
+  would be one nothing collects and nothing deletes. Once the new pair is
+  written it removes the older `backup-*` files and reports how many, leaving
+  one generation on a router whose flash is measured in tens of megabytes and
+  which is about to need the space. The removal sits inside the success branch
+  and after both writes, so a save that failed jumps to the error handler and
+  can never be the run that deletes the last good backup; exclusion is by name
+  because the files just written are known by name and RouterOS script has no
+  sort to order the rest by age. The sweep keeps everything starting with the
+  new base name rather than the two exact names `.backup` and `.rsc`, because
+  `/export file=` writes through a `<name>.rsc.in_progress` temporary and
+  returns before the export has finished — an exact-name test leaves that file
+  matching `^backup-` and excluded by neither name, so the prune deletes a
+  half-written export. Found by running the block against a CHR rather than by
+  reading it: the temporary is real, outlives the command that created it, and
+  the first run survived only because the sweep happened to win the race. It
+  reads the same `:global
+  BACKUP_REMOVE_PREVIOUS` as `backup.lua`, because how many generations live on
+  a router is one policy and not two. `:global BACKUP_PASSWORD` encrypts it, the same global
+  `backup.lua` reads; `:global UPDATE_CHECK_BACKUP false` goes back to
+  notify-only. A failed backup does not suppress the update notification: it is
+  reported, because "there is nothing to roll back to" is the thing you most
+  need to know before upgrading. The convention suite pins the name, because a
+  rename is the kind of edit that looks cosmetic and silently produces the one
+  backup nothing collects and nothing ages out.
 
 - `backup.lua` removes the previous generation once the new pair is written
   (`RemovePrevious`, off via `:global BACKUP_REMOVE_PREVIOUS false`). Exclusion

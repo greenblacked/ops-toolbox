@@ -230,15 +230,36 @@ The verdict comes from RouterOS's own `status` field rather than from
 *older* — switch a router from `stable` to `long-term` and a difference test
 announces an upgrade to the release you just moved away from.
 
-When an upgrade is offered it runs the `backup` script first and reports the
-outcome in the same message, so the pre-upgrade snapshot exists by the time
+When an upgrade is offered it takes a `.backup` + `.rsc` pair first and names
+the file in the same message, so the pre-upgrade snapshot exists by the time
 anyone reads the notification instead of depending on them remembering. The
-backup sends its own message naming the file, and the version in that
-filename is the one you would be rolling back to. Requires the `backup`
-script in `/system script`; set `:global UPDATE_CHECK_BACKUP false` to only
-notify. A failed backup does not suppress the update notification — the
-message says the backup failed, which is louder than silence and is the state
-you most need to know about before upgrading.
+save is inline rather than a call out to the `backup` script, so a router
+where only this script was pasted still gets a rollback point. The filename is
+`backup-IDENTITY-DATE-VERSION-pre-upgrade`, and that version is the running
+one — the release this file restores you to. It keeps the `backup-` prefix so
+`pull_router_backups.sh` still collects it and `backup_file_cleanup.lua` still
+ages it out. Encrypt it by setting `:global BACKUP_PASSWORD`, the same one
+`backup.lua` reads; set `:global UPDATE_CHECK_BACKUP false` to only notify. A
+failed backup does not suppress the update notification — the message says the
+backup failed, which is louder than silence and is the state you most need to
+know about before upgrading.
+
+Once the new pair is written it deletes the older `backup-*` files, leaving one
+generation, and says how many it removed. The removal sits inside the success
+branch and after both writes, so a save that failed jumps to the error handler
+and can never be the run that deletes the last good backup. Exclusion is by
+name rather than by age: the files just written are known by name, everything
+else matching the prefix is older by definition, and RouterOS script has no
+sort. Everything starting with the new base name is kept, not just the two
+exact names — `/export file=` writes through a `<name>.rsc.in_progress`
+temporary and returns before the export finishes, so an exact-name test leaves
+that file matching `^backup-`, excluded by neither name, and the sweep deletes
+a half-written export. It reads the same `:global BACKUP_REMOVE_PREVIOUS` that
+`backup.lua` does, because how many generations live on a router is one policy
+and not two — set it `false` and both scripts keep every generation for
+`backup_file_cleanup.lua` to age out at 30 days. The caveat from `backup.lua`
+carries over: one generation means a corrupt backup is the only backup, so this
+is retention on the router, not a backup policy.
 
 That same message carries the firmware, board, architecture, uptime, CPU load,
 memory and storage figures, because those are what you would go and look up
