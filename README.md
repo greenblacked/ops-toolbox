@@ -461,6 +461,10 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   Telegram once per new version and takes a pre-upgrade backup first, named
   after the date and the version it would restore. Reports firmware, board,
   uptime and resource figures with it, and says so when the check itself fails.
+- `backup_update_check.lua` — the same job in a plainer style: a message on
+  every run, and the pre-upgrade backup + prune when an update is offered. No
+  underscored `:global` names, which is why it runs on RouterOS 7.24 where
+  `update_check.lua` does not. Install one of the two, not both.
 - `wan_failover_notify.lua` — polls the built-in `detect-internet-state`
   property on the WAN interface and notifies only on transitions.
 - `detect_internet.lua` — manual nudge that re-runs RouterOS WAN/LAN

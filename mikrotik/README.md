@@ -24,6 +24,7 @@ pinned CHR version and its digest are bumped.
 | `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
 | `health_check.lua`              | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
 | `update_check.lua`              | Backs up, then notifies when a newer RouterOS version appears.          |
+| `backup_update_check.lua`       | Same job, plainer; runs on RouterOS 7.24 where update_check will not.   |
 | `wan_failover_notify.lua`       | One-shot Telegram alert on built-in WAN-detect state transitions.       |
 | `detect_internet.lua`           | Re-runs RouterOS WAN/LAN auto-detection (manual reset).                 |
 | `reboot-and-flush.lua`          | Flushes DNS + connection tracking, then reboots. No pre-reboot ping.    |
@@ -117,6 +118,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 | `change_WIFI_pw`       | `30d` (or on demand)                                                     |
 | `health_check`         | `5m`                                                                     |
 | `update_check`         | `1d`                                                                     |
+| `backup_update_check`  | `1d` — instead of `update_check`, not alongside it                       |
 | `wan_failover_notify`  | `1m`                                                                     |
 | `dhcp_lease_watch`     | `5m`                                                                     |
 | `firewall_drift`       | `15m`                                                                    |
@@ -298,6 +300,48 @@ can still reach Telegram — DNS broken, the upgrade server refusing, a proxy in
 the way — which is exactly the case where a router sits on an unpatched
 release with nothing saying so. A fully offline router cannot report anything,
 and no arrangement here changes that.
+
+### `backup_update_check.lua`
+
+The same job as `update_check.lua` in a plainer style, and the one to install
+on RouterOS 7.24. That release refuses to execute a script declaring a
+`:global` whose name contains an underscore — "expected end of command" at the
+underscore, from the scheduler, from `:parse` and from `/system script run`
+alike. The CHR suite had recorded that as a CHR quirk; a router on that release
+failed `update_check.lua` identically, with "executing script failed" and not
+one line of the script's own logging reaching the log. `update_check.lua`
+declares six such names. This script declares none: its only globals are
+`OpsToolboxPaused` and `RouterBackupPassword`.
+
+It was run end to end on a 7.24.1 CHR, where it found a real newer release,
+wrote the `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, pruned a seeded
+older generation and delivered the message. The backup and prune are the ones
+described under `update_check.lua` above — same filename, same prefix so
+`pull_router_backups.sh` and `backup_file_cleanup.lua` still see it, same rule
+that the prune runs only after the pair is written, same prefix exclusion for
+the `.rsc.in_progress` temporary.
+
+The rest is deliberately the plain design, because it is the script an
+operator already trusted on that hardware, plus the backup: a fixed 15-second
+wait rather than polling `status`, a message on **every** run — "update is
+required" with the backup, firmware, board and resource detail, or a short
+"not required" heartbeat with versions, firmware, uptime and free storage in
+MiB — rather than only on a transition, and a
+`installed != latest` test rather than RouterOS's own verdict. That test is
+guarded against a failed check (`latest` still `unknown`), because the branch
+it selects now takes a backup and deletes the previous one, and doing that on a
+false alarm is the one thing it must not do.
+
+Three settings at the top. `TgSendScript` names the Telegram helper, and it
+defaults to `tg_send_new` — the operator's own copy — rather than the package's
+`tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
+on 7.24 either; point it at whatever helper the router actually has.
+`updChannel` is `"stable"` by default and is **written** on every run, as the
+original script did — a fleet meant to sit on one train gets a hand-switched
+router put back before it is checked. Set it to `""` to leave the channel as
+the router has it and only report it, which is `update_check.lua`'s stance. `RouterBackupPassword`, set from a `:global`
+at boot, encrypts the binary backup. Install it **instead of** `update_check`,
+not alongside it, or every update is reported twice.
 
 ### `wan_failover_notify.lua`
 

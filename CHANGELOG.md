@@ -61,6 +61,29 @@ entry here belongs to a version.
   "up to date" because it also covers the channel-switch case, where the
   versions differ and there is still nothing RouterOS will offer.
 
+- `backup_update_check.lua`: the update check with the pre-upgrade backup and
+  prune, written so that it runs on RouterOS 7.24. The CHR suite has marked
+  the execution tests for `backup.lua` and `update_check.lua` as expected
+  failures because 7.24.1 refuses a `:global` whose name contains an
+  underscore, and had recorded that as a CHR quirk. It is not: a router on
+  that release failed `update_check.lua` the same way, with the same
+  "executing script failed" and not one line of the script's own logging
+  reaching the log. This script declares no such name - its only globals are
+  `OpsToolboxPaused` and `RouterBackupPassword` - and was run end to end on a
+  7.24.1 CHR, where it found a real newer release, wrote the pair, pruned a
+  seeded older generation and delivered the message. It is the plainer design
+  on purpose: a fixed 15-second wait rather than polling `status`, a message
+  on every run rather than only on a transition, a `!=` test guarded against
+  a failed check rather than RouterOS's own verdict, and the channel forced to
+  `stable` on every run rather than only read, because that is the script an
+  operator already trusted on that hardware, plus the backup.
+  The Telegram helper's name is a setting and defaults to `tg_send_new`, the
+  operator's own copy, because the package's `tg_send` declares `TG_BOT_TOKEN`
+  and `TG_CHAT_ID` and so does not run on 7.24 either - a script that runs
+  calling a helper that cannot is a message that never arrives. Install it
+  instead of `update_check.lua`, not alongside it. The underscore refusal itself is now a known defect of most of
+  this package on 7.24, not of the suite, and is left for its own change.
+
 - `update_check.lua` reports the firmware, board, architecture, uptime, CPU,
   memory and storage figures alongside the version, and sends a message when
   the check itself fails rather than only logging one. Both are the questions
