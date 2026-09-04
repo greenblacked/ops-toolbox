@@ -50,6 +50,17 @@ entry here belongs to a version.
   legitimately needs longer, and a test that has to sit through the full 65
   seconds to watch the timeout path is a test nobody runs.
 
+- `:global UPDATE_CHECK_NOTIFY_UP_TO_DATE true` makes `update_check.lua` send a
+  short heartbeat on a quiet run - installed, latest, channel and RouterOS's
+  own verdict - instead of only a log line. Quiet by default stays the default,
+  because a router that says "nothing to do" every morning is the message that
+  gets muted, and the one that matters gets muted with it. But a router that
+  never speaks is indistinguishable from one whose scheduler quietly stopped,
+  and on a router where that ambiguity is the worse problem the heartbeat is
+  the answer. Opted into per router. Worded "nothing to install" rather than
+  "up to date" because it also covers the channel-switch case, where the
+  versions differ and there is still nothing RouterOS will offer.
+
 - `update_check.lua` reports the firmware, board, architecture, uptime, CPU,
   memory and storage figures alongside the version, and sends a message when
   the check itself fails rather than only logging one. Both are the questions

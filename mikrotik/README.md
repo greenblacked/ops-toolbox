@@ -268,6 +268,17 @@ are read only on the branch that sends, so an ordinary quiet run stays a
 handful of reads. RouterBOARD firmware is skipped on hardware that has none
 (CHR, x86) rather than reported as `unknown`.
 
+A quiet run — nothing to install — is a log line and no message, on purpose:
+a router that says "nothing to do" every morning is the message that gets
+muted, and the one that matters gets muted with it. Silence has its own cost,
+though, because a router that never speaks looks exactly like one whose
+scheduler quietly stopped. Where that ambiguity is worse than the noise, set
+`:global UPDATE_CHECK_NOTIFY_UP_TO_DATE true` and every quiet run sends a short
+heartbeat instead — installed, latest, channel and RouterOS's own verdict.
+Opted into per router, never the default. It is worded "nothing to install"
+rather than "up to date" because it also covers the channel-switch case, where
+the versions differ and there is still nothing RouterOS will offer.
+
 The channel is read and reported, never written. Setting it would mean the
 script overriding a deliberate choice: a router parked on `long-term` moved to
 `stable` on the next tick, then correctly told an upgrade is available — to a
