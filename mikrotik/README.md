@@ -240,6 +240,32 @@ notify. A failed backup does not suppress the update notification — the
 message says the backup failed, which is louder than silence and is the state
 you most need to know about before upgrading.
 
+That same message carries the firmware, board, architecture, uptime, CPU load,
+memory and storage figures, because those are what you would go and look up
+anyway before deciding whether to upgrade now or wait for the weekend. They
+are read only on the branch that sends, so an ordinary quiet run stays a
+handful of reads. RouterBOARD firmware is skipped on hardware that has none
+(CHR, x86) rather than reported as `unknown`.
+
+The channel is read and reported, never written. Setting it would mean the
+script overriding a deliberate choice: a router parked on `long-term` moved to
+`stable` on the next tick, then correctly told an upgrade is available — to a
+release train somebody had specifically kept it off.
+
+Completion is detected by polling `status` until it reaches a verdict, up to
+about 65 seconds, rather than waiting a fixed interval or waiting for
+`latest-version` to fill. RouterOS keeps `latest-version` from the previous
+check, so on every run after the first it is already populated the instant the
+command is issued, and a loop waiting for it to fill exits immediately with
+last week's answer.
+
+A check that never completes sends its own message (`:global
+UPDATE_CHECK_NOTIFY_FAILURE false` to disable). It only fires where the router
+can still reach Telegram — DNS broken, the upgrade server refusing, a proxy in
+the way — which is exactly the case where a router sits on an unpatched
+release with nothing saying so. A fully offline router cannot report anything,
+and no arrangement here changes that.
+
 ### `wan_failover_notify.lua`
 
 Polls the WAN interface's built-in `detect-internet-state` property and sends
@@ -532,9 +558,15 @@ harness (syntax + ShellCheck only, no Homebrew) — see
 
   or, less securely, append `check-certificate=no` to the fetch command in
   `tg_send.lua`.
-- Telegram message text uses URL-style escapes: `%0A` for newline,
-  `\F0\9F...` for emoji codepoints encoded as UTF-8 byte literals. When
-  copy-pasting through editors, double-check those escape sequences survived.
+- Telegram message text uses URL-style escapes: `%0A` for newline, `%25` for a
+  literal percent sign, `\F0\9F...` for emoji codepoints encoded as UTF-8 byte
+  literals. When copy-pasting through editors, double-check those escape
+  sequences survived. The percent one is easy to skip because it usually looks
+  fine: `tg_send` posts the text as `application/x-www-form-urlencoded`, so a
+  bare `%` is a truncated escape sequence, and whether that reaches Telegram as
+  a percent sign or as a 400 is the decoder's choice rather than yours. It
+  stops being cosmetic the moment the two characters after it happen to be hex
+  digits, which silently produces a byte instead.
 - `:global` variables persist across scheduler runs *within an uptime
   session*. They are cleared on reboot — `wan_failover_notify` relies on
   this and treats the first post-boot run as the baseline state.

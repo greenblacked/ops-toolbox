@@ -16,6 +16,16 @@ entry here belongs to a version.
 
 ### Added
 
+- `update_check.lua` reports the firmware, board, architecture, uptime, CPU,
+  memory and storage figures alongside the version, and sends a message when
+  the check itself fails rather than only logging one. Both are the questions
+  somebody goes and answers by hand before deciding whether to upgrade tonight
+  or at the weekend, and a check that silently never completes is a router
+  sitting on an unpatched release with nothing saying so. The failure notice
+  can only fire where the router still reaches Telegram, which is the case
+  worth catching: DNS broken, the upgrade server refusing, a proxy in the way.
+  `:global UPDATE_CHECK_NOTIFY_FAILURE false` turns it off.
+
 - `update_check.lua` takes a backup before it tells you an upgrade is
   available, and reports whether it succeeded in the same message. The snapshot
   worth having is one taken while the router still runs the version being
@@ -665,6 +675,30 @@ entry here belongs to a version.
   repository cannot set for itself.
 
 ### Fixed
+
+- A literal `%` in Telegram message text is now sent as `%25`, in
+  `health_check.lua`, `latency_monitor.lua` and `traffic_quota.lua`. `tg_send`
+  posts the text as `application/x-www-form-urlencoded`, which is why newlines
+  are written `%0A` — and by the same rule a bare `%` is a truncated escape
+  sequence. It has been getting through on decoder leniency rather than on
+  being correct, and it stops being cosmetic the moment the two characters
+  after it are hex digits, which silently yields a byte instead of a percent
+  sign.
+
+- `update_check.lua` waits for the update check to finish by polling `status`
+  until it reaches a verdict, instead of by waiting a fixed 10 seconds.
+  RouterOS keeps `latest-version` from the previous check, so testing that
+  field for content answers "has this router ever checked", not "has this
+  check finished" — a distinction that only shows up as a stale verdict, never
+  as an error.
+
+- `update_check.lua` escapes the router identity before interpolating it into
+  the message. It is operator-supplied text going into a URL-encoded body that
+  Telegram then parses as HTML: an `&` in an identity ends the text field early
+  and silently truncates the rest of the message, and a `<` opens a tag
+  Telegram cannot close and the send is rejected outright. The same exposure
+  exists wherever the other scripts interpolate an identity or a rule comment,
+  and is not addressed here.
 
 - `launchd/stay_fresh_agent.sh` rejected `--weekday=`, `--hour=`, `--minute=`
   and `--profile=` as unknown arguments, and `stay_fresh.sh` did the same for
