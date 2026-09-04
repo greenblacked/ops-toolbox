@@ -1,9 +1,10 @@
 name: RouterOS CHR
 
 # The RouterOS integration suite boots a real CHR image under QEMU, which takes
-# minutes rather than seconds. It runs nightly, on demand, and on the pull
-# requests that touch mikrotik/ - a narrow enough set that the cost lands only
-# where a real router is the only thing that can answer the question.
+# minutes rather than seconds. It runs nightly, on demand, on the pull requests
+# that touch mikrotik/, and on pushes that touch the CHR image or the version
+# pin - a narrow enough set that the cost lands only where a real router is the
+# one thing that can answer the question.
 # The version is pinned in mikrotik/tests/routeros-version.env and is deliberately
 # not repeated here: GITHUB_TOKEN cannot push changes to .github/workflows, so a
 # version named in this file blocks the automated bump from opening its branch.
@@ -16,15 +17,27 @@ name: RouterOS CHR
 #     60 days, and does not run them in forks at all.
 
 on:
-  # The nightly run answers "does the pinned RouterOS still like these scripts".
-  # It cannot answer "does this change work", because by the time it runs the
-  # change has usually merged. A pull request that touches mikrotik/ is the only
-  # moment where booting a real router is worth 45 minutes, so it gets one -
-  # every other pull request is untouched by this workflow.
+  # Two development-path triggers, because they cover different gaps and each
+  # one is sometimes the only thing that fires.
   #
-  # The branch list mirrors ci.yml's, and for the reason stated there: these are
-  # *target* branches, and a target matching no pattern runs nothing and merges
-  # green.
+  # A pull request touching mikrotik/ gets a run, because the nightly cannot
+  # answer "does this change work" - by the time it fires the change has
+  # usually merged. This is also the trigger that tests the merge result rather
+  # than the branch tip.
+  #
+  # A push touching the CHR image, compose files or the version pin gets a run
+  # even with no pull request open, which is the state ci.yml deliberately does
+  # not cover. Those paths rebuild the QEMU image, and the ordinary PR path
+  # only hadolints the Dockerfile.
+  #
+  # They overlap: a pull-request branch touching mikrotik/tests/chr/** fires
+  # both, in different concurrency groups, so that one case boots CHR twice.
+  # Left as it is rather than quietly dropping either - the alternative is
+  # narrowing somebody else's trigger to save a job on an uncommon path.
+  #
+  # The branch list mirrors ci.yml's, and for the reason stated there: these
+  # are *target* branches, and a target matching no pattern runs nothing and
+  # merges green.
   pull_request:
     branches:
       - master
@@ -36,6 +49,14 @@ on:
     paths:
       - 'mikrotik/**'
       - 'run-tests.sh'
+      - '.github/workflows/chr.yml'
+  push:
+    paths:
+      - 'mikrotik/tests/chr/**'
+      - 'mikrotik/tests/docker-compose.yml'
+      - 'mikrotik/tests/docker-compose.kvm.yml'
+      - 'mikrotik/tests/run.sh'
+      - 'mikrotik/tests/routeros-version.env'
       - '.github/workflows/chr.yml'
   schedule:
     # 03:37 UTC daily. The odd minute is deliberate: GitHub queues scheduled

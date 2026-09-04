@@ -734,6 +734,16 @@ entry here belongs to a version.
   exists wherever the other scripts interpolate an identity or a rule comment,
   and is not addressed here.
 
+- `linux/packages.sh install --dry-run` mixed three output forms on one preview
+  path, including `git/`'s `dry-run: would run:`, and its command-preview
+  `printf` omitted the trailing newline so `dry-run complete; no changes written`
+  was glued onto the same line. Install now matches the linux indented
+  `(dry-run)` grammar already used by `dump` in the same file (and by
+  `stay_fresh.sh` / `sysctl_defaults.sh`): dimmed two-space previews, every
+  line ending in a newline, then the standalone closing summary. The suite
+  asserts the closing line, the indented form, and the absence of the git
+  mix.
+
 - `launchd/stay_fresh_agent.sh` rejected `--weekday=`, `--hour=`, `--minute=`
   and `--profile=` as unknown arguments, and `stay_fresh.sh` did the same for
   `--prune-xcode-archives-days=`. The equals form is half of the documented
