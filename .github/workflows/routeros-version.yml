@@ -86,12 +86,16 @@ jobs:
             echo "Existing pull request: $url"
           fi
 
-      - name: Report KVM availability
+      # /dev/kvm is crw-rw---- root:kvm and the runner user is not in that
+      # group, so run.sh's readable-and-writable test fails and CHR boots under
+      # TCG. See chr.yml for the longer version of why that went unnoticed.
+      - name: Enable KVM access
         if: >-
           (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
           steps.existing.outputs.url == ''
         run: |
           if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
             ls -l /dev/kvm
           else
             echo "no /dev/kvm on this runner — CHR will boot under TCG emulation"

@@ -733,6 +733,10 @@ change has usually merged. The Linux runner has `/dev/kvm`, which
 [`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
 `docker-compose.kvm.yml` on top — a separate file because compose fails hard on
 a device that does not exist, which would break the suite for everyone on macOS.
+Existing is not the same as usable, and that distinction cost real time here:
+the node is `crw-rw---- root:kvm` and the runner user is not in that group, so
+the detection failed and every run fell back to TCG emulation without saying so.
+The workflow now widens the mode before starting the suite.
 
 [`routeros-version.yml`](.github/workflows/routeros-version.yml) checks
 MikroTik's official stable release feed every Monday and Thursday at 04:19 UTC,

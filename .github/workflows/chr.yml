@@ -70,12 +70,17 @@ jobs:
         with:
           persist-credentials: false
 
-      # The runner exposes /dev/kvm, which run.sh detects and layers
-      # docker-compose.kvm.yml on top for. Without it CHR boots under TCG
-      # emulation and the job runs out of time.
-      - name: Report KVM availability
+      # /dev/kvm exists on ubuntu-24.04, and until this step was added that was
+      # all anyone checked. It is crw-rw---- root:kvm and the runner user is not
+      # in that group, so run.sh's readable-and-writable test failed, the
+      # docker-compose.kvm.yml overlay was never layered on, and CHR booted
+      # under TCG - silently, because the suite still passes that way, roughly
+      # ten times slower. Widening the mode on an ephemeral runner is the
+      # documented way to hand the device to a container.
+      - name: Enable KVM access
         run: |
           if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
             ls -l /dev/kvm
           else
             echo "no /dev/kvm on this runner — CHR will boot under TCG emulation"
