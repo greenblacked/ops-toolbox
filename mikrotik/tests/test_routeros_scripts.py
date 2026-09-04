@@ -28,10 +28,20 @@ RUNNABLE_SCRIPTS = (
     # test_script_add_remove_roundtrip below.
 )
 
-# RouterOS CHR (e.g. x86_64 under QEMU/TCG on Apple Silicon) can expose a
-# /system/script/run uses a parser that rejects '_' in :local and :global names
-# ("expected end of command" at the underscore). The same source runs via
-# :parse, /execute, and script add. Not a bug in the repo .lua files.
+# RouterOS 7.24.1 CHR: /system/script/run uses a parser that rejects '_' in
+# :local and :global names ("expected end of command" pointing at the
+# underscore). Not a bug in the repo .lua files - the same source is accepted
+# by script add and runs from the scheduler.
+#
+# This was previously attributed to QEMU/TCG emulation. That is wrong, and the
+# correction is worth keeping: the identical failure was measured on a runner
+# with /dev/kvm handed to the container, same counts, same column. Whatever it
+# is, hardware acceleration does not change it.
+#
+# :parse is not the escape hatch either, though this comment used to say it
+# was. It refuses the same names, which is why the tests that need to execute a
+# script go through _run_via_scheduler instead.
+#
 # detect_internet.lua has no :global with '_' in the name, so it can still be
 # exercised via /system/script/run on CHR.
 XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
@@ -397,35 +407,84 @@ def _wait_for_backup_files(api: Any, count: int, timeout: float = 30.0) -> list[
     return names
 
 
-def _run_wrapped(api: Any, script_resource: Any, body: str) -> None:
-    """Run `body` through :parse, the way the production scripts call each other.
+SCHEDULER_NAME = "pu_ut_sched"
 
-    /system/script/run misparses '_' in :local and :global names on CHR, and
-    every script with a configurable global has one. :parse does not, so a
-    wrapper whose own locals are underscore-free hands the real source to the
-    parser that reads it correctly. This is also exactly how update_check.lua
-    invokes backup.lua, so the wrapper is not a test-only contrivance.
+
+def _recent_log_lines(api: Any, limit: int = 20) -> list[str]:
+    with contextlib.suppress(ros_exc.RouterOsApiError):
+        rows = list(api.get_binary_resource("/log").get())
+        return [
+            f"{_row_str(r, 'topics')}: {_row_str(r, 'message')}" for r in rows[-limit:]
+        ]
+    return []
+
+
+def _run_via_scheduler(
+    api: Any,
+    name: str,
+    ready,
+    timeout: float = 60.0,
+) -> None:
+    """Run an installed script from the scheduler, and wait for its effect.
+
+    Not a stylistic choice. On RouterOS 7.24.1 CHR both `/system/script/run`
+    and `:parse` refuse any source declaring a `:global` whose name contains an
+    underscore - "expected end of command" pointing exactly at the underscore -
+    which is most of this package. Measured under KVM as well as TCG, so the
+    QEMU attribution in XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE does not hold.
+
+    The scheduler is how these scripts run on a real router, so it is both the
+    more faithful harness and the one execution path not blocked by that.
+
+    `ready` is polled until it returns true. The entry re-fires every second
+    until then, which is safe here because both scripts are idempotent within a
+    run: the same date and version produce the same filename, and the same
+    failure produces the same message.
     """
-    _add_script(script_resource, PARSE_WRAPPER, body)
-    try:
-        _run_named(api, PARSE_WRAPPER)
-    finally:
-        _remove_by_name(script_resource, PARSE_WRAPPER)
-
-
-def _run_source(api: Any, script_resource: Any, source: str) -> None:
-    """Run a one-line RouterOS statement. No quotes or backslashes: the source
-    is embedded in a RouterOS string literal and nothing escapes them here."""
-    assert '"' not in source and "\\" not in source, f"cannot embed: {source!r}"
-    _run_wrapped(api, script_resource, f':local F [:parse "{source}"];\n$F;\n')
-
-
-def _run_installed(api: Any, script_resource: Any, name: str) -> None:
-    _run_wrapped(
-        api,
-        script_resource,
-        f":local F [:parse [/system script get {name} source]];\n$F;\n",
+    res = api.get_binary_resource("/system/scheduler")
+    _remove_by_name(res, SCHEDULER_NAME)
+    res.call(
+        "add",
+        {
+            "name": SCHEDULER_NAME.encode("utf-8"),
+            "on-event": name.encode("utf-8"),
+            "interval": b"1s",
+            "policy": b"read,write,policy,test,ftp,reboot,password,sensitive",
+        },
     )
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if ready():
+                return
+            time.sleep(1)
+    finally:
+        _remove_by_name(res, SCHEDULER_NAME)
+    log = "\n".join(_recent_log_lines(api)) or "(router log empty or unreadable)"
+    raise AssertionError(f"{name} produced no effect within {timeout:.0f}s\n{log}")
+
+
+def _set_global_via_scheduler(
+    api: Any,
+    script_resource: Any,
+    name: str,
+    literal: str,
+) -> None:
+    """Set a :global by running a one-line script from the scheduler.
+
+    /system/script/environment cannot create a global no script has declared,
+    and declaring one named UPDATE_CHECK_MAX_WAIT hits the underscore refusal
+    above - so the declaration has to go through the scheduler like everything
+    else here.
+    """
+    helper = "pu_ut_setglobal"
+    _add_script(script_resource, helper, f":global {name} {literal};\n")
+    try:
+        _run_via_scheduler(
+            api, helper, lambda: _read_global(api, name) != "", timeout=30.0
+        )
+    finally:
+        _remove_by_name(script_resource, helper)
 
 
 def _router_date(api: Any) -> str:
@@ -445,7 +504,7 @@ def test_backup_names_the_pair_by_date_and_version(
     src = (MIKROTIK_DIR / "backup.lua").read_text(encoding="utf-8", errors="replace")
     try:
         _add_script(script_resource, "backup", src)
-        _run_installed(api, script_resource, "backup")
+        _run_via_scheduler(api, "backup", lambda: len(_backup_files(api)) >= 2)
         names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup")
@@ -478,11 +537,18 @@ def test_backup_removes_the_previous_generation(
     _clear_backup_files(api)
     stale = "backup-stale-2020-01-01-6.49.10"
     try:
-        _run_source(
-            api,
+        # No :local or :global at all, so this one can go through the ordinary
+        # /system/script/run path.
+        decoy = "pu_ut_decoy"
+        _add_script(
             script_resource,
-            f"/system backup save name={stale} dont-encrypt=yes;",
+            decoy,
+            f"/system backup save name={stale} dont-encrypt=yes;\n",
         )
+        try:
+            _run_named(api, decoy)
+        finally:
+            _remove_by_name(script_resource, decoy)
         assert _wait_for_backup_files(api, 1), "decoy backup was not created"
         assert f"{stale}.backup" in _backup_files(api)
 
@@ -490,7 +556,11 @@ def test_backup_removes_the_previous_generation(
             encoding="utf-8", errors="replace"
         )
         _add_script(script_resource, "backup", src)
-        _run_installed(api, script_resource, "backup")
+        _run_via_scheduler(
+            api,
+            "backup",
+            lambda: f"{stale}.backup" not in _backup_files(api),
+        )
         names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup")
@@ -517,9 +587,15 @@ def test_update_check_reports_a_failed_check(
         encoding="utf-8", errors="replace"
     )
     try:
-        _run_source(api, script_resource, ":global UPDATE_CHECK_MAX_WAIT 0;")
+        _set_global_via_scheduler(
+            api, script_resource, "UPDATE_CHECK_MAX_WAIT", "0"
+        )
         _add_script(script_resource, "update_check", src)
-        _run_installed(api, script_resource, "update_check")
+        _run_via_scheduler(
+            api,
+            "update_check",
+            lambda: _read_global(api, "pu_TG_LAST_MESSAGE") != "",
+        )
     finally:
         _remove_by_name(script_resource, "update_check")
         _unset_global(api, "UPDATE_CHECK_MAX_WAIT")

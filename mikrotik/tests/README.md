@@ -118,10 +118,14 @@ docker compose down -v
    escape: the text is posted URL-encoded, so a bare `%` is a defect that
    otherwise only shows up as a mangled Telegram message.
 
-Both of the last two run the script through `:parse` rather than
-`/system script run`, which is how the production scripts invoke each other
-anyway, and which sidesteps the CHR parser bug documented in
-`XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE`.
+Both of the last two drive the script from `/system scheduler`, which is how it
+runs on a real router. That is forced rather than chosen: on RouterOS 7.24.1
+CHR both `/system script run` and `:parse` refuse any source declaring a
+`:global` whose name contains an underscore, reporting "expected end of
+command" at the underscore — and that covers most of this package. The suite
+used to attribute this to QEMU/TCG emulation; that attribution is wrong. The
+identical failure was measured with `/dev/kvm` handed to the container: same
+count, same column. The scheduler is the one execution path not blocked by it.
 
 `reboot-and-flush` (reboots the VM), `change_WIFI_pw` (touches wireless
 profiles), and `tg_send` itself are intentionally **not executed** — only their
