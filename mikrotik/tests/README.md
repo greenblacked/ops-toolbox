@@ -118,14 +118,31 @@ docker compose down -v
    escape: the text is posted URL-encoded, so a bare `%` is a defect that
    otherwise only shows up as a mangled Telegram message.
 
-Both of the last two drive the script from `/system scheduler`, which is how it
-runs on a real router. That is forced rather than chosen: on RouterOS 7.24.1
-CHR both `/system script run` and `:parse` refuse any source declaring a
-`:global` whose name contains an underscore, reporting "expected end of
-command" at the underscore — and that covers most of this package. The suite
-used to attribute this to QEMU/TCG emulation; that attribution is wrong. The
-identical failure was measured with `/dev/kvm` handed to the container: same
-count, same column. The scheduler is the one execution path not blocked by it.
+Items 4 and 5 are written and **currently xfail**, because RouterOS 7.24.1 CHR
+will not execute either script. Every path refuses a `:global` whose name
+contains an underscore — which `backup.lua` and `update_check.lua` both have —
+reporting "expected end of command" pointing at the underscore:
+
+| path | result |
+| --- | --- |
+| `/system script run` | refused at the underscore |
+| `:parse` | refused, reported against the parsed string |
+| `/system scheduler` | refused, logged as `(scheduler:NAME)` at the underscore |
+| `/system script add` | accepted — the source is stored intact |
+
+Two explanations were tested and ruled out. **QEMU** is not it: the failure is
+identical with `/dev/kvm` handed to the container, same tests, same column. Nor
+is it **permissions**, though that masked it for one round — a script added
+through the API carries no policy, an on-event script runs with the
+intersection of its own policy and the scheduler entry's, and empty intersects
+to empty. Fixing that turned "not enough permissions" into the parse refusal
+underneath.
+
+The tests are kept rather than deleted, and non-strict to match the rest of the
+suite: if a later RouterOS accepts these names they start passing and the
+coverage arrives with them. Until then, `add → remove` is the ceiling for these
+two scripts, and it is worth being clear about what that does and does not
+prove — RouterOS accepts the source; nothing here has run it.
 
 `reboot-and-flush` (reboots the VM), `change_WIFI_pw` (touches wireless
 profiles), and `tg_send` itself are intentionally **not executed** — only their

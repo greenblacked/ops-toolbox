@@ -24,8 +24,16 @@ entry here belongs to a version.
   request, and pull-request runs cancel when superseded while nightly and manual
   runs never do.
 
-- `backup.lua` and `update_check.lua` are executed in the CHR suite rather than
-  only loaded. Adding a script proves RouterOS accepts the source, not that
+- `backup.lua` and `update_check.lua` have execution tests in the CHR suite,
+  currently xfail: RouterOS 7.24.1 CHR refuses to run either script, because
+  every execution path rejects a `:global` whose name contains an underscore and
+  both have one. `/system script run`, `:parse` and `/system scheduler` all
+  report "expected end of command" pointing at the underscore; `script add`
+  accepts the source, so it is stored intact. QEMU was ruled out (identical
+  under KVM) and so were permissions (an API-added script carries no policy,
+  which masked the refusal for one round). The assertions are kept rather than
+  dropped, so the coverage arrives on its own if a later release accepts the
+  names. Adding a script proves RouterOS accepts the source, not that
   running it does what the file says — a weaker claim than it looks for the two
   scripts that respectively delete files and decide whether to tell you to
   upgrade. The backup tests assert the pair carries the router's own date and
