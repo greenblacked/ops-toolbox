@@ -89,11 +89,24 @@ def _remove_by_name(resource: Any, name: str) -> None:
         resource.call("remove", {".id": rid})
 
 
+# A script added through the API carries no policy unless one is given, and an
+# on-event script runs with the intersection of its own policy and the
+# scheduler entry's. Empty intersects to empty, which RouterOS reports as
+# "executing script NAME (not enough permissions)" - the script never runs and
+# nothing else says why. /system/script/run does not hit this, because it
+# borrows the calling API session's permissions instead.
+SCRIPT_POLICY = b"ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon"
+
+
 def _add_script(resource: Any, name: str, source: str) -> None:
     _remove_by_name(resource, name)
     resource.call(
         "add",
-        {"name": name.encode("utf-8"), "source": source.encode("utf-8")},
+        {
+            "name": name.encode("utf-8"),
+            "source": source.encode("utf-8"),
+            "policy": SCRIPT_POLICY,
+        },
     )
 
 
@@ -449,7 +462,7 @@ def _run_via_scheduler(
             "name": SCHEDULER_NAME.encode("utf-8"),
             "on-event": name.encode("utf-8"),
             "interval": b"1s",
-            "policy": b"read,write,policy,test,ftp,reboot,password,sensitive",
+            "policy": SCRIPT_POLICY,
         },
     )
     try:
