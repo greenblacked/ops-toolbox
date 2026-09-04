@@ -13,11 +13,32 @@
 # reads the notification and starts the upgrade, instead of depending on them
 # remembering - which is exactly the step that gets skipped at 23:00.
 #
-# backup.lua does the work and sends its own notification naming the file, so
-# the version in that filename is the version you would be rolling back to.
+# The save happens inline rather than by calling backup.lua, so a router where
+# only this script was pasted still gets a rollback point, and so the filename
+# and its outcome can be reported in the one message that announces the
+# upgrade. The name carries the date and the *running* version, which is the
+# version this file would restore you to.
 :local TakeBackup true;
 :global UPDATE_CHECK_BACKUP;
 :if ([:typeof $UPDATE_CHECK_BACKUP] = "bool") do={ :set TakeBackup $UPDATE_CHECK_BACKUP; }
+
+# Once the new pair is written, delete the older backup-* files, leaving one
+# generation on the router. That is the point on a hEX or a hAP where flash is
+# measured in tens of megabytes, and an update check is exactly when a router
+# is about to need the space.
+#
+# It reads the same :global backup.lua does, because "how many generations live
+# on this router" is one policy and not two - a router set to keep every
+# generation for backup_file_cleanup.lua to age out at 30 days should not have
+# an update check pruning behind its back.
+#
+# The same caveat as backup.lua applies and is worth repeating: one generation
+# means a corrupt backup is the only backup. This is retention on the router,
+# not a backup policy - pull the files off with pull_router_backups.sh and keep
+# generations there.
+:local RemovePrevious true;
+:global BACKUP_REMOVE_PREVIOUS;
+:if ([:typeof $BACKUP_REMOVE_PREVIOUS] = "bool") do={ :set RemovePrevious $BACKUP_REMOVE_PREVIOUS; }
 
 # A check that never completes is a router silently running an unpatched
 # release, which is the failure this script exists to prevent - so it is worth
@@ -196,15 +217,107 @@
     # Runs before the notification is sent so the message can report the
     # outcome. A failed backup is not a reason to stay quiet about the update -
     # it is a reason to say loudly that there is nothing to roll back to.
+    #
+    # The "backup-" prefix is deliberate and load-bearing: it is what
+    # pull_router_backups.sh globs for and what backup_file_cleanup.lua ages
+    # out, so a differently-named pre-upgrade file would be one nothing ever
+    # collects and nothing ever deletes.
     :local BackupLine "";
     :if ($TakeBackup) do={
+        :local rawDate [/system clock get date];
+        :local Time    [/system clock get time];
+
+        # Sanitize the date so the filename never contains '/': under a
+        # non-ISO date-format setting (mdy/dmy) that would create
+        # subdirectories instead of a file.
+        :local Date "";
+        :for i from=0 to=([:len $rawDate] - 1) do={
+            :local ch [:pick $rawDate $i ($i + 1)];
+            :if ($ch = "/") do={ :set ch "-"; }
+            :set Date ($Date . $ch);
+        }
+
+        # $installed is the version still running, which is the one this file
+        # restores. The suffix separates it from the scheduled backup that may
+        # already exist for the same identity, date and version.
+        :local BackupFile ("backup-" . $rawName . "-" . $Date . "-" . $installed . "-pre-upgrade");
+        # $DeviceName is the escaped identity, so the filename shown in the
+        # message survives the URL-encode and HTML-parse the send puts it
+        # through even when the identity holds '&' or '<'.
+        :local BackupShown ("backup-" . $DeviceName . "-" . $Date . "-" . $installed . "-pre-upgrade");
+
+        # Same :global as backup.lua, for the same reason: this file is
+        # tracked, so a password typed into the body lands in the next commit.
+        #
+        #     /system script add name=startup source={:global BACKUP_PASSWORD "s3cret";}
+        :local BackupPassword "";
+        :global BACKUP_PASSWORD;
+        :if ([:len $BACKUP_PASSWORD] > 0) do={ :set BackupPassword $BACKUP_PASSWORD; }
+
+        :local BackupOk false;
         :do {
-            :local RunBackup [:parse [/system script get backup source]];
-            $RunBackup;
-            :set BackupLine "%0A<b>Backup:</b> <code>taken before upgrade</code>";
+            :if ([:len $BackupPassword] > 0) do={
+                /system backup save name=$BackupFile password=$BackupPassword;
+            } else={
+                /system backup save name=$BackupFile dont-encrypt=yes;
+            }
+            # The .rsc alongside the binary: a binary backup only restores to
+            # the same version, and the version is the thing about to change.
+            /export file=$BackupFile;
+            :set BackupOk true;
+            :log info ("update_check: pre-upgrade backup created: $BackupFile");
+            :set BackupLine ("%0A<b>Backup:</b> <code>" . $BackupShown . "</code>");
         } on-error={
-            :log error "update_check: pre-upgrade backup failed (is the backup script installed?)";
+            :log error ("update_check: pre-upgrade backup FAILED on $rawName at $Date $Time");
             :set BackupLine "%0A<b>Backup:</b> <code>FAILED - nothing to roll back to</code>";
+        }
+
+        # Gated on $BackupOk, and outside the handler above rather than at the
+        # end of its success branch. Both give the ordering that is the whole
+        # safety property here - a failed save is never the run that deletes
+        # the last good backup - but a retention failure reached from inside
+        # that block would land in its on-error and report a backup that
+        # actually succeeded as "nothing to roll back to". A file that would
+        # not delete is worth a log line, not a false alarm about the backup.
+        #
+        # Exclusion is by name rather than by age, because the files just
+        # written are known by name and everything else matching the prefix is
+        # older by definition. RouterOS script has no sort, so picking "the
+        # previous one" out of creation stamps means a hand-rolled pairwise
+        # scan to do what a name exclusion does exactly.
+        #
+        # It keeps everything starting with $BackupFile, not just the two exact
+        # names ".backup" and ".rsc". `/export file=` writes through a
+        # "<name>.rsc.in_progress" temporary and returns before the export has
+        # finished, so an exact-name test leaves that file matching "^backup-"
+        # and not matching either exclusion - and the sweep deletes a
+        # half-written export out from under RouterOS. Verified against a CHR:
+        # the temporary is real and outlives the command that created it. A
+        # prefix test cannot delete our own generation whatever suffix RouterOS
+        # gives it, and over-matching costs nothing here: the worst case is
+        # keeping a file, which is the safe direction for a prune to err in.
+        :if ($BackupOk and $RemovePrevious) do={
+            :local Keep [:len $BackupFile];
+            :local Removed 0;
+            :do {
+                :foreach f in=[/file find where name~"^backup-"] do={
+                    :do {
+                        :local nm [/file get $f name];
+                        :if ([:pick $nm 0 $Keep] != $BackupFile) do={
+                            /file remove $f;
+                            :log info ("update_check: removed previous backup $nm");
+                            :set Removed ($Removed + 1);
+                        }
+                    } on-error={
+                        :log warning "update_check: could not remove a previous backup file";
+                    }
+                }
+            } on-error={
+                :log warning "update_check: could not list files to prune previous backups";
+            }
+            :if ($Removed > 0) do={
+                :set BackupLine ($BackupLine . "%0A<b>Removed:</b> <code>" . $Removed . " older file(s)</code>");
+            }
         }
     }
 

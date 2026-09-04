@@ -282,6 +282,28 @@ if grep -q 'RetentionDays \* 1d\|\$RetentionDays \* 1d' "$PKG/backup_file_cleanu
 else
   err "backup_file_cleanup.lua must use RetentionDays and a ^backup- prefix match"
 fi
+# update_check.lua writes the pre-upgrade pair itself rather than calling the
+# backup script, so it is a second producer of these files and has to agree
+# with the two consumers: pull_router_backups.sh globs backup-*, and
+# backup_file_cleanup.lua ages out ^backup-. Rename the prefix here and the one
+# backup taken at the moment it matters most is the one nothing ever collects
+# and nothing ever deletes - a leak and a gap at once, both silent. $installed
+# is what makes the name answer "restores to which version".
+if grep -qF '("backup-" . $rawName' "$PKG/update_check.lua" \
+   && grep -qF '$installed . "-pre-upgrade"' "$PKG/update_check.lua"; then
+  ok "update_check.lua names its pre-upgrade backup backup-...-VERSION-pre-upgrade"
+else
+  err "update_check.lua must name the pre-upgrade pair backup-<identity>-<date>-<installed>-pre-upgrade"
+fi
+# The pruning is only safe because it cannot run unless the save it replaces
+# succeeded. Ungate it and a router that failed to write a backup deletes the
+# last good one on its way past - the two defects that have to coincide for a
+# rollback to be impossible, in one edit.
+if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/update_check.lua"; then
+  ok "update_check.lua prunes previous backups only after a successful save"
+else
+  err "update_check.lua must gate previous-backup removal on the save having succeeded"
+fi
 if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
    && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
   ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"
