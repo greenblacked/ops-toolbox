@@ -20,10 +20,10 @@ pinned CHR version and its digest are bumped.
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |
 | `tg_send.lua`                   | Generic Telegram text-message helper used by every other script.        |
-| `backup.lua`                    | Daily binary + export backup with Telegram confirmation.                |
+| `backup.lua`                    | Dated, version-stamped backup + export; prunes the previous one.        |
 | `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
 | `health_check.lua`              | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
-| `update_check.lua`              | Notifies once when a newer RouterOS version appears on your channel.    |
+| `update_check.lua`              | Backs up, then notifies when a newer RouterOS version appears.          |
 | `wan_failover_notify.lua`       | One-shot Telegram alert on built-in WAN-detect state transitions.       |
 | `detect_internet.lua`           | Re-runs RouterOS WAN/LAN auto-detection (manual reset).                 |
 | `reboot-and-flush.lua`          | Flushes DNS + connection tracking, then reboots. No pre-reboot ping.    |
@@ -168,9 +168,27 @@ Creates a binary backup (`.backup`) and a config export (`.rsc`) and sends a
 Telegram notification with the resulting filename. Optional binary-backup
 encryption via `BackupPassword`. Sanitizes the date so non-ISO `date-format`
 settings don't accidentally produce filenames with `/` (which would create
-sub-folders on disk). Files accumulate in `/file` — pair with
+sub-folders on disk).
+
+The name is `backup-<identity>-<date>-<installed-version>`, so a listing
+answers which config, from when, and on which RouterOS version — the version
+matters most on a rollback, because a `.backup` restored onto a different
+release is not guaranteed to load.
+
+`RemovePrevious` (default `true`, overridable with
+`:global BACKUP_REMOVE_PREVIOUS false`) deletes every other `backup-*` file
+once the new pair has been written, leaving exactly one generation on the
+router. It runs only after a successful save — the failure path ends in
+`:error` before it is reached — so a backup that failed never takes the last
+good one with it.
+
+One generation on a router is retention, not a backup policy. Keep
+generations off the device with `pull_router_backups.sh`, and run it at least
+as often as the backup runs, or the older ones are gone before it sees them.
+With `RemovePrevious` off, files accumulate in `/file` and
 `backup_file_cleanup.lua` (default retention 30 days; see
-`print_schedulers.sh`) so flash does not fill with stale pairs.
+`print_schedulers.sh`) ages them out instead; running both is harmless, since
+the age sweep finds nothing left to remove.
 
 ### `change_WIFI_pw.lua`
 
@@ -206,6 +224,21 @@ Temperature lookup iterates `/system health` entries (`temperature`,
 
 Asks the official update server whether a newer RouterOS version exists on
 your channel, and notifies once when one appears. Does **not** auto-install.
+
+The verdict comes from RouterOS's own `status` field rather than from
+`installed != latest`, because those strings also differ when `latest` is
+*older* — switch a router from `stable` to `long-term` and a difference test
+announces an upgrade to the release you just moved away from.
+
+When an upgrade is offered it runs the `backup` script first and reports the
+outcome in the same message, so the pre-upgrade snapshot exists by the time
+anyone reads the notification instead of depending on them remembering. The
+backup sends its own message naming the file, and the version in that
+filename is the one you would be rolling back to. Requires the `backup`
+script in `/system script`; set `:global UPDATE_CHECK_BACKUP false` to only
+notify. A failed backup does not suppress the update notification — the
+message says the backup failed, which is louder than silence and is the state
+you most need to know about before upgrading.
 
 ### `wan_failover_notify.lua`
 

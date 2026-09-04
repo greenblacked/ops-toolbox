@@ -450,13 +450,15 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
   script body, with retries and 4 KB truncation.
 - `backup.lua` — daily binary + export backup; sends a Telegram confirmation
-  with the resulting filename. Date-format-safe filenames.
+  with the resulting filename. Date-format-safe filenames stamped with the
+  identity, date and installed version; removes the previous generation once
+  the new one is written.
 - `change_WIFI_pw.lua` — rotates 2.4 GHz / 5 GHz WPA2 PSKs (legacy `wireless`
   or new `wifi`/WiFiWave2 stack) and posts the new credentials to Telegram.
 - `health_check.lua` — CPU / RAM / disk / temperature watchdog; only alerts
   on threshold violations.
 - `update_check.lua` — daily check against MikroTik's update server; pings
-  Telegram once per new version.
+  Telegram once per new version and takes a pre-upgrade backup first.
 - `wan_failover_notify.lua` — polls the built-in `detect-internet-state`
   property on the WAN interface and notifies only on transitions.
 - `detect_internet.lua` — manual nudge that re-runs RouterOS WAN/LAN
@@ -490,8 +492,9 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   when the snapshot changes. First run records a baseline silently.
 - `backup_file_cleanup.lua` — removes `backup-*` files older than
   `RetentionDays` from `/file`, so flash does not fill with stale
-  `.backup`/`.rsc` pairs. Pair it with `backup.lua`, which creates them and
-  prunes nothing.
+  `.backup`/`.rsc` pairs. Age-based, and so the alternative to `backup.lua`'s
+  own `RemovePrevious`: use it when you want several generations kept on the
+  router rather than only the newest.
 
 Run from your machine rather than on the router:
 

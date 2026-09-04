@@ -16,6 +16,24 @@ entry here belongs to a version.
 
 ### Added
 
+- `update_check.lua` takes a backup before it tells you an upgrade is
+  available, and reports whether it succeeded in the same message. The snapshot
+  worth having is one taken while the router still runs the version being
+  replaced, and it needs to exist by the time somebody reads the notification
+  rather than depending on them remembering. `:global UPDATE_CHECK_BACKUP false`
+  goes back to notify-only. A failed backup does not suppress the update
+  notification: it is reported, because "there is nothing to roll back to" is
+  the thing you most need to know before upgrading.
+
+- `backup.lua` removes the previous generation once the new pair is written
+  (`RemovePrevious`, off via `:global BACKUP_REMOVE_PREVIOUS false`). Exclusion
+  is by exact filename rather than by timestamp, because the two files just
+  written are known by name and RouterOS script has no sort to order the rest
+  by. The sweep runs only after a successful save — the failure path ends in
+  `:error` first — so a backup that failed never deletes the last good one.
+  This is retention on the router, not a backup policy: it leaves one
+  generation, so keep the rest off the device with `pull_router_backups.sh`.
+
 - Dependabot watches the Docker base images as well as the actions. Every suite
   that runs anything builds it on one, and they were watched by nothing — the
   same mutable-tag argument the actions entry already makes, applied to the
