@@ -36,13 +36,13 @@
 
 :local alerts "";
 :if ($cpu > $CpuThreshold) do={
-    :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F CPU: " . $cpu . "%");
+    :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F CPU: " . $cpu . "%25");
 }
 :if ($memUsed > $MemThreshold) do={
-    :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F Memory: " . $memUsed . "%");
+    :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F Memory: " . $memUsed . "%25");
 }
 :if ($hddUsed > $DiskThreshold) do={
-    :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F Disk: " . $hddUsed . "%");
+    :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F Disk: " . $hddUsed . "%25");
 }
 :if (($temp > 0) and ($temp > $TempThreshold)) do={
     :set alerts ($alerts . "%0A\E2\9A\A0\EF\B8\8F Temp: " . $temp . "C");

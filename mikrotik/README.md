@@ -20,10 +20,10 @@ pinned CHR version and its digest are bumped.
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |
 | `tg_send.lua`                   | Generic Telegram text-message helper used by every other script.        |
-| `backup.lua`                    | Daily binary + export backup with Telegram confirmation.                |
+| `backup.lua`                    | Dated, version-stamped backup + export; prunes the previous one.        |
 | `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
 | `health_check.lua`              | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
-| `update_check.lua`              | Notifies once when a newer RouterOS version appears on your channel.    |
+| `update_check.lua`              | Backs up, then notifies when a newer RouterOS version appears.          |
 | `wan_failover_notify.lua`       | One-shot Telegram alert on built-in WAN-detect state transitions.       |
 | `detect_internet.lua`           | Re-runs RouterOS WAN/LAN auto-detection (manual reset).                 |
 | `reboot-and-flush.lua`          | Flushes DNS + connection tracking, then reboots. No pre-reboot ping.    |
@@ -168,9 +168,27 @@ Creates a binary backup (`.backup`) and a config export (`.rsc`) and sends a
 Telegram notification with the resulting filename. Optional binary-backup
 encryption via `BackupPassword`. Sanitizes the date so non-ISO `date-format`
 settings don't accidentally produce filenames with `/` (which would create
-sub-folders on disk). Files accumulate in `/file` — pair with
+sub-folders on disk).
+
+The name is `backup-<identity>-<date>-<installed-version>`, so a listing
+answers which config, from when, and on which RouterOS version — the version
+matters most on a rollback, because a `.backup` restored onto a different
+release is not guaranteed to load.
+
+`RemovePrevious` (default `true`, overridable with
+`:global BACKUP_REMOVE_PREVIOUS false`) deletes every other `backup-*` file
+once the new pair has been written, leaving exactly one generation on the
+router. It runs only after a successful save — the failure path ends in
+`:error` before it is reached — so a backup that failed never takes the last
+good one with it.
+
+One generation on a router is retention, not a backup policy. Keep
+generations off the device with `pull_router_backups.sh`, and run it at least
+as often as the backup runs, or the older ones are gone before it sees them.
+With `RemovePrevious` off, files accumulate in `/file` and
 `backup_file_cleanup.lua` (default retention 30 days; see
-`print_schedulers.sh`) so flash does not fill with stale pairs.
+`print_schedulers.sh`) ages them out instead; running both is harmless, since
+the age sweep finds nothing left to remove.
 
 ### `change_WIFI_pw.lua`
 
@@ -206,6 +224,48 @@ Temperature lookup iterates `/system health` entries (`temperature`,
 
 Asks the official update server whether a newer RouterOS version exists on
 your channel, and notifies once when one appears. Does **not** auto-install.
+
+The verdict comes from RouterOS's own `status` field rather than from
+`installed != latest`, because those strings also differ when `latest` is
+*older* — switch a router from `stable` to `long-term` and a difference test
+announces an upgrade to the release you just moved away from.
+
+When an upgrade is offered it runs the `backup` script first and reports the
+outcome in the same message, so the pre-upgrade snapshot exists by the time
+anyone reads the notification instead of depending on them remembering. The
+backup sends its own message naming the file, and the version in that
+filename is the one you would be rolling back to. Requires the `backup`
+script in `/system script`; set `:global UPDATE_CHECK_BACKUP false` to only
+notify. A failed backup does not suppress the update notification — the
+message says the backup failed, which is louder than silence and is the state
+you most need to know about before upgrading.
+
+That same message carries the firmware, board, architecture, uptime, CPU load,
+memory and storage figures, because those are what you would go and look up
+anyway before deciding whether to upgrade now or wait for the weekend. They
+are read only on the branch that sends, so an ordinary quiet run stays a
+handful of reads. RouterBOARD firmware is skipped on hardware that has none
+(CHR, x86) rather than reported as `unknown`.
+
+The channel is read and reported, never written. Setting it would mean the
+script overriding a deliberate choice: a router parked on `long-term` moved to
+`stable` on the next tick, then correctly told an upgrade is available — to a
+release train somebody had specifically kept it off.
+
+Completion is detected by polling `status` until it reaches a verdict, up to
+about 65 seconds (`:global UPDATE_CHECK_MAX_WAIT` in five-second units, for a
+slow or contended link), rather than waiting a fixed interval or waiting for
+`latest-version` to fill. RouterOS keeps `latest-version` from the previous
+check, so on every run after the first it is already populated the instant the
+command is issued, and a loop waiting for it to fill exits immediately with
+last week's answer.
+
+A check that never completes sends its own message (`:global
+UPDATE_CHECK_NOTIFY_FAILURE false` to disable). It only fires where the router
+can still reach Telegram — DNS broken, the upgrade server refusing, a proxy in
+the way — which is exactly the case where a router sits on an unpatched
+release with nothing saying so. A fully offline router cannot report anything,
+and no arrangement here changes that.
 
 ### `wan_failover_notify.lua`
 
@@ -499,9 +559,15 @@ harness (syntax + ShellCheck only, no Homebrew) — see
 
   or, less securely, append `check-certificate=no` to the fetch command in
   `tg_send.lua`.
-- Telegram message text uses URL-style escapes: `%0A` for newline,
-  `\F0\9F...` for emoji codepoints encoded as UTF-8 byte literals. When
-  copy-pasting through editors, double-check those escape sequences survived.
+- Telegram message text uses URL-style escapes: `%0A` for newline, `%25` for a
+  literal percent sign, `\F0\9F...` for emoji codepoints encoded as UTF-8 byte
+  literals. When copy-pasting through editors, double-check those escape
+  sequences survived. The percent one is easy to skip because it usually looks
+  fine: `tg_send` posts the text as `application/x-www-form-urlencoded`, so a
+  bare `%` is a truncated escape sequence, and whether that reaches Telegram as
+  a percent sign or as a 400 is the decoder's choice rather than yours. It
+  stops being cosmetic the moment the two characters after it happen to be hex
+  digits, which silently produces a byte instead.
 - `:global` variables persist across scheduler runs *within an uptime
   session*. They are cleared on reboot — `wan_failover_notify` relies on
   this and treats the first post-boot run as the baseline state.

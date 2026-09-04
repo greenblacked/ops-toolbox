@@ -4,6 +4,7 @@ import contextlib
 import os
 import pathlib
 import re
+import time
 from typing import Any
 
 import pytest
@@ -27,17 +28,28 @@ RUNNABLE_SCRIPTS = (
     # test_script_add_remove_roundtrip below.
 )
 
-# RouterOS CHR (e.g. x86_64 under QEMU/TCG on Apple Silicon) can expose a
-# /system/script/run uses a parser that rejects '_' in :local and :global names
-# ("expected end of command" at the underscore). The same source runs via
-# :parse, /execute, and script add. Not a bug in the repo .lua files.
+# RouterOS 7.24.1 CHR: /system/script/run uses a parser that rejects '_' in
+# :local and :global names ("expected end of command" pointing at the
+# underscore). Not a bug in the repo .lua files - the same source is accepted
+# by script add and runs from the scheduler.
+#
+# This was previously attributed to QEMU/TCG emulation. That is wrong, and the
+# correction is worth keeping: the identical failure was measured on a runner
+# with /dev/kvm handed to the container, same counts, same column. Whatever it
+# is, hardware acceleration does not change it.
+#
+# :parse is not the escape hatch either, though this comment used to say it
+# was. It refuses the same names, which is why the tests that need to execute a
+# script go through _run_via_scheduler instead.
+#
 # detect_internet.lua has no :global with '_' in the name, so it can still be
 # exercised via /system/script/run on CHR.
 XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
     reason=(
-        f"RouterOS {EXPECT_VER} CHR (QEMU/TCG): /system/script/run misparses '_' in "
-        ":local/:global "
-        "names; :parse, /execute, and script add are fine. Not a .lua source bug."
+        f"RouterOS {EXPECT_VER} CHR refuses '_' in :local/:global names at "
+        "execution time on every path tried: /system/script/run, :parse, and "
+        "/system scheduler. script add is fine, so the source is stored intact. "
+        "Not a .lua source bug."
     ),
     strict=False,
 )
@@ -78,11 +90,24 @@ def _remove_by_name(resource: Any, name: str) -> None:
         resource.call("remove", {".id": rid})
 
 
+# A script added through the API carries no policy unless one is given, and an
+# on-event script runs with the intersection of its own policy and the
+# scheduler entry's. Empty intersects to empty, which RouterOS reports as
+# "executing script NAME (not enough permissions)" - the script never runs and
+# nothing else says why. /system/script/run does not hit this, because it
+# borrows the calling API session's permissions instead.
+SCRIPT_POLICY = b"ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon"
+
+
 def _add_script(resource: Any, name: str, source: str) -> None:
     _remove_by_name(resource, name)
     resource.call(
         "add",
-        {"name": name.encode("utf-8"), "source": source.encode("utf-8")},
+        {
+            "name": name.encode("utf-8"),
+            "source": source.encode("utf-8"),
+            "policy": SCRIPT_POLICY,
+        },
     )
 
 
@@ -350,3 +375,268 @@ def test_dhcp_lease_watch_baseline_silent(api: Any, script_resource: Any) -> Non
         _unset_global(api, "DHCP_CHURN_FLAG")
         _unset_global(api, "DHCP_DUPS_FLAG")
         _unset_global(api, "pu_TG_LAST_MESSAGE")
+
+
+# --- backup.lua and update_check.lua ---------------------------------------
+#
+# Both were parse-only for a long time, which is a weaker claim than it looks:
+# adding a script proves RouterOS accepts the source, not that running it does
+# what the file says. That gap matters most for exactly these two - backup.lua
+# deletes files, and update_check.lua decides whether to tell you to upgrade.
+#
+# These tests are written to close it and are marked xfail because the platform
+# will not let them. Three execution paths were tried and all three refuse a
+# :global whose name contains an underscore, which both scripts have:
+#
+#   /system/script/run   expected end of command, at the underscore
+#   :parse               same, reported against the parsed string
+#   /system scheduler    same, logged as (scheduler:NAME) ... at the underscore
+#
+# Ruled out along the way: QEMU (identical under KVM and TCG, same column) and
+# permissions (the scheduler first reported "not enough permissions", which was
+# an API-added script carrying no policy - fixed, and the refusal underneath it
+# is what is left).
+#
+# They are kept rather than deleted, and kept non-strict to match the rest of
+# the suite. If a later RouterOS accepts these names, they start passing and the
+# coverage arrives with it; until then the assertions are here, written down,
+# rather than being a gap nobody has described.
+
+BACKUP_PREFIX = "backup-"
+PARSE_WRAPPER = "pu_ut_parse_wrapper"
+
+
+def _clear_backup_files(api: Any) -> None:
+    res = api.get_binary_resource("/file")
+    for row in list(res.get()):
+        if _row_str(row, "name").startswith(BACKUP_PREFIX):
+            with contextlib.suppress(ros_exc.RouterOsApiError):
+                res.call("remove", {".id": _row_id(row)})
+
+
+def _backup_files(api: Any) -> list[str]:
+    res = api.get_binary_resource("/file")
+    return sorted(
+        n
+        for n in (_row_str(r, "name") for r in res.get())
+        if n.startswith(BACKUP_PREFIX)
+    )
+
+
+def _wait_for_backup_files(api: Any, count: int, timeout: float = 30.0) -> list[str]:
+    """Poll until `count` backup files exist, or give up.
+
+    `/export file=` returns before the file is necessarily on disk, so asserting
+    straight after the run is a race that passes on a fast boot and fails on a
+    contended runner.
+    """
+    deadline = time.monotonic() + timeout
+    names = _backup_files(api)
+    while len(names) < count and time.monotonic() < deadline:
+        time.sleep(1)
+        names = _backup_files(api)
+    return names
+
+
+SCHEDULER_NAME = "pu_ut_sched"
+
+
+def _recent_log_lines(api: Any, limit: int = 20) -> list[str]:
+    with contextlib.suppress(ros_exc.RouterOsApiError):
+        rows = list(api.get_binary_resource("/log").get())
+        return [
+            f"{_row_str(r, 'topics')}: {_row_str(r, 'message')}" for r in rows[-limit:]
+        ]
+    return []
+
+
+def _run_via_scheduler(
+    api: Any,
+    name: str,
+    ready,
+    timeout: float = 60.0,
+) -> None:
+    """Run an installed script from the scheduler, and wait for its effect.
+
+    Not a stylistic choice. On RouterOS 7.24.1 CHR both `/system/script/run`
+    and `:parse` refuse any source declaring a `:global` whose name contains an
+    underscore - "expected end of command" pointing exactly at the underscore -
+    which is most of this package. Measured under KVM as well as TCG, so the
+    QEMU attribution in XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE does not hold.
+
+    The scheduler is how these scripts run on a real router, so it is both the
+    more faithful harness and the one execution path not blocked by that.
+
+    `ready` is polled until it returns true. The entry re-fires every second
+    until then, which is safe here because both scripts are idempotent within a
+    run: the same date and version produce the same filename, and the same
+    failure produces the same message.
+    """
+    res = api.get_binary_resource("/system/scheduler")
+    _remove_by_name(res, SCHEDULER_NAME)
+    res.call(
+        "add",
+        {
+            "name": SCHEDULER_NAME.encode("utf-8"),
+            "on-event": name.encode("utf-8"),
+            "interval": b"1s",
+            "policy": SCRIPT_POLICY,
+        },
+    )
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if ready():
+                return
+            time.sleep(1)
+    finally:
+        _remove_by_name(res, SCHEDULER_NAME)
+    log = "\n".join(_recent_log_lines(api)) or "(router log empty or unreadable)"
+    raise AssertionError(f"{name} produced no effect within {timeout:.0f}s\n{log}")
+
+
+def _set_global_via_scheduler(
+    api: Any,
+    script_resource: Any,
+    name: str,
+    literal: str,
+) -> None:
+    """Set a :global by running a one-line script from the scheduler.
+
+    /system/script/environment cannot create a global no script has declared,
+    and declaring one named UPDATE_CHECK_MAX_WAIT hits the underscore refusal
+    above - so the declaration has to go through the scheduler like everything
+    else here.
+    """
+    helper = "pu_ut_setglobal"
+    _add_script(script_resource, helper, f":global {name} {literal};\n")
+    try:
+        _run_via_scheduler(
+            api, helper, lambda: _read_global(api, name) != "", timeout=30.0
+        )
+    finally:
+        _remove_by_name(script_resource, helper)
+
+
+def _router_date(api: Any) -> str:
+    rows = list(api.get_binary_resource("/system/clock").get())
+    assert rows, "/system clock returned empty"
+    # backup.lua rewrites '/' to '-' so a non-ISO date-format cannot turn the
+    # filename into a path.
+    return _row_str(rows[0], "date").replace("/", "-")
+
+
+@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
+def test_backup_names_the_pair_by_date_and_version(
+    api: Any,
+    script_resource: Any,
+) -> None:
+    """One run leaves a .backup/.rsc pair carrying the date and the version."""
+    _clear_backup_files(api)
+    src = (MIKROTIK_DIR / "backup.lua").read_text(encoding="utf-8", errors="replace")
+    try:
+        _add_script(script_resource, "backup", src)
+        _run_via_scheduler(api, "backup", lambda: len(_backup_files(api)) >= 2)
+        names = _wait_for_backup_files(api, 2)
+    finally:
+        _remove_by_name(script_resource, "backup")
+        _clear_backup_files(api)
+
+    assert len(names) == 2, f"expected a .backup/.rsc pair, got {names}"
+    assert sorted(n.rsplit(".", 1)[1] for n in names) == ["backup", "rsc"], names
+    stems = {n.rsplit(".", 1)[0] for n in names}
+    assert len(stems) == 1, f"pair does not share a stem: {names}"
+    stem = stems.pop()
+
+    date = _router_date(api)
+    assert date, "router reported no date"
+    assert date in stem, f"date {date!r} missing from {stem!r}"
+    assert EXPECT_VER in stem, f"version {EXPECT_VER!r} missing from {stem!r}"
+    assert "/" not in stem, f"filename would create a directory: {stem!r}"
+
+
+@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
+def test_backup_removes_the_previous_generation(
+    api: Any,
+    script_resource: Any,
+) -> None:
+    """A second generation replaces the first rather than accumulating.
+
+    Seeded with a decoy rather than by running backup.lua twice: two runs on the
+    same day at the same version produce the same filename, so the second
+    overwrites the first and deletes nothing. A decoy under an older name is
+    what the retention sweep is actually for.
+    """
+    _clear_backup_files(api)
+    stale = "backup-stale-2020-01-01-6.49.10"
+    try:
+        # No :local or :global at all, so this one can go through the ordinary
+        # /system/script/run path.
+        decoy = "pu_ut_decoy"
+        _add_script(
+            script_resource,
+            decoy,
+            f"/system backup save name={stale} dont-encrypt=yes;\n",
+        )
+        try:
+            _run_named(api, decoy)
+        finally:
+            _remove_by_name(script_resource, decoy)
+        assert _wait_for_backup_files(api, 1), "decoy backup was not created"
+        assert f"{stale}.backup" in _backup_files(api)
+
+        src = (MIKROTIK_DIR / "backup.lua").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        _add_script(script_resource, "backup", src)
+        _run_via_scheduler(
+            api,
+            "backup",
+            lambda: f"{stale}.backup" not in _backup_files(api),
+        )
+        names = _wait_for_backup_files(api, 2)
+    finally:
+        _remove_by_name(script_resource, "backup")
+        _clear_backup_files(api)
+
+    assert f"{stale}.backup" not in names, f"previous generation survived: {names}"
+    assert len(names) == 2, f"expected exactly the new pair, got {names}"
+
+
+@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
+def test_update_check_reports_a_failed_check(
+    api: Any,
+    script_resource: Any,
+) -> None:
+    """A check that never reaches a verdict sends a message instead of going quiet.
+
+    UPDATE_CHECK_MAX_WAIT=0 skips the poll loop, so the script reaches its
+    timeout path deterministically whether or not the CHR can reach MikroTik.
+    It still sits through the 5s settle delay; if this ever fails on the API
+    read timeout rather than on an assertion, `check-for-updates once` has
+    started blocking, which it is not supposed to do.
+    """
+    _unset_global(api, "pu_TG_LAST_MESSAGE")
+    src = (MIKROTIK_DIR / "update_check.lua").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    try:
+        _set_global_via_scheduler(
+            api, script_resource, "UPDATE_CHECK_MAX_WAIT", "0"
+        )
+        _add_script(script_resource, "update_check", src)
+        _run_via_scheduler(
+            api,
+            "update_check",
+            lambda: _read_global(api, "pu_TG_LAST_MESSAGE") != "",
+        )
+    finally:
+        _remove_by_name(script_resource, "update_check")
+        _unset_global(api, "UPDATE_CHECK_MAX_WAIT")
+
+    message = _read_global(api, "pu_TG_LAST_MESSAGE")
+    assert "update check FAILED" in message, f"no failure notice sent: {message!r}"
+    # tg_send posts the text URL-encoded, so every % has to introduce a real
+    # escape. A bare one is the defect this assertion exists to keep out.
+    stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
+    assert stray is None, f"malformed percent escape at {stray.start()}: {message!r}"

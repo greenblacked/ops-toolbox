@@ -8,6 +8,15 @@ exercise every `*.lua` in `../`. Two services run side by side:
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
 
+## When it runs in CI
+
+Nightly at 03:37 UTC, on demand, and on any pull request touching `mikrotik/`,
+`run-tests.sh`, or `.github/workflows/chr.yml`. The path filter is the point:
+booting a router costs minutes, and it should cost them only where a real
+router is the one thing that can answer the question. A nightly run cannot
+answer it for a change under review, because by the time it fires the change
+has usually merged.
+
 ## Requirements
 
 - Docker (with the `compose` v2 plugin). Tested on Docker Desktop on macOS and
@@ -96,11 +105,50 @@ docker compose down -v
    `tg_send` is replaced with a **stub** for the test session that records
    the message text but does not call Telegram, so tests do not depend on
    external network reachability.
+4. **Backup behaviour** — `backup` is run and its output inspected: the pair it
+   writes carries the router's own date and the installed version, and a
+   seeded older generation is gone afterwards. The decoy matters — two runs on
+   the same day at the same version produce the same filename, so the second
+   overwrites the first and deletes nothing, which would pass a naive test
+   while proving nothing about retention.
+5. **Update-check failure path** — `update_check` is run with
+   `UPDATE_CHECK_MAX_WAIT=0`, which skips its poll loop and lands it on the
+   timeout path whether or not the CHR can reach MikroTik. The stub's recorded
+   message must say the check failed, and must contain no malformed percent
+   escape: the text is posted URL-encoded, so a bare `%` is a defect that
+   otherwise only shows up as a mangled Telegram message.
 
-`reboot-and-flush` (reboots the VM), `update_check` (10s sleep + online
-update probe), `change_WIFI_pw` (touches wireless profiles), `backup`
-(creates files, sends notifications), and `tg_send` itself are intentionally
-**not executed** — only their `add → remove` parse step runs.
+Items 4 and 5 are written and **currently xfail**, because RouterOS 7.24.1 CHR
+will not execute either script. Every path refuses a `:global` whose name
+contains an underscore — which `backup.lua` and `update_check.lua` both have —
+reporting "expected end of command" pointing at the underscore:
+
+| path | result |
+| --- | --- |
+| `/system script run` | refused at the underscore |
+| `:parse` | refused, reported against the parsed string |
+| `/system scheduler` | refused, logged as `(scheduler:NAME)` at the underscore |
+| `/system script add` | accepted — the source is stored intact |
+
+Two explanations were tested and ruled out. **QEMU** is not it: the failure is
+identical with `/dev/kvm` handed to the container, same tests, same column. Nor
+is it **permissions**, though that masked it for one round — a script added
+through the API carries no policy, an on-event script runs with the
+intersection of its own policy and the scheduler entry's, and empty intersects
+to empty. Fixing that turned "not enough permissions" into the parse refusal
+underneath.
+
+The tests are kept rather than deleted, and non-strict to match the rest of the
+suite: if a later RouterOS accepts these names they start passing and the
+coverage arrives with them. Until then, `add → remove` is the ceiling for these
+two scripts, and it is worth being clear about what that does and does not
+prove — RouterOS accepts the source; nothing here has run it.
+
+`reboot-and-flush` (reboots the VM), `change_WIFI_pw` (touches wireless
+profiles), and `tg_send` itself are intentionally **not executed** — only their
+`add → remove` parse step runs. `update_check` is executed only on its timeout
+path; the branch that reports an available upgrade needs an update server
+saying so, which is not something a test can arrange.
 
 ## Environment
 

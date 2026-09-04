@@ -156,7 +156,7 @@
         :if (($totalBytes >= $threshold) and ([:find $QUOTA_ALERTED $pctKey] = nil)) do={
             :set QUOTA_ALERTED ($QUOTA_ALERTED . $pct . ";");
             :local MessageText ("\F0\9F\93\B6 <b>" . $DeviceName . ":</b> traffic quota " . \
-                                $pct . "% reached" . \
+                                $pct . "%25 reached" . \
                                 "%0A<b>Month:</b> " . $monthStr . \
                                 "%0A<b>Used:</b> " . $totalGB . " GB / " . $QuotaGB . " GB" . \
                                 "%0A<b>RX:</b> " . $rxGB . " GB  <b>TX:</b> " . $txGB . " GB");

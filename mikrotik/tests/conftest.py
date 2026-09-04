@@ -110,7 +110,14 @@ _PRODUCTION_NAMED_TEST_SCRIPTS = {
     "mac_allowlist_dhcp",
     "brute_force_block",
     "rogue_dns_check",
+    "backup",
+    "update_check",
 }
+
+# backup.lua writes into /file and, with RemovePrevious on, deletes what it
+# finds there. Both halves are what the tests assert on, so the namespace is
+# cleared at session boundaries the same way the script namespace is.
+BACKUP_FILE_PREFIX = "backup-"
 
 # Globals tests touch via /system/script/environment. Cleaned at session
 # boundaries to avoid leakage between runs (RouterOS keeps :globals across
@@ -129,7 +136,31 @@ _TEST_OWNED_GLOBALS = (
     "DNS_EXPECTED",
     "DNS_ALLOWED_RESOLVERS",
     "RDNS_LAST_FLAG",
+    "BACKUP_PASSWORD",
+    "BACKUP_REMOVE_PREVIOUS",
+    "UPDATE_CHECK_BACKUP",
+    "UPDATE_CHECK_MAX_WAIT",
+    "UPDATE_CHECK_NOTIFY_FAILURE",
 )
+
+
+def _remove_test_schedulers(api: Any) -> None:
+    """Tests drive scripts from the scheduler, because the API's own run path
+    refuses any source declaring an underscore :global on this CHR. An entry
+    left behind by an interrupted run would keep firing for the whole session."""
+    res = api.get_binary_resource("/system/scheduler")
+    for row in list(res.get()):
+        if _row_str(row, "name").startswith(TEST_SCRIPT_PREFIX):
+            with contextlib.suppress(ros_exc.RouterOsApiError):
+                res.call("remove", {".id": _row_id(row)})
+
+
+def _remove_backup_files(api: Any) -> None:
+    res = api.get_binary_resource("/file")
+    for row in list(res.get()):
+        if _row_str(row, "name").startswith(BACKUP_FILE_PREFIX):
+            with contextlib.suppress(ros_exc.RouterOsApiError):
+                res.call("remove", {".id": _row_id(row)})
 
 
 def _remove_globals(api: Any, names) -> None:
@@ -149,7 +180,9 @@ def _clean_router_state(api: Any) -> Iterator[None]:
         lambda n: n.startswith(TEST_SCRIPT_PREFIX)
         or n in ({TG_SEND_NAME} | _PRODUCTION_NAMED_TEST_SCRIPTS),
     )
+    _remove_test_schedulers(api)
     _remove_globals(api, _TEST_OWNED_GLOBALS)
+    _remove_backup_files(api)
     api.get_binary_resource("/system/script").call(
         "add",
         {
@@ -165,7 +198,9 @@ def _clean_router_state(api: Any) -> Iterator[None]:
             lambda n: n.startswith(TEST_SCRIPT_PREFIX)
             or n in ({TG_SEND_NAME} | _PRODUCTION_NAMED_TEST_SCRIPTS),
         )
+        _remove_test_schedulers(api)
         _remove_globals(api, _TEST_OWNED_GLOBALS)
+        _remove_backup_files(api)
 
 
 @pytest.fixture

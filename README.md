@@ -14,8 +14,8 @@
 conventions suites on every pull request, including native macOS and Windows
 contracts, plus repo-wide ShellCheck, PSScriptAnalyzer, actionlint, Hadolint,
 yamllint, markdownlint and schema validation. **RouterOS CHR** is separate because it boots a real router under
-QEMU: it runs nightly rather than on the pull-request path, so a red badge
-there does not necessarily mean a red pull request.
+QEMU: it runs nightly, on demand, and on the pull requests that touch
+`mikrotik/`, so a red badge there does not necessarily mean a red pull request.
 
 The two lint badges are static labels for the gates CI enforces, not live
 results — the CI badge is the one that reflects the current state of `master`.
@@ -450,13 +450,17 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
   script body, with retries and 4 KB truncation.
 - `backup.lua` — daily binary + export backup; sends a Telegram confirmation
-  with the resulting filename. Date-format-safe filenames.
+  with the resulting filename. Date-format-safe filenames stamped with the
+  identity, date and installed version; removes the previous generation once
+  the new one is written.
 - `change_WIFI_pw.lua` — rotates 2.4 GHz / 5 GHz WPA2 PSKs (legacy `wireless`
   or new `wifi`/WiFiWave2 stack) and posts the new credentials to Telegram.
 - `health_check.lua` — CPU / RAM / disk / temperature watchdog; only alerts
   on threshold violations.
 - `update_check.lua` — daily check against MikroTik's update server; pings
-  Telegram once per new version.
+  Telegram once per new version and takes a pre-upgrade backup first. Reports
+  firmware, board, uptime and resource figures with it, and says so when the
+  check itself fails.
 - `wan_failover_notify.lua` — polls the built-in `detect-internet-state`
   property on the WAN interface and notifies only on transitions.
 - `detect_internet.lua` — manual nudge that re-runs RouterOS WAN/LAN
@@ -490,8 +494,9 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   when the snapshot changes. First run records a baseline silently.
 - `backup_file_cleanup.lua` — removes `backup-*` files older than
   `RetentionDays` from `/file`, so flash does not fill with stale
-  `.backup`/`.rsc` pairs. Pair it with `backup.lua`, which creates them and
-  prunes nothing.
+  `.backup`/`.rsc` pairs. Age-based, and so the alternative to `backup.lua`'s
+  own `RemovePrevious`: use it when you want several generations kept on the
+  router rather than only the newest.
 
 Run from your machine rather than on the router:
 
@@ -718,12 +723,20 @@ five-host download out of pull requests makes the fast contract gate reliable;
 the scheduled build catches expired or unavailable upstream artefacts.
 
 [`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the pinned RouterOS
-integration suite nightly at 03:37 UTC and on demand. It is kept off the
-pull-request path because CHR is an x86_64 image under QEMU and first boot takes
-minutes. The Linux runner has `/dev/kvm`, which
+integration suite nightly at 03:37 UTC, on demand, and on pull requests that
+touch `mikrotik/`, `run-tests.sh`, or the workflow itself. CHR is an x86_64
+image under QEMU and first boot takes minutes, so the path filter matters: the
+cost lands only where a real router is the one thing that can answer the
+question, and every other pull request is untouched by this workflow. The
+nightly run cannot cover a change under review — by the time it fires, the
+change has usually merged. The Linux runner has `/dev/kvm`, which
 [`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
 `docker-compose.kvm.yml` on top — a separate file because compose fails hard on
 a device that does not exist, which would break the suite for everyone on macOS.
+Existing is not the same as usable, and that distinction cost real time here:
+the node is `crw-rw---- root:kvm` and the runner user is not in that group, so
+the detection failed and every run fell back to TCG emulation without saying so.
+The workflow now widens the mode before starting the suite.
 
 [`routeros-version.yml`](.github/workflows/routeros-version.yml) checks
 MikroTik's official stable release feed every Monday and Thursday at 04:19 UTC,

@@ -67,7 +67,7 @@
 
     :if ($bad) do={
         :local line ("%0A  <code>" . $target . "</code>  loss=" . $loss . \
-                     "%  rtt=" . $rttAvg . "ms  (min=" . $rttMin . " max=" . $rttMax . ")");
+                     "%25  rtt=" . $rttAvg . "ms  (min=" . $rttMin . " max=" . $rttMax . ")");
         :set alerts ($alerts . $line);
         :set alertSig ($alertSig . $target . "=" . $loss . "%;");
     }

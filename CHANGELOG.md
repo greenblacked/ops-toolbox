@@ -16,6 +16,68 @@ entry here belongs to a version.
 
 ### Added
 
+- The RouterOS CHR suite runs on pull requests that touch `mikrotik/`,
+  `run-tests.sh`, or `chr.yml`, alongside the nightly and on-demand runs. The
+  nightly answers "does the pinned RouterOS still like these scripts"; it cannot
+  answer "does this change work", because by the time it fires the change has
+  usually merged. The path filter keeps the QEMU boot off every other pull
+  request, and pull-request runs cancel when superseded while nightly and manual
+  runs never do.
+
+- `backup.lua` and `update_check.lua` have execution tests in the CHR suite,
+  currently xfail: RouterOS 7.24.1 CHR refuses to run either script, because
+  every execution path rejects a `:global` whose name contains an underscore and
+  both have one. `/system script run`, `:parse` and `/system scheduler` all
+  report "expected end of command" pointing at the underscore; `script add`
+  accepts the source, so it is stored intact. QEMU was ruled out (identical
+  under KVM) and so were permissions (an API-added script carries no policy,
+  which masked the refusal for one round). The assertions are kept rather than
+  dropped, so the coverage arrives on its own if a later release accepts the
+  names. Adding a script proves RouterOS accepts the source, not that
+  running it does what the file says — a weaker claim than it looks for the two
+  scripts that respectively delete files and decide whether to tell you to
+  upgrade. The backup tests assert the pair carries the router's own date and
+  installed version, and that a seeded older generation is gone afterwards; the
+  decoy is necessary because two runs on the same day at the same version write
+  the same filename, so a second run overwrites rather than prunes and would
+  pass a naive test while proving nothing. The update-check test asserts the
+  timeout path sends a message and that the text carries no malformed percent
+  escape. Both run through `:parse`, which is how these scripts invoke each
+  other anyway and which sidesteps the CHR `/system script run` underscore bug.
+
+- `:global UPDATE_CHECK_MAX_WAIT` sets how long `update_check.lua` waits for a
+  verdict, in five-second units. A router on a slow or contended link
+  legitimately needs longer, and a test that has to sit through the full 65
+  seconds to watch the timeout path is a test nobody runs.
+
+- `update_check.lua` reports the firmware, board, architecture, uptime, CPU,
+  memory and storage figures alongside the version, and sends a message when
+  the check itself fails rather than only logging one. Both are the questions
+  somebody goes and answers by hand before deciding whether to upgrade tonight
+  or at the weekend, and a check that silently never completes is a router
+  sitting on an unpatched release with nothing saying so. The failure notice
+  can only fire where the router still reaches Telegram, which is the case
+  worth catching: DNS broken, the upgrade server refusing, a proxy in the way.
+  `:global UPDATE_CHECK_NOTIFY_FAILURE false` turns it off.
+
+- `update_check.lua` takes a backup before it tells you an upgrade is
+  available, and reports whether it succeeded in the same message. The snapshot
+  worth having is one taken while the router still runs the version being
+  replaced, and it needs to exist by the time somebody reads the notification
+  rather than depending on them remembering. `:global UPDATE_CHECK_BACKUP false`
+  goes back to notify-only. A failed backup does not suppress the update
+  notification: it is reported, because "there is nothing to roll back to" is
+  the thing you most need to know before upgrading.
+
+- `backup.lua` removes the previous generation once the new pair is written
+  (`RemovePrevious`, off via `:global BACKUP_REMOVE_PREVIOUS false`). Exclusion
+  is by exact filename rather than by timestamp, because the two files just
+  written are known by name and RouterOS script has no sort to order the rest
+  by. The sweep runs only after a successful save — the failure path ends in
+  `:error` first — so a backup that failed never deletes the last good one.
+  This is retention on the router, not a backup policy: it leaves one
+  generation, so keep the rest off the device with `pull_router_backups.sh`.
+
 - Dependabot watches the Docker base images as well as the actions. Every suite
   that runs anything builds it on one, and they were watched by nothing — the
   same mutable-tag argument the actions entry already makes, applied to the
@@ -647,6 +709,30 @@ entry here belongs to a version.
   repository cannot set for itself.
 
 ### Fixed
+
+- A literal `%` in Telegram message text is now sent as `%25`, in
+  `health_check.lua`, `latency_monitor.lua` and `traffic_quota.lua`. `tg_send`
+  posts the text as `application/x-www-form-urlencoded`, which is why newlines
+  are written `%0A` — and by the same rule a bare `%` is a truncated escape
+  sequence. It has been getting through on decoder leniency rather than on
+  being correct, and it stops being cosmetic the moment the two characters
+  after it are hex digits, which silently yields a byte instead of a percent
+  sign.
+
+- `update_check.lua` waits for the update check to finish by polling `status`
+  until it reaches a verdict, instead of by waiting a fixed 10 seconds.
+  RouterOS keeps `latest-version` from the previous check, so testing that
+  field for content answers "has this router ever checked", not "has this
+  check finished" — a distinction that only shows up as a stale verdict, never
+  as an error.
+
+- `update_check.lua` escapes the router identity before interpolating it into
+  the message. It is operator-supplied text going into a URL-encoded body that
+  Telegram then parses as HTML: an `&` in an identity ends the text field early
+  and silently truncates the rest of the message, and a `<` opens a tag
+  Telegram cannot close and the send is rejected outright. The same exposure
+  exists wherever the other scripts interpolate an identity or a rule comment,
+  and is not addressed here.
 
 - `linux/packages.sh install --dry-run` mixed three output forms on one preview
   path, including `git/`'s `dry-run: would run:`, and its command-preview
