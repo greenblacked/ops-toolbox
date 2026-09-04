@@ -16,6 +16,32 @@ entry here belongs to a version.
 
 ### Added
 
+- The RouterOS CHR suite runs on pull requests that touch `mikrotik/`,
+  `run-tests.sh`, or `chr.yml`, alongside the nightly and on-demand runs. The
+  nightly answers "does the pinned RouterOS still like these scripts"; it cannot
+  answer "does this change work", because by the time it fires the change has
+  usually merged. The path filter keeps the QEMU boot off every other pull
+  request, and pull-request runs cancel when superseded while nightly and manual
+  runs never do.
+
+- `backup.lua` and `update_check.lua` are executed in the CHR suite rather than
+  only loaded. Adding a script proves RouterOS accepts the source, not that
+  running it does what the file says — a weaker claim than it looks for the two
+  scripts that respectively delete files and decide whether to tell you to
+  upgrade. The backup tests assert the pair carries the router's own date and
+  installed version, and that a seeded older generation is gone afterwards; the
+  decoy is necessary because two runs on the same day at the same version write
+  the same filename, so a second run overwrites rather than prunes and would
+  pass a naive test while proving nothing. The update-check test asserts the
+  timeout path sends a message and that the text carries no malformed percent
+  escape. Both run through `:parse`, which is how these scripts invoke each
+  other anyway and which sidesteps the CHR `/system script run` underscore bug.
+
+- `:global UPDATE_CHECK_MAX_WAIT` sets how long `update_check.lua` waits for a
+  verdict, in five-second units. A router on a slow or contended link
+  legitimately needs longer, and a test that has to sit through the full 65
+  seconds to watch the timeout path is a test nobody runs.
+
 - `update_check.lua` reports the firmware, board, architecture, uptime, CPU,
   memory and storage figures alongside the version, and sends a message when
   the check itself fails rather than only logging one. Both are the questions

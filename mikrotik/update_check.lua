@@ -29,8 +29,13 @@
 :global UPDATE_CHECK_NOTIFY_FAILURE;
 :if ([:typeof $UPDATE_CHECK_NOTIFY_FAILURE] = "bool") do={ :set NotifyOnCheckFailure $UPDATE_CHECK_NOTIFY_FAILURE; }
 
-# 5s settle + up to 12 polls of 5s = 65s worst case.
+# 5s settle + up to 12 polls of 5s = 65s worst case. Overridable because a
+# router behind a slow or contended link legitimately needs longer, and because
+# a test that has to sit through the full 65s to watch the timeout path is a
+# test nobody runs.
 :local MaxWait 12;
+:global UPDATE_CHECK_MAX_WAIT;
+:if ([:typeof $UPDATE_CHECK_MAX_WAIT] = "num") do={ :set MaxWait $UPDATE_CHECK_MAX_WAIT; }
 
 # tg_send posts the text as application/x-www-form-urlencoded and Telegram then
 # parses it as HTML, so anything interpolated into the message has to survive

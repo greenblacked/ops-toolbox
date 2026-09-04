@@ -8,6 +8,15 @@ exercise every `*.lua` in `../`. Two services run side by side:
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
 
+## When it runs in CI
+
+Nightly at 03:37 UTC, on demand, and on any pull request touching `mikrotik/`,
+`run-tests.sh`, or `.github/workflows/chr.yml`. The path filter is the point:
+booting a router costs minutes, and it should cost them only where a real
+router is the one thing that can answer the question. A nightly run cannot
+answer it for a change under review, because by the time it fires the change
+has usually merged.
+
 ## Requirements
 
 - Docker (with the `compose` v2 plugin). Tested on Docker Desktop on macOS and
@@ -96,11 +105,29 @@ docker compose down -v
    `tg_send` is replaced with a **stub** for the test session that records
    the message text but does not call Telegram, so tests do not depend on
    external network reachability.
+4. **Backup behaviour** — `backup` is run and its output inspected: the pair it
+   writes carries the router's own date and the installed version, and a
+   seeded older generation is gone afterwards. The decoy matters — two runs on
+   the same day at the same version produce the same filename, so the second
+   overwrites the first and deletes nothing, which would pass a naive test
+   while proving nothing about retention.
+5. **Update-check failure path** — `update_check` is run with
+   `UPDATE_CHECK_MAX_WAIT=0`, which skips its poll loop and lands it on the
+   timeout path whether or not the CHR can reach MikroTik. The stub's recorded
+   message must say the check failed, and must contain no malformed percent
+   escape: the text is posted URL-encoded, so a bare `%` is a defect that
+   otherwise only shows up as a mangled Telegram message.
 
-`reboot-and-flush` (reboots the VM), `update_check` (10s sleep + online
-update probe), `change_WIFI_pw` (touches wireless profiles), `backup`
-(creates files, sends notifications), and `tg_send` itself are intentionally
-**not executed** — only their `add → remove` parse step runs.
+Both of the last two run the script through `:parse` rather than
+`/system script run`, which is how the production scripts invoke each other
+anyway, and which sidesteps the CHR parser bug documented in
+`XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE`.
+
+`reboot-and-flush` (reboots the VM), `change_WIFI_pw` (touches wireless
+profiles), and `tg_send` itself are intentionally **not executed** — only their
+`add → remove` parse step runs. `update_check` is executed only on its timeout
+path; the branch that reports an available upgrade needs an update server
+saying so, which is not something a test can arrange.
 
 ## Environment
 

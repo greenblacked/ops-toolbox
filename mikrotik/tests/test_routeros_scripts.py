@@ -4,6 +4,7 @@ import contextlib
 import os
 import pathlib
 import re
+import time
 from typing import Any
 
 import pytest
@@ -350,3 +351,182 @@ def test_dhcp_lease_watch_baseline_silent(api: Any, script_resource: Any) -> Non
         _unset_global(api, "DHCP_CHURN_FLAG")
         _unset_global(api, "DHCP_DUPS_FLAG")
         _unset_global(api, "pu_TG_LAST_MESSAGE")
+
+
+# --- backup.lua and update_check.lua ---------------------------------------
+#
+# Both were parse-only for a long time, which is a weaker claim than it looks:
+# adding a script proves RouterOS accepts the source, not that running it does
+# what the file says. That gap matters most for exactly these two - backup.lua
+# deletes files, and update_check.lua decides whether to tell you to upgrade -
+# so they are executed here rather than only loaded.
+
+BACKUP_PREFIX = "backup-"
+PARSE_WRAPPER = "pu_ut_parse_wrapper"
+
+
+def _clear_backup_files(api: Any) -> None:
+    res = api.get_binary_resource("/file")
+    for row in list(res.get()):
+        if _row_str(row, "name").startswith(BACKUP_PREFIX):
+            with contextlib.suppress(ros_exc.RouterOsApiError):
+                res.call("remove", {".id": _row_id(row)})
+
+
+def _backup_files(api: Any) -> list[str]:
+    res = api.get_binary_resource("/file")
+    return sorted(
+        n
+        for n in (_row_str(r, "name") for r in res.get())
+        if n.startswith(BACKUP_PREFIX)
+    )
+
+
+def _wait_for_backup_files(api: Any, count: int, timeout: float = 30.0) -> list[str]:
+    """Poll until `count` backup files exist, or give up.
+
+    `/export file=` returns before the file is necessarily on disk, so asserting
+    straight after the run is a race that passes on a fast boot and fails on a
+    contended runner.
+    """
+    deadline = time.monotonic() + timeout
+    names = _backup_files(api)
+    while len(names) < count and time.monotonic() < deadline:
+        time.sleep(1)
+        names = _backup_files(api)
+    return names
+
+
+def _run_wrapped(api: Any, script_resource: Any, body: str) -> None:
+    """Run `body` through :parse, the way the production scripts call each other.
+
+    /system/script/run misparses '_' in :local and :global names on CHR, and
+    every script with a configurable global has one. :parse does not, so a
+    wrapper whose own locals are underscore-free hands the real source to the
+    parser that reads it correctly. This is also exactly how update_check.lua
+    invokes backup.lua, so the wrapper is not a test-only contrivance.
+    """
+    _add_script(script_resource, PARSE_WRAPPER, body)
+    try:
+        _run_named(api, PARSE_WRAPPER)
+    finally:
+        _remove_by_name(script_resource, PARSE_WRAPPER)
+
+
+def _run_source(api: Any, script_resource: Any, source: str) -> None:
+    """Run a one-line RouterOS statement. No quotes or backslashes: the source
+    is embedded in a RouterOS string literal and nothing escapes them here."""
+    assert '"' not in source and "\\" not in source, f"cannot embed: {source!r}"
+    _run_wrapped(api, script_resource, f':local F [:parse "{source}"];\n$F;\n')
+
+
+def _run_installed(api: Any, script_resource: Any, name: str) -> None:
+    _run_wrapped(
+        api,
+        script_resource,
+        f":local F [:parse [/system script get {name} source]];\n$F;\n",
+    )
+
+
+def _router_date(api: Any) -> str:
+    rows = list(api.get_binary_resource("/system/clock").get())
+    assert rows, "/system clock returned empty"
+    # backup.lua rewrites '/' to '-' so a non-ISO date-format cannot turn the
+    # filename into a path.
+    return _row_str(rows[0], "date").replace("/", "-")
+
+
+def test_backup_names_the_pair_by_date_and_version(
+    api: Any,
+    script_resource: Any,
+) -> None:
+    """One run leaves a .backup/.rsc pair carrying the date and the version."""
+    _clear_backup_files(api)
+    src = (MIKROTIK_DIR / "backup.lua").read_text(encoding="utf-8", errors="replace")
+    try:
+        _add_script(script_resource, "backup", src)
+        _run_installed(api, script_resource, "backup")
+        names = _wait_for_backup_files(api, 2)
+    finally:
+        _remove_by_name(script_resource, "backup")
+        _clear_backup_files(api)
+
+    assert len(names) == 2, f"expected a .backup/.rsc pair, got {names}"
+    assert sorted(n.rsplit(".", 1)[1] for n in names) == ["backup", "rsc"], names
+    stems = {n.rsplit(".", 1)[0] for n in names}
+    assert len(stems) == 1, f"pair does not share a stem: {names}"
+    stem = stems.pop()
+
+    date = _router_date(api)
+    assert date, "router reported no date"
+    assert date in stem, f"date {date!r} missing from {stem!r}"
+    assert EXPECT_VER in stem, f"version {EXPECT_VER!r} missing from {stem!r}"
+    assert "/" not in stem, f"filename would create a directory: {stem!r}"
+
+
+def test_backup_removes_the_previous_generation(
+    api: Any,
+    script_resource: Any,
+) -> None:
+    """A second generation replaces the first rather than accumulating.
+
+    Seeded with a decoy rather than by running backup.lua twice: two runs on the
+    same day at the same version produce the same filename, so the second
+    overwrites the first and deletes nothing. A decoy under an older name is
+    what the retention sweep is actually for.
+    """
+    _clear_backup_files(api)
+    stale = "backup-stale-2020-01-01-6.49.10"
+    try:
+        _run_source(
+            api,
+            script_resource,
+            f"/system backup save name={stale} dont-encrypt=yes;",
+        )
+        assert _wait_for_backup_files(api, 1), "decoy backup was not created"
+        assert f"{stale}.backup" in _backup_files(api)
+
+        src = (MIKROTIK_DIR / "backup.lua").read_text(
+            encoding="utf-8", errors="replace"
+        )
+        _add_script(script_resource, "backup", src)
+        _run_installed(api, script_resource, "backup")
+        names = _wait_for_backup_files(api, 2)
+    finally:
+        _remove_by_name(script_resource, "backup")
+        _clear_backup_files(api)
+
+    assert f"{stale}.backup" not in names, f"previous generation survived: {names}"
+    assert len(names) == 2, f"expected exactly the new pair, got {names}"
+
+
+def test_update_check_reports_a_failed_check(
+    api: Any,
+    script_resource: Any,
+) -> None:
+    """A check that never reaches a verdict sends a message instead of going quiet.
+
+    UPDATE_CHECK_MAX_WAIT=0 skips the poll loop, so the script reaches its
+    timeout path deterministically whether or not the CHR can reach MikroTik.
+    It still sits through the 5s settle delay; if this ever fails on the API
+    read timeout rather than on an assertion, `check-for-updates once` has
+    started blocking, which it is not supposed to do.
+    """
+    _unset_global(api, "pu_TG_LAST_MESSAGE")
+    src = (MIKROTIK_DIR / "update_check.lua").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    try:
+        _run_source(api, script_resource, ":global UPDATE_CHECK_MAX_WAIT 0;")
+        _add_script(script_resource, "update_check", src)
+        _run_installed(api, script_resource, "update_check")
+    finally:
+        _remove_by_name(script_resource, "update_check")
+        _unset_global(api, "UPDATE_CHECK_MAX_WAIT")
+
+    message = _read_global(api, "pu_TG_LAST_MESSAGE")
+    assert "update check FAILED" in message, f"no failure notice sent: {message!r}"
+    # tg_send posts the text URL-encoded, so every % has to introduce a real
+    # escape. A bare one is the defect this assertion exists to keep out.
+    stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
+    assert stray is None, f"malformed percent escape at {stray.start()}: {message!r}"

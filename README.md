@@ -14,8 +14,8 @@
 conventions suites on every pull request, including native macOS and Windows
 contracts, plus repo-wide ShellCheck, PSScriptAnalyzer, actionlint, Hadolint,
 yamllint, markdownlint and schema validation. **RouterOS CHR** is separate because it boots a real router under
-QEMU: it runs nightly rather than on the pull-request path, so a red badge
-there does not necessarily mean a red pull request.
+QEMU: it runs nightly, on demand, and on the pull requests that touch
+`mikrotik/`, so a red badge there does not necessarily mean a red pull request.
 
 The two lint badges are static labels for the gates CI enforces, not live
 results — the CI badge is the one that reflects the current state of `master`.
@@ -723,9 +723,13 @@ five-host download out of pull requests makes the fast contract gate reliable;
 the scheduled build catches expired or unavailable upstream artefacts.
 
 [`.github/workflows/chr.yml`](.github/workflows/chr.yml) runs the pinned RouterOS
-integration suite nightly at 03:37 UTC and on demand. It is kept off the
-pull-request path because CHR is an x86_64 image under QEMU and first boot takes
-minutes. The Linux runner has `/dev/kvm`, which
+integration suite nightly at 03:37 UTC, on demand, and on pull requests that
+touch `mikrotik/`, `run-tests.sh`, or the workflow itself. CHR is an x86_64
+image under QEMU and first boot takes minutes, so the path filter matters: the
+cost lands only where a real router is the one thing that can answer the
+question, and every other pull request is untouched by this workflow. The
+nightly run cannot cover a change under review — by the time it fires, the
+change has usually merged. The Linux runner has `/dev/kvm`, which
 [`mikrotik/tests/run.sh`](mikrotik/tests/run.sh) detects and enables by layering
 `docker-compose.kvm.yml` on top — a separate file because compose fails hard on
 a device that does not exist, which would break the suite for everyone on macOS.

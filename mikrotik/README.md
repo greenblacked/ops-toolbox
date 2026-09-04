@@ -253,7 +253,8 @@ script overriding a deliberate choice: a router parked on `long-term` moved to
 release train somebody had specifically kept it off.
 
 Completion is detected by polling `status` until it reaches a verdict, up to
-about 65 seconds, rather than waiting a fixed interval or waiting for
+about 65 seconds (`:global UPDATE_CHECK_MAX_WAIT` in five-second units, for a
+slow or contended link), rather than waiting a fixed interval or waiting for
 `latest-version` to fill. RouterOS keeps `latest-version` from the previous
 check, so on every run after the first it is already populated the instant the
 command is issued, and a loop waiting for it to fill exits immediately with
