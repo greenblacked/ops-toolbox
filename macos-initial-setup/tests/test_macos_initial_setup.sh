@@ -175,7 +175,7 @@ set -e
 assert_eq "install_devtools rejects unknown --only tool -> 3" "3" "$rc"
 
 steps_out="$("$M/stay_fresh.sh" --list-steps)"
-for step_id in brew docker workspace-storage versions; do
+for step_id in brew docker workspace-storage versions os-updates; do
   assert_contains "stay_fresh lists selectable $step_id" "$steps_out" "$step_id"
 done
 set +e

@@ -16,6 +16,37 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh` ends with a read-only report of pending macOS and App Store
+  updates: `softwareupdate --list`, and `mas outdated` where `mas` is
+  installed. The script upgraded everything Homebrew manages and said nothing
+  about the operating system underneath, which is the one update that matters
+  most and the one that sits unnoticed in System Settings. It names what is
+  pending and the command that installs it, and never installs anything,
+  because a macOS update can reboot the machine and that is the operator's
+  decision. Pending updates are information, not a warning, so the scheduled
+  `--fail-on-warn` agent does not go red every morning between patch days; a
+  query that fails - offline, not signed in to the App Store - is a warning.
+  Not probed under `--dry-run`, where the catalogue scan would break the
+  promise to answer quickly and touch nothing. `--skip-os-updates` and the
+  `os-updates` id for `--only`.
+
+- `stay_fresh.sh` dev-caches also runs `uv cache clean` and clears
+  `~/.kube/cache`. uv's cache is separate from pip's and routinely larger; the
+  kubectl cache holds per-cluster API discovery for every cluster a kubeconfig
+  has ever pointed at, including the ones that no longer exist, and kubectl
+  rebuilds it on the next call. `~/.kube/config` is not under that directory
+  and is not touched.
+
+- `stay_fresh.sh` routes pip's output to the log unless `--verbose`, like
+  every other command. It used to tee to the terminal regardless, so a quiet
+  run showed one stray "WARNING: No matching packages" line from pip and
+  nothing from anything else.
+
+- The Docker steps suite covers the three: the report with pending, current,
+  and unreachable update servers, the dry run scanning nothing, the two new
+  cache targets, and pip's notice staying out of a quiet run. The seventeenth
+  step is exercised for real like the sixteen before it.
+
 - `stay_fresh.lua`: the RouterOS counterpart of the macOS and Linux
   `stay_fresh.sh`. `update_check.lua` and `backup_update_check.lua` say a
   release is waiting and leave the install to whoever reads the message, which

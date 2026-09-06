@@ -415,13 +415,26 @@ In the order they run:
 11. Remove diagnostic and crash reports (user, plus system with `sudo`).
 12. Update and upgrade Homebrew formulae, then casks once when an interactive
     sudo-capable run permits them; run `cleanup -s` and `autoremove`.
-13. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Old
+13. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`,
+    and kubectl's per-cluster discovery cache under `~/.kube/cache`, which
+    kubectl rebuilds on the next call; `~/.kube/config` is not touched). Old
     installed gem versions are package state, not cache, and are kept unless
     `--cleanup-old-gems` is explicit.
 14. Update installed Helm plugins.
 15. Run `gcloud components update`.
 16. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     and `gcloud`.
+17. Report **pending macOS and App Store updates**: `softwareupdate --list`,
+    and `mas outdated` where [`mas`](https://github.com/mas-cli/mas) is
+    installed. Read-only. Homebrew keeps what it manages fresh; the operating
+    system and App Store apps were the two things this script said nothing
+    about. It names what is pending and the command that installs it, and never
+    installs anything itself, because a macOS update can reboot the machine.
+    Pending updates are reported as information, not as a warning, so a
+    scheduled `--fail-on-warn` run does not go red every morning between patch
+    days; a query that fails (offline, not signed in to the App Store) is a
+    warning. Not probed under `--dry-run`: the catalogue scan is a system
+    action that takes time on the network.
 
 ### Usage
 
@@ -464,7 +477,7 @@ In the order they run:
 | `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 7). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
-| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`go` cache cleanup. |
+| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`uv`/`go`/kubectl cache cleanup. |
 | `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
@@ -473,7 +486,8 @@ In the order they run:
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
 | `--skip-gcloud` | Skip `gcloud components update`. |
-| `--skip-versions` | Skip the final version report. |
+| `--skip-versions` | Skip the version report. |
+| `--skip-os-updates` | Skip the pending macOS / App Store update report (step 17). |
 | `-h`, `--help` | Show the built-in help. |
 
 `--only` is the safer interface for one-off work: it initializes every step as
@@ -1053,8 +1067,11 @@ Homebrew / `pyenv` / `goenv` commands.
   folder no longer exists. Remote workspaces and unreadable entries are
   left alone.
 - Empties `~/.Trash`.
-- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Installed
-  gem versions are kept unless `--cleanup-old-gems` is explicit.
+- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`) and
+  the contents of `~/.kube/cache`. Installed gem versions are kept unless
+  `--cleanup-old-gems` is explicit.
+- Queries `softwareupdate --list` and, when installed, `mas outdated`, and
+  prints what is pending. Installs neither.
 - Prunes Docker resources when Docker is available:
   - Containers (`docker container prune -f`)
   - Networks (`docker network prune -f`)

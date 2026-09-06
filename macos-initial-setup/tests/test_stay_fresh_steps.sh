@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the sixteen steps for real against a scratch HOME and a faked set of
+# each of the seventeen steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -497,9 +497,16 @@ section "dev-caches (each toolchain, and an unusable node)"
 devcache_env() {
   local d; d="$(new_env)"
   mkbin "$d/bin/node"  'echo "node $*" >> "$CALLS"; exit "${NODE_RC:-0}"'
-  for t in npm yarn pnpm pip3 gem go; do
+  for t in npm yarn pnpm gem go uv; do
     mkbin "$d/bin/$t" "echo \"$t \$*\" >> \"\$CALLS\"; exit 0"
   done
+  # pip prints this even with -q on an already-empty cache. It belongs in the
+  # log, not on the terminal of a quiet run.
+  mkbin "$d/bin/pip3" 'echo "pip3 $*" >> "$CALLS"; echo "WARNING: No matching packages"; exit 0'
+  mkdir -p "$d/home/.kube/cache/discovery/cluster_a" "$d/home/.kube/cache/http"
+  : > "$d/home/.kube/cache/discovery/cluster_a/servergroups.json"
+  : > "$d/home/.kube/cache/http/entry"
+  : > "$d/home/.kube/config"
   printf '%s' "$d"
 }
 d="$(devcache_env)"; : > "$d/calls"
@@ -509,10 +516,39 @@ assert_called "npm cache is cleaned"   "$d/calls" "npm cache clean --force"
 assert_called "yarn cache is cleaned"  "$d/calls" "yarn cache clean"
 assert_called "pnpm store is pruned"   "$d/calls" "pnpm store prune"
 assert_called "pip cache is purged"    "$d/calls" "pip3 cache purge"
+assert_not_contains "pip's empty-cache notice stays out of a quiet run" "$out" \
+  "WARNING: No matching packages"
+assert_called "uv cache is cleaned"    "$d/calls" "uv cache clean"
 assert_not_called "installed gems are kept by default" "$d/calls" "gem cleanup"
 assert_contains "the run explains how to clean old gems explicitly" "$out" \
   "pass --cleanup-old-gems"
 assert_called "go caches are cleaned"  "$d/calls" "go clean -cache -modcache -testcache"
+assert_gone   "kubectl discovery cache is cleared" "$d/home/.kube/cache/discovery"
+assert_gone   "kubectl http cache is cleared"      "$d/home/.kube/cache/http"
+assert_exists "~/.kube/cache itself is kept"       "$d/home/.kube/cache"
+assert_exists "~/.kube/config is untouched"        "$d/home/.kube/config"
+assert_contains "dev-caches stays clean with pip's notice" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# Under --verbose the pip line is still filtered from the live stream, while
+# the rest of pip's output would reach the terminal like every other command.
+d="$(devcache_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --verbose --only dev-caches)"; rc=$?
+assert_eq "dev-caches step succeeds under --verbose" "0" "$rc"
+assert_not_contains "pip's empty-cache notice is filtered under --verbose" "$out" \
+  "WARNING: No matching packages"
+rm -rf "$d"
+
+# A dev-caches run on a machine without kubectl state must not invent one.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/go" 'echo "go $*" >> "$CALLS"; exit 0'
+out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "dev-caches without a kube cache succeeds" "0" "$rc"
+if [[ ! -e "$d/home/.kube" ]]; then
+  ok "no ~/.kube is created when none existed"
+else
+  err "dev-caches created ~/.kube on a machine that had none"
+fi
 rm -rf "$d"
 
 d="$(devcache_env)"; : > "$d/calls"
@@ -576,6 +612,85 @@ assert_eq "versions step succeeds" "0" "$rc"
 assert_contains "the active python version is reported"    "$out" "pyenv active:  3.12.1"
 assert_contains "the active go version is reported"        "$out" "goenv active:  1.22.0"
 assert_contains "the active terraform version is reported" "$out" "tfenv active:  1.7.5"
+rm -rf "$d"
+
+# ===========================================================================
+section "os-updates (read-only report of pending macOS / App Store updates)"
+# softwareupdate --list writes the label lines to stderr on a real Mac and the
+# "No new software available." verdict to stdout; both are captured together.
+os_env() {
+  local d; d="$(new_env)"
+  mkbin "$d/bin/softwareupdate" 'echo "softwareupdate $*" >> "$CALLS"' \
+    'if [ -n "${SU_RC:-}" ]; then echo "Failed to check for updates" >&2; exit "$SU_RC"; fi' \
+    'if [ -n "${SU_PENDING:-}" ]; then' \
+    '  echo "Software Update Tool"' \
+    '  echo "Finding available software"' \
+    '  echo "Software Update found the following new or updated software:" >&2' \
+    '  echo "* Label: macOS Sequoia 15.6.1-24G90" >&2' \
+    '  echo "	Title: macOS Sequoia 15.6.1, Version: 15.6.1, Size: 1234567KiB, Recommended: YES, Action: restart," >&2' \
+    'else' \
+    '  echo "Software Update Tool"' \
+    '  echo "No new software available."' \
+    'fi; exit 0'
+  mkbin "$d/bin/mas" 'echo "mas $*" >> "$CALLS"' \
+    'if [ -n "${MAS_RC:-}" ]; then echo "Error: not signed in" >&2; exit "$MAS_RC"; fi' \
+    'if [ -n "${MAS_PENDING:-}" ]; then echo "497799835 Xcode (16.4 -> 26.0)"; fi; exit 0'
+  printf '%s' "$d"
+}
+run_os() {
+  local d="$1"; shift
+  SU_PENDING="${SU_PENDING:-}" SU_RC="${SU_RC:-}" MAS_PENDING="${MAS_PENDING:-}" MAS_RC="${MAS_RC:-}" \
+    run_sf "$d" "$@"
+}
+d="$(os_env)"; : > "$d/calls"
+out="$(run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "os-updates step succeeds when everything is current" "0" "$rc"
+assert_called "os-updates queries softwareupdate" "$d/calls" "softwareupdate --list"
+assert_called "os-updates queries mas"            "$d/calls" "mas outdated"
+assert_contains "an up-to-date macOS is reported as such" "$out" "macOS is up to date"
+assert_contains "up-to-date App Store apps are reported"  "$out" "App Store apps are up to date"
+assert_not_called "os-updates never installs macOS updates" "$d/calls" "softwareupdate --install"
+assert_not_called "os-updates never upgrades App Store apps" "$d/calls" "mas upgrade"
+rm -rf "$d"
+
+d="$(os_env)"; : > "$d/calls"
+out="$(SU_PENDING=1 MAS_PENDING=1 run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "pending updates do not fail the run" "0" "$rc"
+assert_contains "a pending macOS update is named" "$out" "macOS Sequoia 15.6.1-24G90"
+assert_contains "the macOS install path is given" "$out" "sudo softwareupdate --install --all"
+assert_contains "a pending App Store update is named" "$out" "Xcode (16.4 -> 26.0)"
+assert_contains "the App Store install path is given" "$out" "mas upgrade"
+# Pending updates are the normal state of a workstation between patch days,
+# not a fault: the scheduled agent runs with --fail-on-warn and must not go
+# red every morning until somebody reboots into an update.
+assert_contains "pending updates are information, not a warning" "$out" "warn steps:  0"
+assert_not_called "pending updates are still never installed" "$d/calls" "softwareupdate --install"
+rm -rf "$d"
+
+d="$(os_env)"; : > "$d/calls"
+out="$(SU_RC=1 MAS_RC=1 run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "an unreachable update server does not fail the run" "0" "$rc"
+assert_contains "a failed macOS query is reported" "$out" "could not query macOS updates"
+assert_contains "a failed App Store query is reported" "$out" "could not query App Store updates"
+assert_contains "a failed query is accounted a warning" "$out" "warn steps:  1"
+rm -rf "$d"
+
+# A dry run answers quickly and touches nothing: the catalogue scan is a
+# system action and is only named, not run.
+d="$(os_env)"; : > "$d/calls"
+out="$(run_os "$d" --dry-run --only os-updates)"; rc=$?
+assert_eq "os-updates dry run succeeds" "0" "$rc"
+assert_not_called "a dry run does not scan for macOS updates" "$d/calls" "softwareupdate"
+assert_not_called "a dry run does not query mas" "$d/calls" "mas"
+assert_contains "a dry run names the softwareupdate probe" "$out" "[dry] softwareupdate --list"
+rm -rf "$d"
+
+# Neither tool present: still a clean step, and it says so.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only os-updates)"; rc=$?
+assert_eq "os-updates with no tools succeeds" "0" "$rc"
+assert_contains "os-updates with no tools says nothing to report" "$out" \
+  "neither softwareupdate nor mas is available"
 rm -rf "$d"
 
 # ===========================================================================

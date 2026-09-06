@@ -12,8 +12,8 @@
 #     credentials, projects, extensions, runtimes, and downloaded models
 #   - prune VS Code workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
-#   - clean developer tool caches (npm, yarn, pnpm, pip, go); uninstall old gem
-#     versions only when explicitly requested
+#   - clean developer tool caches (npm, yarn, pnpm, pip, uv, go, kubectl
+#     discovery); uninstall old gem versions only when explicitly requested
 #   - prune Docker / OrbStack (images, containers, builder cache; volumes
 #     only with --prune-docker-volumes, because volumes hold data)
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
@@ -21,6 +21,7 @@
 #   - Homebrew: update, upgrade (formulae + casks), cleanup -s, autoremove
 #   - refresh dev toolchains (helm plugins, gcloud components) installed by
 #     install_apps.sh / install_devtools.sh
+#   - report pending macOS and App Store updates (read-only; never installs)
 #
 # Usage:
 #   ./stay_fresh.sh [--dry-run] [--yes] [--verbose]
@@ -32,7 +33,8 @@
 #                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
 #                   [--cleanup-old-gems] [--fail-on-warn]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-gcloud]
-#                   [--skip-versions] [--skip-docker] [--prune-docker-volumes]
+#                   [--skip-versions] [--skip-os-updates]
+#                   [--skip-docker] [--prune-docker-volumes]
 #                   [--skip-xcode] [--prune-xcode-archives-days N]
 #                   [--force-active-app-caches] [--skip-diagnostics]
 #                   [--no-sudo] [--help]
@@ -116,6 +118,7 @@ SKIP_DEVTOOLS=0
 SKIP_HELM_PLUGINS=0
 SKIP_GCLOUD=0
 SKIP_VERSIONS=0
+SKIP_OS_UPDATES=0
 SKIP_DOCKER=0
 PRUNE_DOCKER_VOLUMES=0
 SKIP_XCODE=0
@@ -251,6 +254,7 @@ dev-caches        clean language and package-manager caches
 helm-plugins      update installed Helm plugins
 gcloud            update gcloud components
 versions          print active tool versions
+os-updates        report pending macOS / App Store updates (read-only)
 EOF
 }
 
@@ -287,7 +291,7 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-brew            Don't run Homebrew maintenance (see Notes)
   --brew-greedy          Also upgrade casks with 'auto_updates true' / 'version :latest'
                          (may prompt for sudo during cask postinstalls)
-  --skip-devcaches       Don't clean npm/yarn/pnpm/pip/go caches
+  --skip-devcaches       Don't clean npm/yarn/pnpm/pip/uv/go/kubectl caches
   --cleanup-old-gems     Uninstall old gem versions during dev-cache cleanup
                          (off by default; this changes installed packages)
   --skip-devtools        Shorthand: skip all dev-tool refresh steps below
@@ -296,6 +300,7 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-gcloud          Don't run 'gcloud components update'
   --skip-versions        Don't print active pyenv/goenv/tfenv/tenv/helm/gcloud
                          versions
+  --skip-os-updates      Don't report pending macOS / App Store updates
   --skip-docker          Don't prune Docker / OrbStack
   --prune-docker-volumes Also remove unused Docker volumes (they hold data,
                          not cache, so the default keeps them)
@@ -331,6 +336,10 @@ ${C_BOLD}Notes:${C_RESET}
   ~/Library/Logs/DiagnosticReports and ~/Library/DiagnosticReports). With sudo
   (default), also clears /Library/Logs/DiagnosticReports and
   /Library/Logs/CrashReporter. --no-sudo skips only those system paths.
+
+  OS updates: softwareupdate --list, and mas outdated where mas is installed.
+  Read-only: it names what is pending and how to install it, and never installs
+  anything itself, because a macOS update can reboot the machine.
 
   Homebrew: runs brew update; brew upgrade (formulae, then casks); brew cleanup -s;
   brew autoremove; brew doctor only when --verbose. Casks may prompt for sudo during
@@ -376,6 +385,7 @@ while (( $# > 0 )); do
     --skip-helm-plugins) SKIP_HELM_PLUGINS=1; EXPLICIT_SKIP=1 ;;
     --skip-gcloud)     SKIP_GCLOUD=1; EXPLICIT_SKIP=1 ;;
     --skip-versions)   SKIP_VERSIONS=1; EXPLICIT_SKIP=1 ;;
+    --skip-os-updates) SKIP_OS_UPDATES=1; EXPLICIT_SKIP=1 ;;
     --skip-docker)     SKIP_DOCKER=1; EXPLICIT_SKIP=1 ;;
     --prune-docker-volumes) PRUNE_DOCKER_VOLUMES=1 ;;
     --skip-xcode)      SKIP_XCODE=1; EXPLICIT_SKIP=1 ;;
@@ -425,6 +435,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
   SKIP_HELM_PLUGINS=1
   SKIP_GCLOUD=1
   SKIP_VERSIONS=1
+  SKIP_OS_UPDATES=1
   SKIP_DOCKER=1
   SKIP_XCODE=1
   SKIP_DIAGNOSTICS=1
@@ -452,6 +463,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
       helm-plugins)      SKIP_HELM_PLUGINS=0 ;;
       gcloud)            SKIP_GCLOUD=0 ;;
       versions)          SKIP_VERSIONS=0 ;;
+      os-updates)        SKIP_OS_UPDATES=0 ;;
       docker)            SKIP_DOCKER=0 ;;
       xcode)             SKIP_XCODE=0 ;;
       diagnostics)       SKIP_DIAGNOSTICS=0 ;;
@@ -973,14 +985,15 @@ plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "$xc
 plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "user (+ system if sudo)"
 plan_line "homebrew update/upgrade/cleanup"   "$(( 1 - SKIP_BREW        ))" "brew update · upgrade · cleanup -s · autoremove"
 if (( CLEANUP_OLD_GEMS )); then
-  devcache_plan="npm/yarn/pnpm/pip/go caches + old installed gems"
+  devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl caches + old installed gems"
 else
-  devcache_plan="npm/yarn/pnpm/pip/go caches; installed gems kept"
+  devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl caches; installed gems kept"
 fi
 plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
 plan_line "gcloud components update"          "$(( 1 - SKIP_GCLOUD      ))" "non-brew gcloud components"
 plan_line "report active versions"            "$(( 1 - SKIP_VERSIONS    ))" "pyenv/goenv/tfenv/tenv/helm/gcloud"
+plan_line "pending OS / App Store updates"      "$(( 1 - SKIP_OS_UPDATES  ))" "softwareupdate --list, mas outdated; read-only"
 hr
 
 if (( DRY_RUN )); then
@@ -1434,6 +1447,32 @@ step_trash() {
   fi
 }
 
+# pip prints "WARNING: No matching packages" on an already-empty cache, even
+# with -q. Every other command here goes to the log unless --verbose, and this
+# one used to tee to the terminal regardless, so a quiet run showed one stray
+# pip line and nothing from anything else. Same routing as run_cmd, with that
+# one line dropped from the live stream because it is noise, not a warning.
+# Usage: pip_cache_purge <pip|pip3>
+pip_cache_purge() {
+  local pip="$1" rc=0
+  printf "  %s->%s %s cache purge\n" "$C_CYAN" "$C_RESET" "$pip"
+  echo "# $(date '+%H:%M:%S') [$pip cache purge] >> $pip cache purge -q" >>"$LOG_FILE"
+  if (( VERBOSE )); then
+    "$pip" cache purge -q 2>&1 \
+      | tee -a "$LOG_FILE" \
+      | awk '!/^WARNING: No matching packages$/'
+    rc="${PIPESTATUS[0]}"
+  else
+    "$pip" cache purge -q >>"$LOG_FILE" 2>&1
+    rc=$?
+  fi
+  if (( rc != 0 )); then
+    STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
+    warn "'$pip cache purge' failed"
+  fi
+  return "$rc"
+}
+
 step_devcaches() {
   local any=0
   local node_ok=0
@@ -1479,26 +1518,14 @@ step_devcaches() {
     if (( DRY_RUN )); then
       run_cmd "pip3 cache purge" pip3 cache purge -q || warn "'pip3 cache purge' failed"
     else
-      echo "# $(date '+%H:%M:%S') [pip3 cache purge] >> pip3 cache purge -q" >>"$LOG_FILE"
-      local rc=0
-      pip3 cache purge -q 2>&1 \
-        | tee -a "$LOG_FILE" \
-        | awk '!/^WARNING: No matching packages$/'
-      rc="${PIPESTATUS[0]}"
-      if (( rc != 0 )); then STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); fi
+      pip_cache_purge pip3
     fi
   elif command -v pip >/dev/null 2>&1; then
     any=1
     if (( DRY_RUN )); then
       run_cmd "pip cache purge" pip cache purge -q || warn "'pip cache purge' failed"
     else
-      echo "# $(date '+%H:%M:%S') [pip cache purge] >> pip cache purge -q" >>"$LOG_FILE"
-      local rc=0
-      pip cache purge -q 2>&1 \
-        | tee -a "$LOG_FILE" \
-        | awk '!/^WARNING: No matching packages$/'
-      rc="${PIPESTATUS[0]}"
-      if (( rc != 0 )); then STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); fi
+      pip_cache_purge pip
     fi
   fi
 
@@ -1513,10 +1540,29 @@ step_devcaches() {
     fi
   fi
 
+  # uv keeps every wheel and source build it has ever resolved under its own
+  # cache, separate from pip's, and it is routinely larger. Re-downloadable.
+  if command -v uv >/dev/null 2>&1; then
+    any=1
+    printf "  uv cache %s(%s)%s\n" "$C_DIM" \
+      "$(human_bytes "$(path_bytes "${UV_CACHE_DIR:-$HOME/.cache/uv}")")" "$C_RESET"
+    run_cmd "uv cache clean" uv cache clean || warn "'uv cache clean' failed"
+  fi
+
   if command -v go >/dev/null 2>&1; then
     any=1
     run_cmd "go clean -cache -modcache -testcache" go clean -cache -modcache -testcache \
       || warn "'go clean' failed"
+  fi
+
+  # kubectl caches API discovery and HTTP responses per cluster under
+  # ~/.kube/cache and rebuilds them on the next call. With a few dozen
+  # clusters in a kubeconfig it grows to hundreds of megabytes of stale
+  # discovery for clusters that no longer exist. Only the cache: ~/.kube/config
+  # and its credentials are not under this directory.
+  if [[ -d "$HOME/.kube/cache" ]]; then
+    any=1
+    clear_dir "$HOME/.kube/cache"
   fi
 
   if command -v cargo >/dev/null 2>&1 && command -v cargo-cache >/dev/null 2>&1; then
@@ -1829,6 +1875,66 @@ step_versions() {
   fi
 }
 
+# Pending OS and App Store updates. Homebrew above upgrades what it manages;
+# macOS itself and Mac App Store apps are the two things on a workstation this
+# script keeps fresh everywhere else and used to say nothing about. Read-only:
+# a macOS update can reboot the machine, so the install is always a decision
+# the operator makes, and this step's job is to make sure the decision is in
+# front of them rather than buried in System Settings.
+#
+# Not probed in a dry run. `softwareupdate --list` scans Apple's catalogue: it
+# takes seconds to a minute on the network and writes its result into system
+# state, and a dry run promises to touch nothing and to answer quickly.
+step_os_updates() {
+  local any=0
+  if command -v softwareupdate >/dev/null 2>&1; then
+    any=1
+    if (( DRY_RUN )); then
+      printf "  [dry] softwareupdate --list\n"
+    else
+      local su_out su_rc=0
+      echo "# $(date '+%H:%M:%S') [softwareupdate --list] >> softwareupdate --list" >>"$LOG_FILE"
+      su_out="$(softwareupdate --list 2>&1)" || su_rc=$?
+      printf '%s\n' "$su_out" >>"$LOG_FILE"
+      if (( su_rc != 0 )); then
+        warn_step "could not query macOS updates (softwareupdate exited $su_rc) — see log"
+      elif grep -q '^\* Label: ' <<<"$su_out"; then
+        printf "  %smacOS updates pending:%s\n" "$C_YELLOW" "$C_RESET"
+        grep '^\* Label: ' <<<"$su_out" | sed 's/^\* Label: /      /'
+        printf "  %sinstall via System Settings → General → Software Update, or: sudo softwareupdate --install --all%s\n" \
+          "$C_DIM" "$C_RESET"
+      else
+        ok "macOS is up to date"
+      fi
+    fi
+  fi
+
+  if command -v mas >/dev/null 2>&1; then
+    any=1
+    if (( DRY_RUN )); then
+      printf "  [dry] mas outdated\n"
+    else
+      local mas_out mas_rc=0
+      echo "# $(date '+%H:%M:%S') [mas outdated] >> mas outdated" >>"$LOG_FILE"
+      mas_out="$(mas outdated 2>&1)" || mas_rc=$?
+      printf '%s\n' "$mas_out" >>"$LOG_FILE"
+      if (( mas_rc != 0 )); then
+        warn_step "could not query App Store updates (mas exited $mas_rc) — see log"
+      elif [[ -n "$mas_out" ]]; then
+        printf "  %sApp Store updates pending:%s\n" "$C_YELLOW" "$C_RESET"
+        awk '{ print "      " $0 }' <<<"$mas_out"
+        printf "  %sinstall with: mas upgrade%s\n" "$C_DIM" "$C_RESET"
+      else
+        ok "App Store apps are up to date"
+      fi
+    fi
+  fi
+
+  if (( any == 0 )); then
+    info "neither softwareupdate nor mas is available — nothing to report"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # execute
 # ---------------------------------------------------------------------------
@@ -1867,6 +1973,7 @@ run_or_skip "Dev-tool caches"                      "$SKIP_DEVCACHES"   step_devc
 run_or_skip "Helm plugin refresh"                  "$SKIP_HELM_PLUGINS" step_helm_plugins helm-plugins
 run_or_skip "gcloud components update"             "$SKIP_GCLOUD"       step_gcloud gcloud
 run_or_skip "Active tool versions"                 "$SKIP_VERSIONS"     step_versions versions
+run_or_skip "Pending OS / App Store updates"       "$SKIP_OS_UPDATES"   step_os_updates os-updates
 
 ELAPSED=$(( $(date +%s) - START_ALL ))
 FREE_AFTER_B="$(disk_free_bytes)"
