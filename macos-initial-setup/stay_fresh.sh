@@ -300,7 +300,6 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-gcloud          Don't run 'gcloud components update'
   --skip-versions        Don't print active pyenv/goenv/tfenv/tenv/helm/gcloud
                          versions
-  --skip-os-updates      Don't report pending macOS / App Store updates
   --skip-docker          Don't prune Docker / OrbStack
   --prune-docker-volumes Also remove unused Docker volumes (they hold data,
                          not cache, so the default keeps them)
@@ -308,6 +307,8 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --prune-xcode-archives-days N
                          Remove only .xcarchive bundles older than N days
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
+  --skip-os-updates      Don't report pending macOS / App Store updates
+                         (not part of --skip-devtools)
 
 ${C_BOLD}Notes:${C_RESET}
   --only: preflight can still disable a step the machine cannot run (no
@@ -566,10 +567,11 @@ run_cmd() {
 }
 
 # Run a command and capture its stdout in CAPTURED, with run_cmd's dry-run
-# line, log header and exit-status accounting. stderr goes to the log unless
-# CAPTURE_STDERR=1, for a tool that writes its answer there. For read-only
-# probes whose output the step has to parse. Under --dry-run nothing runs and
-# CAPTURED is empty.
+# line and log header. stderr goes to the log unless CAPTURE_STDERR=1, for a
+# tool that writes its answer there. For read-only probes whose output the
+# step has to parse; unlike run_cmd it does not count a failure as a step
+# warning, because whether a failed probe matters is the caller's call. Under
+# --dry-run nothing runs and CAPTURED is empty.
 # Usage: [CAPTURE_STDERR=1] capture_cmd "human label" cmd args...
 CAPTURED=""
 capture_cmd() {
@@ -589,9 +591,6 @@ capture_cmd() {
     CAPTURED="$("$@" 2>>"$LOG_FILE")" || rc=$?
   fi
   printf '%s\n' "$CAPTURED" >>"$LOG_FILE"
-  if (( rc != 0 )); then
-    STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
-  fi
   return "$rc"
 }
 
@@ -1906,7 +1905,6 @@ step_os_updates() {
       fi
     else
       rc=$?
-      STEP_WARN_COUNT=$(( STEP_WARN_COUNT - 1 ))
       warn "could not query macOS updates (softwareupdate exited $rc) — see log"
     fi
   fi
@@ -1927,7 +1925,6 @@ step_os_updates() {
       fi
     else
       rc=$?
-      STEP_WARN_COUNT=$(( STEP_WARN_COUNT - 1 ))
       warn "could not query App Store updates (mas exited $rc) — see log"
     fi
   fi

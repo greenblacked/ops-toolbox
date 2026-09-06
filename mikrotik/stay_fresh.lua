@@ -319,7 +319,7 @@
                $NL . "Uptime: <code>" . $Uptime . "</code>" . \
                $NL . "Free storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>");
 :local Mode "";
-:if ($DryRun) do={ :set Mode $NL . $NL . "<i>dry run: nothing was changed</i>"; }
+:if ($DryRun) do={ :set Mode ($NL . $NL . "<i>dry run: nothing was changed</i>"); }
 
 # --- a check that did not complete ---------------------------------------------
 # Named as such rather than falling through: latest-version survives from the
@@ -397,7 +397,7 @@
         :set BackupLine ($NL . "Backup: <code>" . $BackupFile . "</code>");
     } on-error={
         :log error ("stay_fresh: pre-upgrade backup FAILED on $rawName at $Date");
-        :set BackupLine $NL . "Backup: <code>FAILED - nothing to roll back to</code>";
+        :set BackupLine ($NL . "Backup: <code>FAILED - nothing to roll back to</code>");
     }
 
     # Only after the new pair is written, so a failed save is never the run
