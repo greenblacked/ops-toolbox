@@ -538,7 +538,10 @@ path_bytes() {
 # Run a command; honor --dry-run and --verbose; log output to $LOG_FILE.
 # Prints the human label so the console matches the log. Bumps STEP_WARN_COUNT
 # on a non-zero exit so do_step can route to OK/WARN/FAIL accurately.
-# Usage: run_cmd "human label" cmd args...
+# RUN_CMD_FILTER, an awk regex, drops matching lines from the live --verbose
+# stream only; the log keeps everything. For a tool whose one known noise line
+# is not a warning (pip's "No matching packages", brew cleanup's "Skipping").
+# Usage: [RUN_CMD_FILTER=regex] run_cmd "human label" cmd args...
 run_cmd() {
   local label="$1"; shift
   if (( DRY_RUN )); then
@@ -550,12 +553,42 @@ run_cmd() {
   echo "# $(date '+%H:%M:%S') [$label] >> $*" >>"$LOG_FILE"
   local rc=0
   if (( VERBOSE )); then
-    "$@" 2>&1 | tee -a "$LOG_FILE"
+    "$@" 2>&1 | tee -a "$LOG_FILE" | awk -v pat="${RUN_CMD_FILTER:-}" 'pat == "" || $0 !~ pat'
     rc="${PIPESTATUS[0]}"
   else
     "$@" >>"$LOG_FILE" 2>&1
     rc=$?
   fi
+  if (( rc != 0 )); then
+    STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
+  fi
+  return "$rc"
+}
+
+# Run a command and capture its stdout in CAPTURED, with run_cmd's dry-run
+# line, log header and exit-status accounting. stderr goes to the log unless
+# CAPTURE_STDERR=1, for a tool that writes its answer there. For read-only
+# probes whose output the step has to parse. Under --dry-run nothing runs and
+# CAPTURED is empty.
+# Usage: [CAPTURE_STDERR=1] capture_cmd "human label" cmd args...
+CAPTURED=""
+capture_cmd() {
+  local label="$1"; shift
+  CAPTURED=""
+  if (( DRY_RUN )); then
+    printf "  %s(dry-run)%s %s %s[%s]%s\n" \
+      "$C_DIM" "$C_RESET" "$*" "$C_DIM" "$label" "$C_RESET"
+    return 0
+  fi
+  printf "  %s->%s %s\n" "$C_CYAN" "$C_RESET" "$label"
+  echo "# $(date '+%H:%M:%S') [$label] >> $*" >>"$LOG_FILE"
+  local rc=0
+  if (( ${CAPTURE_STDERR:-0} )); then
+    CAPTURED="$("$@" 2>&1)" || rc=$?
+  else
+    CAPTURED="$("$@" 2>>"$LOG_FILE")" || rc=$?
+  fi
+  printf '%s\n' "$CAPTURED" >>"$LOG_FILE"
   if (( rc != 0 )); then
     STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
   fi
@@ -1447,32 +1480,6 @@ step_trash() {
   fi
 }
 
-# pip prints "WARNING: No matching packages" on an already-empty cache, even
-# with -q. Every other command here goes to the log unless --verbose, and this
-# one used to tee to the terminal regardless, so a quiet run showed one stray
-# pip line and nothing from anything else. Same routing as run_cmd, with that
-# one line dropped from the live stream because it is noise, not a warning.
-# Usage: pip_cache_purge <pip|pip3>
-pip_cache_purge() {
-  local pip="$1" rc=0
-  printf "  %s->%s %s cache purge\n" "$C_CYAN" "$C_RESET" "$pip"
-  echo "# $(date '+%H:%M:%S') [$pip cache purge] >> $pip cache purge -q" >>"$LOG_FILE"
-  if (( VERBOSE )); then
-    "$pip" cache purge -q 2>&1 \
-      | tee -a "$LOG_FILE" \
-      | awk '!/^WARNING: No matching packages$/'
-    rc="${PIPESTATUS[0]}"
-  else
-    "$pip" cache purge -q >>"$LOG_FILE" 2>&1
-    rc=$?
-  fi
-  if (( rc != 0 )); then
-    STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
-    warn "'$pip cache purge' failed"
-  fi
-  return "$rc"
-}
-
 step_devcaches() {
   local any=0
   local node_ok=0
@@ -1511,22 +1518,16 @@ step_devcaches() {
     fi
   fi
 
+  # pip prints "WARNING: No matching packages" even with -q on an already-empty
+  # cache; it is noise, not a warning, and stays out of the live stream.
   if command -v pip3 >/dev/null 2>&1; then
     any=1
-    # pip may print "WARNING: No matching packages" even with -q; filter that noise from the
-    # terminal while keeping full output in the log.
-    if (( DRY_RUN )); then
+    RUN_CMD_FILTER='^WARNING: No matching packages$' \
       run_cmd "pip3 cache purge" pip3 cache purge -q || warn "'pip3 cache purge' failed"
-    else
-      pip_cache_purge pip3
-    fi
   elif command -v pip >/dev/null 2>&1; then
     any=1
-    if (( DRY_RUN )); then
+    RUN_CMD_FILTER='^WARNING: No matching packages$' \
       run_cmd "pip cache purge" pip cache purge -q || warn "'pip cache purge' failed"
-    else
-      pip_cache_purge pip
-    fi
   fi
 
   if command -v gem >/dev/null 2>&1; then
@@ -1544,9 +1545,16 @@ step_devcaches() {
   # cache, separate from pip's, and it is routinely larger. Re-downloadable.
   if command -v uv >/dev/null 2>&1; then
     any=1
-    printf "  uv cache %s(%s)%s\n" "$C_DIM" \
-      "$(human_bytes "$(path_bytes "${UV_CACHE_DIR:-$HOME/.cache/uv}")")" "$C_RESET"
+    # Measured before and after so the freed total counts it, and not at all
+    # under --dry-run: the walk over a multi-GB cache is the cost a dry run
+    # promises not to pay.
+    local uv_dir="${UV_CACHE_DIR:-$HOME/.cache/uv}" uv_before=0 uv_after=0
+    (( DRY_RUN )) || uv_before="$(path_bytes "$uv_dir")"
     run_cmd "uv cache clean" uv cache clean || warn "'uv cache clean' failed"
+    if (( DRY_RUN == 0 )); then
+      uv_after="$(path_bytes "$uv_dir")"
+      (( uv_before > uv_after )) && STEP_FREED_B=$(( STEP_FREED_B + uv_before - uv_after ))
+    fi
   fi
 
   if command -v go >/dev/null 2>&1; then
@@ -1753,17 +1761,8 @@ step_brew() {
   # brew cleanup may emit "Warning: Skipping <formula>: most recent version ... not installed"
   # in verbose mode; it's harmless and noisy, so filter it from the terminal while keeping
   # the full output in the log.
-  if (( VERBOSE )); then
-    echo "# $(date '+%H:%M:%S') [brew cleanup -s] >> brew cleanup -s" >>"$LOG_FILE"
-    local rc=0
-    brew cleanup -s 2>&1 \
-      | tee -a "$LOG_FILE" \
-      | awk '!/^Warning: Skipping .*most recent version .* not installed$/'
-    rc="${PIPESTATUS[0]}"
-    if (( rc != 0 )); then STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); fi
-  else
+  RUN_CMD_FILTER='^Warning: Skipping .*most recent version .* not installed$' \
     run_cmd "brew cleanup -s" brew cleanup -s || warn "'brew cleanup' had issues"
-  fi
   run_cmd "brew autoremove"        brew autoremove             || warn "'brew autoremove' had issues"
   if (( VERBOSE )); then
     run_cmd "brew doctor" brew doctor || warn "'brew doctor' reports issues — see log"
@@ -1886,47 +1885,50 @@ step_versions() {
 # takes seconds to a minute on the network and writes its result into system
 # state, and a dry run promises to touch nothing and to answer quickly.
 step_os_updates() {
-  local any=0
+  local any=0 rc=0
+  # A query that fails - offline, not signed in to the App Store - is reported
+  # and does not count against the step: the scheduled agent runs with
+  # --fail-on-warn, and a report that went red every morning on a Mac with
+  # mas installed and no App Store account is the warning that gets muted.
   if command -v softwareupdate >/dev/null 2>&1; then
     any=1
-    if (( DRY_RUN )); then
-      printf "  [dry] softwareupdate --list\n"
-    else
-      local su_out su_rc=0
-      echo "# $(date '+%H:%M:%S') [softwareupdate --list] >> softwareupdate --list" >>"$LOG_FILE"
-      su_out="$(softwareupdate --list 2>&1)" || su_rc=$?
-      printf '%s\n' "$su_out" >>"$LOG_FILE"
-      if (( su_rc != 0 )); then
-        warn_step "could not query macOS updates (softwareupdate exited $su_rc) — see log"
-      elif grep -q '^\* Label: ' <<<"$su_out"; then
+    # The label lines come out on stderr on a real Mac.
+    if CAPTURE_STDERR=1 capture_cmd "softwareupdate --list" softwareupdate --list; then
+      if (( DRY_RUN )); then
+        :
+      elif grep -q '^\* Label: ' <<<"$CAPTURED"; then
         printf "  %smacOS updates pending:%s\n" "$C_YELLOW" "$C_RESET"
-        grep '^\* Label: ' <<<"$su_out" | sed 's/^\* Label: /      /'
+        grep '^\* Label: ' <<<"$CAPTURED" | sed 's/^\* Label: /      /'
         printf "  %sinstall via System Settings → General → Software Update, or: sudo softwareupdate --install --all%s\n" \
           "$C_DIM" "$C_RESET"
       else
         ok "macOS is up to date"
       fi
+    else
+      rc=$?
+      STEP_WARN_COUNT=$(( STEP_WARN_COUNT - 1 ))
+      warn "could not query macOS updates (softwareupdate exited $rc) — see log"
     fi
   fi
 
   if command -v mas >/dev/null 2>&1; then
     any=1
-    if (( DRY_RUN )); then
-      printf "  [dry] mas outdated\n"
-    else
-      local mas_out mas_rc=0
-      echo "# $(date '+%H:%M:%S') [mas outdated] >> mas outdated" >>"$LOG_FILE"
-      mas_out="$(mas outdated 2>&1)" || mas_rc=$?
-      printf '%s\n' "$mas_out" >>"$LOG_FILE"
-      if (( mas_rc != 0 )); then
-        warn_step "could not query App Store updates (mas exited $mas_rc) — see log"
-      elif [[ -n "$mas_out" ]]; then
+    # stdout only decides the pending case: mas writes warnings to stderr and
+    # still exits 0, and those belong in the log, not under "pending".
+    if capture_cmd "mas outdated" mas outdated; then
+      if (( DRY_RUN )); then
+        :
+      elif [[ -n "$CAPTURED" ]]; then
         printf "  %sApp Store updates pending:%s\n" "$C_YELLOW" "$C_RESET"
-        awk '{ print "      " $0 }' <<<"$mas_out"
+        awk '{ print "      " $0 }' <<<"$CAPTURED"
         printf "  %sinstall with: mas upgrade%s\n" "$C_DIM" "$C_RESET"
       else
         ok "App Store apps are up to date"
       fi
+    else
+      rc=$?
+      STEP_WARN_COUNT=$(( STEP_WARN_COUNT - 1 ))
+      warn "could not query App Store updates (mas exited $rc) — see log"
     fi
   fi
 

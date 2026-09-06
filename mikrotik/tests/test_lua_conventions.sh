@@ -179,6 +179,15 @@ fi
 PRINTER="$PKG/print_schedulers.sh"
 MANUAL_ONLY="tg_send detect_internet reboot-and-flush firewall_drift_baseline change_WIFI_pw"
 
+UPDATE_SCRIPTS="update_check backup_update_check stay_fresh"
+is_update_script() {
+  local candidate="$1" name
+  for name in $UPDATE_SCRIPTS; do
+    [ "$name" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
 is_manual() {
   local candidate="$1" name
   for name in $MANUAL_ONLY; do
@@ -201,12 +210,35 @@ else
         err "$n is meant to be run by hand, but print_schedulers.sh schedules it"
         unscheduled=$((unscheduled + 1))
       fi
+    elif is_update_script "$n"; then
+      # One of three, chosen by --update-script: present when chosen, absent
+      # otherwise, so pasting the default output never schedules two of them.
+      if ! grep -q "name=$n " <<<"$(NO_COLOR=1 "$PRINTER" --update-script "$n")"; then
+        err "$n is not emitted by print_schedulers.sh --update-script $n"
+        unscheduled=$((unscheduled + 1))
+      fi
     elif ! grep -q "name=$n " <<<"$printed"; then
       err "$n has no /system scheduler line in print_schedulers.sh"
       unscheduled=$((unscheduled + 1))
     fi
   done
   (( unscheduled == 0 )) && ok "print_schedulers.sh covers every unattended script"
+
+  update_lines="$(grep -c 'start-time=04:20:00' <<<"$printed")"
+  if [[ "$update_lines" == "1" ]] && grep -q 'name=update_check ' <<<"$printed"; then
+    ok "print_schedulers.sh schedules exactly one update script by default"
+  else
+    err "print_schedulers.sh default output schedules $update_lines update scripts, expected only update_check"
+  fi
+  set +e
+  NO_COLOR=1 "$PRINTER" --update-script nosuch >/dev/null 2>&1
+  bad_update_rc=$?
+  set -e
+  if (( bad_update_rc == 3 )); then
+    ok "print_schedulers.sh rejects an unknown --update-script"
+  else
+    err "print_schedulers.sh unknown --update-script exited $bad_update_rc, expected 3"
+  fi
 
   only_backup="$(NO_COLOR=1 "$PRINTER" --only backup)"
   if grep -q 'name=backup ' <<<"$only_backup" \

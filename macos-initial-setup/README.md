@@ -432,9 +432,10 @@ In the order they run:
     installs anything itself, because a macOS update can reboot the machine.
     Pending updates are reported as information, not as a warning, so a
     scheduled `--fail-on-warn` run does not go red every morning between patch
-    days; a query that fails (offline, not signed in to the App Store) is a
-    warning. Not probed under `--dry-run`: the catalogue scan is a system
-    action that takes time on the network.
+    days; a query that fails (offline, not signed in to the App Store) is
+    reported and does not count against the step either, for the same reason.
+    Not probed under `--dry-run`: the catalogue scan is a system action that
+    takes time on the network.
 
 ### Usage
 
@@ -954,7 +955,7 @@ suites:
 | Suite | File | Scope |
 | --- | --- | --- |
 | `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
-| `steps` | `test_stay_fresh_steps.sh` | Each of the sixteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the seventeen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
 | `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
 
 The `steps` suite fakes only the commands that identify the host or that the

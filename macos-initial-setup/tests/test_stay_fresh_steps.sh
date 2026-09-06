@@ -544,11 +544,7 @@ d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/go" 'echo "go $*" >> "$CALLS"; exit 0'
 out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
 assert_eq "dev-caches without a kube cache succeeds" "0" "$rc"
-if [[ ! -e "$d/home/.kube" ]]; then
-  ok "no ~/.kube is created when none existed"
-else
-  err "dev-caches created ~/.kube on a machine that had none"
-fi
+assert_gone "no ~/.kube is created when none existed" "$d/home/.kube"
 rm -rf "$d"
 
 d="$(devcache_env)"; : > "$d/calls"
@@ -634,12 +630,14 @@ os_env() {
     'fi; exit 0'
   mkbin "$d/bin/mas" 'echo "mas $*" >> "$CALLS"' \
     'if [ -n "${MAS_RC:-}" ]; then echo "Error: not signed in" >&2; exit "$MAS_RC"; fi' \
+    'if [ -n "${MAS_STDERR:-}" ]; then echo "Warning: could not look up an app" >&2; fi' \
     'if [ -n "${MAS_PENDING:-}" ]; then echo "497799835 Xcode (16.4 -> 26.0)"; fi; exit 0'
   printf '%s' "$d"
 }
 run_os() {
   local d="$1"; shift
   SU_PENDING="${SU_PENDING:-}" SU_RC="${SU_RC:-}" MAS_PENDING="${MAS_PENDING:-}" MAS_RC="${MAS_RC:-}" \
+    MAS_STDERR="${MAS_STDERR:-}" \
     run_sf "$d" "$@"
 }
 d="$(os_env)"; : > "$d/calls"
@@ -672,7 +670,18 @@ out="$(SU_RC=1 MAS_RC=1 run_os "$d" --yes --only os-updates)"; rc=$?
 assert_eq "an unreachable update server does not fail the run" "0" "$rc"
 assert_contains "a failed macOS query is reported" "$out" "could not query macOS updates"
 assert_contains "a failed App Store query is reported" "$out" "could not query App Store updates"
-assert_contains "a failed query is accounted a warning" "$out" "warn steps:  1"
+# Reported, not counted: the agent runs with --fail-on-warn, and a Mac with mas
+# installed but no App Store sign-in must not fail every scheduled run.
+assert_contains "a failed query does not count against the step" "$out" "warn steps:  0"
+rm -rf "$d"
+
+d="$(os_env)"; : > "$d/calls"
+out="$(MAS_STDERR=1 run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "mas stderr chatter does not fail the run" "0" "$rc"
+assert_not_contains "mas stderr chatter is not reported as a pending update" "$out" \
+  "App Store updates pending"
+assert_contains "mas stderr chatter still leaves the apps reported current" "$out" \
+  "App Store apps are up to date"
 rm -rf "$d"
 
 # A dry run answers quickly and touches nothing: the catalogue scan is a
@@ -682,7 +691,7 @@ out="$(run_os "$d" --dry-run --only os-updates)"; rc=$?
 assert_eq "os-updates dry run succeeds" "0" "$rc"
 assert_not_called "a dry run does not scan for macOS updates" "$d/calls" "softwareupdate"
 assert_not_called "a dry run does not query mas" "$d/calls" "mas"
-assert_contains "a dry run names the softwareupdate probe" "$out" "[dry] softwareupdate --list"
+assert_contains "a dry run names the softwareupdate probe" "$out" "(dry-run) softwareupdate --list"
 rm -rf "$d"
 
 # Neither tool present: still a clean step, and it says so.

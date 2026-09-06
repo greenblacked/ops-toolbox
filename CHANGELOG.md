@@ -25,7 +25,8 @@ entry here belongs to a version.
   because a macOS update can reboot the machine and that is the operator's
   decision. Pending updates are information, not a warning, so the scheduled
   `--fail-on-warn` agent does not go red every morning between patch days; a
-  query that fails - offline, not signed in to the App Store - is a warning.
+  query that fails - offline, not signed in to the App Store - is reported
+  and does not count against the step either, for the same reason.
   Not probed under `--dry-run`, where the catalogue scan would break the
   promise to answer quickly and touch nothing. `--skip-os-updates` and the
   `os-updates` id for `--only`.
@@ -71,13 +72,20 @@ entry here belongs to a version.
   that reboots routers should never be silent about having run. No `:global`
   here carries an underscore, so it runs on RouterOS 7.24 where
   `update_check.lua` does not; it looks for `tg_send_new` first and falls back
-  to `tg_send`, so the same file works on a router with either. The convention
+  to `tg_send` on the releases that run it, encoding line breaks the way that
+  helper's form body needs. With no helper resolved it checks and logs and
+  refuses to install or reboot, because a router that reboots without saying
+  so is the failure it exists to avoid (`StayFreshRequireNotify false` for a
+  router with no Telegram at all). The firmware step compares versions
+  numerically, so firmware newer than the bundled one is never flashed down.
+  `print_schedulers.sh --update-script` picks which of the three update
+  scripts to schedule and prints only that one. The convention
   suite holds it to the backup name, the prune-after-save gate, the
   backup-before-install gate and the window and dry-run guards on every
   install and reboot line, and checks that neither it nor
   `backup_update_check.lua` declares an underscored `:global`.
-  `print_schedulers.sh` gives it the 04:20 slot alongside the two checks and
-  says to install one of the three, not several.
+  `print_schedulers.sh` gives it the 04:20 slot in place of the check it
+  replaces.
 
 - The RouterOS CHR suite runs on pull requests that touch `mikrotik/`,
   `run-tests.sh`, or `chr.yml`, alongside the nightly and on-demand runs. The

@@ -120,7 +120,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 | `health_check`         | `5m`                                                                     |
 | `update_check`         | `1d`                                                                     |
 | `backup_update_check`  | `1d` — instead of `update_check`, not alongside it                       |
-| `stay_fresh`           | `1d` inside its window (`04:20:00`) — instead of either update check     |
+| `stay_fresh`           | `1d` inside its window (`04:20:00`) — `--update-script stay_fresh`      |
 | `wan_failover_notify`  | `1m`                                                                     |
 | `dhcp_lease_watch`     | `5m`                                                                     |
 | `firewall_drift`       | `15m`                                                                    |
@@ -367,7 +367,10 @@ It declares no `:global` with an underscore in its name, for the reason under
 `test_script_add_remove_roundtrip` proves 7.24.1 accepts the source, and the
 convention suite holds it to the invariants below. It looks for the Telegram
 helper as `tg_send_new` first, the operator's copy that runs there, and falls
-back to the package's `tg_send`, so the same file works on either router.
+back to the package's `tg_send` on releases that run it (not 7.24), encoding
+line breaks the way that helper's form body needs. With no helper resolved it
+still checks and logs, and refuses to install or reboot: a router that reboots
+without saying so is the failure it exists to avoid.
 
 What stops it from rebooting a router it should not — each one a `:global`
 set at boot, so a fleet is tuned from one startup script and the tracked file
@@ -379,8 +382,9 @@ is never edited per router:
 | `StayFreshWindowStart`     | `3`     | Local hour, inclusive. With the end, the only hours it will install or reboot in. Outside: "deferred".         |
 | `StayFreshWindowEnd`       | `6`     | Local hour, exclusive. `3` and `6` is 03:00–05:59; start > end wraps past midnight; equal means always.        |
 | `StayFreshInstall`         | `true`  | `false`: never install; the script becomes an update check with a backup, like `backup_update_check`.          |
-| `StayFreshFirmware`        | `true`  | `false`: never touch the RouterBOARD firmware. Skipped on its own on CHR and x86, which have none.              |
+| `StayFreshFirmware`        | `true`  | `false`: never touch the RouterBOARD firmware. Only when the bundled firmware is numerically newer; CHR/x86 skip. |
 | `StayFreshRequireBackup`   | `true`  | Refuse the install when the pre-upgrade pair was not written. `false`: report the failed backup and install.   |
+| `StayFreshRequireNotify`   | `true`  | Refuse to install or reboot when no Telegram helper resolved. `false` for a router with no Telegram at all.     |
 | `StayFreshMinFreeMiB`      | `16`    | Free storage the install must find, checked before the download. A floor to tune, not a RouterOS figure; `0` off. |
 | `StayFreshRemovePrevious`  | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                            |
 | `StayFreshMaxWait`         | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                             |
@@ -564,9 +568,14 @@ backup.
 ./print_schedulers.sh --include-notify-boot  # add the startup notifier
 ./print_schedulers.sh --policy read,test     # a narrower policy set
 ./print_schedulers.sh --only backup          # generate one reviewed entry
+./print_schedulers.sh --update-script stay_fresh  # which update script (default update_check)
 ./print_schedulers.sh --list                 # names accepted by --only
 ./print_schedulers.sh > schedulers.rsc       # keep it, diff it later
 ```
+
+`update_check`, `backup_update_check` and `stay_fresh` do one job three ways
+and must not be scheduled together, so only one is printed:
+`--update-script NAME` chooses it, `update_check` by default.
 
 The daily entries carry an explicit `start-time`, staggered across the small
 hours: `interval=1d` on its own anchors to the moment the entry was created, so

@@ -54,11 +54,7 @@
     /system package update set channel=$updChannel
 }
 :local Channel "unknown"
-:do {
-    :set Channel [/system package update get channel]
-} on-error={
-    :set Channel "unknown"
-}
+:do { :set Channel [/system package update get channel]; } on-error={}
 
 /system package update check-for-updates
 
@@ -67,17 +63,9 @@
 :local InstalledVersion "unknown"
 :local LatestVersion "unknown"
 
-:do {
-    :set InstalledVersion [/system package update get installed-version]
-} on-error={
-    :set InstalledVersion "unknown"
-}
+:do { :set InstalledVersion [/system package update get installed-version]; } on-error={}
 
-:do {
-    :set LatestVersion [/system package update get latest-version]
-} on-error={
-    :set LatestVersion "unknown"
-}
+:do { :set LatestVersion [/system package update get latest-version]; } on-error={}
 
 :local BoardName "unknown"
 :local Architecture "unknown"
@@ -88,55 +76,23 @@
 :local FreeHdd "unknown"
 :local TotalHdd "unknown"
 
-:do {
-    :set BoardName [/system resource get board-name]
-} on-error={
-    :set BoardName "unknown"
-}
+:do { :set BoardName [/system resource get board-name]; } on-error={}
 
-:do {
-    :set Architecture [/system resource get architecture-name]
-} on-error={
-    :set Architecture "unknown"
-}
+:do { :set Architecture [/system resource get architecture-name]; } on-error={}
 
-:do {
-    :set Uptime [/system resource get uptime]
-} on-error={
-    :set Uptime "unknown"
-}
+:do { :set Uptime [/system resource get uptime]; } on-error={}
 
-:do {
-    :set CpuLoad [/system resource get cpu-load]
-} on-error={
-    :set CpuLoad "unknown"
-}
+:do { :set CpuLoad [/system resource get cpu-load]; } on-error={}
 
 # In MiB: the raw byte counts are unreadable, and free storage is the figure
 # that decides whether an upgrade can proceed at all.
-:do {
-    :set FreeMemory ([/system resource get free-memory] / 1048576)
-} on-error={
-    :set FreeMemory "unknown"
-}
+:do { :set FreeMemory ([/system resource get free-memory] / 1048576); } on-error={}
 
-:do {
-    :set TotalMemory ([/system resource get total-memory] / 1048576)
-} on-error={
-    :set TotalMemory "unknown"
-}
+:do { :set TotalMemory ([/system resource get total-memory] / 1048576); } on-error={}
 
-:do {
-    :set FreeHdd ([/system resource get free-hdd-space] / 1048576)
-} on-error={
-    :set FreeHdd "unknown"
-}
+:do { :set FreeHdd ([/system resource get free-hdd-space] / 1048576); } on-error={}
 
-:do {
-    :set TotalHdd ([/system resource get total-hdd-space] / 1048576)
-} on-error={
-    :set TotalHdd "unknown"
-}
+:do { :set TotalHdd ([/system resource get total-hdd-space] / 1048576); } on-error={}
 
 # RouterBOARD firmware: a RouterOS upgrade is usually followed by
 # /system routerboard upgrade and a reboot, so say whether one is waiting.
@@ -149,9 +105,7 @@
     :if ($FwCurrent != $FwUpgrade) do={
         :set FirmwareLine ($FirmwareLine . " -> <code>" . $FwUpgrade . "</code> (upgrade available)")
     }
-} on-error={
-    :set FirmwareLine ""
-}
+} on-error={}
 
 # Resolved once, wrapped: a missing helper must not kill the run before the
 # backup below, and the router log has to say what went wrong.
@@ -163,8 +117,10 @@
 }
 
 # "unknown" != installed would also be true when the check itself failed, and
-# that must not take a backup and prune the previous one on a false alarm.
-:if (($InstalledVersion != $LatestVersion) and ($LatestVersion != "unknown")) do={
+# that must not take a backup and prune the previous one on a false alarm. An
+# empty latest-version is the same failure on a router where no check has ever
+# completed, and it is not "unknown".
+:if (($InstalledVersion != $LatestVersion) and ($LatestVersion != "unknown") and ([:len $LatestVersion] > 0)) do={
 
     # --- pre-upgrade backup ---------------------------------------------------
     :local BackupLine ""
@@ -245,7 +201,7 @@
     "\0AArchitecture: <code>" . $Architecture . "</code>" . \
     "\0AUptime: <code>" . $Uptime . "</code>" . \
     "\0A\0A<b>Resources</b>" . \
-    "\0ACPU load: <code>" . $CpuLoad . "%</code>" . \
+    "\0ACPU load: <code>" . $CpuLoad . " percent</code>" . \
     "\0AFree memory: <code>" . $FreeMemory . " MiB</code> / <code>" . $TotalMemory . " MiB</code>" . \
     "\0AFree storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>")
 
