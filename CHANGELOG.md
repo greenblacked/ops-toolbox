@@ -16,6 +16,38 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.lua`: the RouterOS counterpart of the macOS and Linux
+  `stay_fresh.sh`. `update_check.lua` and `backup_update_check.lua` say a
+  release is waiting and leave the install to whoever reads the message, which
+  on a fleet of home and branch routers is the step that waits for a weekend
+  that never comes. This one installs it: when RouterOS's own verdict is that a
+  newer release is offered on the channel, it writes the
+  `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, prunes the older
+  generations, announces what it is about to do and runs
+  `/system package update install`, which downloads and reboots; on the run
+  after, when the RouterBOARD firmware is behind, it upgrades that and reboots
+  once more, one action per run in the order MikroTik documents. What keeps it
+  from rebooting a router it should not: a maintenance window in local hours
+  (03:00 to 05:59 by default, outside it the run reports "deferred" and changes
+  nothing), the `status` verdict rather than `installed != latest` so a channel
+  switch never installs an older release, a check that errors or times out
+  installing nothing and saying so, the install refused when the pre-upgrade
+  pair was not written, a free-storage floor checked before the download, and
+  `StayFreshDryRun`, which does the check and the report and nothing else and
+  is the way to run the first tick. Every knob is a `:global` set at boot so a
+  fleet is tuned from one startup script. Every run ends in a message,
+  including a one-line "fresh, nothing to install" heartbeat, because a script
+  that reboots routers should never be silent about having run. No `:global`
+  here carries an underscore, so it runs on RouterOS 7.24 where
+  `update_check.lua` does not; it looks for `tg_send_new` first and falls back
+  to `tg_send`, so the same file works on a router with either. The convention
+  suite holds it to the backup name, the prune-after-save gate, the
+  backup-before-install gate and the window and dry-run guards on every
+  install and reboot line, and checks that neither it nor
+  `backup_update_check.lua` declares an underscored `:global`.
+  `print_schedulers.sh` gives it the 04:20 slot alongside the two checks and
+  says to install one of the three, not several.
+
 - The RouterOS CHR suite runs on pull requests that touch `mikrotik/`,
   `run-tests.sh`, or `chr.yml`, alongside the nightly and on-demand runs. The
   nightly answers "does the pinned RouterOS still like these scripts"; it cannot

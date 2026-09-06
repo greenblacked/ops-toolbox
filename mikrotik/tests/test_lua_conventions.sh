@@ -304,6 +304,54 @@ if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/update_check.lua"; 
 else
   err "update_check.lua must gate previous-backup removal on the save having succeeded"
 fi
+# stay_fresh.lua is the third producer of the pre-upgrade pair and the only
+# script here that installs and reboots, so it is held to the same two
+# invariants as update_check.lua, plus the one that is its own: the install is
+# refused without a written backup. Ungate that and an upgrade with nothing to
+# roll back to is exactly the run that goes ahead.
+if grep -qF '("backup-" . $rawName' "$PKG/stay_fresh.lua" \
+   && grep -qF '$installed . "-pre-upgrade"' "$PKG/stay_fresh.lua"; then
+  ok "stay_fresh.lua names its pre-upgrade backup backup-...-VERSION-pre-upgrade"
+else
+  err "stay_fresh.lua must name the pre-upgrade pair backup-<identity>-<date>-<installed>-pre-upgrade"
+fi
+if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/stay_fresh.lua"; then
+  ok "stay_fresh.lua prunes previous backups only after a successful save"
+else
+  err "stay_fresh.lua must gate previous-backup removal on the save having succeeded"
+fi
+if grep -qF ':if ((!$BackupOk) and $RequireBackup) do={' "$PKG/stay_fresh.lua" \
+   && grep -q 'New version is available' "$PKG/stay_fresh.lua"; then
+  ok "stay_fresh.lua refuses to install without a backup and gates on the RouterOS verdict"
+else
+  err "stay_fresh.lua must refuse the install without a backup and gate on RouterOS's own verdict"
+fi
+# The install and the reboot must both sit behind the window and the dry run:
+# each action line is preceded, somewhere above it, by the two guards.
+for action in '/system package update install;' '/system reboot;' '/system routerboard upgrade;'; do
+  if grep -qF "$action" "$PKG/stay_fresh.lua" \
+     && grep -q ':if (!\$InWindow) do={' "$PKG/stay_fresh.lua" \
+     && grep -q ':if (\$DryRun) do={' "$PKG/stay_fresh.lua"; then
+    ok "stay_fresh.lua guards '$action' with the window and the dry run"
+  else
+    err "stay_fresh.lua must guard '$action' with the maintenance window and StayFreshDryRun"
+  fi
+done
+
+# --- the scripts meant for RouterOS 7.24 declare no underscored :global ----
+# 7.24 refuses to execute a script that declares one, from every path, and
+# says nothing in the script's own log lines because it never gets past the
+# parser. These two exist because of that; a :global with an underscore
+# slipping into either would be the defect they were written around.
+for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua"; do
+  n="$(basename "$f")"
+  bad="$(grep -E '^[[:space:]]*:global +[A-Za-z0-9]*_' "$f" || true)"
+  if [[ -z "$bad" ]]; then
+    ok "$n declares no :global with an underscore in its name"
+  else
+    err "$n declares an underscored :global, which RouterOS 7.24 refuses to run: $bad"
+  fi
+done
 if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
    && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
   ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"

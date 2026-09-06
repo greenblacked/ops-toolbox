@@ -127,7 +127,7 @@ case "$POLICY" in
     ;;
 esac
 
-SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch backup_update_check"
+SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch backup_update_check stay_fresh"
 
 for selected in ${ONLY[@]+"${ONLY[@]}"}; do
   known=0
@@ -230,15 +230,19 @@ backup_file_cleanup    1d   04:40:00
 cert_expiry_watch      1d   05:00:00
 EOF
 
-comment "--- one or the other, not both ---"
+comment "--- one of these three, not several ---"
 comment
 comment "backup_update_check does the same job as update_check in a plainer style and"
 comment "is the one that runs on RouterOS 7.24, which refuses update_check's"
-comment "underscored :global names. It takes update_check's slot: install one of the"
-comment "two, not both, or the router reports every update twice."
+comment "underscored :global names. stay_fresh goes one step further and installs"
+comment "the release inside its maintenance window (03:00-05:59 by default; the"
+comment "04:20 slot is inside it), then the RouterBOARD firmware on the run after."
+comment "All three take update_check's slot: install one, not several, or the"
+comment "router reports every update more than once."
 comment
 emit_table <<'EOF'
 backup_update_check    1d   04:20:00
+stay_fresh             1d   04:20:00
 EOF
 
 # --- reboot notification ---------------------------------------------------

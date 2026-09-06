@@ -464,7 +464,14 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 - `backup_update_check.lua` — the same job in a plainer style: a message on
   every run, and the pre-upgrade backup + prune when an update is offered. No
   underscored `:global` names, which is why it runs on RouterOS 7.24 where
-  `update_check.lua` does not. Install one of the two, not both.
+  `update_check.lua` does not.
+- `stay_fresh.lua` — the RouterOS counterpart of the macOS and Linux
+  `stay_fresh.sh`: the two checks above tell you a release is waiting, this one
+  installs it. Pre-upgrade backup and prune, then `/system package update
+  install` inside a maintenance window (03:00–05:59 by default), then the
+  RouterBOARD firmware on the run after; refuses to install without the backup,
+  gates on RouterOS's own verdict, and has a dry run. No underscored `:global`
+  names, so it runs on 7.24. Install one of the three, not several.
 - `wan_failover_notify.lua` — polls the built-in `detect-internet-state`
   property on the WAN interface and notifies only on transitions.
 - `detect_internet.lua` — manual nudge that re-runs RouterOS WAN/LAN
