@@ -120,7 +120,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 | `health_check`         | `5m`                                                                     |
 | `update_check`         | `1d`                                                                     |
 | `backup_update_check`  | `1d` — instead of `update_check`, not alongside it                       |
-| `stay_fresh`           | `1d` inside its window (`04:20:00`) — `--update-script stay_fresh`      |
+| `stay_fresh`           | `1d` inside its window (`04:20:00`) — `--update-script stay_fresh`       |
 | `wan_failover_notify`  | `1m`                                                                     |
 | `dhcp_lease_watch`     | `5m`                                                                     |
 | `firewall_drift`       | `15m`                                                                    |
@@ -376,20 +376,20 @@ What stops it from rebooting a router it should not — each one a `:global`
 set at boot, so a fleet is tuned from one startup script and the tracked file
 is never edited per router:
 
-| `:global`                  | Default | What it does                                                                                                   |
-| -------------------------- | ------- | -------------------------------------------------------------------------------------------------------------- |
-| `StayFreshDryRun`          | `false` | `true`: check and report only. Run the first tick with this on and read the message before letting it act.     |
-| `StayFreshWindowStart`     | `3`     | Local hour, inclusive. With the end, the only hours it will install or reboot in. Outside: "deferred".         |
-| `StayFreshWindowEnd`       | `6`     | Local hour, exclusive. `3` and `6` is 03:00–05:59; start > end wraps past midnight; equal means always.        |
-| `StayFreshInstall`         | `true`  | `false`: never install; the script becomes an update check with a backup, like `backup_update_check`.          |
-| `StayFreshFirmware`        | `true`  | `false`: never touch the RouterBOARD firmware. Only when the bundled firmware is numerically newer; CHR/x86 skip. |
-| `StayFreshRequireBackup`   | `true`  | Refuse the install when the pre-upgrade pair was not written. `false`: report the failed backup and install.   |
-| `StayFreshRequireNotify`   | `true`  | Refuse to install or reboot when no Telegram helper resolved. `false` for a router with no Telegram at all.     |
-| `StayFreshMinFreeMiB`      | `16`    | Free storage the install must find, checked before the download. A floor to tune, not a RouterOS figure; `0` off. |
-| `StayFreshRemovePrevious`  | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                            |
-| `StayFreshMaxWait`         | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                             |
-| `StayFreshTgSend`          | unset   | Name of the Telegram helper script, if it is neither `tg_send_new` nor `tg_send`.                              |
-| `RouterBackupPassword`     | unset   | Encrypts the binary backup; the same `:global` `backup_update_check` reads.                                     |
+| `:global`                 | Default | What it does                                                                                                      |
+| ------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `StayFreshDryRun`         | `false` | `true`: check and report only. Run the first tick with this on and read the message before letting it act.        |
+| `StayFreshWindowStart`    | `3`     | Local hour, inclusive. With the end, the only hours it will install or reboot in. Outside: "deferred".            |
+| `StayFreshWindowEnd`      | `6`     | Local hour, exclusive. `3` and `6` is 03:00–05:59; start > end wraps past midnight; equal means always.           |
+| `StayFreshInstall`        | `true`  | `false`: never install; the script becomes an update check with a backup, like `backup_update_check`.             |
+| `StayFreshFirmware`       | `true`  | `false`: never touch the RouterBOARD firmware. Only when the bundled firmware is numerically newer; CHR/x86 skip. |
+| `StayFreshRequireBackup`  | `true`  | Refuse the install when the pre-upgrade pair was not written. `false`: report the failed backup and install.      |
+| `StayFreshRequireNotify`  | `true`  | Refuse to install or reboot when no Telegram helper resolved. `false` for a router with no Telegram at all.       |
+| `StayFreshMinFreeMiB`     | `16`    | Free storage the install must find, checked before the download. A floor to tune, not a RouterOS figure; `0` off. |
+| `StayFreshRemovePrevious` | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                               |
+| `StayFreshMaxWait`        | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                                |
+| `StayFreshTgSend`         | unset   | Name of the Telegram helper script, if it is neither `tg_send_new` nor `tg_send`.                                 |
+| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup_update_check` reads.                                       |
 
 The verdict is `status`, never `installed != latest`, for the reason under
 `update_check.lua`: switch a router from `stable` to `long-term` and the
