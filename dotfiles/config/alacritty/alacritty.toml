@@ -1,0 +1,72 @@
+# Alacritty. Read from ~/.config/alacritty/alacritty.toml on macOS and Linux.
+# Keys checked against extra/man/alacritty.5.scd of Alacritty 0.17.
+
+[general]
+# Font and colour edits apply as soon as the file is saved.
+live_config_reload = true
+# Colours live in a separate file so a theme swap never touches this one:
+# https://github.com/alacritty/alacritty-theme
+# import = ["~/.config/alacritty/themes/catppuccin-mocha.toml"]
+
+[env]
+# Alacritty's own terminfo is missing on most hosts you will ssh into;
+# xterm-256color is everywhere.
+TERM = "xterm-256color"
+
+[terminal]
+# tmux and nvim over ssh may copy to the clipboard, never read it.
+osc52 = "OnlyCopy"
+
+[window]
+padding = { x = 8, y = 6 }
+dynamic_padding = true
+decorations = "Full"
+# Logs are read, not admired.
+opacity = 1.0
+dynamic_title = true
+# macOS: Option acts as Alt, so Alt-b, Alt-f and Alt-. work in zsh and nvim.
+option_as_alt = "Both"
+
+[scrolling]
+# The hard maximum. A long `kubectl logs` or `terraform plan` stays reachable.
+history = 100000
+multiplier = 3
+
+[font]
+normal = { family = "JetBrainsMono Nerd Font", style = "Regular" }
+bold = { family = "JetBrainsMono Nerd Font", style = "Bold" }
+italic = { family = "JetBrainsMono Nerd Font", style = "Italic" }
+size = 13.0
+# One extra pixel of line spacing for dense YAML.
+offset = { x = 0, y = 1 }
+builtin_box_drawing = true
+
+[cursor]
+# A steady block is the easiest cursor to find in a wall of log output.
+style = { shape = "Block", blinking = "Off" }
+vi_mode_style = { shape = "Beam", blinking = "Off" }
+# Hollow when unfocused, so the active window is obvious.
+unfocused_hollow = true
+
+[selection]
+# Select is copy, as on Linux. Pod names and image digests get copied all
+# day; this removes a keystroke from every one.
+save_to_clipboard = true
+
+[mouse]
+hide_when_typing = true
+
+[bell]
+duration = 0
+
+[keyboard]
+bindings = [
+  # Cmd-K clears the screen and the scrollback, the Terminal.app habit.
+  # The second binding sends a form feed so the shell redraws its prompt.
+  { key = "K", mods = "Command", action = "ClearHistory" },
+  { key = "K", mods = "Command", chars = "\u000c" },
+  # Cmd-F searches the scrollback; the default Ctrl-Shift-F clashes on macOS.
+  { key = "F", mods = "Command", action = "SearchForward" },
+  # Keyboard selection of output.
+  { key = "Space", mods = "Control|Shift", action = "ToggleViMode" },
+]

@@ -1,0 +1,24 @@
+# k9s - resource aliases, typed after `:`.
+#
+# Built-in short names (po, dp, svc, ing, ...) stay; these add the ones that
+# are missing or awkward. Since k9s 0.30 an alias can also expand to a full
+# command with a namespace and label selector, which is what the last block
+# does. Schema: internal/config/json/schemas/aliases.json upstream.
+aliases:
+  # Long group-qualified names nobody wants to type.
+  crb: rbac.authorization.k8s.io/v1/clusterrolebindings
+  rb: rbac.authorization.k8s.io/v1/rolebindings
+  cr: rbac.authorization.k8s.io/v1/clusterroles
+  pdb: policy/v1/poddisruptionbudgets
+  hpa: autoscaling/v2/horizontalpodautoscalers
+  np: networking.k8s.io/v1/networkpolicies
+  sc: storage.k8s.io/v1/storageclasses
+  # Argo CD and Flux, present on the clusters this toolbox targets.
+  app: argoproj.io/v1alpha1/applications
+  appset: argoproj.io/v1alpha1/applicationsets
+  hr: helm.toolkit.fluxcd.io/v2/helmreleases
+  ks: kustomize.toolkit.fluxcd.io/v1/kustomizations
+  # cert-manager
+  cert: cert-manager.io/v1/certificates
+  # Straight to the cluster DNS pods: a view, a namespace and a selector.
+  dns: pod kube-system k8s-app=kube-dns

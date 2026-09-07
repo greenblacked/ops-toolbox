@@ -1,0 +1,89 @@
+# k9s - main configuration.
+#
+# Installed as a COPY, not a link: k9s rewrites this file on every exit, and
+# would strip these comments out of the tracked copy. `install_dotfiles.sh
+# --status` reports DRIFT once it has; fold anything worth keeping back here.
+#
+# Where k9s looks: $XDG_CONFIG_HOME/k9s/config.yaml. On macOS with no
+# XDG_CONFIG_HOME set that is ~/Library/Application Support/k9s, so export
+# XDG_CONFIG_HOME="$HOME/.config" (or K9S_CONFIG_DIR) - see the README.
+# `k9s info` prints the paths it resolved.
+#
+# Every key is in internal/config/json/schemas/k9s.json upstream; the suite
+# validates this file against that schema.
+k9s:
+  # Refresh tables on events and keypresses only. Periodic redraw adds API
+  # load on every cluster you have open, for information you are not reading.
+  liveViewAutoRefresh: false
+  # Seconds between polls when a view does refresh. 2 is the floor.
+  refreshRate: 2
+  # Default is 120s: on a flaky VPN that is two minutes of frozen UI before
+  # k9s admits the API server is gone. Fail fast and reconnect instead.
+  apiServerTimeout: 15s
+  # Reconnect attempts after the connection drops. Default 15.
+  maxConnRetry: 5
+  # Mutations stay allowed by default. Production contexts get readOnly: true
+  # in their own per-context file - see the README for the path - so the
+  # block is where it matters and not where it gets in the way.
+  readOnly: false
+  # Ctrl-C no longer quits. Muscle memory hits it to cancel a filter, and
+  # losing every open view for that is not worth the shortcut; :quit works.
+  noExitOnCtrlC: true
+  portForwardAddress: localhost
+  # No "new release available" call to GitHub on startup from a tool that
+  # holds cluster credentials. Homebrew keeps it current.
+  skipLatestRevCheck: true
+  # Node view counts pods per node with one list call per node. Leave on;
+  # set true on a cluster with hundreds of nodes if the view is slow.
+  disablePodCounting: false
+  ui:
+    # Mouse mode captures clicks, so terminal selection and copy stop
+    # working. Off is the terminal-native choice.
+    enableMouse: false
+    headless: false
+    # The logo costs six rows on every view.
+    logoless: true
+    crumbsless: false
+    splashless: true
+    # Nerd Font glyphs are in use; set true on a terminal without them.
+    noIcons: false
+    # Reload skins, plugins, aliases and hotkeys from disk when they change,
+    # so an edit here is visible without restarting.
+    reactive: true
+    # No skin is set: the terminal's own colours apply. Drop a file from
+    # https://github.com/derailed/k9s/tree/master/skins into
+    # ~/.config/k9s/skins/ and name it here, or per context (README).
+    defaultsToFullScreen: false
+  # Image vulnerability scans in the pod view. Off: they pull the Trivy
+  # database and scan every image in view, which is a job for CI.
+  imageScans:
+    enable: false
+  logger:
+    # Lines fetched when a log view opens (default 100) and kept (default
+    # 5000). Enough history to see what happened before the crash.
+    tail: 200
+    buffer: 5000
+    # -1 tails from now; 300 would start five minutes back.
+    sinceSeconds: -1
+    # Wrapped JSON log lines are unreadable; `w` toggles it per view.
+    textWrap: false
+    # Timestamps on every line. An incident timeline is built from these.
+    showTime: true
+  # The pod behind the nodeShell feature gate (off by default, and off in
+  # the per-context prod file). netshoot carries tcpdump, dig and curl;
+  # busybox, the default, carries almost nothing.
+  shellPod:
+    image: nicolaka/netshoot:v0.14
+    namespace: default
+    limits:
+      cpu: 100m
+      memory: 100Mi
+    tty: true
+  # Header turns amber at warn and red at critical (defaults 70 / 90).
+  thresholds:
+    cpu:
+      critical: 90
+      warn: 70
+    memory:
+      critical: 90
+      warn: 70

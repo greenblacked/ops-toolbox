@@ -1,0 +1,117 @@
+# k9s - plugins: a key, a scope, and a command run with the selection.
+#
+# Adapted from the upstream plugins/ directory. Each names the tool it needs;
+# a missing one fails on the key press and nothing else. Variables k9s
+# substitutes: $CONTEXT $CLUSTER $NAMESPACE $NAME $POD $CONTAINER $FILTER
+# $RESOURCE_NAME $RESOURCE_GROUP $KUBECONFIG $COL-<COLUMN> and $INPUT_<name>.
+# --context is passed everywhere so a plugin can never act on a cluster
+# other than the one on screen. Schema: internal/config/json/schemas/plugins.json.
+plugins:
+  # Tail every pod matching the current filter. Needs stern (krew or brew).
+  stern:
+    shortCut: Ctrl-Y
+    description: Logs <stern>
+    scopes:
+      - pods
+    command: stern
+    background: false
+    args:
+      - --tail
+      - "50"
+      - $FILTER
+      - -n
+      - $NAMESPACE
+      - --context
+      - $CONTEXT
+
+  # An ephemeral debug container next to the selected one. This is the
+  # answer for a distroless image with no shell; the pod keeps running.
+  # `dangerous` marks it as a mutation in the UI and `confirm` asks first.
+  debug:
+    shortCut: Shift-D
+    description: Add debug container
+    dangerous: true
+    confirm: true
+    scopes:
+      - containers
+    command: bash
+    background: false
+    inputs:
+      - name: image
+        label: Debug image
+        type: dropdown
+        required: true
+        default: nicolaka/netshoot:v0.14
+        options:
+          - nicolaka/netshoot:v0.14
+          - busybox:1.37
+          - alpine:3.22
+      - name: profile
+        label: Debug profile
+        type: dropdown
+        required: true
+        default: general
+        options:
+          - general
+          - baseline
+          - restricted
+          - netadmin
+          - sysadmin
+    args:
+      - -c
+      - >-
+        kubectl debug -it --context $CONTEXT -n $NAMESPACE $POD
+        --target=$NAME --image=$INPUT_IMAGE --profile=$INPUT_PROFILE -- sh
+
+  # Decode a Secret's data in one step. Needs jq.
+  decode-secret:
+    shortCut: Ctrl-X
+    description: Decode secret
+    scopes:
+      - secrets
+    command: sh
+    background: false
+    args:
+      - -c
+      - >-
+        kubectl get secret $NAME -n $NAMESPACE --context $CONTEXT -o json
+        | jq -r '.data | map_values(@base64d)' | less -K
+
+  # Live events for the selected object.
+  watch-events:
+    shortCut: Shift-E
+    description: Watch events
+    scopes:
+      - all
+    command: sh
+    background: false
+    args:
+      - -c
+      - >-
+        kubectl events --context $CONTEXT --namespace $NAMESPACE
+        --for $RESOURCE_NAME.$RESOURCE_GROUP/$NAME --watch
+
+  # Which manager last set each field. Needs `kubectl krew install blame`.
+  blame:
+    shortCut: b
+    description: Blame
+    scopes:
+      - all
+    command: sh
+    background: false
+    args:
+      - -c
+      - kubectl blame $RESOURCE_NAME $NAME -n $NAMESPACE --context $CONTEXT | less -K
+
+  # Everything in a namespace, including the kinds `get all` omits.
+  # Needs `kubectl krew install get-all`.
+  get-all:
+    shortCut: g
+    description: get-all
+    scopes:
+      - namespaces
+    command: sh
+    background: false
+    args:
+      - -c
+      - kubectl get-all --context $CONTEXT -n $NAME | less -K

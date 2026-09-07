@@ -1,0 +1,40 @@
+# Git - global excludes. Machine, editor and tooling noise only: an artefact a
+# project produces belongs in that project's .gitignore, where the next clone
+# sees it too. This is also why node_modules/ is not here - hiding it
+# globally hides the missing project rule, and `git status` stops warning.
+
+# Operating system
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.*.sw?
+
+# Local environment and secrets. .env files are the most common thing to
+# leak into a repository, and the one gitleaks is most often run for.
+.env
+.env.*
+.envrc
+!.env.example
+
+# Terraform state can contain every secret the providers ever returned.
+# The lock file is NOT here: .terraform.lock.hcl belongs in the repository.
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/

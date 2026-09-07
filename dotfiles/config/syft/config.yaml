@@ -1,0 +1,27 @@
+# Syft defaults, read from $XDG_CONFIG_HOME/syft/config.yaml after
+# ./.syft.yaml and ~/.syft.yaml. SYFT_<KEY> overrides; `syft config` prints
+# the effective result. Keys from cmd/syft/internal/options/*.go.
+
+output:
+  - table
+check-for-app-update: false
+scope: squashed
+# 0 is NumCPU * 4.
+parallelism: 0
+exclude:
+  - './node_modules/**'
+  - './.git/**'
+# Network enrichment (Go module proxy, npm, PyPI lookups) stays off; an
+# SBOM should be reproducible from the artefact alone.
+enrich: []
+file:
+  metadata:
+    selection: owned-by-package
+    digests:
+      - sha256
+python:
+  # Never invent a version for an unpinned requirements.txt line.
+  guess-unpinned-requirements: false
+registry:
+  insecure-skip-tls-verify: false
+  insecure-use-http: false

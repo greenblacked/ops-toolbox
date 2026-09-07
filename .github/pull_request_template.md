@@ -8,7 +8,7 @@
 
 <!-- Delete the ones you did not run. CI runs the same ./run-tests.sh. -->
 
-- [ ] `./run-tests.sh` (git + macos + linux + k8s + python + static + windows)
+- [ ] `./run-tests.sh` (git + macos + linux + k8s + dotfiles + python + static + windows)
 - [ ] `LINUX_DISTROS=all ./run-tests.sh linux`
 - [ ] `./run-tests.sh windows`
 - [ ] `./run-tests.sh k8s`
