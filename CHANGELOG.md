@@ -43,10 +43,18 @@ entry here belongs to a version.
   run showed one stray "WARNING: No matching packages" line from pip and
   nothing from anything else.
 
-- The Docker steps suite covers the three: the report with pending, current,
+- `stay_fresh.sh --yes` passes `--yes` to `brew upgrade` only after
+  `brew upgrade --help` documents it. Current Homebrew asks for confirmation
+  before downloading, and `--yes` is what keeps the LaunchAgent from stalling
+  on that prompt; an older Homebrew rejects the flag as an invalid option,
+  which turned every upgrade into a warning. The script now probes once and
+  says so when it runs without the flag.
+
+- The Docker steps suite covers the four: the report with pending, current,
   and unreachable update servers, the dry run scanning nothing, the two new
-  cache targets, and pip's notice staying out of a quiet run. The seventeenth
-  step is exercised for real like the sixteen before it.
+  cache targets, pip's notice staying out of a quiet run, and the brew flag
+  probe against a Homebrew with and without `--yes`. The seventeenth step is
+  exercised for real like the sixteen before it.
 
 - `stay_fresh.lua`: the RouterOS counterpart of the macOS and Linux
   `stay_fresh.sh`. `update_check.lua` and `backup_update_check.lua` say a

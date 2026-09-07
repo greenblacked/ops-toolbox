@@ -480,6 +480,25 @@ assert_contains "cask upgrades are skipped without a terminal" "$out" \
 assert_not_called "no cask upgrade is attempted without a terminal" "$d/calls" \
   "brew upgrade --cask"
 assert_contains "a terminal-less brew run stays clean" "$out" "warn steps:  0"
+assert_not_called "no --yes is passed to a brew whose upgrade help lacks it" "$d/calls" \
+  "brew upgrade --formula --yes"
+assert_contains "the missing --yes flag is reported" "$out" \
+  "has no --yes flag"
+rm -rf "$d"
+
+# A current Homebrew documents --yes on brew upgrade; --yes runs pass it through
+# so the download confirmation does not stall the LaunchAgent.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+                    'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+                    'case "${1:-} ${2:-}" in "upgrade --help") echo "  --no-ask, --yes, -y  Do not ask for confirmation" ;; esac' \
+                    'exit 0'
+out="$(run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "brew step succeeds with a --yes-capable brew" "0" "$rc"
+assert_called "--yes reaches brew upgrade when the help documents it" "$d/calls" \
+  "brew upgrade --formula --yes"
+assert_not_contains "no missing-flag notice for a --yes-capable brew" "$out" \
+  "has no --yes flag"
 rm -rf "$d"
 
 # ===========================================================================

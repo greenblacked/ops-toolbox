@@ -1721,8 +1721,17 @@ step_brew() {
   # Make cask installs less chatty and less likely to open GUIs mid-run.
   export HOMEBREW_NO_ENV_HINTS=1
 
+  # `brew upgrade --yes` (also -y / --no-ask) skips the confirmation prompt that
+  # current Homebrew shows before downloading; an older Homebrew rejects the
+  # flag as an invalid option, so probe for it instead of assuming.
   local -a brew_yes=()
-  (( ASSUME_YES )) && brew_yes+=(--yes)
+  if (( ASSUME_YES )); then
+    if brew upgrade --help 2>/dev/null | grep -q -- '--yes'; then
+      brew_yes+=(--yes)
+    else
+      info "this Homebrew's 'brew upgrade' has no --yes flag; running without it"
+    fi
+  fi
 
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
   # Keep formulae and casks separate: generic `brew upgrade` considers both,
