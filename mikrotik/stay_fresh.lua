@@ -223,12 +223,14 @@
 
 /system package update check-for-updates once;
 
-# Wait for the check to finish rather than for a field to be non-empty:
-# RouterOS keeps latest-version from the previous check, so it is populated
-# the instant the command is issued. status is the field that moves, and it
-# holds the previous verdict for a moment before its in-progress text
-# ("finding out latest version..." on 7.24.2, measured on the CHR), hence the
-# settle before the first read.
+# Wait for the check to finish rather than for a field to be non-empty. On
+# the 7.24.2 CHR, issuing the check clears latest-version at once, a good check
+# refills it in about a second, and a failed check leaves it empty - so the
+# field is empty both mid-check and after a failure and cannot be the signal.
+# (This comment used to say RouterOS kept the previous value; it does not on
+# 7.24.2.) status is the field that moves, and it may hold the previous verdict
+# for a moment before its in-progress text ("finding out latest version..."),
+# hence the settle before the first read.
 :delay 5s;
 
 :local settled false;
@@ -323,10 +325,11 @@
 :if ($DryRun) do={ :set Mode ($NL . $NL . "<i>dry run: nothing was changed</i>"); }
 
 # --- a check that did not complete ---------------------------------------------
-# Named as such rather than falling through: latest-version survives from the
-# previous check, so a run that ended in "ERROR: could not resolve" still has
-# last week's version in the field and would otherwise read as "nothing to
-# install" - the outcome that looks like up to date and means the opposite.
+# Named as such rather than falling through: on 7.24.2 a failed check leaves
+# latest-version empty, and an empty field would otherwise read as "nothing to
+# install" - the outcome that looks like up to date and means the opposite. (An
+# earlier note here said the field kept last week's version; the CHR says
+# otherwise, and the guard is the same either way.)
 :local why "";
 :if (!$settled) do={ :set why "timed out waiting for a verdict"; }
 :if ([:len $latest] = 0) do={ :set why "no latest-version reported"; }

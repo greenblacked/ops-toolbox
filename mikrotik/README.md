@@ -291,10 +291,12 @@ release train somebody had specifically kept it off.
 Completion is detected by polling `status` until it reaches a verdict, up to
 about 65 seconds (`:global UPDATE_CHECK_MAX_WAIT` in five-second units, for a
 slow or contended link), rather than waiting a fixed interval or waiting for
-`latest-version` to fill. RouterOS keeps `latest-version` from the previous
-check, so on every run after the first it is already populated the instant the
-command is issued, and a loop waiting for it to fill exits immediately with
-last week's answer.
+`latest-version` to fill. That field cannot be the signal: measured on the
+7.24.2 CHR, issuing the check clears it at once, a good check refills it in
+about a second, and a failed check leaves it empty, so a loop waiting for it to
+fill hangs on a failure and a read after a fixed wait cannot tell mid-check
+from failed. (This section used to say RouterOS kept the previous check's
+value; the CHR says otherwise.)
 
 A check that never completes sends its own message (`:global
 UPDATE_CHECK_NOTIFY_FAILURE false` to disable). It only fires where the router
@@ -329,17 +331,19 @@ the `.rsc.in_progress` temporary.
 The rest keeps the plain design where it was sound — a message on **every**
 run rather than only on a transition, no `:global` knobs — and drops it where
 the CHR showed it lying. The original waited a fixed 15 seconds and compared
-`installed` with `latest`. Measured on a 7.24.2 CHR, `latest-version` is empty
-only until the first check ever completes; after that it keeps the last answer
-through every later check, failed ones included, so that comparison cannot see
-a failed check. A router whose DNS or outbound HTTPS broke would report "not
-required" against last week's version indefinitely, or, if last week offered a
-newer release, take a backup and prune the old one on stale information. So
-the script now polls `status` until it settles — "finding out latest
-version..." while the check runs, about two seconds on the CHR, then "System
-is already up to date", "New version is available", or an `ERROR:` line naming
-the cause — bounded by `MaxWait` attempts of five seconds, and the verdict is
-RouterOS's own, the same as `update_check.lua`.
+`installed` with `latest`. Measured on a 7.24.2 CHR: issuing the check clears
+`latest-version` at once, a good check refills it in about a second, and a
+failed check leaves it empty with an `ERROR:` line in `status` — with the
+update hosts unreachable, "ERROR: IPv4: server is not responding / IPv6: no
+internet connection". The old comparison sent that empty field down the "not
+required" branch, so a router whose DNS or outbound HTTPS broke reported
+"update is not required" with a blank Latest every morning. So the script now
+polls `status` until it settles — "finding out latest version..." while the
+check runs, then "System is already up to date", "New version is available",
+or the `ERROR:` line — bounded by `MaxWait` attempts of five seconds, and the
+verdict is RouterOS's own, the same as `update_check.lua`. The sibling
+scripts' comments used to say `latest-version` kept the previous check's
+answer; the CHR says otherwise, and they now say what was measured.
 
 Three messages, one per outcome. "Update is required" carries the backup, the
 firmware state, the license level, the installed packages with their versions
@@ -437,9 +441,10 @@ The verdict is `status`, never `installed != latest`, for the reason under
 strings differ while `latest` is *older*, and a script that installs on a
 difference test downgrades the router. A check that errors or never
 completes installs nothing and sends a message saying so rather than reading
-as "nothing to install" — `latest-version` survives from the previous check,
-so silence there would look like up to date and mean the opposite. The channel
-is read and reported, never written.
+as "nothing to install" — on 7.24.2 a failed check leaves `latest-version`
+empty, and an empty field compared with `installed` would read as "differs,
+nothing offered", the silence that looks like up to date and means the
+opposite. The channel is read and reported, never written.
 
 The backup and prune are the ones described under `update_check.lua`: same
 filename, same `backup-` prefix so `pull_router_backups.sh` still collects the

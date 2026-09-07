@@ -18,14 +18,14 @@ entry here belongs to a version.
 
 - `backup_update_check.lua` takes its verdict from RouterOS's `status` line,
   polled until it settles, instead of a fixed 15-second wait and an
-  `installed != latest` comparison. Measured on a 7.24.2 CHR: `latest-version`
-  is empty only until the first check ever completes and then keeps the last
-  answer through every later check, failed ones included, so the comparison
-  could not see a failed check. A router whose DNS or outbound HTTPS broke
-  reported "not required" against last week's version every morning, which is
-  how a fleet quietly stops being checked; had last week offered a newer
-  release, it would have taken a backup and pruned the old one on stale
-  information. A failed check is now its own message, "update check FAILED",
+  `installed != latest` comparison. Measured on a 7.24.2 CHR: issuing the
+  check clears `latest-version` at once, a good check refills it in about a
+  second, and a failed check leaves it empty with an `ERROR:` line in
+  `status`. The old comparison sent that empty field down the "not required"
+  branch, so a router whose DNS or outbound HTTPS broke reported "update is
+  not required" with a blank Latest every morning, which is how a fleet
+  quietly stops being checked. A failed check is now its own message,
+  "update check FAILED",
   with the reason, the `status` line, the update mode, the NTP client state
   and the DNS servers, and the command to run by hand; it takes no backup and
   prunes nothing. Every message carries the `status` line and the router's
@@ -48,8 +48,11 @@ entry here belongs to a version.
   returns in 0.1s, `status` reads "finding out latest version..." while the
   check runs and settles in about two seconds, `/system routerboard` does not
   exist on the CHR, and `/system health` has no readings there. One forces a
-  failed check by pointing the update hosts at the router itself and asserts
-  `latest-version` survives it. Two run `backup_update_check.lua` end to end
+  failed check by pointing the update hosts at the router itself and records
+  what this release does: `status` becomes "ERROR: IPv4: server is not
+  responding / IPv6: no internet connection" and `latest-version` is left
+  empty, not stale, which corrects a claim the update scripts' comments had
+  made. Two run `backup_update_check.lua` end to end
   through a Telegram stub whose `:global` has no underscore, the first update
   script the suite executes on the CHR rather than xfails: on the stable
   channel for the heartbeat, and with the channel patched to `development`,

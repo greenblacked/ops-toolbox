@@ -9,17 +9,18 @@
 # firmware state, the package list and the resources an upgrade depends on.
 # "Not required" is the daily heartbeat. "Check FAILED" is the one the plain
 # design used to hide. It used to wait a fixed 15 seconds and compare
-# installed-version with latest-version, and measured on a 7.24.2 CHR that
-# comparison cannot see a failed check: latest-version is empty only until the
-# first check ever completes, and after that it keeps the last answer through
-# every later check, failed ones included. A router whose DNS or outbound HTTPS
-# broke would report "not required" against last week's version indefinitely -
-# or, if last week offered a newer release, take a backup and prune the old
-# one on stale information. So the verdict is RouterOS's own status line, read
-# until it settles: "finding out latest version..." while the check runs (about
-# two seconds on the CHR), then "System is already up to date", "New version
-# is available", or an ERROR that names the cause. That line is in every
-# message, because it is the one field that says what the check actually did.
+# installed-version with latest-version. Measured on a 7.24.2 CHR: issuing the
+# check clears latest-version at once, a good check refills it in about a
+# second, and a failed check leaves it empty with an ERROR line in status. The
+# old comparison sent that empty field down the "not required" branch, so a
+# router whose DNS or outbound HTTPS broke reported "update is not required"
+# with a blank Latest every morning - the outcome that looks like up to date
+# and means the opposite. So the verdict is RouterOS's own status line, read
+# until it settles: "finding out latest version..." while the check runs, then
+# "System is already up to date", "New version is available", or an ERROR that
+# names the cause - on the CHR with the update hosts unreachable, "ERROR: IPv4:
+# server is not responding / IPv6: no internet connection". That line is in
+# every message, because it is the one field that says what the check did.
 #
 # No :global here carries an underscore in its name, and that is the point.
 # RouterOS 7.24 refuses to execute a script that declares one - "expected end
@@ -119,11 +120,12 @@
 /system package update check-for-updates once
 
 # Wait for the verdict, not for a fixed time. status is the field that moves:
-# it holds the previous verdict for a moment, reads "finding out latest
+# it may hold the previous verdict for a moment, reads "finding out latest
 # version..." while the check runs, and settles on "System is already up to
 # date", "New version is available", or an ERROR line. latest-version is not
-# a signal: it is populated from the previous check the instant the command
-# is issued, on every run but the first.
+# a signal on its own: on 7.24.2 it is cleared the instant the check is issued
+# and stays empty when the check fails, so it is empty both mid-check and
+# after a failure, and only status tells the two apart.
 :delay 5s
 
 :local Settled false
@@ -355,13 +357,18 @@
         :set DnsLine ("\0ADNS servers: <code>" . $DnsStatic . "</code> dynamic: <code>" . $DnsDynamic . "</code>")
     } on-error={}
 
+    # A failed check leaves latest-version empty on 7.24.2; say so rather than
+    # print an empty field.
+    :local LatestText $LatestVersion
+    :if ([:len $LatestText] = 0) do={ :set LatestText "none - cleared by the failed check" }
+
     :log warning ("backup_update_check: update check failed on channel $Channel - $Reason (status: $Status)")
     :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update check FAILED." . \
     "\0A\0AReason: <code>" . $Reason . "</code>" . \
     "\0AStatus: <code>" . $StatusText . "</code>" . \
     "\0AChannel: <code>" . $Channel . "</code> mode: <code>" . $UpdateMode . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
-    "\0ALast known latest: <code>" . $LatestVersion . "</code>" . \
+    "\0ALatest: <code>" . $LatestText . "</code>" . \
     $NtpLine . \
     $DnsLine . \
     $CheckedLine . \

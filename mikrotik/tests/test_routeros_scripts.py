@@ -847,14 +847,16 @@ def _remove_probe_dns_entries(api: Any) -> None:
         api.get_binary_resource("/ip/dns/cache").call("flush", {})
 
 
-def test_latest_version_survives_a_failed_check(api: Any, script_resource: Any) -> None:
-    """A check that fails leaves the previous latest-version in place.
+def test_a_failed_check_clears_latest_version(api: Any, script_resource: Any) -> None:
+    """A check that fails leaves latest-version empty, not stale.
 
-    This is the claim the update scripts' comments rest on, and the reason
-    installed != latest cannot detect a failed check. It is put to a live
-    router: one good check so latest-version holds an answer, then the update
-    hosts are pointed at the router itself and a second check is run. The trail
-    and the ERROR text this release emits go into the warnings summary.
+    The update scripts' comments used to say the opposite - that the field
+    kept the previous check's answer - and the first version of this test
+    asserted that. On 7.24.2 the CHR says: issuing the check clears the field
+    at once, a good check refills it in about a second, a failed one leaves it
+    empty with an ERROR line in status. Either way the field cannot be the
+    verdict, which is why the scripts poll status. The trail and the exact
+    ERROR text this release emits go into the warnings summary.
     """
     probe = "pu_ut_update_probe"
     _add_script(script_resource, probe, "/system package update check-for-updates once;\n")
@@ -899,10 +901,10 @@ def test_latest_version_survives_a_failed_check(api: Any, script_resource: Any) 
     errored = any(e in bad["status"] for e in ("ERROR", "error"))
     if not errored:
         pytest.skip(f"the override did not make the check fail; status {bad['status']!r}")
-    assert bad["latest-version"] == good["latest-version"], (
-        f"latest-version changed on a failed check: {good} -> {bad}"
+    assert good["latest-version"], f"the good check reported no version: {good}"
+    assert bad["latest-version"] == "", (
+        f"a failed check left latest-version populated on this release: {good} -> {bad}"
     )
-    assert bad["latest-version"], "latest-version was cleared by the failed check"
 
 
 def test_backup_update_check_backs_up_when_a_release_is_offered(
