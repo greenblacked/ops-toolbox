@@ -91,6 +91,7 @@ jobs:
       suite_linux: ${{ steps.filter.outputs.suite_linux }}
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
       suite_k8s: ${{ steps.filter.outputs.suite_k8s }}
+      suite_dotfiles: ${{ steps.filter.outputs.suite_dotfiles }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -176,6 +177,7 @@ jobs:
           emit suite_linux   '^linux/'
           emit suite_windows '^windows/'
           emit suite_k8s     '^k8s-toolbox/'
+          emit suite_dotfiles '^dotfiles/'
 
       - name: Summarise
         if: always()
@@ -198,6 +200,7 @@ jobs:
             printf '| linux suite | %s |\n'   '${{ steps.filter.outputs.suite_linux }}'
             printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
             printf '| k8s suite | %s |\n'     '${{ steps.filter.outputs.suite_k8s }}'
+            printf '| dotfiles suite | %s |\n'     '${{ steps.filter.outputs.suite_dotfiles }}'
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
@@ -727,6 +730,12 @@ jobs:
           - check_name: k8s
             suite: k8s
             changed: ${{ needs.changes.outputs.suite_k8s }}
+          # The tool configs and the script that links them; needs nothing
+          # but bash. python3 is on the runner, so the TOML, YAML and JSON
+          # configs are parsed as well rather than skipped.
+          - check_name: dotfiles
+            suite: dotfiles
+            changed: ${{ needs.changes.outputs.suite_dotfiles }}
     steps:
       - name: Check out repository
         if: matrix.changed == 'true'

@@ -1,0 +1,32 @@
+# gitleaks - workstation ruleset, reached through the environment:
+#
+#   export GITLEAKS_CONFIG="$HOME/.config/gitleaks/gitleaks.toml"
+#
+# A repository's own .gitleaks.toml takes precedence when it has one.
+# Everything here extends the built-in rules; nothing is disabled.
+# Verified against README.md and config/gitleaks.toml of gitleaks 8.30.
+
+title = "workstation gitleaks config"
+
+[extend]
+useDefault = true
+
+# Lock files and binary assets never hold a live secret that could be
+# rotated, and they are the files that trip the generic entropy rule.
+[[allowlists]]
+description = "lock files and vendored assets"
+paths = [
+  '''(^|/)package-lock\.json$''',
+  '''(^|/)pnpm-lock\.yaml$''',
+  '''(^|/)yarn\.lock$''',
+  '''(^|/)go\.sum$''',
+  '''(^|/)Cargo\.lock$''',
+  '''(^|/)poetry\.lock$''',
+  '''\.(png|jpg|jpeg|gif|svg|woff2?|ico)$''',
+]
+
+# Obvious placeholders in examples and templates.
+[[allowlists]]
+description = "placeholders"
+regexTarget = "match"
+regexes = ['''(?i)(example|changeme|placeholder|redacted|xxxx)''']

@@ -1,0 +1,36 @@
+# ncdu. Read from ~/.config/ncdu/config; one command-line option per line.
+# Every option here is in the ncdu(1) man page shared by the 1.x and 2.x
+# branches. `--ignore-config` runs without this file.
+
+# Stay on one filesystem: `ncdu /` otherwise walks network mounts, Docker
+# volumes and every disk under /Volumes.
+-x
+# Skip /proc, /sys and cgroup pseudo-filesystems. Linux only; ignored elsewhere.
+--exclude-kernfs
+# Directories carrying a CACHEDIR.TAG (~/.cache, go, cargo, pip) are listed
+# but not counted, which is the honest number.
+--exclude-caches
+# macOS: do not descend into firmlinks and count the data volume twice.
+--exclude-firmlinks
+
+# A stray q after a twenty-minute scan of a full disk should ask first, and
+# so should every delete. This is the tool people run as root.
+--confirm-quit
+--confirm-delete
+
+--color dark-bg
+# Percentage and bar, item counts, directories first: what a decision to
+# delete needs.
+--show-percent
+--show-graph
+--graph-style eighth-block
+--show-itemcount
+--group-directories-first
+# Read mtime and owner, so m sorts by modification time. About 30% more RAM.
+-e
+
+# Not counted, still shown with a < marker.
+--exclude .git
+--exclude node_modules
+--exclude .terraform
+--exclude .terragrunt-cache

@@ -1,0 +1,66 @@
+# ripgrep. Read only when RIPGREP_CONFIG_PATH names this file:
+#
+#   export RIPGREP_CONFIG_PATH="$HOME/.config/ripgrep/config"
+#
+# One argument per line, no shell quoting; a flag and its value are joined
+# with = or put on two lines. Arguments here are prepended, so a flag on the
+# command line always wins. Checked against GUIDE.md of ripgrep 14/15.
+
+# Case-insensitive until the pattern has a capital: `rg configmap` finds
+# ConfigMap, `rg ConfigMap` is exact.
+--smart-case
+
+# Search dotfiles and dotdirs: .github/workflows, .gitlab-ci.yml, .env,
+# .terraform.lock.hcl. That makes .git searchable too, so it and the other
+# generated trees are excluded by name. Trailing slash means directories.
+--hidden
+--glob=!.git/
+--glob=!node_modules/
+--glob=!.terraform/
+--glob=!.terragrunt-cache/
+--glob=!vendor/
+--glob=!__pycache__/
+--glob=!.venv/
+--glob=!.mypy_cache/
+--glob=!.pytest_cache/
+--glob=!.ruff_cache/
+--glob=!dist/
+--glob=!build/
+--glob=!target/
+--glob=!*.tfstate
+--glob=!*.tfstate.backup
+--glob=!*.min.js
+--glob=!package-lock.json
+--glob=!pnpm-lock.yaml
+--glob=!yarn.lock
+
+# A minified file or a base64 blob in a Secret is one line of thousands of
+# columns; show the start of the match instead of flooding the terminal.
+--max-columns=250
+--max-columns-preview
+
+# Line numbers uncoloured so file:line: copies cleanly.
+--colors=line:none
+--colors=path:fg:green
+--colors=path:style:bold
+--colors=match:fg:magenta
+--colors=match:style:bold
+
+# File types for -t and -T. Names are letters and digits only; globs are
+# appended to any built-in definition of the same name.
+--type-add=terraform:*.{tf,tfvars,hcl}
+--type-add=terraform:.terraform.lock.hcl
+--type-add=helm:Chart.yaml
+--type-add=helm:Chart.lock
+--type-add=helm:values*.yaml
+--type-add=helm:helmfile*.yaml
+--type-add=helm:templates/*.{yaml,yml,tpl,txt}
+--type-add=helm:*.gotmpl
+--type-add=k8s:*.{yaml,yml}
+--type-add=jenkins:Jenkinsfile*
+--type-add=jenkins:*.jenkinsfile
+--type-add=jenkins:*.groovy
+--type-add=gitlab:.gitlab-ci.yml
+--type-add=gitlab:*.gitlab-ci.yml
+--type-add=iac:include:terraform,helm,k8s,docker,sh,yaml,toml
+--type-add=ci:include:jenkins,gitlab,yaml

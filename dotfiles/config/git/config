@@ -1,0 +1,136 @@
+# Git - global configuration, read from $XDG_CONFIG_HOME/git/config.
+#
+# Do not create ~/.gitconfig. Git reads it after this file, so it wins on
+# every key, and once it exists `git config --global` writes there instead
+# of here. `git-credential-manager configure` creates it: run that, then
+# move the two lines it wrote into config.local and delete ~/.gitconfig.
+#
+# Identity, signing key and per-client includeIf blocks live in
+# ~/.config/git/config.local, which is not tracked - see the [include] block
+# at the end. Every key here is in Documentation/config/*.adoc of git 2.45+.
+
+[init]
+	# Every hosting service defaults to main; a repo created locally should
+	# not be the odd one out.
+	defaultBranch = main
+
+[column]
+	# Columns for branch, status and tag output, only on a terminal.
+	ui = auto
+
+[branch]
+	# Newest first. The branch you want is almost always the one you touched
+	# last, not the one that sorts first alphabetically.
+	sort = -committerdate
+
+[tag]
+	# v1.10 after v1.9, not between v1.1 and v1.2.
+	sort = version:refname
+
+[diff]
+	# Histogram is patience with better handling of repeated lines; the
+	# hunks it produces are the ones a human would draw.
+	algorithm = histogram
+	# A moved block is shown in its own colour instead of as a delete plus
+	# an add, which is the difference between reviewing a refactor and
+	# re-reading it.
+	colorMoved = plain
+	# i/ w/ c/ for index, worktree and commit instead of a/ b/.
+	mnemonicPrefix = true
+	renames = true
+
+[merge]
+	# The conflict marker also shows the common ancestor, with the lines
+	# both sides kept trimmed out. Without it a conflict is two versions
+	# and a guess at what changed.
+	conflictStyle = zdiff3
+
+[rerere]
+	# Remember how a conflict was resolved and replay it the next time the
+	# same hunks collide, which on a long-lived branch is every rebase.
+	enabled = true
+	autoupdate = true
+
+[pull]
+	# A pull never creates "Merge branch 'main' of origin" commits.
+	rebase = true
+
+[fetch]
+	# Drop remote-tracking branches and tags that were deleted upstream, so
+	# `git branch -r` describes the remote rather than its history.
+	prune = true
+	prunetags = true
+	# `git fetch` with no arguments fetches every remote (git 2.44+).
+	all = true
+
+[push]
+	# Push the current branch to the same-named upstream, and create that
+	# upstream on the first push instead of stopping to ask for -u.
+	default = simple
+	autoSetupRemote = true
+	# Annotated tags reachable from what is pushed go with it.
+	followTags = true
+
+[rebase]
+	# fixup! and squash! commits fold into their targets in an interactive
+	# rebase; a dirty tree is stashed and restored; and branches stacked on
+	# the rebased range move with it instead of pointing at the old commits.
+	autoSquash = true
+	autoStash = true
+	updateRefs = true
+
+[commit]
+	# The diff is in the editor while the message is written.
+	verbose = true
+
+[core]
+	# core.excludesFile is not set: the default is already ignore next to
+	# this file ($XDG_CONFIG_HOME/git/ignore), and a hardcoded ~/.config
+	# would break under --config-home or another XDG_CONFIG_HOME.
+	# Cache the untracked-file scan between runs.
+	untrackedCache = true
+	# On macOS also add to config.local:  [core] fsmonitor = true
+	# The built-in daemon makes `git status` on a large tree near-instant.
+	# It is macOS and Windows only, so it is not set here.
+
+[help]
+	# `git psuh` offers `git push` and waits for a yes.
+	autocorrect = prompt
+
+[transfer]
+	# Verify every object received. A corrupt or crafted object is refused
+	# at fetch time instead of discovered at the next gc.
+	fsckObjects = true
+	# Refuse a remote URL with a password in it.
+	credentialsInUrl = die
+
+[protocol]
+	version = 2
+
+[include]
+	# Identity, signing and credential helper. Not tracked; missing is fine.
+	# A relative path resolves against this file's directory, so it follows
+	# the file wherever install_dotfiles.sh puts it.
+	#
+	#   [user]
+	#   	name = Your Name
+	#   	email = you@example.com
+	#   	signingkey = ~/.ssh/id_ed25519.pub
+	#   [gpg]
+	#   	format = ssh
+	#   [gpg "ssh"]
+	#   	allowedSignersFile = ~/.config/git/allowed_signers
+	#   [commit]
+	#   	gpgsign = true
+	#   [credential]
+	#   	helper = osxkeychain        ; macOS; Linux: libsecret or manager
+	#   [includeIf "gitdir:~/work/"]
+	#   	path = work.inc
+	#
+	# Add this only once an SSH key is registered on GitHub. It rewrites
+	# every https://github.com/ URL to SSH, for every tool that shells out
+	# to git - helm plugin install, krew, go install, pip - and on a fresh
+	# machine without the key each of those fails with "Permission denied".
+	#   [url "git@github.com:"]
+	#   	insteadOf = https://github.com/
+	path = config.local
