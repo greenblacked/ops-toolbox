@@ -15,8 +15,9 @@
 # been edited, which is the reminder to fold the change back into the repo.
 #
 # Nothing here is ever deleted. A file that is already in the way is left
-# alone and reported; --force moves it to a timestamped .bak first. Uninstall
-# removes only links that point into this folder, and copies that still match.
+# alone and reported; --force moves it to a timestamped .backup first, the
+# same suffix windows/git-bash/install_dotfiles.sh uses. Uninstall removes
+# only links that point into this folder, and copies that still match.
 #
 # Exit codes:
 #   0   success (for --status: everything matches)
@@ -36,6 +37,7 @@ LIST=0
 FORCE=0
 QUIET=0
 HOME_DIR="${HOME:-}"
+HOME_GIVEN=0
 CONFIG_DIR=""
 ONLY=""
 
@@ -62,18 +64,19 @@ Usage:
   $(basename "$0") [--dry-run] [--force] [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --status    [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
-  $(basename "$0") --list
+  $(basename "$0") --list      [--only UNIT ...] [--home DIR] [--config-home DIR]
 
 Options:
   --dry-run          Show what would change; write nothing
-  --status           Report MATCH / DRIFT / MISSING / CONFLICT per file; write nothing
+  --status           One STATE line per file: MATCH, DRIFT, MISSING, FOREIGN or
+                     CONFLICT; write nothing. Exit 4 unless everything is MATCH
   --uninstall        Remove links that point into this folder, and copies that still match
-  --list             Print every unit with its source and target, then exit
-  --force            Move a file that is in the way to NAME.bak-TIMESTAMP, then install
+  --list             Print UNIT, MODE (link or copy), SOURCE and TARGET per file, then exit
+  --force            Move a file that is in the way to NAME.backup-TIMESTAMP, then install
   --only UNIT        Limit to one unit (repeatable, or comma-separated): a tool
                      directory under config/ such as k9s, or a dotfile under home/
                      with its leading dot dropped, such as ssh or terraformrc
-  --home DIR         Install into DIR instead of \$HOME
+  --home DIR         Install into DIR instead of \$HOME; config/ then goes under DIR/.config
   --config-home DIR  Install config/ into DIR instead of \$XDG_CONFIG_HOME or ~/.config
   --quiet            Suppress informational and success output (errors remain)
   -h, --help         Show this help
@@ -104,8 +107,8 @@ while (( $# > 0 )); do
     --quiet)          QUIET=1 ;;
     --only)           require_value "$1" "${2:-}"; ONLY="${ONLY:+$ONLY,}$2"; shift ;;
     --only=*)         v="${1#*=}"; require_value "--only" "$v"; ONLY="${ONLY:+$ONLY,}$v" ;;
-    --home)           require_value "$1" "${2:-}"; HOME_DIR="$2"; shift ;;
-    --home=*)         HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR" ;;
+    --home)           require_value "$1" "${2:-}"; HOME_DIR="$2"; HOME_GIVEN=1; shift ;;
+    --home=*)         HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR"; HOME_GIVEN=1 ;;
     --config-home)    require_value "$1" "${2:-}"; CONFIG_DIR="$2"; shift ;;
     --config-home=*)  CONFIG_DIR="${1#*=}"; require_value "--config-home" "$CONFIG_DIR" ;;
     *)
@@ -126,62 +129,60 @@ if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1) )); then
   err "--dry-run only applies to install and --uninstall"
   exit 3
 fi
-if (( FORCE == 1 && (STATUS == 1 || UNINSTALL == 1 || LIST == 1) )); then
+if (( FORCE == 1 && modes > 0 )); then
   err "--force only applies to install"
   exit 3
 fi
 
 # --- preflight -------------------------------------------------------------
-SRC_CONFIG="$SCRIPT_DIR/config"
-SRC_HOME="$SCRIPT_DIR/home"
-if [[ ! -d "$SRC_CONFIG" || ! -d "$SRC_HOME" ]]; then
+if [[ ! -d "$SCRIPT_DIR/config" || ! -d "$SCRIPT_DIR/home" ]]; then
   err "config/ and home/ must sit next to this script ($SCRIPT_DIR)"
   exit 2
 fi
-if (( LIST == 0 )); then
-  if [[ -z "$HOME_DIR" ]]; then
-    err "\$HOME is not set; pass --home DIR"
-    exit 2
-  fi
-  if [[ ! -d "$HOME_DIR" ]]; then
-    err "home directory does not exist: $HOME_DIR"
-    exit 2
-  fi
+if [[ -z "$HOME_DIR" ]]; then
+  err "\$HOME is not set; pass --home DIR"
+  exit 2
 fi
+if (( LIST == 0 )) && [[ ! -d "$HOME_DIR" ]]; then
+  err "home directory does not exist: $HOME_DIR"
+  exit 2
+fi
+# Strip a trailing slash so targets print and compare the same either way.
+HOME_DIR="${HOME_DIR%/}"
+[[ -n "$HOME_DIR" ]] || HOME_DIR="/"
 if [[ -z "$CONFIG_DIR" ]]; then
-  # XDG_CONFIG_HOME is only honoured when no --home was given: a caller that
+  # XDG_CONFIG_HOME applies to the caller's own home only. A caller that
   # points the script at another home directory wants everything under it.
-  if [[ -n "${XDG_CONFIG_HOME:-}" && "$HOME_DIR" == "${HOME:-}" ]]; then
+  if (( HOME_GIVEN == 0 )) && [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
     CONFIG_DIR="$XDG_CONFIG_HOME"
   else
     CONFIG_DIR="$HOME_DIR/.config"
   fi
 fi
+CONFIG_DIR="${CONFIG_DIR%/}"
 
 # --- the file table --------------------------------------------------------
 # Files whose owning tool rewrites them in full. Linking these would make the
 # tool write its comment-free serialisation straight into the repository the
 # first time it saved - k9s does so on every exit, gh on `gh config set`, the
 # AWS CLI on `aws configure`, docker on every `docker login`. Everything else
-# is linked, so an edit in the repository is live immediately.
+# is linked, so an edit in the repository is live immediately. The README
+# says "Installed as a copy" under each of these, and the suite checks that
+# the two lists agree.
 copy_mode() {
   case "$1" in
-    config/k9s/config.yaml) return 0 ;;
-    config/gh/config.yml)   return 0 ;;
-    home/.aws/config)       return 0 ;;
+    config/k9s/config.yaml)   return 0 ;;
+    config/gh/config.yml)     return 0 ;;
+    home/.aws/config)         return 0 ;;
     home/.docker/config.json) return 0 ;;
-    *)                      return 1 ;;
+    *)                        return 1 ;;
   esac
 }
 
 # Directories that must be private for their tool to accept them at all: ssh
 # refuses a config in a world-readable ~/.ssh and gpg warns on every call.
-private_dir() {
-  case "$1" in
-    home/.ssh|home/.gnupg) return 0 ;;
-    *)                     return 1 ;;
-  esac
-}
+# One list, used by install (to set the mode) and by status (to check it).
+PRIVATE_DIRS="home/.ssh home/.gnupg"
 
 # The unit a tracked file belongs to, for --only: the first path component with
 # any leading dot dropped, or the file's own stem when it sits directly in the
@@ -189,12 +190,14 @@ private_dir() {
 unit_of() {
   local rel="${1#config/}"
   rel="${rel#home/}"
-  local first="${rel%%/*}"
-  first="${first#.}"
-  if [[ "$first" == "$rel" || "$first" == "${rel#.}" ]]; then
+  local first
+  if [[ "$rel" == */* ]]; then
+    first="${rel%%/*}"
+  else
+    first="${rel#.}"
     first="${first%%.*}"
   fi
-  printf '%s\n' "$first"
+  printf '%s\n' "${first#.}"
 }
 
 target_of() {
@@ -204,11 +207,19 @@ target_of() {
   esac
 }
 
+# --only, parsed once into an array; empty means everything.
+only_units=()
+if [[ -n "$ONLY" ]]; then
+  while IFS= read -r u; do
+    [[ -n "$u" ]] && only_units+=("$u")
+  done < <(printf '%s\n' "$ONLY" | tr ',' '\n')
+fi
+
 selected() {
-  [[ -z "$ONLY" ]] && return 0
+  (( ${#only_units[@]} == 0 )) && return 0
   local unit want
   unit="$(unit_of "$1")"
-  for want in $(printf '%s' "$ONLY" | tr ',' ' '); do
+  for want in "${only_units[@]}"; do
     [[ "$want" == "$unit" ]] && return 0
   done
   return 1
@@ -216,30 +227,44 @@ selected() {
 
 # Every regular file under config/ and home/, as a path relative to this
 # folder. Discovered, not listed, so a config added later is covered by the
-# commit that adds it. Sorted so output and tests are stable.
+# commit that adds it. Finder droppings and Python caches are the two things
+# a checkout grows that are not configs. Sorted so output and tests are stable.
 files=()
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
   files+=("${f#./}")
-done < <(cd "$SCRIPT_DIR" && find ./config ./home -type f -not -path '*/__pycache__/*' | sort)
+done < <(cd "$SCRIPT_DIR" && find ./config ./home -type f \
+  -not -name .DS_Store -not -path '*/__pycache__/*' | sort)
 
 if (( ${#files[@]} == 0 )); then
-  err "no files found under $SRC_CONFIG or $SRC_HOME"
+  err "no files found under $SCRIPT_DIR/config or $SCRIPT_DIR/home"
   exit 2
 fi
 
-if [[ -n "$ONLY" ]]; then
-  for want in $(printf '%s' "$ONLY" | tr ',' ' '); do
-    found=0
-    for f in "${files[@]}"; do
-      [[ "$(unit_of "$f")" == "$want" ]] && { found=1; break; }
-    done
-    if (( found == 0 )); then
-      err "no such unit: $want (see --list)"
-      exit 3
-    fi
+for want in ${only_units[@]+"${only_units[@]}"}; do
+  found=0
+  for f in "${files[@]}"; do
+    [[ "$(unit_of "$f")" == "$want" ]] && { found=1; break; }
   done
-fi
+  if (( found == 0 )); then
+    err "no such unit: $want (see --list)"
+    exit 3
+  fi
+done
+
+# The private directories that hold at least one selected file, so --only
+# git never fails on the mode of ~/.ssh.
+selected_private_dirs() {
+  local d f
+  for d in $PRIVATE_DIRS; do
+    for f in "${files[@]}"; do
+      [[ "$f" == "$d"/* ]] || continue
+      selected "$f" || continue
+      printf '%s\n' "$d"
+      break
+    done
+  done
+}
 
 # --- helpers ---------------------------------------------------------------
 run_cmd() {
@@ -262,19 +287,23 @@ points_here() {
   [[ -n "$t" && "$t" == "$SCRIPT_DIR"/* ]]
 }
 
+# GNU stat first: on Linux `stat -f` is the filesystem form and succeeds with
+# the wrong answer, while `stat -c` on macOS fails and falls through.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true; }
+
 # MATCH, DRIFT, MISSING, CONFLICT or FOREIGN for one file.
 #   MATCH    linked to this source, or an identical copy
 #   DRIFT    a copy whose content differs from the source
 #   MISSING  nothing at the target
 #   FOREIGN  a link into this folder, but to a different file
-#   CONFLICT an unrelated regular file or link occupies the target
+#   CONFLICT an unrelated file, link or directory occupies the target
 state_of() {
   local rel="$1" target="$2" src="$SCRIPT_DIR/$1"
   if [[ ! -e "$target" && ! -L "$target" ]]; then
     printf 'MISSING\n'; return
   fi
   if copy_mode "$rel"; then
-    if [[ -L "$target" ]]; then
+    if [[ -L "$target" || ! -f "$target" ]]; then
       printf 'CONFLICT\n'
     elif cmp -s "$src" "$target"; then
       printf 'MATCH\n'
@@ -308,36 +337,33 @@ do_list() {
   done
 }
 
+# Bare `STATE   path` lines, the shape windows/git-bash/install_dotfiles.sh
+# already prints, so `--status | grep '^DRIFT'` means the same for both.
 do_status() {
-  local f target st not_current=0
+  local f d target st perm not_current=0
   for f in "${files[@]}"; do
     selected "$f" || continue
     target="$(target_of "$f")"
     st="$(state_of "$f" "$target")"
-    case "$st" in
-      MATCH) ok   "MATCH    $target" ;;
-      *)     warn "$st $target"; not_current=$((not_current + 1)) ;;
-    esac
+    printf '%-7s %s\n' "$st" "$target"
+    [[ "$st" == "MATCH" ]] || not_current=$((not_current + 1))
   done
-  for d in home/.ssh home/.gnupg; do
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
     target="$(target_of "$d")"
     [[ -d "$target" ]] || continue
-    # GNU stat first: on Linux `stat -f` is the filesystem form and succeeds
-    # with the wrong answer, while `stat -c` on macOS fails and falls through.
-    perm="$(stat -c '%a' "$target" 2>/dev/null || stat -f '%Lp' "$target" 2>/dev/null || true)"
-    if [[ "$perm" == "700" ]]; then
-      ok "$target is mode 700"
-    else
+    perm="$(mode_of "$target")"
+    if [[ "$perm" != "700" ]]; then
       warn "$target is mode ${perm:-?}; ssh and gpg want 700"
       not_current=$((not_current + 1))
     fi
-  done
+  done < <(selected_private_dirs)
   (( not_current == 0 )) && return 0
   return 4
 }
 
 do_install() {
-  local f src target st dir rel_dir stamp failed=0 conflicts=0 linked=0
+  local f d src target st dir stamp failed=0 conflicts=0 installed=0
   stamp="$(date +%Y%m%d-%H%M%S)"
   for f in "${files[@]}"; do
     selected "$f" || continue
@@ -350,22 +376,18 @@ do_install() {
       continue
     fi
 
-    if [[ "$st" == "CONFLICT" || "$st" == "FOREIGN" || "$st" == "DRIFT" ]]; then
+    if [[ "$st" != "MISSING" ]]; then
       if (( FORCE == 0 )); then
-        warn "$st, left in place: $target (use --force to move it to .bak-$stamp)"
+        warn "$st, left in place: $target (use --force to move it to .backup-$stamp)"
         conflicts=$((conflicts + 1))
         continue
       fi
-      run_cmd "back up $st file" mv "$target" "$target.bak-$stamp" || { err "could not move $target aside"; failed=$((failed + 1)); continue; }
+      run_cmd "back up $st file" mv "$target" "$target.backup-$stamp" || { err "could not move $target aside"; failed=$((failed + 1)); continue; }
     fi
 
     dir="$(dirname "$target")"
     if [[ ! -d "$dir" ]]; then
       run_cmd "create directory" mkdir -p "$dir" || { err "could not create $dir"; failed=$((failed + 1)); continue; }
-    fi
-    rel_dir="${f%/*}"
-    if private_dir "$rel_dir" && (( DRY_RUN == 0 )); then
-      chmod 700 "$dir" 2>/dev/null || warn "could not chmod 700 $dir"
     fi
 
     if copy_mode "$f"; then
@@ -375,15 +397,25 @@ do_install() {
       run_cmd "link $f" ln -s "$src" "$target" || { err "could not link $target"; failed=$((failed + 1)); continue; }
     fi
     (( DRY_RUN )) || ok "installed: $target"
-    linked=$((linked + 1))
+    installed=$((installed + 1))
   done
+
+  # Private directories are set to 700 whether or not a file was installed
+  # into them on this run, so a directory that drifted to 755 is repaired by
+  # the next install and not only reported by --status.
+  while IFS= read -r d; do
+    [[ -n "$d" ]] || continue
+    target="$(target_of "$d")"
+    [[ -d "$target" ]] || continue
+    [[ "$(mode_of "$target")" == "700" ]] && continue
+    run_cmd "private directory" chmod 700 "$target" || warn "could not chmod 700 $target"
+  done < <(selected_private_dirs)
 
   if (( DRY_RUN )); then
     printf "dry-run complete; no changes written\n"
-    (( conflicts > 0 )) && return 4
-    return 0
+  else
+    info "$installed file(s) installed"
   fi
-  info "$linked file(s) installed"
   (( failed > 0 )) && return 1
   (( conflicts > 0 )) && return 4
   return 0
@@ -414,9 +446,9 @@ do_uninstall() {
   done
   if (( DRY_RUN )); then
     printf "dry-run complete; no changes written\n"
-    return 0
+  else
+    info "$removed file(s) removed, $kept kept"
   fi
-  info "$removed file(s) removed, $kept kept"
   (( failed > 0 )) && return 1
   return 0
 }

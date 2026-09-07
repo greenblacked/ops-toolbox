@@ -84,8 +84,9 @@
 	verbose = true
 
 [core]
-	# The XDG default; stated so nobody looks for it.
-	excludesFile = ~/.config/git/ignore
+	# core.excludesFile is not set: the default is already ignore next to
+	# this file ($XDG_CONFIG_HOME/git/ignore), and a hardcoded ~/.config
+	# would break under --config-home or another XDG_CONFIG_HOME.
 	# Cache the untracked-file scan between runs.
 	untrackedCache = true
 	# On macOS also add to config.local:  [core] fsmonitor = true
@@ -106,13 +107,10 @@
 [protocol]
 	version = 2
 
-[url "git@github.com:"]
-	# A pasted https://github.com/... clone URL goes over SSH, so the key in
-	# ssh-agent is the only credential GitHub ever needs.
-	insteadOf = https://github.com/
-
 [include]
 	# Identity, signing and credential helper. Not tracked; missing is fine.
+	# A relative path resolves against this file's directory, so it follows
+	# the file wherever install_dotfiles.sh puts it.
 	#
 	#   [user]
 	#   	name = Your Name
@@ -127,5 +125,12 @@
 	#   [credential]
 	#   	helper = osxkeychain        ; macOS; Linux: libsecret or manager
 	#   [includeIf "gitdir:~/work/"]
-	#   	path = ~/.config/git/work.inc
-	path = ~/.config/git/config.local
+	#   	path = work.inc
+	#
+	# Add this only once an SSH key is registered on GitHub. It rewrites
+	# every https://github.com/ URL to SSH, for every tool that shells out
+	# to git - helm plugin install, krew, go install, pip - and on a fresh
+	# machine without the key each of those fails with "Permission denied".
+	#   [url "git@github.com:"]
+	#   	insteadOf = https://github.com/
+	path = config.local

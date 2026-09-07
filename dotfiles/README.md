@@ -42,7 +42,7 @@ cd dotfiles
 ```
 
 A file that is already in the way is reported and left alone; `--force` moves
-it to `NAME.bak-TIMESTAMP` first. `--only k9s --only git` limits any mode to
+it to `NAME.backup-TIMESTAMP` first. `--only k9s --only git` limits any mode to
 the tools named. `--uninstall` removes only the links the script made and the
 copies that still match their source.
 
@@ -89,26 +89,36 @@ install_dotfiles.sh --list
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Print each `mkdir`, `ln -s`, `cp` or `rm` in the indented `(dry-run)` form and the closing `dry-run complete; no changes written`. Nothing is written, not even a directory. |
-| `--status` | One line per file: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file). Also checks that `~/.ssh` and `~/.gnupg` are mode `700`. Exit `4` if anything is not `MATCH`. |
+| `--status` | One bare `STATE   path` line per file, the shape `windows/git-bash/install_dotfiles.sh` prints: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file, link or directory). Also checks that `~/.ssh` and `~/.gnupg` are mode `700` when a file in them is selected. Exit `4` if anything is not `MATCH`. |
 | `--uninstall` | Remove links that point into this folder and copies that still equal their source. A `DRIFT` copy and a `CONFLICT` file are kept and reported. |
 | `--list` | Every tracked file with its unit name, `link` or `copy`, and its target. Needs no home directory. |
-| `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.bak-YYYYmmdd-HHMMSS`, then install. The `.bak` is never removed, not even by `--uninstall`. |
+| `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`. |
 | `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). An unknown unit exits `3`. |
-| `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` regardless of `XDG_CONFIG_HOME`, because a caller pointing at another home wants everything under it. |
+| `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, because a caller pointing at another home wants everything under it; without `--home`, `XDG_CONFIG_HOME` is honoured. |
 | `--config-home DIR` | Put `config/` under `DIR` instead. |
 | `--quiet` | Suppress `[info]` and `[ ok ]` lines; warnings, errors and dry-run previews remain. |
 
-**Link or copy.** Three files are copied rather than linked, because the tool
+**Link or copy.** Four files are copied rather than linked, because the tool
 that owns them rewrites the whole file and would strip every comment out of
 the tracked copy the first time it saved: `k9s` writes `config.yaml` on
 every exit, `gh config set` rewrites `config.yml`, `aws configure` rewrites
-`~/.aws/config`. Copies are installed mode `600`. Everything else is a link,
-so an edit in the repository is live immediately. `--list` shows which is
-which.
+`~/.aws/config`, and `docker login` rewrites `~/.docker/config.json`. Copies
+are installed mode `600`. Everything else is a link, so an edit in the
+repository is live immediately. `--list` shows which is which, and the suite
+checks that the list agrees with the "Installed as a copy" sentences below.
 
-**Private directories.** `~/.ssh` and `~/.gnupg` are created mode `700` when
-the script makes them, and `chmod 700` when they already exist: ssh refuses a
-config in a group-readable directory and gpg warns on every invocation.
+**Private directories.** `~/.ssh` and `~/.gnupg` are set to mode `700` on
+every install that selects a file in them, whether or not anything new was
+installed, so a directory that drifted to `755` is repaired rather than only
+reported: ssh refuses a config in a group-readable directory and gpg warns
+on every invocation.
+
+**Not the Git Bash installer.** `windows/git-bash/install_dotfiles.sh` shares
+the name and the `.backup-TIMESTAMP` suffix but not the policy: it backs up
+and replaces an existing file by default and reserves `--force` for a
+line-ending override. This one refuses to touch an existing file unless
+`--force` says so, because a config already in `~/.config` is more likely to
+be deliberate than a stray `.bashrc` on a fresh Windows machine.
 
 **Exit codes:** `0` success (for `--status`: everything matches); `1` a link
 or copy could not be made; `2` preflight — `config/` or `home/` missing next to
@@ -170,9 +180,10 @@ starship 1.26.
 | `[terraform]` workspace only | `$version` would run `terraform version`, which with many providers is slow; starship leaves it out for the same reason. |
 | `pyenv_version_name = false` | A pyenv lookup on every prompt is slow. |
 
-Glyphs assume a Nerd Font, which the Brewfile installs. Without one, replace
-`󰌾`, `󱁢`, `󰟓` and `󰎙` with plain text; `starship module kubernetes` tests a
-context pattern without opening a new shell.
+Glyphs assume a Nerd Font: `brew install --cask font-jetbrains-mono-nerd-font`,
+which the terminal configs below also name. Without one, replace `󰌾`, `󱁢`,
+`󰟓` and `󰎙` with plain text; `starship module kubernetes` tests a context
+pattern without opening a new shell.
 
 ### `~/.config/alacritty/alacritty.toml`
 
@@ -312,12 +323,16 @@ here. Every key is in `Documentation/config/*.adoc` of git 2.45 or later.
 | `core.untrackedCache` | Caches the untracked-file scan. `core.fsmonitor` is macOS and Windows only, so it goes in `config.local` there. |
 | `help.autocorrect = prompt` | `git psuh` offers `git push` and waits for a yes. |
 | `transfer.fsckObjects`, `credentialsInUrl = die` | Every received object is verified; a remote URL with a password in it is refused. |
-| `url "git@github.com:" insteadOf` | A pasted HTTPS GitHub URL goes over SSH, so the agent key is the only credential GitHub ever needs. |
-| `include.path = config.local` | Identity, signing, credential helper and per-client `includeIf` blocks. Not tracked; missing is fine. |
+| `include.path = config.local` | Identity, signing, credential helper and per-client `includeIf` blocks. Not tracked; missing is fine. The path is relative, so it resolves next to this file wherever the installer puts it. |
 
 The commented block inside `[include]` is the template for `config.local`,
-including SSH commit signing (`gpg.format = ssh`, `gpg.ssh.allowedSignersFile`)
-and `credential.helper = osxkeychain`.
+including SSH commit signing (`gpg.format = ssh`, `gpg.ssh.allowedSignersFile`),
+`credential.helper = osxkeychain`, and the `url "git@github.com:" insteadOf`
+rewrite that sends every HTTPS GitHub URL over SSH. That rewrite is in the
+template rather than the tracked file on purpose: it applies to every tool
+that shells out to git — `helm plugin install`, krew, `go install`, `pip` —
+and on a machine whose SSH key is not yet registered on GitHub each of those
+fails with "Permission denied". Add it once the key is.
 
 ### `~/.config/git/ignore`
 
@@ -502,14 +517,16 @@ Identity Center and a `credential_process` profile for aws-vault or
 Installed as a copy because every `docker login` rewrites it. It holds
 only the keys that are safe to publish, from `cli/config/configfile/file.go`:
 `credsStore: osxkeychain` so `docker login` secrets go to the Keychain and
-the `auths` block stays empty; `currentContext: orbstack`; `detachKeys`
-moved off `Ctrl-p`, which is shell history; `cliPluginsExtraDirs` pointing
-at where Homebrew installs `docker-buildx` and `docker-compose`; a `psFormat`
-that fits a terminal; and an `ll` alias. On Linux change `credsStore` to
-`pass` or `secretservice` and drop `currentContext`. Docker's own docs say
-never to commit this file once it carries `auths` or authenticated
-`proxies`; the copy in the home directory may, and the tracked one never
-does.
+the `auths` block stays empty; `detachKeys` moved off `Ctrl-p`, which is
+shell history; `cliPluginsExtraDirs` pointing at where Homebrew installs
+`docker-buildx` and `docker-compose`; a `psFormat` that fits a terminal; and
+an `ll` alias. No `currentContext`: the CLI fails every command when the
+named context does not exist, and OrbStack sets its own context on first
+launch. On Linux change `credsStore` to `pass` or `secretservice`, because
+the CLI fails `docker login` and private pulls when the named helper is not
+on `PATH`. Docker's own docs say never to commit this file once it carries
+`auths` or authenticated `proxies`; the copy in the home directory may, and
+the tracked one never does.
 
 ## Security scanners
 
@@ -609,15 +626,20 @@ what it promises: `--help` before preflight, exit `3` on a bad flag, a dry
 run that leaves the home byte-identical, every tracked file installed as a
 link into this folder or as a matching copy, `~/.ssh` and `~/.gnupg` mode
 `700`, a second install that changes nothing, a foreign file left in place
-with exit `4`, `--force` keeping a `.bak`, `--status` telling `MATCH` from
-`DRIFT`, and an uninstall that removes only what it made and keeps the
-edited copy and the `.bak`.
+with exit `4`, `--force` keeping a `.backup`, `--status` telling `MATCH`
+from `DRIFT` and reporting a directory at a copy target as `CONFLICT`, a
+drifted `~/.ssh` mode repaired by install, and an uninstall that removes
+every link and matching copy, keeps the edited copy and the `.backup`. The
+file table is read from `--list` rather than re-derived, and the run is
+isolated from any `XDG_CONFIG_HOME` the shell exports.
 
 The second half reads the tracked configs themselves: none is executable or
 starts with a shebang; every TOML, YAML, JSON, Lua and Python file parses,
-and the git, ssh and gpg configs are accepted by their own tools; every
-file has a heading in this README naming its installed path; and nothing
-matches the common token shapes — AWS keys, GitHub and GitLab tokens, Slack
-tokens, private key headers. Parsers that are missing on the host are
-skipped with a note rather than failed, so a verdict on the installer never
-depends on having Python or gpg installed.
+and the git, ssh, gpg, gpg-agent and dirmngr configs are accepted by their
+own tools; every file has a heading in this README naming its installed
+path; the files `--list` reports as copies are exactly the ones this README
+says are installed as a copy; and nothing matches the common token shapes —
+AWS keys, GitHub and GitLab tokens, Slack tokens, private key headers.
+Parsers that are missing on the host are skipped with a note rather than
+failed, so a verdict on the installer never depends on having Python or gpg
+installed.

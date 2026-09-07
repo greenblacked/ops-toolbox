@@ -25,7 +25,7 @@ head_() { printf '\n--- %s ---\n' "$*"; }
 # Packages whose scripts must run under the Bash 3.2 that ships as /bin/bash on
 # macOS. Deliberately not repository-wide: windows/git-bash/ targets Git Bash
 # (bash 5) and uses local -A and globstar on purpose, and ci.yml uses mapfile.
-BASH32_DIRS="git macos-initial-setup linux"
+BASH32_DIRS="git macos-initial-setup linux dotfiles"
 
 # --------------------------------------------------------------------------
 head_ "discovery"

@@ -590,7 +590,7 @@ cd dotfiles
 ```
 
 - `config/` mirrors `~/.config`: `starship.toml`, `git/config` and
-  `git/ignore`, `k9s/` (config, aliases, plugins, a skin), `gh/config.yml`,
+  `git/ignore`, `k9s/` (config, aliases, hotkeys, plugins), `gh/config.yml`,
   `nvim/init.lua`, `bat/config`, `ripgrep/config`, `alacritty/`, `kitty/`,
   `ncdu/config`, `thefuck/settings.py`, `pip/pip.conf`,
   `homebrew/brew.env`, and the scanner defaults for `trivy`, `grype` and
@@ -601,9 +601,9 @@ cd dotfiles
 - Files are linked one at a time, never whole directories, so runtime state
   a tool writes beside its config — `gh` hosts, `k9s` clusters, ssh
   `known_hosts` — lands in the home directory and never in the repository.
-  The three files their tools rewrite in full (`k9s` config, `gh` config,
-  the AWS config) are copied instead, and `--status` reports `DRIFT` when a
-  copy has been edited.
+  The four files their tools rewrite in full (`k9s` config, `gh` config, the
+  AWS config, the Docker config) are copied instead, and `--status` reports
+  `DRIFT` when a copy has been edited.
 - Nothing tracked here holds a credential. Every tool that needs one reads it
   from a file the package does not ship — `gh` hosts, `~/.aws/credentials`,
   `~/.config/git/config.local` — and the suite greps for the common token
