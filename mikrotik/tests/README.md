@@ -1,9 +1,9 @@
-# MikroTik script tests (RouterOS 7.24.1)
+# MikroTik script tests (RouterOS 7.24.2)
 
-Integration tests that run **real RouterOS CHR 7.24.1** in QEMU inside Docker and
+Integration tests that run **real RouterOS CHR 7.24.2** in QEMU inside Docker and
 exercise every `*.lua` in `../`. Two services run side by side:
 
-- `chr` — Alpine + QEMU + the official CHR 7.24.1 disk (talks to host on
+- `chr` — Alpine + QEMU + the official CHR 7.24.2 disk (talks to host on
   `127.0.0.1:8728` for ad‑hoc inspection).
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
@@ -53,7 +53,7 @@ without changing tracked files, override it for one run — and override the
 digest with it:
 
 ```bash
-ROUTEROS_VERSION=7.24.1 \
+ROUTEROS_VERSION=7.24.2 \
 ROUTEROS_SHA256=<digest of that image> ./mikrotik/tests/run.sh
 ```
 
@@ -99,7 +99,7 @@ docker compose down -v
    release (a patch suffix is accepted only when the requested version omits it).
 2. **Source acceptance** — every `mikrotik/*.lua` is added as a
    `/system script` and removed. RouterOS rejects malformed source at `add`
-   time, so this catches syntax issues against the live 7.24.1 parser.
+   time, so this catches syntax issues against the live 7.24.2 parser.
 3. **Safe execution** — `wan_failover_notify`, `health_check`, and
    `detect_internet` are loaded under their production names and executed.
    `tg_send` is replaced with a **stub** for the test session that records
@@ -118,7 +118,7 @@ docker compose down -v
    escape: the text is posted URL-encoded, so a bare `%` is a defect that
    otherwise only shows up as a mangled Telegram message.
 
-Items 4 and 5 are written and **currently xfail**, because RouterOS 7.24.1 CHR
+Items 4 and 5 are written and **currently xfail**, because RouterOS 7.24.2 CHR
 will not execute either script. Every path refuses a `:global` whose name
 contains an underscore — which `backup.lua` and `update_check.lua` both have —
 reporting "expected end of command" pointing at the underscore:
@@ -188,7 +188,7 @@ available. Its `check` command does not modify files:
 ```bash
 python3 mikrotik/tests/routeros_version.py check
 python3 mikrotik/tests/routeros_version.py check --channel long-term
-python3 mikrotik/tests/routeros_version.py check --version 7.24.1
+python3 mikrotik/tests/routeros_version.py check --version 7.24.2
 ```
 
 The `RouterOS version check` GitHub Actions workflow runs every Monday and
