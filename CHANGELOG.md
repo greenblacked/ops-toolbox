@@ -50,6 +50,14 @@ entry here belongs to a version.
   which turned every upgrade into a warning. The script now probes once and
   says so when it runs without the flag.
 
+- `.gitignore` ignores every dot-directory at the repository root and
+  re-admits `.github/`, the one that is tracked. The local agent skills
+  directory used to be ignored by name; the rule now covers it and every
+  other coding agent's local state without naming any, and `CONTRIBUTING.md`
+  and the README are true again when they say that directory is gitignored.
+  A future tracked dot-directory needs its own negation line, and the comment
+  in `.gitignore` says so.
+
 - The Docker steps suite covers the four: the report with pending, current,
   and unreachable update servers, the dry run scanning nothing, the two new
   cache targets, pip's notice staying out of a quiet run, and the brew flag
