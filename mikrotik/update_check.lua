@@ -117,9 +117,9 @@
 # actually moves, so poll that until it reaches a verdict.
 #
 # The 5s before the first read is the other half of the same problem: status
-# holds the *previous* verdict until RouterOS replaces it with "checking for
-# updates...", and reading in that window sees a terminal-looking value that
-# is equally stale.
+# holds the *previous* verdict until RouterOS replaces it with its in-progress
+# text ("finding out latest version..." on 7.24.2, measured on the CHR), and
+# reading in that window sees a terminal-looking value that is equally stale.
 :delay 5s;
 
 :local settled false;

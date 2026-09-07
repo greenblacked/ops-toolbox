@@ -1,5 +1,5 @@
-# Update check with a pre-upgrade backup, in the plain style: a fixed wait, a
-# message on every run, and when an update is available a
+# Update check with a pre-upgrade backup, in the plain style: a message on
+# every run, and when an update is offered a
 # backup-<identity>-<date>-<installed version>-pre-upgrade .backup/.rsc pair
 # taken first, older backup-* files pruned only after the new pair is written.
 # The sibling update_check.lua is the more careful design; this one exists
@@ -8,12 +8,18 @@
 # Three outcomes, three messages. "Update is required" carries the backup, the
 # firmware state, the package list and the resources an upgrade depends on.
 # "Not required" is the daily heartbeat. "Check FAILED" is the one the plain
-# design used to hide: a router that cannot reach the upgrade server has no
-# latest version to compare, and reporting that as "not required" every
-# morning is how a fleet quietly stops being checked. RouterOS's own status
-# line - "ERROR: could not resolve dns name", "New version is available",
-# "System is already up to date" - is in every message, because it is the one
-# field that says what the check actually did.
+# design used to hide. It used to wait a fixed 15 seconds and compare
+# installed-version with latest-version, and measured on a 7.24.2 CHR that
+# comparison cannot see a failed check: latest-version is empty only until the
+# first check ever completes, and after that it keeps the last answer through
+# every later check, failed ones included. A router whose DNS or outbound HTTPS
+# broke would report "not required" against last week's version indefinitely -
+# or, if last week offered a newer release, take a backup and prune the old
+# one on stale information. So the verdict is RouterOS's own status line, read
+# until it settles: "finding out latest version..." while the check runs (about
+# two seconds on the CHR), then "System is already up to date", "New version
+# is available", or an ERROR that names the cause. That line is in every
+# message, because it is the one field that says what the check actually did.
 #
 # No :global here carries an underscore in its name, and that is the point.
 # RouterOS 7.24 refuses to execute a script that declares one - "expected end
@@ -46,6 +52,13 @@
 :local TakeBackup true
 :local RemovePrevious true
 
+# How long to wait for the check's verdict: attempts of 5 seconds each, after
+# a 5 second settle. Twelve is a minute, which is generous - the CHR settles in
+# about two seconds - and bounded, so a router that never hears back still
+# sends its message. Not a :global on purpose; the plain design has no knobs
+# outside this file.
+:local MaxWait 12
+
 # Free storage floor in MiB. RouterOS downloads the package to storage before
 # it installs, so a router under this floor fails the download, not the check.
 # The message says so next to the figure instead of leaving it to be noticed.
@@ -77,28 +90,55 @@
 :local Channel "unknown"
 :do { :set Channel [/system package update get channel]; } on-error={}
 
-/system package update check-for-updates
+# `once` returns at once - 0.1s measured - and the check runs behind it.
+/system package update check-for-updates once
 
-:delay 15s
+# Wait for the verdict, not for a fixed time. status is the field that moves:
+# it holds the previous verdict for a moment, reads "finding out latest
+# version..." while the check runs, and settles on "System is already up to
+# date", "New version is available", or an ERROR line. latest-version is not
+# a signal: it is populated from the previous check the instant the command
+# is issued, on every run but the first.
+:delay 5s
+
+:local Settled false
+:local Errored false
+:local Attempt 0
+:local Status ""
+:while ((!$Settled) and ($Attempt < $MaxWait)) do={
+    :do { :set Status [/system package update get status]; } on-error={}
+    :if (([:typeof [:find $Status "ERROR"]] != "nil") \
+      or ([:typeof [:find $Status "error"]] != "nil")) do={
+        :set Errored true
+        :set Settled true
+    } else={
+        :if (([:typeof [:find $Status "New version is available"]] != "nil") \
+          or ([:typeof [:find $Status "up to date"]] != "nil")) do={
+            :set Settled true
+        } else={
+            :delay 5s
+            :set Attempt ($Attempt + 1)
+        }
+    }
+}
 
 :local InstalledVersion "unknown"
 :local LatestVersion "unknown"
-:local Status "unknown"
 
 :do { :set InstalledVersion [/system package update get installed-version]; } on-error={}
 
 :do { :set LatestVersion [/system package update get latest-version]; } on-error={}
 
-# RouterOS's own verdict on the check it just ran. This is the field that
-# distinguishes "nothing newer" from "could not ask", and it names the cause
-# when the check failed.
-:do { :set Status [/system package update get status]; } on-error={}
-
-# The check succeeded when RouterOS filled in latest-version. An empty or
-# unknown value means it did not, and installed != latest would be true on
-# that failure too - which must not take a backup, prune the previous one,
-# or claim the router is current.
-:local CheckOk (($LatestVersion != "unknown") and ([:len $LatestVersion] > 0))
+# The check is good when it settled on a verdict that is not an error and
+# RouterOS reported a version. Anything else is the failed-check outcome, and
+# the most specific reason wins. A failed check must not take a backup, prune
+# the previous one, or claim the router is current.
+:local Reason ""
+:if (!$Settled) do={ :set Reason "timed out waiting for a verdict" }
+:if ([:len $LatestVersion] = 0) do={ :set Reason "no latest-version reported" }
+:if ($Errored) do={ :set Reason "the update server reported an error" }
+:local CheckOk ([:len $Reason] = 0)
+:local UpdateOffered ([:typeof [:find $Status "New version is available"]] != "nil")
 
 :local BoardName "unknown"
 :local Architecture "unknown"
@@ -211,14 +251,37 @@
 :if (!$CheckOk) do={
 
     # --- the check itself failed ---------------------------------------------
-    # No backup, no prune, and not "not required": say what RouterOS said.
-    :log warning ("backup_update_check: update check failed on channel $Channel - status: $Status")
+    # No backup, no prune, and not "not required": say what RouterOS said, and
+    # the three things the check depends on. The CHR reports mode=https with
+    # check-certificate=yes, so a clock far enough off breaks the TLS handshake
+    # - hence the NTP state - and the DNS servers are where "could not resolve"
+    # is answered.
+    :local UpdateMode "unknown"
+    :do { :set UpdateMode [/system package update get mode]; } on-error={}
+    :local NtpLine ""
+    :do {
+        :local NtpEnabled [/system ntp client get enabled]
+        :local NtpStatus [/system ntp client get status]
+        :set NtpLine ("\0ANTP client: <code>enabled=" . $NtpEnabled . " status=" . $NtpStatus . "</code>")
+    } on-error={}
+    :local DnsLine ""
+    :do {
+        :local DnsStatic [/ip dns get servers]
+        :local DnsDynamic [/ip dns get dynamic-servers]
+        :set DnsLine ("\0ADNS servers: <code>" . $DnsStatic . "</code> dynamic: <code>" . $DnsDynamic . "</code>")
+    } on-error={}
+
+    :log warning ("backup_update_check: update check failed on channel $Channel - $Reason (status: $Status)")
     :local MessageText ("<b>" . $DeviceName . ":</b> RouterOS update check FAILED." . \
-    "\0A\0AStatus: <code>" . $Status . "</code>" . \
-    "\0AChannel: <code>" . $Channel . "</code>" . \
+    "\0A\0AReason: <code>" . $Reason . "</code>" . \
+    "\0AStatus: <code>" . $Status . "</code>" . \
+    "\0AChannel: <code>" . $Channel . "</code> mode: <code>" . $UpdateMode . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
+    "\0ALast known latest: <code>" . $LatestVersion . "</code>" . \
+    $NtpLine . \
+    $DnsLine . \
     $CheckedLine . \
-    "\0A\0AThe router could not get a latest version from the upgrade server. Check DNS and outbound HTTPS from the router, then run the check by hand: <code>/system package update check-for-updates</code>")
+    "\0A\0ANothing was backed up or pruned. Check DNS, the clock and outbound HTTPS from the router, then run the check by hand: <code>/system package update check-for-updates once</code>")
 
     :do {
         $SendTelegramMessage MessageText=$MessageText
@@ -227,7 +290,11 @@
     }
 
 } else={
-:if ($InstalledVersion != $LatestVersion) do={
+# The verdict decides. Differing versions without "New version is available"
+# is the channel-switch case - a router moved to a train whose current release
+# is older than what it runs - and that is a log line, never a backup and a
+# prune.
+:if ($UpdateOffered) do={
 
     # --- pre-upgrade backup ---------------------------------------------------
     :local BackupLine ""
@@ -323,7 +390,11 @@
 
 } else={
 
-    :log info ("backup_update_check: nothing to install ($InstalledVersion, latest $LatestVersion) on channel $Channel")
+    :if ($InstalledVersion != $LatestVersion) do={
+        :log info ("backup_update_check: $InstalledVersion vs $LatestVersion on channel $Channel - no upgrade offered ($Status)")
+    } else={
+        :log info ("backup_update_check: nothing to install ($InstalledVersion, latest $LatestVersion) on channel $Channel")
+    }
     # The daily one. Shorter on purpose: it is a heartbeat, and what it has to
     # answer is "is anything pending" and "is there room" - not repeat the
     # board and architecture every morning.

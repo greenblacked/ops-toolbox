@@ -226,8 +226,9 @@
 # Wait for the check to finish rather than for a field to be non-empty:
 # RouterOS keeps latest-version from the previous check, so it is populated
 # the instant the command is issued. status is the field that moves, and it
-# holds the previous verdict for a moment before "checking for updates...",
-# hence the settle before the first read.
+# holds the previous verdict for a moment before its in-progress text
+# ("finding out latest version..." on 7.24.2, measured on the CHR), hence the
+# settle before the first read.
 :delay 5s;
 
 :local settled false;

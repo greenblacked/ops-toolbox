@@ -16,19 +16,36 @@ entry here belongs to a version.
 
 ### Added
 
-- `backup_update_check.lua` reports a failed check as its own outcome. A router
-  that cannot reach the upgrade server has no latest version to compare, and
-  the plain `installed != latest` design reported that as "update is not
-  required" every morning, which is how a fleet quietly stops being checked.
-  It now sends "update check FAILED" with RouterOS's own `status` line, which
-  names the cause, and the command to run by hand; it takes no backup and
-  prunes nothing on that path. Every message also carries the `status` line
-  and the router's clock. The "update is required" message adds the enabled
-  packages with their versions, the board's health readings where it has any,
-  and a changelog link; the storage line warns when free space is under
-  `MinFreeStorageMiB` (16 by default, the floor `stay_fresh.lua` shares),
-  since the package download fails under it, and a non-zero `bad-blocks`
-  figure is reported as a warning beside the number.
+- `backup_update_check.lua` takes its verdict from RouterOS's `status` line,
+  polled until it settles, instead of a fixed 15-second wait and an
+  `installed != latest` comparison. Measured on a 7.24.2 CHR: `latest-version`
+  is empty only until the first check ever completes and then keeps the last
+  answer through every later check, failed ones included, so the comparison
+  could not see a failed check. A router whose DNS or outbound HTTPS broke
+  reported "not required" against last week's version every morning, which is
+  how a fleet quietly stops being checked; had last week offered a newer
+  release, it would have taken a backup and pruned the old one on stale
+  information. A failed check is now its own message, "update check FAILED",
+  with the reason, the `status` line, the update mode, the NTP client state
+  and the DNS servers, and the command to run by hand; it takes no backup and
+  prunes nothing. Every message carries the `status` line and the router's
+  clock. The "update is required" message adds the enabled packages with their
+  versions, the board's health readings where it has any, and a changelog
+  link; the storage line warns when free space is under `MinFreeStorageMiB`
+  (16 by default, the floor `stay_fresh.lua` shares), since the package
+  download fails under it, and a non-zero `bad-blocks` figure is reported as a
+  warning beside the number.
+
+- Three CHR tests around the update check. One triggers a real check and
+  records how `status` and `latest-version` move, then dumps every field the
+  update scripts read into the CI log: on 7.24.2, `check-for-updates once`
+  returns in 0.1s, `status` reads "finding out latest version..." while the
+  check runs and settles in about two seconds, `/system routerboard` does not
+  exist on the CHR, and `/system health` has no readings there. One forces a
+  failed check by pointing the update hosts at the router itself and asserts
+  `latest-version` survives it. One runs `backup_update_check.lua` end to end
+  through a Telegram stub whose `:global` has no underscore, the first update
+  script the suite executes on the CHR rather than xfails.
 
 - `stay_fresh.sh` ends with a read-only report of pending macOS and App Store
   updates: `softwareupdate --list`, and `mas outdated` where `mas` is

@@ -801,3 +801,104 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
     if "update is required" in message:
         assert len(backups) >= 2, f"newer release offered but no backup pair: {backups}"
+
+
+# The hostnames the update check talks to. Overridden with static DNS entries
+# pointing at the router itself, a check fails fast - connection refused on a
+# port nothing listens on - instead of waiting out a timeout, and the failure is
+# undone by removing the entries.
+UPDATE_HOSTS = ("upgrade.mikrotik.com", "download.mikrotik.com")
+PROBE_DNS_COMMENT = "pu_ut probe"
+
+
+def _await_verdict(api: Any, previous: str, timeout: float = 90.0) -> tuple[list[str], dict]:
+    """Poll status until it settles on a verdict that is not the pre-run value.
+
+    A terminal-looking status read straight after check-for-updates can still
+    be the previous run's, so a value equal to `previous` only counts once a
+    few seconds have passed and it has demonstrably not moved.
+    """
+    t0 = time.monotonic()
+    trail: list[str] = []
+    last: tuple[str, str] | None = None
+    fields = _update_fields(api)
+    while time.monotonic() - t0 < timeout:
+        fields = _update_fields(api)
+        snap = (fields["status"], fields["latest-version"])
+        if snap != last:
+            trail.append(f"{time.monotonic() - t0:5.1f}s status={snap[0]!r} latest={snap[1]!r}")
+            last = snap
+        status = fields["status"]
+        moved = status != previous or time.monotonic() - t0 > 5
+        if moved and any(v in status for v in UPDATE_VERDICTS):
+            break
+        time.sleep(1)
+    return trail, fields
+
+
+def _remove_probe_dns_entries(api: Any) -> None:
+    res = api.get_binary_resource("/ip/dns/static")
+    for row in list(res.get()):
+        if _row_str(row, "comment") == PROBE_DNS_COMMENT:
+            with contextlib.suppress(ros_exc.RouterOsApiError):
+                res.call("remove", {".id": _row_id(row)})
+    with contextlib.suppress(ros_exc.RouterOsApiError):
+        api.get_binary_resource("/ip/dns/cache").call("flush", {})
+
+
+def test_latest_version_survives_a_failed_check(api: Any, script_resource: Any) -> None:
+    """A check that fails leaves the previous latest-version in place.
+
+    This is the claim the update scripts' comments rest on, and the reason
+    installed != latest cannot detect a failed check. It is put to a live
+    router: one good check so latest-version holds an answer, then the update
+    hosts are pointed at the router itself and a second check is run. The trail
+    and the ERROR text this release emits go into the warnings summary.
+    """
+    probe = "pu_ut_update_probe"
+    _add_script(script_resource, probe, "/system package update check-for-updates once;\n")
+    good_trail: list[str] = []
+    bad_trail: list[str] = []
+    good: dict = {}
+    bad: dict = {}
+    try:
+        previous = _update_fields(api)["status"]
+        _run_named(api, probe)
+        good_trail, good = _await_verdict(api, previous)
+        if any(e in good["status"] for e in ("ERROR", "error")) or not good["latest-version"]:
+            pytest.skip(f"the runner cannot reach the update server: {good}")
+
+        res = api.get_binary_resource("/ip/dns/static")
+        for host in UPDATE_HOSTS:
+            res.call(
+                "add",
+                {
+                    "name": host.encode("utf-8"),
+                    "address": b"127.0.0.1",
+                    "comment": PROBE_DNS_COMMENT.encode("utf-8"),
+                },
+            )
+        with contextlib.suppress(ros_exc.RouterOsApiError):
+            api.get_binary_resource("/ip/dns/cache").call("flush", {})
+        previous = good["status"]
+        _run_named(api, probe)
+        bad_trail, bad = _await_verdict(api, previous)
+    finally:
+        _remove_probe_dns_entries(api)
+        _remove_by_name(script_resource, probe)
+
+    report = [
+        "failed-check probe:",
+        "good check:",
+        *good_trail,
+        "with the hosts overridden:",
+        *bad_trail,
+    ]
+    warnings.warn("\n".join(report), stacklevel=2)
+    errored = any(e in bad["status"] for e in ("ERROR", "error"))
+    if not errored:
+        pytest.skip(f"the override did not make the check fail; status {bad['status']!r}")
+    assert bad["latest-version"] == good["latest-version"], (
+        f"latest-version changed on a failed check: {good} -> {bad}"
+    )
+    assert bad["latest-version"], "latest-version was cleared by the failed check"

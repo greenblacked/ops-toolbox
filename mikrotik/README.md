@@ -323,22 +323,30 @@ described under `update_check.lua` above — same filename, same prefix so
 that the prune runs only after the pair is written, same prefix exclusion for
 the `.rsc.in_progress` temporary.
 
-The rest is deliberately the plain design, because it is the script an
-operator already trusted on that hardware, plus the backup: a fixed 15-second
-wait rather than polling `status`, a message on **every** run rather than only
-on a transition, and an `installed != latest` test rather than RouterOS's own
-verdict for deciding whether an update is pending. Three messages, one per
-outcome. "Update is required" carries the backup, the firmware state, the
-enabled packages with their versions, the board's health readings where it has
-any, and the resources an upgrade depends on. "Not required" is the short daily
-heartbeat: versions, firmware, uptime, free storage. "Check FAILED" is the
-outcome the plain design used to report as "not required": `latest` came back
-empty or unknown, so the router could not ask the upgrade server, and the
-message says so with RouterOS's own `status` line — typically an `ERROR:` about
-DNS or the server — and the command to run by hand. That failed check takes no
-backup and prunes nothing, because the branch that does is selected only when
-`latest` is real, and doing it on a false alarm is the one thing it must not
-do.
+The rest keeps the plain design where it was sound — a message on **every**
+run rather than only on a transition, no `:global` knobs — and drops it where
+the CHR showed it lying. The original waited a fixed 15 seconds and compared
+`installed` with `latest`. Measured on a 7.24.2 CHR, `latest-version` is empty
+only until the first check ever completes; after that it keeps the last answer
+through every later check, failed ones included, so that comparison cannot see
+a failed check. A router whose DNS or outbound HTTPS broke would report "not
+required" against last week's version indefinitely, or, if last week offered a
+newer release, take a backup and prune the old one on stale information. So
+the script now polls `status` until it settles — "finding out latest
+version..." while the check runs, about two seconds on the CHR, then "System
+is already up to date", "New version is available", or an `ERROR:` line naming
+the cause — bounded by `MaxWait` attempts of five seconds, and the verdict is
+RouterOS's own, the same as `update_check.lua`.
+
+Three messages, one per outcome. "Update is required" carries the backup, the
+firmware state, the enabled packages with their versions, the board's health
+readings where it has any, and the resources an upgrade depends on. "Not
+required" is the short daily heartbeat: versions, firmware, uptime, free
+storage. "Check FAILED" names the reason — a timeout, an error from the server,
+or no version reported — with the `status` line, the update `mode`, the NTP
+client state (the check is HTTPS with certificate verification, so a clock far
+enough off fails the handshake), the DNS servers, and the command to run by
+hand. A failed check takes no backup and prunes nothing.
 
 Every message carries the `status` line and the router's clock at the time of
 the check. Free storage is compared against a floor (`MinFreeStorageMiB`, 16
@@ -349,7 +357,7 @@ rather than the check. A non-zero `bad-blocks` figure is reported the same way,
 as a warning next to the number, because an upgrade is a large write to that
 flash.
 
-Four settings at the top. `TgSendScript` names the Telegram helper, and it
+Five settings at the top. `TgSendScript` names the Telegram helper, and it
 defaults to `tg_send_new` — the operator's own copy — rather than the package's
 `tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
 on 7.24 either; point it at whatever helper the router actually has.
@@ -358,7 +366,8 @@ original script did — a fleet meant to sit on one train gets a hand-switched
 router put back before it is checked. Set it to `""` to leave the channel as
 the router has it and only report it, which is `update_check.lua`'s stance. `RouterBackupPassword`, set from a `:global`
 at boot, encrypts the binary backup. `MinFreeStorageMiB` is the storage floor
-described above. Install it **instead of** `update_check`,
+described above, and `MaxWait` the number of five-second attempts to wait for
+the verdict. Install it **instead of** `update_check`,
 not alongside it, or every update is reported twice.
 
 ### `stay_fresh.lua`
