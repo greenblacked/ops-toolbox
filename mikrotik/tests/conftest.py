@@ -112,6 +112,11 @@ _PRODUCTION_NAMED_TEST_SCRIPTS = {
     "rogue_dns_check",
     "backup",
     "update_check",
+    "backup_update_check",
+    # The stub backup_update_check calls by default. Separate from tg_send
+    # because its :global carries no underscore, which is what lets a 7.24
+    # CHR :parse it.
+    "tg_send_new",
 }
 
 # backup.lua writes into /file and, with RemovePrevious on, deletes what it
@@ -124,6 +129,7 @@ BACKUP_FILE_PREFIX = "backup-"
 # scheduler runs within an uptime session).
 _TEST_OWNED_GLOBALS = (
     "pu_TG_LAST_MESSAGE",
+    "PuTgLastMessage",
     "FW_BASELINE",
     "DHCP_KNOWN_MACS",
     "DHCP_PREV_LEASE_COUNT",

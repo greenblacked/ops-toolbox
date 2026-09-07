@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import time
+import warnings
 from typing import Any
 
 import pytest
@@ -455,6 +456,7 @@ def _run_via_scheduler(
     name: str,
     ready,
     timeout: float = 60.0,
+    interval: str = "1s",
 ) -> None:
     """Run an installed script from the scheduler, and wait for its effect.
 
@@ -471,6 +473,11 @@ def _run_via_scheduler(
     until then, which is safe here because both scripts are idempotent within a
     run: the same date and version produce the same filename, and the same
     failure produces the same message.
+
+    `interval` is the re-fire period. A script that sits in a :delay for longer
+    than that gets a second instance started under it every period, which is
+    harmless for the quick ones and a pile-up for backup_update_check with its
+    fixed 15s wait; that caller passes an interval longer than its own run.
     """
     res = api.get_binary_resource("/system/scheduler")
     _remove_by_name(res, SCHEDULER_NAME)
@@ -479,7 +486,7 @@ def _run_via_scheduler(
         {
             "name": SCHEDULER_NAME.encode("utf-8"),
             "on-event": name.encode("utf-8"),
-            "interval": b"1s",
+            "interval": interval.encode("utf-8"),
             "policy": SCRIPT_POLICY,
         },
     )
@@ -640,3 +647,157 @@ def test_update_check_reports_a_failed_check(
     # escape. A bare one is the defect this assertion exists to keep out.
     stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
     assert stray is None, f"malformed percent escape at {stray.start()}: {message!r}"
+
+
+# --- what a real RouterOS reports around an update check ---------------------
+#
+# The update scripts reason about four fields of /system package update and a
+# handful of resource readings, and the comments in update_check.lua and
+# stay_fresh.lua make claims about how those fields move: latest-version
+# survives from the previous check, status holds the old verdict for a moment
+# before "checking for updates...", check-for-updates once does not block. The
+# two tests below put the observed behaviour into the CI log so those claims can
+# be read against a live release rather than remembered.
+
+UPDATE_VERDICTS = ("New version is available", "up to date", "ERROR", "error")
+
+
+def _row_items(row: dict) -> list[tuple[str, str]]:
+    out = []
+    for k, v in row.items():
+        key = k.decode() if isinstance(k, bytes) else str(k)
+        if key == ".id":
+            continue
+        out.append((key, v.decode() if isinstance(v, bytes) else str(v)))
+    return out
+
+
+def _update_fields(api: Any) -> dict[str, str]:
+    rows = list(api.get_binary_resource("/system/package/update").get())
+    row = rows[0] if rows else {}
+    keys = ("channel", "installed-version", "latest-version", "status")
+    return {k: _row_str(row, k) for k in keys}
+
+
+def _dump_path(api: Any, path: str) -> list[str]:
+    try:
+        rows = list(api.get_binary_resource(path).get())
+    except ros_exc.RouterOsApiError as e:
+        return [f"{path}: error: {e}"]
+    if not rows:
+        return [f"{path}: (no rows)"]
+    return [f"{path}: " + ", ".join(f"{k}={v}" for k, v in _row_items(row)) for row in rows]
+
+
+PROBE_PATHS = (
+    "/system/package/update",
+    "/system/resource",
+    "/system/routerboard",
+    "/system/health",
+    "/system/license",
+    "/system/package",
+    "/system/ntp/client",
+    "/ip/dns",
+    "/system/clock",
+)
+
+
+def test_update_check_probe_records_how_status_moves(api: Any, script_resource: Any) -> None:
+    """Trigger a real check and record how status and latest-version move.
+
+    The trail and the field dump go into the warnings summary, which pytest
+    prints by default, so the CI log carries what this release actually
+    reports. The one assertion is that status reaches a verdict - one of the
+    strings the update scripts test for - within 90 seconds. On a runner with
+    no route to MikroTik that verdict is an ERROR line, and the trail then
+    shows what the failed-check path of backup_update_check.lua will see.
+    """
+    before = _update_fields(api)
+    probe = "pu_ut_update_probe"
+    # No :local or :global, so /system/script/run is fine here.
+    _add_script(script_resource, probe, "/system package update check-for-updates once;\n")
+    trail = [f"before the check: {before}"]
+    t0 = time.monotonic()
+    settled = False
+    try:
+        _run_named(api, probe)
+        trail.append(f"check-for-updates once returned after {time.monotonic() - t0:.1f}s")
+        last: tuple[str, str] | None = None
+        while time.monotonic() - t0 < 90:
+            fields = _update_fields(api)
+            snap = (fields["status"], fields["latest-version"])
+            if snap != last:
+                trail.append(
+                    f"{time.monotonic() - t0:5.1f}s status={snap[0]!r} latest={snap[1]!r}"
+                )
+                last = snap
+            if any(v in fields["status"] for v in UPDATE_VERDICTS):
+                settled = True
+                break
+            time.sleep(2)
+    finally:
+        _remove_by_name(script_resource, probe)
+
+    dump = [line for path in PROBE_PATHS for line in _dump_path(api, path)]
+    warnings.warn("\n".join(["update check probe:", *trail, *dump]), stacklevel=2)
+    assert settled, "status reached no verdict within 90s:\n" + "\n".join(trail)
+
+
+# A Telegram stub whose :global carries no underscore, so a 7.24 CHR can :parse
+# it. The session-wide tg_send stub cannot be parsed there, which is why every
+# end-to-end run of update_check.lua on the CHR is an xfail; this stub, under
+# the name backup_update_check.lua calls by default, is what lets that script
+# run for real.
+TG_SEND_NEW_STUB_SOURCE = (
+    ":global PuTgLastMessage;\n"
+    ":set PuTgLastMessage $MessageText;\n"
+    ':log info ("pu_ut tg_send_new STUB: " . $MessageText);\n'
+)
+
+
+def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> None:
+    """backup_update_check.lua runs on the CHR and sends one of its three messages.
+
+    Whichever outcome the runner's network produces - a newer release, up to
+    date, or a failed check - the message has to name it, carry RouterOS's own
+    status line and the clock, and contain no bare percent sign. When a newer
+    release is offered, the pre-upgrade pair has to exist as well. The message
+    goes into the warnings summary so the CI log shows the real rendering.
+    """
+    _unset_global(api, "PuTgLastMessage")
+    _clear_backup_files(api)
+    src = (MIKROTIK_DIR / "backup_update_check.lua").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    try:
+        _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
+        _add_script(script_resource, "backup_update_check", src)
+        # The script sits in a 15s :delay, so re-fire slower than it runs.
+        _run_via_scheduler(
+            api,
+            "backup_update_check",
+            lambda: _read_global(api, "PuTgLastMessage") != "",
+            timeout=150.0,
+            interval="40s",
+        )
+        message = _read_global(api, "PuTgLastMessage")
+        backups = _backup_files(api) if "update is required" in message else []
+    finally:
+        _remove_by_name(script_resource, "backup_update_check")
+        _remove_by_name(script_resource, "tg_send_new")
+        _unset_global(api, "PuTgLastMessage")
+        _clear_backup_files(api)
+
+    warnings.warn("backup_update_check message:\n" + message, stacklevel=2)
+    headlines = (
+        "RouterOS update is required.",
+        "RouterOS update is not required.",
+        "RouterOS update check FAILED.",
+    )
+    assert any(h in message for h in headlines), f"no known headline: {message!r}"
+    assert "Status: <code>" in message, f"status line missing: {message!r}"
+    assert "Checked: <code>" in message, f"clock line missing: {message!r}"
+    stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
+    assert stray is None, f"bare percent at {stray.start()}: {message!r}"
+    if "update is required" in message:
+        assert len(backups) >= 2, f"newer release offered but no backup pair: {backups}"
