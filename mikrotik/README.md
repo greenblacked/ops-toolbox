@@ -291,10 +291,12 @@ release train somebody had specifically kept it off.
 Completion is detected by polling `status` until it reaches a verdict, up to
 about 65 seconds (`:global UPDATE_CHECK_MAX_WAIT` in five-second units, for a
 slow or contended link), rather than waiting a fixed interval or waiting for
-`latest-version` to fill. RouterOS keeps `latest-version` from the previous
-check, so on every run after the first it is already populated the instant the
-command is issued, and a loop waiting for it to fill exits immediately with
-last week's answer.
+`latest-version` to fill. That field cannot be the signal: measured on the
+7.24.2 CHR, issuing the check clears it at once, a good check refills it in
+about a second, and a failed check leaves it empty, so a loop waiting for it to
+fill hangs on a failure and a read after a fixed wait cannot tell mid-check
+from failed. (This section used to say RouterOS kept the previous check's
+value; the CHR says otherwise.)
 
 A check that never completes sends its own message (`:global
 UPDATE_CHECK_NOTIFY_FAILURE false` to disable). It only fires where the router
@@ -315,26 +317,67 @@ one line of the script's own logging reaching the log. `update_check.lua`
 declares six such names. This script declares none: its only globals are
 `OpsToolboxPaused` and `RouterBackupPassword`.
 
-It was run end to end on a 7.24.1 CHR, where it found a real newer release,
-wrote the `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, pruned a seeded
-older generation and delivered the message. The backup and prune are the ones
+The suite runs it end to end on the 7.24.2 CHR: once on the stable channel,
+where it sends the heartbeat, and once with the channel patched to
+`development`, where a newer build is usually offered and it writes the
+`backup-IDENTITY-DATE-VERSION-pre-upgrade` pair and sends the full message.
+The first hand run, on a 7.24.1 CHR, found a real newer release, wrote the
+pair, pruned a seeded older generation and delivered the message. The backup and prune are the ones
 described under `update_check.lua` above — same filename, same prefix so
 `pull_router_backups.sh` and `backup_file_cleanup.lua` still see it, same rule
 that the prune runs only after the pair is written, same prefix exclusion for
 the `.rsc.in_progress` temporary.
 
-The rest is deliberately the plain design, because it is the script an
-operator already trusted on that hardware, plus the backup: a fixed 15-second
-wait rather than polling `status`, a message on **every** run — "update is
-required" with the backup, firmware, board and resource detail, or a short
-"not required" heartbeat with versions, firmware, uptime and free storage in
-MiB — rather than only on a transition, and a
-`installed != latest` test rather than RouterOS's own verdict. That test is
-guarded against a failed check (`latest` still `unknown`), because the branch
-it selects now takes a backup and deletes the previous one, and doing that on a
-false alarm is the one thing it must not do.
+The rest keeps the plain design where it was sound — a message on **every**
+run rather than only on a transition, no `:global` knobs — and drops it where
+the CHR showed it lying. The original waited a fixed 15 seconds and compared
+`installed` with `latest`. Measured on a 7.24.2 CHR: issuing the check clears
+`latest-version` at once, a good check refills it in about a second, and a
+failed check leaves it empty with an `ERROR:` line in `status` — with the
+update hosts unreachable, "ERROR: IPv4: server is not responding / IPv6: no
+internet connection". The old comparison sent that empty field down the "not
+required" branch, so a router whose DNS or outbound HTTPS broke reported
+"update is not required" with a blank Latest every morning. So the script now
+polls `status` until it settles — "finding out latest version..." while the
+check runs, then "System is already up to date", "New version is available",
+or the `ERROR:` line — bounded by `MaxWait` attempts of five seconds, and the
+verdict is RouterOS's own, the same as `update_check.lua`. The sibling
+scripts' comments used to say `latest-version` kept the previous check's
+answer; the CHR says otherwise, and they now say what was measured.
 
-Three settings at the top. `TgSendScript` names the Telegram helper, and it
+Three messages, one per outcome. "Update is required" carries the backup, the
+firmware state, the license level, the installed packages with their versions
+(a disabled one marked, since it is upgraded with the rest), the board's health
+readings where it has any, the resources an upgrade depends on, a changelog
+link, and a **reboot impact** section: interfaces running, DHCP leases bound,
+PPP sessions active and WireGuard peers, so the operator picks the moment
+rather than learning who was on the router from the complaints. "Not required"
+is the short daily heartbeat: versions, firmware, uptime, free storage. "Check
+FAILED" names the reason — a timeout, an error from the server, or no version
+reported — with the `status` line, the update `mode`, the NTP client state (the
+check is HTTPS with certificate verification, so a clock far enough off fails
+the handshake), the DNS servers, and the command to run by hand. A failed check
+takes no backup and prunes nothing.
+
+Two risk lines appear in any message only when there is something to say: the
+number of `supout` crash dumps on the router, and the number of `critical` log
+entries in the buffer with the last one's text. Every message carries the
+`status` line and the router's clock at the time of the check. Text that did
+not originate in the script — the status line, a log entry, the identity — is
+HTML-escaped first, because Telegram rejects the whole message on one
+unbalanced `<`.
+
+Free storage is shown next to the size of the installed packages, which is
+roughly what the upgrade downloads, and compared against a floor
+(`MinFreeStorageMiB`, 16 by default, the floor `stay_fresh.lua` refuses to
+install under). The floor suits routers with 128 MiB of flash or more. A 16 MB
+flash router normally sits at 2 to 4 MiB free and upgrades anyway, so on those
+set it to 0 or the heartbeat warns every day. A non-zero `bad-blocks` figure is
+reported the same way, as a warning next to the number, because an upgrade is
+a large write to that flash. The CHR reports no `bad-blocks` at all, and the
+line is simply absent there.
+
+Five settings at the top. `TgSendScript` names the Telegram helper, and it
 defaults to `tg_send_new` — the operator's own copy — rather than the package's
 `tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
 on 7.24 either; point it at whatever helper the router actually has.
@@ -342,7 +385,9 @@ on 7.24 either; point it at whatever helper the router actually has.
 original script did — a fleet meant to sit on one train gets a hand-switched
 router put back before it is checked. Set it to `""` to leave the channel as
 the router has it and only report it, which is `update_check.lua`'s stance. `RouterBackupPassword`, set from a `:global`
-at boot, encrypts the binary backup. Install it **instead of** `update_check`,
+at boot, encrypts the binary backup. `MinFreeStorageMiB` is the storage floor
+described above, and `MaxWait` the number of five-second attempts to wait for
+the verdict. Install it **instead of** `update_check`,
 not alongside it, or every update is reported twice.
 
 ### `stay_fresh.lua`
@@ -396,9 +441,10 @@ The verdict is `status`, never `installed != latest`, for the reason under
 strings differ while `latest` is *older*, and a script that installs on a
 difference test downgrades the router. A check that errors or never
 completes installs nothing and sends a message saying so rather than reading
-as "nothing to install" — `latest-version` survives from the previous check,
-so silence there would look like up to date and mean the opposite. The channel
-is read and reported, never written.
+as "nothing to install" — on 7.24.2 a failed check leaves `latest-version`
+empty, and an empty field compared with `installed` would read as "differs,
+nothing offered", the silence that looks like up to date and means the
+opposite. The channel is read and reported, never written.
 
 The backup and prune are the ones described under `update_check.lua`: same
 filename, same `backup-` prefix so `pull_router_backups.sh` still collects the
