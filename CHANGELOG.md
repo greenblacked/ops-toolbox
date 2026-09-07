@@ -16,6 +16,93 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh` ends with a read-only report of pending macOS and App Store
+  updates: `softwareupdate --list`, and `mas outdated` where `mas` is
+  installed. The script upgraded everything Homebrew manages and said nothing
+  about the operating system underneath, which is the one update that matters
+  most and the one that sits unnoticed in System Settings. It names what is
+  pending and the command that installs it, and never installs anything,
+  because a macOS update can reboot the machine and that is the operator's
+  decision. Pending updates are information, not a warning, so the scheduled
+  `--fail-on-warn` agent does not go red every morning between patch days; a
+  query that fails - offline, not signed in to the App Store - is reported
+  and does not count against the step either, for the same reason.
+  Not probed under `--dry-run`, where the catalogue scan would break the
+  promise to answer quickly and touch nothing. `--skip-os-updates` and the
+  `os-updates` id for `--only`.
+
+- `stay_fresh.sh` dev-caches also runs `uv cache clean` and clears
+  `~/.kube/cache`. uv's cache is separate from pip's and routinely larger; the
+  kubectl cache holds per-cluster API discovery for every cluster a kubeconfig
+  has ever pointed at, including the ones that no longer exist, and kubectl
+  rebuilds it on the next call. `~/.kube/config` is not under that directory
+  and is not touched.
+
+- `stay_fresh.sh` routes pip's output to the log unless `--verbose`, like
+  every other command. It used to tee to the terminal regardless, so a quiet
+  run showed one stray "WARNING: No matching packages" line from pip and
+  nothing from anything else.
+
+- `stay_fresh.sh --yes` passes `--yes` to `brew upgrade` only after
+  `brew upgrade --help` documents it. Current Homebrew asks for confirmation
+  before downloading, and `--yes` is what keeps the LaunchAgent from stalling
+  on that prompt; an older Homebrew rejects the flag as an invalid option,
+  which turned every upgrade into a warning. The script now probes once and
+  says so when it runs without the flag.
+
+- `.gitignore` ignores every dot-directory at the repository root and
+  re-admits `.github/`, the one that is tracked. The local agent skills
+  directory used to be ignored by name; the rule now covers it and every
+  other coding agent's local state without naming any, and `CONTRIBUTING.md`
+  and the README are true again when they say that directory is gitignored.
+  A future tracked dot-directory needs its own negation line, and the comment
+  in `.gitignore` says so.
+
+- The Docker steps suite covers the four: the report with pending, current,
+  and unreachable update servers, the dry run scanning nothing, the two new
+  cache targets, pip's notice staying out of a quiet run, and the brew flag
+  probe against a Homebrew with and without `--yes`. The seventeenth step is
+  exercised for real like the sixteen before it.
+
+- `stay_fresh.lua`: the RouterOS counterpart of the macOS and Linux
+  `stay_fresh.sh`. `update_check.lua` and `backup_update_check.lua` say a
+  release is waiting and leave the install to whoever reads the message, which
+  on a fleet of home and branch routers is the step that waits for a weekend
+  that never comes. This one installs it: when RouterOS's own verdict is that a
+  newer release is offered on the channel, it writes the
+  `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, prunes the older
+  generations, announces what it is about to do and runs
+  `/system package update install`, which downloads and reboots; on the run
+  after, when the RouterBOARD firmware is behind, it upgrades that and reboots
+  once more, one action per run in the order MikroTik documents. What keeps it
+  from rebooting a router it should not: a maintenance window in local hours
+  (03:00 to 05:59 by default, outside it the run reports "deferred" and changes
+  nothing), the `status` verdict rather than `installed != latest` so a channel
+  switch never installs an older release, a check that errors or times out
+  installing nothing and saying so, the install refused when the pre-upgrade
+  pair was not written, a free-storage floor checked before the download, and
+  `StayFreshDryRun`, which does the check and the report and nothing else and
+  is the way to run the first tick. Every knob is a `:global` set at boot so a
+  fleet is tuned from one startup script. Every run ends in a message,
+  including a one-line "fresh, nothing to install" heartbeat, because a script
+  that reboots routers should never be silent about having run. No `:global`
+  here carries an underscore, so it runs on RouterOS 7.24 where
+  `update_check.lua` does not; it looks for `tg_send_new` first and falls back
+  to `tg_send` on the releases that run it, encoding line breaks the way that
+  helper's form body needs. With no helper resolved it checks and logs and
+  refuses to install or reboot, because a router that reboots without saying
+  so is the failure it exists to avoid (`StayFreshRequireNotify false` for a
+  router with no Telegram at all). The firmware step compares versions
+  numerically, so firmware newer than the bundled one is never flashed down.
+  `print_schedulers.sh --update-script` picks which of the three update
+  scripts to schedule and prints only that one. The convention
+  suite holds it to the backup name, the prune-after-save gate, the
+  backup-before-install gate and the window and dry-run guards on every
+  install and reboot line, and checks that neither it nor
+  `backup_update_check.lua` declares an underscored `:global`.
+  `print_schedulers.sh` gives it the 04:20 slot in place of the check it
+  replaces.
+
 - The RouterOS CHR suite runs on pull requests that touch `mikrotik/`,
   `run-tests.sh`, or `chr.yml`, alongside the nightly and on-demand runs. The
   nightly answers "does the pinned RouterOS still like these scripts"; it cannot
@@ -49,6 +136,40 @@ entry here belongs to a version.
   verdict, in five-second units. A router on a slow or contended link
   legitimately needs longer, and a test that has to sit through the full 65
   seconds to watch the timeout path is a test nobody runs.
+
+- `:global UPDATE_CHECK_NOTIFY_UP_TO_DATE true` makes `update_check.lua` send a
+  short heartbeat on a quiet run - installed, latest, channel and RouterOS's
+  own verdict - instead of only a log line. Quiet by default stays the default,
+  because a router that says "nothing to do" every morning is the message that
+  gets muted, and the one that matters gets muted with it. But a router that
+  never speaks is indistinguishable from one whose scheduler quietly stopped,
+  and on a router where that ambiguity is the worse problem the heartbeat is
+  the answer. Opted into per router. Worded "nothing to install" rather than
+  "up to date" because it also covers the channel-switch case, where the
+  versions differ and there is still nothing RouterOS will offer.
+
+- `backup_update_check.lua`: the update check with the pre-upgrade backup and
+  prune, written so that it runs on RouterOS 7.24. The CHR suite has marked
+  the execution tests for `backup.lua` and `update_check.lua` as expected
+  failures because 7.24.1 refuses a `:global` whose name contains an
+  underscore, and had recorded that as a CHR quirk. It is not: a router on
+  that release failed `update_check.lua` the same way, with the same
+  "executing script failed" and not one line of the script's own logging
+  reaching the log. This script declares no such name - its only globals are
+  `OpsToolboxPaused` and `RouterBackupPassword` - and was run end to end on a
+  7.24.1 CHR, where it found a real newer release, wrote the pair, pruned a
+  seeded older generation and delivered the message. It is the plainer design
+  on purpose: a fixed 15-second wait rather than polling `status`, a message
+  on every run rather than only on a transition, a `!=` test guarded against
+  a failed check rather than RouterOS's own verdict, and the channel forced to
+  `stable` on every run rather than only read, because that is the script an
+  operator already trusted on that hardware, plus the backup.
+  The Telegram helper's name is a setting and defaults to `tg_send_new`, the
+  operator's own copy, because the package's `tg_send` declares `TG_BOT_TOKEN`
+  and `TG_CHAT_ID` and so does not run on 7.24 either - a script that runs
+  calling a helper that cannot is a message that never arrives. Install it
+  instead of `update_check.lua`, not alongside it. The underscore refusal itself is now a known defect of most of
+  this package on 7.24, not of the suite, and is left for its own change.
 
 - `update_check.lua` reports the firmware, board, architecture, uptime, CPU,
   memory and storage figures alongside the version, and sends a message when
@@ -143,16 +264,16 @@ entry here belongs to a version.
   packages, and holding it to "name every script beside you" would mean every
   script in the tree.
 
-- `stay_fresh.sh --only ai-caches` clears disposable Claude, Codex, ChatGPT,
-  Cursor, and Windsurf caches without treating all AI data as temporary. It
+- `stay_fresh.sh --only ai-caches` clears disposable Codex, ChatGPT, Cursor,
+  and Windsurf caches without treating all AI data as temporary. It
   skips a tool while its process is active, fails closed when process state
   cannot be inspected, and preserves credentials, settings, conversations and
   project sessions, extensions, Codex runtimes, and local models. The
   LaunchAgent's conservative profile includes the step, so these caches are
   handled on schedule without broad user-cache deletion.
 
-- Task-scoped conventions under `.claude/skills/` on a local checkout, so an
-  automated coding agent working here loads the rules for the file in front of
+- Task-scoped conventions in an agent skills directory on a local checkout, so
+  an automated coding agent working here loads the rules for the file in front of
   it instead of skimming `CONTRIBUTING.md` and acting on the half it remembered.
   Ten skills: one entry point, one per language (`bash`, PowerShell, RouterOS,
   Python), and one each for adding a script, running the suites, the pre-push
@@ -1171,6 +1292,16 @@ entry here belongs to a version.
 
 ### Removed
 
+- The `ai-caches` step no longer clears one vendor's desktop and CLI caches:
+  its Application Support scan, its two bundle cache roots and its CLI cache
+  root are gone, along with the process names that gated them. Codex, ChatGPT,
+  Cursor and Windsurf are unaffected and still cleaned on the same terms. This
+  is a deliberate narrowing of what the step touches, not a bug fix, so a
+  machine that relied on those caches being swept now keeps them; delete them
+  by hand, or add the paths back locally. The steps suite covers the remaining
+  four, with Codex standing in as the tool that has both a desktop cache and a
+  CLI cache.
+
 - Cursor is gone from the macOS package. `install_apps.sh` no longer ships the
   `cursor` cask, and `stay_fresh.sh` no longer touches it: the editor list its
   cache steps iterate (`VSCODE_FAMILY`) is now stock VS Code only — `Code` and
@@ -1203,7 +1334,7 @@ entry here belongs to a version.
   the pipe it replaced. `path_bytes` is therefore unchanged, and still serves
   the six single-path callers where there is nothing to batch.
 
-- `.claude/skills/` is local-only. The directory is gitignored and no longer
+- The agent skills directory is local-only. It is gitignored and no longer
   published on GitHub; `CONTRIBUTING.md` is the public reference. Package
   READMEs that pointed at a skill now point at that file instead.
 

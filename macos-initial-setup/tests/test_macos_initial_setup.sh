@@ -175,7 +175,7 @@ set -e
 assert_eq "install_devtools rejects unknown --only tool -> 3" "3" "$rc"
 
 steps_out="$("$M/stay_fresh.sh" --list-steps)"
-for step_id in brew docker workspace-storage versions; do
+for step_id in brew docker workspace-storage versions os-updates; do
   assert_contains "stay_fresh lists selectable $step_id" "$steps_out" "$step_id"
 done
 set +e
@@ -540,11 +540,14 @@ else
 fi
 
 # Exercise the LaunchAgent's effective Homebrew mode: --yes --no-sudo must run
-# formulae exactly once and must never start a cask pass.
+# formulae exactly once and must never start a cask pass. The fake is a
+# current Homebrew, so its upgrade help documents --yes and the flag is
+# expected to reach the formula pass.
 brew_calls="$fake_macos/brew.calls"
 printf '%s\n' '#!/bin/sh' \
   'printf "%s\n" "$*" >> "$BREW_CALLS"' \
   'case "${1:-}" in --version) echo "Homebrew test" ;; --prefix) echo /opt/homebrew ;; esac' \
+  'case "${1:-} ${2:-}" in "upgrade --help") echo "  --no-ask, --yes, -y  Do not ask for confirmation" ;; esac' \
   'exit 0' > "$fake_macos/bin/brew"
 printf '%s\n' '#!/bin/sh' \
   'case "${1:-}" in version) echo v3.17.0 ;; esac' \

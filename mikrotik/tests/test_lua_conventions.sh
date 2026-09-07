@@ -179,6 +179,15 @@ fi
 PRINTER="$PKG/print_schedulers.sh"
 MANUAL_ONLY="tg_send detect_internet reboot-and-flush firewall_drift_baseline change_WIFI_pw"
 
+UPDATE_SCRIPTS="update_check backup_update_check stay_fresh"
+is_update_script() {
+  local candidate="$1" name
+  for name in $UPDATE_SCRIPTS; do
+    [ "$name" = "$candidate" ] && return 0
+  done
+  return 1
+}
+
 is_manual() {
   local candidate="$1" name
   for name in $MANUAL_ONLY; do
@@ -201,12 +210,35 @@ else
         err "$n is meant to be run by hand, but print_schedulers.sh schedules it"
         unscheduled=$((unscheduled + 1))
       fi
+    elif is_update_script "$n"; then
+      # One of three, chosen by --update-script: present when chosen, absent
+      # otherwise, so pasting the default output never schedules two of them.
+      if ! grep -q "name=$n " <<<"$(NO_COLOR=1 "$PRINTER" --update-script "$n")"; then
+        err "$n is not emitted by print_schedulers.sh --update-script $n"
+        unscheduled=$((unscheduled + 1))
+      fi
     elif ! grep -q "name=$n " <<<"$printed"; then
       err "$n has no /system scheduler line in print_schedulers.sh"
       unscheduled=$((unscheduled + 1))
     fi
   done
   (( unscheduled == 0 )) && ok "print_schedulers.sh covers every unattended script"
+
+  update_lines="$(grep -c 'start-time=04:20:00' <<<"$printed")"
+  if [[ "$update_lines" == "1" ]] && grep -q 'name=update_check ' <<<"$printed"; then
+    ok "print_schedulers.sh schedules exactly one update script by default"
+  else
+    err "print_schedulers.sh default output schedules $update_lines update scripts, expected only update_check"
+  fi
+  set +e
+  NO_COLOR=1 "$PRINTER" --update-script nosuch >/dev/null 2>&1
+  bad_update_rc=$?
+  set -e
+  if (( bad_update_rc == 3 )); then
+    ok "print_schedulers.sh rejects an unknown --update-script"
+  else
+    err "print_schedulers.sh unknown --update-script exited $bad_update_rc, expected 3"
+  fi
 
   only_backup="$(NO_COLOR=1 "$PRINTER" --only backup)"
   if grep -q 'name=backup ' <<<"$only_backup" \
@@ -304,6 +336,54 @@ if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/update_check.lua"; 
 else
   err "update_check.lua must gate previous-backup removal on the save having succeeded"
 fi
+# stay_fresh.lua is the third producer of the pre-upgrade pair and the only
+# script here that installs and reboots, so it is held to the same two
+# invariants as update_check.lua, plus the one that is its own: the install is
+# refused without a written backup. Ungate that and an upgrade with nothing to
+# roll back to is exactly the run that goes ahead.
+if grep -qF '("backup-" . $rawName' "$PKG/stay_fresh.lua" \
+   && grep -qF '$installed . "-pre-upgrade"' "$PKG/stay_fresh.lua"; then
+  ok "stay_fresh.lua names its pre-upgrade backup backup-...-VERSION-pre-upgrade"
+else
+  err "stay_fresh.lua must name the pre-upgrade pair backup-<identity>-<date>-<installed>-pre-upgrade"
+fi
+if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/stay_fresh.lua"; then
+  ok "stay_fresh.lua prunes previous backups only after a successful save"
+else
+  err "stay_fresh.lua must gate previous-backup removal on the save having succeeded"
+fi
+if grep -qF ':if ((!$BackupOk) and $RequireBackup) do={' "$PKG/stay_fresh.lua" \
+   && grep -q 'New version is available' "$PKG/stay_fresh.lua"; then
+  ok "stay_fresh.lua refuses to install without a backup and gates on the RouterOS verdict"
+else
+  err "stay_fresh.lua must refuse the install without a backup and gate on RouterOS's own verdict"
+fi
+# The install and the reboot must both sit behind the window and the dry run:
+# each action line is preceded, somewhere above it, by the two guards.
+for action in '/system package update install;' '/system reboot;' '/system routerboard upgrade;'; do
+  if grep -qF "$action" "$PKG/stay_fresh.lua" \
+     && grep -q ':if (!\$InWindow) do={' "$PKG/stay_fresh.lua" \
+     && grep -q ':if (\$DryRun) do={' "$PKG/stay_fresh.lua"; then
+    ok "stay_fresh.lua guards '$action' with the window and the dry run"
+  else
+    err "stay_fresh.lua must guard '$action' with the maintenance window and StayFreshDryRun"
+  fi
+done
+
+# --- the scripts meant for RouterOS 7.24 declare no underscored :global ----
+# 7.24 refuses to execute a script that declares one, from every path, and
+# says nothing in the script's own log lines because it never gets past the
+# parser. These two exist because of that; a :global with an underscore
+# slipping into either would be the defect they were written around.
+for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua"; do
+  n="$(basename "$f")"
+  bad="$(grep -E '^[[:space:]]*:global +[A-Za-z0-9]*_' "$f" || true)"
+  if [[ -z "$bad" ]]; then
+    ok "$n declares no :global with an underscore in its name"
+  else
+    err "$n declares an underscored :global, which RouterOS 7.24 refuses to run: $bad"
+  fi
+done
 if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
    && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
   ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"

@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the sixteen steps for real against a scratch HOME and a faked set of
+# each of the seventeen steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -225,36 +225,26 @@ rm -rf "$d"
 section "ai-caches (temporary data only, active tools kept)"
 d="$(new_env)"
 as="$d/home/Library/Application Support"
-mkdir -p "$as/Claude/Cache" "$as/Claude/Local Storage" \
-         "$as/Codex/Default/GPUCache" "$as/Codex/Default/Session Storage" \
+mkdir -p "$as/Codex/Default/GPUCache" "$as/Codex/Default/Session Storage" \
          "$as/Cursor/Code Cache" "$d/home/Library/Caches/Codex" \
-         "$d/home/.claude/cache" "$d/home/.claude/projects/kept" \
          "$d/home/.codex/tmp" "$d/home/.codex/sessions/kept" \
          "$d/home/.cache/codex-runtimes/kept" \
          "$as/Ollama/models/kept"
-: > "$as/Claude/Cache/data"
-: > "$as/Claude/Local Storage/state"
 : > "$as/Codex/Default/GPUCache/data"
 : > "$as/Codex/Default/Session Storage/state"
 : > "$as/Cursor/Code Cache/data"
 : > "$d/home/Library/Caches/Codex/data"
-: > "$d/home/.claude/cache/data"
-: > "$d/home/.claude/projects/kept/session"
 : > "$d/home/.codex/tmp/data"
 : > "$d/home/.codex/sessions/kept/session"
 : > "$d/home/.cache/codex-runtimes/kept/runtime"
 : > "$as/Ollama/models/kept/model"
 out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "ai-caches step succeeds" "0" "$rc"
-assert_gone "Claude's disposable cache is removed" "$as/Claude/Cache"
 assert_gone "Codex's disposable GPU cache is removed" "$as/Codex/Default/GPUCache"
 assert_gone "Cursor's disposable code cache is removed" "$as/Cursor/Code Cache"
 assert_gone "Codex bundle cache contents are removed" "$d/home/Library/Caches/Codex/data"
-assert_gone "Claude CLI cache contents are removed" "$d/home/.claude/cache/data"
 assert_gone "Codex CLI tmp contents are removed" "$d/home/.codex/tmp/data"
-assert_exists "Claude local state is kept" "$as/Claude/Local Storage/state"
 assert_exists "Codex session storage is kept" "$as/Codex/Default/Session Storage/state"
-assert_exists "Claude project sessions are kept" "$d/home/.claude/projects/kept/session"
 assert_exists "Codex sessions are kept" "$d/home/.codex/sessions/kept/session"
 assert_exists "Codex runtimes are kept" "$d/home/.cache/codex-runtimes/kept/runtime"
 assert_exists "Ollama models are kept" "$as/Ollama/models/kept/model"
@@ -271,15 +261,15 @@ rm -rf "$d"
 
 d="$(new_env)"
 as="$d/home/Library/Application Support"
-mkdir -p "$as/Claude/Cache" "$d/home/.claude/cache"
-: > "$as/Claude/Cache/data"
-: > "$d/home/.claude/cache/data"
-RUNNING_APPS="Claude" out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
+mkdir -p "$as/Codex/Default/GPUCache" "$d/home/.codex/tmp"
+: > "$as/Codex/Default/GPUCache/data"
+: > "$d/home/.codex/tmp/data"
+RUNNING_APPS="Codex" out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "a running AI tool does not fail cleanup" "0" "$rc"
-assert_exists "a running Claude app keeps its cache" "$as/Claude/Cache/data"
-assert_exists "a running Claude app keeps its CLI cache" "$d/home/.claude/cache/data"
+assert_exists "a running Codex app keeps its cache" "$as/Codex/Default/GPUCache/data"
+assert_exists "a running Codex app keeps its CLI cache" "$d/home/.codex/tmp/data"
 assert_contains "the run explains why active AI caches were kept" "$out" \
-  "Claude is running - keeping its caches"
+  "Codex is running - keeping its caches"
 rm -rf "$d"
 
 d="$(new_env)"
@@ -294,13 +284,13 @@ rm -rf "$d"
 
 d="$(new_env)"
 as="$d/home/Library/Application Support"
-mkdir -p "$as/Claude/Cache"
-: > "$as/Claude/Cache/data"
+mkdir -p "$as/Codex/Default/GPUCache"
+: > "$as/Codex/Default/GPUCache/data"
 PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "an unavailable process check keeps AI cleanup non-fatal" "0" "$rc"
-assert_exists "an unavailable process check fails closed" "$as/Claude/Cache/data"
+assert_exists "an unavailable process check fails closed" "$as/Codex/Default/GPUCache/data"
 assert_contains "an unavailable process check explains the safe refusal" "$out" \
-  "cannot determine whether Claude is running - keeping its caches"
+  "cannot determine whether Codex is running - keeping its caches"
 assert_contains "an unavailable process check records a warning" "$out" \
   "warn steps:  1"
 rm -rf "$d"
@@ -490,6 +480,25 @@ assert_contains "cask upgrades are skipped without a terminal" "$out" \
 assert_not_called "no cask upgrade is attempted without a terminal" "$d/calls" \
   "brew upgrade --cask"
 assert_contains "a terminal-less brew run stays clean" "$out" "warn steps:  0"
+assert_not_called "no --yes is passed to a brew whose upgrade help lacks it" "$d/calls" \
+  "brew upgrade --formula --yes"
+assert_contains "the missing --yes flag is reported" "$out" \
+  "has no --yes flag"
+rm -rf "$d"
+
+# A current Homebrew documents --yes on brew upgrade; --yes runs pass it through
+# so the download confirmation does not stall the LaunchAgent.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+                    'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+                    'case "${1:-} ${2:-}" in "upgrade --help") echo "  --no-ask, --yes, -y  Do not ask for confirmation" ;; esac' \
+                    'exit 0'
+out="$(run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "brew step succeeds with a --yes-capable brew" "0" "$rc"
+assert_called "--yes reaches brew upgrade when the help documents it" "$d/calls" \
+  "brew upgrade --formula --yes"
+assert_not_contains "no missing-flag notice for a --yes-capable brew" "$out" \
+  "has no --yes flag"
 rm -rf "$d"
 
 # ===========================================================================
@@ -497,9 +506,16 @@ section "dev-caches (each toolchain, and an unusable node)"
 devcache_env() {
   local d; d="$(new_env)"
   mkbin "$d/bin/node"  'echo "node $*" >> "$CALLS"; exit "${NODE_RC:-0}"'
-  for t in npm yarn pnpm pip3 gem go; do
+  for t in npm yarn pnpm gem go uv; do
     mkbin "$d/bin/$t" "echo \"$t \$*\" >> \"\$CALLS\"; exit 0"
   done
+  # pip prints this even with -q on an already-empty cache. It belongs in the
+  # log, not on the terminal of a quiet run.
+  mkbin "$d/bin/pip3" 'echo "pip3 $*" >> "$CALLS"; echo "WARNING: No matching packages"; exit 0'
+  mkdir -p "$d/home/.kube/cache/discovery/cluster_a" "$d/home/.kube/cache/http"
+  : > "$d/home/.kube/cache/discovery/cluster_a/servergroups.json"
+  : > "$d/home/.kube/cache/http/entry"
+  : > "$d/home/.kube/config"
   printf '%s' "$d"
 }
 d="$(devcache_env)"; : > "$d/calls"
@@ -509,10 +525,35 @@ assert_called "npm cache is cleaned"   "$d/calls" "npm cache clean --force"
 assert_called "yarn cache is cleaned"  "$d/calls" "yarn cache clean"
 assert_called "pnpm store is pruned"   "$d/calls" "pnpm store prune"
 assert_called "pip cache is purged"    "$d/calls" "pip3 cache purge"
+assert_not_contains "pip's empty-cache notice stays out of a quiet run" "$out" \
+  "WARNING: No matching packages"
+assert_called "uv cache is cleaned"    "$d/calls" "uv cache clean"
 assert_not_called "installed gems are kept by default" "$d/calls" "gem cleanup"
 assert_contains "the run explains how to clean old gems explicitly" "$out" \
   "pass --cleanup-old-gems"
 assert_called "go caches are cleaned"  "$d/calls" "go clean -cache -modcache -testcache"
+assert_gone   "kubectl discovery cache is cleared" "$d/home/.kube/cache/discovery"
+assert_gone   "kubectl http cache is cleared"      "$d/home/.kube/cache/http"
+assert_exists "~/.kube/cache itself is kept"       "$d/home/.kube/cache"
+assert_exists "~/.kube/config is untouched"        "$d/home/.kube/config"
+assert_contains "dev-caches stays clean with pip's notice" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# Under --verbose the pip line is still filtered from the live stream, while
+# the rest of pip's output would reach the terminal like every other command.
+d="$(devcache_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --verbose --only dev-caches)"; rc=$?
+assert_eq "dev-caches step succeeds under --verbose" "0" "$rc"
+assert_not_contains "pip's empty-cache notice is filtered under --verbose" "$out" \
+  "WARNING: No matching packages"
+rm -rf "$d"
+
+# A dev-caches run on a machine without kubectl state must not invent one.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/go" 'echo "go $*" >> "$CALLS"; exit 0'
+out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "dev-caches without a kube cache succeeds" "0" "$rc"
+assert_gone "no ~/.kube is created when none existed" "$d/home/.kube"
 rm -rf "$d"
 
 d="$(devcache_env)"; : > "$d/calls"
@@ -576,6 +617,98 @@ assert_eq "versions step succeeds" "0" "$rc"
 assert_contains "the active python version is reported"    "$out" "pyenv active:  3.12.1"
 assert_contains "the active go version is reported"        "$out" "goenv active:  1.22.0"
 assert_contains "the active terraform version is reported" "$out" "tfenv active:  1.7.5"
+rm -rf "$d"
+
+# ===========================================================================
+section "os-updates (read-only report of pending macOS / App Store updates)"
+# softwareupdate --list writes the label lines to stderr on a real Mac and the
+# "No new software available." verdict to stdout; both are captured together.
+os_env() {
+  local d; d="$(new_env)"
+  mkbin "$d/bin/softwareupdate" 'echo "softwareupdate $*" >> "$CALLS"' \
+    'if [ -n "${SU_RC:-}" ]; then echo "Failed to check for updates" >&2; exit "$SU_RC"; fi' \
+    'if [ -n "${SU_PENDING:-}" ]; then' \
+    '  echo "Software Update Tool"' \
+    '  echo "Finding available software"' \
+    '  echo "Software Update found the following new or updated software:" >&2' \
+    '  echo "* Label: macOS Sequoia 15.6.1-24G90" >&2' \
+    '  echo "	Title: macOS Sequoia 15.6.1, Version: 15.6.1, Size: 1234567KiB, Recommended: YES, Action: restart," >&2' \
+    'else' \
+    '  echo "Software Update Tool"' \
+    '  echo "No new software available."' \
+    'fi; exit 0'
+  mkbin "$d/bin/mas" 'echo "mas $*" >> "$CALLS"' \
+    'if [ -n "${MAS_RC:-}" ]; then echo "Error: not signed in" >&2; exit "$MAS_RC"; fi' \
+    'if [ -n "${MAS_STDERR:-}" ]; then echo "Warning: could not look up an app" >&2; fi' \
+    'if [ -n "${MAS_PENDING:-}" ]; then echo "497799835 Xcode (16.4 -> 26.0)"; fi; exit 0'
+  printf '%s' "$d"
+}
+run_os() {
+  local d="$1"; shift
+  SU_PENDING="${SU_PENDING:-}" SU_RC="${SU_RC:-}" MAS_PENDING="${MAS_PENDING:-}" MAS_RC="${MAS_RC:-}" \
+    MAS_STDERR="${MAS_STDERR:-}" \
+    run_sf "$d" "$@"
+}
+d="$(os_env)"; : > "$d/calls"
+out="$(run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "os-updates step succeeds when everything is current" "0" "$rc"
+assert_called "os-updates queries softwareupdate" "$d/calls" "softwareupdate --list"
+assert_called "os-updates queries mas"            "$d/calls" "mas outdated"
+assert_contains "an up-to-date macOS is reported as such" "$out" "macOS is up to date"
+assert_contains "up-to-date App Store apps are reported"  "$out" "App Store apps are up to date"
+assert_not_called "os-updates never installs macOS updates" "$d/calls" "softwareupdate --install"
+assert_not_called "os-updates never upgrades App Store apps" "$d/calls" "mas upgrade"
+rm -rf "$d"
+
+d="$(os_env)"; : > "$d/calls"
+out="$(SU_PENDING=1 MAS_PENDING=1 run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "pending updates do not fail the run" "0" "$rc"
+assert_contains "a pending macOS update is named" "$out" "macOS Sequoia 15.6.1-24G90"
+assert_contains "the macOS install path is given" "$out" "sudo softwareupdate --install --all"
+assert_contains "a pending App Store update is named" "$out" "Xcode (16.4 -> 26.0)"
+assert_contains "the App Store install path is given" "$out" "mas upgrade"
+# Pending updates are the normal state of a workstation between patch days,
+# not a fault: the scheduled agent runs with --fail-on-warn and must not go
+# red every morning until somebody reboots into an update.
+assert_contains "pending updates are information, not a warning" "$out" "warn steps:  0"
+assert_not_called "pending updates are still never installed" "$d/calls" "softwareupdate --install"
+rm -rf "$d"
+
+d="$(os_env)"; : > "$d/calls"
+out="$(SU_RC=1 MAS_RC=1 run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "an unreachable update server does not fail the run" "0" "$rc"
+assert_contains "a failed macOS query is reported" "$out" "could not query macOS updates"
+assert_contains "a failed App Store query is reported" "$out" "could not query App Store updates"
+# Reported, not counted: the agent runs with --fail-on-warn, and a Mac with mas
+# installed but no App Store sign-in must not fail every scheduled run.
+assert_contains "a failed query does not count against the step" "$out" "warn steps:  0"
+rm -rf "$d"
+
+d="$(os_env)"; : > "$d/calls"
+out="$(MAS_STDERR=1 run_os "$d" --yes --only os-updates)"; rc=$?
+assert_eq "mas stderr chatter does not fail the run" "0" "$rc"
+assert_not_contains "mas stderr chatter is not reported as a pending update" "$out" \
+  "App Store updates pending"
+assert_contains "mas stderr chatter still leaves the apps reported current" "$out" \
+  "App Store apps are up to date"
+rm -rf "$d"
+
+# A dry run answers quickly and touches nothing: the catalogue scan is a
+# system action and is only named, not run.
+d="$(os_env)"; : > "$d/calls"
+out="$(run_os "$d" --dry-run --only os-updates)"; rc=$?
+assert_eq "os-updates dry run succeeds" "0" "$rc"
+assert_not_called "a dry run does not scan for macOS updates" "$d/calls" "softwareupdate"
+assert_not_called "a dry run does not query mas" "$d/calls" "mas"
+assert_contains "a dry run names the softwareupdate probe" "$out" "(dry-run) softwareupdate --list"
+rm -rf "$d"
+
+# Neither tool present: still a clean step, and it says so.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only os-updates)"; rc=$?
+assert_eq "os-updates with no tools succeeds" "0" "$rc"
+assert_contains "os-updates with no tools says nothing to report" "$out" \
+  "neither softwareupdate nor mas is available"
 rm -rf "$d"
 
 # ===========================================================================

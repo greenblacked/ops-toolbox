@@ -24,6 +24,8 @@ pinned CHR version and its digest are bumped.
 | `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
 | `health_check.lua`              | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
 | `update_check.lua`              | Backs up, then notifies when a newer RouterOS version appears.          |
+| `backup_update_check.lua`       | Same job, plainer; runs on RouterOS 7.24 where update_check will not.   |
+| `stay_fresh.lua`                | Backs up, installs the update in a window, then the firmware. Reboots.  |
 | `wan_failover_notify.lua`       | One-shot Telegram alert on built-in WAN-detect state transitions.       |
 | `detect_internet.lua`           | Re-runs RouterOS WAN/LAN auto-detection (manual reset).                 |
 | `reboot-and-flush.lua`          | Flushes DNS + connection tracking, then reboots. No pre-reboot ping.    |
@@ -117,6 +119,8 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 | `change_WIFI_pw`       | `30d` (or on demand)                                                     |
 | `health_check`         | `5m`                                                                     |
 | `update_check`         | `1d`                                                                     |
+| `backup_update_check`  | `1d` — instead of `update_check`, not alongside it                       |
+| `stay_fresh`           | `1d` inside its window (`04:20:00`) — `--update-script stay_fresh`       |
 | `wan_failover_notify`  | `1m`                                                                     |
 | `dhcp_lease_watch`     | `5m`                                                                     |
 | `firewall_drift`       | `15m`                                                                    |
@@ -268,6 +272,17 @@ are read only on the branch that sends, so an ordinary quiet run stays a
 handful of reads. RouterBOARD firmware is skipped on hardware that has none
 (CHR, x86) rather than reported as `unknown`.
 
+A quiet run — nothing to install — is a log line and no message, on purpose:
+a router that says "nothing to do" every morning is the message that gets
+muted, and the one that matters gets muted with it. Silence has its own cost,
+though, because a router that never speaks looks exactly like one whose
+scheduler quietly stopped. Where that ambiguity is worse than the noise, set
+`:global UPDATE_CHECK_NOTIFY_UP_TO_DATE true` and every quiet run sends a short
+heartbeat instead — installed, latest, channel and RouterOS's own verdict.
+Opted into per router, never the default. It is worded "nothing to install"
+rather than "up to date" because it also covers the channel-switch case, where
+the versions differ and there is still nothing RouterOS will offer.
+
 The channel is read and reported, never written. Setting it would mean the
 script overriding a deliberate choice: a router parked on `long-term` moved to
 `stable` on the next tick, then correctly told an upgrade is available — to a
@@ -287,6 +302,125 @@ can still reach Telegram — DNS broken, the upgrade server refusing, a proxy in
 the way — which is exactly the case where a router sits on an unpatched
 release with nothing saying so. A fully offline router cannot report anything,
 and no arrangement here changes that.
+
+### `backup_update_check.lua`
+
+The same job as `update_check.lua` in a plainer style, and the one to install
+on RouterOS 7.24. That release refuses to execute a script declaring a
+`:global` whose name contains an underscore — "expected end of command" at the
+underscore, from the scheduler, from `:parse` and from `/system script run`
+alike. The CHR suite had recorded that as a CHR quirk; a router on that release
+failed `update_check.lua` identically, with "executing script failed" and not
+one line of the script's own logging reaching the log. `update_check.lua`
+declares six such names. This script declares none: its only globals are
+`OpsToolboxPaused` and `RouterBackupPassword`.
+
+It was run end to end on a 7.24.1 CHR, where it found a real newer release,
+wrote the `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, pruned a seeded
+older generation and delivered the message. The backup and prune are the ones
+described under `update_check.lua` above — same filename, same prefix so
+`pull_router_backups.sh` and `backup_file_cleanup.lua` still see it, same rule
+that the prune runs only after the pair is written, same prefix exclusion for
+the `.rsc.in_progress` temporary.
+
+The rest is deliberately the plain design, because it is the script an
+operator already trusted on that hardware, plus the backup: a fixed 15-second
+wait rather than polling `status`, a message on **every** run — "update is
+required" with the backup, firmware, board and resource detail, or a short
+"not required" heartbeat with versions, firmware, uptime and free storage in
+MiB — rather than only on a transition, and a
+`installed != latest` test rather than RouterOS's own verdict. That test is
+guarded against a failed check (`latest` still `unknown`), because the branch
+it selects now takes a backup and deletes the previous one, and doing that on a
+false alarm is the one thing it must not do.
+
+Three settings at the top. `TgSendScript` names the Telegram helper, and it
+defaults to `tg_send_new` — the operator's own copy — rather than the package's
+`tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
+on 7.24 either; point it at whatever helper the router actually has.
+`updChannel` is `"stable"` by default and is **written** on every run, as the
+original script did — a fleet meant to sit on one train gets a hand-switched
+router put back before it is checked. Set it to `""` to leave the channel as
+the router has it and only report it, which is `update_check.lua`'s stance. `RouterBackupPassword`, set from a `:global`
+at boot, encrypts the binary backup. Install it **instead of** `update_check`,
+not alongside it, or every update is reported twice.
+
+### `stay_fresh.lua`
+
+The RouterOS counterpart of the macOS and Linux `stay_fresh.sh`: the two
+update checks above tell you a release is waiting and leave the install to
+you; this one installs it. Every run checks the update server, and when
+RouterOS's own verdict is that a newer release is available on the channel,
+it takes the `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, prunes the older
+`backup-*` generations, announces what it is about to do, and runs
+`/system package update install`, which downloads the release and reboots. On
+the run after that, when `/system routerboard` reports the firmware behind the
+RouterOS it now runs, it upgrades the firmware and reboots once more — one
+action per run, in the order MikroTik documents. Every run ends in a Telegram
+message: installed, deferred, refused, or the one-line "fresh, nothing to
+install" heartbeat, because a script that reboots routers should never be
+silent about having run. Install it **instead of** `update_check` or
+`backup_update_check`, not alongside them.
+
+It declares no `:global` with an underscore in its name, for the reason under
+`backup_update_check.lua`, so it runs on RouterOS 7.24; the CHR suite's
+`test_script_add_remove_roundtrip` proves 7.24.1 accepts the source, and the
+convention suite holds it to the invariants below. It looks for the Telegram
+helper as `tg_send_new` first, the operator's copy that runs there, and falls
+back to the package's `tg_send` on releases that run it (not 7.24), encoding
+line breaks the way that helper's form body needs. With no helper resolved it
+still checks and logs, and refuses to install or reboot: a router that reboots
+without saying so is the failure it exists to avoid.
+
+What stops it from rebooting a router it should not — each one a `:global`
+set at boot, so a fleet is tuned from one startup script and the tracked file
+is never edited per router:
+
+| `:global`                 | Default | What it does                                                                                                      |
+| ------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| `StayFreshDryRun`         | `false` | `true`: check and report only. Run the first tick with this on and read the message before letting it act.        |
+| `StayFreshWindowStart`    | `3`     | Local hour, inclusive. With the end, the only hours it will install or reboot in. Outside: "deferred".            |
+| `StayFreshWindowEnd`      | `6`     | Local hour, exclusive. `3` and `6` is 03:00–05:59; start > end wraps past midnight; equal means always.           |
+| `StayFreshInstall`        | `true`  | `false`: never install; the script becomes an update check with a backup, like `backup_update_check`.             |
+| `StayFreshFirmware`       | `true`  | `false`: never touch the RouterBOARD firmware. Only when the bundled firmware is numerically newer; CHR/x86 skip. |
+| `StayFreshRequireBackup`  | `true`  | Refuse the install when the pre-upgrade pair was not written. `false`: report the failed backup and install.      |
+| `StayFreshRequireNotify`  | `true`  | Refuse to install or reboot when no Telegram helper resolved. `false` for a router with no Telegram at all.       |
+| `StayFreshMinFreeMiB`     | `16`    | Free storage the install must find, checked before the download. A floor to tune, not a RouterOS figure; `0` off. |
+| `StayFreshRemovePrevious` | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                               |
+| `StayFreshMaxWait`        | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                                |
+| `StayFreshTgSend`         | unset   | Name of the Telegram helper script, if it is neither `tg_send_new` nor `tg_send`.                                 |
+| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup_update_check` reads.                                       |
+
+The verdict is `status`, never `installed != latest`, for the reason under
+`update_check.lua`: switch a router from `stable` to `long-term` and the
+strings differ while `latest` is *older*, and a script that installs on a
+difference test downgrades the router. A check that errors or never
+completes installs nothing and sends a message saying so rather than reading
+as "nothing to install" — `latest-version` survives from the previous check,
+so silence there would look like up to date and mean the opposite. The channel
+is read and reported, never written.
+
+The backup and prune are the ones described under `update_check.lua`: same
+filename, same `backup-` prefix so `pull_router_backups.sh` still collects the
+pair and `backup_file_cleanup.lua` still ages it out, the prune only after
+both files are written, the prefix exclusion for the `.rsc.in_progress`
+temporary. What is new is that the install sits behind the backup: with
+`StayFreshRequireBackup` on, a run whose backup failed sends "NOT installed,
+nothing to roll back to" and stops. The install is announced *before* it
+starts, with a five-second delay for the send to complete, because a message
+sent after `/system package update install` never leaves the router; pair it
+with the `notify-boot` scheduler entry under [Reboot
+notifications](#reboot-notifications) for the "back online" half.
+
+Recovery, if an upgrade goes wrong: the pre-upgrade pair is on the router and,
+if `pull_router_backups.sh` runs, on your machine. Netinstall the previous
+release and restore the `.backup` there, or restore the `.rsc` onto any
+release with `/import`. The binary backup only restores onto the version it
+was taken on, which is the version in its name.
+
+Pause it with the fleet-wide `OpsToolboxPaused`, or set `StayFreshInstall`
+and `StayFreshFirmware` to `false` at boot to keep the checks and the
+heartbeat while planned work rules out a reboot.
 
 ### `wan_failover_notify.lua`
 
@@ -434,9 +568,14 @@ backup.
 ./print_schedulers.sh --include-notify-boot  # add the startup notifier
 ./print_schedulers.sh --policy read,test     # a narrower policy set
 ./print_schedulers.sh --only backup          # generate one reviewed entry
+./print_schedulers.sh --update-script stay_fresh  # which update script (default update_check)
 ./print_schedulers.sh --list                 # names accepted by --only
 ./print_schedulers.sh > schedulers.rsc       # keep it, diff it later
 ```
+
+`update_check`, `backup_update_check` and `stay_fresh` do one job three ways
+and must not be scheduled together, so only one is printed:
+`--update-script NAME` chooses it, `update_check` by default.
 
 The daily entries carry an explicit `start-time`, staggered across the small
 hours: `interval=1d` on its own anchors to the moment the entry was created, so

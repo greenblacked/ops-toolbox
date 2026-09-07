@@ -276,8 +276,10 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   initialization using version managers.
 - `stay_fresh.sh` handles recurring maintenance: system, application, and AI
   tool caches; Homebrew upgrades; Docker/OrbStack cleanup; Xcode extras; Helm
-  plugins; `gcloud`; and version reporting. AI credentials, sessions, runtimes,
-  and downloaded models are kept.
+  plugins; `gcloud`; dev-tool caches including `uv` and kubectl's discovery
+  cache; version reporting; and a read-only report of pending macOS and App
+  Store updates. AI credentials, sessions, runtimes, and downloaded models are
+  kept.
 - `v1_stay_fresh.sh` is a legacy, flag-free minimal maintenance flow kept for
   reference; prefer `stay_fresh.sh` for new use.
 - `brewfile.sh` captures the Homebrew state of a machine into a versioned
@@ -461,6 +463,17 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
   Telegram once per new version and takes a pre-upgrade backup first, named
   after the date and the version it would restore. Reports firmware, board,
   uptime and resource figures with it, and says so when the check itself fails.
+- `backup_update_check.lua` — the same job in a plainer style: a message on
+  every run, and the pre-upgrade backup + prune when an update is offered. No
+  underscored `:global` names, which is why it runs on RouterOS 7.24 where
+  `update_check.lua` does not.
+- `stay_fresh.lua` — the RouterOS counterpart of the macOS and Linux
+  `stay_fresh.sh`: the two checks above tell you a release is waiting, this one
+  installs it. Pre-upgrade backup and prune, then `/system package update
+  install` inside a maintenance window (03:00–05:59 by default), then the
+  RouterBOARD firmware on the run after; refuses to install without the backup,
+  gates on RouterOS's own verdict, and has a dry run. No underscored `:global`
+  names, so it runs on 7.24. Install one of the three, not several.
 - `wan_failover_notify.lua` — polls the built-in `detect-internet-state`
   property on the WAN interface and notifies only on transitions.
 - `detect_internet.lua` — manual nudge that re-runs RouterOS WAN/LAN
@@ -754,8 +767,8 @@ dispatches the standard CI workflow for the bump branch before opening its PR.
 ## Agent skills
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is the published conventions document.
-Task-scoped copies of the same material live under `.claude/skills/` on a
-local checkout so an automated coding agent can load the rules for the file
+Task-scoped copies of the same material live in an agent skills directory on
+a local checkout so an automated coding agent can load the rules for the file
 it is editing. That directory is gitignored and is not on GitHub.
 Automation should read `CONTRIBUTING.md` first; any machine-local instructions
 are intentionally not part of the repository.

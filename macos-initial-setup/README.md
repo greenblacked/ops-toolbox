@@ -392,11 +392,10 @@ In the order they run:
    Cache roots for running applications are kept. Sandboxed-container caches,
    whose activity cannot be mapped reliably, are kept unless
    `--force-active-app-caches` is explicitly passed.
-6. Clear **AI tool caches** for Claude, Codex, ChatGPT, Cursor, and Windsurf
-   when the matching process is confirmed not running. If process state cannot
-   be checked, the caches are kept. Only exact browser-cache
-   directories, known macOS bundle caches, `~/.claude/cache`, and
-   `~/.codex/tmp` are removed. Credentials, settings, conversations/sessions,
+6. Clear **AI tool caches** for Codex, ChatGPT, Cursor, and Windsurf when the
+   matching process is confirmed not running. If process state cannot be
+   checked, the caches are kept. Only exact browser-cache directories, known
+   macOS bundle caches, and `~/.codex/tmp` are removed. Credentials, settings, conversations/sessions,
    projects, extensions, Codex runtimes, and Ollama/downloaded models are kept.
 7. Prune **stale workspace storage**. VS Code (stable and Insiders) keeps
    a `workspaceStorage` entry for every folder ever opened and never
@@ -415,13 +414,27 @@ In the order they run:
 11. Remove diagnostic and crash reports (user, plus system with `sudo`).
 12. Update and upgrade Homebrew formulae, then casks once when an interactive
     sudo-capable run permits them; run `cleanup -s` and `autoremove`.
-13. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Old
+13. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`,
+    and kubectl's per-cluster discovery cache under `~/.kube/cache`, which
+    kubectl rebuilds on the next call; `~/.kube/config` is not touched). Old
     installed gem versions are package state, not cache, and are kept unless
     `--cleanup-old-gems` is explicit.
 14. Update installed Helm plugins.
 15. Run `gcloud components update`.
 16. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     and `gcloud`.
+17. Report **pending macOS and App Store updates**: `softwareupdate --list`,
+    and `mas outdated` where [`mas`](https://github.com/mas-cli/mas) is
+    installed. Read-only. Homebrew keeps what it manages fresh; the operating
+    system and App Store apps were the two things this script said nothing
+    about. It names what is pending and the command that installs it, and never
+    installs anything itself, because a macOS update can reboot the machine.
+    Pending updates are reported as information, not as a warning, so a
+    scheduled `--fail-on-warn` run does not go red every morning between patch
+    days; a query that fails (offline, not signed in to the App Store) is
+    reported and does not count against the step either, for the same reason.
+    Not probed under `--dry-run`: the catalogue scan is a system action that
+    takes time on the network.
 
 ### Usage
 
@@ -460,11 +473,11 @@ In the order they run:
 | `--skip-usercaches` | Skip user-cache cleanup. |
 | `--skip-appcaches` | Skip per-app caches (step 5: Chromium/Electron directories, sandboxed containers, `.vsix`). |
 | `--force-active-app-caches` | Also clear running known-app roots and generic sandbox-container caches. |
-| `--skip-aicaches` | Skip Claude/Codex/ChatGPT/Cursor/Windsurf temporary-cache cleanup. |
+| `--skip-aicaches` | Skip Codex/ChatGPT/Cursor/Windsurf temporary-cache cleanup. |
 | `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 7). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
-| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`go` cache cleanup. |
+| `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`uv`/`go`/kubectl cache cleanup. |
 | `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
@@ -473,7 +486,8 @@ In the order they run:
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
 | `--skip-gcloud` | Skip `gcloud components update`. |
-| `--skip-versions` | Skip the final version report. |
+| `--skip-versions` | Skip the version report. |
+| `--skip-os-updates` | Skip the pending macOS / App Store update report (step 17). |
 | `-h`, `--help` | Show the built-in help. |
 
 `--only` is the safer interface for one-off work: it initializes every step as
@@ -940,7 +954,7 @@ suites:
 | Suite | File | Scope |
 | --- | --- | --- |
 | `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
-| `steps` | `test_stay_fresh_steps.sh` | Each of the sixteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the seventeen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
 | `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
 
 The `steps` suite fakes only the commands that identify the host or that the
@@ -1042,8 +1056,8 @@ Homebrew / `pyenv` / `goenv` commands.
   Chromium-internal directories under known Application Support roots and
   downloaded `.vsix` archives. Running application roots are skipped;
   sandbox-container caches require `--force-active-app-caches`.
-- Deletes exact disposable cache directories for idle Claude, Codex, ChatGPT,
-  Cursor, and Windsurf installations, plus their known bundle caches and CLI
+- Deletes exact disposable cache directories for idle Codex, ChatGPT, Cursor,
+  and Windsurf installations, plus their known bundle caches and CLI
   temp roots. Active or unknown process state keeps the cache. It preserves
   credentials, settings, conversations/sessions, project state, extensions,
   Codex runtimes, and downloaded models.
@@ -1053,8 +1067,11 @@ Homebrew / `pyenv` / `goenv` commands.
   folder no longer exists. Remote workspaces and unreadable entries are
   left alone.
 - Empties `~/.Trash`.
-- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `go`). Installed
-  gem versions are kept unless `--cleanup-old-gems` is explicit.
+- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`) and
+  the contents of `~/.kube/cache`. Installed gem versions are kept unless
+  `--cleanup-old-gems` is explicit.
+- Queries `softwareupdate --list` and, when installed, `mas outdated`, and
+  prints what is pending. Installs neither.
 - Prunes Docker resources when Docker is available:
   - Containers (`docker container prune -f`)
   - Networks (`docker network prune -f`)

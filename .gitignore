@@ -15,9 +15,15 @@
 # so project-level config can still be tracked deliberately.
 */worktrees/
 
-# Local coding-agent skills. They restate CONTRIBUTING.md and stay on the
-# machine that uses them; they are not part of the published tree.
-.claude/
+# Local coding-agent state. Every agent keeps its skills, settings and scratch
+# in a dot-directory at the repository root, and that belongs to the machine
+# running it, not the published tree: the skills restate CONTRIBUTING.md and
+# stay local. Ignoring every root dot-directory covers each agent without
+# naming any; .github/ is the one such directory that is part of the
+# repository, so it is re-admitted. A future tracked dot-directory needs its
+# own negation line here, or git will quietly leave it out.
+/.*/
+!/.github/
 
 # Local agent instructions belong to the machine running them, not the repo.
 AGENTS.md

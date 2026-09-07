@@ -50,6 +50,17 @@
 :global UPDATE_CHECK_NOTIFY_FAILURE;
 :if ([:typeof $UPDATE_CHECK_NOTIFY_FAILURE] = "bool") do={ :set NotifyOnCheckFailure $UPDATE_CHECK_NOTIFY_FAILURE; }
 
+# A quiet run - nothing to install - is a log line and no message. That is on
+# purpose: a router that says "nothing to do" every morning is the message
+# that gets muted, and the one that matters gets muted with it. But silence has
+# a cost of its own, because a router that never speaks looks exactly like a
+# router whose scheduler quietly stopped. Where that ambiguity is worse than
+# the noise, this sends a short heartbeat on every quiet run instead - opted
+# into per router, never the default.
+:local NotifyUpToDate false;
+:global UPDATE_CHECK_NOTIFY_UP_TO_DATE;
+:if ([:typeof $UPDATE_CHECK_NOTIFY_UP_TO_DATE] = "bool") do={ :set NotifyUpToDate $UPDATE_CHECK_NOTIFY_UP_TO_DATE; }
+
 # 5s settle + up to 12 polls of 5s = 65s worst case. Overridable because a
 # router behind a slow or contended link legitimately needs longer, and because
 # a test that has to sit through the full 65s to watch the timeout path is a
@@ -342,5 +353,23 @@
         :log info ("update_check: $installed vs $latest on channel $channel - no upgrade offered ($status)");
     } else={
         :log info ("update_check: already on latest ($installed) on channel $channel");
+    }
+
+    # The heartbeat. Worded as "nothing to install" rather than "up to date",
+    # because it also covers the channel-switch case above, where the versions
+    # differ and there is still nothing RouterOS will offer. $status is
+    # RouterOS's own verdict text, so the message says which of the two it was.
+    :if ($NotifyUpToDate) do={
+        :local OkText ("\E2\9C\85 <b>" . $DeviceName . ":</b> RouterOS update check: nothing to install.%0A" . \
+                       "<b>Installed:</b> <code>" . $installed . "</code>%0A" . \
+                       "<b>Latest:</b> <code>" . $latest . "</code>%0A" . \
+                       "<b>Channel:</b> <code>" . $channel . "</code>%0A" . \
+                       "<b>Status:</b> <code>" . $status . "</code>");
+        :do {
+            :local Send [:parse [/system script get tg_send source]];
+            $Send MessageText=$OkText;
+        } on-error={
+            :log warning "update_check: could not send the heartbeat (is tg_send installed?)";
+        };
     }
 }

@@ -6,12 +6,13 @@
 # Installing a script is the easy half. Scheduling it is where this package goes
 # quiet: a script that was never scheduled looks exactly like a script that has
 # nothing to report, and the mistake is invisible until the month you needed the
-# backup. Twenty scripts here are meant to run unattended and only eight of them
-# have an interval written down in README.md.
+# backup. Twenty-two scripts here are meant to run unattended and only ten of
+# them have an interval written down in README.md.
 #
 # Usage:
 #   ./print_schedulers.sh
 #   ./print_schedulers.sh --include-notify-boot > schedulers.rsc
+#   ./print_schedulers.sh --update-script stay_fresh
 #
 # No router is contacted and nothing is written — this only prints text.
 #
@@ -52,13 +53,20 @@ DRY_RUN=0
 NOTIFY_BOOT=0
 LIST_ONLY=0
 ONLY=()
+# update_check, backup_update_check and stay_fresh do one job three ways and
+# must not be scheduled together: three checks at 04:20, prunes racing each
+# other's export, and stay_fresh rebooting while the other two are mid-backup.
+# Exactly one is emitted, this one by default.
+UPDATE_SCRIPTS="update_check backup_update_check stay_fresh"
+UPDATE_SCRIPT="update_check"
 
 usage() {
   cat <<EOF
 $(basename "$0") - print the RouterOS scheduler entries for the scripts here
 
 Usage:
-  $(basename "$0") [--policy LIST] [--include-notify-boot] [--only NAME] [--dry-run]
+  $(basename "$0") [--policy LIST] [--include-notify-boot] [--only NAME]
+                       [--update-script NAME] [--dry-run]
   $(basename "$0") --list
 
 Prints one \`/system scheduler add\` command per script that is meant to run
@@ -71,6 +79,9 @@ Options:
                          (default: $DEFAULT_POLICY)
   --include-notify-boot  Also print the start-time=startup "back online" entry
   --only NAME            Print only this scheduled script (repeatable)
+  --update-script NAME   Which of update_check, backup_update_check and
+                         stay_fresh to schedule; they do one job three ways and
+                         must not run together (default: update_check)
   --list                 List the scheduled script names and exit
   --dry-run              Accepted for symmetry with the other scripts here. This
                          one only ever prints, so the flag adds a closing note
@@ -101,6 +112,8 @@ while (( $# > 0 )); do
     --only)                require_value "$1" "${2:-}"; shift; ONLY+=("$1") ;;
     --only=*)              value="${1#*=}"; require_value "--only" "$value"; ONLY+=("$value") ;;
     --list)                LIST_ONLY=1 ;;
+    --update-script)       require_value "$1" "${2:-}"; shift; UPDATE_SCRIPT="$1" ;;
+    --update-script=*)     UPDATE_SCRIPT="${1#*=}"; require_value "--update-script" "$UPDATE_SCRIPT" ;;
     --policy)              require_value "$1" "${2:-}"; shift; POLICY="$1" ;;
     --policy=*)            POLICY="${1#*=}"; require_value "--policy" "$POLICY" ;;
     -*)
@@ -127,7 +140,16 @@ case "$POLICY" in
     ;;
 esac
 
-SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch"
+SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch backup_update_check stay_fresh"
+
+known=0
+for name in $UPDATE_SCRIPTS; do
+  [[ "$UPDATE_SCRIPT" == "$name" ]] && { known=1; break; }
+done
+if (( known == 0 )); then
+  printf -- '--update-script must be one of: %s (got: %s)\n' "$UPDATE_SCRIPTS" "$UPDATE_SCRIPT" >&2
+  exit 3
+fi
 
 for selected in ${ONLY[@]+"${ONLY[@]}"}; do
   known=0
@@ -155,6 +177,13 @@ emit() {
       [[ "$selected" == "$name" ]] && { wanted=1; break; }
     done
     (( wanted == 1 )) || return 0
+  else
+    # Without --only, only the chosen update script is printed; --only names
+    # a script outright and overrides the choice.
+    local candidate
+    for candidate in $UPDATE_SCRIPTS; do
+      [[ "$name" == "$candidate" && "$name" != "$UPDATE_SCRIPT" ]] && return 0
+    done
   fi
   local when="interval=$interval"
   if [[ -n "$start" ]]; then
@@ -228,6 +257,21 @@ ddns_update            5m
 traffic_quota          1h
 backup_file_cleanup    1d   04:40:00
 cert_expiry_watch      1d   05:00:00
+EOF
+
+comment "--- the update script: one of three, chosen with --update-script ---"
+comment
+comment "backup_update_check does the same job as update_check in a plainer style and"
+comment "is the one that runs on RouterOS 7.24, which refuses update_check's"
+comment "underscored :global names. stay_fresh goes one step further and installs"
+comment "the release inside its maintenance window (03:00-05:59 by default; the"
+comment "04:20 slot is inside it), then the RouterBOARD firmware on the run after."
+comment "All three take the same slot and only the chosen one is printed:"
+comment "  --update-script $UPDATE_SCRIPT   (this output)"
+comment
+emit_table <<'EOF'
+backup_update_check    1d   04:20:00
+stay_fresh             1d   04:20:00
 EOF
 
 # --- reboot notification ---------------------------------------------------
