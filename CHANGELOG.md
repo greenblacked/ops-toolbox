@@ -1319,6 +1319,7 @@ entry here belongs to a version.
 
 ### Changed
 
+- RouterOS CHR compatibility was bumped from 7.24.1 to 7.24.2 after the full Docker integration suite passed.
 - `stay_fresh.sh` sizes a sweep with one `du` for the whole set rather than one
   fork per path. `clear_paths` measures before and after, and its own comment
   notes that a sweep can match a few hundred directories — at that size the
