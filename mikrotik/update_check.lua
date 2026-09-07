@@ -110,16 +110,18 @@
 # Wait for the check to actually finish, rather than for a field to be
 # non-empty.
 #
-# RouterOS keeps `latest-version` from the previous check, so on every run
-# after the first it is already populated the instant the command is issued.
-# Polling until it fills therefore exits immediately with last week's answer -
-# a freshness guard that guarantees nothing. `status` is the field that
-# actually moves, so poll that until it reaches a verdict.
+# `latest-version` cannot be the signal. This comment used to say RouterOS
+# keeps it from the previous check; measured on the 7.24.2 CHR, issuing the
+# check clears it at once, a good check refills it in about a second, and a
+# failed check leaves it empty. Polling until it fills would therefore hang on
+# a failure, and reading it after a fixed wait cannot tell mid-check from
+# failed. `status` is the field that actually moves, so poll that until it
+# reaches a verdict.
 #
 # The 5s before the first read is the other half of the same problem: status
-# holds the *previous* verdict until RouterOS replaces it with "checking for
-# updates...", and reading in that window sees a terminal-looking value that
-# is equally stale.
+# may hold the *previous* verdict until RouterOS replaces it with its
+# in-progress text ("finding out latest version..." on 7.24.2, measured on the
+# CHR), and reading in that window sees a terminal-looking value that is stale.
 :delay 5s;
 
 :local settled false;
@@ -148,11 +150,11 @@
 
 # An errored check has to be named as one rather than fall through.
 #
-# `latest-version` survives from the previous check, so a run that ends in
-# "ERROR: could not resolve..." still has last week's version sitting in the
-# field. Left to the verdict test below, that reads as "no upgrade offered" and
-# the router goes quiet - the one outcome that looks identical to being up to
-# date while meaning the opposite. Each test overwrites the reason, so the most
+# On 7.24.2 a failed check leaves `latest-version` empty (an earlier note here
+# said it kept last week's version; the CHR says otherwise). Left to the
+# verdict test below, an empty field reads as "no upgrade offered" and the
+# router goes quiet - the one outcome that looks identical to being up to date
+# while meaning the opposite. Each test overwrites the reason, so the most
 # specific one wins.
 :local why "";
 :if (!$settled) do={ :set why "timed out waiting for a verdict"; }
