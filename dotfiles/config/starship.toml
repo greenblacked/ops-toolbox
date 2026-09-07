@@ -1,0 +1,157 @@
+# starship prompt. Read from ~/.config/starship.toml (STARSHIP_CONFIG to
+# override). Every key checked against docs/config/README.md of starship 1.26.
+#
+# The prompt is the last line of defence against running a command on the
+# wrong cluster, so the Kubernetes context is the first thing on it and a
+# production context is red. Glyphs assume a Nerd Font; the README lists the
+# fallbacks.
+
+# An explicit module list instead of $all: the order is predictable, and
+# modules not named here are never even computed.
+format = """
+$kubernetes\
+$directory\
+$git_branch\
+$git_status\
+$docker_context\
+$helm\
+$terraform\
+$golang\
+$java\
+$nodejs\
+$python\
+$gcloud\
+$aws\
+$cmd_duration\
+$line_break\
+$character"""
+right_format = "$time"
+
+add_newline = true
+# Default 500ms is too short for `terraform version` or `helm version` on a
+# cold cache; the module is then silently skipped.
+command_timeout = 1000
+
+[character]
+success_symbol = "[❯](bold green)"
+error_symbol = "[❯](bold red)"
+
+[directory]
+# One more level than the default 3: Terraform module trees are deep.
+truncation_length = 4
+truncate_to_repo = true
+truncation_symbol = "…/"
+read_only = " 󰌾"
+style = "bold cyan"
+
+[git_branch]
+symbol = " "
+truncation_length = 32
+truncation_symbol = "…"
+
+[git_status]
+# Counts, so the state is actionable without running git status.
+format = '([\[$all_status$ahead_behind\]]($style) )'
+ahead = "⇡${count}"
+behind = "⇣${count}"
+diverged = "⇕⇡${ahead_count}⇣${behind_count}"
+untracked = "?${count}"
+stashed = '\$${count}'
+modified = "!${count}"
+staged = "+${count}"
+renamed = "»${count}"
+deleted = "✘${count}"
+conflicted = "=${count}"
+# Submodule status is slow and rarely what a prompt is for.
+ignore_submodules = true
+
+[cmd_duration]
+# Only for the slow ones: a plan, an upgrade, a long test run.
+min_time = 2_000
+show_notifications = true
+min_time_to_notify = 45_000
+
+[time]
+# Off by default. On, because an incident timeline needs it.
+disabled = false
+format = "[$time]($style)"
+time_format = "%H:%M"
+style = "dimmed white"
+
+[kubernetes]
+# Off by default; the one module here that must be switched on.
+disabled = false
+symbol = "☸ "
+# The namespace is the usual source of a "wrong cluster" mistake, so it is
+# shown too. No detect_* keys: the module is always visible, because a
+# hidden production context is worse than a longer prompt.
+format = '[$symbol$context( \($namespace\))]($style) '
+style = "cyan bold"
+
+# Patterns are anchored; named captures are used as $name in the alias.
+[[kubernetes.contexts]]
+context_pattern = ".*prod.*"
+style = "bold red"
+symbol = "🔥 "
+
+[[kubernetes.contexts]]
+# gke_<project>_<location>_<cluster>  ->  gke:<cluster>
+context_pattern = "gke_(?P<project>[\\w-]+)_(?P<location>[\\w-]+)_(?P<cluster>[\\w-]+)"
+context_alias = "gke:$cluster"
+
+[[kubernetes.contexts]]
+# arn:aws:eks:<region>:<account>:cluster/<name>  ->  eks:<name>@<region>
+context_pattern = "arn:aws:eks:(?P<region>[\\w-]+):\\d+:cluster/(?P<cluster>[\\w-]+)"
+context_alias = "eks:$cluster@$region"
+
+[[kubernetes.contexts]]
+context_pattern = "kind-(?P<name>.*)"
+context_alias = "kind:$name"
+style = "green"
+
+[gcloud]
+format = '[$symbol$account(@$domain)(\($project\))(\[$region\])]($style) '
+symbol = "☁️ "
+style = "bold blue"
+# Only when a gcloud setting is active in this shell; otherwise the module
+# is on in every directory, which is noise.
+detect_env_vars = ["CLOUDSDK_CONFIG", "CLOUDSDK_CORE_PROJECT", "CLOUDSDK_ACTIVE_CONFIG_NAME"]
+
+[aws]
+# Profile, region and the time left on temporary credentials.
+format = '[$symbol($profile )(\($region\) )(\[$duration\] )]($style)'
+symbol = "  "
+style = "bold yellow"
+expiration_symbol = "X"
+force_display = false
+
+[terraform]
+# Workspace only. $version would run `terraform version`, which with many
+# providers is slow, and that is why starship leaves it out too.
+format = "[$symbol$workspace]($style) "
+symbol = "󱁢 "
+style = "bold 105"
+
+[helm]
+format = "[$symbol($version )]($style)"
+symbol = "⎈ "
+
+[docker_context]
+format = "[$symbol$context]($style) "
+symbol = "🐳 "
+# Only where a Dockerfile or compose file is, not "default" everywhere.
+only_with_files = true
+
+[golang]
+symbol = "󰟓 "
+
+[java]
+symbol = "☕ "
+
+[nodejs]
+symbol = "󰎙 "
+
+[python]
+symbol = "🐍 "
+# pyenv lookups on every prompt are slow.
+pyenv_version_name = false

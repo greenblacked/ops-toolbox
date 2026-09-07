@@ -1,0 +1,30 @@
+# Grype defaults, read from $XDG_CONFIG_HOME/grype/config.yaml after
+# ./.grype.yaml and ~/.grype.yaml. GRYPE_<KEY> in the environment overrides
+# any key; `grype config` prints the effective result. Keys from
+# cmd/grype/cli/options/*.go.
+
+output:
+  - table
+# No update phone-home on every run; Homebrew keeps it current.
+check-for-app-update: false
+# Exit 2 on anything high or above, so the same command gates a pipeline.
+fail-on-severity: high
+# false lists unfixable findings too; flip per run with --only-fixed.
+only-fixed: false
+# Synthesise CPEs for packages that lack them, so third-party SBOMs match.
+add-cpes-if-none: true
+# Stable identifiers across sources.
+by-cve: true
+search:
+  scope: squashed
+db:
+  auto-update: true
+  # Refuse to scan with a database older than five days rather than
+  # silently missing the last week's CVEs.
+  validate-age: true
+  max-allowed-built-age: 120h
+  # Offline still scans with the database it has.
+  require-update-check: false
+registry:
+  insecure-skip-tls-verify: false
+  insecure-use-http: false

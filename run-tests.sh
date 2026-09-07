@@ -33,8 +33,8 @@ fi
 # must run under the Bash 3.2 that ships on macOS, which has no associative
 # arrays. See CONTRIBUTING.md.
 
-SUITE_ALL="git macos linux k8s python static windows mikrotik"
-SUITE_FAST="git macos linux k8s python static windows"
+SUITE_ALL="git macos linux k8s dotfiles python static windows mikrotik"
+SUITE_FAST="git macos linux k8s dotfiles python static windows"
 
 suite_runner() {
   case "$1" in
@@ -42,6 +42,7 @@ suite_runner() {
     macos)    printf '%s\n' "$HERE/macos-initial-setup/tests/run.sh" ;;
     linux)    printf '%s\n' "$HERE/linux/tests/run.sh" ;;
     k8s)      printf '%s\n' "$HERE/k8s-toolbox/tests/run.sh" ;;
+    dotfiles) printf '%s\n' "$HERE/dotfiles/tests/run.sh" ;;
     python)   printf '%s\n' "$HERE/test-env/python/run.sh" ;;
     static)   printf '%s\n' "$HERE/test-env/static/run.sh" ;;
     windows)  printf '%s\n' "$HERE/windows/tests/run.sh" ;;
@@ -69,6 +70,7 @@ suite_blurb() {
     macos)    printf '%s\n' "macOS setup scripts       (Docker, ~30s)" ;;
     linux)    printf '%s\n' "Linux scripts, run for real (Docker; LINUX_DISTROS=all for 3 distros)" ;;
     k8s)      printf '%s\n' "k8s-toolbox script contracts (bash only; K8S_IMAGE_SMOKE=1 builds the image)" ;;
+    dotfiles) printf '%s\n' "Tool configs + installer   (bash only; parsers used when present)" ;;
     python)   printf '%s\n' "Python libs: ruff + pytest (host python3, no Docker)" ;;
     static)   printf '%s\n' "Repo-wide conventions     (bash + git only, no Docker)" ;;
     windows)  printf '%s\n' "PowerShell contract checks (pwsh, no Docker; skipped without it)" ;;

@@ -1,0 +1,52 @@
+# bat. One command-line argument per line; `bat --config-file` prints the
+# path it reads, which is ~/.config/bat/config on macOS and Linux alike.
+# Syntax names come from `bat --list-languages`.
+
+# Follow the OS light/dark setting, with an explicit theme for each.
+--theme=auto:system
+--theme-dark="Monokai Extended"
+--theme-light="GitHub"
+
+# Line numbers, git change markers and the header, but no grid: grid lines
+# end up in every copy-paste of YAML.
+--style="numbers,changes,header"
+
+# Page only when the output does not fit; `bat f | kubectl apply -f -`
+# keeps working.
+--paging=auto
+# -R keeps colours, -F quits if it fits on one screen, -X leaves the
+# output on screen after quitting.
+--pager="less -RFX"
+
+--tabs=2
+
+# --- file associations bat does not ship -----------------------------------
+# Dockerfile.prod and Containerfile: only plain Dockerfile is built in.
+--map-syntax="Dockerfile.*:Dockerfile"
+--map-syntax="*.dockerfile:Dockerfile"
+--map-syntax="Containerfile*:Dockerfile"
+# Only *.tf is built in for Terraform.
+--map-syntax="*.tfvars:Terraform"
+--map-syntax="*.hcl:Terraform"
+--map-syntax=".terraform.lock.hcl:Terraform"
+--map-syntax="*.tfstate:JSON"
+--map-syntax="*.tfstate.backup:JSON"
+# Only a plain Jenkinsfile is built in.
+--map-syntax="Jenkinsfile*:Groovy"
+--map-syntax="*.jenkinsfile:Groovy"
+# .env.ci and friends beyond the variants the DotENV syntax lists.
+--map-syntax=".env.*:DotENV"
+# kubeconfig files have no extension.
+--map-syntax="**/.kube/config:YAML"
+--map-syntax="kubeconfig*:YAML"
+# Helm templates: no Go-template syntax ships, and YAML is closest.
+--map-syntax="**/templates/*.tpl:YAML"
+--map-syntax="*.gotmpl:YAML"
+--map-syntax="helmfile*.yaml:YAML"
+# Ansible and Jinja-templated YAML.
+--map-syntax="*.yaml.j2:YAML"
+--map-syntax="*.yml.j2:YAML"
+--map-syntax="**/.aws/config:INI"
+--map-syntax="Brewfile:Ruby"
+--map-syntax="Vagrantfile:Ruby"
+--map-syntax="Tiltfile:Python"

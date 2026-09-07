@@ -1,0 +1,42 @@
+# Trivy defaults. Trivy reads ./trivy.yaml from the working directory and
+# nothing else on its own, so this file is reached through an alias:
+#
+#   alias trivy='trivy --config ~/.config/trivy/trivy.yaml'
+#
+# A trivy.yaml in a project root wins for that project. Nesting matches
+# docs/guide/references/configuration/config-file.md of Trivy 0.74: severity,
+# exit-code and timeout are top level; scanners live under scan; unfixed under
+# vulnerability.
+
+# Default 5m. A first run downloads the database and a large image takes
+# longer than that.
+timeout: 10m0s
+cache:
+  dir: ~/.cache/trivy
+# Report what will be acted on. The default list includes UNKNOWN and LOW,
+# which on a base image is hundreds of lines nobody reads.
+severity:
+  - MEDIUM
+  - HIGH
+  - CRITICAL
+# Non-zero on findings, so the same command works as a pre-push hook and a
+# CI gate. Default 0.
+exit-code: 1
+format: table
+ignorefile: .trivyignore
+scan:
+  # vuln and secret are the defaults; misconfig adds the Kubernetes,
+  # Terraform and Dockerfile checks when the target is a directory.
+  scanners:
+    - vuln
+    - secret
+    - misconfig
+  # No usage data to Aqua and no version check on every run.
+  disable-telemetry: true
+  skip-version-check: true
+vulnerability:
+  # Only findings that have a fix. An unfixable CVE is a fact about the
+  # base image, not a task; it comes back when a fix ships.
+  ignore-unfixed: true
+db:
+  no-progress: true

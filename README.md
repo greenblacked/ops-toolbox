@@ -6,7 +6,7 @@
 [![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
 [![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%7C%20RouterOS%20%7C%20Kubernetes-lightgrey.svg)](#whats-here)
-[![Test suites](https://img.shields.io/badge/test%20suites-8-blue.svg)](#testing)
+[![Test suites](https://img.shields.io/badge/test%20suites-9-blue.svg)](#testing)
 [![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.24.1-blue.svg)](mikrotik/README.md)
 
@@ -80,6 +80,7 @@ not at anyone shopping for a dotfiles framework to adopt.
 - [Linux at a glance](#linux-at-a-glance)
 - [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
 - [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
+- [Dotfiles at a glance](#dotfiles-at-a-glance)
 - [Testing](#testing)
 - [Continuous integration](#continuous-integration)
 - [Agent skills](#agent-skills)
@@ -95,6 +96,7 @@ not at anyone shopping for a dotfiles framework to adopt.
 | [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
 | [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
+| [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
 | [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
 | [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
 
@@ -570,12 +572,52 @@ of `apk add`, on a pod that will be gone before you finish.
 See [`k8s-toolbox/README.md`](k8s-toolbox/README.md) for the build and run
 options, GKE auth, and what the suite checks.
 
+## Dotfiles at a glance
+
+Configuration for the tools already on a DevOps workstation, one file per tool,
+every setting commented with why it is there, and a script that links them into
+a home directory without overwriting anything.
+
+```bash
+cd dotfiles
+
+./install_dotfiles.sh --list                 # every file, its target, link or copy
+./install_dotfiles.sh --dry-run              # preview; writes nothing
+./install_dotfiles.sh                        # link config/ under ~/.config and home/ under ~
+./install_dotfiles.sh --only k9s --only git  # a subset
+./install_dotfiles.sh --status               # MATCH / DRIFT / MISSING / CONFLICT per file
+./install_dotfiles.sh --uninstall            # remove only what it made
+```
+
+- `config/` mirrors `~/.config`: `starship.toml`, `git/config` and
+  `git/ignore`, `k9s/` (config, aliases, plugins, a skin), `gh/config.yml`,
+  `nvim/init.lua`, `bat/config`, `ripgrep/config`, `alacritty/`, `kitty/`,
+  `ncdu/config`, `thefuck/settings.py`, `pip/pip.conf`,
+  `homebrew/brew.env`, and the scanner defaults for `trivy`, `grype` and
+  `syft`.
+- `home/` mirrors `~` itself: `.ssh/config`, `.gnupg/gpg.conf` and
+  `gpg-agent.conf`, `.aws/config`, `.terraformrc`, `.npmrc`,
+  `.docker/config.json`.
+- Files are linked one at a time, never whole directories, so runtime state
+  a tool writes beside its config — `gh` hosts, `k9s` clusters, ssh
+  `known_hosts` — lands in the home directory and never in the repository.
+  The three files their tools rewrite in full (`k9s` config, `gh` config,
+  the AWS config) are copied instead, and `--status` reports `DRIFT` when a
+  copy has been edited.
+- Nothing tracked here holds a credential. Every tool that needs one reads it
+  from a file the package does not ship — `gh` hosts, `~/.aws/credentials`,
+  `~/.config/git/config.local` — and the suite greps for the common token
+  shapes on every run.
+
+See [`dotfiles/README.md`](dotfiles/README.md) for what each setting does and
+where it was verified.
+
 ## Testing
 
 Run everything with one command:
 
 ```bash
-./run-tests.sh            # git + macos + linux + k8s + python + static + windows  (the fast default)
+./run-tests.sh            # git + macos + linux + k8s + dotfiles + python + static + windows  (the fast default)
 ./run-tests.sh all        # the above, plus the RouterOS CHR suite
 ./run-tests.sh macos      # a single suite
 ./run-tests.sh --list     # machine-readable suite inventory
@@ -601,11 +643,12 @@ preflight only runs when one of them is actually selected — so
 | [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
 | [`windows/`](windows/) | **Contract** checks on the PowerShell scripts in `windows/` and `templates/`: they parse, comment-based help is complete, anything that changes a machine can be previewed first, every flag the READMEs document actually exists, and each `-DryRun` run leaves a scratch `HOME` and `TEMP` untouched. Needs `pwsh`; skips itself cleanly without it. **No Docker.** | [`windows/README.md`](windows/README.md) — `./windows/tests/run.sh` |
 | [`k8s-toolbox/`](k8s-toolbox/) | **Contract** checks on the toolbox scripts: `--help`, unknown flags, flags that require a value, the dry-run promise checked against the filesystem, exit `2` when Docker or `kubectl` is missing, and agreement between `versions.env`, the Dockerfile and `build.sh`. Deliberately does **not** build the image — `K8S_IMAGE_SMOKE=1` does that. **bash only.** | [`k8s-toolbox/README.md#tests`](k8s-toolbox/README.md#tests) — `./k8s-toolbox/tests/run.sh` |
+| [`dotfiles/`](dotfiles/) | **Behavioural** checks on `install_dotfiles.sh` against a scratch home — links, copies, conflicts, `--force`, `--status` drift, uninstall, and a dry run checked against the filesystem — plus every tracked config parsed by the tool or format it belongs to, checked for secrets, and cross-checked against the package README. **bash only**; parsers are used when present. | [`dotfiles/README.md#tests`](dotfiles/README.md#tests) — `./dotfiles/tests/run.sh` |
 | [`mikrotik/`](mikrotik/) | **Integration** tests against a real **RouterOS 7.24.1 CHR** in QEMU, API-driven `pytest`. Slow (QEMU boot); excluded from the default selection. | [`mikrotik/tests/README.md`](mikrotik/tests/README.md) — `./mikrotik/tests/run.sh` |
 
 The three Docker suites are self-contained: you need only Docker Engine and
 Compose v2 on the host — no local Python, shellcheck, or RouterOS install. The
-Python, static and k8s suites deliberately need none of that either: the Python
+Python, static, k8s and dotfiles suites deliberately need none of that either: the Python
 modules are invoked by `/usr/bin/python3` on a bare macOS machine, and the
 static and k8s checks have to keep working on a host where Docker is
 unavailable. The k8s one is the pointed case — it checks the scripts that build
@@ -631,6 +674,7 @@ rather than being a convenience nobody tests.
 | `Test / windows` | PowerShell contract checks under `pwsh` | `windows/` changes |
 | `Test / windows native` | Git Bash and PowerShell contracts on Windows | `windows/` changes |
 | `Test / k8s` | The k8s-toolbox script contracts, without building the image | `k8s-toolbox/` changes |
+| `Test / dotfiles` | The installer against a scratch home, and every tracked config parsed | `dotfiles/` changes |
 | `Test / python helpers` | 231 unit tests + `ruff`, pinned to Python 3.9 | Python changes |
 | `Test / conventions` | The repo-wide contracts, on every change | always |
 
