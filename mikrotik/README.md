@@ -325,16 +325,31 @@ the `.rsc.in_progress` temporary.
 
 The rest is deliberately the plain design, because it is the script an
 operator already trusted on that hardware, plus the backup: a fixed 15-second
-wait rather than polling `status`, a message on **every** run — "update is
-required" with the backup, firmware, board and resource detail, or a short
-"not required" heartbeat with versions, firmware, uptime and free storage in
-MiB — rather than only on a transition, and a
-`installed != latest` test rather than RouterOS's own verdict. That test is
-guarded against a failed check (`latest` still `unknown`), because the branch
-it selects now takes a backup and deletes the previous one, and doing that on a
-false alarm is the one thing it must not do.
+wait rather than polling `status`, a message on **every** run rather than only
+on a transition, and an `installed != latest` test rather than RouterOS's own
+verdict for deciding whether an update is pending. Three messages, one per
+outcome. "Update is required" carries the backup, the firmware state, the
+enabled packages with their versions, the board's health readings where it has
+any, and the resources an upgrade depends on. "Not required" is the short daily
+heartbeat: versions, firmware, uptime, free storage. "Check FAILED" is the
+outcome the plain design used to report as "not required": `latest` came back
+empty or unknown, so the router could not ask the upgrade server, and the
+message says so with RouterOS's own `status` line — typically an `ERROR:` about
+DNS or the server — and the command to run by hand. That failed check takes no
+backup and prunes nothing, because the branch that does is selected only when
+`latest` is real, and doing it on a false alarm is the one thing it must not
+do.
 
-Three settings at the top. `TgSendScript` names the Telegram helper, and it
+Every message carries the `status` line and the router's clock at the time of
+the check. Free storage is compared against a floor (`MinFreeStorageMiB`, 16
+by default, the same floor `stay_fresh.lua` refuses to install under) and the
+line says when the router is below it, since RouterOS downloads the package to
+storage before installing and a router under the floor fails the download
+rather than the check. A non-zero `bad-blocks` figure is reported the same way,
+as a warning next to the number, because an upgrade is a large write to that
+flash.
+
+Four settings at the top. `TgSendScript` names the Telegram helper, and it
 defaults to `tg_send_new` — the operator's own copy — rather than the package's
 `tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
 on 7.24 either; point it at whatever helper the router actually has.
@@ -342,7 +357,8 @@ on 7.24 either; point it at whatever helper the router actually has.
 original script did — a fleet meant to sit on one train gets a hand-switched
 router put back before it is checked. Set it to `""` to leave the channel as
 the router has it and only report it, which is `update_check.lua`'s stance. `RouterBackupPassword`, set from a `:global`
-at boot, encrypts the binary backup. Install it **instead of** `update_check`,
+at boot, encrypts the binary backup. `MinFreeStorageMiB` is the storage floor
+described above. Install it **instead of** `update_check`,
 not alongside it, or every update is reported twice.
 
 ### `stay_fresh.lua`

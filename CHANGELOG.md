@@ -16,6 +16,20 @@ entry here belongs to a version.
 
 ### Added
 
+- `backup_update_check.lua` reports a failed check as its own outcome. A router
+  that cannot reach the upgrade server has no latest version to compare, and
+  the plain `installed != latest` design reported that as "update is not
+  required" every morning, which is how a fleet quietly stops being checked.
+  It now sends "update check FAILED" with RouterOS's own `status` line, which
+  names the cause, and the command to run by hand; it takes no backup and
+  prunes nothing on that path. Every message also carries the `status` line
+  and the router's clock. The "update is required" message adds the enabled
+  packages with their versions, the board's health readings where it has any,
+  and a changelog link; the storage line warns when free space is under
+  `MinFreeStorageMiB` (16 by default, the floor `stay_fresh.lua` shares),
+  since the package download fails under it, and a non-zero `bad-blocks`
+  figure is reported as a warning beside the number.
+
 - `stay_fresh.sh` ends with a read-only report of pending macOS and App Store
   updates: `softwareupdate --list`, and `mas outdated` where `mas` is
   installed. The script upgraded everything Homebrew manages and said nothing

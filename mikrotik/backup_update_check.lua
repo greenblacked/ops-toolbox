@@ -1,9 +1,19 @@
 # Update check with a pre-upgrade backup, in the plain style: a fixed wait, a
-# message on every run ("update is required" / "not required"), and when an
-# update is available a backup-<identity>-<date>-<installed version>-pre-upgrade
-# .backup/.rsc pair taken first, older backup-* files pruned only after the new
-# pair is written. The sibling update_check.lua is the more careful design;
-# this one exists because it runs where that one does not.
+# message on every run, and when an update is available a
+# backup-<identity>-<date>-<installed version>-pre-upgrade .backup/.rsc pair
+# taken first, older backup-* files pruned only after the new pair is written.
+# The sibling update_check.lua is the more careful design; this one exists
+# because it runs where that one does not.
+#
+# Three outcomes, three messages. "Update is required" carries the backup, the
+# firmware state, the package list and the resources an upgrade depends on.
+# "Not required" is the daily heartbeat. "Check FAILED" is the one the plain
+# design used to hide: a router that cannot reach the upgrade server has no
+# latest version to compare, and reporting that as "not required" every
+# morning is how a fleet quietly stops being checked. RouterOS's own status
+# line - "ERROR: could not resolve dns name", "New version is available",
+# "System is already up to date" - is in every message, because it is the one
+# field that says what the check actually did.
 #
 # No :global here carries an underscore in its name, and that is the point.
 # RouterOS 7.24 refuses to execute a script that declares one - "expected end
@@ -36,6 +46,12 @@
 :local TakeBackup true
 :local RemovePrevious true
 
+# Free storage floor in MiB. RouterOS downloads the package to storage before
+# it installs, so a router under this floor fails the download, not the check.
+# The message says so next to the figure instead of leaving it to be noticed.
+# 16 MiB is the same floor stay_fresh.lua refuses to install under.
+:local MinFreeStorageMiB 16
+
 # Optional password for the binary backup. Set it from a :global at boot, the
 # way the rest of the package does, so it never sits in a tracked file:
 #
@@ -50,6 +66,11 @@
 # -----------------------------------------------------------------------------
 :local DeviceName [/system identity get name]
 
+# Read once, before anything slow: the same date names the backup file and
+# stamps the message, so the two cannot disagree across midnight.
+:local rawDate [/system clock get date]
+:local Time [/system clock get time]
+
 :if ([:len $updChannel] > 0) do={
     /system package update set channel=$updChannel
 }
@@ -62,10 +83,22 @@
 
 :local InstalledVersion "unknown"
 :local LatestVersion "unknown"
+:local Status "unknown"
 
 :do { :set InstalledVersion [/system package update get installed-version]; } on-error={}
 
 :do { :set LatestVersion [/system package update get latest-version]; } on-error={}
+
+# RouterOS's own verdict on the check it just ran. This is the field that
+# distinguishes "nothing newer" from "could not ask", and it names the cause
+# when the check failed.
+:do { :set Status [/system package update get status]; } on-error={}
+
+# The check succeeded when RouterOS filled in latest-version. An empty or
+# unknown value means it did not, and installed != latest would be true on
+# that failure too - which must not take a backup, prune the previous one,
+# or claim the router is current.
+:local CheckOk (($LatestVersion != "unknown") and ([:len $LatestVersion] > 0))
 
 :local BoardName "unknown"
 :local Architecture "unknown"
@@ -75,6 +108,7 @@
 :local TotalMemory "unknown"
 :local FreeHdd "unknown"
 :local TotalHdd "unknown"
+:local BadBlocks "unknown"
 
 :do { :set BoardName [/system resource get board-name]; } on-error={}
 
@@ -94,6 +128,22 @@
 
 :do { :set TotalHdd ([/system resource get total-hdd-space] / 1048576); } on-error={}
 
+# Flash wear, as the percentage RouterOS reports. An upgrade is a large write
+# to that flash, so a non-zero figure is worth seeing before one.
+:do { :set BadBlocks [/system resource get bad-blocks]; } on-error={}
+
+# The storage line carries its own warning, so the number and what it means
+# arrive together in every message that shows it.
+:local StorageLine ("\0AFree storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>")
+:if (([:typeof $FreeHdd] = "num") and ($FreeHdd < $MinFreeStorageMiB)) do={
+    :set StorageLine ($StorageLine . "\0A<b>Low storage:</b> under " . $MinFreeStorageMiB . " MiB - the package download will likely fail; free space before upgrading")
+}
+
+:local BadBlocksLine ""
+:if (([:typeof $BadBlocks] = "num") and ($BadBlocks > 0)) do={
+    :set BadBlocksLine ("\0A<b>Bad blocks:</b> <code>" . $BadBlocks . " percent</code> - flash is wearing; keep the backup off the router before upgrading")
+}
+
 # RouterBOARD firmware: a RouterOS upgrade is usually followed by
 # /system routerboard upgrade and a reboot, so say whether one is waiting.
 # CHR and x86 have no routerboard - the line is simply omitted there.
@@ -107,6 +157,48 @@
     }
 } on-error={}
 
+# Temperature, voltage and whatever else the board reports. CHR and most x86
+# report nothing, and the line is omitted there. A reading that will not
+# resolve is skipped on its own rather than taking the others with it.
+:local HealthLine ""
+:do {
+    :local Health ""
+    :foreach h in=[/system health find] do={
+        :do {
+            :local hn [/system health get $h name]
+            :local hv [/system health get $h value]
+            :local ht ""
+            :do { :set ht [/system health get $h type]; } on-error={}
+            :if ([:len $Health] > 0) do={ :set Health ($Health . ", ") }
+            :set Health ($Health . $hn . "=" . $hv . $ht)
+        } on-error={}
+    }
+    :if ([:len $Health] > 0) do={ :set HealthLine ("\0AHealth: <code>" . $Health . "</code>") }
+} on-error={}
+
+# Enabled packages with their versions: what the upgrade will replace, and
+# where a package that lags the rest - one installed by hand, or one the last
+# upgrade skipped - shows up before the next one is attempted.
+:local PackagesLine ""
+:do {
+    :local Packages ""
+    :foreach p in=[/system package find] do={
+        :do {
+            :local pd false
+            :do { :set pd [/system package get $p disabled]; } on-error={}
+            :if (!$pd) do={
+                :local pn [/system package get $p name]
+                :local pv [/system package get $p version]
+                :if ([:len $Packages] > 0) do={ :set Packages ($Packages . ", ") }
+                :set Packages ($Packages . $pn . " " . $pv)
+            }
+        } on-error={}
+    }
+    :if ([:len $Packages] > 0) do={ :set PackagesLine ("\0APackages: <code>" . $Packages . "</code>") }
+} on-error={}
+
+:local CheckedLine ("\0AChecked: <code>" . $rawDate . " " . $Time . "</code>")
+
 # Resolved once, wrapped: a missing helper must not kill the run before the
 # backup below, and the router log has to say what went wrong.
 :local SendTelegramMessage ""
@@ -116,18 +208,30 @@
     :log error ("backup_update_check: Telegram helper '" . $TgSendScript . "' not found - messages will not be sent")
 }
 
-# "unknown" != installed would also be true when the check itself failed, and
-# that must not take a backup and prune the previous one on a false alarm. An
-# empty latest-version is the same failure on a router where no check has ever
-# completed, and it is not "unknown".
-:if (($InstalledVersion != $LatestVersion) and ($LatestVersion != "unknown") and ([:len $LatestVersion] > 0)) do={
+:if (!$CheckOk) do={
+
+    # --- the check itself failed ---------------------------------------------
+    # No backup, no prune, and not "not required": say what RouterOS said.
+    :log warning ("backup_update_check: update check failed on channel $Channel - status: $Status")
+    :local MessageText ("<b>" . $DeviceName . ":</b> RouterOS update check FAILED." . \
+    "\0A\0AStatus: <code>" . $Status . "</code>" . \
+    "\0AChannel: <code>" . $Channel . "</code>" . \
+    "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
+    $CheckedLine . \
+    "\0A\0AThe router could not get a latest version from the upgrade server. Check DNS and outbound HTTPS from the router, then run the check by hand: <code>/system package update check-for-updates</code>")
+
+    :do {
+        $SendTelegramMessage MessageText=$MessageText
+    } on-error={
+        :log error "backup_update_check: could not send the failed-check notification"
+    }
+
+} else={
+:if ($InstalledVersion != $LatestVersion) do={
 
     # --- pre-upgrade backup ---------------------------------------------------
     :local BackupLine ""
     :if ($TakeBackup) do={
-        :local rawDate [/system clock get date]
-        :local Time [/system clock get time]
-
         # Never let '/' into the filename: a non-ISO date format (mdy/dmy)
         # would turn it into subdirectories instead of a file.
         :local Date ""
@@ -194,16 +298,22 @@
     "\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
+    "\0AStatus: <code>" . $Status . "</code>" . \
     $FirmwareLine . \
     $BackupLine . \
+    "\0AChangelog: https://mikrotik.com/download/changelogs" . \
     "\0A\0A<b>Device info</b>" . \
     "\0ABoard: <code>" . $BoardName . "</code>" . \
     "\0AArchitecture: <code>" . $Architecture . "</code>" . \
     "\0AUptime: <code>" . $Uptime . "</code>" . \
+    $HealthLine . \
+    $PackagesLine . \
     "\0A\0A<b>Resources</b>" . \
     "\0ACPU load: <code>" . $CpuLoad . " percent</code>" . \
     "\0AFree memory: <code>" . $FreeMemory . " MiB</code> / <code>" . $TotalMemory . " MiB</code>" . \
-    "\0AFree storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>")
+    $StorageLine . \
+    $BadBlocksLine . \
+    $CheckedLine)
 
     :do {
         $SendTelegramMessage MessageText=$MessageText
@@ -221,13 +331,17 @@
     "\0A\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
+    "\0AStatus: <code>" . $Status . "</code>" . \
     $FirmwareLine . \
     "\0AUptime: <code>" . $Uptime . "</code>" . \
-    "\0AFree storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>")
+    $StorageLine . \
+    $BadBlocksLine . \
+    $CheckedLine)
 
     :do {
         $SendTelegramMessage MessageText=$MessageText
     } on-error={
         :log error "backup_update_check: could not send the status message"
     }
+}
 }
