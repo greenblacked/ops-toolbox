@@ -322,8 +322,8 @@ ${C_BOLD}Notes:${C_RESET}
   kept. Sandboxed-container caches cannot be mapped reliably to process state,
   so they are also kept unless --force-active-app-caches is explicit.
 
-  AI caches: clears disposable caches for Claude, Codex, ChatGPT, Cursor, and
-  Windsurf only while the matching tool is confirmed not running. If process
+  AI caches: clears disposable caches for Codex, ChatGPT, Cursor, and Windsurf
+  only while the matching tool is confirmed not running. If process
   state cannot be checked, caches are kept. Credentials, settings,
   conversations/sessions, projects, extensions, runtimes, and local models are
   always kept.
@@ -999,7 +999,7 @@ plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dsc
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Saved State, DerivedData, ..."
 plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed containers, VSIX"
-plan_line "clear AI tool caches"              "$(( 1 - SKIP_AICACHES    ))" "Claude, Codex, ChatGPT, Cursor, Windsurf"
+plan_line "clear AI tool caches"              "$(( 1 - SKIP_AICACHES    ))" "Codex, ChatGPT, Cursor, Windsurf"
 plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 if (( PRUNE_DOCKER_VOLUMES )); then
@@ -1342,8 +1342,6 @@ clear_ai_cache_roots() {
 step_aicaches() {
   AI_CACHE_FOUND=0
 
-  clear_ai_support_caches "Claude" \
-    "$HOME/Library/Application Support/Claude" Claude claude
   clear_ai_support_caches "Codex" \
     "$HOME/Library/Application Support/Codex" ChatGPT Codex codex
   clear_ai_support_caches "ChatGPT" \
@@ -1353,10 +1351,6 @@ step_aicaches() {
   clear_ai_support_caches "Windsurf" \
     "$HOME/Library/Application Support/Windsurf" Windsurf
 
-  clear_ai_cache_roots "Claude" $'Claude\nclaude' \
-    "$HOME/Library/Caches/com.anthropic.claudefordesktop" \
-    "$HOME/Library/Caches/com.anthropic.claudefordesktop.ShipIt" \
-    "$HOME/.claude/cache"
   clear_ai_cache_roots "Codex" $'ChatGPT\nCodex\ncodex' \
     "$HOME/Library/Caches/Codex" \
     "$HOME/Library/Caches/com.openai.codex" \

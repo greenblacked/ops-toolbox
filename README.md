@@ -767,8 +767,8 @@ dispatches the standard CI workflow for the bump branch before opening its PR.
 ## Agent skills
 
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is the published conventions document.
-Task-scoped copies of the same material live under `.claude/skills/` on a
-local checkout so an automated coding agent can load the rules for the file
+Task-scoped copies of the same material live in an agent skills directory on
+a local checkout so an automated coding agent can load the rules for the file
 it is editing. That directory is gitignored and is not on GitHub.
 Automation should read `CONTRIBUTING.md` first; any machine-local instructions
 are intentionally not part of the repository.

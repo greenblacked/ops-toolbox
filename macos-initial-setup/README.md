@@ -392,11 +392,10 @@ In the order they run:
    Cache roots for running applications are kept. Sandboxed-container caches,
    whose activity cannot be mapped reliably, are kept unless
    `--force-active-app-caches` is explicitly passed.
-6. Clear **AI tool caches** for Claude, Codex, ChatGPT, Cursor, and Windsurf
-   when the matching process is confirmed not running. If process state cannot
-   be checked, the caches are kept. Only exact browser-cache
-   directories, known macOS bundle caches, `~/.claude/cache`, and
-   `~/.codex/tmp` are removed. Credentials, settings, conversations/sessions,
+6. Clear **AI tool caches** for Codex, ChatGPT, Cursor, and Windsurf when the
+   matching process is confirmed not running. If process state cannot be
+   checked, the caches are kept. Only exact browser-cache directories, known
+   macOS bundle caches, and `~/.codex/tmp` are removed. Credentials, settings, conversations/sessions,
    projects, extensions, Codex runtimes, and Ollama/downloaded models are kept.
 7. Prune **stale workspace storage**. VS Code (stable and Insiders) keeps
    a `workspaceStorage` entry for every folder ever opened and never
@@ -474,7 +473,7 @@ In the order they run:
 | `--skip-usercaches` | Skip user-cache cleanup. |
 | `--skip-appcaches` | Skip per-app caches (step 5: Chromium/Electron directories, sandboxed containers, `.vsix`). |
 | `--force-active-app-caches` | Also clear running known-app roots and generic sandbox-container caches. |
-| `--skip-aicaches` | Skip Claude/Codex/ChatGPT/Cursor/Windsurf temporary-cache cleanup. |
+| `--skip-aicaches` | Skip Codex/ChatGPT/Cursor/Windsurf temporary-cache cleanup. |
 | `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 7). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
@@ -1057,8 +1056,8 @@ Homebrew / `pyenv` / `goenv` commands.
   Chromium-internal directories under known Application Support roots and
   downloaded `.vsix` archives. Running application roots are skipped;
   sandbox-container caches require `--force-active-app-caches`.
-- Deletes exact disposable cache directories for idle Claude, Codex, ChatGPT,
-  Cursor, and Windsurf installations, plus their known bundle caches and CLI
+- Deletes exact disposable cache directories for idle Codex, ChatGPT, Cursor,
+  and Windsurf installations, plus their known bundle caches and CLI
   temp roots. Active or unknown process state keeps the cache. It preserves
   credentials, settings, conversations/sessions, project state, extensions,
   Codex runtimes, and downloaded models.

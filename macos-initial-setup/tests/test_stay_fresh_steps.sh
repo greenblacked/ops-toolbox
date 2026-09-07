@@ -225,36 +225,26 @@ rm -rf "$d"
 section "ai-caches (temporary data only, active tools kept)"
 d="$(new_env)"
 as="$d/home/Library/Application Support"
-mkdir -p "$as/Claude/Cache" "$as/Claude/Local Storage" \
-         "$as/Codex/Default/GPUCache" "$as/Codex/Default/Session Storage" \
+mkdir -p "$as/Codex/Default/GPUCache" "$as/Codex/Default/Session Storage" \
          "$as/Cursor/Code Cache" "$d/home/Library/Caches/Codex" \
-         "$d/home/.claude/cache" "$d/home/.claude/projects/kept" \
          "$d/home/.codex/tmp" "$d/home/.codex/sessions/kept" \
          "$d/home/.cache/codex-runtimes/kept" \
          "$as/Ollama/models/kept"
-: > "$as/Claude/Cache/data"
-: > "$as/Claude/Local Storage/state"
 : > "$as/Codex/Default/GPUCache/data"
 : > "$as/Codex/Default/Session Storage/state"
 : > "$as/Cursor/Code Cache/data"
 : > "$d/home/Library/Caches/Codex/data"
-: > "$d/home/.claude/cache/data"
-: > "$d/home/.claude/projects/kept/session"
 : > "$d/home/.codex/tmp/data"
 : > "$d/home/.codex/sessions/kept/session"
 : > "$d/home/.cache/codex-runtimes/kept/runtime"
 : > "$as/Ollama/models/kept/model"
 out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "ai-caches step succeeds" "0" "$rc"
-assert_gone "Claude's disposable cache is removed" "$as/Claude/Cache"
 assert_gone "Codex's disposable GPU cache is removed" "$as/Codex/Default/GPUCache"
 assert_gone "Cursor's disposable code cache is removed" "$as/Cursor/Code Cache"
 assert_gone "Codex bundle cache contents are removed" "$d/home/Library/Caches/Codex/data"
-assert_gone "Claude CLI cache contents are removed" "$d/home/.claude/cache/data"
 assert_gone "Codex CLI tmp contents are removed" "$d/home/.codex/tmp/data"
-assert_exists "Claude local state is kept" "$as/Claude/Local Storage/state"
 assert_exists "Codex session storage is kept" "$as/Codex/Default/Session Storage/state"
-assert_exists "Claude project sessions are kept" "$d/home/.claude/projects/kept/session"
 assert_exists "Codex sessions are kept" "$d/home/.codex/sessions/kept/session"
 assert_exists "Codex runtimes are kept" "$d/home/.cache/codex-runtimes/kept/runtime"
 assert_exists "Ollama models are kept" "$as/Ollama/models/kept/model"
@@ -271,15 +261,15 @@ rm -rf "$d"
 
 d="$(new_env)"
 as="$d/home/Library/Application Support"
-mkdir -p "$as/Claude/Cache" "$d/home/.claude/cache"
-: > "$as/Claude/Cache/data"
-: > "$d/home/.claude/cache/data"
-RUNNING_APPS="Claude" out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
+mkdir -p "$as/Codex/Default/GPUCache" "$d/home/.codex/tmp"
+: > "$as/Codex/Default/GPUCache/data"
+: > "$d/home/.codex/tmp/data"
+RUNNING_APPS="Codex" out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "a running AI tool does not fail cleanup" "0" "$rc"
-assert_exists "a running Claude app keeps its cache" "$as/Claude/Cache/data"
-assert_exists "a running Claude app keeps its CLI cache" "$d/home/.claude/cache/data"
+assert_exists "a running Codex app keeps its cache" "$as/Codex/Default/GPUCache/data"
+assert_exists "a running Codex app keeps its CLI cache" "$d/home/.codex/tmp/data"
 assert_contains "the run explains why active AI caches were kept" "$out" \
-  "Claude is running - keeping its caches"
+  "Codex is running - keeping its caches"
 rm -rf "$d"
 
 d="$(new_env)"
@@ -294,13 +284,13 @@ rm -rf "$d"
 
 d="$(new_env)"
 as="$d/home/Library/Application Support"
-mkdir -p "$as/Claude/Cache"
-: > "$as/Claude/Cache/data"
+mkdir -p "$as/Codex/Default/GPUCache"
+: > "$as/Codex/Default/GPUCache/data"
 PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "an unavailable process check keeps AI cleanup non-fatal" "0" "$rc"
-assert_exists "an unavailable process check fails closed" "$as/Claude/Cache/data"
+assert_exists "an unavailable process check fails closed" "$as/Codex/Default/GPUCache/data"
 assert_contains "an unavailable process check explains the safe refusal" "$out" \
-  "cannot determine whether Claude is running - keeping its caches"
+  "cannot determine whether Codex is running - keeping its caches"
 assert_contains "an unavailable process check records a warning" "$out" \
   "warn steps:  1"
 rm -rf "$d"

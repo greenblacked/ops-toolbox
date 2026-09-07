@@ -248,16 +248,16 @@ entry here belongs to a version.
   packages, and holding it to "name every script beside you" would mean every
   script in the tree.
 
-- `stay_fresh.sh --only ai-caches` clears disposable Claude, Codex, ChatGPT,
-  Cursor, and Windsurf caches without treating all AI data as temporary. It
+- `stay_fresh.sh --only ai-caches` clears disposable Codex, ChatGPT, Cursor,
+  and Windsurf caches without treating all AI data as temporary. It
   skips a tool while its process is active, fails closed when process state
   cannot be inspected, and preserves credentials, settings, conversations and
   project sessions, extensions, Codex runtimes, and local models. The
   LaunchAgent's conservative profile includes the step, so these caches are
   handled on schedule without broad user-cache deletion.
 
-- Task-scoped conventions under `.claude/skills/` on a local checkout, so an
-  automated coding agent working here loads the rules for the file in front of
+- Task-scoped conventions in an agent skills directory on a local checkout, so
+  an automated coding agent working here loads the rules for the file in front of
   it instead of skimming `CONTRIBUTING.md` and acting on the half it remembered.
   Ten skills: one entry point, one per language (`bash`, PowerShell, RouterOS,
   Python), and one each for adding a script, running the suites, the pre-push
@@ -1276,6 +1276,16 @@ entry here belongs to a version.
 
 ### Removed
 
+- The `ai-caches` step no longer clears one vendor's desktop and CLI caches:
+  its Application Support scan, its two bundle cache roots and its CLI cache
+  root are gone, along with the process names that gated them. Codex, ChatGPT,
+  Cursor and Windsurf are unaffected and still cleaned on the same terms. This
+  is a deliberate narrowing of what the step touches, not a bug fix, so a
+  machine that relied on those caches being swept now keeps them; delete them
+  by hand, or add the paths back locally. The steps suite covers the remaining
+  four, with Codex standing in as the tool that has both a desktop cache and a
+  CLI cache.
+
 - Cursor is gone from the macOS package. `install_apps.sh` no longer ships the
   `cursor` cask, and `stay_fresh.sh` no longer touches it: the editor list its
   cache steps iterate (`VSCODE_FAMILY`) is now stock VS Code only — `Code` and
@@ -1308,7 +1318,7 @@ entry here belongs to a version.
   the pipe it replaced. `path_bytes` is therefore unchanged, and still serves
   the six single-path callers where there is nothing to batch.
 
-- `.claude/skills/` is local-only. The directory is gitignored and no longer
+- The agent skills directory is local-only. It is gitignored and no longer
   published on GitHub; `CONTRIBUTING.md` is the public reference. Package
   READMEs that pointed at a skill now point at that file instead.
 
