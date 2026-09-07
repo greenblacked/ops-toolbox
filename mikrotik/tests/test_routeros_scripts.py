@@ -797,6 +797,7 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
     assert any(h in message for h in headlines), f"no known headline: {message!r}"
     assert "Status: <code>" in message, f"status line missing: {message!r}"
     assert "Checked: <code>" in message, f"clock line missing: {message!r}"
+    assert "installed packages <code>" in message, f"package size missing: {message!r}"
     stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
     if "update is required" in message:
@@ -902,3 +903,67 @@ def test_latest_version_survives_a_failed_check(api: Any, script_resource: Any) 
         f"latest-version changed on a failed check: {good} -> {bad}"
     )
     assert bad["latest-version"], "latest-version was cleared by the failed check"
+
+
+def test_backup_update_check_backs_up_when_a_release_is_offered(
+    api: Any, script_resource: Any
+) -> None:
+    """On the development channel the CHR is usually offered a newer build.
+
+    That is the one way to reach the "update is required" path on a router
+    pinned to the current stable release without installing anything: the
+    script only ever checks, backs up and reports. The channel setting is
+    patched in the installed copy, and the router is put back on stable in
+    the finally. When the development channel happens to offer nothing newer,
+    or the runner cannot reach the server, the test skips and says so.
+    """
+    _unset_global(api, "PuTgLastMessage")
+    _clear_backup_files(api)
+    src = (MIKROTIK_DIR / "backup_update_check.lua").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    patched = src.replace(':local updChannel "stable"', ':local updChannel "development"', 1)
+    assert patched != src, "the channel setting moved; update this test"
+    update = api.get_binary_resource("/system/package/update")
+    message = ""
+    names: list[str] = []
+    try:
+        _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
+        _add_script(script_resource, "backup_update_check", patched)
+        _run_via_scheduler(
+            api,
+            "backup_update_check",
+            lambda: _read_global(api, "PuTgLastMessage") != "",
+            timeout=150.0,
+            interval="40s",
+        )
+        message = _read_global(api, "PuTgLastMessage")
+        if "update is required" in message:
+            names = _wait_for_backup_files(api, 2)
+    finally:
+        _remove_by_name(script_resource, "backup_update_check")
+        _remove_by_name(script_resource, "tg_send_new")
+        _unset_global(api, "PuTgLastMessage")
+        _clear_backup_files(api)
+        with contextlib.suppress(ros_exc.RouterOsApiError):
+            update.call("set", {"channel": b"stable"})
+
+    warnings.warn("backup_update_check on the development channel:\n" + message, stacklevel=2)
+    if "update check FAILED" in message:
+        pytest.skip(f"the runner cannot reach the update server: {message!r}")
+    if "update is not required" in message:
+        pytest.skip("the development channel offers nothing newer than the pinned release")
+
+    assert "RouterOS update is required." in message, f"no known headline: {message!r}"
+    assert "Status: <code>New version is available" in message, message
+    assert len(names) >= 2, f"a release was offered but no backup pair exists: {names}"
+    stems = {n.rsplit(".", 1)[0] for n in names}
+    assert len(stems) == 1, f"pair does not share a stem: {names}"
+    stem = stems.pop()
+    assert stem.startswith("backup-") and stem.endswith("-pre-upgrade"), stem
+    assert EXPECT_VER in stem, f"installed version {EXPECT_VER!r} missing from {stem!r}"
+    assert f"Backup: <code>{stem}</code>" in message, message
+    for needle in ("Changelog:", "Packages: <code>routeros", "Reboot impact", "Checked: <code>"):
+        assert needle in message, f"{needle!r} missing: {message!r}"
+    stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
+    assert stray is None, f"bare percent at {stray.start()}: {message!r}"

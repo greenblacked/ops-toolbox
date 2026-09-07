@@ -29,12 +29,18 @@ entry here belongs to a version.
   with the reason, the `status` line, the update mode, the NTP client state
   and the DNS servers, and the command to run by hand; it takes no backup and
   prunes nothing. Every message carries the `status` line and the router's
-  clock. The "update is required" message adds the enabled packages with their
-  versions, the board's health readings where it has any, and a changelog
-  link; the storage line warns when free space is under `MinFreeStorageMiB`
-  (16 by default, the floor `stay_fresh.lua` shares), since the package
-  download fails under it, and a non-zero `bad-blocks` figure is reported as a
-  warning beside the number.
+  clock. The "update is required" message adds the license level, the
+  installed packages with their versions (a disabled one marked), the board's
+  health readings where it has any, a changelog link, and a reboot-impact
+  section: interfaces running, DHCP leases bound, PPP sessions active,
+  WireGuard peers. Two risk lines appear in any message only when non-zero:
+  `supout` crash dumps on the router, and `critical` log entries with the
+  last one's text. Text the script did not write itself is HTML-escaped,
+  since Telegram rejects the whole message on one unbalanced `<`. The storage
+  line shows free space beside the size of the installed packages and warns
+  under `MinFreeStorageMiB` (16 by default, the floor `stay_fresh.lua`
+  shares; 0 disables it, which a 16 MB flash router needs), and a non-zero
+  `bad-blocks` figure is reported as a warning beside the number.
 
 - Three CHR tests around the update check. One triggers a real check and
   records how `status` and `latest-version` move, then dumps every field the
@@ -43,9 +49,12 @@ entry here belongs to a version.
   check runs and settles in about two seconds, `/system routerboard` does not
   exist on the CHR, and `/system health` has no readings there. One forces a
   failed check by pointing the update hosts at the router itself and asserts
-  `latest-version` survives it. One runs `backup_update_check.lua` end to end
+  `latest-version` survives it. Two run `backup_update_check.lua` end to end
   through a Telegram stub whose `:global` has no underscore, the first update
-  script the suite executes on the CHR rather than xfails.
+  script the suite executes on the CHR rather than xfails: on the stable
+  channel for the heartbeat, and with the channel patched to `development`,
+  where a newer build is usually offered, for the backup pair and the full
+  message.
 
 - `stay_fresh.sh` ends with a read-only report of pending macOS and App Store
   updates: `softwareupdate --list`, and `mas outdated` where `mas` is

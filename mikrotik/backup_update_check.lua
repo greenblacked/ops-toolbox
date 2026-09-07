@@ -25,9 +25,10 @@
 # RouterOS 7.24 refuses to execute a script that declares one - "expected end
 # of command" at the underscore, from the scheduler, from :parse and from
 # /system script run alike - and it was seen on hardware, not only on the CHR
-# the suite boots. update_check.lua declares six. This script was run end to
-# end on a 7.24.1 CHR: it found a real newer release, wrote the pair, pruned a
-# seeded older generation and delivered the message.
+# the suite boots. update_check.lua declares six. The suite runs this script
+# end to end on the 7.24.2 CHR (test_backup_update_check_runs_end_to_end), and
+# the hand run on a 7.24.1 CHR that first proved the backup and the prune
+# against a real newer release is recorded in the CHANGELOG.
 
 # Fleet-wide maintenance switch; router_doctor.py reports when it is active.
 :global OpsToolboxPaused;
@@ -59,10 +60,13 @@
 # outside this file.
 :local MaxWait 12
 
-# Free storage floor in MiB. RouterOS downloads the package to storage before
-# it installs, so a router under this floor fails the download, not the check.
-# The message says so next to the figure instead of leaving it to be noticed.
-# 16 MiB is the same floor stay_fresh.lua refuses to install under.
+# Free storage floor in MiB, 0 to disable the warning. The message always shows
+# free storage next to the size of the installed packages, which is roughly
+# what the upgrade has to download; below the floor it adds a warning. 16 MiB
+# is the floor stay_fresh.lua refuses to install under, and it suits routers
+# with 128 MiB of flash or more. A 16 MB flash router normally sits at 2 to
+# 4 MiB free and upgrades anyway - RouterOS stages the download differently
+# there - so on those set the floor to 0, or the heartbeat warns every day.
 :local MinFreeStorageMiB 16
 
 # Optional password for the binary backup. Set it from a :global at boot, the
@@ -77,7 +81,28 @@
 :if ([:len $RouterBackupPassword] > 0) do={ :set BackupPassword $RouterBackupPassword }
 
 # -----------------------------------------------------------------------------
+# The message is Telegram HTML, and Telegram rejects the whole message on one
+# unbalanced '<'. Anything that did not originate in this script - the status
+# line, a log entry, the identity - goes through this first. A bare percent
+# sign is a truncated escape to a helper that posts form-encoded text, so it
+# is spelled out too.
+:local HtmlEscape do={
+    :local out ""
+    :if ([:len $1] > 0) do={
+        :for i from=0 to=([:len $1] - 1) do={
+            :local ch [:pick $1 $i ($i + 1)]
+            :if ($ch = "&") do={ :set ch "&amp;" }
+            :if ($ch = "<") do={ :set ch "&lt;" }
+            :if ($ch = ">") do={ :set ch "&gt;" }
+            :if ($ch = "%") do={ :set ch " pct" }
+            :set out ($out . $ch)
+        }
+    }
+    :return $out
+}
+
 :local DeviceName [/system identity get name]
+:local DeviceLabel [$HtmlEscape $DeviceName]
 
 # Read once, before anything slow: the same date names the backup file and
 # stamps the message, so the two cannot disagree across midnight.
@@ -139,6 +164,7 @@
 :if ($Errored) do={ :set Reason "the update server reported an error" }
 :local CheckOk ([:len $Reason] = 0)
 :local UpdateOffered ([:typeof [:find $Status "New version is available"]] != "nil")
+:local StatusText [$HtmlEscape $Status]
 
 :local BoardName "unknown"
 :local Architecture "unknown"
@@ -172,18 +198,6 @@
 # to that flash, so a non-zero figure is worth seeing before one.
 :do { :set BadBlocks [/system resource get bad-blocks]; } on-error={}
 
-# The storage line carries its own warning, so the number and what it means
-# arrive together in every message that shows it.
-:local StorageLine ("\0AFree storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>")
-:if (([:typeof $FreeHdd] = "num") and ($FreeHdd < $MinFreeStorageMiB)) do={
-    :set StorageLine ($StorageLine . "\0A<b>Low storage:</b> under " . $MinFreeStorageMiB . " MiB - the package download will likely fail; free space before upgrading")
-}
-
-:local BadBlocksLine ""
-:if (([:typeof $BadBlocks] = "num") and ($BadBlocks > 0)) do={
-    :set BadBlocksLine ("\0A<b>Bad blocks:</b> <code>" . $BadBlocks . " percent</code> - flash is wearing; keep the backup off the router before upgrading")
-}
-
 # RouterBOARD firmware: a RouterOS upgrade is usually followed by
 # /system routerboard upgrade and a reboot, so say whether one is waiting.
 # CHR and x86 have no routerboard - the line is simply omitted there.
@@ -216,25 +230,95 @@
     :if ([:len $Health] > 0) do={ :set HealthLine ("\0AHealth: <code>" . $Health . "</code>") }
 } on-error={}
 
-# Enabled packages with their versions: what the upgrade will replace, and
+# Installed packages with their versions: what the upgrade will replace, and
 # where a package that lags the rest - one installed by hand, or one the last
-# upgrade skipped - shows up before the next one is attempted.
+# upgrade skipped - shows up before the next one is attempted. On 7.13 and
+# later the list also carries packages that are merely available to install,
+# with an empty version; those are not installed and are left out. A disabled
+# package is installed and is upgraded with the rest, so it stays, marked.
+# The sizes add up to roughly what the upgrade has to download.
 :local PackagesLine ""
+:local PkgMiB 0
 :do {
     :local Packages ""
     :foreach p in=[/system package find] do={
         :do {
-            :local pd false
-            :do { :set pd [/system package get $p disabled]; } on-error={}
-            :if (!$pd) do={
+            :local pv [/system package get $p version]
+            :if ([:len $pv] > 0) do={
                 :local pn [/system package get $p name]
-                :local pv [/system package get $p version]
+                :local pd false
+                :do { :set pd [/system package get $p disabled]; } on-error={}
+                :do { :set PkgMiB ($PkgMiB + ([/system package get $p size] / 1048576)); } on-error={}
                 :if ([:len $Packages] > 0) do={ :set Packages ($Packages . ", ") }
                 :set Packages ($Packages . $pn . " " . $pv)
+                :if ($pd) do={ :set Packages ($Packages . " (disabled)") }
             }
         } on-error={}
     }
     :if ([:len $Packages] > 0) do={ :set PackagesLine ("\0APackages: <code>" . $Packages . "</code>") }
+} on-error={}
+
+# The storage line carries its own context and warning, so the number, what
+# the upgrade needs and what it means arrive together.
+:local StorageLine ("\0AFree storage: <code>" . $FreeHdd . " MiB</code> / <code>" . $TotalHdd . " MiB</code>")
+:if ($PkgMiB > 0) do={
+    :set StorageLine ($StorageLine . " (installed packages <code>" . $PkgMiB . " MiB</code>)")
+}
+:if (([:typeof $FreeHdd] = "num") and ($MinFreeStorageMiB > 0) and ($FreeHdd < $MinFreeStorageMiB)) do={
+    :set StorageLine ($StorageLine . "\0A<b>Low storage:</b> under the " . $MinFreeStorageMiB . " MiB floor - check there is room for the download before upgrading, or lower MinFreeStorageMiB if this router always runs this close")
+}
+
+:local BadBlocksLine ""
+:if (([:typeof $BadBlocks] = "num") and ($BadBlocks > 0)) do={
+    :set BadBlocksLine ("\0A<b>Bad blocks:</b> <code>" . $BadBlocks . " percent</code> - flash is wearing; keep the backup off the router before upgrading")
+}
+
+:local LicenseLine ""
+:do { :set LicenseLine ("\0ALicense: <code>" . [/system license get level] . "</code>"); } on-error={}
+
+# --- what the reboot would interrupt -----------------------------------------
+# The upgrade ends in a reboot. These say who is on the router right now, so
+# the operator picks the moment rather than discovering the answer from the
+# complaints. Each is wrapped on its own: a router without the wireguard or
+# ppp feature errors on the find, and that drops the one line.
+:local ImpactLine ""
+:do {
+    :local IfTotal [:len [/interface find]]
+    :local IfRunning [:len [/interface find where running=yes]]
+    :set ImpactLine ($ImpactLine . "\0AInterfaces running: <code>" . $IfRunning . " of " . $IfTotal . "</code>")
+} on-error={}
+:do {
+    :local Leases [:len [/ip dhcp-server lease find where status="bound"]]
+    :set ImpactLine ($ImpactLine . "\0ADHCP leases bound: <code>" . $Leases . "</code>")
+} on-error={}
+:do {
+    :local Ppp [:len [/ppp active find]]
+    :set ImpactLine ($ImpactLine . "\0APPP sessions active: <code>" . $Ppp . "</code>")
+} on-error={}
+:do {
+    :local WgPeers [:len [/interface wireguard peers find]]
+    :set ImpactLine ($ImpactLine . "\0AWireGuard peers: <code>" . $WgPeers . "</code>")
+} on-error={}
+
+# --- what says the router is not well ----------------------------------------
+# A supout file is a crash dump RouterOS wrote after a kernel failure, and a
+# critical log entry is the router's own alarm. Both are worth knowing before
+# an upgrade rides on top of them, and both are silent when there are none.
+:local RiskLine ""
+:do {
+    :local Crashes [:len [/file find where name~"supout"]]
+    :if ($Crashes > 0) do={
+        :set RiskLine ($RiskLine . "\0A<b>Crash dumps:</b> <code>" . $Crashes . " supout file(s)</code> on the router - a kernel failure preceded this check")
+    }
+} on-error={}
+:do {
+    :local Critical [/log find where topics~"critical"]
+    :local Count [:len $Critical]
+    :if ($Count > 0) do={
+        :local LastMsg [/log get ($Critical->($Count - 1)) message]
+        :if ([:len $LastMsg] > 120) do={ :set LastMsg ([:pick $LastMsg 0 120] . "...") }
+        :set RiskLine ($RiskLine . "\0A<b>Critical log entries:</b> <code>" . $Count . "</code> in the buffer, last: <code>" . [$HtmlEscape $LastMsg] . "</code>")
+    }
 } on-error={}
 
 :local CheckedLine ("\0AChecked: <code>" . $rawDate . " " . $Time . "</code>")
@@ -272,9 +356,9 @@
     } on-error={}
 
     :log warning ("backup_update_check: update check failed on channel $Channel - $Reason (status: $Status)")
-    :local MessageText ("<b>" . $DeviceName . ":</b> RouterOS update check FAILED." . \
+    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update check FAILED." . \
     "\0A\0AReason: <code>" . $Reason . "</code>" . \
-    "\0AStatus: <code>" . $Status . "</code>" . \
+    "\0AStatus: <code>" . $StatusText . "</code>" . \
     "\0AChannel: <code>" . $Channel . "</code> mode: <code>" . $UpdateMode . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALast known latest: <code>" . $LatestVersion . "</code>" . \
@@ -360,18 +444,19 @@
     }
 
     :log info ("backup_update_check: $InstalledVersion -> $LatestVersion on channel $Channel")
-    :local MessageText ("<b>" . $DeviceName . ":</b> RouterOS update is required." . \
+    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is required." . \
     "\0A\0A<b>Update info</b>" . \
     "\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
-    "\0AStatus: <code>" . $Status . "</code>" . \
+    "\0AStatus: <code>" . $StatusText . "</code>" . \
     $FirmwareLine . \
     $BackupLine . \
     "\0AChangelog: https://mikrotik.com/download/changelogs" . \
     "\0A\0A<b>Device info</b>" . \
     "\0ABoard: <code>" . $BoardName . "</code>" . \
     "\0AArchitecture: <code>" . $Architecture . "</code>" . \
+    $LicenseLine . \
     "\0AUptime: <code>" . $Uptime . "</code>" . \
     $HealthLine . \
     $PackagesLine . \
@@ -380,6 +465,9 @@
     "\0AFree memory: <code>" . $FreeMemory . " MiB</code> / <code>" . $TotalMemory . " MiB</code>" . \
     $StorageLine . \
     $BadBlocksLine . \
+    "\0A\0A<b>Reboot impact</b>" . \
+    $ImpactLine . \
+    $RiskLine . \
     $CheckedLine)
 
     :do {
@@ -398,15 +486,16 @@
     # The daily one. Shorter on purpose: it is a heartbeat, and what it has to
     # answer is "is anything pending" and "is there room" - not repeat the
     # board and architecture every morning.
-    :local MessageText ("<b>" . $DeviceName . ":</b> RouterOS update is not required." . \
+    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is not required." . \
     "\0A\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
-    "\0AStatus: <code>" . $Status . "</code>" . \
+    "\0AStatus: <code>" . $StatusText . "</code>" . \
     $FirmwareLine . \
     "\0AUptime: <code>" . $Uptime . "</code>" . \
     $StorageLine . \
     $BadBlocksLine . \
+    $RiskLine . \
     $CheckedLine)
 
     :do {

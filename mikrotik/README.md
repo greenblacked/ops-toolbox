@@ -315,9 +315,12 @@ one line of the script's own logging reaching the log. `update_check.lua`
 declares six such names. This script declares none: its only globals are
 `OpsToolboxPaused` and `RouterBackupPassword`.
 
-It was run end to end on a 7.24.1 CHR, where it found a real newer release,
-wrote the `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair, pruned a seeded
-older generation and delivered the message. The backup and prune are the ones
+The suite runs it end to end on the 7.24.2 CHR: once on the stable channel,
+where it sends the heartbeat, and once with the channel patched to
+`development`, where a newer build is usually offered and it writes the
+`backup-IDENTITY-DATE-VERSION-pre-upgrade` pair and sends the full message.
+The first hand run, on a 7.24.1 CHR, found a real newer release, wrote the
+pair, pruned a seeded older generation and delivered the message. The backup and prune are the ones
 described under `update_check.lua` above — same filename, same prefix so
 `pull_router_backups.sh` and `backup_file_cleanup.lua` still see it, same rule
 that the prune runs only after the pair is written, same prefix exclusion for
@@ -339,23 +342,36 @@ the cause — bounded by `MaxWait` attempts of five seconds, and the verdict is
 RouterOS's own, the same as `update_check.lua`.
 
 Three messages, one per outcome. "Update is required" carries the backup, the
-firmware state, the enabled packages with their versions, the board's health
-readings where it has any, and the resources an upgrade depends on. "Not
-required" is the short daily heartbeat: versions, firmware, uptime, free
-storage. "Check FAILED" names the reason — a timeout, an error from the server,
-or no version reported — with the `status` line, the update `mode`, the NTP
-client state (the check is HTTPS with certificate verification, so a clock far
-enough off fails the handshake), the DNS servers, and the command to run by
-hand. A failed check takes no backup and prunes nothing.
+firmware state, the license level, the installed packages with their versions
+(a disabled one marked, since it is upgraded with the rest), the board's health
+readings where it has any, the resources an upgrade depends on, a changelog
+link, and a **reboot impact** section: interfaces running, DHCP leases bound,
+PPP sessions active and WireGuard peers, so the operator picks the moment
+rather than learning who was on the router from the complaints. "Not required"
+is the short daily heartbeat: versions, firmware, uptime, free storage. "Check
+FAILED" names the reason — a timeout, an error from the server, or no version
+reported — with the `status` line, the update `mode`, the NTP client state (the
+check is HTTPS with certificate verification, so a clock far enough off fails
+the handshake), the DNS servers, and the command to run by hand. A failed check
+takes no backup and prunes nothing.
 
-Every message carries the `status` line and the router's clock at the time of
-the check. Free storage is compared against a floor (`MinFreeStorageMiB`, 16
-by default, the same floor `stay_fresh.lua` refuses to install under) and the
-line says when the router is below it, since RouterOS downloads the package to
-storage before installing and a router under the floor fails the download
-rather than the check. A non-zero `bad-blocks` figure is reported the same way,
-as a warning next to the number, because an upgrade is a large write to that
-flash.
+Two risk lines appear in any message only when there is something to say: the
+number of `supout` crash dumps on the router, and the number of `critical` log
+entries in the buffer with the last one's text. Every message carries the
+`status` line and the router's clock at the time of the check. Text that did
+not originate in the script — the status line, a log entry, the identity — is
+HTML-escaped first, because Telegram rejects the whole message on one
+unbalanced `<`.
+
+Free storage is shown next to the size of the installed packages, which is
+roughly what the upgrade downloads, and compared against a floor
+(`MinFreeStorageMiB`, 16 by default, the floor `stay_fresh.lua` refuses to
+install under). The floor suits routers with 128 MiB of flash or more. A 16 MB
+flash router normally sits at 2 to 4 MiB free and upgrades anyway, so on those
+set it to 0 or the heartbeat warns every day. A non-zero `bad-blocks` figure is
+reported the same way, as a warning next to the number, because an upgrade is
+a large write to that flash. The CHR reports no `bad-blocks` at all, and the
+line is simply absent there.
 
 Five settings at the top. `TgSendScript` names the Telegram helper, and it
 defaults to `tg_send_new` — the operator's own copy — rather than the package's
