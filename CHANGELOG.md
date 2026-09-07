@@ -16,6 +16,26 @@ entry here belongs to a version.
 
 ### Added
 
+- `dotfiles/`, a new package: configuration for the tools already installed
+  on a DevOps workstation, one file per tool with every setting commented, and
+  `install_dotfiles.sh` to link them into a home directory. The repository
+  installed the tools — `install_apps.sh`, `install_devtools.sh`, the
+  Brewfile — and then left every one of them on its defaults, which for
+  `git` means no `rerere`, no `push.autoSetupRemote` and a merge conflict
+  style from 2005; for `ssh` and `gpg` means the weak defaults their
+  hardening guides exist to replace; and for `k9s`, `starship`, `bat`,
+  `ripgrep` and the terminals means a first hour on every new machine spent
+  re-deriving the same twenty lines. The settings were checked against each
+  tool's own documentation and the README says where. The installer links one
+  file at a time so runtime state stays out of the repository, copies the
+  three files their tools rewrite in full, refuses to overwrite anything
+  without `--force` (which keeps a `.bak`), reports `MATCH` / `DRIFT` /
+  `MISSING` / `CONFLICT` under `--status`, and removes only what it made.
+  A ninth suite, `./run-tests.sh dotfiles`, runs the installer against a
+  scratch home and parses every tracked config with the tool or format
+  parser it belongs to. Nothing here carries a credential, and the suite
+  greps for the usual token shapes to keep it that way.
+
 - `stay_fresh.sh` ends with a read-only report of pending macOS and App Store
   updates: `softwareupdate --list`, and `mas outdated` where `mas` is
   installed. The script upgraded everything Homebrew manages and said nothing

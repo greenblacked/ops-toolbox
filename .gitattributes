@@ -29,3 +29,8 @@ windows/git-bash/default-git-bash/.aliases text eol=lf
 *.py text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+
+# Everything under dotfiles/ is read by a tool on macOS or Linux - ssh, gpg,
+# git, starship - and a CRLF in any of them is a parse error or a silently
+# ignored line. The trees are linked into the home directory as-is.
+dotfiles/** text eol=lf

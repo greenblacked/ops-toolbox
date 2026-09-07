@@ -1,0 +1,32 @@
+# GitHub CLI settings. Installed as a COPY: `gh config set` rewrites this
+# file. Tokens are in hosts.yml beside it, which is never tracked; GH_TOKEN
+# in the environment takes precedence over it for CI.
+# Keys and values from internal/config/config.go in cli/cli.
+version: 1
+# Clone and push over SSH, matching git's url.insteadOf rewrite.
+git_protocol: ssh
+# Empty falls back to GH_EDITOR, GIT_EDITOR, VISUAL, EDITOR in that order.
+editor:
+# Interactive prompts on a terminal. CI sets GH_PROMPT_DISABLED instead.
+prompt: enabled
+prefer_editor_prompt: disabled
+# -F: no pager for output that fits; -R: keep colours; -X: no screen clear.
+pager: less -FRX
+browser:
+http_unix_socket:
+# gh sends usage telemetry unless told not to (GH_TELEMETRY also works).
+telemetry: disabled
+spinner: enabled
+aliases:
+  # gh co 123           check out a pull request by number or URL
+  co: pr checkout
+  # gh pv               open the current branch's pull request in a browser
+  pv: pr view --web
+  # gh prs              pull requests I opened
+  prs: pr list --author @me
+  # gh rv               pull requests waiting on my review
+  rv: pr list --search "review-requested:@me"
+  # gh ci               follow the checks on the current branch
+  ci: run watch
+  # gh il               issues assigned to me
+  il: issue list --assignee @me

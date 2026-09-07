@@ -1,0 +1,31 @@
+# k9s - global hotkeys, available from any view.
+#
+# Shift-digit jumps to a view without leaving what you were looking at;
+# `keepHistory: true` makes Esc take you back. Schema:
+# internal/config/json/schemas/hotkeys.json upstream.
+hotKeys:
+  shift-0:
+    shortCut: Shift-0
+    description: Pods
+    command: pods
+    keepHistory: true
+  shift-1:
+    shortCut: Shift-1
+    description: Deployments
+    command: dp
+    keepHistory: true
+  shift-2:
+    shortCut: Shift-2
+    description: Events, newest last
+    command: events
+    keepHistory: true
+  shift-3:
+    shortCut: Shift-3
+    description: Nodes
+    command: nodes
+    keepHistory: true
+  shift-4:
+    shortCut: Shift-4
+    description: Xray deployments
+    command: xray deploy
+    keepHistory: true
