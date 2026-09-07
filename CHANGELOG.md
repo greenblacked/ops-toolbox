@@ -28,8 +28,8 @@ entry here belongs to a version.
   re-deriving the same twenty lines. The settings were checked against each
   tool's own documentation and the README says where. The installer links one
   file at a time so runtime state stays out of the repository, copies the
-  three files their tools rewrite in full, refuses to overwrite anything
-  without `--force` (which keeps a `.bak`), reports `MATCH` / `DRIFT` /
+  four files their tools rewrite in full, refuses to overwrite anything
+  without `--force` (which keeps a `.backup`), reports `MATCH` / `DRIFT` /
   `MISSING` / `CONFLICT` under `--status`, and removes only what it made.
   A ninth suite, `./run-tests.sh dotfiles`, runs the installer against a
   scratch home and parses every tracked config with the tool or format

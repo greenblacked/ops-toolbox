@@ -200,6 +200,7 @@ jobs:
             printf '| linux suite | %s |\n'   '${{ steps.filter.outputs.suite_linux }}'
             printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
             printf '| k8s suite | %s |\n'     '${{ steps.filter.outputs.suite_k8s }}'
+            printf '| dotfiles suite | %s |\n'     '${{ steps.filter.outputs.suite_dotfiles }}'
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
