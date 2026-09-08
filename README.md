@@ -218,6 +218,11 @@ repositories and local bare remotes:
   whether it is installed and current; an existing unrelated hook is backed up
   rather than clobbered, and restored on `uninstall`. `--commit-msg` adds an
   opt-in Conventional Commits hook, exempting the messages git writes itself.
+- `clone-repos.sh` — clones every repository in a list file into one parent
+  directory, skipping the ones already there and reporting an occupied path
+  instead of touching it. The list is the thing worth keeping: a new machine
+  is one run away from every repository you work in. `repos.txt.example`
+  shows the format.
 - `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
   the remote. This is the squash-merge case: a squash-merged branch leaves no
   merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects

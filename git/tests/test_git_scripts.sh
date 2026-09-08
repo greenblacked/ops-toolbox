@@ -19,6 +19,7 @@ HOOKS="$G/git_hooks_install.sh"
 PRUNE="$G/git_prune_gone.sh"
 STALE="$G/git_stale_branches.sh"
 SIZE="$G/git_size_report.sh"
+CLONE="$G/clone-repos.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
@@ -1021,6 +1022,83 @@ if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
 else
   ok "the refused install wrote nothing"
 fi
+
+# --- clone-repos.sh ---
+# A bare repository stands in for the remote; the list mixes a default
+# destination, a nested one, and a line that is not a URL at all.
+clone_remote="$(mktemp -d /tmp/git-script-clone-remote.XXXXXX)/upstream.git"
+clone_seed="$(mktemp -d /tmp/git-script-clone-seed.XXXXXX)"
+clone_dest="$(mktemp -d /tmp/git-script-clone-dest.XXXXXX)"
+clone_list="$clone_dest/repos.txt"
+git init -q --bare -b main "$clone_remote"
+git init -q -b main "$clone_seed"
+git -C "$clone_seed" config user.name "Test User"
+git -C "$clone_seed" config user.email "test@example.com"
+printf "one\n" >"$clone_seed/file.txt"
+git -C "$clone_seed" add file.txt
+git -C "$clone_seed" commit -m "one" >/dev/null
+git -C "$clone_seed" remote add origin "$clone_remote"
+git -C "$clone_seed" push -q -u origin main
+printf '# repositories\n%s\n%s   nested/second\nnot-a-url\n' "$clone_remote" "$clone_remote" >"$clone_list"
+
+out="$("$CLONE" --help)"
+assert_contains "$out" "Exit codes:" "clone help documents exit codes"
+set +e
+"$CLONE" --bogus >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "$rc" "3" "clone rejects an unknown flag with 3"
+set +e
+"$CLONE" --dir >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "$rc" "3" "clone --dir without a value exits 3"
+set +e
+"$CLONE" "$clone_dest/missing.txt" >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "$rc" "2" "clone exits 2 for a missing list"
+
+before_tree="$(find "$clone_dest" | sort)"
+set +e
+out="$("$CLONE" --dry-run --dir "$clone_dest/out" "$clone_list" 2>&1)"; rc=$?
+set -e
+assert_contains "$out" "dry-run: would run: git clone -- $clone_remote $clone_dest/out/upstream" "clone dry-run previews the default destination"
+assert_contains "$out" "dry-run: would run: git clone -- $clone_remote $clone_dest/out/nested/second" "clone dry-run previews the nested destination"
+assert_contains "$out" "not a git URL or path: not-a-url" "clone dry-run reports the bad line"
+assert_contains "$out" "dry-run complete; no changes written" "clone dry-run closes with the summary line"
+assert_eq "$rc" "1" "clone dry-run exits 1 because one line failed"
+assert_eq "$(find "$clone_dest" | sort)" "$before_tree" "clone dry-run wrote nothing"
+
+set +e
+out="$("$CLONE" --dir="$clone_dest/out" "$clone_list" 2>&1)"; rc=$?
+set -e
+assert_eq "$rc" "1" "clone exits 1 when a line failed"
+assert_eq "$(git -C "$clone_dest/out/upstream" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "clone landed the default destination"
+assert_eq "$(git -C "$clone_dest/out/nested/second" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "clone landed the nested destination"
+
+set +e
+out="$("$CLONE" --dir "$clone_dest/out" "$clone_list" 2>&1)"; rc=$?
+set -e
+assert_contains "$out" "already cloned: $clone_dest/out/upstream" "a second run skips what is cloned"
+assert_contains "$out" "already present 2" "a second run counts the skips"
+
+printf '%s\n' "$clone_remote" >"$clone_dest/good.txt"
+mkdir -p "$clone_dest/busy/upstream"
+touch "$clone_dest/busy/upstream/keep"
+set +e
+out="$("$CLONE" --dir "$clone_dest/busy" "$clone_dest/good.txt" 2>&1)"; rc=$?
+set -e
+assert_eq "$rc" "1" "an occupied destination fails the line"
+assert_contains "$out" "destination exists and is not a git checkout" "an occupied destination is named"
+if [[ -e "$clone_dest/busy/upstream/keep" ]]; then
+  ok "the occupied destination was left alone"
+else
+  err "the occupied destination was touched"
+fi
+
+printf '# only comments\n\n' >"$clone_dest/empty.txt"
+set +e
+"$CLONE" --dry-run "$clone_dest/empty.txt" >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "$rc" "4" "an empty list exits 4"
 
 if (( failures )); then
   echo "=== $failures test(s) failed ===" >&2

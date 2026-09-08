@@ -34,6 +34,9 @@ _pretty_git_alias gacp     gacp.sh
 _pretty_git_alias gamend   git_amend_last.sh
 _pretty_git_alias gundo    git_undo_last_commit.sh
 
+# --- setting up ------------------------------------------------------------
+_pretty_git_alias gclone   clone-repos.sh
+
 # --- looking around --------------------------------------------------------
 _pretty_git_alias gsum     git_status_summary.sh
 _pretty_git_alias gdiffb   git_diff_branch.sh

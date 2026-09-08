@@ -343,6 +343,7 @@ dry_run_args() {
     k8s-toolbox/debug_pod.sh)                printf '%s\n' "--pod dry-run-probe --dry-run" ;;
     mikrotik/pull_router_backups.sh)         printf '%s\n' "--dry-run probe@localhost" ;;
     git/gacp.sh)                             printf '%s\n' "--dry-run -m dry-run probe" ;;
+    git/clone-repos.sh)                      printf '%s\n' "--dry-run git/repos.txt.example" ;;
     git/set_git_profile.sh)                  printf '%s\n' "--dry-run --name Probe --email probe@example.invalid" ;;
     *)                                       printf '%s\n' "--dry-run" ;;
   esac
