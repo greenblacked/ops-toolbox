@@ -28,6 +28,31 @@ entry here belongs to a version.
   the suite's wall clock. Per-file verdicts and the skip-when-no-parser
   behaviour are unchanged.
 
+- `stay_fresh.sh` ends every real run with a verdict it can act on: a
+  headline (`stay_fresh OK: freed 1.2G in 4m10s`) and a detail line with the
+  step counts, the packages Homebrew upgraded, the casks still outdated, the
+  OS and App Store updates pending, the local snapshots found, and the
+  uptime. The same two lines go to a Notification Center banner or a Telegram
+  message (`--notify none|macos|telegram|both|auto`; `auto` posts a banner
+  when no terminal is attached, which is the scheduled case), into
+  `~/Library/Logs/stay_fresh/history.tsv` (one row per run; `--history`
+  prints the last ten), and into `last-run.json` next to it. The Telegram
+  token comes from the environment or the login Keychain and is handed to
+  `curl` as a config file on stdin, never as an argument. Two new steps:
+  `snapshots` lists local Time Machine snapshots, the usual reason `df` does
+  not move after a cleanup, and deletes them only with `--thin-snapshots`
+  (sudo; demoted to listing under `--no-sudo`); `disk-report`, opt-in through
+  `--disk-report`, prints the largest entries under `~/Library/Caches`,
+  `Application Support`, `Containers`, `Developer`, `Logs`, `~/.cache` and
+  `~/Downloads`, and the size of device backups, read-only. `--quick` is the
+  user-level cleanup as one flag (user, app and AI caches, workspace storage,
+  Trash, dev-tool caches: no sudo, no Homebrew, no reports). The trash step
+  also empties `/Volumes/*/.Trashes/<uid>`, the per-volume Trash that only
+  Finder ever drained. `launchd/stay_fresh_agent.sh install --notify MODE`
+  stores the mode in the plist and passes it through. The steps suite covers
+  each of these with faked `osascript`, `curl`, `security`, `tmutil` and
+  `sysctl`, and the contract suite the agent's plist and option rejection.
+
 - `backup_update_check.lua` takes its verdict from RouterOS's `status` line,
   polled until it settles, instead of a fixed 15-second wait and an
   `installed != latest` comparison. Measured on a 7.24.2 CHR: issuing the
@@ -933,6 +958,34 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `stay_fresh.sh` tells the macOS protections apart from failures. A real run
+  warned on three steps for things no run can change: `/System/Library/Caches`
+  answers "Operation not permitted" to root with System Integrity Protection
+  on, `/Library/Caches` and `~/Library/Caches` hold a dozen Apple entries the
+  privacy controls keep out of reach (HomeKit, CloudKit, Safari, `aned`), and
+  `~/.Trash` cannot even be listed by a terminal without Full Disk Access.
+  Every run warned, and a warning that fires every run is the one that gets
+  muted. Now `/System/Library/Caches` is left alone while SIP is on, protected
+  entries are counted and kept without a warning, and the Trash is emptied
+  through Finder in an interactive run or the missing grant is named in a
+  scheduled one. An entry owned by another user - the root-owned directory
+  Slack's updater leaves in the caches - is the fixable case and is treated
+  as such: retried with sudo when a credential is already in hand, warned
+  about when not.
+- `stay_fresh.sh` no longer reports `brew update` clean when a stale git lock
+  stopped it: Homebrew prints "Unable to create '.../.git/index.lock'", then
+  "Already up-to-date", and exits 0 with the taps untouched, so the upgrade
+  that followed ran on the previous index and the summary said nothing. A
+  lock older than five minutes with no git process running is removed and
+  said so; any other lock is named with the remedy, and the update that
+  could not refresh the taps is counted as a warning. Casks and formulae
+  Homebrew has disabled, which it says once per upgrade in a line nobody
+  reads, are named with their reason. npm's own "using --force" notice stays
+  out of the quiet stream, and an aborted run no longer leaves an empty log.
+- `stay_fresh.sh` dev-caches also clears Terraform's provider plugin cache
+  where one is configured, removes gcloud log directories older than a week
+  (one per invocation, never pruned by gcloud, hundreds of megabytes on a
+  machine that scripts it), and runs `pre-commit gc`.
 - A literal `%` in Telegram message text is now sent as `%25`, in
   `health_check.lua`, `latency_monitor.lua` and `traffic_quota.lua`. `tg_send`
   posts the text as `application/x-www-form-urlencoded`, which is why newlines
