@@ -487,13 +487,13 @@ assert_contains "the dry-run preview says a real run would stop" "$out" \
 brew_absent_skip=(
   --skip-dns --skip-syscaches --skip-usercaches --skip-appcaches
   --skip-workspacestorage --skip-trash --skip-devcaches --skip-docker
-  --skip-xcode --skip-diagnostics --skip-devtools
+  --skip-xcode --skip-diagnostics --skip-devtools --skip-snapshots
 )
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${brew_absent_skip[@]}" 2>&1)"
 assert_contains "an all-skipped run counts each step exactly once" "$out" \
-  "skipped:     15"
+  "skipped:     17"
 assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
   "brew (not installed)"
 assert_contains "a skipped step reports why it was skipped" "$out" \
@@ -842,6 +842,33 @@ else
   err "LaunchAgent install --print-only failed"
 fi
 rm -f "$plist_tmp"
+
+# --notify travels into the plist so the scheduled run can reach Telegram; an
+# unknown mode is refused before anything is written.
+plist_tmp="$(mktemp)"
+if "$agent" install --print-only --notify telegram --dry-run > "$plist_tmp" \
+   && python3 - "$plist_tmp" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+assert data["ProgramArguments"][-5:] == ["run-scheduled", "--profile", "safe", "--notify", "telegram"]
+PY
+then
+  ok "LaunchAgent plist carries --notify"
+else
+  err "LaunchAgent plist does not carry --notify"
+fi
+rm -f "$plist_tmp"
+set +e
+"$agent" install --print-only --notify slack --dry-run >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "agent rejects an unknown --notify mode" "3" "$rc"
+set +e
+"$agent" status --notify macos >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "agent status does not take --notify" "3" "$rc"
 
 if grep -q 'kickstart -k' "$agent"; then
   err "LaunchAgent run-now still kills an active maintenance run"

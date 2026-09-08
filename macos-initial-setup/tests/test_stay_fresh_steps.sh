@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the seventeen steps for real against a scratch HOME and a faked set of
+# each of the nineteen steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -125,6 +125,10 @@ run_sf() {
     HELM_UPDATE_RC="${HELM_UPDATE_RC:-0}" \
     GCLOUD_COMPONENTS_RC="${GCLOUD_COMPONENTS_RC:-0}" \
     BREW_REPO="${BREW_REPO:-}" \
+    STAY_FRESH_NOTIFY="${STAY_FRESH_NOTIFY:-none}" \
+    STAY_FRESH_TG_BOT_TOKEN="${STAY_FRESH_TG_BOT_TOKEN:-}" \
+    STAY_FRESH_TG_CHAT_ID="${STAY_FRESH_TG_CHAT_ID:-}" \
+    SNAPSHOTS="${SNAPSHOTS:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -838,6 +842,240 @@ out="$(run_sf "$d" --yes --only os-updates)"; rc=$?
 assert_eq "os-updates with no tools succeeds" "0" "$rc"
 assert_contains "os-updates with no tools says nothing to report" "$out" \
   "neither softwareupdate nor mas is available"
+rm -rf "$d"
+
+# ===========================================================================
+section "quick preset, history, verdict"
+# --quick is a fixed --only list: the user-level cleanup, nothing that needs
+# sudo, Homebrew or the network.
+d="$(new_env)"
+out="$(run_sf "$d" --dry-run --quick)"; rc=$?
+assert_eq "--quick previews" "0" "$rc"
+for want in "clear user caches" "clear per-app caches" "clear AI tool caches" \
+            "prune workspace storage" "empty trash" "dev-tool caches"; do
+  assert_contains "--quick runs: $want" "$(grep "$want" <<<"$out")" "run"
+done
+for keep in "homebrew update" "flush DNS" "clear system caches" "pending OS" "docker" "xcode"; do
+  assert_contains "--quick skips: $keep" "$(grep -i "$keep" <<<"$out")" "skip"
+done
+run_sf "$d" --dry-run --quick --only trash >/dev/null; rc=$?
+assert_eq "--quick refuses --only" "3" "$rc"
+run_sf "$d" --dry-run --quick --skip-brew >/dev/null; rc=$?
+assert_eq "--quick refuses --skip-* flags" "3" "$rc"
+run_sf "$d" --dry-run --notify slack >/dev/null; rc=$?
+assert_eq "an unknown --notify mode is refused" "3" "$rc"
+rm -rf "$d"
+
+# History: nothing before the first real run, one row and a JSON summary after.
+d="$(new_env)"
+out="$(run_sf "$d" --history)"; rc=$?
+assert_eq "--history works before any run" "0" "$rc"
+assert_contains "--history says when there is nothing yet" "$out" "no history yet"
+out="$(run_sf "$d" --dry-run --only versions)"
+assert_gone "a dry run records no history" "$d/home/Library/Logs/stay_fresh/history.tsv"
+# The kernel boot time feeds the "up Nd Nh" part of the verdict.
+mkbin "$d/bin/sysctl" 'echo "{ sec = $(( $(date +%s) - 93600 )), usec = 0 } Mon Sep  7 10:00:00 2026"'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a real run succeeds" "0" "$rc"
+assert_contains "the verdict line is printed" "$out" "stay_fresh OK: freed"
+assert_contains "the verdict counts the steps" "$out" "1 ok, 18 skipped"
+assert_contains "the verdict carries the uptime" "$out" "up 1d 2h"
+hist="$d/home/Library/Logs/stay_fresh/history.tsv"
+assert_exists "history.tsv is written" "$hist"
+assert_eq "history has one row" "1" "$(wc -l <"$hist" | tr -d ' ')"
+assert_contains "the history row carries the result" "$(cut -f2 "$hist")" "OK"
+if python3 - "$d/home/Library/Logs/stay_fresh/last-run.json" <<'PY'
+import json, sys
+with open(sys.argv[1]) as fh:
+    data = json.load(fh)
+assert data["result"] == "OK", data
+assert data["ok"] and data["ok"][0].startswith("Active tool versions"), data
+assert isinstance(data["freed_bytes"], int) and isinstance(data["elapsed_s"], int), data
+assert data["log"] == "", data
+PY
+then ok "last-run.json is valid and carries the verdict"
+else err "last-run.json is missing or malformed"; cat "$d/home/Library/Logs/stay_fresh/last-run.json" >&2 2>/dev/null; fi
+out="$(run_sf "$d" --history)"; rc=$?
+assert_eq "--history prints after a run" "0" "$rc"
+assert_contains "--history shows the row" "$out" "OK"
+assert_contains "--history shows the step counts" "$out" "1/0/0/18"
+rm -rf "$d"
+
+# ===========================================================================
+section "notifications (macOS banner, Telegram)"
+# The banner goes through osascript; the verdict is the title.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a run with a macOS notification succeeds" "0" "$rc"
+assert_called "the banner is posted through osascript" "$d/calls" 'display notification'
+assert_called "the banner title is the verdict" "$d/calls" 'with title "stay_fresh OK: freed'
+assert_contains "the preflight names the channel" "$out" "notify: macos"
+rm -rf "$d"
+
+# A dry run notifies nobody, whatever the mode says.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --dry-run --only versions)"
+assert_contains "a dry run says it would notify" "$out" "would notify via macos"
+assert_not_called "a dry run posts no banner" "$d/calls" "display notification"
+rm -rf "$d"
+
+# Telegram: the token rides in a curl config on stdin, never on the command
+# line, and the chat id and text are form fields.
+tg_env() {
+  local d; d="$(new_env)"
+  mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat > "$CALLS.curl-config"; exit 0'
+  printf '%s' "$d"
+}
+d="$(tg_env)"; : > "$d/calls"
+out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_TG_BOT_TOKEN=123:secret-token STAY_FRESH_TG_CHAT_ID=42 \
+  run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a run with a Telegram notification succeeds" "0" "$rc"
+assert_contains "the Telegram send is reported" "$out" "telegram notification sent"
+assert_called "the chat id is a form field" "$d/calls" "chat_id=42"
+assert_called "the text starts with the verdict" "$d/calls" "text=stay_fresh OK: freed"
+assert_not_called "the token is not on the curl command line" "$d/calls" "secret-token"
+assert_contains "the token is in the stdin config" "$(cat "$d/calls.curl-config")" \
+  'url = "https://api.telegram.org/bot123:secret-token/sendMessage"'
+rm -rf "$d"
+
+# Without the environment, the login Keychain answers.
+d="$(tg_env)"; : > "$d/calls"
+mkbin "$d/bin/security" 'echo "security $*" >> "$CALLS"' \
+  'case "$*" in *"-a bot-token"*) echo "kc:token" ;; *"-a chat-id"*) echo 77 ;; esac'
+out="$(STAY_FRESH_NOTIFY=telegram run_sf "$d" --yes --only versions)"; rc=$?
+assert_called "the Keychain is asked for the token" "$d/calls" "find-generic-password -s stay_fresh-telegram -a bot-token -w"
+assert_called "the Keychain chat id is used" "$d/calls" "chat_id=77"
+assert_contains "the Keychain token reaches curl" "$(cat "$d/calls.curl-config")" "botkc:token/"
+rm -rf "$d"
+
+# No credentials anywhere: said once, the run itself is still fine.
+d="$(tg_env)"; : > "$d/calls"
+out="$(STAY_FRESH_NOTIFY=telegram run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "missing Telegram credentials do not fail the run" "0" "$rc"
+assert_contains "missing credentials are explained" "$out" "telegram notification skipped"
+assert_not_called "nothing is sent without credentials" "$d/calls" "curl"
+rm -rf "$d"
+
+# ===========================================================================
+section "snapshots (listed by default, deleted only with --thin-snapshots)"
+snap_env() {
+  local d; d="$(new_env)"
+  mkbin "$d/bin/tmutil" 'echo "tmutil $*" >> "$CALLS"' \
+    'case "${1:-}" in' \
+    '  listlocalsnapshots) echo "Snapshots for disk /:"' \
+    '    [ -n "${SNAPSHOTS:-}" ] && { echo "com.apple.TimeMachine.2026-09-01-101010.local"; echo "com.apple.TimeMachine.2026-09-07-030000.local"; } ;;' \
+    'esac; exit 0'
+  printf '%s' "$d"
+}
+d="$(snap_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only snapshots)"; rc=$?
+assert_eq "no snapshots is a clean step" "0" "$rc"
+assert_contains "no snapshots is said" "$out" "no local Time Machine snapshots"
+rm -rf "$d"
+
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 run_sf "$d" --yes --only snapshots)"; rc=$?
+assert_eq "listing snapshots succeeds" "0" "$rc"
+assert_contains "snapshots are counted" "$out" "2 local snapshot(s):"
+assert_contains "snapshot dates are listed" "$out" "2026-09-07-030000"
+assert_contains "the thinning flag is pointed at" "$out" "remove with --thin-snapshots"
+assert_not_called "nothing is deleted without --thin-snapshots" "$d/calls" "deletelocalsnapshots"
+assert_contains "the verdict mentions kept snapshots" "$out" "2 local snapshot(s) kept"
+assert_contains "listing is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "thinning succeeds" "0" "$rc"
+assert_called "each snapshot is deleted through sudo" "$d/calls" "sudo tmutil deletelocalsnapshots 2026-09-01-101010"
+assert_called "the second snapshot too" "$d/calls" "sudo tmutil deletelocalsnapshots 2026-09-07-030000"
+assert_contains "the verdict mentions thinned snapshots" "$out" "2 local snapshot(s) thinned"
+rm -rf "$d"
+
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 run_sf "$d" --yes --no-sudo --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "--no-sudo still lists" "0" "$rc"
+assert_contains "--no-sudo explains that thinning is off" "$out" "listed, not deleted"
+assert_not_called "--no-sudo deletes nothing" "$d/calls" "deletelocalsnapshots"
+assert_contains "the snapshots are still listed" "$out" "2 local snapshot(s):"
+rm -rf "$d"
+
+# ===========================================================================
+section "disk-report (opt-in, read-only, largest first)"
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/bigapp" "$d/home/Library/Caches/smallapp" "$d/home/Downloads" \
+         "$d/home/Library/Application Support/MobileSync/Backup/device"
+bytes_file "$d/home/Library/Caches/bigapp/blob" 512
+bytes_file "$d/home/Library/Caches/smallapp/blob" 8
+bytes_file "$d/home/Downloads/iso" 64
+bytes_file "$d/home/Library/Application Support/MobileSync/Backup/device/data" 128
+out="$(run_sf "$d" --dry-run --only disk-report)"
+assert_contains "a dry run names the roots without measuring" "$out" "would measure the largest entries under ~/Library/Caches"
+out="$(run_sf "$d" --yes --only disk-report)"; rc=$?
+assert_eq "disk-report succeeds" "0" "$rc"
+assert_contains "the report is read-only" "$out" "read-only; nothing above was changed"
+big_line="$(grep -n 'bigapp' <<<"$out" | head -1 | cut -d: -f1)"
+small_line="$(grep -n 'smallapp' <<<"$out" | head -1 | cut -d: -f1)"
+if [[ -n "$big_line" && -n "$small_line" ]] && (( big_line < small_line )); then
+  ok "entries are listed largest first"
+else err "entries are not listed largest first (big=$big_line small=$small_line)"; fi
+assert_contains "Downloads are covered" "$out" "iso"
+assert_contains "device backups are sized" "$out" "iPhone/iPad backups:"
+assert_exists "the report deletes nothing" "$d/home/Library/Caches/bigapp/blob"
+assert_exists "the report deletes nothing (Downloads)" "$d/home/Downloads/iso"
+out="$(run_sf "$d" --dry-run)"
+assert_contains "disk-report is off by default" "$(grep 'disk report' <<<"$out")" "skip"
+out="$(run_sf "$d" --dry-run --disk-report)"
+assert_contains "--disk-report turns it on" "$(grep 'disk report' <<<"$out")" "run"
+rm -rf "$d"
+
+# ===========================================================================
+section "trash on external volumes"
+# Each mounted volume keeps its own .Trashes/<uid>. The boot volume shows up
+# under /Volumes as a symlink and is skipped; a real second volume is emptied.
+d="$(new_env)"
+mkdir -p /Volumes/Ext/.Trashes/501/folder /Volumes/Empty/.Trashes/501 "$d/home/.Trash"
+ln -s / "/Volumes/Macintosh HD"
+bytes_file /Volumes/Ext/.Trashes/501/old 128
+: > /Volumes/Ext/.Trashes/501/folder/nested
+: > "$d/home/.Trash/file"
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "trash with external volumes succeeds" "0" "$rc"
+assert_gone "~/.Trash is still emptied" "$d/home/.Trash/file"
+assert_gone "the external volume's Trash is emptied" "/Volumes/Ext/.Trashes/501/old"
+assert_gone "nested external entries too" "/Volumes/Ext/.Trashes/501/folder"
+assert_exists "the external .Trashes/<uid> directory itself is kept" "/Volumes/Ext/.Trashes/501"
+assert_contains "the external volume is named" "$out" "K from Trash on Ext"
+assert_not_contains "an empty external Trash is not mentioned" "$out" "Trash on Empty"
+assert_not_contains "the boot volume symlink is skipped" "$out" "Trash on Macintosh HD"
+rm -rf /Volumes "$d"
+
+# ===========================================================================
+section "brew (upgrade count and outdated casks in the verdict)"
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; --repository) echo "$HOME/brewrepo" ;; esac' \
+  'case "${1:-} ${2:-}" in' \
+  '  "upgrade --help") echo "--yes" ;;' \
+  '  "upgrade --formula") echo "==> Upgrading 2 outdated packages:"; echo "fzf 0.60 -> 0.61"; echo "jq 1.7 -> 1.8"; echo "==> Upgrading fzf"; echo "==> Upgrading jq" ;;' \
+  '  "outdated --cask") echo alacritty; echo unetbootin ;;' \
+  'esac; exit 0'
+out="$(run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "brew step succeeds" "0" "$rc"
+assert_contains "upgraded packages are counted and named" "$out" "upgraded 2 package(s): fzf jq"
+assert_called "outdated casks are asked for" "$d/calls" "brew outdated --cask --quiet"
+assert_contains "outdated casks are named" "$out" "2 cask(s) still outdated:"
+assert_contains "the manual cask command is given" "$out" "brew upgrade --cask alacritty unetbootin"
+assert_contains "the verdict carries the brew facts" "$out" "brew upgraded 2; 2 cask(s) still outdated"
+assert_contains "history records the upgrade count" "$(cut -f10 "$d/home/Library/Logs/stay_fresh/history.tsv")" "2"
+rm -rf "$d"
+
+# Pending OS updates reach the verdict as a count.
+d="$(os_env)"; : > "$d/calls"
+out="$(SU_PENDING=1 MAS_PENDING=1 run_os "$d" --yes --only os-updates)"
+assert_contains "the verdict counts pending OS updates" "$out" "2 OS/App Store update(s) pending"
 rm -rf "$d"
 
 # ===========================================================================

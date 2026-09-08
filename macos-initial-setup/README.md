@@ -455,6 +455,24 @@ In the order they run:
     reported and does not count against the step either, for the same reason.
     Not probed under `--dry-run`: the catalogue scan is a system action that
     takes time on the network.
+18. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
+    APFS keeps every block a snapshot references, so a run can free gigabytes
+    and `df` still not move; macOS thins the snapshots on its own only under
+    disk pressure. Listing is read-only. `--thin-snapshots` deletes them with
+    `sudo tmutil deletelocalsnapshots`; the backup disk is never touched, and
+    `--no-sudo` demotes the flag to listing.
+19. Print a **disk report**, opt-in (`--disk-report` or `--only disk-report`):
+    the five largest entries under `~/Library/Caches`, `Application Support`,
+    `Containers`, `Developer`, `Logs`, `~/.cache` and `~/Downloads`, plus the
+    size of iPhone/iPad backups. Read-only, and off by default because `du`
+    over a full home directory takes minutes.
+
+Every real run then ends with a one-line verdict (`stay_fresh OK: freed 1.2G
+in 4m10s`, then step counts, packages Homebrew upgraded, casks still outdated,
+pending OS updates, snapshots, uptime), appends a row to
+`~/Library/Logs/stay_fresh/history.tsv`, rewrites `last-run.json` next to it,
+and sends a notification when asked (see `--notify`). `--history` prints the
+last ten rows.
 
 ### Usage
 
@@ -471,7 +489,26 @@ In the order they run:
 ./stay_fresh.sh --cleanup-old-gems # opt-in removal of old installed gem versions
 ./stay_fresh.sh --fail-on-warn     # useful for schedulers and monitoring
 ./stay_fresh.sh --skip-devtools   # skip all dev-tool refresh steps at once
+./stay_fresh.sh --quick           # user-level cleanup only: no sudo, no brew, no reports
+./stay_fresh.sh --thin-snapshots  # also delete local Time Machine snapshots
+./stay_fresh.sh --disk-report     # also list the largest entries under ~/Library etc.
+./stay_fresh.sh --history         # the last ten runs: result, freed, duration
+./stay_fresh.sh --yes --notify telegram   # verdict to Telegram (credentials: see below)
 ```
+
+Telegram credentials come from `STAY_FRESH_TG_BOT_TOKEN` and
+`STAY_FRESH_TG_CHAT_ID`, or from the login Keychain, which is the right place
+for a scheduled run:
+
+```bash
+security add-generic-password -s stay_fresh-telegram -a bot-token -w '<bot token>'
+security add-generic-password -s stay_fresh-telegram -a chat-id  -w '<chat id>'
+```
+
+The token is handed to `curl` as a config file on stdin, so it never appears
+in `ps` output. macOS banners (`--notify macos`) go through `osascript` and
+need no setup; `auto`, the default, picks `macos` when no terminal is attached
+and `none` otherwise.
 
 ### Options
 
@@ -483,7 +520,10 @@ In the order they run:
 | `--fail-on-warn` | Exit `1` when a step records a real warning; scheduled runs enable this. |
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, system diagnostics, and Homebrew cask upgrades. |
 | `--only STEP1,STEP2` | Run only named stable step ids; use `--list-steps`. Cannot be mixed with individual `--skip-*` flags. |
+| `--quick` | Same as `--only user-caches,app-caches,ai-caches,workspace-storage,trash,dev-caches`: everything a user can clear without sudo, Homebrew or the network. Cannot be mixed with `--only` or `--skip-*`. |
 | `--list-steps` | List every selectable step id and exit before preflight. |
+| `--history` | Print the last ten rows of `~/Library/Logs/stay_fresh/history.tsv` and exit. |
+| `--notify MODE` | `none`, `macos`, `telegram`, `both`, or `auto` (default; env `STAY_FRESH_NOTIFY`). Sent after the summary of a real run, never under `--dry-run`. |
 | `--brew-greedy` | Upgrade casks that self-update (`auto_updates true`, `:latest`). |
 | `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-gcloud --skip-versions`. |
 | `--purge-memory` | Opt into `sudo purge` for cold-cache troubleshooting. |
@@ -508,6 +548,9 @@ In the order they run:
 | `--skip-gcloud` | Skip `gcloud components update`. |
 | `--skip-versions` | Skip the version report. |
 | `--skip-os-updates` | Skip the pending macOS / App Store update report (step 17). |
+| `--skip-snapshots` | Skip listing local Time Machine snapshots (step 18). |
+| `--thin-snapshots` | Delete the local snapshots step 18 lists; needs sudo, listed only under `--no-sudo`. |
+| `--disk-report` | Enable the read-only disk report (step 19). |
 | `-h`, `--help` | Show the built-in help. |
 
 `--only` is the safer interface for one-off work: it initializes every step as
@@ -549,6 +592,18 @@ accounting, and closes with a summary that includes:
   disabled carries its reason, e.g. `Docker / OrbStack prune (the Docker
   daemon is unreachable)`.
 - Path to the full log file when warnings or failures caused it to be retained.
+- A one-line verdict and a detail line: `stay_fresh OK: freed 1.2G in 4m10s`,
+  then `15 ok, 4 skipped; brew upgraded 3; 2 cask(s) still outdated; 1
+  OS/App Store update(s) pending; 2 local snapshot(s) kept; up 12d 4h`. The
+  same two lines are the notification and the `headline` / `detail` fields of
+  `last-run.json`.
+
+Two files under `~/Library/Logs/stay_fresh/` carry the verdict forward:
+`history.tsv` gets one tab-separated row per real run (timestamp, result,
+elapsed seconds, bytes freed, `df` delta, ok/warn/fail/skip counts, packages
+upgraded, OS updates pending, kept log path), and `last-run.json` is rewritten
+each time for anything that wants the latest state without parsing a log: a
+prompt segment, a status-bar widget, the agent's `status`.
 
 ### Exit codes
 
@@ -844,6 +899,7 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ./launchd/stay_fresh_agent.sh install                      # Mondays, 10:30
 ./launchd/stay_fresh_agent.sh install --weekday daily --hour 3
 ./launchd/stay_fresh_agent.sh install --profile full       # original broad maintenance
+./launchd/stay_fresh_agent.sh install --notify telegram    # verdict to Telegram after each run
 ./launchd/stay_fresh_agent.sh install --dry-run            # preview install only
 ./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
 ./launchd/stay_fresh_agent.sh status
@@ -877,6 +933,12 @@ casks.
 
 Every scheduled run passes `--fail-on-warn`, so incomplete cleanup or a failed
 update produces a non-zero launchd exit status instead of appearing healthy.
+A scheduled run has no terminal, so `stay_fresh.sh`'s default `--notify auto`
+posts a Notification Center banner with the verdict when it finishes; `install
+--notify telegram` (or `both`, or `none`) is stored in the plist and passed
+through. Telegram credentials belong in the login Keychain for this use (see
+the `stay_fresh.sh` usage above), because the agent's environment carries
+only `PATH`.
 Install and replacement are transactional: a failed bootstrap restores the
 previous plist and restarts the old job. `uninstall --dry-run` previews removal;
 options that do not belong to a command are rejected with exit `3`.
@@ -974,7 +1036,7 @@ suites:
 | Suite | File | Scope |
 | --- | --- | --- |
 | `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
-| `steps` | `test_stay_fresh_steps.sh` | Each of the seventeen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the nineteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
 | `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
 
 The `steps` suite fakes only the commands that identify the host or that the
@@ -1114,6 +1176,14 @@ Homebrew / `pyenv` / `goenv` commands.
 - Writes `$TMPDIR/stay_fresh-YYYYMMDD-HHMMSS.log` during the run. A
   clean run discards it; a run with warnings or failures keeps it under
   `~/Library/Logs/stay_fresh/`, pruned to the ten most recent.
+- Appends one row per real run to `~/Library/Logs/stay_fresh/history.tsv`
+  and rewrites `last-run.json` there. Sends a notification only when
+  `--notify` (or `STAY_FRESH_NOTIFY`) asks for one, and reads the Telegram
+  token from the environment or the `stay_fresh-telegram` Keychain items.
+- Empties the per-user Trash of every mounted volume (`/Volumes/*/.Trashes/<uid>`),
+  not only `~/.Trash`.
+- Deletes local Time Machine snapshots only with `--thin-snapshots`; by
+  default it lists them.
 - Does **not** modify any shell configuration files.
 
 ### `v1_stay_fresh.sh`

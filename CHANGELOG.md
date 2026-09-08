@@ -16,6 +16,31 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh` ends every real run with a verdict it can act on: a
+  headline (`stay_fresh OK: freed 1.2G in 4m10s`) and a detail line with the
+  step counts, the packages Homebrew upgraded, the casks still outdated, the
+  OS and App Store updates pending, the local snapshots found, and the
+  uptime. The same two lines go to a Notification Center banner or a Telegram
+  message (`--notify none|macos|telegram|both|auto`; `auto` posts a banner
+  when no terminal is attached, which is the scheduled case), into
+  `~/Library/Logs/stay_fresh/history.tsv` (one row per run; `--history`
+  prints the last ten), and into `last-run.json` next to it. The Telegram
+  token comes from the environment or the login Keychain and is handed to
+  `curl` as a config file on stdin, never as an argument. Two new steps:
+  `snapshots` lists local Time Machine snapshots, the usual reason `df` does
+  not move after a cleanup, and deletes them only with `--thin-snapshots`
+  (sudo; demoted to listing under `--no-sudo`); `disk-report`, opt-in through
+  `--disk-report`, prints the largest entries under `~/Library/Caches`,
+  `Application Support`, `Containers`, `Developer`, `Logs`, `~/.cache` and
+  `~/Downloads`, and the size of device backups, read-only. `--quick` is the
+  user-level cleanup as one flag (user, app and AI caches, workspace storage,
+  Trash, dev-tool caches: no sudo, no Homebrew, no reports). The trash step
+  also empties `/Volumes/*/.Trashes/<uid>`, the per-volume Trash that only
+  Finder ever drained. `launchd/stay_fresh_agent.sh install --notify MODE`
+  stores the mode in the plist and passes it through. The steps suite covers
+  each of these with faked `osascript`, `curl`, `security`, `tmutil` and
+  `sysctl`, and the contract suite the agent's plist and option rejection.
+
 - `backup_update_check.lua` takes its verdict from RouterOS's `status` line,
   polled until it settles, instead of a fixed 15-second wait and an
   `installed != latest` comparison. Measured on a 7.24.2 CHR: issuing the
