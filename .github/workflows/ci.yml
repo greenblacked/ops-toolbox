@@ -86,12 +86,13 @@ jobs:
       dockerfile: ${{ steps.filter.outputs.dockerfile }}
       manifests: ${{ steps.filter.outputs.manifests }}
       compose: ${{ steps.filter.outputs.compose }}
-      suite_git: ${{ steps.filter.outputs.suite_git }}
+      # The Test / <suite> matrix, built from `run-tests.sh --list` below so
+      # a suite added to the aggregator gets its job without an edit here.
+      matrix: ${{ steps.filter.outputs.matrix }}
+      # The two native jobs are not matrix entries and read their suite's
+      # verdict directly.
       suite_macos: ${{ steps.filter.outputs.suite_macos }}
-      suite_linux: ${{ steps.filter.outputs.suite_linux }}
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
-      suite_k8s: ${{ steps.filter.outputs.suite_k8s }}
-      suite_dotfiles: ${{ steps.filter.outputs.suite_dotfiles }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -172,12 +173,47 @@ jobs:
           emit dockerfile    '(^|/)Dockerfile$'
           emit manifests     '^(k8s-toolbox/(examples|debug)/|linux/cloud-init/).*\.ya?ml$'
           emit compose       '(^|/)docker-compose[^/]*\.ya?ml$'
-          emit suite_git     '^git/'
-          emit suite_macos   '^macos-initial-setup/'
-          emit suite_linux   '^linux/'
-          emit suite_windows '^windows/'
-          emit suite_k8s     '^k8s-toolbox/'
-          emit suite_dotfiles '^dotfiles/'
+
+          # Suites come from the aggregator's own table, not a copy of it
+          # here. `run-tests.sh --list` prints name, package directory and
+          # blurb per suite; a suite runs when a changed file sits under its
+          # package. The same loop builds the Test / <suite> matrix, so the
+          # workflow has no per-suite lines to forget when one is added -
+          # the dotfiles suite arrived with four hand edits to this file and
+          # its summary row was the one that got missed.
+          #
+          # Three suites are not matrix entries: python and static have jobs
+          # of their own (static runs on every change), and mikrotik boots a
+          # router under QEMU in its own workflow.
+          echo
+          echo "suites:"
+          matrix='[]'
+          while IFS=$'\t' read -r suite pkg _blurb; do
+            [ -n "$suite" ] || continue
+            case "$suite" in python|static|mikrotik) continue ;; esac
+            emit "suite_$suite" "^${pkg}/"
+            changed="$(grep "^suite_$suite=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2)"
+            case "$suite" in
+              linux)
+                # Keep the historical `Test / linux` name for the Debian
+                # fixture so an existing required-check rule continues to
+                # report. Fedora and Arch run as separate jobs: failures
+                # identify the affected package manager immediately, and the
+                # three images build in parallel.
+                matrix="$(jq -c --arg c "$changed" '. + [
+                  {check_name: "linux",          suite: "linux", linux_distro: "debian", changed: $c},
+                  {check_name: "linux (fedora)", suite: "linux", linux_distro: "fedora", changed: $c},
+                  {check_name: "linux (arch)",   suite: "linux", linux_distro: "arch",   changed: $c}
+                ]' <<< "$matrix")"
+                ;;
+              *)
+                matrix="$(jq -c --arg s "$suite" --arg c "$changed" \
+                  '. + [{check_name: $s, suite: $s, linux_distro: "", changed: $c}]' <<< "$matrix")"
+                ;;
+            esac
+          done < <(./run-tests.sh --list)
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf '  %-14s %s\n' matrix "$(jq -r 'map(.check_name) | join(", ")' <<< "$matrix")"
 
       - name: Summarise
         if: always()
@@ -195,12 +231,10 @@ jobs:
             printf '| Dockerfile | %s |\n' '${{ steps.filter.outputs.dockerfile }}'
             printf '| manifests | %s |\n'  '${{ steps.filter.outputs.manifests }}'
             printf '| Compose | %s |\n'    '${{ steps.filter.outputs.compose }}'
-            printf '| git suite | %s |\n'     '${{ steps.filter.outputs.suite_git }}'
-            printf '| macos suite | %s |\n'   '${{ steps.filter.outputs.suite_macos }}'
-            printf '| linux suite | %s |\n'   '${{ steps.filter.outputs.suite_linux }}'
-            printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
-            printf '| k8s suite | %s |\n'     '${{ steps.filter.outputs.suite_k8s }}'
-            printf '| dotfiles suite | %s |\n'     '${{ steps.filter.outputs.suite_dotfiles }}'
+            # One row per suite, from the same matrix the test job runs, so a
+            # suite cannot be in the matrix and missing from this table.
+            jq -r 'unique_by(.suite)[] | "| \(.suite) suite | \(.changed) |"' \
+              <<< '${{ steps.filter.outputs.matrix }}'
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
@@ -690,52 +724,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `include` rather than a bare list so each entry can carry its own
-        # change filter. `changed` is read by the step-level `if` below, which
-        # keeps the job reporting success when there is nothing to do.
-        include:
-          - check_name: git
-            suite: git
-            changed: ${{ needs.changes.outputs.suite_git }}
-          - check_name: macos
-            suite: macos
-            changed: ${{ needs.changes.outputs.suite_macos }}
-          # Keep the historical `Test / linux` name for the Debian fixture so
-          # an existing required-check rule continues to report. Fedora and
-          # Arch run as separate jobs: failures identify the affected package
-          # manager immediately, and the three images build in parallel.
-          - check_name: linux
-            suite: linux
-            linux_distro: debian
-            changed: ${{ needs.changes.outputs.suite_linux }}
-          - check_name: linux (fedora)
-            suite: linux
-            linux_distro: fedora
-            changed: ${{ needs.changes.outputs.suite_linux }}
-          - check_name: linux (arch)
-            suite: linux
-            linux_distro: arch
-            changed: ${{ needs.changes.outputs.suite_linux }}
-          # Needs pwsh, which the ubuntu image ships preinstalled. The suite
-          # skips itself with exit 0 on a host without it, so the job asserts
-          # pwsh is really there rather than trusting a green tick.
-          - check_name: windows
-            suite: windows
-            changed: ${{ needs.changes.outputs.suite_windows }}
-          # Contract checks on the k8s-toolbox scripts; needs nothing but bash.
-          # It deliberately does not build the image — five pinned toolchains
-          # pulled from five hosts is minutes of network per run, and the
-          # scripts that drive the build are what regress. K8S_IMAGE_SMOKE=1
-          # runs the real build when that is what you want to verify.
-          - check_name: k8s
-            suite: k8s
-            changed: ${{ needs.changes.outputs.suite_k8s }}
-          # The tool configs and the script that links them; needs nothing
-          # but bash. python3 is on the runner, so the TOML, YAML and JSON
-          # configs are parsed as well rather than skipped.
-          - check_name: dotfiles
-            suite: dotfiles
-            changed: ${{ needs.changes.outputs.suite_dotfiles }}
+        # Built by the Detect changes job from `run-tests.sh --list`: one
+        # entry per suite (three for linux, one per distribution), each with
+        # its own `changed` verdict. `changed` is read by the step-level `if`
+        # below, which keeps the job reporting success when there is nothing
+        # to do. The windows entry needs pwsh, which the ubuntu image ships
+        # preinstalled; the k8s entry deliberately does not build the image
+        # (K8S_IMAGE_SMOKE=1 does); the dotfiles entry parses every config
+        # because python3 is on the runner.
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - name: Check out repository
         if: matrix.changed == 'true'
