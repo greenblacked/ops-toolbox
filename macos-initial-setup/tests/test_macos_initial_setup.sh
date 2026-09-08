@@ -175,7 +175,7 @@ set -e
 assert_eq "install_devtools rejects unknown --only tool -> 3" "3" "$rc"
 
 steps_out="$("$M/stay_fresh.sh" --list-steps)"
-for step_id in brew docker workspace-storage versions os-updates; do
+for step_id in brew docker workspace-storage krew versions os-updates; do
   assert_contains "stay_fresh lists selectable $step_id" "$steps_out" "$step_id"
 done
 set +e
@@ -263,6 +263,11 @@ if grep -Eq 'purge disk caches[[:space:]]+skip' <<<"$out"; then
   ok "stay_fresh keeps purge opt-in by default"
 else
   err "stay_fresh planned purge without --purge-memory"
+fi
+if grep -Eq 'krew plugin refresh[[:space:]]+skip' <<<"$out"; then
+  ok "--skip-devtools also skips the krew refresh"
+else
+  err "--skip-devtools left the krew refresh planned"
 fi
 
 mkdir -p "$fake_macos/home/Library/Developer/Xcode/Archives/2020-01-01/Test.xcarchive"
@@ -493,7 +498,7 @@ out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${brew_absent_skip[@]}" 2>&1)"
 assert_contains "an all-skipped run counts each step exactly once" "$out" \
-  "skipped:     17"
+  "skipped:     18"
 assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
   "brew (not installed)"
 assert_contains "a skipped step reports why it was skipped" "$out" \

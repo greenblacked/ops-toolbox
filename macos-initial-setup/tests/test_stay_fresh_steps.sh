@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the nineteen steps for real against a scratch HOME and a faked set of
+# each of the twenty steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -123,6 +123,7 @@ run_sf() {
     DOCKER_INFO_N="$d/docker.info.n" \
     NODE_RC="${NODE_RC:-0}" \
     HELM_UPDATE_RC="${HELM_UPDATE_RC:-0}" \
+    KREW_UPGRADE_RC="${KREW_UPGRADE_RC:-0}" \
     GCLOUD_COMPONENTS_RC="${GCLOUD_COMPONENTS_RC:-0}" \
     BREW_REPO="${BREW_REPO:-}" \
     STAY_FRESH_NOTIFY="${STAY_FRESH_NOTIFY:-none}" \
@@ -722,6 +723,55 @@ assert_called "the second installed plugin is updated" "$d/calls" "helm plugin u
 rm -rf "$d"
 
 # ===========================================================================
+section "krew (kubectl plugin refresh)"
+krew_env() {
+  local d; d="$(new_env)"
+  # The table shape krew prints to a terminal; the pipe shape is names only,
+  # and the parser has to take both.
+  mkbin "$d/bin/kubectl" 'echo "kubectl $*" >> "$CALLS"' \
+    'case "${1:-} ${2:-}" in' \
+    '  "krew list") printf "PLUGIN  VERSION\n"; printf "ctx  v0.9.5\n"; printf "ns  v0.9.5\n"; exit 0 ;;' \
+    '  "krew update") exit 0 ;;' \
+    '  "krew upgrade") exit "${KREW_UPGRADE_RC:-0}" ;;' \
+    'esac; exit 0'
+  mkbin "$d/bin/kubectl-krew" 'exit 0'
+  printf '%s' "$d"
+}
+d="$(krew_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only krew)"; rc=$?
+assert_eq "krew step succeeds" "0" "$rc"
+assert_called "the krew index is refreshed first" "$d/calls" "kubectl krew update"
+assert_called "the first installed plugin is upgraded"  "$d/calls" "kubectl krew upgrade ctx"
+assert_called "the second installed plugin is upgraded" "$d/calls" "kubectl krew upgrade ns"
+assert_not_called "the table header is not taken for a plugin" "$d/calls" "kubectl krew upgrade PLUGIN"
+rm -rf "$d"
+
+d="$(krew_env)"; : > "$d/calls"
+out="$(KREW_UPGRADE_RC=1 run_sf "$d" --yes --only krew)"; rc=$?
+assert_eq "a failed plugin upgrade does not fail the run" "0" "$rc"
+assert_contains "a failed plugin upgrade is accounted a warning" "$out" "warn steps:  1"
+rm -rf "$d"
+
+# --skip-devtools covers krew like the other refresh steps.
+d="$(krew_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --no-sudo --skip-devtools --skip-dns --skip-syscaches \
+  --skip-usercaches --skip-appcaches --skip-aicaches --skip-workspacestorage \
+  --skip-trash --skip-brew --skip-devcaches --skip-snapshots --skip-docker \
+  --skip-xcode --skip-diagnostics --skip-os-updates)"; rc=$?
+assert_eq "--skip-devtools run succeeds" "0" "$rc"
+assert_not_called "--skip-devtools skips krew" "$d/calls" "kubectl krew"
+rm -rf "$d"
+
+# kubectl without krew, and no kubectl at all, are both clean steps.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/kubectl" 'echo "kubectl $*" >> "$CALLS"; exit 0'
+out="$(run_sf "$d" --yes --only krew)"; rc=$?
+assert_eq "krew step without krew succeeds" "0" "$rc"
+assert_contains "krew step without krew says so" "$out" "krew not installed"
+assert_not_called "nothing is run through kubectl without krew" "$d/calls" "kubectl krew"
+rm -rf "$d"
+
+# ===========================================================================
 section "gcloud"
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/gcloud" 'echo "gcloud $*" >> "$CALLS"' \
@@ -878,7 +928,7 @@ mkbin "$d/bin/sysctl" 'echo "{ sec = $(( $(date +%s) - 93600 )), usec = 0 } Mon 
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "a real run succeeds" "0" "$rc"
 assert_contains "the verdict line is printed" "$out" "stay_fresh OK: freed"
-assert_contains "the verdict counts the steps" "$out" "1 ok, 18 skipped"
+assert_contains "the verdict counts the steps" "$out" "1 ok, 19 skipped"
 assert_contains "the verdict carries the uptime" "$out" "up 1d 2h"
 hist="$d/home/Library/Logs/stay_fresh/history.tsv"
 assert_exists "history.tsv is written" "$hist"
@@ -898,7 +948,7 @@ else err "last-run.json is missing or malformed"; cat "$d/home/Library/Logs/stay
 out="$(run_sf "$d" --history)"; rc=$?
 assert_eq "--history prints after a run" "0" "$rc"
 assert_contains "--history shows the row" "$out" "OK"
-assert_contains "--history shows the step counts" "$out" "1/0/0/18"
+assert_contains "--history shows the step counts" "$out" "1/0/0/19"
 rm -rf "$d"
 
 # ===========================================================================
