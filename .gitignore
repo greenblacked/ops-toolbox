@@ -24,6 +24,14 @@
 # own negation line here, or git will quietly leave it out.
 /.*/
 !/.github/
+# The remote-session startup hook is the exception: a remote session starts
+# from a bare clone, so the hook that prepares it has to be in the tree. Only
+# the hook and the settings file that registers it are tracked; everything
+# else the agent keeps in that directory stays local.
+!/.claude/
+/.claude/*
+!/.claude/hooks/
+!/.claude/settings.json
 
 # Local agent instructions belong to the machine running them, not the repo.
 AGENTS.md
