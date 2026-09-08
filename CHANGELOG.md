@@ -16,6 +16,18 @@ entry here belongs to a version.
 
 ### Added
 
+- CI builds its `Test / <suite>` matrix from `run-tests.sh --list`, which now
+  prints each suite's package directory as a second column. Adding a suite
+  used to take four hand edits to the workflow - a job output, a filter line,
+  a matrix entry and a summary row - and the dotfiles suite arrived with the
+  summary row missing. The aggregator's table was already the one place to
+  add a suite for everything local; it is now the one place for CI too, and
+  the contract test checks that every listed package directory exists.
+- The dotfiles suite parses its TOML, YAML, JSON and Python configs in one
+  Python run instead of one interpreter launch per file, which was most of
+  the suite's wall clock. Per-file verdicts and the skip-when-no-parser
+  behaviour are unchanged.
+
 - `backup_update_check.lua` takes its verdict from RouterOS's `status` line,
   polled until it settles, instead of a fixed 15-second wait and an
   `installed != latest` comparison. Measured on a 7.24.2 CHR: issuing the

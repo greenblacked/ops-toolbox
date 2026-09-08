@@ -389,6 +389,13 @@ executable, and exits non-zero on failure. `run-tests.sh` is the single
 entry point and CI calls it, so a green run locally and a green run in CI mean
 the same thing.
 
+The suite table at the top of `run-tests.sh` is also what CI reads. The
+`Detect changes` job runs `run-tests.sh --list`, matches changed files against
+each suite's package directory, and builds the `Test / <suite>` matrix from
+the result, so a suite added to that table gets its job without an edit to
+the workflow. The exceptions are named in the workflow: `python` and `static`
+have jobs of their own, and `mikrotik` runs in its own workflow.
+
 The Docker suites mount the repository **read-only** at `/repo`, so all scratch
 state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses —
 `failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `# --- section ---`
