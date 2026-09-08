@@ -10,7 +10,7 @@
 #
 # Usage:
 #   ./stay_fresh_agent.sh install [--weekday N] [--hour N] [--minute N]
-#                                 [--profile safe|full] [--dry-run]
+#                                 [--profile safe|full] [--notify MODE] [--dry-run]
 #   ./stay_fresh_agent.sh uninstall [--dry-run]
 #   ./stay_fresh_agent.sh status
 #   ./stay_fresh_agent.sh run-now
@@ -23,6 +23,9 @@
 #   --profile P   'safe' runs protected app/AI-cache cleanup, workspace cleanup,
 #                 and version reporting; 'full' keeps the original broad behavior
 #                 (default safe)
+#   --notify M    Passed to stay_fresh.sh as --notify: none, macos, telegram,
+#                 both or auto (default: not passed, and stay_fresh.sh's auto
+#                 sends a macOS banner because no terminal is attached)
 #   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
 #                 nothing and loading nothing
@@ -78,6 +81,8 @@ AGENT_DRY_RUN=0
 PRINT_ONLY=0
 PROFILE="safe"
 PROFILE_SET=0
+NOTIFY=""
+NOTIFY_SET=0
 SCHEDULE_SET=0
 TAIL_LINES=80
 TAIL_SET=0
@@ -146,6 +151,17 @@ while (( $# > 0 )); do
         || { err "--profile must be 'safe' or 'full'"; exit 3; }
       PROFILE_SET=1
       ;;
+    --notify)
+      shift; [[ $# -gt 0 ]] || { err "--notify needs a value"; exit 3; }
+      case "$1" in none|macos|telegram|both|auto) ;; *) err "--notify must be none, macos, telegram, both or auto"; exit 3 ;; esac
+      NOTIFY="$1"
+      NOTIFY_SET=1
+      ;;
+    --notify=*)
+      NOTIFY="${1#*=}"
+      case "$NOTIFY" in none|macos|telegram|both|auto) ;; *) err "--notify must be none, macos, telegram, both or auto"; exit 3 ;; esac
+      NOTIFY_SET=1
+      ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
     --print-only) PRINT_ONLY=1 ;;
     --tail)
@@ -172,21 +188,21 @@ case "$CMD" in
     (( TAIL_SET == 0 )) || { err "--tail is only valid with logs"; exit 3; }
     ;;
   uninstall)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
       || { err "uninstall accepts only --dry-run"; exit 3; }
     ;;
   logs)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
       || { err "logs accepts only --tail"; exit 3; }
     ;;
   status|run-now)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && PRINT_ONLY == 0 \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 \
        && AGENT_DRY_RUN == 0 && TAIL_SET == 0 )) \
       || { err "$CMD does not accept options"; exit 3; }
     ;;
   run-scheduled)
     (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
-      || { err "run-scheduled accepts only --profile and --dry-run"; exit 3; }
+      || { err "run-scheduled accepts only --profile, --notify and --dry-run"; exit 3; }
     ;;
 esac
 
@@ -247,6 +263,7 @@ run_scheduled() {
     # recorded local project path is provably gone.
     args+=(--only app-caches,ai-caches,workspace-storage,versions)
   fi
+  (( NOTIFY_SET )) && args+=(--notify "$NOTIFY")
   (( AGENT_DRY_RUN )) && args+=(--dry-run)
 
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
@@ -287,6 +304,11 @@ case "$CMD" in
     args="        <string>run-scheduled</string>
         <string>--profile</string>
         <string>$PROFILE</string>"
+    if (( NOTIFY_SET )); then
+      args="$args
+        <string>--notify</string>
+        <string>$NOTIFY</string>"
+    fi
 
     if (( DAILY )); then
       schedule="    <key>StartCalendarInterval</key>
