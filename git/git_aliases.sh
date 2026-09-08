@@ -61,6 +61,7 @@ _pus_git_alias gwho     git_whoami.sh
 _pus_git_alias gsync    git_sync_default.sh
 _pus_git_alias gmerged  git_cleanup_merged.sh
 _pus_git_alias ggone    git_prune_gone.sh
+_pus_git_alias gclone   clone-repos.sh
 _pus_git_alias gstale   git_stale_branches.sh
 _pus_git_alias gsize    git_size_report.sh
 _pus_git_alias ghooks   git_hooks_install.sh
