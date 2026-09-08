@@ -13,7 +13,8 @@
 #   - prune VS Code workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, uv, go, kubectl
-#     discovery); uninstall old gem versions only when explicitly requested
+#     discovery, Terraform provider cache, stale gcloud logs, pre-commit
+#     repos); uninstall old gem versions only when explicitly requested
 #   - prune Docker / OrbStack (images, containers, builder cache; volumes
 #     only with --prune-docker-volumes, because volumes hold data)
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
@@ -291,7 +292,8 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-brew            Don't run Homebrew maintenance (see Notes)
   --brew-greedy          Also upgrade casks with 'auto_updates true' / 'version :latest'
                          (may prompt for sudo during cask postinstalls)
-  --skip-devcaches       Don't clean npm/yarn/pnpm/pip/uv/go/kubectl caches
+  --skip-devcaches       Don't clean npm/yarn/pnpm/pip/uv/go/kubectl/terraform
+                         caches, stale gcloud logs, or unused pre-commit repos
   --cleanup-old-gems     Uninstall old gem versions during dev-cache cleanup
                          (off by default; this changes installed packages)
   --skip-devtools        Shorthand: skip all dev-tool refresh steps below
@@ -332,6 +334,15 @@ ${C_BOLD}Notes:${C_RESET}
   folder ever opened and never garbage-collect them. Only entries whose recorded
   path no longer exists are removed; remote workspaces and anything unparsable
   are kept.
+
+  Protected entries: macOS keeps some cache entries out of reach on purpose.
+  System Integrity Protection covers /System/Library/Caches and a few Apple
+  services under /Library/Caches; the privacy controls (TCC) cover entries
+  such as HomeKit, CloudKit, Safari and ~/.Trash unless the terminal or agent
+  has Full Disk Access. Those are reported as kept, not as warnings, because
+  no run can change them. An entry owned by another user is different - a
+  root-owned updater leftover in your caches - and is retried with sudo when
+  sudo is available, or warned about when it is not.
 
   Diagnostic / crash reports: always runs as your user (clears
   ~/Library/Logs/DiagnosticReports and ~/Library/DiagnosticReports). With sudo
@@ -633,12 +644,36 @@ run_cmd_tty() {
   return "$rc"
 }
 
+# Count the lines of an rm/find error capture that name each kind of refusal.
+# "Operation not permitted" is EPERM: System Integrity Protection, or the
+# privacy controls (TCC) on a terminal without Full Disk Access - nothing this
+# run can do changes it. "Permission denied" is EACCES: ordinary ownership, and
+# sudo can take it. Anything else is a real failure. Both macOS and GNU tools
+# end the line with the strerror text, so the match is on the suffix.
+count_errors() {
+  local file="$1"
+  PROTECTED_N=0; DENIED_N=0; OTHER_N=0
+  [[ -s "$file" ]] || return 0
+  PROTECTED_N=$(grep -c 'Operation not permitted$' "$file" || true)
+  DENIED_N=$(grep -c 'Permission denied$' "$file" || true)
+  OTHER_N=$(grep -v -e 'Operation not permitted$' -e 'Permission denied$' "$file" | grep -c . || true)
+}
+
 # Clear contents of a directory (not the dir itself), with before/after size.
 # Uses sudo if $2 == "sudo".
+#
+# What the filesystem refuses is sorted before it is reported. A real macOS
+# run against ~/Library/Caches meets HomeKit, CloudKit, Safari and a dozen
+# other Apple entries the privacy controls keep out of reach, and /Library/
+# Caches holds services SIP protects; warning about those every run trained
+# the operator to stop reading the summary. They are counted and kept. An
+# entry another user owns - Slack's ShipIt updater leaves a root-owned one -
+# is retried with sudo when sudo is available, and warned about otherwise,
+# because that one a person can fix.
 # Usage: clear_dir <path> [sudo]
 clear_dir() {
-  local dir="$1" use_sudo="${2:-}" before_b after_b delta rc=0
-  local remaining="" verify_rc=0
+  local dir="$1" use_sudo="${2:-}" before_b after_b delta
+  local remaining="" verify_rc=0 errs kept=0
   if [[ ! -d "$dir" ]]; then
     printf "  %s- %s (missing, skipped)%s\n" "$C_DIM" "$dir" "$C_RESET"
     return 0
@@ -649,12 +684,27 @@ clear_dir() {
     printf "  %s(dry-run) would remove contents of %s%s\n" "$C_DIM" "$dir" "$C_RESET"
     return 0
   fi
+  errs="$(mktemp)"
   if [[ "$use_sudo" == "sudo" ]]; then
-    sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>>"$LOG_FILE" || rc=$?
+    sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
+  else
+    find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
+    # Only with a sudo credential already in hand - the preflight prompt, or a
+    # timestamp still valid from the shell - never a fresh prompt from inside
+    # a step, and never under --no-sudo.
+    if (( USE_SUDO )) && grep -q 'Permission denied$' "$errs" \
+       && { (( SUDO_AVAILABLE )) || sudo -n true 2>/dev/null; }; then
+      printf "  %sretrying entries owned by another user with sudo%s\n" "$C_DIM" "$C_RESET"
+      sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
+    fi
+  fi
+  count_errors "$errs"
+  cat "$errs" >>"$LOG_FILE"
+  rm -f "$errs"
+  if [[ "$use_sudo" == "sudo" ]]; then
     remaining="$(sudo find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
       || verify_rc=$?
   else
-    find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>>"$LOG_FILE" || rc=$?
     remaining="$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
       || verify_rc=$?
   fi
@@ -662,8 +712,21 @@ clear_dir() {
   delta=$(( before_b - after_b ))
   (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
   printf "  %s->%s freed %s from %s\n" "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$dir"
-  if (( rc != 0 || verify_rc != 0 )) || [[ -n "$remaining" ]]; then
-    warn_step "could not fully clear $dir — protected or recreated entries remain"
+  if (( OTHER_N > 0 || DENIED_N > 0 || verify_rc != 0 )) \
+     || { [[ -n "$remaining" ]] && (( PROTECTED_N == 0 )); }; then
+    if (( DENIED_N > 0 )); then
+      warn_step "could not fully clear $dir — entries owned by another user remain (a run with sudo available can remove them)"
+    else
+      warn_step "could not fully clear $dir — protected or recreated entries remain"
+    fi
+  elif (( PROTECTED_N > 0 )); then
+    if [[ "$use_sudo" == "sudo" ]]; then
+      kept="$(sudo find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | grep -c . || true)"
+    else
+      kept="$(find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | grep -c . || true)"
+    fi
+    printf "  %s%s entries kept: protected by macOS (SIP or privacy controls), see log%s\n" \
+      "$C_DIM" "$kept" "$C_RESET"
   fi
 }
 
@@ -1017,9 +1080,9 @@ plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "$xc
 plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "user (+ system if sudo)"
 plan_line "homebrew update/upgrade/cleanup"   "$(( 1 - SKIP_BREW        ))" "brew update · upgrade · cleanup -s · autoremove"
 if (( CLEANUP_OLD_GEMS )); then
-  devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl caches + old installed gems"
+  devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl/terraform caches, gcloud logs, pre-commit + old gems"
 else
-  devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl caches; installed gems kept"
+  devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl/terraform caches, gcloud logs, pre-commit; gems kept"
 fi
 plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
@@ -1037,7 +1100,7 @@ if (( ASSUME_YES == 0 )) && (( DRY_RUN == 0 )); then
   read -r answer
   case "$answer" in
     y|Y|yes|YES) ;;
-    *) warn "aborted by user"; exit 0 ;;
+    *) warn "aborted by user"; rm -f "$LOG_FILE"; exit 0 ;;
   esac
 fi
 
@@ -1087,9 +1150,21 @@ step_dns() {
   run_cmd "reload mDNSResponder" sudo killall -HUP mDNSResponder
 }
 
+# System Integrity Protection, as the system reports it. Absent csrutil means
+# a machine that is not a Mac, where nothing is protected.
+sip_enabled() {
+  command -v csrutil >/dev/null 2>&1 || return 1
+  csrutil status 2>/dev/null | grep -qi 'status: enabled'
+}
+
 step_syscaches() {
   clear_dir "/Library/Caches"        sudo
-  if [[ -d /System/Library/Caches ]]; then
+  if [[ -d /System/Library/Caches ]] && sip_enabled; then
+    # Every entry there sits behind SIP on a current Mac: the kext caches
+    # answered "Operation not permitted" to root, six lines a run, and the
+    # step warned every time. Nothing to attempt.
+    printf "  %s/System/Library/Caches: protected by System Integrity Protection, kept%s\n" "$C_DIM" "$C_RESET"
+  elif [[ -d /System/Library/Caches ]]; then
     printf "  /System/Library/Caches: removing writable entries only\n"
     if (( DRY_RUN == 0 )); then
       # BSD find on macOS does not consistently support -writable; use -perm instead.
@@ -1461,8 +1536,28 @@ step_trash() {
   fi
   # -mindepth 1 skips $trash itself; -delete handles hidden files and avoids the
   # '.' / '..' issues that 'rm -rf "$trash"/.*' produces.
-  local delete_rc=0 remaining="" verify_rc=0
-  find "$trash" -mindepth 1 -delete 2>>"$LOG_FILE" || delete_rc=$?
+  local delete_rc=0 remaining="" verify_rc=0 errs
+  errs="$(mktemp)"
+  find "$trash" -mindepth 1 -delete 2>"$errs" || delete_rc=$?
+  cat "$errs" >>"$LOG_FILE"
+  # ~/.Trash is behind the privacy controls: without Full Disk Access the
+  # shell cannot even list it, and find answers "Operation not permitted" on
+  # the directory itself. Finder can always empty it, so an interactive run
+  # asks Finder; a scheduled one has no way to answer the permission prompt
+  # that may raise, and says what to grant instead. Neither is a warning:
+  # the machine is fine, the terminal is not trusted with the Trash.
+  if grep -q "${trash}: Operation not permitted$" "$errs"; then
+    rm -f "$errs"
+    if have_tty && command -v osascript >/dev/null 2>&1 \
+       && run_cmd "empty Trash via Finder" osascript -e 'tell application "Finder" to empty the trash'; then
+      ok "Trash emptied by Finder (the shell itself has no Full Disk Access)"
+    else
+      STEP_WARN_COUNT=0
+      printf "  %s~/.Trash is protected by the privacy controls: grant Full Disk Access to this terminal or the agent (System Settings → Privacy & Security → Full Disk Access), or empty it from Finder%s\n" "$C_DIM" "$C_RESET"
+    fi
+    return 0
+  fi
+  rm -f "$errs"
   remaining="$(find "$trash" -mindepth 1 -print -quit 2>>"$LOG_FILE")" || verify_rc=$?
   after_b="$(path_bytes "$trash")"
   delta=$(( before_b - after_b ))
@@ -1485,7 +1580,10 @@ step_devcaches() {
     local d="$HOME/.npm"
     printf "  npm cache %s(%s)%s\n" "$C_DIM" "$(human_bytes "$(path_bytes "$d")")" "$C_RESET"
     if (( node_ok )); then
-      run_cmd "npm cache clean --force" npm cache clean --force || warn "'npm cache clean' failed"
+      # npm prints "using --force Recommended protections disabled" for the
+      # flag it documents for exactly this; noise, not a warning.
+      RUN_CMD_FILTER='^npm warn using --force' \
+        run_cmd "npm cache clean --force" npm cache clean --force || warn "'npm cache clean' failed"
     else
       warn_step "node is not runnable; skipping npm cache clean (try: brew reinstall node)"
     fi
@@ -1569,6 +1667,42 @@ step_devcaches() {
   if command -v cargo >/dev/null 2>&1 && command -v cargo-cache >/dev/null 2>&1; then
     any=1
     run_cmd "cargo cache --autoclean" cargo cache --autoclean || warn "'cargo cache' failed"
+  fi
+
+  # Terraform's provider plugin cache, where one is configured: every
+  # provider version any init ever resolved, re-fetched on the next init.
+  # Only the cache; .terraform/ inside projects is never touched.
+  local tf_cache="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
+  if [[ -d "$tf_cache" ]]; then
+    any=1
+    clear_dir "$tf_cache"
+  fi
+
+  # gcloud writes a log directory per invocation under ~/.config/gcloud/logs
+  # and never prunes them; on a machine that runs gcloud in loops it reaches
+  # hundreds of megabytes of command transcripts. The last week is kept for
+  # troubleshooting the recent past; older ones go.
+  local gcloud_logs="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/logs"
+  if [[ -d "$gcloud_logs" ]]; then
+    any=1
+    local -a old_logs=()
+    local scan_out
+    scan_out="$(mktemp)"
+    if find "$gcloud_logs" -mindepth 1 -maxdepth 1 -type d -mtime +7 -print0 >"$scan_out" 2>>"$LOG_SINK"; then
+      while IFS= read -r -d '' d; do old_logs+=("$d"); done < "$scan_out"
+    else
+      warn_step "could not scan gcloud logs"
+    fi
+    rm -f "$scan_out"
+    clear_paths "gcloud logs older than 7 days" dir ${old_logs[@]+"${old_logs[@]}"}
+  fi
+
+  # pre-commit keeps a clone of every hook repository it ever ran, including
+  # the versions no .pre-commit-config.yaml points at any more. `gc` is its
+  # own garbage collector and removes only those.
+  if command -v pre-commit >/dev/null 2>&1; then
+    any=1
+    run_cmd "pre-commit gc" pre-commit gc || warn "'pre-commit gc' failed"
   fi
 
   if (( any == 0 )); then
@@ -1733,7 +1867,35 @@ step_brew() {
     fi
   fi
 
+  # A brew update that meets a stale git lock prints "fatal: Unable to create
+  # '.../.git/index.lock': File exists", then "Already up-to-date", and exits
+  # 0 with the taps untouched - so the upgrade that follows runs on the
+  # previous index and nothing in the summary says so. Seen in a real run
+  # after an interrupted brew. A lock older than five minutes with no git
+  # process running is stale and is removed; a fresh one, or one with git
+  # alive, is left alone and named.
+  local brew_repo brew_lock log_mark
+  brew_repo="$(brew --repository 2>/dev/null)"
+  brew_lock="${brew_repo:+$brew_repo/.git/index.lock}"
+  if [[ -n "$brew_repo" && -e "$brew_lock" ]]; then
+    if ! pgrep -x git >/dev/null 2>&1 && [[ -n "$(find "$brew_lock" -mmin +5 2>/dev/null)" ]]; then
+      if (( DRY_RUN )); then
+        printf "  %s(dry-run) would remove stale Homebrew git lock %s%s\n" "$C_DIM" "$brew_lock" "$C_RESET"
+      elif rm -f "$brew_lock"; then
+        warn "removed a stale Homebrew git lock ($brew_lock: older than 5 minutes, no git process running)"
+      fi
+    else
+      warn_step "Homebrew git lock present at $brew_lock — brew update cannot refresh taps; if no brew or git process is running, remove it: rm '$brew_lock'"
+    fi
+  fi
+
+  log_mark=0
+  (( DRY_RUN )) || log_mark="$(grep -c . "$LOG_FILE" 2>/dev/null || echo 0)"
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
+  if (( DRY_RUN == 0 )) && tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null \
+       | grep -q -e 'index.lock' -e 'could not detach HEAD'; then
+    warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+  fi
   # Keep formulae and casks separate: generic `brew upgrade` considers both,
   # which made the following cask command a duplicate pass.
   # Plain warn, not warn_step: run_cmd has already counted this failure.
@@ -1763,6 +1925,21 @@ step_brew() {
   # brew cleanup may emit "Warning: Skipping <formula>: most recent version ... not installed"
   # in verbose mode; it's harmless and noisy, so filter it from the terminal while keeping
   # the full output in the log.
+  # Homebrew disables a cask or formula it can no longer vouch for - a cask
+  # that fails the Gatekeeper check, an abandoned formula - and from then on
+  # every upgrade prints "Not upgrading X, it is disabled because ..." and
+  # moves on. Left in the log, that is a package that silently stops getting
+  # updates. Named here, once each.
+  if (( DRY_RUN == 0 )); then
+    local disabled
+    disabled="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null \
+      | sed -n 's/^Warning: Not upgrading \(.*\), it is disabled because \(.*\)$/\1: \2/p' | sort -u)"
+    if [[ -n "$disabled" ]]; then
+      printf "  %sdisabled by Homebrew, no longer upgraded (uninstall or replace):%s\n" "$C_YELLOW" "$C_RESET"
+      awk '{ print "      " $0 }' <<<"$disabled"
+    fi
+  fi
+
   RUN_CMD_FILTER='^Warning: Skipping .*most recent version .* not installed$' \
     run_cmd "brew cleanup -s" brew cleanup -s || warn "'brew cleanup' had issues"
   run_cmd "brew autoremove"        brew autoremove             || warn "'brew autoremove' had issues"

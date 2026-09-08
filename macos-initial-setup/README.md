@@ -380,10 +380,17 @@ In the order they run:
 1. Optionally purge disk caches (`sudo purge`) for cold-cache troubleshooting;
    disabled unless `--purge-memory` is passed.
 2. Flush the DNS cache (`dscacheutil`, `mDNSResponder`).
-3. Clear system caches (`/Library/Caches` and writable entries under
-   `/System/Library/Caches`).
+3. Clear system caches (`/Library/Caches`; `/System/Library/Caches` only
+   when System Integrity Protection is off, since with it on every entry
+   there answers "Operation not permitted" even to root).
 4. Clear user caches (`~/Library/Caches`, Saved State, Xcode
-   DerivedData, and related paths).
+   DerivedData, and related paths). What macOS refuses is sorted before it
+   is reported: entries the privacy controls or SIP protect (HomeKit,
+   CloudKit, Safari, a dozen Apple services) are counted and kept without a
+   warning, since no run can change that; an entry owned by another user,
+   such as the root-owned directory Slack's updater leaves behind, is
+   retried with sudo when a credential is already in hand and warned about
+   otherwise, since that one a person can fix.
 5. Clear **per-app caches** — the disposable data that lives outside
    `~/Library/Caches` and is therefore invisible to step 4: the
    Chromium-internal directories (`Cache`, `Code Cache`, `GPUCache`,
@@ -403,7 +410,10 @@ In the order they run:
    whose recorded path no longer exists are removed; remote workspaces
    and anything unparsable are kept. The classification is done by
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
-8. Empty `~/.Trash`.
+8. Empty `~/.Trash`. The Trash sits behind the privacy controls: a terminal
+   or agent without Full Disk Access cannot list it. An interactive run then
+   asks Finder to empty it; a scheduled run says what to grant instead.
+   Neither is a warning.
 9. Prune Docker / OrbStack (containers, networks, builder cache, and
    **dangling images only** — tagged images are kept). Unused volumes are
    kept unless `--prune-docker-volumes` is passed: volumes hold data, not
@@ -413,12 +423,22 @@ In the order they run:
    an age threshold is explicitly set with `--prune-xcode-archives-days N`.
 11. Remove diagnostic and crash reports (user, plus system with `sudo`).
 12. Update and upgrade Homebrew formulae, then casks once when an interactive
-    sudo-capable run permits them; run `cleanup -s` and `autoremove`.
+    sudo-capable run permits them; run `cleanup -s` and `autoremove`. A stale
+    git lock in the Homebrew repository makes `brew update` print "Already
+    up-to-date" and exit 0 with the taps untouched, so the upgrade runs on
+    the previous index; a lock older than five minutes with no git process
+    running is removed, any other lock is named and the update counted as a
+    warning. A cask or formula Homebrew has disabled, typically for failing
+    the Gatekeeper check, stops being upgraded silently; each one is named
+    with its reason.
 13. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`,
-    and kubectl's per-cluster discovery cache under `~/.kube/cache`, which
-    kubectl rebuilds on the next call; `~/.kube/config` is not touched). Old
-    installed gem versions are package state, not cache, and are kept unless
-    `--cleanup-old-gems` is explicit.
+    kubectl's per-cluster discovery cache under `~/.kube/cache`, which
+    kubectl rebuilds on the next call, and Terraform's provider plugin cache
+    where one is configured; `~/.kube/config` and project `.terraform/`
+    directories are not touched), remove gcloud's per-invocation log
+    directories older than a week, and run `pre-commit gc`, which drops hook
+    repositories no config points at. Old installed gem versions are package
+    state, not cache, and are kept unless `--cleanup-old-gems` is explicit.
 14. Update installed Helm plugins.
 15. Run `gcloud components update`.
 16. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
@@ -1049,9 +1069,11 @@ Homebrew / `pyenv` / `goenv` commands.
 ### `stay_fresh.sh`
 
 - Deletes cache contents (not the directories themselves) under
-  `/Library/Caches`, writable entries of `/System/Library/Caches`,
-  `~/Library/Caches`, Saved State, Xcode DerivedData, and related
-  paths.
+  `/Library/Caches`, `~/Library/Caches`, Saved State, Xcode DerivedData,
+  and related paths, and under `/System/Library/Caches` only when System
+  Integrity Protection is off. Entries SIP or the privacy controls protect
+  are kept and counted; entries owned by another user are retried with
+  sudo when a credential is in hand.
 - Deletes per-app cache contents outside `~/Library/Caches`: the
   Chromium-internal directories under known Application Support roots and
   downloaded `.vsix` archives. Running application roots are skipped;
@@ -1066,10 +1088,12 @@ Homebrew / `pyenv` / `goenv` commands.
 - Removes VS Code `workspaceStorage` entries whose project
   folder no longer exists. Remote workspaces and unreadable entries are
   left alone.
-- Empties `~/.Trash`.
-- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`) and
-  the contents of `~/.kube/cache`. Installed gem versions are kept unless
-  `--cleanup-old-gems` is explicit.
+- Empties `~/.Trash`, through Finder when the shell lacks Full Disk Access
+  and a person is present to answer the prompt.
+- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`),
+  the contents of `~/.kube/cache` and of Terraform's plugin cache, gcloud log
+  directories older than a week, and unused pre-commit repositories.
+  Installed gem versions are kept unless `--cleanup-old-gems` is explicit.
 - Queries `softwareupdate --list` and, when installed, `mas outdated`, and
   prints what is pending. Installs neither.
 - Prunes Docker resources when Docker is available:

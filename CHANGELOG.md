@@ -901,6 +901,34 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `stay_fresh.sh` tells the macOS protections apart from failures. A real run
+  warned on three steps for things no run can change: `/System/Library/Caches`
+  answers "Operation not permitted" to root with System Integrity Protection
+  on, `/Library/Caches` and `~/Library/Caches` hold a dozen Apple entries the
+  privacy controls keep out of reach (HomeKit, CloudKit, Safari, `aned`), and
+  `~/.Trash` cannot even be listed by a terminal without Full Disk Access.
+  Every run warned, and a warning that fires every run is the one that gets
+  muted. Now `/System/Library/Caches` is left alone while SIP is on, protected
+  entries are counted and kept without a warning, and the Trash is emptied
+  through Finder in an interactive run or the missing grant is named in a
+  scheduled one. An entry owned by another user - the root-owned directory
+  Slack's updater leaves in the caches - is the fixable case and is treated
+  as such: retried with sudo when a credential is already in hand, warned
+  about when not.
+- `stay_fresh.sh` no longer reports `brew update` clean when a stale git lock
+  stopped it: Homebrew prints "Unable to create '.../.git/index.lock'", then
+  "Already up-to-date", and exits 0 with the taps untouched, so the upgrade
+  that followed ran on the previous index and the summary said nothing. A
+  lock older than five minutes with no git process running is removed and
+  said so; any other lock is named with the remedy, and the update that
+  could not refresh the taps is counted as a warning. Casks and formulae
+  Homebrew has disabled, which it says once per upgrade in a line nobody
+  reads, are named with their reason. npm's own "using --force" notice stays
+  out of the quiet stream, and an aborted run no longer leaves an empty log.
+- `stay_fresh.sh` dev-caches also clears Terraform's provider plugin cache
+  where one is configured, removes gcloud log directories older than a week
+  (one per invocation, never pruned by gcloud, hundreds of megabytes on a
+  machine that scripts it), and runs `pre-commit gc`.
 - A literal `%` in Telegram message text is now sent as `%25`, in
   `health_check.lua`, `latency_monitor.lua` and `traffic_quota.lua`. `tg_send`
   posts the text as `application/x-www-form-urlencoded`, which is why newlines

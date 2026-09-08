@@ -124,6 +124,7 @@ run_sf() {
     NODE_RC="${NODE_RC:-0}" \
     HELM_UPDATE_RC="${HELM_UPDATE_RC:-0}" \
     GCLOUD_COMPONENTS_RC="${GCLOUD_COMPONENTS_RC:-0}" \
+    BREW_REPO="${BREW_REPO:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -168,6 +169,81 @@ assert_gone   "writable /System/Library/Caches entry goes" /System/Library/Cache
 assert_exists "unwritable /System/Library/Caches entry stays" /System/Library/Caches/locked
 chmod 755 /System/Library/Caches/locked
 rm -rf /Library/Caches /System/Library/Caches
+rm -rf "$d"
+
+# ===========================================================================
+section "system-caches under System Integrity Protection"
+# On a Mac with SIP on, every entry of /System/Library/Caches answers
+# "Operation not permitted" to root, and the step used to warn on every run.
+# With csrutil reporting SIP enabled, the directory is not touched at all.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: enabled."'
+rm -rf /Library/Caches /System/Library/Caches
+mkdir -p /Library/Caches/vendor /System/Library/Caches/writable
+bytes_file /Library/Caches/vendor/blob 256
+: > /System/Library/Caches/writable/entry
+out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
+assert_eq "system-caches under SIP succeeds" "0" "$rc"
+assert_gone   "/Library/Caches is still cleared under SIP" /Library/Caches/vendor
+assert_exists "/System/Library/Caches is left alone under SIP" /System/Library/Caches/writable/entry
+assert_contains "the SIP protection is stated" "$out" "protected by System Integrity Protection"
+assert_contains "a SIP-protected system cache is not a warning" "$out" "warn steps:  0"
+rm -rf /Library/Caches /System/Library/Caches
+rm -rf "$d"
+
+# ===========================================================================
+section "protected cache entries (SIP / privacy controls) are kept, not warned"
+# rm answering "Operation not permitted" is EPERM: SIP or the privacy
+# controls, which no run can change. A real ~/Library/Caches has a dozen such
+# Apple entries, and warning about them every day is the warning that gets
+# muted. A fake rm refuses one entry that way and removes the rest.
+d="$(new_env)"; : > "$d/calls"
+# find -exec ... {} + hands every path to one rm, and a real rm keeps going
+# past the entry it cannot remove; the fake does the same.
+mkbin "$d/bin/rm" 'fail=0; opts=""' \
+                  'for a in "$@"; do' \
+                  '  case "$a" in' \
+                  '    -*) opts="$opts $a" ;;' \
+                  '    *"/com.apple.homed"*) echo "rm: $a: Operation not permitted" >&2; fail=1 ;;' \
+                  '    *) /bin/rm $opts "$a" ;;' \
+                  '  esac' \
+                  'done' \
+                  'exit $fail'
+mkdir -p "$d/home/Library/Caches/com.apple.homed" "$d/home/Library/Caches/com.vendor.app"
+: > "$d/home/Library/Caches/com.apple.homed/state"
+bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 128
+out="$(run_sf "$d" --yes --no-sudo --only user-caches)"; rc=$?
+assert_eq "a protected entry does not fail the run" "0" "$rc"
+assert_exists "the protected entry survives" "$d/home/Library/Caches/com.apple.homed/state"
+assert_gone   "the ordinary neighbour is still cleared" "$d/home/Library/Caches/com.vendor.app"
+assert_contains "protected entries are reported as kept" "$out" "entries kept: protected by macOS"
+assert_contains "a protected entry is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# "Permission denied" is EACCES: ownership, which sudo can take. With sudo
+# available the entry is retried under it; the fake sudo execs the real
+# command, so the retry succeeds and the run stays clean.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/rm" 'fail=0; opts=""' \
+                  'for a in "$@"; do' \
+                  '  case "$a" in' \
+                  '    -*) opts="$opts $a" ;;' \
+                  '    *"ShipIt"*) if [ -z "${SUDO_RETRY:-}" ]; then echo "rm: $a: Permission denied" >&2; fail=1; else /bin/rm $opts "$a"; fi ;;' \
+                  '    *) /bin/rm $opts "$a" ;;' \
+                  '  esac' \
+                  'done' \
+                  'exit $fail'
+mkbin "$d/bin/sudo" 'case "${1:-}" in -v) exit 0 ;; -n) shift; case "${1:-}" in true) exit 0 ;; esac ;; esac' \
+                    'echo "sudo $*" >> "$CALLS"' \
+                    'SUDO_RETRY=1 exec "$@"'
+mkdir -p "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+: > "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/update"
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_eq "an ownership refusal with sudo available succeeds" "0" "$rc"
+assert_contains "the sudo retry is announced" "$out" "retrying entries owned by another user with sudo"
+assert_called "the retry goes through sudo" "$d/calls" "sudo find"
+assert_gone "the root-owned leftover is removed by the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_contains "a retried ownership refusal is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
 # ===========================================================================
@@ -502,6 +578,47 @@ assert_not_contains "no missing-flag notice for a --yes-capable brew" "$out" \
 rm -rf "$d"
 
 # ===========================================================================
+section "brew (git lock and disabled packages)"
+brew_lock_env() {
+  local d; d="$(new_env)"
+  mkdir -p "$d/brewrepo/.git"
+  mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+                      'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; --repository) echo "$BREW_REPO" ;; esac' \
+                      'case "${1:-}" in update) [ -e "$BREW_REPO/.git/index.lock" ] && { echo "fatal: Unable to create '"'"'$BREW_REPO/.git/index.lock'"'"': File exists."; echo "error: could not detach HEAD"; echo "Already up-to-date."; } ;; esac' \
+                      'case "${1:-} ${2:-}" in "upgrade --formula") echo "Warning: Not upgrading alacritty, it is disabled because it does not pass the macOS Gatekeeper check! It was disabled on 2026-09-01." ;; esac' \
+                      'exit 0'
+  printf '%s' "$d"
+}
+# A lock older than five minutes with no git running is stale: removed, said
+# so, and brew update then refreshes the taps.
+d="$(brew_lock_env)"; : > "$d/calls"
+: > "$d/brewrepo/.git/index.lock"
+touch -d '10 minutes ago' "$d/brewrepo/.git/index.lock"
+out="$(BREW_REPO="$d/brewrepo" run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "brew with a stale git lock succeeds" "0" "$rc"
+assert_gone "the stale lock is removed" "$d/brewrepo/.git/index.lock"
+assert_contains "the stale lock removal is announced" "$out" "removed a stale Homebrew git lock"
+assert_contains "a removed stale lock is not a warning" "$out" "warn steps:  0"
+assert_contains "a package Homebrew disabled is named" "$out" "disabled by Homebrew, no longer upgraded"
+assert_contains "the disabled package and its reason are shown" "$out" \
+  "alacritty: it does not pass the macOS Gatekeeper check"
+rm -rf "$d"
+
+# A fresh lock may belong to a live brew in another terminal: left alone,
+# named, and the update that then cannot refresh the taps is a warning rather
+# than the clean [ ok ] it used to be.
+d="$(brew_lock_env)"; : > "$d/calls"
+: > "$d/brewrepo/.git/index.lock"
+out="$(BREW_REPO="$d/brewrepo" run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "brew with a fresh git lock does not fail the run" "0" "$rc"
+assert_exists "a fresh lock is left in place" "$d/brewrepo/.git/index.lock"
+assert_contains "the fresh lock is named with the remedy" "$out" "Homebrew git lock present at"
+assert_contains "an update that could not refresh the taps is reported" "$out" \
+  "brew update did not refresh the taps"
+assert_contains "the blocked update is accounted a warning" "$out" "warn steps:  1"
+rm -rf "$d"
+
+# ===========================================================================
 section "dev-caches (each toolchain, and an unusable node)"
 devcache_env() {
   local d; d="$(new_env)"
@@ -516,6 +633,13 @@ devcache_env() {
   : > "$d/home/.kube/cache/discovery/cluster_a/servergroups.json"
   : > "$d/home/.kube/cache/http/entry"
   : > "$d/home/.kube/config"
+  mkbin "$d/bin/pre-commit" 'echo "pre-commit $*" >> "$CALLS"; exit 0'
+  mkdir -p "$d/home/.terraform.d/plugin-cache/registry.terraform.io/hashicorp/null/3.2.0"
+  : > "$d/home/.terraform.d/plugin-cache/registry.terraform.io/hashicorp/null/3.2.0/provider"
+  mkdir -p "$d/home/.config/gcloud/logs/2026.08.01" "$d/home/.config/gcloud/logs/recent"
+  : > "$d/home/.config/gcloud/logs/2026.08.01/cmd.log"
+  : > "$d/home/.config/gcloud/logs/recent/cmd.log"
+  touch -d '30 days ago' "$d/home/.config/gcloud/logs/2026.08.01" "$d/home/.config/gcloud/logs/2026.08.01/cmd.log"
   printf '%s' "$d"
 }
 d="$(devcache_env)"; : > "$d/calls"
@@ -536,6 +660,11 @@ assert_gone   "kubectl discovery cache is cleared" "$d/home/.kube/cache/discover
 assert_gone   "kubectl http cache is cleared"      "$d/home/.kube/cache/http"
 assert_exists "~/.kube/cache itself is kept"       "$d/home/.kube/cache"
 assert_exists "~/.kube/config is untouched"        "$d/home/.kube/config"
+assert_gone   "the Terraform provider cache is cleared" "$d/home/.terraform.d/plugin-cache/registry.terraform.io"
+assert_exists "the Terraform plugin-cache directory itself is kept" "$d/home/.terraform.d/plugin-cache"
+assert_gone   "a gcloud log directory older than a week goes" "$d/home/.config/gcloud/logs/2026.08.01"
+assert_exists "a recent gcloud log directory is kept" "$d/home/.config/gcloud/logs/recent"
+assert_called "pre-commit garbage-collects its repos" "$d/calls" "pre-commit gc"
 assert_contains "dev-caches stays clean with pip's notice" "$out" "warn steps:  0"
 rm -rf "$d"
 
