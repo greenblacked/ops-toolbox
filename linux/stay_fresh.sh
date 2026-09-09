@@ -42,7 +42,15 @@ else
 fi
 info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
 ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
-warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+# The second argument is the fix: the command to run, or where to look. Two
+# callers below already passed one, and with a "$*" body it was glued onto the
+# end of the message as if it were part of the sentence. system_doctor.sh in
+# this same directory prints it as a dimmed second line; so does this.
+warn() {
+  printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$1"
+  [[ -n "${2:-}" ]] && printf "         %s%s%s\n" "$C_DIM" "$2" "$C_RESET"
+  return 0
+}
 err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
 
 STEP_FAIL_COUNT=0
@@ -151,6 +159,19 @@ if [[ -n "$ONLY" ]]; then
       *) err "unknown --only step: $selected_step (see --list-steps)"; exit 3 ;;
     esac
   done
+fi
+
+# Every path this script removes is built from HOME. Empty, "$HOME/.cache/pip"
+# becomes "/.cache/pip" and the rm -rf below addresses the root filesystem;
+# set -u does not fire, because an empty variable is set. --help and
+# --list-steps have already answered by this point and need no home directory.
+if [[ -z "${HOME:-}" ]]; then
+  err "HOME is not set — the caches this script removes are all built from it"
+  exit 2
+fi
+if [[ ! -d "$HOME" ]]; then
+  err "HOME is not a directory: $HOME"
+  exit 2
 fi
 
 PKG_MGR="$(detect_pkg_mgr)"
@@ -283,10 +304,13 @@ if (( SKIP_CACHES == 0 )); then
     [[ -d "$dir" ]] || continue
     run_cmd "remove $dir" rm -rf "$dir"
   done
-  trash="$HOME/.local/share/Trash/files"
-  if [[ -d "$trash" ]]; then
-    run_cmd "empty trash" rm -rf "$trash"
-  fi
+  # Both halves, or none: every trashed file has a matching .trashinfo record
+  # under info/, and clearing only files/ leaves the desktop showing entries
+  # that no longer exist. disk_cleanup.sh in this directory clears both.
+  for trash in "$HOME/.local/share/Trash/files" "$HOME/.local/share/Trash/info"; do
+    [[ -d "$trash" ]] || continue
+    run_cmd "empty ${trash#"$HOME"/}" rm -rf "$trash"
+  done
 else
   info "skipped: caches"
 fi
@@ -317,6 +341,8 @@ if (( SKIP_FLATPAK == 0 )); then
   else
     warn "flatpak not installed — skipping"
   fi
+else
+  info "skipped: flatpak"
 fi
 
 if (( SKIP_SNAP == 0 )); then
@@ -326,6 +352,8 @@ if (( SKIP_SNAP == 0 )); then
   else
     warn "snap not installed — skipping"
   fi
+else
+  info "skipped: snap"
 fi
 
 # --- report ----------------------------------------------------------------
@@ -375,9 +403,24 @@ if (( DRY_RUN == 1 )); then
   printf "dry-run complete; no changes written\n"
   exit 0
 fi
-info "full log: $LOG_FILE"
+# A clean run's log is a list of commands that worked, and it accumulated in
+# TMPDIR forever - one file per run, never read, never removed. It is kept
+# only when a step failed, which is the only time anyone opens it, and then
+# the ten newest survive.
 if (( STEP_FAIL_COUNT > 0 )); then
+  info "full log: $LOG_FILE"
+  old_log_list="$(mktemp 2>/dev/null || true)"
+  if [[ -n "$old_log_list" ]]; then
+    find "$LOG_DIR" -maxdepth 1 -name 'linux_stay_fresh-*.log' -type f 2>/dev/null \
+      | sort -r | tail -n +11 > "$old_log_list"
+    while IFS= read -r old_log; do
+      [[ -n "$old_log" ]] || continue
+      rm -f "$old_log" 2>/dev/null || warn "could not remove old log: $old_log"
+    done < "$old_log_list"
+    rm -f "$old_log_list"
+  fi
   err "$STEP_FAIL_COUNT step(s) failed"
   exit 1
 fi
+rm -f "$LOG_FILE"
 ok "done"

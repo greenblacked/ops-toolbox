@@ -229,11 +229,64 @@ out="$("$L/stay_fresh.sh" --dry-run --only caches 2>&1)"
 assert_contains "stay_fresh --only skips unselected steps" "$out" "skipped: packages"
 assert_contains "stay_fresh --only runs selected step" "$out" "== user caches =="
 
+assert_contains "stay_fresh --only names every skipped step" "$out" "skipped: flatpak"
+assert_contains "stay_fresh --only names snap among them too" "$out" "skipped: snap"
+
 set +e
 "$L/stay_fresh.sh" --dry-run --only caches --skip-snap >/dev/null 2>&1
 rc=$?
 set -e
 assert_eq "stay_fresh rejects mixed scoping styles -> 3" "3" "$rc"
+
+# --- HOME builds every path stay_fresh removes ---
+# Empty rather than unset is the dangerous one: set -u does not fire, and
+# "$HOME/.cache/pip" becomes "/.cache/pip", so the rm -rf addresses the root
+# filesystem. The flags that need no home directory still answer.
+set +e
+env -u HOME "$L/stay_fresh.sh" --help >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "stay_fresh --help works with HOME unset" "0" "$rc"
+set +e
+env -u HOME "$L/stay_fresh.sh" --list-steps >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "stay_fresh --list-steps works with HOME unset" "0" "$rc"
+for home_case in unset empty; do
+  set +e
+  if [[ "$home_case" == unset ]]; then
+    out="$(env -u HOME "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"; rc=$?
+  else
+    out="$(HOME="" "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"; rc=$?
+  fi
+  set -e
+  assert_eq "stay_fresh with HOME $home_case is refused -> 2" "2" "$rc"
+  assert_contains "stay_fresh with HOME $home_case says why" "$out" "HOME is not set"
+  assert_not_contains "stay_fresh with HOME $home_case names no root path" "$out" "/.cache/pip"
+done
+set +e
+out="$(HOME="$L/stay_fresh.sh" "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"; rc=$?
+set -e
+assert_eq "stay_fresh with a HOME that is a file is refused -> 2" "2" "$rc"
+assert_contains "a non-directory HOME is named" "$out" "HOME is not a directory"
+
+# --- the Trash is emptied whole, or the desktop shows phantom entries ---
+sf_home="$(mktemp -d)"
+mkdir -p "$sf_home/.local/share/Trash/files" "$sf_home/.local/share/Trash/info"
+: > "$sf_home/.local/share/Trash/files/doc.txt"
+: > "$sf_home/.local/share/Trash/info/doc.txt.trashinfo"
+out="$(HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"
+assert_contains "stay_fresh empties the trashed files" "$out" "Trash/files"
+assert_contains "stay_fresh empties their .trashinfo records too" "$out" "Trash/info"
+
+# --- a clean run leaves no log behind ---
+# One file per run accumulated in TMPDIR forever, never read and never removed.
+out="$(HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --only caches 2>&1)"; rc=$?
+assert_eq "stay_fresh clean run succeeds" "0" "$rc"
+if [[ -z "$(find "$sf_home" -maxdepth 1 -name 'linux_stay_fresh-*.log' -print -quit)" ]]; then
+  ok "stay_fresh discards a clean run's log"
+else
+  err "stay_fresh left a log behind after a clean run"
+fi
+rm -rf "$sf_home"
 
 # --- installing without --yes refuses rather than proceeding ---
 set +e
