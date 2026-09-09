@@ -440,10 +440,14 @@ In the order they run:
     repositories no config points at. Old installed gem versions are package
     state, not cache, and are kept unless `--cleanup-old-gems` is explicit.
 14. Update installed Helm plugins.
-15. Run `gcloud components update`.
-16. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
+15. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
+    index, then `kubectl krew upgrade` each plugin. krew itself is a Homebrew
+    formula; the kubectl plugins it installs are not, and nothing else moves
+    them.
+16. Run `gcloud components update`.
+17. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     and `gcloud`.
-17. Report **pending macOS and App Store updates**: `softwareupdate --list`,
+18. Report **pending macOS and App Store updates**: `softwareupdate --list`,
     and `mas outdated` where [`mas`](https://github.com/mas-cli/mas) is
     installed. Read-only. Homebrew keeps what it manages fresh; the operating
     system and App Store apps were the two things this script said nothing
@@ -455,13 +459,13 @@ In the order they run:
     reported and does not count against the step either, for the same reason.
     Not probed under `--dry-run`: the catalogue scan is a system action that
     takes time on the network.
-18. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
+19. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
     APFS keeps every block a snapshot references, so a run can free gigabytes
     and `df` still not move; macOS thins the snapshots on its own only under
     disk pressure. Listing is read-only. `--thin-snapshots` deletes them with
     `sudo tmutil deletelocalsnapshots`; the backup disk is never touched, and
     `--no-sudo` demotes the flag to listing.
-19. Print a **disk report**, opt-in (`--disk-report` or `--only disk-report`):
+20. Print a **disk report**, opt-in (`--disk-report` or `--only disk-report`):
     the five largest entries under `~/Library/Caches`, `Application Support`,
     `Containers`, `Developer`, `Logs`, `~/.cache` and `~/Downloads`, plus the
     size of iPhone/iPad backups. Read-only, and off by default because `du`
@@ -485,6 +489,7 @@ last ten rows.
 ./stay_fresh.sh --purge-memory     # explicit cold-cache troubleshooting
 ./stay_fresh.sh --only brew,versions
 ./stay_fresh.sh --only ai-caches  # clean AI caches, preserve sessions/models
+./stay_fresh.sh --only helm-plugins,krew # refresh the plugins Homebrew does not manage
 ./stay_fresh.sh --prune-xcode-archives-days 90
 ./stay_fresh.sh --cleanup-old-gems # opt-in removal of old installed gem versions
 ./stay_fresh.sh --fail-on-warn     # useful for schedulers and monitoring
@@ -525,7 +530,7 @@ and `none` otherwise.
 | `--history` | Print the last ten rows of `~/Library/Logs/stay_fresh/history.tsv` and exit. |
 | `--notify MODE` | `none`, `macos`, `telegram`, `both`, or `auto` (default; env `STAY_FRESH_NOTIFY`). Sent after the summary of a real run, never under `--dry-run`. |
 | `--brew-greedy` | Upgrade casks that self-update (`auto_updates true`, `:latest`). |
-| `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-gcloud --skip-versions`. |
+| `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-krew --skip-gcloud --skip-versions`. |
 | `--purge-memory` | Opt into `sudo purge` for cold-cache troubleshooting. |
 | `--skip-memory` | Keep purge disabled; compatibility flag matching the default. |
 | `--skip-dns` | Skip the DNS cache flush. |
@@ -545,12 +550,13 @@ and `none` otherwise.
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
+| `--skip-krew` | Skip krew plugin updates (step 15). |
 | `--skip-gcloud` | Skip `gcloud components update`. |
 | `--skip-versions` | Skip the version report. |
-| `--skip-os-updates` | Skip the pending macOS / App Store update report (step 17). |
-| `--skip-snapshots` | Skip listing local Time Machine snapshots (step 18). |
-| `--thin-snapshots` | Delete the local snapshots step 18 lists; needs sudo, listed only under `--no-sudo`. |
-| `--disk-report` | Enable the read-only disk report (step 19). |
+| `--skip-os-updates` | Skip the pending macOS / App Store update report (step 18). |
+| `--skip-snapshots` | Skip listing local Time Machine snapshots (step 19). |
+| `--thin-snapshots` | Delete the local snapshots step 19 lists; needs sudo, listed only under `--no-sudo`. |
+| `--disk-report` | Enable the read-only disk report (step 20). |
 | `-h`, `--help` | Show the built-in help. |
 
 `--only` is the safer interface for one-off work: it initializes every step as
@@ -1036,7 +1042,7 @@ suites:
 | Suite | File | Scope |
 | --- | --- | --- |
 | `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
-| `steps` | `test_stay_fresh_steps.sh` | Each of the nineteen `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the twenty `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
 | `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
 
 The `steps` suite fakes only the commands that identify the host or that the
