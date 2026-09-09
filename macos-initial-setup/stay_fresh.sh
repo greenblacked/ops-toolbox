@@ -20,8 +20,8 @@
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
 #   - clean diagnostic / crash reports (as user; system dirs if sudo)
 #   - Homebrew: update, upgrade (formulae + casks), cleanup -s, autoremove
-#   - refresh dev toolchains (helm plugins, gcloud components) installed by
-#     install_apps.sh / install_devtools.sh
+#   - refresh dev toolchains (helm plugins, krew plugins, gcloud components)
+#     installed by install_apps.sh / install_devtools.sh
 #   - report pending macOS and App Store updates (read-only; never installs)
 #   - list local Time Machine snapshots (they hold space df cannot show);
 #     delete them only with --thin-snapshots
@@ -40,7 +40,8 @@
 #                   [--skip-workspacestorage] [--skip-trash]
 #                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
 #                   [--cleanup-old-gems] [--fail-on-warn]
-#                   [--skip-devtools] [--skip-helm-plugins] [--skip-gcloud]
+#                   [--skip-devtools] [--skip-helm-plugins] [--skip-krew]
+#                   [--skip-gcloud]
 #                   [--skip-versions] [--skip-os-updates]
 #                   [--skip-docker] [--prune-docker-volumes]
 #                   [--skip-xcode] [--prune-xcode-archives-days N]
@@ -124,6 +125,7 @@ SKIP_BREW=0
 SKIP_DEVCACHES=0
 SKIP_DEVTOOLS=0
 SKIP_HELM_PLUGINS=0
+SKIP_KREW=0
 SKIP_GCLOUD=0
 SKIP_VERSIONS=0
 SKIP_OS_UPDATES=0
@@ -280,6 +282,7 @@ diagnostics       remove crash and diagnostic reports
 brew              update, upgrade and clean Homebrew
 dev-caches        clean language and package-manager caches
 helm-plugins      update installed Helm plugins
+krew              update installed kubectl krew plugins
 gcloud            update gcloud components
 versions          print active tool versions
 os-updates        report pending macOS / App Store updates (read-only)
@@ -332,9 +335,10 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          caches, stale gcloud logs, or unused pre-commit repos
   --cleanup-old-gems     Uninstall old gem versions during dev-cache cleanup
                          (off by default; this changes installed packages)
-  --skip-devtools        Shorthand: skip all dev-tool refresh steps below
-                         (--skip-helm-plugins --skip-gcloud --skip-versions)
+  --skip-devtools        Shorthand for --skip-helm-plugins --skip-krew
+                         --skip-gcloud --skip-versions
   --skip-helm-plugins    Don't run 'helm plugin update' for installed plugins
+  --skip-krew            Don't run 'kubectl krew upgrade' for installed plugins
   --skip-gcloud          Don't run 'gcloud components update'
   --skip-versions        Don't print active pyenv/goenv/tfenv/tenv/helm/gcloud
                          versions
@@ -418,6 +422,15 @@ Log file: $LOG_FILE
 EOF
 }
 
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    printf "%s requires a value\n" "$option" >&2
+    exit 3
+  fi
+}
+
 while (( $# > 0 )); do
   case "$1" in
     --dry-run)         DRY_RUN=1 ;;
@@ -425,15 +438,8 @@ while (( $# > 0 )); do
     -v|--verbose)      VERBOSE=1 ;;
     --fail-on-warn)    FAIL_ON_WARN=1 ;;
     --no-sudo)         USE_SUDO=0 ;;
-    --only)
-      shift
-      [[ -n "${1:-}" && "$1" != --* ]] || { err "--only needs a value"; exit 3; }
-      ONLY_STEPS="$1"
-      ;;
-    --only=*)
-      ONLY_STEPS="${1#*=}"
-      [[ -n "$ONLY_STEPS" ]] || { err "--only needs a value"; exit 3; }
-      ;;
+    --only)            require_value "$1" "${2:-}"; shift; ONLY_STEPS="$1" ;;
+    --only=*)          ONLY_STEPS="${1#*=}"; require_value "--only" "$ONLY_STEPS" ;;
     --list-steps)      LIST_STEPS=1 ;;
     --purge-memory)    SKIP_MEMORY=0; PURGE_MEMORY_EXPLICIT=1 ;;
     --skip-memory)     SKIP_MEMORY=1; EXPLICIT_SKIP=1 ;;
@@ -451,42 +457,39 @@ while (( $# > 0 )); do
     --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
     --skip-devtools)   SKIP_DEVTOOLS=1; EXPLICIT_SKIP=1 ;;
     --skip-helm-plugins) SKIP_HELM_PLUGINS=1; EXPLICIT_SKIP=1 ;;
+    --skip-krew)       SKIP_KREW=1; EXPLICIT_SKIP=1 ;;
     --skip-gcloud)     SKIP_GCLOUD=1; EXPLICIT_SKIP=1 ;;
     --skip-versions)   SKIP_VERSIONS=1; EXPLICIT_SKIP=1 ;;
     --skip-os-updates) SKIP_OS_UPDATES=1; EXPLICIT_SKIP=1 ;;
     --skip-docker)     SKIP_DOCKER=1; EXPLICIT_SKIP=1 ;;
     --prune-docker-volumes) PRUNE_DOCKER_VOLUMES=1 ;;
     --skip-xcode)      SKIP_XCODE=1; EXPLICIT_SKIP=1 ;;
-    --prune-xcode-archives-days=*)
-      XCODE_ARCHIVE_DAYS="${1#*=}"
+    --prune-xcode-archives-days)
+      require_value "$1" "${2:-}"; shift
+      XCODE_ARCHIVE_DAYS="$1"
       [[ "$XCODE_ARCHIVE_DAYS" =~ ^[1-9][0-9]*$ ]] || {
         err "--prune-xcode-archives-days must be a positive integer"
         exit 3
       }
       ;;
-    --prune-xcode-archives-days)
-      shift
-      [[ $# -gt 0 ]] || { err "--prune-xcode-archives-days needs a value"; exit 3; }
-      [[ "$1" =~ ^[1-9][0-9]*$ ]] || {
+    --prune-xcode-archives-days=*)
+      XCODE_ARCHIVE_DAYS="${1#*=}"
+      require_value "--prune-xcode-archives-days" "$XCODE_ARCHIVE_DAYS"
+      [[ "$XCODE_ARCHIVE_DAYS" =~ ^[1-9][0-9]*$ ]] || {
         err "--prune-xcode-archives-days must be a positive integer"
         exit 3
       }
-      XCODE_ARCHIVE_DAYS="$1"
       ;;
-    --skip-diagnostics)SKIP_DIAGNOSTICS=1; EXPLICIT_SKIP=1 ;;
+    --skip-diagnostics) SKIP_DIAGNOSTICS=1; EXPLICIT_SKIP=1 ;;
     --skip-snapshots)  SKIP_SNAPSHOTS=1; EXPLICIT_SKIP=1 ;;
     --thin-snapshots)  THIN_SNAPSHOTS=1 ;;
     --disk-report)     SKIP_DISK_REPORT=0 ;;
     --quick)           QUICK=1 ;;
     --history)         SHOW_HISTORY=1 ;;
-    --notify)
-      shift
-      [[ -n "${1:-}" && "$1" != --* ]] || { err "--notify needs a value"; exit 3; }
-      NOTIFY_MODE="$1"
-      ;;
-    --notify=*)        NOTIFY_MODE="${1#*=}" ;;
+    --notify)          require_value "$1" "${2:-}"; shift; NOTIFY_MODE="$1" ;;
+    --notify=*)        NOTIFY_MODE="${1#*=}"; require_value "--notify" "$NOTIFY_MODE" ;;
     -h|--help)         usage; exit 0 ;;
-    *)                 err "unknown option: $1"; echo; usage; exit 3 ;;
+    *)                 err "unknown option: $1"; usage >&2; exit 3 ;;
   esac
   shift
 done
@@ -525,6 +528,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
   SKIP_BREW=1
   SKIP_DEVCACHES=1
   SKIP_HELM_PLUGINS=1
+  SKIP_KREW=1
   SKIP_GCLOUD=1
   SKIP_VERSIONS=1
   SKIP_OS_UPDATES=1
@@ -555,6 +559,7 @@ if [[ -n "$ONLY_STEPS" ]]; then
       brew)              SKIP_BREW=0 ;;
       dev-caches)        SKIP_DEVCACHES=0 ;;
       helm-plugins)      SKIP_HELM_PLUGINS=0 ;;
+      krew)              SKIP_KREW=0 ;;
       gcloud)            SKIP_GCLOUD=0 ;;
       versions)          SKIP_VERSIONS=0 ;;
       os-updates)        SKIP_OS_UPDATES=0 ;;
@@ -581,6 +586,7 @@ LOG_SINK="$LOG_FILE"
 # dev-tool refresh steps so the plan/summary accurately reflects what runs.
 if (( SKIP_DEVTOOLS )); then
   SKIP_HELM_PLUGINS=1
+  SKIP_KREW=1
   SKIP_GCLOUD=1
   SKIP_VERSIONS=1
 fi
@@ -1290,6 +1296,7 @@ else
 fi
 plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
+plan_line "krew plugin refresh"               "$(( 1 - SKIP_KREW        ))" "kubectl krew update · upgrade <name>"
 plan_line "gcloud components update"          "$(( 1 - SKIP_GCLOUD      ))" "non-brew gcloud components"
 plan_line "report active versions"            "$(( 1 - SKIP_VERSIONS    ))" "pyenv/goenv/tfenv/tenv/helm/gcloud"
 plan_line "pending OS / App Store updates"      "$(( 1 - SKIP_OS_UPDATES  ))" "softwareupdate --list, mas outdated; read-only"
@@ -2261,6 +2268,40 @@ step_helm_plugins() {
   done <<< "$plugins"
 }
 
+# kubectl plugins installed through krew are the same shape as Helm plugins:
+# krew itself comes from Homebrew (install_apps.sh), the plugins it installs
+# come from the krew index, and only 'kubectl krew upgrade' moves them. The
+# index is refreshed first; without that, upgrade compares against whatever
+# was fetched last.
+step_krew() {
+  if ! command -v kubectl >/dev/null 2>&1; then
+    info "kubectl not installed — nothing to refresh"
+    return 0
+  fi
+  # kubectl finds krew as the kubectl-krew executable on PATH, so that is the
+  # test, and it holds for the Homebrew formula and krew's own installer alike.
+  if ! command -v kubectl-krew >/dev/null 2>&1; then
+    info "krew not installed — nothing to refresh"
+    return 0
+  fi
+  # krew prints a PLUGIN/VERSION table to a terminal and bare names to a
+  # pipe; the header is dropped by name so both shapes parse.
+  local plugins
+  plugins="$(kubectl krew list 2>/dev/null | awk 'NF && $1 != "PLUGIN" {print $1}')"
+  if [[ -z "$plugins" ]]; then
+    info "no krew plugins installed — nothing to refresh"
+    return 0
+  fi
+  run_cmd "kubectl krew update" kubectl krew update \
+    || warn "'kubectl krew update' failed"
+  local p
+  while IFS= read -r p; do
+    [[ -z "$p" ]] && continue
+    run_cmd "kubectl krew upgrade $p" kubectl krew upgrade "$p" \
+      || warn "'kubectl krew upgrade $p' failed"
+  done <<< "$plugins"
+}
+
 # gcloud components (e.g. gke-gcloud-auth-plugin, kubectl, beta, alpha) that
 # were installed via 'gcloud components install' live under the brew-cask
 # SDK dir and aren't refreshed by 'brew upgrade'. Components installed via
@@ -2272,9 +2313,11 @@ step_gcloud() {
   fi
   if (( DRY_RUN )); then
     # Even ostensibly read-only gcloud commands initialise config databases and
-    # logs under ~/.config/gcloud. A dry run may not invoke them at all.
-    printf "  [dry] gcloud components update --quiet\n"
-    printf "  [dry] gcloud components update-macos-python --quiet (if supported)\n"
+    # logs under ~/.config/gcloud. A dry run may not invoke them at all, so the
+    # capability probes below are skipped and both commands are only named.
+    run_cmd "gcloud components update" gcloud components update --quiet
+    run_cmd "gcloud components update-macos-python (if supported)" \
+      gcloud components update-macos-python --quiet
     return 0
   fi
   # Some gcloud builds disable the in-place component manager (e.g. when
@@ -2515,6 +2558,7 @@ run_or_skip "Diagnostic / crash reports"           "$SKIP_DIAGNOSTICS" step_diag
 run_or_skip "Homebrew update / upgrade / cleanup"  "$SKIP_BREW"         step_brew brew
 run_or_skip "Dev-tool caches"                      "$SKIP_DEVCACHES"   step_devcaches dev-caches
 run_or_skip "Helm plugin refresh"                  "$SKIP_HELM_PLUGINS" step_helm_plugins helm-plugins
+run_or_skip "krew plugin refresh"                  "$SKIP_KREW"        step_krew krew
 run_or_skip "gcloud components update"             "$SKIP_GCLOUD"       step_gcloud gcloud
 run_or_skip "Active tool versions"                 "$SKIP_VERSIONS"     step_versions versions
 run_or_skip "Pending OS / App Store updates"       "$SKIP_OS_UPDATES"   step_os_updates os-updates
