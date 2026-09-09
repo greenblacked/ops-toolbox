@@ -370,6 +370,31 @@ else
   err "the lock directory survived the run"
 fi
 
+# kern.boottime is not a constant: XNU re-derives it whenever the clock is
+# stepped, which NTP and sleep/wake do, by seconds. A lock whose recorded
+# boot is thirty seconds off, held by a live pid, is a run still going,
+# not one from before a reboot; only minutes of difference mean a reboot.
+boot_now="$( { /usr/sbin/sysctl -n kern.boottime 2>/dev/null || true; } | sed -n 's/.*{ *sec = \([0-9]*\).*/\1/p')"
+[[ -n "$boot_now" ]] || boot_now="$(awk '/^btime /{ print $2 }' /proc/stat 2>/dev/null || true)"
+if [[ "$boot_now" =~ ^[0-9]+$ ]]; then
+  mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
+  printf '%s\n' "$$" > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
+  printf '%s\n' $(( boot_now - 30 )) > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/boot"
+  set +e
+  out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+    PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+    "${skip_for_plan[@]}" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "a live lock whose boot time drifted by seconds is still respected" "2" "$rc"
+  assert_contains "the drifted live lock is reported as active" "$out" "another stay_fresh run is active"
+  rm -f "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid" \
+        "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/boot"
+  rmdir "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
+else
+  err "could not read the boot time to test the lock's drift tolerance"
+fi
+
 # A kill can land after mkdir(2) but before the pid file is written. That empty
 # directory is stale and must not disable maintenance forever.
 mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
@@ -872,52 +897,70 @@ write_last_run() {
 }
 JSON
 }
+agent_status() {
+  AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
+    PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1
+}
+sched_stamp="$fake_macos/home/Library/Logs/stay_fresh/last-scheduled"
 fresh_when="$(stamp_days_ago 0)"
 write_last_run "$fresh_when"
+rm -f "$sched_stamp"
+touch "$agent_plist"
 set +e
-out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
-  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+out="$(agent_status)"
 rc=$?
 set -e
-assert_eq "agent status with a fresh run exits 0" "0" "$rc"
+assert_eq "agent status with a fresh install and no scheduled run yet exits 0" "0" "$rc"
 assert_contains "agent status shows the last run's headline" "$out" \
   "last run: $fresh_when — stay_fresh WARN: freed 1.20G in 4m10s"
 assert_contains "agent status shows the detail line with its quotes unescaped" "$out" \
   '15 ok, 1 warned, 4 skipped; brew upgraded 3; "kept" 2 local snapshot(s)'
-assert_not_contains "a fresh run is not called stale" "$out" "the job is not running"
+assert_contains "agent status says no scheduled run has happened yet" "$out" "no scheduled run recorded yet"
+assert_not_contains "a fresh install is not called stale" "$out" "the job is not running"
 
 # A job that stopped firing is the failure launchd hides best: still loaded,
-# last verdict still OK. The plist's schedule sets the yardstick - daily
-# here (the fake plist has no Weekday) - and twice that with no run is stale.
-write_last_run "$(stamp_days_ago 3)"
+# last verdict still OK. The yardstick is the plist's schedule - daily here,
+# the fake plist has no Weekday - and twice that with no scheduled run is
+# stale. The measure is the stamp run-scheduled writes, or the install when
+# there is none; last-run.json is rewritten by manual runs too and stays
+# fresh here throughout, which must not mask a job that never fires.
+touch -t 202001010000 "$agent_plist"
 set +e
-out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
-  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+out="$(agent_status)"
 rc=$?
 set -e
-assert_eq "agent status with a stale daily run exits 1" "1" "$rc"
-assert_contains "a stale daily run is called out with its age" "$out" \
-  "last run was 3 day(s) ago and the schedule fires every 1 day(s) — the job is not running"
+assert_eq "an old install with no scheduled run ever exits 1" "1" "$rc"
+assert_contains "the missing first run is measured from the install" "$out" \
+  "since the install, and the schedule fires every 1 day(s) — the job is not running"
+touch "$agent_plist"
+printf '%s\t%s\n' "$(stamp_days_ago 3)" 0 > "$sched_stamp"
+set +e
+out="$(agent_status)"
+rc=$?
+set -e
+assert_eq "agent status with a stale daily schedule exits 1" "1" "$rc"
+assert_contains "the last scheduled run is shown with its exit code" "$out" "last scheduled run: $(stamp_days_ago 3 | cut -c1-10)"
+assert_contains "a stale daily schedule is called out with its age" "$out" \
+  "no scheduled run in 3 day(s) since the last scheduled run, and the schedule fires every 1 day(s) — the job is not running"
 # The same three days against a weekly schedule are on time.
 printf '%s\n' '<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer></dict>' \
   > "$agent_plist"
 set +e
-out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
-  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+out="$(agent_status)"
 rc=$?
 set -e
 assert_eq "three days against a weekly schedule exits 0" "0" "$rc"
 assert_not_contains "three days against a weekly schedule is not stale" "$out" "the job is not running"
-write_last_run "$(stamp_days_ago 20)"
+printf '%s\t%s\n' "$(stamp_days_ago 20)" 1 > "$sched_stamp"
 set +e
-out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
-  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+out="$(agent_status)"
 rc=$?
 set -e
 assert_eq "twenty days against a weekly schedule exits 1" "1" "$rc"
-assert_contains "a stale weekly run names the weekly yardstick" "$out" \
-  "last run was 20 day(s) ago and the schedule fires every 7 day(s)"
+assert_contains "a stale weekly schedule names the weekly yardstick" "$out" \
+  "no scheduled run in 20 day(s) since the last scheduled run, and the schedule fires every 7 day(s)"
 printf 'original plist\n' > "$agent_plist"
+rm -f "$sched_stamp"
 
 # The safe profile is what the plist runs by default. Its step list lives in
 # run-scheduled, not in the plist, so it is checked from the transcript of a
@@ -944,6 +987,21 @@ if [[ -n "$sched_log" ]]; then
     "$(grep "local Time Machine snapshots" <<<"$sched_out")" "read-only"
 else
   err "a dry scheduled run wrote no transcript"
+fi
+if [[ ! -e "$sched_stamp" ]]; then
+  ok "a dry scheduled run leaves no scheduled-run stamp"
+else
+  err "a dry scheduled run wrote the scheduled-run stamp"
+fi
+# A real scheduled run stamps when it fired and how it ended, for status.
+set +e
+HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+  STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe >/dev/null 2>&1
+set -e
+if [[ -s "$sched_stamp" ]] && grep -Eq $'^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\t[0-9]+$' "$sched_stamp"; then
+  ok "a real scheduled run writes the scheduled-run stamp with its exit code"
+else
+  err "a real scheduled run left no usable scheduled-run stamp"; cat "$sched_stamp" >&2 2>/dev/null
 fi
 
 rm -rf "$fake_macos"
@@ -1009,6 +1067,15 @@ set +e
 rc=$?
 set -e
 assert_eq "agent rejects an empty --notify" "3" "$rc"
+# The check is stay_fresh.sh's own, so the two cannot disagree: a value the
+# scheduled run would refuse is refused at install, with the same message.
+set +e
+out="$("$agent" install --print-only --notify none,macos --dry-run 2>&1 >/dev/null)"
+rc=$?
+set -e
+assert_eq "agent rejects none combined with a channel, as stay_fresh.sh does" "3" "$rc"
+assert_contains "the agent relays stay_fresh.sh's reason" "$out" \
+  "--notify none and auto cannot be combined with other channels"
 # A channel list travels into the plist unchanged; stay_fresh.sh splits it.
 plist_tmp="$(mktemp)"
 if "$agent" install --print-only --notify macos,slack --dry-run > "$plist_tmp" \

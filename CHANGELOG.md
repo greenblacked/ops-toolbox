@@ -1021,6 +1021,63 @@ entry here belongs to a version.
   (`rm: cannot remove '/p': Permission denied`) forms are parsed, the retry
   is announced with its count, and the unprivileged suite runs it as uid
   1000 against a directory the kernel really refuses.
+- `stay_fresh.sh` aborts on Ctrl-C again. The `--step-timeout` wrapper
+  caught the interrupt, stopped the command and exited 130 normally, which
+  bash reads as "the child handled it": the interrupted command was booked
+  a warning and the run went on to the next step, one Ctrl-C per command.
+  The wrapper now dies of the interrupt itself after stopping the command,
+  so bash ends the run and the lock is released. At a terminal it also
+  signals the command's children, found through `pgrep -P` before the
+  parent goes, so a `git fetch` brew left behind cannot keep the log pipe
+  open past the limit; and a command run through `sudo` is stopped through
+  `sudo -n kill`, since root's process refuses an unprivileged signal and
+  the wrapper then waited for it to finish and reported a timeout for work
+  that completed.
+- `stay_fresh.sh` bounds the probes that used to run outside the timeout:
+  `docker info` at preflight and in the step, `docker system df`, `gcloud
+  components list` and `gcloud version` (with its update check disabled). A
+  daemon that accepts the socket and never answers hung the run with the
+  lock held, which is the failure `--step-timeout` was added for. A probe
+  stopped by the limit now counts as a step warning too, as the help always
+  said; `capture_cmd` reported the stop and then booked the step `[ ok ]`,
+  so the agent's `--fail-on-warn` never saw it.
+- `STAY_FRESH_STEP_TIMEOUT` is validated like `--step-timeout`: `30m`
+  became a 30-second limit through perl's numification and `abc` silently
+  disabled the limit; both now exit 3 with the value named.
+- `stay_fresh.sh`'s `user-logs` step keeps its file list out of the argument
+  vector: the machine it exists for carries tens of thousands of eligible
+  files, more than ARG_MAX holds, and `du`/`rm` on the whole list failed
+  with nothing removed. The NUL-separated list stays in a file and `xargs`
+  batches every pass. A directory `find` could not enter no longer discards
+  the scan either: what was listed is removed and the directory is named
+  as a warning.
+- The Trash step reads the volume list from the mount table before touching
+  anything under `/Volumes`. The glob it used stats every entry, and stat on
+  the mount point of a share whose server went away blocks in the kernel
+  before the network-share check could run, which is the hang the check was
+  added to prevent. Volume names with spaces and parentheses are parsed
+  whole, and a directory under `/Volumes` that is not a mount is ignored.
+- The run lock's boot-time check tolerates five minutes of drift. XNU
+  re-derives `kern.boottime` whenever the clock is stepped, which NTP and
+  sleep/wake do by seconds, and a lock held by a live run was discarded as
+  pre-reboot on the next scheduled firing, letting two runs upgrade and sweep
+  at once.
+- The narrowed sudo retry no longer counts BSD rm's "Directory not empty"
+  lines, printed for each parent of a refused file, as leftovers after the
+  retry removed that entry; on a real Mac every retry that worked ended the
+  step as a warning.
+- `stay_fresh_agent.sh install --notify` asks `stay_fresh.sh --list-steps
+  --notify VALUE` whether the value is acceptable instead of keeping its own
+  copy of the grammar, which had already drifted: `none,macos` passed the
+  install check and failed every scheduled run with exit 3 and nothing
+  watching. `--list-steps` now answers after the argument checks for exactly
+  this.
+- `stay_fresh_agent.sh status` measures staleness from the run the schedule
+  itself fired, stamped in `last-scheduled` by `run-scheduled`, or from the
+  plist's modification time when it has never fired, instead of from
+  `last-run.json`, which every manual run rewrites: a `stay-fresh --quick`
+  by hand every few days hid a job that had not fired for months, and an
+  old manual run flagged a job installed two days ago.
 - `stay_fresh.sh --thin-snapshots` no longer deletes local snapshots while a
   Time Machine backup is running (`tmutil status` reports `Running = 1`).
   A backup copies from the newest snapshot, and deleting it underneath made

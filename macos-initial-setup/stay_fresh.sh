@@ -290,7 +290,16 @@ acquire_lock() {
   [[ -r "$LOCK_DIR/pid" ]]  && read -r existing_pid  < "$LOCK_DIR/pid"
   [[ -r "$LOCK_DIR/boot" ]] && read -r existing_boot < "$LOCK_DIR/boot"
   now_boot="$(boot_epoch)"
-  if [[ -n "$existing_boot" && -n "$now_boot" && "$existing_boot" != "$now_boot" ]]; then
+  # A reboot moves the boot time by minutes at the very least. It also drifts
+  # by seconds without one: XNU re-derives kern.boottime whenever the clock is
+  # stepped, which NTP and sleep/wake do routinely, and a lock that moved by
+  # thirty seconds belongs to a run that is still going.
+  local boot_drift=0
+  if [[ "$existing_boot" =~ ^[0-9]+$ && "$now_boot" =~ ^[0-9]+$ ]]; then
+    boot_drift=$(( now_boot - existing_boot ))
+    (( boot_drift < 0 )) && boot_drift=$(( -boot_drift ))
+  fi
+  if (( boot_drift > 300 )); then
     warn "removing stale stay_fresh lock from before the last reboot (pid ${existing_pid:-?})"
   elif [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
     err "another stay_fresh run is active (pid $existing_pid)"
@@ -622,10 +631,13 @@ while (( $# > 0 )); do
   shift
 done
 
-if (( LIST_STEPS )); then
-  list_steps
-  exit 0
-fi
+# The flag arms check their own value; the environment variable the help
+# offers as an alternative used to skip the check, and `30m` then became a
+# 30-second limit through perl's numification while `abc` disabled it.
+[[ "$STEP_TIMEOUT" =~ ^[0-9]+$ ]] || {
+  err "--step-timeout / STAY_FRESH_STEP_TIMEOUT must be a whole number of seconds (got: $STEP_TIMEOUT)"
+  exit 3
+}
 
 # One channel, or a comma-separated list of them. `both` predates the Slack
 # channel and stays as the pair it always meant. none and auto describe the
@@ -651,6 +663,14 @@ done
 if (( (NOTIFY_NONE || NOTIFY_AUTO) && notify_count > 1 )); then
   err "--notify none and auto cannot be combined with other channels (got: $NOTIFY_MODE)"
   exit 3
+fi
+
+# After the argument checks, so that `--list-steps --notify X` is the one
+# question the agent can ask about a --notify value without running anything:
+# exit 0 means stay_fresh.sh will take it, exit 3 and the message say why not.
+if (( LIST_STEPS )); then
+  list_steps
+  exit 0
 fi
 
 # --quick is a fixed --only list: everything a user can clear without sudo,
@@ -768,9 +788,21 @@ path_bytes() {
 # agent) the command runs in its own process group so the children brew and
 # gcloud fork go with it; at a terminal it stays in the shell's group, because
 # a command that asks a question there must be able to read the answer.
+#
+# Three details of the signalling are load-bearing. At a terminal the command
+# keeps the shell's process group, so the children it forked are found by
+# walking pgrep -P before the parent is signalled, and signalled with it;
+# otherwise a git or curl the parent left behind keeps the log pipe open and
+# the "stopped" command never returns. A command run through sudo is root's,
+# and an unprivileged kill is refused, so those go through `sudo -n kill`,
+# whose credential the preflight prompt already warmed. And a Ctrl-C is
+# handed back: the wrapper stops the command, then dies of SIGINT itself, so
+# bash sees a child killed by the interrupt and aborts the run as it did
+# before the wrapper existed, instead of booking a warning and carrying on to
+# the next step.
 read -r -d '' PERL_TIMEOUT <<'PERL' || true
 use POSIX qw(WNOHANG);
-my ($limit, $group, @cmd) = @ARGV;
+my ($limit, $group, $via_sudo, @cmd) = @ARGV;
 my $pid = fork();
 defined $pid or die "fork: $!\n";
 if ($pid == 0) {
@@ -779,25 +811,45 @@ if ($pid == 0) {
   print STDERR "exec $cmd[0]: $!\n";
   exit 127;
 }
-my $target = $group ? -$pid : $pid;
 my $status;
 my $timed_out = 0;
+sub descendants {
+  my ($p) = @_;
+  my @kids = grep { /^\d+$/ } map { s/\s+//gr } `pgrep -P $p 2>/dev/null`;
+  return map { ($_, descendants($_)) } @kids;
+}
+my $signal = sub {
+  my ($sig, @targets) = @_;
+  if ($via_sudo) {
+    return if system("sudo", "-n", "kill", "-$sig", "--", @targets) == 0;
+  }
+  my $n = kill $sig, @targets;
+  if ($n == 0 && $!{EPERM}) {
+    system("sudo", "-n", "kill", "-$sig", "--", @targets);
+  }
+};
 my $stop = sub {
   my ($sig) = @_;
-  kill $sig, $target;
+  my @targets = $group ? (-$pid) : ($pid, descendants($pid));
+  $signal->($sig, @targets);
   for (1 .. 50) {
     my $r = waitpid($pid, WNOHANG);
     if ($r == $pid) { $status = $?; return; }
     return if $r == -1;
     select(undef, undef, undef, 0.1);
   }
-  kill "KILL", $target;
+  $signal->("KILL", @targets);
   my $r = waitpid($pid, 0);
   $status = $? if $r == $pid;
 };
 $SIG{ALRM} = sub { $timed_out = 1; $stop->("TERM"); };
 for my $sig (qw(INT TERM HUP)) {
-  $SIG{$sig} = sub { $stop->("TERM"); exit 128 + ($sig eq "INT" ? 2 : $sig eq "HUP" ? 1 : 15); };
+  $SIG{$sig} = sub {
+    $stop->("TERM");
+    $SIG{$sig} = "DEFAULT";
+    kill $sig, $$;
+    exit 128 + ($sig eq "INT" ? 2 : $sig eq "HUP" ? 1 : 15);
+  };
 }
 alarm $limit;
 while (!defined $status) {
@@ -817,9 +869,22 @@ with_timeout() {
     "$@"
     return
   fi
-  local group=0
+  local group=0 via_sudo=0
   [[ -t 0 ]] || group=1
-  perl -e "$PERL_TIMEOUT" -- "$secs" "$group" "$@"
+  [[ "$1" == "sudo" ]] && via_sudo=1
+  perl -e "$PERL_TIMEOUT" -- "$secs" "$group" "$via_sudo" "$@"
+}
+
+# A command --step-timeout stopped: said on the terminal with the limit,
+# marked in the log, and counted as a warning for the step, whichever wrapper
+# ran it. The help promises the step counts as warned; capture_cmd used to
+# report the stop and leave the count alone, so an os-updates probe that hung
+# for the full limit still ended the step [ ok ].
+report_timeout() {
+  local label="$1"
+  warn "$label stopped after $(human_duration "$STEP_TIMEOUT") (--step-timeout) — see log"
+  echo "# $(date '+%H:%M:%S') [$label] stopped after ${STEP_TIMEOUT}s by --step-timeout" >>"$LOG_FILE"
+  STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
 }
 
 # Run a command; honor --dry-run and --verbose; log output to $LOG_FILE.
@@ -849,10 +914,8 @@ run_cmd() {
     rc=$?
   fi
   if (( rc == 124 )); then
-    warn "$label stopped after $(human_duration "$STEP_TIMEOUT") (--step-timeout) — see log"
-    echo "# $(date '+%H:%M:%S') [$label] stopped after ${STEP_TIMEOUT}s by --step-timeout" >>"$LOG_FILE"
-  fi
-  if (( rc != 0 )); then
+    report_timeout "$label"
+  elif (( rc != 0 )); then
     STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
   fi
   return "$rc"
@@ -883,10 +946,7 @@ capture_cmd() {
     CAPTURED="$(with_timeout "$STEP_TIMEOUT" "$@" 2>>"$LOG_FILE")" || rc=$?
   fi
   printf '%s\n' "$CAPTURED" >>"$LOG_FILE"
-  if (( rc == 124 )); then
-    warn "$label stopped after $(human_duration "$STEP_TIMEOUT") (--step-timeout) — see log"
-    echo "# $(date '+%H:%M:%S') [$label] stopped after ${STEP_TIMEOUT}s by --step-timeout" >>"$LOG_FILE"
-  fi
+  (( rc == 124 )) && report_timeout "$label"
   return "$rc"
 }
 
@@ -1017,9 +1077,18 @@ clear_dir() {
           "$C_DIM" "${#denied[@]}" "$( (( ${#denied[@]} == 1 )) && printf 'y' || printf 'ies')" "$C_RESET"
         retry_errs="$(mktemp)"
         sudo rm -rf -- "${denied[@]}" 2>"$retry_errs" || true
-        # The first pass's refusals are superseded by the retry's outcome;
-        # everything else it reported still stands.
-        { grep -v 'Permission denied$' "$errs" || true; cat "$retry_errs"; } >"$errs.retry"
+        # The first pass's refusals are superseded by the retry's outcome, and
+        # so is whatever else it said about an entry the retry then removed:
+        # BSD rm follows a refused file with "Directory not empty" for its
+        # parent, and that line counted as a leftover after the leftover was
+        # gone. Everything else it reported still stands.
+        grep -v 'Permission denied$' "$errs" >"$errs.retry" || true
+        for denied_entry in "${denied[@]}"; do
+          [[ -e "$denied_entry" ]] && continue
+          grep -vF -- "$denied_entry" "$errs.retry" >"$errs.retry2" || true
+          mv -f "$errs.retry2" "$errs.retry"
+        done
+        cat "$retry_errs" >>"$errs.retry"
         mv -f "$errs.retry" "$errs"
         rm -f "$retry_errs"
       else
@@ -1405,7 +1474,7 @@ if (( SKIP_DOCKER == 0 )); then
     info "Docker CLI not found — docker-prune step will be skipped"
     SKIP_DOCKER=1
     note_auto_skip docker "the Docker CLI is not installed"
-  elif ! docker info >/dev/null 2>&1; then
+  elif ! with_timeout "$STEP_TIMEOUT" docker info >/dev/null 2>&1; then
     warn "Docker CLI present but daemon unreachable — docker-prune step will be skipped"
     SKIP_DOCKER=1
     note_auto_skip docker "the Docker daemon is unreachable"
@@ -2071,21 +2140,33 @@ empty_trash_dir() {
   fi
 }
 
-# The filesystem type of a mount point, read from mount(8) without touching
-# the volume: "smbfs" out of "//u@nas/share on /Volumes/share (smbfs, nodev,
-# ...)" on macOS, "cifs" out of "//nas/share on /mnt/x type cifs (rw,...)" on
-# Linux, where the tests run. Empty when the path is not a mount point.
-volume_fs_type() {
-  local mp="$1" line
-  line="$(mount 2>/dev/null | grep -F " on $mp " | head -n 1)"
-  [[ -n "$line" ]] || { printf ''; return 0; }
-  case "$line" in
-    *" type "*) line="${line##* type }"; printf '%s' "${line%% *}" ;;
-    *)          line="${line##* (}";     printf '%s' "${line%%[,)]*}" ;;
-  esac
+# The volumes mounted under /Volumes, one "name<TAB>fstype" per line, read
+# from mount(8) alone: "//u@nas/share on /Volumes/share (smbfs, nodev, ...)"
+# on macOS, "//nas/share on /Volumes/x type cifs (rw,...)" in the Linux shape
+# the tests use. Nothing under /Volumes is opened or stat'ed to build it,
+# which is the point: on a share whose server went away even `[[ -d ]]` on
+# the mount point blocks in the kernel, so the type has to be known before
+# the path is touched at all. A volume name may contain spaces and
+# parentheses; the type is the last parenthesised group on macOS and the word
+# after " type " on Linux.
+mounted_volumes() {
+  local line rest name fstype
+  mount 2>/dev/null | while IFS= read -r line; do
+    case "$line" in *" on /Volumes/"*) ;; *) continue ;; esac
+    rest="${line#* on /Volumes/}"
+    if [[ "$rest" == *" type "* ]]; then
+      name="${rest%% type *}"
+      fstype="${rest#* type }"; fstype="${fstype%% *}"
+    else
+      name="${rest% (*}"
+      fstype="${rest##* (}"; fstype="${fstype%%[,)]*}"
+    fi
+    [[ -n "$name" ]] || continue
+    printf '%s\t%s\n' "$name" "$fstype"
+  done
 }
-volume_is_network() {
-  case "$(volume_fs_type "$1")" in
+volume_type_is_network() {
+  case "$1" in
     smbfs|cifs|nfs|nfs4|afpfs|webdav|ftp|sshfs|fuse*) return 0 ;;
   esac
   return 1
@@ -2124,19 +2205,25 @@ step_trash() {
   # or a second APFS volume can carry gigabytes there for months. The boot
   # volume appears here too, as a symlink, and is skipped: its Trash is the
   # one above.
+  #
+  # The list comes from the mount table, not from a glob of /Volumes: a glob
+  # stats every entry, and stat on the mount point of a share whose server
+  # went away blocks for as long as the kernel keeps retrying, which on a
+  # scheduled run is until somebody kills the process. A network share is
+  # therefore skipped by its type before anything touches it; its Trash
+  # belongs to Finder anyway. The boot volume's /Volumes symlink is not a
+  # mount and never appears here.
   uid="$(id -u)"
-  for vol in /Volumes/*/; do
-    vol="${vol%/}"
-    [[ -d "$vol" && ! -L "$vol" ]] || continue
-    # A network share is asked nothing: find(1) on a share whose server went
-    # away blocks for as long as the kernel keeps retrying, which on a
-    # scheduled run is until somebody kills the process. Its Trash belongs to
-    # Finder anyway.
-    if volume_is_network "$vol"; then
+  local vname vtype
+  while IFS=$'\t' read -r vname vtype; do
+    [[ -n "$vname" ]] || continue
+    vol="/Volumes/$vname"
+    if volume_type_is_network "$vtype"; then
       printf "  %sTrash on %s skipped: network volume (%s)%s\n" \
-        "$C_DIM" "${vol#/Volumes/}" "$(volume_fs_type "$vol")" "$C_RESET"
+        "$C_DIM" "$vname" "$vtype" "$C_RESET"
       continue
     fi
+    [[ -d "$vol" && ! -L "$vol" ]] || continue
     vtrash="$vol/.Trashes/$uid"
     [[ -d "$vtrash" ]] || continue
     [[ -n "$(find "$vtrash" -mindepth 1 -print -quit 2>/dev/null)" ]] || continue
@@ -2148,7 +2235,7 @@ step_trash() {
         ;;
       2) warn_step "Trash on ${vol#/Volumes/} cleanup incomplete — protected or recreated entries remain" ;;
     esac
-  done
+  done <<<"$(mounted_volumes)"
 }
 
 step_devcaches() {
@@ -2314,7 +2401,7 @@ step_docker() {
     warn "docker not on PATH"
     return 1
   fi
-  if ! docker info >/dev/null 2>&1; then
+  if ! with_timeout "$STEP_TIMEOUT" docker info >/dev/null 2>&1; then
     warn "docker daemon not reachable"
     return 1
   fi
@@ -2337,7 +2424,7 @@ step_docker() {
 
   # Size before
   local before after
-  before="$(docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | awk -F'\t' '{print $1": "$2}' | paste -sd ', ' - || echo 'unknown')"
+  before="$(with_timeout "$STEP_TIMEOUT" docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | awk -F'\t' '{print $1": "$2}' | paste -sd ', ' - || echo 'unknown')"
   printf "  docker disk usage: %s%s%s\n" "$C_DIM" "$before" "$C_RESET"
 
   # Keep tagged images, remove only dangling (<none>) ones.
@@ -2361,7 +2448,7 @@ step_docker() {
   run_cmd "docker builder prune -af"          docker builder prune -af \
     || warn "'docker builder prune' failed"
 
-  after="$(docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | awk -F'\t' '{print $1": "$2}' | paste -sd ', ' - || echo 'unknown')"
+  after="$(with_timeout "$STEP_TIMEOUT" docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | awk -F'\t' '{print $1": "$2}' | paste -sd ', ' - || echo 'unknown')"
   printf "  docker disk usage after: %s%s%s\n" "$C_DIM" "$after" "$C_RESET"
 }
 
@@ -2442,23 +2529,57 @@ step_diagnostics() {
 # missing may not recreate it. Two subtrees are left alone: DiagnosticReports,
 # which the diagnostics step owns, and this script's own state directory,
 # where the history and the kept logs live.
+#
+# The list never becomes an argument vector. The machine this step exists for
+# carries tens of thousands of eligible files, more than ARG_MAX holds, so
+# the NUL-separated list stays in a file and xargs batches every pass over
+# it. A directory find could not enter costs a warning, not the sweep: what
+# it did list is still removed.
+old_user_logs() {
+  find "$HOME/Library/Logs" \( -path "$HOME/Library/Logs/DiagnosticReports" -o -path "$STATE_DIR" \) -prune \
+    -o -type f -mtime +"$USER_LOG_DAYS" -print0
+}
 step_user_logs() {
-  local root="$HOME/Library/Logs"
+  local root="$HOME/Library/Logs" label="log files older than $USER_LOG_DAYS days"
   if [[ ! -d "$root" ]]; then
     info "no $root — nothing to do"
     return 0
   fi
-  local -a old_logs=()
-  local scan_out f
+  local scan_out scan_rc=0 count total_kb total_b=0 rm_rc=0 left left_kb left_b=0 delta
   scan_out="$(mktemp)"
-  if find "$root" \( -path "$root/DiagnosticReports" -o -path "$STATE_DIR" \) -prune \
-       -o -type f -mtime +"$USER_LOG_DAYS" -print0 >"$scan_out" 2>>"$LOG_SINK"; then
-    while IFS= read -r -d '' f; do old_logs+=("$f"); done < "$scan_out"
-  else
-    warn_step "could not scan $root"
+  old_user_logs >"$scan_out" 2>>"$LOG_SINK" || scan_rc=$?
+  count="$(tr -cd '\0' <"$scan_out" | wc -c | tr -d ' ')"
+  if (( count > 0 )); then
+    total_kb="$(xargs -0 du -sk <"$scan_out" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s + 0 }')"
+    total_b=$(( total_kb * 1024 ))
+  fi
+  printf "  %s: %d path(s), %s%s%s\n" "$label" "$count" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
+  if (( scan_rc != 0 )); then
+    warn_step "$root could not be fully scanned — a directory in it is unreadable, see log"
+  fi
+  if (( DRY_RUN )); then
+    rm -f "$scan_out"
+    printf "  %s(dry-run) would clear %d path(s)%s\n" "$C_DIM" "$count" "$C_RESET"
+    return 0
+  fi
+  if (( count > 0 )); then
+    xargs -0 rm -f <"$scan_out" 2>>"$LOG_FILE" || rm_rc=$?
+    # What is still there afterwards is what the sweep could not take.
+    old_user_logs >"$scan_out" 2>/dev/null || true
+    left="$(tr -cd '\0' <"$scan_out" | wc -c | tr -d ' ')"
+    if (( left > 0 )); then
+      left_kb="$(xargs -0 du -sk <"$scan_out" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s + 0 }')"
+      left_b=$(( left_kb * 1024 ))
+    fi
+    delta=$(( total_b - left_b ))
+    (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
+    printf "  %s->%s freed %s %s(%s)%s\n" \
+      "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$C_DIM" "$label" "$C_RESET"
+    if (( rm_rc != 0 || left > 0 )); then
+      warn_step "$label cleanup incomplete — $left path(s) still there"
+    fi
   fi
   rm -f "$scan_out"
-  clear_paths "log files older than $USER_LOG_DAYS days" dir ${old_logs[@]+"${old_logs[@]}"}
 }
 
 step_brew() {
@@ -2694,7 +2815,7 @@ step_gcloud() {
   fi
   # Some gcloud builds disable the in-place component manager (e.g. when
   # installed from a distro package); in that case there's nothing to do.
-  if ! gcloud components list --quiet >/dev/null 2>&1; then
+  if ! with_timeout "$STEP_TIMEOUT" gcloud components list --quiet >/dev/null 2>&1; then
     info "gcloud present but component manager unavailable — skipping components update"
     return 0
   fi
@@ -2764,7 +2885,8 @@ step_versions() {
   fi
   if command -v gcloud >/dev/null 2>&1 && (( DRY_RUN == 0 )); then
     any=1
-    line="$(gcloud version 2>/dev/null | head -n1 || echo '?')"
+    # The version print would otherwise check for updates over the network.
+    line="$(CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 with_timeout "$STEP_TIMEOUT" gcloud version 2>/dev/null | head -n1 || echo '?')"
     printf "  gcloud:        %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   elif command -v gcloud >/dev/null 2>&1; then
     any=1

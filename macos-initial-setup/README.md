@@ -625,13 +625,17 @@ cannot alter a cleanup target.
 
 Only one real run per user can be active at a time; the lock records the
 boot it was taken in, so one left by a run the last reboot ended is recognised
-as stale even when its pid has been reused. Every command a step runs is under
-`--step-timeout` (30 minutes by default): `brew update`, `softwareupdate
---list`, `gcloud`, `helm` and `krew` all talk to the network with no bound of
-their own, and one that hangs used to stall the scheduled agent and turn every
-later run away at the lock. A stopped command is reported with the limit and
-counts as a warning. The script prints a per-step plan, runs each step with
-OK / WARN / FAIL accounting, and closes with a summary that includes:
+as stale even when its pid has been reused (a boot time that moved by
+seconds is clock drift, not a reboot; only minutes count). Every command a
+step runs is under `--step-timeout` (30 minutes by default), the daemon and
+component-manager probes included: `brew update`, `softwareupdate --list`,
+`docker info`, `gcloud`, `helm` and `krew` all talk to the network or a
+daemon with no bound of their own, and one that hangs used to stall the
+scheduled agent and turn every later run away at the lock. A stopped command
+is reported with the limit and counts as a warning; one run through `sudo` is
+stopped through `sudo` too. Ctrl-C stops the running command and ends the
+run, releasing the lock. The script prints a per-step plan, runs each step
+with OK / WARN / FAIL accounting, and closes with a summary that includes:
 
 - Elapsed wall-clock time.
 - `df` delta on `/`.
@@ -997,10 +1001,16 @@ and the Slack webhook belong in the login Keychain for this use (see the
 
 `status` also tells you when the job has stopped running, which is the failure
 a schedule hides best: launchd still says loaded and the last verdict still
-reads OK, the Mac was simply asleep every Monday at 10:30. It reads the last
-run's timestamp from `last-run.json`, takes the plist's schedule as the
-yardstick (weekly when the plist carries a `Weekday`, daily otherwise), and
-warns and exits `1` when more than twice that interval has passed.
+reads OK, the Mac was simply asleep every Monday at 10:30. Every real
+scheduled run stamps `~/Library/Logs/stay_fresh/last-scheduled` with its time
+and exit code; `status` measures from that stamp, or from the plist's
+modification time when the job has never fired, takes the plist's schedule as
+the yardstick (weekly when the plist carries a `Weekday`, daily otherwise),
+and warns and exits `1` when more than twice that interval has passed.
+`last-run.json` is not the measure, because a manual `stay-fresh --quick`
+rewrites it and would hide a job that never fires. The `--notify` value is
+checked by `stay_fresh.sh` itself at install time, so a list the scheduled run
+would refuse is refused before the plist is written.
 Install and replacement are transactional: a failed bootstrap restores the
 previous plist and restarts the old job. `uninstall --dry-run` previews removal;
 options that do not belong to a command are rejected with exit `3`.

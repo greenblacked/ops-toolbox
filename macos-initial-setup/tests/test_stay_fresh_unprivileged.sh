@@ -42,6 +42,17 @@ assert_not_contains() {
     err "$label (unexpected '$needle')"; printf '%s\n' "$haystack" | tail -20 >&2
   else ok "$label"; fi
 }
+assert_called() {
+  local label="$1" calls="$2" needle="$3"
+  if grep -qF -- "$needle" "$calls" 2>/dev/null; then ok "$label"
+  else err "$label (no '$needle' in recorded calls)"; tail -15 "$calls" >&2 2>/dev/null; fi
+}
+assert_not_called() {
+  local label="$1" calls="$2" needle="$3"
+  if grep -qF -- "$needle" "$calls" 2>/dev/null; then
+    err "$label (unexpected '$needle')"; tail -15 "$calls" >&2 2>/dev/null
+  else ok "$label"; fi
+}
 
 mkbin() {
   local path="$1"; shift
@@ -156,21 +167,10 @@ printf 'junk\n' > "$d/home/Library/Caches/disposable/data"
 out="$(run_sf "$d/tmp" --yes --only user-caches)"; rc=$?
 assert_eq "a refused entry with sudo available does not fail the run" "0" "$rc"
 assert_contains "the retry is announced" "$out" "retrying 1 entry owned by another user with sudo"
-if grep -qF -- "sudo rm -rf -- $d/home/Library/Caches/protected" "$d/calls"; then
-  ok "the retry names the refused top-level entry"
-else
-  err "the retry did not name the refused entry"; cat "$d/calls" >&2
-fi
-if grep -q 'sudo find' "$d/calls"; then
-  err "the retry swept the whole directory"; cat "$d/calls" >&2
-else
-  ok "the retry does not sweep the whole directory"
-fi
-if grep -q 'disposable' "$d/calls"; then
-  err "the retry touched an entry that was never refused"; cat "$d/calls" >&2
-else
-  ok "the retry leaves the entries the first pass handled alone"
-fi
+assert_called "the retry names the refused top-level entry" "$d/calls" \
+  "sudo rm -rf -- $d/home/Library/Caches/protected"
+assert_not_called "the retry does not sweep the whole directory" "$d/calls" "sudo find"
+assert_not_called "the retry leaves the entries the first pass handled alone" "$d/calls" "disposable"
 assert_contains "a retry sudo could not carry out is still a warning" "$out" "warn steps:  1"
 if [[ -f "$d/home/Library/Caches/protected/data" ]]; then
   ok "the refused entry survives a retry that grants nothing"
@@ -178,6 +178,26 @@ else
   err "the refused entry was removed"
 fi
 chmod 755 "$d/home/Library/Caches/protected"
+
+echo "--- an unreadable directory under ~/Library/Logs ---"
+# find cannot enter a mode-000 directory and exits non-zero having listed
+# everything else. The sweep still removes what was listed and says what it
+# could not see; it used to throw the whole list away and prune nothing.
+L="$d/home/Library/Logs"
+mkdir -p "$L/Homebrew" "$L/locked"
+printf 'old\n' > "$L/Homebrew/old.log"; touch -d '40 days ago' "$L/Homebrew/old.log"
+printf 'hidden\n' > "$L/locked/old.log"; touch -d '40 days ago' "$L/locked/old.log"
+chmod 000 "$L/locked"
+out="$(run_sf "$d/tmp" --yes --no-sudo --only user-logs)"; rc=$?
+assert_eq "an unreadable log directory does not fail the run" "0" "$rc"
+if [[ ! -e "$L/Homebrew/old.log" ]]; then
+  ok "the old logs that were listed are still removed"
+else
+  err "an unreadable directory stopped the whole sweep"
+fi
+assert_contains "the unreadable directory is reported" "$out" "could not be fully scanned"
+assert_contains "an unreadable directory is accounted a warning" "$out" "warn steps:  1"
+chmod 755 "$L/locked"
 rm -rf "$d"
 
 if (( failures )); then

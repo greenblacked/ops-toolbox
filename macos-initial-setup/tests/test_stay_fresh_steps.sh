@@ -131,7 +131,11 @@ run_sf() {
     STAY_FRESH_TG_CHAT_ID="${STAY_FRESH_TG_CHAT_ID:-}" \
     SNAPSHOTS="${SNAPSHOTS:-}" \
     TM_RUNNING="${TM_RUNNING:-}" \
+    TM_DELETE_HANG="${TM_DELETE_HANG:-}" \
+    DOCKER_INFO_HANG="${DOCKER_INFO_HANG:-}" \
+    SU_HANG="${SU_HANG:-}" \
     STAY_FRESH_SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}" \
+    STAY_FRESH_STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -265,14 +269,17 @@ rm -rf "$d"
 # Before, the retry was `sudo find ... -exec rm`, which reached for the
 # protected one as root too. The refused path is nested here (GNU rm names
 # the deepest file it could not unlink), and the retry still targets the
-# top-level entry under the cache root.
+# top-level entry under the cache root. The fake also prints what BSD rm
+# prints after a refused file, "Directory not empty" for each parent; those
+# lines describe the entry the retry then removed and must not survive it
+# as leftovers, or every real Mac would warn after a retry that worked.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/rm" 'fail=0; opts=""' \
                   'for a in "$@"; do' \
                   '  case "$a" in' \
                   '    -*) opts="$opts $a" ;;' \
                   '    *"/com.apple.homed"*) echo "rm: $a: Operation not permitted" >&2; fail=1 ;;' \
-                  '    *"ShipIt"*) if [ -z "${SUDO_RETRY:-}" ]; then echo "rm: cannot remove '"'"'$a/pending/update'"'"': Permission denied" >&2; fail=1; else /bin/rm $opts "$a"; fi ;;' \
+                  '    *"ShipIt"*) if [ -z "${SUDO_RETRY:-}" ]; then echo "rm: cannot remove '"'"'$a/pending/update'"'"': Permission denied" >&2; echo "rm: $a/pending: Directory not empty" >&2; echo "rm: $a: Directory not empty" >&2; fail=1; else /bin/rm $opts "$a"; fi ;;' \
                   '    *) /bin/rm $opts "$a" ;;' \
                   '  esac' \
                   'done' \
@@ -457,6 +464,7 @@ docker_fake() {
     'echo "docker $*" >> "$CALLS"' \
     'case "${1:-}" in' \
     '  info)' \
+    '    [ -n "${DOCKER_INFO_HANG:-}" ] && sleep 60' \
     '    if [ -n "${DOCKER_INFO_FAIL_AFTER:-}" ]; then' \
     '      n=$(cat "$DOCKER_INFO_N" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DOCKER_INFO_N"' \
     '      [ "$n" -gt "$DOCKER_INFO_FAIL_AFTER" ] && exit 1' \
@@ -515,6 +523,18 @@ d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
 DOCKER_INFO_FAIL_AFTER=1 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "a step that hard-fails exits 1" "1" "$rc"
 assert_contains "a hard failure is counted" "$out" "failed:      1"
+rm -rf "$d"
+
+# A daemon that accepts the socket and never answers used to hang the
+# preflight probe itself, outside every timeout, with the lock held.
+d="$(new_env)"; docker_fake "$d"; : > "$d/calls"
+started="$(date +%s)"
+out="$(DOCKER_INFO_HANG=1 run_sf "$d" --yes --only docker --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hung docker daemon voids the docker step at preflight" "2" "$rc"
+assert_contains "the hung daemon is reported as unreachable" "$out" "daemon unreachable"
+if (( elapsed <= 20 )); then ok "the daemon probe was bounded (${elapsed}s)"
+else err "the run took ${elapsed}s — the daemon probe was not bounded"; fi
 rm -rf "$d"
 
 # ===========================================================================
@@ -850,6 +870,89 @@ assert_contains "the kept log records the timeout" "$(cat "$saved" 2>/dev/null)"
   "stopped after 1s by --step-timeout"
 rm -rf "$d"
 
+# A probe whose output the step parses (capture_cmd) is under the same limit
+# and counts the same way: the help says the step is warned, and the agent's
+# --fail-on-warn depends on it. It used to be reported and then booked [ ok ].
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/softwareupdate" 'echo "softwareupdate $*" >> "$CALLS"; sleep 60'
+started="$(date +%s)"
+out="$(run_sf "$d" --yes --only os-updates --step-timeout 1 --fail-on-warn)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a timed-out probe fails a --fail-on-warn run" "1" "$rc"
+assert_contains "the timed-out probe is reported" "$out" "softwareupdate --list stopped after 1s (--step-timeout)"
+assert_contains "a timed-out probe counts as a warning" "$out" "warn steps:  1"
+if (( elapsed <= 20 )); then ok "the probe was stopped promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the probe timeout did not fire"; fi
+rm -rf "$d"
+
+# A command run through sudo belongs to root, and the unprivileged watchdog
+# cannot signal it: the kill is refused, the wrapper waited for the command
+# to finish on its own, and then reported a timeout for work that completed.
+# The stop goes through `sudo -n kill` for those, on the credential the
+# preflight warmed. The fake sudo records the call and execs it.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/tmutil" 'echo "tmutil $*" >> "$CALLS"' \
+  'case "${1:-}" in' \
+  '  listlocalsnapshots) echo "Snapshots for disk /:"; echo "com.apple.TimeMachine.2026-09-01-101010.local" ;;' \
+  '  status) echo "{ Running = 0; }" ;;' \
+  '  deletelocalsnapshots) sleep 60 ;;' \
+  'esac; exit 0'
+started="$(date +%s)"
+out="$(run_sf "$d" --yes --only snapshots --thin-snapshots --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a timed-out sudo command does not fail the run" "0" "$rc"
+assert_called "a sudo command is stopped through sudo" "$d/calls" "sudo kill -TERM --"
+assert_contains "the stopped sudo command is reported" "$out" "stopped after 1s (--step-timeout)"
+if (( elapsed <= 20 )); then ok "the sudo command was stopped promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the sudo command was not stopped"; fi
+rm -rf "$d"
+
+# Ctrl-C. A terminal delivers SIGINT to the whole foreground process group:
+# the script, the wrapper and, at a terminal, the command. The wrapper stops
+# the command and then dies of SIGINT itself; bash then sees a child killed
+# by the interrupt and aborts the run, releasing the lock. The wrapper used
+# to exit 130 normally instead, which bash reads as "the child handled it":
+# the interrupted command was booked a warning and the run went on to the
+# next step, and the next, one Ctrl-C per command.
+#
+# setsid gives the run a process group of its own to signal; perl resets the
+# disposition first, because a background job inherits SIGINT ignored from
+# a non-interactive shell and the run would otherwise never see it.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+  '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+  '  "plugin update") sleep 60 & echo $! > "$CALLS.sleep"; echo started > "$CALLS.started"; wait ;;' \
+  'esac; exit 0'
+HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" CALLS="$d/calls" NO_COLOR=1 \
+  STAY_FRESH_NOTIFY=none SF="$SF" \
+  setsid perl -e '$SIG{INT} = "DEFAULT"; exec $ENV{SF}, "--yes", "--no-sudo", "--only", "helm-plugins,versions"' \
+  <"/dev/null" >"$d/calls.out" 2>&1 &
+run_pid=$!
+for _ in $(seq 1 100); do [[ -f "$d/calls.started" ]] && break; sleep 0.1; done
+run_pgid="$(awk '{ print $5 }' "/proc/$run_pid/stat" 2>/dev/null)"
+if [[ -f "$d/calls.started" && -n "$run_pgid" ]]; then
+  kill -INT -- "-$run_pgid"
+  for _ in $(seq 1 100); do kill -0 "$run_pid" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$run_pid" 2>/dev/null; then
+    err "the run survived Ctrl-C"; kill -9 -- "-$run_pgid" 2>/dev/null; wait "$run_pid" 2>/dev/null
+  else
+    wait "$run_pid"; rc=$?
+    assert_eq "Ctrl-C ends the run with 130" "130" "$rc"
+    assert_not_contains "an interrupted run reaches no summary" "$(cat "$d/calls.out")" "stay_fresh: summary"
+    assert_not_contains "an interrupted run does not go on to the next step" "$(cat "$d/calls.out")" "Active tool versions"
+  fi
+  sleep_pid="$(cat "$d/calls.sleep" 2>/dev/null)"
+  if [[ -n "$sleep_pid" ]] && proc_alive "$sleep_pid"; then
+    err "the interrupted command's child (pid $sleep_pid) survived"; kill "$sleep_pid" 2>/dev/null
+  else ok "the interrupted command's child was stopped with it"; fi
+  if [[ ! -d "$d/home/Library/Application Support/stay_fresh/run.lock" ]]; then
+    ok "the lock is released on Ctrl-C"
+  else err "the lock survived Ctrl-C"; fi
+else
+  err "the interruptible command never started"; kill -9 "$run_pid" 2>/dev/null
+fi
+rm -rf "$d"
+
 # 0 disables the limit, and a fast command under the default limit is untouched.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/helm" 'echo "helm $*" >> "$CALLS"' \
@@ -1022,6 +1125,15 @@ run_sf "$d" --dry-run --notify none,macos >/dev/null; rc=$?
 assert_eq "--notify none does not combine with a channel" "3" "$rc"
 run_sf "$d" --dry-run --notify auto,slack >/dev/null; rc=$?
 assert_eq "--notify auto does not combine with a channel" "3" "$rc"
+# The environment variable goes through the same check as the flag: `30m`
+# used to become a 30-second limit through perl, and `abc` disabled it.
+out="$(STAY_FRESH_STEP_TIMEOUT=30m run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a non-numeric STAY_FRESH_STEP_TIMEOUT is refused" "3" "$rc"
+assert_contains "the refused environment value is named" "$out" "STAY_FRESH_STEP_TIMEOUT must be a whole number of seconds (got: 30m)"
+run_sf "$d" --dry-run --only versions --step-timeout 30m >/dev/null; rc=$?
+assert_eq "a non-numeric --step-timeout is refused" "3" "$rc"
+out="$(STAY_FRESH_STEP_TIMEOUT=600 run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a numeric STAY_FRESH_STEP_TIMEOUT is accepted" "0" "$rc"
 out="$(run_sf "$d" --dry-run --notify=macos,slack --only versions)"; rc=$?
 assert_eq "a channel list is accepted" "0" "$rc"
 assert_contains "a dry run names every channel it would use" "$out" "would notify via macos, slack"
@@ -1365,6 +1477,22 @@ assert_contains "the freed size is reported" "$out" "freed 128.00K (log files ol
 assert_contains "pruning old logs is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
+# The machine this step exists for has tens of thousands of eligible files,
+# more than one argument vector holds. The list never becomes one: it stays
+# in a file and every pass over it is batched.
+d="$(new_env)"; : > "$d/calls"
+big="$d/home/Library/Logs/CoreSimulator/$(printf 'device-%0120d' 1)"
+mkdir -p "$big"
+seq 1 20000 | sed "s|^|$big/session-|; s|\$|.log|" | xargs touch -d '40 days ago'
+: > "$big/today.log"
+out="$(run_sf "$d" --yes --only user-logs)"; rc=$?
+assert_eq "twenty thousand old logs are a clean step" "0" "$rc"
+assert_contains "all of them are counted" "$out" "log files older than 30 days: 20000 path(s)"
+assert_eq "all of them are removed" "1" "$(find "$big" -type f | wc -l | tr -d ' ')"
+assert_exists "the recent one among them is kept" "$big/today.log"
+assert_contains "the large sweep is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
 d="$(logs_env)"; : > "$d/calls"
 out="$(run_sf "$d" --dry-run --only user-logs)"; rc=$?
 assert_eq "user-logs dry run succeeds" "0" "$rc"
@@ -1454,12 +1582,23 @@ rm -rf "$d"
 section "trash on external volumes"
 # Each mounted volume keeps its own .Trashes/<uid>. The boot volume shows up
 # under /Volumes as a symlink and is skipped; a real second volume is emptied.
+# The volumes come from the mount table, never from a glob of /Volumes: a
+# glob stats each entry, and stat on the mount point of a share whose server
+# went away blocks before any type check can run. mount(8) is faked in the
+# macOS shape here; a name with spaces and parentheses is parsed whole.
 d="$(new_env)"
-mkdir -p /Volumes/Ext/.Trashes/501/folder /Volumes/Empty/.Trashes/501 "$d/home/.Trash"
+mkdir -p /Volumes/Ext/.Trashes/501/folder /Volumes/Empty/.Trashes/501 "$d/home/.Trash" \
+  "/Volumes/Time Machine (1)/.Trashes/501" /Volumes/Unmounted/.Trashes/501
 ln -s / "/Volumes/Macintosh HD"
 bytes_file /Volumes/Ext/.Trashes/501/old 128
 : > /Volumes/Ext/.Trashes/501/folder/nested
+: > "/Volumes/Time Machine (1)/.Trashes/501/old"
+: > /Volumes/Unmounted/.Trashes/501/keep
 : > "$d/home/.Trash/file"
+mkbin "$d/bin/mount" 'echo "/dev/disk3s1 on / (apfs, sealed, local, journaled)"' \
+  'echo "/dev/disk5s1 on /Volumes/Ext (apfs, local, nodev, nosuid, journaled, noowners)"' \
+  'echo "/dev/disk6s1 on /Volumes/Empty (apfs, local, nodev, nosuid, journaled, noowners)"' \
+  'echo "/dev/disk7s2 on /Volumes/Time Machine (1) (apfs, local, nodev, nosuid, journaled)"'
 out="$(run_sf "$d" --yes --only trash)"; rc=$?
 assert_eq "trash with external volumes succeeds" "0" "$rc"
 assert_gone "~/.Trash is still emptied" "$d/home/.Trash/file"
@@ -1469,6 +1608,8 @@ assert_exists "the external .Trashes/<uid> directory itself is kept" "/Volumes/E
 assert_contains "the external volume is named" "$out" "K from Trash on Ext"
 assert_not_contains "an empty external Trash is not mentioned" "$out" "Trash on Empty"
 assert_not_contains "the boot volume symlink is skipped" "$out" "Trash on Macintosh HD"
+assert_gone "a volume name with spaces and parentheses is parsed whole" "/Volumes/Time Machine (1)/.Trashes/501/old"
+assert_exists "a directory under /Volumes that is not mounted is not touched" /Volumes/Unmounted/.Trashes/501/keep
 rm -rf /Volumes "$d"
 
 # A network share is never asked: find(1) on a share whose server went away
@@ -1480,12 +1621,17 @@ mkdir -p /Volumes/NAS/.Trashes/501 /Volumes/USB/.Trashes/501
 : > /Volumes/USB/.Trashes/501/old
 mkbin "$d/bin/mount" 'echo "/dev/disk3s1 on / (apfs, sealed, local, journaled)"' \
   'echo "//serhii@nas.local/share on /Volumes/NAS (smbfs, nodev, nosuid, mounted by serhii)"' \
-  'echo "/dev/disk5s1 on /Volumes/USB (apfs, local, nodev, nosuid, journaled, noowners)"'
+  'echo "/dev/disk5s1 on /Volumes/USB (apfs, local, nodev, nosuid, journaled, noowners)"' \
+  'echo "nas:/export on /Volumes/Dead NFS type nfs (rw,hard,intr)"'
+# /Volumes/Dead NFS is listed and does not exist: a mount the kernel would
+# block on is skipped by its type, before the path is looked at.
 out="$(run_sf "$d" --yes --only trash)"; rc=$?
 assert_eq "trash with a network volume succeeds" "0" "$rc"
 assert_exists "the network volume's Trash is left alone" /Volumes/NAS/.Trashes/501/keep
 assert_contains "the network volume is named and typed" "$out" \
   "Trash on NAS skipped: network volume (smbfs)"
+assert_contains "a hard NFS mount is skipped by type without being touched" "$out" \
+  "Trash on Dead NFS skipped: network volume (nfs)"
 assert_gone "the local volume's Trash is still emptied" /Volumes/USB/.Trashes/501/old
 rm -rf /Volumes "$d"
 

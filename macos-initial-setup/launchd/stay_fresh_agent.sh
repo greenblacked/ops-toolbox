@@ -75,29 +75,44 @@ ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
 warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
 
-# The channel list stay_fresh.sh takes: one of these, or a comma-separated
-# list of them. Checked at install so a typo fails here, not on the first
-# scheduled run with nobody watching.
+# Whether stay_fresh.sh will take a --notify value, asked of stay_fresh.sh
+# itself: `--list-steps` answers after the argument checks and before
+# anything runs, so exit 0 means yes and its message says why not. Checked
+# at install so a typo fails here, not on the first scheduled run with
+# nobody watching - and checked by the script that will parse it, so the
+# two cannot disagree about `none,macos` or a channel added next month.
+NOTIFY_ERROR=""
 valid_notify() {
-  local rest="$1" item
-  [[ -n "$rest" ]] || return 1
-  while [[ -n "$rest" ]]; do
-    item="${rest%%,*}"
-    if [[ "$rest" == *,* ]]; then rest="${rest#*,}"; else rest=""; fi
-    case "$item" in none|macos|telegram|slack|both|auto) ;; *) return 1 ;; esac
-  done
-  return 0
+  local out
+  if [[ ! -x "$STAY_FRESH" ]]; then
+    NOTIFY_ERROR="cannot validate --notify: stay_fresh.sh not found or not executable at $STAY_FRESH"
+    return 1
+  fi
+  if out="$("$STAY_FRESH" --list-steps --notify "$1" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  NOTIFY_ERROR="${out#*\] }"
+  [[ -n "$NOTIFY_ERROR" ]] || NOTIFY_ERROR="--notify value rejected by stay_fresh.sh: $1"
+  return 1
 }
-NOTIFY_USAGE="--notify must be none, macos, telegram, slack, both or auto, or a comma-separated list of channels"
 
 # Epoch seconds of a "YYYY-MM-DD HH:MM:SS" stamp: the BSD date on macOS, the
-# GNU one where the tests run. Empty when neither can read it.
+# GNU one where the tests run. Empty when neither can read it, and for an
+# empty stamp, which GNU date would otherwise read as today.
 epoch_of() {
   local e
+  [[ -n "$1" ]] || { printf ''; return 0; }
   e="$(date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s 2>/dev/null)" \
     || e="$(date -d "$1" +%s 2>/dev/null)" \
     || e=""
   printf '%s' "$e"
+}
+
+# Modification time of a file in epoch seconds: BSD stat first, GNU second.
+mtime_of() {
+  local m
+  m="$(stat -f %m "$1" 2>/dev/null)" || m="$(stat -c %Y "$1" 2>/dev/null)" || m=""
+  printf '%s' "$m"
 }
 
 usage() {
@@ -187,13 +202,13 @@ while (( $# > 0 )); do
       ;;
     --notify)
       shift; [[ $# -gt 0 ]] || { err "--notify needs a value"; exit 3; }
-      valid_notify "$1" || { err "$NOTIFY_USAGE"; exit 3; }
+      valid_notify "$1" || { err "$NOTIFY_ERROR"; exit 3; }
       NOTIFY="$1"
       NOTIFY_SET=1
       ;;
     --notify=*)
       NOTIFY="${1#*=}"
-      valid_notify "$NOTIFY" || { err "$NOTIFY_USAGE"; exit 3; }
+      valid_notify "$NOTIFY" || { err "$NOTIFY_ERROR"; exit 3; }
       NOTIFY_SET=1
       ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
@@ -305,6 +320,14 @@ run_scheduled() {
 
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
   local rc=$?
+
+  # When the schedule last actually fired, for `status`. stay_fresh.sh's own
+  # last-run.json is rewritten by every run, a manual --quick included, so
+  # it cannot tell a job that stopped firing from one whose owner keeps
+  # running the script by hand; this stamp is written only here.
+  if (( AGENT_DRY_RUN == 0 )); then
+    printf '%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$rc" > "$LOG_DIR/last-scheduled" 2>/dev/null || true
+  fi
 
   # One bounded, complete transcript per invocation. launchd itself writes to
   # /dev/null, so fixed agent.out/agent.err files cannot grow without limit.
@@ -563,27 +586,42 @@ PLIST_EOF
     # for exactly this reader. One field per line there, so a line match is
     # all the parsing it takes; jq is not on a stock Mac.
     last_run="$LOG_DIR/last-run.json"
-    stale=0
     if [[ -f "$last_run" ]]; then
-      last_when="$(json_field when "$last_run")"
-      info "last run: $last_when — $(json_field headline "$last_run")"
+      info "last run: $(json_field when "$last_run") — $(json_field headline "$last_run")"
       printf "  %s%s%s\n" "$C_DIM" "$(json_field detail "$last_run")" "$C_RESET"
-      # A job that stopped firing is the failure a schedule hides best:
-      # launchd still says loaded, the last verdict still reads OK, and the
-      # laptop was simply asleep at 10:30 every Monday. The plist says how
-      # often it should run; twice that with no run is not running.
-      interval_days=1
-      if [[ -f "$PLIST" ]] && grep -q '<key>Weekday</key>' "$PLIST"; then
-        interval_days=7
-      fi
-      last_s="$(epoch_of "$last_when")"
-      now_s="$(date +%s)"
-      if [[ -n "$last_s" ]] && (( now_s - last_s > 2 * interval_days * 86400 )); then
-        warn "last run was $(( (now_s - last_s) / 86400 )) day(s) ago and the schedule fires every $interval_days day(s) — the job is not running (check 'launchctl print' and the logs)"
-        stale=1
-      fi
     else
       info "no run recorded yet (last-run.json appears in $LOG_DIR after the first real run)"
+    fi
+    # A job that stopped firing is the failure a schedule hides best: launchd
+    # still says loaded, the last verdict still reads OK, and the laptop was
+    # simply asleep at 10:30 every Monday. Measured from the last time the
+    # schedule itself ran (the stamp run-scheduled writes; last-run.json is
+    # rewritten by manual runs too and would mask exactly this), or from the
+    # install when it has never run. The plist says how often it should
+    # fire; twice that with nothing is not running.
+    stale=0
+    since_s=""
+    since_what=""
+    if [[ -s "$LOG_DIR/last-scheduled" ]]; then
+      IFS=$'\t' read -r sched_when sched_rc < "$LOG_DIR/last-scheduled"
+      info "last scheduled run: $sched_when (exit ${sched_rc:-?})"
+      since_s="$(epoch_of "$sched_when")"
+      since_what="the last scheduled run"
+    elif [[ -f "$PLIST" ]]; then
+      since_s="$(mtime_of "$PLIST")"
+      since_what="the install"
+      info "no scheduled run recorded yet"
+    fi
+    if [[ "$since_s" =~ ^[0-9]+$ ]]; then
+      interval_days=1
+      if grep -q '<key>Weekday</key>' "$PLIST" 2>/dev/null; then
+        interval_days=7
+      fi
+      now_s="$(date +%s)"
+      if (( now_s - since_s > 2 * interval_days * 86400 )); then
+        warn "no scheduled run in $(( (now_s - since_s) / 86400 )) day(s) since $since_what, and the schedule fires every $interval_days day(s) — the job is not running (check 'launchctl print' and the logs)"
+        stale=1
+      fi
     fi
     if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
       ok "loaded in $DOMAIN"
