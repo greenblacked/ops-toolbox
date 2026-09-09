@@ -259,8 +259,10 @@ printf '%s\n' '#!/bin/sh' \
 printf '%s\n' '#!/bin/sh' \
   'case "${1:-}" in -productVersion) echo 15.0 ;; -buildVersion) echo TESTBUILD ;; esac' \
   > "$fake_macos/bin/sw_vers"
+# Substring match, so the fake answers both `pgrep -x Slack` and the bundle
+# path form the app-cache guard uses, `pgrep -f "/Slack.app/Contents/MacOS/"`.
 printf '%s\n' '#!/bin/sh' \
-  'for arg in "$@"; do [ "$arg" = Slack ] && exit 0; done; exit 1' \
+  'for arg in "$@"; do case "$arg" in *Slack*) exit 0 ;; esac; done; exit 1' \
   > "$fake_macos/bin/pgrep"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$fake_macos/bin/curl"
 printf '%s\n' '#!/bin/sh' \

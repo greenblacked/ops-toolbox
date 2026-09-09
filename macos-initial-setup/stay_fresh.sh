@@ -93,10 +93,21 @@ else
   C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE='' C_CYAN=''
 fi
 
+# A run's log is kept precisely because something warned - and it was the one
+# artefact that did not say what. warn/err print to the terminal and say the
+# same thing in the log. LOG_SINK is /dev/null until the log file is chosen
+# (and stays /dev/null for a dry run), so this never creates a file a preview
+# promised not to write.
+LOG_SINK=/dev/null
+log_line() {
+  [[ "$LOG_SINK" == /dev/null ]] && return 0
+  printf '# %s %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG_SINK" 2>/dev/null || true
+}
+
 bold()  { printf "%s%s%s\n" "$C_BOLD"    "$*" "$C_RESET"; }
 info()  { printf "%s[info]%s %s\n"  "$C_BLUE"   "$C_RESET" "$*"; }
 ok()    { printf "%s[ ok ]%s %s\n"  "$C_GREEN"  "$C_RESET" "$*"; }
-warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; }
+warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; log_line "[warn] $*"; }
 # warn() only prints. Inside a step that is not enough: do_step decides OK vs
 # WARN from STEP_WARN_COUNT, so a bare warn leaves the step reporting [ ok ] and
 # landing in STEPS_OK however loudly it complained.
@@ -108,7 +119,7 @@ warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; }
 # Those stay plain warn. A step that reports WARN on every ordinary run trains
 # you to stop reading the summary, which costs more than it catches.
 warn_step() { warn "$*"; STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); }
-err()   { printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; }
+err()   { printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; log_line "[err ] $*"; }
 step()  { printf "\n%s==>%s %s%s%s\n" "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
 hr()    { printf "%s%s%s\n" "$C_DIM" "--------------------------------------------------------------" "$C_RESET"; }
 
@@ -155,6 +166,15 @@ PRUNE_DOWNLOADS_DAYS=""
 # removed only with --prune-orphan-agents. System-level ones are never touched.
 SKIP_LAUNCH_AGENTS=0
 PRUNE_ORPHAN_AGENTS=0
+# /System/Library/Caches holds the dyld shared cache and the kernel caches.
+# Touching it is opt-in even when SIP is off; see the Notes in --help.
+FORCE_SYSTEM_CACHES=0
+# Deleting a simulator takes its data container with it: installed builds,
+# app databases, screenshots. Opt-in, like the Xcode archives.
+PRUNE_UNAVAILABLE_SIMULATORS=0
+# A stopped container's writable layer is data when nothing mounted a volume.
+# Only containers idle for this long are pruned.
+DOCKER_CONTAINER_KEEP_HOURS=168
 # Listing snapshots is read-only and cheap; deleting them is opt-in.
 SKIP_SNAPSHOTS=0
 THIN_SNAPSHOTS=0
@@ -517,6 +537,12 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --prune-downloads-days N
                          Remove top-level ~/Downloads entries untouched for N
                          days (off by default: the report only names them)
+  --force-system-caches  Clear /System/Library/Caches when System Integrity
+                         Protection is confirmed off (see Notes; kept by default
+                         because the dyld and kernel caches live there)
+  --prune-unavailable-simulators
+                         Delete simulators whose runtime is gone, with their
+                         data (installed builds, app databases, screenshots)
   --skip-launch-agents   Don't report launchd plists whose program is gone
   --prune-orphan-agents  Unload and remove orphaned plists in ~/Library/LaunchAgents
                          (system-level ones are only ever reported)
@@ -694,6 +720,8 @@ while (( $# > 0 )); do
       ;;
     --skip-launch-agents) SKIP_LAUNCH_AGENTS=1; EXPLICIT_SKIP=1 ;;
     --prune-orphan-agents) PRUNE_ORPHAN_AGENTS=1 ;;
+    --force-system-caches) FORCE_SYSTEM_CACHES=1 ;;
+    --prune-unavailable-simulators) PRUNE_UNAVAILABLE_SIMULATORS=1 ;;
     --skip-snapshots)  SKIP_SNAPSHOTS=1; EXPLICIT_SKIP=1 ;;
     --thin-snapshots)  THIN_SNAPSHOTS=1 ;;
     --disk-report)     SKIP_DISK_REPORT=0 ;;
@@ -797,6 +825,8 @@ if (( REPORTS )); then
   (( THIN_SNAPSHOTS == 0 )) || { err "--reports is read-only and cannot be combined with --thin-snapshots"; exit 3; }
   [[ -z "$PRUNE_DOWNLOADS_DAYS" ]] || { err "--reports is read-only and cannot be combined with --prune-downloads-days"; exit 3; }
   (( PRUNE_ORPHAN_AGENTS == 0 )) || { err "--reports is read-only and cannot be combined with --prune-orphan-agents"; exit 3; }
+  (( FORCE_SYSTEM_CACHES == 0 )) || { err "--reports is read-only and cannot be combined with --force-system-caches"; exit 3; }
+  (( PRUNE_UNAVAILABLE_SIMULATORS == 0 )) || { err "--reports is read-only and cannot be combined with --prune-unavailable-simulators"; exit 3; }
   ONLY_STEPS="versions,os-updates,snapshots,downloads,launch-agents,disk-report"
 fi
 
@@ -831,8 +861,11 @@ fi
 
 # Read-only probes still redirect diagnostics. Point those at /dev/null during
 # a dry run so merely scanning a populated HOME cannot create the promised log.
-LOG_SINK="$LOG_FILE"
-(( DRY_RUN )) && LOG_SINK=/dev/null
+# Deliberately still /dev/null here. warn() and err() now write to LOG_SINK,
+# and a run that never gets past preflight - a refusal for want of --yes, an
+# unsupported OS - must not leave a log file behind for the trouble. Preflight
+# points this at the real file once it has one, which is also the moment the
+# file exists.
 
 # --skip-devtools is a convenience; fan it out across the individual
 # dev-tool refresh steps so the plan/summary accurately reflects what runs.
@@ -1176,6 +1209,13 @@ denied_entries() {
 # Usage: clear_dir <path> [sudo]
 clear_dir() {
   local dir="$1" use_sudo="${2:-}" before_b after_b delta
+  # A floor under every caller: this function's whole job is to empty what it
+  # is handed, and one empty or relative variable upstream would hand it the
+  # root directory.
+  if [[ -z "$dir" || "$dir" != /* || "$dir" == "/" ]]; then
+    warn_step "refusing to clear an unexpected path: '${dir:-<empty>}'"
+    return 0
+  fi
   local remaining="" verify_rc=0 kept=0
   if [[ ! -d "$dir" ]]; then
     printf "  %s- %s (missing, skipped)%s\n" "$C_DIM" "$dir" "$C_RESET"
@@ -1896,6 +1936,7 @@ fi
 do_step() {
   local label="$1" fn="$2" t_start t_end rc=0 dur freed_str="" entry
   step "$label"
+  log_line "== $label =="
   STEP_WARN_COUNT=0
   STEP_FREED_B=0
   t_start=$(date +%s)
@@ -1933,30 +1974,63 @@ step_dns() {
 
 # System Integrity Protection, as the system reports it. Absent csrutil means
 # a machine that is not a Mac, where nothing is protected.
-sip_enabled() {
-  command -v csrutil >/dev/null 2>&1 || return 1
-  csrutil status 2>/dev/null | grep -qi 'status: enabled'
+# enabled | disabled | unknown. Only a positive reading either way is
+# trusted: csrutil can be missing, can exit non-zero, can be localized, and on
+# a machine with a custom configuration it answers "unknown". All of those
+# used to read as "SIP is off" and took the branch that runs sudo rm -rf.
+sip_status() {
+  command -v csrutil >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  local out
+  out="$(csrutil status 2>/dev/null)" || { printf 'unknown'; return 0; }
+  case "$out" in
+    *"status: disabled"*|*"status: Disabled"*) printf 'disabled' ;;
+    *"status: enabled"*|*"status: Enabled"*)   printf 'enabled' ;;
+    *)                                          printf 'unknown' ;;
+  esac
 }
+
+# The three entries that must never be swept: the dyld shared cache and the
+# kernel caches are what the machine boots from. macOS rebuilds them, but a
+# Mac that is interrupted between the delete and the rebuild does not start.
+SYSTEM_CACHE_KEEP=(
+  "com.apple.dyld"
+  "com.apple.kernelcaches"
+  "com.apple.bootstamps"
+)
 
 step_syscaches() {
   clear_dir "/Library/Caches"        sudo
-  if [[ -d /System/Library/Caches ]] && sip_enabled; then
+  [[ -d /System/Library/Caches ]] || return 0
+  local sip
+  sip="$(sip_status)"
+  if [[ "$sip" == "enabled" ]]; then
     # Every entry there sits behind SIP on a current Mac: the kext caches
     # answered "Operation not permitted" to root, six lines a run, and the
     # step warned every time. Nothing to attempt.
     printf "  %s/System/Library/Caches: protected by System Integrity Protection, kept%s\n" "$C_DIM" "$C_RESET"
-  elif [[ -d /System/Library/Caches ]]; then
-    printf "  /System/Library/Caches: removing writable entries only\n"
-    if (( DRY_RUN == 0 )); then
-      # BSD find on macOS does not consistently support -writable; use -perm instead.
-      sudo find /System/Library/Caches -mindepth 1 -maxdepth 2 \
-        \( -perm -u+w -o -perm -g+w -o -perm -o+w \) \
-        -exec rm -rf {} + 2>>"$LOG_FILE" \
-        || warn_step "some writable system cache entries could not be removed"
-    else
-      printf "  %s(dry-run) would remove writable entries in /System/Library/Caches%s\n" "$C_DIM" "$C_RESET"
-    fi
+    return 0
   fi
+  if [[ "$sip" == "unknown" ]]; then
+    printf "  %s/System/Library/Caches: kept — could not read the System Integrity Protection state (csrutil missing, failed, or reporting a custom configuration)%s\n" "$C_DIM" "$C_RESET"
+    return 0
+  fi
+  if (( FORCE_SYSTEM_CACHES == 0 )); then
+    printf "  %s/System/Library/Caches: System Integrity Protection is off, so this is reachable — kept anyway; --force-system-caches clears it%s\n" "$C_DIM" "$C_RESET"
+    return 0
+  fi
+  # Reachable, and asked for. Everything except the boot caches.
+  local -a prune=(-mindepth 1 -maxdepth 1)
+  local keep
+  for keep in "${SYSTEM_CACHE_KEEP[@]}"; do
+    prune+=(! -name "$keep")
+  done
+  printf "  /System/Library/Caches: clearing (keeping %s)\n" "$(printf '%s ' "${SYSTEM_CACHE_KEEP[@]}")"
+  if (( DRY_RUN )); then
+    printf "  %s(dry-run) would remove entries in /System/Library/Caches except the boot caches%s\n" "$C_DIM" "$C_RESET"
+    return 0
+  fi
+  sudo find /System/Library/Caches "${prune[@]}" -exec rm -rf {} + 2>>"$LOG_FILE" \
+    || warn_step "some system cache entries could not be removed"
 }
 
 step_usercaches() {
@@ -1989,8 +2063,17 @@ step_appcaches() {
 
   # Parallel process/path arrays keep the implementation compatible with the
   # Bash 3.2 shipped by macOS, which has no associative arrays.
-  local -a app_processes=(
-    "Slack" "Code" "Code - Insiders"
+  #
+  # Matched by the bundle path on the command line, not by the executable
+  # name: an Electron app's executable is usually "Electron", so `pgrep -x
+  # Code` never matched VS Code, `pgrep -x "Code - Insiders"` never matched
+  # Insiders, and new Teams ships "MSTeams". Three of the eleven apps this
+  # guard exists for were therefore always considered idle, and their caches
+  # were cleared under a running editor without --force-active-app-caches.
+  # Over-matching here keeps a cache that could have gone; under-matching
+  # deletes one that was in use, so the bundle path is the safer question.
+  local -a app_bundles=(
+    "Slack" "Visual Studio Code" "Visual Studio Code - Insiders"
     "Notion" "Obsidian" "Signal" "Discord"
     "Google Chrome" "Brave Browser" "Vivaldi" "Microsoft Teams"
   )
@@ -2001,11 +2084,11 @@ step_appcaches() {
   )
   local -a running=() scan_roots=() skipped_roots=()
   local i proc app_root
-  for (( i=0; i<${#app_processes[@]}; i++ )); do
-    proc="${app_processes[$i]}"
+  for (( i=0; i<${#app_bundles[@]}; i++ )); do
+    proc="${app_bundles[$i]}"
     app_root="$root/${app_dirs[$i]}"
     [[ -d "$app_root" ]] || continue
-    if pgrep -x "$proc" >/dev/null 2>&1; then
+    if pgrep -f "/${proc}.app/Contents/MacOS/" >/dev/null 2>&1; then
       running+=("$proc")
       if (( FORCE_ACTIVE_APP_CACHES )); then
         scan_roots+=("$app_root")
@@ -2556,10 +2639,17 @@ step_devcaches() {
   # Terraform's provider plugin cache, where one is configured: every
   # provider version any init ever resolved, re-fetched on the next init.
   # Only the cache; .terraform/ inside projects is never touched.
+  # The environment names this one, and clear_dir removes whatever it is
+  # given: TF_PLUGIN_CACHE_DIR set one component short (~/.terraform.d) would
+  # take credentials.tfrc.json with it. It has to look like a plugin cache.
   local tf_cache="${TF_PLUGIN_CACHE_DIR:-$HOME/.terraform.d/plugin-cache}"
   if [[ -d "$tf_cache" ]]; then
     any=1
-    clear_dir "$tf_cache"
+    if [[ "${tf_cache##*/}" == "plugin-cache" ]]; then
+      clear_dir "$tf_cache"
+    else
+      warn_step "TF_PLUGIN_CACHE_DIR=$tf_cache does not end in plugin-cache — kept, in case it is not a cache"
+    fi
   fi
 
   # gcloud writes a log directory per invocation under ~/.config/gcloud/logs
@@ -2645,7 +2735,15 @@ step_docker() {
   printf "  docker disk usage: %s%s%s\n" "$C_DIM" "$before" "$C_RESET"
 
   # Keep tagged images, remove only dangling (<none>) ones.
-  run_cmd "docker container prune -f" docker container prune -f \
+  #
+  # Containers are pruned by age, for the reason the volume comment below
+  # gives: a container started without -v keeps its data in its own writable
+  # layer, so `docker container prune -f` destroyed exactly the thing the
+  # volume guard protects - a stopped project's database - and did it
+  # unattended, since the LaunchAgent runs with --yes. A week is long enough
+  # that anything still stopped is finished with.
+  run_cmd "docker container prune -f (stopped over ${DOCKER_CONTAINER_KEEP_HOURS}h)" \
+    docker container prune -f --filter "until=${DOCKER_CONTAINER_KEEP_HOURS}h" \
     || warn "'docker container prune' failed"
   run_cmd "docker network prune -f" docker network prune -f \
     || warn "'docker network prune' failed"
@@ -2709,8 +2807,18 @@ step_xcode() {
 
   if command -v xcrun >/dev/null 2>&1 && xcrun simctl help >/dev/null 2>&1; then
     any=1
-    run_cmd "xcrun simctl delete unavailable" xcrun simctl delete unavailable \
-      || warn "'simctl delete unavailable' failed"
+    # "unavailable" means the runtime the device was made against is gone -
+    # the ordinary state of every simulator from the previous runtime after
+    # an Xcode upgrade, not a sign that the device is finished with. Deleting
+    # one takes its data container: installed builds, app databases,
+    # keychains, screenshots. The Archives above are already opt-in for the
+    # same reason, and this is no more recoverable.
+    if (( PRUNE_UNAVAILABLE_SIMULATORS )); then
+      run_cmd "xcrun simctl delete unavailable" xcrun simctl delete unavailable \
+        || warn "'simctl delete unavailable' failed"
+    else
+      info "simulators whose runtime is gone are kept; --prune-unavailable-simulators deletes them and their data"
+    fi
   fi
 
   if (( any == 0 )); then

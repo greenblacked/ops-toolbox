@@ -1036,6 +1036,12 @@ entry here belongs to a version.
 - A **Why this exists** section in `README.md`.
 - A **Repository settings** checklist in `CONTRIBUTING.md` for the settings a
   repository cannot set for itself.
+- `stay_fresh.sh --force-system-caches`: the only way to reach
+  `/System/Library/Caches`, and even then only on a machine that reports SIP
+  positively disabled, and never the boot caches.
+- `stay_fresh.sh --prune-unavailable-simulators`: the only way to run
+  `simctl delete unavailable`. Without it those devices and their data are
+  reported and kept.
 
 ### Fixed
 
@@ -1628,6 +1634,44 @@ entry here belongs to a version.
 - `--dry-run` created a timestamped log file in five scripts, contradicting the
   first promise in `README.md`. Log creation is now guarded, and the path that
   *would* be written is printed instead.
+- `stay_fresh.sh` cleared `/System/Library/Caches` whenever it could not prove
+  SIP was on: the probe read `csrutil status` and treated a missing binary, a
+  non-zero exit and an unrecognised (localised) answer alike as "off". On a
+  machine where SIP genuinely is off that swept the dyld and kernel caches,
+  which is minutes of rebuild and an alarming first boot for a few megabytes.
+  The probe now answers `enabled`, `disabled` or `unknown`, only a positive
+  `disabled` counts, the step is additionally gated behind the new
+  `--force-system-caches`, and `com.apple.dyld`, `com.apple.kernelcaches` and
+  `com.apple.bootstamps` are excluded even then.
+- The per-app cache step decided an application was idle from `pgrep -x` on a
+  process name. Electron applications run as `Electron`, `Code Helper` or a
+  renderer, never as `Visual Studio Code`, so an open editor read as idle and
+  had its cache cleared underneath it. The check now matches the bundle
+  executable path (`/Visual Studio Code.app/Contents/MacOS/`) with `pgrep -f`.
+- `lib/workspace_scan.py` classed a workspace as stale whenever `lstat` said
+  the folder was not there, which is also what an unmounted external volume
+  and an iCloud Drive file the provider has not materialised say. Unplugging
+  a disk before a run therefore deleted that project's editor state. Those two
+  cases are now `unresolved` and kept, and a real `ENOENT` on a mounted volume
+  remains stale.
+- The Docker step ran a bare `docker container prune -f`, which also removes
+  the container you stopped minutes ago and meant to restart. It now filters
+  on `until=168h`, so only containers stopped for more than a week go.
+- `simctl delete unavailable` ran unconditionally. A half-finished Xcode
+  update marks every simulator unavailable, and the command deletes their app
+  data, databases and screenshots with them. It now needs
+  `--prune-unavailable-simulators`; otherwise the count is reported.
+- The developer-cache step cleared whatever `TF_PLUGIN_CACHE_DIR` pointed at.
+  A variable exported to a working directory — or to an empty value, which
+  resolves to `$HOME` — meant that directory was emptied. The path must now
+  end in `plugin-cache`; anything else warns and is left alone.
+- `clear_dir()` accepted an empty or relative argument and would have swept
+  the process's working directory. It now refuses anything that is not an
+  absolute path below `/`.
+- The kept log recorded the commands a run executed but not its `[warn]` and
+  `[err ]` lines, which are the reason the log was kept in the first place.
+  Both now go to the log, timestamped. The sink stays `/dev/null` until
+  preflight passes, so a refused run still writes nothing.
 
 ### Removed
 

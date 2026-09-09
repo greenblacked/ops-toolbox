@@ -58,6 +58,16 @@ def mounted_volume_names(volumes_dir: str = "/Volumes") -> frozenset:
         return frozenset()
 
 
+# Cloud providers mount under ~/Library/CloudStorage, never under /Volumes, so
+# the volume check above cannot see them. A project there whose provider is not
+# running is unresolved, not gone.
+_CLOUD_MARKER = os.sep + os.path.join("Library", "CloudStorage") + os.sep
+
+
+def _is_cloud_path(path: str) -> bool:
+    return _CLOUD_MARKER in path
+
+
 def _volume_of(path: str):
     """Return the /Volumes name a path lives on, or None for the root volume."""
     parts = path.split(os.sep)
@@ -173,11 +183,30 @@ def classify_entry(entry_dir: str, mounted: frozenset):
         if volumes and not any(v in mounted for v in volumes):
             return UNRESOLVED, "volume not mounted (%s)" % volumes[0], path
 
+    # os.path.exists() answers False for three different questions: the path
+    # is not there, the path cannot be resolved, and the path cannot be
+    # stat'ed. Only the first means the project is gone. It follows symlinks,
+    # so a project reached through a link onto an unplugged volume looked
+    # "gone" even though the volume check above exists to prevent exactly
+    # that; and it swallows EACCES/EPERM, so a directory the run merely may
+    # not look at (TCC on macOS, a mode-000 parent) looked "gone" too.
+    # Deleting on either reading destroys the editor state of a live project.
     for candidate in candidates:
-        if os.path.exists(candidate):
+        try:
+            os.lstat(candidate)
             # Report the spelling that actually matched, not the first guess —
             # this string is what --verbose and --json show.
             return LIVE, "", candidate
+        except FileNotFoundError:
+            # Absent here, but a symlink may have pointed off this machine.
+            resolved = os.path.realpath(candidate)
+            volume = _volume_of(resolved)
+            if volume is not None and volume not in mounted:
+                return UNRESOLVED, "volume not mounted (%s)" % volume, candidate
+            if _is_cloud_path(resolved):
+                return UNRESOLVED, "cloud storage not materialised", candidate
+        except OSError as exc:
+            return UNRESOLVED, "cannot read (%s)" % (exc.strerror or "error"), candidate
 
     return STALE, "path gone", path
 

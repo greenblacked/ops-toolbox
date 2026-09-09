@@ -93,9 +93,15 @@ new_env() {
   mkbin "$d/bin/sw_vers" 'case "${1:-}" in -productVersion) echo 15.0 ;; -buildVersion) echo TESTBUILD ;; esac'
   mkbin "$d/bin/df" 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
                     'echo "/dev/test 1000000 200000 800000 20% /"'
-  mkbin "$d/bin/pgrep" 'for a in "$@"; do' \
-                       '  [ -n "${PGREP_RC:-}" ] && exit "$PGREP_RC"' \
-                       '  case " ${RUNNING_APPS:-} " in *" $a "*) exit 0 ;; esac' \
+  # RUNNING_APPS entries are matched as substrings of any argument, so the
+  # fake answers both `pgrep -x Codex` and the bundle-path form the app-cache
+  # guard uses, `pgrep -f "/Visual Studio Code.app/Contents/MacOS/"`.
+  mkbin "$d/bin/pgrep" '[ -n "${PGREP_RC:-}" ] && exit "$PGREP_RC"' \
+                       'for a in "$@"; do' \
+                       '  case "$a" in -*) continue ;; esac' \
+                       '  for app in ${RUNNING_APPS:-}; do' \
+                       '    case "$a" in *"$app"*) exit 0 ;; esac' \
+                       '  done' \
                        'done; exit 1'
   mkbin "$d/bin/xcode-select" 'case "${1:-}" in -p) echo /Library/Developer/CommandLineTools ;; esac; exit 0'
   mkbin "$d/bin/pkgutil" 'echo "version: 15.0.0.0.1"; exit 0'
@@ -142,7 +148,10 @@ run_sf() {
     "$SF" "$@" </dev/null 2>&1
 }
 
-bytes_file() { dd if=/dev/zero of="$1" bs=1024 count="${2:-512}" status=none; }
+# /dev/urandom, not /dev/zero: several assertions below compare rendered `du`
+# output, and a zero-filled file measures near nothing on a btrfs or ZFS
+# runner with compression on, failing tests on code that is correct.
+bytes_file() { dd if=/dev/urandom of="$1" bs=1024 count="${2:-512}" status=none; }
 
 section() { echo; echo "--- $* ---"; }
 
@@ -168,21 +177,61 @@ rm -rf "$d"
 
 # ===========================================================================
 section "system-caches (root-owned absolute paths)"
-d="$(new_env)"; : > "$d/calls"
-rm -rf /Library/Caches /System/Library/Caches
-mkdir -p /Library/Caches/vendor /System/Library/Caches/writable /System/Library/Caches/locked
-bytes_file /Library/Caches/vendor/blob 256
-: > /System/Library/Caches/writable/entry
-: > /System/Library/Caches/locked/entry
-chmod 555 /System/Library/Caches/locked
+# /System/Library/Caches holds the dyld shared cache and the kernel caches:
+# what the machine boots from. It is kept unless csrutil positively reports
+# System Integrity Protection off AND --force-system-caches is passed. The
+# four ways csrutil can fail to answer used to read as "SIP is off" and took
+# the branch that runs sudo rm -rf over that directory.
+syscache_env() {
+  local d; d="$(new_env)"
+  rm -rf /Library/Caches /System/Library/Caches
+  mkdir -p /Library/Caches/vendor /System/Library/Caches/com.apple.dyld /System/Library/Caches/vendor
+  bytes_file /Library/Caches/vendor/blob 256
+  : > /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e
+  : > /System/Library/Caches/vendor/entry
+  printf '%s' "$d"
+}
+for csr in missing failing localized unknown; do
+  d="$(syscache_env)"; : > "$d/calls"
+  case "$csr" in
+    missing)   rm -f "$d/bin/csrutil" ;;
+    failing)   mkbin "$d/bin/csrutil" 'exit 1' ;;
+    localized) mkbin "$d/bin/csrutil" 'echo "Statut de la protection de l integrite du systeme : desactive."' ;;
+    unknown)   mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: unknown (Custom Configuration)."' ;;
+  esac
+  out="$(run_sf "$d" --yes --only system-caches --force-system-caches)"; rc=$?
+  assert_eq "system-caches with csrutil $csr succeeds" "0" "$rc"
+  assert_gone   "/Library/Caches is still cleared ($csr)" /Library/Caches/vendor
+  assert_exists "the dyld cache survives csrutil $csr" /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e
+  assert_exists "no system cache entry is removed on csrutil $csr" /System/Library/Caches/vendor/entry
+  assert_contains "an unreadable SIP state is stated ($csr)" "$out" \
+    "could not read the System Integrity Protection state"
+  rm -rf /Library/Caches /System/Library/Caches "$d"
+done
+
+# SIP positively off, but without the flag: still kept.
+d="$(syscache_env)"; : > "$d/calls"
+mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: disabled."'
 out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
-assert_eq "system-caches step succeeds" "0" "$rc"
-assert_gone   "/Library/Caches contents are removed"      /Library/Caches/vendor
-assert_exists "/Library/Caches itself is kept"            /Library/Caches
-assert_gone   "writable /System/Library/Caches entry goes" /System/Library/Caches/writable
-assert_exists "unwritable /System/Library/Caches entry stays" /System/Library/Caches/locked
-chmod 755 /System/Library/Caches/locked
-rm -rf /Library/Caches /System/Library/Caches
+assert_eq "system-caches with SIP off succeeds" "0" "$rc"
+assert_exists "SIP off alone does not clear the system caches" /System/Library/Caches/vendor/entry
+assert_contains "the flag that would clear them is named" "$out" "--force-system-caches clears it"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+# SIP positively off and asked for: cleared, except the boot caches.
+d="$(syscache_env)"; : > "$d/calls"
+mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: disabled."'
+out="$(run_sf "$d" --yes --only system-caches --force-system-caches)"; rc=$?
+assert_eq "forced system-caches succeeds" "0" "$rc"
+assert_gone   "an ordinary system cache entry is removed" /System/Library/Caches/vendor
+assert_exists "the dyld cache is never removed" /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e
+assert_contains "the kept boot caches are named" "$out" "keeping com.apple.dyld"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+# --reports is read-only and refuses the flag outright.
+d="$(new_env)"
+run_sf "$d" --dry-run --reports --force-system-caches >/dev/null; rc=$?
+assert_eq "--reports refuses --force-system-caches" "3" "$rc"
 rm -rf "$d"
 
 # ===========================================================================
@@ -303,6 +352,28 @@ assert_exists "the protected entry survives the retry" "$d/home/Library/Caches/c
 assert_contains "the protected entry is still reported as kept" "$out" "entries kept: protected by macOS"
 assert_contains "neither is a warning" "$out" "warn steps:  0"
 rm -rf "$d"
+
+# ===========================================================================
+section "destructive steps stay inside HOME"
+# The bug class this guards: one empty variable upstream and "$HOME/Library/
+# Caches" becomes "/Library/Caches", "$HOME/.Trash" becomes "/.Trash". Every
+# other assertion here looks only at the scratch HOME, so a step that walked
+# out of it would still pass them all. These canaries are the ones that would
+# not.
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /.Trash
+mkdir -p /Library/Caches /.Trash "$d/home/Library/Caches/vendor" "$d/home/.Trash"
+: > /Library/Caches/CANARY
+: > /.Trash/CANARY
+bytes_file "$d/home/Library/Caches/vendor/blob" 64
+: > "$d/home/.Trash/junk"
+out="$(run_sf "$d" --yes --no-sudo --only user-caches,trash,dev-caches,user-logs)"; rc=$?
+assert_eq "the sweep succeeds" "0" "$rc"
+assert_gone   "the scratch HOME cache was cleared"  "$d/home/Library/Caches/vendor"
+assert_gone   "the scratch HOME trash was emptied"  "$d/home/.Trash/junk"
+assert_exists "the system cache directory is untouched" /Library/Caches/CANARY
+assert_exists "the root .Trash is untouched"            /.Trash/CANARY
+rm -rf /Library/Caches /.Trash "$d"
 
 # ===========================================================================
 section "user-caches (contents cleared, directories kept, bytes counted)"
@@ -486,7 +557,9 @@ docker_fake() {
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "docker step succeeds against a local daemon" "0" "$rc"
-for sub in "container prune -f" "network prune -f" \
+assert_called "stopped containers are pruned by age, not wholesale" "$d/calls" \
+  "docker container prune -f --filter until=168h"
+for sub in "network prune -f" \
            "image prune -f" "builder prune -af"; do
   assert_called "docker step runs $sub" "$d/calls" "docker $sub"
 done
@@ -566,7 +639,9 @@ assert_gone   "simulator caches are cleared" \
 assert_exists "archives are kept without an explicit retention" \
   "$d/home/Library/Developer/Xcode/Archives/2020-01-01/Old.xcarchive"
 assert_contains "the run says archives were kept" "$out" "Xcode Archives kept"
-assert_called "unavailable simulators are deleted" "$d/calls" "xcrun simctl delete unavailable"
+assert_not_called "unavailable simulators are kept by default" "$d/calls" "simctl delete unavailable"
+assert_contains "the flag that would delete them is named" "$out" \
+  "--prune-unavailable-simulators deletes them and their data"
 rm -rf "$d"
 
 d="$(xcode_env)"; : > "$d/calls"
@@ -1136,6 +1211,35 @@ done
 for keep in "homebrew update" "flush DNS" "clear system caches" "pending OS" "docker" "xcode"; do
   assert_contains "--quick skips: $keep" "$(grep -i "$keep" <<<"$out")" "skip"
 done
+# --quick's help says "No sudo (not even a cached credential)". The only thing
+# enforcing that is one QUICK == 0 in clear_dir's retry condition, and the
+# retry's other arm reaches for a warm timestamp with `sudo -n true`. Run it
+# for real against an entry the user cannot unlink, with a sudo that would
+# answer if asked.
+qd="$(new_env)"; : > "$qd/calls"
+mkbin "$qd/bin/rm" 'fail=0; opts=""' \
+                   'for a in "$@"; do' \
+                   '  case "$a" in' \
+                   '    -*) opts="$opts $a" ;;' \
+                   '    *"ShipIt"*) echo "rm: $a: Permission denied" >&2; fail=1 ;;' \
+                   '    *) /bin/rm $opts "$a" ;;' \
+                   '  esac' \
+                   'done' \
+                   'exit $fail'
+mkbin "$qd/bin/sudo" 'echo "sudo $*" >> "$CALLS"' \
+                     'case "${1:-}" in -v) exit 0 ;; -n) shift; case "${1:-}" in true) exit 0 ;; esac ;; esac' \
+                     'exec "$@"'
+mkdir -p "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt" "$qd/home/Library/Caches/vendor"
+: > "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/update"
+bytes_file "$qd/home/Library/Caches/vendor/blob" 64
+out="$(run_sf "$qd" --yes --quick)"; rc=$?
+assert_eq "--quick runs for real" "0" "$rc"
+assert_not_called "--quick never reaches for sudo, warm or otherwise" "$qd/calls" "sudo"
+assert_exists "--quick leaves the entry it cannot unlink" "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_gone   "--quick still clears what it can" "$qd/home/Library/Caches/vendor"
+assert_contains "--quick reports the entry it could not take" "$out" "entries owned by another user remain"
+rm -rf "$qd"
+
 run_sf "$d" --dry-run --quick --only trash >/dev/null; rc=$?
 assert_eq "--quick refuses --only" "3" "$rc"
 run_sf "$d" --dry-run --quick --skip-brew >/dev/null; rc=$?
@@ -1613,6 +1717,26 @@ assert_contains "--skip-user-logs takes the step off the plan" "$(grep "old user
 rm -rf "$d"
 
 # ===========================================================================
+section "a cache path named by the environment must look like one"
+# TF_PLUGIN_CACHE_DIR set one component short of Terraform's own documented
+# value is ~/.terraform.d, which holds credentials.tfrc.json. clear_dir
+# removes whatever it is handed.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.terraform.d/plugin-cache"
+: > "$d/home/.terraform.d/credentials.tfrc.json"
+bytes_file "$d/home/.terraform.d/plugin-cache/provider" 64
+out="$(TF_PLUGIN_CACHE_DIR="$d/home/.terraform.d" run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "a suspicious TF_PLUGIN_CACHE_DIR does not fail the run" "0" "$rc"
+assert_exists "the terraform credentials survive" "$d/home/.terraform.d/credentials.tfrc.json"
+assert_exists "so does the cache it wrongly named" "$d/home/.terraform.d/plugin-cache/provider"
+assert_contains "the refusal is explained" "$out" "does not end in plugin-cache"
+# The documented value is still cleared.
+out="$(TF_PLUGIN_CACHE_DIR="$d/home/.terraform.d/plugin-cache" run_sf "$d" --yes --only dev-caches)"
+assert_gone   "the real plugin cache is still cleared" "$d/home/.terraform.d/plugin-cache/provider"
+assert_exists "and the credentials beside it are still there" "$d/home/.terraform.d/credentials.tfrc.json"
+rm -rf "$d"
+
+# ===========================================================================
 section "dev-caches (Gradle and Maven caches only with --prune-build-caches)"
 build_env() {
   local d; d="$(new_env)"
@@ -1968,6 +2092,39 @@ fi
 rm -rf "$d"
 
 # ===========================================================================
+section "the kept log says what warned"
+# A log is kept precisely because something warned, and it was the one
+# artefact that did not name it: warn/err printed to the terminal only, so a
+# step that warns without running a command left zero bytes behind.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+  '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+  '  "plugin update") echo "helm: plugin diff is broken" >&2; exit 1 ;;' \
+  'esac; exit 0'
+out="$(run_sf "$d" --yes --no-sudo --only helm-plugins)"; rc=$?
+assert_contains "the run warned" "$out" "warn steps:  1"
+saved="$(find "$d/home/Library/Logs/stay_fresh" -name 'stay_fresh-*.log' | head -n 1)"
+if [[ -n "$saved" ]]; then
+  saved_text="$(cat "$saved")"
+  assert_contains "the kept log names the step that warned" "$saved_text" "== Helm plugin refresh =="
+  assert_contains "the kept log carries the warning itself" "$saved_text" "[warn] 'helm plugin update diff' failed"
+  assert_contains "the kept log still carries the command output" "$saved_text" "plugin diff is broken"
+else
+  err "no log was kept for a warned run"
+fi
+rm -rf "$d"
+
+# A dry run still writes nothing, warnings included.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only versions)"
+if [[ -z "$(find "$d/tmp" "$d/home" -type f -print -quit 2>/dev/null)" ]]; then
+  ok "a dry run writes no log even though warnings now reach one"
+else
+  err "a dry run wrote a file"; find "$d/tmp" "$d/home" -type f >&2
+fi
+rm -rf "$d"
+
+# ===========================================================================
 section "log lifecycle"
 # A clean run leaves nothing behind.
 d="$(new_env)"
@@ -2017,7 +2174,7 @@ assert_eq "a run against a long history succeeds" "0" "$rc"
 assert_eq "history is trimmed to 500 rows" "500" \
   "$(wc -l < "$d/home/Library/Logs/stay_fresh/history.tsv" | tr -d ' ')"
 assert_contains "the newest row survives the trim" \
-  "$(tail -n 1 "$d/home/Library/Logs/stay_fresh/history.tsv")" "$(date '+%Y-%m-%d')"
+  "$(tail -n 1 "$d/home/Library/Logs/stay_fresh/history.tsv")" "$(date '+%Y-%m')"
 assert_not_contains "the oldest row is the one dropped" \
   "$(cat "$d/home/Library/Logs/stay_fresh/history.tsv")" "2000-01-01 00:00:001"
 rm -rf "$d"

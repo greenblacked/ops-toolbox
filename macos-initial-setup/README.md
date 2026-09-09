@@ -380,9 +380,16 @@ In the order they run:
 1. Optionally purge disk caches (`sudo purge`) for cold-cache troubleshooting;
    disabled unless `--purge-memory` is passed.
 2. Flush the DNS cache (`dscacheutil`, `mDNSResponder`).
-3. Clear system caches (`/Library/Caches`; `/System/Library/Caches` only
-   when System Integrity Protection is off, since with it on every entry
-   there answers "Operation not permitted" even to root).
+3. Clear system caches (`/Library/Caches`). `/System/Library/Caches` is left
+   alone unless `csrutil` reports System Integrity Protection *positively*
+   disabled **and** `--force-system-caches` is passed. With SIP on every entry
+   there answers "Operation not permitted" even to root; when `csrutil` is
+   missing, fails, or answers in a language the parse does not know, the
+   status is *unknown*, which is not the same as off. Even with both
+   conditions met the boot caches (`com.apple.dyld`,
+   `com.apple.kernelcaches`, `com.apple.bootstamps`) are excluded: removing
+   them buys a few megabytes and costs a long, alarming first boot while the
+   kernel and dyld caches are rebuilt.
 4. Clear user caches (`~/Library/Caches`, Saved State, Xcode
    DerivedData, and related paths). What macOS refuses is sorted before it
    is reported: entries the privacy controls or SIP protect (HomeKit,
@@ -398,9 +405,13 @@ In the order they run:
    Chromium-internal directories (`Cache`, `Code Cache`, `GPUCache`,
    `Service Worker`, `blob_storage`) that Electron apps keep under
    known Application Support roots and downloaded extension `.vsix` archives.
-   Cache roots for running applications are kept. Sandboxed-container caches,
-   whose activity cannot be mapped reliably, are kept unless
-   `--force-active-app-caches` is explicitly passed.
+   Cache roots for running applications are kept. "Running" is decided from
+   the bundle's executable path (`/Visual Studio Code.app/Contents/MacOS/`),
+   not from a process name: Electron apps run as `Electron`, `Code Helper` or
+   a renderer, so a name match saw an open editor as idle and cleared the
+   cache underneath it. Sandboxed-container caches, whose activity cannot be
+   mapped reliably, are kept unless `--force-active-app-caches` is explicitly
+   passed.
 6. Clear **AI tool caches** for Codex, ChatGPT, Cursor, and Windsurf when the
    matching process is confirmed not running. If process state cannot be
    checked, the caches are kept. Only exact browser-cache directories, known
@@ -408,9 +419,12 @@ In the order they run:
    projects, extensions, Codex runtimes, and Ollama/downloaded models are kept.
 7. Prune **stale workspace storage**. VS Code (stable and Insiders) keeps
    a `workspaceStorage` entry for every folder ever opened and never
-   garbage-collects them. Only entries
-   whose recorded path no longer exists are removed; remote workspaces
-   and anything unparsable are kept. The classification is done by
+   garbage-collects them. Only entries whose recorded path is genuinely gone
+   are removed; remote workspaces and anything unparsable are kept. A path
+   that is merely *unreachable* — on a volume that is not mounted, or under
+   `~/Library/CloudStorage` where the provider has not materialised it — is
+   classed unresolved and kept, so an unplugged external disk or a
+   signed-out iCloud Drive does not cost you that project's editor state. The classification is done by
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
 8. Empty `~/.Trash`. The Trash sits behind the privacy controls: a terminal
    or agent without Full Disk Access cannot list it. An interactive run then
@@ -419,13 +433,21 @@ In the order they run:
    except network shares (SMB, NFS, AFP, WebDAV), which are named and
    skipped: a share whose server went away blocks `find` for as long as the
    kernel retries, and a scheduled run has nobody to interrupt it.
-9. Prune Docker / OrbStack (containers, networks, builder cache, and
-   **dangling images only** — tagged images are kept). Unused volumes are
+9. Prune Docker / OrbStack (stopped containers older than 7 days, networks,
+   builder cache, and **dangling images only** — tagged images are kept).
+   The container age filter is deliberate: a bare `container prune` also
+   removes the stopped container you exited five minutes ago and meant to
+   `docker start` again. Unused volumes are
    kept unless `--prune-docker-volumes` is passed: volumes hold data, not
    cache, and a stopped project's database volume counts as "unused" the
    moment its container is removed.
-10. Clean Xcode DeviceSupport and obsolete simulators. Archives are kept unless
-   an age threshold is explicitly set with `--prune-xcode-archives-days N`.
+10. Clean Xcode DeviceSupport. Unavailable simulators are only *reported*
+   unless `--prune-unavailable-simulators` is passed: `simctl delete
+   unavailable` also deletes every device whose runtime merely is not
+   installed at this moment — a half-finished Xcode update marks them all
+   unavailable — and with them the app data, databases and screenshots on
+   those devices. Archives are kept unless an age threshold is explicitly set
+   with `--prune-xcode-archives-days N`.
 11. Remove diagnostic and crash reports (user, plus system with `sudo`).
 12. Remove **old user logs**: files under `~/Library/Logs` older than 30 days.
     Every app, daemon and installer writes there and nothing prunes it, so a
@@ -592,6 +614,7 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-memory` | Keep purge disabled; compatibility flag matching the default. |
 | `--skip-dns` | Skip the DNS cache flush. |
 | `--skip-syscaches` | Skip system-cache cleanup. |
+| `--force-system-caches` | Also clear `/System/Library/Caches`, and only then, and only when SIP is positively reported disabled. Boot caches stay. |
 | `--skip-usercaches` | Skip user-cache cleanup. |
 | `--skip-appcaches` | Skip per-app caches (step 5: Chromium/Electron directories, sandboxed containers, `.vsix`). |
 | `--force-active-app-caches` | Also clear running known-app roots and generic sandbox-container caches. |
@@ -606,6 +629,7 @@ reported on the terminal with the reason and never fails the run.
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
+| `--prune-unavailable-simulators` | Run `simctl delete unavailable`; unavailable devices and their data are otherwise only reported. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
 | `--skip-user-logs` | Skip removing files under `~/Library/Logs` older than 30 days (step 12). |
 | `--skip-downloads` | Skip the old-downloads report (step 13). |
@@ -1239,10 +1263,12 @@ Homebrew / `pyenv` / `goenv` commands.
 
 - Deletes cache contents (not the directories themselves) under
   `/Library/Caches`, `~/Library/Caches`, Saved State, Xcode DerivedData,
-  and related paths, and under `/System/Library/Caches` only when System
-  Integrity Protection is off. Entries SIP or the privacy controls protect
-  are kept and counted; entries owned by another user are retried with
-  sudo when a credential is in hand.
+  and related paths. `/System/Library/Caches` is touched only when SIP is
+  positively reported disabled *and* `--force-system-caches` is passed, and
+  never the boot caches (`com.apple.dyld`, `com.apple.kernelcaches`,
+  `com.apple.bootstamps`). An unknown SIP status is treated as on. Entries
+  SIP or the privacy controls protect are kept and counted; entries owned by
+  another user are retried with sudo when a credential is in hand.
 - Deletes per-app cache contents outside `~/Library/Caches`: the
   Chromium-internal directories under known Application Support roots and
   downloaded `.vsix` archives. Running application roots are skipped;
@@ -1254,19 +1280,26 @@ Homebrew / `pyenv` / `goenv` commands.
   Codex runtimes, and downloaded models.
 - Keeps Xcode Archives by default. `--prune-xcode-archives-days N` removes only
   old `.xcarchive` bundles matching the explicit retention threshold.
-- Removes VS Code `workspaceStorage` entries whose project
-  folder no longer exists. Remote workspaces and unreadable entries are
-  left alone.
+- Keeps unavailable simulators and their data by default; deleting them needs
+  `--prune-unavailable-simulators`.
+- Removes VS Code `workspaceStorage` entries whose project folder is gone.
+  Remote workspaces, unreadable entries, and paths on an unmounted volume or
+  in unmaterialised `~/Library/CloudStorage` are left alone.
 - Empties `~/.Trash`, through Finder when the shell lacks Full Disk Access
   and a person is present to answer the prompt.
 - Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`),
   the contents of `~/.kube/cache` and of Terraform's plugin cache, gcloud log
   directories older than a week, and unused pre-commit repositories.
+  `TF_PLUGIN_CACHE_DIR` is cleared only when it ends in `plugin-cache`; a
+  variable pointed at a working directory, or at `$HOME`, is warned about
+  and left untouched.
   Installed gem versions are kept unless `--cleanup-old-gems` is explicit.
 - Queries `softwareupdate --list` and, when installed, `mas outdated`, and
   prints what is pending. Installs neither.
 - Prunes Docker resources when Docker is available:
-  - Containers (`docker container prune -f`)
+  - Containers stopped for more than 7 days
+    (`docker container prune -f --filter until=168h`) — a bare prune would
+    also take the container you stopped minutes ago
   - Networks (`docker network prune -f`)
   - Volumes only with `--prune-docker-volumes` — they hold data, and the
     LaunchAgent runs with `--yes`, so a default volume prune would delete a
@@ -1289,7 +1322,12 @@ Homebrew / `pyenv` / `goenv` commands.
   `TMPDIR` cannot be written (a full disk is exactly when this script is
   run), the log and the scratch lists the sweeps need move to
   `~/Library/Logs/stay_fresh/`; when that fails too, the run goes ahead
-  without a log and says so.
+  without a log and says so. Every `[warn]` and `[err ]` line is written to
+  the log as well as to the terminal, timestamped — the kept log is read
+  after a scheduled run, and it used to hold the command transcript but not
+  the reason the run was kept. Nothing is opened until preflight passes, so
+  a refused run (no `--yes` in a non-interactive shell, an unsupported OS)
+  still writes nothing at all.
 - Appends one row per real run to `~/Library/Logs/stay_fresh/history.tsv`
   and rewrites `last-run.json` there. Sends a notification only when
   `--notify` (or `STAY_FRESH_NOTIFY`) asks for one, and reads the Telegram
