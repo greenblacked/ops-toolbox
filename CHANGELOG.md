@@ -12,6 +12,13 @@ by the day each pull request landed on `master`; they are history, not releases.
 The first tagged version will be cut from `[Unreleased]`, and from then on every
 entry here belongs to a version.
 
+New entries are not added to `[Unreleased]` by hand. Each change ships one
+file under [`changelog.d/`](changelog.d/README.md), and
+`changelog.d/changelog.sh preview` prints the section with those fragments
+pasted in ahead of what it already holds; `changelog.d/changelog.sh release`
+moves both under a version heading. The entries below were written before
+that directory existed and stay here until the first release moves them.
+
 ## [Unreleased]
 
 ### Added
@@ -52,42 +59,6 @@ entry here belongs to a version.
   stores the mode in the plist and passes it through. The steps suite covers
   each of these with faked `osascript`, `curl`, `security`, `tmutil` and
   `sysctl`, and the contract suite the agent's plist and option rejection.
-
-- CI builds its `Test / <suite>` matrix from `run-tests.sh --list`, which now
-  prints each suite's package directory as a second column. Adding a suite
-  used to take four hand edits to the workflow - a job output, a filter line,
-  a matrix entry and a summary row - and the dotfiles suite arrived with the
-  summary row missing. The aggregator's table was already the one place to
-  add a suite for everything local; it is now the one place for CI too, and
-  the contract test checks that every listed package directory exists.
-- The dotfiles suite parses its TOML, YAML, JSON and Python configs in one
-  Python run instead of one interpreter launch per file, which was most of
-  the suite's wall clock. Per-file verdicts and the skip-when-no-parser
-  behaviour are unchanged.
-
-- `git/clone-repos.sh` clones every repository listed in a text file into
-  one parent directory, one URL per line with an optional destination, and
-  `repos.txt.example` shows the format. A checkout that is already there is
-  skipped, an occupied path is reported and left alone, and one bad line
-  never stops the rest; the exit code says whether everything landed. It
-  follows the package's contract: `--help` before any check, `3` on a bad
-  flag, both `--dir DIR` and `--dir=DIR`, and a `--dry-run` that prints the
-  clones it would run and writes nothing. `gclone` is its alias in both
-  alias files.
-
-- A startup hook for hosted coding sessions, `.claude/hooks/session-start.sh`,
-  registered through `.claude/settings.json`. A session that starts from a
-  bare clone lacked `zsh` (the macOS contract suite died at its last check),
-  ran a different ShellCheck than the one `ci.yml` pins, had no Docker daemon
-  for the macOS suites, and had lost the attribution guard with the
-  container. The hook reads the versions from `ci.yml`, installs ShellCheck,
-  ruff and markdownlint-cli2 at those versions, adds `zsh`, lays out `/repo`,
-  `/.dockerenv`, `/rootonly` and `/rootlocked` so the macOS steps and
-  unprivileged suites run directly, and reinstalls the guard. `--check`
-  reports without changing anything and exits 1 when something is missing;
-  outside a remote session the hook is a no-op unless `--force`. The
-  `.gitignore` rule that keeps agent state out of the tree now re-admits just
-  those two files.
 
 - `backup_update_check.lua` takes its verdict from RouterOS's `status` line,
   polled until it settles, instead of a fixed 15-second wait and an

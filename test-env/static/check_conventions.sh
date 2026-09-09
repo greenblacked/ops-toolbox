@@ -345,6 +345,7 @@ dry_run_args() {
     git/gacp.sh)                             printf '%s\n' "--dry-run -m dry-run probe" ;;
     git/clone-repos.sh)                      printf '%s\n' "--dry-run git/repos.txt.example" ;;
     git/set_git_profile.sh)                  printf '%s\n' "--dry-run --name Probe --email probe@example.invalid" ;;
+    changelog.d/changelog.sh)                printf '%s\n' "release 0.0.0-probe --dry-run" ;;
     *)                                       printf '%s\n' "--dry-run" ;;
   esac
 }

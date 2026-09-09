@@ -40,4 +40,11 @@ printf '\n--- run-tests.sh automation contract ---\n'
 printf '\n--- documentation citations ---\n'
 "$HERE/test_doc_citations.sh" || rc=1
 
+# One file per change under changelog.d/ is what keeps two pull requests from
+# editing the same line of CHANGELOG.md; a fragment that would not paste is
+# caught here, before it is the release that finds out.
+printf '\n--- changelog fragments ---\n'
+"$REPO_ROOT/changelog.d/changelog.sh" check || rc=1
+"$HERE/test_changelog.sh" || rc=1
+
 exit "$rc"

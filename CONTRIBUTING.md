@@ -447,9 +447,17 @@ documentation entries a script is not finished without.
    beside you" would mean naming every script in the tree. It is still half of
    what the pull request template means by "the folder README and the root
    README were updated".
-7. **Add a `CHANGELOG.md` entry** under `[Unreleased]`, in the voice the
-   entries around it use: what changed and why it mattered, not a commit
-   subject.
+7. **Add a changelog fragment**: one file under
+   [`changelog.d/`](changelog.d/README.md), in the directory named for its
+   type (`added/`, `fixed/`, `changed/` ...), written exactly as the entry
+   will read in `CHANGELOG.md` and in the voice the entries there use: what
+   changed and why it mattered, not a commit subject. Do not edit
+   `[Unreleased]` in `CHANGELOG.md` directly: every pull request inserted at
+   the same line, so any two open at once conflicted the moment one merged.
+   `changelog.d/changelog.sh preview` shows the section as it will read, and
+   the static suite runs `changelog.d/changelog.sh check` so a fragment that
+   would not paste fails before merge. A release moves the fragments under a
+   version heading; see the README there.
 
 A script that touches a machine also needs `--dry-run` before it needs
 anything else. That is the promise this repository makes, and it is the one

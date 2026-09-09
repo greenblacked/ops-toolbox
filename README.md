@@ -872,4 +872,8 @@ documentation entries it is not finished without, is
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and what changed when in
-[`CHANGELOG.md`](CHANGELOG.md).
+[`CHANGELOG.md`](CHANGELOG.md). New entries go in as one file per change
+under [`changelog.d/`](changelog.d/README.md), and
+`changelog.d/changelog.sh preview` shows the `[Unreleased]` section as it
+will read once they are pasted in; a release moves them under a version
+heading.
