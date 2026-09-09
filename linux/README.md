@@ -236,10 +236,16 @@ OS_RELEASE=/tmp/fake ./stay_fresh.sh --dry-run   # exits 2
 ## What `stay_fresh.sh` does
 
 Package upgrade and autoremove, `journalctl --vacuum-time=14d`, user caches
-(pip, npm, yarn, go, `~/.cache`), trash, `docker`/`podman` prune, flatpak and
-snap, then a report of whether a reboot is pending, whether processes are
-still running old libraries (`needs-restarting` / `needrestart`, when
-installed), and how full `/` is.
+(pip, npm, yarn, go, `~/.cache`), trash (both `files/` and the matching
+`info/` records, so the desktop is not left showing entries that no longer
+exist), `docker`/`podman` prune, flatpak and snap, then a report of whether a
+reboot is pending, whether processes are still running old libraries
+(`needs-restarting` / `needrestart`, when installed), and how full `/` is.
+
+It refuses to run when `HOME` is unset, empty or not a directory (exit `2`):
+every path it removes is built from `HOME`, and an empty one turns
+`~/.cache/pip` into `/.cache/pip`. `--help` and `--list-steps` work without
+one.
 
 Two things it deliberately does not do:
 
@@ -366,7 +372,9 @@ Three details worth knowing:
   that never does.
 
 Output goes to the journal: `journalctl --user -u ops-toolbox-stay-fresh.service`.
-`stay_fresh.sh` still writes its own log under `$TMPDIR`.
+`stay_fresh.sh` writes its own log under `$TMPDIR` during the run; a clean run
+discards it, and a run with a failed step keeps it and prunes to the ten
+newest.
 
 ## `install_aliases.sh`
 

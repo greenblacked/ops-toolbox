@@ -958,6 +958,23 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `linux/stay_fresh.sh` empties the whole Trash. It cleared
+  `~/.local/share/Trash/files` and left the matching `info/` records, so the
+  desktop kept showing entries whose files were gone; `disk_cleanup.sh` in
+  the same directory has always cleared both.
+- `linux/stay_fresh.sh` refuses an unset, empty or non-directory `HOME` with
+  exit 2. `rm -rf "$HOME/.cache/pip"` with an empty `HOME` addresses
+  `/.cache/pip`, and `set -u` does not fire on a variable that is set but
+  empty. `--help` and `--list-steps` still work without one.
+- `linux/stay_fresh.sh` discards a clean run's log instead of leaving one
+  file per run in `TMPDIR` forever; a run with a failed step keeps its log
+  and prunes to the ten newest.
+- `linux/stay_fresh.sh`'s `warn()` prints the fix hint its callers pass as a
+  second argument on its own dimmed line, as `system_doctor.sh` does. With a
+  `"$*"` body the hint was glued onto the end of the message, so the
+  stale-library warning ran the hint on as part of the same sentence.
+- `linux/stay_fresh.sh` names flatpak and snap among the steps it skipped
+  under `--only`, which it already did for every other step.
 - `stay_fresh.sh` tells the macOS protections apart from failures. A real run
   warned on three steps for things no run can change: `/System/Library/Caches`
   answers "Operation not permitted" to root with System Integrity Protection
