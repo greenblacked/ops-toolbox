@@ -1039,6 +1039,21 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `stay_fresh.sh` refuses to run without a usable `HOME` instead of
+  addressing the machine. Every path it clears is built from `HOME`, and an
+  empty one made `"$HOME/Library/Caches"` into `/Library/Caches`, the system
+  cache directory, and `"$HOME/.Trash"` into `/.Trash`; unset, `set -u`
+  aborted with a bare "HOME: unbound variable" before `--help` could answer.
+  `--help`, `--list-steps` and the flag validation the agent uses still work
+  without one; anything that resolves a path stops with exit 2 and says why,
+  and `HOME` is poisoned with a path that cannot exist until that check runs,
+  so nothing can reach a system directory in the meantime.
+- The Trash step leaves the per-volume Trash alone when the uid cannot be
+  read, instead of sweeping `.Trashes/` — the shared parent that holds every
+  user's trash on that volume. `~/.Trash` needs no uid and is still emptied.
+- A `df` that cannot be read is reported once and counted as zero, rather
+  than passing the empty string into every later size calculation and the
+  history row.
 - `stay_fresh.sh` runs on a full disk. TMPDIR lives on the disk the script
   is run to free, and three things there used to stop it: the log could
   not be opened, so the run refused to start with exit 2; `mktemp` failed,

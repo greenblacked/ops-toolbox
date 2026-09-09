@@ -1852,6 +1852,47 @@ assert_contains "a hard NFS mount is skipped by type without being touched" "$ou
 assert_gone "the local volume's Trash is still emptied" /Volumes/USB/.Trashes/501/old
 rm -rf /Volumes "$d"
 
+# Without a uid the per-user directory would be ".Trashes/" - the shared
+# parent holding every user's trash on that volume - and the sweep would take
+# all of it. ~/.Trash needs no uid and is still emptied.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p /Volumes/USB/.Trashes/501 /Volumes/USB/.Trashes/502 "$d/home/.Trash"
+: > /Volumes/USB/.Trashes/501/mine
+: > /Volumes/USB/.Trashes/502/someone-elses
+: > "$d/home/.Trash/own"
+mkbin "$d/bin/id" 'case "${1:-}" in -u) exit 1 ;; -un) echo tester ;; *) /usr/bin/id "$@" ;; esac'
+mkbin "$d/bin/mount" 'echo "/dev/disk5s1 on /Volumes/USB (apfs, local)"'
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "an unavailable uid does not fail the run" "0" "$rc"
+assert_contains "the missing uid is named" "$out" \
+  "cannot determine the current uid — leaving the Trash on mounted volumes alone"
+assert_exists "another user's trash on the volume survives" /Volumes/USB/.Trashes/502/someone-elses
+assert_exists "the volume's own trash is left alone too" /Volumes/USB/.Trashes/501/mine
+assert_gone   "~/.Trash is still emptied without a uid" "$d/home/.Trash/own"
+rm -rf /Volumes "$d"
+
+# ===========================================================================
+section "df unreadable (the summary still adds up)"
+# An empty free-space reading used to flow into every later size calculation.
+# It is reported once and treated as zero.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" 'exit 1'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "an unreadable df does not fail the run" "0" "$rc"
+assert_contains "the unreadable df is reported once" "$out" \
+  "could not read free space on / — the reclaimed total will read 0B"
+assert_contains "the preflight still prints a number" "$out" "disk free on /: 0B"
+assert_contains "the summary still adds up" "$out" "disk free:   0B -> 0B  (0B reclaimed)"
+assert_not_contains "no printf complains about an empty number" "$out" "invalid number"
+assert_contains "the run still reaches its verdict" "$out" "stay_fresh OK"
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d['reclaimed_bytes'], int), d" \
+     "$d/home/Library/Logs/stay_fresh/last-run.json" 2>/dev/null; then
+  ok "last-run.json still carries a numeric reclaimed_bytes"
+else
+  err "last-run.json reclaimed_bytes is not a number"
+fi
+rm -rf "$d"
+
 # ===========================================================================
 section "brew (upgrade count and outdated casks in the verdict)"
 d="$(new_env)"; : > "$d/calls"

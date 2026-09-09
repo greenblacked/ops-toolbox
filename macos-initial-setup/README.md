@@ -1280,6 +1280,9 @@ Homebrew / `pyenv` / `goenv` commands.
   `--brew-greedy`).
 - Updates Helm plugins and `gcloud` components when those tools are
   installed.
+- Refuses to run when `HOME` is unset, empty or not a directory (exit `2`):
+  every path it clears is built from `HOME`, and an empty one resolves to
+  system directories. `--help` and `--list-steps` work without one.
 - Writes `$TMPDIR/stay_fresh-YYYYMMDD-HHMMSS.log` during the run. A
   clean run discards it; a run with warnings or failures keeps it under
   `~/Library/Logs/stay_fresh/`, pruned to the ten most recent. When

@@ -189,6 +189,22 @@ NOTIFY_SLACK=0
 NOTIFY_AUTO=0
 NOTIFY_CHANNELS=""
 # Where the run history and the last-run summary live, next to the kept logs.
+# HOME builds every path this script touches: the caches it clears, the Trash
+# it empties, the lock, the log, the history. Unset, `set -u` aborted the run
+# with a bare "HOME: unbound variable" before --help could even answer. Empty
+# is worse and silent: "$HOME/Library/Caches" becomes "/Library/Caches", the
+# *system* cache directory, and "$HOME/.Trash" becomes "/.Trash" - a run that
+# meant to sweep a home directory would sweep the machine.
+#
+# So an unusable HOME is recorded here and refused below, after the flags that
+# need no home directory (--help, --list-steps) have had their say. Until
+# then it is poisoned with a path that cannot exist and cannot be created:
+# anything that reaches for it fails closed instead of finding a system one.
+HOME_USABLE=1
+if [[ -z "${HOME:-}" ]]; then
+  HOME_USABLE=0
+  HOME='/dev/null/stay_fresh-HOME-is-not-set'
+fi
 STATE_DIR="$HOME/Library/Logs/stay_fresh"
 # Facts the steps learn along the way, for the headline and the notification.
 BREW_UPGRADED=0
@@ -754,6 +770,16 @@ if (( LIST_STEPS )); then
   exit 0
 fi
 
+# Everything past this point resolves a path under HOME.
+if (( HOME_USABLE == 0 )); then
+  err "HOME is not set — every path this script clears is built from it, and without one they would resolve to system directories"
+  exit 2
+fi
+if [[ ! -d "$HOME" ]]; then
+  err "HOME is not a directory: $HOME"
+  exit 2
+fi
+
 # --quick is a fixed --only list: everything a user can clear without sudo,
 # without a package manager, and without waiting on a report.
 if (( QUICK )); then
@@ -847,10 +873,19 @@ human_bytes() {
   fi
 }
 
-# Disk free in bytes on /.
+# Disk free in bytes on /. Always prints an integer; returns 1 when df could
+# not be read, so the caller can say so once rather than passing the empty
+# string into every later size calculation.
 disk_free_bytes() {
+  local kb
   # df -k prints 1024-byte blocks
-  df -k / | awk 'NR==2 {printf "%.0f", $4 * 1024}'
+  kb="$(df -k / 2>/dev/null | awk 'NR==2 { print $4 }')"
+  if [[ "$kb" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$(( kb * 1024 ))"
+    return 0
+  fi
+  printf '0'
+  return 1
 }
 
 # Size of a path in bytes (0 if missing). Best-effort (ignores permission errors).
@@ -1571,7 +1606,8 @@ else
 fi
 
 # 3. Disk free before
-FREE_BEFORE_B="$(disk_free_bytes)"
+FREE_BEFORE_B="$(disk_free_bytes)" \
+  || warn "could not read free space on / — the reclaimed total will read 0B"
 ok "disk free on /: $(human_bytes "$FREE_BEFORE_B")"
 
 # 4. Homebrew check (only relevant if we aren't skipping it)
@@ -2384,7 +2420,14 @@ step_trash() {
   # therefore skipped by its type before anything touches it; its Trash
   # belongs to Finder anyway. The boot volume's /Volumes symlink is not a
   # mount and never appears here.
-  uid="$(id -u)"
+  uid="$(id -u 2>/dev/null)"
+  # Without a uid the per-user directory would be ".Trashes/", the shared
+  # parent that holds every user's trash on that volume, and the sweep would
+  # take all of it. ~/.Trash above is already done and needs no uid.
+  if [[ ! "$uid" =~ ^[0-9]+$ ]]; then
+    warn_step "cannot determine the current uid — leaving the Trash on mounted volumes alone"
+    return 0
+  fi
   local vname vtype
   while IFS=$'\t' read -r vname vtype; do
     [[ -n "$vname" ]] || continue
@@ -3447,7 +3490,7 @@ for (( step_i=0; step_i<${#STEP_IDS[@]}; step_i++ )); do
 done
 
 ELAPSED=$(( $(date +%s) - START_ALL ))
-FREE_AFTER_B="$(disk_free_bytes)"
+FREE_AFTER_B="$(disk_free_bytes)" || true
 RECLAIMED_B=$(( FREE_AFTER_B - FREE_BEFORE_B ))
 
 # ---------------------------------------------------------------------------

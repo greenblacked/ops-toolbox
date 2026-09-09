@@ -113,6 +113,48 @@ for f in "${sh_scripts[@]}"; do
   fi
 done
 
+# --- HOME: every path the script clears is built from it ------------------
+# Unset, `set -u` aborted with a bare "HOME: unbound variable" before --help
+# could answer. Empty was worse and silent: "$HOME/Library/Caches" is
+# "/Library/Caches", the system cache directory, and "$HOME/.Trash" is
+# "/.Trash", so a run meant for one home directory addressed the machine.
+# The flags that need no home directory still work; anything that touches a
+# path stops with exit 2 and says why.
+sf="$M/stay_fresh.sh"
+set +e
+out="$(env -u HOME "$sf" --help 2>&1)"; rc=$?
+set -e
+assert_eq "stay_fresh --help works with HOME unset" "0" "$rc"
+assert_contains "the help is the real help" "$out" "macOS housekeeping in one script"
+set +e
+out="$(env -u HOME "$sf" --list-steps 2>&1)"; rc=$?
+set -e
+assert_eq "stay_fresh --list-steps works with HOME unset" "0" "$rc"
+assert_contains "the step ids are listed without a home directory" "$out" "user-caches"
+# The agent asks this exact question to validate --notify, so it must not
+# need a home directory either.
+set +e
+env -u HOME "$sf" --list-steps --notify macos,slack >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "the agent's --notify probe works with HOME unset" "0" "$rc"
+for home_case in unset empty; do
+  set +e
+  if [[ "$home_case" == unset ]]; then
+    out="$(env -u HOME "$sf" --yes --no-sudo --only user-caches 2>&1)"; rc=$?
+  else
+    out="$(HOME="" "$sf" --yes --no-sudo --only user-caches 2>&1)"; rc=$?
+  fi
+  set -e
+  assert_eq "a run with HOME $home_case is refused -> 2" "2" "$rc"
+  assert_contains "a run with HOME $home_case says why" "$out" "HOME is not set"
+  assert_not_contains "a run with HOME $home_case never names a system path" "$out" "/Library/Caches"
+done
+set +e
+out="$(HOME="$M/stay_fresh.sh" "$sf" --yes --no-sudo --only user-caches 2>&1)"; rc=$?
+set -e
+assert_eq "a HOME that is not a directory is refused -> 2" "2" "$rc"
+assert_contains "a non-directory HOME is named" "$out" "HOME is not a directory"
+
 # --- unknown CLI -> exit 3 (parsed before preflight) ---
 for f in "${sh_scripts[@]}"; do
   set +e
