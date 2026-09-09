@@ -277,11 +277,12 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
 - `install_devtools.sh` installs Python, Terraform, Go, Helm, and optional shell
   initialization using version managers.
 - `stay_fresh.sh` handles recurring maintenance: system, application, and AI
-  tool caches; Homebrew upgrades; Docker/OrbStack cleanup; Xcode extras; Helm
-  and krew plugins; `gcloud`; dev-tool caches including `uv` and kubectl's
-  discovery cache; version reporting; and a read-only report of pending macOS
-  and App Store updates. AI credentials, sessions, runtimes, and downloaded
-  models are kept.
+  tool caches; old user logs; Homebrew upgrades; Docker/OrbStack cleanup;
+  Xcode extras; Helm and krew plugins; `gcloud`; dev-tool caches including
+  `uv` and kubectl's discovery cache; version reporting; a read-only report
+  of pending macOS and App Store updates; and a verdict sent as a macOS
+  banner, a Telegram message or a Slack post. AI credentials, sessions,
+  runtimes, and downloaded models are kept.
 - `v1_stay_fresh.sh` is a legacy, flag-free minimal maintenance flow kept for
   reference; prefer `stay_fresh.sh` for new use.
 - `brewfile.sh` captures the Homebrew state of a machine into a versioned

@@ -16,6 +16,39 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh` step `user-logs`: files under `~/Library/Logs` older than
+  30 days are removed. Every app, daemon and installer writes there and
+  nothing prunes it. Directories stay, because an app whose log directory
+  vanished may not recreate it; `DiagnosticReports` (the diagnostics step's)
+  and the script's own `stay_fresh` directory are left alone. Part of
+  `--quick`; `--skip-user-logs` to keep them.
+- `stay_fresh.sh --reports`: the read-only subset (`versions`, `os-updates`,
+  `snapshots`, `disk-report`) as one flag, for a look at the machine that
+  changes nothing. It refuses `--thin-snapshots`, because then it would.
+- `stay_fresh.sh --prune-build-caches` clears `~/.gradle/caches` and
+  `~/.m2/repository` during the dev-cache step. Without the flag they are
+  named and kept: they are the largest thing under `HOME` on a JVM
+  workstation and the slowest to get back, since the next build downloads
+  every dependency again.
+- `stay_fresh.sh --notify slack` posts the verdict to a Slack incoming
+  webhook (`STAY_FRESH_SLACK_WEBHOOK`, or the `stay_fresh-slack` Keychain
+  item). The URL is the credential, so like the Telegram token it goes to
+  `curl` as a config file on stdin and is scrubbed from any error.
+  `--notify` also takes a comma-separated list (`macos,slack`); `both`
+  still means `macos,telegram`. `stay_fresh_agent.sh install --notify`
+  validates the same list.
+- `stay_fresh_agent.sh status` says when the job has stopped running: the
+  last run's timestamp against the plist's schedule (weekly with a
+  `Weekday`, daily otherwise), a warning and exit `1` past twice the
+  interval. launchd still reports such a job as loaded and the last verdict
+  still reads OK, which is how a Mac asleep every Monday at 10:30 goes
+  unmaintained for months.
+- `zsh_aliases.zsh` completes `stay_fresh.sh` (and `stay-fresh`,
+  `stayfresh`): the flags from the script's `--help`, the step ids after
+  `--only` and the channels after `--notify`, comma-separated. Both lists
+  are read from the script, so a new flag or step is completable the moment
+  it exists.
+
 - `stay_fresh.sh --step-timeout N` (default 1800, `0` disables, env
   `STAY_FRESH_STEP_TIMEOUT`): every command a step runs is stopped after N
   seconds and the step counts as warned. `brew update`, `softwareupdate
@@ -979,6 +1012,20 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `stay_fresh.sh` retries a "Permission denied" cache entry with sudo by
+  naming exactly the top-level entries `rm` refused, instead of re-running
+  `find -exec rm` over the whole directory as root. The sweep also reached
+  for the entries macOS keeps out of reach on purpose (HomeKit, CloudKit,
+  Safari), which the first pass had correctly counted as protected and kept.
+  Both the macOS (`rm: /p: Permission denied`) and GNU
+  (`rm: cannot remove '/p': Permission denied`) forms are parsed, the retry
+  is announced with its count, and the unprivileged suite runs it as uid
+  1000 against a directory the kernel really refuses.
+- `stay_fresh.sh --thin-snapshots` no longer deletes local snapshots while a
+  Time Machine backup is running (`tmutil status` reports `Running = 1`).
+  A backup copies from the newest snapshot, and deleting it underneath made
+  the pass start over; the snapshots are listed, the verdict says "kept",
+  and the next run thins.
 - `stay_fresh.sh` no longer leaves an empty log in `TMPDIR` after a clean
   run that notified. The clean run's log was discarded before the
   notification went out, and both notifiers logged into the same path, so
@@ -1493,6 +1540,16 @@ entry here belongs to a version.
 
 ### Changed
 
+- `stay_fresh_agent.sh`'s `safe` profile now also runs the two read-only
+  reports, `os-updates` and `snapshots` (listing only; the agent has no
+  sudo, so nothing is thinned). A pending macOS update and a pile of local
+  snapshots are what a Mac accumulates without anyone noticing, and a
+  scheduled verdict that said nothing about either was not worth reading.
+- `stay_fresh.sh` keeps its steps in one table (id, skip variable, function,
+  label, description) that drives `--list-steps`, `--only` and the run loop.
+  Adding a step is one line there, a parser arm and a plan line; the three
+  hand-maintained lists that had to agree are gone, and the Docker suite
+  checks every listed id is one `--only` accepts and previews.
 - `CHANGELOG.md` merges with `merge=union` (`.gitattributes`). Every pull
   request adds its entry at the top of the Unreleased section, so any two
   open at once collided on the same lines and the second to merge conflicted;

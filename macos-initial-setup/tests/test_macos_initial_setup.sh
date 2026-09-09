@@ -523,13 +523,13 @@ assert_contains "the dry-run preview says a real run would stop" "$out" \
 brew_absent_skip=(
   --skip-dns --skip-syscaches --skip-usercaches --skip-appcaches
   --skip-workspacestorage --skip-trash --skip-devcaches --skip-docker
-  --skip-xcode --skip-diagnostics --skip-devtools --skip-snapshots
+  --skip-xcode --skip-diagnostics --skip-user-logs --skip-devtools --skip-snapshots
 )
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${brew_absent_skip[@]}" 2>&1)"
 assert_contains "an all-skipped run counts each step exactly once" "$out" \
-  "skipped:     18"
+  "skipped:     19"
 assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
   "brew (not installed)"
 assert_contains "a skipped step reports why it was skipped" "$out" \
@@ -853,23 +853,98 @@ rm -f "$fake_macos/home/Library/Logs/stay_fresh/last-run.json"
 out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
 assert_contains "agent status says when no run is recorded" "$out" "no run recorded yet"
-mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
-cat > "$fake_macos/home/Library/Logs/stay_fresh/last-run.json" <<'JSON'
+# "YYYY-MM-DD HH:MM:SS" some days back, in the format stay_fresh.sh writes;
+# BSD date takes -r seconds, GNU date takes -d @seconds.
+stamp_days_ago() {
+  local e=$(( $(date +%s) - $1 * 86400 ))
+  date -r "$e" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -d "@$e" '+%Y-%m-%d %H:%M:%S'
+}
+write_last_run() {
+  mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
+  cat > "$fake_macos/home/Library/Logs/stay_fresh/last-run.json" <<JSON
 {
-  "when": "2026-09-09 03:00:12",
+  "when": "$1",
   "result": "WARN",
   "headline": "stay_fresh WARN: freed 1.20G in 4m10s",
-  "detail": "15 ok, 1 warned, 4 skipped; brew upgraded 3; \"kept\" 2 local snapshot(s)",
+  "detail": "15 ok, 1 warned, 4 skipped; brew upgraded 3; \\"kept\\" 2 local snapshot(s)",
   "elapsed_s": 250,
   "log": "/Users/serhii/Library/Logs/stay_fresh/stay_fresh-20260909-030012.log"
 }
 JSON
+}
+fresh_when="$(stamp_days_ago 0)"
+write_last_run "$fresh_when"
+set +e
 out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+rc=$?
+set -e
+assert_eq "agent status with a fresh run exits 0" "0" "$rc"
 assert_contains "agent status shows the last run's headline" "$out" \
-  "last run: 2026-09-09 03:00:12 — stay_fresh WARN: freed 1.20G in 4m10s"
+  "last run: $fresh_when — stay_fresh WARN: freed 1.20G in 4m10s"
 assert_contains "agent status shows the detail line with its quotes unescaped" "$out" \
   '15 ok, 1 warned, 4 skipped; brew upgraded 3; "kept" 2 local snapshot(s)'
+assert_not_contains "a fresh run is not called stale" "$out" "the job is not running"
+
+# A job that stopped firing is the failure launchd hides best: still loaded,
+# last verdict still OK. The plist's schedule sets the yardstick - daily
+# here (the fake plist has no Weekday) - and twice that with no run is stale.
+write_last_run "$(stamp_days_ago 3)"
+set +e
+out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+rc=$?
+set -e
+assert_eq "agent status with a stale daily run exits 1" "1" "$rc"
+assert_contains "a stale daily run is called out with its age" "$out" \
+  "last run was 3 day(s) ago and the schedule fires every 1 day(s) — the job is not running"
+# The same three days against a weekly schedule are on time.
+printf '%s\n' '<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer></dict>' \
+  > "$agent_plist"
+set +e
+out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+rc=$?
+set -e
+assert_eq "three days against a weekly schedule exits 0" "0" "$rc"
+assert_not_contains "three days against a weekly schedule is not stale" "$out" "the job is not running"
+write_last_run "$(stamp_days_ago 20)"
+set +e
+out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+rc=$?
+set -e
+assert_eq "twenty days against a weekly schedule exits 1" "1" "$rc"
+assert_contains "a stale weekly run names the weekly yardstick" "$out" \
+  "last run was 20 day(s) ago and the schedule fires every 7 day(s)"
+printf 'original plist\n' > "$agent_plist"
+
+# The safe profile is what the plist runs by default. Its step list lives in
+# run-scheduled, not in the plist, so it is checked from the transcript of a
+# dry scheduled run: the two read-only reports are in, the deletions out.
+rm -rf "$fake_macos/home/Library/Logs/stay_fresh"
+set +e
+HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+  "$agent" run-scheduled --profile safe --dry-run >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "a dry scheduled run under the safe profile succeeds" "0" "$rc"
+sched_log="$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev/null | head -n 1)"
+if [[ -n "$sched_log" ]]; then
+  sched_out="$(cat "$sched_log")"
+  for want in "clear per-app caches" "clear AI tool caches" "prune workspace storage" \
+              "report active versions" "pending OS / App Store updates" "local Time Machine snapshots"; do
+    assert_contains "safe profile runs: $want" "$(grep "$want" <<<"$sched_out")" "run"
+  done
+  for keep in "clear user caches" "empty trash" "homebrew update" "dev-tool caches" \
+              "old user logs" "docker" "disk report"; do
+    assert_contains "safe profile skips: $keep" "$(grep -i "$keep" <<<"$sched_out")" "skip"
+  done
+  assert_contains "the safe profile lists snapshots read-only" \
+    "$(grep "local Time Machine snapshots" <<<"$sched_out")" "read-only"
+else
+  err "a dry scheduled run wrote no transcript"
+fi
 
 rm -rf "$fake_macos"
 
@@ -920,10 +995,35 @@ else
 fi
 rm -f "$plist_tmp"
 set +e
-"$agent" install --print-only --notify slack --dry-run >/dev/null 2>&1
+"$agent" install --print-only --notify pager --dry-run >/dev/null 2>&1
 rc=$?
 set -e
 assert_eq "agent rejects an unknown --notify mode" "3" "$rc"
+set +e
+"$agent" install --print-only --notify macos,pager --dry-run >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "agent rejects an unknown channel inside a --notify list" "3" "$rc"
+set +e
+"$agent" install --print-only --notify= --dry-run >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "agent rejects an empty --notify" "3" "$rc"
+# A channel list travels into the plist unchanged; stay_fresh.sh splits it.
+plist_tmp="$(mktemp)"
+if "$agent" install --print-only --notify macos,slack --dry-run > "$plist_tmp" \
+   && python3 - "$plist_tmp" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+assert data["ProgramArguments"][-2:] == ["--notify", "macos,slack"], data["ProgramArguments"]
+PY
+then
+  ok "LaunchAgent plist carries a --notify channel list"
+else
+  err "LaunchAgent plist does not carry a --notify channel list"
+fi
+rm -f "$plist_tmp"
 set +e
 "$agent" status --notify macos >/dev/null 2>&1
 rc=$?
@@ -1050,6 +1150,24 @@ assert_contains "zsh aliases expose workstation diagnosis" "$aliases_out" "works
 assert_contains "zsh aliases expose scheduled-run logs" "$aliases_out" "stay-fresh-logs="
 assert_contains "toolbox-help makes guarded shortcuts discoverable" "$aliases_out" \
   "macOS toolbox commands available"
+
+# Tab completion for stay_fresh.sh: registered once compinit has run, and
+# fed by the script's own --help and --list-steps, so a new flag or step id
+# is completable the moment it exists. Only the option lines feed it: the
+# help's Notes quote `softwareupdate --list` and `--install`, and neither is
+# a stay_fresh flag.
+comp_out="$(zsh -f -c "autoload -Uz compinit; compinit -u -D; source '$M/zsh_aliases.zsh'
+print -r -- registered=\${_comps[stay_fresh.sh]} alias=\${_comps[stay-fresh]}
+_stay_fresh_flags
+_stay_fresh_step_ids" 2>&1)"
+assert_contains "zsh: completion is registered for the script" "$comp_out" "registered=_stay_fresh"
+assert_contains "zsh: completion is registered for the alias" "$comp_out" "alias=_stay_fresh"
+assert_contains "zsh: completion offers --step-timeout" "$comp_out" "--step-timeout"
+assert_contains "zsh: completion offers --reports" "$comp_out" "--reports"
+assert_contains "zsh: completion offers the short-flag options too" "$comp_out" "--verbose"
+assert_contains "zsh: completion knows the step ids" "$comp_out" "workspace-storage"
+assert_not_contains "zsh: completion does not offer flags quoted in the notes" "$comp_out" "--install"
+assert_not_contains "zsh: completion does not offer softwareupdate's --list" "$comp_out" $'\n--list\n'
 
 # A shadow is only allowed when the replacement accepts the same flags. fd and
 # rg do not - `find . -name` errors under fd, `grep -rn pattern dir` changes

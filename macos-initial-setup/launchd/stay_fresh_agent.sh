@@ -21,11 +21,13 @@
 #   --hour N      0-23 (default 10)
 #   --minute N    0-59 (default 30)
 #   --profile P   'safe' runs protected app/AI-cache cleanup, workspace cleanup,
-#                 and version reporting; 'full' keeps the original broad behavior
+#                 version reporting, the pending-OS-update report and the
+#                 snapshot listing; 'full' keeps the original broad behavior
 #                 (default safe)
 #   --notify M    Passed to stay_fresh.sh as --notify: none, macos, telegram,
-#                 both or auto (default: not passed, and stay_fresh.sh's auto
-#                 sends a macOS banner because no terminal is attached)
+#                 slack, both, auto, or a comma-separated list of channels
+#                 (default: not passed, and stay_fresh.sh's auto sends a macOS
+#                 banner because no terminal is attached)
 #   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
 #                 nothing and loading nothing
@@ -72,6 +74,31 @@ json_field() {
 ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
 warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
+
+# The channel list stay_fresh.sh takes: one of these, or a comma-separated
+# list of them. Checked at install so a typo fails here, not on the first
+# scheduled run with nobody watching.
+valid_notify() {
+  local rest="$1" item
+  [[ -n "$rest" ]] || return 1
+  while [[ -n "$rest" ]]; do
+    item="${rest%%,*}"
+    if [[ "$rest" == *,* ]]; then rest="${rest#*,}"; else rest=""; fi
+    case "$item" in none|macos|telegram|slack|both|auto) ;; *) return 1 ;; esac
+  done
+  return 0
+}
+NOTIFY_USAGE="--notify must be none, macos, telegram, slack, both or auto, or a comma-separated list of channels"
+
+# Epoch seconds of a "YYYY-MM-DD HH:MM:SS" stamp: the BSD date on macOS, the
+# GNU one where the tests run. Empty when neither can read it.
+epoch_of() {
+  local e
+  e="$(date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s 2>/dev/null)" \
+    || e="$(date -d "$1" +%s 2>/dev/null)" \
+    || e=""
+  printf '%s' "$e"
+}
 
 usage() {
   awk 'NR == 1 { next }
@@ -160,13 +187,13 @@ while (( $# > 0 )); do
       ;;
     --notify)
       shift; [[ $# -gt 0 ]] || { err "--notify needs a value"; exit 3; }
-      case "$1" in none|macos|telegram|both|auto) ;; *) err "--notify must be none, macos, telegram, both or auto"; exit 3 ;; esac
+      valid_notify "$1" || { err "$NOTIFY_USAGE"; exit 3; }
       NOTIFY="$1"
       NOTIFY_SET=1
       ;;
     --notify=*)
       NOTIFY="${1#*=}"
-      case "$NOTIFY" in none|macos|telegram|both|auto) ;; *) err "--notify must be none, macos, telegram, both or auto"; exit 3 ;; esac
+      valid_notify "$NOTIFY" || { err "$NOTIFY_USAGE"; exit 3; }
       NOTIFY_SET=1
       ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
@@ -267,8 +294,11 @@ run_scheduled() {
   if [[ "$PROFILE" == "safe" ]]; then
     # Scheduled cleanup must be conservative by default. These steps protect
     # active/unknown application state and remove workspace data only when the
-    # recorded local project path is provably gone.
-    args+=(--only app-caches,ai-caches,workspace-storage,versions)
+    # recorded local project path is provably gone. The two reports are
+    # read-only and are the reason to look at the verdict at all: a pending
+    # macOS update and a pile of local snapshots are what a scheduled run can
+    # tell you that you would not otherwise notice.
+    args+=(--only app-caches,ai-caches,workspace-storage,versions,os-updates,snapshots)
   fi
   (( NOTIFY_SET )) && args+=(--notify "$NOTIFY")
   (( AGENT_DRY_RUN )) && args+=(--dry-run)
@@ -481,7 +511,7 @@ PLIST_EOF
     info "as you, without sudo: memory purge, DNS flush, system caches and"
     info "system diagnostics are skipped. Run stay_fresh.sh by hand for those."
     if [[ "$PROFILE" == "safe" ]]; then
-      info "safe profile: app/AI caches, stale workspace storage and versions only"
+      info "safe profile: app/AI caches, stale workspace storage, versions, pending OS updates and the snapshot listing"
     else
       info "full profile: cask upgrades are skipped; formulae update unattended"
     fi
@@ -533,9 +563,25 @@ PLIST_EOF
     # for exactly this reader. One field per line there, so a line match is
     # all the parsing it takes; jq is not on a stock Mac.
     last_run="$LOG_DIR/last-run.json"
+    stale=0
     if [[ -f "$last_run" ]]; then
-      info "last run: $(json_field when "$last_run") — $(json_field headline "$last_run")"
+      last_when="$(json_field when "$last_run")"
+      info "last run: $last_when — $(json_field headline "$last_run")"
       printf "  %s%s%s\n" "$C_DIM" "$(json_field detail "$last_run")" "$C_RESET"
+      # A job that stopped firing is the failure a schedule hides best:
+      # launchd still says loaded, the last verdict still reads OK, and the
+      # laptop was simply asleep at 10:30 every Monday. The plist says how
+      # often it should run; twice that with no run is not running.
+      interval_days=1
+      if [[ -f "$PLIST" ]] && grep -q '<key>Weekday</key>' "$PLIST"; then
+        interval_days=7
+      fi
+      last_s="$(epoch_of "$last_when")"
+      now_s="$(date +%s)"
+      if [[ -n "$last_s" ]] && (( now_s - last_s > 2 * interval_days * 86400 )); then
+        warn "last run was $(( (now_s - last_s) / 86400 )) day(s) ago and the schedule fires every $interval_days day(s) — the job is not running (check 'launchctl print' and the logs)"
+        stale=1
+      fi
     else
       info "no run recorded yet (last-run.json appears in $LOG_DIR after the first real run)"
     fi
@@ -547,6 +593,7 @@ PLIST_EOF
       warn "not loaded in $DOMAIN"
       exit 1
     fi
+    (( stale == 0 )) || exit 1
     ;;
 
   run-now)

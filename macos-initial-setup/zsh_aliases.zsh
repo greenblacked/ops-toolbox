@@ -379,6 +379,53 @@ _ZSH_ALIASES_DIR="${${(%):-%x}:A:h}"
 if [[ -x "$_ZSH_ALIASES_DIR/stay_fresh.sh" ]]; then
   alias stay-fresh="$_ZSH_ALIASES_DIR/stay_fresh.sh"
   alias stayfresh="$_ZSH_ALIASES_DIR/stay_fresh.sh"
+
+  # Tab completion for stay_fresh.sh and both aliases. The flags come from
+  # the script's own --help and the step ids from --list-steps, so the
+  # completion cannot drift from the script; both are read once per shell.
+  # Only the option lines count (two spaces, then the flag): the Notes quote
+  # softwareupdate --list and --install, which are not this script's flags.
+  _STAY_FRESH_SCRIPT="$_ZSH_ALIASES_DIR/stay_fresh.sh"
+  _stay_fresh_flags() {
+    if [[ -z "${_STAY_FRESH_FLAGS_CACHE:-}" ]]; then
+      _STAY_FRESH_FLAGS_CACHE="$("$_STAY_FRESH_SCRIPT" --help 2>/dev/null \
+        | sed -nE 's/^  (-[a-z], )?(--[a-z][a-z0-9-]*).*/\2/p' | sort -u)"
+    fi
+    print -r -- "$_STAY_FRESH_FLAGS_CACHE"
+  }
+  _stay_fresh_step_ids() {
+    if [[ -z "${_STAY_FRESH_STEP_IDS_CACHE:-}" ]]; then
+      _STAY_FRESH_STEP_IDS_CACHE="$("$_STAY_FRESH_SCRIPT" --list-steps 2>/dev/null | awk '{ print $1 }')"
+    fi
+    print -r -- "$_STAY_FRESH_STEP_IDS_CACHE"
+  }
+  _stay_fresh() {
+    local -a ids channels
+    channels=(none macos telegram slack both auto)
+    # The value of a flag that takes one: as the next word, or after '='.
+    case "${words[CURRENT-1]}" in
+      --only)   ids=(${(f)"$(_stay_fresh_step_ids)"}); _values -s , 'step id' $ids; return ;;
+      --notify) _values -s , 'channel' $channels; return ;;
+      --step-timeout)              _message 'seconds (0 disables)'; return ;;
+      --prune-xcode-archives-days) _message 'days'; return ;;
+    esac
+    if compset -P '--only='; then
+      ids=(${(f)"$(_stay_fresh_step_ids)"}); _values -s , 'step id' $ids; return
+    fi
+    if compset -P '--notify='; then
+      _values -s , 'channel' $channels; return
+    fi
+    if compset -P '--step-timeout='; then _message 'seconds (0 disables)'; return; fi
+    if compset -P '--prune-xcode-archives-days='; then _message 'days'; return; fi
+    local -a flags
+    flags=(${(f)"$(_stay_fresh_flags)"})
+    compadd -- $flags
+  }
+  # compdef exists only once compinit has run; a .zshrc that sources this
+  # file first still gets the aliases, just not the completion.
+  if (( ${+functions[compdef]} )); then
+    compdef _stay_fresh stay_fresh.sh stay-fresh stayfresh
+  fi
 fi
 
 if [[ -x "$_ZSH_ALIASES_DIR/install_apps.sh" ]]; then

@@ -58,10 +58,19 @@ mkbin "$d/bin/df" 'echo "Filesystem 1024-blocks Used Available Capacity Mounted 
                   'echo "/dev/test 1000000 200000 800000 20% /"'
 mkbin "$d/bin/pgrep" 'exit 1'
 mkbin "$d/bin/xcode-select" 'exit 0'
+# sudo is absent from the image. This one reports a warm credential and then
+# runs the command as the same unprivileged user, which is the point: the
+# retry must be aimed at the right entry whether or not it then succeeds.
+mkbin "$d/bin/sudo" 'case "${1:-}" in' \
+                    '  -v) exit 0 ;;' \
+                    '  -n) shift; case "${1:-}" in true) exit 0 ;; esac ;;' \
+                    'esac' \
+                    'echo "sudo $*" >> "$CALLS"' \
+                    'exec "$@"'
 
 run_sf() {
   local tmp="$1"; shift
-  HOME="$d/home" TMPDIR="$tmp" PATH="$d/bin:/usr/bin:/bin" NO_COLOR=1 \
+  HOME="$d/home" TMPDIR="$tmp" PATH="$d/bin:/usr/bin:/bin" NO_COLOR=1 CALLS="$d/calls" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -116,6 +125,7 @@ mkdir -p "$d/home/Library/Caches/disposable"
 printf 'junk\n' > "$d/home/Library/Caches/disposable/data"
 chmod 555 "$d/home/Library/Caches/protected"
 
+: > "$d/calls"
 out="$(run_sf "$d/tmp" --yes --no-sudo --only user-caches)"; rc=$?
 assert_eq "an undeletable cache entry does not fail the run" "0" "$rc"
 assert_contains "an undeletable cache entry is reported" "$out" "could not fully clear"
@@ -129,6 +139,43 @@ if [[ ! -e "$d/home/Library/Caches/disposable" ]]; then
   ok "a deletable neighbour is still cleared"
 else
   err "one undeletable entry stopped the rest of the sweep"
+fi
+if [[ ! -s "$d/calls" ]]; then
+  ok "--no-sudo never reaches for sudo"
+else
+  err "--no-sudo ran sudo"; cat "$d/calls" >&2
+fi
+
+# With sudo available the refusal is retried, and the retry is aimed at the
+# one top-level entry the kernel refused - GNU rm names the file inside it -
+# not at the whole cache directory. Here sudo grants nothing, so the entry
+# still survives and the step still warns; what changes is what was asked.
+mkdir -p "$d/home/Library/Caches/disposable"
+printf 'junk\n' > "$d/home/Library/Caches/disposable/data"
+: > "$d/calls"
+out="$(run_sf "$d/tmp" --yes --only user-caches)"; rc=$?
+assert_eq "a refused entry with sudo available does not fail the run" "0" "$rc"
+assert_contains "the retry is announced" "$out" "retrying 1 entry owned by another user with sudo"
+if grep -qF -- "sudo rm -rf -- $d/home/Library/Caches/protected" "$d/calls"; then
+  ok "the retry names the refused top-level entry"
+else
+  err "the retry did not name the refused entry"; cat "$d/calls" >&2
+fi
+if grep -q 'sudo find' "$d/calls"; then
+  err "the retry swept the whole directory"; cat "$d/calls" >&2
+else
+  ok "the retry does not sweep the whole directory"
+fi
+if grep -q 'disposable' "$d/calls"; then
+  err "the retry touched an entry that was never refused"; cat "$d/calls" >&2
+else
+  ok "the retry leaves the entries the first pass handled alone"
+fi
+assert_contains "a retry sudo could not carry out is still a warning" "$out" "warn steps:  1"
+if [[ -f "$d/home/Library/Caches/protected/data" ]]; then
+  ok "the refused entry survives a retry that grants nothing"
+else
+  err "the refused entry was removed"
 fi
 chmod 755 "$d/home/Library/Caches/protected"
 rm -rf "$d"

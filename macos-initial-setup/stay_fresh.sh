@@ -14,11 +14,13 @@
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, uv, go, kubectl
 #     discovery, Terraform provider cache, stale gcloud logs, pre-commit
-#     repos); uninstall old gem versions only when explicitly requested
+#     repos); uninstall old gem versions and clear the Gradle / Maven
+#     dependency caches only when explicitly requested
 #   - prune Docker / OrbStack (images, containers, builder cache; volumes
 #     only with --prune-docker-volumes, because volumes hold data)
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
 #   - clean diagnostic / crash reports (as user; system dirs if sudo)
+#   - remove files under ~/Library/Logs older than 30 days
 #   - Homebrew: update, upgrade (formulae + casks), cleanup -s, autoremove
 #   - refresh dev toolchains (helm plugins, krew plugins, gcloud components)
 #     installed by install_apps.sh / install_devtools.sh
@@ -27,26 +29,27 @@
 #     delete them only with --thin-snapshots
 #   - optional disk report: the largest entries under the usual suspects
 #   - finish with a one-line verdict, a history file, and a notification
-#     (macOS banner or Telegram) so a scheduled run is not silent
+#     (macOS banner, Telegram or Slack) so a scheduled run is not silent
 #
 # Usage:
-#   ./stay_fresh.sh [--dry-run] [--yes] [--verbose] [--quick] [--step-timeout SECONDS]
+#   ./stay_fresh.sh [--dry-run] [--yes] [--verbose] [--quick] [--reports]
+#                   [--step-timeout SECONDS]
 #                   [--only STEP1,STEP2] [--list-steps] [--history]
-#                   [--notify none|macos|telegram|both|auto]
+#                   [--notify none|macos|telegram|slack|both|auto|CH1,CH2]
 #                   [--skip-snapshots] [--thin-snapshots] [--disk-report]
 #                   [--purge-memory] [--skip-memory] [--skip-dns] [--skip-syscaches]
 #                   [--skip-usercaches] [--skip-appcaches]
 #                   [--skip-aicaches]
 #                   [--skip-workspacestorage] [--skip-trash]
 #                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
-#                   [--cleanup-old-gems] [--fail-on-warn]
+#                   [--cleanup-old-gems] [--prune-build-caches] [--fail-on-warn]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-krew]
 #                   [--skip-gcloud]
 #                   [--skip-versions] [--skip-os-updates]
 #                   [--skip-docker] [--prune-docker-volumes]
 #                   [--skip-xcode] [--prune-xcode-archives-days N]
 #                   [--force-active-app-caches] [--skip-diagnostics]
-#                   [--no-sudo] [--help]
+#                   [--skip-user-logs] [--no-sudo] [--help]
 #
 # Exit codes:
 #   0   housekeeping finished (possibly with non-fatal warnings)
@@ -133,6 +136,9 @@ SKIP_DOCKER=0
 PRUNE_DOCKER_VOLUMES=0
 SKIP_XCODE=0
 SKIP_DIAGNOSTICS=0
+# Files under ~/Library/Logs older than this many days are removed.
+SKIP_USER_LOGS=0
+USER_LOG_DAYS=30
 # Listing snapshots is read-only and cheap; deleting them is opt-in.
 SKIP_SNAPSHOTS=0
 THIN_SNAPSHOTS=0
@@ -140,6 +146,7 @@ THIN_SNAPSHOTS=0
 # a while on a full disk, so it is opt-in (--disk-report or --only disk-report).
 SKIP_DISK_REPORT=1
 QUICK=0
+REPORTS=0
 SHOW_HISTORY=0
 # Wall-clock limit for one command inside a step. brew update, softwareupdate
 # --list, gcloud, helm and krew all talk to the network with no bound of their
@@ -147,9 +154,16 @@ SHOW_HISTORY=0
 # every later run away with "another run is active" until somebody notices.
 # 0 disables it. Interactive commands (run_cmd_tty) are never limited.
 STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-1800}"
-# none | macos | telegram | both | auto. auto sends a macOS banner when there
-# is nobody at a terminal (the scheduled agent) and nothing otherwise.
+# none | macos | telegram | slack | both | auto, or a comma-separated list of
+# channels. auto sends a macOS banner when there is nobody at a terminal (the
+# scheduled agent) and nothing otherwise. Resolved into the NOTIFY_* flags
+# below once the arguments are parsed.
 NOTIFY_MODE="${STAY_FRESH_NOTIFY:-auto}"
+NOTIFY_MACOS=0
+NOTIFY_TELEGRAM=0
+NOTIFY_SLACK=0
+NOTIFY_AUTO=0
+NOTIFY_CHANNELS=""
 # Where the run history and the last-run summary live, next to the kept logs.
 STATE_DIR="$HOME/Library/Logs/stay_fresh"
 # Facts the steps learn along the way, for the headline and the notification.
@@ -158,9 +172,11 @@ BREW_UPGRADED_NAMES=""
 CASKS_OUTDATED=0
 OS_UPDATES_PENDING=0
 SNAPSHOTS_FOUND=0
+SNAPSHOTS_THINNED=0
 TRASH_PROTECTED=0
 BREW_GREEDY=0
 CLEANUP_OLD_GEMS=0
+PRUNE_BUILD_CACHES=0
 FORCE_ACTIVE_APP_CACHES=0
 XCODE_ARCHIVE_DAYS=""
 ONLY_STEPS=""
@@ -299,29 +315,69 @@ acquire_lock() {
   return 1
 }
 
-list_steps() {
+# The step table: one line per step, in run order. Everything that names a
+# step by id reads it - --list-steps, --only, the run loop at the bottom - so
+# a step added here is selectable, listed and run without touching three more
+# places, and the id, its skip variable and its function cannot drift apart.
+# The parser arms and the plan lines stay written out, because each carries
+# wording of its own.
+#   id | skip variable | function | label | description
+step_table() {
   cat <<'EOF'
-memory            purge inactive memory (also requires --purge-memory)
-dns               flush DNS caches
-system-caches     clear root-owned macOS caches
-user-caches       clear user caches
-app-caches        clear disposable per-app caches
-ai-caches         clear disposable AI tool caches
-workspace-storage prune stale editor workspace storage
-trash             empty the user's Trash
-docker            prune local Docker / OrbStack resources
-xcode             clean safe Xcode extras
-diagnostics       remove crash and diagnostic reports
-brew              update, upgrade and clean Homebrew
-dev-caches        clean language and package-manager caches
-helm-plugins      update installed Helm plugins
-krew              update installed kubectl krew plugins
-gcloud            update gcloud components
-versions          print active tool versions
-os-updates        report pending macOS / App Store updates (read-only)
-snapshots         list local Time Machine snapshots (delete with --thin-snapshots)
-disk-report       show the largest entries under the usual cache and data roots
+memory|SKIP_MEMORY|step_memory|Purge inactive memory|purge inactive memory (also requires --purge-memory)
+dns|SKIP_DNS|step_dns|Flush DNS cache|flush DNS caches
+system-caches|SKIP_SYSCACHES|step_syscaches|Clear system caches|clear root-owned macOS caches
+user-caches|SKIP_USERCACHES|step_usercaches|Clear user caches|clear user caches
+app-caches|SKIP_APPCACHES|step_appcaches|Clear per-app caches|clear disposable per-app caches
+ai-caches|SKIP_AICACHES|step_aicaches|Clear AI tool caches|clear disposable AI tool caches
+workspace-storage|SKIP_WORKSPACESTORAGE|step_workspacestorage|Prune stale workspace storage|prune stale editor workspace storage
+trash|SKIP_TRASH|step_trash|Empty trash|empty the user's Trash
+docker|SKIP_DOCKER|step_docker|Docker / OrbStack prune|prune local Docker / OrbStack resources
+xcode|SKIP_XCODE|step_xcode|Xcode extras|clean safe Xcode extras
+diagnostics|SKIP_DIAGNOSTICS|step_diagnostics|Diagnostic / crash reports|remove crash and diagnostic reports
+user-logs|SKIP_USER_LOGS|step_user_logs|Old user logs|remove ~/Library/Logs files older than 30 days
+brew|SKIP_BREW|step_brew|Homebrew update / upgrade / cleanup|update, upgrade and clean Homebrew
+dev-caches|SKIP_DEVCACHES|step_devcaches|Dev-tool caches|clean language and package-manager caches
+helm-plugins|SKIP_HELM_PLUGINS|step_helm_plugins|Helm plugin refresh|update installed Helm plugins
+krew|SKIP_KREW|step_krew|krew plugin refresh|update installed kubectl krew plugins
+gcloud|SKIP_GCLOUD|step_gcloud|gcloud components update|update gcloud components
+versions|SKIP_VERSIONS|step_versions|Active tool versions|print active tool versions
+os-updates|SKIP_OS_UPDATES|step_os_updates|Pending OS / App Store updates|report pending macOS / App Store updates (read-only)
+snapshots|SKIP_SNAPSHOTS|step_snapshots|Local Time Machine snapshots|list local Time Machine snapshots (delete with --thin-snapshots)
+disk-report|SKIP_DISK_REPORT|step_disk_report|Disk report|show the largest entries under the usual cache and data roots
 EOF
+}
+STEP_IDS=()
+STEP_VARS=()
+STEP_FNS=()
+STEP_LABELS=()
+STEP_DESCS=()
+while IFS='|' read -r step_id step_var step_fn step_label step_desc; do
+  [[ -n "$step_id" ]] || continue
+  STEP_IDS+=("$step_id")
+  STEP_VARS+=("$step_var")
+  STEP_FNS+=("$step_fn")
+  STEP_LABELS+=("$step_label")
+  STEP_DESCS+=("$step_desc")
+done <<<"$(step_table)"
+
+list_steps() {
+  local i
+  for (( i=0; i<${#STEP_IDS[@]}; i++ )); do
+    printf '%-17s %s\n' "${STEP_IDS[$i]}" "${STEP_DESCS[$i]}"
+  done
+}
+
+# The skip variable behind a step id; exit 1 for an id the table does not know.
+step_skip_var() {
+  local i
+  for (( i=0; i<${#STEP_IDS[@]}; i++ )); do
+    if [[ "${STEP_IDS[$i]}" == "$1" ]]; then
+      printf '%s' "${STEP_VARS[$i]}"
+      return 0
+    fi
+  done
+  return 1
 }
 
 usage() {
@@ -339,17 +395,22 @@ ${C_BOLD}General options:${C_RESET}
   --no-sudo              Skip root-owned steps and Homebrew cask upgrades
   --only STEP1,STEP2     Run only the named steps (see --list-steps)
   --quick                The user-level cleanup only: user, app and AI caches,
-                         workspace storage, Trash, dev-tool caches. No sudo (not
-                         even a cached credential), no Homebrew, no reports.
-                         Same as --only with those ids
+                         workspace storage, Trash, old user logs, dev-tool
+                         caches. No sudo (not even a cached credential), no
+                         Homebrew, no reports. Same as --only with those ids
+  --reports              The read-only subset: tool versions, pending OS / App
+                         Store updates, local snapshots (listed, never thinned)
+                         and the disk report. Same as --only with those ids
   --step-timeout N       Stop any one command inside a step after N seconds
                          and count the step as warned (default 1800; 0 disables;
                          env STAY_FRESH_STEP_TIMEOUT). Prompts are never limited
   --list-steps           Print stable step ids and exit
   --history              Print the last ten runs (result, freed, duration) and exit
   --notify MODE          none, macos (Notification Center banner), telegram,
-                         both, or auto (default: macos when no terminal is
-                         attached, none otherwise). Env: STAY_FRESH_NOTIFY
+                         slack (incoming webhook), both (macos and telegram),
+                         auto (default: macos when no terminal is attached,
+                         none otherwise), or a comma-separated list of channels
+                         such as macos,slack. Env: STAY_FRESH_NOTIFY
   --help, -h             Show this help
 
 ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
@@ -372,6 +433,9 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          caches, stale gcloud logs, or unused pre-commit repos
   --cleanup-old-gems     Uninstall old gem versions during dev-cache cleanup
                          (off by default; this changes installed packages)
+  --prune-build-caches   Also clear ~/.gradle/caches and ~/.m2/repository during
+                         dev-cache cleanup (off by default: the next build
+                         downloads every dependency again)
   --skip-devtools        Shorthand for --skip-helm-plugins --skip-krew
                          --skip-gcloud --skip-versions
   --skip-helm-plugins    Don't run 'helm plugin update' for installed plugins
@@ -386,6 +450,8 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --prune-xcode-archives-days N
                          Remove only .xcarchive bundles older than N days
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
+  --skip-user-logs       Don't remove files under ~/Library/Logs older than
+                         30 days (see Notes)
   --skip-os-updates      Don't report pending macOS / App Store updates
                          (not part of --skip-devtools)
   --skip-snapshots       Don't list local Time Machine snapshots
@@ -404,8 +470,11 @@ ${C_BOLD}Notes:${C_RESET}
   STAY_FRESH_TG_BOT_TOKEN / STAY_FRESH_TG_CHAT_ID, or from the login Keychain:
     security add-generic-password -s stay_fresh-telegram -a bot-token -w '<token>'
     security add-generic-password -s stay_fresh-telegram -a chat-id -w '<chat id>'
-  The token never appears on a command line. macOS banners go through
-  osascript and need no setup.
+  The Slack channel posts to an incoming webhook whose URL comes from
+  STAY_FRESH_SLACK_WEBHOOK or the login Keychain:
+    security add-generic-password -s stay_fresh-slack -a webhook -w '<webhook url>'
+  Neither the token nor the webhook URL ever appears on a command line. macOS
+  banners go through osascript and need no setup.
 
   History: every real run appends one line to ~/Library/Logs/stay_fresh/history.tsv
   and rewrites last-run.json there. --history prints the tail.
@@ -445,6 +514,15 @@ ${C_BOLD}Notes:${C_RESET}
   ~/Library/Logs/DiagnosticReports and ~/Library/DiagnosticReports). With sudo
   (default), also clears /Library/Logs/DiagnosticReports and
   /Library/Logs/CrashReporter. --no-sudo skips only those system paths.
+
+  User logs: every app, daemon and installer writes under ~/Library/Logs and
+  nothing prunes it. Files older than 30 days are removed; directories stay,
+  because an app whose log directory vanished may not recreate it.
+  DiagnosticReports (the step above) and this script's own
+  ~/Library/Logs/stay_fresh are left alone.
+
+  Snapshots are never thinned while a Time Machine backup is running
+  ('tmutil status' says so); they are listed and the next run tries again.
 
   OS updates: softwareupdate --list, and mas outdated where mas is installed.
   Read-only: it names what is pending and how to install it, and never installs
@@ -492,6 +570,7 @@ while (( $# > 0 )); do
     --brew-greedy)     BREW_GREEDY=1 ;;
     --skip-devcaches)  SKIP_DEVCACHES=1; EXPLICIT_SKIP=1 ;;
     --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
+    --prune-build-caches) PRUNE_BUILD_CACHES=1 ;;
     --skip-devtools)   SKIP_DEVTOOLS=1; EXPLICIT_SKIP=1 ;;
     --skip-helm-plugins) SKIP_HELM_PLUGINS=1; EXPLICIT_SKIP=1 ;;
     --skip-krew)       SKIP_KREW=1; EXPLICIT_SKIP=1 ;;
@@ -518,10 +597,12 @@ while (( $# > 0 )); do
       }
       ;;
     --skip-diagnostics) SKIP_DIAGNOSTICS=1; EXPLICIT_SKIP=1 ;;
+    --skip-user-logs)  SKIP_USER_LOGS=1; EXPLICIT_SKIP=1 ;;
     --skip-snapshots)  SKIP_SNAPSHOTS=1; EXPLICIT_SKIP=1 ;;
     --thin-snapshots)  THIN_SNAPSHOTS=1 ;;
     --disk-report)     SKIP_DISK_REPORT=0 ;;
     --quick)           QUICK=1 ;;
+    --reports)         REPORTS=1 ;;
     --history)         SHOW_HISTORY=1 ;;
     --step-timeout)
       require_value "$1" "${2:-}"; shift
@@ -546,17 +627,48 @@ if (( LIST_STEPS )); then
   exit 0
 fi
 
-case "$NOTIFY_MODE" in
-  none|macos|telegram|both|auto) ;;
-  *) err "--notify must be none, macos, telegram, both or auto (got: $NOTIFY_MODE)"; exit 3 ;;
-esac
+# One channel, or a comma-separated list of them. `both` predates the Slack
+# channel and stays as the pair it always meant. none and auto describe the
+# whole setting, so they stand alone.
+NOTIFY_NONE=0
+notify_count=0
+IFS=',' read -r -a notify_items <<< "$NOTIFY_MODE"
+for notify_item in ${notify_items[@]+"${notify_items[@]}"}; do
+  notify_item="$(printf '%s' "$notify_item" | tr -d '[:space:]')"
+  case "$notify_item" in
+    none)     NOTIFY_NONE=1 ;;
+    macos)    NOTIFY_MACOS=1 ;;
+    telegram) NOTIFY_TELEGRAM=1 ;;
+    slack)    NOTIFY_SLACK=1 ;;
+    both)     NOTIFY_MACOS=1; NOTIFY_TELEGRAM=1 ;;
+    auto)     NOTIFY_AUTO=1 ;;
+    "")       continue ;;
+    *) err "--notify must be none, macos, telegram, slack, both or auto, or a comma-separated list of channels (got: $notify_item)"; exit 3 ;;
+  esac
+  notify_count=$(( notify_count + 1 ))
+done
+(( notify_count > 0 )) || { err "--notify needs a mode (got: $NOTIFY_MODE)"; exit 3; }
+if (( (NOTIFY_NONE || NOTIFY_AUTO) && notify_count > 1 )); then
+  err "--notify none and auto cannot be combined with other channels (got: $NOTIFY_MODE)"
+  exit 3
+fi
 
 # --quick is a fixed --only list: everything a user can clear without sudo,
 # without a package manager, and without waiting on a report.
 if (( QUICK )); then
   [[ -z "$ONLY_STEPS" ]] || { err "--quick cannot be combined with --only"; exit 3; }
   (( EXPLICIT_SKIP == 0 )) || { err "--quick cannot be combined with individual --skip-* flags"; exit 3; }
-  ONLY_STEPS="user-caches,app-caches,ai-caches,workspace-storage,trash,dev-caches"
+  ONLY_STEPS="user-caches,app-caches,ai-caches,workspace-storage,trash,user-logs,dev-caches"
+fi
+
+# --reports is the other fixed list: the steps that change nothing. It never
+# takes --thin-snapshots, because then it would.
+if (( REPORTS )); then
+  (( QUICK == 0 )) || { err "--reports cannot be combined with --quick"; exit 3; }
+  [[ -z "$ONLY_STEPS" ]] || { err "--reports cannot be combined with --only"; exit 3; }
+  (( EXPLICIT_SKIP == 0 )) || { err "--reports cannot be combined with individual --skip-* flags"; exit 3; }
+  (( THIN_SNAPSHOTS == 0 )) || { err "--reports is read-only and cannot be combined with --thin-snapshots"; exit 3; }
+  ONLY_STEPS="versions,os-updates,snapshots,disk-report"
 fi
 
 if [[ -n "$ONLY_STEPS" ]]; then
@@ -564,60 +676,24 @@ if [[ -n "$ONLY_STEPS" ]]; then
     err "--only cannot be combined with individual --skip-* flags"
     exit 3
   }
-  SKIP_MEMORY=1
-  SKIP_DNS=1
-  SKIP_SYSCACHES=1
-  SKIP_USERCACHES=1
-  SKIP_APPCACHES=1
-  SKIP_AICACHES=1
-  SKIP_WORKSPACESTORAGE=1
-  SKIP_TRASH=1
-  SKIP_BREW=1
-  SKIP_DEVCACHES=1
-  SKIP_HELM_PLUGINS=1
-  SKIP_KREW=1
-  SKIP_GCLOUD=1
-  SKIP_VERSIONS=1
-  SKIP_OS_UPDATES=1
-  SKIP_DOCKER=1
-  SKIP_XCODE=1
-  SKIP_DIAGNOSTICS=1
-  SKIP_SNAPSHOTS=1
-  SKIP_DISK_REPORT=1
+  # Every step off, then exactly the named ones back on.
+  for step_var in "${STEP_VARS[@]}"; do
+    printf -v "$step_var" '%s' 1
+  done
   selected=0
   IFS=',' read -r -a only_items <<< "$ONLY_STEPS"
   for step_id in "${only_items[@]}"; do
     step_id="$(printf '%s' "$step_id" | tr -d '[:space:]')"
-    case "$step_id" in
-      memory)
-        (( PURGE_MEMORY_EXPLICIT )) || {
-          err "--only memory also requires --purge-memory"
-          exit 3
-        }
-        SKIP_MEMORY=0
-        ;;
-      dns)               SKIP_DNS=0 ;;
-      system-caches)     SKIP_SYSCACHES=0 ;;
-      user-caches)       SKIP_USERCACHES=0 ;;
-      app-caches)        SKIP_APPCACHES=0 ;;
-      ai-caches)         SKIP_AICACHES=0 ;;
-      workspace-storage) SKIP_WORKSPACESTORAGE=0 ;;
-      trash)             SKIP_TRASH=0 ;;
-      brew)              SKIP_BREW=0 ;;
-      dev-caches)        SKIP_DEVCACHES=0 ;;
-      helm-plugins)      SKIP_HELM_PLUGINS=0 ;;
-      krew)              SKIP_KREW=0 ;;
-      gcloud)            SKIP_GCLOUD=0 ;;
-      versions)          SKIP_VERSIONS=0 ;;
-      os-updates)        SKIP_OS_UPDATES=0 ;;
-      docker)            SKIP_DOCKER=0 ;;
-      xcode)             SKIP_XCODE=0 ;;
-      diagnostics)       SKIP_DIAGNOSTICS=0 ;;
-      snapshots)         SKIP_SNAPSHOTS=0 ;;
-      disk-report)       SKIP_DISK_REPORT=0 ;;
-      "")                continue ;;
-      *) err "unknown step in --only: $step_id (see --list-steps)"; exit 3 ;;
-    esac
+    [[ -n "$step_id" ]] || continue
+    if [[ "$step_id" == "memory" ]] && (( PURGE_MEMORY_EXPLICIT == 0 )); then
+      err "--only memory also requires --purge-memory"
+      exit 3
+    fi
+    step_var="$(step_skip_var "$step_id")" || {
+      err "unknown step in --only: $step_id (see --list-steps)"
+      exit 3
+    }
+    printf -v "$step_var" '%s' 0
     ONLY_SELECTED+=("$step_id")
     selected=$((selected + 1))
   done
@@ -868,6 +944,26 @@ count_errors() {
   OTHER_N=$(grep -v -e 'Operation not permitted$' -e 'Permission denied$' "$file" | grep -c . || true)
 }
 
+# The top-level entries of $dir that "Permission denied" lines in an error
+# capture name, one per line, deduplicated. rm and find both print the path
+# they failed on - `rm: /p: Permission denied` on macOS, `rm: cannot remove
+# '/p': Permission denied` under GNU - and the entry to retry is the child of
+# $dir that path sits under, whatever depth the refusal came from.
+# Usage: denied_entries <dir> <error file>
+denied_entries() {
+  local dir="$1" errs="$2" line p rel
+  grep 'Permission denied$' "$errs" 2>/dev/null | while IFS= read -r line; do
+    p="${line%: Permission denied}"
+    p="${p#*: }"
+    p="${p#cannot remove }"
+    p="${p#\'}"
+    p="${p%\'}"
+    [[ "$p" == "$dir"/?* ]] || continue
+    rel="${p#"$dir"/}"
+    printf '%s\n' "$dir/${rel%%/*}"
+  done | sort -u
+}
+
 # Clear contents of a directory (not the dir itself), with before/after size.
 # Uses sudo if $2 == "sudo".
 #
@@ -903,10 +999,32 @@ clear_dir() {
     # a step, and never under --no-sudo.
     # --quick promises no sudo at all, so not even a credential another
     # shell left warm.
+    #
+    # The retry is as narrow as the refusal: only the entries rm named, not
+    # the whole directory. A sudo sweep of everything the first pass left
+    # behind also takes the entries macOS keeps out of reach on purpose, and
+    # root reaching for a privacy-protected cache is the kind of thing the
+    # system logs and asks about.
     if (( USE_SUDO && QUICK == 0 )) && grep -q 'Permission denied$' "$errs" \
        && { (( SUDO_AVAILABLE )) || sudo -n true 2>/dev/null; }; then
-      printf "  %sretrying entries owned by another user with sudo%s\n" "$C_DIM" "$C_RESET"
-      sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
+      local -a denied=()
+      local denied_entry retry_errs
+      while IFS= read -r denied_entry; do
+        [[ -n "$denied_entry" ]] && denied+=("$denied_entry")
+      done < <(denied_entries "$dir" "$errs")
+      if (( ${#denied[@]} > 0 )); then
+        printf "  %sretrying %d entr%s owned by another user with sudo%s\n" \
+          "$C_DIM" "${#denied[@]}" "$( (( ${#denied[@]} == 1 )) && printf 'y' || printf 'ies')" "$C_RESET"
+        retry_errs="$(mktemp)"
+        sudo rm -rf -- "${denied[@]}" 2>"$retry_errs" || true
+        # The first pass's refusals are superseded by the retry's outcome;
+        # everything else it reported still stands.
+        { grep -v 'Permission denied$' "$errs" || true; cat "$retry_errs"; } >"$errs.retry"
+        mv -f "$errs.retry" "$errs"
+        rm -f "$retry_errs"
+      else
+        printf "  %sentries owned by another user remain, but rm did not name them; not retried%s\n" "$C_DIM" "$C_RESET"
+      fi
     fi
   fi
   count_errors "$errs"
@@ -1096,6 +1214,41 @@ notify_telegram() {
   [[ -z "$out" ]] || printf '%s\n' "$out" >>"$LOG_SINK" 2>/dev/null
   if (( rc != 0 )); then
     warn "telegram notification failed (curl exited $rc): ${out:-no output}"
+    return 1
+  fi
+  return 0
+}
+
+# The Slack incoming-webhook URL: the environment first, the login Keychain
+# second. Sets SLACK_WEBHOOK; returns 1 when there is none.
+slack_webhook() {
+  SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}"
+  if [[ -z "$SLACK_WEBHOOK" ]] && command -v security >/dev/null 2>&1; then
+    SLACK_WEBHOOK="$(security find-generic-password -s stay_fresh-slack -a webhook -w 2>/dev/null || true)"
+  fi
+  [[ -n "$SLACK_WEBHOOK" ]]
+}
+
+# Post one message to a Slack incoming webhook. The URL is the credential -
+# anyone holding it can post to the channel - so, like the Telegram token, it
+# goes to curl as a config file on stdin and is scrubbed from any error.
+notify_slack() {
+  local text="$1"
+  command -v curl >/dev/null 2>&1 || { warn "slack notification skipped: curl not found"; return 1; }
+  slack_webhook || {
+    warn "slack notification skipped: set STAY_FRESH_SLACK_WEBHOOK or the stay_fresh-slack Keychain item (see --help)"
+    return 1
+  }
+  local out rc=0
+  out="$(printf 'url = "%s"\n' "$SLACK_WEBHOOK" \
+    | curl -fsS --max-time 20 -K - \
+        -H 'Content-type: application/json' \
+        --data-binary "{\"text\": $(json_str "$text")}" \
+        -o /dev/null 2>&1)" || rc=$?
+  out="${out//$SLACK_WEBHOOK/***}"
+  [[ -z "$out" ]] || printf '%s\n' "$out" >>"$LOG_SINK" 2>/dev/null
+  if (( rc != 0 )); then
+    warn "slack notification failed (curl exited $rc): ${out:-no output}"
     return 1
   fi
   return 0
@@ -1356,14 +1509,17 @@ SKIP_DIAGNOSTICS_SYS="${SKIP_DIAGNOSTICS_SYS:-0}"
 
 # auto: a banner is the only way a scheduled run gets seen; at a terminal the
 # summary is already on screen.
-if [[ "$NOTIFY_MODE" == "auto" ]]; then
-  if [[ -t 0 ]]; then NOTIFY_MODE=none; else NOTIFY_MODE=macos; fi
+if (( NOTIFY_AUTO )) && [[ ! -t 0 ]]; then
+  NOTIFY_MACOS=1
 fi
-if [[ "$NOTIFY_MODE" != "none" ]]; then
+(( NOTIFY_MACOS ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }macos"
+(( NOTIFY_TELEGRAM )) && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }telegram"
+(( NOTIFY_SLACK ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }slack"
+if [[ -n "$NOTIFY_CHANNELS" ]]; then
   if (( DRY_RUN )); then
-    info "(dry-run) would notify via $NOTIFY_MODE at the end"
+    info "(dry-run) would notify via $NOTIFY_CHANNELS at the end"
   else
-    ok "notify: $NOTIFY_MODE"
+    ok "notify: $NOTIFY_CHANNELS"
   fi
 fi
 
@@ -1426,11 +1582,15 @@ else
 fi
 plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "$xcode_plan"
 plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "user (+ system if sudo)"
+plan_line "old user logs"                     "$(( 1 - SKIP_USER_LOGS   ))" "~/Library/Logs files older than ${USER_LOG_DAYS}d; DiagnosticReports and stay_fresh's own kept"
 plan_line "homebrew update/upgrade/cleanup"   "$(( 1 - SKIP_BREW        ))" "brew update · upgrade · cleanup -s · autoremove"
 if (( CLEANUP_OLD_GEMS )); then
   devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl/terraform caches, gcloud logs, pre-commit + old gems"
 else
   devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl/terraform caches, gcloud logs, pre-commit; gems kept"
+fi
+if (( PRUNE_BUILD_CACHES )); then
+  devcache_plan="$devcache_plan + gradle/maven caches"
 fi
 plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
@@ -2120,6 +2280,22 @@ step_devcaches() {
     clear_paths "gcloud logs older than 7 days" dir ${old_logs[@]+"${old_logs[@]}"}
   fi
 
+  # Gradle's and Maven's caches hold every dependency every build ever
+  # resolved, and on a JVM workstation they are the largest thing under HOME
+  # after Docker. They are also the slowest to get back: the next build
+  # downloads all of it again, on whatever network it finds. So they are
+  # named on every run and cleared only on request.
+  local build_cache
+  for build_cache in "$HOME/.gradle/caches" "$HOME/.m2/repository"; do
+    [[ -d "$build_cache" ]] || continue
+    any=1
+    if (( PRUNE_BUILD_CACHES )); then
+      clear_dir "$build_cache"
+    else
+      info "${build_cache/#$HOME/\~} kept; pass --prune-build-caches to clear it"
+    fi
+  done
+
   # pre-commit keeps a clone of every hook repository it ever ran, including
   # the versions no .pre-commit-config.yaml points at any more. `gc` is its
   # own garbage collector and removes only those.
@@ -2257,6 +2433,32 @@ step_diagnostics() {
   else
     info "skipping system diagnostic reports (--no-sudo or sudo unavailable)"
   fi
+}
+
+# ~/Library/Logs is where every app, daemon and installer writes and nothing
+# reads back: a machine a few years old carries gigabytes of Homebrew,
+# Docker, Adobe and IDE transcripts nobody will open. Files older than a
+# month go; the directories stay, because an app that finds its log directory
+# missing may not recreate it. Two subtrees are left alone: DiagnosticReports,
+# which the diagnostics step owns, and this script's own state directory,
+# where the history and the kept logs live.
+step_user_logs() {
+  local root="$HOME/Library/Logs"
+  if [[ ! -d "$root" ]]; then
+    info "no $root — nothing to do"
+    return 0
+  fi
+  local -a old_logs=()
+  local scan_out f
+  scan_out="$(mktemp)"
+  if find "$root" \( -path "$root/DiagnosticReports" -o -path "$STATE_DIR" \) -prune \
+       -o -type f -mtime +"$USER_LOG_DAYS" -print0 >"$scan_out" 2>>"$LOG_SINK"; then
+    while IFS= read -r -d '' f; do old_logs+=("$f"); done < "$scan_out"
+  else
+    warn_step "could not scan $root"
+  fi
+  rm -f "$scan_out"
+  clear_paths "log files older than $USER_LOG_DAYS days" dir ${old_logs[@]+"${old_logs[@]}"}
 }
 
 step_brew() {
@@ -2666,6 +2868,16 @@ step_snapshots() {
     printf "  %sthey hold every block deleted since they were taken; remove with --thin-snapshots (the backup disk is not touched)%s\n" "$C_DIM" "$C_RESET"
     return 0
   fi
+  # A backup in progress copies from the newest of these snapshots. Deleting
+  # it under the backup makes Time Machine start the pass over, and tmutil
+  # will not refuse; this run keeps the list and the next run thins.
+  local tm_status
+  tm_status="$(tmutil status 2>>"$LOG_SINK" || true)"
+  if grep -Eq 'Running *= *1' <<<"$tm_status"; then
+    info "a Time Machine backup is running — snapshots listed, not thinned this run"
+    return 0
+  fi
+  SNAPSHOTS_THINNED=1
   local d
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
@@ -2736,26 +2948,14 @@ run_or_skip() {
   do_step "$label" "$fn"
 }
 
-run_or_skip "Purge inactive memory"                "$SKIP_MEMORY"      step_memory memory
-run_or_skip "Flush DNS cache"                      "$SKIP_DNS"         step_dns dns
-run_or_skip "Clear system caches"                  "$SKIP_SYSCACHES"   step_syscaches system-caches
-run_or_skip "Clear user caches"                    "$SKIP_USERCACHES"  step_usercaches user-caches
-run_or_skip "Clear per-app caches"                 "$SKIP_APPCACHES"   step_appcaches app-caches
-run_or_skip "Clear AI tool caches"                 "$SKIP_AICACHES"    step_aicaches ai-caches
-run_or_skip "Prune stale workspace storage"        "$SKIP_WORKSPACESTORAGE" step_workspacestorage workspace-storage
-run_or_skip "Empty trash"                          "$SKIP_TRASH"       step_trash trash
-run_or_skip "Docker / OrbStack prune"              "$SKIP_DOCKER"      step_docker docker
-run_or_skip "Xcode extras"                         "$SKIP_XCODE"       step_xcode xcode
-run_or_skip "Diagnostic / crash reports"           "$SKIP_DIAGNOSTICS" step_diagnostics diagnostics
-run_or_skip "Homebrew update / upgrade / cleanup"  "$SKIP_BREW"         step_brew brew
-run_or_skip "Dev-tool caches"                      "$SKIP_DEVCACHES"   step_devcaches dev-caches
-run_or_skip "Helm plugin refresh"                  "$SKIP_HELM_PLUGINS" step_helm_plugins helm-plugins
-run_or_skip "krew plugin refresh"                  "$SKIP_KREW"        step_krew krew
-run_or_skip "gcloud components update"             "$SKIP_GCLOUD"       step_gcloud gcloud
-run_or_skip "Active tool versions"                 "$SKIP_VERSIONS"     step_versions versions
-run_or_skip "Pending OS / App Store updates"       "$SKIP_OS_UPDATES"   step_os_updates os-updates
-run_or_skip "Local Time Machine snapshots"         "$SKIP_SNAPSHOTS"    step_snapshots snapshots
-run_or_skip "Disk report"                          "$SKIP_DISK_REPORT"  step_disk_report disk-report
+# The table's order is the run order. A plain for loop, not a pipeline or a
+# process substitution: a step that asks a question (a cask postinstall, a
+# sudo prompt) reads the terminal, and this loop must not sit between it and
+# stdin.
+for (( step_i=0; step_i<${#STEP_IDS[@]}; step_i++ )); do
+  step_var="${STEP_VARS[$step_i]}"
+  run_or_skip "${STEP_LABELS[$step_i]}" "${!step_var}" "${STEP_FNS[$step_i]}" "${STEP_IDS[$step_i]}"
+done
 
 ELAPSED=$(( $(date +%s) - START_ALL ))
 FREE_AFTER_B="$(disk_free_bytes)"
@@ -2844,7 +3044,7 @@ DETAIL="${#STEPS_OK[@]} ok"
 (( BREW_UPGRADED > 0 ))     && DETAIL="$DETAIL; brew upgraded $BREW_UPGRADED"
 (( CASKS_OUTDATED > 0 ))    && DETAIL="$DETAIL; $CASKS_OUTDATED cask(s) still outdated"
 (( OS_UPDATES_PENDING > 0 )) && DETAIL="$DETAIL; $OS_UPDATES_PENDING OS/App Store update(s) pending"
-(( SNAPSHOTS_FOUND > 0 ))   && DETAIL="$DETAIL; $SNAPSHOTS_FOUND local snapshot(s)$( (( THIN_SNAPSHOTS )) && printf ' thinned' || printf ' kept')"
+(( SNAPSHOTS_FOUND > 0 ))   && DETAIL="$DETAIL; $SNAPSHOTS_FOUND local snapshot(s)$( (( SNAPSHOTS_THINNED )) && printf ' thinned' || printf ' kept')"
 (( TRASH_PROTECTED > 0 ))   && DETAIL="$DETAIL; Trash needs Full Disk Access"
 UPTIME_TEXT="$(uptime_text)"
 [[ -n "$UPTIME_TEXT" ]]     && DETAIL="$DETAIL; $UPTIME_TEXT"
@@ -2902,22 +3102,24 @@ if (( DRY_RUN == 0 )); then
   fi
 fi
 
-if (( DRY_RUN == 0 )) && [[ "$NOTIFY_MODE" != "none" ]]; then
+if (( DRY_RUN == 0 )) && [[ -n "$NOTIFY_CHANNELS" ]]; then
   NOTIFY_BODY="$DETAIL"
   [[ -n "${SAVED_LOG:-}" ]] && NOTIFY_BODY="$NOTIFY_BODY. Log: $SAVED_LOG"
-  case "$NOTIFY_MODE" in
-    macos|both)
-      notify_macos "$HEADLINE" "$DETAIL" || true
-      ;;
-  esac
-  case "$NOTIFY_MODE" in
-    telegram|both)
-      if notify_telegram "$HEADLINE
+  if (( NOTIFY_MACOS )); then
+    notify_macos "$HEADLINE" "$DETAIL" || true
+  fi
+  if (( NOTIFY_TELEGRAM )); then
+    if notify_telegram "$HEADLINE
 $NOTIFY_BODY"; then
-        ok "telegram notification sent"
-      fi
-      ;;
-  esac
+      ok "telegram notification sent"
+    fi
+  fi
+  if (( NOTIFY_SLACK )); then
+    if notify_slack "$HEADLINE
+$NOTIFY_BODY"; then
+      ok "slack notification sent"
+    fi
+  fi
 fi
 
 # The clean run's log, kept alive until now for the notifiers, goes last.
