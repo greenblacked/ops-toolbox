@@ -218,10 +218,15 @@ cleanup_on_exit() {
 }
 
 # When this kernel booted, in epoch seconds: the macOS sysctl, or /proc/stat
-# where the tests run. Empty when neither answers.
+# where the tests run. Empty when neither answers. sysctl sits in /usr/sbin,
+# which a stripped PATH (a test, a lean launchd job) may not carry, so the
+# absolute path is the fallback after whatever PATH offers.
 boot_epoch() {
-  local b
-  b="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*{ *sec = \([0-9]*\).*/\1/p')"
+  local b="" s
+  for s in sysctl /usr/sbin/sysctl; do
+    b="$(command "$s" -n kern.boottime 2>/dev/null | sed -n 's/.*{ *sec = \([0-9]*\).*/\1/p')"
+    [[ -n "$b" ]] && break
+  done
   [[ -n "$b" ]] || b="$(awk '/^btime /{ print $2 }' /proc/stat 2>/dev/null)"
   printf '%s' "$b"
 }
