@@ -30,6 +30,14 @@ windows/git-bash/default-git-bash/.aliases text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
 
+# Every pull request adds its entry at the top of the Unreleased section, so
+# any two open at once collide on the same lines and the second to merge
+# conflicts. union keeps both sides' insertions instead of stopping; it is
+# safe here because the only edit pattern is a whole bullet inserted, never a
+# line changed in place. Order between two merged-together entries may need a
+# glance, which is cheaper than a conflict per pull request.
+CHANGELOG.md merge=union
+
 # Everything under dotfiles/ is read by a tool on macOS or Linux - ssh, gpg,
 # git, starship - and a CRLF in any of them is a parse error or a silently
 # ignored line. The trees are linked into the home directory as-is.

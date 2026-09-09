@@ -186,6 +186,14 @@ set +e
 "$M/stay_fresh.sh" --only memory >/dev/null 2>&1; rc=$?
 set -e
 assert_eq "stay_fresh keeps memory purge behind explicit opt-in" "3" "$rc"
+set +e
+"$M/stay_fresh.sh" --step-timeout abc >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "stay_fresh rejects a non-numeric --step-timeout -> 3" "3" "$rc"
+set +e
+"$M/stay_fresh.sh" --step-timeout >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "stay_fresh rejects --step-timeout without a value -> 3" "3" "$rc"
 
 set +e
 "$M/install_apps.sh" --only-formulae nosuch >/dev/null 2>&1; rc=$?
@@ -338,6 +346,29 @@ set -e
 assert_eq "overlap is rejected even from a different TMPDIR" "2" "$rc"
 rm -f "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
 rmdir "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
+
+# A lock from before the last reboot is stale whatever its pid says: after a
+# reboot an unrelated process can wear the old number, and kill -0 then
+# reported a run that ended with the power as active. The boot time recorded
+# beside the pid settles it. The pid here is this very shell, alive by
+# definition, and the run must still go ahead.
+mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
+printf '%s\n' "$$" > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
+printf '1\n' > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/boot"
+set +e
+out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
+  "${skip_for_plan[@]}" 2>&1)"
+rc=$?
+set -e
+assert_eq "a lock from before the last reboot does not block the run" "0" "$rc"
+assert_contains "the pre-reboot lock is named as such" "$out" \
+  "removing stale stay_fresh lock from before the last reboot"
+if [[ ! -d "$fake_macos/home/Library/Application Support/stay_fresh/run.lock" ]]; then
+  ok "the lock is released after recovering from a pre-reboot one"
+else
+  err "the lock directory survived the run"
+fi
 
 # A kill can land after mkdir(2) but before the pid file is written. That empty
 # directory is stale and must not disable maintenance forever.
@@ -815,6 +846,30 @@ assert_eq "a failed replacement restores the old plist" "original plist" \
   "$(cat "$agent_plist")"
 assert_eq "a failed replacement bootstraps the rollback" "2" \
   "$(grep -c '^bootstrap ' "$agent_calls")"
+
+# status reads the verdict stay_fresh.sh writes for it, and says so when
+# there is none yet.
+rm -f "$fake_macos/home/Library/Logs/stay_fresh/last-run.json"
+out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+assert_contains "agent status says when no run is recorded" "$out" "no run recorded yet"
+mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
+cat > "$fake_macos/home/Library/Logs/stay_fresh/last-run.json" <<'JSON'
+{
+  "when": "2026-09-09 03:00:12",
+  "result": "WARN",
+  "headline": "stay_fresh WARN: freed 1.20G in 4m10s",
+  "detail": "15 ok, 1 warned, 4 skipped; brew upgraded 3; \"kept\" 2 local snapshot(s)",
+  "elapsed_s": 250,
+  "log": "/Users/serhii/Library/Logs/stay_fresh/stay_fresh-20260909-030012.log"
+}
+JSON
+out="$(AGENT_CALLS="$agent_calls" AGENT_LOADED=1 HOME="$fake_macos/home" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" status 2>&1)"
+assert_contains "agent status shows the last run's headline" "$out" \
+  "last run: 2026-09-09 03:00:12 — stay_fresh WARN: freed 1.20G in 4m10s"
+assert_contains "agent status shows the detail line with its quotes unescaped" "$out" \
+  '15 ok, 1 warned, 4 skipped; brew upgraded 3; "kept" 2 local snapshot(s)'
 
 rm -rf "$fake_macos"
 

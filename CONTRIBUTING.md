@@ -442,7 +442,9 @@ documentation entries a script is not finished without.
    README were updated".
 7. **Add a `CHANGELOG.md` entry** under `[Unreleased]`, in the voice the
    entries around it use: what changed and why it mattered, not a commit
-   subject.
+   subject. `.gitattributes` merges that file with `merge=union`, so two pull
+   requests that both add an entry at the top no longer conflict; after a
+   merge, glance at the order of the entries that landed together.
 
 A script that touches a machine also needs `--dry-run` before it needs
 anything else. That is the promise this repository makes, and it is the one

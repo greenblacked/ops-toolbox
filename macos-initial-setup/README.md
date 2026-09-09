@@ -413,7 +413,10 @@ In the order they run:
 8. Empty `~/.Trash`. The Trash sits behind the privacy controls: a terminal
    or agent without Full Disk Access cannot list it. An interactive run then
    asks Finder to empty it; a scheduled run says what to grant instead.
-   Neither is a warning.
+   Neither is a warning. Every other mounted volume's Trash is emptied too,
+   except network shares (SMB, NFS, AFP, WebDAV), which are named and
+   skipped: a share whose server went away blocks `find` for as long as the
+   kernel retries, and a scheduled run has nobody to interrupt it.
 9. Prune Docker / OrbStack (containers, networks, builder cache, and
    **dangling images only** — tagged images are kept). Unused volumes are
    kept unless `--prune-docker-volumes` is passed: volumes hold data, not
@@ -446,7 +449,7 @@ In the order they run:
     them.
 16. Run `gcloud components update`.
 17. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
-    and `gcloud`.
+    `kubectl` and its krew, `terraform`, `docker`, and `gcloud`.
 18. Report **pending macOS and App Store updates**: `softwareupdate --list`,
     and `mas outdated` where [`mas`](https://github.com/mas-cli/mas) is
     installed. Read-only. Homebrew keeps what it manages fresh; the operating
@@ -523,9 +526,10 @@ and `none` otherwise.
 | `-y`, `--yes` | Authorize a non-interactive real run and suppress supported command prompts. Required when stdin is not a TTY. |
 | `-v`, `--verbose` | Stream per-step output live. |
 | `--fail-on-warn` | Exit `1` when a step records a real warning; scheduled runs enable this. |
+| `--step-timeout N` | Stop any one command inside a step after `N` seconds and count the step as warned (default `1800`; `0` disables; env `STAY_FRESH_STEP_TIMEOUT`). Interactive commands such as cask upgrades are never limited. |
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, system diagnostics, and Homebrew cask upgrades. |
 | `--only STEP1,STEP2` | Run only named stable step ids; use `--list-steps`. Cannot be mixed with individual `--skip-*` flags. |
-| `--quick` | Same as `--only user-caches,app-caches,ai-caches,workspace-storage,trash,dev-caches`: everything a user can clear without sudo, Homebrew or the network. Cannot be mixed with `--only` or `--skip-*`. |
+| `--quick` | Same as `--only user-caches,app-caches,ai-caches,workspace-storage,trash,dev-caches`: everything a user can clear without sudo, Homebrew or the network. Never uses sudo, not even a credential another shell left warm. Cannot be mixed with `--only` or `--skip-*`. |
 | `--list-steps` | List every selectable step id and exit before preflight. |
 | `--history` | Print the last ten rows of `~/Library/Logs/stay_fresh/history.tsv` and exit. |
 | `--notify MODE` | `none`, `macos`, `telegram`, `both`, or `auto` (default; env `STAY_FRESH_NOTIFY`). Sent after the summary of a real run, never under `--dry-run`. |
@@ -587,9 +591,15 @@ cannot alter a cleanup target.
 
 ### Output
 
-Only one real run per user can be active at a time. The script prints a
-per-step plan, runs each step with OK / WARN / FAIL
-accounting, and closes with a summary that includes:
+Only one real run per user can be active at a time; the lock records the
+boot it was taken in, so one left by a run the last reboot ended is recognised
+as stale even when its pid has been reused. Every command a step runs is under
+`--step-timeout` (30 minutes by default): `brew update`, `softwareupdate
+--list`, `gcloud`, `helm` and `krew` all talk to the network with no bound of
+their own, and one that hangs used to stall the scheduled agent and turn every
+later run away at the lock. A stopped command is reported with the limit and
+counts as a warning. The script prints a per-step plan, runs each step with
+OK / WARN / FAIL accounting, and closes with a summary that includes:
 
 - Elapsed wall-clock time.
 - `df` delta on `/`.
@@ -607,9 +617,12 @@ accounting, and closes with a summary that includes:
 Two files under `~/Library/Logs/stay_fresh/` carry the verdict forward:
 `history.tsv` gets one tab-separated row per real run (timestamp, result,
 elapsed seconds, bytes freed, `df` delta, ok/warn/fail/skip counts, packages
-upgraded, OS updates pending, kept log path), and `last-run.json` is rewritten
-each time for anything that wants the latest state without parsing a log: a
-prompt segment, a status-bar widget, the agent's `status`.
+upgraded, OS updates pending, kept log path) and keeps the last 500, and
+`last-run.json` is rewritten each time for anything that wants the latest
+state without parsing a log: a prompt segment, a status-bar widget, the
+agent's `status`, which prints its headline and detail line. A notification
+that cannot be sent is reported on the terminal with the reason, and the
+clean run's log is discarded only after the notification has gone out.
 
 ### Exit codes
 
@@ -908,7 +921,7 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ./launchd/stay_fresh_agent.sh install --notify telegram    # verdict to Telegram after each run
 ./launchd/stay_fresh_agent.sh install --dry-run            # preview install only
 ./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
-./launchd/stay_fresh_agent.sh status
+./launchd/stay_fresh_agent.sh status                       # plist, launchd state, last run's verdict
 ./launchd/stay_fresh_agent.sh run-now
 ./launchd/stay_fresh_agent.sh logs --tail 120
 ./launchd/stay_fresh_agent.sh uninstall

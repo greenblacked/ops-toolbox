@@ -772,6 +772,55 @@ assert_not_called "nothing is run through kubectl without krew" "$d/calls" "kube
 rm -rf "$d"
 
 # ===========================================================================
+section "step timeout (a hung command is stopped, its children with it)"
+# A plugin update that never returns stands in for brew, gcloud or
+# softwareupdate hanging on the network. The run has no terminal here, as the
+# agent has none, so the command runs in its own process group and the sleep
+# it forked must go with it: an orphan would hold the log open and the space.
+# /proc rather than ps: the tester image has no procps, and a probe that
+# cannot run would report every orphan as dead. A zombie is dead enough: it
+# holds no file and no CPU, only a pid until init reaps it.
+proc_alive() {
+  [[ -d "/proc/$1" ]] || return 1
+  [[ "$(awk '/^State:/ { print $2 }' "/proc/$1/status" 2>/dev/null)" != Z* ]]
+}
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+  '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+  '  "plugin update") sleep 60 & echo $! > "$CALLS.sleep"; wait ;;' \
+  'esac; exit 0'
+started="$(date +%s)"
+out="$(run_sf "$d" --yes --only helm-plugins --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a timed-out step does not fail the run" "0" "$rc"
+assert_contains "the timeout is reported with the limit" "$out" \
+  "helm plugin update diff stopped after 1s (--step-timeout)"
+assert_contains "a timed-out step is accounted a warning" "$out" "warn steps:  1"
+if (( elapsed <= 20 )); then ok "the run returned promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the timeout did not stop the command"; fi
+sleep_pid="$(cat "$d/calls.sleep" 2>/dev/null)"
+if [[ -n "$sleep_pid" ]] && proc_alive "$sleep_pid"; then
+  err "the hung command's child (pid $sleep_pid) outlived the timeout"; kill "$sleep_pid" 2>/dev/null
+else ok "the hung command's child was stopped with it"; fi
+saved="$(find "$d/home/Library/Logs/stay_fresh" -name 'stay_fresh-*.log' | head -n 1)"
+assert_contains "the kept log records the timeout" "$(cat "$saved" 2>/dev/null)" \
+  "stopped after 1s by --step-timeout"
+rm -rf "$d"
+
+# 0 disables the limit, and a fast command under the default limit is untouched.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'echo "helm $*" >> "$CALLS"' \
+  'case "${1:-} ${2:-}" in "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n" ;; esac; exit 0'
+out="$(run_sf "$d" --yes --only helm-plugins --step-timeout 0)"; rc=$?
+assert_eq "--step-timeout 0 runs the step" "0" "$rc"
+assert_called "--step-timeout 0 still runs the command" "$d/calls" "helm plugin update diff"
+assert_not_contains "--step-timeout 0 stops nothing" "$out" "stopped after"
+out="$(run_sf "$d" --yes --only helm-plugins)"; rc=$?
+assert_not_contains "a fast command is untouched by the default limit" "$out" "stopped after"
+assert_contains "the fast run is clean" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# ===========================================================================
 section "gcloud"
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/gcloud" 'echo "gcloud $*" >> "$CALLS"' \
@@ -795,11 +844,20 @@ mkbin "$d/bin/pyenv" 'echo 3.12.1'
 mkbin "$d/bin/goenv" 'echo 1.22.0'
 mkbin "$d/bin/tfenv" 'echo 1.7.5'
 mkbin "$d/bin/helm"  'echo "v3.14.0"'
+mkbin "$d/bin/kubectl" 'case "$*" in "version --client") echo "Client Version: v1.31.2" ;; "krew version") printf "OPTION VALUE\nGitTag v0.4.4\n" ;; esac'
+mkbin "$d/bin/kubectl-krew" 'exit 0'
+mkbin "$d/bin/terraform" 'echo "terraform $*" >> "$CALLS"; echo "env CHECKPOINT_DISABLE=${CHECKPOINT_DISABLE:-}" >> "$CALLS"; echo "Terraform v1.9.5"; echo "on darwin_arm64"'
+mkbin "$d/bin/docker" 'echo "Docker version 27.3.1, build ce12230"'
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "versions step succeeds" "0" "$rc"
 assert_contains "the active python version is reported"    "$out" "pyenv active:  3.12.1"
 assert_contains "the active go version is reported"        "$out" "goenv active:  1.22.0"
 assert_contains "the active terraform version is reported" "$out" "tfenv active:  1.7.5"
+assert_contains "the kubectl client version is reported"   "$out" "kubectl:       v1.31.2"
+assert_contains "the krew version is reported"             "$out" "krew:          v0.4.4"
+assert_contains "the terraform binary version is reported" "$out" "terraform:     v1.9.5"
+assert_contains "the docker version is reported"           "$out" "docker:        27.3.1"
+assert_called "terraform is asked without phoning home" "$d/calls" "env CHECKPOINT_DISABLE=1"
 rm -rf "$d"
 
 # ===========================================================================
@@ -1008,6 +1066,27 @@ assert_contains "missing credentials are explained" "$out" "telegram notificatio
 assert_not_called "nothing is sent without credentials" "$d/calls" "curl"
 rm -rf "$d"
 
+# A send that fails is reported with curl's reason, on the terminal, and the
+# token stays out of it. It used to vanish into a log already discarded.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat >/dev/null; echo "curl: (6) Could not resolve host: api.telegram.org" >&2; exit 6'
+out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_TG_BOT_TOKEN=123:secret-token STAY_FRESH_TG_CHAT_ID=42 \
+  run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a failed Telegram send does not fail the run" "0" "$rc"
+assert_contains "a failed Telegram send is reported with the reason" "$out" \
+  "telegram notification failed (curl exited 6): curl: (6) Could not resolve host"
+assert_not_contains "a failed Telegram send is not reported as sent" "$out" "telegram notification sent"
+assert_not_contains "the token stays out of the report" "$out" "secret-token"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript: execution error: Notification Center is not available (-1743)" >&2; exit 1'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a failed banner does not fail the run" "0" "$rc"
+assert_contains "a failed banner is reported with the reason" "$out" \
+  "macOS notification failed (osascript exited 1): osascript: execution error"
+rm -rf "$d"
+
 # ===========================================================================
 section "snapshots (listed by default, deleted only with --thin-snapshots)"
 snap_env() {
@@ -1102,6 +1181,24 @@ assert_not_contains "an empty external Trash is not mentioned" "$out" "Trash on 
 assert_not_contains "the boot volume symlink is skipped" "$out" "Trash on Macintosh HD"
 rm -rf /Volumes "$d"
 
+# A network share is never asked: find(1) on a share whose server went away
+# blocks until somebody kills the run. mount(8) says what each volume is, in
+# macOS's "(smbfs, ...)" shape here; a local disk is still emptied.
+d="$(new_env)"
+mkdir -p /Volumes/NAS/.Trashes/501 /Volumes/USB/.Trashes/501
+: > /Volumes/NAS/.Trashes/501/keep
+: > /Volumes/USB/.Trashes/501/old
+mkbin "$d/bin/mount" 'echo "/dev/disk3s1 on / (apfs, sealed, local, journaled)"' \
+  'echo "//serhii@nas.local/share on /Volumes/NAS (smbfs, nodev, nosuid, mounted by serhii)"' \
+  'echo "/dev/disk5s1 on /Volumes/USB (apfs, local, nodev, nosuid, journaled, noowners)"'
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "trash with a network volume succeeds" "0" "$rc"
+assert_exists "the network volume's Trash is left alone" /Volumes/NAS/.Trashes/501/keep
+assert_contains "the network volume is named and typed" "$out" \
+  "Trash on NAS skipped: network volume (smbfs)"
+assert_gone "the local volume's Trash is still emptied" /Volumes/USB/.Trashes/501/old
+rm -rf /Volumes "$d"
+
 # ===========================================================================
 section "brew (upgrade count and outdated casks in the verdict)"
 d="$(new_env)"; : > "$d/calls"
@@ -1162,6 +1259,47 @@ if [[ -z "$(find "$d/tmp" -name 'stay_fresh-*.log' -print -quit)" ]]; then
 else
   err "a clean run left a log in TMPDIR"
 fi
+rm -rf "$d"
+
+# A clean run that notifies leaves nothing behind either. The notifiers log
+# into the run's log; with the discard ahead of them, every notified clean
+# run recreated an empty log in TMPDIR on its way out.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/pyenv" 'echo 3.12.1'
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a clean notified run succeeds" "0" "$rc"
+assert_called "the banner was posted" "$d/calls" "display notification"
+assert_contains "the clean notified run discards its log" "$out" "run clean — log discarded"
+if [[ -z "$(find "$d/tmp" -type f -print -quit)" ]]; then
+  ok "a clean notified run leaves nothing in TMPDIR"
+else
+  err "a clean notified run left a file in TMPDIR: $(find "$d/tmp" -type f)"
+fi
+# The discard is the last thing said: the verdict comes before it.
+verdict_line="$(grep -n 'stay_fresh OK: freed' <<<"$out" | head -n 1 | cut -d: -f1)"
+discard_line="$(grep -n 'run clean — log discarded' <<<"$out" | head -n 1 | cut -d: -f1)"
+if [[ -n "$verdict_line" && -n "$discard_line" ]] && (( discard_line > verdict_line )); then
+  ok "the log is discarded after the verdict and the notification"
+else
+  err "the log discard (line ${discard_line:-?}) precedes the verdict (line ${verdict_line:-?})"
+fi
+rm -rf "$d"
+
+# history.tsv is capped at 500 rows, newest kept.
+d="$(new_env)"
+mkbin "$d/bin/pyenv" 'echo 3.12.1'
+mkdir -p "$d/home/Library/Logs/stay_fresh"
+for i in $(seq 1 600); do printf '2000-01-01 00:00:%03d\tOK\t0\t0\t0\t1\t0\t0\t0\t0\t0\t\n' "$i"; done \
+  > "$d/home/Library/Logs/stay_fresh/history.tsv"
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a run against a long history succeeds" "0" "$rc"
+assert_eq "history is trimmed to 500 rows" "500" \
+  "$(wc -l < "$d/home/Library/Logs/stay_fresh/history.tsv" | tr -d ' ')"
+assert_contains "the newest row survives the trim" \
+  "$(tail -n 1 "$d/home/Library/Logs/stay_fresh/history.tsv")" "$(date '+%Y-%m-%d')"
+assert_not_contains "the oldest row is the one dropped" \
+  "$(cat "$d/home/Library/Logs/stay_fresh/history.tsv")" "2000-01-01 00:00:001"
 rm -rf "$d"
 
 # A run that warned keeps its log, and retention caps the directory at ten.

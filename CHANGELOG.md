@@ -16,6 +16,27 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh --step-timeout N` (default 1800, `0` disables, env
+  `STAY_FRESH_STEP_TIMEOUT`): every command a step runs is stopped after N
+  seconds and the step counts as warned. `brew update`, `softwareupdate
+  --list`, `gcloud components update`, `helm plugin update` and
+  `kubectl krew update` all talk to the network with no bound of their own;
+  one that hung stalled the scheduled agent, and the run lock then turned
+  every later run away with "another run is active" until somebody killed
+  the process, with no verdict and no notification to say so. macOS ships no
+  `timeout`, so the limit is perl's `alarm`, which every macOS has. Without
+  a terminal the command runs in its own process group so the children brew
+  and gcloud fork stop with it; at a terminal it stays in the shell's group,
+  because a command that asks a question there must be able to read the
+  answer, and `run_cmd_tty` (cask upgrades, sudo prompts) is never limited.
+- `stay_fresh_agent.sh status` prints the last run's verdict: the headline
+  and detail line from `last-run.json`, which was written for exactly that
+  reader and had none.
+- The versions report names the tools the run maintains and did not list:
+  `kubectl` and its krew, `terraform` (with `CHECKPOINT_DISABLE=1`, so a
+  version print does not phone home or write the checkpoint cache) and
+  `docker`.
+
 - `stay_fresh.sh` refreshes the kubectl plugins installed through krew:
   `kubectl krew update` for the index, then `kubectl krew upgrade` per
   plugin. `install_apps.sh` puts krew on the machine as a Homebrew formula,
@@ -958,6 +979,31 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `stay_fresh.sh` no longer leaves an empty log in `TMPDIR` after a clean
+  run that notified. The clean run's log was discarded before the
+  notification went out, and both notifiers logged into the same path, so
+  the append recreated the file: one orphan per scheduled run, the exact
+  promise `CONTRIBUTING.md` makes about a run's own files. The discard now
+  comes last; a kept log receives the notifiers' output instead.
+- A notification that cannot be sent is said on the terminal with curl's or
+  osascript's reason, the bot token scrubbed. A wrong chat id or a blocked
+  network used to vanish into that discarded log.
+- The Homebrew log mark counted non-empty lines with `grep -c .` and then
+  read with `tail -n +N`, which counts every line, so the reads started
+  inside an earlier step by as many blank lines as docker and the cache
+  sweeps had written. `wc -l` on both sides.
+- The trash step skips network shares. `find` on an SMB, NFS, AFP or WebDAV
+  volume whose server went away blocks for as long as the kernel retries,
+  and on a scheduled run nobody is there to interrupt it. The mount type
+  comes from `mount(8)` without touching the volume; the share is named and
+  left to Finder.
+- The run lock records the boot it was taken in. After a reboot an unrelated
+  process can wear the old pid, and `kill -0` then reported a run that ended
+  with the power as active, for as long as that process lived. A lock from
+  an earlier boot is now removed as stale whatever its pid says.
+- `--quick` never uses sudo, as its help says: the retry for cache entries
+  owned by another user used a credential another shell had left warm.
+
 - `stay_fresh.sh` tells the macOS protections apart from failures. A real run
   warned on three steps for things no run can change: `/System/Library/Caches`
   answers "Operation not permitted" to root with System Integrity Protection
@@ -1447,6 +1493,14 @@ entry here belongs to a version.
 
 ### Changed
 
+- `CHANGELOG.md` merges with `merge=union` (`.gitattributes`). Every pull
+  request adds its entry at the top of the Unreleased section, so any two
+  open at once collided on the same lines and the second to merge conflicted;
+  four open pull requests meant six conflicts to resolve by hand. Union keeps
+  both sides' insertions, which is safe here because the only edit pattern is
+  a whole bullet inserted, never a line changed in place.
+- `history.tsv` keeps its last 500 rows. One row per run adds up on a daily
+  schedule, and nothing that reads the file needs more.
 - `stay_fresh.sh` parses `--only`, `--notify` and
   `--prune-xcode-archives-days` through the canonical `require_value()` block
   the other `macos-initial-setup/` scripts copy, so the static suite's

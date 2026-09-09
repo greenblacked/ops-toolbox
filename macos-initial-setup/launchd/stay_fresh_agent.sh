@@ -62,6 +62,13 @@ else
   C_RESET='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE=''
 fi
 info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
+
+# One string field of stay_fresh.sh's last-run.json, with the two escapes it
+# writes (backslash and double quote) undone.
+json_field() {
+  sed -n "s/^  \"$1\": \"\(.*\)\",\{0,1\}\$/\1/p" "$2" | head -n 1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
 ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
 warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
@@ -521,6 +528,16 @@ PLIST_EOF
       ok "plist present: $PLIST"
     else
       warn "no plist at $PLIST"
+    fi
+    # The verdict of the last real run, from the file stay_fresh.sh rewrites
+    # for exactly this reader. One field per line there, so a line match is
+    # all the parsing it takes; jq is not on a stock Mac.
+    last_run="$LOG_DIR/last-run.json"
+    if [[ -f "$last_run" ]]; then
+      info "last run: $(json_field when "$last_run") — $(json_field headline "$last_run")"
+      printf "  %s%s%s\n" "$C_DIM" "$(json_field detail "$last_run")" "$C_RESET"
+    else
+      info "no run recorded yet (last-run.json appears in $LOG_DIR after the first real run)"
     fi
     if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
       ok "loaded in $DOMAIN"

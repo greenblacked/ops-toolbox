@@ -30,7 +30,7 @@
 #     (macOS banner or Telegram) so a scheduled run is not silent
 #
 # Usage:
-#   ./stay_fresh.sh [--dry-run] [--yes] [--verbose] [--quick]
+#   ./stay_fresh.sh [--dry-run] [--yes] [--verbose] [--quick] [--step-timeout SECONDS]
 #                   [--only STEP1,STEP2] [--list-steps] [--history]
 #                   [--notify none|macos|telegram|both|auto]
 #                   [--skip-snapshots] [--thin-snapshots] [--disk-report]
@@ -141,6 +141,12 @@ THIN_SNAPSHOTS=0
 SKIP_DISK_REPORT=1
 QUICK=0
 SHOW_HISTORY=0
+# Wall-clock limit for one command inside a step. brew update, softwareupdate
+# --list, gcloud, helm and krew all talk to the network with no bound of their
+# own; one that hangs stalls the scheduled agent, and the run lock then turns
+# every later run away with "another run is active" until somebody notices.
+# 0 disables it. Interactive commands (run_cmd_tty) are never limited.
+STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-1800}"
 # none | macos | telegram | both | auto. auto sends a macOS banner when there
 # is nobody at a terminal (the scheduled agent) and nothing otherwise.
 NOTIFY_MODE="${STAY_FRESH_NOTIFY:-auto}"
@@ -206,9 +212,29 @@ cleanup_on_exit() {
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
   fi
   if (( LOCK_HELD )); then
-    rm -f "$LOCK_DIR/pid"
+    rm -f "$LOCK_DIR/pid" "$LOCK_DIR/boot"
     rmdir "$LOCK_DIR" 2>/dev/null || true
   fi
+}
+
+# When this kernel booted, in epoch seconds: the macOS sysctl, or /proc/stat
+# where the tests run. Empty when neither answers.
+boot_epoch() {
+  local b
+  b="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*{ *sec = \([0-9]*\).*/\1/p')"
+  [[ -n "$b" ]] || b="$(awk '/^btime /{ print $2 }' /proc/stat 2>/dev/null)"
+  printf '%s' "$b"
+}
+
+# The pid, and the boot the pid belongs to. A pid alone cannot tell a run that
+# is still going from one that died with the last power cut: after a reboot
+# some unrelated process can wear the old number, and kill -0 then reports a
+# maintenance run that ended days ago as active, for as long as that process
+# lives.
+write_lock_metadata() {
+  printf '%s\n' "$$" > "$LOCK_DIR/pid" || return 1
+  printf '%s\n' "$(boot_epoch)" > "$LOCK_DIR/boot" 2>/dev/null || true
+  return 0
 }
 trap cleanup_on_exit EXIT
 
@@ -221,7 +247,7 @@ acquire_lock() {
     return 1
   fi
   if mkdir "$LOCK_DIR" 2>/dev/null; then
-    if ! printf '%s\n' "$$" > "$LOCK_DIR/pid"; then
+    if ! write_lock_metadata; then
       rmdir "$LOCK_DIR" 2>/dev/null || true
       err "cannot write run lock metadata at $LOCK_DIR/pid"
       return 1
@@ -239,21 +265,23 @@ acquire_lock() {
     return 1
   fi
 
-  local existing_pid=""
-  [[ -r "$LOCK_DIR/pid" ]] && read -r existing_pid < "$LOCK_DIR/pid"
-  if [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+  local existing_pid="" existing_boot="" now_boot=""
+  [[ -r "$LOCK_DIR/pid" ]]  && read -r existing_pid  < "$LOCK_DIR/pid"
+  [[ -r "$LOCK_DIR/boot" ]] && read -r existing_boot < "$LOCK_DIR/boot"
+  now_boot="$(boot_epoch)"
+  if [[ -n "$existing_boot" && -n "$now_boot" && "$existing_boot" != "$now_boot" ]]; then
+    warn "removing stale stay_fresh lock from before the last reboot (pid ${existing_pid:-?})"
+  elif [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
     err "another stay_fresh run is active (pid $existing_pid)"
     return 1
-  fi
-
-  if [[ -n "$existing_pid" ]]; then
+  elif [[ -n "$existing_pid" ]]; then
     warn "removing stale stay_fresh lock for pid $existing_pid"
   else
     warn "removing stale stay_fresh lock without a live pid"
   fi
-  rm -f "$LOCK_DIR/pid"
+  rm -f "$LOCK_DIR/pid" "$LOCK_DIR/boot"
   if rmdir "$LOCK_DIR" 2>/dev/null && mkdir "$LOCK_DIR" 2>/dev/null; then
-    if ! printf '%s\n' "$$" > "$LOCK_DIR/pid"; then
+    if ! write_lock_metadata; then
       rmdir "$LOCK_DIR" 2>/dev/null || true
       err "cannot write run lock metadata at $LOCK_DIR/pid"
       return 1
@@ -306,8 +334,12 @@ ${C_BOLD}General options:${C_RESET}
   --no-sudo              Skip root-owned steps and Homebrew cask upgrades
   --only STEP1,STEP2     Run only the named steps (see --list-steps)
   --quick                The user-level cleanup only: user, app and AI caches,
-                         workspace storage, Trash, dev-tool caches. No sudo,
-                         no Homebrew, no reports. Same as --only with those ids
+                         workspace storage, Trash, dev-tool caches. No sudo (not
+                         even a cached credential), no Homebrew, no reports.
+                         Same as --only with those ids
+  --step-timeout N       Stop any one command inside a step after N seconds
+                         and count the step as warned (default 1800; 0 disables;
+                         env STAY_FRESH_STEP_TIMEOUT). Prompts are never limited
   --list-steps           Print stable step ids and exit
   --history              Print the last ten runs (result, freed, duration) and exit
   --notify MODE          none, macos (Notification Center banner), telegram,
@@ -340,8 +372,8 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-helm-plugins    Don't run 'helm plugin update' for installed plugins
   --skip-krew            Don't run 'kubectl krew upgrade' for installed plugins
   --skip-gcloud          Don't run 'gcloud components update'
-  --skip-versions        Don't print active pyenv/goenv/tfenv/tenv/helm/gcloud
-                         versions
+  --skip-versions        Don't print active pyenv/goenv/tfenv/tenv/helm/kubectl/
+                         krew/terraform/docker/gcloud versions
   --skip-docker          Don't prune Docker / OrbStack
   --prune-docker-volumes Also remove unused Docker volumes (they hold data,
                          not cache, so the default keeps them)
@@ -486,6 +518,16 @@ while (( $# > 0 )); do
     --disk-report)     SKIP_DISK_REPORT=0 ;;
     --quick)           QUICK=1 ;;
     --history)         SHOW_HISTORY=1 ;;
+    --step-timeout)
+      require_value "$1" "${2:-}"; shift
+      STEP_TIMEOUT="$1"
+      [[ "$STEP_TIMEOUT" =~ ^[0-9]+$ ]] || { err "--step-timeout must be a whole number of seconds"; exit 3; }
+      ;;
+    --step-timeout=*)
+      STEP_TIMEOUT="${1#*=}"
+      require_value "--step-timeout" "$STEP_TIMEOUT"
+      [[ "$STEP_TIMEOUT" =~ ^[0-9]+$ ]] || { err "--step-timeout must be a whole number of seconds"; exit 3; }
+      ;;
     --notify)          require_value "$1" "${2:-}"; shift; NOTIFY_MODE="$1" ;;
     --notify=*)        NOTIFY_MODE="${1#*=}"; require_value "--notify" "$NOTIFY_MODE" ;;
     -h|--help)         usage; exit 0 ;;
@@ -637,9 +679,73 @@ path_bytes() {
   du -sk "$p" 2>/dev/null | awk 'NR==1 { b = $1 * 1024 } END { printf "%.0f", b + 0 }'
 }
 
+# Run a command under a wall-clock limit. macOS ships no timeout(1); it does
+# ship perl, and alarm(2) is the portable way to say "stop this if it is still
+# running in N seconds". Exits 124 on a timeout, like GNU timeout, so a caller
+# can tell it from the command's own failure. The command gets SIGTERM, five
+# seconds to leave, then SIGKILL. With no terminal on stdin (the scheduled
+# agent) the command runs in its own process group so the children brew and
+# gcloud fork go with it; at a terminal it stays in the shell's group, because
+# a command that asks a question there must be able to read the answer.
+read -r -d '' PERL_TIMEOUT <<'PERL' || true
+use POSIX qw(WNOHANG);
+my ($limit, $group, @cmd) = @ARGV;
+my $pid = fork();
+defined $pid or die "fork: $!\n";
+if ($pid == 0) {
+  setpgrp(0, 0) if $group;
+  exec { $cmd[0] } @cmd;
+  print STDERR "exec $cmd[0]: $!\n";
+  exit 127;
+}
+my $target = $group ? -$pid : $pid;
+my $status;
+my $timed_out = 0;
+my $stop = sub {
+  my ($sig) = @_;
+  kill $sig, $target;
+  for (1 .. 50) {
+    my $r = waitpid($pid, WNOHANG);
+    if ($r == $pid) { $status = $?; return; }
+    return if $r == -1;
+    select(undef, undef, undef, 0.1);
+  }
+  kill "KILL", $target;
+  my $r = waitpid($pid, 0);
+  $status = $? if $r == $pid;
+};
+$SIG{ALRM} = sub { $timed_out = 1; $stop->("TERM"); };
+for my $sig (qw(INT TERM HUP)) {
+  $SIG{$sig} = sub { $stop->("TERM"); exit 128 + ($sig eq "INT" ? 2 : $sig eq "HUP" ? 1 : 15); };
+}
+alarm $limit;
+while (!defined $status) {
+  my $r = waitpid($pid, 0);
+  if ($r == $pid) { $status = $?; }
+  elsif ($r == -1) { last; }
+}
+alarm 0;
+exit 124 if $timed_out;
+exit 1 unless defined $status;
+exit(($status & 127) ? 128 + ($status & 127) : $status >> 8);
+PERL
+
+with_timeout() {
+  local secs="$1"; shift
+  if (( secs <= 0 )) || ! command -v perl >/dev/null 2>&1; then
+    "$@"
+    return
+  fi
+  local group=0
+  [[ -t 0 ]] || group=1
+  perl -e "$PERL_TIMEOUT" -- "$secs" "$group" "$@"
+}
+
 # Run a command; honor --dry-run and --verbose; log output to $LOG_FILE.
 # Prints the human label so the console matches the log. Bumps STEP_WARN_COUNT
-# on a non-zero exit so do_step can route to OK/WARN/FAIL accurately.
+# on a non-zero exit so do_step can route to OK/WARN/FAIL accurately. The
+# command runs under --step-timeout; a timeout is reported here and counted
+# like any other failure.
 # RUN_CMD_FILTER, an awk regex, drops matching lines from the live --verbose
 # stream only; the log keeps everything. For a tool whose one known noise line
 # is not a warning (pip's "No matching packages", brew cleanup's "Skipping").
@@ -655,11 +761,15 @@ run_cmd() {
   echo "# $(date '+%H:%M:%S') [$label] >> $*" >>"$LOG_FILE"
   local rc=0
   if (( VERBOSE )); then
-    "$@" 2>&1 | tee -a "$LOG_FILE" | awk -v pat="${RUN_CMD_FILTER:-}" 'pat == "" || $0 !~ pat'
+    with_timeout "$STEP_TIMEOUT" "$@" 2>&1 | tee -a "$LOG_FILE" | awk -v pat="${RUN_CMD_FILTER:-}" 'pat == "" || $0 !~ pat'
     rc="${PIPESTATUS[0]}"
   else
-    "$@" >>"$LOG_FILE" 2>&1
+    with_timeout "$STEP_TIMEOUT" "$@" >>"$LOG_FILE" 2>&1
     rc=$?
+  fi
+  if (( rc == 124 )); then
+    warn "$label stopped after $(human_duration "$STEP_TIMEOUT") (--step-timeout) — see log"
+    echo "# $(date '+%H:%M:%S') [$label] stopped after ${STEP_TIMEOUT}s by --step-timeout" >>"$LOG_FILE"
   fi
   if (( rc != 0 )); then
     STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
@@ -687,11 +797,15 @@ capture_cmd() {
   echo "# $(date '+%H:%M:%S') [$label] >> $*" >>"$LOG_FILE"
   local rc=0
   if (( ${CAPTURE_STDERR:-0} )); then
-    CAPTURED="$("$@" 2>&1)" || rc=$?
+    CAPTURED="$(with_timeout "$STEP_TIMEOUT" "$@" 2>&1)" || rc=$?
   else
-    CAPTURED="$("$@" 2>>"$LOG_FILE")" || rc=$?
+    CAPTURED="$(with_timeout "$STEP_TIMEOUT" "$@" 2>>"$LOG_FILE")" || rc=$?
   fi
   printf '%s\n' "$CAPTURED" >>"$LOG_FILE"
+  if (( rc == 124 )); then
+    warn "$label stopped after $(human_duration "$STEP_TIMEOUT") (--step-timeout) — see log"
+    echo "# $(date '+%H:%M:%S') [$label] stopped after ${STEP_TIMEOUT}s by --step-timeout" >>"$LOG_FILE"
+  fi
   return "$rc"
 }
 
@@ -782,7 +896,9 @@ clear_dir() {
     # Only with a sudo credential already in hand - the preflight prompt, or a
     # timestamp still valid from the shell - never a fresh prompt from inside
     # a step, and never under --no-sudo.
-    if (( USE_SUDO )) && grep -q 'Permission denied$' "$errs" \
+    # --quick promises no sudo at all, so not even a credential another
+    # shell left warm.
+    if (( USE_SUDO && QUICK == 0 )) && grep -q 'Permission denied$' "$errs" \
        && { (( SUDO_AVAILABLE )) || sudo -n true 2>/dev/null; }; then
       printf "  %sretrying entries owned by another user with sudo%s\n" "$C_DIM" "$C_RESET"
       sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
@@ -927,11 +1043,17 @@ fi
 # Notification Center banner. osascript takes the strings inside double
 # quotes, so those and backslashes are the two characters to escape.
 notify_macos() {
-  local title="$1" body="$2"
-  command -v osascript >/dev/null 2>&1 || return 1
+  local title="$1" body="$2" out rc=0
+  command -v osascript >/dev/null 2>&1 || { warn "macOS notification skipped: osascript not found"; return 1; }
   title="${title//\\/\\\\}"; title="${title//\"/\\\"}"
   body="${body//\\/\\\\}";   body="${body//\"/\\\"}"
-  osascript -e "display notification \"$body\" with title \"$title\"" >>"$LOG_SINK" 2>&1
+  out="$(osascript -e "display notification \"$body\" with title \"$title\"" 2>&1)" || rc=$?
+  [[ -z "$out" ]] || printf '%s\n' "$out" >>"$LOG_SINK" 2>/dev/null
+  if (( rc != 0 )); then
+    warn "macOS notification failed (osascript exited $rc): ${out:-no output}"
+    return 1
+  fi
+  return 0
 }
 
 # Telegram credentials: the environment first, the login Keychain second.
@@ -956,11 +1078,22 @@ notify_telegram() {
     warn "telegram notification skipped: set STAY_FRESH_TG_BOT_TOKEN / STAY_FRESH_TG_CHAT_ID or the stay_fresh-telegram Keychain items (see --help)"
     return 1
   }
-  printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TG_TOKEN" \
+  # A failure is said out loud, with curl's reason: a wrong chat id or a
+  # blocked network used to vanish into a log that was already discarded. The
+  # token is scrubbed from the reason in case curl ever echoes the URL.
+  local out rc=0
+  out="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TG_TOKEN" \
     | curl -fsS --max-time 20 -K - \
         --data-urlencode "chat_id=$TG_CHAT" \
         --data-urlencode "text=$text" \
-        -o /dev/null >>"$LOG_SINK" 2>&1
+        -o /dev/null 2>&1)" || rc=$?
+  out="${out//$TG_TOKEN/***}"
+  [[ -z "$out" ]] || printf '%s\n' "$out" >>"$LOG_SINK" 2>/dev/null
+  if (( rc != 0 )); then
+    warn "telegram notification failed (curl exited $rc): ${out:-no output}"
+    return 1
+  fi
+  return 0
 }
 
 # Minimal JSON string quoting for last-run.json: backslash, double quote,
@@ -984,7 +1117,7 @@ json_list() {
 # "up 12d 4h" from the kernel's boot time; empty when it cannot be read.
 uptime_text() {
   local boot now secs
-  boot="$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*{ *sec = \([0-9]*\).*/\1/p')"
+  boot="$(boot_epoch)"
   [[ -n "$boot" ]] || { printf ''; return 0; }
   now="$(date +%s)"
   secs=$(( now - boot ))
@@ -1298,7 +1431,7 @@ plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$de
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
 plan_line "krew plugin refresh"               "$(( 1 - SKIP_KREW        ))" "kubectl krew update · upgrade <name>"
 plan_line "gcloud components update"          "$(( 1 - SKIP_GCLOUD      ))" "non-brew gcloud components"
-plan_line "report active versions"            "$(( 1 - SKIP_VERSIONS    ))" "pyenv/goenv/tfenv/tenv/helm/gcloud"
+plan_line "report active versions"            "$(( 1 - SKIP_VERSIONS    ))" "pyenv/goenv/tfenv/tenv/helm/kubectl/krew/terraform/docker/gcloud"
 plan_line "pending OS / App Store updates"      "$(( 1 - SKIP_OS_UPDATES  ))" "softwareupdate --list, mas outdated; read-only"
 if (( THIN_SNAPSHOTS )); then
   snapshot_plan="tmutil listlocalsnapshots, then deletelocalsnapshots"
@@ -1773,6 +1906,26 @@ empty_trash_dir() {
   fi
 }
 
+# The filesystem type of a mount point, read from mount(8) without touching
+# the volume: "smbfs" out of "//u@nas/share on /Volumes/share (smbfs, nodev,
+# ...)" on macOS, "cifs" out of "//nas/share on /mnt/x type cifs (rw,...)" on
+# Linux, where the tests run. Empty when the path is not a mount point.
+volume_fs_type() {
+  local mp="$1" line
+  line="$(mount 2>/dev/null | grep -F " on $mp " | head -n 1)"
+  [[ -n "$line" ]] || { printf ''; return 0; }
+  case "$line" in
+    *" type "*) line="${line##* type }"; printf '%s' "${line%% *}" ;;
+    *)          line="${line##* (}";     printf '%s' "${line%%[,)]*}" ;;
+  esac
+}
+volume_is_network() {
+  case "$(volume_fs_type "$1")" in
+    smbfs|cifs|nfs|nfs4|afpfs|webdav|ftp|sshfs|fuse*) return 0 ;;
+  esac
+  return 1
+}
+
 step_trash() {
   local trash="$HOME/.Trash" uid vol vtrash
   if [[ ! -d "$trash" ]]; then
@@ -1810,6 +1963,15 @@ step_trash() {
   for vol in /Volumes/*/; do
     vol="${vol%/}"
     [[ -d "$vol" && ! -L "$vol" ]] || continue
+    # A network share is asked nothing: find(1) on a share whose server went
+    # away blocks for as long as the kernel keeps retrying, which on a
+    # scheduled run is until somebody kills the process. Its Trash belongs to
+    # Finder anyway.
+    if volume_is_network "$vol"; then
+      printf "  %sTrash on %s skipped: network volume (%s)%s\n" \
+        "$C_DIM" "${vol#/Volumes/}" "$(volume_fs_type "$vol")" "$C_RESET"
+      continue
+    fi
     vtrash="$vol/.Trashes/$uid"
     [[ -d "$vtrash" ]] || continue
     [[ -n "$(find "$vtrash" -mindepth 1 -print -quit 2>/dev/null)" ]] || continue
@@ -2145,8 +2307,11 @@ step_brew() {
     fi
   fi
 
+  # Every line counts, blank ones included: tail -n +N below counts them all,
+  # and a mark taken with grep -c . fell short by the blank lines docker and
+  # the cache sweeps had written, so the reads started inside an earlier step.
   log_mark=0
-  (( DRY_RUN )) || log_mark="$(grep -c . "$LOG_FILE" 2>/dev/null || echo 0)"
+  (( DRY_RUN )) || log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)"
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
   if (( DRY_RUN == 0 )) && tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null \
        | grep -q -e 'index.lock' -e 'could not detach HEAD'; then
@@ -2368,6 +2533,28 @@ step_versions() {
     line="$(helm version --short 2>/dev/null | head -n1 || echo '?')"
     printf "  helm:          %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   fi
+  # The tools the run maintains and did not name: kubectl and its krew plugins,
+  # Terraform, Docker. Each probe is local; CHECKPOINT_DISABLE keeps terraform
+  # from phoning home and writing its checkpoint cache during a version print.
+  if command -v kubectl >/dev/null 2>&1; then
+    any=1
+    line="$(kubectl version --client 2>/dev/null | sed -n 's/^Client Version: *//p' | head -n1)"
+    printf "  kubectl:       %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
+    if command -v kubectl-krew >/dev/null 2>&1; then
+      line="$(kubectl krew version 2>/dev/null | awk '$1 == "GitTag" { print $2 }' | head -n1)"
+      printf "  krew:          %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
+    fi
+  fi
+  if command -v terraform >/dev/null 2>&1; then
+    any=1
+    line="$(CHECKPOINT_DISABLE=1 terraform version 2>/dev/null | head -n1 | sed 's/^Terraform *//')"
+    printf "  terraform:     %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
+  fi
+  if command -v docker >/dev/null 2>&1; then
+    any=1
+    line="$(docker --version 2>/dev/null | sed 's/^Docker version *//')"
+    printf "  docker:        %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
+  fi
   if command -v gcloud >/dev/null 2>&1 && (( DRY_RUN == 0 )); then
     any=1
     line="$(gcloud version 2>/dev/null | head -n1 || echo '?')"
@@ -2378,7 +2565,7 @@ step_versions() {
       "$C_DIM" "$C_RESET"
   fi
   if (( any == 0 )); then
-    info "no dev toolchain managers found (pyenv/goenv/tfenv/tenv/helm/gcloud) — nothing to report"
+    info "no dev toolchains found (pyenv/goenv/tfenv/tenv/helm/kubectl/terraform/docker/gcloud) — nothing to report"
   fi
 }
 
@@ -2600,14 +2787,24 @@ print_group() {
 (( ${#STEPS_FAIL[@]} > 0 )) && print_group "Failed"  "$C_RED"    "${STEPS_FAIL[@]}"
 
 echo
-if (( DRY_RUN )); then
-  : # No log exists to retain or discard.
-elif (( ${#STEPS_FAIL[@]} > 0 || ${#STEPS_WARN[@]} > 0 )); then
+# ---------------------------------------------------------------------------
+# log retention
+# ---------------------------------------------------------------------------
+# Decided here, ahead of the verdict, because the notification and the history
+# row both name the kept log. A clean run's log is discarded at the very end,
+# after the notification has gone out: the notifiers log into the same file,
+# and while the discard came first every notified clean run recreated an
+# empty log in TMPDIR on its way out.
+SAVED_LOG=""
+if (( DRY_RUN == 0 )) && (( ${#STEPS_FAIL[@]} > 0 || ${#STEPS_WARN[@]} > 0 )); then
   PERSISTENT_LOG_DIR="$STATE_DIR"
   mkdir -p "$PERSISTENT_LOG_DIR"
   SAVED_LOG="$PERSISTENT_LOG_DIR/$(basename "$LOG_FILE")"
   if cp "$LOG_FILE" "$SAVED_LOG" 2>/dev/null; then
     rm -f "$LOG_FILE"
+    # Whatever still writes to the log from here on lands in the kept copy.
+    LOG_FILE="$SAVED_LOG"
+    LOG_SINK="$SAVED_LOG"
   else
     SAVED_LOG="$LOG_FILE"
   fi
@@ -2622,9 +2819,6 @@ elif (( ${#STEPS_FAIL[@]} > 0 || ${#STEPS_WARN[@]} > 0 )); then
   rm -f "$old_log_list"
   warn "log saved: $SAVED_LOG"
   printf "  %sTo inspect:%s tail -80 '%s'\n" "$C_DIM" "$C_RESET" "$SAVED_LOG"
-else
-  rm -f "$LOG_FILE"
-  info "run clean — log discarded"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2668,6 +2862,14 @@ if (( DRY_RUN == 0 )); then
       "${#STEPS_OK[@]}" "${#STEPS_WARN[@]}" "${#STEPS_FAIL[@]}" "${#STEPS_SKIP[@]}" \
       "$BREW_UPGRADED" "$OS_UPDATES_PENDING" "${SAVED_LOG:-}" \
       >>"$STATE_DIR/history.tsv" 2>/dev/null || warn "could not append to $STATE_DIR/history.tsv"
+    # One row per run adds up on a daily schedule; the last 500 are plenty
+    # for --history and for anything that plots them.
+    history_rows="$(wc -l < "$STATE_DIR/history.tsv" 2>/dev/null | tr -d ' ')"
+    if (( ${history_rows:-0} > 500 )); then
+      tail -n 500 "$STATE_DIR/history.tsv" > "$STATE_DIR/history.tsv.tmp" 2>/dev/null \
+        && mv -f "$STATE_DIR/history.tsv.tmp" "$STATE_DIR/history.tsv" 2>/dev/null \
+        || warn "could not trim $STATE_DIR/history.tsv"
+    fi
     {
       printf '{\n'
       printf '  "when": %s,\n'            "$(json_str "$RUN_STAMP")"
@@ -2700,15 +2902,23 @@ if (( DRY_RUN == 0 )) && [[ "$NOTIFY_MODE" != "none" ]]; then
   [[ -n "${SAVED_LOG:-}" ]] && NOTIFY_BODY="$NOTIFY_BODY. Log: $SAVED_LOG"
   case "$NOTIFY_MODE" in
     macos|both)
-      notify_macos "$HEADLINE" "$DETAIL" || warn "macOS notification could not be sent"
+      notify_macos "$HEADLINE" "$DETAIL" || true
       ;;
   esac
   case "$NOTIFY_MODE" in
     telegram|both)
-      notify_telegram "$HEADLINE
-$NOTIFY_BODY" && ok "telegram notification sent"
+      if notify_telegram "$HEADLINE
+$NOTIFY_BODY"; then
+        ok "telegram notification sent"
+      fi
       ;;
   esac
+fi
+
+# The clean run's log, kept alive until now for the notifiers, goes last.
+if (( DRY_RUN == 0 )) && [[ -z "$SAVED_LOG" ]]; then
+  rm -f "$LOG_FILE"
+  info "run clean — log discarded"
 fi
 
 if (( ${#STEPS_FAIL[@]} > 0 )); then
