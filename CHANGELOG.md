@@ -30,6 +30,18 @@ entry here belongs to a version.
   `.gitignore` rule that keeps agent state out of the tree now re-admits just
   those two files.
 
+- `stay_fresh.sh` refreshes the kubectl plugins installed through krew:
+  `kubectl krew update` for the index, then `kubectl krew upgrade` per
+  plugin. `install_apps.sh` puts krew on the machine as a Homebrew formula,
+  but the plugins it installs are not Homebrew's, and nothing in the run
+  moved them, the same gap the Helm plugin step already closed for Helm.
+  krew prints a header to a terminal and bare names to a pipe; the parser
+  takes both. `--skip-krew`, folded into `--skip-devtools` with the other
+  refresh steps, and the `krew` id for `--only`. The Docker steps suite runs
+  it against both output shapes, counts a failed upgrade as a warning, and
+  checks `--skip-devtools` covers it and a kubectl without krew is a clean
+  step.
+
 - `stay_fresh.sh` ends every real run with a verdict it can act on: a
   headline (`stay_fresh OK: freed 1.2G in 4m10s`) and a detail line with the
   step counts, the packages Homebrew upgraded, the casks still outdated, the
@@ -1449,6 +1461,13 @@ entry here belongs to a version.
 
 ### Changed
 
+- `stay_fresh.sh` parses `--only`, `--notify` and
+  `--prune-xcode-archives-days` through the canonical `require_value()` block
+  the other `macos-initial-setup/` scripts copy, so the static suite's
+  contract check covers it. An unknown option now prints the help to stderr,
+  where `CONTRIBUTING.md` says it goes, and the gcloud step's dry run prints
+  the package's `(dry-run)` preview lines instead of a `[dry]` prefix nothing
+  else in the tree uses.
 - RouterOS CHR compatibility was bumped from 7.24.1 to 7.24.2 after the full Docker integration suite passed.
 - `stay_fresh.sh` sizes a sweep with one `du` for the whole set rather than one
   fork per path. `clear_paths` measures before and after, and its own comment
