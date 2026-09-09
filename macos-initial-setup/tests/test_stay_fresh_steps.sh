@@ -137,6 +137,7 @@ run_sf() {
     STAY_FRESH_SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}" \
     STAY_FRESH_STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-}" \
     STAY_FRESH_NOTIFY_WHEN="${STAY_FRESH_NOTIFY_WHEN:-}" \
+    STAY_FRESH_NOTIFY_TIMEOUT="${STAY_FRESH_NOTIFY_TIMEOUT:-}" \
     BREW_SERVICES_ERROR="${BREW_SERVICES_ERROR:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
@@ -968,6 +969,27 @@ assert_not_contains "a fast command is untouched by the default limit" "$out" "s
 assert_contains "the fast run is clean" "$out" "warn steps:  0"
 rm -rf "$d"
 
+# Without perl the limit cannot be enforced; that is said once before the
+# run, and the run itself is unaffected.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/nobin"
+for b in /usr/bin/* /bin/*; do
+  [[ "$(basename "$b")" == perl* ]] && continue
+  ln -sf "$b" "$d/nobin/$(basename "$b")" 2>/dev/null || true
+done
+mkbin "$d/bin/helm" 'echo "helm $*" >> "$CALLS"' \
+  'case "${1:-} ${2:-}" in "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n" ;; esac; exit 0'
+out="$(HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:$d/nobin" CALLS="$d/calls" NO_COLOR=1 \
+  STAY_FRESH_NOTIFY=none "$SF" --yes --no-sudo --only helm-plugins </dev/null 2>&1)"; rc=$?
+assert_eq "a run without perl succeeds" "0" "$rc"
+assert_contains "the missing perl is said before the run" "$out" \
+  "perl not found — --step-timeout cannot be enforced"
+assert_called "the command still runs without the wrapper" "$d/calls" "helm plugin update diff"
+out="$(HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:$d/nobin" CALLS="$d/calls" NO_COLOR=1 \
+  STAY_FRESH_NOTIFY=none "$SF" --yes --no-sudo --only helm-plugins --step-timeout 0 </dev/null 2>&1)"
+assert_not_contains "with the limit off, missing perl is not mentioned" "$out" "perl not found"
+rm -rf "$d"
+
 # ===========================================================================
 section "gcloud"
 d="$(new_env)"; : > "$d/calls"
@@ -1327,6 +1349,37 @@ out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "a failed banner does not fail the run" "0" "$rc"
 assert_contains "a failed banner is reported with the reason" "$out" \
   "macOS notification failed (osascript exited 1): osascript: execution error"
+rm -rf "$d"
+
+# A notifier that never returns must not hold the run open after the work is
+# done: a locked keychain raises a prompt nobody at a scheduled run can
+# answer, and osascript can wait on Notification Center. Each call is under
+# the notifier timeout, and a timed-out Keychain lookup is named.
+d="$(tg_env)"; : > "$d/calls"
+mkbin "$d/bin/security" 'echo "security $*" >> "$CALLS"; sleep 60'
+started="$(date +%s)"
+out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_NOTIFY_TIMEOUT=1 run_sf "$d" --yes --only versions)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hung Keychain lookup does not fail the run" "0" "$rc"
+assert_contains "the hung lookup is named" "$out" \
+  "Keychain lookup for stay_fresh-telegram/bot-token timed out after 1s"
+assert_contains "the notification is then skipped as unconfigured" "$out" "telegram notification skipped"
+if (( elapsed <= 20 )); then ok "the run returned promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the Keychain lookup was not bounded"; fi
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'sleep 60'
+started="$(date +%s)"
+out="$(STAY_FRESH_NOTIFY=macos STAY_FRESH_NOTIFY_TIMEOUT=1 run_sf "$d" --yes --only versions)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hung osascript does not fail the run" "0" "$rc"
+assert_contains "the hung banner is reported as timed out" "$out" "macOS notification failed (osascript exited 124)"
+if (( elapsed <= 20 )); then ok "the banner call was bounded (${elapsed}s)"
+else err "the run took ${elapsed}s — osascript was not bounded"; fi
+run_sf "$d" --dry-run --only versions >/dev/null; rc=$?
+out="$(STAY_FRESH_NOTIFY_TIMEOUT=soon run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a non-numeric notifier timeout is refused" "3" "$rc"
 rm -rf "$d"
 
 # Slack: an incoming webhook. The URL is the credential, so it rides in the

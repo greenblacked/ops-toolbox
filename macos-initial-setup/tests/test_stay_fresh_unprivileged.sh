@@ -112,19 +112,41 @@ assert_contains "an unwritable lock dir reports the lock it could not take" "$ou
 assert_not_contains "an unwritable lock dir is not blamed on a stale lock" "$out" \
   "stale stay_fresh lock"
 
-# TMPDIR failures are now the log's problem, not the lock's: with the lock
-# under HOME, an unusable TMPDIR surfaces at log initialization, after the
-# lock is held, and the lock must still be released on the way out.
-out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions)"; rc=$?
-assert_eq "an uncreatable TMPDIR fails at log init -> 2" "2" "$rc"
-assert_contains "an uncreatable TMPDIR names the log file" "$out" \
-  "cannot initialize log file"
+# An unusable TMPDIR is not a reason to refuse the run: the full disk this
+# script is run for is where TMPDIR lives. The log moves to the state
+# directory under HOME and the run says so; the scratch lists the sweeps
+# need move with it, so a step that lists before it deletes still works.
+L="$d/home/Library/Logs"
+mkdir -p "$L/Homebrew"
+printf 'old\n' > "$L/Homebrew/old.log"; touch -d '40 days ago' "$L/Homebrew/old.log"
+out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions,user-logs)"; rc=$?
+assert_eq "an uncreatable TMPDIR does not refuse the run" "0" "$rc"
+assert_contains "the log falls back to the state directory and says so" "$out" \
+  "cannot write the log under /rootonly/scratch; logging to $d/home/Library/Logs/stay_fresh instead"
 assert_not_contains "an uncreatable TMPDIR does not implicate the lock" "$out" \
   "run lock"
+if [[ ! -e "$L/Homebrew/old.log" ]]; then
+  ok "a sweep that needs a scratch list still runs with TMPDIR unusable"
+else
+  err "the scratch list did not fall back with the log"
+fi
+assert_contains "the run is clean despite the fallback" "$out" "warn steps:  0"
 out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions)"; rc=$?
-assert_eq "the lock is released after a log-init failure" "2" "$rc"
-assert_not_contains "no stale lock is left behind by a failed run" "$out" \
-  "stale stay_fresh lock"
+assert_eq "the lock is released after a run that used the fallback log" "0" "$rc"
+assert_not_contains "no stale lock is left behind" "$out" "stale stay_fresh lock"
+
+# Neither TMPDIR nor the state directory writable: the run goes ahead
+# without a log, says so, and still does its work.
+rm -rf "$d/home/Library/Logs/stay_fresh"
+chmod 555 "$L"
+out="$(run_sf /rootonly/scratch --yes --no-sudo --only versions)"; rc=$?
+assert_eq "no writable log location at all still runs" "0" "$rc"
+assert_contains "the missing log is said" "$out" \
+  "running without one; command output will not be kept"
+assert_contains "the run still reaches its verdict" "$out" "stay_fresh"
+assert_contains "the step still ran" "$out" "Active tool versions done"
+assert_not_contains "no error about removing the missing log" "$out" "/dev/null"
+chmod 755 "$L"
 
 echo "--- cache deletion that the filesystem refuses ---"
 # A cache entry inside a directory we may not write: rm(1) can unlink neither the

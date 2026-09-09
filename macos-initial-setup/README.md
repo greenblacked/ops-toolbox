@@ -661,7 +661,10 @@ daemon with no bound of their own, and one that hangs used to stall the
 scheduled agent and turn every later run away at the lock. A stopped command
 is reported with the limit and counts as a warning; one run through `sudo` is
 stopped through `sudo` too. Ctrl-C stops the running command and ends the
-run, releasing the lock. The script prints a per-step plan, runs each step
+run, releasing the lock. Every notifier call (the Keychain lookup, `osascript`,
+`curl`) is under its own limit (`STAY_FRESH_NOTIFY_TIMEOUT`, 20 seconds), so a
+locked keychain or a pending access prompt cannot hold a scheduled run open
+after the work is done. The script prints a per-step plan, runs each step
 with OK / WARN / FAIL accounting, and closes with a summary that includes:
 
 - Elapsed wall-clock time.
@@ -1279,7 +1282,11 @@ Homebrew / `pyenv` / `goenv` commands.
   installed.
 - Writes `$TMPDIR/stay_fresh-YYYYMMDD-HHMMSS.log` during the run. A
   clean run discards it; a run with warnings or failures keeps it under
-  `~/Library/Logs/stay_fresh/`, pruned to the ten most recent.
+  `~/Library/Logs/stay_fresh/`, pruned to the ten most recent. When
+  `TMPDIR` cannot be written (a full disk is exactly when this script is
+  run), the log and the scratch lists the sweeps need move to
+  `~/Library/Logs/stay_fresh/`; when that fails too, the run goes ahead
+  without a log and says so.
 - Appends one row per real run to `~/Library/Logs/stay_fresh/history.tsv`
   and rewrites `last-run.json` there. Sends a notification only when
   `--notify` (or `STAY_FRESH_NOTIFY`) asks for one, and reads the Telegram

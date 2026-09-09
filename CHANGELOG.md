@@ -1039,6 +1039,25 @@ entry here belongs to a version.
 
 ### Fixed
 
+- `stay_fresh.sh` runs on a full disk. TMPDIR lives on the disk the script
+  is run to free, and three things there used to stop it: the log could
+  not be opened, so the run refused to start with exit 2; `mktemp` failed,
+  so a cache sweep that could not open its error file ran nothing at all;
+  and the lists the sweeps build before deleting had nowhere to go. The log
+  and the scratch lists now fall back to `~/Library/Logs/stay_fresh`, and
+  failing that the run proceeds without a log and says so; `rm`'s errors
+  are captured in memory rather than in a file; a step that has no scratch
+  space anywhere skips its sweep with a warning instead of a shell error.
+- `stay_fresh.sh`'s notifiers are under a limit of their own
+  (`STAY_FRESH_NOTIFY_TIMEOUT`, 20 seconds): a locked keychain, or a
+  Keychain item whose access list does not include `security`, raises a
+  prompt nobody at a scheduled run can answer, and the lookup held the run
+  open indefinitely after the work was done and before the verdict. A
+  timed-out lookup is named; `osascript` and `curl` are bounded the same
+  way.
+- `stay_fresh.sh` says before the run when perl is missing and
+  `--step-timeout` therefore cannot be enforced, instead of running every
+  command unbounded in silence.
 - `stay_fresh.sh` retries a "Permission denied" cache entry with sudo by
   naming exactly the top-level entries `rm` refused, instead of re-running
   `find -exec rm` over the whole directory as root. The sweep also reached

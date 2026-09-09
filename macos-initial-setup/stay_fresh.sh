@@ -179,6 +179,10 @@ NOTIFY_MODE="${STAY_FRESH_NOTIFY:-auto}"
 # trains its owner to swipe it away; warn keeps the channel for the runs
 # that need reading.
 NOTIFY_WHEN="${STAY_FRESH_NOTIFY_WHEN:-always}"
+# Seconds any one notifier call may take: the Keychain lookup, osascript,
+# curl. A locked keychain or a pending access prompt would otherwise hold a
+# scheduled run open forever, after the work is done and before the verdict.
+NOTIFY_TIMEOUT="${STAY_FRESH_NOTIFY_TIMEOUT:-20}"
 NOTIFY_MACOS=0
 NOTIFY_TELEGRAM=0
 NOTIFY_SLACK=0
@@ -737,6 +741,10 @@ case "$NOTIFY_WHEN" in
   always|warn|fail) ;;
   *) err "--notify-when must be always, warn or fail (got: $NOTIFY_WHEN)"; exit 3 ;;
 esac
+[[ "$NOTIFY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
+  err "STAY_FRESH_NOTIFY_TIMEOUT must be a positive whole number of seconds (got: $NOTIFY_TIMEOUT)"
+  exit 3
+}
 
 # After the argument checks, so that `--list-steps --notify X` is the one
 # question the agent can ask about a --notify value without running anything:
@@ -1071,12 +1079,32 @@ run_cmd_tty() {
 # sudo can take it. Anything else is a real failure. Both macOS and GNU tools
 # end the line with the strerror text, so the match is on the suffix.
 count_errors() {
-  local file="$1"
+  local text="$1"
   PROTECTED_N=0; DENIED_N=0; OTHER_N=0
-  [[ -s "$file" ]] || return 0
-  PROTECTED_N=$(grep -c 'Operation not permitted$' "$file" || true)
-  DENIED_N=$(grep -c 'Permission denied$' "$file" || true)
-  OTHER_N=$(grep -v -e 'Operation not permitted$' -e 'Permission denied$' "$file" | grep -c . || true)
+  [[ -n "$text" ]] || return 0
+  PROTECTED_N=$(grep -c 'Operation not permitted$' <<<"$text" || true)
+  DENIED_N=$(grep -c 'Permission denied$' <<<"$text" || true)
+  OTHER_N=$(grep -v -e 'Operation not permitted$' -e 'Permission denied$' <<<"$text" | grep -c . || true)
+}
+
+# A scratch file for a NUL-separated list, where a pipe will not do because
+# the producer's exit status matters. TMPDIR first; the state directory when
+# TMPDIR is full or unwritable, which on the full disk this script is run
+# for it may well be. Prints nothing and returns 1 when neither works, and
+# the caller says what it could not do. A dry run does not fall back: it
+# promised to write nothing under HOME.
+scratch_file() {
+  local f
+  if f="$(mktemp 2>/dev/null)" && [[ -n "$f" ]]; then
+    printf '%s' "$f"
+    return 0
+  fi
+  (( DRY_RUN )) && return 1
+  if mkdir -p "$STATE_DIR" 2>/dev/null && f="$(mktemp "$STATE_DIR/scratch.XXXXXX" 2>/dev/null)" && [[ -n "$f" ]]; then
+    printf '%s' "$f"
+    return 0
+  fi
+  return 1
 }
 
 # The top-level entries of $dir that "Permission denied" lines in an error
@@ -1084,10 +1112,10 @@ count_errors() {
 # they failed on - `rm: /p: Permission denied` on macOS, `rm: cannot remove
 # '/p': Permission denied` under GNU - and the entry to retry is the child of
 # $dir that path sits under, whatever depth the refusal came from.
-# Usage: denied_entries <dir> <error file>
+# Usage: denied_entries <dir> <<<"$error text"
 denied_entries() {
-  local dir="$1" errs="$2" line p rel
-  grep 'Permission denied$' "$errs" 2>/dev/null | while IFS= read -r line; do
+  local dir="$1" line p rel
+  grep 'Permission denied$' | while IFS= read -r line; do
     p="${line%: Permission denied}"
     p="${p#*: }"
     p="${p#cannot remove }"
@@ -1113,7 +1141,7 @@ denied_entries() {
 # Usage: clear_dir <path> [sudo]
 clear_dir() {
   local dir="$1" use_sudo="${2:-}" before_b after_b delta
-  local remaining="" verify_rc=0 errs kept=0
+  local remaining="" verify_rc=0 kept=0
   if [[ ! -d "$dir" ]]; then
     printf "  %s- %s (missing, skipped)%s\n" "$C_DIM" "$dir" "$C_RESET"
     return 0
@@ -1125,11 +1153,14 @@ clear_dir() {
     DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + before_b ))
     return 0
   fi
-  errs="$(mktemp)"
+  # What rm and find refuse is captured in a variable, not a temp file: the
+  # full disk this script exists for is the one place mktemp fails, and a
+  # sweep that could not open its error file used to run nothing at all.
+  local errs_text retry_text
   if [[ "$use_sudo" == "sudo" ]]; then
-    sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
+    errs_text="$( { sudo find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + ; } 2>&1 >/dev/null || true)"
   else
-    find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>"$errs" || true
+    errs_text="$( { find "$dir" -mindepth 1 -maxdepth 1 -exec rm -rf {} + ; } 2>&1 >/dev/null || true)"
     # Only with a sudo credential already in hand - the preflight prompt, or a
     # timestamp still valid from the shell - never a fresh prompt from inside
     # a step, and never under --no-sudo.
@@ -1141,40 +1172,38 @@ clear_dir() {
     # behind also takes the entries macOS keeps out of reach on purpose, and
     # root reaching for a privacy-protected cache is the kind of thing the
     # system logs and asks about.
-    if (( USE_SUDO && QUICK == 0 )) && grep -q 'Permission denied$' "$errs" \
+    if (( USE_SUDO && QUICK == 0 )) && grep -q 'Permission denied$' <<<"$errs_text" \
        && { (( SUDO_AVAILABLE )) || sudo -n true 2>/dev/null; }; then
       local -a denied=()
-      local denied_entry retry_errs
+      local denied_entry
       while IFS= read -r denied_entry; do
         [[ -n "$denied_entry" ]] && denied+=("$denied_entry")
-      done < <(denied_entries "$dir" "$errs")
+      done < <(denied_entries "$dir" <<<"$errs_text")
       if (( ${#denied[@]} > 0 )); then
         printf "  %sretrying %d entr%s owned by another user with sudo%s\n" \
           "$C_DIM" "${#denied[@]}" "$( (( ${#denied[@]} == 1 )) && printf 'y' || printf 'ies')" "$C_RESET"
-        retry_errs="$(mktemp)"
-        sudo rm -rf -- "${denied[@]}" 2>"$retry_errs" || true
+        retry_text="$( { sudo rm -rf -- "${denied[@]}" ; } 2>&1 >/dev/null || true)"
         # The first pass's refusals are superseded by the retry's outcome, and
         # so is whatever else it said about an entry the retry then removed:
         # BSD rm follows a refused file with "Directory not empty" for its
         # parent, and that line counted as a leftover after the leftover was
         # gone. Everything else it reported still stands.
-        grep -v 'Permission denied$' "$errs" >"$errs.retry" || true
+        errs_text="$(grep -v 'Permission denied$' <<<"$errs_text" || true)"
         for denied_entry in "${denied[@]}"; do
           [[ -e "$denied_entry" ]] && continue
-          grep -vF -- "$denied_entry" "$errs.retry" >"$errs.retry2" || true
-          mv -f "$errs.retry2" "$errs.retry"
+          errs_text="$(grep -vF -- "$denied_entry" <<<"$errs_text" || true)"
         done
-        cat "$retry_errs" >>"$errs.retry"
-        mv -f "$errs.retry" "$errs"
-        rm -f "$retry_errs"
+        if [[ -n "$retry_text" ]]; then
+          errs_text="${errs_text:+$errs_text
+}$retry_text"
+        fi
       else
         printf "  %sentries owned by another user remain, but rm did not name them; not retried%s\n" "$C_DIM" "$C_RESET"
       fi
     fi
   fi
-  count_errors "$errs"
-  cat "$errs" >>"$LOG_FILE"
-  rm -f "$errs"
+  count_errors "$errs_text"
+  [[ -z "$errs_text" ]] || printf '%s\n' "$errs_text" >>"$LOG_FILE"
   if [[ "$use_sudo" == "sudo" ]]; then
     remaining="$(sudo find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
       || verify_rc=$?
@@ -1316,7 +1345,7 @@ notify_macos() {
   command -v osascript >/dev/null 2>&1 || { warn "macOS notification skipped: osascript not found"; return 1; }
   title="${title//\\/\\\\}"; title="${title//\"/\\\"}"
   body="${body//\\/\\\\}";   body="${body//\"/\\\"}"
-  out="$(osascript -e "display notification \"$body\" with title \"$title\"" 2>&1)" || rc=$?
+  out="$(with_timeout "$NOTIFY_TIMEOUT" osascript -e "display notification \"$body\" with title \"$title\"" 2>&1)" || rc=$?
   [[ -z "$out" ]] || printf '%s\n' "$out" >>"$LOG_SINK" 2>/dev/null
   if (( rc != 0 )); then
     warn "macOS notification failed (osascript exited $rc): ${out:-no output}"
@@ -1325,15 +1354,37 @@ notify_macos() {
   return 0
 }
 
+# One item from the login Keychain, under the notifier timeout: a locked
+# keychain, or an item whose access list does not include `security`, raises
+# a prompt nobody at a scheduled run can answer, and the lookup then held the
+# run open indefinitely after the work was done. Empty when absent or timed
+# out; the timeout is said, the absence is the caller's to report.
+# The value lands in KEYCHAIN_VALUE rather than on stdout, so the warning a
+# timeout raises cannot be mistaken for the secret by a caller capturing
+# output. Returns 0 with a value, 1 without one, 124 on a timeout.
+# Usage: keychain_item <service> <account>
+KEYCHAIN_VALUE=""
+keychain_item() {
+  local service="$1" account="$2" rc=0
+  KEYCHAIN_VALUE=""
+  command -v security >/dev/null 2>&1 || return 1
+  KEYCHAIN_VALUE="$(with_timeout "$NOTIFY_TIMEOUT" security find-generic-password -s "$service" -a "$account" -w 2>/dev/null)" || rc=$?
+  if (( rc == 124 )); then
+    warn "Keychain lookup for $service/$account timed out after ${NOTIFY_TIMEOUT}s (a locked keychain, or an access prompt nobody can answer?)"
+    KEYCHAIN_VALUE=""
+    return 124
+  fi
+  (( rc == 0 )) || { KEYCHAIN_VALUE=""; return 1; }
+  [[ -n "$KEYCHAIN_VALUE" ]]
+}
+
 # Telegram credentials: the environment first, the login Keychain second.
 # Sets TG_TOKEN and TG_CHAT; returns 1 when either is missing.
 telegram_credentials() {
   TG_TOKEN="${STAY_FRESH_TG_BOT_TOKEN:-}"
   TG_CHAT="${STAY_FRESH_TG_CHAT_ID:-}"
-  if command -v security >/dev/null 2>&1; then
-    [[ -n "$TG_TOKEN" ]] || TG_TOKEN="$(security find-generic-password -s stay_fresh-telegram -a bot-token -w 2>/dev/null || true)"
-    [[ -n "$TG_CHAT" ]]  || TG_CHAT="$(security find-generic-password -s stay_fresh-telegram -a chat-id -w 2>/dev/null || true)"
-  fi
+  [[ -n "$TG_TOKEN" ]] || { keychain_item stay_fresh-telegram bot-token || true; TG_TOKEN="$KEYCHAIN_VALUE"; }
+  [[ -n "$TG_CHAT" ]]  || { keychain_item stay_fresh-telegram chat-id  || true; TG_CHAT="$KEYCHAIN_VALUE"; }
   [[ -n "$TG_TOKEN" && -n "$TG_CHAT" ]]
 }
 
@@ -1352,7 +1403,7 @@ notify_telegram() {
   # token is scrubbed from the reason in case curl ever echoes the URL.
   local out rc=0
   out="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TG_TOKEN" \
-    | curl -fsS --max-time 20 -K - \
+    | curl -fsS --max-time "$NOTIFY_TIMEOUT" -K - \
         --data-urlencode "chat_id=$TG_CHAT" \
         --data-urlencode "text=$text" \
         -o /dev/null 2>&1)" || rc=$?
@@ -1369,9 +1420,7 @@ notify_telegram() {
 # second. Sets SLACK_WEBHOOK; returns 1 when there is none.
 slack_webhook() {
   SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}"
-  if [[ -z "$SLACK_WEBHOOK" ]] && command -v security >/dev/null 2>&1; then
-    SLACK_WEBHOOK="$(security find-generic-password -s stay_fresh-slack -a webhook -w 2>/dev/null || true)"
-  fi
+  [[ -n "$SLACK_WEBHOOK" ]] || { keychain_item stay_fresh-slack webhook || true; SLACK_WEBHOOK="$KEYCHAIN_VALUE"; }
   [[ -n "$SLACK_WEBHOOK" ]]
 }
 
@@ -1387,7 +1436,7 @@ notify_slack() {
   }
   local out rc=0
   out="$(printf 'url = "%s"\n' "$SLACK_WEBHOOK" \
-    | curl -fsS --max-time 20 -K - \
+    | curl -fsS --max-time "$NOTIFY_TIMEOUT" -K - \
         -H 'Content-type: application/json' \
         --data-binary "{\"text\": $(json_str "$text")}" \
         -o /dev/null 2>&1)" || rc=$?
@@ -1500,12 +1549,25 @@ fi
 if (( DRY_RUN == 1 )); then
   info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
 else
-  if ! mkdir -p "$LOG_DIR" || ! : > "$LOG_FILE"; then
-    err "cannot initialize log file: $LOG_FILE"
-    exit 2
+  # A log that cannot be opened is not a reason to refuse the run: a full
+  # disk is exactly when this script gets run, and TMPDIR is on that disk.
+  # The state directory is the second choice; failing that too, the run goes
+  # ahead without a log and says so, because the cleanup is the point.
+  if mkdir -p "$LOG_DIR" 2>/dev/null && : > "$LOG_FILE" 2>/dev/null; then
+    :
+  elif mkdir -p "$STATE_DIR" 2>/dev/null && : > "$STATE_DIR/$(basename "$LOG_FILE")" 2>/dev/null; then
+    warn "cannot write the log under $LOG_DIR; logging to $STATE_DIR instead"
+    LOG_FILE="$STATE_DIR/$(basename "$LOG_FILE")"
+    LOG_DIR="$STATE_DIR"
+  else
+    warn "cannot write a log under $LOG_DIR or $STATE_DIR — running without one; command output will not be kept"
+    LOG_FILE=/dev/null
   fi
-  echo "stay_fresh.sh log - $(date)" >> "$LOG_FILE"
-  info "log file: $C_DIM$LOG_FILE$C_RESET"
+  LOG_SINK="$LOG_FILE"
+  if [[ "$LOG_FILE" != /dev/null ]]; then
+    echo "stay_fresh.sh log - $(date)" >> "$LOG_FILE"
+    info "log file: $C_DIM$LOG_FILE$C_RESET"
+  fi
 fi
 
 # 3. Disk free before
@@ -1543,6 +1605,13 @@ if (( SKIP_BREW == 0 )); then
   else
     warn "Xcode Command Line Tools not detected — Homebrew upgrades may fail (install via 'xcode-select --install')"
   fi
+fi
+
+# 4a. The step timeout needs perl's alarm; without it a hung command is not
+# stopped, and that is worth one line before the run rather than a
+# discovery at the lock the next morning.
+if (( STEP_TIMEOUT > 0 )) && ! command -v perl >/dev/null 2>&1; then
+  warn "perl not found — --step-timeout cannot be enforced; a command that hangs will not be stopped"
 fi
 
 # 4b. Docker check — auto-skip if no docker CLI
@@ -1776,7 +1845,7 @@ if (( ASSUME_YES == 0 )) && (( DRY_RUN == 0 )); then
   read -r answer
   case "$answer" in
     y|Y|yes|YES) ;;
-    *) warn "aborted by user"; rm -f "$LOG_FILE"; exit 0 ;;
+    *) warn "aborted by user"; [[ "$LOG_FILE" == /dev/null ]] || rm -f "$LOG_FILE"; exit 0 ;;
   esac
 fi
 
@@ -1924,7 +1993,10 @@ step_appcaches() {
   # the exit status observable while retaining the NUL-safe path contract.
   local -a hits=()
   local d scan_out
-  scan_out="$(mktemp)"
+  scan_out="$(scratch_file)" || {
+    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — application cache scan skipped"
+    return 0
+  }
   for app_root in ${scan_roots[@]+"${scan_roots[@]}"}; do
     find "$app_root" -maxdepth 5 -type d \( \
            -iname "Cache"              -o \
@@ -1957,14 +2029,17 @@ step_appcaches() {
   if (( FORCE_ACTIVE_APP_CACHES )); then
     if [[ -d "$containers" ]]; then
       local container_scan
-      container_scan="$(mktemp)"
-      find "$containers" -maxdepth 4 -type d -path "*/Data/Library/Caches" \
-        -print0 >"$container_scan" 2>>"$LOG_SINK" \
-        || warn_step "could not scan sandboxed application caches"
-      while IFS= read -r -d '' d; do
-        ccaches+=("$d")
-      done < "$container_scan"
-      rm -f "$container_scan"
+      if container_scan="$(scratch_file)"; then
+        find "$containers" -maxdepth 4 -type d -path "*/Data/Library/Caches" \
+          -print0 >"$container_scan" 2>>"$LOG_SINK" \
+          || warn_step "could not scan sandboxed application caches"
+        while IFS= read -r -d '' d; do
+          ccaches+=("$d")
+        done < "$container_scan"
+        rm -f "$container_scan"
+      else
+        warn_step "no scratch space in $LOG_DIR or $STATE_DIR — sandboxed application cache scan skipped"
+      fi
     fi
     clear_paths "sandboxed app caches" contents ${ccaches[@]+"${ccaches[@]}"}
   else
@@ -2039,7 +2114,10 @@ clear_ai_support_caches() {
       \) -prune -print0 2>>"$LOG_SINK"
     )
   else
-    scan_out="$(mktemp)"
+    scan_out="$(scratch_file)" || {
+      warn_step "no scratch space in $LOG_DIR or $STATE_DIR — $label application cache scan skipped"
+      return 0
+    }
     if ! find "$root" -maxdepth 4 -type d \( \
          -name "Cache"              -o \
          -name "Code Cache"         -o \
@@ -2163,7 +2241,10 @@ step_workspacestorage() {
   # "this machine has no workspaces yet" both look like zero records. The first
   # deserves a warning, the second is a perfectly ordinary [ ok ].
   local scan_out
-  scan_out="$(mktemp)"
+  scan_out="$(scratch_file)" || {
+    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — keeping all workspace entries"
+    return 0
+  }
   if ! "$py" "$scanner" "${roots[@]}" >"$scan_out" 2>>"$LOG_SINK"; then
     rm -f "$scan_out"
     warn_step "workspace scanner failed — keeping all entries (see log)"
@@ -2202,7 +2283,7 @@ step_workspacestorage() {
 # entries remain. What it freed is added to STEP_FREED_B.
 empty_trash_dir() {
   local trash="$1" label="$2"
-  local before_b after_b delta delete_rc=0 remaining="" verify_rc=0 errs
+  local before_b after_b delta delete_rc=0 remaining="" verify_rc=0
   TRASH_RC=0
   before_b="$(path_bytes "$trash")"
   printf "  %s %s(%s)%s\n" "$label" "$C_DIM" "$(human_bytes "$before_b")" "$C_RESET"
@@ -2213,15 +2294,13 @@ empty_trash_dir() {
   fi
   # -mindepth 1 skips $trash itself; -delete handles hidden files and avoids the
   # '.' / '..' issues that 'rm -rf "$trash"/.*' produces.
-  errs="$(mktemp)"
-  find "$trash" -mindepth 1 -delete 2>"$errs" || delete_rc=$?
-  cat "$errs" >>"$LOG_FILE"
-  if grep -q "${trash}: Operation not permitted$" "$errs"; then
-    rm -f "$errs"
+  local errs_text
+  errs_text="$( { find "$trash" -mindepth 1 -delete ; } 2>&1 >/dev/null )" || delete_rc=$?
+  [[ -z "$errs_text" ]] || printf '%s\n' "$errs_text" >>"$LOG_FILE"
+  if grep -q "${trash}: Operation not permitted$" <<<"$errs_text"; then
     TRASH_RC=1
     return 0
   fi
-  rm -f "$errs"
   remaining="$(find "$trash" -mindepth 1 -print -quit 2>>"$LOG_FILE")" || verify_rc=$?
   after_b="$(path_bytes "$trash")"
   delta=$(( before_b - after_b ))
@@ -2449,14 +2528,17 @@ step_devcaches() {
     any=1
     local -a old_logs=()
     local scan_out
-    scan_out="$(mktemp)"
-    if find "$gcloud_logs" -mindepth 1 -maxdepth 1 -type d -mtime +7 -print0 >"$scan_out" 2>>"$LOG_SINK"; then
-      while IFS= read -r -d '' d; do old_logs+=("$d"); done < "$scan_out"
+    if scan_out="$(scratch_file)"; then
+      if find "$gcloud_logs" -mindepth 1 -maxdepth 1 -type d -mtime +7 -print0 >"$scan_out" 2>>"$LOG_SINK"; then
+        while IFS= read -r -d '' d; do old_logs+=("$d"); done < "$scan_out"
+      else
+        warn_step "could not scan gcloud logs"
+      fi
+      rm -f "$scan_out"
+      clear_paths "gcloud logs older than 7 days" dir ${old_logs[@]+"${old_logs[@]}"}
     else
-      warn_step "could not scan gcloud logs"
+      warn_step "no scratch space in $LOG_DIR or $STATE_DIR — gcloud log pruning skipped"
     fi
-    rm -f "$scan_out"
-    clear_paths "gcloud logs older than 7 days" dir ${old_logs[@]+"${old_logs[@]}"}
   fi
 
   # Gradle's and Maven's caches hold every dependency every build ever
@@ -2564,7 +2646,10 @@ step_xcode() {
     any=1
     local archive_scan
     local -a old_archives=()
-    archive_scan="$(mktemp)"
+    archive_scan="$(scratch_file)" || {
+      warn_step "no scratch space in $LOG_DIR or $STATE_DIR — Xcode Archives pruning skipped"
+      return 0
+    }
     if find "$archives" -mindepth 1 -maxdepth 3 -type d -name '*.xcarchive' \
          -mtime "+$XCODE_ARCHIVE_DAYS" -prune -print0 >"$archive_scan" 2>>"$LOG_SINK"; then
       while IFS= read -r -d '' d; do old_archives+=("$d"); done < "$archive_scan"
@@ -2638,7 +2723,10 @@ step_user_logs() {
     return 0
   fi
   local scan_out scan_rc=0 count total_kb total_b=0 rm_rc=0 left left_kb left_b=0 delta
-  scan_out="$(mktemp)"
+  scan_out="$(scratch_file)" || {
+    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — old log sweep skipped"
+    return 0
+  }
   old_user_logs >"$scan_out" 2>>"$LOG_SINK" || scan_rc=$?
   count="$(tr -cd '\0' <"$scan_out" | wc -c | tr -d ' ')"
   if (( count > 0 )); then
@@ -2690,7 +2778,10 @@ step_downloads() {
   local days="${PRUNE_DOWNLOADS_DAYS:-$DOWNLOADS_OLD_DAYS}"
   local -a old=()
   local scan_out p
-  scan_out="$(mktemp)"
+  scan_out="$(scratch_file)" || {
+    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — Downloads scan skipped"
+    return 0
+  }
   if find "$dl" -mindepth 1 -maxdepth 1 ! -name '.*' -mtime +"$days" -print0 >"$scan_out" 2>>"$LOG_SINK"; then
     while IFS= read -r -d '' p; do old+=("$p"); done <"$scan_out"
   else
@@ -3403,7 +3494,7 @@ echo
 # and while the discard came first every notified clean run recreated an
 # empty log in TMPDIR on its way out.
 SAVED_LOG=""
-if (( DRY_RUN == 0 )) && (( ${#STEPS_FAIL[@]} > 0 || ${#STEPS_WARN[@]} > 0 )); then
+if (( DRY_RUN == 0 )) && [[ "$LOG_FILE" != /dev/null ]] && (( ${#STEPS_FAIL[@]} > 0 || ${#STEPS_WARN[@]} > 0 )); then
   PERSISTENT_LOG_DIR="$STATE_DIR"
   mkdir -p "$PERSISTENT_LOG_DIR"
   SAVED_LOG="$PERSISTENT_LOG_DIR/$(basename "$LOG_FILE")"
@@ -3416,14 +3507,15 @@ if (( DRY_RUN == 0 )) && (( ${#STEPS_FAIL[@]} > 0 || ${#STEPS_WARN[@]} > 0 )); t
     SAVED_LOG="$LOG_FILE"
   fi
   # keep only the 10 most recent logs
-  old_log_list="$(mktemp)"
-  find "$PERSISTENT_LOG_DIR" -name 'stay_fresh-*.log' -type f 2>/dev/null \
-    | sort -r | tail -n +11 > "$old_log_list"
-  while IFS= read -r old_log; do
-    [[ -n "$old_log" ]] || continue
-    rm -f "$old_log" 2>/dev/null || warn "could not remove old log: $old_log"
-  done < "$old_log_list"
-  rm -f "$old_log_list"
+  if old_log_list="$(scratch_file)"; then
+    find "$PERSISTENT_LOG_DIR" -name 'stay_fresh-*.log' -type f 2>/dev/null \
+      | sort -r | tail -n +11 > "$old_log_list"
+    while IFS= read -r old_log; do
+      [[ -n "$old_log" ]] || continue
+      rm -f "$old_log" 2>/dev/null || warn "could not remove old log: $old_log"
+    done < "$old_log_list"
+    rm -f "$old_log_list"
+  fi
   warn "log saved: $SAVED_LOG"
   printf "  %sTo inspect:%s tail -80 '%s'\n" "$C_DIM" "$C_RESET" "$SAVED_LOG"
 fi
@@ -3538,7 +3630,7 @@ $NOTIFY_BODY"; then
 fi
 
 # The clean run's log, kept alive until now for the notifiers, goes last.
-if (( DRY_RUN == 0 )) && [[ -z "$SAVED_LOG" ]]; then
+if (( DRY_RUN == 0 )) && [[ -z "$SAVED_LOG" && "$LOG_FILE" != /dev/null ]]; then
   rm -f "$LOG_FILE"
   info "run clean — log discarded"
 fi
