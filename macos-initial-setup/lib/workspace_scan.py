@@ -191,6 +191,12 @@ def classify_entry(entry_dir: str, mounted: frozenset):
     # that; and it swallows EACCES/EPERM, so a directory the run merely may
     # not look at (TCC on macOS, a mode-000 parent) looked "gone" too.
     # Deleting on either reading destroys the editor state of a live project.
+    # A reason to keep the entry is collected, not acted on: a spelling that is
+    # absent may still be present under another, and returning on the first one
+    # let a decoded spelling nobody has ("/Volumes/back%up") shield an entry
+    # whose attached spelling ("/Volumes/back%25up") really is gone. The reason
+    # counts only when every spelling gives one.
+    reasons = []
     for candidate in candidates:
         try:
             os.lstat(candidate)
@@ -198,16 +204,29 @@ def classify_entry(entry_dir: str, mounted: frozenset):
             # this string is what --verbose and --json show.
             return LIVE, "", candidate
         except FileNotFoundError:
-            # Absent here, but a symlink may have pointed off this machine.
+            # Absent under this spelling. realpath() still resolves the
+            # intermediate symlinks, so a link in /Volumes onto a disk that is
+            # not attached, and a path inside a CloudStorage provider that has
+            # not materialised it, are told apart from a deleted project. The
+            # literal check above cannot see either: both name a directory that
+            # is present, and only what it points at is missing.
             resolved = os.path.realpath(candidate)
             volume = _volume_of(resolved)
             if volume is not None and volume not in mounted:
-                return UNRESOLVED, "volume not mounted (%s)" % volume, candidate
-            if _is_cloud_path(resolved):
-                return UNRESOLVED, "cloud storage not materialised", candidate
+                reasons.append(
+                    (UNRESOLVED, "volume not mounted (%s)" % volume, candidate)
+                )
+            elif _is_cloud_path(resolved):
+                reasons.append(
+                    (UNRESOLVED, "cloud storage not materialised", candidate)
+                )
         except OSError as exc:
+            # EACCES, EPERM, a mount whose server went away: we may not look,
+            # so we do not judge.
             return UNRESOLVED, "cannot read (%s)" % (exc.strerror or "error"), candidate
 
+    if reasons and len(reasons) == len(candidates):
+        return reasons[0]
     return STALE, "path gone", path
 
 
