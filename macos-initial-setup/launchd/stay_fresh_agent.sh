@@ -10,7 +10,8 @@
 #
 # Usage:
 #   ./stay_fresh_agent.sh install [--weekday N] [--hour N] [--minute N]
-#                                 [--profile safe|full] [--notify MODE] [--dry-run]
+#                                 [--profile safe|full] [--notify MODE]
+#                                 [--notify-when WHEN] [--dry-run]
 #   ./stay_fresh_agent.sh uninstall [--dry-run]
 #   ./stay_fresh_agent.sh status
 #   ./stay_fresh_agent.sh run-now
@@ -28,6 +29,9 @@
 #                 slack, both, auto, or a comma-separated list of channels
 #                 (default: not passed, and stay_fresh.sh's auto sends a macOS
 #                 banner because no terminal is attached)
+#   --notify-when W
+#                 Passed to stay_fresh.sh as --notify-when: always, warn or
+#                 fail (default: not passed; stay_fresh.sh's default is always)
 #   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
 #                 nothing and loading nothing
@@ -75,24 +79,25 @@ ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
 warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
 
-# Whether stay_fresh.sh will take a --notify value, asked of stay_fresh.sh
+# Whether stay_fresh.sh will take a flag's value, asked of stay_fresh.sh
 # itself: `--list-steps` answers after the argument checks and before
 # anything runs, so exit 0 means yes and its message says why not. Checked
 # at install so a typo fails here, not on the first scheduled run with
 # nobody watching - and checked by the script that will parse it, so the
 # two cannot disagree about `none,macos` or a channel added next month.
-NOTIFY_ERROR=""
-valid_notify() {
-  local out
+# Usage: stay_fresh_accepts --flag VALUE   (the reason lands in FLAG_ERROR)
+FLAG_ERROR=""
+stay_fresh_accepts() {
+  local flag="$1" value="$2" out
   if [[ ! -x "$STAY_FRESH" ]]; then
-    NOTIFY_ERROR="cannot validate --notify: stay_fresh.sh not found or not executable at $STAY_FRESH"
+    FLAG_ERROR="cannot validate $flag: stay_fresh.sh not found or not executable at $STAY_FRESH"
     return 1
   fi
-  if out="$("$STAY_FRESH" --list-steps --notify "$1" 2>&1 >/dev/null)"; then
+  if out="$("$STAY_FRESH" --list-steps "$flag" "$value" 2>&1 >/dev/null)"; then
     return 0
   fi
-  NOTIFY_ERROR="${out#*\] }"
-  [[ -n "$NOTIFY_ERROR" ]] || NOTIFY_ERROR="--notify value rejected by stay_fresh.sh: $1"
+  FLAG_ERROR="${out#*\] }"
+  [[ -n "$FLAG_ERROR" ]] || FLAG_ERROR="$flag value rejected by stay_fresh.sh: $value"
   return 1
 }
 
@@ -132,6 +137,8 @@ PROFILE="safe"
 PROFILE_SET=0
 NOTIFY=""
 NOTIFY_SET=0
+NOTIFY_WHEN=""
+NOTIFY_WHEN_SET=0
 SCHEDULE_SET=0
 TAIL_LINES=80
 TAIL_SET=0
@@ -202,14 +209,25 @@ while (( $# > 0 )); do
       ;;
     --notify)
       shift; [[ $# -gt 0 ]] || { err "--notify needs a value"; exit 3; }
-      valid_notify "$1" || { err "$NOTIFY_ERROR"; exit 3; }
+      stay_fresh_accepts --notify "$1" || { err "$FLAG_ERROR"; exit 3; }
       NOTIFY="$1"
       NOTIFY_SET=1
       ;;
     --notify=*)
       NOTIFY="${1#*=}"
-      valid_notify "$NOTIFY" || { err "$NOTIFY_ERROR"; exit 3; }
+      stay_fresh_accepts --notify "$NOTIFY" || { err "$FLAG_ERROR"; exit 3; }
       NOTIFY_SET=1
+      ;;
+    --notify-when)
+      shift; [[ $# -gt 0 ]] || { err "--notify-when needs a value"; exit 3; }
+      stay_fresh_accepts --notify-when "$1" || { err "$FLAG_ERROR"; exit 3; }
+      NOTIFY_WHEN="$1"
+      NOTIFY_WHEN_SET=1
+      ;;
+    --notify-when=*)
+      NOTIFY_WHEN="${1#*=}"
+      stay_fresh_accepts --notify-when "$NOTIFY_WHEN" || { err "$FLAG_ERROR"; exit 3; }
+      NOTIFY_WHEN_SET=1
       ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
     --print-only) PRINT_ONLY=1 ;;
@@ -237,21 +255,21 @@ case "$CMD" in
     (( TAIL_SET == 0 )) || { err "--tail is only valid with logs"; exit 3; }
     ;;
   uninstall)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
       || { err "uninstall accepts only --dry-run"; exit 3; }
     ;;
   logs)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
       || { err "logs accepts only --tail"; exit 3; }
     ;;
   status|run-now)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 \
        && AGENT_DRY_RUN == 0 && TAIL_SET == 0 )) \
       || { err "$CMD does not accept options"; exit 3; }
     ;;
   run-scheduled)
     (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
-      || { err "run-scheduled accepts only --profile, --notify and --dry-run"; exit 3; }
+      || { err "run-scheduled accepts only --profile, --notify, --notify-when and --dry-run"; exit 3; }
     ;;
 esac
 
@@ -313,9 +331,10 @@ run_scheduled() {
     # read-only and are the reason to look at the verdict at all: a pending
     # macOS update and a pile of local snapshots are what a scheduled run can
     # tell you that you would not otherwise notice.
-    args+=(--only app-caches,ai-caches,workspace-storage,versions,os-updates,snapshots)
+    args+=(--only app-caches,ai-caches,workspace-storage,versions,os-updates,snapshots,downloads,launch-agents)
   fi
   (( NOTIFY_SET )) && args+=(--notify "$NOTIFY")
+  (( NOTIFY_WHEN_SET )) && args+=(--notify-when "$NOTIFY_WHEN")
   (( AGENT_DRY_RUN )) && args+=(--dry-run)
 
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
@@ -368,6 +387,11 @@ case "$CMD" in
       args="$args
         <string>--notify</string>
         <string>$NOTIFY</string>"
+    fi
+    if (( NOTIFY_WHEN_SET )); then
+      args="$args
+        <string>--notify-when</string>
+        <string>$NOTIFY_WHEN</string>"
     fi
 
     if (( DAILY )); then
@@ -534,7 +558,7 @@ PLIST_EOF
     info "as you, without sudo: memory purge, DNS flush, system caches and"
     info "system diagnostics are skipped. Run stay_fresh.sh by hand for those."
     if [[ "$PROFILE" == "safe" ]]; then
-      info "safe profile: app/AI caches, stale workspace storage, versions, pending OS updates and the snapshot listing"
+      info "safe profile: app/AI caches, stale workspace storage, versions, pending OS updates, the snapshot listing, old downloads and orphaned launch agents (both reported, never removed)"
     else
       info "full profile: cask upgrades are skipped; formulae update unattended"
     fi

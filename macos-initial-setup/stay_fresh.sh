@@ -21,6 +21,10 @@
 #   - clean Xcode extras (DeviceSupport, stale simulators, optionally old Archives)
 #   - clean diagnostic / crash reports (as user; system dirs if sudo)
 #   - remove files under ~/Library/Logs older than 30 days
+#   - report what sits untouched in ~/Downloads (delete only with
+#     --prune-downloads-days N)
+#   - report LaunchAgents and LaunchDaemons whose program no longer exists
+#     (remove the user-level ones only with --prune-orphan-agents)
 #   - Homebrew: update, upgrade (formulae + casks), cleanup -s, autoremove
 #   - refresh dev toolchains (helm plugins, krew plugins, gcloud components)
 #     installed by install_apps.sh / install_devtools.sh
@@ -36,6 +40,7 @@
 #                   [--step-timeout SECONDS]
 #                   [--only STEP1,STEP2] [--list-steps] [--history]
 #                   [--notify none|macos|telegram|slack|both|auto|CH1,CH2]
+#                   [--notify-when always|warn|fail]
 #                   [--skip-snapshots] [--thin-snapshots] [--disk-report]
 #                   [--purge-memory] [--skip-memory] [--skip-dns] [--skip-syscaches]
 #                   [--skip-usercaches] [--skip-appcaches]
@@ -49,7 +54,9 @@
 #                   [--skip-docker] [--prune-docker-volumes]
 #                   [--skip-xcode] [--prune-xcode-archives-days N]
 #                   [--force-active-app-caches] [--skip-diagnostics]
-#                   [--skip-user-logs] [--no-sudo] [--help]
+#                   [--skip-user-logs] [--skip-downloads] [--prune-downloads-days N]
+#                   [--skip-launch-agents] [--prune-orphan-agents]
+#                   [--no-sudo] [--help]
 #
 # Exit codes:
 #   0   housekeeping finished (possibly with non-fatal warnings)
@@ -139,6 +146,15 @@ SKIP_DIAGNOSTICS=0
 # Files under ~/Library/Logs older than this many days are removed.
 SKIP_USER_LOGS=0
 USER_LOG_DAYS=30
+# ~/Downloads is reported, never cleared, unless --prune-downloads-days says
+# how old an entry must be to go.
+SKIP_DOWNLOADS=0
+DOWNLOADS_OLD_DAYS=90
+PRUNE_DOWNLOADS_DAYS=""
+# launchd plists whose program is gone are reported; the user-level ones are
+# removed only with --prune-orphan-agents. System-level ones are never touched.
+SKIP_LAUNCH_AGENTS=0
+PRUNE_ORPHAN_AGENTS=0
 # Listing snapshots is read-only and cheap; deleting them is opt-in.
 SKIP_SNAPSHOTS=0
 THIN_SNAPSHOTS=0
@@ -159,6 +175,10 @@ STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-1800}"
 # scheduled agent) and nothing otherwise. Resolved into the NOTIFY_* flags
 # below once the arguments are parsed.
 NOTIFY_MODE="${STAY_FRESH_NOTIFY:-auto}"
+# always | warn | fail: a scheduled run that posts a banner every morning
+# trains its owner to swipe it away; warn keeps the channel for the runs
+# that need reading.
+NOTIFY_WHEN="${STAY_FRESH_NOTIFY_WHEN:-always}"
 NOTIFY_MACOS=0
 NOTIFY_TELEGRAM=0
 NOTIFY_SLACK=0
@@ -173,6 +193,12 @@ CASKS_OUTDATED=0
 OS_UPDATES_PENDING=0
 SNAPSHOTS_FOUND=0
 SNAPSHOTS_THINNED=0
+DOWNLOADS_OLD=0
+DOWNLOADS_PRUNED=0
+ORPHAN_AGENTS=0
+BREW_SERVICES_ERROR=0
+# Under --dry-run: the sizes of what the deletions would have removed.
+DRY_ESTIMATE_B=0
 TRASH_PROTECTED=0
 BREW_GREEDY=0
 CLEANUP_OLD_GEMS=0
@@ -345,6 +371,8 @@ docker|SKIP_DOCKER|step_docker|Docker / OrbStack prune|prune local Docker / OrbS
 xcode|SKIP_XCODE|step_xcode|Xcode extras|clean safe Xcode extras
 diagnostics|SKIP_DIAGNOSTICS|step_diagnostics|Diagnostic / crash reports|remove crash and diagnostic reports
 user-logs|SKIP_USER_LOGS|step_user_logs|Old user logs|remove ~/Library/Logs files older than 30 days
+downloads|SKIP_DOWNLOADS|step_downloads|Old downloads|report ~/Downloads entries untouched for 90 days (delete with --prune-downloads-days)
+launch-agents|SKIP_LAUNCH_AGENTS|step_launch_agents|Orphaned launch agents|report launchd plists whose program is gone (remove with --prune-orphan-agents)
 brew|SKIP_BREW|step_brew|Homebrew update / upgrade / cleanup|update, upgrade and clean Homebrew
 dev-caches|SKIP_DEVCACHES|step_devcaches|Dev-tool caches|clean language and package-manager caches
 helm-plugins|SKIP_HELM_PLUGINS|step_helm_plugins|Helm plugin refresh|update installed Helm plugins
@@ -408,8 +436,10 @@ ${C_BOLD}General options:${C_RESET}
                          caches. No sudo (not even a cached credential), no
                          Homebrew, no reports. Same as --only with those ids
   --reports              The read-only subset: tool versions, pending OS / App
-                         Store updates, local snapshots (listed, never thinned)
-                         and the disk report. Same as --only with those ids
+                         Store updates, local snapshots (listed, never thinned),
+                         old downloads and orphaned launch agents (listed, never
+                         removed) and the disk report. Same as --only with
+                         those ids
   --step-timeout N       Stop any one command inside a step after N seconds
                          and count the step as warned (default 1800; 0 disables;
                          env STAY_FRESH_STEP_TIMEOUT). Prompts are never limited
@@ -420,6 +450,8 @@ ${C_BOLD}General options:${C_RESET}
                          auto (default: macos when no terminal is attached,
                          none otherwise), or a comma-separated list of channels
                          such as macos,slack. Env: STAY_FRESH_NOTIFY
+  --notify-when WHEN     always (default), warn (only a WARN or FAILED run),
+                         or fail (only a FAILED run). Env: STAY_FRESH_NOTIFY_WHEN
   --help, -h             Show this help
 
 ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
@@ -461,6 +493,13 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
   --skip-user-logs       Don't remove files under ~/Library/Logs older than
                          30 days (see Notes)
+  --skip-downloads       Don't report entries in ~/Downloads untouched for 90 days
+  --prune-downloads-days N
+                         Remove top-level ~/Downloads entries untouched for N
+                         days (off by default: the report only names them)
+  --skip-launch-agents   Don't report launchd plists whose program is gone
+  --prune-orphan-agents  Unload and remove orphaned plists in ~/Library/LaunchAgents
+                         (system-level ones are only ever reported)
   --skip-os-updates      Don't report pending macOS / App Store updates
                          (not part of --skip-devtools)
   --skip-snapshots       Don't list local Time Machine snapshots
@@ -532,6 +571,21 @@ ${C_BOLD}Notes:${C_RESET}
 
   Snapshots are never thinned while a Time Machine backup is running
   ('tmutil status' says so); they are listed and the next run tries again.
+
+  Downloads: ~/Downloads is where installers, archives and one-off exports
+  land and stay. Top-level entries untouched (by mtime) for 90 days are
+  counted and the largest named; nothing is removed unless
+  --prune-downloads-days N is explicit, and a dry run lists exactly what
+  would go. Hidden entries (.DS_Store, .localized) are never counted.
+
+  Launch agents: every tool that ever installed a background helper left a
+  plist in ~/Library/LaunchAgents, /Library/LaunchAgents or
+  /Library/LaunchDaemons, and uninstalling the tool rarely removes it; launchd
+  then retries a program that is gone at every login. Plists whose Program
+  (or first ProgramArguments entry, or the script an interpreter is given)
+  no longer exists are named. --prune-orphan-agents unloads and removes the
+  ones under ~/Library/LaunchAgents; the system-level ones are yours to
+  remove with sudo, and the command is printed.
 
   OS updates: softwareupdate --list, and mas outdated where mas is installed.
   Read-only: it names what is pending and how to install it, and never installs
@@ -607,6 +661,19 @@ while (( $# > 0 )); do
       ;;
     --skip-diagnostics) SKIP_DIAGNOSTICS=1; EXPLICIT_SKIP=1 ;;
     --skip-user-logs)  SKIP_USER_LOGS=1; EXPLICIT_SKIP=1 ;;
+    --skip-downloads)  SKIP_DOWNLOADS=1; EXPLICIT_SKIP=1 ;;
+    --prune-downloads-days)
+      require_value "$1" "${2:-}"; shift
+      PRUNE_DOWNLOADS_DAYS="$1"
+      [[ "$PRUNE_DOWNLOADS_DAYS" =~ ^[1-9][0-9]*$ ]] || { err "--prune-downloads-days must be a positive integer"; exit 3; }
+      ;;
+    --prune-downloads-days=*)
+      PRUNE_DOWNLOADS_DAYS="${1#*=}"
+      require_value "--prune-downloads-days" "$PRUNE_DOWNLOADS_DAYS"
+      [[ "$PRUNE_DOWNLOADS_DAYS" =~ ^[1-9][0-9]*$ ]] || { err "--prune-downloads-days must be a positive integer"; exit 3; }
+      ;;
+    --skip-launch-agents) SKIP_LAUNCH_AGENTS=1; EXPLICIT_SKIP=1 ;;
+    --prune-orphan-agents) PRUNE_ORPHAN_AGENTS=1 ;;
     --skip-snapshots)  SKIP_SNAPSHOTS=1; EXPLICIT_SKIP=1 ;;
     --thin-snapshots)  THIN_SNAPSHOTS=1 ;;
     --disk-report)     SKIP_DISK_REPORT=0 ;;
@@ -625,6 +692,8 @@ while (( $# > 0 )); do
       ;;
     --notify)          require_value "$1" "${2:-}"; shift; NOTIFY_MODE="$1" ;;
     --notify=*)        NOTIFY_MODE="${1#*=}"; require_value "--notify" "$NOTIFY_MODE" ;;
+    --notify-when)     require_value "$1" "${2:-}"; shift; NOTIFY_WHEN="$1" ;;
+    --notify-when=*)   NOTIFY_WHEN="${1#*=}"; require_value "--notify-when" "$NOTIFY_WHEN" ;;
     -h|--help)         usage; exit 0 ;;
     *)                 err "unknown option: $1"; usage >&2; exit 3 ;;
   esac
@@ -664,6 +733,10 @@ if (( (NOTIFY_NONE || NOTIFY_AUTO) && notify_count > 1 )); then
   err "--notify none and auto cannot be combined with other channels (got: $NOTIFY_MODE)"
   exit 3
 fi
+case "$NOTIFY_WHEN" in
+  always|warn|fail) ;;
+  *) err "--notify-when must be always, warn or fail (got: $NOTIFY_WHEN)"; exit 3 ;;
+esac
 
 # After the argument checks, so that `--list-steps --notify X` is the one
 # question the agent can ask about a --notify value without running anything:
@@ -688,7 +761,9 @@ if (( REPORTS )); then
   [[ -z "$ONLY_STEPS" ]] || { err "--reports cannot be combined with --only"; exit 3; }
   (( EXPLICIT_SKIP == 0 )) || { err "--reports cannot be combined with individual --skip-* flags"; exit 3; }
   (( THIN_SNAPSHOTS == 0 )) || { err "--reports is read-only and cannot be combined with --thin-snapshots"; exit 3; }
-  ONLY_STEPS="versions,os-updates,snapshots,disk-report"
+  [[ -z "$PRUNE_DOWNLOADS_DAYS" ]] || { err "--reports is read-only and cannot be combined with --prune-downloads-days"; exit 3; }
+  (( PRUNE_ORPHAN_AGENTS == 0 )) || { err "--reports is read-only and cannot be combined with --prune-orphan-agents"; exit 3; }
+  ONLY_STEPS="versions,os-updates,snapshots,downloads,launch-agents,disk-report"
 fi
 
 if [[ -n "$ONLY_STEPS" ]]; then
@@ -1047,6 +1122,7 @@ clear_dir() {
   printf "  clearing %s %s(%s)%s\n" "$dir" "$C_DIM" "$(human_bytes "$before_b")" "$C_RESET"
   if (( DRY_RUN )); then
     printf "  %s(dry-run) would remove contents of %s%s\n" "$C_DIM" "$dir" "$C_RESET"
+    DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + before_b ))
     return 0
   fi
   errs="$(mktemp)"
@@ -1166,6 +1242,7 @@ clear_paths() {
 
   if (( DRY_RUN )); then
     printf "  %s(dry-run) would clear %d path(s)%s\n" "$C_DIM" "$count" "$C_RESET"
+    DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + total_b ))
     return 0
   fi
 
@@ -1585,10 +1662,12 @@ fi
 (( NOTIFY_TELEGRAM )) && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }telegram"
 (( NOTIFY_SLACK ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }slack"
 if [[ -n "$NOTIFY_CHANNELS" ]]; then
+  notify_when_text=""
+  [[ "$NOTIFY_WHEN" == "always" ]] || notify_when_text=" (only on $NOTIFY_WHEN)"
   if (( DRY_RUN )); then
-    info "(dry-run) would notify via $NOTIFY_CHANNELS at the end"
+    info "(dry-run) would notify via $NOTIFY_CHANNELS at the end$notify_when_text"
   else
-    ok "notify: $NOTIFY_CHANNELS"
+    ok "notify: $NOTIFY_CHANNELS$notify_when_text"
   fi
 fi
 
@@ -1652,6 +1731,18 @@ fi
 plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "$xcode_plan"
 plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "user (+ system if sudo)"
 plan_line "old user logs"                     "$(( 1 - SKIP_USER_LOGS   ))" "~/Library/Logs files older than ${USER_LOG_DAYS}d; DiagnosticReports and stay_fresh's own kept"
+if [[ -n "$PRUNE_DOWNLOADS_DAYS" ]]; then
+  downloads_plan="remove ~/Downloads entries untouched for ${PRUNE_DOWNLOADS_DAYS}d"
+else
+  downloads_plan="entries untouched for ${DOWNLOADS_OLD_DAYS}d; read-only (--prune-downloads-days removes)"
+fi
+plan_line "old downloads"                     "$(( 1 - SKIP_DOWNLOADS   ))" "$downloads_plan"
+if (( PRUNE_ORPHAN_AGENTS )); then
+  agents_plan="plists whose program is gone; user-level ones removed, system-level reported"
+else
+  agents_plan="plists whose program is gone; read-only (--prune-orphan-agents removes user-level)"
+fi
+plan_line "orphaned launch agents"            "$(( 1 - SKIP_LAUNCH_AGENTS ))" "$agents_plan"
 plan_line "homebrew update/upgrade/cleanup"   "$(( 1 - SKIP_BREW        ))" "brew update · upgrade · cleanup -s · autoremove"
 if (( CLEANUP_OLD_GEMS )); then
   devcache_plan="npm/yarn/pnpm/pip/uv/go/kubectl/terraform caches, gcloud logs, pre-commit + old gems"
@@ -2117,6 +2208,7 @@ empty_trash_dir() {
   printf "  %s %s(%s)%s\n" "$label" "$C_DIM" "$(human_bytes "$before_b")" "$C_RESET"
   if (( DRY_RUN )); then
     printf "  %s(dry-run) would empty %s%s\n" "$C_DIM" "$label" "$C_RESET"
+    DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + before_b ))
     return 0
   fi
   # -mindepth 1 skips $trash itself; -delete handles hidden files and avoids the
@@ -2560,6 +2652,7 @@ step_user_logs() {
   if (( DRY_RUN )); then
     rm -f "$scan_out"
     printf "  %s(dry-run) would clear %d path(s)%s\n" "$C_DIM" "$count" "$C_RESET"
+    DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + total_b ))
     return 0
   fi
   if (( count > 0 )); then
@@ -2582,10 +2675,180 @@ step_user_logs() {
   rm -f "$scan_out"
 }
 
+# ~/Downloads is where installers, archives and one-off exports land and
+# stay: nothing on the machine ever looks at them again, and nothing removes
+# them. Top-level entries by mtime, so a folder that was added to last week
+# counts as touched. Reported by default; removal is one explicit flag and
+# one dry run away, because a download is the one thing here that may be the
+# only copy.
+step_downloads() {
+  local dl="$HOME/Downloads"
+  if [[ ! -d "$dl" ]]; then
+    info "no $dl — nothing to do"
+    return 0
+  fi
+  local days="${PRUNE_DOWNLOADS_DAYS:-$DOWNLOADS_OLD_DAYS}"
+  local -a old=()
+  local scan_out p
+  scan_out="$(mktemp)"
+  if find "$dl" -mindepth 1 -maxdepth 1 ! -name '.*' -mtime +"$days" -print0 >"$scan_out" 2>>"$LOG_SINK"; then
+    while IFS= read -r -d '' p; do old+=("$p"); done <"$scan_out"
+  else
+    warn_step "could not scan $dl"
+  fi
+  rm -f "$scan_out"
+  DOWNLOADS_OLD=${#old[@]}
+  if (( DOWNLOADS_OLD == 0 )); then
+    ok "nothing in ~/Downloads untouched for $days days"
+    return 0
+  fi
+  if [[ -n "$PRUNE_DOWNLOADS_DAYS" ]]; then
+    DOWNLOADS_PRUNED=1
+    clear_paths "Downloads entries untouched for $days days" dir "${old[@]}"
+    return 0
+  fi
+  # The report: the total, then the five largest so the next decision is
+  # made from numbers.
+  local listing total_b=0 kb name
+  listing="$(du -sk "${old[@]}" 2>/dev/null | sort -rn)"
+  while IFS=$'\t' read -r kb name; do
+    [[ "$kb" =~ ^[0-9]+$ ]] || continue
+    total_b=$(( total_b + kb * 1024 ))
+  done <<<"$listing"
+  printf "  %s%d entr%s in ~/Downloads untouched for %d days:%s %s\n" \
+    "$C_YELLOW" "$DOWNLOADS_OLD" "$( (( DOWNLOADS_OLD == 1 )) && printf 'y' || printf 'ies')" "$days" "$C_RESET" "$(human_bytes "$total_b")"
+  head -n 5 <<<"$listing" | while IFS=$'\t' read -r kb name; do
+    [[ "$kb" =~ ^[0-9]+$ ]] || continue
+    printf "      %8s  %s\n" "$(human_bytes $(( kb * 1024 )))" "${name#"$dl"/}"
+  done
+  printf "  %skept; --prune-downloads-days %d removes them (a dry run lists what would go)%s\n" \
+    "$C_DIM" "$days" "$C_RESET"
+}
+
+# The program a launchd plist runs: the Program key, else the first entry of
+# ProgramArguments, and the second entry too when the first is an interpreter
+# handed a script. Prints one path per line. XML is read as is; a binary
+# plist goes through plutil where macOS provides it and is otherwise not
+# inspected (return 1).
+plist_program() {
+  local f="$1" xml
+  if [[ "$(head -c 6 "$f" 2>/dev/null)" == "bplist" ]]; then
+    command -v plutil >/dev/null 2>&1 || return 1
+    xml="$(plutil -convert xml1 -o - "$f" 2>/dev/null)" || return 1
+  else
+    xml="$(cat "$f" 2>/dev/null)" || return 1
+  fi
+  # Keys, arrays and strings may share a line or each take one; the scan
+  # keeps going on the remainder of a line after a key it recognised.
+  awk '
+    {
+      line = $0
+      if (line ~ /<key>Program<\/key>/) {
+        want = "p"; sub(/.*<key>Program<\/key>/, "", line)
+      } else if (line ~ /<key>ProgramArguments<\/key>/) {
+        want = "a"; sub(/.*<key>ProgramArguments<\/key>/, "", line)
+      }
+      while (want != "" && match(line, /<string>[^<]*<\/string>/)) {
+        v = substr(line, RSTART + 8, RLENGTH - 17)
+        line = substr(line, RSTART + RLENGTH)
+        if (want == "p") { print v; exit }
+        args[++n] = v
+        if (n == 2) exit
+      }
+      if (want == "a" && line ~ /<\/array>/) exit
+    }
+    END { for (i = 1; i <= n; i++) print args[i] }
+  ' <<<"$xml"
+}
+
+# Every tool that ever installed a background helper left a plist behind, and
+# uninstalling the tool rarely removes it; launchd then retries a program that
+# is gone at every login and logs the failure forever. Reported by default.
+# The user-level ones are unloaded and removed with --prune-orphan-agents; the
+# system-level ones belong to root and are only ever named, with the command.
+step_launch_agents() {
+  local -a roots=("$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons")
+  local -a user_orphans=() system_orphans=()
+  local root f progs prog arg1 target scanned=0 uninspected=0 label
+  for root in "${roots[@]}"; do
+    [[ -d "$root" ]] || continue
+    for f in "$root"/*.plist; do
+      [[ -f "$f" ]] || continue
+      scanned=$(( scanned + 1 ))
+      if ! progs="$(plist_program "$f")"; then
+        uninspected=$(( uninspected + 1 ))
+        continue
+      fi
+      prog="$(sed -n 1p <<<"$progs")"
+      arg1="$(sed -n 2p <<<"$progs")"
+      [[ -n "$prog" ]] || continue
+      target="$prog"
+      case "$prog" in
+        /bin/sh|/bin/bash|/bin/zsh|/usr/bin/env|/usr/bin/perl|/usr/bin/python3|/usr/bin/osascript)
+          [[ "$arg1" == /* ]] && target="$arg1" ;;
+      esac
+      if [[ "$target" == /* ]]; then
+        [[ -e "$target" ]] && continue
+      else
+        command -v "$target" >/dev/null 2>&1 && continue
+      fi
+      if [[ "$root" == "$HOME/Library/LaunchAgents" ]]; then
+        user_orphans+=("$f")
+      else
+        system_orphans+=("$f")
+      fi
+      printf "  %s%s%s -> %s (missing)\n" "$C_YELLOW" "${f/#$HOME/\~}" "$C_RESET" "$target"
+    done
+  done
+  ORPHAN_AGENTS=$(( ${#user_orphans[@]} + ${#system_orphans[@]} ))
+  if (( scanned == 0 )); then
+    info "no launchd plists under ~/Library/LaunchAgents, /Library/LaunchAgents or /Library/LaunchDaemons"
+    return 0
+  fi
+  if (( uninspected > 0 )); then
+    printf "  %s%d binary plist(s) not inspected (plutil not available)%s\n" "$C_DIM" "$uninspected" "$C_RESET"
+  fi
+  if (( ORPHAN_AGENTS == 0 )); then
+    ok "every launchd plist points at a program that exists ($scanned checked)"
+    return 0
+  fi
+  if (( ${#system_orphans[@]} > 0 )); then
+    printf "  %ssystem-level plists are never removed by this run; if nothing needs them:%s\n" "$C_DIM" "$C_RESET"
+    for f in "${system_orphans[@]}"; do
+      printf "      sudo launchctl bootout system/%s; sudo rm -f '%s'\n" "$(basename "$f" .plist)" "$f"
+    done
+  fi
+  if (( ${#user_orphans[@]} == 0 )); then
+    return 0
+  fi
+  if (( PRUNE_ORPHAN_AGENTS == 0 )); then
+    printf "  %s%d user-level plist(s) kept; --prune-orphan-agents unloads and removes them%s\n" \
+      "$C_DIM" "${#user_orphans[@]}" "$C_RESET"
+    return 0
+  fi
+  for f in "${user_orphans[@]}"; do
+    label="$(basename "$f" .plist)"
+    if (( DRY_RUN )); then
+      printf "  %s(dry-run) launchctl bootout gui/%s/%s%s\n" "$C_DIM" "$(id -u)" "$label" "$C_RESET"
+    else
+      # Unloading a job that is not loaded fails, and that is fine: the
+      # plist goes either way.
+      launchctl bootout "gui/$(id -u)/$label" >>"$LOG_SINK" 2>&1 || true
+    fi
+  done
+  clear_paths "orphaned LaunchAgents" dir "${user_orphans[@]}"
+}
+
 step_brew() {
   if ! command -v brew >/dev/null 2>&1; then
     warn "brew not on PATH"
     return 1
+  fi
+  # A second, Intel Homebrew under /usr/local on Apple silicon is common on
+  # a migrated machine and is not what this run maintains.
+  if [[ "$(uname -m 2>/dev/null)" == "arm64" && -d /usr/local/Homebrew ]] \
+     && [[ "$(brew --prefix 2>/dev/null)" != "/usr/local" ]]; then
+    info "an Intel Homebrew is also installed at /usr/local/Homebrew; this run maintains only $(brew --prefix 2>/dev/null). Remove it if nothing under Rosetta still needs it"
   fi
 
   # Some casks (Docker, Karabiner, VirtualBox, ...) invoke sudo during their
@@ -2731,6 +2994,19 @@ step_brew() {
   run_cmd "brew autoremove"        brew autoremove             || warn "'brew autoremove' had issues"
   if (( VERBOSE )); then
     run_cmd "brew doctor" brew doctor || warn "'brew doctor' reports issues — see log"
+  fi
+
+  # A brew service in "error" state is a daemon (postgres, redis, a proxy)
+  # that launchd has given up restarting; it will not come back on its own,
+  # and nothing else in the run would mention it. Reported, not counted: the
+  # run cannot fix it.
+  local services_out errored
+  if (( DRY_RUN == 0 )) && services_out="$(with_timeout "$STEP_TIMEOUT" brew services list 2>>"$LOG_SINK")"; then
+    errored="$(awk 'NR > 1 && $2 == "error" { print $1 }' <<<"$services_out")"
+    if [[ -n "$errored" ]]; then
+      BREW_SERVICES_ERROR="$(grep -c . <<<"$errored")"
+      warn "$BREW_SERVICES_ERROR brew service(s) in error state: $(paste -sd ' ' - <<<"$errored") — see 'brew services info <name>'"
+    fi
   fi
 }
 
@@ -3095,6 +3371,10 @@ printf "  disk free:   %s -> %s  %s(%s reclaimed)%s\n" \
   "$C_GREEN" "$(human_bytes "$RECLAIMED_B")" "$C_RESET"
 printf "  steps freed: %s%s%s %s(sum of per-step deltas; more precise than df)%s\n" \
   "$C_GREEN" "$(human_bytes "$TOTAL_FREED_B")" "$C_RESET" "$C_DIM" "$C_RESET"
+if (( DRY_RUN )); then
+  printf "  would free:  %s%s%s %s(what the deletions would remove; caches that rebuild themselves count too)%s\n" \
+    "$C_GREEN" "$(human_bytes "$DRY_ESTIMATE_B")" "$C_RESET" "$C_DIM" "$C_RESET"
+fi
 printf "  ok steps:    %s%d%s\n" "$C_GREEN"  "${#STEPS_OK[@]}"   "$C_RESET"
 printf "  warn steps:  %s%d%s\n" "$C_YELLOW" "${#STEPS_WARN[@]}" "$C_RESET"
 printf "  skipped:     %s%d%s\n" "$C_DIM"    "${#STEPS_SKIP[@]}" "$C_RESET"
@@ -3168,6 +3448,9 @@ DETAIL="${#STEPS_OK[@]} ok"
 (( OS_UPDATES_PENDING > 0 )) && DETAIL="$DETAIL; $OS_UPDATES_PENDING OS/App Store update(s) pending"
 (( SNAPSHOTS_FOUND > 0 ))   && DETAIL="$DETAIL; $SNAPSHOTS_FOUND local snapshot(s)$( (( SNAPSHOTS_THINNED )) && printf ' thinned' || printf ' kept')"
 (( TRASH_PROTECTED > 0 ))   && DETAIL="$DETAIL; Trash needs Full Disk Access"
+(( DOWNLOADS_OLD > 0 ))     && DETAIL="$DETAIL; $DOWNLOADS_OLD old download(s)$( (( DOWNLOADS_PRUNED )) && printf ' removed' || printf ' kept')"
+(( ORPHAN_AGENTS > 0 ))     && DETAIL="$DETAIL; $ORPHAN_AGENTS orphaned launch agent(s)"
+(( BREW_SERVICES_ERROR > 0 )) && DETAIL="$DETAIL; $BREW_SERVICES_ERROR brew service(s) in error"
 UPTIME_TEXT="$(uptime_text)"
 [[ -n "$UPTIME_TEXT" ]]     && DETAIL="$DETAIL; $UPTIME_TEXT"
 
@@ -3209,6 +3492,8 @@ if (( DRY_RUN == 0 )); then
       printf '  "brew_upgraded": %d,\n'   "$BREW_UPGRADED"
       printf '  "casks_outdated": %d,\n'  "$CASKS_OUTDATED"
       printf '  "os_updates_pending": %d,\n' "$OS_UPDATES_PENDING"
+      printf '  "old_downloads": %d,\n'     "$DOWNLOADS_OLD"
+      printf '  "orphaned_agents": %d,\n'   "$ORPHAN_AGENTS"
       printf '  "snapshots_found": %d,\n' "$SNAPSHOTS_FOUND"
       printf '  "ok": %s,\n'      "$(json_list ${STEPS_OK[@]+"${STEPS_OK[@]}"})"
       printf '  "warned": %s,\n'  "$(json_list ${STEPS_WARN[@]+"${STEPS_WARN[@]}"})"
@@ -3224,7 +3509,15 @@ if (( DRY_RUN == 0 )); then
   fi
 fi
 
-if (( DRY_RUN == 0 )) && [[ -n "$NOTIFY_CHANNELS" ]]; then
+NOTIFY_DUE=1
+case "$NOTIFY_WHEN" in
+  warn) [[ "$RESULT" != "OK" ]]     || NOTIFY_DUE=0 ;;
+  fail) [[ "$RESULT" == "FAILED" ]] || NOTIFY_DUE=0 ;;
+esac
+if (( DRY_RUN == 0 )) && [[ -n "$NOTIFY_CHANNELS" ]] && (( NOTIFY_DUE == 0 )); then
+  info "notification not sent: the run was $RESULT and --notify-when is $NOTIFY_WHEN"
+fi
+if (( DRY_RUN == 0 )) && [[ -n "$NOTIFY_CHANNELS" ]] && (( NOTIFY_DUE )); then
   NOTIFY_BODY="$DETAIL"
   [[ -n "${SAVED_LOG:-}" ]] && NOTIFY_BODY="$NOTIFY_BODY. Log: $SAVED_LOG"
   if (( NOTIFY_MACOS )); then

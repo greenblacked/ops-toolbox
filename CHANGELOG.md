@@ -16,6 +16,33 @@ entry here belongs to a version.
 
 ### Added
 
+- `stay_fresh.sh` step `downloads`: top-level entries in `~/Downloads`
+  untouched for 90 days are counted, totalled and the largest named. Nothing
+  is removed unless `--prune-downloads-days N` is explicit, a dry run lists
+  what would go, and hidden entries are never touched. Installers and
+  archives land there and nothing on the machine ever looks at them again.
+- `stay_fresh.sh` step `launch-agents`: plists under `~/Library/LaunchAgents`,
+  `/Library/LaunchAgents` and `/Library/LaunchDaemons` whose program (the
+  `Program` key, the first `ProgramArguments` entry, or the script an
+  interpreter is handed) no longer exists are named. Every uninstalled tool
+  leaves one, and launchd retries it at every login. `--prune-orphan-agents`
+  unloads and removes the user-level ones; system-level ones are only ever
+  named with the `sudo` command. Both new steps are part of `--reports` and
+  of the agent's `safe` profile, as reports.
+- `stay_fresh.sh --notify-when always|warn|fail` (env
+  `STAY_FRESH_NOTIFY_WHEN`): a banner every morning gets swiped away unread;
+  `warn` keeps the channel for the runs that need reading. A withheld
+  notification is said on the terminal. `stay_fresh_agent.sh install
+  --notify-when` passes it through, validated by `stay_fresh.sh` itself.
+- `stay_fresh.sh --dry-run` ends with a `would free` line: the sizes of
+  everything the deletions would have removed, added up across steps, so a
+  preview answers the question it is run for.
+- The Homebrew step names a `brew services` entry in `error` state (a
+  daemon launchd gave up restarting, which nothing else in the run would
+  mention) and carries the count into the verdict, and names an Intel
+  Homebrew still installed at `/usr/local/Homebrew` on Apple silicon.
+- `zsh_aliases.zsh` completes `--notify-when` values and the new flags.
+
 - `stay_fresh.sh` step `user-logs`: files under `~/Library/Logs` older than
   30 days are removed. Every app, daemon and installer writes there and
   nothing prunes it. Directories stay, because an app whose log directory

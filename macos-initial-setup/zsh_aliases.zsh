@@ -403,20 +403,18 @@ if [[ -x "$_ZSH_ALIASES_DIR/stay_fresh.sh" ]]; then
     local -a ids channels
     channels=(none macos telegram slack both auto)
     # The value of a flag that takes one: as the next word, or after '='.
-    case "${words[CURRENT-1]}" in
-      --only)   ids=(${(f)"$(_stay_fresh_step_ids)"}); _values -s , 'step id' $ids; return ;;
-      --notify) _values -s , 'channel' $channels; return ;;
+    local flag="${words[CURRENT-1]}" f
+    for f in --only --notify --notify-when --step-timeout --prune-xcode-archives-days --prune-downloads-days; do
+      compset -P "$f=" && flag="$f"
+    done
+    case "$flag" in
+      --only)        ids=(${(f)"$(_stay_fresh_step_ids)"}); _values -s , 'step id' $ids; return ;;
+      --notify)      _values -s , 'channel' $channels; return ;;
+      --notify-when) _values 'when' always warn fail; return ;;
       --step-timeout)              _message 'seconds (0 disables)'; return ;;
       --prune-xcode-archives-days) _message 'days'; return ;;
+      --prune-downloads-days)      _message 'days'; return ;;
     esac
-    if compset -P '--only='; then
-      ids=(${(f)"$(_stay_fresh_step_ids)"}); _values -s , 'step id' $ids; return
-    fi
-    if compset -P '--notify='; then
-      _values -s , 'channel' $channels; return
-    fi
-    if compset -P '--step-timeout='; then _message 'seconds (0 disables)'; return; fi
-    if compset -P '--prune-xcode-archives-days='; then _message 'days'; return; fi
     local -a flags
     flags=(${(f)"$(_stay_fresh_flags)"})
     compadd -- $flags

@@ -434,7 +434,22 @@ In the order they run:
     log directory vanished may not recreate it; `DiagnosticReports` belongs
     to step 11 and `~/Library/Logs/stay_fresh` (the run history and kept
     logs) is left alone.
-13. Update and upgrade Homebrew formulae, then casks once when an interactive
+13. Report **old downloads**: top-level entries in `~/Downloads` untouched
+    (by mtime) for 90 days, their total and the five largest. Installers,
+    archives and one-off exports land there and nothing ever removes them.
+    Reported only; `--prune-downloads-days N` removes entries untouched for
+    `N` days, and a dry run lists exactly what would go. Hidden entries such
+    as `.DS_Store` are never counted or removed.
+14. Report **orphaned launch agents**: plists under `~/Library/LaunchAgents`,
+    `/Library/LaunchAgents` and `/Library/LaunchDaemons` whose `Program` (or
+    first `ProgramArguments` entry, or the script an interpreter is handed)
+    no longer exists. Every tool that ever installed a background helper left
+    one, and uninstalling the tool rarely removes it; launchd then retries a
+    program that is gone at every login. Reported only;
+    `--prune-orphan-agents` unloads and removes the user-level ones. The
+    system-level ones are never touched, and the `sudo` command to remove
+    them is printed. Binary plists are inspected through `plutil` on macOS.
+15. Update and upgrade Homebrew formulae, then casks once when an interactive
     sudo-capable run permits them; run `cleanup -s` and `autoremove`. A stale
     git lock in the Homebrew repository makes `brew update` print "Already
     up-to-date" and exit 0 with the taps untouched, so the upgrade runs on
@@ -442,8 +457,12 @@ In the order they run:
     running is removed, any other lock is named and the update counted as a
     warning. A cask or formula Homebrew has disabled, typically for failing
     the Gatekeeper check, stops being upgraded silently; each one is named
-    with its reason.
-14. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`,
+    with its reason. A `brew services` entry in `error` state, a daemon
+    launchd has given up restarting, is named and reaches the verdict; it is
+    not counted as a warning, because the run cannot fix it. An Intel
+    Homebrew still installed at `/usr/local/Homebrew` on Apple silicon is
+    named once, because this run maintains only the active prefix.
+16. Clean developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`,
     kubectl's per-cluster discovery cache under `~/.kube/cache`, which
     kubectl rebuilds on the next call, and Terraform's provider plugin cache
     where one is configured; `~/.kube/config` and project `.terraform/`
@@ -455,15 +474,15 @@ In the order they run:
     every run and cleared only with `--prune-build-caches`: they are the
     largest thing under `HOME` on a JVM workstation, and the slowest to get
     back, because the next build downloads every dependency again.
-15. Update installed Helm plugins.
-16. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
+17. Update installed Helm plugins.
+18. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
     index, then `kubectl krew upgrade` each plugin. krew itself is a Homebrew
     formula; the kubectl plugins it installs are not, and nothing else moves
     them.
-17. Run `gcloud components update`.
-18. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
+19. Run `gcloud components update`.
+20. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     `kubectl` and its krew, `terraform`, `docker`, and `gcloud`.
-19. Report **pending macOS and App Store updates**: `softwareupdate --list`,
+21. Report **pending macOS and App Store updates**: `softwareupdate --list`,
     and `mas outdated` where [`mas`](https://github.com/mas-cli/mas) is
     installed. Read-only. Homebrew keeps what it manages fresh; the operating
     system and App Store apps were the two things this script said nothing
@@ -475,7 +494,7 @@ In the order they run:
     reported and does not count against the step either, for the same reason.
     Not probed under `--dry-run`: the catalogue scan is a system action that
     takes time on the network.
-20. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
+22. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
     APFS keeps every block a snapshot references, so a run can free gigabytes
     and `df` still not move; macOS thins the snapshots on its own only under
     disk pressure. Listing is read-only. `--thin-snapshots` deletes them with
@@ -484,7 +503,7 @@ In the order they run:
     (`tmutil status` reports `Running = 1`): a backup copies from the newest
     snapshot, and deleting it underneath makes the pass start over, so the
     snapshots are listed and the next run thins.
-21. Print a **disk report**, opt-in (`--disk-report` or `--only disk-report`):
+23. Print a **disk report**, opt-in (`--disk-report` or `--only disk-report`):
     the five largest entries under `~/Library/Caches`, `Application Support`,
     `Containers`, `Developer`, `Logs`, `~/.cache` and `~/Downloads`, plus the
     size of iPhone/iPad backups. Read-only, and off by default because `du`
@@ -514,13 +533,16 @@ last ten rows.
 ./stay_fresh.sh --fail-on-warn     # useful for schedulers and monitoring
 ./stay_fresh.sh --skip-devtools   # skip all dev-tool refresh steps at once
 ./stay_fresh.sh --quick           # user-level cleanup only: no sudo, no brew, no reports
-./stay_fresh.sh --reports         # the read-only subset: versions, OS updates, snapshots, disk report
+./stay_fresh.sh --reports         # the read-only subset: versions, OS updates, snapshots, downloads, launch agents, disk report
+./stay_fresh.sh --prune-downloads-days 180 --dry-run # list what an old-downloads prune would remove
+./stay_fresh.sh --prune-orphan-agents               # also remove orphaned user LaunchAgents
 ./stay_fresh.sh --prune-build-caches # also clear ~/.gradle/caches and ~/.m2/repository
 ./stay_fresh.sh --thin-snapshots  # also delete local Time Machine snapshots
 ./stay_fresh.sh --disk-report     # also list the largest entries under ~/Library etc.
 ./stay_fresh.sh --history         # the last ten runs: result, freed, duration
 ./stay_fresh.sh --yes --notify telegram   # verdict to Telegram (credentials: see below)
 ./stay_fresh.sh --yes --notify macos,slack # a banner and a Slack message
+./stay_fresh.sh --yes --notify-when warn  # notify only when the run warned or failed
 ```
 
 Telegram credentials come from `STAY_FRESH_TG_BOT_TOKEN` and
@@ -559,10 +581,11 @@ reported on the terminal with the reason and never fails the run.
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, system diagnostics, and Homebrew cask upgrades. |
 | `--only STEP1,STEP2` | Run only named stable step ids; use `--list-steps`. Cannot be mixed with individual `--skip-*` flags. |
 | `--quick` | Same as `--only user-caches,app-caches,ai-caches,workspace-storage,trash,user-logs,dev-caches`: everything a user can clear without sudo, Homebrew or the network. Never uses sudo, not even a credential another shell left warm. Cannot be mixed with `--only` or `--skip-*`. |
-| `--reports` | Same as `--only versions,os-updates,snapshots,disk-report`: the read-only subset. Cannot be mixed with `--only`, `--quick`, `--skip-*` or `--thin-snapshots`. |
+| `--reports` | Same as `--only versions,os-updates,snapshots,downloads,launch-agents,disk-report`: the read-only subset. Cannot be mixed with `--only`, `--quick`, `--skip-*`, `--thin-snapshots`, `--prune-downloads-days` or `--prune-orphan-agents`. |
 | `--list-steps` | List every selectable step id and exit before preflight. |
 | `--history` | Print the last ten rows of `~/Library/Logs/stay_fresh/history.tsv` and exit. |
 | `--notify MODE` | `none`, `macos`, `telegram`, `slack`, `both` (`macos,telegram`), `auto` (default; env `STAY_FRESH_NOTIFY`), or a comma-separated list of channels. Sent after the summary of a real run, never under `--dry-run`. |
+| `--notify-when WHEN` | `always` (default; env `STAY_FRESH_NOTIFY_WHEN`), `warn` (only a WARN or FAILED run) or `fail` (only a FAILED run). A withheld notification is said on the terminal. |
 | `--brew-greedy` | Upgrade casks that self-update (`auto_updates true`, `:latest`). |
 | `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-krew --skip-gcloud --skip-versions`. |
 | `--purge-memory` | Opt into `sudo purge` for cold-cache troubleshooting. |
@@ -578,21 +601,25 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`uv`/`go`/kubectl cache cleanup. |
 | `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
-| `--prune-build-caches` | Also clear `~/.gradle/caches` and `~/.m2/repository` (step 14); off by default because the next build downloads every dependency again. |
+| `--prune-build-caches` | Also clear `~/.gradle/caches` and `~/.m2/repository` (step 16); off by default because the next build downloads every dependency again. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
 | `--skip-user-logs` | Skip removing files under `~/Library/Logs` older than 30 days (step 12). |
+| `--skip-downloads` | Skip the old-downloads report (step 13). |
+| `--prune-downloads-days N` | Remove top-level `~/Downloads` entries untouched for positive integer `N` days (step 13); off by default, the report only names them. |
+| `--skip-launch-agents` | Skip the orphaned-launch-agent report (step 14). |
+| `--prune-orphan-agents` | Unload and remove orphaned plists under `~/Library/LaunchAgents` (step 14); system-level ones are only ever reported. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
-| `--skip-krew` | Skip krew plugin updates (step 16). |
+| `--skip-krew` | Skip krew plugin updates (step 18). |
 | `--skip-gcloud` | Skip `gcloud components update`. |
 | `--skip-versions` | Skip the version report. |
-| `--skip-os-updates` | Skip the pending macOS / App Store update report (step 19). |
-| `--skip-snapshots` | Skip listing local Time Machine snapshots (step 20). |
-| `--thin-snapshots` | Delete the local snapshots step 20 lists; needs sudo, listed only under `--no-sudo` or while a Time Machine backup is running. |
-| `--disk-report` | Enable the read-only disk report (step 21). |
+| `--skip-os-updates` | Skip the pending macOS / App Store update report (step 21). |
+| `--skip-snapshots` | Skip listing local Time Machine snapshots (step 22). |
+| `--thin-snapshots` | Delete the local snapshots step 22 lists; needs sudo, listed only under `--no-sudo` or while a Time Machine backup is running. |
+| `--disk-report` | Enable the read-only disk report (step 23). |
 | `-h`, `--help` | Show the built-in help. |
 
 `--only` is the safer interface for one-off work: it initializes every step as
@@ -639,7 +666,9 @@ with OK / WARN / FAIL accounting, and closes with a summary that includes:
 
 - Elapsed wall-clock time.
 - `df` delta on `/`.
-- Sum of per-step deltas (more precise than `df` alone).
+- Sum of per-step deltas (more precise than `df` alone). Under `--dry-run`, a
+  `would free` line instead: the sizes of everything the deletions would
+  have removed, so the preview answers the question it is run for.
 - Which steps passed, warned, were skipped, or failed. A step preflight
   disabled carries its reason, e.g. `Docker / OrbStack prune (the Docker
   daemon is unreachable)`.
@@ -964,13 +993,16 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ```
 
 The default `safe` profile runs only protected per-app and AI cache cleanup,
-conservative stale-workspace cleanup, version reporting, the read-only report
-of pending macOS / App Store updates and the local snapshot listing (never
-thinning). The two reports are why a scheduled verdict is worth reading: a
-pending OS update and a pile of local snapshots are what a Mac accumulates
-without anyone noticing. It does not empty Trash, prune Docker, remove broad
+conservative stale-workspace cleanup, version reporting, and the read-only
+reports: pending macOS / App Store updates, the local snapshot listing (never
+thinning), old downloads and orphaned launch agents (both listed, never
+removed). The reports are why a scheduled verdict is worth reading: a pending
+OS update, a pile of local snapshots, a gigabyte of installers and a helper
+launchd retries at every login are what a Mac accumulates without anyone
+noticing. It does not empty Trash, prune Docker, remove broad
 user/Xcode/developer caches or old logs, upgrade packages, or update plugins.
 Pass `install --profile full` to retain the previous broad scheduled behavior.
+`install --notify-when warn` keeps the channel quiet on a clean run.
 
 **The agent cannot use `sudo`, and that is not a limitation to work around.** A
 LaunchAgent runs in your GUI login session with no terminal attached, so a
@@ -1108,7 +1140,7 @@ suites:
 | Suite | File | Scope |
 | --- | --- | --- |
 | `tester` | `test_macos_initial_setup.sh` | Static checks and the CLI surface of every script: `--help`, argument rejection, plans, dry runs. |
-| `steps` | `test_stay_fresh_steps.sh` | Each of the twenty-one `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
+| `steps` | `test_stay_fresh_steps.sh` | Each of the twenty-three `stay_fresh.sh` steps **executed for real** against a scratch `HOME` and faked host binaries. |
 | `unprivileged` | `test_stay_fresh_unprivileged.sh` | The permission-denied branches, as uid 1000. Root can create any directory and delete any file, so these are unreachable in the other two. |
 
 The `steps` suite fakes only the commands that identify the host or that the
@@ -1257,6 +1289,9 @@ Homebrew / `pyenv` / `goenv` commands.
   `DiagnosticReports` and its own `stay_fresh` directory; directories stay.
 - Clears `~/.gradle/caches` and `~/.m2/repository` only with
   `--prune-build-caches`.
+- Reports old entries in `~/Downloads` and orphaned launchd plists; removes
+  the former only with `--prune-downloads-days N` and the user-level latter
+  only with `--prune-orphan-agents`. System-level plists are never touched.
 - Empties the per-user Trash of every mounted volume (`/Volumes/*/.Trashes/<uid>`),
   not only `~/.Trash`.
 - Deletes local Time Machine snapshots only with `--thin-snapshots`; by

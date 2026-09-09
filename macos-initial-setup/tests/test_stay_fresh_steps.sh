@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the twenty-one steps for real against a scratch HOME and a faked set of
+# each of the twenty-three steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -136,6 +136,8 @@ run_sf() {
     SU_HANG="${SU_HANG:-}" \
     STAY_FRESH_SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}" \
     STAY_FRESH_STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-}" \
+    STAY_FRESH_NOTIFY_WHEN="${STAY_FRESH_NOTIFY_WHEN:-}" \
+    BREW_SERVICES_ERROR="${BREW_SERVICES_ERROR:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -1145,7 +1147,7 @@ d="$(new_env)"
 out="$(run_sf "$d" --dry-run --reports)"; rc=$?
 assert_eq "--reports previews" "0" "$rc"
 for want in "report active versions" "pending OS / App Store updates" \
-            "local Time Machine snapshots" "disk report"; do
+            "local Time Machine snapshots" "old downloads" "orphaned launch agents" "disk report"; do
   assert_contains "--reports runs: $want" "$(grep "$want" <<<"$out")" "run"
 done
 for keep in "clear user caches" "empty trash" "homebrew update" "dev-tool caches" "old user logs"; do
@@ -1160,9 +1162,13 @@ assert_eq "--reports refuses --skip-* flags" "3" "$rc"
 out="$(run_sf "$d" --dry-run --reports --thin-snapshots)"; rc=$?
 assert_eq "--reports refuses --thin-snapshots" "3" "$rc"
 assert_contains "--reports says why it refuses --thin-snapshots" "$out" "read-only"
+run_sf "$d" --dry-run --reports --prune-downloads-days 30 >/dev/null; rc=$?
+assert_eq "--reports refuses --prune-downloads-days" "3" "$rc"
+run_sf "$d" --dry-run --reports --prune-orphan-agents >/dev/null; rc=$?
+assert_eq "--reports refuses --prune-orphan-agents" "3" "$rc"
 out="$(run_sf "$d" --yes --reports)"; rc=$?
 assert_eq "a real --reports run succeeds" "0" "$rc"
-assert_contains "a real --reports run runs the four reporting steps" "$out" "4 ok, 17 skipped"
+assert_contains "a real --reports run runs the six reporting steps" "$out" "6 ok, 17 skipped"
 # The history row and last-run.json are the only files a real run leaves.
 if [[ -z "$(find "$d/home" -type f -not -path '*/Library/Logs/stay_fresh/*' -print -quit)" ]]; then
   ok "--reports writes nothing but its own history"
@@ -1171,12 +1177,26 @@ else
 fi
 rm -rf "$d"
 
+# A dry run adds up what the deletions would remove, so the preview answers
+# the question it is run for: how much would this free.
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/com.vendor.app" "$d/home/.Trash"
+bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 2048
+bytes_file "$d/home/.Trash/old" 1024
+out="$(run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
+assert_eq "a dry run with an estimate succeeds" "0" "$rc"
+assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "3."
+assert_contains "the estimate names its unit" "$out" "would free:"
+assert_contains "the real freed total stays zero under a dry run" "$out" "steps freed: 0B"
+assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.vendor.app/blob"
+rm -rf "$d"
+
 # Every id --list-steps prints is one --only accepts, and the run loop runs
 # the step under the same label the plan used. One table drives all three;
 # this is the check that nothing bypasses it.
 d="$(new_env)"
 ids="$(run_sf "$d" --list-steps | awk '{ print $1 }')"
-assert_eq "--list-steps prints twenty-one ids" "21" "$(grep -c . <<<"$ids")"
+assert_eq "--list-steps prints twenty-three ids" "23" "$(grep -c . <<<"$ids")"
 while IFS= read -r id; do
   [[ -n "$id" ]] || continue
   extra=(); [[ "$id" == memory ]] && extra=(--purge-memory)
@@ -1208,7 +1228,7 @@ mkbin "$d/bin/sysctl" 'echo "{ sec = $(( $(date +%s) - 93600 )), usec = 0 } Mon 
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "a real run succeeds" "0" "$rc"
 assert_contains "the verdict line is printed" "$out" "stay_fresh OK: freed"
-assert_contains "the verdict counts the steps" "$out" "1 ok, 20 skipped"
+assert_contains "the verdict counts the steps" "$out" "1 ok, 22 skipped"
 assert_contains "the verdict carries the uptime" "$out" "up 1d 2h"
 hist="$d/home/Library/Logs/stay_fresh/history.tsv"
 assert_exists "history.tsv is written" "$hist"
@@ -1228,7 +1248,7 @@ else err "last-run.json is missing or malformed"; cat "$d/home/Library/Logs/stay
 out="$(run_sf "$d" --history)"; rc=$?
 assert_eq "--history prints after a run" "0" "$rc"
 assert_contains "--history shows the row" "$out" "OK"
-assert_contains "--history shows the step counts" "$out" "1/0/0/20"
+assert_contains "--history shows the step counts" "$out" "1/0/0/22"
 rm -rf "$d"
 
 # ===========================================================================
@@ -1367,6 +1387,33 @@ assert_contains "the preflight names both channels" "$out" "notify: macos, slack
 assert_called "the banner is posted" "$d/calls" "display notification"
 assert_called "the Slack message is posted" "$d/calls" "Content-type: application/json"
 assert_contains "the Slack send is reported" "$out" "slack notification sent"
+rm -rf "$d"
+
+# --notify-when: a banner every morning gets swiped away unread; `warn`
+# keeps the channel for the runs that need reading. `fail` for FAILED only.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos STAY_FRESH_NOTIFY_WHEN=warn run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "an OK run under --notify-when warn succeeds" "0" "$rc"
+assert_contains "the preflight names the condition" "$out" "notify: macos (only on warn)"
+assert_not_called "an OK run under --notify-when warn posts nothing" "$d/calls" "display notification"
+assert_contains "the withheld notification is explained" "$out" \
+  "notification not sent: the run was OK and --notify-when is warn"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;; "plugin update") exit 1 ;; esac; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only helm-plugins --notify-when warn)"; rc=$?
+assert_contains "the warned run is a WARN" "$out" "stay_fresh WARN"
+assert_called "a WARN run under --notify-when warn posts the banner" "$d/calls" "display notification"
+: > "$d/calls"
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only helm-plugins --notify-when=fail)"; rc=$?
+assert_not_called "a WARN run under --notify-when fail posts nothing" "$d/calls" "display notification"
+assert_contains "the withheld WARN notification is explained" "$out" \
+  "notification not sent: the run was WARN and --notify-when is fail"
+run_sf "$d" --dry-run --notify-when sometimes >/dev/null; rc=$?
+assert_eq "an unknown --notify-when is refused" "3" "$rc"
 rm -rf "$d"
 
 # `both` is still macos + telegram, from before Slack existed.
@@ -1550,6 +1597,123 @@ assert_contains "a dry run previews the Gradle sweep" "$out" "(dry-run) would re
 rm -rf "$d"
 
 # ===========================================================================
+section "downloads (reported by default, removed only with --prune-downloads-days)"
+dl_env() {
+  local d; d="$(new_env)"
+  local dl="$d/home/Downloads"
+  mkdir -p "$dl/old-project" "$dl/fresh-project"
+  bytes_file "$dl/installer.dmg" 2048;   touch -d '120 days ago' "$dl/installer.dmg"
+  bytes_file "$dl/old-project/a.txt" 64; touch -d '120 days ago' "$dl/old-project/a.txt" "$dl/old-project"
+  bytes_file "$dl/recent.zip" 512
+  : > "$dl/.DS_Store";                    touch -d '400 days ago' "$dl/.DS_Store"
+  printf '%s' "$d"
+}
+d="$(dl_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only downloads)"; rc=$?
+assert_eq "downloads step succeeds" "0" "$rc"
+assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: 2.07M"
+assert_contains "the largest old entry is named first" "$(grep -A1 'untouched for 90 days' <<<"$out")" "installer.dmg"
+assert_contains "the report says how to remove them" "$out" "--prune-downloads-days 90 removes them"
+assert_exists "the report removes nothing" "$d/home/Downloads/installer.dmg"
+assert_contains "old downloads reach the verdict" "$out" "2 old download(s) kept"
+assert_contains "a report is not a warning" "$out" "warn steps:  0"
+assert_not_contains "hidden entries are not counted" "$out" ".DS_Store"
+rm -rf "$d"
+
+d="$(dl_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only downloads --prune-downloads-days 100)"; rc=$?
+assert_eq "a downloads prune dry run succeeds" "0" "$rc"
+assert_contains "the dry run names what would go" "$out" "(dry-run) would clear 2 path(s)"
+assert_exists "the dry run removes nothing" "$d/home/Downloads/installer.dmg"
+out="$(run_sf "$d" --yes --only downloads --prune-downloads-days 100)"; rc=$?
+assert_eq "a downloads prune succeeds" "0" "$rc"
+assert_gone   "an old file is removed"            "$d/home/Downloads/installer.dmg"
+assert_gone   "an old directory is removed whole" "$d/home/Downloads/old-project"
+assert_exists "a recent file is kept"             "$d/home/Downloads/recent.zip"
+assert_exists "a recent directory is kept"        "$d/home/Downloads/fresh-project"
+assert_exists "hidden entries are never removed"  "$d/home/Downloads/.DS_Store"
+assert_contains "removed downloads reach the verdict" "$out" "2 old download(s) removed"
+run_sf "$d" --dry-run --prune-downloads-days 0 >/dev/null; rc=$?
+assert_eq "--prune-downloads-days rejects zero" "3" "$rc"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/Downloads"; : > "$d/home/Downloads/today.pdf"
+out="$(run_sf "$d" --yes --only downloads)"; rc=$?
+assert_contains "a Downloads folder with nothing old says so" "$out" "nothing in ~/Downloads untouched for 90 days"
+rm -rf "$d"
+
+# ===========================================================================
+section "launch-agents (orphaned plists reported; user-level removed only on request)"
+agents_env() {
+  local d; d="$(new_env)"
+  local la="$d/home/Library/LaunchAgents"
+  mkdir -p "$la" /Library/LaunchAgents /Library/LaunchDaemons "$d/home/bin"
+  : > "$d/home/bin/present.sh"
+  # An uninstalled app's helper, arguments on one line.
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict>' \
+    '<key>Label</key><string>com.gone.helper</string>' \
+    '<key>ProgramArguments</key><array><string>/Applications/Gone.app/Contents/MacOS/helper</string><string>--daemon</string></array>' \
+    '</dict></plist>' > "$la/com.gone.helper.plist"
+  # A script handed to an interpreter: the script is what must exist.
+  printf '%s\n' '<plist version="1.0"><dict><key>ProgramArguments</key><array>' \
+    '  <string>/bin/sh</string>' "  <string>$d/home/gone/backup.sh</string>" '</array></dict></plist>' \
+    > "$la/com.wrapped.gone.plist"
+  printf '%s\n' '<plist version="1.0"><dict><key>ProgramArguments</key><array>' \
+    '  <string>/bin/sh</string>' "  <string>$d/home/bin/present.sh</string>" '</array></dict></plist>' \
+    > "$la/com.wrapped.ok.plist"
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key>' '<string>/bin/ls</string></dict></plist>' \
+    > "$la/com.ok.plist"
+  printf 'bplist00binarycontent' > "$la/com.binary.plist"
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/Library/Gone/daemon</string></dict></plist>' \
+    > /Library/LaunchDaemons/com.gone.daemon.plist
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/bin/ls</string></dict></plist>' \
+    > /Library/LaunchAgents/com.ok.system.plist
+  mkbin "$d/bin/launchctl" 'echo "launchctl $*" >> "$CALLS"; exit 0'
+  printf '%s' "$d"
+}
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
+assert_eq "launch-agents step succeeds" "0" "$rc"
+assert_contains "an uninstalled app's helper is named" "$out" \
+  "com.gone.helper.plist -> /Applications/Gone.app/Contents/MacOS/helper (missing)"
+assert_contains "a script handed to an interpreter is checked, not the interpreter" "$out" \
+  "com.wrapped.gone.plist -> $d/home/gone/backup.sh (missing)"
+assert_not_contains "an interpreter with a present script is fine" "$out" "com.wrapped.ok.plist"
+assert_not_contains "a present program is fine" "$out" "com.ok.plist ->"
+assert_contains "a system-level orphan is named with its command" "$out" \
+  "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
+assert_contains "a binary plist without plutil is left uninspected" "$out" "1 binary plist(s) not inspected"
+assert_contains "user-level orphans are kept by default" "$out" "2 user-level plist(s) kept; --prune-orphan-agents"
+assert_contains "orphans reach the verdict" "$out" "3 orphaned launch agent(s)"
+assert_exists "nothing is removed by default" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_not_called "nothing is unloaded by default" "$d/calls" "launchctl bootout"
+assert_contains "a report is not a warning" "$out" "warn steps:  0"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_contains "a prune dry run names the unload" "$out" "(dry-run) launchctl bootout gui/501/com.gone.helper"
+assert_not_called "a prune dry run unloads nothing" "$d/calls" "launchctl"
+assert_exists "a prune dry run removes nothing" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+out="$(run_sf "$d" --yes --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_eq "pruning orphans succeeds" "0" "$rc"
+assert_called "the orphan is unloaded first" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
+assert_called "the wrapped orphan is unloaded too" "$d/calls" "launchctl bootout gui/501/com.wrapped.gone"
+assert_gone   "the orphaned plist is removed"          "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_gone   "the wrapped orphan is removed"          "$d/home/Library/LaunchAgents/com.wrapped.gone.plist"
+assert_exists "a plist with a present program stays"  "$d/home/Library/LaunchAgents/com.ok.plist"
+assert_exists "the uninspected binary plist stays"     "$d/home/Library/LaunchAgents/com.binary.plist"
+assert_exists "a system-level orphan is never removed" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_not_called "system-level plists are never unloaded" "$d/calls" "system/com.gone.daemon"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
+assert_contains "no plists anywhere is a clean step" "$out" "no launchd plists under"
+rm -rf "$d"
+
+# ===========================================================================
 section "disk-report (opt-in, read-only, largest first)"
 d="$(new_env)"
 mkdir -p "$d/home/Library/Caches/bigapp" "$d/home/Library/Caches/smallapp" "$d/home/Downloads" \
@@ -1653,6 +1817,32 @@ assert_contains "outdated casks are named" "$out" "2 cask(s) still outdated:"
 assert_contains "the manual cask command is given" "$out" "brew upgrade --cask alacritty unetbootin"
 assert_contains "the verdict carries the brew facts" "$out" "brew upgraded 2; 2 cask(s) still outdated"
 assert_contains "history records the upgrade count" "$(cut -f10 "$d/home/Library/Logs/stay_fresh/history.tsv")" "2"
+rm -rf "$d"
+
+# A brew service in "error" state is a daemon launchd gave up restarting;
+# nothing else in the run would mention it. Named, and in the verdict, but
+# not counted: the run cannot fix it. An Intel Homebrew beside the Apple
+# silicon one is named once too.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+  'case "${1:-} ${2:-}" in' \
+  '  "services list") printf "Name       Status  User    File\n"; printf "postgresql@16 error   serhii  ~/Library/LaunchAgents/homebrew.mxcl.postgresql@16.plist\n"; printf "redis      started serhii  ~/Library/LaunchAgents/homebrew.mxcl.redis.plist\n"; printf "nginx      none\n" ;;' \
+  'esac; exit 0'
+mkdir -p /usr/local/Homebrew
+out="$(run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "a brew service in error does not fail the run" "0" "$rc"
+assert_called "brew services are listed" "$d/calls" "brew services list"
+assert_contains "the errored service is named" "$out" \
+  "1 brew service(s) in error state: postgresql@16"
+assert_contains "the errored service reaches the verdict" "$out" "1 brew service(s) in error"
+assert_contains "an errored service is information, not a warning" "$out" "warn steps:  0"
+assert_contains "an Intel Homebrew beside the Apple silicon one is named" "$out" \
+  "an Intel Homebrew is also installed at /usr/local/Homebrew"
+rmdir /usr/local/Homebrew
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only brew)"
+assert_not_called "a dry run does not list services" "$d/calls" "brew services"
 rm -rf "$d"
 
 # Pending OS updates reach the verdict as a count.

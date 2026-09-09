@@ -548,13 +548,14 @@ assert_contains "the dry-run preview says a real run would stop" "$out" \
 brew_absent_skip=(
   --skip-dns --skip-syscaches --skip-usercaches --skip-appcaches
   --skip-workspacestorage --skip-trash --skip-devcaches --skip-docker
-  --skip-xcode --skip-diagnostics --skip-user-logs --skip-devtools --skip-snapshots
+  --skip-xcode --skip-diagnostics --skip-user-logs --skip-downloads --skip-launch-agents
+  --skip-devtools --skip-snapshots
 )
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${brew_absent_skip[@]}" 2>&1)"
 assert_contains "an all-skipped run counts each step exactly once" "$out" \
-  "skipped:     19"
+  "skipped:     21"
 assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
   "brew (not installed)"
 assert_contains "a skipped step reports why it was skipped" "$out" \
@@ -976,9 +977,14 @@ sched_log="$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev
 if [[ -n "$sched_log" ]]; then
   sched_out="$(cat "$sched_log")"
   for want in "clear per-app caches" "clear AI tool caches" "prune workspace storage" \
-              "report active versions" "pending OS / App Store updates" "local Time Machine snapshots"; do
+              "report active versions" "pending OS / App Store updates" "local Time Machine snapshots" \
+              "old downloads" "orphaned launch agents"; do
     assert_contains "safe profile runs: $want" "$(grep "$want" <<<"$sched_out")" "run"
   done
+  assert_contains "the safe profile only reports downloads" \
+    "$(grep "old downloads" <<<"$sched_out")" "read-only"
+  assert_contains "the safe profile only reports launch agents" \
+    "$(grep "orphaned launch agents" <<<"$sched_out")" "read-only"
   for keep in "clear user caches" "empty trash" "homebrew update" "dev-tool caches" \
               "old user logs" "docker" "disk report"; do
     assert_contains "safe profile skips: $keep" "$(grep -i "$keep" <<<"$sched_out")" "skip"
@@ -1067,6 +1073,33 @@ set +e
 rc=$?
 set -e
 assert_eq "agent rejects an empty --notify" "3" "$rc"
+# --notify-when rides into the plist the same way, and is checked the same way.
+plist_tmp="$(mktemp)"
+if "$agent" install --print-only --notify slack --notify-when warn --dry-run > "$plist_tmp" \
+   && python3 - "$plist_tmp" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+assert data["ProgramArguments"][-4:] == ["--notify", "slack", "--notify-when", "warn"], data["ProgramArguments"]
+PY
+then
+  ok "LaunchAgent plist carries --notify-when"
+else
+  err "LaunchAgent plist does not carry --notify-when"
+fi
+rm -f "$plist_tmp"
+set +e
+out="$("$agent" install --print-only --notify-when sometimes --dry-run 2>&1 >/dev/null)"
+rc=$?
+set -e
+assert_eq "agent rejects an unknown --notify-when" "3" "$rc"
+assert_contains "the agent relays stay_fresh.sh's --notify-when reason" "$out" \
+  "--notify-when must be always, warn or fail"
+set +e
+"$agent" status --notify-when warn >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "agent status does not take --notify-when" "3" "$rc"
 # The check is stay_fresh.sh's own, so the two cannot disagree: a value the
 # scheduled run would refuse is refused at install, with the same message.
 set +e
@@ -1231,6 +1264,8 @@ assert_contains "zsh: completion is registered for the script" "$comp_out" "regi
 assert_contains "zsh: completion is registered for the alias" "$comp_out" "alias=_stay_fresh"
 assert_contains "zsh: completion offers --step-timeout" "$comp_out" "--step-timeout"
 assert_contains "zsh: completion offers --reports" "$comp_out" "--reports"
+assert_contains "zsh: completion offers --notify-when" "$comp_out" "--notify-when"
+assert_contains "zsh: completion offers --prune-downloads-days" "$comp_out" "--prune-downloads-days"
 assert_contains "zsh: completion offers the short-flag options too" "$comp_out" "--verbose"
 assert_contains "zsh: completion knows the step ids" "$comp_out" "workspace-storage"
 assert_not_contains "zsh: completion does not offer flags quoted in the notes" "$comp_out" "--install"
