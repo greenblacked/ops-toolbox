@@ -41,6 +41,18 @@ fi
 for suite in git macos linux k8s dotfiles python static windows mikrotik; do
   check "--list emits the $suite suite" grep -q "^$suite"$'\t' "$list_output"
 done
+# The second column is the package directory CI matches changed files
+# against. A suite whose column is empty or points at a directory that does
+# not exist would silently never run on a pull request.
+packages_exist() {
+  local name pkg
+  while IFS=$'\t' read -r name pkg _; do
+    [ -n "$pkg" ] && [ -d "$REPO_ROOT/$pkg" ] && continue
+    printf '%s -> %s is not a directory\n' "$name" "${pkg:-<empty>}" >&2
+    return 1
+  done < "$list_output"
+}
+check "--list names an existing package directory for every suite" packages_exist
 
 summary_file="$tmp_root/results.json"
 run_output="$tmp_root/run.txt"

@@ -25,6 +25,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_undo_last_commit.sh`](#git_undo_last_commitsh)
 - [`git_amend_last.sh`](#git_amend_lastsh)
 - [`git_hooks_install.sh`](#git_hooks_installsh)
+- [`clone-repos.sh`](#clone-repossh)
 - [`git_ssh_doctor.py`](#git_ssh_doctorpy)
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
@@ -54,6 +55,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | `git_sync_default.sh` | Fast-forward the default branch and optionally restore the starting branch. |
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
 | `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
+| `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, and `repos.txt.example` shows the format. |
 | `git_prune_gone.sh` | Delete branches with deleted upstreams, with include/exclude filters. |
 | `git_stale_branches.sh` | Report old branches and optionally filter by gone/merged/unmerged state. |
 | `git_size_report.sh` | Report repository size across all history or selected refs. |
@@ -470,6 +472,36 @@ An existing hook this script did not write is backed up rather than clobbered, a
 
 ---
 
+## `clone-repos.sh`
+
+Clones every repository listed in a text file, one URL or local path per
+line, into a parent directory. A destination that is already a git checkout
+is skipped, one that holds anything else is reported and left alone, and a
+failure on one line never stops the rest. The point is a workstation set up
+from a list rather than from memory: keep the list in your dotfiles, run the
+script once on a new machine, run it again whenever the list grows.
+
+```bash
+./git/clone-repos.sh --dry-run repos.txt              # preview; writes nothing
+./git/clone-repos.sh --dir ~/src repos.txt            # clone into ~/src
+./git/clone-repos.sh -n -d ~/src repos.txt.example    # the shipped example
+```
+
+The list format, shown in `repos.txt.example`: one URL per line; an
+optional second field is the destination, relative to `--dir` unless it is
+absolute, and without it the repository name from the URL is used; blank
+lines and lines starting with `#` are ignored. `--verbose` prints each line
+as it is read and each decision made. The default list file is `repos.txt`
+in the current directory.
+
+Exit `0` when every entry was cloned or already present; `1` when at least
+one entry failed, with the line number in the message; `2` when the list is
+unreadable, git is missing or `--dir` is unusable; `3` on a bad flag; `4`
+when the list has no entries. A clone that fails part-way is reported with
+its path, and the directory is left for you to inspect rather than removed.
+
+---
+
 ## `git_ssh_doctor.py`
 
 Answers the question `Permission denied (publickey)` refuses to: *which* of the things involved actually went wrong.
@@ -582,6 +614,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_undo_last_commit.sh --revert
 ./git/git_amend_last.sh --add-all --message "fix: update the last commit"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
+./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

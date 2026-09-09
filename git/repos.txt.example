@@ -1,0 +1,13 @@
+# Repositories for clone-repos.sh: one git URL or local path per line.
+# An optional second field is the destination, relative to --dir unless it is
+# absolute; without it the repository name from the URL is used. Blank lines
+# and lines starting with # are ignored.
+#
+# Copy this file to repos.txt, or pass any file as the argument:
+#   ./clone-repos.sh --dry-run --dir ~/src repos.txt.example
+
+# This repository, into ./ops-toolbox
+https://github.com/greenblacked/ops-toolbox.git
+
+# The same over SSH, into a chosen directory instead of the default name
+# git@github.com:greenblacked/ops-toolbox.git    tooling/ops-toolbox

@@ -8,7 +8,7 @@
 #   ./run-tests.sh              # the fast default
 #   ./run-tests.sh all          # the above, plus the CHR integration suite
 #   ./run-tests.sh git macos    # an explicit subset
-#   ./run-tests.sh --list       # machine-friendly suite inventory
+#   ./run-tests.sh --list       # machine-friendly suite inventory: name, package, blurb
 #   ./run-tests.sh --summary-file results.json linux
 #   ./run-tests.sh mikrotik -- -k version_matches   # trailing args go to the suite
 #
@@ -27,7 +27,10 @@ fi
 # --- the suite table -------------------------------------------------------
 # One place to add a suite. Everything below — the help text, the argument
 # validation, the fast/all sets, the Docker preflight and the dispatch — is
-# derived from these four definitions rather than repeating the list.
+# derived from these four definitions rather than repeating the list. So is
+# CI: .github/workflows/ci.yml reads `--list` to decide which suites a change
+# touches and to build its Test / <suite> matrix, so a suite added here gets
+# its job without the workflow being edited.
 #
 # Kept as space-separated strings and case statements because these scripts
 # must run under the Bash 3.2 that ships on macOS, which has no associative
@@ -64,6 +67,17 @@ suite_needs_docker() {
   esac
 }
 
+# The package a suite covers, relative to the repository: the directory its
+# runner lives under, with the tests/ layer stripped. CI matches changed
+# files against this prefix to decide whether the suite runs.
+suite_package() {
+  local runner
+  runner="$(suite_runner "$1")"
+  runner="${runner#"$HERE"/}"
+  runner="${runner%/run.sh}"
+  printf '%s\n' "${runner%/tests}"
+}
+
 suite_blurb() {
   case "$1" in
     git)      printf '%s\n' "Git helper scripts        (Docker, ~30s)" ;;
@@ -98,7 +112,7 @@ usage() {
   printf '  %-9s %s\n' "all"  "fast + mikrotik"
   printf '\n'
   printf 'Options:\n'
-  printf '  --list                List suite names and descriptions, then exit\n'
+  printf '  --list                Tab-separated suite name, package directory and description, then exit\n'
   printf '  --summary-file PATH   Write a JSON result matrix after the run\n'
   printf '  -h, --help            Show this help\n\n'
   printf 'Any arguments after a lone `--` are forwarded to the last named suite.\n'
@@ -152,7 +166,7 @@ done
 
 if (( LIST_ONLY )); then
   for s in $SUITE_ALL; do
-    printf '%s\t%s\n' "$s" "$(suite_blurb "$s")"
+    printf '%s\t%s\t%s\n' "$s" "$(suite_package "$s")" "$(suite_blurb "$s")"
   done
   exit 0
 fi

@@ -12,6 +12,13 @@ by the day each pull request landed on `master`; they are history, not releases.
 The first tagged version will be cut from `[Unreleased]`, and from then on every
 entry here belongs to a version.
 
+New entries are not added to `[Unreleased]` by hand. Each change ships one
+file under [`changelog.d/`](changelog.d/README.md), and
+`changelog.d/changelog.sh preview` prints the section with those fragments
+pasted in ahead of what it already holds; `changelog.d/changelog.sh release`
+moves both under a version heading. The entries below were written before
+that directory existed and stay here until the first release moves them.
+
 ## [Unreleased]
 
 ### Added
