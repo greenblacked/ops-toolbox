@@ -484,7 +484,7 @@ script once on a new machine, run it again whenever the list grows.
 ```bash
 ./git/clone-repos.sh --dry-run repos.txt              # preview; writes nothing
 ./git/clone-repos.sh --dir ~/src repos.txt            # clone into ~/src
-./git/clone-repos.sh -n -d ~/src repos.txt.example    # the shipped example
+./git/clone-repos.sh -n -d ~/src git/repos.txt.example  # the shipped example
 ```
 
 The list format, shown in `repos.txt.example`: one URL per line; an

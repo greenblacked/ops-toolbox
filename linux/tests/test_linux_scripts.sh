@@ -277,9 +277,59 @@ out="$(HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --dry-run --only cac
 assert_contains "stay_fresh empties the trashed files" "$out" "Trash/files"
 assert_contains "stay_fresh empties their .trashinfo records too" "$out" "Trash/info"
 
+# A real run must empty the two directories and leave them behind: the
+# FreeDesktop spec expects both to exist, and `rm -rf` on the directory
+# itself removed them.
+sf_home="$(mktemp -d)"
+mkdir -p "$sf_home/.local/share/Trash/files/sub" "$sf_home/.local/share/Trash/info"
+: > "$sf_home/.local/share/Trash/files/doc.txt"
+: > "$sf_home/.local/share/Trash/files/sub/deep.txt"
+: > "$sf_home/.local/share/Trash/info/doc.txt.trashinfo"
+set +e
+HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --yes --only caches >/dev/null 2>&1
+set -e
+assert_eq "the Trash files/ directory itself survives" "yes" \
+  "$([[ -d "$sf_home/.local/share/Trash/files" ]] && echo yes || echo no)"
+assert_eq "the Trash info/ directory itself survives" "yes" \
+  "$([[ -d "$sf_home/.local/share/Trash/info" ]] && echo yes || echo no)"
+assert_eq "the trashed files are gone" "" \
+  "$(ls -A "$sf_home/.local/share/Trash/files" 2>/dev/null)"
+assert_eq "the .trashinfo records are gone" "" \
+  "$(ls -A "$sf_home/.local/share/Trash/info" 2>/dev/null)"
+rm -rf "$sf_home"
+
+# A Trash relocated to another disk - files/ a symlink, the usual way to keep
+# it off a small SSD. `[[ -d ]]` follows the link, so `rm -rf "$trash"` deleted
+# the link: the trashed files stayed where they were, nothing was freed, the
+# relocation was destroyed, and the run still printed "empty".
+sf_home="$(mktemp -d)"
+other_disk="$(mktemp -d)"
+mkdir -p "$sf_home/.local/share/Trash" "$other_disk/files"
+: > "$other_disk/files/big.iso"
+ln -s "$other_disk/files" "$sf_home/.local/share/Trash/files"
+mkdir -p "$sf_home/.local/share/Trash/info"
+: > "$sf_home/.local/share/Trash/info/big.iso.trashinfo"
+set +e
+HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --yes --only caches >/dev/null 2>&1
+set -e
+assert_eq "a relocated Trash keeps its symlink" "yes" \
+  "$([[ -L "$sf_home/.local/share/Trash/files" ]] && echo yes || echo no)"
+assert_eq "a relocated Trash is actually emptied" "" \
+  "$(ls -A "$other_disk/files" 2>/dev/null)"
+rm -rf "$sf_home" "$other_disk"
+sf_home="$(mktemp -d)"
+
 # --- a clean run leaves no log behind ---
 # One file per run accumulated in TMPDIR forever, never read and never removed.
-out="$(HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --only caches 2>&1)"; rc=$?
+# set +e as every other real invocation in this file does: the suite runs
+# under `set -euo pipefail`, so an unbracketed nonzero exit kills it here,
+# before rc is assigned - which made the assertion below unfailable and took
+# the ~40 assertions after it with it, leaving CI a bare exit 1 and no
+# failing-test line.
+set +e
+out="$(HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --only caches 2>&1)"
+rc=$?
+set -e
 assert_eq "stay_fresh clean run succeeds" "0" "$rc"
 if [[ -z "$(find "$sf_home" -maxdepth 1 -name 'linux_stay_fresh-*.log' -print -quit)" ]]; then
   ok "stay_fresh discards a clean run's log"

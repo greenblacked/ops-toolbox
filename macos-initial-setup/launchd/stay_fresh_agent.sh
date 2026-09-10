@@ -643,8 +643,20 @@ PLIST_EOF
       fi
       now_s="$(date +%s)"
       if (( now_s - since_s > 2 * interval_days * 86400 )); then
-        warn "no scheduled run in $(( (now_s - since_s) / 86400 )) day(s) since $since_what, and the schedule fires every $interval_days day(s) — the job is not running (check 'launchctl print' and the logs)"
-        stale=1
+        if [[ "$since_what" == "the install" ]]; then
+          # No stamp, so no evidence either way. Only run-scheduled writes
+          # last-scheduled and only since this version, so an agent installed
+          # before the upgrade has none however faithfully it has been firing
+          # - and its plist mtime is the install date, which made a weekly job
+          # installed a month ago report "the job is not running" and exit 1
+          # while launchd was running it on time. A false death notice for a
+          # working job is worse than waiting one more cycle for the real
+          # signal, which the next firing writes.
+          info "no run-scheduled stamp yet and the plist was installed $(( (now_s - since_s) / 86400 )) day(s) ago — if this agent predates the stamp it will appear at the next firing; check 'launchctl print' if it does not"
+        else
+          warn "no scheduled run in $(( (now_s - since_s) / 86400 )) day(s) since $since_what, and the schedule fires every $interval_days day(s) — the job is not running (check 'launchctl print' and the logs)"
+          stale=1
+        fi
       fi
     fi
     if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then

@@ -969,14 +969,27 @@ assert_not_contains "a fresh install is not called stale" "$out" "the job is not
 # stale. The measure is the stamp run-scheduled writes, or the install when
 # there is none; last-run.json is rewritten by manual runs too and stays
 # fresh here throughout, which must not mask a job that never fires.
+# An old plist with no stamp is genuinely ambiguous, and it used to be read
+# the pessimistic way: "the job is not running", exit 1. But only
+# run-scheduled writes last-scheduled and only since the version that added
+# it, so an agent installed before that upgrade has no stamp however
+# faithfully launchd has been firing it - and every one of them was told its
+# job was dead, for up to a full interval, until the next firing wrote the
+# stamp. A false death notice for a working job is the worse error of the
+# two, so with no stamp the age is reported and the exit stays 0; the real
+# signal arrives at the next firing.
 touch -t 202001010000 "$agent_plist"
 set +e
 out="$(agent_status)"
 rc=$?
 set -e
-assert_eq "an old install with no scheduled run ever exits 1" "1" "$rc"
-assert_contains "the missing first run is measured from the install" "$out" \
-  "since the install, and the schedule fires every 1 day(s) — the job is not running"
+assert_eq "an old install with no stamp is not declared dead" "0" "$rc"
+assert_contains "the age since the install is still reported" "$out" \
+  "no run-scheduled stamp yet and the plist was installed"
+assert_contains "and it says where the real signal comes from" "$out" \
+  "it will appear at the next firing"
+assert_not_contains "an old install with no stamp is not called dead" "$out" \
+  "the job is not running"
 touch "$agent_plist"
 printf '%s\t%s\n' "$(stamp_days_ago 3)" 0 > "$sched_stamp"
 set +e

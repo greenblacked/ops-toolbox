@@ -206,7 +206,14 @@ part_unreleased() { awk 's==1 && /^## /{exit} s==1{print} /^## \[Unreleased\]/{s
 part_tail()       { awk 's==1 && /^## /{s=2} s==2{print} /^## \[Unreleased\]/{s=1}' "$CHANGELOG"; }
 
 # Lines of [Unreleased] before its first "### " heading: a preamble, if any.
-unreleased_preamble() { part_unreleased | awk '/^### /{exit} {print}' | trim_blank; }
+# The reader must not exit early. It used to (`/^### /{exit}`), which closed
+# the pipe while part_unreleased was still writing the section body into it:
+# the writer died of SIGPIPE, pipefail promoted that to the pipeline's status,
+# and `set -e` aborted `preview` with no message and two lines of output. The
+# section only has to outgrow one pipe buffer for that to happen, which it
+# already has under gawk. Setting a flag and printing nothing after it reads
+# the same and consumes all of the input.
+unreleased_preamble() { part_unreleased | awk '/^### /{f=1} !f' | trim_blank; }
 
 # The list items already under one "### Label" of [Unreleased].
 unreleased_section() {
@@ -281,7 +288,15 @@ do_check() {
   fi
   # Anything at the top level other than the script, its README and the lint
   # config is a fragment that missed its type directory.
-  for f in "$FRAGMENTS"/* "$FRAGMENTS"/.[!.]*; do
+  #
+  # Dot-files are deliberately not enumerated here or below. They are never
+  # pasted (fragments_of globs *.md, with dotglob off), so counting one as a
+  # fragment promised an entry that release then silently dropped; and the
+  # ones that actually turn up are .DS_Store, which Finder writes unbidden on
+  # the machines this repository targets, and a .swp for as long as a fragment
+  # is open in vim - both gitignored, and neither a reason to fail the static
+  # suite. What check enumerates now matches what release pastes.
+  for f in "$FRAGMENTS"/*; do
     [[ -e "$f" ]] || continue
     base="${f##*/}"
     if [[ -d "$f" ]]; then
@@ -298,7 +313,7 @@ do_check() {
   done
   for type in $TYPES; do
     [[ -d "$FRAGMENTS/$type" ]] || continue
-    for f in "$FRAGMENTS/$type"/* "$FRAGMENTS/$type"/.[!.]*; do
+    for f in "$FRAGMENTS/$type"/*; do
       [[ -e "$f" ]] || continue
       rel="changelog.d/$type/${f##*/}"
       if [[ ! -f "$f" ]]; then
@@ -308,7 +323,12 @@ do_check() {
         *.md) ;;
         *) err "$rel: a fragment is a .md file"; problems=$((problems + 1)); continue ;;
       esac
-      if [[ ! -s "$f" ]]; then
+      # -s catches a zero-byte file; a file of nothing but newlines is just
+      # as empty, and reached no validation at all below, because the awk rule
+      # that skips blank lines fires before the one that requires an item. It
+      # contributed nothing and left two blank lines behind it in the pasted
+      # section, which markdownlint counts as MD012.
+      if [[ ! -s "$f" ]] || ! grep -q '[^[:space:]]' "$f"; then
         err "$rel is empty"; problems=$((problems + 1)); continue
       fi
       # Shape: first non-blank line is an item; every other line is an item, a

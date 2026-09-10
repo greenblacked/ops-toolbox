@@ -109,7 +109,74 @@ fetch() {
     --connect-timeout 10 --max-time 120 "$1" -o "$2"
 }
 
-# --- 1. packages ----------------------------------------------------------
+# Order matters, and it is local-first. This hook gets Claude Code's default
+# 60s unless settings.json says otherwise, and steps 1-4 are an apt-get, two
+# curls each allowed --max-time 120 with retries, and an npx fetch - minutes
+# on the cold container this exists for. The two steps that need no network
+# and cannot fail slowly used to be last, so a timeout killed the hook
+# mid-fetch and neither ever ran. They run first now, and settings.json sets
+# an explicit timeout besides.
+
+# --- 1. the layout the macOS Docker suites expect -------------------------
+# There is no Docker daemon in a remote session, so the macos suites cannot
+# build their tester image. They can run directly: the steps and unprivileged
+# suites refuse to start unless /.dockerenv exists (they clear absolute system
+# paths, and that guard is what keeps them off a real machine), they read the
+# repository at /repo, and the unprivileged one needs /rootonly (700) and
+# /rootlocked (755) exactly as tester/Dockerfile creates them.
+# -d /repo is not enough: on a container where /repo is already a bind-mount
+# or a symlink to a different checkout, the suites would run against the wrong
+# repository while this reported the layout "in place".
+if [[ -e /.dockerenv && -d /repo && -d /rootonly && -d /rootlocked ]] \
+   && [[ "$(readlink -f /repo)" == "$(readlink -f "$REPO_ROOT")" ]]; then
+  ok "macOS suite layout in place (/repo, /.dockerenv, /rootonly, /rootlocked)"
+elif (( CHECK )); then
+  missing "macOS suite layout (/repo, /.dockerenv, /rootonly, /rootlocked)"
+elif [[ "$SUDO" == "none" ]]; then
+  skip "macOS suite layout: no root"
+else
+  layout_ok=1
+  as_root touch /.dockerenv || layout_ok=0
+  if [[ ! -e /repo ]]; then
+    as_root ln -s "$REPO_ROOT" /repo || layout_ok=0
+  elif [[ "$(readlink -f /repo)" != "$(readlink -f "$REPO_ROOT")" ]]; then
+    # Not ours to repoint, but not a success either: without clearing the flag
+    # the block below still announced "macOS suite layout created".
+    layout_ok=0
+    skip "/repo exists and points elsewhere ($(readlink -f /repo)); left alone"
+  fi
+  as_root mkdir -p /rootonly /rootlocked && as_root chmod 700 /rootonly && as_root chmod 755 /rootlocked || layout_ok=0
+  if (( layout_ok )); then
+    ok "macOS suite layout created; run the suites with: bash macos-initial-setup/tests/test_stay_fresh_steps.sh </dev/null"
+  else
+    skip "macOS suite layout: could not create every piece"
+  fi
+fi
+
+# --- 2. the attribution guard --------------------------------------------
+# Lives in the user's home, not in this repository, and is what a fresh
+# container loses. Its installer merges into the existing settings and is safe
+# to re-run.
+guard_install=""
+for candidate in "$HOME"/.claude/skills/*/no-tooling-attribution/scripts/install.sh \
+                 "$HOME"/.claude/skills/synced/*/no-tooling-attribution/scripts/install.sh; do
+  [[ -f "$candidate" ]] && { guard_install="$candidate"; break; }
+done
+if [[ -z "$guard_install" ]]; then
+  skip "attribution guard: installer not found under ~/.claude/skills"
+elif (( CHECK )); then
+  if bash "$guard_install" --check >/dev/null 2>&1; then
+    ok "attribution guard in place"
+  else
+    missing "attribution guard (bash '$guard_install')"
+  fi
+elif bash "$guard_install" >/dev/null 2>&1 && bash "$guard_install" --check >/dev/null 2>&1; then
+  ok "attribution guard installed and verified"
+else
+  skip "attribution guard: installer failed — run: bash '$guard_install'"
+fi
+
+# --- 3. packages ----------------------------------------------------------
 # zsh: the macOS contract suite sources zsh_aliases.zsh with it.
 if command -v zsh >/dev/null 2>&1; then
   ok "zsh present"
@@ -117,7 +184,11 @@ elif (( CHECK )); then
   missing "zsh (macOS contract suite needs it)"
 elif command -v apt-get >/dev/null 2>&1 && [[ "$SUDO" != "none" ]]; then
   info "installing zsh"
-  if DEBIAN_FRONTEND=noninteractive as_root apt-get install -y -qq zsh >/dev/null 2>&1; then
+  # Through `env`, not as a prefix assignment: as_root runs `sudo -n`, and
+  # sudo's env_reset drops the variable before apt-get ever sees it, so a
+  # package that raises a debconf prompt blocked the hook until it was killed.
+  # stdin from /dev/null so nothing can wait on an answer either.
+  if as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq zsh </dev/null >/dev/null 2>&1; then
     ok "zsh installed"
   else
     skip "zsh: apt-get failed (offline?)"
@@ -126,7 +197,7 @@ else
   skip "zsh: no apt-get or no root"
 fi
 
-# --- 2. ShellCheck at the CI version -------------------------------------
+# --- 4. ShellCheck at the CI version -------------------------------------
 have_shellcheck="$(shellcheck --version 2>/dev/null | awk '/^version:/ { print $2 }')"
 if [[ "$have_shellcheck" == "$SHELLCHECK_VERSION" ]]; then
   ok "shellcheck $SHELLCHECK_VERSION"
@@ -148,7 +219,7 @@ else
   rm -rf "$tmp"
 fi
 
-# --- 3. ruff at the CI version -------------------------------------------
+# --- 5. ruff at the CI version -------------------------------------------
 have_ruff="$(ruff --version 2>/dev/null | awk '{ print $2 }')"
 if [[ "$have_ruff" == "$RUFF_VERSION" ]]; then
   ok "ruff $RUFF_VERSION"
@@ -173,7 +244,7 @@ else
   rm -rf "$tmp"
 fi
 
-# --- 4. markdownlint-cli2, warmed into the npx cache ---------------------
+# --- 6. markdownlint-cli2, warmed into the npx cache ---------------------
 # markdownlint-cli2 has no --help or --version flag, and with no arguments
 # it prints usage and exits 1. A glob that matches nothing in an empty
 # directory lints zero files and exits 0, which is the probe.
@@ -198,58 +269,6 @@ if command -v npx >/dev/null 2>&1; then
   fi
 else
   skip "markdownlint-cli2: no npx"
-fi
-
-# --- 5. the layout the macOS Docker suites expect -------------------------
-# There is no Docker daemon in a remote session, so the macos suites cannot
-# build their tester image. They can run directly: the steps and unprivileged
-# suites refuse to start unless /.dockerenv exists (they clear absolute system
-# paths, and that guard is what keeps them off a real machine), they read the
-# repository at /repo, and the unprivileged one needs /rootonly (700) and
-# /rootlocked (755) exactly as tester/Dockerfile creates them.
-if [[ -e /.dockerenv && -d /repo && -d /rootonly && -d /rootlocked ]]; then
-  ok "macOS suite layout in place (/repo, /.dockerenv, /rootonly, /rootlocked)"
-elif (( CHECK )); then
-  missing "macOS suite layout (/repo, /.dockerenv, /rootonly, /rootlocked)"
-elif [[ "$SUDO" == "none" ]]; then
-  skip "macOS suite layout: no root"
-else
-  layout_ok=1
-  as_root touch /.dockerenv || layout_ok=0
-  if [[ ! -e /repo ]]; then
-    as_root ln -s "$REPO_ROOT" /repo || layout_ok=0
-  elif [[ "$(readlink -f /repo)" != "$(readlink -f "$REPO_ROOT")" ]]; then
-    skip "/repo exists and points elsewhere ($(readlink -f /repo)); left alone"
-  fi
-  as_root mkdir -p /rootonly /rootlocked && as_root chmod 700 /rootonly && as_root chmod 755 /rootlocked || layout_ok=0
-  if (( layout_ok )); then
-    ok "macOS suite layout created; run the suites with: bash macos-initial-setup/tests/test_stay_fresh_steps.sh </dev/null"
-  else
-    skip "macOS suite layout: could not create every piece"
-  fi
-fi
-
-# --- 6. the attribution guard --------------------------------------------
-# Lives in the user's home, not in this repository, and is what a fresh
-# container loses. Its installer merges into the existing settings and is safe
-# to re-run.
-guard_install=""
-for candidate in "$HOME"/.claude/skills/*/no-tooling-attribution/scripts/install.sh \
-                 "$HOME"/.claude/skills/synced/*/no-tooling-attribution/scripts/install.sh; do
-  [[ -f "$candidate" ]] && { guard_install="$candidate"; break; }
-done
-if [[ -z "$guard_install" ]]; then
-  skip "attribution guard: installer not found under ~/.claude/skills"
-elif (( CHECK )); then
-  if bash "$guard_install" --check >/dev/null 2>&1; then
-    ok "attribution guard in place"
-  else
-    missing "attribution guard (bash '$guard_install')"
-  fi
-elif bash "$guard_install" >/dev/null 2>&1 && bash "$guard_install" --check >/dev/null 2>&1; then
-  ok "attribution guard installed and verified"
-else
-  skip "attribution guard: installer failed — run: bash '$guard_install'"
 fi
 
 if (( CHECK )); then

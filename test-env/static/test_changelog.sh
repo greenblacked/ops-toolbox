@@ -29,6 +29,13 @@ lacks()   { [[ "$1" != *"$2"* ]]; }
 starts()  { [[ "$1" == "$2"* ]]; }
 same()    { [[ "$1" == "$2" ]]; }
 rc_is()   { [[ "$rc" -eq "$1" ]]; }
+# BSD sed's -i takes a mandatory backup suffix, GNU sed's must not be a
+# separate argument. '' works for neither, so branch once on which this is.
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }
+else
+  sed_i() { local e="$1"; shift; sed -i '' "$e" "$@"; }
+fi
 
 if [[ ! -x "$SCRIPT" ]]; then
   err "$SCRIPT is missing or not executable"
@@ -80,7 +87,15 @@ run() {
   rc=$?
 }
 
-snapshot() { find "$1" -mindepth 1 -printf '%p %T@\n' | sort; }
+# macOS find has no -printf, and this suite is the one that runs natively
+# there. Without a fallback snapshot() printed nothing for both the before and
+# the after call, so every "writes nothing" assertion compared "" to "" and
+# passed even when a dry run had written files. dotfiles/tests/test_dotfiles.sh
+# guards the same call the same way.
+snapshot() { find "$1" -mindepth 1 -printf '%p %T@\n' 2>/dev/null | sort; }
+if ! find "$WORK" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  snapshot() { find "$1" -mindepth 1 -exec ls -ld {} + 2>/dev/null | sort; }
+fi
 
 # --- CLI contract ----------------------------------------------------------
 root="$(fresh_root)"
@@ -96,6 +111,50 @@ run "$root" preview --dry-run;           expect "--dry-run outside release exits
 run "$root" check --date 2026-01-01;     expect "--date outside release exits 3 (got $rc)" rc_is 3
 run "$root" release --date;              expect "--date without a value exits 3 (got $rc)" rc_is 3
 run "$root" release 1.0 --date 2026-1-1; expect "malformed --date exits 3 (got $rc)" rc_is 3
+
+# --- a large [Unreleased] must not break preview ---------------------------
+# unreleased_preamble() piped part_unreleased into an awk that exited at the
+# first "### ". Once the section outgrew one pipe buffer (64K on Linux; the
+# real CHANGELOG.md passed that long ago) the writer died of SIGPIPE, pipefail
+# promoted it, and set -e aborted preview with no message after two lines of
+# output. The fixture has to be bigger than a pipe buffer for this to bite.
+big_root="$(fresh_root)"
+{
+  printf '# Changelog\n\nIntro paragraph that must survive.\n\n## [Unreleased]\n\n### Added\n\n'
+  i=0
+  while [ "$i" -lt 4000 ]; do
+    printf -- '- Item %d, long enough to push this section past a pipe buffer.\n' "$i"
+    i=$((i + 1))
+  done
+  printf '\n## 2026-01-01\n\n### Added\n\n- Old item that belongs to history.\n'
+} > "$big_root/CHANGELOG.md"
+expect "the fixture section really is bigger than a pipe buffer" \
+  test "$(wc -c < "$big_root/CHANGELOG.md")" -gt 65536
+run "$big_root" preview
+expect "preview of a large [Unreleased] exits 0 (got $rc)" rc_is 0
+expect "preview keeps the first item" has "$out" "- Item 0,"
+expect "preview keeps the last item"  has "$out" "- Item 3999,"
+expect "preview keeps the fragments too" has "$out" "Fragment A, added."
+run "$big_root" release 9.9.9 --dry-run
+expect "a dry-run release of a large section exits 0 (got $rc)" rc_is 0
+
+# --- what counts as a fragment ---------------------------------------------
+# check used to enumerate dot-files while the paste globbed only *.md, so the
+# two disagreed in both directions: a .md dot-file was counted and then
+# silently dropped by release, and the OS/editor junk that actually turns up
+# in a working tree failed the whole static suite.
+dot_root="$(fresh_root)"
+printf -- '- Hidden, and never pasted.\n' > "$dot_root/changelog.d/added/.hidden.md"
+: > "$dot_root/changelog.d/.DS_Store"
+: > "$dot_root/changelog.d/added/.aaa.md.swp"
+run "$dot_root" check
+expect "a .DS_Store and a vim swapfile do not fail check (exit $rc)" rc_is 0
+expect "check counts only the three real fragments" has "$out" "3 fragment(s) would paste cleanly"
+run "$dot_root" release 1.2.3 --date 2026-02-02
+expect "release over dot-files exits 0 (got $rc)" rc_is 0
+expect "the dot-file's text was never pasted" \
+  lacks "$(cat "$dot_root/CHANGELOG.md")" "Hidden, and never pasted."
+expect "the .DS_Store is left alone" test -e "$dot_root/changelog.d/.DS_Store"
 
 # --- check -----------------------------------------------------------------
 run "$root" check
@@ -190,12 +249,14 @@ expect "release refuses to run over a bad fragment (exit $rc)" rc_is 1
 expect "a refused release touches nothing" same "$before" "$after"
 
 root="$(fresh_root)"
-sed -i 's/^## \[Unreleased\]$/## Unreleased/' "$root/CHANGELOG.md"
+# BSD sed's -i requires a backup-suffix argument, so a bare `sed -i` consumes
+# the script as the suffix and fails; these were the only two in the repo.
+sed_i 's/^## \[Unreleased\]$/## Unreleased/' "$root/CHANGELOG.md"
 run "$root" preview
 expect "a CHANGELOG.md without the [Unreleased] heading is refused (exit $rc)" rc_is 1
 
 root="$(fresh_root)"
-sed -i 's/^### Fixed$/### Surprises/' "$root/CHANGELOG.md"
+sed_i 's/^### Fixed$/### Surprises/' "$root/CHANGELOG.md"
 run "$root" preview
 expect "an unknown section under [Unreleased] is refused (exit $rc)" rc_is 1
 

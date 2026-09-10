@@ -220,6 +220,14 @@ def classify_entry(entry_dir: str, mounted: frozenset):
                 reasons.append(
                     (UNRESOLVED, "cloud storage not materialised", candidate)
                 )
+        except ValueError:
+            # A NUL in the path. os.path.exists(), which this replaced, folded
+            # this into its False; os.lstat() raises, and ValueError is not an
+            # OSError, so it escaped classify_entry and aborted the whole scan
+            # with a traceback - one unparsable manifest and every entry for
+            # every editor went unclassified. Unrepresentable on this
+            # filesystem, so it is no more resolvable than an unmounted disk.
+            return UNRESOLVED, "path is not representable", candidate
         except OSError as exc:
             # EACCES, EPERM, a mount whose server went away: we may not look,
             # so we do not judge.

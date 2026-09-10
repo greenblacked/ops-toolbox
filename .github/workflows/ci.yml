@@ -212,6 +212,18 @@ jobs:
                 ;;
             esac
           done < <(./run-tests.sh --list)
+          # A process substitution's exit status is invisible to `set -e`, so
+          # a run-tests.sh that dies before printing anything - a syntax error
+          # from a bad edit, a lost exec bit, the cd guard firing - leaves
+          # matrix at its '[]' seed and this step still succeeds. `fromJSON`
+          # then expands to zero jobs, every required `Test / <suite>` check
+          # goes missing rather than red, and the pull request is unmergeable
+          # with nothing to point at. Precisely the change most in need of
+          # testing is the one that triggers it, so it has to be loud.
+          if [ "$matrix" = '[]' ]; then
+            echo "::error::run-tests.sh --list produced no suites; refusing to publish an empty test matrix"
+            exit 1
+          fi
           printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
           printf '  %-14s %s\n' matrix "$(jq -r 'map(.check_name) | join(", ")' <<< "$matrix")"
 

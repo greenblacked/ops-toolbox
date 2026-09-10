@@ -307,9 +307,19 @@ if (( SKIP_CACHES == 0 )); then
   # Both halves, or none: every trashed file has a matching .trashinfo record
   # under info/, and clearing only files/ leaves the desktop showing entries
   # that no longer exist. disk_cleanup.sh in this directory clears both.
+  #
+  # The contents, not the directories. `rm -rf "$trash"` removed the two
+  # directories the FreeDesktop spec expects to exist, and on a trash
+  # relocated to another disk - files/ a symlink, the usual way to keep it
+  # off a small SSD - `[[ -d ]]` followed the link and rm deleted the link
+  # itself: the trashed files stayed where they were, nothing was freed, the
+  # relocation was gone, and the run said "empty". A trailing slash makes
+  # find descend into the target of a symlink, so the same line empties a
+  # relocated trash and a plain one and leaves both in place afterwards.
+  # macos-initial-setup/stay_fresh.sh empties ~/.Trash the same way.
   for trash in "$HOME/.local/share/Trash/files" "$HOME/.local/share/Trash/info"; do
     [[ -d "$trash" ]] || continue
-    run_cmd "empty ${trash#"$HOME"/}" rm -rf "$trash"
+    run_cmd "empty ${trash#"$HOME"/}" find "$trash/" -mindepth 1 -delete
   done
 else
   info "skipped: caches"

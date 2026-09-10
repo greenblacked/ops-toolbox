@@ -30,7 +30,14 @@
 # else the agent keeps in that directory stays local.
 !/.claude/
 /.claude/*
+# Re-including the directory is not enough: /.claude/* matches one level, so
+# nothing re-ignores what is inside hooks/ and a scratch hook written there
+# showed up as untracked, ready to be swept into a `git add -A`. Ignore the
+# directory's contents too, then name the two files that are tracked.
 !/.claude/hooks/
+/.claude/hooks/*
+!/.claude/hooks/session-start.sh
+!/.claude/hooks/README.md
 !/.claude/settings.json
 
 # Local agent instructions belong to the machine running them, not the repo.
