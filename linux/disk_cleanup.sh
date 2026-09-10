@@ -26,6 +26,7 @@ ASSUME_YES=0
 NO_SUDO=0
 DAYS=7
 HOME_DIR="${HOME:-}"
+HOME_OVERRIDE=0
 TMP_DIR="${TMPDIR:-}"
 TMP_OVERRIDE=0
 INCLUDE_TRASH=0
@@ -70,7 +71,8 @@ Options:
   --dry-run              Print every deletion without running it
   --yes, -y              Required for a run that actually deletes
   --days N               Only files older than N days (default: $DAYS; 0 = all)
-  --home DIR             User profile to clean (default: \$HOME)
+  --home DIR             User profile to clean (default: \$HOME); an ambient
+                         \$XDG_CACHE_HOME is ignored when this is given
   --tmp DIR              Extra temp directory to clean (default: \$TMPDIR)
   --no-sudo              Skip every step that needs root
   --include-trash        Empty ~/.local/share/Trash
@@ -119,8 +121,8 @@ while (( $# > 0 )); do
     --no-sudo)             NO_SUDO=1 ;;
     --days)                require_value "$1" "${2:-}"; DAYS="$2"; shift ;;
     --days=*)              DAYS="${1#*=}"; require_value "--days" "$DAYS" ;;
-    --home)                require_value "$1" "${2:-}"; HOME_DIR="$2"; shift ;;
-    --home=*)              HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR" ;;
+    --home)                require_value "$1" "${2:-}"; HOME_DIR="$2"; HOME_OVERRIDE=1; shift ;;
+    --home=*)              HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR"; HOME_OVERRIDE=1 ;;
     --tmp)                 require_value "$1" "${2:-}"; TMP_DIR="$2"; TMP_OVERRIDE=1; shift ;;
     --tmp=*)               TMP_DIR="${1#*=}"; require_value "--tmp" "$TMP_DIR"; TMP_OVERRIDE=1 ;;
     --include-trash)       INCLUDE_TRASH=1 ;;
@@ -424,8 +426,17 @@ done
 # --- thumbnails ------------------------------------------------------------
 step "thumbnails"
 clean_dir_contents "$HOME_DIR/.cache/thumbnails" "thumbnail cache"
+# XDG_CACHE_HOME describes the cache of the user running this script. With
+# --home the profile being cleaned is somebody else's — another account, or a
+# test fixture — and their cache is not where this process's environment says
+# it is. Honouring it anyway deleted files outside the directory --home named,
+# which is the one thing --home promises not to touch.
 if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-  clean_dir_contents "$XDG_CACHE_HOME/thumbnails" "XDG thumbnail cache"
+  if (( HOME_OVERRIDE )); then
+    info "XDG_CACHE_HOME ignored: it describes the caller's cache, not the profile --home names"
+  else
+    clean_dir_contents "$XDG_CACHE_HOME/thumbnails" "XDG thumbnail cache"
+  fi
 fi
 
 # --- trash -----------------------------------------------------------------

@@ -33,6 +33,17 @@ M="$REPO_ROOT/macos-initial-setup"
 SF="$M/stay_fresh.sh"
 [[ -x "$SF" ]] || { echo "expected stay_fresh.sh at $SF" >&2; exit 1; }
 
+# stay_fresh.sh reads these from the environment to locate somebody else's cache
+# or to reach a notifier, and a developer's shell — or this container — often
+# has them set. Inherited, they aim the run at a real cache or a real webhook:
+# an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
+# the test passed here and failed in CI. Every test that needs one of these
+# supplies it itself; start from an environment holding none of them.
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
+  STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
+  STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+
 failures=0
 ok()  { echo "[ ok ] $*"; }
 err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
@@ -1823,7 +1834,7 @@ rm -rf "$d"
 # for the wrong reason.
 d="$(devcache_env)"; : > "$d/calls"
 mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; [ "$1" = "pm" ] && exit 1; exit 0'
-BUN_INSTALL="$d/home/.bun" out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+out="$(BUN_INSTALL="$d/home/.bun" run_sf "$d" --yes --only dev-caches)"; rc=$?
 assert_eq "dev-caches succeeds with a bun that has no pm cache" "0" "$rc"
 assert_gone   "the bun cache is cleared through the directory instead" \
   "$d/home/.bun/install/cache/pkg"
@@ -1836,7 +1847,7 @@ d="$(devcache_env)"; : > "$d/calls"
 mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; [ "$1" = "pm" ] && exit 1; exit 0'
 mkdir -p "$d/home/elsewhere/install/cache/pkg"
 bytes_file "$d/home/elsewhere/install/cache/pkg/tarball.tgz" 128
-BUN_INSTALL="$d/home/elsewhere" out="$(run_sf "$d" --yes --only dev-caches)"
+out="$(BUN_INSTALL="$d/home/elsewhere" run_sf "$d" --yes --only dev-caches)"
 assert_gone   "BUN_INSTALL relocates which cache is cleared" \
   "$d/home/elsewhere/install/cache/pkg"
 assert_exists "and the default location is left alone" \

@@ -18,6 +18,13 @@ if [[ ! -d "$L" ]]; then
   exit 1
 fi
 
+# These name a file or directory outside the fixtures, and the scripts under
+# test read them straight from the environment. XDG_CACHE_HOME is the one that
+# bites: disk_cleanup.sh deleted its thumbnails even when --home pointed the run
+# at a scratch profile, so running this suite on a desktop Linux box emptied the
+# developer's real cache. Every test that needs one of these supplies it itself.
+unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME
+
 failures=0
 ok()  { echo "[ ok ] $*"; }
 err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
@@ -880,6 +887,43 @@ if [[ ! -f "$old_file" && -f "$new_file" ]]; then
 else
   err "disk_cleanup age filter misbehaved (old=$([[ -f $old_file ]] && echo present || echo gone), new=$([[ -f $new_file ]] && echo present || echo gone))"
 fi
+
+# XDG_CACHE_HOME names the cache of whoever is running the script; --home names
+# a different profile to clean. Honouring both at once reached outside the
+# directory --home pointed at, which is the one place --home promises to keep
+# the run inside: this suite, run on a desktop with XDG_CACHE_HOME exported,
+# emptied the developer's own thumbnail cache. Under --home the variable must be
+# inert, and the run must say so rather than silently skipping a step.
+xdg_outside="$(mktemp -d)"
+mkdir -p "$xdg_outside/thumbnails"
+printf 'not-ours\n' > "$xdg_outside/thumbnails/keep.png"
+set +e
+out="$(XDG_CACHE_HOME="$xdg_outside" "$CLEAN" --yes --days 1 \
+  --home "$clean_home" --tmp "$clean_tmp" 2>&1)"; rc=$?
+set -e
+assert_eq "disk_cleanup --home with an ambient XDG_CACHE_HOME exits 0" "0" "$rc"
+if [[ -f "$xdg_outside/thumbnails/keep.png" ]]; then
+  ok "--home makes an ambient XDG_CACHE_HOME inert"
+else
+  err "--home honoured XDG_CACHE_HOME and deleted outside the profile it named"
+fi
+assert_contains "the ignored XDG_CACHE_HOME is announced" "$out" "XDG_CACHE_HOME ignored"
+
+# The variable is not being distrusted, only re-aimed: without --home it is the
+# caller's own cache and must still be cleaned.
+printf 'ours\n' > "$xdg_outside/thumbnails/mine.png"
+set +e
+out="$(HOME="$clean_home" XDG_CACHE_HOME="$xdg_outside" "$CLEAN" --yes --days 1 \
+  --tmp "$clean_tmp" 2>&1)"; rc=$?
+set -e
+assert_eq "disk_cleanup without --home exits 0" "0" "$rc"
+if [[ ! -f "$xdg_outside/thumbnails/mine.png" ]]; then
+  ok "without --home the XDG thumbnail cache is still cleaned"
+else
+  err "without --home the XDG thumbnail cache was skipped"
+fi
+rm -rf "$xdg_outside"
+
 rm -rf "$clean_home" "$clean_tmp"
 
 # Coredumps are opt-in and age-filtered, with --coredump-dir as the seam so

@@ -10,6 +10,17 @@ if [[ ! -d "$M" ]]; then
   exit 1
 fi
 
+# stay_fresh.sh reads these from the environment to locate somebody else's cache
+# or to reach a notifier, and a developer's shell — or this container — often
+# has them set. Inherited, they aim the run at a real cache or a real webhook:
+# an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
+# the test passed here and failed in CI. Every test that needs one of these
+# supplies it itself; start from an environment holding none of them.
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
+  STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
+  STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+
 failures=0
 ok()  { echo "[ ok ] $*"; }
 err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }

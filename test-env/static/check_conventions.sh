@@ -435,6 +435,79 @@ else
 fi
 
 # --------------------------------------------------------------------------
+head_ "test suites must not inherit the host environment"
+# A script that reads a path out of the environment — XDG_CACHE_HOME,
+# BUN_INSTALL, TF_PLUGIN_CACHE_DIR — is aimed by whoever runs it. A test suite
+# that leaves such a variable alone is therefore aimed by the developer's shell
+# rather than by its own fixtures, and the failure mode is silent in both
+# directions: an exported BUN_INSTALL made a relocation assertion pass here
+# against ~/.bun and fail in CI, and disk_cleanup.sh emptied the real
+# XDG_CACHE_HOME/thumbnails while --home pointed it at a scratch profile.
+#
+# Neither was a hard variable to think of once named. The point of doing it here
+# is that nobody has to: the set is derived from the scripts themselves, so the
+# next variable someone reads from the environment is covered by the commit that
+# reads it.
+#
+# A variable counts as read-from-the-host when the script expands it and never
+# assigns it. A suite counts as pinning it when it mentions the name at all —
+# unset at the top, forwarded through a run helper, or set for one command.
+
+# Bash internals and the ambient environment every process legitimately
+# inherits. HOME, PATH and TMPDIR are on the list because every suite already
+# sets them for other reasons and flagging them would be noise.
+host_env_ignore='^(BASH[A-Z_]*|PIPESTATUS|FUNCNAME|IFS|OSTYPE|HOSTNAME|RANDOM|SECONDS|LINENO|PPID|UID|EUID|PWD|OLDPWD|SHLVL|REPLY|HOME|PATH|TMPDIR|TMP|TEMP|USER|LOGNAME|SHELL|TERM|LANG|LC_[A-Z]+|NO_COLOR|COLUMNS|LINES|EDITOR|VISUAL|PAGER|SUDO_[A-Z]+)$'
+
+# Expanded as ${VAR:-...}, ${VAR:+...} or ${VAR}, minus every name the script
+# assigns anywhere — at the start of a line, as a `local`/`export`, or as a
+# one-command prefix such as `CAPTURE_STDERR=1 capture_cmd ...`.
+host_env_read() {
+  grep -oE '\$\{[A-Z][A-Z0-9_]{2,}(:-|:\+|\})' "$1" \
+    | grep -oE '[A-Z][A-Z0-9_]{2,}' | sort -u
+}
+host_env_assigned() {
+  grep -oE '(^|[;&|(]|[[:space:]])(local |export |readonly |declare -[a-zA-Z]+ )?[A-Z][A-Z0-9_]{2,}=' "$1" \
+    | grep -oE '[A-Z][A-Z0-9_]{2,}' | sort -u
+}
+
+suites=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && suites+=("$f")
+done < <(git ls-files '*/tests/*.sh')
+
+env_leaks=0
+env_pairs=0
+for suite in "${suites[@]}"; do
+  pkg="${suite%%/tests/*}"
+  # Scripts are matched within the suite's own package: linux/ and
+  # macos-initial-setup/ both ship a stay_fresh.sh, and matching on the bare
+  # basename attributes one's variables to the other's suite.
+  scripts=()
+  while IFS= read -r f; do
+    [[ -n "$f" ]] && scripts+=("$f")
+  done < <(git ls-files "$pkg/*.sh" | grep -v '/tests/')
+
+  for script in "${scripts[@]}"; do
+    base="$(basename "$script")"
+    grep -q "$base" "$suite" || continue
+    for v in $(comm -23 <(host_env_read "$script") <(host_env_assigned "$script") \
+                 | grep -Ev "$host_env_ignore"); do
+      env_pairs=$((env_pairs + 1))
+      if ! grep -qE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|$)" "$suite"; then
+        err "$suite runs $base, which reads \$$v, and never pins it — the host aims that run"
+        env_leaks=$((env_leaks + 1))
+      fi
+    done
+  done
+done
+
+if (( env_pairs == 0 )); then
+  err "no suite/script pairs examined — the discovery above is broken"
+elif (( env_leaks == 0 )); then
+  ok "every suite pins the $env_pairs host-read variable(s) of the scripts it runs"
+fi
+
+# --------------------------------------------------------------------------
 head_ "winget configuration files"
 # yamllint covers the syntax of these. It cannot cover the shape, and the shape
 # is where the real defect was: an unquoted description containing a comma

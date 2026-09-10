@@ -441,7 +441,10 @@ machine whose `/tmp` is not disposable can point at one directory.
 `/var/crash`; `--coredump-dir DIR` replaces that list (and `/` is refused).
 `--include-docker` prunes dangling images, stopped containers and build cache —
 never volumes, for the reason `stay_fresh.sh` gives. `--home DIR` points the
-user-owned targets at a home directory other than the caller's.
+user-owned targets at a home directory other than the caller's, and an
+`XDG_CACHE_HOME` inherited from the environment is ignored while it is in
+effect: that variable describes the caller's cache, and honouring both at once
+deleted files outside the directory `--home` named.
 
 ## `net_doctor.sh`
 
