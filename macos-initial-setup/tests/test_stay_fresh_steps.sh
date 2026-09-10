@@ -118,6 +118,19 @@ new_env() {
 
 # Run stay_fresh.sh inside an environment root. Prints combined output; the
 # caller keeps $?.
+# Every variable the script reads has to be named here, set to the caller's
+# value or to empty. Two reasons, and both bite silently:
+#
+#   - A caller writes `FOO=x out="$(run_sf ...)"`. That is two assignments,
+#     not a command with a prefix, so FOO is an ordinary shell variable and
+#     never reaches the child unless this list exports it.
+#   - Anything not named here leaks in from the host. BUN_INSTALL is exported
+#     on a developer machine and in this suite's own container, so a test that
+#     relied on the default path cleared the real cache and passed.
+#
+# The four cache-location variables are listed even though no test sets most
+# of them, precisely so the host's values cannot reach a run that clears
+# whatever they point at.
 run_sf() {
   local d="$1"; shift
   HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" \
@@ -145,6 +158,10 @@ run_sf() {
     STAY_FRESH_NOTIFY_WHEN="${STAY_FRESH_NOTIFY_WHEN:-}" \
     STAY_FRESH_NOTIFY_TIMEOUT="${STAY_FRESH_NOTIFY_TIMEOUT:-}" \
     BREW_SERVICES_ERROR="${BREW_SERVICES_ERROR:-}" \
+    BUN_INSTALL="${BUN_INSTALL:-}" \
+    TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-}" \
+    CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-}" \
+    UV_CACHE_DIR="${UV_CACHE_DIR:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
