@@ -22,8 +22,11 @@ need no Docker, `test_run_tests.sh` for the aggregator's own contract, and
 `test_doc_citations.sh` for the documentation ones. It discovers its own subjects from the git index rather
 than keeping a list, so a new script is covered by the commit that adds it:
 the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes`
-coverage, Bash 3.2 constructs, the deliberately-duplicated blocks, and the
-dry-run promise checked against the filesystem. **No Docker and no network.**
+coverage, Bash 3.2 constructs, the deliberately-duplicated blocks, the
+dry-run promise checked against the filesystem, and the rule that a suite must
+pin every environment variable the scripts it runs read from the host
+(`host_env_vars.awk` derives that set from each script). **No Docker and no
+network.**
 Almost all of it is bash + git; the one exception is the `.winget`
 configuration shape check, which shells out to `python3` with PyYAML and
 prints a `warn` and skips if either is missing.

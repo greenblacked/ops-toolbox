@@ -439,61 +439,63 @@ head_ "test suites must not inherit the host environment"
 # A script that reads a path out of the environment — XDG_CACHE_HOME,
 # BUN_INSTALL, TF_PLUGIN_CACHE_DIR — is aimed by whoever runs it. A test suite
 # that leaves such a variable alone is therefore aimed by the developer's shell
-# rather than by its own fixtures, and the failure mode is silent in both
-# directions: an exported BUN_INSTALL made a relocation assertion pass here
-# against ~/.bun and fail in CI, and disk_cleanup.sh emptied the real
-# XDG_CACHE_HOME/thumbnails while --home pointed it at a scratch profile.
+# rather than by its own fixtures, and the failure is silent in both directions:
+# an exported BUN_INSTALL made a relocation assertion pass here against ~/.bun
+# and fail in CI, and disk_cleanup.sh emptied the real XDG_CACHE_HOME/thumbnails
+# while --home pointed it at a scratch profile.
 #
-# Neither was a hard variable to think of once named. The point of doing it here
-# is that nobody has to: the set is derived from the scripts themselves, so the
-# next variable someone reads from the environment is covered by the commit that
+# Neither was hard to think of once named. The point of doing it here is that
+# nobody has to: the set is derived from the scripts themselves, so the next
+# variable someone reads from the environment is covered by the commit that
 # reads it.
 #
 # A variable counts as read-from-the-host when the script expands it and never
-# assigns it. A suite counts as pinning it when it mentions the name at all —
-# unset at the top, forwarded through a run helper, or set for one command.
+# assigns it. A suite counts as pinning it when it names it in code — unset at
+# the top, forwarded through a run helper, or set for one command. Comments are
+# stripped from both sides of that question: a suite explaining in prose why it
+# unsets a variable is not unsetting it, and test_doc_citations.sh describing
+# stay_fresh.sh in its header is not running it.
+host_env_ignore='^(BASH[A-Z_]*|PIPESTATUS|FUNCNAME|IFS|OSTYPE|HOSTNAME|RANDOM|SECONDS|LINENO|PPID|UID|EUID|PWD|OLDPWD|SHLVL|REPLY|HOME|PATH|TMPDIR|TMP|TEMP|USER|LOGNAME|SHELL|TERM|LANG|LC_[A-Z]+|NO_COLOR|COLUMNS|LINES|EDITOR|VISUAL|PAGER|SUDO_[A-Z]+|GPG_TTY)$'
 
-# Bash internals and the ambient environment every process legitimately
-# inherits. HOME, PATH and TMPDIR are on the list because every suite already
-# sets them for other reasons and flagging them would be noise.
-host_env_ignore='^(BASH[A-Z_]*|PIPESTATUS|FUNCNAME|IFS|OSTYPE|HOSTNAME|RANDOM|SECONDS|LINENO|PPID|UID|EUID|PWD|OLDPWD|SHLVL|REPLY|HOME|PATH|TMPDIR|TMP|TEMP|USER|LOGNAME|SHELL|TERM|LANG|LC_[A-Z]+|NO_COLOR|COLUMNS|LINES|EDITOR|VISUAL|PAGER|SUDO_[A-Z]+)$'
+host_env_scratch="$(mktemp -d)"
+trap 'rm -rf "$host_env_scratch"' EXIT
 
-# Expanded as ${VAR:-...}, ${VAR:+...} or ${VAR}, minus every name the script
-# assigns anywhere — at the start of a line, as a `local`/`export`, or as a
-# one-command prefix such as `CAPTURE_STDERR=1 capture_cmd ...`.
-host_env_read() {
-  grep -oE '\$\{[A-Z][A-Z0-9_]{2,}(:-|:\+|\})' "$1" \
-    | grep -oE '[A-Z][A-Z0-9_]{2,}' | sort -u
-}
-host_env_assigned() {
-  grep -oE '(^|[;&|(]|[[:space:]])(local |export |readonly |declare -[a-zA-Z]+ )?[A-Z][A-Z0-9_]{2,}=' "$1" \
-    | grep -oE '[A-Z][A-Z0-9_]{2,}' | sort -u
+# One awk pass per script, cached: stay_fresh.sh alone is ~3900 lines and every
+# suite in its package asks about it.
+host_env_vars() {
+  local script="$1" lang=sh cache
+  case "$script" in *.py) lang=py ;; esac
+  cache="$host_env_scratch/$(printf '%s' "$script" | tr '/.' '__')"
+  # Safe as a pipeline: sort reads to EOF, so nothing upstream is cut short.
+  [[ -f "$cache" ]] || awk -f "$HERE/host_env_vars.awk" -v lang="$lang" "$script" \
+    | grep -Ev "$host_env_ignore" | sort > "$cache"
+  cat "$cache"
 }
 
 suites=()
 while IFS= read -r f; do
   [[ -n "$f" ]] && suites+=("$f")
-done < <(git ls-files '*/tests/*.sh')
+done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh')
 
 env_leaks=0
 env_pairs=0
 for suite in "${suites[@]}"; do
-  pkg="${suite%%/tests/*}"
-  # Scripts are matched within the suite's own package: linux/ and
-  # macos-initial-setup/ both ship a stay_fresh.sh, and matching on the bare
-  # basename attributes one's variables to the other's suite.
-  scripts=()
-  while IFS= read -r f; do
-    [[ -n "$f" ]] && scripts+=("$f")
-  done < <(git ls-files "$pkg/*.sh" | grep -v '/tests/')
+  # A package suite tests its own package: linux/ and macos-initial-setup/ both
+  # ship a stay_fresh.sh, and matching on the bare basename repo-wide attributes
+  # one's variables to the other's suite. The test-env/ suites belong to no
+  # package, so theirs is everything outside one.
+  case "$suite" in
+    test-env/*) scope="$(git ls-files '*.sh' '*.py' | grep -v '/tests/' | grep -v '^test-env/')" ;;
+    *)          scope="$(git ls-files "${suite%%/tests/*}/*.sh" "${suite%%/tests/*}/*.py" | grep -v '/tests/')" ;;
+  esac
+  suite_code="$(grep -vE '^[[:space:]]*#' "$suite")"
 
-  for script in "${scripts[@]}"; do
+  for script in $scope; do
     base="$(basename "$script")"
-    grep -q "$base" "$suite" || continue
-    for v in $(comm -23 <(host_env_read "$script") <(host_env_assigned "$script") \
-                 | grep -Ev "$host_env_ignore"); do
+    grep -q "$base" <<<"$suite_code" || continue
+    for v in $(host_env_vars "$script"); do
       env_pairs=$((env_pairs + 1))
-      if ! grep -qE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|$)" "$suite"; then
+      if ! grep -qE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|$)" <<<"$suite_code"; then
         err "$suite runs $base, which reads \$$v, and never pins it — the host aims that run"
         env_leaks=$((env_leaks + 1))
       fi
