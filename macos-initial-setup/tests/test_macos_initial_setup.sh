@@ -1061,12 +1061,143 @@ set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
   STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe >/dev/null 2>&1
 set -e
-if [[ -s "$sched_stamp" ]] && grep -Eq $'^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\t[0-9]+$' "$sched_stamp"; then
+# The stamp gained a third field saying whether the firing did the full job
+# (empty when it did), so the shape is now three tab-separated fields with the
+# last possibly empty. status reads it with a third variable; a reader that
+# stops at the second is unaffected.
+if [[ -s "$sched_stamp" ]] && grep -Eq $'^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\t[0-9]+\t[a-z:-]*$' "$sched_stamp"; then
   ok "a real scheduled run writes the scheduled-run stamp with its exit code"
 else
   err "a real scheduled run left no usable scheduled-run stamp"; cat "$sched_stamp" >&2 2>/dev/null
 fi
+assert_eq "an undisturbed scheduled run records no deferral" "" \
+  "$(cut -f3 "$sched_stamp" 2>/dev/null)"
 
+# --- --trend turns the recorded runs into an answer ------------------------
+# A single run says what it freed today. Only the history says whether the
+# cleaning is keeping up, which steps do the work, and which are slowing down.
+trend_home="$(mktemp -d)"
+trend_state="$trend_home/Library/Logs/stay_fresh"
+mkdir -p "$trend_state"
+trend() {
+  set +e
+  HOME="$trend_home" TMPDIR="$trend_home" PATH="$fake_macos/bin:/usr/bin:/bin" \
+    "$sf" --trend 2>&1
+  set -e
+}
+
+out="$(trend)"
+assert_eq "--trend with no history at all exits 0" "0" "$?"
+assert_contains "--trend says where the history will appear" "$out" "no history yet"
+
+# Rows written before the free-space column existed must not be read as zero
+# free space: that would invent a trend out of missing data.
+for i in 1 2 3; do
+  printf '2026-08-0%d 03:00:00\tOK\t120\t1000000000\t900000000\t20\t0\t0\t3\t2\t1\t\n' "$i"
+done > "$trend_state/history.tsv"
+out="$(trend)"
+assert_contains "--trend counts the legacy rows" "$out" "3 run(s) recorded"
+assert_contains "--trend does not invent a free-space trend from old rows" "$out" "not recorded in any row yet"
+assert_not_contains "and does not claim the disk is filling up" "$out" "filling up"
+
+# Twelve runs freeing 2 GB each while free space falls 5 GB a run: the cleaning
+# is working and losing anyway, which is the finding no single run can report.
+: > "$trend_state/history.tsv"; : > "$trend_state/steps.tsv"
+for i in $(seq 1 12); do
+  printf '2026-08-%02d 03:00:00\tOK\t%d\t2000000000\t1800000000\t20\t0\t0\t3\t2\t1\t\t%d\n' \
+    "$i" $(( 100 + i * 5 )) $(( 100000000000 - i * 5000000000 )) >> "$trend_state/history.tsv"
+  printf '2026-08-%02d 03:00:00\tuser-caches\t30\t1500000000\tok\n' "$i" >> "$trend_state/steps.tsv"
+  printf '2026-08-%02d 03:00:00\tdocker\t%d\t400000000\tok\n' "$i" \
+    "$( (( i <= 6 )) && echo 4 || echo 60 )" >> "$trend_state/steps.tsv"
+  printf '2026-08-%02d 03:00:00\ttrash\t2\t100000000\tok\n' "$i" >> "$trend_state/steps.tsv"
+done
+out="$(trend)"
+assert_contains "--trend reads the free-space column when it is there" "$out" "free space 2026-08-01"
+assert_contains "--trend names a disk that is filling up regardless" "$out" "filling up faster than these runs free it"
+assert_contains "--trend names the step that does the most work" \
+  "$(grep -A1 'Which steps do the work' <<<"$out" | tail -1)" "user-caches"
+assert_contains "--trend flags a step whose runs are getting longer" "$out" "Slowing down"
+assert_contains "and names which one, with the before and after" "$(grep -A2 'Slowing down' <<<"$out")" "docker"
+assert_not_contains "--trend does not flag a step that is steady" "$(grep -A3 'Slowing down' <<<"$out")" "trash"
+
+# Read-only: a report that rewrites the data it reports on is not a report.
+before="$(find "$trend_home" -type f -exec ls -ld {} + 2>/dev/null | sort)"
+trend >/dev/null
+after="$(find "$trend_home" -type f -exec ls -ld {} + 2>/dev/null | sort)"
+assert_eq "--trend writes nothing" "$before" "$after"
+rm -rf "$trend_home"
+
+# --- a scheduled run is not worth a battery or an interruption -------------
+# Neither probe is faked above, so power_source answers "unknown" and the idle
+# probe answers nothing: the runs before this took the ordinary path, which is
+# what a desktop with no battery must also get.
+sched_run() {
+  rm -rf "$fake_macos/home/Library/Logs/stay_fresh"
+  set +e
+  HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+    STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe "$@" 2>&1
+  set -e
+}
+fake_power() {
+  printf '%s\n' '#!/bin/sh' "echo \"Now drawing from '$1'\"" > "$fake_macos/bin/pmset"
+  chmod +x "$fake_macos/bin/pmset"
+}
+fake_idle() {   # seconds since the last keyboard or mouse event
+  printf '%s\n' '#!/bin/sh' "echo '  \"HIDIdleTime\" = ${1}000000000'" > "$fake_macos/bin/ioreg"
+  chmod +x "$fake_macos/bin/ioreg"
+}
+
+fake_power 'Battery Power'; fake_idle 99999
+out="$(sched_run)"
+assert_contains "on battery the scheduled run defers" "$out" "on battery"
+assert_contains "and says how to override it" "$out" "--ignore-power"
+assert_eq "the deferral is recorded in the stamp" "deferred:battery" \
+  "$(cut -f3 "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled" 2>/dev/null)"
+assert_eq "a deferred run does not run stay_fresh.sh at all" "" \
+  "$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev/null)"
+
+out="$(sched_run --ignore-power)"
+assert_not_contains "--ignore-power runs on battery anyway" "$out" "deferring this run"
+assert_eq "and records no deferral" "" \
+  "$(cut -f3 "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled" 2>/dev/null)"
+
+# On mains, but somebody is typing: the sweep would be minutes of du and rm
+# under their hands. The read-only reports run instead — deferring outright
+# would mean a machine in use at this hour every day never runs at all.
+fake_power 'AC Power'; fake_idle 10
+out="$(sched_run)"
+assert_contains "an active user downgrades the run to the reports" "$out" "read-only reports only"
+assert_eq "the downgrade is recorded in the stamp" "reports-only:active" \
+  "$(cut -f3 "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled" 2>/dev/null)"
+sched_log="$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev/null | head -n 1)"
+if [[ -n "$sched_log" ]]; then
+  sched_out="$(cat "$sched_log")"
+  assert_contains "the downgraded run still reports pending OS updates" \
+    "$(grep "pending OS / App Store updates" <<<"$sched_out")" "run"
+  for keep in "clear per-app caches" "prune workspace storage" "empty trash"; do
+    assert_contains "the downgraded run sweeps nothing: $keep" "$(grep -i "$keep" <<<"$sched_out")" "skip"
+  done
+else
+  err "the downgraded scheduled run wrote no transcript"
+fi
+
+# Idle long enough: the ordinary run.
+fake_idle 3600
+out="$(sched_run)"
+assert_not_contains "an idle machine on mains runs normally" "$out" "read-only reports only"
+assert_eq "and records no deferral" "" \
+  "$(cut -f3 "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled" 2>/dev/null)"
+
+# status surfaces the note rather than hiding a deferral behind an exit code.
+printf '%s\t0\tdeferred:battery\n' "$(stamp_days_ago 0)" \
+  > "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled"
+touch "$agent_plist"
+set +e
+out="$(agent_status)"
+set -e
+assert_contains "status says the last firing was deferred" "$out" "deferred:battery"
+
+rm -f "$fake_macos/bin/pmset" "$fake_macos/bin/ioreg"
 rm -rf "$fake_macos"
 
 # --- LaunchAgent plist semantics ------------------------------------------

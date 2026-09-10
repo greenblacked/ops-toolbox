@@ -142,6 +142,7 @@ NOTIFY_WHEN_SET=0
 SCHEDULE_SET=0
 TAIL_LINES=80
 TAIL_SET=0
+IGNORE_POWER=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -229,6 +230,7 @@ while (( $# > 0 )); do
       stay_fresh_accepts --notify-when "$NOTIFY_WHEN" || { err "$FLAG_ERROR"; exit 3; }
       NOTIFY_WHEN_SET=1
       ;;
+    --ignore-power) IGNORE_POWER=1 ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
     --print-only) PRINT_ONLY=1 ;;
     --tail)
@@ -269,7 +271,7 @@ case "$CMD" in
     ;;
   run-scheduled)
     (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
-      || { err "run-scheduled accepts only --profile, --notify, --notify-when and --dry-run"; exit 3; }
+      || { err "run-scheduled accepts only --profile, --notify, --notify-when, --ignore-power and --dry-run"; exit 3; }
     ;;
 esac
 
@@ -315,6 +317,46 @@ agent_log_names() {
   done
 }
 
+# Where the power is coming from, as pmset reports it: "ac", "battery", or
+# "unknown" when pmset is missing or says something this does not recognise.
+# Unknown is treated as ac by the caller - a desktop with no battery must not
+# have its schedule deferred forever by a probe that cannot answer.
+power_source() {
+  local out
+  command -v pmset >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+  out="$(pmset -g batt 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  case "$out" in
+    *"'AC Power'"*)      printf 'ac\n' ;;
+    *"'Battery Power'"*) printf 'battery\n' ;;
+    *)                   printf 'unknown\n' ;;
+  esac
+}
+
+# Seconds since the last keyboard or mouse event, from the HID system. Prints
+# nothing when it cannot be read, which the caller treats as "cannot tell".
+user_idle_seconds() {
+  command -v ioreg >/dev/null 2>&1 || return 0
+  ioreg -c IOHIDSystem 2>/dev/null \
+    | awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { printf "%d\n", $NF / 1000000000; exit } }'
+}
+
+# A scheduled run is not worth a battery or an interruption. Both guards are
+# advisory and both can be turned off with --ignore-power; neither ever runs
+# for `run-now`, which is a person asking for it deliberately.
+IDLE_BEFORE_SWEEP_S=300
+
+# When the schedule last actually fired, for `status`. stay_fresh.sh's own
+# last-run.json is rewritten by every run, a manual --quick included, so it
+# cannot tell a job that stopped firing from one whose owner keeps running the
+# script by hand; this stamp is written only here. The third field says whether
+# the firing did the full job, and is empty when it did — readers that stop at
+# the second field are unaffected.
+note_scheduled_run() {
+  (( AGENT_DRY_RUN == 0 )) || return 0
+  printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "${2:-}" \
+    > "$LOG_DIR/last-scheduled" 2>/dev/null || true
+}
+
 run_scheduled() {
   if [[ ! -x "$STAY_FRESH" ]]; then
     err "stay_fresh.sh not found or not executable at $STAY_FRESH"
@@ -324,7 +366,32 @@ run_scheduled() {
 
   local run_log="$LOG_DIR/agent-$(date +%Y%m%d-%H%M%S)-$$.log"
   local -a args=(--yes --no-sudo --fail-on-warn)
-  if [[ "$PROFILE" == "safe" ]]; then
+  local deferred="" power idle=""
+
+  if (( IGNORE_POWER == 0 )); then
+    power="$(power_source)"
+    if [[ "$power" == "battery" ]]; then
+      # A full sweep is minutes of du and rm plus a brew upgrade. On battery
+      # that is somebody's afternoon, spent without being asked. The next
+      # firing on mains does the work.
+      info "on battery — deferring this run (pass --ignore-power to run anyway)"
+      note_scheduled_run 0 "deferred:battery"
+      return 0
+    fi
+    idle="$(user_idle_seconds)"
+    if [[ "$idle" =~ ^[0-9]+$ ]] && (( idle < IDLE_BEFORE_SWEEP_S )); then
+      # Somebody is at the keyboard. Deferring outright would mean a machine
+      # in use at this hour every day never runs at all, so the read-only
+      # reports run instead: they are the part worth having daily, and they
+      # neither sweep nor upgrade anything.
+      info "active ${idle}s ago — running the read-only reports only, not the sweep"
+      args+=(--reports)
+      deferred="reports-only:active"
+    fi
+  fi
+  if [[ -n "$deferred" ]]; then
+    : # --reports is already in args, and it refuses to be joined with --only
+  elif [[ "$PROFILE" == "safe" ]]; then
     # Scheduled cleanup must be conservative by default. These steps protect
     # active/unknown application state and remove workspace data only when the
     # recorded local project path is provably gone. The two reports are
@@ -340,13 +407,7 @@ run_scheduled() {
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
   local rc=$?
 
-  # When the schedule last actually fired, for `status`. stay_fresh.sh's own
-  # last-run.json is rewritten by every run, a manual --quick included, so
-  # it cannot tell a job that stopped firing from one whose owner keeps
-  # running the script by hand; this stamp is written only here.
-  if (( AGENT_DRY_RUN == 0 )); then
-    printf '%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$rc" > "$LOG_DIR/last-scheduled" 2>/dev/null || true
-  fi
+  note_scheduled_run "$rc" "$deferred"
 
   # One bounded, complete transcript per invocation. launchd itself writes to
   # /dev/null, so fixed agent.out/agent.err files cannot grow without limit.
@@ -627,8 +688,12 @@ PLIST_EOF
     since_s=""
     since_what=""
     if [[ -s "$LOG_DIR/last-scheduled" ]]; then
-      IFS=$'\t' read -r sched_when sched_rc < "$LOG_DIR/last-scheduled"
-      info "last scheduled run: $sched_when (exit ${sched_rc:-?})"
+      IFS=$'\t' read -r sched_when sched_rc sched_note < "$LOG_DIR/last-scheduled"
+      if [[ -n "${sched_note:-}" ]]; then
+        info "last scheduled run: $sched_when (exit ${sched_rc:-?}, ${sched_note})"
+      else
+        info "last scheduled run: $sched_when (exit ${sched_rc:-?})"
+      fi
       since_s="$(epoch_of "$sched_when")"
       since_what="the last scheduled run"
     elif [[ -f "$PLIST" ]]; then

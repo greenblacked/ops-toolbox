@@ -1349,6 +1349,7 @@ assert_eq "--history works before any run" "0" "$rc"
 assert_contains "--history says when there is nothing yet" "$out" "no history yet"
 out="$(run_sf "$d" --dry-run --only versions)"
 assert_gone "a dry run records no history" "$d/home/Library/Logs/stay_fresh/history.tsv"
+assert_gone "a dry run records no per-step figures either" "$d/home/Library/Logs/stay_fresh/steps.tsv"
 # The kernel boot time feeds the "up Nd Nh" part of the verdict.
 mkbin "$d/bin/sysctl" 'echo "{ sec = $(( $(date +%s) - 93600 )), usec = 0 } Mon Sep  7 10:00:00 2026"'
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
@@ -1360,6 +1361,23 @@ hist="$d/home/Library/Logs/stay_fresh/history.tsv"
 assert_exists "history.tsv is written" "$hist"
 assert_eq "history has one row" "1" "$(wc -l <"$hist" | tr -d ' ')"
 assert_contains "the history row carries the result" "$(cut -f2 "$hist")" "OK"
+# The thirteenth column is free space after the run. RECLAIMED_B beside it is a
+# delta, and a delta alone cannot say whether the disk is filling up anyway.
+if [[ "$(cut -f13 "$hist")" =~ ^[0-9]+$ ]]; then
+  ok "the history row records free space after the run"
+else
+  err "the history row has no free-space column: [$(cut -f13 "$hist")]"
+fi
+# One row per step per run, in its own file: the row count differs from
+# history.tsv's, and a separate file needs no migration for rows already there.
+steps_tsv="$d/home/Library/Logs/stay_fresh/steps.tsv"
+assert_exists "steps.tsv is written" "$steps_tsv"
+assert_eq "the run that ran one step recorded one step row" "1" \
+  "$(wc -l <"$steps_tsv" | tr -d ' ')"
+assert_eq "the step row names the step by id" "versions" "$(cut -f2 "$steps_tsv")"
+assert_eq "the step row carries its outcome" "ok" "$(cut -f5 "$steps_tsv")"
+assert_eq "the step row is stamped with the same run time as the history row" \
+  "$(cut -f1 "$hist")" "$(cut -f1 "$steps_tsv")"
 if python3 - "$d/home/Library/Logs/stay_fresh/last-run.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as fh:

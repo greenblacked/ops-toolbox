@@ -630,6 +630,7 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
 | `--prune-unavailable-simulators` | Run `simctl delete unavailable`; unavailable devices and their data are otherwise only reported. |
+| `--trend` | Summarise the recorded runs and exit: whether free space is keeping up, which steps do the work, which are slowing down. Read-only. |
 | `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
 | `--skip-user-logs` | Skip removing files under `~/Library/Logs` older than 30 days (step 12). |
 | `--skip-downloads` | Skip the old-downloads report (step 13). |
@@ -1015,6 +1016,7 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
 ./launchd/stay_fresh_agent.sh status                       # plist, launchd state, last run's verdict
 ./launchd/stay_fresh_agent.sh run-now
+./launchd/stay_fresh_agent.sh run-scheduled --ignore-power  # sweep even on battery
 ./launchd/stay_fresh_agent.sh logs --tail 120
 ./launchd/stay_fresh_agent.sh uninstall
 ```
@@ -1030,6 +1032,18 @@ noticing. It does not empty Trash, prune Docker, remove broad
 user/Xcode/developer caches or old logs, upgrade packages, or update plugins.
 Pass `install --profile full` to retain the previous broad scheduled behavior.
 `install --notify-when warn` keeps the channel quiet on a clean run.
+
+**A scheduled run checks two things before it sweeps.** On battery it **defers
+entirely**: a full sweep is minutes of `du` and `rm` plus a `brew upgrade`, and
+that is somebody's afternoon spent without being asked — the next firing on
+mains does the work. With somebody **at the keyboard** (any input in the last
+five minutes) it runs the read-only reports instead of the sweep; deferring
+outright would mean a machine in use at that hour every day never runs at all,
+and the reports are the part worth having daily. Either decision is recorded in
+the `last-scheduled` stamp and shown by `status`, so a deferral is never silent.
+`--ignore-power` skips both checks. Neither applies to `run-now`, which is a
+person asking deliberately, and a machine with no battery — or one where
+`pmset` and `ioreg` cannot be read — takes the ordinary path.
 
 **The agent cannot use `sudo`, and that is not a limitation to work around.** A
 LaunchAgent runs in your GUI login session with no terminal attached, so a
@@ -1329,7 +1343,8 @@ Homebrew / `pyenv` / `goenv` commands.
   a refused run (no `--yes` in a non-interactive shell, an unsupported OS)
   still writes nothing at all.
 - Appends one row per real run to `~/Library/Logs/stay_fresh/history.tsv`
-  and rewrites `last-run.json` there. Sends a notification only when
+  and one row per step to `steps.tsv` beside it, and rewrites `last-run.json`.
+  `--trend` reads them back; nothing else does. Sends a notification only when
   `--notify` (or `STAY_FRESH_NOTIFY`) asks for one, and reads the Telegram
   token from the environment or the `stay_fresh-telegram` Keychain items and
   the Slack webhook from the environment or the `stay_fresh-slack` item.

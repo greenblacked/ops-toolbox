@@ -38,7 +38,7 @@
 # Usage:
 #   ./stay_fresh.sh [--dry-run] [--yes] [--verbose] [--quick] [--reports]
 #                   [--step-timeout SECONDS]
-#                   [--only STEP1,STEP2] [--list-steps] [--history]
+#                   [--only STEP1,STEP2] [--list-steps] [--history] [--trend]
 #                   [--notify none|macos|telegram|slack|both|auto|CH1,CH2]
 #                   [--notify-when always|warn|fail]
 #                   [--skip-snapshots] [--thin-snapshots] [--disk-report]
@@ -184,6 +184,7 @@ SKIP_DISK_REPORT=1
 QUICK=0
 REPORTS=0
 SHOW_HISTORY=0
+SHOW_TREND=0
 # Wall-clock limit for one command inside a step. brew update, softwareupdate
 # --list, gcloud, helm and krew all talk to the network with no bound of their
 # own; one that hangs stalls the scheduled agent, and the run lock then turns
@@ -226,6 +227,11 @@ if [[ -z "${HOME:-}" ]]; then
   HOME='/dev/null/stay_fresh-HOME-is-not-set'
 fi
 STATE_DIR="$HOME/Library/Logs/stay_fresh"
+# One row per step per run, written at the end of a real run beside history.tsv.
+# A separate file rather than more columns on history.tsv: the row count differs
+# (one per step, not one per run), and a new file needs no migration for the
+# rows already on disk.
+STEP_STATS=()
 # Facts the steps learn along the way, for the headline and the notification.
 BREW_UPGRADED=0
 BREW_UPGRADED_NAMES=""
@@ -485,6 +491,9 @@ ${C_BOLD}General options:${C_RESET}
                          env STAY_FRESH_STEP_TIMEOUT). Prompts are never limited
   --list-steps           Print stable step ids and exit
   --history              Print the last ten runs (result, freed, duration) and exit
+  --trend                Summarise the recorded runs — whether free space is
+                         keeping up, which steps do the work, which are slowing
+                         down — and exit
   --notify MODE          none, macos (Notification Center banner), telegram,
                          slack (incoming webhook), both (macos and telegram),
                          auto (default: macos when no terminal is attached,
@@ -728,6 +737,7 @@ while (( $# > 0 )); do
     --quick)           QUICK=1 ;;
     --reports)         REPORTS=1 ;;
     --history)         SHOW_HISTORY=1 ;;
+    --trend)           SHOW_TREND=1 ;;
     --step-timeout)
       require_value "$1" "${2:-}"; shift
       STEP_TIMEOUT="$1"
@@ -1413,6 +1423,106 @@ if (( SHOW_HISTORY )); then
   exit 0
 fi
 
+# What a single run cannot answer: is the cleaning keeping up, which steps
+# actually do the work, and is any of them slowing down. Reads only what past
+# runs already recorded; writes nothing.
+show_trend() {
+  local hist="$STATE_DIR/history.tsv" steps="$STATE_DIR/steps.tsv"
+  if [[ ! -s "$hist" ]]; then
+    info "no history yet ($hist is written at the end of every real run)"
+    return 0
+  fi
+
+  bold "Runs"
+  awk -F'\t' '
+    NF >= 5 && $1 != "" {
+      runs++
+      if (first == "") first = $1
+      last = $1
+      freed += $4
+      elapsed += $3
+      if ($2 == "OK") n_ok++; else if ($2 == "WARN") n_warn++; else n_fail++
+      # The 13th column is free space after the run; rows written before it
+      # existed have none, and must not be read as zero.
+      if (NF >= 13 && $13 != "") { if (free_first == "") { free_first = $13; free_first_when = $1 }
+                                   free_last = $13; free_last_when = $1; free_n++ }
+    }
+    END {
+      if (runs == 0) { print "  no complete rows yet"; exit }
+      printf "  %d run(s) recorded, %s to %s\n", runs, substr(first,1,10), substr(last,1,10)
+      printf "  verdicts: %d OK, %d WARN, %d FAILED\n", n_ok, n_warn, n_fail
+      printf "  freed in total: %.2f GB across those runs (%.2f GB per run on average)\n",
+             freed/1073741824, (freed/runs)/1073741824
+      printf "  time spent: %d min in total, %d s per run on average\n", elapsed/60, elapsed/runs
+      if (free_n >= 2) {
+        delta = free_last - free_first
+        printf "\n  free space %s to %s: %.2f GB -> %.2f GB (%s%.2f GB)\n",
+               substr(free_first_when,1,10), substr(free_last_when,1,10),
+               free_first/1073741824, free_last/1073741824,
+               (delta >= 0 ? "+" : ""), delta/1073741824
+        if (delta < 0)
+          print "  the disk is filling up faster than these runs free it — something is growing between runs"
+      } else if (free_n == 1) {
+        print "\n  free space: only one run has recorded it; the trend needs a second"
+      } else {
+        print "\n  free space: not recorded in any row yet (older runs predate that column)"
+      }
+    }
+  ' "$hist"
+
+  if [[ ! -s "$steps" ]]; then
+    printf "\n%sper-step figures start accumulating at the next real run (%s)%s\n" \
+      "$C_DIM" "$steps" "$C_RESET"
+    return 0
+  fi
+
+  printf '\n'
+  bold "Which steps do the work"
+  awk -F'\t' '
+    NF >= 5 && $2 != "" { freed[$2] += $4; secs[$2] += $3; n[$2]++ }
+    END {
+      for (k in freed) printf "%d\t%s\t%d\t%d\n", freed[k], k, secs[k], n[k]
+    }
+  ' "$steps" | sort -rn | head -n 5 | while IFS=$'\t' read -r f id secs n; do
+    [[ -n "$id" ]] || continue
+    printf "  %-20s %10s over %s run(s), %s total\n" \
+      "$id" "$(human_bytes "${f:-0}")" "${n:-0}" "$(human_duration "${secs:-0}")"
+  done
+
+  # A step whose recent runs cost far more than its early ones is the shape of
+  # a cache growing out of control — visible here long before it is visible as
+  # a full disk.
+  local creep
+  creep="$(awk -F'\t' '
+    NF >= 5 && $2 != "" { id = $2; cnt[id]++; t[id "\t" cnt[id]] = $3 }
+    END {
+      for (id in cnt) {
+        c = cnt[id]
+        if (c < 6) continue          # too few runs to say anything
+        half = int(c / 2)
+        early = 0; late = 0
+        for (i = 1; i <= half; i++)      early += t[id "\t" i]
+        for (i = c - half + 1; i <= c; i++) late  += t[id "\t" i]
+        early /= half; late /= half
+        if (early >= 1 && late >= 10 && late >= 2 * early)
+          printf "  %-20s %ds -> %ds per run\n", id, early, late
+      }
+    }
+  ' "$steps")"
+  if [[ -n "$creep" ]]; then
+    printf '\n'
+    bold "Slowing down"
+    printf '%s\n' "$creep"
+  fi
+
+  printf "%s\nfull history: %s · per-step: %s%s\n" "$C_DIM" "$hist" "$steps" "$C_RESET"
+}
+
+if (( SHOW_TREND )); then
+  show_trend
+  exit 0
+fi
+
 # Notification Center banner. osascript takes the strings inside double
 # quotes, so those and backslashes are the two characters to escape.
 notify_macos() {
@@ -1934,7 +2044,7 @@ fi
 #   otherwise                    -> STEPS_OK
 # Appends per-step bytes freed to the bookkeeping entry when > 0.
 do_step() {
-  local label="$1" fn="$2" t_start t_end rc=0 dur freed_str="" entry
+  local label="$1" fn="$2" step_id="${3:-}" t_start t_end rc=0 dur freed_str="" entry outcome
   step "$label"
   log_line "== $label =="
   STEP_WARN_COUNT=0
@@ -1948,6 +2058,13 @@ do_step() {
     TOTAL_FREED_B=$(( TOTAL_FREED_B + STEP_FREED_B ))
   fi
   entry="$label  (${dur}${freed_str})"
+  # Buffered, not written here: the run may still be interrupted, and a dry run
+  # must leave nothing behind. The summary flushes these beside history.tsv.
+  if (( rc != 0 )); then outcome=fail
+  elif (( STEP_WARN_COUNT > 0 )); then outcome=warn
+  else outcome=ok
+  fi
+  [[ -z "$step_id" ]] || STEP_STATS+=("$step_id	$(( t_end - t_start ))	$STEP_FREED_B	$outcome")
   if (( rc != 0 )); then
     err "$label failed in $dur$freed_str — see log"
     STEPS_FAIL+=("$entry")
@@ -3585,7 +3702,7 @@ run_or_skip() {
     fi
     return 0
   fi
-  do_step "$label" "$fn"
+  do_step "$label" "$fn" "$step_id"
 }
 
 # The table's order is the run order. A plain for loop, not a pipeline or a
@@ -3710,10 +3827,14 @@ printf "%s  %s%s\n" "$C_DIM" "$DETAIL" "$C_RESET"
 if (( DRY_RUN == 0 )); then
   RUN_STAMP="$(date '+%Y-%m-%d %H:%M:%S')"
   if mkdir -p "$STATE_DIR" 2>/dev/null; then
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    # FREE_AFTER_B is appended as a 13th column rather than replacing anything:
+    # RECLAIMED_B is a delta, and a delta cannot answer "is the disk filling up
+    # regardless". Readers that stop at the twelfth field are unaffected, and
+    # rows written before this simply have no thirteenth.
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
       "$RUN_STAMP" "$RESULT" "$ELAPSED" "$TOTAL_FREED_B" "$RECLAIMED_B" \
       "${#STEPS_OK[@]}" "${#STEPS_WARN[@]}" "${#STEPS_FAIL[@]}" "${#STEPS_SKIP[@]}" \
-      "$BREW_UPGRADED" "$OS_UPDATES_PENDING" "${SAVED_LOG:-}" \
+      "$BREW_UPGRADED" "$OS_UPDATES_PENDING" "${SAVED_LOG:-}" "${FREE_AFTER_B:-}" \
       >>"$STATE_DIR/history.tsv" 2>/dev/null || warn "could not append to $STATE_DIR/history.tsv"
     # One row per run adds up on a daily schedule; the last 500 are plenty
     # for --history and for anything that plots them.
@@ -3722,6 +3843,23 @@ if (( DRY_RUN == 0 )); then
       tail -n 500 "$STATE_DIR/history.tsv" > "$STATE_DIR/history.tsv.tmp" 2>/dev/null \
         && mv -f "$STATE_DIR/history.tsv.tmp" "$STATE_DIR/history.tsv" 2>/dev/null \
         || warn "could not trim $STATE_DIR/history.tsv"
+    fi
+    # The per-step rows this run buffered, stamped with the same run time so a
+    # reader can join them back to the history row.
+    if (( ${#STEP_STATS[@]} > 0 )); then
+      step_stat_row=""
+      for step_stat_row in "${STEP_STATS[@]}"; do
+        printf '%s\t%s\n' "$RUN_STAMP" "$step_stat_row"
+      done >>"$STATE_DIR/steps.tsv" 2>/dev/null \
+        || warn "could not append to $STATE_DIR/steps.tsv"
+      # Around twenty rows per run against history.tsv's one, so the cap is
+      # correspondingly larger for the same number of runs kept.
+      step_rows="$(wc -l < "$STATE_DIR/steps.tsv" 2>/dev/null | tr -d ' ')"
+      if (( ${step_rows:-0} > 10000 )); then
+        tail -n 10000 "$STATE_DIR/steps.tsv" > "$STATE_DIR/steps.tsv.tmp" 2>/dev/null \
+          && mv -f "$STATE_DIR/steps.tsv.tmp" "$STATE_DIR/steps.tsv" 2>/dev/null \
+          || warn "could not trim $STATE_DIR/steps.tsv"
+      fi
     fi
     {
       printf '{\n'
