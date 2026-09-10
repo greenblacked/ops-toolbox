@@ -2192,12 +2192,12 @@ step_appcaches() {
   local -a app_bundles=(
     "Slack" "Visual Studio Code" "Visual Studio Code - Insiders"
     "Notion" "Obsidian" "Signal" "Discord"
-    "Google Chrome" "Brave Browser" "Vivaldi" "Microsoft Teams"
+    "Google Chrome" "Brave Browser" "Vivaldi" "Microsoft Teams" "Spotify"
   )
   local -a app_dirs=(
     "Slack" "Code" "Code - Insiders"
     "Notion" "obsidian" "Signal" "discord"
-    "Google/Chrome" "BraveSoftware/Brave-Browser" "Vivaldi" "Microsoft/Teams"
+    "Google/Chrome" "BraveSoftware/Brave-Browser" "Vivaldi" "Microsoft/Teams" "Spotify"
   )
   local -a running=() scan_roots=() skipped_roots=()
   local i proc app_root
@@ -2245,7 +2245,8 @@ step_appcaches() {
            -iname "DawnGraphiteCache"  -o \
            -iname "DawnWebGPUCache"    -o \
            -iname "ShaderCache"        -o \
-           -iname "GrShaderCache"        \
+           -iname "GrShaderCache"      -o \
+           -iname "PersistentCache"      \
          \) -prune -print0 >>"$scan_out" 2>>"$LOG_SINK" \
       || warn_step "could not scan application caches under $app_root"
   done
@@ -2684,6 +2685,20 @@ step_devcaches() {
     fi
   fi
 
+  # bun keeps every package tarball it has resolved, in its own cache separate
+  # from npm's. `bun pm cache rm` is its own command for exactly this; the
+  # directory is the fallback when the binary is present but the subcommand is
+  # not (it arrived in 1.0.x).
+  if command -v bun >/dev/null 2>&1; then
+    any=1
+    if bun pm cache --help >/dev/null 2>&1; then
+      run_cmd "bun pm cache rm" bun pm cache rm || warn "'bun pm cache rm' failed"
+    else
+      local bun_cache="${BUN_INSTALL:-$HOME/.bun}/install/cache"
+      [[ -d "$bun_cache" ]] && clear_dir "$bun_cache"
+    fi
+  fi
+
   if command -v pnpm >/dev/null 2>&1; then
     any=1
     if (( node_ok )); then
@@ -2736,6 +2751,17 @@ step_devcaches() {
     any=1
     run_cmd "go clean -cache -modcache -testcache" go clean -cache -modcache -testcache \
       || warn "'go clean' failed"
+  fi
+
+  # minikube caches the ISO, the kic base image and a preload tarball per
+  # Kubernetes version — hundreds of megabytes each, and it re-downloads them
+  # on demand. Only the cache: ~/.minikube/machines, profiles/ and certs/ are
+  # the cluster itself and its credentials, and clearing those would destroy a
+  # running cluster rather than free disposable space.
+  local minikube_cache="$HOME/.minikube/cache"
+  if [[ -d "$minikube_cache" ]]; then
+    any=1
+    clear_dir "$minikube_cache"
   fi
 
   # kubectl caches API discovery and HTTP responses per cluster under
@@ -2796,8 +2822,12 @@ step_devcaches() {
   # after Docker. They are also the slowest to get back: the next build
   # downloads all of it again, on whatever network it finds. So they are
   # named on every run and cleared only on request.
+  # ~/.gradle/wrapper/dists is a full Gradle distribution per version any
+  # project's wrapper ever asked for, around 150 MB each and never pruned. It
+  # belongs with the build caches rather than with the always-cleared ones: the
+  # next build re-downloads it, on whatever network it finds.
   local build_cache
-  for build_cache in "$HOME/.gradle/caches" "$HOME/.m2/repository"; do
+  for build_cache in "$HOME/.gradle/caches" "$HOME/.gradle/wrapper/dists" "$HOME/.m2/repository"; do
     [[ -d "$build_cache" ]] || continue
     any=1
     if (( PRUNE_BUILD_CACHES )); then

@@ -404,8 +404,14 @@ rm -rf "$d"
 section "app-caches (running apps kept, idle apps cleared)"
 d="$(new_env)"
 as="$d/home/Library/Application Support"
+# Spotify's streaming cache is routinely several GB and lives outside
+# ~/Library/Caches, so the user-caches step never sees it. Its own settings
+# and credentials sit beside it under the same root and must survive.
 mkdir -p "$as/Slack/Cache" "$as/Notion/GPUCache" \
+         "$as/Spotify/PersistentCache/Storage" "$as/Spotify/Users/serhii-user" \
          "$as/Code/CachedExtensionVSIXs" "$d/home/Library/Containers/com.x/Data/Library/Caches"
+: > "$as/Spotify/PersistentCache/Storage/chunk"
+: > "$as/Spotify/Users/serhii-user/prefs"
 : > "$as/Slack/Cache/data"
 : > "$as/Notion/GPUCache/data"
 : > "$as/Code/CachedExtensionVSIXs/ext.vsix"
@@ -414,6 +420,10 @@ RUNNING_APPS="Slack" out="$(run_sf "$d" --yes --only app-caches)"; rc=$?
 assert_eq "app-caches step succeeds" "0" "$rc"
 assert_exists "a running app keeps its cache"       "$as/Slack/Cache/data"
 assert_gone   "an idle app loses its cache"         "$as/Notion/GPUCache"
+assert_gone   "Spotify's streaming cache is cleared when it is idle" \
+  "$as/Spotify/PersistentCache/Storage"
+assert_exists "Spotify's settings and credentials are untouched" \
+  "$as/Spotify/Users/serhii-user/prefs"
 assert_gone   "the VSIX download cache is emptied"  "$as/Code/CachedExtensionVSIXs/ext.vsix"
 assert_exists "the VSIX directory itself is kept"   "$as/Code/CachedExtensionVSIXs"
 assert_exists "sandbox containers are kept by default" \
@@ -424,6 +434,21 @@ assert_gone "--force-active-app-caches clears sandbox containers" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 assert_exists "the sandbox Caches directory itself is kept" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches"
+rm -rf "$d"
+
+# Spotify while it is playing: the running-app guard covers it like any other,
+# and clearing a streaming cache under a running player is exactly the case
+# the guard exists for.
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Spotify/PersistentCache/Storage" "$as/Notion/GPUCache"
+: > "$as/Spotify/PersistentCache/Storage/chunk"
+: > "$as/Notion/GPUCache/data"
+RUNNING_APPS="Spotify" out="$(run_sf "$d" --yes --only app-caches)"
+assert_exists "a running Spotify keeps its streaming cache" \
+  "$as/Spotify/PersistentCache/Storage/chunk"
+assert_contains "and it is named among the running apps" "$out" "Spotify"
+assert_gone "an idle app beside it is still cleared" "$as/Notion/GPUCache"
 rm -rf "$d"
 
 # ===========================================================================
@@ -772,9 +797,22 @@ devcache_env() {
   for t in npm yarn pnpm gem go uv; do
     mkbin "$d/bin/$t" "echo \"$t \$*\" >> \"\$CALLS\"; exit 0"
   done
+  # A bun that knows `pm cache`, so the step uses the tool's own command.
+  mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; exit 0'
+  mkdir -p "$d/home/.bun/install/cache/pkg"
+  bytes_file "$d/home/.bun/install/cache/pkg/tarball.tgz" 256
   # pip prints this even with -q on an already-empty cache. It belongs in the
   # log, not on the terminal of a quiet run.
   mkbin "$d/bin/pip3" 'echo "pip3 $*" >> "$CALLS"; echo "WARNING: No matching packages"; exit 0'
+  # minikube re-downloads its ISO, kic base image and preload tarballs on
+  # demand; machines/, profiles/ and certs/ are the cluster and its
+  # credentials, and clearing those would destroy a running cluster.
+  mkdir -p "$d/home/.minikube/cache/iso" "$d/home/.minikube/machines/minikube" \
+           "$d/home/.minikube/profiles/minikube" "$d/home/.minikube/certs"
+  bytes_file "$d/home/.minikube/cache/iso/minikube-v1.33.iso" 512
+  : > "$d/home/.minikube/machines/minikube/config.json"
+  : > "$d/home/.minikube/profiles/minikube/config.json"
+  : > "$d/home/.minikube/certs/client.pem"
   mkdir -p "$d/home/.kube/cache/discovery/cluster_a" "$d/home/.kube/cache/http"
   : > "$d/home/.kube/cache/discovery/cluster_a/servergroups.json"
   : > "$d/home/.kube/cache/http/entry"
@@ -791,6 +829,13 @@ devcache_env() {
 d="$(devcache_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
 assert_eq "dev-caches step succeeds" "0" "$rc"
+assert_contains "bun's own cache command is used when it has one" \
+  "$(grep '^bun ' "$d/calls")" "pm cache rm"
+assert_gone   "the minikube cache is cleared" "$d/home/.minikube/cache/iso"
+assert_exists "the minikube cache directory itself stays" "$d/home/.minikube/cache"
+assert_exists "the minikube machines are untouched" "$d/home/.minikube/machines/minikube/config.json"
+assert_exists "the minikube profiles are untouched" "$d/home/.minikube/profiles/minikube/config.json"
+assert_exists "the minikube certificates are untouched" "$d/home/.minikube/certs/client.pem"
 assert_called "npm cache is cleaned"   "$d/calls" "npm cache clean --force"
 assert_called "yarn cache is cleaned"  "$d/calls" "yarn cache clean"
 assert_called "pnpm store is pruned"   "$d/calls" "pnpm store prune"
@@ -1754,11 +1799,43 @@ assert_gone   "the real plugin cache is still cleared" "$d/home/.terraform.d/plu
 assert_exists "and the credentials beside it are still there" "$d/home/.terraform.d/credentials.tfrc.json"
 rm -rf "$d"
 
+# A bun old enough not to have `pm cache` (it arrived in 1.0.x). The cache
+# directory is the fallback. BUN_INSTALL is set explicitly in both cases: the
+# variable is often already exported on a developer's machine — it is in this
+# container — and a test that inherits it would clear the real cache and pass
+# for the wrong reason.
+d="$(devcache_env)"; : > "$d/calls"
+mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; [ "$1" = "pm" ] && exit 1; exit 0'
+BUN_INSTALL="$d/home/.bun" out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "dev-caches succeeds with a bun that has no pm cache" "0" "$rc"
+assert_gone   "the bun cache is cleared through the directory instead" \
+  "$d/home/.bun/install/cache/pkg"
+assert_exists "the bun cache directory itself stays" "$d/home/.bun/install/cache"
+rm -rf "$d"
+
+# BUN_INSTALL relocates the cache, and the fallback must follow it there
+# rather than clearing the default path.
+d="$(devcache_env)"; : > "$d/calls"
+mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; [ "$1" = "pm" ] && exit 1; exit 0'
+mkdir -p "$d/home/elsewhere/install/cache/pkg"
+bytes_file "$d/home/elsewhere/install/cache/pkg/tarball.tgz" 128
+BUN_INSTALL="$d/home/elsewhere" out="$(run_sf "$d" --yes --only dev-caches)"
+assert_gone   "BUN_INSTALL relocates which cache is cleared" \
+  "$d/home/elsewhere/install/cache/pkg"
+assert_exists "and the default location is left alone" \
+  "$d/home/.bun/install/cache/pkg/tarball.tgz"
+rm -rf "$d"
+
 # ===========================================================================
 section "dev-caches (Gradle and Maven caches only with --prune-build-caches)"
 build_env() {
   local d; d="$(new_env)"
   mkdir -p "$d/home/.gradle/caches/modules-2" "$d/home/.m2/repository/org"
+  # A full Gradle distribution per version any project's wrapper asked for,
+  # around 150 MB each and never pruned. Re-downloaded by the next build, so
+  # it belongs with the build caches rather than the always-cleared ones.
+  mkdir -p "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123"
+  bytes_file "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123/gradle-8.5.zip" 128
   bytes_file "$d/home/.gradle/caches/modules-2/dep.jar" 256
   bytes_file "$d/home/.m2/repository/org/dep.pom" 64
   printf '%s' "$d"
@@ -1770,6 +1847,10 @@ assert_exists "the Gradle cache is kept by default" "$d/home/.gradle/caches/modu
 assert_exists "the Maven repository is kept by default" "$d/home/.m2/repository/org/dep.pom"
 assert_contains "the kept Gradle cache is named" "$out" "~/.gradle/caches kept; pass --prune-build-caches to clear it"
 assert_contains "the kept Maven repository is named" "$out" "~/.m2/repository kept; pass --prune-build-caches to clear it"
+assert_exists "the Gradle wrapper distributions are kept by default" \
+  "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123/gradle-8.5.zip"
+assert_contains "the kept wrapper distributions are named" "$out" \
+  "~/.gradle/wrapper/dists kept; pass --prune-build-caches to clear it"
 assert_not_contains "build caches count as a toolchain" "$out" "no known developer toolchains found"
 rm -rf "$d"
 
@@ -1778,6 +1859,9 @@ out="$(run_sf "$d" --yes --only dev-caches --prune-build-caches)"; rc=$?
 assert_eq "--prune-build-caches succeeds" "0" "$rc"
 assert_gone   "--prune-build-caches clears the Gradle cache"   "$d/home/.gradle/caches/modules-2"
 assert_gone   "--prune-build-caches clears the Maven repository" "$d/home/.m2/repository/org"
+assert_gone   "--prune-build-caches clears the Gradle wrapper distributions" \
+  "$d/home/.gradle/wrapper/dists/gradle-8.5-bin"
+assert_exists "the wrapper dists directory itself stays" "$d/home/.gradle/wrapper/dists"
 assert_exists "the Gradle cache directory itself stays"   "$d/home/.gradle/caches"
 assert_exists "the Maven repository directory itself stays" "$d/home/.m2/repository"
 assert_contains "the plan names the build caches" "$(grep "dev-tool caches" <<<"$out")" "gradle/maven caches"

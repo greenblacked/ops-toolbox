@@ -404,7 +404,9 @@ In the order they run:
    `~/Library/Caches` and is therefore invisible to step 4: the
    Chromium-internal directories (`Cache`, `Code Cache`, `GPUCache`,
    `Service Worker`, `blob_storage`) that Electron apps keep under
-   known Application Support roots and downloaded extension `.vsix` archives.
+   known Application Support roots, Spotify's `PersistentCache` (a streaming
+   cache that routinely reaches several gigabytes and lives nowhere near
+   `~/Library/Caches`), and downloaded extension `.vsix` archives.
    Cache roots for running applications are kept. "Running" is decided from
    the bundle's executable path (`/Visual Studio Code.app/Contents/MacOS/`),
    not from a process name: Electron apps run as `Electron`, `Code Helper` or
@@ -624,7 +626,7 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`uv`/`go`/kubectl cache cleanup. |
 | `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
-| `--prune-build-caches` | Also clear `~/.gradle/caches` and `~/.m2/repository` (step 16); off by default because the next build downloads every dependency again. |
+| `--prune-build-caches` | Also clear `~/.gradle/caches`, `~/.gradle/wrapper/dists` and `~/.m2/repository` (step 16); off by default because the next build downloads every dependency, and every wrapper distribution, again. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
@@ -1301,9 +1303,12 @@ Homebrew / `pyenv` / `goenv` commands.
   in unmaterialised `~/Library/CloudStorage` are left alone.
 - Empties `~/.Trash`, through Finder when the shell lacks Full Disk Access
   and a person is present to answer the prompt.
-- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `pip`, `uv`, `go`),
-  the contents of `~/.kube/cache` and of Terraform's plugin cache, gcloud log
-  directories older than a week, and unused pre-commit repositories.
+- Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `bun`, `pip`, `uv`,
+  `go`), the contents of `~/.kube/cache`, `~/.minikube/cache` and Terraform's
+  plugin cache, gcloud log directories older than a week, and unused
+  pre-commit repositories. minikube's `machines/`, `profiles/` and `certs/`
+  are the cluster and its credentials and are never touched; only the ISO and
+  image cache it re-downloads on demand.
   `TF_PLUGIN_CACHE_DIR` is cleared only when it ends in `plugin-cache`; a
   variable pointed at a working directory, or at `$HOME`, is warned about
   and left untouched.
