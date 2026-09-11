@@ -7,11 +7,15 @@
 # GitHub Desktop, Lens, Postman, draw.io, Wireshark, DBeaver, Chrome, 1Password,
 # Teams, Notion, Tailscale, Cloudflare WARP, ngrok, Rectangle, AltTab, Maccy,
 # Zed, Sublime Text, JetBrains Toolbox, Fork, GitKraken, Azure Data Studio,
-# Postico, Redis Insight, Cyberduck, Proxyman, Linear, Discord.
+# Postico, Redis Insight, Cyberduck, Proxyman, Linear, Discord, Obsidian, Stats.
 # Also installs the Google Cloud SDK (gcloud-cli cask) with common components
 # (gke-gcloud-auth-plugin, kubectl), then a set of Homebrew *formulae* for
 # Kubernetes and platform engineering (k9s, stern, kind, cloud CLIs, policy,
-# supply chain, load tools, …). Skip those with --skip-cli-ops or --skip-formulae.
+# supply chain, secrets, load tools, shell tools, …). Skip those with
+# --skip-cli-ops or --skip-formulae.
+#
+# The two catalogues are printable without running anything: --list-casks and
+# --list-formulae answer before the macOS preflight, exactly as --help does.
 #
 # Usage:
 #   ./install_apps.sh [--dry-run] [--yes] [--skip-upgrade]
@@ -19,6 +23,7 @@
 #                     [--no-cleanup] [--skip-gcloud]
 #                     [--skip-cli-ops] [--only-formulae f1,f2]
 #                     [--skip-formulae f1,f2]
+#                     [--list-casks] [--list-formulae]
 #                     [--gcloud-components a,b,c] [--no-gcloud-components]
 #                     [--verbose] [--help]
 #
@@ -90,6 +95,10 @@ CASKS=(
   "rectangle|Rectangle|Rectangle.app"
   "alt-tab|AltTab|AltTab.app"
   "maccy|Maccy|Maccy.app"
+  # A menu-bar readout of CPU / memory / disk / network. It earns its place
+  # next to stay_fresh.sh: that script reports disk pressure once, when you
+  # run it, and this is the thing that tells you to go and run it.
+  "stats|Stats|Stats.app"
   # Editors & Git (beyond VS Code / GitHub Desktop)
   "zed|Zed|Zed.app"
   "sublime-text|Sublime Text|Sublime Text.app"
@@ -105,17 +114,47 @@ CASKS=(
   # Collaboration & work tracking
   "linear-linear|Linear|Linear.app"
   "discord|Discord|Discord.app"
+  # Local-first notes, so runbooks and incident scratch survive a laptop with
+  # no network. Notion above is the shared copy; this is the one that opens
+  # during the incident that took the shared copy away.
+  "obsidian|Obsidian|Obsidian.app"
 )
 
 # ---------------------------------------------------------------------------
 # Homebrew formulae (CLIs) — K8s, multi-cloud, Terraform helpers, security, HTTP
 # Do not use formula name "flux" here: core "flux" is Influx's language, not Flux CD.
+#
+# Every name here is a *bare homebrew-core formula token*, because that is all
+# the install loop below knows how to say: it runs `brew info <name>` and then
+# `brew install <name>`. Two consequences worth writing down, since both have
+# cost somebody an afternoon:
+#
+#   1. The token is not always the project's name, or the name of the binary it
+#      drops on PATH. `ripgrep` installs `rg`; `fd` is `fd` on Homebrew but
+#      `fd-find` on Debian and Fedora (see linux/install_devtools.sh, which
+#      spells it both ways for that reason). Copying a package name across
+#      ecosystems is how a list like this acquires a name nobody can install.
+#   2. A tap-qualified name does not belong here. HashiCorp relicensed Vault,
+#      Packer, Consul and Nomad under the BUSL, homebrew-core does not carry
+#      them any more, and the working spelling became `hashicorp/tap/vault` —
+#      a tap this script never adds. They are deliberately absent rather than
+#      present-and-failing; install them with
+#      `brew tap hashicorp/tap && brew install hashicorp/tap/vault` if you
+#      want them, the same way the flux note above sends you to fluxcd/tap.
+#
+# The newer entries are the ones a platform engineer reaches for outside a
+# cluster: `gh` for pull requests, `sops` + `age` for encrypted values files,
+# `cloud-sql-proxy` for Cloud SQL over IAM rather than a public IP, `fzf`,
+# `ripgrep` and `fd` for moving through a monorepo, `k6` for load tests (`hey`
+# and `vegeta` above cover one URL; k6 scripts a scenario), and `shellcheck`
+# plus `hadolint` because this repository's own CI gates on both.
 # ---------------------------------------------------------------------------
 CLI_FORMULAE=(
-  argocd awscli azure-cli cilium-cli conftest cosign crane dive eksctl grpcurl
-  grype helm helmfile hey httpie infracost jq k9s kind krew kubectx kubescape
-  kustomize lazydocker minikube opa popeye skaffold stern terraform-docs
-  terragrunt tflint trivy velero vegeta yq
+  age argocd awscli azure-cli cilium-cli cloud-sql-proxy conftest cosign crane
+  dive eksctl fd fzf gh grpcurl grype hadolint helm helmfile hey httpie
+  infracost jq k6 k9s kind krew kubectx kubescape kustomize lazydocker minikube
+  opa popeye ripgrep shellcheck skaffold sops stern terraform-docs terragrunt
+  tflint trivy velero vegeta yq
 )
 
 # ---------------------------------------------------------------------------
@@ -128,6 +167,8 @@ NO_CLEANUP=0
 SKIP_GCLOUD=0
 SKIP_CLI_OPS=0
 NO_GCLOUD_COMPONENTS=0
+LIST_CASKS=0
+LIST_FORMULAE=0
 VERBOSE=0
 ONLY_LIST=""
 SKIP_LIST=""
@@ -158,6 +199,8 @@ ${C_BOLD}Options:${C_RESET}
   --skip-cli-ops           Skip the Homebrew formula batch (k9s, awscli, …)
   --only-formulae f1,f2    Operate on only these formula names
   --skip-formulae f1,f2    Skip these formula names (comma-separated)
+  --list-casks             Print selectable cask ids and exit
+  --list-formulae          Print selectable formula names and exit
   --gcloud-components a,b  Components to install alongside gcloud-cli
                            (default: ${GCLOUD_COMPONENTS})
   --no-gcloud-components   Don't install any gcloud components
@@ -208,6 +251,8 @@ while (( $# > 0 )); do
       ;;
     --skip-formulae)          shift; SKIP_FORMULAE_LIST="${1:-}" ;;
     --skip-formulae=*)       SKIP_FORMULAE_LIST="${1#*=}" ;;
+    --list-casks)             LIST_CASKS=1 ;;
+    --list-formulae)          LIST_FORMULAE=1 ;;
     --gcloud-components)      shift; GCLOUD_COMPONENTS="${1:-}" ;;
     --gcloud-components=*)    GCLOUD_COMPONENTS="${1#*=}" ;;
     --no-gcloud-components)   NO_GCLOUD_COMPONENTS=1 ;;
@@ -217,6 +262,46 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+# ---------------------------------------------------------------------------
+# catalogue listings (--list-casks / --list-formulae)
+# ---------------------------------------------------------------------------
+# Placed here, immediately after argument parsing, for the same reason
+# install_devtools.sh puts --list-tools here and --help sits where it does:
+# printing a catalogue changes nothing, so it must answer on a machine this
+# script refuses to run on. Somebody deciding what to pass to --only or
+# --skip-formulae is usually not sitting at the Mac they are writing the
+# command for — they are reading a runbook on a Linux box or in CI — and a
+# list that can only be obtained by getting past "This script is for macOS
+# only" is a list they will copy out of the README instead, where it goes
+# stale. Below the preflight these flags would be worth nothing.
+#
+# One bare id per line, nothing else on stdout, so the output is usable as
+# `--only "$(./install_apps.sh --list-casks | tr '\n' ,)"` — and so a zsh
+# completion could be generated from it the way zsh_aliases.zsh builds
+# stay_fresh's step completion out of --list-steps, without teaching the
+# completion to parse a table. The catalogue rows carry a display label and a
+# bundle name too; those are for --help to format, and printing them here
+# would mean every consumer has to cut a field.
+#
+# Each flag prints its own list and exits: the two id namespaces are not
+# interchangeable — one is what --only takes, the other what --only-formulae
+# takes — so concatenating them onto one stream would hand a caller a list
+# whose halves mean different things, with no way to tell where the seam is.
+# Asking for both therefore gets the casks, in the declaration order below.
+# (--help is not in that race: it exits from inside the parse loop, so it wins
+# over both no matter where it appears on the command line.)
+if (( LIST_CASKS )); then
+  for entry in "${CASKS[@]}"; do
+    printf '%s\n' "${entry%%|*}"
+  done
+  exit 0
+fi
+
+if (( LIST_FORMULAE )); then
+  printf '%s\n' "${CLI_FORMULAE[@]}"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # helpers

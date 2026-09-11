@@ -578,6 +578,152 @@ elif (( env_leaks == 0 )); then
 fi
 
 # --------------------------------------------------------------------------
+head_ "CI tool pins carry a digest"
+# .github/ci-tool-checksums.env records the SHA-256 of every binary the workflow
+# downloads, and each install step in .github/workflows/ci.yml now checks its
+# download against it. That is a control spread across two files, and a control
+# spread across two files drifts.
+#
+# It had already drifted as far as it can go. The digest file declared itself
+# the source of truth and said, in its own header, that "a version pin without a
+# digest still trusts whoever answers the URL" — while nothing in the tree read
+# it. A grep for its name returned the file and nothing else. Five tools were
+# installed on a version pin alone, and the two Darwin digests recorded
+# specifically for the macos-native job had never once been compared against
+# anything. A digest nobody checks is worse than no digest, because it reads
+# like a control and gets counted as one.
+#
+# The drift that will happen next is smaller and likelier: someone bumps a
+# *_VERSION in the workflow env: block, the download URL changes with it, and
+# the digest file still holds the previous release's hash. Nothing about that is
+# visible in a diff of either file alone. Caught here it is a review-time
+# failure naming both values; caught at install time it is a red job on a branch
+# that looked fine.
+#
+# Three assertions, each covering a different half of the drift:
+#   - every *_VERSION pinned in the workflow is recorded in the digest file at
+#     the same version, or is named in that file's NO_DIGEST_TOOLS as arriving
+#     through a package manager that verifies its own downloads;
+#   - every *_VERSION recorded in the digest file is still pinned in the
+#     workflow, so a removed tool cannot leave a stale digest behind;
+#   - every digest recorded in that file is named by some step in the workflow —
+#     the assertion that would have caught the original rot on the day it
+#     started, and the one that keeps this from becoming decoration again.
+#
+# Nothing here validates a digest against the bytes of a release. That needs the
+# network, this suite deliberately has none, and the digests are transcribed
+# from upstream by a human at bump time. The claim being checked is that the two
+# files agree and that both are wired up, not that the hex is right.
+ci_yml=".github/workflows/ci.yml"
+sums_env=".github/ci-tool-checksums.env"
+
+pin_gaps=0
+ci_pin_count=0
+sums_pin_count=0
+digest_count=0
+
+if [[ ! -f "$ci_yml" ]]; then
+  err "$ci_yml is missing — the CI download gate cannot be checked at all"
+elif [[ ! -f "$sums_env" ]]; then
+  err "$sums_env is missing — every binary ci.yml downloads would install on a version pin alone"
+else
+  # The top-level env: block only, anchored at column 0: ci.yml also carries
+  # step-level env: blocks, which are indented and must not be mistaken for it.
+  # The block ends at the next column-0 key (jobs:); a column-0 comment or a
+  # blank line does not end it. Rename or reindent that block and this collects
+  # nothing, which the floor at the bottom turns into a failure rather than a
+  # silent pass.
+  ci_pins="$(awk '
+    /^env:[[:space:]]*$/        { in_env = 1; next }
+    in_env && /^[^[:space:]#]/  { in_env = 0 }
+    in_env && $1 ~ /_VERSION:$/ {
+      name = $1
+      sub(/:$/, "", name)
+      print name, $2
+    }
+  ' "$ci_yml" | tr -d "\"'")"
+
+  # Declared in the digest file rather than here, so the exemption sits beside
+  # what it exempts and a reader of that file can see why a tool is absent.
+  no_digest="$(awk -F= '$1 == "NO_DIGEST_TOOLS" { print $2 }' "$sums_env" | tr -d "\"'")"
+
+  # A here-string, not a pipe. Both because the loop body increments counters
+  # that have to survive it, and because this repository has been bitten three
+  # times by a pipeline whose reader exits early: under `set -o pipefail` that
+  # kills the writer, the pipeline reports 141, and a match reads as a miss.
+  while read -r ci_name ci_value; do
+    [[ -n "$ci_name" ]] || continue
+    ci_pin_count=$((ci_pin_count + 1))
+    tool="${ci_name%_VERSION}"
+    recorded="$(awk -F= -v k="$ci_name" '$1 == k { print $2 }' "$sums_env")"
+
+    case " $no_digest " in
+      *" $tool "*)
+        if [[ -n "$recorded" ]]; then
+          err "$tool is in NO_DIGEST_TOOLS yet $sums_env records $ci_name — it cannot be both exempt and pinned here"
+          pin_gaps=$((pin_gaps + 1))
+        fi
+        continue
+        ;;
+    esac
+
+    if [[ -z "$recorded" ]]; then
+      err "$ci_yml pins $ci_name: '$ci_value' and $sums_env records no $ci_name — that download runs on a version pin alone"
+      pin_gaps=$((pin_gaps + 1))
+    elif [[ "$recorded" != "$ci_value" ]]; then
+      err "$ci_yml pins $ci_name: '$ci_value' but $sums_env records $ci_name=$recorded — a bump edited one file and not the other, and the digest now belongs to a release CI no longer downloads"
+      pin_gaps=$((pin_gaps + 1))
+    elif ! grep -qE "^${tool}_SHA256_[A-Za-z0-9_]+=" "$sums_env"; then
+      err "$sums_env records $ci_name=$recorded but no ${tool}_SHA256_* digest — a version with no bytes behind it"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+  done <<<"$ci_pins"
+
+  # Only run the reverse direction when the forward one found something.
+  # Otherwise a renamed env: block reports every recorded tool as missing and
+  # buries the one message that says what actually happened.
+  if (( ci_pin_count > 0 )); then
+    while IFS='=' read -r sums_name sums_value; do
+      [[ -n "$sums_name" ]] || continue
+      sums_pin_count=$((sums_pin_count + 1))
+      # A version mismatch is already reported above; this direction exists for
+      # the name the workflow does not pin at all.
+      if [[ -z "$(awk -v k="$sums_name" '$1 == k { print $2 }' <<<"$ci_pins")" ]]; then
+        err "$sums_env records $sums_name=$sums_value and the env: block of $ci_yml pins no $sums_name — a stale entry for a tool the workflow no longer installs"
+        pin_gaps=$((pin_gaps + 1))
+      fi
+    done <<<"$(grep -E '^[A-Za-z_][A-Za-z0-9_]*_VERSION=' "$sums_env")"
+  fi
+
+  while read -r digest_key; do
+    [[ -n "$digest_key" ]] || continue
+    digest_count=$((digest_count + 1))
+    if ! grep -q "$digest_key" "$ci_yml"; then
+      err "$sums_env records $digest_key and no step in $ci_yml names it — an unread digest is exactly the state this whole file was in"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+    digest_tool="${digest_key%%_SHA256_*}"
+    if ! grep -q "^${digest_tool}_VERSION=" "$sums_env"; then
+      err "$sums_env records $digest_key but no ${digest_tool}_VERSION — the digest names no release"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+  done <<<"$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*_SHA256_[A-Za-z0-9_]+' "$sums_env")"
+
+  # The floors. Every one of the three loops above is happy with an empty
+  # subject list, so without these a renamed env: block, an emptied digest file
+  # or a changed key shape disarms the whole section and it still prints ok.
+  if (( ci_pin_count == 0 )); then
+    err "no *_VERSION pins found in the top-level env: block of $ci_yml — it was renamed, reindented or removed, and this check just inspected nothing"
+  elif (( sums_pin_count == 0 )); then
+    err "no *_VERSION entries found in $sums_env — the file was emptied or its key shape changed, and this check just inspected nothing"
+  elif (( digest_count == 0 )); then
+    err "no *_SHA256_* digests found in $sums_env — every binary ci.yml downloads is installing on a version pin alone"
+  elif (( pin_gaps == 0 )); then
+    ok "$ci_pin_count CI tool pin(s) agree with $sums_env; $digest_count digest(s), each named by a step in $ci_yml"
+  fi
+fi
+
+# --------------------------------------------------------------------------
 head_ "winget configuration files"
 # yamllint covers the syntax of these. It cannot cover the shape, and the shape
 # is where the real defect was: an unquoted description containing a comma

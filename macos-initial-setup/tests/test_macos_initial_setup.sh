@@ -256,6 +256,109 @@ set +e
 set -e
 assert_eq "install_apps rejects unknown --only-formulae -> 3" "3" "$rc"
 
+# install_apps.sh's two catalogues answer here, on Linux, ahead of every
+# preflight — the same contract --help and install_devtools.sh --list-tools
+# have, and the reason it matters is the same: the person choosing what to
+# pass to --only is reading a runbook on a machine that is not the Mac.
+#
+# Exit 0 is asserted alongside the content because exit 2 is what this script
+# says to a Linux host ("This script is for macOS only") and exit 3 is what it
+# said to these flags before they existed. Both would satisfy an assertion
+# that only looked at the ids being absent, which is the shape of a test that
+# passes while proving nothing.
+set +e
+casks_out="$("$M/install_apps.sh" --list-casks 2>&1)"; rc=$?
+set -e
+assert_eq "install_apps --list-casks answers before the macOS preflight" "0" "$rc"
+assert_not_contains "install_apps --list-casks starts no preflight" "$casks_out" \
+  "preflight checks"
+set +e
+formulae_out="$("$M/install_apps.sh" --list-formulae 2>&1)"; rc=$?
+set -e
+assert_eq "install_apps --list-formulae answers before the macOS preflight" "0" "$rc"
+assert_not_contains "install_apps --list-formulae starts no preflight" "$formulae_out" \
+  "preflight checks"
+
+# grep -x, so a line is the whole id and not a fragment of a longer one: the
+# catalogue rows are "id|label|bundle" and printing a whole row would satisfy
+# a substring match while handing --only something it cannot parse. Here-string
+# rather than a pipe throughout this block — grep -q exits at the first match
+# and under `set -o pipefail` that kills the writer and reports 141, so a hit
+# reads as a miss. This repository has been bitten by that three times.
+for cask_id in brave-browser obsidian stats; do
+  if grep -qxF -- "$cask_id" <<<"$casks_out"; then
+    ok "install_apps lists selectable cask $cask_id"
+  else
+    err "install_apps --list-casks does not list $cask_id"
+  fi
+done
+if grep -q '|' <<<"$casks_out"; then
+  err "install_apps --list-casks prints catalogue rows, not bare cask ids"
+else
+  ok "install_apps --list-casks prints one bare cask id per line"
+fi
+
+for formula in jq gh sops age vault packer cloud-sql-proxy fzf ripgrep fd k6 \
+  shellcheck hadolint; do
+  case "$formula" in
+    # Named to keep the exclusion honest rather than accidental. HashiCorp
+    # relicensed these under the BUSL, homebrew-core dropped them, and the
+    # bare tokens this script installs by no longer resolve; the working
+    # spelling is hashicorp/tap/…, a tap install_apps.sh never adds. If a
+    # future change adds them back, this loop is where the argument has to be
+    # made again.
+    vault|packer)
+      if grep -qxF -- "$formula" <<<"$formulae_out"; then
+        err "$formula is listed as a bare formula; confirm 'brew info $formula' resolves in core before shipping it, or use hashicorp/tap/$formula"
+      else
+        ok "install_apps leaves $formula to hashicorp/tap"
+      fi
+      ;;
+    *)
+      if grep -qxF -- "$formula" <<<"$formulae_out"; then
+        ok "install_apps lists selectable formula $formula"
+      else
+        err "install_apps --list-formulae does not list $formula"
+      fi
+      ;;
+  esac
+done
+
+# The listing and the catalogue must be the same thing, not two lists that
+# agree today. Feeding every printed name back through --only-formulae proves
+# it: that filter validates against CLI_FORMULAE before the platform preflight,
+# so a name that is printed but not installable fails here with "unknown
+# formula" and exit 3.
+#
+# `</dev/null` is not decoration. This is the one probe here that runs the
+# installer without --dry-run, and on the macos-native CI job it gets past the
+# platform check: with a terminal on stdin it would reach "Proceed? [y/N]" and
+# block the suite, or take a stray newline as a yes and install several dozen
+# formulae on the runner. With stdin closed the script's own non-interactive
+# guard stops it at exit 2, before the log file, the network probe and brew.
+#
+# Which guard stops it differs by host, and both are asserted by message
+# rather than by the exit code they share, because 2 is also what this script
+# returns for half a dozen other reasons. What matters either way is that the
+# run was stopped by a *preflight* and not by argument validation: exit 3 is
+# the one code that would mean a listed name was rejected.
+set +e
+out="$("$M/install_apps.sh" --only-formulae "$(tr '\n' ',' <<<"$formulae_out")" \
+  </dev/null 2>&1)"
+rc=$?
+set -e
+assert_not_contains "every listed formula is one --only-formulae accepts" "$out" \
+  "unknown formula in --only-formulae"
+assert_eq "the listed-formulae probe is stopped by a preflight, not by usage -> 2" \
+  "2" "$rc"
+if [[ "$(uname -s)" == "Linux" ]]; then
+  assert_contains "the listed-formulae probe reached the platform guard" "$out" \
+    "This script is for macOS only"
+else
+  assert_contains "the listed-formulae probe reached the consent gate" "$out" \
+    "non-interactive execution requires --yes"
+fi
+
 legacy_help="$("$M/v1_stay_fresh.sh" --help)"
 assert_contains "legacy maintenance help carries deprecation warning" "$legacy_help" "DEPRECATED"
 assert_contains "legacy maintenance help documents the opt-in flag" "$legacy_help" "--legacy-run"
@@ -775,6 +878,51 @@ if grep -Eq '^[[:space:]]*k9s[[:space:]]' <<<"$out"; then
 else
   ok "install_apps --only-formulae excludes unselected formulae"
 fi
+
+# A catalogue entry is only real if a run can select it, so both additions are
+# asserted through the plan rather than through --list-casks alone. The ids go
+# in and the labels come out, which is the round trip the cask array exists to
+# make: an id that is not in CASKS matches nothing, the filter leaves TARGETS
+# empty, and the script exits 3 saying so — a failure, not a quiet omission.
+#
+# `set +e` around the capture, and the exit code asserted on its own line. The
+# suite runs under `set -e`, so an unguarded out="$(...)" of a run that exits
+# non-zero takes the whole file down at that point: no [fail] line, no message,
+# and every test below it silently unrun. Written the obvious way first, this
+# very assertion did exactly that against the unmodified script.
+set +e
+out="$(BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/install_apps.sh" --dry-run \
+  --only obsidian,stats --skip-gcloud --skip-cli-ops 2>&1)"
+rc=$?
+set -e
+assert_eq "a dry run of the two new casks reaches its plan -> 0" "0" "$rc"
+assert_contains "install_apps can plan exactly the two new casks" "$out" "Plan (2 apps)"
+assert_contains "install_apps plans Obsidian" "$out" "Obsidian"
+assert_contains "install_apps plans Stats" "$out" "Stats"
+
+# Same round trip for the new formulae. --only-formulae validates against
+# CLI_FORMULAE and exits 3 on a name it does not know, so reaching a plan at
+# all is the assertion; the count then proves every one of the ten was kept
+# rather than silently dropped. brave-browser keeps the cask side down to one
+# app, since this is a statement about formulae.
+set +e
+out="$(BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/install_apps.sh" --dry-run \
+  --only brave-browser --skip-gcloud \
+  --only-formulae gh,sops,age,cloud-sql-proxy,fzf,ripgrep,fd,k6,shellcheck,hadolint 2>&1)"
+rc=$?
+set -e
+assert_eq "a dry run of the ten new formulae reaches its plan -> 0" "0" "$rc"
+assert_contains "install_apps can plan all ten new formulae" "$out" \
+  "CLI formulae (10 selected)"
+for formula in gh sops age cloud-sql-proxy fzf ripgrep fd k6 shellcheck hadolint; do
+  if grep -Eq "^[[:space:]]*${formula}[[:space:]]" <<<"$out"; then
+    ok "install_apps plans formula $formula"
+  else
+    err "install_apps --only-formulae $formula reached no plan line"
+  fi
+done
 
 # --- installers refuse a non-interactive real run without --yes -----------
 # stay_fresh.sh has enforced this for a while and the two bootstrap scripts

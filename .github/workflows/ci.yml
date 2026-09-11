@@ -52,6 +52,26 @@ concurrency:
 # The GitHub Actions used below are pinned to commit SHAs rather than moving
 # tags, with the tag in a trailing comment. A tag is mutable; a SHA is what
 # actually gets executed. .github/dependabot.yml keeps them current.
+#
+# A version pin answers "which release", not "which bytes". The asset behind a
+# pinned URL can be replaced, and a download that only pins the version installs
+# whatever answers. So every binary fetched below is checked against the SHA-256
+# recorded in .github/ci-tool-checksums.env before it is unpacked or installed,
+# and the step fails on a mismatch.
+#
+# That file spent its whole life as documentation. It declared itself the source
+# of truth for these digests while nothing in the tree read it — a grep for its
+# name returned the file and nothing else — so the two Darwin digests written
+# for the macos-native job below had never once been compared against anything,
+# and a bump that edited a *_VERSION here and forgot the digest file was
+# invisible. A digest nobody checks is worse than no digest, because it reads
+# like a control.
+#
+# The other half of that is at review time: test-env/static/check_conventions.sh
+# asserts this block and that file agree version for version, that every tool
+# pinned here either records a digest or is named as installed through a package
+# manager that does its own verification, and that every digest recorded there is
+# named by a step below. Neither half can rot back into decoration unnoticed.
 env:
   SHELLCHECK_VERSION: '0.10.0'
   ACTIONLINT_VERSION: '1.7.12'
@@ -373,6 +393,22 @@ jobs:
             curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
               --retry-connrefused --connect-timeout 10 \
               "$url" -o "$RUNNER_TEMP/shellcheck.tar.xz"
+            # Checked before it is unpacked, and the archive is what is checked:
+            # the digests in that file are of the release artefact as served, not
+            # of the binary inside it. See the env: block for why this exists.
+            # Inside the cache-miss branch because this is the only path that
+            # touches the network — a cache hit reinstalls bytes that passed
+            # this check when they were fetched.
+            want="$(awk -F= '$1 == "SHELLCHECK_SHA256_LINUX_AMD64" { print $2 }' \
+              .github/ci-tool-checksums.env)"
+            [ -n "$want" ] || {
+              echo "::error::SHELLCHECK_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+              exit 1
+            }
+            sha256sum -c - <<<"$want  $RUNNER_TEMP/shellcheck.tar.xz" || {
+              echo "::error::ShellCheck v$SHELLCHECK_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+              exit 1
+            }
             tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
             mkdir -p "$cache_dir"
             install -m 0755 \
@@ -410,6 +446,16 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${ACTIONLINT_VERSION}/$archive" \
             -o "$RUNNER_TEMP/actionlint.tar.gz"
+          want="$(awk -F= '$1 == "ACTIONLINT_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::ACTIONLINT_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/actionlint.tar.gz" || {
+            echo "::error::actionlint v$ACTIONLINT_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           sudo install -m 0755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
           got="$(actionlint -version | head -n 1)"
@@ -432,6 +478,21 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${HADOLINT_VERSION}/hadolint-linux-x86_64" \
             -o "$RUNNER_TEMP/hadolint"
+          # Hadolint ships no checksums file of its own, so the recorded digest
+          # is a first observation rather than an upstream publication — read it
+          # as "these are the bytes this repository has been running", which is
+          # what catches a silently replaced asset. It is still the download
+          # itself being checked: this release is a bare binary, not an archive.
+          want="$(awk -F= '$1 == "HADOLINT_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::HADOLINT_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/hadolint" || {
+            echo "::error::Hadolint v$HADOLINT_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           sudo install -m 0755 "$RUNNER_TEMP/hadolint" /usr/local/bin/hadolint
           got="$(hadolint --version)"
           case "$got" in
@@ -571,6 +632,16 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
             -o "$RUNNER_TEMP/kubeconform.tar.gz"
+          want="$(awk -F= '$1 == "KUBECONFORM_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::KUBECONFORM_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/kubeconform.tar.gz" || {
+            echo "::error::kubeconform v$KUBECONFORM_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" \
             -C "$RUNNER_TEMP" kubeconform
           sudo install -m 0755 \
@@ -674,9 +745,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The digest is selected here alongside the asset, so the two cannot
+          # disagree: a runner architecture that gains an asset without a
+          # recorded digest fails at the lookup below rather than installing
+          # unchecked. Both names appear literally so check_conventions.sh can
+          # see that the recorded Darwin digests are actually used by a step.
           case "$(uname -m)" in
-            arm64) asset_arch=aarch64 ;;
-            x86_64) asset_arch=x86_64 ;;
+            arm64) asset_arch=aarch64; sha_key=SHELLCHECK_SHA256_DARWIN_ARM64 ;;
+            x86_64) asset_arch=x86_64; sha_key=SHELLCHECK_SHA256_DARWIN_AMD64 ;;
             *)
               echo "::error::unsupported macOS architecture: $(uname -m)"
               exit 1
@@ -688,6 +764,19 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${SHELLCHECK_VERSION}/$archive" \
             -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          # shasum, not sha256sum: sha256sum is GNU coreutils and is not part of
+          # the macOS base system, while /usr/bin/shasum ships with macOS. The
+          # two agree on both the algorithm and the "DIGEST  PATH" input format.
+          want="$(awk -F= -v k="$sha_key" '$1 == k { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::$sha_key is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          shasum -a 256 -c - <<<"$want  $RUNNER_TEMP/shellcheck.tar.xz" || {
+            echo "::error::ShellCheck v$SHELLCHECK_VERSION for darwin.$asset_arch does not match the SHA-256 recorded in $sha_key. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into .github/ci-tool-checksums.env without confirming the new value upstream first."
+            exit 1
+          }
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           sudo install -m 0755 \
             "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
@@ -894,6 +983,16 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
             --retry-connrefused --connect-timeout 10 \
             "$url" -o "$RUNNER_TEMP/ruff.tar.gz"
+          want="$(awk -F= '$1 == "RUFF_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::RUFF_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/ruff.tar.gz" || {
+            echo "::error::ruff $RUFF_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           tar -xzf "$RUNNER_TEMP/ruff.tar.gz" -C "$RUNNER_TEMP"
           sudo install -m 0755 \
             "$RUNNER_TEMP/ruff-x86_64-unknown-linux-gnu/ruff" /usr/local/bin/ruff

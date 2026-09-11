@@ -63,6 +63,7 @@ For returning users. Every command is idempotent.
 ./install_devtools.sh --dry-run --only terraform,helm
 
 # Read the machine, change nothing
+./status.sh                              # one screen: fit to work on? what next?
 ./workstation_doctor.sh                  # is this Mac well?
 ./hardening_audit.sh                     # is this Mac safe?
 ```
@@ -101,6 +102,7 @@ than memorizing flags.
 | **Ambient** | `zsh_aliases.zsh` | Sourced on every interactive shell (after wiring into `~/.zshrc`) | Your shell only — no disk writes |
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | Caches, Homebrew, Docker, Xcode, toolchains |
 | **Configure** | `macos_defaults.sh` | Once, then after major macOS upgrades | Finder, Dock, keyboard and screenshot preferences; read-only unless `--apply`/`--revert` |
+| **Diagnose** | `status.sh` | Whenever you sit down at the machine | Nothing — it only reads |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
@@ -120,7 +122,7 @@ code looks the way it does.
 | **Idempotent** | Re-running a script upgrades in place. No duplicate installs, no appended shell-rc blocks, no runaway cache. |
 | **Fail-soft** | One failing step never aborts the rest of the run. Missing tools are skipped with a note, not treated as errors. |
 | **Dry-run first** | `--dry-run` is supported on every script that mutates state (except the explicitly minimal `v1_stay_fresh.sh`). No `sudo` prompt is triggered in dry-run. |
-| **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh` and `v1_stay_fresh.sh` write none. |
+| **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh`, `status.sh` and `v1_stay_fresh.sh` write none. |
 | **No hidden writes** | Shell rc files are modified only when you pass `--setup-shell`. Every such block is bracketed by markers so it can be found and removed. |
 | **Opt-out, not opt-in** | `stay_fresh.sh` has a skip flag for every step. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
 | **Sudo only when needed** | Scripts request `sudo` once at startup, keep it warm for the run, and release it on exit. Running as `root` is refused. |
@@ -195,6 +197,19 @@ through `brew` instead of each vendor's auto-updater.
 ./install_apps.sh                        # full install (interactive)
 ./install_apps.sh --dry-run --verbose    # preview and stream details
 ./install_apps.sh --yes                  # non-interactive
+./install_apps.sh --list-casks           # selectable cask ids, one per line
+./install_apps.sh --list-formulae        # selectable formula names, one per line
+```
+
+Both listings answer **before** the macOS preflight, like `--help` and
+`install_devtools.sh --list-tools`: you can read the catalogue on the Linux box
+you are writing the runbook on, not only on the Mac that will run it. Each
+prints one bare id per line and exits **0**, so the output feeds straight back
+into the selectors:
+
+```bash
+./install_apps.sh --list-formulae | grep -E 'k9s|stern|kubectx'   # what is there
+./install_apps.sh --dry-run --only-formulae k9s,stern,kubectx     # take just those
 ```
 
 A real run started without a terminal on stdin — a CI step, a launchd job,
@@ -219,6 +234,8 @@ so there is nothing to agree to.
 | `--skip-cli-ops` | Skip the entire Homebrew **formula** batch (see below). |
 | `--only-formulae a,b,c` | Operate on only the named formulae; unknown names fail before preflight. |
 | `--skip-formulae a,b,c` | Skip individual formula names (comma-separated). |
+| `--list-casks` | Print selectable cask ids and exit without macOS preflight. |
+| `--list-formulae` | Print selectable formula names and exit without macOS preflight. |
 | `--gcloud-components a,b,c` | Override the default component set. |
 | `--no-gcloud-components` | Install `gcloud` core only (no components). |
 | `-h`, `--help` | Show the built-in help (lists every cask and formula). |
@@ -234,9 +251,16 @@ so there is nothing to agree to.
 `cloudflare-warp`, `ngrok`, `rectangle`, `alt-tab`, `maccy`, `zed`,
 `sublime-text`, `jetbrains-toolbox`, `fork`, `gitkraken`,
 `azure-data-studio`, `postico`, `redisinsight`, `cyberduck`, `proxyman`,
-`linear-linear`, `discord`.
+`linear-linear`, `discord`, `obsidian`, `stats`.
 
-Pass `--skip a,b,c` to omit casks your organization provisions elsewhere.
+`obsidian` is the local-first notes app: `notion` above is the shared copy,
+and this is the one that still opens during the incident that took the shared
+copy away. `stats` is the menu-bar CPU / memory / disk / network readout — the
+thing that tells you to go and run `stay_fresh.sh`, which otherwise reports
+disk pressure only when you think to ask.
+
+Pass `--skip a,b,c` to omit casks your organization provisions elsewhere, and
+`--list-casks` to print the ids without running anything.
 The `ngrok` cask installs a **binary only** (no `.app`).
 
 The cask and formula selectors are independent, so a small bootstrap can be
@@ -258,12 +282,31 @@ Installed after the cask loop unless you pass `--skip-cli-ops`. Includes
 **`terraform-docs`**, **`tflint`**, **`terragrunt`**, **`infracost`**, **`conftest`**,
 **`opa`**, **`cosign`**, **`crane`**, **`dive`**, **`lazydocker`**, **`popeye`**,
 **`kubescape`**, **`grype`**, **`trivy`**, **`jq`**, **`yq`**, **`httpie`**, **`hey`**,
-**`vegeta`**.
+**`vegeta`**, plus the day-to-day set outside the cluster: **`gh`**,
+**`sops`**, **`age`**, **`cloud-sql-proxy`**, **`fzf`**, **`ripgrep`**, **`fd`**,
+**`k6`**, **`shellcheck`** and **`hadolint`**.
 
-Homebrew's core formula named **`flux`** is the Influx query language, not
-Flux CD; for the Flux CD CLI use `brew install fluxcd/tap/flux` separately if
-you need it. **`helm`** is also installed by `install_devtools.sh` — running
-both scripts is safe (idempotent).
+`--list-formulae` prints the current list from the script itself, which is the
+copy that cannot go stale while this paragraph does.
+
+Three traps in this area, each of which costs a failed run:
+
+- Homebrew's core formula named **`flux`** is the Influx query language, not
+  Flux CD; for the Flux CD CLI use `brew install fluxcd/tap/flux` separately if
+  you need it.
+- **Vault and Packer are deliberately not here.** HashiCorp relicensed them
+  under the BUSL, homebrew-core dropped them, and the installable spelling is
+  now `brew tap hashicorp/tap && brew install hashicorp/tap/vault` — a tap this
+  script does not add. Every name in the catalogue is a bare homebrew-core
+  token, because the install loop says `brew install <name>` and nothing more.
+- A package name does not travel between ecosystems: **`fd`** is `fd` on
+  Homebrew but `fd-find` on Debian and Fedora, and **`ripgrep`** installs a
+  binary called `rg`.
+
+**`helm`** is also installed by `install_devtools.sh` — running both scripts is
+safe (idempotent). **`k6`** overlaps in purpose with **`hey`** and **`vegeta`**
+above rather than duplicating them: those two hammer one URL, k6 scripts a
+scenario.
 
 ### Google Cloud SDK components
 
