@@ -91,8 +91,13 @@ jobs:
       matrix: ${{ steps.filter.outputs.matrix }}
       # The two native jobs are not matrix entries and read their suite's
       # verdict directly.
-      suite_macos: ${{ steps.filter.outputs.suite_macos }}
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
+      # The native macOS job runs the no-Docker suites as well as its own
+      # package, so its gate is wider than one package prefix and is built by
+      # its own filter line rather than by the per-suite loop. suite_macos is
+      # not exported: the Docker Test / macos job reads its verdict from the
+      # matrix entry, and this job was its only other consumer.
+      native_macos: ${{ steps.filter.outputs.native_macos }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -138,8 +143,17 @@ jobs:
           # A change to CI itself, to the aggregator, or to the shared test
           # helpers invalidates every assumption below it, so treat it as a
           # change to everything.
+          #
+          # templates/ is here for a different reason: nothing under it is a
+          # suite's package, so a templates-only change matched no suite at
+          # all. The templates are exercised by git/tests/test_git_scripts.sh
+          # and windows/tests/contract.ps1, both gated on their own package,
+          # so the one change that most needs those two suites was the one
+          # change that ran neither. contract.ps1 says in as many words that
+          # the templates exist so the conventions cannot drift away from
+          # them, "which only works if the same checks run against them".
           if [ "$full" -eq 0 ] && printf '%s\n' "$files" |
-              grep -Eq '^(\.github/|run-tests\.sh$|test-env/lib/)'; then
+              grep -Eq '^(\.github/|run-tests\.sh$|test-env/lib/|templates/)'; then
             full=1
           fi
 
@@ -173,6 +187,18 @@ jobs:
           emit dockerfile    '(^|/)Dockerfile$'
           emit manifests     '^(k8s-toolbox/(examples|debug)/|linux/cloud-init/).*\.ya?ml$'
           emit compose       '(^|/)docker-compose[^/]*\.ya?ml$'
+
+          # macos-15 is the only runner in this repository where BSD find, sed,
+          # stat and date meet the test harness, so it is the only place a
+          # GNU-ism in a suite can be caught. It was running one file. The
+          # suites added to it below are the no-Docker ones, which cost seconds
+          # on a runner that is already booted - and the gate has to cover
+          # their packages too, or a change to test-env/ would not wake the one
+          # job able to judge it. That is not hypothetical: check_conventions.sh
+          # used GNU-only `find -printf` with no fallback, so on macOS its
+          # "a dry run writes nothing" section compared "" to "" and passed for
+          # every script it checked.
+          emit native_macos  '^(macos-initial-setup/|test-env/|k8s-toolbox/|dotfiles/|run-tests\.sh$)'
 
           # Suites come from the aggregator's own table, not a copy of it
           # here. `run-tests.sh --list` prints name, package directory and
@@ -640,11 +666,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        if: needs.changes.outputs.suite_macos == 'true'
+        if: needs.changes.outputs.native_macos == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install ShellCheck
-        if: needs.changes.outputs.suite_macos == 'true'
+        if: needs.changes.outputs.native_macos == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -673,7 +699,7 @@ jobs:
           }
 
       - name: Run contracts with Apple Bash
-        if: needs.changes.outputs.suite_macos == 'true'
+        if: needs.changes.outputs.native_macos == 'true'
         shell: bash
         run: |
           set -uo pipefail
@@ -692,8 +718,28 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
+      # The no-Docker suites, through the aggregator, on BSD userland. These
+      # run nowhere else on a BSD box: Test / conventions, Test / k8s and
+      # Test / dotfiles are all ubuntu-24.04, where GNU find, sed and stat
+      # hide every portability defect these suites contain.
+      - name: Run the no-Docker suites with Apple Bash
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/macos-native-suites.log"
+          set +e
+          ./run-tests.sh static k8s dotfiles 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            printf '### No-Docker suites on BSD userland\n\n'
+            printf '```text\n%s\n```\n' "$(tail -n 25 "$log")"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
       - name: Report skip
-        if: needs.changes.outputs.suite_macos != 'true'
+        if: needs.changes.outputs.native_macos != 'true'
         run: echo '### Native macOS contracts' >> "$GITHUB_STEP_SUMMARY"
 
   windows-native:
@@ -705,6 +751,23 @@ jobs:
       - name: Check out repository
         if: needs.changes.outputs.suite_windows == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Without this the job is four bash -n invocations and a green tick:
+      # windows/tests/run.sh prints "pwsh not installed - skipped" and exits 0,
+      # so an image rollover that drops or renames pwsh would take the native
+      # PowerShell contracts out of CI silently. The ubuntu matrix entry has
+      # carried this guard for the same reason; this job, the only place
+      # contract.ps1's preview paths actually execute on Windows, did not.
+      - name: Require pwsh
+        if: needs.changes.outputs.suite_windows == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "::error::pwsh is missing from this runner — windows/tests/run.sh would skip itself and exit 0, and the gate would pass without checking anything"
+            exit 1
+          fi
+          pwsh --version
 
       - name: Run contracts on Windows
         if: needs.changes.outputs.suite_windows == 'true'

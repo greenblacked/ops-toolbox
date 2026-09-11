@@ -177,6 +177,15 @@ head_ "a dry run writes nothing"
 snapshot() {
   find "$1" "$2" -mindepth 1 -printf '%p %T@\n' 2>/dev/null | sort
 }
+# -printf is GNU-only, and this suite advertises itself as needing no Docker and
+# running anywhere -- which includes macOS, where find fails, 2>/dev/null eats
+# the message, and both the before and the after call return the empty string.
+# Every case below then passed having compared "" to "". test-env/static/
+# test_changelog.sh and dotfiles/tests/test_dotfiles.sh guard the same call the
+# same way.
+if ! find "$REPO_ROOT" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  snapshot() { find "$1" "$2" -mindepth 1 -exec ls -ld {} + 2>/dev/null | sort; }
+fi
 
 dry_run_case() {
   local label="$1"; shift

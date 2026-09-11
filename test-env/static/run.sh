@@ -10,6 +10,16 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 export REPO_ROOT
 
+# This runner invokes scripts that read the environment, so it has to pin what
+# they read for the same reason the suites it calls do. CHANGELOG_ROOT is the
+# live one: changelog.sh takes it as the directory holding CHANGELOG.md and
+# changelog.d/, so a developer with it exported had this runner validate some
+# other checkout's fragments and report "1 fragment(s) would paste cleanly"
+# about files that are not in this repository -- a fully green static suite
+# that checked nothing here. check_conventions.sh unsets it too, but that is a
+# child process and the unset never reaches this one.
+unset CHANGELOG_ROOT
+
 if ! command -v git >/dev/null 2>&1; then
   echo "git is required" >&2
   exit 1

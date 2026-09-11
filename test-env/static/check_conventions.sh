@@ -379,6 +379,17 @@ snapshot() {
   # Names plus mtimes, so a rewritten file is caught as well as a new one.
   find "$1" "$2" -mindepth 1 -printf '%p %T@\n' 2>/dev/null | sort
 }
+# -printf is GNU-only. On macOS find fails, 2>/dev/null swallows the message,
+# and snapshot() returns the empty string for the before AND the after call --
+# so every assertion below compared "" to "" and reported that a dry run wrote
+# nothing having inspected nothing. This section polices the whole repository
+# for that contract, which made it the worst possible place to lose it.
+# test-env/static/test_changelog.sh and dotfiles/tests/test_dotfiles.sh guard
+# the same call the same way; ls -ld is one batched exec rather than one per
+# file, and prints mtime to the minute, which is enough to catch a rewrite.
+if ! find "$REPO_ROOT" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  snapshot() { find "$1" "$2" -mindepth 1 -exec ls -ld {} + 2>/dev/null | sort; }
+fi
 
 filtered_snapshot() {
   snapshot "$1" "$2" | grep -vE "$IGNORE_RE"
@@ -492,7 +503,13 @@ host_env_vars() {
 suites=()
 while IFS= read -r f; do
   [[ -n "$f" ]] && suites+=("$f")
-done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh' 'test-env/static/check_conventions.sh')
+# Package runners (git/tests/run.sh and friends) match the first pattern. The
+# two test-env runners match none of the three, which is how test-env/static/
+# run.sh came to call changelog.sh without pinning CHANGELOG_ROOT: the check
+# built to catch exactly that could not see the file. 'test-env/*/run.sh' is
+# the gap.
+done < <(git ls-files '*/tests/*.sh' 'test-env/*/run.sh' \
+  'test-env/static/test_*.sh' 'test-env/static/check_conventions.sh')
 
 env_leaks=0
 env_pairs=0
