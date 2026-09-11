@@ -199,6 +199,9 @@ through `brew` instead of each vendor's auto-updater.
 ./install_apps.sh --yes                  # non-interactive
 ./install_apps.sh --list-casks           # selectable cask ids, one per line
 ./install_apps.sh --list-formulae        # selectable formula names, one per line
+./install_apps.sh --list-profiles        # profile names and what each is for
+./install_apps.sh --profile core --dry-run     # a day-one machine, previewed
+./install_apps.sh --profile platform --yes     # lead workstation, unattended
 ```
 
 Both listings answer **before** the macOS preflight, like `--help` and
@@ -228,6 +231,8 @@ so there is nothing to agree to.
 | `-v`, `--verbose` | Stream `brew` output live (also runs `brew doctor` into the log). |
 | `--list-casks` | Print selectable cask ids and exit. No macOS preflight. |
 | `--list-formulae` | Print selectable formula ids and exit. No macOS preflight. |
+| `--profile NAME` | Use a named subset — `core`, `platform` or `full`. Fills `--only` / `--only-formulae` only when you left them unset. |
+| `--list-profiles` | Print profile names with what each is for, and exit. No macOS preflight. |
 | `--only a,b,c` | Install only the listed casks. |
 | `--skip a,b,c` | Install everything except the listed casks. |
 | `--skip-upgrade` | Do not upgrade already-installed casks or formulae. |
@@ -238,6 +243,8 @@ so there is nothing to agree to.
 | `--skip-formulae a,b,c` | Skip individual formula names (comma-separated). |
 | `--list-casks` | Print selectable cask ids and exit without macOS preflight. |
 | `--list-formulae` | Print selectable formula names and exit without macOS preflight. |
+| `--profile NAME` | Use a named subset — `core`, `platform` or `full`. |
+| `--list-profiles` | Print profile names and their purpose, without macOS preflight. |
 | `--gcloud-components a,b,c` | Override the default component set. |
 | `--no-gcloud-components` | Install `gcloud` core only (no components). |
 | `-h`, `--help` | Show the built-in help (lists every cask and formula). |

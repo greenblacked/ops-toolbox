@@ -298,6 +298,68 @@ else
   ok "install_apps --list-casks prints one bare cask id per line"
 fi
 
+# --- install_apps profiles --------------------------------------------------
+# The contract: a profile answers before preflight, filters both listings,
+# loses to an explicit --only, and refuses a name it does not know.
+#
+# The membership assertion is the one that earns its keep. A typo in a profile
+# list selects nothing, and selecting nothing looks exactly like the `full`
+# profile — so without this, a misspelled cask id would ship silently.
+set +e
+profiles_out="$("$M/install_apps.sh" --list-profiles 2>&1)"; rc=$?
+set -e
+assert_eq "install_apps --list-profiles answers before the macOS preflight" "0" "$rc"
+assert_not_contains "install_apps --list-profiles starts no preflight" "$profiles_out" \
+  "preflight checks"
+for profile_name in core platform full; do
+  assert_contains "install_apps --list-profiles names $profile_name" \
+    "$profiles_out" "$profile_name"
+done
+
+for profile_name in core platform; do
+  set +e
+  prof_casks="$("$M/install_apps.sh" --profile "$profile_name" --list-casks 2>&1)"
+  prof_formulae="$("$M/install_apps.sh" --profile "$profile_name" --list-formulae 2>&1)"
+  set -e
+  # Asserted through the exit code, not by inspecting the listing. An id the
+  # catalogue lacks is filtered OUT of the listing, so comparing the listing
+  # against the catalogue can never see it - that version of this test passed
+  # against a deliberately typo'd profile. The script refuses instead, so a
+  # healthy profile exiting 0 here is the real assertion.
+  set +e
+  "$M/install_apps.sh" --profile "$profile_name" --list-casks >/dev/null 2>&1; rc=$?
+  set -e
+  assert_eq "every member of profile $profile_name resolves in the catalogue" "0" "$rc"
+  if (( $(grep -c . <<<"$prof_casks") < $(grep -c . <<<"$casks_out") )); then
+    ok "profile $profile_name narrows the cask catalogue"
+  else
+    err "profile $profile_name did not narrow the cask catalogue"
+  fi
+done
+
+set +e
+full_casks="$("$M/install_apps.sh" --profile full --list-casks 2>&1)"
+only_wins="$("$M/install_apps.sh" --profile core --only slack --list-casks 2>&1)"
+prof_eq="$("$M/install_apps.sh" --profile=core --list-casks 2>&1)"
+prof_sp="$("$M/install_apps.sh" --profile core --list-casks 2>&1)"
+set -e
+assert_eq "profile full is the unfiltered catalogue" "$casks_out" "$full_casks"
+assert_eq "an explicit --only wins over the profile" "slack" "$only_wins"
+assert_eq "--profile=NAME and --profile NAME agree" "$prof_sp" "$prof_eq"
+
+set +e
+"$M/install_apps.sh" --profile nosuch --list-casks >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "an unknown profile exits 3" "3" "$rc"
+set +e
+"$M/install_apps.sh" --profile >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "--profile with no value exits 3" "3" "$rc"
+set +e
+"$M/install_apps.sh" --profile= >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "--profile= with an empty value exits 3" "3" "$rc"
+
 for formula in jq gh sops age vault packer cloud-sql-proxy fzf ripgrep fd k6 \
   shellcheck hadolint; do
   case "$formula" in

@@ -66,6 +66,48 @@ hr()    { printf "%s%s%s\n" "$C_DIM" "------------------------------------------
 # cask catalogue
 #   cask-id | display label | /Applications bundle name (for detection)
 # ---------------------------------------------------------------------------
+# --- profiles ---------------------------------------------------------------
+# Named subsets of the two catalogues below, for the common case of setting up
+# a machine for a role rather than picking forty casks by hand.
+#
+# A profile only fills a selector you left empty: --only and --only-formulae
+# still win when set, so `--profile core --only slack` means slack, not core's
+# list. That ordering is deliberate - a profile is a default, and an explicit
+# selector is an instruction.
+#
+# Held as plain space-separated strings and read through a case, because these
+# scripts run under the Bash 3.2 that ships as /bin/bash on macOS and it has no
+# associative arrays (CONTRIBUTING.md). Every id below must also appear in the
+# catalogue it draws from; the macOS suite asserts that, so a typo here fails
+# rather than silently selecting nothing.
+PROFILE_NAMES="core platform full"
+
+profile_casks() {
+  case "$1" in
+    core)     printf '%s' "google-chrome visual-studio-code iterm2 1password slack rectangle" ;;
+    platform) printf '%s' "google-chrome visual-studio-code iterm2 1password slack rectangle orbstack lens postman tailscale-app" ;;
+    full)     printf '%s' "" ;;
+  esac
+}
+
+profile_formulae() {
+  case "$1" in
+    core)     printf '%s' "jq fd ripgrep fzf gh yq" ;;
+    platform) printf '%s' "jq fd ripgrep fzf gh yq helm k9s kubectx kustomize terraform-docs tflint sops age awscli trivy" ;;
+    full)     printf '%s' "" ;;
+  esac
+}
+
+# What each profile is for, printed by --list-profiles. One line per name so
+# the output stays greppable.
+profile_blurb() {
+  case "$1" in
+    core)     printf '%s' "day-one machine that can work" ;;
+    platform) printf '%s' "lead workstation: core plus Kubernetes, cloud and IaC" ;;
+    full)     printf '%s' "the unfiltered catalogue (the default)" ;;
+  esac
+}
+
 CASKS=(
   "brave-browser|Brave Browser|Brave Browser.app"
   "visual-studio-code|Visual Studio Code|Visual Studio Code.app"
@@ -118,6 +160,11 @@ CASKS=(
   # no network. Notion above is the shared copy; this is the one that opens
   # during the incident that took the shared copy away.
   "obsidian|Obsidian|Obsidian.app"
+  # SSH keys in the Secure Enclave: the private key cannot leave the machine.
+  "secretive|Secretive|Secretive.app"
+  # A second terminal, not a replacement for iTerm2 - both are listed so a
+  # machine can have the one its owner actually uses.
+  "ghostty|Ghostty|Ghostty.app"
 )
 
 # ---------------------------------------------------------------------------
@@ -155,6 +202,7 @@ CLI_FORMULAE=(
   infracost jq k6 k9s kind krew kubectx kubescape kustomize lazydocker minikube
   opa popeye ripgrep shellcheck skaffold sops stern terraform-docs terragrunt
   tflint trivy velero vegeta yq
+  glab gitleaks syft kubeconform yamllint rclone direnv actionlint ansible
 )
 
 # ---------------------------------------------------------------------------
@@ -174,6 +222,8 @@ ONLY_LIST=""
 SKIP_LIST=""
 ONLY_FORMULAE_LIST=""
 SKIP_FORMULAE_LIST=""
+PROFILE=""
+LIST_PROFILES=0
 GCLOUD_COMPONENTS="gke-gcloud-auth-plugin,kubectl"
 
 LOG_DIR="${TMPDIR:-/tmp}"
@@ -201,6 +251,9 @@ ${C_BOLD}Options:${C_RESET}
   --skip-formulae f1,f2    Skip these formula names (comma-separated)
   --list-casks             Print selectable cask ids and exit
   --list-formulae          Print selectable formula names and exit
+  --profile NAME           Use a named subset: core, platform or full
+                           (fills --only/--only-formulae only when unset)
+  --list-profiles          Print profile names with what each is for
   --gcloud-components a,b  Components to install alongside gcloud-cli
                            (default: ${GCLOUD_COMPONENTS})
   --no-gcloud-components   Don't install any gcloud components
@@ -253,6 +306,16 @@ while (( $# > 0 )); do
     --skip-formulae=*)       SKIP_FORMULAE_LIST="${1#*=}" ;;
     --list-casks)             LIST_CASKS=1 ;;
     --list-formulae)          LIST_FORMULAE=1 ;;
+    --list-profiles)          LIST_PROFILES=1 ;;
+    --profile)
+      shift
+      [[ -n "${1:-}" && "$1" != --* ]] || { err "--profile needs a value"; exit 3; }
+      PROFILE="$1"
+      ;;
+    --profile=*)
+      PROFILE="${1#*=}"
+      [[ -n "$PROFILE" ]] || { err "--profile needs a value"; exit 3; }
+      ;;
     --gcloud-components)      shift; GCLOUD_COMPONENTS="${1:-}" ;;
     --gcloud-components=*)    GCLOUD_COMPONENTS="${1#*=}" ;;
     --no-gcloud-components)   NO_GCLOUD_COMPONENTS=1 ;;
@@ -262,6 +325,71 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+# ---------------------------------------------------------------------------
+# profile resolution (--profile / --list-profiles)
+# ---------------------------------------------------------------------------
+# Above the listings, because --list-casks and --list-formulae honour the
+# profile: `--profile core --list-casks` has to print core's six, not all
+# forty. And above the preflight for the same reason they are - naming a
+# profile changes nothing, so it must answer on a machine this script refuses
+# to run on.
+#
+# An unknown name exits 3 rather than selecting nothing. A typo that silently
+# installed the empty set would look exactly like a profile that is meant to be
+# empty, and `full` is that profile.
+if (( LIST_PROFILES )); then
+  for profile_name in $PROFILE_NAMES; do
+    printf '%s\t%s\n' "$profile_name" "$(profile_blurb "$profile_name")"
+  done
+  exit 0
+fi
+
+if [[ -n "$PROFILE" ]]; then
+  profile_known=0
+  for profile_name in $PROFILE_NAMES; do
+    [[ "$PROFILE" == "$profile_name" ]] && profile_known=1
+  done
+  if (( profile_known == 0 )); then
+    err "unknown profile: $PROFILE (see --list-profiles)"
+    exit 3
+  fi
+  # Every member must resolve to a catalogue entry. A typo here would otherwise
+  # be silent in the worst way: the id matches nothing, the filter drops it, and
+  # the profile just installs less than it says. Nothing downstream can tell
+  # that from a profile that is meant to be smaller, so it has to fail here.
+  for profile_entry in $(profile_casks "$PROFILE"); do
+    profile_found=0
+    for entry in "${CASKS[@]}"; do
+      [[ "${entry%%|*}" == "$profile_entry" ]] && profile_found=1
+    done
+    if (( profile_found == 0 )); then
+      err "profile $PROFILE names cask '$profile_entry', which is not in the catalogue"
+      exit 3
+    fi
+  done
+  for profile_entry in $(profile_formulae "$PROFILE"); do
+    profile_found=0
+    for entry in "${CLI_FORMULAE[@]}"; do
+      [[ "$entry" == "$profile_entry" ]] && profile_found=1
+    done
+    if (( profile_found == 0 )); then
+      err "profile $PROFILE names formula '$profile_entry', which is not in the catalogue"
+      exit 3
+    fi
+  done
+
+  # A profile fills a selector only when that selector is empty. An explicit
+  # --only is an instruction; a profile is a default, and the instruction wins.
+  profile_selection="$(profile_casks "$PROFILE")"
+  if [[ -n "$profile_selection" && -z "$ONLY_LIST" ]]; then
+    ONLY_LIST="$(printf '%s' "$profile_selection" | tr ' ' ',')"
+  fi
+  profile_selection="$(profile_formulae "$PROFILE")"
+  if [[ -n "$profile_selection" && -z "$ONLY_FORMULAE_LIST" ]]; then
+    ONLY_FORMULAE_LIST="$(printf '%s' "$profile_selection" | tr ' ' ',')"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # catalogue listings (--list-casks / --list-formulae)
@@ -293,13 +421,23 @@ done
 # over both no matter where it appears on the command line.)
 if (( LIST_CASKS )); then
   for entry in "${CASKS[@]}"; do
+    # in_list is defined below, so the profile filter is inline here: the
+    # listings answer before the helpers, which is the whole point of them.
+    if [[ -n "$ONLY_LIST" && ",$ONLY_LIST," != *",${entry%%|*},"* ]]; then
+      continue
+    fi
     printf '%s\n' "${entry%%|*}"
   done
   exit 0
 fi
 
 if (( LIST_FORMULAE )); then
-  printf '%s\n' "${CLI_FORMULAE[@]}"
+  for formula in "${CLI_FORMULAE[@]}"; do
+    if [[ -n "$ONLY_FORMULAE_LIST" && ",$ONLY_FORMULAE_LIST," != *",$formula,"* ]]; then
+      continue
+    fi
+    printf '%s\n' "$formula"
+  done
   exit 0
 fi
 
@@ -960,7 +1098,7 @@ bold "=== install_apps: summary ==="
 printf "  elapsed:   %s\n" "$(human_duration "$ELAPSED")"
 printf "  installed: %s%d%s\n" "$C_GREEN"  "${#INSTALLED[@]}" "$C_RESET"
 printf "  upgraded:  %s%d%s\n" "$C_CYAN"   "${#UPGRADED[@]}"  "$C_RESET"
-printf "  adopted:   %s%d%s\n" "$C_MAGENTA""${#ADOPTED[@]}"   "$C_RESET"
+printf "  adopted:   %s%d%s\n" "$C_MAGENTA" "${#ADOPTED[@]}"  "$C_RESET"
 printf "  skipped:   %s%d%s\n" "$C_DIM"    "${#SKIPPED[@]}"   "$C_RESET"
 printf "  failed:    %s%d%s\n" "$C_RED"    "${#FAILED[@]}"    "$C_RESET"
 case "$GCLOUD_STATUS" in
