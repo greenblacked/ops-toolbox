@@ -206,6 +206,40 @@ while IFS= read -r -d '' record; do
 done < <(git ls-files -s -z)
 ok "no executable file lacks a shebang"
 
+# And the converse, which is how status.sh arrived: a script with a shebang,
+# tracked 100644. Nothing above caught it - that loop only asks whether an
+# executable file earns its bit, never whether a script has one - so the file
+# was committed, reviewed and merged as a script nobody could run without
+# saying `bash` first. Every usage line in this repository is written `./x.sh`.
+#
+# A shebang is the file declaring itself runnable, so the mode is the part that
+# is wrong when they disagree. Sourced libraries are the exception and are
+# excluded by path: they carry a shebang for editors and shellcheck, and are
+# never executed.
+mode_bad=0
+mode_checked=0
+while IFS= read -r -d '' record; do
+  mode="${record%% *}"
+  path="${record#*$'\t'}"
+  [[ "$mode" == "100644" ]] || continue
+  # A file that says so in its own header is not a mistake. git_aliases.sh and
+  # bash_aliases.sh both open with "Sourced, not executed" and carry a shebang
+  # for editors and shellcheck; so do the shared test helpers. Reading the
+  # header beats a path pattern, because the declaration travels with the file
+  # when somebody moves it.
+  case "$path" in
+    test-env/lib/*|*/lib/*|*.zsh) continue ;;
+  esac
+  head -n 1 -- "$path" | grep -q '^#!' || continue
+  head -n 8 -- "$path" | grep -qi 'sourced, not executed' && continue
+  mode_checked=$((mode_checked + 1))
+  err "$path has a shebang but is mode 644 — nobody can run it as ./$(basename "$path")"
+  mode_bad=$((mode_bad + 1))
+done < <(git ls-files -s -z)
+if (( mode_bad == 0 )); then
+  ok "every tracked script with a shebang is executable"
+fi
+
 while IFS= read -r -d '' record; do
   mode="${record%% *}"
   path="${record#*$'\t'}"
