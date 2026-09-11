@@ -133,10 +133,18 @@ their values, so no token crosses the wire.
    `tg_send` helper picks them up automatically.
 
    RouterOS 7.24 refuses `:global` names with an underscore, so the package
-   helper no longer reads `TG_BOT_TOKEN` / `TG_CHAT_ID`. If those are already
-   set on a 7.24 router, copy the values by hand from `/system script
-   environment` into `TgBotToken` / `TgChatId` — 7.24 cannot re-declare the
-   old names even to migrate. On 7.23 a one-shot terminal snippet still works:
+   helper no longer reads `TG_BOT_TOKEN` / `TG_CHAT_ID`.
+
+   **On a router already upgraded to 7.24, the old values are gone** — not
+   hidden, gone. Globals are runtime state, repopulated at boot by the startup
+   script, and on 7.24 that script declares `TG_BOT_TOKEN` and so does not run
+   at all. `/system script environment` has no row to copy from. Get the token
+   from BotFather (or wherever you keep it), put it in `TgBotToken` /
+   `TgChatId`, and **rewrite the startup script to the new names** — otherwise
+   the next reboot leaves them unset again.
+
+   **On 7.23, migrate before you upgrade.** This snippet copies the values for
+   the current uptime:
 
    ```routeros
    :global TG_BOT_TOKEN;
@@ -144,6 +152,12 @@ their values, so no token crosses the wire.
    :global TgBotToken $TG_BOT_TOKEN;
    :global TgChatId   $TG_CHAT_ID;
    ```
+
+   It is **not** the whole migration. Globals do not survive a reboot, so the
+   startup script has to be edited to the new names too — without that, the
+   next restart restores the old pair and the helper falls back to its
+   placeholders. `router_doctor.py` reports `TgBotToken is not set` when this
+   has not been done, which is how you confirm the migration took.
 
 5. Run `detect_internet` once if you plan to use `wan_failover_notify`. It
    enables `detect-interface-list=all`, which is the prerequisite for the
@@ -236,8 +250,9 @@ HTML parse mode using `application/x-www-form-urlencoded`, retries up to 3×
 on transient failures, and truncates messages above Telegram's 4096-char
 limit. Reads `:global TgBotToken` / `:global TgChatId` if defined so
 secrets can stay out of the script body. RouterOS 7.24 refuses underscore
-names, so the old `TG_BOT_TOKEN` / `TG_CHAT_ID` globals are not read and
-cannot be re-declared there; copy the values by hand.
+names, so the old `TG_BOT_TOKEN` / `TG_CHAT_ID` globals are not read and cannot
+be re-declared there — see the migration note above, which includes rewriting
+the startup script.
 
 ### `backup.lua`
 
@@ -486,7 +501,8 @@ It declares no `:global` with an underscore in its name, for the reason under
 `test_script_add_remove_roundtrip` proves 7.24.1 accepts the source, and the
 convention suite holds it to the invariants below. It looks for the Telegram
 helper as `tg_send_new` first, the operator's copy that runs there, and falls
-back to the package's `tg_send` on releases that run it (not 7.24), encoding
+back to the package's `tg_send`, which runs on 7.24 too now that its globals
+are `TgBotToken` / `TgChatId`, encoding
 line breaks the way that helper's form body needs. With no helper resolved it
 still checks and logs, and refuses to install or reboot: a router that reboots
 without saying so is the failure it exists to avoid.

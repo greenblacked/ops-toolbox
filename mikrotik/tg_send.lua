@@ -10,11 +10,17 @@
 #     and add a scheduler entry "on event=startup" pointing to that script.
 #
 # No :global here carries an underscore in its name. RouterOS 7.24 refuses
-# to execute a script that declares one. Old names TG_BOT_TOKEN / TG_CHAT_ID
-# cannot be re-declared on 7.24; copy the values by hand from
-# /system script environment into TgBotToken / TgChatId before pasting this
-# file. On 7.23 you can still copy in a one-shot terminal snippet — see
-# mikrotik/README.md.
+# to execute a script that declares one, which is why the old TG_BOT_TOKEN /
+# TG_CHAT_ID pair is gone.
+#
+# Migrating: on a router already on 7.24 the old values are not recoverable.
+# Globals are runtime state repopulated at boot, and the startup script that
+# set them declares an underscored name, so it does not run and
+# /system script environment has nothing to copy. Re-enter the token and
+# rewrite that startup script to the new names. On 7.23, migrate first - the
+# snippet in mikrotik/README.md copies the values for the current uptime, but
+# the startup script still has to be edited or the next reboot undoes it.
+# router_doctor.py reports "TgBotToken is not set" until that is done.
 
 :local BotToken "token";
 :local ChatID   "ID";
