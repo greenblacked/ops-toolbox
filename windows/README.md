@@ -7,9 +7,11 @@ full details.
 Editing a `.ps1` here? The static suite does not cover PowerShell at all —
 [`tests/contract.ps1`](tests/contract.ps1) is the only place these contracts are
 checked, and on Linux five of the seven stop at an `$IsWindows` guard,
-`wsl_manage.ps1` at its `wsl.exe` probe, and `clean_disk_c.ps1` throws at
-script scope before it reads `-DryRun` — which is why the contract suite skips
-it there.
+`wsl_manage.ps1` at its `wsl.exe` probe, and `clean_disk_c.ps1 -DryRun` throws
+at script scope before it reads `-DryRun` — which is why the "a dry run writes
+nothing" check skips it there. Its later sections work around that: they strip
+the platform guard from a copy so the body is reached anyway, and the consent
+gate is checked directly because it answers before the throwing line.
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that, the hand-rolled
 `-DryRun`, the `WOULD`/`CLEAN`/`SKIP` grammar and the ASCII-with-no-BOM rule.
 
@@ -19,7 +21,7 @@ it there.
 | --- | --- |
 | [`git-bash/`](git-bash/) | `.bashrc` / `.bash_profile` / `.aliases` for Git Bash (MSYS2) — persistent shared `ssh-agent`, Git-aware prompt, PATH hygiene, and ~190 aliases (Git, GitLab CLI, Docker, Kubernetes, Terraform, WSL, Windows commands). `install_dotfiles.sh` copies them into `$HOME` with a backup, and refuses anything carrying CRLF line endings. |
 | [`wsl/`](wsl/) | `wsl_manage.ps1` — list distros with real disk usage, `df` for allocated-vs-used, dated `.tar` backups and the `restore` that brings one back, `prune-backups` retention over the export folder, shrink ballooned VHDX disks (compact/sparse), terminate one distro or shut all of WSL down. |
-| [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, and Docker. `-DryRun` first. |
+| [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, and Docker. `-DryRun` first; deleting needs `-Yes`. |
 | [`setup/`](setup/) | `winget_configure.ps1` — build a machine from [`configuration.winget`](setup/configuration.winget), a curated declarative list (`validate` / `show` / `test` / `apply`). `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `list` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy. `choco_bootstrap.ps1` — five verbs over a Chocolatey `packages.config`, the same set with `install` in place of `import`, for machines managed with choco rather than winget. |
 | [`tests/`](tests/) | Contract checks over every script here and in [`../templates/`](../templates/): parse, comment-based help, preview-before-changing, that documented flags exist, and that a `-DryRun` writes nothing. |
 
@@ -47,7 +49,11 @@ it there.
 
 # The recurring maintenance run, previewed then performed:
 .\setup\stay_fresh.ps1 -DryRun
-.\setup\stay_fresh.ps1
+.\setup\stay_fresh.ps1 -Yes
+
+# Free space on C:, previewed then performed:
+.\cleanup\clean_disk_c.ps1 -DryRun
+.\cleanup\clean_disk_c.ps1 -Yes
 ```
 
 ```bash
@@ -59,6 +65,16 @@ it there.
 PowerShell scripts follow the same rules as the rest of the repo: idempotent,
 dry-run (or read-only default action) first, destructive things behind
 explicit opt-in flags.
+
+That includes consent. `clean_disk_c.ps1` refuses to delete without `-Yes`
+and `stay_fresh.ps1` skips the winget upgrades without it, matching
+[`linux/disk_cleanup.sh`](../linux/disk_cleanup.sh) and
+[`linux/stay_fresh.sh`](../linux/stay_fresh.sh) flag for flag. The scripts are
+presented as cross-platform counterparts, so the gate has to mean the same
+thing on both sides — a habit formed on one of them is going to be used on the
+other. The gate is `-Yes`, not `-WhatIf`/`-Confirm`:
+[`CONTRIBUTING.md`](../CONTRIBUTING.md) rules `SupportsShouldProcess` out for
+these scripts, and the hand-rolled `-DryRun` already covers the preview half.
 
 ## Execution policy note
 

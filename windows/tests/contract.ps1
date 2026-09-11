@@ -14,14 +14,22 @@
     Get-Command and Get-Help both parse a .ps1 without running its body, which
     is what makes these checks possible on a Linux runner at all.
 
-    The exception is the last section, which runs each -DryRun capable script
-    against a scratch HOME and TEMP and fails if the filesystem changed. Read
-    what that proves where: on Windows it is the real thing, the whole dry-run
-    path executed and checked against the disk. On Linux the scripts that can
-    be run at all stop at their platform check, so it only proves they write
-    nothing before deciding they are on the wrong machine - which is still the
-    place a stray log file or scratch directory would appear. The template is
-    the one subject that runs its dry run to completion anywhere.
+    The exceptions are the sections from 'a dry run writes nothing' onwards,
+    which run scripts as child processes against a scratch HOME and TEMP. The
+    first of them fails if the filesystem changed. Read what that proves where:
+    on Windows it is the real thing, the whole dry-run path executed and checked
+    against the disk. On Linux the scripts that can be run at all stop at their
+    platform check, so it only proves they write nothing before deciding they
+    are on the wrong machine - which is still the place a stray log file or
+    scratch directory would appear. The template is the one subject that runs
+    its dry run to completion anywhere.
+
+    The consent and -Only sections at the end go further and strip the platform
+    guard from a copy, so the body is reached on this OS too. The -Only checks
+    run everywhere, because they run under -DryRun. The behavioural half of the
+    consent checks runs only off Windows, and the comment there says why: it
+    works by invoking these scripts WITHOUT -Yes, which on Windows would mean a
+    regressed gate upgrading or emptying the machine running the suite.
 
     Linting is PSScriptAnalyzer's job and runs separately in CI. What is checked
     here is the contract PSScriptAnalyzer has no opinion about: that the
@@ -322,6 +330,38 @@ function Test-HostArtifact {
     return ($Entry -split '\|')[0] -match $hostArtifact
 }
 
+# The verdict for one dry run, lifted out of the loop below into a function so
+# that it can be exercised directly. This file's own verdict was otherwise the
+# one piece of logic in here that nothing checked, and it is the piece that
+# decides whether anything else gets reported at all.
+#
+# Exit 3 is a failure, not a pass. It is this repository's usage error, so a
+# run that ends in it was rejected during argument parsing and stopped before
+# the code that could write was ever reached: "wrote nothing" is true and
+# meaningless. It was accepted here for a while, which meant Get-DryRunArgument
+# going stale - renaming the 'import', 'install' or 'apply' verb it hardcodes
+# would do it - silently retired the dry-run check for that script while the
+# suite kept printing '[ ok ] ... wrote nothing (exit 3)'.
+# test-env/static/check_conventions.sh has always called exit 3 a gap in its
+# argument table rather than a pass; this is the same rule, said the same way.
+#
+# A write outranks the exit code: a preview that wrote is a failure whatever it
+# exited with, including 3.
+function Get-DryRunVerdict {
+    param(
+        [int]$ExitCode,
+        [bool]$WroteToDisk
+    )
+
+    if ($WroteToDisk) { return 'wrote' }
+    if ($ExitCode -eq 3) { return 'usage' }
+    # 1 is "the work ran and some of it did not succeed", which a preview has
+    # no business reporting. Catching it here is how the wsl_manage.ps1
+    # preflight was found returning 1 where it documents 2.
+    if ($ExitCode -notin 0, 2, 4) { return 'failed' }
+    return 'ok'
+}
+
 # The host running this suite, so the children are the same PowerShell.
 $pwshExe = (Get-Process -Id $PID).Path
 $dryRunScripts = @($scripts | Where-Object {
@@ -383,21 +423,29 @@ foreach ($s in $dryRunScripts) {
 
     $dryChecked++
     $written = @(Compare-Object -ReferenceObject $before -DifferenceObject $after)
-    if ($written) {
-        Test-Fail "$rel $($arguments -join ' ') changed the filesystem:"
-        foreach ($line in $written) {
-            Write-Host ('       {0} {1}' -f $line.SideIndicator, $line.InputObject) -ForegroundColor Red
+    switch (Get-DryRunVerdict -ExitCode $rc -WroteToDisk ($written.Count -gt 0)) {
+        'wrote' {
+            Test-Fail "$rel $($arguments -join ' ') changed the filesystem:"
+            foreach ($line in $written) {
+                Write-Host ('       {0} {1}' -f $line.SideIndicator, $line.InputObject) -ForegroundColor Red
+            }
         }
-    } elseif ($rc -notin 0, 2, 3, 4) {
-        # 1 is "the work ran and some of it did not succeed", which a preview
-        # has no business reporting. Catching it here is how the wsl_manage.ps1
-        # preflight was found returning 1 where it documents 2.
-        Test-Fail "$rel $($arguments -join ' ') wrote nothing but exited $rc; a dry run should not report a generic failure"
-        foreach ($line in ($output -split "`n" | Select-Object -First 5)) {
-            Write-Host "       $line" -ForegroundColor Red
+        'usage' {
+            Test-Fail "$rel exited 3 (usage) under '$($arguments -join ' ')' - its dry run was never exercised"
+            Write-Host '       add an entry to Get-DryRunArgument so this script reaches its main path' -ForegroundColor Red
+            foreach ($line in ($output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
         }
-    } else {
-        Test-Ok "$rel $($arguments -join ' ') wrote nothing (exit $rc)"
+        'failed' {
+            Test-Fail "$rel $($arguments -join ' ') wrote nothing but exited $rc; a dry run should not report a generic failure"
+            foreach ($line in ($output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+        default {
+            Test-Ok "$rel $($arguments -join ' ') wrote nothing (exit $rc)"
+        }
     }
 
     Remove-Item -Path $scratch -Recurse -Force -ErrorAction SilentlyContinue
@@ -405,6 +453,52 @@ foreach ($s in $dryRunScripts) {
 
 if ($dryChecked -eq 0) {
     Test-Fail 'no -DryRun script could be executed here - this check has stopped checking'
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'the dry-run verdict itself'
+# Testing the suite's own verdict is the one check here that could easily be
+# written as a tautology - grep this file for the number 3 and declare victory.
+# It is not written that way. Get-DryRunVerdict above is the single place the
+# loop gets its answer from, so these cases exercise the same code that judged
+# every script a moment ago; the only link left unasserted is the one line that
+# calls it, which is visible from the table below.
+#
+# What cannot be faked here is a real script that exits 3: manufacturing one
+# would mean shipping a broken Get-DryRunArgument entry, and a check that has
+# to break the thing it checks is worse than the gap it closes. The honest
+# version is this: the verdict is a function, the function is tested, the loop
+# has no second opinion.
+$verdictCases = @(
+    @{ ExitCode = 3; Wrote = $false; Expect = 'usage'
+       Why = 'exit 3 is a usage error: the run stopped at argument parsing and never reached the code that writes' }
+    @{ ExitCode = 0; Wrote = $false; Expect = 'ok'
+       Why = 'a clean preview' }
+    @{ ExitCode = 2; Wrote = $false; Expect = 'ok'
+       Why = 'a preflight that declined to run is allowed to answer a preview' }
+    @{ ExitCode = 4; Wrote = $false; Expect = 'ok'
+       Why = '4 is the documented "found something to report" code' }
+    @{ ExitCode = 1; Wrote = $false; Expect = 'failed'
+       Why = 'a preview has no business reporting a generic failure' }
+    @{ ExitCode = 0; Wrote = $true;  Expect = 'wrote'
+       Why = 'a preview that wrote is a failure however it exited' }
+    @{ ExitCode = 3; Wrote = $true;  Expect = 'wrote'
+       Why = 'a write outranks the usage error, so the report names the writing' }
+)
+foreach ($case in $verdictCases) {
+    $got = Get-DryRunVerdict -ExitCode $case.ExitCode -WroteToDisk $case.Wrote
+    $label = 'exit {0}, wrote {1} -> {2}' -f $case.ExitCode, $case.Wrote, $case.Expect
+    if ($got -eq $case.Expect) {
+        Test-Ok "verdict: $label ($($case.Why))"
+    } else {
+        Test-Fail "verdict: $label but Get-DryRunVerdict said '$got' - $($case.Why)"
+    }
+}
+if (@($verdictCases | Where-Object { $_.Expect -eq 'usage' }).Count -eq 0) {
+    # The floor, in the shape the rest of this file uses it: a table that has
+    # lost its exit-3 case is a table that has stopped asserting the thing this
+    # section exists for.
+    Test-Fail 'no exit-3 case is left in the verdict table - this check has stopped checking'
 }
 
 # --------------------------------------------------------------------------
@@ -451,16 +545,82 @@ Write-Section 'a preview does not invoke its packaging tool'
 # being called, and the preview is required not to call them. It says nothing
 # about what the tools would do; it says the preview does not reach them, which
 # is the property that was actually broken.
-if ($onWindows) {
-    Test-Skip 'the filesystem check above covers this natively on Windows'
-} else {
-    $guard = @'
+# Hoisted out of the section below because the consent checks at the end of
+# this file strip the same guard from the same scripts; two copies of it would
+# be two things to update when the preflight is reworded, and the second one
+# would be found by someone reading a confusing failure.
+$platformGuard = @'
 if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
     Write-Err 'this script targets Windows'
     exit 2
 }
 '@ -replace "`r`n", "`n"
 
+# Writes a copy of $Script with the platform guard removed, so its body can be
+# reached on a machine the guard would turn away, and returns the copy's path.
+# $null when the guard is not in the file verbatim: every caller reports that
+# loudly rather than carrying on, because a harness that quietly stops
+# transforming is a harness that quietly stops checking.
+function Copy-UnguardedScript {
+    param(
+        [IO.FileInfo]$Script,
+        [string]$Directory
+    )
+
+    $body = (Get-Content -Path $Script.FullName -Raw) -replace "`r`n", "`n"
+    if ($body -notmatch [regex]::Escape($platformGuard)) { return $null }
+
+    $copy = Join-Path $Directory $Script.Name
+    Set-Content -Path $copy -Value ($body -replace [regex]::Escape($platformGuard), '# platform guard removed by contract.ps1') -NoNewline
+    return $copy
+}
+
+# Runs one script as a child process with HOME and TEMP pointed at a throwaway
+# directory, optionally with $PathPrefix ahead of PATH so a shim stands in for
+# a tool, and hands back what it printed and what it exited with. The sections
+# below that run a script rather than read it all need the same isolation: the
+# whole point of running these is that the property under test might be broken,
+# and a broken one must not be able to reach the real home directory.
+function Invoke-InScratch {
+    param(
+        [string]$Path,
+        [string[]]$Arguments = @(),
+        [string]$PathPrefix
+    )
+
+    $box = Join-Path ([IO.Path]::GetTempPath()) ('winscratch_' + [Guid]::NewGuid().ToString('N'))
+    $boxHome = Join-Path $box 'home'
+    $boxTemp = Join-Path $box 'temp'
+    New-Item -ItemType Directory -Path $boxHome, $boxTemp -Force | Out-Null
+
+    $redirect = @{
+        TEMP         = $boxTemp
+        TMP          = $boxTemp
+        TMPDIR       = $boxTemp
+        HOME         = $boxHome
+        USERPROFILE  = $boxHome
+        LOCALAPPDATA = (Join-Path $boxHome 'AppData/Local')
+        APPDATA      = (Join-Path $boxHome 'AppData/Roaming')
+    }
+    $keep = @{}
+    foreach ($key in $redirect.Keys) { $keep[$key] = [Environment]::GetEnvironmentVariable($key) }
+    $keepPath = $env:PATH
+    try {
+        foreach ($key in $redirect.Keys) { [Environment]::SetEnvironmentVariable($key, $redirect[$key]) }
+        if ($PathPrefix) { $env:PATH = $PathPrefix + [IO.Path]::PathSeparator + $keepPath }
+        $text = & $pwshExe -NoProfile -File $Path @Arguments 2>&1 | Out-String
+        $code = $LASTEXITCODE
+    } finally {
+        foreach ($key in $keep.Keys) { [Environment]::SetEnvironmentVariable($key, $keep[$key]) }
+        $env:PATH = $keepPath
+    }
+    Remove-Item -Path $box -Recurse -Force -ErrorAction SilentlyContinue
+    return [pscustomobject]@{ ExitCode = $code; Output = $text }
+}
+
+if ($onWindows) {
+    Test-Skip 'the filesystem check above covers this natively on Windows'
+} else {
     # Only scripts that shell out to a packaging tool are in scope.
     $tools = @{
         'winget_bootstrap.ps1' = 'winget'
@@ -474,21 +634,19 @@ if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
         if (-not $tools.ContainsKey($s.Name)) { continue }
         $rel = Get-RelativePath $s.FullName
 
-        $body = (Get-Content -Path $s.FullName -Raw) -replace "`r`n", "`n"
-        if ($body -notmatch [regex]::Escape($guard)) {
-            # Loud, not silent. A harness that quietly stops transforming is a
-            # harness that quietly stops checking - which is how the first
-            # version of this idea "passed" a file that still had the bug.
-            Test-Fail "$rel : platform guard not found verbatim, so this check could not run; update the guard text in contract.ps1"
-            continue
-        }
-
         $sandbox = Join-Path ([IO.Path]::GetTempPath()) ('winpreview_' + [Guid]::NewGuid().ToString('N'))
         $binDir = Join-Path $sandbox 'bin'
         New-Item -ItemType Directory -Path $binDir -Force | Out-Null
         $marker = Join-Path $sandbox 'invoked.log'
-        $copy = Join-Path $sandbox $s.Name
-        Set-Content -Path $copy -Value ($body -replace [regex]::Escape($guard), '# platform guard removed by contract.ps1') -NoNewline
+        $copy = Copy-UnguardedScript -Script $s -Directory $sandbox
+        if (-not $copy) {
+            # Loud, not silent. A harness that quietly stops transforming is a
+            # harness that quietly stops checking - which is how the first
+            # version of this idea "passed" a file that still had the bug.
+            Test-Fail "$rel : platform guard not found verbatim, so this check could not run; update the guard text in contract.ps1"
+            Remove-Item -Path $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+            continue
+        }
 
         foreach ($tool in @('winget.exe', 'choco.exe')) {
             $shim = Join-Path $binDir $tool
@@ -519,6 +677,190 @@ if (-not $IsWindows -and $PSVersionTable.PSEdition -eq 'Core') {
     if ($previewChecked -eq 0) {
         Test-Fail 'no packaging-tool preview was checked - this check has stopped checking'
     }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'changing the machine needs consent'
+# linux/disk_cleanup.sh refuses to delete without --yes, and its header calls
+# that "the same gate install_devtools.sh uses for anything that changes the
+# machine". linux/stay_fresh.sh skips package upgrades without it. The Windows
+# counterparts had neither: a bare .\stay_fresh.ps1 went straight to
+# 'winget upgrade --all --include-unknown --accept-package-agreements
+# --disable-interactivity', and a bare .\clean_disk_c.ps1 deleted.
+#
+# The root README presents the two families as counterparts, which is what made
+# that asymmetry dangerous rather than merely inconsistent: the habit learned on
+# the Bash side is "just run it, it will tell me what it wants", and on Windows
+# that habit upgraded or deleted for real, the first time, with no preview.
+# These checks exist so the gate cannot quietly go away again - a parameter
+# nothing asserts is a parameter somebody eventually removes as unused.
+foreach ($name in @('stay_fresh.ps1', 'clean_disk_c.ps1')) {
+    if ($paramCache[$name] -contains 'Yes') {
+        Test-Ok "$name declares -Yes"
+    } else {
+        Test-Fail "$name is missing -Yes; its Bash counterpart will not change a machine without --yes and this one would"
+    }
+}
+
+if ($onWindows) {
+    Test-Skip 'the behavioural half of this check runs only off Windows: it proves the gate by invoking these scripts WITHOUT -Yes, and on Windows a gate that had regressed would upgrade or empty the machine running the suite'
+} else {
+    # Safe to run here for a reason worth stating. clean_disk_c.ps1 without a
+    # gate reaches WindowsIdentity and Get-PSDrive C, which throw on this OS
+    # before anything is deleted; stay_fresh.ps1 only reaches winget through a
+    # shim on a PATH this block controls. Neither can touch the real machine
+    # even when the property under test is broken, which is the only reason
+    # testing a consent gate by withholding consent is defensible at all.
+    $consentChecked = 0
+
+    # --- clean_disk_c.ps1: refuse outright, the way disk_cleanup.sh does -----
+    $cleanScript = $scripts | Where-Object { $_.Name -eq 'clean_disk_c.ps1' } | Select-Object -First 1
+    if (-not $cleanScript) {
+        Test-Fail 'clean_disk_c.ps1 was not found among the scripts - this check has stopped checking'
+    } else {
+        $bare = Invoke-InScratch -Path $cleanScript.FullName
+        $consentChecked++
+        if ($bare.ExitCode -eq 3 -and $bare.Output -match '-Yes' -and $bare.Output -match '-DryRun') {
+            Test-Ok 'clean_disk_c.ps1 with no arguments refuses to delete and exits 3, naming -Yes and -DryRun'
+        } else {
+            Test-Fail "clean_disk_c.ps1 with no arguments must refuse, exit 3 and name -Yes and -DryRun; it exited $($bare.ExitCode)"
+            foreach ($line in ($bare.Output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+
+    # --- stay_fresh.ps1: skip the upgrades, the way stay_fresh.sh does -------
+    # Two runs, because one proves nothing on its own. Without -Yes the shim
+    # must not be called; with -Yes it must be. Drop the second and the check
+    # passes just as happily against a script that stopped calling winget at
+    # all - which is a regression, not a fix, and exactly the sort of thing a
+    # one-sided assertion waves through.
+    $freshScript = $scripts | Where-Object { $_.Name -eq 'stay_fresh.ps1' } | Select-Object -First 1
+    if (-not $freshScript) {
+        Test-Fail 'stay_fresh.ps1 was not found among the scripts - this check has stopped checking'
+    } else {
+        $sandbox = Join-Path ([IO.Path]::GetTempPath()) ('winconsent_' + [Guid]::NewGuid().ToString('N'))
+        $binDir = Join-Path $sandbox 'bin'
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+        $copy = Copy-UnguardedScript -Script $freshScript -Directory $sandbox
+
+        if (-not $copy) {
+            Test-Fail 'stay_fresh.ps1 : platform guard not found verbatim, so the consent check could not run; update the guard text in contract.ps1'
+        } else {
+            foreach ($pass in @(
+                @{ Arguments = @();        Expect = $false; Label = 'with no arguments does not upgrade' }
+                @{ Arguments = @('-Yes'); Expect = $true;  Label = 'with -Yes does upgrade' }
+            )) {
+                $marker = Join-Path $sandbox 'invoked.log'
+                Remove-Item -Path $marker -Force -ErrorAction SilentlyContinue
+                $shim = Join-Path $binDir 'winget.exe'
+                Set-Content -Path $shim -Value "#!/bin/sh`necho `"`$0 `$*`" >> '$marker'`nexit 0`n" -NoNewline
+                & chmod +x $shim
+
+                $run = Invoke-InScratch -Path $copy -Arguments $pass.Arguments -PathPrefix $binDir
+                $invoked = Test-Path $marker
+                $consentChecked++
+
+                if ($invoked -eq $pass.Expect) {
+                    Test-Ok "stay_fresh.ps1 $($pass.Label)"
+                } elseif ($pass.Expect) {
+                    Test-Fail "stay_fresh.ps1 $($pass.Label): -Yes was given and winget was still never invoked, so the gate above is not what stops the upgrade"
+                    foreach ($line in ($run.Output -split "`n" | Select-Object -First 5)) {
+                        Write-Host "       $line" -ForegroundColor Red
+                    }
+                } else {
+                    Test-Fail 'stay_fresh.ps1 with no arguments invoked winget; upgrades must wait for -Yes, as linux/stay_fresh.sh waits for --yes'
+                    foreach ($call in (Get-Content $marker | Select-Object -First 3)) {
+                        Write-Host "       $call" -ForegroundColor Red
+                    }
+                }
+
+                # The refusal has to say so. A gate that silently drops the
+                # step reads, from the output, exactly like a machine that had
+                # nothing to upgrade.
+                if (-not $pass.Expect) {
+                    if ($run.Output -match '-Yes') {
+                        Test-Ok 'stay_fresh.ps1 says why it skipped the upgrades, and names -Yes'
+                    } else {
+                        Test-Fail 'stay_fresh.ps1 skipped the upgrades without naming -Yes; a silent skip reads like a machine with nothing to do'
+                    }
+                    $consentChecked++
+                }
+            }
+        }
+        Remove-Item -Path $sandbox -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($consentChecked -eq 0) {
+        Test-Fail 'no consent gate was exercised - this check has stopped checking'
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section '-Only takes a list of steps'
+# linux/stay_fresh.sh --only takes a comma-separated subset. This took exactly
+# one name, as a [string] behind a ValidateSet, so '-Only Winget,Wsl' - the
+# obvious thing to type, and the thing the Bash sibling accepts - died during
+# parameter binding with a message about the set of valid steps, which reads as
+# though the step names were wrong rather than the type.
+#
+# Runs under -DryRun, so it is safe on Windows as well, and with the platform
+# guard stripped so the sections are actually reached off Windows. What is
+# asserted is which sections ran, not that binding succeeded: binding succeeds
+# just as well for a script that quietly ignores every name after the first.
+$onlyScript = $scripts | Where-Object { $_.Name -eq 'stay_fresh.ps1' } | Select-Object -First 1
+if (-not $onlyScript) {
+    Test-Fail 'stay_fresh.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $onlyBox = Join-Path ([IO.Path]::GetTempPath()) ('winonly_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $onlyBox -Force | Out-Null
+    $onlyCopy = Copy-UnguardedScript -Script $onlyScript -Directory $onlyBox
+
+    if (-not $onlyCopy) {
+        Test-Fail 'stay_fresh.ps1 : platform guard not found verbatim, so the -Only check could not run; update the guard text in contract.ps1'
+    } else {
+        $onlyCases = @(
+            @{ Arguments = @('-DryRun', '-Only', 'Winget,Wsl'); Code = 0
+               Ran = @('== winget ==', '== wsl =='); Skipped = @('== store ==', '== report ==')
+               Label = "-Only Winget,Wsl runs both named steps and nothing else" }
+            @{ Arguments = @('-DryRun', '-Only', 'Report'); Code = 0
+               Ran = @('== report =='); Skipped = @('== winget ==', '== wsl ==')
+               Label = '-Only Report still selects a single step' }
+            @{ Arguments = @('-DryRun'); Code = 0
+               Ran = @('== winget ==', '== wsl ==', '== store ==', '== report ==')
+               Skipped = @()
+               Label = 'the default is still every step' }
+        )
+        foreach ($case in $onlyCases) {
+            $run = Invoke-InScratch -Path $onlyCopy -Arguments $case.Arguments
+            $missing = @($case.Ran | Where-Object { $run.Output -notlike "*$_*" })
+            $extra = @($case.Skipped | Where-Object { $run.Output -like "*$_*" })
+
+            if ($run.ExitCode -eq $case.Code -and -not $missing -and -not $extra) {
+                Test-Ok "stay_fresh.ps1 $($case.Label)"
+            } else {
+                Test-Fail ("stay_fresh.ps1 {0}: exited {1}, missing [{2}], unexpected [{3}]" -f
+                    $case.Label, $run.ExitCode, ($missing -join ' '), ($extra -join ' '))
+                foreach ($line in ($run.Output -split "`n" | Select-Object -First 5)) {
+                    Write-Host "       $line" -ForegroundColor Red
+                }
+            }
+        }
+
+        # An unknown step is still rejected, and with the usage code, so making
+        # the parameter a list did not turn a typo into a silently ignored one.
+        $bogus = Invoke-InScratch -Path $onlyCopy -Arguments @('-DryRun', '-Only', 'Winget,Bogus')
+        if ($bogus.ExitCode -eq 3 -and $bogus.Output -match 'Bogus') {
+            Test-Ok 'stay_fresh.ps1 -Only rejects an unknown step by name, with exit 3'
+        } else {
+            Test-Fail "stay_fresh.ps1 -Only Winget,Bogus must exit 3 and name the step it did not recognise; it exited $($bogus.ExitCode)"
+            foreach ($line in ($bogus.Output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $onlyBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------

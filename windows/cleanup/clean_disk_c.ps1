@@ -19,17 +19,29 @@
                               containers/unused networks; volumes are NOT touched)
 
     Run with -DryRun first: it reports what would be deleted and how much
-    space each target would free, without deleting anything.
+    space each target would free, without deleting anything. A run that
+    actually deletes needs -Yes; see the gate below the parameter block.
 
 .EXAMPLE
     .\clean_disk_c.ps1 -DryRun
     .\clean_disk_c.ps1 -DryRun -Scope User
-    .\clean_disk_c.ps1
-    .\clean_disk_c.ps1 -Days 3 -IncludeRecycleBin -IncludeDevCaches
+    .\clean_disk_c.ps1 -Yes
+    .\clean_disk_c.ps1 -Yes -Days 3 -IncludeRecycleBin -IncludeDevCaches
+
+.NOTES
+    Exit codes, matching linux/disk_cleanup.sh:
+      0  success
+      3  refused: neither -DryRun nor -Yes was given
 #>
 [CmdletBinding()]
 param(
     [switch]$DryRun,
+    # The consent gate, spelled the way linux/disk_cleanup.sh spells --yes.
+    # Deliberately not SupportsShouldProcess: CONTRIBUTING.md rules out
+    # -WhatIf/-Confirm for these scripts so the Windows and Bash siblings read
+    # the same, and -WhatIf would only duplicate the hand-rolled -DryRun that
+    # already reports a would-free total ShouldProcess has no way to express.
+    [switch]$Yes,
     [ValidateSet('All', 'User', 'System')]
     [string]$Scope = 'All',
     [ValidateRange(0, 3650)]
@@ -42,6 +54,26 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $script:TotalFreed = 0L
+
+# The gate, and it comes first on purpose - ahead of the elevation probe, the
+# free-space read and every target - because refusing is the one answer that
+# needs nothing else to be true. linux/disk_cleanup.sh has refused to delete
+# without --yes since it was written, and its header calls that "the same gate
+# install_devtools.sh uses for anything that changes the machine". This script
+# had no such gate: a bare .\clean_disk_c.ps1 emptied %TEMP%, the WER queue and
+# the thumbnail cache on the spot. The root README presents the two as
+# counterparts, which is what made the asymmetry dangerous rather than merely
+# untidy - somebody carrying the Bash habit across ("just run it, it will tell
+# me what it wants") got a deletion instead of a refusal, and the deletion is
+# not undoable.
+#
+# Exit 3, the repository's usage code, and the same one disk_cleanup.sh uses
+# here: nothing has been inspected yet, so this is a malformed invocation
+# rather than a step that failed.
+if (-not $DryRun -and -not $Yes) {
+    Write-Host 'refusing to delete without -Yes; preview with -DryRun' -ForegroundColor Red
+    exit 3
+}
 
 $IsAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent()

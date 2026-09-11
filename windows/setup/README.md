@@ -116,30 +116,48 @@ a failure.
 # See the whole run first - it changes nothing:
 .\stay_fresh.ps1 -DryRun
 
-# The usual run
+# The usual run: everything except the upgrades, which wait for -Yes
 .\stay_fresh.ps1
 
-# Packages only, on a machine with no WSL worth touching
-.\stay_fresh.ps1 -SkipWsl
+# The usual run, upgrades included
+.\stay_fresh.ps1 -Yes
 
-# Run exactly one section (the other maintenance steps are not invoked)
+# Packages only, on a machine with no WSL worth touching
+.\stay_fresh.ps1 -Yes -SkipWsl
+
+# Run one section, or a comma-separated list of them
 .\stay_fresh.ps1 -DryRun -Only Winget
 .\stay_fresh.ps1 -Only Report
+.\stay_fresh.ps1 -Yes -Only Winget,Wsl
 ```
 
-| Step | What it runs | Skip with |
-| --- | --- | --- |
-| winget | `source update`, then `upgrade --all --include-unknown` | `-SkipWinget` |
-| wsl | `wsl --update` | `-SkipWsl` |
-| store | Nothing — prints how to update Store apps by hand | — |
-| report | Pending-reboot registry flags, free space on `C:` | — |
+| Step | What it runs | Needs | Skip with |
+| --- | --- | --- | --- |
+| winget | `source update`, then `upgrade --all --include-unknown` | `-Yes` | `-SkipWinget` |
+| wsl | `wsl --update` | — | `-SkipWsl` |
+| store | Nothing — prints how to update Store apps by hand | — | — |
+| report | Pending-reboot registry flags, free space on `C:` | — | — |
 
-`-Only Winget`, `-Only Wsl`, or `-Only Report` selects one section without a
-long inverse list of skip flags. `All` is the unchanged default; the existing
-`-SkipWinget` and `-SkipWsl` still take precedence when their section is selected.
+`-Only` takes one step or a comma-separated list of them —
+`-Only Winget`, `-Only Report`, `-Only Winget,Wsl` — and selects those
+sections without a long inverse list of skip flags, the way
+[`linux/stay_fresh.sh`](../../linux/stay_fresh.sh) `--only` does. `All` is the
+unchanged default; the existing `-SkipWinget` and `-SkipWsl` still take
+precedence when their section is selected. A step nobody has heard of is
+rejected by name with exit `3`, rather than being quietly ignored.
 
 Worth knowing:
 
+- **The upgrades wait for `-Yes`.** Without it the run prints
+  `skipping upgrades: pass -Yes to run them unattended, or -DryRun to see
+  them` and carries on with the rest, so a bare `.\stay_fresh.ps1` is still a
+  useful report — it just does not rewrite the machine.
+  [`linux/stay_fresh.sh`](../../linux/stay_fresh.sh) has skipped package
+  upgrades without `--yes` from the start and this had no equivalent, which
+  mattered because the two are documented as counterparts: the habit learned
+  on one ("just run it, it will tell me what it wants") upgraded every package
+  on the box the first time it was used on the other. `-DryRun` previews the
+  upgrades without `-Yes`, because a preview changes nothing.
 - **`--include-unknown` is passed deliberately.** Without it, winget silently
   leaves behind every package whose installed version it cannot read, which is
   the usual reason a machine reports itself up to date and is not.
@@ -157,7 +175,8 @@ Worth knowing:
   exits `1` at the end, the same way the Linux version does. Note that winget
   exits non-zero when even one package could not be upgraded.
 
-Exit codes: `0` success, `1` one or more steps failed, `2` not Windows.
+Exit codes: `0` success, `1` one or more steps failed, `2` not Windows,
+`3` bad CLI arguments.
 
 ## workstation_doctor.ps1
 

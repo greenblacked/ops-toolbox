@@ -670,11 +670,11 @@ fi
 
 printf "\n"
 if (( DRY_RUN == 1 )); then
-  info "would free at least $(human_bytes "$WOULD_BYTES") from age-filtered files"
+  info "would free at least $(human_bytes "$WOULD_BYTES") in total"
   printf "dry-run complete; no changes written\n"
   exit 0
 fi
-info "freed at least $(human_bytes "$FREED_BYTES") from age-filtered files"
+info "freed at least $(human_bytes "$FREED_BYTES") in total"
 if (( FAIL_COUNT > 0 )); then
   err "$FAIL_COUNT deletion(s) failed"
   exit 1
