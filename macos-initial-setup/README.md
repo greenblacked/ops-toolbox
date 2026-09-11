@@ -1,4 +1,4 @@
-# macOS Initial Setup
+# macOS initial setup
 
 > Opinionated, idempotent shell scripts for provisioning and maintaining
 > a macOS workstation.
@@ -19,7 +19,7 @@ rule that a preview does not even create its own log file — are collected in
 Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 `zsh` for the aliases file.
 
-## Table of contents
+## Contents
 
 - [TL;DR](#tldr)
 - [Folder map](#folder-map)

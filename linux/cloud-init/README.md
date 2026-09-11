@@ -1,4 +1,4 @@
-# Kali Red/Blue Lab Cloud-Init
+# Kali red/blue lab cloud-init
 
 [`kali-vm-init.yaml`](kali-vm-init.yaml) provisions a local Kali VM with
 baseline networking commands and curated Kali red-team and blue-team tool

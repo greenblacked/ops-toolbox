@@ -220,7 +220,7 @@ else
   tmp="$(mktemp -d)"
   arch="$(uname -m)"
   url="https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.${arch}.tar.xz"
-  if fetch "$url" "$tmp/sc.tar.xz" && tar -xJf "$tmp/sc.tar.xz" -C "$tmp" \
+  if fetch "$url" "$tmp/sc.tar.xz" && tar --no-same-owner -xJf "$tmp/sc.tar.xz" -C "$tmp" \
      && as_root install -m 0755 "$tmp/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck; then
     ok "shellcheck $SHELLCHECK_VERSION installed"
   else
@@ -245,7 +245,7 @@ else
     *)             triple="x86_64-unknown-linux-gnu" ;;
   esac
   url="https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-${triple}.tar.gz"
-  if fetch "$url" "$tmp/ruff.tar.gz" && tar -xzf "$tmp/ruff.tar.gz" -C "$tmp" \
+  if fetch "$url" "$tmp/ruff.tar.gz" && tar --no-same-owner -xzf "$tmp/ruff.tar.gz" -C "$tmp" \
      && as_root install -m 0755 "$tmp/ruff-${triple}/ruff" /usr/local/bin/ruff; then
     ok "ruff $RUFF_VERSION installed"
   else

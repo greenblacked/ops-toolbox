@@ -443,16 +443,16 @@ case "$CMD" in
 
     args="        <string>run-scheduled</string>
         <string>--profile</string>
-        <string>$PROFILE</string>"
+        <string>$(xml_escape "$PROFILE")</string>"
     if (( NOTIFY_SET )); then
       args="$args
         <string>--notify</string>
-        <string>$NOTIFY</string>"
+        <string>$(xml_escape "$NOTIFY")</string>"
     fi
     if (( NOTIFY_WHEN_SET )); then
       args="$args
         <string>--notify-when</string>
-        <string>$NOTIFY_WHEN</string>"
+        <string>$(xml_escape "$NOTIFY_WHEN")</string>"
     fi
 
     if (( DAILY )); then

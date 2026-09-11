@@ -1,4 +1,4 @@
-# Windows Scripts
+# Windows scripts
 
 Everything for keeping a Windows dev machine pleasant: Git Bash dotfiles,
 WSL maintenance, and disk cleanup. Each subfolder has its own README with
@@ -6,9 +6,14 @@ full details.
 
 Editing a `.ps1` here? The static suite does not cover PowerShell at all —
 [`tests/contract.ps1`](tests/contract.ps1) is the only place these contracts are
-checked, and on Linux five of the seven stop at an `$IsWindows` guard, `wsl_manage.ps1` at its `wsl.exe` probe, and `clean_disk_c.ps1` throws at script scope before it reads `-DryRun` — which is why the contract suite skips it there.
+checked, and on Linux five of the seven stop at an `$IsWindows` guard,
+`wsl_manage.ps1` at its `wsl.exe` probe, and `clean_disk_c.ps1` throws at
+script scope before it reads `-DryRun` — which is why the contract suite skips
+it there.
 [`CONTRIBUTING.md`](../CONTRIBUTING.md) collects that, the hand-rolled
 `-DryRun`, the `WOULD`/`CLEAN`/`SKIP` grammar and the ASCII-with-no-BOM rule.
+
+## Contents
 
 | Folder | Purpose |
 | --- | --- |

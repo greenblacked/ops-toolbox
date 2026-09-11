@@ -1,4 +1,4 @@
-# Linux Scripts
+# Linux scripts
 
 Bootstrap and maintenance for a Linux machine — the counterpart of
 [`macos-initial-setup/`](../macos-initial-setup/), for servers and workstations
