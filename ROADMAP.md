@@ -1,199 +1,121 @@
 # Improvement plan
 
-This is the working order for `ops-toolbox` after `master` at
-`d524d447` (9 September 2026). It is not a backlog of ideas. Each item is
-either already sitting in an open pull request, or is a gap the scripts and
-CI already demonstrate.
+Working order after `master` @ `d524d447`. Measured against the tree, not
+against a wish list. The copy-into-`~/bin` rule does not change.
 
-The architectural rule does not change: a script still has to work when
-copied on its own into `~/bin`. Shared libraries stay off the table.
+## What is actually true
 
-## Current state
+- [#33](https://github.com/greenblacked/ops-toolbox/pull/33) is mergeable and
+  CI-green, including CHR. It is the next merge. Do not stack more stay_fresh
+  work on current `master`.
+- After #33, `macos-initial-setup/stay_fresh.sh` is **4000 lines**. Linux is
+  436. Windows `setup/stay_fresh.ps1` already exists and is 217. There is no
+  missing Windows sweeper.
+- `v1_stay_fresh.sh` is a documented preserved original, with suite exceptions
+  by name. It is not leftover clutter.
+- RouterOS 7.24.2 is the verified pin. That release refuses to *execute* a
+  script whose source declares a `:global` with `_` in the name. Eighteen of
+  the `.lua` files still do that. Only `stay_fresh.lua` and
+  `backup_update_check.lua` were written around the bug on purpose.
+- Dependabot watches Actions and Dockerfiles. It does not watch
+  `k8s-toolbox/versions.env`, `.github/ci-tool-checksums.env`, or the CHR
+  RouterOS pin.
+- There are no tags. `CHANGELOG.md` is already ~1700 lines on `master`.
 
-| Item | State |
-| --- | --- |
-| Default branch | `master` @ `d524d447` |
-| Open pull request | [#33](https://github.com/greenblacked/ops-toolbox/pull/33) — mergeable, CI green including CHR |
-| Releases / tags | none |
-| Open issues | none |
-| Packages | `git`, `macos-initial-setup`, `linux`, `windows`, `mikrotik`, `k8s-toolbox`, `dotfiles` |
-| Dependabot | monthly grouped PRs for Actions and Dockerfiles |
+## Priority 0 — merge #33
 
-[#33](https://github.com/greenblacked/ops-toolbox/pull/33) already carries the
-next slice of product work: stay_fresh hardening and `--trend` on macOS,
-power-aware scheduling, Linux Trash/`HOME`/`--home` fixes, a CI matrix derived
-from `run-tests.sh --list`, `git/clone-repos.sh`, changelog fragments, and
-`CODEOWNERS`. Treat that pull request as phase 0, not as a competing plan.
+Merge it. Confirm the `master` CI run. Then delete leftover remotes that have
+no open pull request. That is ten minutes of hygiene, not a workstream.
 
-## Phase 0 — land what is already finished
+Do not open a second stay_fresh or CI-matrix branch against pre-#33 `master`.
+The extra `history.tsv` column and the `changelog.d/` fragments will conflict.
 
-1. Merge [#33](https://github.com/greenblacked/ops-toolbox/pull/33) to `master`.
-   Do not open parallel stay_fresh or CI-matrix branches against current
-   `master`; they will conflict with the fragments and the history.tsv column
-   change.
-2. Confirm the post-merge `master` CI run, including Lint, conventions, the
-   Linux matrix, macOS native, Windows native, and CHR if the merge touches
-   `mikrotik/`.
-3. Delete remote branches that already lost their pull request. As of this
-   writing that list is:
+## Priority 1 — RouterOS names, in waves, not one rename PR
 
-   ```text
-   chore/deferred-review-cleanups
-   claude/devops-tools-config-practices-6junj8
-   docs/readme-consistency
-   feat/ci-matrix-clone-repos-session-hook
-   feat/dotfiles
-   feat/git-clone-repos
-   feat/session-start-hook
-   feat/stay-fresh-macos-krew-snapshots
-   feat/stay-fresh-timeouts-and-verdict-fixes
-   feat/stay-fresh-user-logs-reports-slack
-   fix/dry-run-snapshot-and-ci-gates
-   fix/linux-stay-fresh-trash-log-home
-   fix/macos-stay-fresh-protections
-   ```
+This is the only remaining defect that makes scripts fail on the hardware the
+package claims to support.
 
-   Keep `feat/stay-fresh-downloads-agents-notify-when` only until #33 is on
-   `master`. Then delete it too.
+You cannot leave a compatibility `:global TG_BOT_TOKEN` in the script body.
+The declaration itself is what 7.24 rejects. Dual-read inside the same file
+is therefore impossible for the old names.
 
-   `git/git_stale_branches.sh` and `git/git_cleanup_merged.sh` are the tools
-   for this, not a one-off `git branch -D` list in chat.
+Do it in this order:
 
-## Phase 1 — first tag, so CHANGELOG.md can stop being the release
+1. **Wave A — notify path.** `tg_send.lua` first. New names in the
+   `stay_fresh.lua` style (`TgBotToken`, `TgChatId`). Document the mapping in
+   `mikrotik/README.md`. Add a short terminal snippet that copies values from
+   `/system script environment` old → new. Every other script that talks to
+   Telegram is useless on 7.24 until this one runs.
+2. **Wave B — backup / update.** `backup.lua` and `update_check.lua`, or
+   retire them in the README as 7.23-and-older and point 7.24 operators at
+   `backup_update_check.lua` / `stay_fresh.lua` only. Retiring is smaller and
+   safer if you no longer have a pre-7.24 router.
+3. **Wave C — watches.** One script per PR: `wan_failover_notify`,
+   `dhcp_lease_watch`, `traffic_quota`, Cloudflare DDNS, and the rest. Each
+   ships its own env-name mapping and a CHR assertion that the file `:parse`s
+   on the pinned release.
 
-`CHANGELOG.md` is already larger than most of the packages. There is no tag,
-so every dated section is reconstructed history rather than a release.
+Validation: CHR on the PR path. Rollback on a router is paste-the-previous-
+source; replace `tg_send` and the caller in the same window so a running
+scheduler does not call a helper that no longer shares names.
 
-1. After #33 lands, cut `v0.1.0` from `master`.
-2. Move `[Unreleased]` into that version section the same day.
-3. Keep writing new work as `changelog.d/<type>/` fragments (introduced in
-   #33). The assembled file is generated at tag time, not edited by every
-   branch.
-4. Document the tag command and the fragment layout in `CONTRIBUTING.md` so
-   the next tag is mechanical.
+Do not flip every xfail in one commit. Flip the file you just made runnable.
 
-Risk: tagging advertises a support surface this repository has explicitly
-said it does not have (`SECURITY.md`). The tag is a snapshot, not a promise.
-Keep the security policy wording as it is.
+## Priority 2 — freeze stay_fresh.sh feature growth
 
-## Phase 2 — RouterOS 7.24 underscore names
+#33 already closed the dangerous class: a probe that cannot answer must not
+authorise a delete. After it lands, new cache targets need a regression test
+that fails first when the probe is silent, missing, or localised. No new step
+without that test.
 
-This is the highest-severity remaining functional defect, and it is already
-documented in the changelog.
+Do not extract helpers into `lib/`. Do not retire `v1_stay_fresh.sh` as a
+cleanup. Do not add a fourth sweeper on Windows.
 
-RouterOS 7.24 rejects a `:global` whose name contains `_`. `backup.lua`,
-`update_check.lua` and `tg_send.lua` still declare those names.
-`backup_update_check.lua` and `stay_fresh.lua` were written around the bug;
-the older three were not. CHR tests for the older two are xfail.
+If the file has to grow, the sanctioned shape is the one
+`workspace_scan.py` already uses: a substantial program with its own tests,
+invoked as a subprocess by absolute path. Not `source ./common.sh`.
 
-Do this as one pull request, not three:
+## Priority 3 — pin watchers, then a tag
 
-1. Rename every underscored `:global` in the package to a RouterOS-legal
-   name. Keep a one-release compatibility alias only where an operator's boot
-   script already sets the old name (`TG_BOT_TOKEN` / `TG_CHAT_ID` are the
-   ones that matter).
-2. Flip the CHR xfails to real assertions on the same release pin.
-3. Keep secrets out of script bodies. The rename is a name change, not a
-   move of tokens into the files.
+A tag is useful once #33 is on `master`. It is not more urgent than a router
+script that will not parse.
 
-Validation: CHR suite on the PR path (`mikrotik/`, `run-tests.sh`, or
-`chr.yml`). Rollback is the previous script source on the router; these are
-pasted artefacts, so the PR README must say which `/system script` entries
-to replace together.
+Before or with `v0.1.0`:
 
-## Phase 3 — stay_fresh is finished as a product, not as a file
+1. A scheduled job or Dependabot-adjacent check that fails when
+   `versions.env`, `ci-tool-checksums.env`, or the CHR RouterOS pin is older
+   than a documented threshold. Today those pins rot quietly.
+2. Cut `v0.1.0`, move `[Unreleased]` into that section, keep writing fragments
+   under `changelog.d/`.
+3. Say in `SECURITY.md` that a tag is a snapshot, not a support contract.
+   That file already says there is no response window; keep it.
 
-`macos-initial-setup/stay_fresh.sh` is the file that keeps producing silent
-delete bugs. #33 already closed a set of them (SIP, Electron `pgrep`, CloudStorage
-workspaces, Docker `until=`, simulators, `TF_PLUGIN_CACHE_DIR`, empty `HOME`,
-step timeouts). Do not split it into a library. Do these instead:
+## Priority 4 — k8s-toolbox only if you will run it this month
 
-1. Retire `macos-initial-setup/v1_stay_fresh.sh` once nothing in the README
-   or launchd agent still points at it. A second implementation of the same
-   job is how the next audit misses a path.
-2. Add a Windows counterpart only if a real machine needs it. The Windows
-   package already has `cleanup/clean_disk_c.ps1` and WSL VHDX work; a third
-   sweeper that reimplements macOS steps in PowerShell will drift. Prefer
-   extending `clean_disk_c.ps1` with the same verdict / history / `--trend`
-   shape over a new `stay_fresh.ps1`.
-3. Do not add more cache targets without a regression test that fails first
-   when the probe cannot answer. The #33 review record is the rule: a probe
-   that cannot answer must not authorise a delete.
+`kubectl_pod_diag.sh` already reports node pressure. A second node script is
+not the gap. The useful next file, if any, is a **read-only**
+`gke_cluster_doctor.sh`: release channel, node-pool vs control-plane skew,
+Workload Identity, private-cluster DNS, recent quota events. It prints the
+`gcloud`/`kubectl` command that would fix each finding and never mutates.
 
-## Phase 4 — k8s-toolbox, one script at a time
-
-The image, `run.sh`, `debug_pod.sh` and `kubectl_pod_diag.sh` are already at
-the repository's quality bar. The gap is coverage of the questions that come
-up on a GKE cluster after "which pods are unhappy".
-
-Add standalone scripts, each with `--help`, `--dry-run` where anything would
-change, and an exit `4` for nothing to report:
-
-1. `kubectl_node_diag.sh` — Ready / pressure / taints / allocatable vs
-   requested, read-only. `kubectl_pod_diag.sh` already prints pressure; this
-   is the node-shaped version, not a copy of the pod one.
-2. `gke_cluster_doctor.sh` — read-only: release channel, node-pool versions
-   vs control plane, Workload Identity, private-cluster DNS, current quota
-   errors from recent events. Prints the `gcloud` / `kubectl` command that
-   would fix each finding. Never mutates the cluster.
-3. Pin `stern` or `k9s` in `versions.env` only if they are used from the
-   image in anger. Do not grow the image because the list looks short.
-
-Keep the image unprivileged and the examples restricted. The debug variant
-stays the place for `tcpdump` / `strace`.
-
-## Phase 5 — CI cost and the 38 KB workflow
-
-`.github/workflows/ci.yml` on `master` is ~38 KB. #33 already derives the
-suite matrix from `run-tests.sh --list`, which removes one class of drift.
-What is still worth doing, in this order:
-
-1. Keep path filters. CHR already has them. Do not put the QEMU boot back on
-   every pull request.
-2. Split `ci.yml` only when a change to Lint starts conflicting with a change
-   to the Linux matrix. One file is still easier to review than five half-
-   duplicated ones.
-3. Add gitleaks (or an equivalent secret scan) on pull requests, using the
-   config already shipped in `dotfiles/config/gitleaks/`. That file currently
-   configures a workstation; it does not gate the repository.
-4. Leave artefact checksums in `.github/ci-tool-checksums.env`. A version
-   bump without a digest bump must keep failing.
-
-## Phase 6 — docs that the suites can keep true
-
-The root README's per-package "at a glance" sections are unique prose, not
-duplicates of the folder READMEs (#33 measured 0–6% overlap). Leave them.
-
-Do:
-
-1. Point the root README at this file once the plan is accepted, under
-   Contributing / Testing, not in the opening paragraph.
-2. Keep the README-drift check that #9 added. A new script without a row in
-   its folder README should fail CI.
-3. Stop restating agent-skill copy counts in `CONTRIBUTING.md`. The local
-   skills directory is gitignored; the published rules live in that file.
+Do not add `stern` or `k9s` to the image because the list looks short.
 
 ## What not to do
 
-- Do not extract `require_value()` or the colour helpers into `lib/`.
-  `CONTRIBUTING.md` already records why, and the static suite already asserts
-  the contract of every copy.
-- Do not rewrite Git history to strip old attribution. New commits stay
-  `Serhii Zolotov <zolotov.98@gmail.com>` and carry no co-author trailers.
-- Do not add a framework to the test harnesses. The hand-rolled
-  `ok` / `err` / `assert_eq` shape is the suite.
-- Do not auto-install macOS or RouterOS updates. Reporting is the product;
-  rebooting a machine or a router is the operator's decision.
-- Do not open another mega-PR like #33. One concern per branch, with a
-  changelog fragment, is how those five closed PRs stopped colliding.
+- Do not split `ci.yml` because it is 900 lines. #33 already derives the suite
+  matrix from `run-tests.sh --list`.
+- Do not put gitleaks ahead of RouterOS names. The workstation config already
+  lives in `dotfiles/config/gitleaks/`; wiring it into CI is a half-day, not
+  the highest defect.
+- Do not rewrite Git history.
+- Do not auto-install macOS or RouterOS updates.
+- Do not grow `.claude/hooks/` further in this repository unless the hook is
+  doing something CI cannot. The exception in `.gitignore` is already special
+  casing.
 
-## Suggested next three pull requests
+## Next three pull requests after #33
 
-After #33:
-
-1. `chore/retire-stale-branches-and-tag-v0.1.0` — delete the leftover
-   remotes, write the tagging steps into `CONTRIBUTING.md`, cut `v0.1.0`.
-2. `fix/routeros-global-names` — underscore rename + CHR xfail flip.
-3. `feat/k8s-node-diag` — `kubectl_node_diag.sh` and its suite rows only.
-
-Each of those is mergeable on its own if the others stall.
+1. `fix/routeros-tg-send-names` — `tg_send.lua` + mapping + CHR parse test.
+2. `docs/retire-or-keep-update-check` — explicit 7.24 vs older matrix in the
+   MikroTik README, so operators stop pasting `update_check.lua` onto 7.24.
+3. `chore/pin-age-and-v0.1.0` — pin age check, then the first tag.
