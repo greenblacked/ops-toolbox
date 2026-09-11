@@ -182,7 +182,7 @@ if want brew; then
   if ! command -v brew >/dev/null 2>&1; then
     note_warn "brew      Homebrew is not on PATH — run ./install_apps.sh"
   else
-    outdated="$(brew outdated --quiet 2>/dev/null | wc -l | tr -d ' ')"
+    outdated="$(HOMEBREW_NO_AUTO_UPDATE=1 brew outdated --quiet 2>/dev/null | wc -l | tr -d ' ')"
     prefix="$(brew --prefix 2>/dev/null || echo '?')"
     if [[ "${outdated:-0}" -gt 0 ]]; then
       note_warn "brew      $outdated pending upgrade(s)  ($prefix)"
@@ -208,7 +208,7 @@ fi
 
 if want agent; then
   uid="$(id -u 2>/dev/null || echo "")"
-  label="com.ops-toolbox.stay-fresh"
+  label="com.pretty-useful.stay-fresh"
   loaded=0
   if command -v launchctl >/dev/null 2>&1 && [[ -n "$uid" ]]; then
     if launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
@@ -240,12 +240,9 @@ if want security; then
   esac
 fi
 
-printf "%s=== next ===%s\n" "$C_BOLD" "$C_RESET"
 if (( WARNED == 0 )); then
-  info "machine looks well. Recurring work: ./stay_fresh.sh --dry-run"
+  info "next      ./stay_fresh.sh --dry-run"
   exit 0
 fi
-info "well:  ./workstation_doctor.sh"
-info "safe:  ./hardening_audit.sh"
-info "fresh: ./stay_fresh.sh --dry-run"
+info "next      ./workstation_doctor.sh"
 exit 1
