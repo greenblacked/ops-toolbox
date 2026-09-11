@@ -269,9 +269,20 @@ need_changelog() {
   # `grep` exits 1 when the section has no headings at all, which is the
   # state right after a release; `|| true` keeps that from tripping `set -e`
   # inside the substitution.
-  local unknown
+  # The label list is built BEFORE the substitution, not inside the case word.
+  # Bash 3.2 - which is what /bin/bash is on macOS, where the static suite now
+  # runs - cannot parse a nested $( ... do ... done ) sitting in a case pattern
+  # word inside another command substitution. It reports
+  # "syntax error near unexpected token `newline'" and every preview and release
+  # test fails at once. Bash 5 parses it happily, which is why this survived
+  # until the macOS runner started running this suite.
+  local unknown known_labels t
+  known_labels=" "
+  for t in $TYPES; do
+    known_labels="$known_labels$(label_of "$t") "
+  done
   unknown="$(part_unreleased | { grep '^### ' || true; } | sed 's/^### //' | while IFS= read -r l; do
-    case " $(for t in $TYPES; do label_of "$t"; printf ' '; done)" in
+    case "$known_labels" in
       *" $l "*) ;;
       *) printf '%s\n' "$l" ;;
     esac
