@@ -93,9 +93,9 @@ not at anyone shopping for a dotfiles framework to adopt.
 | [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
-| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
+| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, one-screen `status.sh`, and report on health, network, certificates, SSH client dirs and sysctl. |
 | [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
-| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
+| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage and a GKE cluster doctor, and `kubectl debug` for a pod with no shell of its own. |
 | [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
 | [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
 | [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
@@ -386,6 +386,8 @@ OS, so behaviour is actually exercised across all three package managers:
   container prune (**never** volumes), flatpak/snap, and a report of reboot
   pending plus processes still running old libraries. A missing tool is a
   note; a step that runs and fails is an error.
+- `status.sh` — one-screen verdict (`--only` / `--list-sections`). Read-only.
+  `system_doctor.sh` is the long report when something is off.
 - `system_doctor.sh` — read-only health report: distribution and uptime, who
   is logged in, how old the package index is, how many upgrades are pending,
   free space *and inodes*, clock/NTP sync, a pending reboot, sshd, failed
@@ -459,7 +461,7 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 **RouterOS 7.24.2**:
 
 - `tg_send.lua` — generic Telegram text helper used by every other script;
-  reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
+  reads `:global TgBotToken` / `TgChatId` so secrets stay out of the
   script body, with retries and 4 KB truncation.
 - `backup.lua` — daily binary + export backup; sends a Telegram confirmation
   with the resulting filename. Date-format-safe filenames stamped with the
@@ -566,6 +568,9 @@ of `apk add`, on a pod that will be gone before you finish.
   crash-looping pod it prints the *previous* container's logs, which is where
   the reason actually is. Exit `4` means nothing found, distinct from `0`, so
   it can drive a scheduled check without parsing output.
+- `gke_cluster_doctor.sh` — read-only GKE report: release channel, control-plane
+  vs node-pool skew, Workload Identity, and private-cluster flags. Prints the
+  `gcloud` command that would fix each finding and never mutates the cluster.
 - `debug_pod.sh` — wraps `kubectl debug` to attach the image to a running pod
   as an ephemeral container. This is the answer for a distroless or scratch
   container with no shell of its own: the application keeps running and nothing

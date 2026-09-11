@@ -150,6 +150,11 @@ missing_value_cases=(
   "kubectl_pod_diag.sh --namespace"
   "kubectl_pod_diag.sh --context"
   "kubectl_pod_diag.sh --since"
+  "gke_cluster_doctor.sh --project"
+  "gke_cluster_doctor.sh --cluster"
+  "gke_cluster_doctor.sh --location"
+  "gke_cluster_doctor.sh --context"
+  "gke_cluster_doctor.sh --only"
 )
 for case_ in "${missing_value_cases[@]}"; do
   script="${case_%% *}"
@@ -168,6 +173,29 @@ assert_rc "build.sh --variant --push (flag is not a value)" 3 "$?"
 
 guard "$K/build.sh" --variant foo >/dev/null 2>&1
 assert_rc "build.sh --variant foo" 3 "$?"
+
+# --------------------------------------------------------------------------
+head_ "gke_cluster_doctor.sh before gcloud"
+checks="$("$K/gke_cluster_doctor.sh" --list-checks)"
+for check in channel skew identity network; do
+  if [[ "$checks" == *"$check"* ]]; then
+    ok "gke_cluster_doctor lists check $check"
+  else
+    err "gke_cluster_doctor --list-checks missing $check"
+  fi
+done
+guard "$K/gke_cluster_doctor.sh" --only nosuch >/dev/null 2>&1
+assert_rc "gke_cluster_doctor unknown --only" 3 "$?"
+guard "$K/gke_cluster_doctor.sh" --only , >/dev/null 2>&1
+assert_rc "gke_cluster_doctor --only empty selection" 4 "$?"
+guard "$K/gke_cluster_doctor.sh" --help >/dev/null 2>&1
+assert_rc "gke_cluster_doctor --help before gcloud" 0 "$?"
+if ! command -v gcloud >/dev/null 2>&1; then
+  guard "$K/gke_cluster_doctor.sh" --project p --cluster c --location us-central1 >/dev/null 2>&1
+  assert_rc "gke_cluster_doctor without gcloud -> 2" 2 "$?"
+else
+  ok "gke_cluster_doctor no-gcloud path skipped (gcloud is on PATH)"
+fi
 
 # --------------------------------------------------------------------------
 head_ "a dry run writes nothing"

@@ -16,10 +16,11 @@ unprivileged user by default.
 | [`build.sh`](build.sh) | Build (and optionally push) the image with those pins |
 | [`run.sh`](run.sh) | Run it locally with the working directory and your kubeconfig mounted |
 | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh) | Read-only cluster triage: unhealthy pods, warnings, PVCs, node pressure |
+| [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
 | [`debug/`](debug/) | A pod, a job, and a kustomization for the debug image tag |
-| [`tests/`](tests/) | Contract checks for the four scripts; no image build, no Docker |
+| [`tests/`](tests/) | Contract checks for the five scripts; no image build, no Docker |
 
 ## What is inside the image
 
@@ -172,6 +173,22 @@ Exit `2` covers both halves of the environment this script needs: no `kubectl`,
 and no `python3` — the JSON from each `kubectl get` is reduced by a
 standard-library `python3 -c` filter.
 
+## Doctor a GKE cluster
+
+`gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
+reports release channel, control-plane vs node-pool skew, Workload Identity,
+and private-cluster flags, and prints the `gcloud` command that would fix
+each finding.
+
+```bash
+./gke_cluster_doctor.sh --list-checks
+./gke_cluster_doctor.sh --project P --cluster C --location europe-west1
+./gke_cluster_doctor.sh --only channel,skew
+```
+
+Flags, or a kubectl context named `gke_PROJECT_LOCATION_CLUSTER`, resolve
+the cluster. `--list-checks` and `--help` answer before `gcloud` is required.
+
 ## Debug a running pod
 
 `debug_pod.sh` wraps `kubectl debug` with this image, which attaches an
@@ -241,7 +258,7 @@ from `gcloud auth application-default login` or a mounted service-account key.
 
 ## Conventions
 
-The four scripts follow the same rules as everything else in this repository:
+The five scripts follow the same rules as everything else in this repository:
 
 - `--help` works before any preflight check, so it answers on a machine with
   neither Docker nor `kubectl` installed.

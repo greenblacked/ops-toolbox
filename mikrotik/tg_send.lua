@@ -5,19 +5,26 @@
 # Secrets:
 #   - Either replace BotToken / ChatID below with real values, or
 #   - Define globals once on boot, e.g. in /system scripts script "startup":
-#         :global TG_BOT_TOKEN "123:abc";
-#         :global TG_CHAT_ID   "12345";
+#         :global TgBotToken "123:abc";
+#         :global TgChatId   "12345";
 #     and add a scheduler entry "on event=startup" pointing to that script.
+#
+# No :global here carries an underscore in its name. RouterOS 7.24 refuses
+# to execute a script that declares one. Old names TG_BOT_TOKEN / TG_CHAT_ID
+# cannot be re-declared on 7.24; copy the values by hand from
+# /system script environment into TgBotToken / TgChatId before pasting this
+# file. On 7.23 you can still copy in a one-shot terminal snippet — see
+# mikrotik/README.md.
 
 :local BotToken "token";
 :local ChatID   "ID";
 :local ParseMode "html";
 :local DisableWebPagePreview "true";
 
-:global TG_BOT_TOKEN;
-:global TG_CHAT_ID;
-:if ([:len $TG_BOT_TOKEN] > 0) do={ :set BotToken $TG_BOT_TOKEN; }
-:if ([:len $TG_CHAT_ID]   > 0) do={ :set ChatID   $TG_CHAT_ID;   }
+:global TgBotToken;
+:global TgChatId;
+:if ([:len $TgBotToken] > 0) do={ :set BotToken $TgBotToken; }
+:if ([:len $TgChatId]   > 0) do={ :set ChatID   $TgChatId;   }
 
 :if ([:len $MessageText] = 0) do={
     :log warning "tg_send: empty MessageText - nothing to send";

@@ -9,7 +9,7 @@ would test the stub.
 Two of these guard mistakes the tool exists to catch, so they are worth naming:
 `backup` must not be reported as scheduled because some other entry mentions
 `backup_file_cleanup`, and a global's value must never be fetched — only its
-length, which is what makes "TG_BOT_TOKEN is set" printable at all.
+length, which is what makes "TgBotToken is set" printable at all.
 """
 
 from __future__ import annotations
@@ -41,8 +41,8 @@ SCR:startup
 SCH:backup|1d|/system script run backup
 SCH:backup_file_cleanup|1d|/system script run backup_file_cleanup
 SCH:startup|00:00:00|/system script run startup
-ENV:TG_BOT_TOKEN|46
-ENV:TG_CHAT_ID|9
+ENV:TgBotToken|46
+ENV:TgChatId|9
 """
 
 PACKAGE = ["backup", "backup_file_cleanup", "health_check", "tg_send"]
@@ -61,7 +61,7 @@ class ParseReportTestCase(unittest.TestCase):
         )
         self.assertEqual([s["name"] for s in schedulers],
                          ["backup", "backup_file_cleanup", "startup"])
-        self.assertEqual(env, {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9})
+        self.assertEqual(env, {"TgBotToken": 46, "TgChatId": 9})
 
     def test_interval_and_on_event_are_kept(self):
         _, schedulers, _ = router_doctor.parse_report(REPORT)
@@ -75,31 +75,31 @@ class ParseReportTestCase(unittest.TestCase):
             "SCH:notify-boot|00:00:00|:delay 20s;\n"
             ":local S [:parse [/system script get tg_send source]];\n"
             "$S MessageText=(\"back online\");\n"
-            "ENV:TG_CHAT_ID|9\n"
+            "ENV:TgChatId|9\n"
         )
         _, schedulers, env = router_doctor.parse_report(text)
         self.assertEqual(len(schedulers), 1)
         self.assertIn("tg_send", schedulers[0]["on_event"])
         self.assertIn("back online", schedulers[0]["on_event"])
-        self.assertEqual(env, {"TG_CHAT_ID": 9})
+        self.assertEqual(env, {"TgChatId": 9})
 
     def test_carriage_returns_do_not_end_up_in_names(self):
-        scripts, _, env = router_doctor.parse_report("SCR:backup\r\nENV:TG_CHAT_ID|9\r\n")
+        scripts, _, env = router_doctor.parse_report("SCR:backup\r\nENV:TgChatId|9\r\n")
         self.assertEqual(scripts, ["backup"])
-        self.assertEqual(env, {"TG_CHAT_ID": 9})
+        self.assertEqual(env, {"TgChatId": 9})
 
     def test_an_unreadable_length_is_treated_as_empty(self):
-        _, _, env = router_doctor.parse_report("ENV:TG_CHAT_ID|nan\n")
-        self.assertEqual(env, {"TG_CHAT_ID": 0})
+        _, _, env = router_doctor.parse_report("ENV:TgChatId|nan\n")
+        self.assertEqual(env, {"TgChatId": 0})
 
     def test_empty_output_parses_to_nothing(self):
         self.assertEqual(router_doctor.parse_report(""), ([], [], {}))
 
     def test_pause_control_is_parsed_without_exposing_secrets(self):
         _, _, env = router_doctor.parse_report(
-            "ENV:TG_BOT_TOKEN|46\nCTL:OpsToolboxPaused|true\n"
+            "ENV:TgBotToken|46\nCTL:OpsToolboxPaused|true\n"
         )
-        self.assertEqual(env["TG_BOT_TOKEN"], 46)
+        self.assertEqual(env["TgBotToken"], 46)
         self.assertIs(env[router_doctor.PAUSE_STATE_KEY], True)
 
     def test_false_pause_control_is_not_reported_as_active(self):
@@ -146,15 +146,15 @@ class SchedulersForTestCase(unittest.TestCase):
 
 class GlobalStateTestCase(unittest.TestCase):
     def test_a_length_means_set(self):
-        self.assertEqual(router_doctor.global_state("TG_CHAT_ID", {"TG_CHAT_ID": 9}), "set")
+        self.assertEqual(router_doctor.global_state("TgChatId", {"TgChatId": 9}), "set")
 
     def test_zero_length_means_empty(self):
-        # `:global TG_CHAT_ID ""` in a startup script looks configured and is
+        # `:global TgChatId ""` in a startup script looks configured and is
         # not, which is worth telling apart from never having been set.
-        self.assertEqual(router_doctor.global_state("TG_CHAT_ID", {"TG_CHAT_ID": 0}), "empty")
+        self.assertEqual(router_doctor.global_state("TgChatId", {"TgChatId": 0}), "empty")
 
     def test_an_unknown_name_is_absent(self):
-        self.assertEqual(router_doctor.global_state("TG_CHAT_ID", {}), "absent")
+        self.assertEqual(router_doctor.global_state("TgChatId", {}), "absent")
 
 
 class ProbeIsReadOnlyTestCase(unittest.TestCase):
@@ -210,7 +210,7 @@ class BuildFindingsTestCase(unittest.TestCase):
         schedulers = [{"name": "backup", "interval": "1d",
                        "on_event": "/system script run backup"}]
         findings = router_doctor.build_findings(
-            PACKAGE, installed, schedulers, {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9}
+            PACKAGE, installed, schedulers, {"TgBotToken": 46, "TgChatId": 9}
         )
         self.assertEqual(levels_for(findings, "backup is scheduled but not in"), ["fail"])
 
@@ -221,7 +221,7 @@ class BuildFindingsTestCase(unittest.TestCase):
                       {"name": "health_check", "interval": "5m",
                        "on_event": "/system script run health_check"}]
         findings = router_doctor.build_findings(
-            PACKAGE, installed, schedulers, {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9}
+            PACKAGE, installed, schedulers, {"TgBotToken": 46, "TgChatId": 9}
         )
         self.assertEqual(levels_for(findings, "tg_send is not installed"), ["fail"])
 
@@ -240,7 +240,7 @@ class BuildFindingsTestCase(unittest.TestCase):
                        "on_event": "/system script run reboot-and-flush"}]
         findings = router_doctor.build_findings(
             ["tg_send", "reboot-and-flush"], installed, schedulers,
-            {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9},
+            {"TgBotToken": 46, "TgChatId": 9},
         )
         self.assertEqual(levels_for(findings, "reboot-and-flush is meant to be run by hand"),
                          ["warn"])
@@ -248,7 +248,7 @@ class BuildFindingsTestCase(unittest.TestCase):
     def test_a_manual_script_without_a_scheduler_says_nothing(self):
         findings = router_doctor.build_findings(
             ["tg_send", "detect_internet"], ["tg_send", "detect_internet"], [],
-            {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9},
+            {"TgBotToken": 46, "TgChatId": 9},
         )
         self.assertEqual(findings, [])
 
@@ -260,27 +260,27 @@ class BuildFindingsTestCase(unittest.TestCase):
             "on_event": ":local S [:parse [/system script get tg_send source]];",
         }]
         findings = router_doctor.build_findings(
-            ["tg_send"], ["tg_send"], schedulers, {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9}
+            ["tg_send"], ["tg_send"], schedulers, {"TgBotToken": 46, "TgChatId": 9}
         )
         self.assertEqual(findings, [])
 
     def test_an_unset_telegram_global_is_a_warning(self):
         installed, schedulers, _ = self.parsed()
         findings = router_doctor.build_findings(PACKAGE, installed, schedulers, {})
-        self.assertEqual(levels_for(findings, "TG_BOT_TOKEN is not set"), ["warn"])
-        self.assertEqual(levels_for(findings, "TG_CHAT_ID is not set"), ["warn"])
+        self.assertEqual(levels_for(findings, "TgBotToken is not set"), ["warn"])
+        self.assertEqual(levels_for(findings, "TgChatId is not set"), ["warn"])
 
     def test_an_empty_telegram_global_is_reported_separately(self):
         installed, schedulers, _ = self.parsed()
         findings = router_doctor.build_findings(
-            PACKAGE, installed, schedulers, {"TG_BOT_TOKEN": 0, "TG_CHAT_ID": 9}
+            PACKAGE, installed, schedulers, {"TgBotToken": 0, "TgChatId": 9}
         )
-        self.assertEqual(levels_for(findings, "TG_BOT_TOKEN is defined but empty"), ["warn"])
+        self.assertEqual(levels_for(findings, "TgBotToken is defined but empty"), ["warn"])
 
     def test_no_finding_ever_carries_the_length_of_a_global(self):
         installed, schedulers, _ = self.parsed()
         findings = router_doctor.build_findings(
-            PACKAGE, installed, schedulers, {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9}
+            PACKAGE, installed, schedulers, {"TgBotToken": 46, "TgChatId": 9}
         )
         for _, message in findings:
             self.assertNotIn("46", message)
@@ -291,7 +291,7 @@ class BuildFindingsTestCase(unittest.TestCase):
                        "on_event": "/system script run mac_allowlist_dhcp"}]
         findings = router_doctor.build_findings(
             ["tg_send", "mac_allowlist_dhcp"], installed, schedulers,
-            {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9},
+            {"TgBotToken": 46, "TgChatId": 9},
         )
         self.assertEqual(levels_for(findings, "MAC_ALLOWLIST"), ["warn"])
 
@@ -324,7 +324,7 @@ class BuildFindingsTestCase(unittest.TestCase):
         ]
         findings = router_doctor.build_findings(
             ["tg_send", "backup", "health_check"], installed, schedulers,
-            {"TG_BOT_TOKEN": 46, "TG_CHAT_ID": 9},
+            {"TgBotToken": 46, "TgChatId": 9},
         )
         self.assertEqual(findings, [])
         self.assertFalse(router_doctor.has_problems(findings))
@@ -375,7 +375,7 @@ class JsonOutputTestCase(unittest.TestCase):
         report = (
             "SCR:backup\n"
             "SCH:backup|1d|/system script run backup; :local secret=%s\n"
-            "ENV:TG_BOT_TOKEN|46\nENV:TG_CHAT_ID|9\n"
+            "ENV:TgBotToken|46\nENV:TgChatId|9\n"
         ) % secret_marker
         stdout = io.StringIO()
         with mock.patch.object(router_doctor, "probe", return_value=(0, report, "")), \

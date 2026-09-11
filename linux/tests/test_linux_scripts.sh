@@ -477,11 +477,13 @@ rc=$?
 set -e
 assert_eq "bash_aliases.sh executed directly -> 3" "3" "$rc"
 
-out="$(bash -c ". '$L/bash_aliases.sh'; alias stay-fresh; alias net-doctor; alias disk-cleanup; toolbox-help" 2>&1)"
+out="$(bash -c ". '$L/bash_aliases.sh'; alias stay-fresh; alias net-doctor; alias disk-cleanup; alias linux-status; toolbox-help" 2>&1)"
 assert_contains "bash_aliases aliases stay-fresh to this checkout" "$out" "stay_fresh.sh"
 assert_contains "bash_aliases aliases net-doctor to this checkout" "$out" "net_doctor.sh"
 assert_contains "bash_aliases aliases disk-cleanup to this checkout" "$out" "disk_cleanup.sh"
+assert_contains "bash_aliases aliases linux-status to this checkout" "$out" "status.sh"
 assert_contains "toolbox-help lists stay-fresh" "$out" "stay-fresh"
+assert_contains "toolbox-help lists linux-status" "$out" "linux-status"
 assert_contains "toolbox-help lists schedule-report" "$out" "schedule-report"
 assert_contains "toolbox-help lists tls-expiry" "$out" "tls-expiry"
 assert_contains "toolbox-help lists config-backup" "$out" "config-backup"
@@ -1442,6 +1444,29 @@ else
   err "ssh_client_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
 fi
 rm -rf "$scratch_home" "$good"
+
+# --- status.sh --------------------------------------------------------------
+status_sections="$("$L/status.sh" --list-sections)"
+for section in os disk packages reboot timer git; do
+  assert_contains "status lists section $section" "$status_sections" "$section"
+done
+set +e
+"$L/status.sh" --only nosuch >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "status rejects unknown --only section -> 3" "3" "$rc"
+set +e
+"$L/status.sh" --only , >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "status --only empty selection -> 4" "4" "$rc"
+set +e
+out="$(env -u HOME "$L/status.sh" --list-sections 2>&1)"; rc=$?
+set -e
+assert_eq "status --list-sections works with HOME unset" "0" "$rc"
+set +e
+out="$("$L/status.sh" --only os 2>&1)"; rc=$?
+set -e
+assert_eq "status --only os exits 0" "0" "$rc"
+assert_contains "status --only os prints the os section" "$out" "os"
 
 echo
 if (( failures > 0 )); then

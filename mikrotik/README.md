@@ -68,12 +68,25 @@ pinned CHR version and its digest are bumped.
    your real values, **or** create a tiny startup script that sets globals:
 
    ```routeros
-   :global TG_BOT_TOKEN "123456:ABC...";
-   :global TG_CHAT_ID   "12345678";
+   :global TgBotToken "123456:ABC...";
+   :global TgChatId   "12345678";
    ```
 
    then add a Scheduler entry with `start-time=startup` pointing to it. The
    `tg_send` helper picks them up automatically.
+
+   RouterOS 7.24 refuses `:global` names with an underscore, so the package
+   helper no longer reads `TG_BOT_TOKEN` / `TG_CHAT_ID`. If those are already
+   set on a 7.24 router, copy the values by hand from `/system script
+   environment` into `TgBotToken` / `TgChatId` — 7.24 cannot re-declare the
+   old names even to migrate. On 7.23 a one-shot terminal snippet still works:
+
+   ```routeros
+   :global TG_BOT_TOKEN;
+   :global TG_CHAT_ID;
+   :global TgBotToken $TG_BOT_TOKEN;
+   :global TgChatId   $TG_CHAT_ID;
+   ```
 5. Run `detect_internet` once if you plan to use `wan_failover_notify`. It
    enables `detect-interface-list=all`, which is the prerequisite for the
    per-interface `detect-internet-state` property to be populated.
@@ -163,8 +176,10 @@ Generic Telegram text-message helper. All other scripts call it via
 `[:parse [/system script get tg_send source]]`. Posts to `sendMessage` with
 HTML parse mode using `application/x-www-form-urlencoded`, retries up to 3×
 on transient failures, and truncates messages above Telegram's 4096-char
-limit. Reads `:global TG_BOT_TOKEN` / `:global TG_CHAT_ID` if defined so
-secrets can stay out of the script body.
+limit. Reads `:global TgBotToken` / `:global TgChatId` if defined so
+secrets can stay out of the script body. RouterOS 7.24 refuses underscore
+names, so the old `TG_BOT_TOKEN` / `TG_CHAT_ID` globals are not read and
+cannot be re-declared there; copy the values by hand.
 
 ### `backup.lua`
 
@@ -379,8 +394,9 @@ line is simply absent there.
 
 Five settings at the top. `TgSendScript` names the Telegram helper, and it
 defaults to `tg_send_new` — the operator's own copy — rather than the package's
-`tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
-on 7.24 either; point it at whatever helper the router actually has.
+`tg_send`, so a router that already has a working helper keeps using it. The
+package helper now uses `TgBotToken` / `TgChatId` and runs on 7.24; point
+`TgSendScript` at whatever helper the router actually has.
 `updChannel` is `"stable"` by default and is **written** on every run, as the
 original script did — a fleet meant to sit on one train gets a hand-switched
 router put back before it is checked. Set it to `""` to leave the channel as
@@ -648,7 +664,7 @@ fixes what it found.
 ./router_doctor.py --host router.lan --format json
 ```
 
-Secrets stay on the router. The check on `TG_BOT_TOKEN` and `TG_CHAT_ID` asks
+Secrets stay on the router. The check on `TgBotToken` and `TgChatId` asks
 for the **length** of each secret global and never for the value, so no token crosses
 the wire or reaches your terminal — the report can say `set` or `empty`, and
 that is all it knows. The one value it reads is the non-secret boolean

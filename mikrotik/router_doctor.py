@@ -4,13 +4,13 @@
 Every script in this folder is pasted into `/system script` by hand and given a
 `/system scheduler` entry by hand, and both halves fail quietly. A script that
 was never installed under the name its scheduler calls, a script installed but
-scheduled nowhere, an unset `TG_BOT_TOKEN` — all three look exactly like a
+scheduled nowhere, an unset `TgBotToken` — all three look exactly like a
 router with nothing to report. The router knows the answer; nothing asks it.
 
 Read-only, like the other diagnostics here: it runs `find`/`get` over ssh, it
 never writes to the router, and it prints the command that fixes what it found.
 
-Secrets are never fetched. The check on `TG_BOT_TOKEN` and `TG_CHAT_ID` asks the
+Secrets are never fetched. The check on `TgBotToken` and `TgChatId` asks the
 router for the *length* of each global, so no token value crosses the wire or
 reaches this process, let alone the terminal.
 
@@ -47,7 +47,7 @@ MANUAL_ONLY = (
 # Read by tg_send, so effectively by every script that notifies. An unset global
 # is not proof of a broken router — tg_send also has placeholders in its own
 # source — but on an unedited script it means every alert is silently dropped.
-REQUIRED_GLOBALS = ("TG_BOT_TOKEN", "TG_CHAT_ID")
+REQUIRED_GLOBALS = ("TgBotToken", "TgChatId")
 
 # Globals a single script cannot work without. mac_allowlist_dhcp refuses to act
 # on an empty allowlist by design, so without this it is installed, scheduled,

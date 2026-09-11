@@ -17,7 +17,8 @@ what a test here has to assert.
 
 ## The suites that run
 
-**[`static/`](static/)** — `check_conventions.sh`, the two RouterOS checks that
+**[`static/`](static/)** — `check_conventions.sh`, `check_pin_age.sh` for the
+three pin files Dependabot does not watch, the two RouterOS checks that
 need no Docker, `test_run_tests.sh` for the aggregator's own contract, and
 `test_doc_citations.sh` for the documentation ones. It discovers its own subjects from the git index rather
 than keeping a list, so a new script is covered by the commit that adds it:

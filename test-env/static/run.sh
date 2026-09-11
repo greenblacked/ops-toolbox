@@ -43,6 +43,9 @@ printf '\n--- documentation citations ---\n'
 # One file per change under changelog.d/ is what keeps two pull requests from
 # editing the same line of CHANGELOG.md; a fragment that would not paste is
 # caught here, before it is the release that finds out.
+printf '\n--- pin age ---\n'
+"$HERE/check_pin_age.sh" || rc=1
+
 printf '\n--- changelog fragments ---\n'
 "$REPO_ROOT/changelog.d/changelog.sh" check || rc=1
 "$HERE/test_changelog.sh" || rc=1

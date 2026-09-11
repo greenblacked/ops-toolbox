@@ -36,11 +36,10 @@
 :if (([:typeof $OpsToolboxPaused] = "bool") and $OpsToolboxPaused) do={ :return ""; }
 
 # --- settings ----------------------------------------------------------------
-# The Telegram helper to call. Not the package's tg_send: that one declares
-# TG_BOT_TOKEN and TG_CHAT_ID, so on 7.24 it fails the same way update_check
-# does, and a script that runs calling a helper that cannot is a message that
-# never arrives. tg_send_new is the operator's own copy that does run there;
-# point this at whatever helper the router actually has.
+# The Telegram helper to call. Defaults to tg_send_new, the operator's own
+# copy, so a router that already has one keeps using it. The package's
+# tg_send now uses underscore-free globals and runs on 7.24; point this at
+# whatever helper the router actually has.
 :local TgSendScript "tg_send_new"
 
 # Forced to this channel on every run, which is what the script this came from

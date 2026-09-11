@@ -7,6 +7,7 @@ reproduce it elsewhere — and then keep it healthy.
 | --- | --- |
 | [`winget_bootstrap.ps1`](winget_bootstrap.ps1) | `export` / `list` / `check` / `import` / `diff` over the winget package list |
 | [`winget_configure.ps1`](winget_configure.ps1) | `validate` / `show` / `test` / `apply` over [`configuration.winget`](configuration.winget), the curated machine definition |
+| [`status.ps1`](status.ps1) | One-screen verdict (`-Only` / `-ListSections`). |
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
@@ -17,8 +18,9 @@ reproduce it elsewhere — and then keep it healthy.
 
 The scripts split the same way their Unix counterparts do: one builds the
 machine, one captures and restores it, one keeps it current, one only looks.
-Nothing in `workstation_doctor.ps1` changes anything, which is why it is the
-safe first thing to run on a machine you have just been handed.
+`status.ps1` is the one-screen verdict; `workstation_doctor.ps1` is the long
+report. Nothing in either changes anything, which is why they are the safe
+first things to run on a machine you have just been handed.
 
 The distinction between the first two is the one worth reading twice.
 `configuration.winget` is the *intent*: a short curated list, reviewed like
@@ -26,6 +28,18 @@ code, that says what a workstation should have. `winget-packages.json` is the
 *fact*: everything one particular box happens to have, exported from it. Use
 `winget_configure.ps1` to build a machine and `winget_bootstrap.ps1` to record
 one. Neither replaces the other.
+
+## status.ps1
+
+One-screen verdict. Read-only: no log, no elevation, no writes. The long
+report stays `workstation_doctor.ps1`.
+
+```powershell
+.\status.ps1
+.\status.ps1 -ListSections
+.\status.ps1 -Only disk,git
+.\status.ps1 -Action report
+```
 
 ## winget_bootstrap.ps1
 
