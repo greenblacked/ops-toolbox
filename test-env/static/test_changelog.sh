@@ -180,6 +180,176 @@ bad_case "a non-.md file"                        "printf -- '- x\n' > changelog.
 bad_case "a fragment outside a type directory"   "printf -- '- x\n' > changelog.d/stray.md"
 bad_case "a directory that is not a type"        "mkdir changelog.d/misc && printf -- '- x\n' > changelog.d/misc/x.md"
 
+# --- claims against the tree -----------------------------------------------
+# Everything above asks whether a fragment would paste. Two pull requests
+# shipped fragments that would have pasted beautifully and described work that
+# was never committed: #36's claimed a `--legacy-run` opt-in on
+# `v1_stay_fresh.sh`, #37's claimed `install_apps.sh` had "grown
+# `--list-casks` and `--list-formulae`". Both branches held nothing but the
+# fragments, and both passed this suite as it stood.
+#
+# So each assertion below comes in a pair: the lie is rejected and the true
+# version of the same sentence is accepted. The second half is the one that
+# decides whether this check is shippable — a check that flags correct writing
+# gets switched off, and then the lie ships anyway.
+claim_root() {
+  # A scratch root with a small tree in it. Claims resolve against the root
+  # the fragments ship in, so the fixture needs scripts as well as fragments.
+  local r
+  r="$(fresh_root)"
+  rm -f "$r/changelog.d/added/aaa.md" "$r/changelog.d/fixed/zzz.md" \
+    "$r/changelog.d/changed/ccc.md"
+  mkdir -p "$r/tools" "$r/other"
+  cat > "$r/tools/real_tool.sh" <<'EOS'
+#!/usr/bin/env bash
+case "$1" in
+  --real-flag) shift ;;
+esac
+EOS
+  # A second script, holding a flag the first does not: a fragment that names
+  # real_tool.sh and claims --other-flag is exactly the shape of #37, where the
+  # flag existed in the repository's vocabulary but not in the named script.
+  cat > "$r/other/other_tool.sh" <<'EOS'
+#!/usr/bin/env bash
+case "$1" in
+  --other-flag|--list-casks) shift ;;
+esac
+EOS
+  printf '%s\n' "$r"
+}
+claim_out=""
+claim_run() {
+  # claim_run FRAGMENT-TEXT ; sets out and rc for one fragment in a fresh root
+  local r
+  r="$(claim_root)"
+  printf '%s' "$1" > "$r/changelog.d/added/claim.md"
+  run "$r" check
+  claim_out="$out"
+}
+claim_rejects() {
+  # claim_rejects NAME TEXT [MESSAGE] — check must exit 1, and say why
+  local name="$1" text="$2" msg="${3:-}"
+  claim_run "$text"
+  expect "check rejects $name (exit $rc)" rc_is 1
+  [[ -z "$msg" ]] || expect "  and names it: $msg" has "$claim_out" "$msg"
+}
+claim_accepts() {
+  local name="$1" text="$2"
+  claim_run "$text"
+  expect "check accepts $name (exit $rc): $(printf '%s' "$claim_out" | grep '^\[err' | head -n 1)" rc_is 0
+}
+
+# 1. A file named in backticks is a claim about the tree.
+claim_rejects "a fragment naming a script that is not in the tree" \
+  '- `missing_tool.sh` learned to do the thing.
+' \
+  'claim.md:1 names `missing_tool.sh`, which is not a file in this tree'
+claim_accepts "the same sentence about a script that is there" \
+  '- `real_tool.sh` learned to do the thing.
+'
+claim_accepts "a script named by the path it sits at" \
+  '- `tools/real_tool.sh` learned to do the thing.
+'
+claim_rejects "a path under a directory that does not exist" \
+  '- `nowhere/real_tool.sh` learned to do the thing.
+' \
+  'names `nowhere/real_tool.sh`'
+
+# 2. A long flag standing alone in its span is a claim too, resolved against
+#    the scripts its own item names.
+claim_rejects "a flag the script it names does not accept" \
+  '- `real_tool.sh` grew `--other-flag`, which is the shape of the thing.
+' \
+  'says `--other-flag`, which tools/real_tool.sh does not accept'
+claim_accepts "a flag the script it names does accept" \
+  '- `real_tool.sh` grew `--real-flag`, which is the shape of the thing.
+'
+claim_rejects "a flag no script in the tree accepts" \
+  '- The runner grew `--nowhere-flag`, and nothing else changed.
+' \
+  'says `--nowhere-flag`, which no script in this tree accepts'
+claim_accepts "a flag some script accepts, in an item that names no script" \
+  '- The runner grew `--other-flag`, and nothing else changed.
+'
+# The prefix case: a claim on `--list` is not satisfied by a `--list-casks`
+# somewhere in the tree, because the fragment did not say `--list-casks`.
+claim_rejects "a flag that is only ever a prefix of another" \
+  '- The runner grew `--list`, and nothing else changed.
+' \
+  'says `--list`, which no script in this tree accepts'
+
+# 3. The scoping that keeps this from crying wolf. Every one of these is a
+#    form the fragments in changelog.d/ use today.
+claim_accepts "another tool's flag, written in the span with its tool" \
+  '- The cleanup empties `brew --cache` and calls `apt-get --yes` with it,
+  which no script here has to accept.
+'
+claim_accepts "a quoted command line that wraps onto a continuation line" \
+  '- The bare run went straight to `winget upgrade --all
+  --include-unknown --accept-package-agreements --disable-interactivity`.
+'
+claim_accepts "an invocation form, which is prose about how to run a script" \
+  '- Every usage line in the repository is written `./x.sh`, and the check now
+  runs both ways.
+'
+claim_accepts "runtime state named in backticks" \
+  '- The run records what it freed in `last-run.json` and `history.tsv`.
+'
+claim_accepts "a single-dash flag, which is where the other tools live" \
+  '- The snapshot stopped using `find -printf` and `sed -i`.
+'
+
+# 4. Removal wording, which a fragment about a deletion needs — scoped to the
+#    sentence it sits in. #36's entry opened "`v1_stay_fresh.sh` no longer runs
+#    its fixed cleanup" and made its false claim two sentences later; exempting
+#    the whole entry would have exempted the lie with it.
+claim_accepts "a file the fragment says was removed" \
+  '- `missing_tool.sh` was removed; the work it did now happens in
+  `real_tool.sh`.
+'
+claim_accepts "a file the fragment says no longer ships" \
+  '- `missing_tool.sh` no longer ships with the package.
+'
+claim_rejects "a false claim in a later sentence of a removal entry" \
+  '- `real_tool.sh` no longer runs its fixed cleanup on a bare invocation.
+  `--nowhere-flag` is the opt-in that keeps the old sequence.
+' \
+  'says `--nowhere-flag`, which no script in this tree accepts'
+
+# 5. The counts are reported, so a reader can see the check had subjects.
+claim_run '- `real_tool.sh` grew `--real-flag`, the same shape as
+  `other/other_tool.sh --other-flag`.
+'
+expect "check reports what it resolved" has "$claim_out" "file and 1 flag claim(s) hold against this tree"
+
+# 6. The floor. The usual "it inspected zero subjects" guard cannot be used
+#    here — changelog.d/ is empty right after a release and a fragment may have
+#    no backticks at all — so the guard is a canary through the same extractor.
+#    Break the extractor and the canary must say so, whatever the fragments
+#    hold. This is the assertion that fails when somebody's edit quietly turns
+#    the claim check into a no-op.
+broken="$WORK/broken-changelog.sh"
+cp "$SCRIPT" "$broken"
+sed_i 's/^  add("FILE", first, sid)$/  return/' "$broken"
+expect "the fixture really did break the extractor" \
+  test "$(grep -c 'add("FILE", first, sid)' "$broken")" -eq 0
+root="$(claim_root)"
+printf -- '- `real_tool.sh` grew `--real-flag`.\n' > "$root/changelog.d/added/claim.md"
+out="$(CHANGELOG_ROOT="$root" "$broken" check 2>&1)"
+rc=$?
+expect "a claim check that stopped extracting fails (exit $rc)" rc_is 1
+expect "and says it has stopped checking" has "$out" "this check has stopped checking"
+
+# 7. A release must not paste a fragment whose claims do not hold, and must
+#    leave the tree alone when it refuses.
+root="$(claim_root)"
+printf -- '- `missing_tool.sh` learned to do the thing.\n' > "$root/changelog.d/added/claim.md"
+before="$(snapshot "$root")"
+run "$root" release 3.0.0
+after="$(snapshot "$root")"
+expect "release refuses a fragment whose claim does not hold (exit $rc)" rc_is 1
+expect "a release refused over a claim touches nothing" same "$before" "$after"
+
 # --- preview ---------------------------------------------------------------
 root="$(fresh_root)"
 run "$root" preview

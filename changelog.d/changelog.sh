@@ -23,8 +23,10 @@
 #   preview           Print the [Unreleased] section as it will read: the
 #                     fragments first, then whatever the section already holds,
 #                     type by type in Keep a Changelog order. Writes nothing.
-#   check             Validate every fragment; exit 1 on the first shape that
-#                     would not paste cleanly. Runs in the static suite.
+#   check             Validate every fragment: the shape that would not paste
+#                     cleanly, and the claims it makes about the tree it ships
+#                     with — a file or a long flag named in backticks that is
+#                     nowhere in this checkout. Runs in the static suite.
 #   release VERSION   Move the fragments and the entries still under
 #                     [Unreleased] under "## [VERSION] - DATE", leave
 #                     [Unreleased] empty, and delete the fragment files.
@@ -71,7 +73,8 @@ Usage:
 
 Commands:
   preview            Print the [Unreleased] section as it will read; writes nothing
-  check              Validate every fragment under changelog.d/; exit 1 on a problem
+  check              Validate every fragment under changelog.d/ — its shape, and the
+                     files and flags it names against this tree; exit 1 on a problem
   release VERSION    Move the fragments and the current [Unreleased] entries under
                      "## [VERSION] - DATE" in CHANGELOG.md and delete the fragments
 
@@ -279,6 +282,244 @@ need_changelog() {
   fi
 }
 
+# --- claims ----------------------------------------------------------------
+# The shape check below asks whether a fragment would paste. It does not ask
+# whether it is true, and two pull requests shipped fragments describing work
+# that was never committed: #36 said `v1_stay_fresh.sh` had grown a
+# `--legacy-run` opt-in, #37 said `install_apps.sh` "grew `--list-casks` and
+# `--list-formulae`" and listed twelve new Homebrew entries. Both branches held
+# nothing but the fragments. Both passed check, because both would have pasted
+# perfectly. A fragment was a promise nothing tested.
+#
+# Prose cannot be validated. Two forms in it can, and they are the two the
+# incidents turned on: a file named in backticks should be in the tree, and a
+# long flag named in backticks should be one some script here accepts. The
+# scoping is the whole design — a check that fires on correct writing is a
+# check people learn to work around, and test_doc_citations.sh already carries
+# the scar of that (it dropped bare `name.sh` in prose after flagging the
+# hostname `formulae.brew.sh`). So:
+#
+#   * A code span is one span even when it wraps onto a continuation line, and
+#     only its first word can name a file. `winget upgrade --all
+#     --include-unknown --accept-package-agreements` is one quoted command line
+#     for another tool, not four claims about this repository.
+#   * A flag is claimed only when it stands alone in its span. That is the line
+#     between "this repository accepts `--list-casks`" and the borrowed flags
+#     the fragments quote constantly — `brew --cache`, `apt-get --yes`,
+#     `find -delete`, `git add -A`, `sed -i` — every one of which names its
+#     tool inside the span. Write a borrowed flag that way and it is not a
+#     claim about this tree. Single-dash flags are not claimed at all: that is
+#     where the other tools live, and telling `-Yes` (PowerShell, ours) from
+#     `-printf` (find, not ours) needs a list of other people's CLIs.
+#   * A flag claim is resolved against the scripts its own item names, and only
+#     against the whole tree when the item names none. Item scope is what makes
+#     it bite: `--list-casks` was nowhere, but a repo-wide search for a
+#     `--yes` or a `--dry-run` finds one in some other script and passes
+#     anything. Item, not sentence — an entry may name its script in one
+#     sentence and its new flag in the next — and any one of the named scripts
+#     satisfies it, because "`install_devtools.sh` and `stay_fresh.sh` learned
+#     `--trend`" is true when one of them did. Requiring all of them was tried
+#     against the fragments in the tree and produced five false reports.
+#   * An invocation — `./x.sh`, `.\stay_fresh.ps1` — is not a file claim. The
+#     fragment on file modes writes "every usage line in the repository is
+#     written `./x.sh`", which is prose about a form, not about a file.
+#   * A file extension is a source extension. Fragments name runtime state in
+#     backticks too — `last-run.json`, `history.tsv`, `steps.tsv` — and those
+#     are written on the machine, not committed here.
+#   * Removal wording ("removed", "deleted", "no longer", "renamed",
+#     "formerly", "retired", "replaced by", "gone") exempts the *sentence* it
+#     sits in, not the whole entry. A fragment about a deletion has to be able
+#     to name what it deleted; but #36's own first sentence was "`v1_stay_fresh.sh`
+#     no longer runs its fixed cleanup", and exempting the entry would have
+#     exempted the `--legacy-run` claim two sentences later — the one lie here
+#     that is mechanically catchable.
+#
+# What this does NOT catch, so nobody reads a pass as more than it is: #36's
+# other fragment claimed the installers "refuse a non-interactive real run that
+# omitted `--yes`". Both installers already contained `--yes`; the claim was
+# about behaviour, and behaviour is what the package suites are for.
+#
+# Claims are resolved against the tree under ROOT — the working tree, not the
+# index, so a file created but not yet `git add`ed satisfies a claim locally.
+# CI checks out the branch, where the two are the same thing, and that is the
+# gate that caught nothing before this existed.
+
+# Emits one claim per line: KIND \t item-line \t exempt \t value.
+# The item's lines are joined before they are read, so a span that wraps is one
+# span. Deliberately POSIX awk: no interval expressions (the awk on older macOS
+# matches them literally), no gensub, no delete-whole-array.
+CLAIM_AWK='
+BEGIN { item = 0; buf = ""; c = 0 }
+/^- / { flush(); item = NR; buf = $0; next }
+      { buf = (buf == "" ? $0 : buf " " $0) }
+END   { flush() }
+
+function add(kind, value, sid) { c++; ck[c] = kind; cv[c] = value; cs[c] = sid }
+
+function record(span, sid,   first, base, d) {
+  gsub(/^[ \t]+|[ \t]+$/, "", span)
+  if (span == "") return
+  if (span ~ /^--[A-Za-z][A-Za-z0-9-]*$/) { add("FLAG", span, sid); return }
+  first = span; sub(/[ \t].*$/, "", first)
+  if (first ~ /\\/ || first ~ /^\.\//) return
+  if (first !~ /^[A-Za-z0-9_.~\/-]+\.(sh|zsh|ps1|psm1|psd1|py|lua|awk|md)$/) return
+  base = first; sub(/^.*\//, "", base)
+  d = gsub(/\./, ".", base)
+  if (d != 1) return
+  add("FILE", first, sid)
+}
+
+function flush(   n, part, i, p, sid, j, ex) {
+  if (buf == "") return
+  n = split(buf, part, "`")
+  sid = 1; stext[1] = ""
+  for (i = 1; i <= n; i++) {
+    if (i % 2 == 1) {
+      p = part[i]
+      while (match(p, /\. /)) {
+        stext[sid] = stext[sid] substr(p, 1, RSTART + RLENGTH - 1)
+        sid++; stext[sid] = ""
+        p = substr(p, RSTART + RLENGTH)
+      }
+      stext[sid] = stext[sid] p
+    } else {
+      stext[sid] = stext[sid] part[i]
+      if (i < n) record(part[i], sid)
+    }
+  }
+  for (j = 1; j <= c; j++) {
+    ex = (tolower(stext[cs[j]]) ~ /remove|delet|no longer|renamed|formerly|retired|replaced by|gone/) ? 1 : 0
+    printf "%s\t%d\t%d\t%s\n", ck[j], item, ex, cv[j]
+  }
+  c = 0; buf = ""
+  split("", stext)
+}
+'
+
+TREE_INDEX=""
+SCRIPT_FILES=()
+CLAIMS_FILE=0
+CLAIMS_FLAG=0
+CLAIMS_EXEMPT=0
+CLAIM_PROBLEMS=0
+
+# Every file under ROOT, repo-relative. .git is pruned for speed and for
+# honesty: a branch name in .git/logs mentioning a flag is not a script that
+# accepts it, and the first draft passed on exactly that.
+build_tree_index() {
+  local p
+  TREE_INDEX="$(cd "$ROOT" && find . \
+    -name .git -prune -o -name __pycache__ -prune -o -name .ruff_cache -prune -o \
+    -type f -print | sed 's|^\./||' | LC_ALL=C sort)"
+  SCRIPT_FILES=()
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    SCRIPT_FILES[${#SCRIPT_FILES[@]}]="$ROOT/$p"
+  done <<< "$({ grep -E '\.(sh|zsh|ps1|psm1|py|lua|awk)$' <<< "$TREE_INDEX"; } || true)"
+}
+
+# Paths in the tree ending in this token at a path-segment boundary, so a fragment
+# may name `install_apps.sh` or `macos-initial-setup/install_apps.sh` and mean
+# the same file. A bare basename that matches two files (there are two
+# stay_fresh.sh) resolves to both; the fragment has not said which.
+paths_named() {
+  local esc="${1//./\\.}"
+  { grep -E "(^|/)$esc\$" <<< "$TREE_INDEX"; } || true
+}
+
+# The flag as a script would write it: not preceded by another dash, and not
+# the prefix of a longer flag, so a claim on `--list` is not satisfied by
+# `--list-casks`.
+flag_pattern() { printf '(^|[^-[:alnum:]])%s([^-A-Za-z0-9_]|$)' "$1"; }
+
+check_claims() {
+  local f="$1" rel="$2"
+  local claims items item kind ln ex value hits h pat scope bad=0
+  # `|| true` rather than letting set -e take it: an awk that cannot run is a
+  # broken check, and the floor above is what says so out loud. Exiting here
+  # would leave no message at all.
+  claims="$(awk "$CLAIM_AWK" "$f")" || true
+  [[ -n "$claims" ]] || return 0
+  items="$(cut -f2 <<< "$claims" | uniq)"
+  while IFS= read -r item; do
+    [[ -n "$item" ]] || continue
+    local named=() named_rel=""
+    # The file claims of this item come first: they are what a flag claim in
+    # the same item is resolved against.
+    while IFS=$'\t' read -r kind ln ex value; do
+      [[ "$kind" == "FILE" && "$ln" == "$item" ]] || continue
+      if [[ "$ex" == 1 ]]; then CLAIMS_EXEMPT=$((CLAIMS_EXEMPT + 1)); continue; fi
+      CLAIMS_FILE=$((CLAIMS_FILE + 1))
+      hits="$(paths_named "$value")"
+      if [[ -z "$hits" ]]; then
+        err "$rel:$ln names \`$value\`, which is not a file in this tree"
+        bad=$((bad + 1))
+        continue
+      fi
+      while IFS= read -r h; do
+        # A README is not a CLI: a flag documented in Markdown and implemented
+        # nowhere is the half-done change this is here to catch.
+        case "$h" in
+          *.md) ;;
+          *)
+            named[${#named[@]}]="$ROOT/$h"
+            if [[ -z "$named_rel" ]]; then named_rel="$h"; else named_rel="$named_rel, $h"; fi
+            ;;
+        esac
+      done <<< "$hits"
+    done <<< "$claims"
+    while IFS=$'\t' read -r kind ln ex value; do
+      [[ "$kind" == "FLAG" && "$ln" == "$item" ]] || continue
+      if [[ "$ex" == 1 ]]; then CLAIMS_EXEMPT=$((CLAIMS_EXEMPT + 1)); continue; fi
+      CLAIMS_FLAG=$((CLAIMS_FLAG + 1))
+      pat="$(flag_pattern "$value")"
+      if (( ${#named[@]} > 0 )); then
+        grep -qE -- "$pat" "${named[@]}" && continue
+        if (( ${#named[@]} > 1 )); then
+          scope="none of $named_rel accepts"
+        else
+          scope="$named_rel does not accept"
+        fi
+        err "$rel:$ln says \`$value\`, which $scope"
+      else
+        if (( ${#SCRIPT_FILES[@]} > 0 )); then
+          grep -qE -- "$pat" "${SCRIPT_FILES[@]}" && continue
+        fi
+        err "$rel:$ln says \`$value\`, which no script in this tree accepts"
+      fi
+      bad=$((bad + 1))
+    done <<< "$claims"
+  done <<< "$items"
+  CLAIM_PROBLEMS=$((CLAIM_PROBLEMS + bad))
+  (( bad == 0 ))
+}
+
+# Every check in this repository carries a guard against having quietly stopped
+# checking. The usual one — "it inspected zero subjects" — cannot be used here:
+# changelog.d/ is legitimately empty right after a release, and a fragment is
+# allowed to be prose with no backticks in it, so zero claims is a normal
+# Tuesday. The guard is a canary instead: one line carrying one file claim, one
+# flag claim and one sentence that exempts itself, pushed through the same
+# extractor the fragments go through. If the span reader, the classifier, the
+# sentence split or the removal wording stops working, this stops matching and
+# says so, whatever the fragments happen to contain.
+claim_floor() {
+  local got want
+  want='FILE 1 0 canary_floor.sh FLAG 1 0 --canary-floor FILE 1 1 canary_gone.sh'
+  got="$(awk "$CLAIM_AWK" <<EOF | tr '\t\n' '  '
+- \`canary_floor.sh\` grew \`--canary-floor\`. The old \`canary_gone.sh\` was removed.
+EOF
+)" || true
+  got="${got%"${got##*[![:space:]]}"}"
+  if [[ "$got" != "$want" ]]; then
+    err "the claim extractor no longer reads its own canary — this check has stopped checking"
+    err "       wanted: $want"
+    err "       got:    ${got:-(nothing)}"
+    return 1
+  fi
+  return 0
+}
+
 # --- check -----------------------------------------------------------------
 do_check() {
   local problems=0 count=0 f rel type base
@@ -286,6 +527,12 @@ do_check() {
     err "no changelog.d/ at $ROOT"
     return 1
   fi
+  build_tree_index
+  # A claim check that cannot read its own canary reads nothing; running it
+  # over fifty fragments would bury that one line under fifty copies of
+  # whatever awk is complaining about.
+  local claims_ok=1
+  claim_floor || { problems=$((problems + 1)); claims_ok=0; }
   # Anything at the top level other than the script, its README and the lint
   # config is a fragment that missed its type directory.
   #
@@ -354,14 +601,28 @@ do_check() {
         err "$rel does not end with a newline"; problems=$((problems + 1)); continue
       fi
       count=$((count + 1))
-      ok "$rel"
+      # Shape first, claims second: a fragment that would not paste is already
+      # a failure, and reading the tree for it would only bury that line.
+      if (( claims_ok == 0 )); then
+        ok "$rel"
+      elif check_claims "$f" "$rel"; then
+        ok "$rel"
+      else
+        problems=$((problems + 1))
+      fi
     done
   done
   if (( problems > 0 )); then
     err "$problems fragment problem(s)"
+    if (( CLAIM_PROBLEMS > 0 )); then
+      err "a fragment is checked against the tree it ships with: add the file or the flag,"
+      err "correct the name, say the change removes it, or — for another tool's flag —"
+      err "write it in the span with its tool, the way \`brew --cache\` already is"
+    fi
     return 1
   fi
   ok "$count fragment(s) would paste cleanly"
+  ok "$CLAIMS_FILE file and $CLAIMS_FLAG flag claim(s) hold against this tree ($CLAIMS_EXEMPT about removals, not checked)"
   return 0
 }
 
