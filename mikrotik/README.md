@@ -87,6 +87,7 @@ pinned CHR version and its digest are bumped.
    :global TgBotToken $TG_BOT_TOKEN;
    :global TgChatId   $TG_CHAT_ID;
    ```
+
 5. Run `detect_internet` once if you plan to use `wan_failover_notify`. It
    enables `detect-interface-list=all`, which is the prerequisite for the
    per-interface `detect-internet-state` property to be populated.
