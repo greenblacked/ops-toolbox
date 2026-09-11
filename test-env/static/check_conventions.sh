@@ -447,7 +447,18 @@ dry_run_args() {
 # a version table. Excluded because the alternative is contorting the scripts
 # to work around another project's defaults — but named here, and reported
 # when it fires, because a silent exclusion list is how coverage rots.
-IGNORE_RE='/\.config(/go(/.*)?)?( |$)'
+#
+# Homebrew's bootsnap cache is the same shape and arrived the same way. A dry
+# run of install_apps.sh or brewfile.sh calls `brew info` to check a formula
+# name resolves before planning to install it - a read - and Homebrew compiles
+# its own Ruby into ~/Library/Caches/Homebrew/bootsnap, roughly 950 files. The
+# scripts store nothing. This was invisible until the dry-run snapshot started
+# working on macOS: with GNU-only `find -printf` the before and after were both
+# empty, so the write was there all along and nothing could see it.
+# The two bare parents are listed because Homebrew creates them on the way to
+# its cache; they are matched only where the path ENDS there, so a real write
+# to ~/Library/Preferences or ~/Library/Caches/SomethingElse still fails.
+IGNORE_RE='/\.config(/go(/.*)?)?( |$)|/Library(/Caches)?( |$)|/Library/Caches/Homebrew(/.*)?( |$)'
 
 snapshot() {
   # Names plus mtimes, so a rewritten file is caught as well as a new one.
