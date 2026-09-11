@@ -311,12 +311,14 @@ ok "$n tracked configs inspected"
 # files go through compile() rather than py_compile, which would write a
 # __pycache__ into the tracked tree.
 if (( ${#py_parse[@]} > 0 )); then
+  py_verdicts=0
   while IFS=$'\t' read -r verdict message; do
     case "$verdict" in
       ok)   ok "$message" ;;
       err)  err "$message" ;;
       skip) skip "$message" ;;
     esac
+    py_verdicts=$(( py_verdicts + 1 ))
   done < <(cd "$D" && "$PY" - "${py_parse[@]}" <<'PYEOF'
 import json
 import sys
@@ -364,6 +366,13 @@ for rel in sys.argv[1:]:
         say("err", rel + " does not parse: " + str(exc).splitlines()[0])
 PYEOF
   )
+  # A process substitution's exit status is invisible to the shell, so an
+  # interpreter that cannot start emits no lines, the loop body never runs and
+  # every config passes by saying nothing. One verdict per file is the contract;
+  # assert it rather than infer it from silence.
+  if (( py_verdicts != ${#py_parse[@]} )); then
+    err "the parse pass emitted $py_verdicts verdict(s) for ${#py_parse[@]} file(s) — $PY did not run them all"
+  fi
 fi
 
 # The link-or-copy decision lives in copy_mode(); the README says "Installed

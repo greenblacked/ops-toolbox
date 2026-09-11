@@ -134,6 +134,16 @@ elif (( CHECK )); then
   missing "macOS suite layout (/repo, /.dockerenv, /rootonly, /rootlocked)"
 elif [[ "$SUDO" == "none" ]]; then
   skip "macOS suite layout: no root"
+elif [[ ! -e /.dockerenv && "${CLAUDE_CODE_REMOTE:-}" != "true" ]]; then
+  # /.dockerenv is not decoration: it is the guard
+  # macos-initial-setup/tests/test_stay_fresh_steps.sh checks before it agrees
+  # to clear /Library/Caches and /Library/Logs/DiagnosticReports, on the
+  # promise that those paths belong to a disposable container. Planting it on a
+  # machine that is not disposable — which is exactly what --force asks for —
+  # makes that promise false for every later run, and nothing ever removes it.
+  # The rest of --force (linters, the attribution guard) is what a developer
+  # wants from it; this one piece is not.
+  skip "macOS suite layout: not a disposable session, and /.dockerenv would tell the suites otherwise"
 else
   layout_ok=1
   as_root touch /.dockerenv || layout_ok=0

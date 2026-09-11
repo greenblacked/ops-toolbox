@@ -1756,8 +1756,9 @@ else
 fi
 
 # 3. Disk free before
+FREE_BEFORE_KNOWN=1
 FREE_BEFORE_B="$(disk_free_bytes)" \
-  || warn "could not read free space on / — the reclaimed total will read 0B"
+  || { FREE_BEFORE_KNOWN=0; warn "could not read free space on / — this run will report no reclaimed total"; }
 ok "disk free on /: $(human_bytes "$FREE_BEFORE_B")"
 
 # 4. Homebrew check (only relevant if we aren't skipping it)
@@ -3140,6 +3141,13 @@ plist_program() {
       while (want != "" && match(line, /<string>[^<]*<\/string>/)) {
         v = substr(line, RSTART + 8, RLENGTH - 17)
         line = substr(line, RSTART + RLENGTH)
+        # A path is stored XML-escaped: "R&D Tools" is written R&amp;D Tools.
+        # Compared raw against the filesystem it never exists, so the agent
+        # reads as orphaned and --prune-orphan-agents deletes a live one.
+        # &amp; goes last, or &amp;lt; would decode twice into <.
+        gsub(/&lt;/, "<", v); gsub(/&gt;/, ">", v)
+        gsub(/&quot;/, "\"", v); gsub(/&apos;/, "'"'"'", v)
+        gsub(/&amp;/, "\\&", v)
         if (want == "p") { print v; exit }
         args[++n] = v
         if (n == 2) exit
@@ -3664,13 +3672,22 @@ step_snapshots() {
     info "a Time Machine backup is running — snapshots listed, not thinned this run"
     return 0
   fi
-  SNAPSHOTS_THINNED=1
-  local d
+  # Set after the loop, from what the loop achieved: tmutil can refuse every
+  # date — a snapshot pinned by a mount, sudo gone stale mid-run — and the
+  # verdict line and the notification both read this flag. Announcing "thinned"
+  # over a run that deleted nothing is how a disk stays full while the report
+  # says it was cleaned.
+  local d deleted=0
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
-    run_cmd "tmutil deletelocalsnapshots $d" sudo tmutil deletelocalsnapshots "$d" \
-      || warn "could not delete snapshot $d"
+    if run_cmd "tmutil deletelocalsnapshots $d" sudo tmutil deletelocalsnapshots "$d"; then
+      deleted=$(( deleted + 1 ))
+    else
+      warn "could not delete snapshot $d"
+    fi
   done <<<"$dates"
+  (( deleted > 0 )) && SNAPSHOTS_THINNED=1
+  return 0
 }
 
 # The largest entries under the places that fill a Mac up, so the next
@@ -3745,8 +3762,19 @@ for (( step_i=0; step_i<${#STEP_IDS[@]}; step_i++ )); do
 done
 
 ELAPSED=$(( $(date +%s) - START_ALL ))
-FREE_AFTER_B="$(disk_free_bytes)" || true
-RECLAIMED_B=$(( FREE_AFTER_B - FREE_BEFORE_B ))
+# disk_free_bytes prints 0 and returns 1 when df cannot answer. Taken as a
+# real figure that makes RECLAIMED_B the negative of the whole disk, and the
+# number travels: the summary, last-run.json, history.tsv, and every --trend
+# average computed from them afterwards. Unknown is its own answer.
+FREE_AFTER_KNOWN=1
+FREE_AFTER_B="$(disk_free_bytes)" || FREE_AFTER_KNOWN=0
+if (( FREE_AFTER_KNOWN && FREE_BEFORE_KNOWN )); then
+  RECLAIMED_B=$(( FREE_AFTER_B - FREE_BEFORE_B ))
+else
+  RECLAIMED_B=0
+  FREE_AFTER_B=""
+  warn "free space on / could not be read; this run reports no reclaimed total"
+fi
 
 # ---------------------------------------------------------------------------
 # summary
@@ -3754,10 +3782,16 @@ RECLAIMED_B=$(( FREE_AFTER_B - FREE_BEFORE_B ))
 hr
 bold "=== stay_fresh: summary ==="
 printf "  elapsed:     %s\n" "$(human_duration "$ELAPSED")"
-printf "  disk free:   %s -> %s  %s(%s reclaimed)%s\n" \
-  "$(human_bytes "$FREE_BEFORE_B")" \
-  "$(human_bytes "$FREE_AFTER_B")" \
-  "$C_GREEN" "$(human_bytes "$RECLAIMED_B")" "$C_RESET"
+if (( FREE_AFTER_KNOWN && FREE_BEFORE_KNOWN )); then
+  printf "  disk free:   %s -> %s  %s(%s reclaimed)%s\n" \
+    "$(human_bytes "$FREE_BEFORE_B")" \
+    "$(human_bytes "$FREE_AFTER_B")" \
+    "$C_GREEN" "$(human_bytes "$RECLAIMED_B")" "$C_RESET"
+else
+  # Saying 0B here would be a measurement; this is the absence of one, and the
+  # per-step total below is still real.
+  printf "  disk free:   %sunknown (df could not read /)%s\n" "$C_DIM" "$C_RESET"
+fi
 printf "  steps freed: %s%s%s %s(sum of per-step deltas; more precise than df)%s\n" \
   "$C_GREEN" "$(human_bytes "$TOTAL_FREED_B")" "$C_RESET" "$C_DIM" "$C_RESET"
 if (( DRY_RUN )); then

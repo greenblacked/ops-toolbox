@@ -162,6 +162,7 @@ run_sf() {
     SNAPSHOTS="${SNAPSHOTS:-}" \
     TM_RUNNING="${TM_RUNNING:-}" \
     TM_DELETE_HANG="${TM_DELETE_HANG:-}" \
+    TM_DELETE_FAIL="${TM_DELETE_FAIL:-}" \
     DOCKER_INFO_HANG="${DOCKER_INFO_HANG:-}" \
     SU_HANG="${SU_HANG:-}" \
     STAY_FRESH_SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}" \
@@ -1683,7 +1684,8 @@ snap_env() {
     'case "${1:-}" in' \
     '  listlocalsnapshots) echo "Snapshots for disk /:"' \
     '    [ -n "${SNAPSHOTS:-}" ] && { echo "com.apple.TimeMachine.2026-09-01-101010.local"; echo "com.apple.TimeMachine.2026-09-07-030000.local"; } ;;' \
-    '  status) echo "Backup session status:"; echo "{"' \
+    '  deletelocalsnapshots) [ -n "${TM_DELETE_FAIL:-}" ] && exit 1 ;;' \
+  '  status) echo "Backup session status:"; echo "{"' \
     '    if [ -n "${TM_RUNNING:-}" ]; then echo "    BackupPhase = Copying;"; echo "    Running = 1;"; else echo "    Running = 0;"; fi' \
     '    echo "}" ;;' \
     'esac; exit 0'
@@ -1725,6 +1727,21 @@ assert_not_called "nothing is deleted under a running backup" "$d/calls" "delete
 assert_contains "the snapshots are still listed" "$out" "2 local snapshot(s):"
 assert_contains "the verdict says kept, not thinned" "$out" "2 local snapshot(s) kept"
 assert_contains "a running backup is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# tmutil can refuse every date — a snapshot pinned by a mount, a sudo
+# credential gone stale mid-run. The flag that drives the verdict used to be
+# set before the loop rather than from it, so a run that deleted nothing still
+# announced the snapshots thinned, and the disk stayed full while the report
+# said otherwise.
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 TM_DELETE_FAIL=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "every deletion failing is a warned run, not a failed one" "0" "$rc"
+assert_contains "and it is counted as a warning" "$out" "warn steps:  1"
+assert_called "the deletions were attempted" "$d/calls" "sudo tmutil deletelocalsnapshots 2026-09-01-101010"
+assert_contains "each failure is named" "$out" "could not delete snapshot 2026-09-01-101010"
+assert_contains "the verdict says kept when nothing was deleted" "$out" "2 local snapshot(s) kept"
+assert_not_contains "a run that deleted nothing does not claim to have thinned" "$out" "snapshot(s) thinned"
 rm -rf "$d"
 
 # Listing never asks: tmutil status is only consulted before a deletion.
@@ -1972,6 +1989,15 @@ agents_env() {
   printf '%s\n' '<plist version="1.0"><dict><key>Program</key>' '<string>/bin/ls</string></dict></plist>' \
     > "$la/com.ok.plist"
   printf 'bplist00binarycontent' > "$la/com.binary.plist"
+  # A path with a character XML has to escape. The file is really there, so
+  # the only way this reads as orphaned is comparing the escaped spelling
+  # against the filesystem — and --prune-orphan-agents then deletes a live
+  # agent. "R&D Tools" is an ordinary application name.
+  mkdir -p "$d/home/R&D Tools"
+  : > "$d/home/R&D Tools/helper"
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key>' \
+    "<string>$d/home/R&amp;D Tools/helper</string></dict></plist>" \
+    > "$la/com.amp.ok.plist"
   printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/Library/Gone/daemon</string></dict></plist>' \
     > /Library/LaunchDaemons/com.gone.daemon.plist
   printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/bin/ls</string></dict></plist>' \
@@ -1991,6 +2017,7 @@ assert_not_contains "a present program is fine" "$out" "com.ok.plist ->"
 assert_contains "a system-level orphan is named with its command" "$out" \
   "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
 assert_contains "a binary plist without plutil is left uninspected" "$out" "1 binary plist(s) not inspected"
+assert_not_contains "an XML-escaped program path is resolved before it is judged" "$out" "com.amp.ok.plist"
 assert_contains "user-level orphans are kept by default" "$out" "2 user-level plist(s) kept; --prune-orphan-agents"
 assert_contains "orphans reach the verdict" "$out" "3 orphaned launch agent(s)"
 assert_exists "nothing is removed by default" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
@@ -2126,17 +2153,26 @@ assert_gone   "~/.Trash is still emptied without a uid" "$d/home/.Trash/own"
 rm -rf /Volumes "$d"
 
 # ===========================================================================
-section "df unreadable (the summary still adds up)"
-# An empty free-space reading used to flow into every later size calculation.
-# It is reported once and treated as zero.
+section "df unreadable (the summary reports no measurement rather than a wrong one)"
+# An empty free-space reading used to flow into every later size calculation,
+# so this asserted it was "treated as zero" and the summary printed
+# 0B -> 0B (0B reclaimed). That reads as a run which freed nothing, which is a
+# measurement; what actually happened is that nothing was measured. Worse, only
+# one of the two readings has to fail for the subtraction to invent a number —
+# a working df before and a failing df after made RECLAIMED_B the negative of
+# the whole disk, and it travelled into last-run.json, history.tsv and every
+# --trend average built on them. The assertions are rewritten to the new
+# intent: an unmeasured run says so, and the per-step total, which is counted
+# rather than subtracted, still stands.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/df" 'exit 1'
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "an unreadable df does not fail the run" "0" "$rc"
 assert_contains "the unreadable df is reported once" "$out" \
-  "could not read free space on / — the reclaimed total will read 0B"
+  "could not read free space on / — this run will report no reclaimed total"
 assert_contains "the preflight still prints a number" "$out" "disk free on /: 0B"
-assert_contains "the summary still adds up" "$out" "disk free:   0B -> 0B  (0B reclaimed)"
+assert_contains "the summary declines to invent a figure" "$out" "disk free:   unknown (df could not read /)"
+assert_not_contains "and does not present the absence as a measurement" "$out" "0B reclaimed"
 assert_not_contains "no printf complains about an empty number" "$out" "invalid number"
 assert_contains "the run still reaches its verdict" "$out" "stay_fresh OK"
 if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d['reclaimed_bytes'], int), d" \

@@ -17,6 +17,13 @@
 # The regexes are literals rather than function arguments. Passed as a string,
 # `/\$\{/` loses its backslashes, matches empty, and the scan loop never
 # advances: the first draft of this file hung instead of failing.
+#
+# Each loop also copies RSTART and RLENGTH before doing anything else with the
+# match. They are globals, and remember() runs a match() of its own, so reading
+# them afterwards advances the scan by the inner match's offsets: a line with
+# two variables was rescanned seven times, and remember()'s own no-match return
+# would leave RLENGTH at -1, where substr(s, 0) returns the string whole and the
+# loop stops advancing at all.
 
 function remember(kind, tok,    name) {
   if (!match(tok, /[A-Z][A-Z0-9_]*/)) return
@@ -34,18 +41,20 @@ lang == "sh" {
   # Read as ${NAME:-default}, ${NAME:+alt} or ${NAME}.
   s = $0
   while (match(s, /\$\{[A-Z][A-Z0-9_]*(:-|:\+|\})/)) {
-    if (RLENGTH <= 0) break
-    remember("read", substr(s, RSTART, RLENGTH))
-    s = substr(s, RSTART + RLENGTH)
+    start = RSTART; len = RLENGTH
+    if (len <= 0) break
+    remember("read", substr(s, start, len))
+    s = substr(s, start + len)
   }
   # Assigned as NAME= at the start of a line, after a separator, or as a
   # one-command prefix such as `CAPTURE_STDERR=1 capture_cmd ...`. local,
   # export, readonly and `declare -x` spellings all count.
   s = $0
   while (match(s, /(^|[;&|(]|[ \t])(local |export |readonly |declare -[a-zA-Z]+ )?[A-Z][A-Z0-9_]*=/)) {
-    if (RLENGTH <= 0) break
-    remember("assign", substr(s, RSTART, RLENGTH))
-    s = substr(s, RSTART + RLENGTH)
+    start = RSTART; len = RLENGTH
+    if (len <= 0) break
+    remember("assign", substr(s, start, len))
+    s = substr(s, start + len)
   }
 }
 
@@ -53,20 +62,22 @@ lang == "py" {
   # Read as os.environ["NAME"], os.environ.get("NAME") or os.getenv("NAME").
   s = $0
   while (match(s, /(os\.environ(\.get)?\(?\[?|os\.getenv\()["'][A-Z][A-Z0-9_]*/)) {
-    if (RLENGTH <= 0) break
-    tok = substr(s, RSTART, RLENGTH)
+    start = RSTART; len = RLENGTH
+    if (len <= 0) break
+    tok = substr(s, start, len)
     sub(/^os\.[a-z]*/, "", tok)   # os.getenv would otherwise contribute no name
     remember("read", tok)
-    s = substr(s, RSTART + RLENGTH)
+    s = substr(s, start + len)
   }
   # os.environ["NAME"] = ... is the only way a script sets its own.
   s = $0
   while (match(s, /os\.environ\[["'][A-Z][A-Z0-9_]*["']\][ \t]*=[^=]/)) {
-    if (RLENGTH <= 0) break
-    tok = substr(s, RSTART, RLENGTH)
+    start = RSTART; len = RLENGTH
+    if (len <= 0) break
+    tok = substr(s, start, len)
     sub(/^os\.[a-z]*/, "", tok)
     remember("assign", tok)
-    s = substr(s, RSTART + RLENGTH)
+    s = substr(s, start + len)
   }
 }
 

@@ -15,6 +15,23 @@ cd "$REPO_ROOT" || { echo "cannot enter $REPO_ROOT" >&2; exit 1; }
 # shellcheck source=../lib/discover_clis.sh
 . "$REPO_ROOT/test-env/lib/discover_clis.sh"
 
+# This suite runs every discovered script for real — --help, an unknown flag,
+# and a full dry run — so it is a test suite in exactly the sense the
+# "must not inherit the host environment" section below polices, and it is on
+# that section's own list. It pins HOME and TMPDIR at each invocation; these are
+# the rest. Unset rather than set: an XDG_CONFIG_HOME left alone sends a dry run
+# to the developer's real ~/.config, which the scratch snapshot cannot see, so
+# the write goes unnoticed and unreported.
+#
+# The list is checked against the scripts themselves further down. A script that
+# starts reading a new variable from the environment fails this suite until the
+# name is added here, which is the point: nobody has to remember.
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset CHANGELOG_ROOT OS_RELEASE XDG_CONFIG_HOME
+unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
+  STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
+  STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+
 failures=0
 checked=0
 ok()   { printf '[ ok ] %s\n' "$*"; }
@@ -211,7 +228,7 @@ head_ ".gitattributes coverage"
 uncovered=0
 while IFS= read -r -d '' path; do
   case "$path" in
-    *.sh|*.zsh|*.py|*.lua|*.ps1|*.psd1|*.psm1|\
+    *.sh|*.zsh|*.py|*.lua|*.awk|*.ps1|*.psd1|*.psm1|\
     windows/git-bash/.bashrc|windows/git-bash/.bash_profile|windows/git-bash/.aliases|\
     windows/git-bash/default-git-bash/.bashrc|\
     windows/git-bash/default-git-bash/.bash_profile|\
@@ -475,7 +492,7 @@ host_env_vars() {
 suites=()
 while IFS= read -r f; do
   [[ -n "$f" ]] && suites+=("$f")
-done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh')
+done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh' 'test-env/static/check_conventions.sh')
 
 env_leaks=0
 env_pairs=0

@@ -27,6 +27,8 @@ windows/git-bash/default-git-bash/.aliases text eol=lf
 # /usr/bin/python3 on macOS.
 *.lua text eol=lf
 *.py text eol=lf
+# awk reads a CRLF program as commands with a trailing carriage return.
+*.awk text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
 
