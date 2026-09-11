@@ -435,6 +435,21 @@ jobs:
           mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
           shellcheck --severity=error -x --shell=bash "${scripts[@]}"
 
+      # A second pass on SC2183 alone. It is a warning, so the error-severity
+      # pass above lets it through - and it is not a style opinion: a printf
+      # whose format wants more arguments than it is given prints the wrong
+      # thing on every run, silently. install_apps.sh's summary joined a colour
+      # and a count into one word, %d then consumed the reset escape, and the
+      # adopted line rendered "00" for zero adoptions. Nothing else catches it:
+      # the summary block sits past the dry-run exit, so no suite can reach it.
+      - name: Run ShellCheck (printf argument counts)
+        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
+          shellcheck --include=SC2183 -x --shell=bash "${scripts[@]}"
+
       - name: Install actionlint
         if: needs.changes.outputs.workflow == 'true'
         shell: bash
