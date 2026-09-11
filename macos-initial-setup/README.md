@@ -1018,6 +1018,7 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
 ./launchd/stay_fresh_agent.sh status                       # plist, launchd state, last run's verdict
 ./launchd/stay_fresh_agent.sh run-now
+./launchd/stay_fresh_agent.sh install --ignore-power        # every firing sweeps, battery or in use
 ./launchd/stay_fresh_agent.sh run-scheduled --ignore-power  # sweep even on battery
 ./launchd/stay_fresh_agent.sh logs --tail 120
 ./launchd/stay_fresh_agent.sh uninstall
@@ -1043,9 +1044,17 @@ five minutes) it runs the read-only reports instead of the sweep; deferring
 outright would mean a machine in use at that hour every day never runs at all,
 and the reports are the part worth having daily. Either decision is recorded in
 the `last-scheduled` stamp and shown by `status`, so a deferral is never silent.
-`--ignore-power` skips both checks. Neither applies to `run-now`, which is a
-person asking deliberately, and a machine with no battery — or one where
-`pmset` and `ioreg` cannot be read — takes the ordinary path.
+`--ignore-power` skips both checks. Pass it to `install` to bake it into the
+plist, so every firing sweeps regardless, or to a single `run-scheduled`. It is
+refused by the commands with no firing to un-guard (`status`, `run-now`, `logs`,
+`uninstall`). Neither check applies to `run-now`, which is a person asking
+deliberately, and a machine with no battery — or one where `pmset` and `ioreg`
+cannot be read — takes the ordinary path.
+
+A scheduled run keeps the ten newest transcripts in
+`~/Library/Logs/stay_fresh/` and deletes the rest. `--dry-run` is exempt: it
+writes its own transcript, so you can read what the firing would have done, and
+deletes nothing.
 
 **The agent cannot use `sudo`, and that is not a limitation to work around.** A
 LaunchAgent runs in your GUI login session with no terminal attached, so a

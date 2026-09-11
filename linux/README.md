@@ -335,13 +335,20 @@ on macOS:
 ```bash
 ./systemd/stay_fresh_timer.sh install                      # Mondays, 10:30
 ./systemd/stay_fresh_timer.sh install --weekday daily --hour 3
-./systemd/stay_fresh_timer.sh install --dry-run            # the timer previews only
+./systemd/stay_fresh_timer.sh install --dry-run            # preview the install, write nothing
 ./systemd/stay_fresh_timer.sh install --print-only         # show the units, write nothing
 ./systemd/stay_fresh_timer.sh status
 ./systemd/stay_fresh_timer.sh run-now
 ./systemd/stay_fresh_timer.sh logs --lines 200
 ./systemd/stay_fresh_timer.sh uninstall
 ```
+
+`--dry-run` previews the install — the units, the `daemon-reload` and the
+`enable` — and writes nothing; `--print-only` prints the two unit bodies alone,
+which is what CI parses. Neither reaches `stay_fresh.sh`: a scheduled run is
+always `--yes --no-sudo`. Options belong to the command they follow, so
+`uninstall --hour 3` is a usage error (exit 3) rather than a silent no-op, and
+`uninstall` has no preview to ask for.
 
 **A user timer cannot use `sudo`, and that is not a limitation to work around.**
 It runs with no terminal attached, so a password prompt has nothing to prompt
@@ -439,8 +446,13 @@ A real run requires `--yes`, the same gate `install_devtools.sh` uses.
 machine whose `/tmp` is not disposable can point at one directory.
 `--include-coredumps` age-filters `/var/lib/systemd/coredump` and
 `/var/crash`; `--coredump-dir DIR` replaces that list (and `/` is refused).
-`--include-docker` prunes dangling images, stopped containers and build cache —
-never volumes, for the reason `stay_fresh.sh` gives. `--home DIR` points the
+`--include-trash` empties `~/.local/share/Trash` whole — a trashed directory
+goes with its `.trashinfo` record rather than being hollowed out, and a trash
+relocated to another disk, with `files/` a symlink, is emptied where it
+actually lives while the symlink survives. The two directories themselves stay,
+as the FreeDesktop spec expects. `--include-docker` prunes dangling images,
+stopped containers and build cache — never volumes, for the reason
+`stay_fresh.sh` gives. `--home DIR` points the
 user-owned targets at a home directory other than the caller's, and an
 `XDG_CACHE_HOME` inherited from the environment is ignored while it is in
 effect: that variable describes the caller's cache, and honouring both at once
@@ -543,6 +555,11 @@ A real run requires `--yes`. `--list` shows the newest archive (or a named
 file) and writes nothing. `--keep 0` disables rotation. Archives land in
 `~/ops-toolbox-backups` unless `--dest` says otherwise. `--paths` must be
 absolute; `/` is refused.
+
+The archive is created mode `0600`, whatever umask the caller had. The default
+source is `/etc`, and a run that can read all of it is a run with `shadow`, the
+sshd host keys and `sudoers` in the tarball. `--dest` keeps the mode it already
+has: the secret is the file, not the directory holding it.
 
 ## `ssh_client_doctor.sh`
 

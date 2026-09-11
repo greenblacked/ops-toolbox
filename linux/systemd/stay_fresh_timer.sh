@@ -23,11 +23,15 @@
 #   --weekday N   0-7, Sunday is 0 or 7 (default 1, Monday). 'daily' for every day
 #   --hour N      0-23 (default 10)
 #   --minute N    0-59 (default 30)
-#   --dry-run     Make the timer invoke stay_fresh.sh with --dry-run
-#   --print-only  Print the units that would be installed and exit, writing
+#   --dry-run     With 'install', preview it: the units, the daemon-reload and
+#                 the enable, writing nothing and enabling nothing
+#   --print-only  With 'install', print just the unit bodies and exit, writing
 #                 nothing and enabling nothing
 #   --lines N     Number of journal lines for `logs` (default 100)
 #   -h, --help    Show this help
+#
+# Options belong to the command they follow: a command handed one it does not
+# take exits 3 rather than ignoring it.
 #
 # Exit codes:
 #   0   success
@@ -86,16 +90,19 @@ set_weekday() {
     err "--weekday must be 0-7 or 'daily'"
     exit 3
   fi
+  SCHEDULE_SET=1
 }
 
 set_hour() {
   [[ "$1" =~ ^([0-9]|1[0-9]|2[0-3])$ ]] || { err "--hour must be 0-23"; exit 3; }
   HOUR="$1"
+  SCHEDULE_SET=1
 }
 
 set_minute() {
   [[ "$1" =~ ^([0-9]|[1-5][0-9])$ ]] || { err "--minute must be 0-59"; exit 3; }
   MINUTE="$1"
+  SCHEDULE_SET=1
 }
 
 CMD=""
@@ -103,9 +110,11 @@ WEEKDAY=1
 HOUR=10
 MINUTE=30
 DAILY=0
+SCHEDULE_SET=0
 TIMER_DRY_RUN=0
 PRINT_ONLY=0
 LINES=100
+LINES_SET=0
 SYSTEMD_ANALYZE_CMD="${SYSTEMD_ANALYZE_CMD:-systemd-analyze}"
 
 # --help is handled here, before any preflight check, so it keeps working on a
@@ -123,8 +132,8 @@ while (( $# > 0 )); do
     --hour=*)    require_value "--hour" "${1#*=}"; set_hour "${1#*=}" ;;
     --minute)    require_value "$1" "${2:-}"; set_minute "$2"; shift ;;
     --minute=*)  require_value "--minute" "${1#*=}"; set_minute "${1#*=}" ;;
-    --lines)     require_value "$1" "${2:-}"; LINES="$2"; shift ;;
-    --lines=*)   LINES="${1#*=}"; require_value "--lines" "$LINES" ;;
+    --lines)     require_value "$1" "${2:-}"; LINES="$2"; LINES_SET=1; shift ;;
+    --lines=*)   LINES="${1#*=}"; require_value "--lines" "$LINES"; LINES_SET=1 ;;
     --dry-run)    TIMER_DRY_RUN=1 ;;
     --print-only) PRINT_ONLY=1 ;;
     *)
@@ -137,6 +146,33 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$CMD" ]] || { usage; exit 3; }
+
+# An option the command cannot act on is a mistake, and saying so is the whole
+# value of parsing it. Every flag was accepted after every command, so
+# `uninstall --hour 3` looked like it had rescheduled something and had not,
+# and `uninstall --dry-run` read as a preview while it disabled the timer and
+# deleted both unit files for real — the one promise this repository makes
+# without qualification. The launchd sibling,
+# macos-initial-setup/launchd/stay_fresh_agent.sh, validates in exactly this
+# shape; only the option names differ.
+case "$CMD" in
+  install)
+    (( LINES_SET == 0 )) || { err "--lines is only valid with logs"; exit 3; }
+    ;;
+  uninstall)
+    (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TIMER_DRY_RUN == 0 && LINES_SET == 0 )) \
+      || { err "uninstall does not accept options"; exit 3; }
+    ;;
+  logs)
+    (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TIMER_DRY_RUN == 0 )) \
+      || { err "logs accepts only --lines"; exit 3; }
+    ;;
+  status|run-now)
+    (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TIMER_DRY_RUN == 0 && LINES_SET == 0 )) \
+      || { err "$CMD does not accept options"; exit 3; }
+    ;;
+esac
+
 if ! [[ "$LINES" =~ ^[1-9][0-9]*$ ]] || (( LINES > 10000 )); then
   err "--lines must be between 1 and 10000"
   exit 3
@@ -171,10 +207,12 @@ case "$CMD" in
       exit 2
     fi
 
+    # --yes --no-sudo and nothing else. TIMER_DRY_RUN used to append --dry-run
+    # here, which described a timer that previewed maintenance forever and
+    # never did any — and the branch was dead anyway, because the preview below
+    # returns before a unit is written, so no unit ever carried it. --dry-run
+    # on this script previews the install, the way it does everywhere else.
     exec_args="--yes --no-sudo"
-    if (( TIMER_DRY_RUN )); then
-      exec_args="$exec_args --dry-run"
-    fi
 
     at="$(printf '%02d:%02d' "$HOUR" "$MINUTE")"
     if (( DAILY )); then

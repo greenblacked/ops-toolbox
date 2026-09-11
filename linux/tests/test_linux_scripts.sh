@@ -513,7 +513,12 @@ assert_contains "timer installs a [Timer] section" "$out" "[Timer]"
 
 out="$("$TIMER" install --print-only --weekday daily --hour 3 --minute 5 --dry-run 2>&1)"
 assert_contains "timer honours daily and the clock" "$out" "OnCalendar=*-*-* 03:05:00"
-assert_contains "timer passes --dry-run through" "$out" "--yes --no-sudo --dry-run"
+# --dry-run previews the install; it never reaches the unit. It used to be
+# appended to ExecStart, describing a timer that would preview maintenance
+# every week and never do any - and dead even then, because the preview below
+# returns before a unit is written, so nothing ever carried it.
+assert_contains "timer ExecStart runs a real maintenance pass" "$out" "--yes --no-sudo"
+assert_not_contains "timer never installs a unit that only previews" "$out" "--yes --no-sudo --dry-run"
 
 out="$("$TIMER" --help 2>&1)"
 assert_contains "timer exposes read-only log inspection" "$out" "logs [--lines N]"
@@ -554,6 +559,34 @@ for bad in "--weekday 9" "--hour 24" "--minute 60"; do
   set -e
   assert_eq "timer rejects $bad -> 3" "3" "$rc"
 done
+
+# Options belong to the command they follow. Every flag was accepted after
+# every command, so `uninstall --hour 3` looked like it had rescheduled
+# something and had not - and `uninstall --dry-run` read as a preview while it
+# disabled the timer and deleted both unit files for real. HOME is scratch
+# because that is where a command which got past this check would write.
+timer_scratch="$(mktemp -d)"
+for bad in "uninstall --hour 3" "uninstall --dry-run" "uninstall --lines 5" \
+           "status --lines 5" "run-now --hour 3" "logs --hour 3" \
+           "install --lines 5"; do
+  set +e
+  # shellcheck disable=SC2086  # the pair is meant to split into separate arguments
+  HOME="$timer_scratch" XDG_CONFIG_HOME="$timer_scratch/.config" "$TIMER" $bad >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "timer rejects '$bad' -> 3" "3" "$rc"
+done
+
+# ...and the check must not start refusing the pairings that are correct. logs
+# needs journalctl, which these containers may not have, so what is asserted is
+# that this is not a usage error - not that it succeeds.
+set +e
+HOME="$timer_scratch" XDG_CONFIG_HOME="$timer_scratch/.config" \
+  "$TIMER" logs --lines 5 >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq "timer still accepts logs --lines" "no" "$([[ "$rc" == "3" ]] && echo yes || echo no)"
+rm -rf "$timer_scratch"
 
 # No user manager in a container, so a real install must report the wrong
 # environment rather than half-writing units.
@@ -755,6 +788,32 @@ for bad in "--min-free 101" "--min-free notanumber" "--min-memory 101" "--min-me
   set -e
   assert_eq "system_doctor rejects $bad -> 3" "3" "$rc"
 done
+
+# A hint with nowhere to go is not a hint. info() rendered only its first
+# argument, so the one observation that hands you a next command without being
+# a finding - the pending-upgrade count, which is a fact about the machine
+# rather than something wrong with it - passed its preview to a parameter that
+# was never printed. The count is forced with a stub rather than waited for: a
+# container reports nothing pending, so the line carrying the hint never
+# appears on its own. OS_RELEASE pins the package manager so this reads the
+# same on the fedora and arch images.
+doctor_stub="$(mktemp -d)"
+printf 'ID=debian\n' > "$doctor_stub/os-release"
+cat > "$doctor_stub/apt-get" <<'STUB'
+#!/usr/bin/env bash
+printf 'Inst libc6 [2.36-9] (2.36-9+deb12u1 Debian:12/stable [amd64])\n'
+printf 'Inst openssl [3.0.11-1] (3.0.14-1 Debian:12/stable [amd64])\n'
+printf 'Conf libc6 (2.36-9+deb12u1 Debian:12/stable [amd64])\n'
+STUB
+chmod +x "$doctor_stub/apt-get"
+set +e
+out="$(OS_RELEASE="$doctor_stub/os-release" PATH="$doctor_stub:$PATH" \
+  "$L/system_doctor.sh" 2>&1)"; rc=$?
+set -e
+assert_eq "system_doctor with pending upgrades exits 0" "0" "$rc"
+assert_contains "system_doctor counts the pending upgrades" "$out" "2 pending upgrade(s)"
+assert_contains "system_doctor prints the hint beside the count" "$out" "preview: stay_fresh.sh --dry-run"
+rm -rf "$doctor_stub"
 
 # --- install_aliases.sh ---------------------------------------------------
 # The whole point of this script is that a second run does not append a
@@ -994,6 +1053,73 @@ else
   err "disk_cleanup coredump age filter misbehaved (old=$([[ -f $old_core ]] && echo present || echo gone), new=$([[ -f $new_core ]] && echo present || echo gone))"
 fi
 rm -rf "$core_home" "$core_tmp" "$core_dir"
+
+# The Trash is emptied whole. linux/stay_fresh.sh was fixed for both failures
+# below and its comment points at disk_cleanup.sh, but the fix never travelled,
+# so these assert the behaviour here rather than trusting the sibling.
+#
+# A trashed *directory* is one item, not a container: walking `-type f` deleted
+# files/project/nested/big.bin and left files/project/ behind as an empty
+# skeleton — while info/project.trashinfo was deleted, so what remained could
+# no longer be restored or even identified.
+trash_home="$(mktemp -d)"
+trash_tmp="$(mktemp -d)"
+mkdir -p "$trash_home/.local/share/Trash/files/project/nested" \
+         "$trash_home/.local/share/Trash/info"
+printf 'payload\n' > "$trash_home/.local/share/Trash/files/project/nested/big.bin"
+printf 'loose\n'   > "$trash_home/.local/share/Trash/files/loose.txt"
+: > "$trash_home/.local/share/Trash/info/project.trashinfo"
+
+set +e
+out="$("$CLEAN" --yes --include-trash --home "$trash_home" --tmp "$trash_tmp" 2>&1)"; rc=$?
+set -e
+assert_eq "disk_cleanup --include-trash exits 0" "0" "$rc"
+assert_eq "disk_cleanup removes a trashed directory, not just its files" "" \
+  "$(ls -A "$trash_home/.local/share/Trash/files" 2>/dev/null)"
+assert_eq "disk_cleanup removes the .trashinfo records" "" \
+  "$(ls -A "$trash_home/.local/share/Trash/info" 2>/dev/null)"
+assert_eq "disk_cleanup keeps the Trash files/ directory itself" "yes" \
+  "$([[ -d "$trash_home/.local/share/Trash/files" ]] && echo yes || echo no)"
+assert_eq "disk_cleanup keeps the Trash info/ directory itself" "yes" \
+  "$([[ -d "$trash_home/.local/share/Trash/info" ]] && echo yes || echo no)"
+rm -rf "$trash_home"
+
+# And a Trash relocated to another disk - files/ a symlink, the usual way to
+# keep it off a small SSD. `[[ -d ]]` follows the link but find does not, so
+# `-type f` matched nothing: the run printed "nothing in trash files" and freed
+# zero bytes on the machine most likely to need the space. The dry run has to
+# see the relocated files too, and still write nothing.
+trash_home="$(mktemp -d)"
+other_disk="$(mktemp -d)"
+mkdir -p "$trash_home/.local/share/Trash/info" "$other_disk/files"
+printf 'many-bytes-of-iso\n' > "$other_disk/files/big.iso"
+ln -s "$other_disk/files" "$trash_home/.local/share/Trash/files"
+
+set +e
+out="$("$CLEAN" --dry-run --include-trash --home "$trash_home" --tmp "$trash_tmp" 2>&1)"; rc=$?
+set -e
+assert_eq "disk_cleanup trash --dry-run exits 0" "0" "$rc"
+assert_contains "disk_cleanup dry-run names the file in a relocated trash" "$out" "big.iso"
+assert_not_contains "disk_cleanup does not call a relocated trash empty" "$out" "nothing in trash files"
+# -delete reports no sizes, so the total is measured in a pass beforehand; a
+# preview that reached nothing would still have to add up to nothing.
+assert_not_contains "disk_cleanup counts what a relocated trash would free" "$out" "would free at least 0B"
+if [[ -f "$other_disk/files/big.iso" ]]; then
+  ok "disk_cleanup trash --dry-run deleted nothing"
+else
+  err "disk_cleanup trash --dry-run emptied a relocated trash"
+fi
+
+set +e
+out="$("$CLEAN" --yes --include-trash --home "$trash_home" --tmp "$trash_tmp" 2>&1)"; rc=$?
+set -e
+assert_eq "disk_cleanup relocated trash exits 0" "0" "$rc"
+assert_eq "disk_cleanup keeps a relocated Trash symlink" "yes" \
+  "$([[ -L "$trash_home/.local/share/Trash/files" ]] && echo yes || echo no)"
+assert_eq "disk_cleanup empties a relocated Trash" "" \
+  "$(ls -A "$other_disk/files" 2>/dev/null)"
+assert_not_contains "disk_cleanup counts what a relocated trash freed" "$out" "freed at least 0B"
+rm -rf "$trash_home" "$trash_tmp" "$other_disk"
 
 # --- net_doctor.sh --------------------------------------------------------
 NET="$L/net_doctor.sh"
@@ -1350,6 +1476,23 @@ if [[ -n "$archive" ]] && tar -tzf "$archive" | grep -q 'payload.txt'; then
 else
   err "config_backup archive missed the payload"
 fi
+
+# The default --paths is /etc and the script expects to be run privileged — it
+# treats tar's exit 1 as "unreadable files under /etc, archive still written".
+# Nothing here set a mode, so under the stock 022 umask tar created the archive
+# 0644 and `sudo ./config_backup.sh --yes` left shadow, the sshd host keys and
+# sudoers in a tarball every local account could read. The umask is forced in
+# the subshell so the assertion is about the script rather than about whatever
+# the suite happened to inherit, and a separate --prefix keeps this archive out
+# of the rotation counted below.
+mode_dest="$(mktemp -d)"
+set +e
+( umask 022; "$BACKUP" --yes --paths "$src" --dest "$mode_dest" --prefix modecheck >/dev/null 2>&1 )
+set -e
+mode_archive="$(ls -1 "$mode_dest"/modecheck-*.tar.gz 2>/dev/null | head -n 1)"
+assert_eq "config_backup writes the archive mode 600" "600" \
+  "$(stat -c '%a' "$mode_archive" 2>/dev/null || printf 'no-archive')"
+rm -rf "$mode_dest"
 
 set +e
 out="$("$BACKUP" --list --dest "$dest" 2>&1)"; rc=$?

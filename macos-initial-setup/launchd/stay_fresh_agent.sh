@@ -11,7 +11,8 @@
 # Usage:
 #   ./stay_fresh_agent.sh install [--weekday N] [--hour N] [--minute N]
 #                                 [--profile safe|full] [--notify MODE]
-#                                 [--notify-when WHEN] [--dry-run]
+#                                 [--notify-when WHEN] [--ignore-power]
+#                                 [--dry-run]
 #   ./stay_fresh_agent.sh uninstall [--dry-run]
 #   ./stay_fresh_agent.sh status
 #   ./stay_fresh_agent.sh run-now
@@ -32,6 +33,11 @@
 #   --notify-when W
 #                 Passed to stay_fresh.sh as --notify-when: always, warn or
 #                 fail (default: not passed; stay_fresh.sh's default is always)
+#   --ignore-power
+#                 Sweep even on battery and even with somebody at the keyboard,
+#                 instead of deferring. Valid for 'install', where it travels
+#                 into the plist and applies to every firing, and for
+#                 'run-scheduled', where it applies to that run
 #   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
 #                 nothing and loading nothing
@@ -257,16 +263,18 @@ case "$CMD" in
     (( TAIL_SET == 0 )) || { err "--tail is only valid with logs"; exit 3; }
     ;;
   uninstall)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 \
+       && IGNORE_POWER == 0 )) \
       || { err "uninstall accepts only --dry-run"; exit 3; }
     ;;
   logs)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 \
+       && IGNORE_POWER == 0 )) \
       || { err "logs accepts only --tail"; exit 3; }
     ;;
   status|run-now)
     (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 \
-       && AGENT_DRY_RUN == 0 && TAIL_SET == 0 )) \
+       && AGENT_DRY_RUN == 0 && TAIL_SET == 0 && IGNORE_POWER == 0 )) \
       || { err "$CMD does not accept options"; exit 3; }
     ;;
   run-scheduled)
@@ -411,14 +419,35 @@ run_scheduled() {
 
   # One bounded, complete transcript per invocation. launchd itself writes to
   # /dev/null, so fixed agent.out/agent.err files cannot grow without limit.
+  #
+  # A preview stops here. This rotation deletes transcripts of real past
+  # firings, and --dry-run exists to show what a firing would do, not to do the
+  # irreversible half of it: previewing a schedule change used to destroy the
+  # oldest surviving records of what the schedule had actually been doing, and
+  # every preview destroyed one more, because the preview's own transcript
+  # pushed the next one over the edge.
+  # The transcript this invocation just wrote is the one file a dry run leaves
+  # behind, and that is deliberate - it is the step list being previewed - so
+  # it counts towards the ten at the next real firing, not at this one.
+  (( AGENT_DRY_RUN == 0 )) || return "$rc"
+
+  # mktemp fails on the full disk this whole script exists to postpone.
+  # Unchecked, the scratch path is the empty string, and every line below it
+  # addresses a file with no name: the redirect and the loop each report an
+  # unnamed file on stderr - which launchd sends to /dev/null, so nobody ever
+  # sees it - and the rotation silently stops happening on the one machine that
+  # needed the space back. Skip it instead and leave the logs to the next
+  # firing that can make a scratch file, the way linux/stay_fresh.sh does.
   local old_log_list old_log
-  old_log_list="$(mktemp)"
-  agent_log_names | sort -r | tail -n +11 > "$old_log_list"
-  while IFS= read -r old_log; do
-    [[ -n "$old_log" ]] || continue
-    rm -f "$LOG_DIR/$old_log" 2>/dev/null || true
-  done < "$old_log_list"
-  rm -f "$old_log_list"
+  old_log_list="$(mktemp 2>/dev/null || true)"
+  if [[ -n "$old_log_list" ]]; then
+    agent_log_names | sort -r | tail -n +11 > "$old_log_list"
+    while IFS= read -r old_log; do
+      [[ -n "$old_log" ]] || continue
+      rm -f "$LOG_DIR/$old_log" 2>/dev/null || true
+    done < "$old_log_list"
+    rm -f "$old_log_list"
+  fi
 
   return "$rc"
 }
@@ -453,6 +482,14 @@ case "$CMD" in
       args="$args
         <string>--notify-when</string>
         <string>$(xml_escape "$NOTIFY_WHEN")</string>"
+    fi
+    # The battery and at-the-keyboard guards live in run-scheduled, so this is
+    # the only way --ignore-power can mean anything at install time. Without
+    # this the flag parsed, passed validation and was reported as installed,
+    # while the agent it wrote kept deferring on battery for good.
+    if (( IGNORE_POWER )); then
+      args="$args
+        <string>--ignore-power</string>"
     fi
 
     if (( DAILY )); then

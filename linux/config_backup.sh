@@ -6,7 +6,8 @@
 # This is the Linux counterpart of mikrotik/backup.lua and
 # mikrotik/export_config.py: a copy you can keep, not a restore tool. It never
 # writes back into the paths it archives. A dry run writes nothing, including
-# logs. A real run requires --yes.
+# logs. A real run requires --yes. The archive is created mode 0600, because
+# what it holds is /etc.
 #
 # Default source is /etc because that is what people actually mean by "the
 # box config". Home directories, databases and container volumes stay out —
@@ -47,8 +48,10 @@ usage() {
   cat <<EOF
 config_backup.sh - dated tar of selected paths (default: /etc)
 
-Writes a gzip archive and rotates older copies in --dest. A dry run writes
-nothing. A real run requires --yes. This is a copy, not a restore.
+Writes a gzip archive and rotates older copies in --dest. The archive is
+created mode 0600: the default source is /etc, which holds shadow, sudoers and
+the sshd host keys. A dry run writes nothing. A real run requires --yes. This
+is a copy, not a restore.
 
 Usage:
   $(basename "$0") --dry-run
@@ -271,8 +274,22 @@ fi
 # restores on top of the live tree by accident. GNU and BusyBox tar both
 # accept this form. Unreadable files are a warning from tar, not a reason to
 # skip the rest of the tree. No `set -e`: a warning must not abort rotation.
+#
+# umask 077 around the tar, so the archive is created 0600 rather than at
+# whatever the caller inherited. This script has no mode of its own anywhere
+# else, so a stock 022 gave it 0644 — and the default --paths is /etc on a run
+# that plainly expects to be privileged (it treats tar's exit 1 as "unreadable
+# files under /etc, archive still written"). `sudo ./config_backup.sh --yes`
+# therefore left /etc/shadow, the sshd host keys and sudoers in a tarball every
+# local account could read, under a predictable name. The umask is set around
+# the tar alone and restored afterwards: mkdir -p above keeps the caller's mode
+# on purpose, because --dest is a directory the operator chose and may already
+# share with a backup agent, and the secret is the file, not the folder.
+old_umask="$(umask)"
+umask 077
 tar -czf "$archive" -C / "${rels[@]}"
 tar_rc=$?
+umask "$old_umask"
 if (( tar_rc != 0 )); then
   # tar exits 1 for warnings (unreadable files under /etc) and 2 for fatal.
   # A warning still produced an archive, which is the useful outcome on a

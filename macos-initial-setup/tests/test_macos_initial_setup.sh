@@ -1208,6 +1208,65 @@ out="$(agent_status)"
 set -e
 assert_contains "status says the last firing was deferred" "$out" "deferred:battery"
 
+# --- rotation is a real firing's business, not a preview's -----------------
+# One transcript per firing, the ten newest kept. That rotation sat below
+# note_scheduled_run with nothing guarding it, so `run-scheduled --dry-run` —
+# which exists to show what a firing *would* do — deleted genuine transcripts
+# of real past firings on its way out. A dry run removes nothing. The single
+# file it may leave behind is its own transcript, which the safe-profile check
+# above reads; that one is written before this point and is not at issue here.
+fake_power 'AC Power'; fake_idle 3600
+sched_logs="$fake_macos/home/Library/Logs/stay_fresh"
+sched_log_days="01 02 03 04 05 06 07 08 09 10 11 12 13 14"
+seed_sched_logs() {   # fourteen past transcripts, more than the ten kept
+  local d
+  rm -rf "$sched_logs"
+  mkdir -p "$sched_logs"
+  for d in $sched_log_days; do
+    printf 'transcript %s\n' "$d" > "$sched_logs/agent-202601${d}-000000-1.log"
+  done
+}
+run_sched() {
+  HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+    STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe "$@"
+}
+
+seed_sched_logs
+set +e
+run_sched --dry-run >/dev/null 2>&1
+set -e
+survived=0
+for d in $sched_log_days; do
+  if [[ -f "$sched_logs/agent-202601${d}-000000-1.log" ]]; then
+    survived=$((survived + 1))
+  fi
+done
+assert_eq "a dry scheduled run deletes no past transcript" "14" "$survived"
+
+# The other half of the guard: a real firing must still rotate, or bounding the
+# logs has simply been turned off.
+seed_sched_logs
+set +e
+run_sched >/dev/null 2>&1
+set -e
+assert_eq "a real scheduled run keeps the ten newest transcripts" "10" \
+  "$(ls -1 "$sched_logs"/agent-*.log 2>/dev/null | wc -l | tr -d ' ')"
+
+# mktemp fails on the full disk this agent exists to postpone. Unchecked, the
+# scratch path is the empty string: the redirect and the loop that reads it
+# back both report an unnamed file on stderr, and the rotation stops happening
+# on the one machine that needed it. Skipping rotation is the honest outcome,
+# and it has to be silent about it.
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_macos/bin/mktemp"
+chmod +x "$fake_macos/bin/mktemp"
+seed_sched_logs
+set +e
+out="$(run_sched 2>&1 >/dev/null)"
+set -e
+rm -f "$fake_macos/bin/mktemp"
+assert_not_contains "a scratch file that cannot be made is never redirected into" \
+  "$out" "No such file or directory"
+
 rm -f "$fake_macos/bin/pmset" "$fake_macos/bin/ioreg"
 rm -rf "$fake_macos"
 
@@ -1240,6 +1299,36 @@ else
   err "LaunchAgent install --print-only failed"
 fi
 rm -f "$plist_tmp"
+
+# --ignore-power turns off the battery and at-the-keyboard guards, and those
+# guards only ever run for a scheduled firing. So at install time the flag has
+# to reach the plist or it means nothing at all: it parsed, it passed the
+# per-command check, install reported success, and the agent it installed went
+# on deferring on battery forever.
+plist_tmp="$(mktemp)"
+if "$agent" install --print-only --ignore-power --dry-run > "$plist_tmp" \
+   && python3 - "$plist_tmp" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as fh:
+    data = plistlib.load(fh)
+assert data["ProgramArguments"][-4:] == [
+    "run-scheduled", "--profile", "safe", "--ignore-power"], data["ProgramArguments"]
+PY
+then
+  ok "LaunchAgent plist carries --ignore-power"
+else
+  err "LaunchAgent plist does not carry --ignore-power"
+fi
+rm -f "$plist_tmp"
+# Everywhere else the flag has nothing to turn off, and a flag that is accepted
+# and ignored is the failure above in a different costume.
+for ip_cmd in status run-now logs uninstall; do
+  set +e
+  "$agent" "$ip_cmd" --ignore-power >/dev/null 2>&1
+  rc=$?
+  set -e
+  assert_eq "agent $ip_cmd does not take --ignore-power" "3" "$rc"
+done
 
 # --notify travels into the plist so the scheduled run can reach Telegram; an
 # unknown mode is refused before anything is written.
