@@ -269,23 +269,29 @@ need_changelog() {
   # `grep` exits 1 when the section has no headings at all, which is the
   # state right after a release; `|| true` keeps that from tripping `set -e`
   # inside the substitution.
-  # The label list is built BEFORE the substitution, not inside the case word.
-  # Bash 3.2 - which is what /bin/bash is on macOS, where the static suite now
-  # runs - cannot parse a nested $( ... do ... done ) sitting in a case pattern
-  # word inside another command substitution. It reports
-  # "syntax error near unexpected token `newline'" and every preview and release
-  # test fails at once. Bash 5 parses it happily, which is why this survived
-  # until the macOS runner started running this suite.
+  # No `case` inside the command substitution below, and the label list is built
+  # before it rather than in a pattern word. Bash 3.2 - which is /bin/bash on
+  # macOS, where the static suite now runs - parses `$(` by scanning forward for
+  # the matching `)`, and miscounts on the unbalanced `)` that closes each case
+  # pattern: it reaches end of line still looking and reports "syntax error near
+  # unexpected token `newline'". The script then cannot be parsed at all, so
+  # every preview and release assertion fails at once.
+  #
+  # Bash 5 parses the case form correctly, which is why this survived from the
+  # commit that introduced it until a BSD runner executed the suite.
+  # Neither shellcheck nor the Bash 4+ keyword scan says anything about it: that
+  # scan looks for mapfile, declare -A and ${x,,}, and this is a parser limit in
+  # syntax containing none of them. (This comment cannot open with the linter's
+  # own name either - a line starting "# shellcheck" is read as a directive.)
   local unknown known_labels t
   known_labels=" "
   for t in $TYPES; do
     known_labels="$known_labels$(label_of "$t") "
   done
   unknown="$(part_unreleased | { grep '^### ' || true; } | sed 's/^### //' | while IFS= read -r l; do
-    case "$known_labels" in
-      *" $l "*) ;;
-      *) printf '%s\n' "$l" ;;
-    esac
+    if [[ "$known_labels" != *" $l "* ]]; then
+      printf '%s\n' "$l"
+    fi
   done)"
   if [[ -n "$unknown" ]]; then
     err "[Unreleased] has a section this script does not know: $unknown"

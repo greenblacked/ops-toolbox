@@ -298,6 +298,46 @@ for d in $BASH32_DIRS; do
 done
 (( bash4_hits == 0 )) && ok "no Bash 4+ constructs in: $BASH32_DIRS"
 
+# A `case` inside a multi-line $( ) is a Bash 3.2 parse error, and neither the
+# keyword scan above nor shellcheck says a word about it. Bash 3.2 parses `$(`
+# by scanning forward for the matching `)` and miscounts on the unbalanced `)`
+# closing each case pattern: it reaches end of line still looking and dies with
+# "syntax error near unexpected token `newline'". The script cannot then be
+# parsed at all, so every assertion against it fails at once rather than one.
+#
+# changelog.d/changelog.sh carried exactly this and turned the macOS job red
+# twice, through a wrong first diagnosis. It is valid Bash 4 syntax, shellcheck
+# is silent on it, and the keyword scan above looks for mapfile/declare -A/${x,,}
+# and so cannot see it. Unlike those, this is repository-wide rather than
+# scoped to BASH32_DIRS: any script the static suite executes has to parse under
+# whatever /bin/bash the runner has, and on macOS that is 3.2.
+case_sub_hits=0
+case_sub_checked=0
+while IFS= read -r -d '' f; do
+  case_sub_checked=$((case_sub_checked + 1))
+  hit="$(awk '
+    { opens = gsub(/\$\(/, "$("); closes = gsub(/\)/, ")") }
+    depth == 0 && opens > 0 { start = NR; body = $0; depth = opens - closes; if (depth < 0) depth = 0; next }
+    depth > 0 {
+      body = body "\n" $0
+      depth += opens - closes
+      if (depth <= 0) {
+        if (body ~ /(^|\n)[ \t]*case[ \t]/) print start
+        depth = 0; body = ""
+      }
+    }
+  ' "$f")"
+  if [[ -n "$hit" ]]; then
+    err "$f has a case inside a multi-line \$( ) — Bash 3.2 cannot parse it (line $hit)"
+    case_sub_hits=$((case_sub_hits + 1))
+  fi
+done < <(git ls-files -z -- '*.sh')
+if (( case_sub_checked == 0 )); then
+  err "the case-in-substitution scan inspected no file — this check has stopped checking"
+elif (( case_sub_hits == 0 )); then
+  ok "no case inside a multi-line \$( ) in $case_sub_checked script(s)"
+fi
+
 # --------------------------------------------------------------------------
 head_ "duplicated blocks keep their contract"
 # CONTRIBUTING.md says duplication is deliberate, because a script has to work
