@@ -35,6 +35,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`brewfile.sh`](#brewfilesh)
 - [`macos_defaults.sh`](#macos_defaultssh)
+- [`status.sh`](#statussh)
 - [`workstation_doctor.sh`](#workstation_doctorsh)
 - [`hardening_audit.sh`](#hardening_auditsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
@@ -79,6 +80,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. Deprecated: it runs only under `--legacy-run`. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
 | `macos_defaults.sh` | Read-only preference drift report by default; explicitly apply selected settings or revert a validated backup. |
+| `status.sh` | One-screen verdict: is this machine well enough to work on, and what should I run next? Read-only, no log, no sudo. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
@@ -893,6 +895,34 @@ before restoring it.
 macOS · `3` bad arguments.
 
 ---
+
+## `status.sh`
+
+One screen, answering one question: **is this machine well enough to work on,
+and what should I run next?** Read-only — it writes no log, asks for no sudo,
+and changes nothing. Where `workstation_doctor.sh` is the full report, this is
+the glance before you start.
+
+```bash
+./status.sh                       # every section
+./status.sh --only disk,brew      # just those two
+./status.sh --list-sections       # what can be asked for
+./status.sh --help
+```
+
+Sections: `os`, `disk`, `brew`, `git`, `agent`, `security`.
+
+`--help` and `--list-sections` answer before any preflight, so they work off
+macOS. A warning exits 1 and names the script to run next, which is what makes
+it useful in a shell prompt or a login hook rather than only by hand.
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Everything checked looks healthy |
+| 1 | At least one warning; the output names what to run |
+| 2 | Preflight failed (not macOS) |
+| 3 | Invalid arguments — an unknown flag, or an unknown `--only` section |
+| 4 | `--only` selected nothing to run |
 
 ## `workstation_doctor.sh`
 
