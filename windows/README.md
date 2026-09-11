@@ -46,7 +46,8 @@ refuses to run them at all, see [Execution policy note](#execution-policy-note).
 ## Quick start
 
 ```powershell
-# Is this machine healthy? Read-only, changes nothing:
+# One-screen verdict, then the long report if something is off:
+.\setup\status.ps1
 .\setup\workstation_doctor.ps1
 
 # See what cleanup would delete, without deleting anything:

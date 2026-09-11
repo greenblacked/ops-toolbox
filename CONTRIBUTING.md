@@ -49,6 +49,11 @@ them that way and copy the canonical block from
 copies here: the number moves the moment a script is added, and a stale
 count is how this paragraph already went wrong once.
 
+`macos-initial-setup/stay_fresh.sh` is frozen for feature growth. New cache
+targets need a regression test that fails first when the probe is silent,
+missing, or localised, then a substantial program invoked as a subprocess
+(the `workspace_scan.py` shape). Do not add a step by inlining it.
+
 What is asserted about the copies is their **contract**, not byte-identity:
 the same guard condition, `exit 3`, and a message on stderr. They already
 differ in defensible ways — `git/set_git_profile.sh` reports through its own
@@ -353,8 +358,8 @@ The `.lua` extension is for editor highlighting only — these are RouterOS
 scripting language, not Lua.
 
 - **Secrets never appear in a script body.** Read them from `:global` variables
-  set once at boot, the way `mikrotik/tg_send.lua` reads `TG_BOT_TOKEN`
-  and `TG_CHAT_ID`.
+  set once at boot, the way `mikrotik/tg_send.lua` reads `TgBotToken`
+  and `TgChatId`.
 - Send notifications through `tg_send`, wrapped so a missing helper degrades to
   a log line instead of an error (`mikrotik/backup.lua`).
 - **Alert on transitions, not on every run.** Keep the previous state in a

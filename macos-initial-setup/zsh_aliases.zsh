@@ -459,6 +459,9 @@ if [[ -x "$_ZSH_ALIASES_DIR/install_devtools.sh" ]]; then
   alias install-devtools="$_ZSH_ALIASES_DIR/install_devtools.sh"
 fi
 
+if [[ -x "$_ZSH_ALIASES_DIR/status.sh" ]]; then
+  alias mac-status="$_ZSH_ALIASES_DIR/status.sh"
+fi
 if [[ -x "$_ZSH_ALIASES_DIR/workstation_doctor.sh" ]]; then
   alias workstation-doctor="$_ZSH_ALIASES_DIR/workstation_doctor.sh"
 fi
@@ -491,6 +494,8 @@ toolbox-help() {
     printf '  %-20s %s\n' install-devtools 'install language and IaC toolchains'
   [[ -x "$_ZSH_ALIASES_DIR/stay_fresh.sh" ]] && \
     printf '  %-20s %s\n' stay-fresh 'run recurring workstation maintenance'
+  [[ -x "$_ZSH_ALIASES_DIR/status.sh" ]] && \
+    printf '  %-20s %s\n' mac-status 'one-screen Mac verdict'
   [[ -x "$_ZSH_ALIASES_DIR/workstation_doctor.sh" ]] && \
     printf '  %-20s %s\n' workstation-doctor 'report workstation health'
   [[ -x "$_ZSH_ALIASES_DIR/hardening_audit.sh" ]] && \

@@ -288,6 +288,7 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
   to see what `dump` would change before overwriting anything. The curated
   installers above are the intent; the Brewfile is the fact.
+- `status.sh` is the one-screen verdict (`--only` / `--list-sections`).
 - `workstation_doctor.sh` is the read-only health report — is this Mac *well*?
   Security posture, free space, Command Line Tools, Homebrew, SSH keys and
   agent, Git identity, Time Machine, log footprint, LaunchAgents and login
@@ -378,6 +379,8 @@ OS, so behaviour is actually exercised across all three package managers:
   container prune (**never** volumes), flatpak/snap, and a report of reboot
   pending plus processes still running old libraries. A missing tool is a
   note; a step that runs and fails is an error.
+- `status.sh` — one-screen verdict (`--only` / `--list-sections`). Read-only.
+  `system_doctor.sh` is the long report when something is off.
 - `system_doctor.sh` — read-only health report: distribution and uptime, who
   is logged in, how old the package index is, how many upgrades are pending,
   free space *and inodes*, clock/NTP sync, a pending reboot, sshd, failed
@@ -451,7 +454,7 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 **RouterOS 7.24.2**:
 
 - `tg_send.lua` — generic Telegram text helper used by every other script;
-  reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
+  reads `:global TgBotToken` / `TgChatId` so secrets stay out of the
   script body, with retries and 4 KB truncation.
 - `backup.lua` — daily binary + export backup; sends a Telegram confirmation
   with the resulting filename. Date-format-safe filenames stamped with the
@@ -558,6 +561,9 @@ of `apk add`, on a pod that will be gone before you finish.
   crash-looping pod it prints the *previous* container's logs, which is where
   the reason actually is. Exit `4` means nothing found, distinct from `0`, so
   it can drive a scheduled check without parsing output.
+- `gke_cluster_doctor.sh` — read-only GKE report: release channel, control-plane
+  vs node-pool skew, Workload Identity, and private-cluster flags. Prints the
+  `gcloud` command that would fix each finding and never mutates the cluster.
 - `debug_pod.sh` — wraps `kubectl debug` to attach the image to a running pod
   as an ephemeral container. This is the answer for a distroless or scratch
   container with no shell of its own: the application keeps running and nothing

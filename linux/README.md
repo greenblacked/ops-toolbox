@@ -29,6 +29,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [Distro detection](#distro-detection)
 - [What `stay_fresh.sh` does](#what-stay_freshsh-does)
 - [The two overlapping reports](#the-two-overlapping-reports)
+- [`status.sh`](#statussh)
 - [`system_doctor.sh`](#system_doctorsh)
 - [`systemd/stay_fresh_timer.sh`](#systemdstay_fresh_timersh)
 - [`install_aliases.sh`](#install_aliasessh)
@@ -48,6 +49,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
 | [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps; never volumes |
+| [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
 | [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, host keys, updates, kernel controls |
@@ -113,6 +115,7 @@ Capture what a machine has, commit it, rebuild elsewhere:
 Read the machine without touching it:
 
 ```bash
+./status.sh                 # one-screen verdict
 ./system_doctor.sh          # is this machine well?
 ./net_doctor.sh             # is this machine reachable?
 ./hardening_audit.sh        # is this machine safe?
@@ -146,6 +149,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Copy** | `config_backup.sh` | Before editing `/etc` or upgrading | a dated tar under `--dest`; never writes back |
 | **Copy** | `packages.sh` | After a machine looks the way you want | a package list you can commit and restore |
 | **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
+| **Diagnose** | `status.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `system_doctor.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When "the network is wrong" | nothing — it only reads |
 | **Diagnose** | `schedule_report.sh` | When something ran at 3am | nothing — it only reads |
@@ -297,6 +301,21 @@ The counterpart on the other side of the repository is
 and [`macos-initial-setup/hardening_audit.sh`](../macos-initial-setup/hardening_audit.sh),
 which split the same way.
 
+## `status.sh`
+
+One-screen verdict. Read-only: no log, no sudo, no writes. The long
+reports stay `system_doctor.sh` and `hardening_audit.sh`.
+
+```bash
+./status.sh
+./status.sh --list-sections
+./status.sh --only disk,git
+```
+
+`install_aliases.sh` exposes this as `linux-status`.
+
+---
+
 ## `system_doctor.sh`
 
 The first thing to run on a box someone has just handed you, and the thing to
@@ -424,8 +443,9 @@ directory other than `$HOME`, which is also how the tests exercise it.
 
 Once sourced, `bash_aliases.sh` also defines hyphenated aliases for every
 script in this folder that is sitting next to it (`stay-fresh`,
-`system-doctor`, `disk-cleanup`, …) and a `toolbox-help` function that
-lists only the ones that are actually executable, the same pattern as
+`linux-status`, `system-doctor`, `disk-cleanup`, …) and a `toolbox-help`
+function that lists only the ones that are actually executable, the same
+pattern as
 [`macos-initial-setup/zsh_aliases.zsh`](../macos-initial-setup/zsh_aliases.zsh).
 
 ## `schedule_report.sh`

@@ -542,8 +542,12 @@ while IFS= read -r f; do
 # run.sh came to call changelog.sh without pinning CHANGELOG_ROOT: the check
 # built to catch exactly that could not see the file. 'test-env/*/run.sh' is
 # the gap.
+# check_*.sh as well as test_*.sh: check_pin_age.sh arrived named check_, so it
+# matched none of these globs and its PIN_MAX_AGE_DAYS threshold - the entire
+# gate - went unpinned and unnoticed. Matching on the prefix somebody happened
+# to choose is how a subject list rots.
 done < <(git ls-files '*/tests/*.sh' 'test-env/*/run.sh' \
-  'test-env/static/test_*.sh' 'test-env/static/check_conventions.sh')
+  'test-env/static/test_*.sh' 'test-env/static/check_*.sh')
 
 env_leaks=0
 env_pairs=0

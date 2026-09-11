@@ -18,7 +18,11 @@ export REPO_ROOT
 # about files that are not in this repository -- a fully green static suite
 # that checked nothing here. check_conventions.sh unsets it too, but that is a
 # child process and the unset never reaches this one.
-unset CHANGELOG_ROOT
+# PIN_MAX_AGE_DAYS is check_pin_age.sh's threshold, and it is the whole gate:
+# exported by a developer or a runner, it silently changes what "too old"
+# means and the check still prints [ ok ] for every file. Same reasoning as
+# CHANGELOG_ROOT above — a runner must not be aimed by the shell that starts it.
+unset CHANGELOG_ROOT PIN_MAX_AGE_DAYS
 
 if ! command -v git >/dev/null 2>&1; then
   echo "git is required" >&2
@@ -53,6 +57,9 @@ printf '\n--- documentation citations ---\n'
 # One file per change under changelog.d/ is what keeps two pull requests from
 # editing the same line of CHANGELOG.md; a fragment that would not paste is
 # caught here, before it is the release that finds out.
+printf '\n--- pin age ---\n'
+"$HERE/check_pin_age.sh" || rc=1
+
 printf '\n--- changelog fragments ---\n'
 "$REPO_ROOT/changelog.d/changelog.sh" check || rc=1
 "$HERE/test_changelog.sh" || rc=1

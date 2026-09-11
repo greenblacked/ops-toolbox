@@ -226,6 +226,8 @@ so there is nothing to agree to.
 | `--dry-run` | Show the plan; change nothing. Never requires `--yes`. |
 | `-y`, `--yes` | Skip confirmation prompts. Required for a real run with no terminal on stdin. |
 | `-v`, `--verbose` | Stream `brew` output live (also runs `brew doctor` into the log). |
+| `--list-casks` | Print selectable cask ids and exit. No macOS preflight. |
+| `--list-formulae` | Print selectable formula ids and exit. No macOS preflight. |
 | `--only a,b,c` | Install only the listed casks. |
 | `--skip a,b,c` | Install everything except the listed casks. |
 | `--skip-upgrade` | Do not upgrade already-installed casks or formulae. |

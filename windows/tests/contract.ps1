@@ -189,6 +189,7 @@ Write-Section 'feature surfaces'
 $expectedParameters = @{
     'clean_disk_c.ps1'      = @('Scope')
     'stay_fresh.ps1'        = @('Only')
+    'status.ps1'            = @('ListSections', 'Only')
     'workstation_doctor.ps1'= @('MinFreePercent')
     'new_script.ps1'        = @('PassThru')
 }

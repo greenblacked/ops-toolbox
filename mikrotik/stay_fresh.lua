@@ -113,9 +113,10 @@
 :global StayFreshMaxWait;
 :if ([:typeof $StayFreshMaxWait] = "num") do={ :set MaxWait $StayFreshMaxWait; }
 
-# The Telegram helper. tg_send_new first - the operator's own copy, the one
-# that runs on 7.24 - then the package's tg_send, so the same file works on a
-# router that has either. Set the :global to name a different one.
+# The Telegram helper. Prefer the operator's own copy (tg_send_new) so a
+# router that already has one keeps using it, then the package's tg_send.
+# The package helper now uses underscore-free globals and runs on 7.24.
+# Set the :global to name a different one.
 :local TgSendScript "tg_send_new";
 :global StayFreshTgSend;
 :if ([:len $StayFreshTgSend] > 0) do={ :set TgSendScript $StayFreshTgSend; }
@@ -150,8 +151,8 @@
 
 # Resolved once and wrapped: a missing helper must not kill the run before the
 # check, and the log has to say which helper it looked for. The package's
-# tg_send is the fallback for releases that run it; on 7.24 it fails to parse
-# like every other underscored script, and this run then has no sender.
+# tg_send is the fallback; on 7.24 it now parses, because its globals are
+# TgBotToken / TgChatId.
 :local Send "";
 :local HaveSend false;
 :local UsingPackageSend false;
