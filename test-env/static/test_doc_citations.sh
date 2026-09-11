@@ -67,7 +67,10 @@ for f in "${docs[@]}"; do
       err "$f links to $path, which does not exist"
       broken=$((broken + 1))
     fi
-  done < <(grep -hoE '\]\([^)]+\)' "$f" | sed 's/^](//; s/)$//')
+  # Inline code spans are blanked first: a document that quotes `](../other.md)`
+  # as an example of link syntax is describing a link, not making one, and
+  # GitHub renders it as literal text. See strip_code() further down.
+  done < <(sed 's/`[^`]*`/ /g' "$f" | grep -hoE '\]\([^)]+\)' | sed 's/^](//; s/)$//')
 done
 (( broken == 0 )) && ok "every relative link in a document resolves"
 
@@ -116,6 +119,23 @@ head_ "in-page anchors resolve"
 # older macOS does not implement them and matches them literally, which would
 # make this collect nothing and say so only because of the floor below.
 anchor_awk='
+# A link inside a backtick span is a code sample, not a link: GitHub renders
+# `](#anchor)` as literal text. Documentation that explains link syntax - the
+# changelog fragments describing this very check, for one - would otherwise be
+# reported as carrying dead links, and a checker that flags its own
+# documentation is a checker people learn to work around. Spans are blanked
+# rather than deleted so offsets the caller may rely on do not shift.
+function strip_code(line,   out, i, n, inside, c) {
+  out = ""
+  n = length(line)
+  inside = 0
+  for (i = 1; i <= n; i++) {
+    c = substr(line, i, 1)
+    if (c == "`") { inside = !inside; out = out " "; continue }
+    out = out (inside ? " " : c)
+  }
+  return out
+}
 function slug(text,   s) {
   s = tolower(text)
   gsub(/[^a-z0-9 _-]/, "", s)
@@ -156,7 +176,7 @@ mode == "headings" && /^ ? ? ?#/ {
   print s
 }
 mode == "links" {
-  s = $0
+  s = strip_code($0)
   # RSTART and RLENGTH are globals: copy both before doing anything else with
   # the match, or the scan advances by some later match offsets and a line
   # with two links is rescanned from the wrong place.
@@ -262,7 +282,11 @@ while IFS= read -r f; do
       err "$f links to $rel#$frag, which no heading in that file generates"
       bad_cross=$((bad_cross + 1))
     fi
-  done < <(grep -hoE '\]\([^)#]+\.md#[^)]+\)' "$f" \
+  # Same reasoning as strip_code() above: blank inline code spans first, so a
+  # fragment that quotes `](../other.md#section)` as an example is not read as
+  # a link to a file called other.md.
+  done < <(sed 's/`[^`]*`/ /g' "$f" \
+             | grep -hoE '\]\([^)#]+\.md#[^)]+\)' \
              | sed 's/^](//; s/)$//; s/#/|/')
 done < <(git ls-files '*.md')
 if (( cross_checked == 0 )); then

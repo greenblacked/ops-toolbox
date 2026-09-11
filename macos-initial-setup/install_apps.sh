@@ -25,7 +25,8 @@
 # Exit codes:
 #   0   everything installed / upgraded cleanly
 #   1   one or more installs failed
-#   2   preflight checks failed (not macOS, no internet, etc.)
+#   2   preflight checks failed (not macOS, no internet, or a real run with
+#       no terminal on stdin and no --yes)
 #   3   bad CLI arguments
 
 set -u
@@ -146,7 +147,9 @@ ${C_BOLD}Usage:${C_RESET}
 
 ${C_BOLD}Options:${C_RESET}
   --dry-run                Show what would happen, install nothing
-  --yes, -y                Don't ask for confirmation
+  --yes, -y                Don't ask for confirmation. Required for a real
+                           run with no terminal on stdin; --dry-run is not
+                           affected
   --skip-upgrade           Don't upgrade already-installed casks or formulae
   --only a,b,c             Only operate on these cask ids (comma-separated)
   --skip a,b,c             Skip these cask ids (comma-separated)
@@ -317,17 +320,6 @@ clean_broken_gcloud_virtenv() {
 # ---------------------------------------------------------------------------
 bold "=== install_apps: preflight checks ==="
 
-# Start the log. A dry run writes nothing — including this — so the file is
-# only created on a real run. See the same guard in install_devtools.sh.
-if (( DRY_RUN == 1 )); then
-  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
-else
-  mkdir -p "$LOG_DIR"
-  : > "$LOG_FILE"
-  echo "install_apps.sh log - $(date)" >> "$LOG_FILE"
-  info "log file: $C_DIM$LOG_FILE$C_RESET"
-fi
-
 # A preflight that stops a preview is a preflight in the wrong place. --help
 # already answers on a machine this script refuses to run on; a dry run writes
 # nothing either, so it should answer there too — that is what makes the plan
@@ -362,7 +354,49 @@ if [[ "$(id -u)" == "0" ]]; then
 fi
 ok "running as user: $(id -un)"
 
-# 4. Internet connectivity
+# 4. A real run with no terminal must be explicitly authorized.
+#
+# This used to be decided at the confirmation prompt further down, and decided
+# the wrong way: with no terminal on stdin the prompt was skipped and the run
+# proceeded, announcing "non-interactive stdin — auto-proceeding". So a piped
+# stdin counted as consent. Every way this script gets run without a human in
+# front of it — a CI step, a launchd job, `curl … | bash`, a provisioning
+# script that redirects stdin from /dev/null — would therefore install several
+# dozen casks and formulae with nobody having said yes. Absence of a terminal
+# is absence of an answer, not a yes.
+#
+# `[[ ! -t 0 ]]` is the same question stay_fresh.sh asks in the same place and
+# for the same reason; keep the two spellings identical. Note it is a
+# different question from that script's have_tty(), which opens /dev/tty to
+# find out whether a *prompt* can be shown — this one only asks whether stdin
+# is a terminal, which is what decides whether `read` below has anyone to read
+# from.
+#
+# --dry-run is deliberately exempt: a preview changes nothing, so there is
+# nothing to consent to, and requiring --yes to see a plan would push people
+# into passing --yes out of habit — which is how a flag that means "I have
+# read this" stops meaning anything.
+#
+# Placed ahead of the log, the network probe and the Homebrew bootstrap so a
+# refused run leaves no trace: the exit below is a refusal, and a refusal that
+# drops a log file in TMPDIR has already made a change.
+if (( DRY_RUN == 0 && ASSUME_YES == 0 )) && [[ ! -t 0 ]]; then
+  err "non-interactive execution requires --yes; refusing to make changes"
+  exit 2
+fi
+
+# Start the log. A dry run writes nothing — including this — so the file is
+# only created on a real run. See the same guard in install_devtools.sh.
+if (( DRY_RUN == 1 )); then
+  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  mkdir -p "$LOG_DIR"
+  : > "$LOG_FILE"
+  echo "install_apps.sh log - $(date)" >> "$LOG_FILE"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
+
+# 5. Internet connectivity
 info "checking internet connectivity..."
 if curl -fsI --max-time 5 https://formulae.brew.sh/ >/dev/null 2>&1; then
   ok "internet reachable (formulae.brew.sh)"
@@ -370,7 +404,7 @@ else
   preflight_fail "cannot reach formulae.brew.sh — check your network / VPN."
 fi
 
-# 5. Xcode Command Line Tools
+# 6. Xcode Command Line Tools
 if xcode-select -p >/dev/null 2>&1; then
   ok "Xcode Command Line Tools: $(xcode-select -p)"
 else
@@ -382,7 +416,7 @@ else
   fi
 fi
 
-# 6. Disk space (need a reasonable buffer, ~5 GB)
+# 7. Disk space (need a reasonable buffer, ~5 GB)
 # `df -g` is a macOS spelling; GNU df rejects it. Only reachable off macOS
 # during a dry run, and a preview should not be noisier than the thing it
 # previews, so the error is not worth showing.
@@ -396,7 +430,7 @@ else
   warn "could not determine free disk space"
 fi
 
-# 7. Homebrew install / bootstrap
+# 8. Homebrew install / bootstrap
 if ! command -v brew >/dev/null 2>&1; then
   warn "Homebrew not found"
   if (( DRY_RUN )); then
@@ -419,7 +453,7 @@ BREW_PREFIX="$(brew --prefix)"
 BREW_VERSION="$(brew --version | head -n1)"
 ok "$BREW_VERSION (prefix: $BREW_PREFIX)"
 
-# 8. Optional: brew doctor summary (non-fatal)
+# 9. Optional: brew doctor summary (non-fatal)
 if (( VERBOSE )); then
   info "running 'brew doctor' (non-fatal)..."
   brew doctor >>"$LOG_FILE" 2>&1 || warn "'brew doctor' reported issues — see log"
@@ -517,17 +551,18 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
+# No `[[ ! -t 0 ]]` branch here any more. The one that used to live here
+# auto-proceeded without a terminal, which is the consent hole the preflight
+# guard now closes; with that guard in place a real run reaching this line
+# either passed --yes (and skips the block) or has a terminal to prompt on, so
+# a second answer to the same question could only drift away from the first.
 if (( ASSUME_YES == 0 )); then
-  if [[ ! -t 0 ]]; then
-    info "non-interactive stdin — auto-proceeding (use --yes to silence)"
-  else
-    printf "%sProceed? [y/N]%s " "$C_BOLD" "$C_RESET"
-    read -r answer
-    case "$answer" in
-      y|Y|yes|YES) ;;
-      *) warn "aborted by user"; exit 0 ;;
-    esac
-  fi
+  printf "%sProceed? [y/N]%s " "$C_BOLD" "$C_RESET"
+  read -r answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) warn "aborted by user"; exit 0 ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------

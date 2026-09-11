@@ -195,8 +195,11 @@ if [[ "$(uname -s)" == "Linux" ]]; then
   for f in "${sh_scripts[@]}"; do
     name="${f##*/}"
     # v1_stay_fresh.sh has no platform guard by design: it is the preserved
-    # original and its documented exit codes are 0, 1 (no usable home) and 2
-    # (bad arguments), with no 'wrong OS' among them.
+    # original and its documented exit codes are 0, 1 (no usable home) and 3
+    # (bad arguments, which now includes a bare run that omitted
+    # --legacy-run), with no 'wrong OS' among them. A bare invocation here
+    # would exit 3 rather than the 2 this loop asserts, which is a second
+    # reason to skip it; the gate itself is covered further down.
     if [[ "$name" == "v1_stay_fresh.sh" ]]; then
       ok "$name: skipped, it has no platform guard by design"
       continue
@@ -255,6 +258,49 @@ assert_eq "install_apps rejects unknown --only-formulae -> 3" "3" "$rc"
 
 legacy_help="$("$M/v1_stay_fresh.sh" --help)"
 assert_contains "legacy maintenance help carries deprecation warning" "$legacy_help" "DEPRECATED"
+assert_contains "legacy maintenance help documents the opt-in flag" "$legacy_help" "--legacy-run"
+
+# --- v1_stay_fresh: the fixed sequence is opt-in --------------------------
+# The deprecation notice printed on every run and then the run happened
+# anyway: Xcode Archives deleted, `brew --cache` emptied, `killall Finder`,
+# with no dry run to preview it and no skip flag to hold any of it back. A
+# notice that prints while the thing it warns about proceeds is decoration,
+# so the sequence now needs --legacy-run and a bare invocation stops at 3.
+#
+# Two stubs, and they are not decoration either. This assertion is the only
+# thing between a regression and the suite running the real sequence on the
+# machine executing it, and the scratch HOME below would not contain it: the
+# script resolves the user's home through `dscl`, which on a Mac answers with
+# the real one and ignores $HOME entirely. The dscl stub prints nothing so
+# the fallback to $HOME applies, and the sudo stub keeps a regressed run from
+# blocking on a password prompt instead of failing this test.
+v1_scratch="$(mktemp -d)"
+mkdir -p "$v1_scratch/bin" "$v1_scratch/home" "$v1_scratch/tmp"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$v1_scratch/bin/dscl"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$v1_scratch/bin/sudo"
+chmod +x "$v1_scratch/bin/dscl" "$v1_scratch/bin/sudo"
+set +e
+out="$(HOME="$v1_scratch/home" TMPDIR="$v1_scratch/tmp" \
+  PATH="$v1_scratch/bin:/usr/bin:/bin" "$M/v1_stay_fresh.sh" </dev/null 2>&1)"
+rc=$?
+set -e
+assert_eq "v1_stay_fresh refuses a bare run -> 3" "3" "$rc"
+assert_contains "a refused v1_stay_fresh run still prints the deprecation" "$out" \
+  "DEPRECATED"
+assert_contains "a refused v1_stay_fresh run names the opt-in flag" "$out" \
+  "--legacy-run"
+# The steps it would have run must not have run. `qlmanage -r` is step 1, so
+# its absence is evidence the script stopped at the gate rather than getting
+# as far as printing the banner and then failing on a missing tool.
+assert_not_contains "a refused v1_stay_fresh run starts no step" "$out" \
+  "Refresh Quick Look"
+if [[ -z "$(find "$v1_scratch/home" "$v1_scratch/tmp" -mindepth 1 -print -quit)" ]]; then
+  ok "a refused v1_stay_fresh run writes nothing"
+else
+  err "a refused v1_stay_fresh run modified HOME or TMPDIR"
+  find "$v1_scratch/home" "$v1_scratch/tmp" -mindepth 1 >&2
+fi
+rm -rf "$v1_scratch"
 
 # --- stay_fresh safety contracts ------------------------------------------
 # Fake only the three host-identification commands. Everything that can mutate
@@ -729,6 +775,65 @@ if grep -Eq '^[[:space:]]*k9s[[:space:]]' <<<"$out"; then
 else
   ok "install_apps --only-formulae excludes unselected formulae"
 fi
+
+# --- installers refuse a non-interactive real run without --yes -----------
+# stay_fresh.sh has enforced this for a while and the two bootstrap scripts
+# did not. install_apps.sh printed "non-interactive stdin — auto-proceeding"
+# and carried on; install_devtools.sh asked only when `[[ -t 0 ]]`, so with no
+# terminal it never asked and installed regardless. Piped stdin counted as
+# consent, which is the shape of every CI step, launchd job and provisioning
+# script that invokes either of them.
+#
+# The fixture is a real pipe rather than `</dev/null`, because a pipe is the
+# shape the bug had: `echo y | ./install_apps.sh` looked like an answer and
+# was treated as one. printf may finish before or after the script depending
+# on scheduling, but the pipeline's status under pipefail is the rightmost
+# non-zero one, which is the script's own.
+#
+# Fresh HOME and TMPDIR per installer rather than the shared $fake_macos
+# pair: half of what is asserted is that the refusal wrote nothing, and the
+# shared directories already hold fixtures written by the tests above.
+for installer in install_apps install_devtools; do
+  inst_scratch="$(mktemp -d)"
+  mkdir -p "$inst_scratch/home" "$inst_scratch/tmp"
+  set +e
+  out="$(printf 'y\n' | BREW_CALLS="$brew_calls" HOME="$inst_scratch/home" \
+    TMPDIR="$inst_scratch/tmp" SHELL=/bin/zsh \
+    PATH="$fake_macos/bin:/usr/bin:/bin" "$M/$installer.sh" 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "$installer refuses piped stdin without --yes -> 2" "2" "$rc"
+  assert_contains "$installer explains the non-interactive guard" "$out" \
+    "non-interactive execution requires --yes"
+  # Without this line the test would be satisfied by the platform preflight
+  # instead: on Linux both scripts exit 2 saying "macOS only", the same code
+  # for an entirely different reason, and the assertions above would pass
+  # having never reached the gate. The fake uname puts them on Darwin; this
+  # proves they got as far as the user check, which sits immediately before
+  # the guard.
+  assert_contains "$installer reaches the consent gate, not the macOS guard" \
+    "$out" "running as user: tester"
+  if [[ -z "$(find "$inst_scratch/home" "$inst_scratch/tmp" -mindepth 1 -print -quit)" ]]; then
+    ok "$installer's refusal writes nothing"
+  else
+    err "$installer's refusal left files behind (its log, most likely)"
+    find "$inst_scratch/home" "$inst_scratch/tmp" -mindepth 1 >&2
+  fi
+
+  # The other half of the contract, and the reason the guard tests DRY_RUN
+  # first: a preview changes nothing, so there is nothing to consent to and
+  # --yes stays unnecessary. Piped exactly the same way.
+  set +e
+  out="$(printf 'y\n' | BREW_CALLS="$brew_calls" HOME="$inst_scratch/home" \
+    TMPDIR="$inst_scratch/tmp" SHELL=/bin/zsh \
+    PATH="$fake_macos/bin:/usr/bin:/bin" "$M/$installer.sh" --dry-run 2>&1)"
+  rc=$?
+  set -e
+  assert_eq "$installer --dry-run needs no --yes on piped stdin" "0" "$rc"
+  assert_contains "$installer --dry-run reaches its plan" "$out" \
+    "Dry run — no changes will be made."
+  rm -rf "$inst_scratch"
+done
 
 # Brewfile reconciliation previews without --force and mutates only when that
 # explicit flag is present.
@@ -1526,6 +1631,26 @@ if grep -q 'local py=/usr/bin/python3' "$M/stay_fresh.sh"; then
 else
   err "stay_fresh.sh no longer pins an absolute interpreter path"
 fi
+
+# --- zsh_aliases: the header scopes the file to an interactive shell -------
+# Sourcing this file is not the side-effect-free act a list of aliases looks
+# like: it sets HISTSIZE and turns on SHARE_HISTORY and AUTO_CD, all of which
+# belong to a session with a human at the keyboard. Sourced from ~/.zshenv —
+# which every zsh reads, including the one behind `ssh host command` — AUTO_CD
+# turns a script line that names a directory into a silent `cd` instead of the
+# "command not found" that should have stopped the run. Someone has to be told
+# that before they wire it in, and the header is where they look.
+#
+# Only the header counts, so only the header is searched: the file mentions
+# all three names further down, at the `setopt` lines that set them, and a
+# whole-file grep would report a header that says none of this as a pass.
+zsh_header="$(awk '/^setopt/ { exit } { print }' "$M/zsh_aliases.zsh")"
+assert_contains "zsh_aliases header scopes the file to interactive shells" \
+  "$zsh_header" "interactive shell"
+for opt in HISTSIZE SHARE_HISTORY AUTO_CD; do
+  assert_contains "zsh_aliases header names $opt as a reason for that scope" \
+    "$zsh_header" "$opt"
+done
 
 # --- zsh_aliases: must source cleanly in zsh (Linux) ---
 if zsh -f -c "source '$M/zsh_aliases.zsh'"; then

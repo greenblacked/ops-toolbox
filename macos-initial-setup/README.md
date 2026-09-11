@@ -76,7 +76,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `install_apps.sh` | Day-one workstation apps, Homebrew casks/formulae, platform CLIs, and Google Cloud SDK. |
 | `install_devtools.sh` | Language and infrastructure toolchains: Python, Terraform, Go, Helm, and version managers. |
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
-| `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. |
+| `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. Deprecated: it runs only under `--legacy-run`. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
 | `macos_defaults.sh` | Read-only preference drift report by default; explicitly apply selected settings or revert a validated backup. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
@@ -101,7 +101,7 @@ than memorizing flags.
 | **Configure** | `macos_defaults.sh` | Once, then after major macOS upgrades | Finder, Dock, keyboard and screenshot preferences; read-only unless `--apply`/`--revert` |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
-| **Legacy** | `v1_stay_fresh.sh` | On demand | Minimal subset of the above; no flags |
+| **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
 The two bootstrap scripts are independent — you can run either one
 first. `stay_fresh.sh` assumes Homebrew is installed but degrades
@@ -195,12 +195,19 @@ through `brew` instead of each vendor's auto-updater.
 ./install_apps.sh --yes                  # non-interactive
 ```
 
+A real run started without a terminal on stdin — a CI step, a launchd job,
+`curl … | bash`, anything with stdin redirected from `/dev/null` — must pass
+`--yes`, or it exits **2** with `non-interactive execution requires --yes`
+before creating its log or touching Homebrew. Absence of a terminal is absence
+of an answer, not consent. `--dry-run` is exempt: a preview changes nothing,
+so there is nothing to agree to.
+
 ### Options
 
 | Flag | Purpose |
 | --- | --- |
-| `--dry-run` | Show the plan; change nothing. |
-| `-y`, `--yes` | Skip confirmation prompts. |
+| `--dry-run` | Show the plan; change nothing. Never requires `--yes`. |
+| `-y`, `--yes` | Skip confirmation prompts. Required for a real run with no terminal on stdin. |
 | `-v`, `--verbose` | Stream `brew` output live (also runs `brew doctor` into the log). |
 | `--only a,b,c` | Install only the listed casks. |
 | `--skip a,b,c` | Install everything except the listed casks. |
@@ -274,7 +281,7 @@ packaged as a Homebrew formula.
 | --- | --- |
 | `0` | Completed successfully. |
 | `1` | One or more installs failed. |
-| `2` | Preflight checks failed. |
+| `2` | Preflight checks failed, or a non-interactive real run omitted `--yes`. |
 | `3` | Invalid arguments. |
 
 ---
@@ -305,12 +312,16 @@ exactly as its upstream documentation expects.
 ./install_devtools.sh --yes --setup-shell  # non-interactive; wire ~/.zshrc
 ```
 
+As with `install_apps.sh`, a real run started without a terminal on stdin must
+pass `--yes` or it exits **2** with `non-interactive execution requires --yes`,
+before creating its log or reaching Homebrew. `--dry-run` is exempt.
+
 ### Options
 
 | Flag | Purpose |
 | --- | --- |
-| `--dry-run` | Show the plan; change nothing. |
-| `-y`, `--yes` | Skip confirmation prompts. |
+| `--dry-run` | Show the plan; change nothing. Never requires `--yes`. |
+| `-y`, `--yes` | Skip confirmation prompts. Required for a real run with no terminal on stdin. |
 | `-v`, `--verbose` | Stream `brew`, `pyenv`, and builder output live. |
 | `--setup-shell` | Append initialization lines to `~/.zshrc` or `~/.bashrc`. |
 | `--only python,terraform,go,helm` | Install only the named tool groups. Cannot be mixed with individual `--skip-*` tool flags. |
@@ -364,7 +375,7 @@ your shell configuration yourself.
 | --- | --- |
 | `0` | Completed successfully. |
 | `1` | One or more installs failed. |
-| `2` | Preflight checks failed. |
+| `2` | Preflight checks failed, or a non-interactive real run omitted `--yes`. |
 | `3` | Invalid arguments. |
 
 ---
@@ -741,9 +752,13 @@ It has been modernized to run stand-alone: there is no dependency on
 inlined. Prefer `stay_fresh.sh` unless you specifically need this
 minimal runner.
 
-This script is now explicitly **deprecated and behaviorally frozen**. It still
-runs for compatibility, but its fixed cleanup includes Xcode Archives and it
-will not gain new flags. New automation should use scoped
+This script is now explicitly **deprecated and behaviorally frozen**, and its
+fixed sequence is **opt-in**: a bare invocation prints the deprecation notice
+and exits **3** without touching anything. Pass `--legacy-run` to accept the
+old behavior. That gate exists because the sequence deletes Xcode Archives,
+empties `brew --cache` and restarts Finder with no dry run to preview it and
+no skip flag to hold any of it back — a deprecation notice that printed while
+all of that happened anyway was not a guard. New automation should use scoped
 `stay_fresh.sh --only …` runs.
 
 ### Steps
@@ -773,13 +788,21 @@ or `launchd`.
 ### Usage
 
 ```bash
-./v1_stay_fresh.sh              # prompts once for sudo, then runs everything
-./v1_stay_fresh.sh --help       # show the built-in help
+./v1_stay_fresh.sh                  # prints the deprecation notice; exits 3
+./v1_stay_fresh.sh --legacy-run     # prompts once for sudo, then runs everything
+./v1_stay_fresh.sh --help           # show the built-in help
 ```
 
-The complete flag surface is `-h` / `--help`. There is no `--dry-run`,
-`--yes`, `--no-sudo`, or skip flag — use `stay_fresh.sh` if any of those
-are required. A failing step never aborts the remainder of the run.
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--legacy-run` | Run the fixed sequence above. Required: without it the script prints the deprecation notice and exits `3`, having changed nothing. |
+| `-h`, `--help` | Show the built-in help. Answered before anything else, wherever it appears on the command line. |
+
+That is the complete flag surface. There is no `--dry-run`, `--yes`,
+`--no-sudo`, or skip flag — use `stay_fresh.sh` if any of those are
+required. A failing step never aborts the remainder of the run.
 
 ### Exit codes
 
@@ -787,7 +810,7 @@ are required. A failing step never aborts the remainder of the run.
 | --- | --- |
 | `0` | Completed normally, including `--help`. Per-step failures are reported in the output but do not change this. |
 | `1` | Bootstrap failure: cannot determine a usable home directory. |
-| `3` | Invalid arguments. |
+| `3` | Invalid arguments, or a run that omitted `--legacy-run`. |
 
 If you need hard-fail semantics on per-step failures, use
 `stay_fresh.sh` instead.
@@ -1123,6 +1146,17 @@ dependency (`eza`, `bat`, `fd`, `rg`, `docker`, `kubectl`, `helm`,
 `command -v`, so the file is safe to source on any machine regardless
 of which tools are installed.
 
+**Interactive shells only.** Source it from `~/.zshrc`, which zsh reads
+for interactive shells and nothing else — never from `~/.zshenv`, and
+never from a script. Sourcing is not the side-effect-free act a list of
+aliases looks like: the file sets `HISTSIZE` (and `SAVEHIST`, and
+`HISTFILE`) and turns on `SHARE_HISTORY` and `AUTO_CD`. In a
+non-interactive shell `AUTO_CD` turns a line that happens to name a
+directory into a silent `cd` instead of the "command not found" that
+should have stopped the run, and `SHARE_HISTORY` has that shell writing
+to and re-reading a history file it has no business touching. The file's
+own header says the same thing.
+
 ### Installation
 
 ```bash
@@ -1379,14 +1413,17 @@ Homebrew / `pyenv` / `goenv` commands.
 
 ### `v1_stay_fresh.sh`
 
-- Runs the subset of cleanup and toolchain updates listed in its
-  *Steps* section.
+- Changes nothing at all unless `--legacy-run` is passed; without it the
+  script exits `3` before resolving a home directory or asking for
+  `sudo`.
+- With `--legacy-run`, runs the subset of cleanup and toolchain updates
+  listed in its *Steps* section.
 - Deletes `~/.lesshst` and `~/.mysql_history` if present.
 - Writes no log file by default; redirect yourself with `tee` if a
   transcript is needed:
 
   ```bash
-  ./v1_stay_fresh.sh 2>&1 | tee /tmp/v1_stay_fresh.log
+  ./v1_stay_fresh.sh --legacy-run 2>&1 | tee /tmp/v1_stay_fresh.log
   ```
 
 ### `zsh_aliases.zsh`
@@ -1411,4 +1448,4 @@ way and is meant to be run with `sudo` for the checks that need it.
 | `install_apps.sh` | Cask installs that require admin approval (Homebrew invokes `sudo` internally; the script itself does not escalate). |
 | `install_devtools.sh` | Same as above, only via Homebrew where required. |
 | `stay_fresh.sh` | `purge`, DNS flush, `/Library/Caches` cleanup, system diagnostic cleanup. Pass `--no-sudo` to skip all of these. |
-| `v1_stay_fresh.sh` | `purge`. No way to opt out — use `stay_fresh.sh --no-sudo` instead. |
+| `v1_stay_fresh.sh` | `purge`, under `--legacy-run` only. No way to opt out — use `stay_fresh.sh --no-sudo` instead. |

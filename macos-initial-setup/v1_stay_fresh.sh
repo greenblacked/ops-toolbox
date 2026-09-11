@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
-# old_stay_fresh.sh — legacy macOS housekeeping. Self-contained: no
+# v1_stay_fresh.sh — legacy macOS housekeeping. Self-contained: no
 # dependencies outside of bash + the system tools each step exercises.
+#
+# The name above said old_stay_fresh.sh for long enough that the README had
+# to carry a note explaining that the two were the same file. A header that
+# names a file which no longer exists is the first thing a reader checks and
+# the first thing that misleads them, so it now matches the path on disk.
 #
 # Companion to stay_fresh.sh. Uses a built-in step/next/try reporting style
 # (originally derived from ~/scripts/functions, now inlined below so the
@@ -45,10 +50,13 @@ behavior (including Xcode Archives) and receives no new features. Prefer
 stay_fresh.sh, which has dry-run, explicit scoping, and safer retention.
 
 Usage:
+  $(basename "$0") --legacy-run
   $(basename "$0") [--help|-h]
 
-Runs a fixed sequence of housekeeping steps. There are no skip flags — for
-per-step toggles, dry-run, and a summary report, use stay_fresh.sh instead.
+Runs a fixed sequence of housekeeping steps, but only when --legacy-run is
+given: a bare invocation prints the deprecation notice and exits 3 without
+touching anything. There are still no skip flags — for per-step toggles,
+dry-run, and a summary report, use stay_fresh.sh instead.
 
 Steps (in order):
   1.  Refresh Quick Look & Finder caches   (qlmanage -r, killall Finder)
@@ -77,6 +85,9 @@ Behavior:
     the script keeps sudo alive for the full run.
 
 Options:
+  --legacy-run  Run the fixed sequence above. Required: without it this
+                script prints the deprecation notice and exits 3, having
+                changed nothing.
   -h, --help    Show this help and exit.
 
 Files:
@@ -88,13 +99,50 @@ See also:
 EOF
 }
 
-case "${1:-}" in
-  -h|--help) usage; exit 0 ;;
-  "")        ;;
-  *)         printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 3 ;;
-esac
+# Parsed as a loop rather than as a single `case "${1:-}"`, which is what this
+# was. With one arm per invocation, `--legacy-run --help` would have set the
+# opt-in and then run the whole sequence instead of printing the help, because
+# $2 was never looked at. --help has to answer before anything else happens no
+# matter where it appears (CONTRIBUTING.md), and a loop is the only spelling
+# that keeps that true once a second flag exists.
+LEGACY_RUN=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --legacy-run) LEGACY_RUN=1 ;;
+    *)            printf 'unknown option: %s\n\n' "$1" >&2; usage >&2; exit 3 ;;
+  esac
+  shift
+done
 
 printf 'DEPRECATED: use stay_fresh.sh for previewable, scoped maintenance.\n' >&2
+
+# That notice has printed on every run since this script was frozen, and it
+# changed nothing: a bare invocation still walked straight into a fixed
+# sequence that deletes ~/Library/Developer/Xcode/Archives (for anyone who
+# ships from this Mac, the only copy of a shipped build), empties `brew --cache`
+# resolves to, and sends `killall Finder` — with no dry run to preview any of
+# it and no skip flag to hold any of it back. A deprecation notice that prints
+# while the thing it warns about happens anyway is decoration, not a guard.
+#
+# So the sequence is opt-in now. --legacy-run is deliberately long and
+# impossible to type by accident: the machines that still want this behavior
+# say so explicitly, and everything that reaches this script by momentum — a
+# stale cron line, muscle memory, a copy-paste out of a five-year-old runbook
+# — stops here having touched nothing.
+#
+# Exit 3 (bad CLI arguments) rather than 0, because a caller that scripted a
+# bare run must see a failure. Exiting 0 would turn every one of those callers
+# into a silent no-op that nobody notices until the cleanup they thought was
+# running turns out not to have run for months.
+if [ "$LEGACY_RUN" -ne 1 ]; then
+  printf '%s\n' \
+    'Refusing to run the legacy sequence without --legacy-run: it deletes' \
+    'Xcode Archives, empties brew --cache and restarts Finder, with no' \
+    'dry run and no skip flags. Pass --legacy-run to accept that, or use' \
+    'stay_fresh.sh for a previewable, scoped run.' >&2
+  exit 3
+fi
 
 # Resolve the invoking user's real home directory, independent of $HOME —
 # the script may be invoked with a sanitized env (sudo, launchd, etc.) where

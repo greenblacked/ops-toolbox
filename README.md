@@ -279,8 +279,11 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   of pending macOS and App Store updates; and a verdict sent as a macOS
   banner, a Telegram message or a Slack post. AI credentials, sessions,
   runtimes, and downloaded models are kept.
-- `v1_stay_fresh.sh` is a legacy, flag-free minimal maintenance flow kept for
-  reference; prefer `stay_fresh.sh` for new use.
+- `v1_stay_fresh.sh` is a legacy minimal maintenance flow kept for reference.
+  A bare run now refuses and exits `3`: the sequence it used to perform on any
+  invocation deleted Xcode Archives, emptied `brew --cache` and sent
+  `killall Finder`, with no dry run and no way to skip a step. `--legacy-run`
+  is the opt-in that still performs it. Prefer `stay_fresh.sh` for new use.
 - `brewfile.sh` captures the Homebrew state of a machine into a versioned
   `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
   to see what `dump` would change before overwriting anything. The curated

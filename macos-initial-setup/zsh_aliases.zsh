@@ -16,6 +16,31 @@
 #   - Aliases that depend on optional tools (eza, bat, fd, rg, etc.) are only
 #     registered when those tools are available, so this file is safe to
 #     source on any machine.
+#
+# For an INTERACTIVE SHELL ONLY. Source it from ~/.zshrc, which zsh reads for
+# interactive shells and nothing else — never from ~/.zshenv, and never from a
+# script.
+#
+# Sourcing this file is not side-effect free, whatever the aliases below
+# suggest. It sets HISTSIZE (and SAVEHIST and HISTFILE) and turns on
+# SHARE_HISTORY and AUTO_CD, and all three belong to a session with a human at
+# the keyboard:
+#
+#   * AUTO_CD rewrites a bare word that happens to name a directory into a
+#     `cd` to it. Convenient when typing; in a script it turns the
+#     "command not found" that should have stopped the run into a silent
+#     directory change, and every relative path after that line resolves
+#     somewhere else.
+#   * SHARE_HISTORY has the shell append to and re-read $HISTFILE around every
+#     command, so a non-interactive shell that inherits it writes the
+#     machine's automation into a history file it has no business touching,
+#     and concurrent jobs interleave into each other's.
+#   * HISTSIZE/SAVEHIST at 50000 are sized for a terminal somebody scrolls
+#     back through, not for a job that runs once and exits.
+#
+# ~/.zshenv is read by EVERY zsh — including the non-interactive one behind
+# `ssh host command`, a cron entry and `zsh script.zsh` — which is exactly
+# where these settings do the damage described above.
 # ---------------------------------------------------------------------------
 
 # ======= shell options (non-invasive, can be removed if undesired) =========
