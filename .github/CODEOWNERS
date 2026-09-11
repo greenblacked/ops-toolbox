@@ -1,0 +1,8 @@
+# Every path in this repository has one owner. GitHub requests their review
+# automatically on a pull request that touches a matching file, so a change
+# cannot sit unnoticed waiting for somebody to spot it.
+#
+# One entry, because this is a single-maintainer repository. Add narrower
+# lines below it when that stops being true — later matches win, so a path
+# rule must come after this catch-all to take effect.
+*       @greenblacked

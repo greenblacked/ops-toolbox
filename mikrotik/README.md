@@ -15,7 +15,7 @@ rather than every run, and never swallowing a failed notification — are
 collected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), together with how the
 pinned CHR version and its digest are bumped.
 
-## Files at a glance
+## Scripts overview
 
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |

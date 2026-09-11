@@ -1,4 +1,4 @@
-# Windows Git Bash Dotfiles
+# Windows Git Bash dotfiles
 
 A `.bashrc` / `.bash_profile` / `.aliases` set for Git Bash (MSYS2) on
 Windows, built up from a minimal SSH-agent-loading snippet into a fuller set

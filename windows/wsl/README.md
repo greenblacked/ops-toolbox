@@ -1,4 +1,4 @@
-# WSL Maintenance
+# WSL maintenance
 
 `wsl_manage.ps1` covers the WSL2 chores that are annoying to remember:
 finding where the virtual disks actually live, backing distros up and getting
