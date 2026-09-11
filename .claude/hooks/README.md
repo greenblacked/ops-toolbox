@@ -1,5 +1,7 @@
 # Session startup hook
 
+[Ops Toolbox](../../README.md) / **Session startup hook**
+
 What a hosted coding session needs before the first command, so that the
 suites and linters in this repository behave the way they do in CI.
 

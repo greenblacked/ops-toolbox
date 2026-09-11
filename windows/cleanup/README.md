@@ -1,5 +1,7 @@
 # Disk C: cleanup
 
+[Ops Toolbox](../../README.md) / **Disk C: cleanup**
+
 `clean_disk_c.ps1` frees space on `C:` by deleting data that is genuinely
 safe to lose. It never touches documents, downloads, application settings, or
 anything under your user profile except designated cache/temp locations.

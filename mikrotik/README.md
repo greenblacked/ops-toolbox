@@ -1,5 +1,7 @@
 # MikroTik RouterOS scripts
 
+[Ops Toolbox](../README.md) / **MikroTik RouterOS scripts**
+
 A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.2**)
 for backups, WiFi rotation, monitoring and Telegram notifications. All scripts
 live in `/system script` on the router and are run either manually or from

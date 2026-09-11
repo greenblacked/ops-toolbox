@@ -1,8 +1,20 @@
 # Kali red/blue lab cloud-init
 
+[Ops Toolbox](../../README.md) / **Kali red/blue lab cloud-init**
+
 [`kali-vm-init.yaml`](kali-vm-init.yaml) provisions a local Kali VM with
 baseline networking commands and curated Kali red-team and blue-team tool
 groups. It is intended for an authorized, isolated security lab.
+
+## Contents
+
+- [Result](#result)
+- [Sizing](#sizing)
+- [Standard cloud-init usage](#standard-cloud-init-usage)
+- [OrbStack `kali:current` workaround](#orbstack-kalicurrent-workaround)
+- [Verification](#verification)
+- [Recovery and repeat runs](#recovery-and-repeat-runs)
+- [Automated tests](#automated-tests)
 
 ## Result
 

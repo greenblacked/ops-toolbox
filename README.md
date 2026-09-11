@@ -10,27 +10,49 @@
 [![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.24.2-blue.svg)](mikrotik/README.md)
 
-**CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
-conventions suites on every pull request, including native macOS and Windows
-contracts, plus repo-wide ShellCheck, PSScriptAnalyzer, actionlint, Hadolint,
-yamllint, markdownlint and schema validation. **RouterOS CHR** is separate because it boots a real router under
-QEMU: it runs nightly, on demand, and on the pull requests that touch
-`mikrotik/`, so a red badge there does not necessarily mean a red pull request.
-
-The two lint badges are static labels for the gates CI enforces, not live
-results — the CI badge is the one that reflects the current state of `master`.
-
 Helper scripts for setting up, maintaining, and working on the machines I touch
 regularly — macOS workstations, Linux servers and workstations, a Windows dev
 machine, and a MikroTik router, plus everyday Git helpers and a portable
 Kubernetes toolbox. Each folder should be easy to inspect, safe to run more
 than once, and focused on reducing repeat manual work.
 
+## What's here
+
+| Folder | Purpose |
+| --- | --- |
+| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
+| [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
+| [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
+| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
+| [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
+| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
+| [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
+| [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
+| [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [What's here](#whats-here)
+- [Quick start](#quick-start)
+- [Script guidelines](#script-guidelines)
+- [Git scripts at a glance](#git-scripts-at-a-glance)
+- [macOS setup at a glance](#macos-setup-at-a-glance)
+- [Windows at a glance](#windows-at-a-glance)
+- [Linux at a glance](#linux-at-a-glance)
+- [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
+- [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
+- [Dotfiles at a glance](#dotfiles-at-a-glance)
+- [Testing](#testing)
+- [Continuous integration](#continuous-integration)
+- [Agent skills](#agent-skills)
+- [Contributing](#contributing)
+
 Three rules hold everywhere, and the test suites enforce them:
 
 - **`--help` works before anything else**, including on a machine the script
   refuses to run on. An unrecognised flag exits `3` — from the Bash and
-  PowerShell scripts. The four Python CLIs use `argparse`, which exits `2` by
+  PowerShell scripts. The Python CLIs use `argparse`, which exits `2` by
   its own convention; `check_conventions.sh` exempts them by extension rather
   than fighting it.
 - **A dry run writes nothing.** Anything that changes a machine supports
@@ -67,38 +89,6 @@ Because scripts are standalone, the useful unit is one file rather than the
 whole repository: take `git_prune_gone.sh`, or one RouterOS script, and leave
 the rest. It is aimed at people who look after a handful of machines by hand,
 not at anyone shopping for a dotfiles framework to adopt.
-
-## Contents
-
-- [Why this exists](#why-this-exists)
-- [What's here](#whats-here)
-- [Quick start](#quick-start)
-- [Script guidelines](#script-guidelines)
-- [Git scripts at a glance](#git-scripts-at-a-glance)
-- [macOS setup at a glance](#macos-setup-at-a-glance)
-- [Windows at a glance](#windows-at-a-glance)
-- [Linux at a glance](#linux-at-a-glance)
-- [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
-- [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
-- [Dotfiles at a glance](#dotfiles-at-a-glance)
-- [Testing](#testing)
-- [Continuous integration](#continuous-integration)
-- [Agent skills](#agent-skills)
-- [Contributing](#contributing)
-
-## What's here
-
-| Folder | Purpose |
-| --- | --- |
-| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
-| [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
-| [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
-| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
-| [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
-| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
-| [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
-| [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
-| [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
 
 ## Quick start
 
@@ -688,6 +678,16 @@ The `.gitignore` re-admits only the hook and the settings file that registers
 it; everything else an agent keeps in that directory stays local.
 
 ### Continuous integration
+
+**CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
+conventions suites on every pull request, including native macOS and Windows
+contracts, plus repo-wide ShellCheck, PSScriptAnalyzer, actionlint, Hadolint,
+yamllint, markdownlint and schema validation. **RouterOS CHR** is separate because it boots a real router under
+QEMU: it runs nightly, on demand, and on the pull requests that touch
+`mikrotik/`, so a red badge there does not necessarily mean a red pull request.
+
+The two lint badges are static labels for the gates CI enforces, not live
+results — the CI badge is the one that reflects the current state of `master`.
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs every suite except
 the RouterOS one — through `run-tests.sh`, so the aggregator is exercised too

@@ -1,5 +1,7 @@
 # Changelog fragments
 
+[Ops Toolbox](../README.md) / **Changelog fragments**
+
 One file per change, so two pull requests never edit the same line of
 `CHANGELOG.md`.
 

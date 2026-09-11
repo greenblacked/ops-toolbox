@@ -1,5 +1,7 @@
 # Windows scripts
 
+[Ops Toolbox](../README.md) / **Windows scripts**
+
 Everything for keeping a Windows dev machine pleasant: Git Bash dotfiles,
 WSL maintenance, and disk cleanup. Each subfolder has its own README with
 full details.

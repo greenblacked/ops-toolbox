@@ -1,5 +1,7 @@
 # Dotfiles
 
+[Ops Toolbox](../README.md) / **Dotfiles**
+
 Configuration for the tools already on a DevOps workstation — the ones
 [`macos-initial-setup/install_apps.sh`](../macos-initial-setup/install_apps.sh)
 and the Brewfile put there — and a script that links them into a home

@@ -1,5 +1,7 @@
 # Windows setup
 
+[Ops Toolbox](../../README.md) / **Windows setup**
+
 Capture what a Windows machine has installed, keep it under version control,
 reproduce it elsewhere — and then keep it healthy.
 
@@ -26,6 +28,15 @@ code, that says what a workstation should have. `winget-packages.json` is the
 *fact*: everything one particular box happens to have, exported from it. Use
 `winget_configure.ps1` to build a machine and `winget_bootstrap.ps1` to record
 one. Neither replaces the other.
+
+## Contents
+
+- [winget_bootstrap.ps1](#winget_bootstrapps1)
+- [stay_fresh.ps1](#stay_freshps1)
+- [workstation_doctor.ps1](#workstation_doctorps1)
+- [Testing](#testing)
+- [winget_configure.ps1](#winget_configureps1)
+- [choco_bootstrap.ps1](#choco_bootstrapps1)
 
 ## winget_bootstrap.ps1
 

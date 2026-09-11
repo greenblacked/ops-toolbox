@@ -1,5 +1,7 @@
 # Templates
 
+[Ops Toolbox](../README.md) / **Templates**
+
 Starting points for new scripts. Copy one, rename it, delete what you do not
 need. [`CONTRIBUTING.md`](../CONTRIBUTING.md) walks the rest of the way —
 discovery, the dry-run argument tables, tests, and the two documentation

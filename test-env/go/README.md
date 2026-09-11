@@ -1,5 +1,7 @@
 # Go test environment
 
+[Ops Toolbox](../../README.md) / **Go test environment**
+
 Develop and run checks in **Docker** so your laptop does not need a local Go
 toolchain. The image ships **Go 1.23**, **golangci-lint**, **goimports**,
 **govulncheck**, plus the meta-linters **shellcheck**, **hadolint**, and

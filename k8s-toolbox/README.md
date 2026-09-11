@@ -1,5 +1,7 @@
 # Kubernetes toolbox
 
+[Ops Toolbox](../README.md) / **Kubernetes toolbox**
+
 A container image with the Kubernetes CLIs already in it, plus the scripts that
 build it, run it and point it at a cluster.
 

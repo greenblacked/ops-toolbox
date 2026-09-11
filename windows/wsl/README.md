@@ -1,5 +1,7 @@
 # WSL maintenance
 
+[Ops Toolbox](../../README.md) / **WSL maintenance**
+
 `wsl_manage.ps1` covers the WSL2 chores that are annoying to remember:
 finding where the virtual disks actually live, backing distros up and getting
 them back, reclaiming the disk space WSL2 never gives back on its own, and

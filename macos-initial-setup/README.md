@@ -1,5 +1,7 @@
 # macOS initial setup
 
+[Ops Toolbox](../README.md) / **macOS initial setup**
+
 > Opinionated, idempotent shell scripts for provisioning and maintaining
 > a macOS workstation.
 
