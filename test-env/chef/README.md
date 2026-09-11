@@ -1,5 +1,7 @@
 # Chef cookbook test environment
 
+[Ops Toolbox](../../README.md) / **Chef cookbook test environment**
+
 Cookbooks are exercised with [Test Kitchen](https://kitchen.ci/) using the
 **[kitchen-dokken](https://github.com/test-kitchen/kitchen-dokken)** driver:
 Chef is pre-installed in upstream `dokken/*` images, so converges are faster
@@ -16,6 +18,20 @@ never runs `just ci` here, so nothing below is checked by opening a pull
 request — only the scaffolding as text, through the repository-wide ShellCheck,
 yamllint and markdownlint job. Run `just ci` yourself after changing anything
 here.
+
+---
+
+## Contents
+
+- [Layout](#layout)
+- [Prerequisites](#prerequisites)
+- [Quick start (long-running container — recommended)](#quick-start-long-running-container--recommended)
+- [One-shot mode](#one-shot-mode)
+- [Linters](#linters)
+- [How it works](#how-it-works)
+- [Dependency management](#dependency-management)
+- [Optional: Ruby on the host](#optional-ruby-on-the-host)
+- [Adding your own cookbooks](#adding-your-own-cookbooks)
 
 ---
 

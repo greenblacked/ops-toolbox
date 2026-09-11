@@ -1,8 +1,35 @@
-# Kali Red/Blue Lab Cloud-Init
+# Kali red/blue lab cloud-init
+
+[Ops Toolbox](../../README.md) / **Kali red/blue lab cloud-init**
 
 [`kali-vm-init.yaml`](kali-vm-init.yaml) provisions a local Kali VM with
 baseline networking commands and curated Kali red-team and blue-team tool
 groups. It is intended for an authorized, isolated security lab.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Result](#result)
+- [Sizing](#sizing)
+- [Standard cloud-init usage](#standard-cloud-init-usage)
+- [OrbStack `kali:current` workaround](#orbstack-kalicurrent-workaround)
+- [Verification](#verification)
+- [Recovery and repeat runs](#recovery-and-repeat-runs)
+- [Automated tests](#automated-tests)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **A Kali Rolling image that already contains cloud-init** | Not every one does. OrbStack's stock `kali:current` did not when tested with OrbStack 2.2.3 on 2026-08-12, which is what the [OrbStack workaround](#orbstack-kalicurrent-workaround) below exists for. |
+| **A VM provider that accepts cloud-config user-data** | The file is attached whole, as user-data. OrbStack's own flag is `--user-data`. |
+| **`cloud-init` on the machine you validate from** | Only for `cloud-init schema`, which checks the file before a VM is created. |
+| **A VM of at least 2 cores / 4 GB / 64 GB** | See [Sizing](#sizing) for what the tested profile actually consumed. |
+| **Network, and time** | The package set resolved to more than 1,500 packages and the tested install took about 40 minutes. |
+| **Docker** | Only for the [automated tests](#automated-tests), which parse the YAML and check its contracts. They do not emulate a Kali VM. |
+
+This is meant for an authorized, isolated security lab, on a VM you are willing
+to throw away.
 
 ## Result
 

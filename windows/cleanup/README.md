@@ -1,8 +1,19 @@
-# Disk C: Cleanup
+# Disk C: cleanup
+
+[Ops Toolbox](../../README.md) / **Disk C: cleanup**
 
 `clean_disk_c.ps1` frees space on `C:` by deleting data that is genuinely
 safe to lose. It never touches documents, downloads, application settings, or
 anything under your user profile except designated cache/temp locations.
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Windows 10 or 11** | The script reads `C:` and the current Windows identity at script scope, so it is a Windows-only file in a way the other scripts here are not. |
+| **Windows PowerShell 5.1 or PowerShell 7** | Either edition. See the repository's [execution policy note](../README.md#execution-policy-note) if PowerShell refuses to run it at all. |
+| **An elevated shell** | Optional. Without it the machine-wide targets (Windows temp, WER, Delivery Optimization, Windows Update cache) are skipped with a warning and the profile-owned ones still run. |
+| **Docker** | Optional, and only for the opt-in Docker target. When `docker` is not on `PATH` that target prints a `SKIP` line instead of failing the run. |
 
 ## Usage
 
@@ -14,11 +25,30 @@ anything under your user profile except designated cache/temp locations.
 .\clean_disk_c.ps1 -DryRun -Scope User
 
 # Default clean (temp files older than 7 days + system caches):
-.\clean_disk_c.ps1
+.\clean_disk_c.ps1 -Yes
 
 # More aggressive:
-.\clean_disk_c.ps1 -Days 3 -IncludeRecycleBin -IncludeWindowsUpdate -IncludeDevCaches
+.\clean_disk_c.ps1 -Yes -Days 3 -IncludeRecycleBin -IncludeWindowsUpdate -IncludeDevCaches
 ```
+
+## Deleting needs -Yes
+
+A run with neither `-DryRun` nor `-Yes` deletes nothing: it prints
+`refusing to delete without -Yes; preview with -DryRun` and exits `3`. This
+used to be the one thing it did not do — a bare `.\clean_disk_c.ps1` emptied
+`%TEMP%`, the WER queue and the thumbnail cache on the spot.
+
+That was a difference from
+[`../../linux/disk_cleanup.sh`](../../linux/disk_cleanup.sh), which has refused
+without `--yes` since it was written, and the two are presented as
+counterparts throughout this repository. Anyone carrying the habit across
+("just run it, it will tell me what it wants") got a deletion where they
+expected to be told what was missing. `-Yes` is that gate, spelled the way the
+Bash sibling spells it, and it is checked first — before elevation is probed
+and before any target is read.
+
+Exit codes: `0` success, `3` refused because neither `-DryRun` nor `-Yes` was
+given.
 
 Run from an **elevated** PowerShell to also clean the system-wide targets
 (Windows temp, WER reports, Delivery Optimization, Windows Update cache);

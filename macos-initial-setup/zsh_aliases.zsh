@@ -16,6 +16,31 @@
 #   - Aliases that depend on optional tools (eza, bat, fd, rg, etc.) are only
 #     registered when those tools are available, so this file is safe to
 #     source on any machine.
+#
+# For an INTERACTIVE SHELL ONLY. Source it from ~/.zshrc, which zsh reads for
+# interactive shells and nothing else — never from ~/.zshenv, and never from a
+# script.
+#
+# Sourcing this file is not side-effect free, whatever the aliases below
+# suggest. It sets HISTSIZE (and SAVEHIST and HISTFILE) and turns on
+# SHARE_HISTORY and AUTO_CD, and all three belong to a session with a human at
+# the keyboard:
+#
+#   * AUTO_CD rewrites a bare word that happens to name a directory into a
+#     `cd` to it. Convenient when typing; in a script it turns the
+#     "command not found" that should have stopped the run into a silent
+#     directory change, and every relative path after that line resolves
+#     somewhere else.
+#   * SHARE_HISTORY has the shell append to and re-read $HISTFILE around every
+#     command, so a non-interactive shell that inherits it writes the
+#     machine's automation into a history file it has no business touching,
+#     and concurrent jobs interleave into each other's.
+#   * HISTSIZE/SAVEHIST at 50000 are sized for a terminal somebody scrolls
+#     back through, not for a job that runs once and exits.
+#
+# ~/.zshenv is read by EVERY zsh — including the non-interactive one behind
+# `ssh host command`, a cron entry and `zsh script.zsh` — which is exactly
+# where these settings do the damage described above.
 # ---------------------------------------------------------------------------
 
 # ======= shell options (non-invasive, can be removed if undesired) =========
@@ -379,6 +404,51 @@ _ZSH_ALIASES_DIR="${${(%):-%x}:A:h}"
 if [[ -x "$_ZSH_ALIASES_DIR/stay_fresh.sh" ]]; then
   alias stay-fresh="$_ZSH_ALIASES_DIR/stay_fresh.sh"
   alias stayfresh="$_ZSH_ALIASES_DIR/stay_fresh.sh"
+
+  # Tab completion for stay_fresh.sh and both aliases. The flags come from
+  # the script's own --help and the step ids from --list-steps, so the
+  # completion cannot drift from the script; both are read once per shell.
+  # Only the option lines count (two spaces, then the flag): the Notes quote
+  # softwareupdate --list and --install, which are not this script's flags.
+  _STAY_FRESH_SCRIPT="$_ZSH_ALIASES_DIR/stay_fresh.sh"
+  _stay_fresh_flags() {
+    if [[ -z "${_STAY_FRESH_FLAGS_CACHE:-}" ]]; then
+      _STAY_FRESH_FLAGS_CACHE="$("$_STAY_FRESH_SCRIPT" --help 2>/dev/null \
+        | sed -nE 's/^  (-[a-z], )?(--[a-z][a-z0-9-]*).*/\2/p' | sort -u)"
+    fi
+    print -r -- "$_STAY_FRESH_FLAGS_CACHE"
+  }
+  _stay_fresh_step_ids() {
+    if [[ -z "${_STAY_FRESH_STEP_IDS_CACHE:-}" ]]; then
+      _STAY_FRESH_STEP_IDS_CACHE="$("$_STAY_FRESH_SCRIPT" --list-steps 2>/dev/null | awk '{ print $1 }')"
+    fi
+    print -r -- "$_STAY_FRESH_STEP_IDS_CACHE"
+  }
+  _stay_fresh() {
+    local -a ids channels
+    channels=(none macos telegram slack both auto)
+    # The value of a flag that takes one: as the next word, or after '='.
+    local flag="${words[CURRENT-1]}" f
+    for f in --only --notify --notify-when --step-timeout --prune-xcode-archives-days --prune-downloads-days; do
+      compset -P "$f=" && flag="$f"
+    done
+    case "$flag" in
+      --only)        ids=(${(f)"$(_stay_fresh_step_ids)"}); _values -s , 'step id' $ids; return ;;
+      --notify)      _values -s , 'channel' $channels; return ;;
+      --notify-when) _values 'when' always warn fail; return ;;
+      --step-timeout)              _message 'seconds (0 disables)'; return ;;
+      --prune-xcode-archives-days) _message 'days'; return ;;
+      --prune-downloads-days)      _message 'days'; return ;;
+    esac
+    local -a flags
+    flags=(${(f)"$(_stay_fresh_flags)"})
+    compadd -- $flags
+  }
+  # compdef exists only once compinit has run; a .zshrc that sources this
+  # file first still gets the aliases, just not the completion.
+  if (( ${+functions[compdef]} )); then
+    compdef _stay_fresh stay_fresh.sh stay-fresh stayfresh
+  fi
 fi
 
 if [[ -x "$_ZSH_ALIASES_DIR/install_apps.sh" ]]; then
@@ -389,6 +459,9 @@ if [[ -x "$_ZSH_ALIASES_DIR/install_devtools.sh" ]]; then
   alias install-devtools="$_ZSH_ALIASES_DIR/install_devtools.sh"
 fi
 
+if [[ -x "$_ZSH_ALIASES_DIR/status.sh" ]]; then
+  alias mac-status="$_ZSH_ALIASES_DIR/status.sh"
+fi
 if [[ -x "$_ZSH_ALIASES_DIR/workstation_doctor.sh" ]]; then
   alias workstation-doctor="$_ZSH_ALIASES_DIR/workstation_doctor.sh"
 fi
@@ -421,6 +494,8 @@ toolbox-help() {
     printf '  %-20s %s\n' install-devtools 'install language and IaC toolchains'
   [[ -x "$_ZSH_ALIASES_DIR/stay_fresh.sh" ]] && \
     printf '  %-20s %s\n' stay-fresh 'run recurring workstation maintenance'
+  [[ -x "$_ZSH_ALIASES_DIR/status.sh" ]] && \
+    printf '  %-20s %s\n' mac-status 'one-screen Mac verdict'
   [[ -x "$_ZSH_ALIASES_DIR/workstation_doctor.sh" ]] && \
     printf '  %-20s %s\n' workstation-doctor 'report workstation health'
   [[ -x "$_ZSH_ALIASES_DIR/hardening_audit.sh" ]] && \

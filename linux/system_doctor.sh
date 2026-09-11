@@ -43,8 +43,19 @@ SKIP_COUNT=0
 # One line per observation: verdict, what was looked at, and — when it is not
 # healthy — the command that shows you more. --quiet keeps only the lines worth
 # waking up for.
+#
+# info takes the same optional second line as warn below, dimmed and indented
+# under the first. It used to render only $1, so the one observation that hands
+# you a next command without being a finding — the pending-upgrade count, which
+# is a fact about the machine rather than something wrong with it — passed
+# "preview: stay_fresh.sh --dry-run" as a second argument that went nowhere.
 ok()   { OK_COUNT=$((OK_COUNT + 1)); (( QUIET )) || printf "  %s[ ok ]%s %s\n" "$C_GREEN" "$C_RESET" "$1"; }
-info() { (( QUIET )) || printf "  %s[info]%s %s\n" "$C_BLUE" "$C_RESET" "$1"; }
+info() {
+  (( QUIET )) && return 0
+  printf "  %s[info]%s %s\n" "$C_BLUE" "$C_RESET" "$1"
+  [[ -n "${2:-}" ]] && printf "         %s%s%s\n" "$C_DIM" "$2" "$C_RESET"
+  return 0
+}
 skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); (( QUIET )) || printf "  %s[skip]%s %s\n" "$C_DIM" "$C_RESET" "$1"; }
 warn() {
   WARN_COUNT=$((WARN_COUNT + 1))

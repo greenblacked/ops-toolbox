@@ -10,27 +10,49 @@
 [![Python](https://img.shields.io/badge/python-3.9-blue.svg)](https://github.com/greenblacked/ops-toolbox/blob/master/.github/workflows/ci.yml)
 [![RouterOS](https://img.shields.io/badge/RouterOS-7.24.2-blue.svg)](mikrotik/README.md)
 
-**CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
-conventions suites on every pull request, including native macOS and Windows
-contracts, plus repo-wide ShellCheck, PSScriptAnalyzer, actionlint, Hadolint,
-yamllint, markdownlint and schema validation. **RouterOS CHR** is separate because it boots a real router under
-QEMU: it runs nightly, on demand, and on the pull requests that touch
-`mikrotik/`, so a red badge there does not necessarily mean a red pull request.
-
-The two lint badges are static labels for the gates CI enforces, not live
-results — the CI badge is the one that reflects the current state of `master`.
-
 Helper scripts for setting up, maintaining, and working on the machines I touch
 regularly — macOS workstations, Linux servers and workstations, a Windows dev
 machine, and a MikroTik router, plus everyday Git helpers and a portable
 Kubernetes toolbox. Each folder should be easy to inspect, safe to run more
 than once, and focused on reducing repeat manual work.
 
+## What's here
+
+| Folder | Purpose |
+| --- | --- |
+| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
+| [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
+| [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
+| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
+| [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
+| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
+| [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
+| [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
+| [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
+
+## Contents
+
+- [Why this exists](#why-this-exists)
+- [What's here](#whats-here)
+- [Quick start](#quick-start)
+- [Script guidelines](#script-guidelines)
+- [Git scripts at a glance](#git-scripts-at-a-glance)
+- [macOS setup at a glance](#macos-setup-at-a-glance)
+- [Windows at a glance](#windows-at-a-glance)
+- [Linux at a glance](#linux-at-a-glance)
+- [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
+- [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
+- [Dotfiles at a glance](#dotfiles-at-a-glance)
+- [Testing](#testing)
+- [Continuous integration](#continuous-integration)
+- [Agent skills](#agent-skills)
+- [Contributing](#contributing)
+
 Three rules hold everywhere, and the test suites enforce them:
 
 - **`--help` works before anything else**, including on a machine the script
   refuses to run on. An unrecognised flag exits `3` — from the Bash and
-  PowerShell scripts. The four Python CLIs use `argparse`, which exits `2` by
+  PowerShell scripts. The Python CLIs use `argparse`, which exits `2` by
   its own convention; `check_conventions.sh` exempts them by extension rather
   than fighting it.
 - **A dry run writes nothing.** Anything that changes a machine supports
@@ -67,38 +89,6 @@ Because scripts are standalone, the useful unit is one file rather than the
 whole repository: take `git_prune_gone.sh`, or one RouterOS script, and leave
 the rest. It is aimed at people who look after a handful of machines by hand,
 not at anyone shopping for a dotfiles framework to adopt.
-
-## Contents
-
-- [Why this exists](#why-this-exists)
-- [What's here](#whats-here)
-- [Quick start](#quick-start)
-- [Script guidelines](#script-guidelines)
-- [Git scripts at a glance](#git-scripts-at-a-glance)
-- [macOS setup at a glance](#macos-setup-at-a-glance)
-- [Windows at a glance](#windows-at-a-glance)
-- [Linux at a glance](#linux-at-a-glance)
-- [MikroTik scripts at a glance](#mikrotik-scripts-at-a-glance)
-- [Kubernetes toolbox at a glance](#kubernetes-toolbox-at-a-glance)
-- [Dotfiles at a glance](#dotfiles-at-a-glance)
-- [Testing](#testing)
-- [Continuous integration](#continuous-integration)
-- [Agent skills](#agent-skills)
-- [Contributing](#contributing)
-
-## What's here
-
-| Folder | Purpose |
-| --- | --- |
-| [`git/`](git/) | Git helper scripts for author profiles, quick add/commit/push flows, status summaries, branch cleanup and age reports, commit hooks, read-only diagnostics for ssh, signing and remotes, and local Docker-based checks. |
-| [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
-| [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
-| [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
-| [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
-| [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
-| [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
-| [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
-| [`test-env/`](test-env/) | The suites that need no Docker: Python unit tests and the repo-wide convention checks. |
 
 ## Quick start
 
@@ -218,6 +208,11 @@ repositories and local bare remotes:
   whether it is installed and current; an existing unrelated hook is backed up
   rather than clobbered, and restored on `uninstall`. `--commit-msg` adds an
   opt-in Conventional Commits hook, exempting the messages git writes itself.
+- `clone-repos.sh` — clones every repository in a list file into one parent
+  directory, skipping the ones already there and reporting an occupied path
+  instead of touching it. The list is the thing worth keeping: a new machine
+  is one run away from every repository you work in. `repos.txt.example`
+  shows the format.
 - `git_prune_gone.sh` — deletes local branches whose upstream was deleted on
   the remote. This is the squash-merge case: a squash-merged branch leaves no
   merge commit, so `git_cleanup_merged.sh` never sees it, and on most projects
@@ -277,17 +272,23 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
 - `install_devtools.sh` installs Python, Terraform, Go, Helm, and optional shell
   initialization using version managers.
 - `stay_fresh.sh` handles recurring maintenance: system, application, and AI
-  tool caches; Homebrew upgrades; Docker/OrbStack cleanup; Xcode extras; Helm
-  and krew plugins; `gcloud`; dev-tool caches including `uv` and kubectl's
-  discovery cache; version reporting; and a read-only report of pending macOS
-  and App Store updates. AI credentials, sessions, runtimes, and downloaded
-  models are kept.
-- `v1_stay_fresh.sh` is a legacy, flag-free minimal maintenance flow kept for
-  reference; prefer `stay_fresh.sh` for new use.
+  tool caches; old user logs; old downloads and orphaned launch agents
+  (reported, removed on request); Homebrew upgrades; Docker/OrbStack cleanup;
+  Xcode extras; Helm and krew plugins; `gcloud`; dev-tool caches including
+  `uv` and kubectl's discovery cache; version reporting; a read-only report
+  of pending macOS and App Store updates; and a verdict sent as a macOS
+  banner, a Telegram message or a Slack post. AI credentials, sessions,
+  runtimes, and downloaded models are kept.
+- `v1_stay_fresh.sh` is a legacy minimal maintenance flow kept for reference.
+  A bare run now refuses and exits `3`: the sequence it used to perform on any
+  invocation deleted Xcode Archives, emptied `brew --cache` and sent
+  `killall Finder`, with no dry run and no way to skip a step. `--legacy-run`
+  is the opt-in that still performs it. Prefer `stay_fresh.sh` for new use.
 - `brewfile.sh` captures the Homebrew state of a machine into a versioned
   `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
   to see what `dump` would change before overwriting anything. The curated
   installers above are the intent; the Brewfile is the fact.
+- `status.sh` is the one-screen verdict (`--only` / `--list-sections`).
 - `workstation_doctor.sh` is the read-only health report — is this Mac *well*?
   Security posture, free space, Command Line Tools, Homebrew, SSH keys and
   agent, Git identity, Time Machine, log footprint, LaunchAgents and login
@@ -378,6 +379,8 @@ OS, so behaviour is actually exercised across all three package managers:
   container prune (**never** volumes), flatpak/snap, and a report of reboot
   pending plus processes still running old libraries. A missing tool is a
   note; a step that runs and fails is an error.
+- `status.sh` — one-screen verdict (`--only` / `--list-sections`). Read-only.
+  `system_doctor.sh` is the long report when something is off.
 - `system_doctor.sh` — read-only health report: distribution and uptime, who
   is logged in, how old the package index is, how many upgrades are pending,
   free space *and inodes*, clock/NTP sync, a pending reboot, sshd, failed
@@ -451,7 +454,7 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 **RouterOS 7.24.2**:
 
 - `tg_send.lua` — generic Telegram text helper used by every other script;
-  reads `:global TG_BOT_TOKEN` / `TG_CHAT_ID` so secrets stay out of the
+  reads `:global TgBotToken` / `TgChatId` so secrets stay out of the
   script body, with retries and 4 KB truncation.
 - `backup.lua` — daily binary + export backup; sends a Telegram confirmation
   with the resulting filename. Date-format-safe filenames stamped with the
@@ -558,6 +561,9 @@ of `apk add`, on a pod that will be gone before you finish.
   crash-looping pod it prints the *previous* container's logs, which is where
   the reason actually is. Exit `4` means nothing found, distinct from `0`, so
   it can drive a scheduled check without parsing output.
+- `gke_cluster_doctor.sh` — read-only GKE report: release channel, control-plane
+  vs node-pool skew, Workload Identity, and private-cluster flags. Prints the
+  `gcloud` command that would fix each finding and never mutates the cluster.
 - `debug_pod.sh` — wraps `kubectl debug` to attach the image to a running pod
   as an ephemeral container. This is the answer for a distroless or scratch
   container with no shell of its own: the application keeps running and nothing
@@ -637,7 +643,7 @@ preflight only runs when one of them is actually selected — so
 | Package | What runs | How |
 | --- | --- | --- |
 | [`git/`](git/) | **Static + behavior** checks for Git helper scripts (syntax, ShellCheck, `--help`, profile state, `gacp`, status, cleanup, recent branches, and sync against local temporary repos/remotes). | [`git/README.md#tests`](git/README.md#tests) — `./git/tests/run.sh` |
-| [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development--docker-checks`](macos-initial-setup/README.md#development--docker-checks) — `./macos-initial-setup/tests/run.sh` |
+| [`macos-initial-setup/`](macos-initial-setup/) | **Static** checks on the bash scripts and `zsh_aliases.zsh` (syntax, ShellCheck, `--help`, Linux “macOS only” preflight, zsh can source aliases), plus the presence and output contract of `lib/workspace_scan.py`. Does **not** install apps or run Homebrew — the scripts are macOS-only. | [`macos-initial-setup/README.md#development-docker-checks`](macos-initial-setup/README.md#development-docker-checks) — `./macos-initial-setup/tests/run.sh` |
 | [`test-env/python/`](test-env/python/) | **Unit** tests for the Python helpers: workspaceStorage classification, ssh-config `Include` resolution, RouterOS export normalisation. Stdlib `unittest` — **no Docker, no venv, no network**. | `./test-env/python/run.sh` |
 | [`test-env/static/`](test-env/static/) | **Convention** checks across the whole repository: the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes` coverage, Bash 3.2 constructs, and the deliberately-duplicated blocks. Discovers its own subjects, so a new script is covered by the commit that adds it. **bash + git only.** | `./test-env/static/run.sh` |
 | [`linux/`](linux/) | **Behavioural** checks that run the scripts inside pinned Debian, Fedora and Arch containers: detection picks the right package manager, an unsupported distro exits 2, `--dry-run` leaves the package count identical, and `packages.sh` round-trips through a real package database. | [`linux/README.md`](linux/README.md) — `./linux/tests/run.sh` |
@@ -654,7 +660,43 @@ static and k8s checks have to keep working on a host where Docker is
 unavailable. The k8s one is the pointed case — it checks the scripts that build
 a container image, and needs no container to do it.
 
+### Remote coding sessions
+
+A hosted coding session starts from a bare clone in a throwaway container:
+no `zsh`, a ShellCheck that may not match the pinned one, no Docker daemon
+for the macOS suites, and none of the local guard configuration. The
+startup hook at `.claude/hooks/session-start.sh` closes that gap before the
+first command runs. It reads the tool versions from `ci.yml` rather than
+carrying its own copy, installs ShellCheck, ruff and markdownlint-cli2 at
+those versions, adds `zsh`, and lays out `/repo` plus the two root-owned
+fixture directories `/rootonly` and `/rootlocked`, so the macOS steps and
+unprivileged suites can run directly without a daemon. It also plants
+`/.dockerenv`, but only in a session that is genuinely disposable: the steps
+suite reads that file as permission to clear absolute system paths, so `--force`
+on a real machine skips it rather than making the promise false. Finally it
+reinstalls the attribution guard from the user's skills directory. It is a
+no-op outside a remote session, so it never touches a developer's machine, and
+it is safe to re-run.
+
+```bash
+.claude/hooks/session-start.sh --check   # what is in place, what is missing; exit 1 if anything is
+.claude/hooks/session-start.sh --force   # run the setup on a machine that is not a remote session
+```
+
+The `.gitignore` re-admits only the hook and the settings file that registers
+it; everything else an agent keeps in that directory stays local.
+
 ### Continuous integration
+
+**CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
+conventions suites on every pull request, including native macOS and Windows
+contracts, plus repo-wide ShellCheck, PSScriptAnalyzer, actionlint, Hadolint,
+yamllint, markdownlint and schema validation. **RouterOS CHR** is separate because it boots a real router under
+QEMU: it runs nightly, on demand, and on the pull requests that touch
+`mikrotik/`, so a red badge there does not necessarily mean a red pull request.
+
+The two lint badges are static labels for the gates CI enforces, not live
+results — the CI badge is the one that reflects the current state of `master`.
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs every suite except
 the RouterOS one — through `run-tests.sh`, so the aggregator is exercised too
@@ -845,4 +887,8 @@ documentation entries it is not finished without, is
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and what changed when in
-[`CHANGELOG.md`](CHANGELOG.md).
+[`CHANGELOG.md`](CHANGELOG.md). New entries go in as one file per change
+under [`changelog.d/`](changelog.d/README.md), and
+`changelog.d/changelog.sh preview` shows the `[Unreleased]` section as it
+will read once they are pasted in; a release moves them under a version
+heading.

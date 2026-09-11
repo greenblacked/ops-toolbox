@@ -1,0 +1,4 @@
+# A fragment is a slice of a list, pasted under a heading CHANGELOG.md already
+# has, so it starts with `- ` and never with a heading of its own.
+config:
+  MD041: false

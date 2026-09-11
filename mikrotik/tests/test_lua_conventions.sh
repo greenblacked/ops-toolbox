@@ -373,9 +373,9 @@ done
 # --- the scripts meant for RouterOS 7.24 declare no underscored :global ----
 # 7.24 refuses to execute a script that declares one, from every path, and
 # says nothing in the script's own log lines because it never gets past the
-# parser. These two exist because of that; a :global with an underscore
-# slipping into either would be the defect they were written around.
-for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua"; do
+# parser. These three exist because of that; a :global with an underscore
+# slipping into any of them would be the defect they were written around.
+for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua"; do
   n="$(basename "$f")"
   bad="$(grep -E '^[[:space:]]*:global +[A-Za-z0-9]*_' "$f" || true)"
   if [[ -z "$bad" ]]; then

@@ -1,5 +1,7 @@
 # Windows setup
 
+[Ops Toolbox](../../README.md) / **Windows setup**
+
 Capture what a Windows machine has installed, keep it under version control,
 reproduce it elsewhere — and then keep it healthy.
 
@@ -7,6 +9,7 @@ reproduce it elsewhere — and then keep it healthy.
 | --- | --- |
 | [`winget_bootstrap.ps1`](winget_bootstrap.ps1) | `export` / `list` / `check` / `import` / `diff` over the winget package list |
 | [`winget_configure.ps1`](winget_configure.ps1) | `validate` / `show` / `test` / `apply` over [`configuration.winget`](configuration.winget), the curated machine definition |
+| [`status.ps1`](status.ps1) | One-screen verdict (`-Only` / `-ListSections`). |
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
@@ -17,8 +20,9 @@ reproduce it elsewhere — and then keep it healthy.
 
 The scripts split the same way their Unix counterparts do: one builds the
 machine, one captures and restores it, one keeps it current, one only looks.
-Nothing in `workstation_doctor.ps1` changes anything, which is why it is the
-safe first thing to run on a machine you have just been handed.
+`status.ps1` is the one-screen verdict; `workstation_doctor.ps1` is the long
+report. Nothing in either changes anything, which is why they are the safe
+first things to run on a machine you have just been handed.
 
 The distinction between the first two is the one worth reading twice.
 `configuration.winget` is the *intent*: a short curated list, reviewed like
@@ -26,6 +30,53 @@ code, that says what a workstation should have. `winget-packages.json` is the
 *fact*: everything one particular box happens to have, exported from it. Use
 `winget_configure.ps1` to build a machine and `winget_bootstrap.ps1` to record
 one. Neither replaces the other.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [winget_bootstrap.ps1](#winget_bootstrapps1)
+- [stay_fresh.ps1](#stay_freshps1)
+- [workstation_doctor.ps1](#workstation_doctorps1)
+- [Testing](#testing)
+- [winget_configure.ps1](#winget_configureps1)
+- [choco_bootstrap.ps1](#choco_bootstrapps1)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Windows 10 or 11** | Every script here exits `2` on anything else. |
+| **Windows PowerShell 5.1 or PowerShell 7** | Either edition; the platform guard tests the edition too, because Windows PowerShell does not define `$IsWindows`. |
+| **winget, from the Microsoft Store "App Installer"** | Needed by the two winget scripts, which exit `2` without it. `winget_configure.ps1` also needs **WinGet 1.6 or newer** — see its own [Requirements](#requirements-1) — and checks both at the point it invokes winget, so previewing a configuration still works on a machine that has neither. |
+| **Chocolatey** | Only for `choco_bootstrap.ps1`, which exits `2` when `choco.exe` is not on `PATH`. It is an alternative to the winget pair, not a companion to them. |
+| **An elevated shell** | Optional. `workstation_doctor.ps1` runs unelevated and says so, but BitLocker and Defender answer more fully with elevation. |
+
+## Quick start
+
+The read-only one first. Nothing in it changes anything, which is what makes it
+the safe thing to run on a machine you have just been handed:
+
+```powershell
+.\workstation_doctor.ps1
+```
+
+It reports BitLocker, Defender, pending reboot, disk headroom, WSL and
+execution policy in one pass.
+
+Then the two halves of package management, both in their non-destructive form.
+The first compares this machine against the curated list in
+[`configuration.winget`](configuration.winget) — the *intent*. The second
+captures what this particular box actually has — the *fact*:
+
+```powershell
+.\winget_configure.ps1 test
+.\winget_bootstrap.ps1 diff
+```
+
+`test` exits `1` when the machine has drifted from the file, and `diff` needs
+an existing `winget-packages.json` to compare against — run
+`.\winget_bootstrap.ps1 export` once to create it, then commit it.
 
 ## winget_bootstrap.ps1
 
@@ -116,30 +167,48 @@ a failure.
 # See the whole run first - it changes nothing:
 .\stay_fresh.ps1 -DryRun
 
-# The usual run
+# The usual run: everything except the upgrades, which wait for -Yes
 .\stay_fresh.ps1
 
-# Packages only, on a machine with no WSL worth touching
-.\stay_fresh.ps1 -SkipWsl
+# The usual run, upgrades included
+.\stay_fresh.ps1 -Yes
 
-# Run exactly one section (the other maintenance steps are not invoked)
+# Packages only, on a machine with no WSL worth touching
+.\stay_fresh.ps1 -Yes -SkipWsl
+
+# Run one section, or a comma-separated list of them
 .\stay_fresh.ps1 -DryRun -Only Winget
 .\stay_fresh.ps1 -Only Report
+.\stay_fresh.ps1 -Yes -Only Winget,Wsl
 ```
 
-| Step | What it runs | Skip with |
-| --- | --- | --- |
-| winget | `source update`, then `upgrade --all --include-unknown` | `-SkipWinget` |
-| wsl | `wsl --update` | `-SkipWsl` |
-| store | Nothing — prints how to update Store apps by hand | — |
-| report | Pending-reboot registry flags, free space on `C:` | — |
+| Step | What it runs | Needs | Skip with |
+| --- | --- | --- | --- |
+| winget | `source update`, then `upgrade --all --include-unknown` | `-Yes` | `-SkipWinget` |
+| wsl | `wsl --update` | — | `-SkipWsl` |
+| store | Nothing — prints how to update Store apps by hand | — | — |
+| report | Pending-reboot registry flags, free space on `C:` | — | — |
 
-`-Only Winget`, `-Only Wsl`, or `-Only Report` selects one section without a
-long inverse list of skip flags. `All` is the unchanged default; the existing
-`-SkipWinget` and `-SkipWsl` still take precedence when their section is selected.
+`-Only` takes one step or a comma-separated list of them —
+`-Only Winget`, `-Only Report`, `-Only Winget,Wsl` — and selects those
+sections without a long inverse list of skip flags, the way
+[`linux/stay_fresh.sh`](../../linux/stay_fresh.sh) `--only` does. `All` is the
+unchanged default; the existing `-SkipWinget` and `-SkipWsl` still take
+precedence when their section is selected. A step nobody has heard of is
+rejected by name with exit `3`, rather than being quietly ignored.
 
 Worth knowing:
 
+- **The upgrades wait for `-Yes`.** Without it the run prints
+  `skipping upgrades: pass -Yes to run them unattended, or -DryRun to see
+  them` and carries on with the rest, so a bare `.\stay_fresh.ps1` is still a
+  useful report — it just does not rewrite the machine.
+  [`linux/stay_fresh.sh`](../../linux/stay_fresh.sh) has skipped package
+  upgrades without `--yes` from the start and this had no equivalent, which
+  mattered because the two are documented as counterparts: the habit learned
+  on one ("just run it, it will tell me what it wants") upgraded every package
+  on the box the first time it was used on the other. `-DryRun` previews the
+  upgrades without `-Yes`, because a preview changes nothing.
 - **`--include-unknown` is passed deliberately.** Without it, winget silently
   leaves behind every package whose installed version it cannot read, which is
   the usual reason a machine reports itself up to date and is not.
@@ -157,7 +226,8 @@ Worth knowing:
   exits `1` at the end, the same way the Linux version does. Note that winget
   exits non-zero when even one package could not be upgraded.
 
-Exit codes: `0` success, `1` one or more steps failed, `2` not Windows.
+Exit codes: `0` success, `1` one or more steps failed, `2` not Windows,
+`3` bad CLI arguments.
 
 ## workstation_doctor.ps1
 

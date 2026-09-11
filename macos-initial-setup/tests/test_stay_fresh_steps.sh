@@ -5,7 +5,7 @@
 # The sibling suite (test_macos_initial_setup.sh) covers the CLI surface of
 # every script: --help, argument rejection, plans, dry runs. What it cannot
 # reach is the inside of a step, because a step deletes things. This file runs
-# each of the twenty steps for real against a scratch HOME and a faked set of
+# each of the twenty-three steps for real against a scratch HOME and a faked set of
 # host binaries, and asserts on what is gone, what survived, and how the run
 # accounted for it.
 #
@@ -32,6 +32,17 @@ REPO_ROOT="${REPO_ROOT:-/repo}"
 M="$REPO_ROOT/macos-initial-setup"
 SF="$M/stay_fresh.sh"
 [[ -x "$SF" ]] || { echo "expected stay_fresh.sh at $SF" >&2; exit 1; }
+
+# stay_fresh.sh reads these from the environment to locate somebody else's cache
+# or to reach a notifier, and a developer's shell — or this container — often
+# has them set. Inherited, they aim the run at a real cache or a real webhook:
+# an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
+# the test passed here and failed in CI. Every test that needs one of these
+# supplies it itself; start from an environment holding none of them.
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
+  STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
+  STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
 
 failures=0
 ok()  { echo "[ ok ] $*"; }
@@ -93,9 +104,15 @@ new_env() {
   mkbin "$d/bin/sw_vers" 'case "${1:-}" in -productVersion) echo 15.0 ;; -buildVersion) echo TESTBUILD ;; esac'
   mkbin "$d/bin/df" 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
                     'echo "/dev/test 1000000 200000 800000 20% /"'
-  mkbin "$d/bin/pgrep" 'for a in "$@"; do' \
-                       '  [ -n "${PGREP_RC:-}" ] && exit "$PGREP_RC"' \
-                       '  case " ${RUNNING_APPS:-} " in *" $a "*) exit 0 ;; esac' \
+  # RUNNING_APPS entries are matched as substrings of any argument, so the
+  # fake answers both `pgrep -x Codex` and the bundle-path form the app-cache
+  # guard uses, `pgrep -f "/Visual Studio Code.app/Contents/MacOS/"`.
+  mkbin "$d/bin/pgrep" '[ -n "${PGREP_RC:-}" ] && exit "$PGREP_RC"' \
+                       'for a in "$@"; do' \
+                       '  case "$a" in -*) continue ;; esac' \
+                       '  for app in ${RUNNING_APPS:-}; do' \
+                       '    case "$a" in *"$app"*) exit 0 ;; esac' \
+                       '  done' \
                        'done; exit 1'
   mkbin "$d/bin/xcode-select" 'case "${1:-}" in -p) echo /Library/Developer/CommandLineTools ;; esac; exit 0'
   mkbin "$d/bin/pkgutil" 'echo "version: 15.0.0.0.1"; exit 0'
@@ -112,6 +129,19 @@ new_env() {
 
 # Run stay_fresh.sh inside an environment root. Prints combined output; the
 # caller keeps $?.
+# Every variable the script reads has to be named here, set to the caller's
+# value or to empty. Two reasons, and both bite silently:
+#
+#   - A caller writes `FOO=x out="$(run_sf ...)"`. That is two assignments,
+#     not a command with a prefix, so FOO is an ordinary shell variable and
+#     never reaches the child unless this list exports it.
+#   - Anything not named here leaks in from the host. BUN_INSTALL is exported
+#     on a developer machine and in this suite's own container, so a test that
+#     relied on the default path cleared the real cache and passed.
+#
+# The four cache-location variables are listed even though no test sets most
+# of them, precisely so the host's values cannot reach a run that clears
+# whatever they point at.
 run_sf() {
   local d="$1"; shift
   HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" \
@@ -130,10 +160,27 @@ run_sf() {
     STAY_FRESH_TG_BOT_TOKEN="${STAY_FRESH_TG_BOT_TOKEN:-}" \
     STAY_FRESH_TG_CHAT_ID="${STAY_FRESH_TG_CHAT_ID:-}" \
     SNAPSHOTS="${SNAPSHOTS:-}" \
+    TM_RUNNING="${TM_RUNNING:-}" \
+    TM_DELETE_HANG="${TM_DELETE_HANG:-}" \
+    TM_DELETE_FAIL="${TM_DELETE_FAIL:-}" \
+    DOCKER_INFO_HANG="${DOCKER_INFO_HANG:-}" \
+    SU_HANG="${SU_HANG:-}" \
+    STAY_FRESH_SLACK_WEBHOOK="${STAY_FRESH_SLACK_WEBHOOK:-}" \
+    STAY_FRESH_STEP_TIMEOUT="${STAY_FRESH_STEP_TIMEOUT:-}" \
+    STAY_FRESH_NOTIFY_WHEN="${STAY_FRESH_NOTIFY_WHEN:-}" \
+    STAY_FRESH_NOTIFY_TIMEOUT="${STAY_FRESH_NOTIFY_TIMEOUT:-}" \
+    BREW_SERVICES_ERROR="${BREW_SERVICES_ERROR:-}" \
+    BUN_INSTALL="${BUN_INSTALL:-}" \
+    TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-}" \
+    CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-}" \
+    UV_CACHE_DIR="${UV_CACHE_DIR:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
-bytes_file() { dd if=/dev/zero of="$1" bs=1024 count="${2:-512}" status=none; }
+# /dev/urandom, not /dev/zero: several assertions below compare rendered `du`
+# output, and a zero-filled file measures near nothing on a btrfs or ZFS
+# runner with compression on, failing tests on code that is correct.
+bytes_file() { dd if=/dev/urandom of="$1" bs=1024 count="${2:-512}" status=none; }
 
 section() { echo; echo "--- $* ---"; }
 
@@ -159,21 +206,61 @@ rm -rf "$d"
 
 # ===========================================================================
 section "system-caches (root-owned absolute paths)"
-d="$(new_env)"; : > "$d/calls"
-rm -rf /Library/Caches /System/Library/Caches
-mkdir -p /Library/Caches/vendor /System/Library/Caches/writable /System/Library/Caches/locked
-bytes_file /Library/Caches/vendor/blob 256
-: > /System/Library/Caches/writable/entry
-: > /System/Library/Caches/locked/entry
-chmod 555 /System/Library/Caches/locked
+# /System/Library/Caches holds the dyld shared cache and the kernel caches:
+# what the machine boots from. It is kept unless csrutil positively reports
+# System Integrity Protection off AND --force-system-caches is passed. The
+# four ways csrutil can fail to answer used to read as "SIP is off" and took
+# the branch that runs sudo rm -rf over that directory.
+syscache_env() {
+  local d; d="$(new_env)"
+  rm -rf /Library/Caches /System/Library/Caches
+  mkdir -p /Library/Caches/vendor /System/Library/Caches/com.apple.dyld /System/Library/Caches/vendor
+  bytes_file /Library/Caches/vendor/blob 256
+  : > /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e
+  : > /System/Library/Caches/vendor/entry
+  printf '%s' "$d"
+}
+for csr in missing failing localized unknown; do
+  d="$(syscache_env)"; : > "$d/calls"
+  case "$csr" in
+    missing)   rm -f "$d/bin/csrutil" ;;
+    failing)   mkbin "$d/bin/csrutil" 'exit 1' ;;
+    localized) mkbin "$d/bin/csrutil" 'echo "Statut de la protection de l integrite du systeme : desactive."' ;;
+    unknown)   mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: unknown (Custom Configuration)."' ;;
+  esac
+  out="$(run_sf "$d" --yes --only system-caches --force-system-caches)"; rc=$?
+  assert_eq "system-caches with csrutil $csr succeeds" "0" "$rc"
+  assert_gone   "/Library/Caches is still cleared ($csr)" /Library/Caches/vendor
+  assert_exists "the dyld cache survives csrutil $csr" /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e
+  assert_exists "no system cache entry is removed on csrutil $csr" /System/Library/Caches/vendor/entry
+  assert_contains "an unreadable SIP state is stated ($csr)" "$out" \
+    "could not read the System Integrity Protection state"
+  rm -rf /Library/Caches /System/Library/Caches "$d"
+done
+
+# SIP positively off, but without the flag: still kept.
+d="$(syscache_env)"; : > "$d/calls"
+mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: disabled."'
 out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
-assert_eq "system-caches step succeeds" "0" "$rc"
-assert_gone   "/Library/Caches contents are removed"      /Library/Caches/vendor
-assert_exists "/Library/Caches itself is kept"            /Library/Caches
-assert_gone   "writable /System/Library/Caches entry goes" /System/Library/Caches/writable
-assert_exists "unwritable /System/Library/Caches entry stays" /System/Library/Caches/locked
-chmod 755 /System/Library/Caches/locked
-rm -rf /Library/Caches /System/Library/Caches
+assert_eq "system-caches with SIP off succeeds" "0" "$rc"
+assert_exists "SIP off alone does not clear the system caches" /System/Library/Caches/vendor/entry
+assert_contains "the flag that would clear them is named" "$out" "--force-system-caches clears it"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+# SIP positively off and asked for: cleared, except the boot caches.
+d="$(syscache_env)"; : > "$d/calls"
+mkbin "$d/bin/csrutil" 'echo "System Integrity Protection status: disabled."'
+out="$(run_sf "$d" --yes --only system-caches --force-system-caches)"; rc=$?
+assert_eq "forced system-caches succeeds" "0" "$rc"
+assert_gone   "an ordinary system cache entry is removed" /System/Library/Caches/vendor
+assert_exists "the dyld cache is never removed" /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e
+assert_contains "the kept boot caches are named" "$out" "keeping com.apple.dyld"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+# --reports is read-only and refuses the flag outright.
+d="$(new_env)"
+run_sf "$d" --dry-run --reports --force-system-caches >/dev/null; rc=$?
+assert_eq "--reports refuses --force-system-caches" "3" "$rc"
 rm -rf "$d"
 
 # ===========================================================================
@@ -243,13 +330,79 @@ mkbin "$d/bin/sudo" 'case "${1:-}" in -v) exit 0 ;; -n) shift; case "${1:-}" in 
                     'SUDO_RETRY=1 exec "$@"'
 mkdir -p "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
 : > "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/update"
+mkdir -p "$d/home/Library/Caches/com.vendor.app"
+bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 64
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "an ownership refusal with sudo available succeeds" "0" "$rc"
-assert_contains "the sudo retry is announced" "$out" "retrying entries owned by another user with sudo"
-assert_called "the retry goes through sudo" "$d/calls" "sudo find"
+assert_contains "the sudo retry is announced with its count" "$out" "retrying 1 entry owned by another user with sudo"
+# The retry names the entry rm refused, and nothing else: a sudo sweep of the
+# whole directory would also take the entries the privacy controls protect.
+assert_called "the retry removes exactly the refused entry through sudo" "$d/calls" \
+  "sudo rm -rf -- $d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_not_called "the retry does not sweep the whole directory" "$d/calls" "sudo find"
+assert_not_called "the retry does not touch the neighbour" "$d/calls" "com.vendor.app"
 assert_gone "the root-owned leftover is removed by the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_gone "the ordinary neighbour went in the first pass" "$d/home/Library/Caches/com.vendor.app"
 assert_contains "a retried ownership refusal is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
+
+# Both kinds at once: the refusal is retried, the protected entry is not.
+# Before, the retry was `sudo find ... -exec rm`, which reached for the
+# protected one as root too. The refused path is nested here (GNU rm names
+# the deepest file it could not unlink), and the retry still targets the
+# top-level entry under the cache root. The fake also prints what BSD rm
+# prints after a refused file, "Directory not empty" for each parent; those
+# lines describe the entry the retry then removed and must not survive it
+# as leftovers, or every real Mac would warn after a retry that worked.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/rm" 'fail=0; opts=""' \
+                  'for a in "$@"; do' \
+                  '  case "$a" in' \
+                  '    -*) opts="$opts $a" ;;' \
+                  '    *"/com.apple.homed"*) echo "rm: $a: Operation not permitted" >&2; fail=1 ;;' \
+                  '    *"ShipIt"*) if [ -z "${SUDO_RETRY:-}" ]; then echo "rm: cannot remove '"'"'$a/pending/update'"'"': Permission denied" >&2; echo "rm: $a/pending: Directory not empty" >&2; echo "rm: $a: Directory not empty" >&2; fail=1; else /bin/rm $opts "$a"; fi ;;' \
+                  '    *) /bin/rm $opts "$a" ;;' \
+                  '  esac' \
+                  'done' \
+                  'exit $fail'
+mkbin "$d/bin/sudo" 'case "${1:-}" in -v) exit 0 ;; -n) shift; case "${1:-}" in true) exit 0 ;; esac ;; esac' \
+                    'echo "sudo $*" >> "$CALLS"' \
+                    'SUDO_RETRY=1 exec "$@"'
+mkdir -p "$d/home/Library/Caches/com.apple.homed" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/pending"
+: > "$d/home/Library/Caches/com.apple.homed/state"
+: > "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/pending/update"
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_eq "a protected entry beside a refused one is a clean step" "0" "$rc"
+assert_called "the nested refusal is retried at its top-level entry" "$d/calls" \
+  "sudo rm -rf -- $d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_not_called "sudo is not pointed at the protected entry" "$d/calls" "com.apple.homed"
+assert_gone   "the refused entry is gone after the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_exists "the protected entry survives the retry" "$d/home/Library/Caches/com.apple.homed/state"
+assert_contains "the protected entry is still reported as kept" "$out" "entries kept: protected by macOS"
+assert_contains "neither is a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# ===========================================================================
+section "destructive steps stay inside HOME"
+# The bug class this guards: one empty variable upstream and "$HOME/Library/
+# Caches" becomes "/Library/Caches", "$HOME/.Trash" becomes "/.Trash". Every
+# other assertion here looks only at the scratch HOME, so a step that walked
+# out of it would still pass them all. These canaries are the ones that would
+# not.
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /.Trash
+mkdir -p /Library/Caches /.Trash "$d/home/Library/Caches/vendor" "$d/home/.Trash"
+: > /Library/Caches/CANARY
+: > /.Trash/CANARY
+bytes_file "$d/home/Library/Caches/vendor/blob" 64
+: > "$d/home/.Trash/junk"
+out="$(run_sf "$d" --yes --no-sudo --only user-caches,trash,dev-caches,user-logs)"; rc=$?
+assert_eq "the sweep succeeds" "0" "$rc"
+assert_gone   "the scratch HOME cache was cleared"  "$d/home/Library/Caches/vendor"
+assert_gone   "the scratch HOME trash was emptied"  "$d/home/.Trash/junk"
+assert_exists "the system cache directory is untouched" /Library/Caches/CANARY
+assert_exists "the root .Trash is untouched"            /.Trash/CANARY
+rm -rf /Library/Caches /.Trash "$d"
 
 # ===========================================================================
 section "user-caches (contents cleared, directories kept, bytes counted)"
@@ -280,8 +433,14 @@ rm -rf "$d"
 section "app-caches (running apps kept, idle apps cleared)"
 d="$(new_env)"
 as="$d/home/Library/Application Support"
+# Spotify's streaming cache is routinely several GB and lives outside
+# ~/Library/Caches, so the user-caches step never sees it. Its own settings
+# and credentials sit beside it under the same root and must survive.
 mkdir -p "$as/Slack/Cache" "$as/Notion/GPUCache" \
+         "$as/Spotify/PersistentCache/Storage" "$as/Spotify/Users/serhii-user" \
          "$as/Code/CachedExtensionVSIXs" "$d/home/Library/Containers/com.x/Data/Library/Caches"
+: > "$as/Spotify/PersistentCache/Storage/chunk"
+: > "$as/Spotify/Users/serhii-user/prefs"
 : > "$as/Slack/Cache/data"
 : > "$as/Notion/GPUCache/data"
 : > "$as/Code/CachedExtensionVSIXs/ext.vsix"
@@ -290,6 +449,10 @@ RUNNING_APPS="Slack" out="$(run_sf "$d" --yes --only app-caches)"; rc=$?
 assert_eq "app-caches step succeeds" "0" "$rc"
 assert_exists "a running app keeps its cache"       "$as/Slack/Cache/data"
 assert_gone   "an idle app loses its cache"         "$as/Notion/GPUCache"
+assert_gone   "Spotify's streaming cache is cleared when it is idle" \
+  "$as/Spotify/PersistentCache/Storage"
+assert_exists "Spotify's settings and credentials are untouched" \
+  "$as/Spotify/Users/serhii-user/prefs"
 assert_gone   "the VSIX download cache is emptied"  "$as/Code/CachedExtensionVSIXs/ext.vsix"
 assert_exists "the VSIX directory itself is kept"   "$as/Code/CachedExtensionVSIXs"
 assert_exists "sandbox containers are kept by default" \
@@ -300,6 +463,21 @@ assert_gone "--force-active-app-caches clears sandbox containers" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 assert_exists "the sandbox Caches directory itself is kept" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches"
+rm -rf "$d"
+
+# Spotify while it is playing: the running-app guard covers it like any other,
+# and clearing a streaming cache under a running player is exactly the case
+# the guard exists for.
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Spotify/PersistentCache/Storage" "$as/Notion/GPUCache"
+: > "$as/Spotify/PersistentCache/Storage/chunk"
+: > "$as/Notion/GPUCache/data"
+RUNNING_APPS="Spotify" out="$(run_sf "$d" --yes --only app-caches)"
+assert_exists "a running Spotify keeps its streaming cache" \
+  "$as/Spotify/PersistentCache/Storage/chunk"
+assert_contains "and it is named among the running apps" "$out" "Spotify"
+assert_gone "an idle app beside it is still cleared" "$as/Notion/GPUCache"
 rm -rf "$d"
 
 # ===========================================================================
@@ -414,6 +592,7 @@ docker_fake() {
     'echo "docker $*" >> "$CALLS"' \
     'case "${1:-}" in' \
     '  info)' \
+    '    [ -n "${DOCKER_INFO_HANG:-}" ] && sleep 60' \
     '    if [ -n "${DOCKER_INFO_FAIL_AFTER:-}" ]; then' \
     '      n=$(cat "$DOCKER_INFO_N" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DOCKER_INFO_N"' \
     '      [ "$n" -gt "$DOCKER_INFO_FAIL_AFTER" ] && exit 1' \
@@ -432,7 +611,9 @@ docker_fake() {
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "docker step succeeds against a local daemon" "0" "$rc"
-for sub in "container prune -f" "network prune -f" \
+assert_called "stopped containers are pruned by age, not wholesale" "$d/calls" \
+  "docker container prune -f --filter until=168h"
+for sub in "network prune -f" \
            "image prune -f" "builder prune -af"; do
   assert_called "docker step runs $sub" "$d/calls" "docker $sub"
 done
@@ -474,6 +655,18 @@ assert_eq "a step that hard-fails exits 1" "1" "$rc"
 assert_contains "a hard failure is counted" "$out" "failed:      1"
 rm -rf "$d"
 
+# A daemon that accepts the socket and never answers used to hang the
+# preflight probe itself, outside every timeout, with the lock held.
+d="$(new_env)"; docker_fake "$d"; : > "$d/calls"
+started="$(date +%s)"
+out="$(DOCKER_INFO_HANG=1 run_sf "$d" --yes --only docker --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hung docker daemon voids the docker step at preflight" "2" "$rc"
+assert_contains "the hung daemon is reported as unreachable" "$out" "daemon unreachable"
+if (( elapsed <= 20 )); then ok "the daemon probe was bounded (${elapsed}s)"
+else err "the run took ${elapsed}s — the daemon probe was not bounded"; fi
+rm -rf "$d"
+
 # ===========================================================================
 section "xcode (device support, simulators, archive retention)"
 xcode_env() {
@@ -500,7 +693,9 @@ assert_gone   "simulator caches are cleared" \
 assert_exists "archives are kept without an explicit retention" \
   "$d/home/Library/Developer/Xcode/Archives/2020-01-01/Old.xcarchive"
 assert_contains "the run says archives were kept" "$out" "Xcode Archives kept"
-assert_called "unavailable simulators are deleted" "$d/calls" "xcrun simctl delete unavailable"
+assert_not_called "unavailable simulators are kept by default" "$d/calls" "simctl delete unavailable"
+assert_contains "the flag that would delete them is named" "$out" \
+  "--prune-unavailable-simulators deletes them and their data"
 rm -rf "$d"
 
 d="$(xcode_env)"; : > "$d/calls"
@@ -631,9 +826,22 @@ devcache_env() {
   for t in npm yarn pnpm gem go uv; do
     mkbin "$d/bin/$t" "echo \"$t \$*\" >> \"\$CALLS\"; exit 0"
   done
+  # A bun that knows `pm cache`, so the step uses the tool's own command.
+  mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; exit 0'
+  mkdir -p "$d/home/.bun/install/cache/pkg"
+  bytes_file "$d/home/.bun/install/cache/pkg/tarball.tgz" 256
   # pip prints this even with -q on an already-empty cache. It belongs in the
   # log, not on the terminal of a quiet run.
   mkbin "$d/bin/pip3" 'echo "pip3 $*" >> "$CALLS"; echo "WARNING: No matching packages"; exit 0'
+  # minikube re-downloads its ISO, kic base image and preload tarballs on
+  # demand; machines/, profiles/ and certs/ are the cluster and its
+  # credentials, and clearing those would destroy a running cluster.
+  mkdir -p "$d/home/.minikube/cache/iso" "$d/home/.minikube/machines/minikube" \
+           "$d/home/.minikube/profiles/minikube" "$d/home/.minikube/certs"
+  bytes_file "$d/home/.minikube/cache/iso/minikube-v1.33.iso" 512
+  : > "$d/home/.minikube/machines/minikube/config.json"
+  : > "$d/home/.minikube/profiles/minikube/config.json"
+  : > "$d/home/.minikube/certs/client.pem"
   mkdir -p "$d/home/.kube/cache/discovery/cluster_a" "$d/home/.kube/cache/http"
   : > "$d/home/.kube/cache/discovery/cluster_a/servergroups.json"
   : > "$d/home/.kube/cache/http/entry"
@@ -650,6 +858,13 @@ devcache_env() {
 d="$(devcache_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
 assert_eq "dev-caches step succeeds" "0" "$rc"
+assert_contains "bun's own cache command is used when it has one" \
+  "$(grep '^bun ' "$d/calls")" "pm cache rm"
+assert_gone   "the minikube cache is cleared" "$d/home/.minikube/cache/iso"
+assert_exists "the minikube cache directory itself stays" "$d/home/.minikube/cache"
+assert_exists "the minikube machines are untouched" "$d/home/.minikube/machines/minikube/config.json"
+assert_exists "the minikube profiles are untouched" "$d/home/.minikube/profiles/minikube/config.json"
+assert_exists "the minikube certificates are untouched" "$d/home/.minikube/certs/client.pem"
 assert_called "npm cache is cleaned"   "$d/calls" "npm cache clean --force"
 assert_called "yarn cache is cleaned"  "$d/calls" "yarn cache clean"
 assert_called "pnpm store is pruned"   "$d/calls" "pnpm store prune"
@@ -772,6 +987,159 @@ assert_not_called "nothing is run through kubectl without krew" "$d/calls" "kube
 rm -rf "$d"
 
 # ===========================================================================
+section "step timeout (a hung command is stopped, its children with it)"
+# A plugin update that never returns stands in for brew, gcloud or
+# softwareupdate hanging on the network. The run has no terminal here, as the
+# agent has none, so the command runs in its own process group and the sleep
+# it forked must go with it: an orphan would hold the log open and the space.
+# /proc rather than ps: the tester image has no procps, and a probe that
+# cannot run would report every orphan as dead. A zombie is dead enough: it
+# holds no file and no CPU, only a pid until init reaps it.
+proc_alive() {
+  [[ -d "/proc/$1" ]] || return 1
+  [[ "$(awk '/^State:/ { print $2 }' "/proc/$1/status" 2>/dev/null)" != Z* ]]
+}
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+  '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+  '  "plugin update") sleep 60 & echo $! > "$CALLS.sleep"; wait ;;' \
+  'esac; exit 0'
+started="$(date +%s)"
+out="$(run_sf "$d" --yes --only helm-plugins --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a timed-out step does not fail the run" "0" "$rc"
+assert_contains "the timeout is reported with the limit" "$out" \
+  "helm plugin update diff stopped after 1s (--step-timeout)"
+assert_contains "a timed-out step is accounted a warning" "$out" "warn steps:  1"
+if (( elapsed <= 20 )); then ok "the run returned promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the timeout did not stop the command"; fi
+sleep_pid="$(cat "$d/calls.sleep" 2>/dev/null)"
+if [[ -n "$sleep_pid" ]] && proc_alive "$sleep_pid"; then
+  err "the hung command's child (pid $sleep_pid) outlived the timeout"; kill "$sleep_pid" 2>/dev/null
+else ok "the hung command's child was stopped with it"; fi
+saved="$(find "$d/home/Library/Logs/stay_fresh" -name 'stay_fresh-*.log' | head -n 1)"
+assert_contains "the kept log records the timeout" "$(cat "$saved" 2>/dev/null)" \
+  "stopped after 1s by --step-timeout"
+rm -rf "$d"
+
+# A probe whose output the step parses (capture_cmd) is under the same limit
+# and counts the same way: the help says the step is warned, and the agent's
+# --fail-on-warn depends on it. It used to be reported and then booked [ ok ].
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/softwareupdate" 'echo "softwareupdate $*" >> "$CALLS"; sleep 60'
+started="$(date +%s)"
+out="$(run_sf "$d" --yes --only os-updates --step-timeout 1 --fail-on-warn)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a timed-out probe fails a --fail-on-warn run" "1" "$rc"
+assert_contains "the timed-out probe is reported" "$out" "softwareupdate --list stopped after 1s (--step-timeout)"
+assert_contains "a timed-out probe counts as a warning" "$out" "warn steps:  1"
+if (( elapsed <= 20 )); then ok "the probe was stopped promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the probe timeout did not fire"; fi
+rm -rf "$d"
+
+# A command run through sudo belongs to root, and the unprivileged watchdog
+# cannot signal it: the kill is refused, the wrapper waited for the command
+# to finish on its own, and then reported a timeout for work that completed.
+# The stop goes through `sudo -n kill` for those, on the credential the
+# preflight warmed. The fake sudo records the call and execs it.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/tmutil" 'echo "tmutil $*" >> "$CALLS"' \
+  'case "${1:-}" in' \
+  '  listlocalsnapshots) echo "Snapshots for disk /:"; echo "com.apple.TimeMachine.2026-09-01-101010.local" ;;' \
+  '  status) echo "{ Running = 0; }" ;;' \
+  '  deletelocalsnapshots) sleep 60 ;;' \
+  'esac; exit 0'
+started="$(date +%s)"
+out="$(run_sf "$d" --yes --only snapshots --thin-snapshots --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a timed-out sudo command does not fail the run" "0" "$rc"
+assert_called "a sudo command is stopped through sudo" "$d/calls" "sudo kill -TERM --"
+assert_contains "the stopped sudo command is reported" "$out" "stopped after 1s (--step-timeout)"
+if (( elapsed <= 20 )); then ok "the sudo command was stopped promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the sudo command was not stopped"; fi
+rm -rf "$d"
+
+# Ctrl-C. A terminal delivers SIGINT to the whole foreground process group:
+# the script, the wrapper and, at a terminal, the command. The wrapper stops
+# the command and then dies of SIGINT itself; bash then sees a child killed
+# by the interrupt and aborts the run, releasing the lock. The wrapper used
+# to exit 130 normally instead, which bash reads as "the child handled it":
+# the interrupted command was booked a warning and the run went on to the
+# next step, and the next, one Ctrl-C per command.
+#
+# setsid gives the run a process group of its own to signal; perl resets the
+# disposition first, because a background job inherits SIGINT ignored from
+# a non-interactive shell and the run would otherwise never see it.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+  '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+  '  "plugin update") sleep 60 & echo $! > "$CALLS.sleep"; echo started > "$CALLS.started"; wait ;;' \
+  'esac; exit 0'
+HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" CALLS="$d/calls" NO_COLOR=1 \
+  STAY_FRESH_NOTIFY=none SF="$SF" \
+  setsid perl -e '$SIG{INT} = "DEFAULT"; exec $ENV{SF}, "--yes", "--no-sudo", "--only", "helm-plugins,versions"' \
+  <"/dev/null" >"$d/calls.out" 2>&1 &
+run_pid=$!
+for _ in $(seq 1 100); do [[ -f "$d/calls.started" ]] && break; sleep 0.1; done
+run_pgid="$(awk '{ print $5 }' "/proc/$run_pid/stat" 2>/dev/null)"
+if [[ -f "$d/calls.started" && -n "$run_pgid" ]]; then
+  kill -INT -- "-$run_pgid"
+  for _ in $(seq 1 100); do kill -0 "$run_pid" 2>/dev/null || break; sleep 0.1; done
+  if kill -0 "$run_pid" 2>/dev/null; then
+    err "the run survived Ctrl-C"; kill -9 -- "-$run_pgid" 2>/dev/null; wait "$run_pid" 2>/dev/null
+  else
+    wait "$run_pid"; rc=$?
+    assert_eq "Ctrl-C ends the run with 130" "130" "$rc"
+    assert_not_contains "an interrupted run reaches no summary" "$(cat "$d/calls.out")" "stay_fresh: summary"
+    assert_not_contains "an interrupted run does not go on to the next step" "$(cat "$d/calls.out")" "Active tool versions"
+  fi
+  sleep_pid="$(cat "$d/calls.sleep" 2>/dev/null)"
+  if [[ -n "$sleep_pid" ]] && proc_alive "$sleep_pid"; then
+    err "the interrupted command's child (pid $sleep_pid) survived"; kill "$sleep_pid" 2>/dev/null
+  else ok "the interrupted command's child was stopped with it"; fi
+  if [[ ! -d "$d/home/Library/Application Support/stay_fresh/run.lock" ]]; then
+    ok "the lock is released on Ctrl-C"
+  else err "the lock survived Ctrl-C"; fi
+else
+  err "the interruptible command never started"; kill -9 "$run_pid" 2>/dev/null
+fi
+rm -rf "$d"
+
+# 0 disables the limit, and a fast command under the default limit is untouched.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'echo "helm $*" >> "$CALLS"' \
+  'case "${1:-} ${2:-}" in "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n" ;; esac; exit 0'
+out="$(run_sf "$d" --yes --only helm-plugins --step-timeout 0)"; rc=$?
+assert_eq "--step-timeout 0 runs the step" "0" "$rc"
+assert_called "--step-timeout 0 still runs the command" "$d/calls" "helm plugin update diff"
+assert_not_contains "--step-timeout 0 stops nothing" "$out" "stopped after"
+out="$(run_sf "$d" --yes --only helm-plugins)"; rc=$?
+assert_not_contains "a fast command is untouched by the default limit" "$out" "stopped after"
+assert_contains "the fast run is clean" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# Without perl the limit cannot be enforced; that is said once before the
+# run, and the run itself is unaffected.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/nobin"
+for b in /usr/bin/* /bin/*; do
+  [[ "$(basename "$b")" == perl* ]] && continue
+  ln -sf "$b" "$d/nobin/$(basename "$b")" 2>/dev/null || true
+done
+mkbin "$d/bin/helm" 'echo "helm $*" >> "$CALLS"' \
+  'case "${1:-} ${2:-}" in "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n" ;; esac; exit 0'
+out="$(HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:$d/nobin" CALLS="$d/calls" NO_COLOR=1 \
+  STAY_FRESH_NOTIFY=none "$SF" --yes --no-sudo --only helm-plugins </dev/null 2>&1)"; rc=$?
+assert_eq "a run without perl succeeds" "0" "$rc"
+assert_contains "the missing perl is said before the run" "$out" \
+  "perl not found — --step-timeout cannot be enforced"
+assert_called "the command still runs without the wrapper" "$d/calls" "helm plugin update diff"
+out="$(HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:$d/nobin" CALLS="$d/calls" NO_COLOR=1 \
+  STAY_FRESH_NOTIFY=none "$SF" --yes --no-sudo --only helm-plugins --step-timeout 0 </dev/null 2>&1)"
+assert_not_contains "with the limit off, missing perl is not mentioned" "$out" "perl not found"
+rm -rf "$d"
+
+# ===========================================================================
 section "gcloud"
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/gcloud" 'echo "gcloud $*" >> "$CALLS"' \
@@ -795,11 +1163,20 @@ mkbin "$d/bin/pyenv" 'echo 3.12.1'
 mkbin "$d/bin/goenv" 'echo 1.22.0'
 mkbin "$d/bin/tfenv" 'echo 1.7.5'
 mkbin "$d/bin/helm"  'echo "v3.14.0"'
+mkbin "$d/bin/kubectl" 'case "$*" in "version --client") echo "Client Version: v1.31.2" ;; "krew version") printf "OPTION VALUE\nGitTag v0.4.4\n" ;; esac'
+mkbin "$d/bin/kubectl-krew" 'exit 0'
+mkbin "$d/bin/terraform" 'echo "terraform $*" >> "$CALLS"; echo "env CHECKPOINT_DISABLE=${CHECKPOINT_DISABLE:-}" >> "$CALLS"; echo "Terraform v1.9.5"; echo "on darwin_arm64"'
+mkbin "$d/bin/docker" 'echo "Docker version 27.3.1, build ce12230"'
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "versions step succeeds" "0" "$rc"
 assert_contains "the active python version is reported"    "$out" "pyenv active:  3.12.1"
 assert_contains "the active go version is reported"        "$out" "goenv active:  1.22.0"
 assert_contains "the active terraform version is reported" "$out" "tfenv active:  1.7.5"
+assert_contains "the kubectl client version is reported"   "$out" "kubectl:       v1.31.2"
+assert_contains "the krew version is reported"             "$out" "krew:          v0.4.4"
+assert_contains "the terraform binary version is reported" "$out" "terraform:     v1.9.5"
+assert_contains "the docker version is reported"           "$out" "docker:        27.3.1"
+assert_called "terraform is asked without phoning home" "$d/calls" "env CHECKPOINT_DISABLE=1"
 rm -rf "$d"
 
 # ===========================================================================
@@ -902,18 +1279,141 @@ d="$(new_env)"
 out="$(run_sf "$d" --dry-run --quick)"; rc=$?
 assert_eq "--quick previews" "0" "$rc"
 for want in "clear user caches" "clear per-app caches" "clear AI tool caches" \
-            "prune workspace storage" "empty trash" "dev-tool caches"; do
+            "prune workspace storage" "empty trash" "old user logs" "dev-tool caches"; do
   assert_contains "--quick runs: $want" "$(grep "$want" <<<"$out")" "run"
 done
 for keep in "homebrew update" "flush DNS" "clear system caches" "pending OS" "docker" "xcode"; do
   assert_contains "--quick skips: $keep" "$(grep -i "$keep" <<<"$out")" "skip"
 done
+# --quick's help says "No sudo (not even a cached credential)". The only thing
+# enforcing that is one QUICK == 0 in clear_dir's retry condition, and the
+# retry's other arm reaches for a warm timestamp with `sudo -n true`. Run it
+# for real against an entry the user cannot unlink, with a sudo that would
+# answer if asked.
+qd="$(new_env)"; : > "$qd/calls"
+mkbin "$qd/bin/rm" 'fail=0; opts=""' \
+                   'for a in "$@"; do' \
+                   '  case "$a" in' \
+                   '    -*) opts="$opts $a" ;;' \
+                   '    *"ShipIt"*) echo "rm: $a: Permission denied" >&2; fail=1 ;;' \
+                   '    *) /bin/rm $opts "$a" ;;' \
+                   '  esac' \
+                   'done' \
+                   'exit $fail'
+mkbin "$qd/bin/sudo" 'echo "sudo $*" >> "$CALLS"' \
+                     'case "${1:-}" in -v) exit 0 ;; -n) shift; case "${1:-}" in true) exit 0 ;; esac ;; esac' \
+                     'exec "$@"'
+mkdir -p "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt" "$qd/home/Library/Caches/vendor"
+: > "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/update"
+bytes_file "$qd/home/Library/Caches/vendor/blob" 64
+out="$(run_sf "$qd" --yes --quick)"; rc=$?
+assert_eq "--quick runs for real" "0" "$rc"
+assert_not_called "--quick never reaches for sudo, warm or otherwise" "$qd/calls" "sudo"
+assert_exists "--quick leaves the entry it cannot unlink" "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_gone   "--quick still clears what it can" "$qd/home/Library/Caches/vendor"
+assert_contains "--quick reports the entry it could not take" "$out" "entries owned by another user remain"
+rm -rf "$qd"
+
 run_sf "$d" --dry-run --quick --only trash >/dev/null; rc=$?
 assert_eq "--quick refuses --only" "3" "$rc"
 run_sf "$d" --dry-run --quick --skip-brew >/dev/null; rc=$?
 assert_eq "--quick refuses --skip-* flags" "3" "$rc"
-run_sf "$d" --dry-run --notify slack >/dev/null; rc=$?
+run_sf "$d" --dry-run --notify pager >/dev/null; rc=$?
 assert_eq "an unknown --notify mode is refused" "3" "$rc"
+out="$(run_sf "$d" --dry-run --notify macos,pager)"; rc=$?
+assert_eq "an unknown channel in a --notify list is refused" "3" "$rc"
+assert_contains "the unknown channel is named" "$out" "(got: pager)"
+run_sf "$d" --dry-run --notify none,macos >/dev/null; rc=$?
+assert_eq "--notify none does not combine with a channel" "3" "$rc"
+run_sf "$d" --dry-run --notify auto,slack >/dev/null; rc=$?
+assert_eq "--notify auto does not combine with a channel" "3" "$rc"
+# The environment variable goes through the same check as the flag: `30m`
+# used to become a 30-second limit through perl, and `abc` disabled it.
+out="$(STAY_FRESH_STEP_TIMEOUT=30m run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a non-numeric STAY_FRESH_STEP_TIMEOUT is refused" "3" "$rc"
+assert_contains "the refused environment value is named" "$out" "STAY_FRESH_STEP_TIMEOUT must be a whole number of seconds (got: 30m)"
+run_sf "$d" --dry-run --only versions --step-timeout 30m >/dev/null; rc=$?
+assert_eq "a non-numeric --step-timeout is refused" "3" "$rc"
+out="$(STAY_FRESH_STEP_TIMEOUT=600 run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a numeric STAY_FRESH_STEP_TIMEOUT is accepted" "0" "$rc"
+out="$(run_sf "$d" --dry-run --notify=macos,slack --only versions)"; rc=$?
+assert_eq "a channel list is accepted" "0" "$rc"
+assert_contains "a dry run names every channel it would use" "$out" "would notify via macos, slack"
+rm -rf "$d"
+
+# --reports is the read-only preset: the four reporting steps, nothing that
+# deletes or upgrades, and no way to smuggle --thin-snapshots into it.
+d="$(new_env)"
+out="$(run_sf "$d" --dry-run --reports)"; rc=$?
+assert_eq "--reports previews" "0" "$rc"
+for want in "report active versions" "pending OS / App Store updates" \
+            "local Time Machine snapshots" "old downloads" "orphaned launch agents" "disk report"; do
+  assert_contains "--reports runs: $want" "$(grep "$want" <<<"$out")" "run"
+done
+for keep in "clear user caches" "empty trash" "homebrew update" "dev-tool caches" "old user logs"; do
+  assert_contains "--reports skips: $keep" "$(grep -i "$keep" <<<"$out")" "skip"
+done
+run_sf "$d" --dry-run --reports --only trash >/dev/null; rc=$?
+assert_eq "--reports refuses --only" "3" "$rc"
+run_sf "$d" --dry-run --reports --quick >/dev/null; rc=$?
+assert_eq "--reports refuses --quick" "3" "$rc"
+run_sf "$d" --dry-run --reports --skip-brew >/dev/null; rc=$?
+assert_eq "--reports refuses --skip-* flags" "3" "$rc"
+out="$(run_sf "$d" --dry-run --reports --thin-snapshots)"; rc=$?
+assert_eq "--reports refuses --thin-snapshots" "3" "$rc"
+assert_contains "--reports says why it refuses --thin-snapshots" "$out" "read-only"
+run_sf "$d" --dry-run --reports --prune-downloads-days 30 >/dev/null; rc=$?
+assert_eq "--reports refuses --prune-downloads-days" "3" "$rc"
+run_sf "$d" --dry-run --reports --prune-orphan-agents >/dev/null; rc=$?
+assert_eq "--reports refuses --prune-orphan-agents" "3" "$rc"
+out="$(run_sf "$d" --yes --reports)"; rc=$?
+assert_eq "a real --reports run succeeds" "0" "$rc"
+assert_contains "a real --reports run runs the six reporting steps" "$out" "6 ok, 17 skipped"
+# The history row and last-run.json are the only files a real run leaves.
+if [[ -z "$(find "$d/home" -type f -not -path '*/Library/Logs/stay_fresh/*' -print -quit)" ]]; then
+  ok "--reports writes nothing but its own history"
+else
+  err "--reports wrote outside its state directory"; find "$d/home" -type f >&2
+fi
+rm -rf "$d"
+
+# A dry run adds up what the deletions would remove, so the preview answers
+# the question it is run for: how much would this free.
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/com.vendor.app" "$d/home/.Trash"
+bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 2048
+bytes_file "$d/home/.Trash/old" 1024
+out="$(run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
+assert_eq "a dry run with an estimate succeeds" "0" "$rc"
+assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "3."
+assert_contains "the estimate names its unit" "$out" "would free:"
+assert_contains "the real freed total stays zero under a dry run" "$out" "steps freed: 0B"
+assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.vendor.app/blob"
+rm -rf "$d"
+
+# Every id --list-steps prints is one --only accepts, and the run loop runs
+# the step under the same label the plan used. One table drives all three;
+# this is the check that nothing bypasses it.
+d="$(new_env)"
+ids="$(run_sf "$d" --list-steps | awk '{ print $1 }')"
+assert_eq "--list-steps prints twenty-three ids" "23" "$(grep -c . <<<"$ids")"
+while IFS= read -r id; do
+  [[ -n "$id" ]] || continue
+  extra=(); [[ "$id" == memory ]] && extra=(--purge-memory)
+  out="$(run_sf "$d" --dry-run --only "$id" ${extra[@]+"${extra[@]}"})"; rc=$?
+  assert_eq "--only $id is accepted" "0" "$rc"
+  # Exactly the one step in the plan - or none, when preflight found the
+  # machine cannot run it (no Homebrew, no Docker, no Xcode data here), in
+  # which case the selection is named as voided rather than dropped quietly.
+  runs="$(grep -cE '^  [^ ].{33} run( |$)' <<<"$out")"
+  if [[ "$runs" == "1" ]]; then
+    ok "--only $id previews exactly one step"
+  elif [[ "$runs" == "0" ]]; then
+    assert_contains "--only $id is voided by preflight, and says so" "$out" "--only $id: "
+  else
+    err "--only $id previews $runs steps"
+  fi
+done <<<"$ids"
 rm -rf "$d"
 
 # History: nothing before the first real run, one row and a JSON summary after.
@@ -923,17 +1423,35 @@ assert_eq "--history works before any run" "0" "$rc"
 assert_contains "--history says when there is nothing yet" "$out" "no history yet"
 out="$(run_sf "$d" --dry-run --only versions)"
 assert_gone "a dry run records no history" "$d/home/Library/Logs/stay_fresh/history.tsv"
+assert_gone "a dry run records no per-step figures either" "$d/home/Library/Logs/stay_fresh/steps.tsv"
 # The kernel boot time feeds the "up Nd Nh" part of the verdict.
 mkbin "$d/bin/sysctl" 'echo "{ sec = $(( $(date +%s) - 93600 )), usec = 0 } Mon Sep  7 10:00:00 2026"'
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "a real run succeeds" "0" "$rc"
 assert_contains "the verdict line is printed" "$out" "stay_fresh OK: freed"
-assert_contains "the verdict counts the steps" "$out" "1 ok, 19 skipped"
+assert_contains "the verdict counts the steps" "$out" "1 ok, 22 skipped"
 assert_contains "the verdict carries the uptime" "$out" "up 1d 2h"
 hist="$d/home/Library/Logs/stay_fresh/history.tsv"
 assert_exists "history.tsv is written" "$hist"
 assert_eq "history has one row" "1" "$(wc -l <"$hist" | tr -d ' ')"
 assert_contains "the history row carries the result" "$(cut -f2 "$hist")" "OK"
+# The thirteenth column is free space after the run. RECLAIMED_B beside it is a
+# delta, and a delta alone cannot say whether the disk is filling up anyway.
+if [[ "$(cut -f13 "$hist")" =~ ^[0-9]+$ ]]; then
+  ok "the history row records free space after the run"
+else
+  err "the history row has no free-space column: [$(cut -f13 "$hist")]"
+fi
+# One row per step per run, in its own file: the row count differs from
+# history.tsv's, and a separate file needs no migration for rows already there.
+steps_tsv="$d/home/Library/Logs/stay_fresh/steps.tsv"
+assert_exists "steps.tsv is written" "$steps_tsv"
+assert_eq "the run that ran one step recorded one step row" "1" \
+  "$(wc -l <"$steps_tsv" | tr -d ' ')"
+assert_eq "the step row names the step by id" "versions" "$(cut -f2 "$steps_tsv")"
+assert_eq "the step row carries its outcome" "ok" "$(cut -f5 "$steps_tsv")"
+assert_eq "the step row is stamped with the same run time as the history row" \
+  "$(cut -f1 "$hist")" "$(cut -f1 "$steps_tsv")"
 if python3 - "$d/home/Library/Logs/stay_fresh/last-run.json" <<'PY'
 import json, sys
 with open(sys.argv[1]) as fh:
@@ -948,11 +1466,11 @@ else err "last-run.json is missing or malformed"; cat "$d/home/Library/Logs/stay
 out="$(run_sf "$d" --history)"; rc=$?
 assert_eq "--history prints after a run" "0" "$rc"
 assert_contains "--history shows the row" "$out" "OK"
-assert_contains "--history shows the step counts" "$out" "1/0/0/19"
+assert_contains "--history shows the step counts" "$out" "1/0/0/22"
 rm -rf "$d"
 
 # ===========================================================================
-section "notifications (macOS banner, Telegram)"
+section "notifications (macOS banner, Telegram, Slack)"
 # The banner goes through osascript; the verdict is the title.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
@@ -1008,6 +1526,156 @@ assert_contains "missing credentials are explained" "$out" "telegram notificatio
 assert_not_called "nothing is sent without credentials" "$d/calls" "curl"
 rm -rf "$d"
 
+# A send that fails is reported with curl's reason, on the terminal, and the
+# token stays out of it. It used to vanish into a log already discarded.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat >/dev/null; echo "curl: (6) Could not resolve host: api.telegram.org" >&2; exit 6'
+out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_TG_BOT_TOKEN=123:secret-token STAY_FRESH_TG_CHAT_ID=42 \
+  run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a failed Telegram send does not fail the run" "0" "$rc"
+assert_contains "a failed Telegram send is reported with the reason" "$out" \
+  "telegram notification failed (curl exited 6): curl: (6) Could not resolve host"
+assert_not_contains "a failed Telegram send is not reported as sent" "$out" "telegram notification sent"
+assert_not_contains "the token stays out of the report" "$out" "secret-token"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript: execution error: Notification Center is not available (-1743)" >&2; exit 1'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a failed banner does not fail the run" "0" "$rc"
+assert_contains "a failed banner is reported with the reason" "$out" \
+  "macOS notification failed (osascript exited 1): osascript: execution error"
+rm -rf "$d"
+
+# A notifier that never returns must not hold the run open after the work is
+# done: a locked keychain raises a prompt nobody at a scheduled run can
+# answer, and osascript can wait on Notification Center. Each call is under
+# the notifier timeout, and a timed-out Keychain lookup is named.
+d="$(tg_env)"; : > "$d/calls"
+mkbin "$d/bin/security" 'echo "security $*" >> "$CALLS"; sleep 60'
+started="$(date +%s)"
+out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_NOTIFY_TIMEOUT=1 run_sf "$d" --yes --only versions)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hung Keychain lookup does not fail the run" "0" "$rc"
+assert_contains "the hung lookup is named" "$out" \
+  "Keychain lookup for stay_fresh-telegram/bot-token timed out after 1s"
+assert_contains "the notification is then skipped as unconfigured" "$out" "telegram notification skipped"
+if (( elapsed <= 20 )); then ok "the run returned promptly (${elapsed}s)"
+else err "the run took ${elapsed}s — the Keychain lookup was not bounded"; fi
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'sleep 60'
+started="$(date +%s)"
+out="$(STAY_FRESH_NOTIFY=macos STAY_FRESH_NOTIFY_TIMEOUT=1 run_sf "$d" --yes --only versions)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hung osascript does not fail the run" "0" "$rc"
+assert_contains "the hung banner is reported as timed out" "$out" "macOS notification failed (osascript exited 124)"
+if (( elapsed <= 20 )); then ok "the banner call was bounded (${elapsed}s)"
+else err "the run took ${elapsed}s — osascript was not bounded"; fi
+run_sf "$d" --dry-run --only versions >/dev/null; rc=$?
+out="$(STAY_FRESH_NOTIFY_TIMEOUT=soon run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a non-numeric notifier timeout is refused" "3" "$rc"
+rm -rf "$d"
+
+# Slack: an incoming webhook. The URL is the credential, so it rides in the
+# curl config on stdin exactly like the Telegram token, and the message is a
+# JSON body with the verdict as text.
+slack_env() {
+  local d; d="$(new_env)"
+  mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat > "$CALLS.curl-config"; exit 0'
+  printf '%s' "$d"
+}
+hook="https://hooks.slack.com/services/T000/B000/secret-hook"
+d="$(slack_env)"; : > "$d/calls"
+out="$(STAY_FRESH_NOTIFY=slack STAY_FRESH_SLACK_WEBHOOK="$hook" run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a run with a Slack notification succeeds" "0" "$rc"
+assert_contains "the preflight names the Slack channel" "$out" "notify: slack"
+assert_contains "the Slack send is reported" "$out" "slack notification sent"
+assert_called "the body is JSON" "$d/calls" "Content-type: application/json"
+assert_called "the text starts with the verdict" "$d/calls" '{"text": "stay_fresh OK: freed'
+assert_not_called "the webhook is not on the curl command line" "$d/calls" "secret-hook"
+assert_contains "the webhook is in the stdin config" "$(cat "$d/calls.curl-config")" "url = \"$hook\""
+rm -rf "$d"
+
+# Without the environment, the login Keychain answers.
+d="$(slack_env)"; : > "$d/calls"
+mkbin "$d/bin/security" 'echo "security $*" >> "$CALLS"' \
+  'case "$*" in *"-s stay_fresh-slack -a webhook"*) echo "https://hooks.slack.com/services/kc/hook" ;; esac'
+out="$(STAY_FRESH_NOTIFY=slack run_sf "$d" --yes --only versions)"; rc=$?
+assert_called "the Keychain is asked for the webhook" "$d/calls" "find-generic-password -s stay_fresh-slack -a webhook -w"
+assert_contains "the Keychain webhook reaches curl" "$(cat "$d/calls.curl-config")" "services/kc/hook"
+assert_contains "the Keychain-backed Slack send is reported" "$out" "slack notification sent"
+rm -rf "$d"
+
+# No webhook anywhere: said once, the run itself is still fine.
+d="$(slack_env)"; : > "$d/calls"
+out="$(STAY_FRESH_NOTIFY=slack run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a missing Slack webhook does not fail the run" "0" "$rc"
+assert_contains "a missing webhook is explained" "$out" "slack notification skipped"
+assert_not_called "nothing is sent without a webhook" "$d/calls" "curl"
+rm -rf "$d"
+
+# A failed post is reported with curl's reason, and the webhook stays out of it.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat >/dev/null; echo "curl: (22) The requested URL returned error: 403 for '"$hook"'" >&2; exit 22'
+out="$(STAY_FRESH_NOTIFY=slack STAY_FRESH_SLACK_WEBHOOK="$hook" run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a failed Slack post does not fail the run" "0" "$rc"
+assert_contains "a failed Slack post is reported with the reason" "$out" \
+  "slack notification failed (curl exited 22): curl: (22) The requested URL returned error: 403"
+assert_not_contains "the webhook stays out of the report" "$out" "secret-hook"
+assert_contains "the webhook is scrubbed, not just omitted" "$out" "403 for ***"
+rm -rf "$d"
+
+# More than one channel: each one is sent, and the preflight names them all.
+d="$(slack_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos,slack STAY_FRESH_SLACK_WEBHOOK="$hook" run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a run with two channels succeeds" "0" "$rc"
+assert_contains "the preflight names both channels" "$out" "notify: macos, slack"
+assert_called "the banner is posted" "$d/calls" "display notification"
+assert_called "the Slack message is posted" "$d/calls" "Content-type: application/json"
+assert_contains "the Slack send is reported" "$out" "slack notification sent"
+rm -rf "$d"
+
+# --notify-when: a banner every morning gets swiped away unread; `warn`
+# keeps the channel for the runs that need reading. `fail` for FAILED only.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos STAY_FRESH_NOTIFY_WHEN=warn run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "an OK run under --notify-when warn succeeds" "0" "$rc"
+assert_contains "the preflight names the condition" "$out" "notify: macos (only on warn)"
+assert_not_called "an OK run under --notify-when warn posts nothing" "$d/calls" "display notification"
+assert_contains "the withheld notification is explained" "$out" \
+  "notification not sent: the run was OK and --notify-when is warn"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;; "plugin update") exit 1 ;; esac; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only helm-plugins --notify-when warn)"; rc=$?
+assert_contains "the warned run is a WARN" "$out" "stay_fresh WARN"
+assert_called "a WARN run under --notify-when warn posts the banner" "$d/calls" "display notification"
+: > "$d/calls"
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only helm-plugins --notify-when=fail)"; rc=$?
+assert_not_called "a WARN run under --notify-when fail posts nothing" "$d/calls" "display notification"
+assert_contains "the withheld WARN notification is explained" "$out" \
+  "notification not sent: the run was WARN and --notify-when is fail"
+run_sf "$d" --dry-run --notify-when sometimes >/dev/null; rc=$?
+assert_eq "an unknown --notify-when is refused" "3" "$rc"
+rm -rf "$d"
+
+# `both` is still macos + telegram, from before Slack existed.
+d="$(slack_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=both STAY_FRESH_TG_BOT_TOKEN=123:tok STAY_FRESH_TG_CHAT_ID=42 \
+  STAY_FRESH_SLACK_WEBHOOK="$hook" run_sf "$d" --yes --only versions)"; rc=$?
+assert_contains "both means macos and telegram" "$out" "notify: macos, telegram"
+assert_called "both posts the banner" "$d/calls" "display notification"
+assert_called "both posts to Telegram" "$d/calls" "chat_id=42"
+assert_not_called "both does not post to Slack" "$d/calls" "application/json"
+rm -rf "$d"
+
 # ===========================================================================
 section "snapshots (listed by default, deleted only with --thin-snapshots)"
 snap_env() {
@@ -1016,6 +1684,10 @@ snap_env() {
     'case "${1:-}" in' \
     '  listlocalsnapshots) echo "Snapshots for disk /:"' \
     '    [ -n "${SNAPSHOTS:-}" ] && { echo "com.apple.TimeMachine.2026-09-01-101010.local"; echo "com.apple.TimeMachine.2026-09-07-030000.local"; } ;;' \
+    '  deletelocalsnapshots) [ -n "${TM_DELETE_FAIL:-}" ] && exit 1 ;;' \
+  '  status) echo "Backup session status:"; echo "{"' \
+    '    if [ -n "${TM_RUNNING:-}" ]; then echo "    BackupPhase = Copying;"; echo "    Running = 1;"; else echo "    Running = 0;"; fi' \
+    '    echo "}" ;;' \
     'esac; exit 0'
   printf '%s' "$d"
 }
@@ -1039,9 +1711,43 @@ rm -rf "$d"
 d="$(snap_env)"; : > "$d/calls"
 out="$(SNAPSHOTS=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
 assert_eq "thinning succeeds" "0" "$rc"
+assert_called "thinning first asks whether a backup is running" "$d/calls" "tmutil status"
 assert_called "each snapshot is deleted through sudo" "$d/calls" "sudo tmutil deletelocalsnapshots 2026-09-01-101010"
 assert_called "the second snapshot too" "$d/calls" "sudo tmutil deletelocalsnapshots 2026-09-07-030000"
 assert_contains "the verdict mentions thinned snapshots" "$out" "2 local snapshot(s) thinned"
+rm -rf "$d"
+
+# A backup in progress copies from the newest snapshot; deleting it under the
+# backup restarts the pass. The run lists and leaves thinning to the next one.
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 TM_RUNNING=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "a running backup is a clean step" "0" "$rc"
+assert_contains "a running backup is named as the reason" "$out" "a Time Machine backup is running"
+assert_not_called "nothing is deleted under a running backup" "$d/calls" "deletelocalsnapshots"
+assert_contains "the snapshots are still listed" "$out" "2 local snapshot(s):"
+assert_contains "the verdict says kept, not thinned" "$out" "2 local snapshot(s) kept"
+assert_contains "a running backup is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# tmutil can refuse every date — a snapshot pinned by a mount, a sudo
+# credential gone stale mid-run. The flag that drives the verdict used to be
+# set before the loop rather than from it, so a run that deleted nothing still
+# announced the snapshots thinned, and the disk stayed full while the report
+# said otherwise.
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 TM_DELETE_FAIL=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "every deletion failing is a warned run, not a failed one" "0" "$rc"
+assert_contains "and it is counted as a warning" "$out" "warn steps:  1"
+assert_called "the deletions were attempted" "$d/calls" "sudo tmutil deletelocalsnapshots 2026-09-01-101010"
+assert_contains "each failure is named" "$out" "could not delete snapshot 2026-09-01-101010"
+assert_contains "the verdict says kept when nothing was deleted" "$out" "2 local snapshot(s) kept"
+assert_not_contains "a run that deleted nothing does not claim to have thinned" "$out" "snapshot(s) thinned"
+rm -rf "$d"
+
+# Listing never asks: tmutil status is only consulted before a deletion.
+d="$(snap_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 TM_RUNNING=1 run_sf "$d" --yes --only snapshots)"; rc=$?
+assert_not_called "a listing does not probe the backup state" "$d/calls" "tmutil status"
 rm -rf "$d"
 
 d="$(snap_env)"; : > "$d/calls"
@@ -1050,6 +1756,295 @@ assert_eq "--no-sudo still lists" "0" "$rc"
 assert_contains "--no-sudo explains that thinning is off" "$out" "listed, not deleted"
 assert_not_called "--no-sudo deletes nothing" "$d/calls" "deletelocalsnapshots"
 assert_contains "the snapshots are still listed" "$out" "2 local snapshot(s):"
+rm -rf "$d"
+
+# ===========================================================================
+section "user-logs (files older than 30 days; directories, DiagnosticReports and stay_fresh's own kept)"
+logs_env() {
+  local d; d="$(new_env)"
+  local L="$d/home/Library/Logs"
+  mkdir -p "$L/Homebrew" "$L/DiagnosticReports" "$L/stay_fresh" "$L/Adobe/empty"
+  bytes_file "$L/Homebrew/old.log" 64;           touch -d '40 days ago' "$L/Homebrew/old.log"
+  bytes_file "$L/Homebrew/fresh.log" 64;         touch -d '2 days ago'  "$L/Homebrew/fresh.log"
+  bytes_file "$L/top-old.log" 64;                touch -d '90 days ago' "$L/top-old.log"
+  bytes_file "$L/DiagnosticReports/old.ips" 64;  touch -d '90 days ago' "$L/DiagnosticReports/old.ips"
+  bytes_file "$L/stay_fresh/history.tsv" 64;     touch -d '90 days ago' "$L/stay_fresh/history.tsv"
+  bytes_file "$L/stay_fresh/stay_fresh-20260101-000000.log" 64
+  touch -d '90 days ago' "$L/stay_fresh/stay_fresh-20260101-000000.log"
+  printf '%s' "$d"
+}
+d="$(logs_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only user-logs)"; rc=$?
+assert_eq "user-logs step succeeds" "0" "$rc"
+assert_gone   "an old nested log is removed"      "$d/home/Library/Logs/Homebrew/old.log"
+assert_gone   "an old top-level log is removed"   "$d/home/Library/Logs/top-old.log"
+assert_exists "a recent log is kept"              "$d/home/Library/Logs/Homebrew/fresh.log"
+assert_exists "the log directory itself is kept"  "$d/home/Library/Logs/Homebrew"
+assert_exists "an empty log directory is kept"    "$d/home/Library/Logs/Adobe/empty"
+assert_exists "DiagnosticReports belongs to the diagnostics step" "$d/home/Library/Logs/DiagnosticReports/old.ips"
+assert_exists "the run history is not a log to prune" "$d/home/Library/Logs/stay_fresh/history.tsv"
+assert_exists "a kept run log is not pruned either" "$d/home/Library/Logs/stay_fresh/stay_fresh-20260101-000000.log"
+assert_contains "the removed files are counted" "$out" "log files older than 30 days: 2 path(s)"
+assert_contains "the freed size is reported" "$out" "freed 128.00K (log files older than 30 days)"
+assert_contains "pruning old logs is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# The machine this step exists for has tens of thousands of eligible files,
+# more than one argument vector holds. The list never becomes one: it stays
+# in a file and every pass over it is batched.
+d="$(new_env)"; : > "$d/calls"
+big="$d/home/Library/Logs/CoreSimulator/$(printf 'device-%0120d' 1)"
+mkdir -p "$big"
+seq 1 20000 | sed "s|^|$big/session-|; s|\$|.log|" | xargs touch -d '40 days ago'
+: > "$big/today.log"
+out="$(run_sf "$d" --yes --only user-logs)"; rc=$?
+assert_eq "twenty thousand old logs are a clean step" "0" "$rc"
+assert_contains "all of them are counted" "$out" "log files older than 30 days: 20000 path(s)"
+assert_eq "all of them are removed" "1" "$(find "$big" -type f | wc -l | tr -d ' ')"
+assert_exists "the recent one among them is kept" "$big/today.log"
+assert_contains "the large sweep is not a warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+d="$(logs_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only user-logs)"; rc=$?
+assert_eq "user-logs dry run succeeds" "0" "$rc"
+assert_exists "a dry run removes nothing" "$d/home/Library/Logs/top-old.log"
+assert_contains "a dry run says what it would clear" "$out" "(dry-run) would clear 2 path(s)"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only user-logs)"; rc=$?
+assert_eq "user-logs with no log directory succeeds" "0" "$rc"
+assert_contains "user-logs with no log directory says so" "$out" "nothing to do"
+rm -rf "$d"
+
+d="$(logs_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --skip-user-logs)"; rc=$?
+assert_eq "--skip-user-logs is accepted" "0" "$rc"
+assert_contains "--skip-user-logs takes the step off the plan" "$(grep "old user logs" <<<"$out")" "skip"
+rm -rf "$d"
+
+# ===========================================================================
+section "a cache path named by the environment must look like one"
+# TF_PLUGIN_CACHE_DIR set one component short of Terraform's own documented
+# value is ~/.terraform.d, which holds credentials.tfrc.json. clear_dir
+# removes whatever it is handed.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.terraform.d/plugin-cache"
+: > "$d/home/.terraform.d/credentials.tfrc.json"
+bytes_file "$d/home/.terraform.d/plugin-cache/provider" 64
+out="$(TF_PLUGIN_CACHE_DIR="$d/home/.terraform.d" run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "a suspicious TF_PLUGIN_CACHE_DIR does not fail the run" "0" "$rc"
+assert_exists "the terraform credentials survive" "$d/home/.terraform.d/credentials.tfrc.json"
+assert_exists "so does the cache it wrongly named" "$d/home/.terraform.d/plugin-cache/provider"
+assert_contains "the refusal is explained" "$out" "does not end in plugin-cache"
+# The documented value is still cleared.
+out="$(TF_PLUGIN_CACHE_DIR="$d/home/.terraform.d/plugin-cache" run_sf "$d" --yes --only dev-caches)"
+assert_gone   "the real plugin cache is still cleared" "$d/home/.terraform.d/plugin-cache/provider"
+assert_exists "and the credentials beside it are still there" "$d/home/.terraform.d/credentials.tfrc.json"
+rm -rf "$d"
+
+# A bun old enough not to have `pm cache` (it arrived in 1.0.x). The cache
+# directory is the fallback. BUN_INSTALL is set explicitly in both cases: the
+# variable is often already exported on a developer's machine — it is in this
+# container — and a test that inherits it would clear the real cache and pass
+# for the wrong reason.
+d="$(devcache_env)"; : > "$d/calls"
+mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; [ "$1" = "pm" ] && exit 1; exit 0'
+out="$(BUN_INSTALL="$d/home/.bun" run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "dev-caches succeeds with a bun that has no pm cache" "0" "$rc"
+assert_gone   "the bun cache is cleared through the directory instead" \
+  "$d/home/.bun/install/cache/pkg"
+assert_exists "the bun cache directory itself stays" "$d/home/.bun/install/cache"
+rm -rf "$d"
+
+# BUN_INSTALL relocates the cache, and the fallback must follow it there
+# rather than clearing the default path.
+d="$(devcache_env)"; : > "$d/calls"
+mkbin "$d/bin/bun" 'echo "bun $*" >> "$CALLS"; [ "$1" = "pm" ] && exit 1; exit 0'
+mkdir -p "$d/home/elsewhere/install/cache/pkg"
+bytes_file "$d/home/elsewhere/install/cache/pkg/tarball.tgz" 128
+out="$(BUN_INSTALL="$d/home/elsewhere" run_sf "$d" --yes --only dev-caches)"
+assert_gone   "BUN_INSTALL relocates which cache is cleared" \
+  "$d/home/elsewhere/install/cache/pkg"
+assert_exists "and the default location is left alone" \
+  "$d/home/.bun/install/cache/pkg/tarball.tgz"
+rm -rf "$d"
+
+# ===========================================================================
+section "dev-caches (Gradle and Maven caches only with --prune-build-caches)"
+build_env() {
+  local d; d="$(new_env)"
+  mkdir -p "$d/home/.gradle/caches/modules-2" "$d/home/.m2/repository/org"
+  # A full Gradle distribution per version any project's wrapper asked for,
+  # around 150 MB each and never pruned. Re-downloaded by the next build, so
+  # it belongs with the build caches rather than the always-cleared ones.
+  mkdir -p "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123"
+  bytes_file "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123/gradle-8.5.zip" 128
+  bytes_file "$d/home/.gradle/caches/modules-2/dep.jar" 256
+  bytes_file "$d/home/.m2/repository/org/dep.pom" 64
+  printf '%s' "$d"
+}
+d="$(build_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "dev-caches with build caches present succeeds" "0" "$rc"
+assert_exists "the Gradle cache is kept by default" "$d/home/.gradle/caches/modules-2/dep.jar"
+assert_exists "the Maven repository is kept by default" "$d/home/.m2/repository/org/dep.pom"
+assert_contains "the kept Gradle cache is named" "$out" "~/.gradle/caches kept; pass --prune-build-caches to clear it"
+assert_contains "the kept Maven repository is named" "$out" "~/.m2/repository kept; pass --prune-build-caches to clear it"
+assert_exists "the Gradle wrapper distributions are kept by default" \
+  "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123/gradle-8.5.zip"
+assert_contains "the kept wrapper distributions are named" "$out" \
+  "~/.gradle/wrapper/dists kept; pass --prune-build-caches to clear it"
+assert_not_contains "build caches count as a toolchain" "$out" "no known developer toolchains found"
+rm -rf "$d"
+
+d="$(build_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only dev-caches --prune-build-caches)"; rc=$?
+assert_eq "--prune-build-caches succeeds" "0" "$rc"
+assert_gone   "--prune-build-caches clears the Gradle cache"   "$d/home/.gradle/caches/modules-2"
+assert_gone   "--prune-build-caches clears the Maven repository" "$d/home/.m2/repository/org"
+assert_gone   "--prune-build-caches clears the Gradle wrapper distributions" \
+  "$d/home/.gradle/wrapper/dists/gradle-8.5-bin"
+assert_exists "the wrapper dists directory itself stays" "$d/home/.gradle/wrapper/dists"
+assert_exists "the Gradle cache directory itself stays"   "$d/home/.gradle/caches"
+assert_exists "the Maven repository directory itself stays" "$d/home/.m2/repository"
+assert_contains "the plan names the build caches" "$(grep "dev-tool caches" <<<"$out")" "gradle/maven caches"
+assert_contains "the Gradle sweep reports its size" "$(grep 'freed .* from .*/.gradle/caches' <<<"$out")" "freed 2"
+assert_contains "the Maven sweep reports its size"  "$(grep 'freed .* from .*/.m2/repository' <<<"$out")" "freed 6"
+rm -rf "$d"
+
+d="$(build_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only dev-caches --prune-build-caches)"; rc=$?
+assert_exists "a dry run keeps the Gradle cache" "$d/home/.gradle/caches/modules-2/dep.jar"
+assert_contains "a dry run previews the Gradle sweep" "$out" "(dry-run) would remove contents of $d/home/.gradle/caches"
+rm -rf "$d"
+
+# ===========================================================================
+section "downloads (reported by default, removed only with --prune-downloads-days)"
+dl_env() {
+  local d; d="$(new_env)"
+  local dl="$d/home/Downloads"
+  mkdir -p "$dl/old-project" "$dl/fresh-project"
+  bytes_file "$dl/installer.dmg" 2048;   touch -d '120 days ago' "$dl/installer.dmg"
+  bytes_file "$dl/old-project/a.txt" 64; touch -d '120 days ago' "$dl/old-project/a.txt" "$dl/old-project"
+  bytes_file "$dl/recent.zip" 512
+  : > "$dl/.DS_Store";                    touch -d '400 days ago' "$dl/.DS_Store"
+  printf '%s' "$d"
+}
+d="$(dl_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only downloads)"; rc=$?
+assert_eq "downloads step succeeds" "0" "$rc"
+assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: 2.07M"
+assert_contains "the largest old entry is named first" "$(grep -A1 'untouched for 90 days' <<<"$out")" "installer.dmg"
+assert_contains "the report says how to remove them" "$out" "--prune-downloads-days 90 removes them"
+assert_exists "the report removes nothing" "$d/home/Downloads/installer.dmg"
+assert_contains "old downloads reach the verdict" "$out" "2 old download(s) kept"
+assert_contains "a report is not a warning" "$out" "warn steps:  0"
+assert_not_contains "hidden entries are not counted" "$out" ".DS_Store"
+rm -rf "$d"
+
+d="$(dl_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only downloads --prune-downloads-days 100)"; rc=$?
+assert_eq "a downloads prune dry run succeeds" "0" "$rc"
+assert_contains "the dry run names what would go" "$out" "(dry-run) would clear 2 path(s)"
+assert_exists "the dry run removes nothing" "$d/home/Downloads/installer.dmg"
+out="$(run_sf "$d" --yes --only downloads --prune-downloads-days 100)"; rc=$?
+assert_eq "a downloads prune succeeds" "0" "$rc"
+assert_gone   "an old file is removed"            "$d/home/Downloads/installer.dmg"
+assert_gone   "an old directory is removed whole" "$d/home/Downloads/old-project"
+assert_exists "a recent file is kept"             "$d/home/Downloads/recent.zip"
+assert_exists "a recent directory is kept"        "$d/home/Downloads/fresh-project"
+assert_exists "hidden entries are never removed"  "$d/home/Downloads/.DS_Store"
+assert_contains "removed downloads reach the verdict" "$out" "2 old download(s) removed"
+run_sf "$d" --dry-run --prune-downloads-days 0 >/dev/null; rc=$?
+assert_eq "--prune-downloads-days rejects zero" "3" "$rc"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/Downloads"; : > "$d/home/Downloads/today.pdf"
+out="$(run_sf "$d" --yes --only downloads)"; rc=$?
+assert_contains "a Downloads folder with nothing old says so" "$out" "nothing in ~/Downloads untouched for 90 days"
+rm -rf "$d"
+
+# ===========================================================================
+section "launch-agents (orphaned plists reported; user-level removed only on request)"
+agents_env() {
+  local d; d="$(new_env)"
+  local la="$d/home/Library/LaunchAgents"
+  mkdir -p "$la" /Library/LaunchAgents /Library/LaunchDaemons "$d/home/bin"
+  : > "$d/home/bin/present.sh"
+  # An uninstalled app's helper, arguments on one line.
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<plist version="1.0"><dict>' \
+    '<key>Label</key><string>com.gone.helper</string>' \
+    '<key>ProgramArguments</key><array><string>/Applications/Gone.app/Contents/MacOS/helper</string><string>--daemon</string></array>' \
+    '</dict></plist>' > "$la/com.gone.helper.plist"
+  # A script handed to an interpreter: the script is what must exist.
+  printf '%s\n' '<plist version="1.0"><dict><key>ProgramArguments</key><array>' \
+    '  <string>/bin/sh</string>' "  <string>$d/home/gone/backup.sh</string>" '</array></dict></plist>' \
+    > "$la/com.wrapped.gone.plist"
+  printf '%s\n' '<plist version="1.0"><dict><key>ProgramArguments</key><array>' \
+    '  <string>/bin/sh</string>' "  <string>$d/home/bin/present.sh</string>" '</array></dict></plist>' \
+    > "$la/com.wrapped.ok.plist"
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key>' '<string>/bin/ls</string></dict></plist>' \
+    > "$la/com.ok.plist"
+  printf 'bplist00binarycontent' > "$la/com.binary.plist"
+  # A path with a character XML has to escape. The file is really there, so
+  # the only way this reads as orphaned is comparing the escaped spelling
+  # against the filesystem — and --prune-orphan-agents then deletes a live
+  # agent. "R&D Tools" is an ordinary application name.
+  mkdir -p "$d/home/R&D Tools"
+  : > "$d/home/R&D Tools/helper"
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key>' \
+    "<string>$d/home/R&amp;D Tools/helper</string></dict></plist>" \
+    > "$la/com.amp.ok.plist"
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/Library/Gone/daemon</string></dict></plist>' \
+    > /Library/LaunchDaemons/com.gone.daemon.plist
+  printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/bin/ls</string></dict></plist>' \
+    > /Library/LaunchAgents/com.ok.system.plist
+  mkbin "$d/bin/launchctl" 'echo "launchctl $*" >> "$CALLS"; exit 0'
+  printf '%s' "$d"
+}
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
+assert_eq "launch-agents step succeeds" "0" "$rc"
+assert_contains "an uninstalled app's helper is named" "$out" \
+  "com.gone.helper.plist -> /Applications/Gone.app/Contents/MacOS/helper (missing)"
+assert_contains "a script handed to an interpreter is checked, not the interpreter" "$out" \
+  "com.wrapped.gone.plist -> $d/home/gone/backup.sh (missing)"
+assert_not_contains "an interpreter with a present script is fine" "$out" "com.wrapped.ok.plist"
+assert_not_contains "a present program is fine" "$out" "com.ok.plist ->"
+assert_contains "a system-level orphan is named with its command" "$out" \
+  "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
+assert_contains "a binary plist without plutil is left uninspected" "$out" "1 binary plist(s) not inspected"
+assert_not_contains "an XML-escaped program path is resolved before it is judged" "$out" "com.amp.ok.plist"
+assert_contains "user-level orphans are kept by default" "$out" "2 user-level plist(s) kept; --prune-orphan-agents"
+assert_contains "orphans reach the verdict" "$out" "3 orphaned launch agent(s)"
+assert_exists "nothing is removed by default" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_not_called "nothing is unloaded by default" "$d/calls" "launchctl bootout"
+assert_contains "a report is not a warning" "$out" "warn steps:  0"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_contains "a prune dry run names the unload" "$out" "(dry-run) launchctl bootout gui/501/com.gone.helper"
+assert_not_called "a prune dry run unloads nothing" "$d/calls" "launchctl"
+assert_exists "a prune dry run removes nothing" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+out="$(run_sf "$d" --yes --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_eq "pruning orphans succeeds" "0" "$rc"
+assert_called "the orphan is unloaded first" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
+assert_called "the wrapped orphan is unloaded too" "$d/calls" "launchctl bootout gui/501/com.wrapped.gone"
+assert_gone   "the orphaned plist is removed"          "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_gone   "the wrapped orphan is removed"          "$d/home/Library/LaunchAgents/com.wrapped.gone.plist"
+assert_exists "a plist with a present program stays"  "$d/home/Library/LaunchAgents/com.ok.plist"
+assert_exists "the uninspected binary plist stays"     "$d/home/Library/LaunchAgents/com.binary.plist"
+assert_exists "a system-level orphan is never removed" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_not_called "system-level plists are never unloaded" "$d/calls" "system/com.gone.daemon"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
+assert_contains "no plists anywhere is a clean step" "$out" "no launchd plists under"
 rm -rf "$d"
 
 # ===========================================================================
@@ -1085,12 +2080,23 @@ rm -rf "$d"
 section "trash on external volumes"
 # Each mounted volume keeps its own .Trashes/<uid>. The boot volume shows up
 # under /Volumes as a symlink and is skipped; a real second volume is emptied.
+# The volumes come from the mount table, never from a glob of /Volumes: a
+# glob stats each entry, and stat on the mount point of a share whose server
+# went away blocks before any type check can run. mount(8) is faked in the
+# macOS shape here; a name with spaces and parentheses is parsed whole.
 d="$(new_env)"
-mkdir -p /Volumes/Ext/.Trashes/501/folder /Volumes/Empty/.Trashes/501 "$d/home/.Trash"
+mkdir -p /Volumes/Ext/.Trashes/501/folder /Volumes/Empty/.Trashes/501 "$d/home/.Trash" \
+  "/Volumes/Time Machine (1)/.Trashes/501" /Volumes/Unmounted/.Trashes/501
 ln -s / "/Volumes/Macintosh HD"
 bytes_file /Volumes/Ext/.Trashes/501/old 128
 : > /Volumes/Ext/.Trashes/501/folder/nested
+: > "/Volumes/Time Machine (1)/.Trashes/501/old"
+: > /Volumes/Unmounted/.Trashes/501/keep
 : > "$d/home/.Trash/file"
+mkbin "$d/bin/mount" 'echo "/dev/disk3s1 on / (apfs, sealed, local, journaled)"' \
+  'echo "/dev/disk5s1 on /Volumes/Ext (apfs, local, nodev, nosuid, journaled, noowners)"' \
+  'echo "/dev/disk6s1 on /Volumes/Empty (apfs, local, nodev, nosuid, journaled, noowners)"' \
+  'echo "/dev/disk7s2 on /Volumes/Time Machine (1) (apfs, local, nodev, nosuid, journaled)"'
 out="$(run_sf "$d" --yes --only trash)"; rc=$?
 assert_eq "trash with external volumes succeeds" "0" "$rc"
 assert_gone "~/.Trash is still emptied" "$d/home/.Trash/file"
@@ -1100,7 +2106,82 @@ assert_exists "the external .Trashes/<uid> directory itself is kept" "/Volumes/E
 assert_contains "the external volume is named" "$out" "K from Trash on Ext"
 assert_not_contains "an empty external Trash is not mentioned" "$out" "Trash on Empty"
 assert_not_contains "the boot volume symlink is skipped" "$out" "Trash on Macintosh HD"
+assert_gone "a volume name with spaces and parentheses is parsed whole" "/Volumes/Time Machine (1)/.Trashes/501/old"
+assert_exists "a directory under /Volumes that is not mounted is not touched" /Volumes/Unmounted/.Trashes/501/keep
 rm -rf /Volumes "$d"
+
+# A network share is never asked: find(1) on a share whose server went away
+# blocks until somebody kills the run. mount(8) says what each volume is, in
+# macOS's "(smbfs, ...)" shape here; a local disk is still emptied.
+d="$(new_env)"
+mkdir -p /Volumes/NAS/.Trashes/501 /Volumes/USB/.Trashes/501
+: > /Volumes/NAS/.Trashes/501/keep
+: > /Volumes/USB/.Trashes/501/old
+mkbin "$d/bin/mount" 'echo "/dev/disk3s1 on / (apfs, sealed, local, journaled)"' \
+  'echo "//serhii@nas.local/share on /Volumes/NAS (smbfs, nodev, nosuid, mounted by serhii)"' \
+  'echo "/dev/disk5s1 on /Volumes/USB (apfs, local, nodev, nosuid, journaled, noowners)"' \
+  'echo "nas:/export on /Volumes/Dead NFS type nfs (rw,hard,intr)"'
+# /Volumes/Dead NFS is listed and does not exist: a mount the kernel would
+# block on is skipped by its type, before the path is looked at.
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "trash with a network volume succeeds" "0" "$rc"
+assert_exists "the network volume's Trash is left alone" /Volumes/NAS/.Trashes/501/keep
+assert_contains "the network volume is named and typed" "$out" \
+  "Trash on NAS skipped: network volume (smbfs)"
+assert_contains "a hard NFS mount is skipped by type without being touched" "$out" \
+  "Trash on Dead NFS skipped: network volume (nfs)"
+assert_gone "the local volume's Trash is still emptied" /Volumes/USB/.Trashes/501/old
+rm -rf /Volumes "$d"
+
+# Without a uid the per-user directory would be ".Trashes/" - the shared
+# parent holding every user's trash on that volume - and the sweep would take
+# all of it. ~/.Trash needs no uid and is still emptied.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p /Volumes/USB/.Trashes/501 /Volumes/USB/.Trashes/502 "$d/home/.Trash"
+: > /Volumes/USB/.Trashes/501/mine
+: > /Volumes/USB/.Trashes/502/someone-elses
+: > "$d/home/.Trash/own"
+mkbin "$d/bin/id" 'case "${1:-}" in -u) exit 1 ;; -un) echo tester ;; *) /usr/bin/id "$@" ;; esac'
+mkbin "$d/bin/mount" 'echo "/dev/disk5s1 on /Volumes/USB (apfs, local)"'
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "an unavailable uid does not fail the run" "0" "$rc"
+assert_contains "the missing uid is named" "$out" \
+  "cannot determine the current uid — leaving the Trash on mounted volumes alone"
+assert_exists "another user's trash on the volume survives" /Volumes/USB/.Trashes/502/someone-elses
+assert_exists "the volume's own trash is left alone too" /Volumes/USB/.Trashes/501/mine
+assert_gone   "~/.Trash is still emptied without a uid" "$d/home/.Trash/own"
+rm -rf /Volumes "$d"
+
+# ===========================================================================
+section "df unreadable (the summary reports no measurement rather than a wrong one)"
+# An empty free-space reading used to flow into every later size calculation,
+# so this asserted it was "treated as zero" and the summary printed
+# 0B -> 0B (0B reclaimed). That reads as a run which freed nothing, which is a
+# measurement; what actually happened is that nothing was measured. Worse, only
+# one of the two readings has to fail for the subtraction to invent a number —
+# a working df before and a failing df after made RECLAIMED_B the negative of
+# the whole disk, and it travelled into last-run.json, history.tsv and every
+# --trend average built on them. The assertions are rewritten to the new
+# intent: an unmeasured run says so, and the per-step total, which is counted
+# rather than subtracted, still stands.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" 'exit 1'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "an unreadable df does not fail the run" "0" "$rc"
+assert_contains "the unreadable df is reported once" "$out" \
+  "could not read free space on / — this run will report no reclaimed total"
+assert_contains "the preflight still prints a number" "$out" "disk free on /: 0B"
+assert_contains "the summary declines to invent a figure" "$out" "disk free:   unknown (df could not read /)"
+assert_not_contains "and does not present the absence as a measurement" "$out" "0B reclaimed"
+assert_not_contains "no printf complains about an empty number" "$out" "invalid number"
+assert_contains "the run still reaches its verdict" "$out" "stay_fresh OK"
+if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d['reclaimed_bytes'], int), d" \
+     "$d/home/Library/Logs/stay_fresh/last-run.json" 2>/dev/null; then
+  ok "last-run.json still carries a numeric reclaimed_bytes"
+else
+  err "last-run.json reclaimed_bytes is not a number"
+fi
+rm -rf "$d"
 
 # ===========================================================================
 section "brew (upgrade count and outdated casks in the verdict)"
@@ -1120,6 +2201,32 @@ assert_contains "outdated casks are named" "$out" "2 cask(s) still outdated:"
 assert_contains "the manual cask command is given" "$out" "brew upgrade --cask alacritty unetbootin"
 assert_contains "the verdict carries the brew facts" "$out" "brew upgraded 2; 2 cask(s) still outdated"
 assert_contains "history records the upgrade count" "$(cut -f10 "$d/home/Library/Logs/stay_fresh/history.tsv")" "2"
+rm -rf "$d"
+
+# A brew service in "error" state is a daemon launchd gave up restarting;
+# nothing else in the run would mention it. Named, and in the verdict, but
+# not counted: the run cannot fix it. An Intel Homebrew beside the Apple
+# silicon one is named once too.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+  'case "${1:-} ${2:-}" in' \
+  '  "services list") printf "Name       Status  User    File\n"; printf "postgresql@16 error   serhii  ~/Library/LaunchAgents/homebrew.mxcl.postgresql@16.plist\n"; printf "redis      started serhii  ~/Library/LaunchAgents/homebrew.mxcl.redis.plist\n"; printf "nginx      none\n" ;;' \
+  'esac; exit 0'
+mkdir -p /usr/local/Homebrew
+out="$(run_sf "$d" --yes --only brew)"; rc=$?
+assert_eq "a brew service in error does not fail the run" "0" "$rc"
+assert_called "brew services are listed" "$d/calls" "brew services list"
+assert_contains "the errored service is named" "$out" \
+  "1 brew service(s) in error state: postgresql@16"
+assert_contains "the errored service reaches the verdict" "$out" "1 brew service(s) in error"
+assert_contains "an errored service is information, not a warning" "$out" "warn steps:  0"
+assert_contains "an Intel Homebrew beside the Apple silicon one is named" "$out" \
+  "an Intel Homebrew is also installed at /usr/local/Homebrew"
+rmdir /usr/local/Homebrew
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only brew)"
+assert_not_called "a dry run does not list services" "$d/calls" "brew services"
 rm -rf "$d"
 
 # Pending OS updates reach the verdict as a count.
@@ -1151,6 +2258,39 @@ fi
 rm -rf "$d"
 
 # ===========================================================================
+section "the kept log says what warned"
+# A log is kept precisely because something warned, and it was the one
+# artefact that did not name it: warn/err printed to the terminal only, so a
+# step that warns without running a command left zero bytes behind.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/helm" 'case "${1:-} ${2:-}" in' \
+  '  "plugin list") printf "NAME\tVERSION\n"; printf "diff\t3.9\n"; exit 0 ;;' \
+  '  "plugin update") echo "helm: plugin diff is broken" >&2; exit 1 ;;' \
+  'esac; exit 0'
+out="$(run_sf "$d" --yes --no-sudo --only helm-plugins)"; rc=$?
+assert_contains "the run warned" "$out" "warn steps:  1"
+saved="$(find "$d/home/Library/Logs/stay_fresh" -name 'stay_fresh-*.log' | head -n 1)"
+if [[ -n "$saved" ]]; then
+  saved_text="$(cat "$saved")"
+  assert_contains "the kept log names the step that warned" "$saved_text" "== Helm plugin refresh =="
+  assert_contains "the kept log carries the warning itself" "$saved_text" "[warn] 'helm plugin update diff' failed"
+  assert_contains "the kept log still carries the command output" "$saved_text" "plugin diff is broken"
+else
+  err "no log was kept for a warned run"
+fi
+rm -rf "$d"
+
+# A dry run still writes nothing, warnings included.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --only versions)"
+if [[ -z "$(find "$d/tmp" "$d/home" -type f -print -quit 2>/dev/null)" ]]; then
+  ok "a dry run writes no log even though warnings now reach one"
+else
+  err "a dry run wrote a file"; find "$d/tmp" "$d/home" -type f >&2
+fi
+rm -rf "$d"
+
+# ===========================================================================
 section "log lifecycle"
 # A clean run leaves nothing behind.
 d="$(new_env)"
@@ -1162,6 +2302,47 @@ if [[ -z "$(find "$d/tmp" -name 'stay_fresh-*.log' -print -quit)" ]]; then
 else
   err "a clean run left a log in TMPDIR"
 fi
+rm -rf "$d"
+
+# A clean run that notifies leaves nothing behind either. The notifiers log
+# into the run's log; with the discard ahead of them, every notified clean
+# run recreated an empty log in TMPDIR on its way out.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/pyenv" 'echo 3.12.1'
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+out="$(STAY_FRESH_NOTIFY=macos run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a clean notified run succeeds" "0" "$rc"
+assert_called "the banner was posted" "$d/calls" "display notification"
+assert_contains "the clean notified run discards its log" "$out" "run clean — log discarded"
+if [[ -z "$(find "$d/tmp" -type f -print -quit)" ]]; then
+  ok "a clean notified run leaves nothing in TMPDIR"
+else
+  err "a clean notified run left a file in TMPDIR: $(find "$d/tmp" -type f)"
+fi
+# The discard is the last thing said: the verdict comes before it.
+verdict_line="$(grep -n 'stay_fresh OK: freed' <<<"$out" | head -n 1 | cut -d: -f1)"
+discard_line="$(grep -n 'run clean — log discarded' <<<"$out" | head -n 1 | cut -d: -f1)"
+if [[ -n "$verdict_line" && -n "$discard_line" ]] && (( discard_line > verdict_line )); then
+  ok "the log is discarded after the verdict and the notification"
+else
+  err "the log discard (line ${discard_line:-?}) precedes the verdict (line ${verdict_line:-?})"
+fi
+rm -rf "$d"
+
+# history.tsv is capped at 500 rows, newest kept.
+d="$(new_env)"
+mkbin "$d/bin/pyenv" 'echo 3.12.1'
+mkdir -p "$d/home/Library/Logs/stay_fresh"
+for i in $(seq 1 600); do printf '2000-01-01 00:00:%03d\tOK\t0\t0\t0\t1\t0\t0\t0\t0\t0\t\n' "$i"; done \
+  > "$d/home/Library/Logs/stay_fresh/history.tsv"
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "a run against a long history succeeds" "0" "$rc"
+assert_eq "history is trimmed to 500 rows" "500" \
+  "$(wc -l < "$d/home/Library/Logs/stay_fresh/history.tsv" | tr -d ' ')"
+assert_contains "the newest row survives the trim" \
+  "$(tail -n 1 "$d/home/Library/Logs/stay_fresh/history.tsv")" "$(date '+%Y-%m')"
+assert_not_contains "the oldest row is the one dropped" \
+  "$(cat "$d/home/Library/Logs/stay_fresh/history.tsv")" "2000-01-01 00:00:001"
 rm -rf "$d"
 
 # A run that warned keeps its log, and retention caps the directory at ten.

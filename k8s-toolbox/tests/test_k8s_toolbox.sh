@@ -150,6 +150,11 @@ missing_value_cases=(
   "kubectl_pod_diag.sh --namespace"
   "kubectl_pod_diag.sh --context"
   "kubectl_pod_diag.sh --since"
+  "gke_cluster_doctor.sh --project"
+  "gke_cluster_doctor.sh --cluster"
+  "gke_cluster_doctor.sh --location"
+  "gke_cluster_doctor.sh --context"
+  "gke_cluster_doctor.sh --only"
 )
 for case_ in "${missing_value_cases[@]}"; do
   script="${case_%% *}"
@@ -170,6 +175,29 @@ guard "$K/build.sh" --variant foo >/dev/null 2>&1
 assert_rc "build.sh --variant foo" 3 "$?"
 
 # --------------------------------------------------------------------------
+head_ "gke_cluster_doctor.sh before gcloud"
+checks="$("$K/gke_cluster_doctor.sh" --list-checks)"
+for check in channel skew identity network; do
+  if [[ "$checks" == *"$check"* ]]; then
+    ok "gke_cluster_doctor lists check $check"
+  else
+    err "gke_cluster_doctor --list-checks missing $check"
+  fi
+done
+guard "$K/gke_cluster_doctor.sh" --only nosuch >/dev/null 2>&1
+assert_rc "gke_cluster_doctor unknown --only" 3 "$?"
+guard "$K/gke_cluster_doctor.sh" --only , >/dev/null 2>&1
+assert_rc "gke_cluster_doctor --only empty selection" 4 "$?"
+guard "$K/gke_cluster_doctor.sh" --help >/dev/null 2>&1
+assert_rc "gke_cluster_doctor --help before gcloud" 0 "$?"
+if ! command -v gcloud >/dev/null 2>&1; then
+  guard "$K/gke_cluster_doctor.sh" --project p --cluster c --location us-central1 >/dev/null 2>&1
+  assert_rc "gke_cluster_doctor without gcloud -> 2" 2 "$?"
+else
+  ok "gke_cluster_doctor no-gcloud path skipped (gcloud is on PATH)"
+fi
+
+# --------------------------------------------------------------------------
 head_ "a dry run writes nothing"
 # Asserted against the filesystem, not against the script's own claim. Each run
 # gets a scratch HOME and TMPDIR, snapshotted by name and mtime before and
@@ -177,6 +205,15 @@ head_ "a dry run writes nothing"
 snapshot() {
   find "$1" "$2" -mindepth 1 -printf '%p %T@\n' 2>/dev/null | sort
 }
+# -printf is GNU-only, and this suite advertises itself as needing no Docker and
+# running anywhere -- which includes macOS, where find fails, 2>/dev/null eats
+# the message, and both the before and the after call return the empty string.
+# Every case below then passed having compared "" to "". test-env/static/
+# test_changelog.sh and dotfiles/tests/test_dotfiles.sh guard the same call the
+# same way.
+if ! find "$REPO_ROOT" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  snapshot() { find "$1" "$2" -mindepth 1 -exec ls -ld {} + 2>/dev/null | sort; }
+fi
 
 dry_run_case() {
   local label="$1"; shift

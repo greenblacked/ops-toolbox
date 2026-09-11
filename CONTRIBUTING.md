@@ -49,6 +49,11 @@ them that way and copy the canonical block from
 copies here: the number moves the moment a script is added, and a stale
 count is how this paragraph already went wrong once.
 
+`macos-initial-setup/stay_fresh.sh` is frozen for feature growth. New cache
+targets need a regression test that fails first when the probe is silent,
+missing, or localised, then a substantial program invoked as a subprocess
+(the `workspace_scan.py` shape). Do not add a step by inlining it.
+
 What is asserted about the copies is their **contract**, not byte-identity:
 the same guard condition, `exit 3`, and a message on stderr. They already
 differ in defensible ways — `git/set_git_profile.sh` reports through its own
@@ -353,8 +358,8 @@ The `.lua` extension is for editor highlighting only — these are RouterOS
 scripting language, not Lua.
 
 - **Secrets never appear in a script body.** Read them from `:global` variables
-  set once at boot, the way `mikrotik/tg_send.lua` reads `TG_BOT_TOKEN`
-  and `TG_CHAT_ID`.
+  set once at boot, the way `mikrotik/tg_send.lua` reads `TgBotToken`
+  and `TgChatId`.
 - Send notifications through `tg_send`, wrapped so a missing helper degrades to
   a log line instead of an error (`mikrotik/backup.lua`).
 - **Alert on transitions, not on every run.** Keep the previous state in a
@@ -388,6 +393,13 @@ Every package has a `tests/run.sh` that takes no required arguments, is
 executable, and exits non-zero on failure. `run-tests.sh` is the single
 entry point and CI calls it, so a green run locally and a green run in CI mean
 the same thing.
+
+The suite table at the top of `run-tests.sh` is also what CI reads. The
+`Detect changes` job runs `run-tests.sh --list`, matches changed files against
+each suite's package directory, and builds the `Test / <suite>` matrix from
+the result, so a suite added to that table gets its job without an edit to
+the workflow. The exceptions are named in the workflow: `python` and `static`
+have jobs of their own, and `mikrotik` runs in its own workflow.
 
 The Docker suites mount the repository **read-only** at `/repo`, so all scratch
 state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses —
@@ -440,9 +452,17 @@ documentation entries a script is not finished without.
    beside you" would mean naming every script in the tree. It is still half of
    what the pull request template means by "the folder README and the root
    README were updated".
-7. **Add a `CHANGELOG.md` entry** under `[Unreleased]`, in the voice the
-   entries around it use: what changed and why it mattered, not a commit
-   subject.
+7. **Add a changelog fragment**: one file under
+   [`changelog.d/`](changelog.d/README.md), in the directory named for its
+   type (`added/`, `fixed/`, `changed/` ...), written exactly as the entry
+   will read in `CHANGELOG.md` and in the voice the entries there use: what
+   changed and why it mattered, not a commit subject. Do not edit
+   `[Unreleased]` in `CHANGELOG.md` directly: every pull request inserted at
+   the same line, so any two open at once conflicted the moment one merged.
+   `changelog.d/changelog.sh preview` shows the section as it will read, and
+   the static suite runs `changelog.d/changelog.sh check` so a fragment that
+   would not paste fails before merge. A release moves the fragments under a
+   version heading; see the README there.
 
 A script that touches a machine also needs `--dry-run` before it needs
 anything else. That is the promise this repository makes, and it is the one

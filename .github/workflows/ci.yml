@@ -52,6 +52,26 @@ concurrency:
 # The GitHub Actions used below are pinned to commit SHAs rather than moving
 # tags, with the tag in a trailing comment. A tag is mutable; a SHA is what
 # actually gets executed. .github/dependabot.yml keeps them current.
+#
+# A version pin answers "which release", not "which bytes". The asset behind a
+# pinned URL can be replaced, and a download that only pins the version installs
+# whatever answers. So every binary fetched below is checked against the SHA-256
+# recorded in .github/ci-tool-checksums.env before it is unpacked or installed,
+# and the step fails on a mismatch.
+#
+# That file spent its whole life as documentation. It declared itself the source
+# of truth for these digests while nothing in the tree read it — a grep for its
+# name returned the file and nothing else — so the two Darwin digests written
+# for the macos-native job below had never once been compared against anything,
+# and a bump that edited a *_VERSION here and forgot the digest file was
+# invisible. A digest nobody checks is worse than no digest, because it reads
+# like a control.
+#
+# The other half of that is at review time: test-env/static/check_conventions.sh
+# asserts this block and that file agree version for version, that every tool
+# pinned here either records a digest or is named as installed through a package
+# manager that does its own verification, and that every digest recorded there is
+# named by a step below. Neither half can rot back into decoration unnoticed.
 env:
   SHELLCHECK_VERSION: '0.10.0'
   ACTIONLINT_VERSION: '1.7.12'
@@ -86,12 +106,18 @@ jobs:
       dockerfile: ${{ steps.filter.outputs.dockerfile }}
       manifests: ${{ steps.filter.outputs.manifests }}
       compose: ${{ steps.filter.outputs.compose }}
-      suite_git: ${{ steps.filter.outputs.suite_git }}
-      suite_macos: ${{ steps.filter.outputs.suite_macos }}
-      suite_linux: ${{ steps.filter.outputs.suite_linux }}
+      # The Test / <suite> matrix, built from `run-tests.sh --list` below so
+      # a suite added to the aggregator gets its job without an edit here.
+      matrix: ${{ steps.filter.outputs.matrix }}
+      # The two native jobs are not matrix entries and read their suite's
+      # verdict directly.
       suite_windows: ${{ steps.filter.outputs.suite_windows }}
-      suite_k8s: ${{ steps.filter.outputs.suite_k8s }}
-      suite_dotfiles: ${{ steps.filter.outputs.suite_dotfiles }}
+      # The native macOS job runs the no-Docker suites as well as its own
+      # package, so its gate is wider than one package prefix and is built by
+      # its own filter line rather than by the per-suite loop. suite_macos is
+      # not exported: the Docker Test / macos job reads its verdict from the
+      # matrix entry, and this job was its only other consumer.
+      native_macos: ${{ steps.filter.outputs.native_macos }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -137,8 +163,17 @@ jobs:
           # A change to CI itself, to the aggregator, or to the shared test
           # helpers invalidates every assumption below it, so treat it as a
           # change to everything.
+          #
+          # templates/ is here for a different reason: nothing under it is a
+          # suite's package, so a templates-only change matched no suite at
+          # all. The templates are exercised by git/tests/test_git_scripts.sh
+          # and windows/tests/contract.ps1, both gated on their own package,
+          # so the one change that most needs those two suites was the one
+          # change that ran neither. contract.ps1 says in as many words that
+          # the templates exist so the conventions cannot drift away from
+          # them, "which only works if the same checks run against them".
           if [ "$full" -eq 0 ] && printf '%s\n' "$files" |
-              grep -Eq '^(\.github/|run-tests\.sh$|test-env/lib/)'; then
+              grep -Eq '^(\.github/|run-tests\.sh$|test-env/lib/|templates/)'; then
             full=1
           fi
 
@@ -172,12 +207,71 @@ jobs:
           emit dockerfile    '(^|/)Dockerfile$'
           emit manifests     '^(k8s-toolbox/(examples|debug)/|linux/cloud-init/).*\.ya?ml$'
           emit compose       '(^|/)docker-compose[^/]*\.ya?ml$'
-          emit suite_git     '^git/'
-          emit suite_macos   '^macos-initial-setup/'
-          emit suite_linux   '^linux/'
-          emit suite_windows '^windows/'
-          emit suite_k8s     '^k8s-toolbox/'
-          emit suite_dotfiles '^dotfiles/'
+
+          # macos-15 is the only runner in this repository where BSD find, sed,
+          # stat and date meet the test harness, so it is the only place a
+          # GNU-ism in a suite can be caught. It was running one file. The
+          # suites added to it below are the no-Docker ones, which cost seconds
+          # on a runner that is already booted - and the gate has to cover
+          # their packages too, or a change to test-env/ would not wake the one
+          # job able to judge it. That is not hypothetical: check_conventions.sh
+          # used GNU-only `find -printf` with no fallback, so on macOS its
+          # "a dry run writes nothing" section compared "" to "" and passed for
+          # every script it checked.
+          emit native_macos  '^(macos-initial-setup/|test-env/|k8s-toolbox/|dotfiles/|run-tests\.sh$)'
+
+          # Suites come from the aggregator's own table, not a copy of it
+          # here. `run-tests.sh --list` prints name, package directory and
+          # blurb per suite; a suite runs when a changed file sits under its
+          # package. The same loop builds the Test / <suite> matrix, so the
+          # workflow has no per-suite lines to forget when one is added -
+          # the dotfiles suite arrived with four hand edits to this file and
+          # its summary row was the one that got missed.
+          #
+          # Three suites are not matrix entries: python and static have jobs
+          # of their own (static runs on every change), and mikrotik boots a
+          # router under QEMU in its own workflow.
+          echo
+          echo "suites:"
+          matrix='[]'
+          while IFS=$'\t' read -r suite pkg _blurb; do
+            [ -n "$suite" ] || continue
+            case "$suite" in python|static|mikrotik) continue ;; esac
+            emit "suite_$suite" "^${pkg}/"
+            changed="$(grep "^suite_$suite=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2)"
+            case "$suite" in
+              linux)
+                # Keep the historical `Test / linux` name for the Debian
+                # fixture so an existing required-check rule continues to
+                # report. Fedora and Arch run as separate jobs: failures
+                # identify the affected package manager immediately, and the
+                # three images build in parallel.
+                matrix="$(jq -c --arg c "$changed" '. + [
+                  {check_name: "linux",          suite: "linux", linux_distro: "debian", changed: $c},
+                  {check_name: "linux (fedora)", suite: "linux", linux_distro: "fedora", changed: $c},
+                  {check_name: "linux (arch)",   suite: "linux", linux_distro: "arch",   changed: $c}
+                ]' <<< "$matrix")"
+                ;;
+              *)
+                matrix="$(jq -c --arg s "$suite" --arg c "$changed" \
+                  '. + [{check_name: $s, suite: $s, linux_distro: "", changed: $c}]' <<< "$matrix")"
+                ;;
+            esac
+          done < <(./run-tests.sh --list)
+          # A process substitution's exit status is invisible to `set -e`, so
+          # a run-tests.sh that dies before printing anything - a syntax error
+          # from a bad edit, a lost exec bit, the cd guard firing - leaves
+          # matrix at its '[]' seed and this step still succeeds. `fromJSON`
+          # then expands to zero jobs, every required `Test / <suite>` check
+          # goes missing rather than red, and the pull request is unmergeable
+          # with nothing to point at. Precisely the change most in need of
+          # testing is the one that triggers it, so it has to be loud.
+          if [ "$matrix" = '[]' ]; then
+            echo "::error::run-tests.sh --list produced no suites; refusing to publish an empty test matrix"
+            exit 1
+          fi
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf '  %-14s %s\n' matrix "$(jq -r 'map(.check_name) | join(", ")' <<< "$matrix")"
 
       - name: Summarise
         if: always()
@@ -195,12 +289,10 @@ jobs:
             printf '| Dockerfile | %s |\n' '${{ steps.filter.outputs.dockerfile }}'
             printf '| manifests | %s |\n'  '${{ steps.filter.outputs.manifests }}'
             printf '| Compose | %s |\n'    '${{ steps.filter.outputs.compose }}'
-            printf '| git suite | %s |\n'     '${{ steps.filter.outputs.suite_git }}'
-            printf '| macos suite | %s |\n'   '${{ steps.filter.outputs.suite_macos }}'
-            printf '| linux suite | %s |\n'   '${{ steps.filter.outputs.suite_linux }}'
-            printf '| windows suite | %s |\n' '${{ steps.filter.outputs.suite_windows }}'
-            printf '| k8s suite | %s |\n'     '${{ steps.filter.outputs.suite_k8s }}'
-            printf '| dotfiles suite | %s |\n'     '${{ steps.filter.outputs.suite_dotfiles }}'
+            # One row per suite, from the same matrix the test job runs, so a
+            # suite cannot be in the matrix and missing from this table.
+            jq -r 'unique_by(.suite)[] | "| \(.suite) suite | \(.changed) |"' \
+              <<< '${{ steps.filter.outputs.matrix }}'
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
@@ -301,6 +393,22 @@ jobs:
             curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
               --retry-connrefused --connect-timeout 10 \
               "$url" -o "$RUNNER_TEMP/shellcheck.tar.xz"
+            # Checked before it is unpacked, and the archive is what is checked:
+            # the digests in that file are of the release artefact as served, not
+            # of the binary inside it. See the env: block for why this exists.
+            # Inside the cache-miss branch because this is the only path that
+            # touches the network — a cache hit reinstalls bytes that passed
+            # this check when they were fetched.
+            want="$(awk -F= '$1 == "SHELLCHECK_SHA256_LINUX_AMD64" { print $2 }' \
+              .github/ci-tool-checksums.env)"
+            [ -n "$want" ] || {
+              echo "::error::SHELLCHECK_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+              exit 1
+            }
+            sha256sum -c - <<<"$want  $RUNNER_TEMP/shellcheck.tar.xz" || {
+              echo "::error::ShellCheck v$SHELLCHECK_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+              exit 1
+            }
             tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
             mkdir -p "$cache_dir"
             install -m 0755 \
@@ -338,6 +446,16 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${ACTIONLINT_VERSION}/$archive" \
             -o "$RUNNER_TEMP/actionlint.tar.gz"
+          want="$(awk -F= '$1 == "ACTIONLINT_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::ACTIONLINT_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/actionlint.tar.gz" || {
+            echo "::error::actionlint v$ACTIONLINT_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
           sudo install -m 0755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
           got="$(actionlint -version | head -n 1)"
@@ -360,6 +478,21 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${HADOLINT_VERSION}/hadolint-linux-x86_64" \
             -o "$RUNNER_TEMP/hadolint"
+          # Hadolint ships no checksums file of its own, so the recorded digest
+          # is a first observation rather than an upstream publication — read it
+          # as "these are the bytes this repository has been running", which is
+          # what catches a silently replaced asset. It is still the download
+          # itself being checked: this release is a bare binary, not an archive.
+          want="$(awk -F= '$1 == "HADOLINT_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::HADOLINT_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/hadolint" || {
+            echo "::error::Hadolint v$HADOLINT_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           sudo install -m 0755 "$RUNNER_TEMP/hadolint" /usr/local/bin/hadolint
           got="$(hadolint --version)"
           case "$got" in
@@ -499,6 +632,16 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
             -o "$RUNNER_TEMP/kubeconform.tar.gz"
+          want="$(awk -F= '$1 == "KUBECONFORM_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::KUBECONFORM_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/kubeconform.tar.gz" || {
+            echo "::error::kubeconform v$KUBECONFORM_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" \
             -C "$RUNNER_TEMP" kubeconform
           sudo install -m 0755 \
@@ -594,17 +737,22 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Check out repository
-        if: needs.changes.outputs.suite_macos == 'true'
+        if: needs.changes.outputs.native_macos == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install ShellCheck
-        if: needs.changes.outputs.suite_macos == 'true'
+        if: needs.changes.outputs.native_macos == 'true'
         shell: bash
         run: |
           set -euo pipefail
+          # The digest is selected here alongside the asset, so the two cannot
+          # disagree: a runner architecture that gains an asset without a
+          # recorded digest fails at the lookup below rather than installing
+          # unchecked. Both names appear literally so check_conventions.sh can
+          # see that the recorded Darwin digests are actually used by a step.
           case "$(uname -m)" in
-            arm64) asset_arch=aarch64 ;;
-            x86_64) asset_arch=x86_64 ;;
+            arm64) asset_arch=aarch64; sha_key=SHELLCHECK_SHA256_DARWIN_ARM64 ;;
+            x86_64) asset_arch=x86_64; sha_key=SHELLCHECK_SHA256_DARWIN_AMD64 ;;
             *)
               echo "::error::unsupported macOS architecture: $(uname -m)"
               exit 1
@@ -616,6 +764,19 @@ jobs:
             --retry-connrefused --connect-timeout 10 \
             "$base/v${SHELLCHECK_VERSION}/$archive" \
             -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          # shasum, not sha256sum: sha256sum is GNU coreutils and is not part of
+          # the macOS base system, while /usr/bin/shasum ships with macOS. The
+          # two agree on both the algorithm and the "DIGEST  PATH" input format.
+          want="$(awk -F= -v k="$sha_key" '$1 == k { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::$sha_key is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          shasum -a 256 -c - <<<"$want  $RUNNER_TEMP/shellcheck.tar.xz" || {
+            echo "::error::ShellCheck v$SHELLCHECK_VERSION for darwin.$asset_arch does not match the SHA-256 recorded in $sha_key. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into .github/ci-tool-checksums.env without confirming the new value upstream first."
+            exit 1
+          }
           tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
           sudo install -m 0755 \
             "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
@@ -627,7 +788,7 @@ jobs:
           }
 
       - name: Run contracts with Apple Bash
-        if: needs.changes.outputs.suite_macos == 'true'
+        if: needs.changes.outputs.native_macos == 'true'
         shell: bash
         run: |
           set -uo pipefail
@@ -646,8 +807,28 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
+      # The no-Docker suites, through the aggregator, on BSD userland. These
+      # run nowhere else on a BSD box: Test / conventions, Test / k8s and
+      # Test / dotfiles are all ubuntu-24.04, where GNU find, sed and stat
+      # hide every portability defect these suites contain.
+      - name: Run the no-Docker suites with Apple Bash
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/macos-native-suites.log"
+          set +e
+          ./run-tests.sh static k8s dotfiles 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            printf '### No-Docker suites on BSD userland\n\n'
+            printf '```text\n%s\n```\n' "$(tail -n 25 "$log")"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
       - name: Report skip
-        if: needs.changes.outputs.suite_macos != 'true'
+        if: needs.changes.outputs.native_macos != 'true'
         run: echo '### Native macOS contracts' >> "$GITHUB_STEP_SUMMARY"
 
   windows-native:
@@ -659,6 +840,23 @@ jobs:
       - name: Check out repository
         if: needs.changes.outputs.suite_windows == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # Without this the job is four bash -n invocations and a green tick:
+      # windows/tests/run.sh prints "pwsh not installed - skipped" and exits 0,
+      # so an image rollover that drops or renames pwsh would take the native
+      # PowerShell contracts out of CI silently. The ubuntu matrix entry has
+      # carried this guard for the same reason; this job, the only place
+      # contract.ps1's preview paths actually execute on Windows, did not.
+      - name: Require pwsh
+        if: needs.changes.outputs.suite_windows == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "::error::pwsh is missing from this runner — windows/tests/run.sh would skip itself and exit 0, and the gate would pass without checking anything"
+            exit 1
+          fi
+          pwsh --version
 
       - name: Run contracts on Windows
         if: needs.changes.outputs.suite_windows == 'true'
@@ -690,52 +888,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `include` rather than a bare list so each entry can carry its own
-        # change filter. `changed` is read by the step-level `if` below, which
-        # keeps the job reporting success when there is nothing to do.
-        include:
-          - check_name: git
-            suite: git
-            changed: ${{ needs.changes.outputs.suite_git }}
-          - check_name: macos
-            suite: macos
-            changed: ${{ needs.changes.outputs.suite_macos }}
-          # Keep the historical `Test / linux` name for the Debian fixture so
-          # an existing required-check rule continues to report. Fedora and
-          # Arch run as separate jobs: failures identify the affected package
-          # manager immediately, and the three images build in parallel.
-          - check_name: linux
-            suite: linux
-            linux_distro: debian
-            changed: ${{ needs.changes.outputs.suite_linux }}
-          - check_name: linux (fedora)
-            suite: linux
-            linux_distro: fedora
-            changed: ${{ needs.changes.outputs.suite_linux }}
-          - check_name: linux (arch)
-            suite: linux
-            linux_distro: arch
-            changed: ${{ needs.changes.outputs.suite_linux }}
-          # Needs pwsh, which the ubuntu image ships preinstalled. The suite
-          # skips itself with exit 0 on a host without it, so the job asserts
-          # pwsh is really there rather than trusting a green tick.
-          - check_name: windows
-            suite: windows
-            changed: ${{ needs.changes.outputs.suite_windows }}
-          # Contract checks on the k8s-toolbox scripts; needs nothing but bash.
-          # It deliberately does not build the image — five pinned toolchains
-          # pulled from five hosts is minutes of network per run, and the
-          # scripts that drive the build are what regress. K8S_IMAGE_SMOKE=1
-          # runs the real build when that is what you want to verify.
-          - check_name: k8s
-            suite: k8s
-            changed: ${{ needs.changes.outputs.suite_k8s }}
-          # The tool configs and the script that links them; needs nothing
-          # but bash. python3 is on the runner, so the TOML, YAML and JSON
-          # configs are parsed as well rather than skipped.
-          - check_name: dotfiles
-            suite: dotfiles
-            changed: ${{ needs.changes.outputs.suite_dotfiles }}
+        # Built by the Detect changes job from `run-tests.sh --list`: one
+        # entry per suite (three for linux, one per distribution), each with
+        # its own `changed` verdict. `changed` is read by the step-level `if`
+        # below, which keeps the job reporting success when there is nothing
+        # to do. The windows entry needs pwsh, which the ubuntu image ships
+        # preinstalled; the k8s entry deliberately does not build the image
+        # (K8S_IMAGE_SMOKE=1 does); the dotfiles entry parses every config
+        # because python3 is on the runner.
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
     steps:
       - name: Check out repository
         if: matrix.changed == 'true'
@@ -822,6 +983,16 @@ jobs:
           curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
             --retry-connrefused --connect-timeout 10 \
             "$url" -o "$RUNNER_TEMP/ruff.tar.gz"
+          want="$(awk -F= '$1 == "RUFF_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::RUFF_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/ruff.tar.gz" || {
+            echo "::error::ruff $RUFF_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
           tar -xzf "$RUNNER_TEMP/ruff.tar.gz" -C "$RUNNER_TEMP"
           sudo install -m 0755 \
             "$RUNNER_TEMP/ruff-x86_64-unknown-linux-gnu/ruff" /usr/local/bin/ruff

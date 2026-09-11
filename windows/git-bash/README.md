@@ -1,10 +1,24 @@
-# Windows Git Bash Dotfiles
+# Windows Git Bash dotfiles
+
+[Ops Toolbox](../../README.md) / **Windows Git Bash dotfiles**
 
 A `.bashrc` / `.bash_profile` / `.aliases` set for Git Bash (MSYS2) on
 Windows, built up from a minimal SSH-agent-loading snippet into a fuller set
 of interactive-shell defaults. Safe to source more than once and safe to
 drop into an existing `$HOME` — nothing here overwrites machine-specific
 config, and secrets/local tweaks stay out of the committed files.
+
+## Contents
+
+- [What's here](#whats-here)
+- [Install](#install)
+- [Applying changes after editing](#applying-changes-after-editing)
+- [What's in `.aliases`](#whats-in-aliases)
+- [Key differences from a minimal SSH-agent-only `.bashrc`](#key-differences-from-a-minimal-ssh-agent-only-bashrc)
+- [Troubleshooting](#troubleshooting)
+- [Customizing without forking this file](#customizing-without-forking-this-file)
+- [Requirements](#requirements)
+- [Not covered here](#not-covered-here)
 
 ## What's here
 

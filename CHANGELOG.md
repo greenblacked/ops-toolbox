@@ -12,9 +12,97 @@ by the day each pull request landed on `master`; they are history, not releases.
 The first tagged version will be cut from `[Unreleased]`, and from then on every
 entry here belongs to a version.
 
+New entries are not added to `[Unreleased]` by hand. Each change ships one
+file under [`changelog.d/`](changelog.d/README.md), and
+`changelog.d/changelog.sh preview` prints the section with those fragments
+pasted in ahead of what it already holds; `changelog.d/changelog.sh release`
+moves both under a version heading. The entries below were written before
+that directory existed and stay here until the first release moves them.
+
 ## [Unreleased]
 
 ### Added
+
+- `stay_fresh.sh` step `downloads`: top-level entries in `~/Downloads`
+  untouched for 90 days are counted, totalled and the largest named. Nothing
+  is removed unless `--prune-downloads-days N` is explicit, a dry run lists
+  what would go, and hidden entries are never touched. Installers and
+  archives land there and nothing on the machine ever looks at them again.
+- `stay_fresh.sh` step `launch-agents`: plists under `~/Library/LaunchAgents`,
+  `/Library/LaunchAgents` and `/Library/LaunchDaemons` whose program (the
+  `Program` key, the first `ProgramArguments` entry, or the script an
+  interpreter is handed) no longer exists are named. Every uninstalled tool
+  leaves one, and launchd retries it at every login. `--prune-orphan-agents`
+  unloads and removes the user-level ones; system-level ones are only ever
+  named with the `sudo` command. Both new steps are part of `--reports` and
+  of the agent's `safe` profile, as reports.
+- `stay_fresh.sh --notify-when always|warn|fail` (env
+  `STAY_FRESH_NOTIFY_WHEN`): a banner every morning gets swiped away unread;
+  `warn` keeps the channel for the runs that need reading. A withheld
+  notification is said on the terminal. `stay_fresh_agent.sh install
+  --notify-when` passes it through, validated by `stay_fresh.sh` itself.
+- `stay_fresh.sh --dry-run` ends with a `would free` line: the sizes of
+  everything the deletions would have removed, added up across steps, so a
+  preview answers the question it is run for.
+- The Homebrew step names a `brew services` entry in `error` state (a
+  daemon launchd gave up restarting, which nothing else in the run would
+  mention) and carries the count into the verdict, and names an Intel
+  Homebrew still installed at `/usr/local/Homebrew` on Apple silicon.
+- `zsh_aliases.zsh` completes `--notify-when` values and the new flags.
+
+- `stay_fresh.sh` step `user-logs`: files under `~/Library/Logs` older than
+  30 days are removed. Every app, daemon and installer writes there and
+  nothing prunes it. Directories stay, because an app whose log directory
+  vanished may not recreate it; `DiagnosticReports` (the diagnostics step's)
+  and the script's own `stay_fresh` directory are left alone. Part of
+  `--quick`; `--skip-user-logs` to keep them.
+- `stay_fresh.sh --reports`: the read-only subset (`versions`, `os-updates`,
+  `snapshots`, `disk-report`) as one flag, for a look at the machine that
+  changes nothing. It refuses `--thin-snapshots`, because then it would.
+- `stay_fresh.sh --prune-build-caches` clears `~/.gradle/caches` and
+  `~/.m2/repository` during the dev-cache step. Without the flag they are
+  named and kept: they are the largest thing under `HOME` on a JVM
+  workstation and the slowest to get back, since the next build downloads
+  every dependency again.
+- `stay_fresh.sh --notify slack` posts the verdict to a Slack incoming
+  webhook (`STAY_FRESH_SLACK_WEBHOOK`, or the `stay_fresh-slack` Keychain
+  item). The URL is the credential, so like the Telegram token it goes to
+  `curl` as a config file on stdin and is scrubbed from any error.
+  `--notify` also takes a comma-separated list (`macos,slack`); `both`
+  still means `macos,telegram`. `stay_fresh_agent.sh install --notify`
+  validates the same list.
+- `stay_fresh_agent.sh status` says when the job has stopped running: the
+  last run's timestamp against the plist's schedule (weekly with a
+  `Weekday`, daily otherwise), a warning and exit `1` past twice the
+  interval. launchd still reports such a job as loaded and the last verdict
+  still reads OK, which is how a Mac asleep every Monday at 10:30 goes
+  unmaintained for months.
+- `zsh_aliases.zsh` completes `stay_fresh.sh` (and `stay-fresh`,
+  `stayfresh`): the flags from the script's `--help`, the step ids after
+  `--only` and the channels after `--notify`, comma-separated. Both lists
+  are read from the script, so a new flag or step is completable the moment
+  it exists.
+
+- `stay_fresh.sh --step-timeout N` (default 1800, `0` disables, env
+  `STAY_FRESH_STEP_TIMEOUT`): every command a step runs is stopped after N
+  seconds and the step counts as warned. `brew update`, `softwareupdate
+  --list`, `gcloud components update`, `helm plugin update` and
+  `kubectl krew update` all talk to the network with no bound of their own;
+  one that hung stalled the scheduled agent, and the run lock then turned
+  every later run away with "another run is active" until somebody killed
+  the process, with no verdict and no notification to say so. macOS ships no
+  `timeout`, so the limit is perl's `alarm`, which every macOS has. Without
+  a terminal the command runs in its own process group so the children brew
+  and gcloud fork stop with it; at a terminal it stays in the shell's group,
+  because a command that asks a question there must be able to read the
+  answer, and `run_cmd_tty` (cask upgrades, sudo prompts) is never limited.
+- `stay_fresh_agent.sh status` prints the last run's verdict: the headline
+  and detail line from `last-run.json`, which was written for exactly that
+  reader and had none.
+- The versions report names the tools the run maintains and did not list:
+  `kubectl` and its krew, `terraform` (with `CHECKPOINT_DISABLE=1`, so a
+  version print does not phone home or write the checkpoint cache) and
+  `docker`.
 
 - `stay_fresh.sh` refreshes the kubectl plugins installed through krew:
   `kubectl krew update` for the index, then `kubectl krew upgrade` per
@@ -955,9 +1043,162 @@ entry here belongs to a version.
 - A **Why this exists** section in `README.md`.
 - A **Repository settings** checklist in `CONTRIBUTING.md` for the settings a
   repository cannot set for itself.
+- `stay_fresh.sh --force-system-caches`: the only way to reach
+  `/System/Library/Caches`, and even then only on a machine that reports SIP
+  positively disabled, and never the boot caches.
+- `stay_fresh.sh --prune-unavailable-simulators`: the only way to run
+  `simctl delete unavailable`. Without it those devices and their data are
+  reported and kept.
 
 ### Fixed
 
+- `stay_fresh.sh` refuses to run without a usable `HOME` instead of
+  addressing the machine. Every path it clears is built from `HOME`, and an
+  empty one made `"$HOME/Library/Caches"` into `/Library/Caches`, the system
+  cache directory, and `"$HOME/.Trash"` into `/.Trash`; unset, `set -u`
+  aborted with a bare "HOME: unbound variable" before `--help` could answer.
+  `--help`, `--list-steps` and the flag validation the agent uses still work
+  without one; anything that resolves a path stops with exit 2 and says why,
+  and `HOME` is poisoned with a path that cannot exist until that check runs,
+  so nothing can reach a system directory in the meantime.
+- The Trash step leaves the per-volume Trash alone when the uid cannot be
+  read, instead of sweeping `.Trashes/` — the shared parent that holds every
+  user's trash on that volume. `~/.Trash` needs no uid and is still emptied.
+- A `df` that cannot be read is reported once and counted as zero, rather
+  than passing the empty string into every later size calculation and the
+  history row.
+- `stay_fresh.sh` runs on a full disk. TMPDIR lives on the disk the script
+  is run to free, and three things there used to stop it: the log could
+  not be opened, so the run refused to start with exit 2; `mktemp` failed,
+  so a cache sweep that could not open its error file ran nothing at all;
+  and the lists the sweeps build before deleting had nowhere to go. The log
+  and the scratch lists now fall back to `~/Library/Logs/stay_fresh`, and
+  failing that the run proceeds without a log and says so; `rm`'s errors
+  are captured in memory rather than in a file; a step that has no scratch
+  space anywhere skips its sweep with a warning instead of a shell error.
+- `stay_fresh.sh`'s notifiers are under a limit of their own
+  (`STAY_FRESH_NOTIFY_TIMEOUT`, 20 seconds): a locked keychain, or a
+  Keychain item whose access list does not include `security`, raises a
+  prompt nobody at a scheduled run can answer, and the lookup held the run
+  open indefinitely after the work was done and before the verdict. A
+  timed-out lookup is named; `osascript` and `curl` are bounded the same
+  way.
+- `stay_fresh.sh` says before the run when perl is missing and
+  `--step-timeout` therefore cannot be enforced, instead of running every
+  command unbounded in silence.
+- `stay_fresh.sh` retries a "Permission denied" cache entry with sudo by
+  naming exactly the top-level entries `rm` refused, instead of re-running
+  `find -exec rm` over the whole directory as root. The sweep also reached
+  for the entries macOS keeps out of reach on purpose (HomeKit, CloudKit,
+  Safari), which the first pass had correctly counted as protected and kept.
+  Both the macOS (`rm: /p: Permission denied`) and GNU
+  (`rm: cannot remove '/p': Permission denied`) forms are parsed, the retry
+  is announced with its count, and the unprivileged suite runs it as uid
+  1000 against a directory the kernel really refuses.
+- `stay_fresh.sh` aborts on Ctrl-C again. The `--step-timeout` wrapper
+  caught the interrupt, stopped the command and exited 130 normally, which
+  bash reads as "the child handled it": the interrupted command was booked
+  a warning and the run went on to the next step, one Ctrl-C per command.
+  The wrapper now dies of the interrupt itself after stopping the command,
+  so bash ends the run and the lock is released. At a terminal it also
+  signals the command's children, found through `pgrep -P` before the
+  parent goes, so a `git fetch` brew left behind cannot keep the log pipe
+  open past the limit; and a command run through `sudo` is stopped through
+  `sudo -n kill`, since root's process refuses an unprivileged signal and
+  the wrapper then waited for it to finish and reported a timeout for work
+  that completed.
+- `stay_fresh.sh` bounds the probes that used to run outside the timeout:
+  `docker info` at preflight and in the step, `docker system df`, `gcloud
+  components list` and `gcloud version` (with its update check disabled). A
+  daemon that accepts the socket and never answers hung the run with the
+  lock held, which is the failure `--step-timeout` was added for. A probe
+  stopped by the limit now counts as a step warning too, as the help always
+  said; `capture_cmd` reported the stop and then booked the step `[ ok ]`,
+  so the agent's `--fail-on-warn` never saw it.
+- `STAY_FRESH_STEP_TIMEOUT` is validated like `--step-timeout`: `30m`
+  became a 30-second limit through perl's numification and `abc` silently
+  disabled the limit; both now exit 3 with the value named.
+- `stay_fresh.sh`'s `user-logs` step keeps its file list out of the argument
+  vector: the machine it exists for carries tens of thousands of eligible
+  files, more than ARG_MAX holds, and `du`/`rm` on the whole list failed
+  with nothing removed. The NUL-separated list stays in a file and `xargs`
+  batches every pass. A directory `find` could not enter no longer discards
+  the scan either: what was listed is removed and the directory is named
+  as a warning.
+- The Trash step reads the volume list from the mount table before touching
+  anything under `/Volumes`. The glob it used stats every entry, and stat on
+  the mount point of a share whose server went away blocks in the kernel
+  before the network-share check could run, which is the hang the check was
+  added to prevent. Volume names with spaces and parentheses are parsed
+  whole, and a directory under `/Volumes` that is not a mount is ignored.
+- The run lock's boot-time check tolerates five minutes of drift. XNU
+  re-derives `kern.boottime` whenever the clock is stepped, which NTP and
+  sleep/wake do by seconds, and a lock held by a live run was discarded as
+  pre-reboot on the next scheduled firing, letting two runs upgrade and sweep
+  at once.
+- The narrowed sudo retry no longer counts BSD rm's "Directory not empty"
+  lines, printed for each parent of a refused file, as leftovers after the
+  retry removed that entry; on a real Mac every retry that worked ended the
+  step as a warning.
+- `stay_fresh_agent.sh install --notify` asks `stay_fresh.sh --list-steps
+  --notify VALUE` whether the value is acceptable instead of keeping its own
+  copy of the grammar, which had already drifted: `none,macos` passed the
+  install check and failed every scheduled run with exit 3 and nothing
+  watching. `--list-steps` now answers after the argument checks for exactly
+  this.
+- `stay_fresh_agent.sh status` measures staleness from the run the schedule
+  itself fired, stamped in `last-scheduled` by `run-scheduled`, or from the
+  plist's modification time when it has never fired, instead of from
+  `last-run.json`, which every manual run rewrites: a `stay-fresh --quick`
+  by hand every few days hid a job that had not fired for months, and an
+  old manual run flagged a job installed two days ago.
+- `stay_fresh.sh --thin-snapshots` no longer deletes local snapshots while a
+  Time Machine backup is running (`tmutil status` reports `Running = 1`).
+  A backup copies from the newest snapshot, and deleting it underneath made
+  the pass start over; the snapshots are listed, the verdict says "kept",
+  and the next run thins.
+- `stay_fresh.sh` no longer leaves an empty log in `TMPDIR` after a clean
+  run that notified. The clean run's log was discarded before the
+  notification went out, and both notifiers logged into the same path, so
+  the append recreated the file: one orphan per scheduled run, the exact
+  promise `CONTRIBUTING.md` makes about a run's own files. The discard now
+  comes last; a kept log receives the notifiers' output instead.
+- A notification that cannot be sent is said on the terminal with curl's or
+  osascript's reason, the bot token scrubbed. A wrong chat id or a blocked
+  network used to vanish into that discarded log.
+- The Homebrew log mark counted non-empty lines with `grep -c .` and then
+  read with `tail -n +N`, which counts every line, so the reads started
+  inside an earlier step by as many blank lines as docker and the cache
+  sweeps had written. `wc -l` on both sides.
+- The trash step skips network shares. `find` on an SMB, NFS, AFP or WebDAV
+  volume whose server went away blocks for as long as the kernel retries,
+  and on a scheduled run nobody is there to interrupt it. The mount type
+  comes from `mount(8)` without touching the volume; the share is named and
+  left to Finder.
+- The run lock records the boot it was taken in. After a reboot an unrelated
+  process can wear the old pid, and `kill -0` then reported a run that ended
+  with the power as active, for as long as that process lived. A lock from
+  an earlier boot is now removed as stale whatever its pid says.
+- `--quick` never uses sudo, as its help says: the retry for cache entries
+  owned by another user used a credential another shell had left warm.
+
+- `linux/stay_fresh.sh` empties the whole Trash. It cleared
+  `~/.local/share/Trash/files` and left the matching `info/` records, so the
+  desktop kept showing entries whose files were gone; `disk_cleanup.sh` in
+  the same directory has always cleared both.
+- `linux/stay_fresh.sh` refuses an unset, empty or non-directory `HOME` with
+  exit 2. `rm -rf "$HOME/.cache/pip"` with an empty `HOME` addresses
+  `/.cache/pip`, and `set -u` does not fire on a variable that is set but
+  empty. `--help` and `--list-steps` still work without one.
+- `linux/stay_fresh.sh` discards a clean run's log instead of leaving one
+  file per run in `TMPDIR` forever; a run with a failed step keeps its log
+  and prunes to the ten newest.
+- `linux/stay_fresh.sh`'s `warn()` prints the fix hint its callers pass as a
+  second argument on its own dimmed line, as `system_doctor.sh` does. With a
+  `"$*"` body the hint was glued onto the end of the message, so the
+  stale-library warning ran the hint on as part of the same sentence.
+- `linux/stay_fresh.sh` names flatpak and snap among the steps it skipped
+  under `--only`, which it already did for every other step.
 - `stay_fresh.sh` tells the macOS protections apart from failures. A real run
   warned on three steps for things no run can change: `/System/Library/Caches`
   answers "Operation not permitted" to root with System Integrity Protection
@@ -1417,6 +1658,44 @@ entry here belongs to a version.
 - `--dry-run` created a timestamped log file in five scripts, contradicting the
   first promise in `README.md`. Log creation is now guarded, and the path that
   *would* be written is printed instead.
+- `stay_fresh.sh` cleared `/System/Library/Caches` whenever it could not prove
+  SIP was on: the probe read `csrutil status` and treated a missing binary, a
+  non-zero exit and an unrecognised (localised) answer alike as "off". On a
+  machine where SIP genuinely is off that swept the dyld and kernel caches,
+  which is minutes of rebuild and an alarming first boot for a few megabytes.
+  The probe now answers `enabled`, `disabled` or `unknown`, only a positive
+  `disabled` counts, the step is additionally gated behind the new
+  `--force-system-caches`, and `com.apple.dyld`, `com.apple.kernelcaches` and
+  `com.apple.bootstamps` are excluded even then.
+- The per-app cache step decided an application was idle from `pgrep -x` on a
+  process name. Electron applications run as `Electron`, `Code Helper` or a
+  renderer, never as `Visual Studio Code`, so an open editor read as idle and
+  had its cache cleared underneath it. The check now matches the bundle
+  executable path (`/Visual Studio Code.app/Contents/MacOS/`) with `pgrep -f`.
+- `lib/workspace_scan.py` classed a workspace as stale whenever `lstat` said
+  the folder was not there, which is also what an unmounted external volume
+  and an iCloud Drive file the provider has not materialised say. Unplugging
+  a disk before a run therefore deleted that project's editor state. Those two
+  cases are now `unresolved` and kept, and a real `ENOENT` on a mounted volume
+  remains stale.
+- The Docker step ran a bare `docker container prune -f`, which also removes
+  the container you stopped minutes ago and meant to restart. It now filters
+  on `until=168h`, so only containers stopped for more than a week go.
+- `simctl delete unavailable` ran unconditionally. A half-finished Xcode
+  update marks every simulator unavailable, and the command deletes their app
+  data, databases and screenshots with them. It now needs
+  `--prune-unavailable-simulators`; otherwise the count is reported.
+- The developer-cache step cleared whatever `TF_PLUGIN_CACHE_DIR` pointed at.
+  A variable exported to a working directory — or to an empty value, which
+  resolves to `$HOME` — meant that directory was emptied. The path must now
+  end in `plugin-cache`; anything else warns and is left alone.
+- `clear_dir()` accepted an empty or relative argument and would have swept
+  the process's working directory. It now refuses anything that is not an
+  absolute path below `/`.
+- The kept log recorded the commands a run executed but not its `[warn]` and
+  `[err ]` lines, which are the reason the log was kept in the first place.
+  Both now go to the log, timestamped. The sink stays `/dev/null` until
+  preflight passes, so a refused run still writes nothing.
 
 ### Removed
 
@@ -1447,6 +1726,24 @@ entry here belongs to a version.
 
 ### Changed
 
+- `stay_fresh_agent.sh`'s `safe` profile now also runs the two read-only
+  reports, `os-updates` and `snapshots` (listing only; the agent has no
+  sudo, so nothing is thinned). A pending macOS update and a pile of local
+  snapshots are what a Mac accumulates without anyone noticing, and a
+  scheduled verdict that said nothing about either was not worth reading.
+- `stay_fresh.sh` keeps its steps in one table (id, skip variable, function,
+  label, description) that drives `--list-steps`, `--only` and the run loop.
+  Adding a step is one line there, a parser arm and a plan line; the three
+  hand-maintained lists that had to agree are gone, and the Docker suite
+  checks every listed id is one `--only` accepts and previews.
+- `CHANGELOG.md` merges with `merge=union` (`.gitattributes`). Every pull
+  request adds its entry at the top of the Unreleased section, so any two
+  open at once collided on the same lines and the second to merge conflicted;
+  four open pull requests meant six conflicts to resolve by hand. Union keeps
+  both sides' insertions, which is safe here because the only edit pattern is
+  a whole bullet inserted, never a line changed in place.
+- `history.tsv` keeps its last 500 rows. One row per run adds up on a daily
+  schedule, and nothing that reads the file needs more.
 - `stay_fresh.sh` parses `--only`, `--notify` and
   `--prune-xcode-archives-days` through the canonical `require_value()` block
   the other `macos-initial-setup/` scripts copy, so the static suite's

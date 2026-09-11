@@ -1,4 +1,6 @@
-# test-env
+# Test environments
+
+[Ops Toolbox](../README.md) / **Test environments**
 
 Test machinery that does not live inside a script package. Two different kinds
 of thing share this folder, and the difference matters:
@@ -11,19 +13,51 @@ what a test here has to assert.
 | --- | --- | --- |
 | [`static/`](static/) | The repository-wide convention checks (`./run-tests.sh static`) | **yes**, and by CI |
 | [`python/`](python/) | The unit tests for the Python helpers (`./run-tests.sh python`) | **yes**, and by CI |
-| [`lib/`](lib/) | `discover_clis.sh`, the "which tracked files are command-line scripts" rule | sourced by `static/check_conventions.sh` and `static/test_doc_citations.sh`; the python suite does not use it |
+| [`lib/`](lib/) | `discover_clis.sh`, the "which tracked files are command-line scripts" rule | sourced by `static/check_conventions.sh`; `static/test_doc_citations.sh` applies the same exclusion rule but reimplements it, and the python suite does not use it |
 | [`chef/`](chef/) | A self-contained Chef cookbook sandbox | **no** |
 | [`go/`](go/) | A self-contained Go sandbox | **no** |
 
+## Requirements
+
+Different halves of this folder want different things, which is the practical
+form of the distinction above.
+
+| Requirement | Needed by | Notes |
+| --- | --- | --- |
+| **Bash and `git`** | [`static/`](static/) | The whole of it. `run.sh` exits early without `git`, because every check discovers its subjects from the git index. **No Docker, no network.** |
+| **`python3`** | [`python/`](python/) | The suite picks `/usr/bin/python3` on macOS deliberately — that is the interpreter the shell scripts call, and it is 3.9. It runs under stdlib `unittest`, so nothing has to be installed. |
+| **`python3` with PyYAML** | [`static/`](static/), optionally | Only for the `.winget` configuration shape check, which prints a `warn` and skips itself when either is missing. |
+| **`ruff`** | [`python/`](python/), optionally | Lints the repository if installed; the suite says it skipped the lint if not. |
+| **Docker with Compose v2** | [`chef/`](chef/), [`go/`](go/) | Only the sandboxes. Neither is part of `./run-tests.sh` or of CI. |
+
+## Quick start
+
+Both of the suites that run are called through the aggregator at the repository
+root, so this is the same command CI uses:
+
+```bash
+./run-tests.sh static      # repository-wide conventions: bash + git, no Docker
+./run-tests.sh python      # the Python helpers' unit tests, on the host python3
+./run-tests.sh --list      # every suite, its package directory and what it needs
+```
+
+`static` is the one to run first on an unfamiliar checkout: it discovers its own
+subjects from the git index rather than from a list, so it has an opinion about
+every tracked script — including one added five minutes ago.
+
 ## The suites that run
 
-**[`static/`](static/)** — `check_conventions.sh`, the two RouterOS checks that
+**[`static/`](static/)** — `check_conventions.sh`, `check_pin_age.sh` for the
+three pin files Dependabot does not watch, the two RouterOS checks that
 need no Docker, `test_run_tests.sh` for the aggregator's own contract, and
 `test_doc_citations.sh` for the documentation ones. It discovers its own subjects from the git index rather
 than keeping a list, so a new script is covered by the commit that adds it:
 the `--help` and unknown-flag contracts, shebangs, file modes, `.gitattributes`
-coverage, Bash 3.2 constructs, the deliberately-duplicated blocks, and the
-dry-run promise checked against the filesystem. **No Docker and no network.**
+coverage, Bash 3.2 constructs, the deliberately-duplicated blocks, the
+dry-run promise checked against the filesystem, and the rule that a suite must
+pin every environment variable the scripts it runs read from the host
+(`host_env_vars.awk` derives that set from each script). **No Docker and no
+network.**
 Almost all of it is bash + git; the one exception is the `.winget`
 configuration shape check, which shells out to `python3` with PyYAML and
 prints a `warn` and skips if either is missing.

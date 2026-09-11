@@ -1,5 +1,7 @@
 # MikroTik script tests (RouterOS 7.24.2)
 
+[Ops Toolbox](../../README.md) / **MikroTik script tests (RouterOS 7.24.2)**
+
 Integration tests that run **real RouterOS CHR 7.24.2** in QEMU inside Docker and
 exercise every `*.lua` in `../`. Two services run side by side:
 
@@ -7,6 +9,19 @@ exercise every `*.lua` in `../`. Two services run side by side:
   `127.0.0.1:8728` for ad‑hoc inspection).
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
+
+## Contents
+
+- [When it runs in CI](#when-it-runs-in-ci)
+- [Requirements](#requirements)
+- [Run](#run)
+- [What is tested](#what-is-tested)
+- [Environment](#environment)
+- [Troubleshooting](#troubleshooting)
+- [Release checks and version bumps](#release-checks-and-version-bumps)
+- [License](#license)
+- [See also](#see-also)
+- [Credits](#credits)
 
 ## When it runs in CI
 
@@ -210,8 +225,8 @@ MikroTik. Use per [CHR licensing](https://help.mikrotik.com/docs/display/ROS/Clo
 ## See also
 
 - [`../README.md`](../README.md) — RouterOS runbook, policies, and scheduler hints.
-- [`../../macos-initial-setup/README.md`](../../macos-initial-setup/README.md#development--docker-checks) — **macOS** setup scripts: Docker-based `bash`/`shellcheck` checks (separate from this CHR test stack).
-- [Repository root `README.md`](../../README.md#testing-docker) — overview of both Docker test paths.
+- [`../../macos-initial-setup/README.md`](../../macos-initial-setup/README.md#development-docker-checks) — **macOS** setup scripts: Docker-based `bash`/`shellcheck` checks (separate from this CHR test stack).
+- [Repository root `README.md`](../../README.md#testing) — overview of both Docker test paths.
 
 ## Credits
 

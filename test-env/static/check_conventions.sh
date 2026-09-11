@@ -15,6 +15,23 @@ cd "$REPO_ROOT" || { echo "cannot enter $REPO_ROOT" >&2; exit 1; }
 # shellcheck source=../lib/discover_clis.sh
 . "$REPO_ROOT/test-env/lib/discover_clis.sh"
 
+# This suite runs every discovered script for real — --help, an unknown flag,
+# and a full dry run — so it is a test suite in exactly the sense the
+# "must not inherit the host environment" section below polices, and it is on
+# that section's own list. It pins HOME and TMPDIR at each invocation; these are
+# the rest. Unset rather than set: an XDG_CONFIG_HOME left alone sends a dry run
+# to the developer's real ~/.config, which the scratch snapshot cannot see, so
+# the write goes unnoticed and unreported.
+#
+# The list is checked against the scripts themselves further down. A script that
+# starts reading a new variable from the environment fails this suite until the
+# name is added here, which is the point: nobody has to remember.
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset CHANGELOG_ROOT OS_RELEASE XDG_CONFIG_HOME
+unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
+  STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
+  STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+
 failures=0
 checked=0
 ok()   { printf '[ ok ] %s\n' "$*"; }
@@ -189,6 +206,40 @@ while IFS= read -r -d '' record; do
 done < <(git ls-files -s -z)
 ok "no executable file lacks a shebang"
 
+# And the converse, which is how status.sh arrived: a script with a shebang,
+# tracked 100644. Nothing above caught it - that loop only asks whether an
+# executable file earns its bit, never whether a script has one - so the file
+# was committed, reviewed and merged as a script nobody could run without
+# saying `bash` first. Every usage line in this repository is written `./x.sh`.
+#
+# A shebang is the file declaring itself runnable, so the mode is the part that
+# is wrong when they disagree. Sourced libraries are the exception and are
+# excluded by path: they carry a shebang for editors and shellcheck, and are
+# never executed.
+mode_bad=0
+mode_checked=0
+while IFS= read -r -d '' record; do
+  mode="${record%% *}"
+  path="${record#*$'\t'}"
+  [[ "$mode" == "100644" ]] || continue
+  # A file that says so in its own header is not a mistake. git_aliases.sh and
+  # bash_aliases.sh both open with "Sourced, not executed" and carry a shebang
+  # for editors and shellcheck; so do the shared test helpers. Reading the
+  # header beats a path pattern, because the declaration travels with the file
+  # when somebody moves it.
+  case "$path" in
+    test-env/lib/*|*/lib/*|*.zsh) continue ;;
+  esac
+  head -n 1 -- "$path" | grep -q '^#!' || continue
+  head -n 8 -- "$path" | grep -qi 'sourced, not executed' && continue
+  mode_checked=$((mode_checked + 1))
+  err "$path has a shebang but is mode 644 — nobody can run it as ./$(basename "$path")"
+  mode_bad=$((mode_bad + 1))
+done < <(git ls-files -s -z)
+if (( mode_bad == 0 )); then
+  ok "every tracked script with a shebang is executable"
+fi
+
 while IFS= read -r -d '' record; do
   mode="${record%% *}"
   path="${record#*$'\t'}"
@@ -211,7 +262,7 @@ head_ ".gitattributes coverage"
 uncovered=0
 while IFS= read -r -d '' path; do
   case "$path" in
-    *.sh|*.zsh|*.py|*.lua|*.ps1|*.psd1|*.psm1|\
+    *.sh|*.zsh|*.py|*.lua|*.awk|*.ps1|*.psd1|*.psm1|\
     windows/git-bash/.bashrc|windows/git-bash/.bash_profile|windows/git-bash/.aliases|\
     windows/git-bash/default-git-bash/.bashrc|\
     windows/git-bash/default-git-bash/.bash_profile|\
@@ -246,6 +297,46 @@ for d in $BASH32_DIRS; do
   done < <(git ls-files -z -- "$d/*.sh")
 done
 (( bash4_hits == 0 )) && ok "no Bash 4+ constructs in: $BASH32_DIRS"
+
+# A `case` inside a multi-line $( ) is a Bash 3.2 parse error, and neither the
+# keyword scan above nor shellcheck says a word about it. Bash 3.2 parses `$(`
+# by scanning forward for the matching `)` and miscounts on the unbalanced `)`
+# closing each case pattern: it reaches end of line still looking and dies with
+# "syntax error near unexpected token `newline'". The script cannot then be
+# parsed at all, so every assertion against it fails at once rather than one.
+#
+# changelog.d/changelog.sh carried exactly this and turned the macOS job red
+# twice, through a wrong first diagnosis. It is valid Bash 4 syntax, shellcheck
+# is silent on it, and the keyword scan above looks for mapfile/declare -A/${x,,}
+# and so cannot see it. Unlike those, this is repository-wide rather than
+# scoped to BASH32_DIRS: any script the static suite executes has to parse under
+# whatever /bin/bash the runner has, and on macOS that is 3.2.
+case_sub_hits=0
+case_sub_checked=0
+while IFS= read -r -d '' f; do
+  case_sub_checked=$((case_sub_checked + 1))
+  hit="$(awk '
+    { opens = gsub(/\$\(/, "$("); closes = gsub(/\)/, ")") }
+    depth == 0 && opens > 0 { start = NR; body = $0; depth = opens - closes; if (depth < 0) depth = 0; next }
+    depth > 0 {
+      body = body "\n" $0
+      depth += opens - closes
+      if (depth <= 0) {
+        if (body ~ /(^|\n)[ \t]*case[ \t]/) print start
+        depth = 0; body = ""
+      }
+    }
+  ' "$f")"
+  if [[ -n "$hit" ]]; then
+    err "$f has a case inside a multi-line \$( ) — Bash 3.2 cannot parse it (line $hit)"
+    case_sub_hits=$((case_sub_hits + 1))
+  fi
+done < <(git ls-files -z -- '*.sh')
+if (( case_sub_checked == 0 )); then
+  err "the case-in-substitution scan inspected no file — this check has stopped checking"
+elif (( case_sub_hits == 0 )); then
+  ok "no case inside a multi-line \$( ) in $case_sub_checked script(s)"
+fi
 
 # --------------------------------------------------------------------------
 head_ "duplicated blocks keep their contract"
@@ -343,7 +434,9 @@ dry_run_args() {
     k8s-toolbox/debug_pod.sh)                printf '%s\n' "--pod dry-run-probe --dry-run" ;;
     mikrotik/pull_router_backups.sh)         printf '%s\n' "--dry-run probe@localhost" ;;
     git/gacp.sh)                             printf '%s\n' "--dry-run -m dry-run probe" ;;
+    git/clone-repos.sh)                      printf '%s\n' "--dry-run git/repos.txt.example" ;;
     git/set_git_profile.sh)                  printf '%s\n' "--dry-run --name Probe --email probe@example.invalid" ;;
+    changelog.d/changelog.sh)                printf '%s\n' "release 0.0.0-probe --dry-run" ;;
     *)                                       printf '%s\n' "--dry-run" ;;
   esac
 }
@@ -354,12 +447,34 @@ dry_run_args() {
 # a version table. Excluded because the alternative is contorting the scripts
 # to work around another project's defaults — but named here, and reported
 # when it fires, because a silent exclusion list is how coverage rots.
-IGNORE_RE='/\.config(/go(/.*)?)?( |$)'
+#
+# Homebrew's bootsnap cache is the same shape and arrived the same way. A dry
+# run of install_apps.sh or brewfile.sh calls `brew info` to check a formula
+# name resolves before planning to install it - a read - and Homebrew compiles
+# its own Ruby into ~/Library/Caches/Homebrew/bootsnap, roughly 950 files. The
+# scripts store nothing. This was invisible until the dry-run snapshot started
+# working on macOS: with GNU-only `find -printf` the before and after were both
+# empty, so the write was there all along and nothing could see it.
+# The two bare parents are listed because Homebrew creates them on the way to
+# its cache; they are matched only where the path ENDS there, so a real write
+# to ~/Library/Preferences or ~/Library/Caches/SomethingElse still fails.
+IGNORE_RE='/\.config(/go(/.*)?)?( |$)|/Library(/Caches)?( |$)|/Library/Caches/Homebrew(/.*)?( |$)'
 
 snapshot() {
   # Names plus mtimes, so a rewritten file is caught as well as a new one.
   find "$1" "$2" -mindepth 1 -printf '%p %T@\n' 2>/dev/null | sort
 }
+# -printf is GNU-only. On macOS find fails, 2>/dev/null swallows the message,
+# and snapshot() returns the empty string for the before AND the after call --
+# so every assertion below compared "" to "" and reported that a dry run wrote
+# nothing having inspected nothing. This section polices the whole repository
+# for that contract, which made it the worst possible place to lose it.
+# test-env/static/test_changelog.sh and dotfiles/tests/test_dotfiles.sh guard
+# the same call the same way; ls -ld is one batched exec rather than one per
+# file, and prints mtime to the minute, which is enough to catch a rewrite.
+if ! find "$REPO_ROOT" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+  snapshot() { find "$1" "$2" -mindepth 1 -exec ls -ld {} + 2>/dev/null | sort; }
+fi
 
 filtered_snapshot() {
   snapshot "$1" "$2" | grep -vE "$IGNORE_RE"
@@ -430,6 +545,237 @@ if (( dry_checked == 0 )); then
   err "no --dry-run-capable script was found — this check has stopped checking"
 else
   ok "checked $dry_checked --dry-run-capable scripts"
+fi
+
+# --------------------------------------------------------------------------
+head_ "test suites must not inherit the host environment"
+# A script that reads a path out of the environment — XDG_CACHE_HOME,
+# BUN_INSTALL, TF_PLUGIN_CACHE_DIR — is aimed by whoever runs it. A test suite
+# that leaves such a variable alone is therefore aimed by the developer's shell
+# rather than by its own fixtures, and the failure is silent in both directions:
+# an exported BUN_INSTALL made a relocation assertion pass here against ~/.bun
+# and fail in CI, and disk_cleanup.sh emptied the real XDG_CACHE_HOME/thumbnails
+# while --home pointed it at a scratch profile.
+#
+# Neither was hard to think of once named. The point of doing it here is that
+# nobody has to: the set is derived from the scripts themselves, so the next
+# variable someone reads from the environment is covered by the commit that
+# reads it.
+#
+# A variable counts as read-from-the-host when the script expands it and never
+# assigns it. A suite counts as pinning it when it names it in code — unset at
+# the top, forwarded through a run helper, or set for one command. Comments are
+# stripped from both sides of that question: a suite explaining in prose why it
+# unsets a variable is not unsetting it, and test_doc_citations.sh describing
+# stay_fresh.sh in its header is not running it.
+host_env_ignore='^(BASH[A-Z_]*|PIPESTATUS|FUNCNAME|IFS|OSTYPE|HOSTNAME|RANDOM|SECONDS|LINENO|PPID|UID|EUID|PWD|OLDPWD|SHLVL|REPLY|HOME|PATH|TMPDIR|TMP|TEMP|USER|LOGNAME|SHELL|TERM|LANG|LC_[A-Z]+|NO_COLOR|COLUMNS|LINES|EDITOR|VISUAL|PAGER|SUDO_[A-Z]+|GPG_TTY)$'
+
+host_env_scratch="$(mktemp -d)"
+trap 'rm -rf "$host_env_scratch"' EXIT
+
+# One awk pass per script, cached: stay_fresh.sh alone is ~3900 lines and every
+# suite in its package asks about it.
+host_env_vars() {
+  local script="$1" lang=sh cache
+  case "$script" in *.py) lang=py ;; esac
+  cache="$host_env_scratch/$(printf '%s' "$script" | tr '/.' '__')"
+  # Safe as a pipeline: sort reads to EOF, so nothing upstream is cut short.
+  [[ -f "$cache" ]] || awk -f "$HERE/host_env_vars.awk" -v lang="$lang" "$script" \
+    | grep -Ev "$host_env_ignore" | sort > "$cache"
+  cat "$cache"
+}
+
+suites=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] && suites+=("$f")
+# Package runners (git/tests/run.sh and friends) match the first pattern. The
+# two test-env runners match none of the three, which is how test-env/static/
+# run.sh came to call changelog.sh without pinning CHANGELOG_ROOT: the check
+# built to catch exactly that could not see the file. 'test-env/*/run.sh' is
+# the gap.
+# check_*.sh as well as test_*.sh: check_pin_age.sh arrived named check_, so it
+# matched none of these globs and its PIN_MAX_AGE_DAYS threshold - the entire
+# gate - went unpinned and unnoticed. Matching on the prefix somebody happened
+# to choose is how a subject list rots.
+done < <(git ls-files '*/tests/*.sh' 'test-env/*/run.sh' \
+  'test-env/static/test_*.sh' 'test-env/static/check_*.sh')
+
+env_leaks=0
+env_pairs=0
+for suite in "${suites[@]}"; do
+  # A package suite tests its own package: linux/ and macos-initial-setup/ both
+  # ship a stay_fresh.sh, and matching on the bare basename repo-wide attributes
+  # one's variables to the other's suite. The test-env/ suites belong to no
+  # package, so theirs is everything outside one.
+  case "$suite" in
+    test-env/*) scope="$(git ls-files '*.sh' '*.py' | grep -v '/tests/' | grep -v '^test-env/')" ;;
+    *)          scope="$(git ls-files "${suite%%/tests/*}/*.sh" "${suite%%/tests/*}/*.py" | grep -v '/tests/')" ;;
+  esac
+  suite_code="$(grep -vE '^[[:space:]]*#' "$suite")"
+
+  for script in $scope; do
+    base="$(basename "$script")"
+    grep -q "$base" <<<"$suite_code" || continue
+    for v in $(host_env_vars "$script"); do
+      env_pairs=$((env_pairs + 1))
+      if ! grep -qE "(^|[^A-Za-z0-9_])$v([^A-Za-z0-9_]|$)" <<<"$suite_code"; then
+        err "$suite runs $base, which reads \$$v, and never pins it — the host aims that run"
+        env_leaks=$((env_leaks + 1))
+      fi
+    done
+  done
+done
+
+if (( env_pairs == 0 )); then
+  err "no suite/script pairs examined — the discovery above is broken"
+elif (( env_leaks == 0 )); then
+  ok "every suite pins the $env_pairs host-read variable(s) of the scripts it runs"
+fi
+
+# --------------------------------------------------------------------------
+head_ "CI tool pins carry a digest"
+# .github/ci-tool-checksums.env records the SHA-256 of every binary the workflow
+# downloads, and each install step in .github/workflows/ci.yml now checks its
+# download against it. That is a control spread across two files, and a control
+# spread across two files drifts.
+#
+# It had already drifted as far as it can go. The digest file declared itself
+# the source of truth and said, in its own header, that "a version pin without a
+# digest still trusts whoever answers the URL" — while nothing in the tree read
+# it. A grep for its name returned the file and nothing else. Five tools were
+# installed on a version pin alone, and the two Darwin digests recorded
+# specifically for the macos-native job had never once been compared against
+# anything. A digest nobody checks is worse than no digest, because it reads
+# like a control and gets counted as one.
+#
+# The drift that will happen next is smaller and likelier: someone bumps a
+# *_VERSION in the workflow env: block, the download URL changes with it, and
+# the digest file still holds the previous release's hash. Nothing about that is
+# visible in a diff of either file alone. Caught here it is a review-time
+# failure naming both values; caught at install time it is a red job on a branch
+# that looked fine.
+#
+# Three assertions, each covering a different half of the drift:
+#   - every *_VERSION pinned in the workflow is recorded in the digest file at
+#     the same version, or is named in that file's NO_DIGEST_TOOLS as arriving
+#     through a package manager that verifies its own downloads;
+#   - every *_VERSION recorded in the digest file is still pinned in the
+#     workflow, so a removed tool cannot leave a stale digest behind;
+#   - every digest recorded in that file is named by some step in the workflow —
+#     the assertion that would have caught the original rot on the day it
+#     started, and the one that keeps this from becoming decoration again.
+#
+# Nothing here validates a digest against the bytes of a release. That needs the
+# network, this suite deliberately has none, and the digests are transcribed
+# from upstream by a human at bump time. The claim being checked is that the two
+# files agree and that both are wired up, not that the hex is right.
+ci_yml=".github/workflows/ci.yml"
+sums_env=".github/ci-tool-checksums.env"
+
+pin_gaps=0
+ci_pin_count=0
+sums_pin_count=0
+digest_count=0
+
+if [[ ! -f "$ci_yml" ]]; then
+  err "$ci_yml is missing — the CI download gate cannot be checked at all"
+elif [[ ! -f "$sums_env" ]]; then
+  err "$sums_env is missing — every binary ci.yml downloads would install on a version pin alone"
+else
+  # The top-level env: block only, anchored at column 0: ci.yml also carries
+  # step-level env: blocks, which are indented and must not be mistaken for it.
+  # The block ends at the next column-0 key (jobs:); a column-0 comment or a
+  # blank line does not end it. Rename or reindent that block and this collects
+  # nothing, which the floor at the bottom turns into a failure rather than a
+  # silent pass.
+  ci_pins="$(awk '
+    /^env:[[:space:]]*$/        { in_env = 1; next }
+    in_env && /^[^[:space:]#]/  { in_env = 0 }
+    in_env && $1 ~ /_VERSION:$/ {
+      name = $1
+      sub(/:$/, "", name)
+      print name, $2
+    }
+  ' "$ci_yml" | tr -d "\"'")"
+
+  # Declared in the digest file rather than here, so the exemption sits beside
+  # what it exempts and a reader of that file can see why a tool is absent.
+  no_digest="$(awk -F= '$1 == "NO_DIGEST_TOOLS" { print $2 }' "$sums_env" | tr -d "\"'")"
+
+  # A here-string, not a pipe. Both because the loop body increments counters
+  # that have to survive it, and because this repository has been bitten three
+  # times by a pipeline whose reader exits early: under `set -o pipefail` that
+  # kills the writer, the pipeline reports 141, and a match reads as a miss.
+  while read -r ci_name ci_value; do
+    [[ -n "$ci_name" ]] || continue
+    ci_pin_count=$((ci_pin_count + 1))
+    tool="${ci_name%_VERSION}"
+    recorded="$(awk -F= -v k="$ci_name" '$1 == k { print $2 }' "$sums_env")"
+
+    case " $no_digest " in
+      *" $tool "*)
+        if [[ -n "$recorded" ]]; then
+          err "$tool is in NO_DIGEST_TOOLS yet $sums_env records $ci_name — it cannot be both exempt and pinned here"
+          pin_gaps=$((pin_gaps + 1))
+        fi
+        continue
+        ;;
+    esac
+
+    if [[ -z "$recorded" ]]; then
+      err "$ci_yml pins $ci_name: '$ci_value' and $sums_env records no $ci_name — that download runs on a version pin alone"
+      pin_gaps=$((pin_gaps + 1))
+    elif [[ "$recorded" != "$ci_value" ]]; then
+      err "$ci_yml pins $ci_name: '$ci_value' but $sums_env records $ci_name=$recorded — a bump edited one file and not the other, and the digest now belongs to a release CI no longer downloads"
+      pin_gaps=$((pin_gaps + 1))
+    elif ! grep -qE "^${tool}_SHA256_[A-Za-z0-9_]+=" "$sums_env"; then
+      err "$sums_env records $ci_name=$recorded but no ${tool}_SHA256_* digest — a version with no bytes behind it"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+  done <<<"$ci_pins"
+
+  # Only run the reverse direction when the forward one found something.
+  # Otherwise a renamed env: block reports every recorded tool as missing and
+  # buries the one message that says what actually happened.
+  if (( ci_pin_count > 0 )); then
+    while IFS='=' read -r sums_name sums_value; do
+      [[ -n "$sums_name" ]] || continue
+      sums_pin_count=$((sums_pin_count + 1))
+      # A version mismatch is already reported above; this direction exists for
+      # the name the workflow does not pin at all.
+      if [[ -z "$(awk -v k="$sums_name" '$1 == k { print $2 }' <<<"$ci_pins")" ]]; then
+        err "$sums_env records $sums_name=$sums_value and the env: block of $ci_yml pins no $sums_name — a stale entry for a tool the workflow no longer installs"
+        pin_gaps=$((pin_gaps + 1))
+      fi
+    done <<<"$(grep -E '^[A-Za-z_][A-Za-z0-9_]*_VERSION=' "$sums_env")"
+  fi
+
+  while read -r digest_key; do
+    [[ -n "$digest_key" ]] || continue
+    digest_count=$((digest_count + 1))
+    if ! grep -q "$digest_key" "$ci_yml"; then
+      err "$sums_env records $digest_key and no step in $ci_yml names it — an unread digest is exactly the state this whole file was in"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+    digest_tool="${digest_key%%_SHA256_*}"
+    if ! grep -q "^${digest_tool}_VERSION=" "$sums_env"; then
+      err "$sums_env records $digest_key but no ${digest_tool}_VERSION — the digest names no release"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+  done <<<"$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*_SHA256_[A-Za-z0-9_]+' "$sums_env")"
+
+  # The floors. Every one of the three loops above is happy with an empty
+  # subject list, so without these a renamed env: block, an emptied digest file
+  # or a changed key shape disarms the whole section and it still prints ok.
+  if (( ci_pin_count == 0 )); then
+    err "no *_VERSION pins found in the top-level env: block of $ci_yml — it was renamed, reindented or removed, and this check just inspected nothing"
+  elif (( sums_pin_count == 0 )); then
+    err "no *_VERSION entries found in $sums_env — the file was emptied or its key shape changed, and this check just inspected nothing"
+  elif (( digest_count == 0 )); then
+    err "no *_SHA256_* digests found in $sums_env — every binary ci.yml downloads is installing on a version pin alone"
+  elif (( pin_gaps == 0 )); then
+    ok "$ci_pin_count CI tool pin(s) agree with $sums_env; $digest_count digest(s), each named by a step in $ci_yml"
+  fi
 fi
 
 # --------------------------------------------------------------------------

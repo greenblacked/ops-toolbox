@@ -242,12 +242,14 @@ if [[ "$remaining" == "0" ]]; then ok "no links left behind"; else err "$remaini
 # --------------------------------------------------------------------------
 head_ "tracked configs"
 PY="$(command -v python3 || true)"
-py_has() { [[ -n "$PY" ]] && "$PY" -c "import $1" >/dev/null 2>&1; }
 gnupg_probe="$scratch/gnupg-probe"; mkdir -p "$gnupg_probe"; chmod 700 "$gnupg_probe"
 
 tilde='~'
 n=0
 copies_by_list=""
+# Files for the one Python parse pass below: the interpreter starts once for
+# all of them, not once per file, which was most of this suite's run time.
+py_parse=()
 # The heading in force when an "Installed as a copy" paragraph starts.
 copies_by_readme="$(awk '/^### `~/ { h = $2; gsub(/`/, "", h) } /^Installed as a copy/ { print h }' "$D/README.md" | sort)"
 for (( i = 0; i < n_rows; i++ )); do
@@ -263,30 +265,14 @@ for (( i = 0; i < n_rows; i++ )); do
   # A config that its tool cannot parse is worse than none: the tool falls
   # back to defaults and says so once, in a line nobody reads.
   case "$rel" in
-    *.toml)
-      if py_has tomllib; then
-        if "$PY" -c "import sys,tomllib; tomllib.load(open(sys.argv[1],'rb'))" "$full" 2>/dev/null; then ok "$rel parses as TOML"; else err "$rel is not valid TOML"; fi
-      else skip "$rel: no tomllib (python 3.11+) to parse it"; fi ;;
-    *.yaml|*.yml)
-      if py_has yaml; then
-        if "$PY" -c "import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))" "$full" 2>/dev/null; then ok "$rel parses as YAML"; else err "$rel is not valid YAML"; fi
-      else skip "$rel: no PyYAML to parse it"; fi ;;
-    *.json)
-      if [[ -n "$PY" ]]; then
-        if "$PY" -c "import sys,json; json.load(open(sys.argv[1]))" "$full" 2>/dev/null; then ok "$rel parses as JSON"; else err "$rel is not valid JSON"; fi
-      else skip "$rel: no python3 to parse it"; fi ;;
+    *.toml|*.yaml|*.yml|*.json|*.py)
+      if [[ -n "$PY" ]]; then py_parse+=("$rel"); else skip "$rel: no python3 to parse it"; fi ;;
     *.lua)
       if command -v luac >/dev/null 2>&1; then
         if luac -p "$full" 2>/dev/null; then ok "$rel parses as Lua"; else err "$rel is not valid Lua"; fi
       elif command -v nvim >/dev/null 2>&1; then
         if nvim --headless -u NONE -c "luafile $full" -c 'qa!' >/dev/null 2>&1; then ok "$rel loads in nvim"; else err "$rel fails to load in nvim"; fi
       else skip "$rel: no luac or nvim to parse it"; fi ;;
-    *.py)
-      if [[ -n "$PY" ]]; then
-        # compile() rather than py_compile: the latter writes a __pycache__
-        # into the tracked tree.
-        if "$PY" -c "import sys; compile(open(sys.argv[1]).read(), sys.argv[1], 'exec')" "$full" 2>/dev/null; then ok "$rel compiles as Python"; else err "$rel is not valid Python"; fi
-      else skip "$rel: no python3 to parse it"; fi ;;
     home/.ssh/config)
       if command -v ssh >/dev/null 2>&1; then
         # -G resolves the config for a host and refuses on any syntax error;
@@ -318,6 +304,76 @@ for (( i = 0; i < n_rows; i++ )); do
   [[ "${modes[$i]}" == "copy" ]] && copies_by_list="$copies_by_list$doc"$'\n'
 done
 ok "$n tracked configs inspected"
+
+# One interpreter for every TOML, YAML, JSON and Python file. Each line the
+# script prints is a verdict this harness relays: a parser module that is
+# missing skips its files with a note rather than failing them, and Python
+# files go through compile() rather than py_compile, which would write a
+# __pycache__ into the tracked tree.
+if (( ${#py_parse[@]} > 0 )); then
+  py_verdicts=0
+  while IFS=$'\t' read -r verdict message; do
+    case "$verdict" in
+      ok)   ok "$message" ;;
+      err)  err "$message" ;;
+      skip) skip "$message" ;;
+    esac
+    py_verdicts=$(( py_verdicts + 1 ))
+  done < <(cd "$D" && "$PY" - "${py_parse[@]}" <<'PYEOF'
+import json
+import sys
+
+try:
+    import tomllib
+except ImportError:  # python < 3.11
+    tomllib = None
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+
+def say(verdict, message):
+    print(verdict + "\t" + message)
+
+
+for rel in sys.argv[1:]:
+    ext = rel.rsplit(".", 1)[-1]
+    try:
+        if ext == "toml":
+            if tomllib is None:
+                say("skip", rel + ": no tomllib (python 3.11+) to parse it")
+                continue
+            with open(rel, "rb") as f:
+                tomllib.load(f)
+            say("ok", rel + " parses as TOML")
+        elif ext in ("yaml", "yml"):
+            if yaml is None:
+                say("skip", rel + ": no PyYAML to parse it")
+                continue
+            with open(rel) as f:
+                list(yaml.safe_load_all(f))
+            say("ok", rel + " parses as YAML")
+        elif ext == "json":
+            with open(rel) as f:
+                json.load(f)
+            say("ok", rel + " parses as JSON")
+        elif ext == "py":
+            with open(rel) as f:
+                compile(f.read(), rel, "exec")
+            say("ok", rel + " compiles as Python")
+    except Exception as exc:  # any parse failure is the finding
+        say("err", rel + " does not parse: " + str(exc).splitlines()[0])
+PYEOF
+  )
+  # A process substitution's exit status is invisible to the shell, so an
+  # interpreter that cannot start emits no lines, the loop body never runs and
+  # every config passes by saying nothing. One verdict per file is the contract;
+  # assert it rather than infer it from silence.
+  if (( py_verdicts != ${#py_parse[@]} )); then
+    err "the parse pass emitted $py_verdicts verdict(s) for ${#py_parse[@]} file(s) — $PY did not run them all"
+  fi
+fi
 
 # The link-or-copy decision lives in copy_mode(); the README says "Installed
 # as a copy" under each copied file. The two lists must be the same list.

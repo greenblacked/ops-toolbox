@@ -10,7 +10,9 @@
 #
 # Usage:
 #   ./stay_fresh_agent.sh install [--weekday N] [--hour N] [--minute N]
-#                                 [--profile safe|full] [--notify MODE] [--dry-run]
+#                                 [--profile safe|full] [--notify MODE]
+#                                 [--notify-when WHEN] [--ignore-power]
+#                                 [--dry-run]
 #   ./stay_fresh_agent.sh uninstall [--dry-run]
 #   ./stay_fresh_agent.sh status
 #   ./stay_fresh_agent.sh run-now
@@ -21,11 +23,21 @@
 #   --hour N      0-23 (default 10)
 #   --minute N    0-59 (default 30)
 #   --profile P   'safe' runs protected app/AI-cache cleanup, workspace cleanup,
-#                 and version reporting; 'full' keeps the original broad behavior
+#                 version reporting, the pending-OS-update report and the
+#                 snapshot listing; 'full' keeps the original broad behavior
 #                 (default safe)
 #   --notify M    Passed to stay_fresh.sh as --notify: none, macos, telegram,
-#                 both or auto (default: not passed, and stay_fresh.sh's auto
-#                 sends a macOS banner because no terminal is attached)
+#                 slack, both, auto, or a comma-separated list of channels
+#                 (default: not passed, and stay_fresh.sh's auto sends a macOS
+#                 banner because no terminal is attached)
+#   --notify-when W
+#                 Passed to stay_fresh.sh as --notify-when: always, warn or
+#                 fail (default: not passed; stay_fresh.sh's default is always)
+#   --ignore-power
+#                 Sweep even on battery and even with somebody at the keyboard,
+#                 instead of deferring. Valid for 'install', where it travels
+#                 into the plist and applies to every firing, and for
+#                 'run-scheduled', where it applies to that run
 #   --dry-run     Preview install or uninstall; change nothing
 #   --print-only  Print the plist that would be installed and exit, writing
 #                 nothing and loading nothing
@@ -62,9 +74,57 @@ else
   C_RESET='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE=''
 fi
 info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
+
+# One string field of stay_fresh.sh's last-run.json, with the two escapes it
+# writes (backslash and double quote) undone.
+json_field() {
+  sed -n "s/^  \"$1\": \"\(.*\)\",\{0,1\}\$/\1/p" "$2" | head -n 1 \
+    | sed 's/\\"/"/g; s/\\\\/\\/g'
+}
 ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
 warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
+
+# Whether stay_fresh.sh will take a flag's value, asked of stay_fresh.sh
+# itself: `--list-steps` answers after the argument checks and before
+# anything runs, so exit 0 means yes and its message says why not. Checked
+# at install so a typo fails here, not on the first scheduled run with
+# nobody watching - and checked by the script that will parse it, so the
+# two cannot disagree about `none,macos` or a channel added next month.
+# Usage: stay_fresh_accepts --flag VALUE   (the reason lands in FLAG_ERROR)
+FLAG_ERROR=""
+stay_fresh_accepts() {
+  local flag="$1" value="$2" out
+  if [[ ! -x "$STAY_FRESH" ]]; then
+    FLAG_ERROR="cannot validate $flag: stay_fresh.sh not found or not executable at $STAY_FRESH"
+    return 1
+  fi
+  if out="$("$STAY_FRESH" --list-steps "$flag" "$value" 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  FLAG_ERROR="${out#*\] }"
+  [[ -n "$FLAG_ERROR" ]] || FLAG_ERROR="$flag value rejected by stay_fresh.sh: $value"
+  return 1
+}
+
+# Epoch seconds of a "YYYY-MM-DD HH:MM:SS" stamp: the BSD date on macOS, the
+# GNU one where the tests run. Empty when neither can read it, and for an
+# empty stamp, which GNU date would otherwise read as today.
+epoch_of() {
+  local e
+  [[ -n "$1" ]] || { printf ''; return 0; }
+  e="$(date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s 2>/dev/null)" \
+    || e="$(date -d "$1" +%s 2>/dev/null)" \
+    || e=""
+  printf '%s' "$e"
+}
+
+# Modification time of a file in epoch seconds: BSD stat first, GNU second.
+mtime_of() {
+  local m
+  m="$(stat -f %m "$1" 2>/dev/null)" || m="$(stat -c %Y "$1" 2>/dev/null)" || m=""
+  printf '%s' "$m"
+}
 
 usage() {
   awk 'NR == 1 { next }
@@ -83,9 +143,12 @@ PROFILE="safe"
 PROFILE_SET=0
 NOTIFY=""
 NOTIFY_SET=0
+NOTIFY_WHEN=""
+NOTIFY_WHEN_SET=0
 SCHEDULE_SET=0
 TAIL_LINES=80
 TAIL_SET=0
+IGNORE_POWER=0
 
 while (( $# > 0 )); do
   case "$1" in
@@ -153,15 +216,27 @@ while (( $# > 0 )); do
       ;;
     --notify)
       shift; [[ $# -gt 0 ]] || { err "--notify needs a value"; exit 3; }
-      case "$1" in none|macos|telegram|both|auto) ;; *) err "--notify must be none, macos, telegram, both or auto"; exit 3 ;; esac
+      stay_fresh_accepts --notify "$1" || { err "$FLAG_ERROR"; exit 3; }
       NOTIFY="$1"
       NOTIFY_SET=1
       ;;
     --notify=*)
       NOTIFY="${1#*=}"
-      case "$NOTIFY" in none|macos|telegram|both|auto) ;; *) err "--notify must be none, macos, telegram, both or auto"; exit 3 ;; esac
+      stay_fresh_accepts --notify "$NOTIFY" || { err "$FLAG_ERROR"; exit 3; }
       NOTIFY_SET=1
       ;;
+    --notify-when)
+      shift; [[ $# -gt 0 ]] || { err "--notify-when needs a value"; exit 3; }
+      stay_fresh_accepts --notify-when "$1" || { err "$FLAG_ERROR"; exit 3; }
+      NOTIFY_WHEN="$1"
+      NOTIFY_WHEN_SET=1
+      ;;
+    --notify-when=*)
+      NOTIFY_WHEN="${1#*=}"
+      stay_fresh_accepts --notify-when "$NOTIFY_WHEN" || { err "$FLAG_ERROR"; exit 3; }
+      NOTIFY_WHEN_SET=1
+      ;;
+    --ignore-power) IGNORE_POWER=1 ;;
     --dry-run)    AGENT_DRY_RUN=1 ;;
     --print-only) PRINT_ONLY=1 ;;
     --tail)
@@ -188,21 +263,23 @@ case "$CMD" in
     (( TAIL_SET == 0 )) || { err "--tail is only valid with logs"; exit 3; }
     ;;
   uninstall)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 \
+       && IGNORE_POWER == 0 )) \
       || { err "uninstall accepts only --dry-run"; exit 3; }
     ;;
   logs)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 && AGENT_DRY_RUN == 0 \
+       && IGNORE_POWER == 0 )) \
       || { err "logs accepts only --tail"; exit 3; }
     ;;
   status|run-now)
-    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && PRINT_ONLY == 0 \
-       && AGENT_DRY_RUN == 0 && TAIL_SET == 0 )) \
+    (( SCHEDULE_SET == 0 && PROFILE_SET == 0 && NOTIFY_SET == 0 && NOTIFY_WHEN_SET == 0 && PRINT_ONLY == 0 \
+       && AGENT_DRY_RUN == 0 && TAIL_SET == 0 && IGNORE_POWER == 0 )) \
       || { err "$CMD does not accept options"; exit 3; }
     ;;
   run-scheduled)
     (( SCHEDULE_SET == 0 && PRINT_ONLY == 0 && TAIL_SET == 0 )) \
-      || { err "run-scheduled accepts only --profile, --notify and --dry-run"; exit 3; }
+      || { err "run-scheduled accepts only --profile, --notify, --notify-when, --ignore-power and --dry-run"; exit 3; }
     ;;
 esac
 
@@ -248,6 +325,46 @@ agent_log_names() {
   done
 }
 
+# Where the power is coming from, as pmset reports it: "ac", "battery", or
+# "unknown" when pmset is missing or says something this does not recognise.
+# Unknown is treated as ac by the caller - a desktop with no battery must not
+# have its schedule deferred forever by a probe that cannot answer.
+power_source() {
+  local out
+  command -v pmset >/dev/null 2>&1 || { printf 'unknown\n'; return 0; }
+  out="$(pmset -g batt 2>/dev/null)" || { printf 'unknown\n'; return 0; }
+  case "$out" in
+    *"'AC Power'"*)      printf 'ac\n' ;;
+    *"'Battery Power'"*) printf 'battery\n' ;;
+    *)                   printf 'unknown\n' ;;
+  esac
+}
+
+# Seconds since the last keyboard or mouse event, from the HID system. Prints
+# nothing when it cannot be read, which the caller treats as "cannot tell".
+user_idle_seconds() {
+  command -v ioreg >/dev/null 2>&1 || return 0
+  ioreg -c IOHIDSystem 2>/dev/null \
+    | awk '/HIDIdleTime/ { gsub(/[^0-9]/, "", $NF); if ($NF != "") { printf "%d\n", $NF / 1000000000; exit } }'
+}
+
+# A scheduled run is not worth a battery or an interruption. Both guards are
+# advisory and both can be turned off with --ignore-power; neither ever runs
+# for `run-now`, which is a person asking for it deliberately.
+IDLE_BEFORE_SWEEP_S=300
+
+# When the schedule last actually fired, for `status`. stay_fresh.sh's own
+# last-run.json is rewritten by every run, a manual --quick included, so it
+# cannot tell a job that stopped firing from one whose owner keeps running the
+# script by hand; this stamp is written only here. The third field says whether
+# the firing did the full job, and is empty when it did — readers that stop at
+# the second field are unaffected.
+note_scheduled_run() {
+  (( AGENT_DRY_RUN == 0 )) || return 0
+  printf '%s\t%s\t%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "${2:-}" \
+    > "$LOG_DIR/last-scheduled" 2>/dev/null || true
+}
+
 run_scheduled() {
   if [[ ! -x "$STAY_FRESH" ]]; then
     err "stay_fresh.sh not found or not executable at $STAY_FRESH"
@@ -257,28 +374,80 @@ run_scheduled() {
 
   local run_log="$LOG_DIR/agent-$(date +%Y%m%d-%H%M%S)-$$.log"
   local -a args=(--yes --no-sudo --fail-on-warn)
-  if [[ "$PROFILE" == "safe" ]]; then
+  local deferred="" power idle=""
+
+  if (( IGNORE_POWER == 0 )); then
+    power="$(power_source)"
+    if [[ "$power" == "battery" ]]; then
+      # A full sweep is minutes of du and rm plus a brew upgrade. On battery
+      # that is somebody's afternoon, spent without being asked. The next
+      # firing on mains does the work.
+      info "on battery — deferring this run (pass --ignore-power to run anyway)"
+      note_scheduled_run 0 "deferred:battery"
+      return 0
+    fi
+    idle="$(user_idle_seconds)"
+    if [[ "$idle" =~ ^[0-9]+$ ]] && (( idle < IDLE_BEFORE_SWEEP_S )); then
+      # Somebody is at the keyboard. Deferring outright would mean a machine
+      # in use at this hour every day never runs at all, so the read-only
+      # reports run instead: they are the part worth having daily, and they
+      # neither sweep nor upgrade anything.
+      info "active ${idle}s ago — running the read-only reports only, not the sweep"
+      args+=(--reports)
+      deferred="reports-only:active"
+    fi
+  fi
+  if [[ -n "$deferred" ]]; then
+    : # --reports is already in args, and it refuses to be joined with --only
+  elif [[ "$PROFILE" == "safe" ]]; then
     # Scheduled cleanup must be conservative by default. These steps protect
     # active/unknown application state and remove workspace data only when the
-    # recorded local project path is provably gone.
-    args+=(--only app-caches,ai-caches,workspace-storage,versions)
+    # recorded local project path is provably gone. The two reports are
+    # read-only and are the reason to look at the verdict at all: a pending
+    # macOS update and a pile of local snapshots are what a scheduled run can
+    # tell you that you would not otherwise notice.
+    args+=(--only app-caches,ai-caches,workspace-storage,versions,os-updates,snapshots,downloads,launch-agents)
   fi
   (( NOTIFY_SET )) && args+=(--notify "$NOTIFY")
+  (( NOTIFY_WHEN_SET )) && args+=(--notify-when "$NOTIFY_WHEN")
   (( AGENT_DRY_RUN )) && args+=(--dry-run)
 
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
   local rc=$?
 
+  note_scheduled_run "$rc" "$deferred"
+
   # One bounded, complete transcript per invocation. launchd itself writes to
   # /dev/null, so fixed agent.out/agent.err files cannot grow without limit.
+  #
+  # A preview stops here. This rotation deletes transcripts of real past
+  # firings, and --dry-run exists to show what a firing would do, not to do the
+  # irreversible half of it: previewing a schedule change used to destroy the
+  # oldest surviving records of what the schedule had actually been doing, and
+  # every preview destroyed one more, because the preview's own transcript
+  # pushed the next one over the edge.
+  # The transcript this invocation just wrote is the one file a dry run leaves
+  # behind, and that is deliberate - it is the step list being previewed - so
+  # it counts towards the ten at the next real firing, not at this one.
+  (( AGENT_DRY_RUN == 0 )) || return "$rc"
+
+  # mktemp fails on the full disk this whole script exists to postpone.
+  # Unchecked, the scratch path is the empty string, and every line below it
+  # addresses a file with no name: the redirect and the loop each report an
+  # unnamed file on stderr - which launchd sends to /dev/null, so nobody ever
+  # sees it - and the rotation silently stops happening on the one machine that
+  # needed the space back. Skip it instead and leave the logs to the next
+  # firing that can make a scratch file, the way linux/stay_fresh.sh does.
   local old_log_list old_log
-  old_log_list="$(mktemp)"
-  agent_log_names | sort -r | tail -n +11 > "$old_log_list"
-  while IFS= read -r old_log; do
-    [[ -n "$old_log" ]] || continue
-    rm -f "$LOG_DIR/$old_log" 2>/dev/null || true
-  done < "$old_log_list"
-  rm -f "$old_log_list"
+  old_log_list="$(mktemp 2>/dev/null || true)"
+  if [[ -n "$old_log_list" ]]; then
+    agent_log_names | sort -r | tail -n +11 > "$old_log_list"
+    while IFS= read -r old_log; do
+      [[ -n "$old_log" ]] || continue
+      rm -f "$LOG_DIR/$old_log" 2>/dev/null || true
+    done < "$old_log_list"
+    rm -f "$old_log_list"
+  fi
 
   return "$rc"
 }
@@ -303,11 +472,24 @@ case "$CMD" in
 
     args="        <string>run-scheduled</string>
         <string>--profile</string>
-        <string>$PROFILE</string>"
+        <string>$(xml_escape "$PROFILE")</string>"
     if (( NOTIFY_SET )); then
       args="$args
         <string>--notify</string>
-        <string>$NOTIFY</string>"
+        <string>$(xml_escape "$NOTIFY")</string>"
+    fi
+    if (( NOTIFY_WHEN_SET )); then
+      args="$args
+        <string>--notify-when</string>
+        <string>$(xml_escape "$NOTIFY_WHEN")</string>"
+    fi
+    # The battery and at-the-keyboard guards live in run-scheduled, so this is
+    # the only way --ignore-power can mean anything at install time. Without
+    # this the flag parsed, passed validation and was reported as installed,
+    # while the agent it wrote kept deferring on battery for good.
+    if (( IGNORE_POWER )); then
+      args="$args
+        <string>--ignore-power</string>"
     fi
 
     if (( DAILY )); then
@@ -474,7 +656,7 @@ PLIST_EOF
     info "as you, without sudo: memory purge, DNS flush, system caches and"
     info "system diagnostics are skipped. Run stay_fresh.sh by hand for those."
     if [[ "$PROFILE" == "safe" ]]; then
-      info "safe profile: app/AI caches, stale workspace storage and versions only"
+      info "safe profile: app/AI caches, stale workspace storage, versions, pending OS updates, the snapshot listing, old downloads and orphaned launch agents (both reported, never removed)"
     else
       info "full profile: cask upgrades are skipped; formulae update unattended"
     fi
@@ -522,6 +704,63 @@ PLIST_EOF
     else
       warn "no plist at $PLIST"
     fi
+    # The verdict of the last real run, from the file stay_fresh.sh rewrites
+    # for exactly this reader. One field per line there, so a line match is
+    # all the parsing it takes; jq is not on a stock Mac.
+    last_run="$LOG_DIR/last-run.json"
+    if [[ -f "$last_run" ]]; then
+      info "last run: $(json_field when "$last_run") — $(json_field headline "$last_run")"
+      printf "  %s%s%s\n" "$C_DIM" "$(json_field detail "$last_run")" "$C_RESET"
+    else
+      info "no run recorded yet (last-run.json appears in $LOG_DIR after the first real run)"
+    fi
+    # A job that stopped firing is the failure a schedule hides best: launchd
+    # still says loaded, the last verdict still reads OK, and the laptop was
+    # simply asleep at 10:30 every Monday. Measured from the last time the
+    # schedule itself ran (the stamp run-scheduled writes; last-run.json is
+    # rewritten by manual runs too and would mask exactly this), or from the
+    # install when it has never run. The plist says how often it should
+    # fire; twice that with nothing is not running.
+    stale=0
+    since_s=""
+    since_what=""
+    if [[ -s "$LOG_DIR/last-scheduled" ]]; then
+      IFS=$'\t' read -r sched_when sched_rc sched_note < "$LOG_DIR/last-scheduled"
+      if [[ -n "${sched_note:-}" ]]; then
+        info "last scheduled run: $sched_when (exit ${sched_rc:-?}, ${sched_note})"
+      else
+        info "last scheduled run: $sched_when (exit ${sched_rc:-?})"
+      fi
+      since_s="$(epoch_of "$sched_when")"
+      since_what="the last scheduled run"
+    elif [[ -f "$PLIST" ]]; then
+      since_s="$(mtime_of "$PLIST")"
+      since_what="the install"
+      info "no scheduled run recorded yet"
+    fi
+    if [[ "$since_s" =~ ^[0-9]+$ ]]; then
+      interval_days=1
+      if grep -q '<key>Weekday</key>' "$PLIST" 2>/dev/null; then
+        interval_days=7
+      fi
+      now_s="$(date +%s)"
+      if (( now_s - since_s > 2 * interval_days * 86400 )); then
+        if [[ "$since_what" == "the install" ]]; then
+          # No stamp, so no evidence either way. Only run-scheduled writes
+          # last-scheduled and only since this version, so an agent installed
+          # before the upgrade has none however faithfully it has been firing
+          # - and its plist mtime is the install date, which made a weekly job
+          # installed a month ago report "the job is not running" and exit 1
+          # while launchd was running it on time. A false death notice for a
+          # working job is worse than waiting one more cycle for the real
+          # signal, which the next firing writes.
+          info "no run-scheduled stamp yet and the plist was installed $(( (now_s - since_s) / 86400 )) day(s) ago — if this agent predates the stamp it will appear at the next firing; check 'launchctl print' if it does not"
+        else
+          warn "no scheduled run in $(( (now_s - since_s) / 86400 )) day(s) since $since_what, and the schedule fires every $interval_days day(s) — the job is not running (check 'launchctl print' and the logs)"
+          stale=1
+        fi
+      fi
+    fi
     if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
       ok "loaded in $DOMAIN"
       launchctl print "$DOMAIN/$LABEL" 2>/dev/null \
@@ -530,6 +769,7 @@ PLIST_EOF
       warn "not loaded in $DOMAIN"
       exit 1
     fi
+    (( stale == 0 )) || exit 1
     ;;
 
   run-now)

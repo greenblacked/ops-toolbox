@@ -7,11 +7,15 @@
 # GitHub Desktop, Lens, Postman, draw.io, Wireshark, DBeaver, Chrome, 1Password,
 # Teams, Notion, Tailscale, Cloudflare WARP, ngrok, Rectangle, AltTab, Maccy,
 # Zed, Sublime Text, JetBrains Toolbox, Fork, GitKraken, Azure Data Studio,
-# Postico, Redis Insight, Cyberduck, Proxyman, Linear, Discord.
+# Postico, Redis Insight, Cyberduck, Proxyman, Linear, Discord, Obsidian, Stats.
 # Also installs the Google Cloud SDK (gcloud-cli cask) with common components
 # (gke-gcloud-auth-plugin, kubectl), then a set of Homebrew *formulae* for
 # Kubernetes and platform engineering (k9s, stern, kind, cloud CLIs, policy,
-# supply chain, load tools, …). Skip those with --skip-cli-ops or --skip-formulae.
+# supply chain, secrets, load tools, shell tools, …). Skip those with
+# --skip-cli-ops or --skip-formulae.
+#
+# The two catalogues are printable without running anything: --list-casks and
+# --list-formulae answer before the macOS preflight, exactly as --help does.
 #
 # Usage:
 #   ./install_apps.sh [--dry-run] [--yes] [--skip-upgrade]
@@ -19,13 +23,15 @@
 #                     [--no-cleanup] [--skip-gcloud]
 #                     [--skip-cli-ops] [--only-formulae f1,f2]
 #                     [--skip-formulae f1,f2]
+#                     [--list-casks] [--list-formulae]
 #                     [--gcloud-components a,b,c] [--no-gcloud-components]
 #                     [--verbose] [--help]
 #
 # Exit codes:
 #   0   everything installed / upgraded cleanly
 #   1   one or more installs failed
-#   2   preflight checks failed (not macOS, no internet, etc.)
+#   2   preflight checks failed (not macOS, no internet, or a real run with
+#       no terminal on stdin and no --yes)
 #   3   bad CLI arguments
 
 set -u
@@ -89,6 +95,10 @@ CASKS=(
   "rectangle|Rectangle|Rectangle.app"
   "alt-tab|AltTab|AltTab.app"
   "maccy|Maccy|Maccy.app"
+  # A menu-bar readout of CPU / memory / disk / network. It earns its place
+  # next to stay_fresh.sh: that script reports disk pressure once, when you
+  # run it, and this is the thing that tells you to go and run it.
+  "stats|Stats|Stats.app"
   # Editors & Git (beyond VS Code / GitHub Desktop)
   "zed|Zed|Zed.app"
   "sublime-text|Sublime Text|Sublime Text.app"
@@ -104,17 +114,47 @@ CASKS=(
   # Collaboration & work tracking
   "linear-linear|Linear|Linear.app"
   "discord|Discord|Discord.app"
+  # Local-first notes, so runbooks and incident scratch survive a laptop with
+  # no network. Notion above is the shared copy; this is the one that opens
+  # during the incident that took the shared copy away.
+  "obsidian|Obsidian|Obsidian.app"
 )
 
 # ---------------------------------------------------------------------------
 # Homebrew formulae (CLIs) — K8s, multi-cloud, Terraform helpers, security, HTTP
 # Do not use formula name "flux" here: core "flux" is Influx's language, not Flux CD.
+#
+# Every name here is a *bare homebrew-core formula token*, because that is all
+# the install loop below knows how to say: it runs `brew info <name>` and then
+# `brew install <name>`. Two consequences worth writing down, since both have
+# cost somebody an afternoon:
+#
+#   1. The token is not always the project's name, or the name of the binary it
+#      drops on PATH. `ripgrep` installs `rg`; `fd` is `fd` on Homebrew but
+#      `fd-find` on Debian and Fedora (see linux/install_devtools.sh, which
+#      spells it both ways for that reason). Copying a package name across
+#      ecosystems is how a list like this acquires a name nobody can install.
+#   2. A tap-qualified name does not belong here. HashiCorp relicensed Vault,
+#      Packer, Consul and Nomad under the BUSL, homebrew-core does not carry
+#      them any more, and the working spelling became `hashicorp/tap/vault` —
+#      a tap this script never adds. They are deliberately absent rather than
+#      present-and-failing; install them with
+#      `brew tap hashicorp/tap && brew install hashicorp/tap/vault` if you
+#      want them, the same way the flux note above sends you to fluxcd/tap.
+#
+# The newer entries are the ones a platform engineer reaches for outside a
+# cluster: `gh` for pull requests, `sops` + `age` for encrypted values files,
+# `cloud-sql-proxy` for Cloud SQL over IAM rather than a public IP, `fzf`,
+# `ripgrep` and `fd` for moving through a monorepo, `k6` for load tests (`hey`
+# and `vegeta` above cover one URL; k6 scripts a scenario), and `shellcheck`
+# plus `hadolint` because this repository's own CI gates on both.
 # ---------------------------------------------------------------------------
 CLI_FORMULAE=(
-  argocd awscli azure-cli cilium-cli conftest cosign crane dive eksctl grpcurl
-  grype helm helmfile hey httpie infracost jq k9s kind krew kubectx kubescape
-  kustomize lazydocker minikube opa popeye skaffold stern terraform-docs
-  terragrunt tflint trivy velero vegeta yq
+  age argocd awscli azure-cli cilium-cli cloud-sql-proxy conftest cosign crane
+  dive eksctl fd fzf gh grpcurl grype hadolint helm helmfile hey httpie
+  infracost jq k6 k9s kind krew kubectx kubescape kustomize lazydocker minikube
+  opa popeye ripgrep shellcheck skaffold sops stern terraform-docs terragrunt
+  tflint trivy velero vegeta yq
 )
 
 # ---------------------------------------------------------------------------
@@ -127,6 +167,8 @@ NO_CLEANUP=0
 SKIP_GCLOUD=0
 SKIP_CLI_OPS=0
 NO_GCLOUD_COMPONENTS=0
+LIST_CASKS=0
+LIST_FORMULAE=0
 VERBOSE=0
 ONLY_LIST=""
 SKIP_LIST=""
@@ -146,7 +188,9 @@ ${C_BOLD}Usage:${C_RESET}
 
 ${C_BOLD}Options:${C_RESET}
   --dry-run                Show what would happen, install nothing
-  --yes, -y                Don't ask for confirmation
+  --yes, -y                Don't ask for confirmation. Required for a real
+                           run with no terminal on stdin; --dry-run is not
+                           affected
   --skip-upgrade           Don't upgrade already-installed casks or formulae
   --only a,b,c             Only operate on these cask ids (comma-separated)
   --skip a,b,c             Skip these cask ids (comma-separated)
@@ -155,6 +199,8 @@ ${C_BOLD}Options:${C_RESET}
   --skip-cli-ops           Skip the Homebrew formula batch (k9s, awscli, …)
   --only-formulae f1,f2    Operate on only these formula names
   --skip-formulae f1,f2    Skip these formula names (comma-separated)
+  --list-casks             Print selectable cask ids and exit
+  --list-formulae          Print selectable formula names and exit
   --gcloud-components a,b  Components to install alongside gcloud-cli
                            (default: ${GCLOUD_COMPONENTS})
   --no-gcloud-components   Don't install any gcloud components
@@ -205,6 +251,8 @@ while (( $# > 0 )); do
       ;;
     --skip-formulae)          shift; SKIP_FORMULAE_LIST="${1:-}" ;;
     --skip-formulae=*)       SKIP_FORMULAE_LIST="${1#*=}" ;;
+    --list-casks)             LIST_CASKS=1 ;;
+    --list-formulae)          LIST_FORMULAE=1 ;;
     --gcloud-components)      shift; GCLOUD_COMPONENTS="${1:-}" ;;
     --gcloud-components=*)    GCLOUD_COMPONENTS="${1#*=}" ;;
     --no-gcloud-components)   NO_GCLOUD_COMPONENTS=1 ;;
@@ -214,6 +262,46 @@ while (( $# > 0 )); do
   esac
   shift
 done
+
+# ---------------------------------------------------------------------------
+# catalogue listings (--list-casks / --list-formulae)
+# ---------------------------------------------------------------------------
+# Placed here, immediately after argument parsing, for the same reason
+# install_devtools.sh puts --list-tools here and --help sits where it does:
+# printing a catalogue changes nothing, so it must answer on a machine this
+# script refuses to run on. Somebody deciding what to pass to --only or
+# --skip-formulae is usually not sitting at the Mac they are writing the
+# command for — they are reading a runbook on a Linux box or in CI — and a
+# list that can only be obtained by getting past "This script is for macOS
+# only" is a list they will copy out of the README instead, where it goes
+# stale. Below the preflight these flags would be worth nothing.
+#
+# One bare id per line, nothing else on stdout, so the output is usable as
+# `--only "$(./install_apps.sh --list-casks | tr '\n' ,)"` — and so a zsh
+# completion could be generated from it the way zsh_aliases.zsh builds
+# stay_fresh's step completion out of --list-steps, without teaching the
+# completion to parse a table. The catalogue rows carry a display label and a
+# bundle name too; those are for --help to format, and printing them here
+# would mean every consumer has to cut a field.
+#
+# Each flag prints its own list and exits: the two id namespaces are not
+# interchangeable — one is what --only takes, the other what --only-formulae
+# takes — so concatenating them onto one stream would hand a caller a list
+# whose halves mean different things, with no way to tell where the seam is.
+# Asking for both therefore gets the casks, in the declaration order below.
+# (--help is not in that race: it exits from inside the parse loop, so it wins
+# over both no matter where it appears on the command line.)
+if (( LIST_CASKS )); then
+  for entry in "${CASKS[@]}"; do
+    printf '%s\n' "${entry%%|*}"
+  done
+  exit 0
+fi
+
+if (( LIST_FORMULAE )); then
+  printf '%s\n' "${CLI_FORMULAE[@]}"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -317,17 +405,6 @@ clean_broken_gcloud_virtenv() {
 # ---------------------------------------------------------------------------
 bold "=== install_apps: preflight checks ==="
 
-# Start the log. A dry run writes nothing — including this — so the file is
-# only created on a real run. See the same guard in install_devtools.sh.
-if (( DRY_RUN == 1 )); then
-  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
-else
-  mkdir -p "$LOG_DIR"
-  : > "$LOG_FILE"
-  echo "install_apps.sh log - $(date)" >> "$LOG_FILE"
-  info "log file: $C_DIM$LOG_FILE$C_RESET"
-fi
-
 # A preflight that stops a preview is a preflight in the wrong place. --help
 # already answers on a machine this script refuses to run on; a dry run writes
 # nothing either, so it should answer there too — that is what makes the plan
@@ -362,7 +439,49 @@ if [[ "$(id -u)" == "0" ]]; then
 fi
 ok "running as user: $(id -un)"
 
-# 4. Internet connectivity
+# 4. A real run with no terminal must be explicitly authorized.
+#
+# This used to be decided at the confirmation prompt further down, and decided
+# the wrong way: with no terminal on stdin the prompt was skipped and the run
+# proceeded, announcing "non-interactive stdin — auto-proceeding". So a piped
+# stdin counted as consent. Every way this script gets run without a human in
+# front of it — a CI step, a launchd job, `curl … | bash`, a provisioning
+# script that redirects stdin from /dev/null — would therefore install several
+# dozen casks and formulae with nobody having said yes. Absence of a terminal
+# is absence of an answer, not a yes.
+#
+# `[[ ! -t 0 ]]` is the same question stay_fresh.sh asks in the same place and
+# for the same reason; keep the two spellings identical. Note it is a
+# different question from that script's have_tty(), which opens /dev/tty to
+# find out whether a *prompt* can be shown — this one only asks whether stdin
+# is a terminal, which is what decides whether `read` below has anyone to read
+# from.
+#
+# --dry-run is deliberately exempt: a preview changes nothing, so there is
+# nothing to consent to, and requiring --yes to see a plan would push people
+# into passing --yes out of habit — which is how a flag that means "I have
+# read this" stops meaning anything.
+#
+# Placed ahead of the log, the network probe and the Homebrew bootstrap so a
+# refused run leaves no trace: the exit below is a refusal, and a refusal that
+# drops a log file in TMPDIR has already made a change.
+if (( DRY_RUN == 0 && ASSUME_YES == 0 )) && [[ ! -t 0 ]]; then
+  err "non-interactive execution requires --yes; refusing to make changes"
+  exit 2
+fi
+
+# Start the log. A dry run writes nothing — including this — so the file is
+# only created on a real run. See the same guard in install_devtools.sh.
+if (( DRY_RUN == 1 )); then
+  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  mkdir -p "$LOG_DIR"
+  : > "$LOG_FILE"
+  echo "install_apps.sh log - $(date)" >> "$LOG_FILE"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
+
+# 5. Internet connectivity
 info "checking internet connectivity..."
 if curl -fsI --max-time 5 https://formulae.brew.sh/ >/dev/null 2>&1; then
   ok "internet reachable (formulae.brew.sh)"
@@ -370,7 +489,7 @@ else
   preflight_fail "cannot reach formulae.brew.sh — check your network / VPN."
 fi
 
-# 5. Xcode Command Line Tools
+# 6. Xcode Command Line Tools
 if xcode-select -p >/dev/null 2>&1; then
   ok "Xcode Command Line Tools: $(xcode-select -p)"
 else
@@ -382,7 +501,7 @@ else
   fi
 fi
 
-# 6. Disk space (need a reasonable buffer, ~5 GB)
+# 7. Disk space (need a reasonable buffer, ~5 GB)
 # `df -g` is a macOS spelling; GNU df rejects it. Only reachable off macOS
 # during a dry run, and a preview should not be noisier than the thing it
 # previews, so the error is not worth showing.
@@ -396,7 +515,7 @@ else
   warn "could not determine free disk space"
 fi
 
-# 7. Homebrew install / bootstrap
+# 8. Homebrew install / bootstrap
 if ! command -v brew >/dev/null 2>&1; then
   warn "Homebrew not found"
   if (( DRY_RUN )); then
@@ -419,7 +538,7 @@ BREW_PREFIX="$(brew --prefix)"
 BREW_VERSION="$(brew --version | head -n1)"
 ok "$BREW_VERSION (prefix: $BREW_PREFIX)"
 
-# 8. Optional: brew doctor summary (non-fatal)
+# 9. Optional: brew doctor summary (non-fatal)
 if (( VERBOSE )); then
   info "running 'brew doctor' (non-fatal)..."
   brew doctor >>"$LOG_FILE" 2>&1 || warn "'brew doctor' reported issues — see log"
@@ -517,17 +636,18 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
+# No `[[ ! -t 0 ]]` branch here any more. The one that used to live here
+# auto-proceeded without a terminal, which is the consent hole the preflight
+# guard now closes; with that guard in place a real run reaching this line
+# either passed --yes (and skips the block) or has a terminal to prompt on, so
+# a second answer to the same question could only drift away from the first.
 if (( ASSUME_YES == 0 )); then
-  if [[ ! -t 0 ]]; then
-    info "non-interactive stdin — auto-proceeding (use --yes to silence)"
-  else
-    printf "%sProceed? [y/N]%s " "$C_BOLD" "$C_RESET"
-    read -r answer
-    case "$answer" in
-      y|Y|yes|YES) ;;
-      *) warn "aborted by user"; exit 0 ;;
-    esac
-  fi
+  printf "%sProceed? [y/N]%s " "$C_BOLD" "$C_RESET"
+  read -r answer
+  case "$answer" in
+    y|Y|yes|YES) ;;
+    *) warn "aborted by user"; exit 0 ;;
+  esac
 fi
 
 # ---------------------------------------------------------------------------

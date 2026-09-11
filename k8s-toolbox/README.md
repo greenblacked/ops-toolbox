@@ -1,4 +1,6 @@
-# k8s-toolbox
+# Kubernetes toolbox
+
+[Ops Toolbox](../README.md) / **Kubernetes toolbox**
 
 A container image with the Kubernetes CLIs already in it, plus the scripts that
 build it, run it and point it at a cluster.
@@ -16,10 +18,69 @@ unprivileged user by default.
 | [`build.sh`](build.sh) | Build (and optionally push) the image with those pins |
 | [`run.sh`](run.sh) | Run it locally with the working directory and your kubeconfig mounted |
 | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh) | Read-only cluster triage: unhealthy pods, warnings, PVCs, node pressure |
+| [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
 | [`debug/`](debug/) | A pod, a job, and a kustomization for the debug image tag |
-| [`tests/`](tests/) | Contract checks for the four scripts; no image build, no Docker |
+| [`tests/`](tests/) | Contract checks for the five scripts; no image build, no Docker |
+
+## Contents
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [What is inside the image](#what-is-inside-the-image)
+- [Pinned versions](#pinned-versions)
+- [Build](#build)
+- [Debug image](#debug-image)
+- [Run it locally](#run-it-locally)
+- [Triage a cluster](#triage-a-cluster)
+- [Debug a running pod](#debug-a-running-pod)
+- [Use it in a cluster](#use-it-in-a-cluster)
+- [GKE auth](#gke-auth)
+- [Conventions](#conventions)
+- [Tests](#tests)
+
+## Requirements
+
+Nothing here needs all of these at once — each script states which of them it
+needs, and exits `2` rather than half-working when one is missing.
+
+| Requirement | Needed by | Notes |
+| --- | --- | --- |
+| **Bash** | all four scripts | `#!/usr/bin/env bash` with `set -euo pipefail`. |
+| **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
+| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
+| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
+
+The image itself is Debian bookworm-slim, and the CLI versions it installs are
+pinned in [`versions.env`](versions.env) — see [Pinned versions](#pinned-versions).
+
+## Quick start
+
+Two of the four scripts read a cluster and change nothing, so they are the ones
+to try first. Neither needs the image built.
+
+Find out what is unhappy in a cluster, in one read-only pass:
+
+```bash
+./kubectl_pod_diag.sh
+```
+
+It reports pods that are neither Running nor Succeeded (including Running pods
+whose containers are in `CrashLoopBackOff` or `ImagePullBackOff`), recent
+`Warning` events, unbound PVCs, and nodes under pressure — and for a crash-looping
+pod, the last lines of the *previous* container's logs, which is where the reason
+usually is. It exits `4` when it found nothing, distinct from `0`, so it can
+drive a scheduled check without parsing its output.
+
+Then build the image the rest of the package is about:
+
+```bash
+./build.sh --dry-run    # print the buildx command, run nothing
+./build.sh              # k8s-toolbox:local, for this machine
+./run.sh                # a bash shell in it, with $PWD at /work and ~/.kube read-only
+```
 
 ## What is inside the image
 
@@ -172,6 +233,22 @@ Exit `2` covers both halves of the environment this script needs: no `kubectl`,
 and no `python3` — the JSON from each `kubectl get` is reduced by a
 standard-library `python3 -c` filter.
 
+## Doctor a GKE cluster
+
+`gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
+reports release channel, control-plane vs node-pool skew, Workload Identity,
+and private-cluster flags, and prints the `gcloud` command that would fix
+each finding.
+
+```bash
+./gke_cluster_doctor.sh --list-checks
+./gke_cluster_doctor.sh --project P --cluster C --location europe-west1
+./gke_cluster_doctor.sh --only channel,skew
+```
+
+Flags, or a kubectl context named `gke_PROJECT_LOCATION_CLUSTER`, resolve
+the cluster. `--list-checks` and `--help` answer before `gcloud` is required.
+
 ## Debug a running pod
 
 `debug_pod.sh` wraps `kubectl debug` with this image, which attaches an
@@ -241,7 +318,7 @@ from `gcloud auth application-default login` or a mounted service-account key.
 
 ## Conventions
 
-The four scripts follow the same rules as everything else in this repository:
+The five scripts follow the same rules as everything else in this repository:
 
 - `--help` works before any preflight check, so it answers on a machine with
   neither Docker nor `kubectl` installed.

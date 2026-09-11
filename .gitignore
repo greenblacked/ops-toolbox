@@ -24,6 +24,21 @@
 # own negation line here, or git will quietly leave it out.
 /.*/
 !/.github/
+# The remote-session startup hook is the exception: a remote session starts
+# from a bare clone, so the hook that prepares it has to be in the tree. Only
+# the hook and the settings file that registers it are tracked; everything
+# else the agent keeps in that directory stays local.
+!/.claude/
+/.claude/*
+# Re-including the directory is not enough: /.claude/* matches one level, so
+# nothing re-ignores what is inside hooks/ and a scratch hook written there
+# showed up as untracked, ready to be swept into a `git add -A`. Ignore the
+# directory's contents too, then name the two files that are tracked.
+!/.claude/hooks/
+/.claude/hooks/*
+!/.claude/hooks/session-start.sh
+!/.claude/hooks/README.md
+!/.claude/settings.json
 
 # Local agent instructions belong to the machine running them, not the repo.
 AGENTS.md

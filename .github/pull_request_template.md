@@ -33,3 +33,4 @@ A dry run must write nothing; that is the promise this repository makes.
 - [ ] Running it twice is safe and produces the same result
 - [ ] Anything destructive is behind an explicit opt-in flag
 - [ ] The folder README and the root README were updated
+- [ ] A changelog fragment was added under `changelog.d/<type>/` (not an edit to `CHANGELOG.md`)

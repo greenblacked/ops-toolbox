@@ -26,23 +26,47 @@
     that is windows/cleanup/clean_disk_c.ps1, which has the dry run and the
     opt-in flags for it.
 
+    The winget upgrades need -Yes. linux/stay_fresh.sh has skipped package
+    upgrades without --yes from the start, and this script had no equivalent:
+    a bare .\stay_fresh.ps1 went straight to 'winget upgrade --all'. The root
+    README presents the two as counterparts, which is exactly what made that
+    dangerous - somebody who has learned the Bash habit ("just run it, it will
+    tell me what it wants") upgraded every package on the box the first time
+    they tried the Windows one. Every other step still runs without -Yes, so a
+    bare run stays a useful report; only the step that rewrites the machine
+    waits to be asked. -DryRun previews the upgrades without -Yes, because a
+    preview changes nothing and there is nothing to consent to.
+
 .EXAMPLE
     .\stay_fresh.ps1 -DryRun
     .\stay_fresh.ps1
+    .\stay_fresh.ps1 -Yes
     .\stay_fresh.ps1 -SkipWsl
     .\stay_fresh.ps1 -DryRun -Only Winget
+    .\stay_fresh.ps1 -Yes -Only Winget,Wsl
 
 .NOTES
     Exit codes, matching linux/stay_fresh.sh:
       0  success
       1  one or more steps failed
       2  preflight checks failed
+      3  bad CLI arguments (an -Only step nobody has heard of)
 #>
 [CmdletBinding()]
 param(
     [switch]$DryRun,
-    [ValidateSet('All', 'Winget', 'Wsl', 'Report')]
-    [string]$Only = 'All',
+    # The non-interactive consent gate, spelled the way linux/stay_fresh.sh
+    # spells it. Deliberately not SupportsShouldProcess: CONTRIBUTING.md rules
+    # out -WhatIf/-Confirm for these scripts so the Windows and Bash siblings
+    # read the same, and -WhatIf would duplicate the hand-rolled -DryRun that
+    # every other script here already has.
+    [switch]$Yes,
+    # A list, not one value: linux/stay_fresh.sh --only takes a comma-separated
+    # subset and this took exactly one name, so '-Only Winget,Wsl' died in
+    # parameter binding with a ValidateSet error that reads like the step names
+    # are wrong rather than the type. The set is validated in the body instead
+    # of by a ValidateSet attribute - see the parsing below for why.
+    [string[]]$Only = @('All'),
     [switch]$SkipWinget,
     [switch]$SkipWsl
 )
@@ -68,6 +92,31 @@ function Format-Size {
     if ($Bytes -ge 1MB) { return '{0:N1} MB' -f ($Bytes / 1MB) }
     if ($Bytes -ge 1KB) { return '{0:N0} KB' -f ($Bytes / 1KB) }
     return "$Bytes B"
+}
+
+# --- -Only ------------------------------------------------------------------
+# Ahead of the preflight, because a bad argument is a bad argument on every
+# platform and CONTRIBUTING.md puts usage errors before any preflight check.
+#
+# Both spellings of the list have to land here. From PowerShell itself,
+# '-Only Winget,Wsl' arrives as two elements; through 'pwsh -File' - the
+# invocation windows/README.md gives for a machine whose execution policy says
+# no - the very same line arrives as the single string 'Winget,Wsl', because
+# -File hands arguments over literally. Splitting on the comma takes both, and
+# is what linux/stay_fresh.sh does with IFS=','. A ValidateSet attribute
+# cannot: it runs during parameter binding, before anything has had a chance to
+# look at the comma, so the -File form would be rejected as an unknown step.
+$knownSteps = @('All', 'Winget', 'Wsl', 'Report')
+$onlySteps = @($Only |
+    ForEach-Object { $_ -split ',' } |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -ne '' })
+if (-not $onlySteps) { $onlySteps = @('All') }
+foreach ($step in $onlySteps) {
+    if ($knownSteps -notcontains $step) {
+        Write-Err ("unknown -Only step: {0} (expected one or more of: {1})" -f $step, ($knownSteps -join ', '))
+        exit 3
+    }
 }
 
 # --- preflight -------------------------------------------------------------
@@ -109,18 +158,28 @@ if ($DryRun) {
     Write-Host 'Dry run - nothing will be changed.' -ForegroundColor Yellow
 }
 
-$runWinget = $Only -in @('All', 'Winget')
-$runWsl = $Only -in @('All', 'Wsl')
-$runReport = $Only -in @('All', 'Report')
+# -contains, not -in: $onlySteps holds the list now, so -in would ask whether
+# the whole array is one of these names and always answer no.
+$onlyShown = $onlySteps -join ','
+$runWinget = ($onlySteps -contains 'All') -or ($onlySteps -contains 'Winget')
+$runWsl = ($onlySteps -contains 'All') -or ($onlySteps -contains 'Wsl')
+$runReport = ($onlySteps -contains 'All') -or ($onlySteps -contains 'Report')
 
 # --- winget ----------------------------------------------------------------
 if (-not $runWinget) {
-    Write-Info "skipped: winget (-Only $Only)"
+    Write-Info "skipped: winget (-Only $onlyShown)"
 } elseif ($SkipWinget) {
     Write-Info 'skipped: winget (-SkipWinget)'
 } else {
     Write-Section 'winget'
-    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+    # The consent gate, and the same shape as the one in linux/stay_fresh.sh:
+    # checked once the step has been entered, so the run says out loud that it
+    # is not upgrading rather than leaving a silent hole in the output. A dry
+    # run is exempt because it writes nothing; that also keeps the preview
+    # path - the one windows/tests/contract.ps1 exercises - reachable.
+    if (-not $DryRun -and -not $Yes) {
+        Write-Warn 'skipping upgrades: pass -Yes to run them unattended, or -DryRun to see them'
+    } elseif (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
         # A missing tool is a note, not a failure - the same rule the Bash
         # counterparts follow, and the reason this does not exit 2.
         Write-Warn 'winget is not on PATH - install "App Installer" from the Microsoft Store'
@@ -142,7 +201,7 @@ if (-not $runWinget) {
 
 # --- wsl -------------------------------------------------------------------
 if (-not $runWsl) {
-    Write-Info "skipped: WSL (-Only $Only)"
+    Write-Info "skipped: WSL (-Only $onlyShown)"
 } elseif ($SkipWsl) {
     Write-Info 'skipped: WSL (-SkipWsl)'
 } else {
@@ -165,7 +224,7 @@ if (-not $runWsl) {
 }
 
 # --- store -----------------------------------------------------------------
-if ($Only -eq 'All') {
+if ($onlySteps -contains 'All') {
     Write-Section 'store'
 # Notes, not a step. Store apps update on their own schedule, and winget's
 # msstore source needs each package's agreements accepted interactively, so an

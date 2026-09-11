@@ -1,5 +1,7 @@
 # MikroTik RouterOS scripts
 
+[Ops Toolbox](../README.md) / **MikroTik RouterOS scripts**
+
 A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.2**)
 for backups, WiFi rotation, monitoring and Telegram notifications. All scripts
 live in `/system script` on the router and are run either manually or from
@@ -15,7 +17,62 @@ rather than every run, and never swallowing a failed notification — are
 collected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), together with how the
 pinned CHR version and its digest are bumped.
 
-## Files at a glance
+## Contents
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Scripts overview](#scripts-overview)
+- [Installation](#installation)
+- [Script details](#script-details)
+- [Security action surface](#security-action-surface)
+- [Docker integration tests (CHR 7.24.2)](#docker-integration-tests-chr-7242)
+- [RouterOS 7.24.2 notes & gotchas](#routeros-7242-notes--gotchas)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.2**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
+| **Script policy** `read,write,policy,test,sensitive,ftp` | The policy set every `/system script` entry here is created with. `policy` is what lets a script read another script's source, `sensitive` covers the secrets, `ftp` covers `/tool fetch`. |
+| **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TG_BOT_TOKEN` / `TG_CHAT_ID` globals rather than editing each script. |
+| **Bash 3.2 or newer** | Host-side only, for `print_schedulers.sh` and `pull_router_backups.sh`. The `/bin/bash` that ships on macOS is enough. |
+| **Python 3.9+** | Host-side only, for `export_config.py` and `router_doctor.py`. Standard library only — no `pip install`, no venv, no `routeros-api`. |
+| **OpenSSH `ssh` and `scp`** | Host-side only. `pull_router_backups.sh` checks for both up front and exits `2` rather than letting a missing binary look like a router with no backups. `export_config.py --commit` additionally needs `git`. |
+| **Docker with the `compose` v2 plugin** | Optional, and only to run the integration suite in [`tests/`](tests/) against a real CHR instance. |
+
+## Quick start
+
+Nothing here is installed by a package manager. The `.lua` files are pasted into
+`/system script` on the router by hand — [Installation](#installation) walks
+through that — and the host-side helpers are run from a clone of this
+repository. The two worth running first are read-only; paths below are from the
+repository root, and the per-script sections further down invoke the same files
+from inside this folder.
+
+Before you touch a router, read the scheduler entries the `.lua` scripts are
+meant to get. This contacts nothing at all and writes nothing:
+
+```bash
+./mikrotik/print_schedulers.sh
+```
+
+Installing a script and scheduling it are separate acts, and the second one
+fails silently: a script nobody scheduled looks exactly like a script with
+nothing to report. Once the scripts are in place, ask the router which of them
+actually took:
+
+```bash
+./mikrotik/router_doctor.py --host 192.168.88.1
+```
+
+That is a read-only audit over ssh. It reports which of these scripts are in
+`/system script`, which of them a `/system scheduler` entry really runs, whether
+the globals they need are set, and whether a maintenance pause was left on —
+then prints the command that fixes what it found. It never writes to the router,
+and it asks for the *length* of `TG_BOT_TOKEN` and `TG_CHAT_ID` rather than
+their values, so no token crosses the wire.
+
+## Scripts overview
 
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |
@@ -68,12 +125,40 @@ pinned CHR version and its digest are bumped.
    your real values, **or** create a tiny startup script that sets globals:
 
    ```routeros
-   :global TG_BOT_TOKEN "123456:ABC...";
-   :global TG_CHAT_ID   "12345678";
+   :global TgBotToken "123456:ABC...";
+   :global TgChatId   "12345678";
    ```
 
    then add a Scheduler entry with `start-time=startup` pointing to it. The
    `tg_send` helper picks them up automatically.
+
+   RouterOS 7.24 refuses `:global` names with an underscore, so the package
+   helper no longer reads `TG_BOT_TOKEN` / `TG_CHAT_ID`.
+
+   **On a router already upgraded to 7.24, the old values are gone** — not
+   hidden, gone. Globals are runtime state, repopulated at boot by the startup
+   script, and on 7.24 that script declares `TG_BOT_TOKEN` and so does not run
+   at all. `/system script environment` has no row to copy from. Get the token
+   from BotFather (or wherever you keep it), put it in `TgBotToken` /
+   `TgChatId`, and **rewrite the startup script to the new names** — otherwise
+   the next reboot leaves them unset again.
+
+   **On 7.23, migrate before you upgrade.** This snippet copies the values for
+   the current uptime:
+
+   ```routeros
+   :global TG_BOT_TOKEN;
+   :global TG_CHAT_ID;
+   :global TgBotToken $TG_BOT_TOKEN;
+   :global TgChatId   $TG_CHAT_ID;
+   ```
+
+   It is **not** the whole migration. Globals do not survive a reboot, so the
+   startup script has to be edited to the new names too — without that, the
+   next restart restores the old pair and the helper falls back to its
+   placeholders. `router_doctor.py` reports `TgBotToken is not set` when this
+   has not been done, which is how you confirm the migration took.
+
 5. Run `detect_internet` once if you plan to use `wan_failover_notify`. It
    enables `detect-interface-list=all`, which is the prerequisite for the
    per-interface `detect-internet-state` property to be populated.
@@ -163,8 +248,11 @@ Generic Telegram text-message helper. All other scripts call it via
 `[:parse [/system script get tg_send source]]`. Posts to `sendMessage` with
 HTML parse mode using `application/x-www-form-urlencoded`, retries up to 3×
 on transient failures, and truncates messages above Telegram's 4096-char
-limit. Reads `:global TG_BOT_TOKEN` / `:global TG_CHAT_ID` if defined so
-secrets can stay out of the script body.
+limit. Reads `:global TgBotToken` / `:global TgChatId` if defined so
+secrets can stay out of the script body. RouterOS 7.24 refuses underscore
+names, so the old `TG_BOT_TOKEN` / `TG_CHAT_ID` globals are not read and cannot
+be re-declared there — see the migration note above, which includes rewriting
+the startup script.
 
 ### `backup.lua`
 
@@ -379,8 +467,9 @@ line is simply absent there.
 
 Five settings at the top. `TgSendScript` names the Telegram helper, and it
 defaults to `tg_send_new` — the operator's own copy — rather than the package's
-`tg_send`, which declares `TG_BOT_TOKEN` and `TG_CHAT_ID` and so does not run
-on 7.24 either; point it at whatever helper the router actually has.
+`tg_send`, so a router that already has a working helper keeps using it. The
+package helper now uses `TgBotToken` / `TgChatId` and runs on 7.24; point
+`TgSendScript` at whatever helper the router actually has.
 `updChannel` is `"stable"` by default and is **written** on every run, as the
 original script did — a fleet meant to sit on one train gets a hand-switched
 router put back before it is checked. Set it to `""` to leave the channel as
@@ -412,7 +501,8 @@ It declares no `:global` with an underscore in its name, for the reason under
 `test_script_add_remove_roundtrip` proves 7.24.1 accepts the source, and the
 convention suite holds it to the invariants below. It looks for the Telegram
 helper as `tg_send_new` first, the operator's copy that runs there, and falls
-back to the package's `tg_send` on releases that run it (not 7.24), encoding
+back to the package's `tg_send`, which runs on 7.24 too now that its globals
+are `TgBotToken` / `TgChatId`, encoding
 line breaks the way that helper's form body needs. With no helper resolved it
 still checks and logs, and refuses to install or reboot: a router that reboots
 without saying so is the failure it exists to avoid.
@@ -648,7 +738,7 @@ fixes what it found.
 ./router_doctor.py --host router.lan --format json
 ```
 
-Secrets stay on the router. The check on `TG_BOT_TOKEN` and `TG_CHAT_ID` asks
+Secrets stay on the router. The check on `TgBotToken` and `TgChatId` asks
 for the **length** of each secret global and never for the value, so no token crosses
 the wire or reaches your terminal — the report can say `set` or `empty`, and
 that is all it knows. The one value it reads is the non-secret boolean
@@ -747,7 +837,7 @@ candidate testing and the manual workflow controls.
 
 The macOS setup scripts in this repo have a **separate** lightweight Docker
 harness (syntax + ShellCheck only, no Homebrew) — see
-[`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development--docker-checks).
+[`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development-docker-checks).
 
 ## RouterOS 7.24.2 notes & gotchas
 

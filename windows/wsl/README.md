@@ -1,9 +1,35 @@
-# WSL Maintenance
+# WSL maintenance
+
+[Ops Toolbox](../../README.md) / **WSL maintenance**
 
 `wsl_manage.ps1` covers the WSL2 chores that are annoying to remember:
 finding where the virtual disks actually live, backing distros up and getting
 them back, reclaiming the disk space WSL2 never gives back on its own, and
 throwing away the giant `.tar` exports once they have aged out.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Why "compact" exists](#why-compact-exists)
+- [Usage](#usage)
+- [Actions](#actions)
+- [Restoring](#restoring)
+- [Pruning backups](#pruning-backups)
+- [Git Bash shortcuts](#git-bash-shortcuts)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Windows with WSL2** | Every action except `verify-backup` probes for `wsl.exe` and then runs `wsl --status`, exiting `2` if either says WSL is absent or not operational. `wsl.exe` exists as a stub on machines that never installed WSL, which is why the second probe is there. |
+| **Windows PowerShell 5.1 or PowerShell 7** | Run from the folder, or from anywhere by path. |
+| **An elevated shell** | Only for `compact`, which drives `diskpart`. Unelevated it exits `4` and does nothing else. |
+| **A recent WSL build** | Only for `sparse`, which needs `wsl --manage --set-sparse`. An older build fails the call and the script says to run `wsl --update`. |
+| **Enough free disk for both copies** | For `restore`. `wsl --import` reads the `.tar` rather than consuming it, so the tar and the imported `ext4.vhdx` exist at the same time. |
+
+`verify-backup` is the exception to all of it: it recomputes SHA-256 for a
+`.tar` and compares it with the sidecar, so it needs no WSL and no elevation
+and runs on a machine that only holds the backups.
 
 ## Why "compact" exists
 

@@ -1,5 +1,7 @@
 # Go test environment
 
+[Ops Toolbox](../../README.md) / **Go test environment**
+
 Develop and run checks in **Docker** so your laptop does not need a local Go
 toolchain. The image ships **Go 1.23**, **golangci-lint**, **goimports**,
 **govulncheck**, plus the meta-linters **shellcheck**, **hadolint**, and
@@ -13,6 +15,18 @@ This is a **local sandbox**. `../../run-tests.sh` has no `go` suite and CI never
 runs `just ci` here, so nothing below is checked by opening a pull request —
 only the scaffolding as text, through the repository-wide ShellCheck, yamllint
 and markdownlint job. Run `just ci` yourself after changing anything here.
+
+---
+
+## Contents
+
+- [Layout](#layout)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [One-shot mode](#one-shot-mode)
+- [After dependency changes](#after-dependency-changes)
+- [Linters](#linters)
+- [Optional: Go on the host](#optional-go-on-the-host)
 
 ---
 

@@ -32,7 +32,8 @@
 # Exit codes:
 #   0   everything installed / upgraded cleanly
 #   1   one or more installs failed
-#   2   preflight checks failed (not macOS, no internet, no brew, etc.)
+#   2   preflight checks failed (not macOS, no internet, no brew, or a real
+#       run with no terminal on stdin and no --yes)
 #   3   bad CLI arguments
 
 set -u
@@ -111,7 +112,8 @@ ${C_BOLD}Usage:${C_RESET}
 
 ${C_BOLD}General options:${C_RESET}
   --dry-run                 Show what would happen, install nothing
-  --yes, -y                 Don't ask for confirmation
+  --yes, -y                 Don't ask for confirmation. Required for a real run
+                            with no terminal on stdin; --dry-run is not affected
   --verbose, -v             Stream brew / builder output live (default: captured)
   --setup-shell             Append the needed init lines to ~/.zshrc (or ~/.bashrc)
   --only TOOLS              Install only a comma-separated subset of:
@@ -321,17 +323,6 @@ shell_setup_required() {
 # preflight
 # ---------------------------------------------------------------------------
 bold "=== install_devtools: preflight checks ==="
-# A dry run writes nothing — including this script's own log. Creating it
-# unconditionally left one orphan per preview and contradicted the promise
-# README.md makes. run_cmd() already skips the appends.
-if (( DRY_RUN == 1 )); then
-  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
-else
-  mkdir -p "$LOG_DIR"
-  : > "$LOG_FILE"
-  echo "install_devtools.sh log - $(date)" >> "$LOG_FILE"
-  info "log file: $C_DIM$LOG_FILE$C_RESET"
-fi
 
 # OS
 # A preflight that stops a preview is a preflight in the wrong place. --help
@@ -358,6 +349,47 @@ if [[ "$(id -u)" == "0" ]]; then
   preflight_fail "Do NOT run this script as root. brew/pyenv refuse to run as root."
 fi
 ok "running as user: $(id -un)"
+
+# A real run with no terminal must be explicitly authorized.
+#
+# The confirmation further down reads `(( ASSUME_YES == 0 )) && [[ -t 0 ]]`,
+# so with no terminal it simply did not ask and the run went ahead: piped
+# stdin counted as consent. A CI step, a launchd job or a provisioning script
+# with stdin redirected from /dev/null would therefore install pyenv, tfenv,
+# goenv and their toolchains with nobody having agreed to any of it. Absence
+# of a terminal is absence of an answer, not a yes.
+#
+# `[[ ! -t 0 ]]` is the same question stay_fresh.sh asks in the same place and
+# for the same reason; keep the two spellings identical. It is a different
+# question from that script's have_tty(), which opens /dev/tty to find out
+# whether a prompt can be *shown* — this one asks only whether stdin is a
+# terminal, which is what decides whether `read` below has anyone to read
+# from.
+#
+# --dry-run is deliberately exempt: a preview changes nothing, so there is
+# nothing to consent to, and requiring --yes to see a plan would push people
+# into passing --yes by habit — which is how a flag meaning "I have read this"
+# stops meaning anything.
+#
+# Placed ahead of the log, the network probe and the Homebrew lookup so a
+# refused run leaves no trace: a refusal that drops a log file in TMPDIR has
+# already made a change.
+if (( DRY_RUN == 0 && ASSUME_YES == 0 )) && [[ ! -t 0 ]]; then
+  err "non-interactive execution requires --yes; refusing to make changes"
+  exit 2
+fi
+
+# A dry run writes nothing — including this script's own log. Creating it
+# unconditionally left one orphan per preview and contradicted the promise
+# README.md makes. run_cmd() already skips the appends.
+if (( DRY_RUN == 1 )); then
+  info "  (dry-run) would write log: $C_DIM$LOG_FILE$C_RESET"
+else
+  mkdir -p "$LOG_DIR"
+  : > "$LOG_FILE"
+  echo "install_devtools.sh log - $(date)" >> "$LOG_FILE"
+  info "log file: $C_DIM$LOG_FILE$C_RESET"
+fi
 
 # internet
 if curl -fsI --max-time 5 https://formulae.brew.sh/ >/dev/null 2>&1; then
@@ -419,7 +451,13 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
-if (( ASSUME_YES == 0 )) && [[ -t 0 ]]; then
+# The `[[ -t 0 ]]` half of this condition is gone. It meant "only ask when
+# somebody is there to answer", which reads as caution and behaved as consent:
+# with no terminal the question was skipped and the install proceeded. The
+# preflight guard above now refuses that run outright, so anything reaching
+# this line either passed --yes (and skips the block) or has a terminal to
+# prompt on.
+if (( ASSUME_YES == 0 )); then
   printf "%sProceed? [y/N]%s " "$C_BOLD" "$C_RESET"
   read -r answer
   case "$answer" in

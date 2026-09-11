@@ -253,6 +253,78 @@ class ScanTestCase(unittest.TestCase):
         self.assertEqual(status, UNRESOLVED)
         self.assertIn("volume not mounted", reason)
 
+    # --- what the path resolves to, not what it is spelled as -------------
+    def test_symlink_onto_unmounted_volume_is_unresolved(self):
+        # ~/work/big -> /Volumes/BigSSD/big, the usual way a project on an
+        # external disk is reached. The literal path names no volume at all,
+        # so only resolving it can tell that the disk is unplugged rather than
+        # the project deleted.
+        link = os.path.join(self.tmp, "link")
+        os.symlink("/Volumes/BigSSD/big", link)
+        entry = self.make_entry({"folder": "file://" + os.path.join(link, "proj")})
+        status, reason, _ = self.classify(entry)
+        self.assertEqual(status, UNRESOLVED)
+        self.assertIn("volume not mounted", reason)
+        self.assertIn("BigSSD", reason)
+
+    def test_symlink_onto_mounted_volume_is_stale(self):
+        # Same link, disk attached: now the missing path really is missing.
+        self.mount("BigSSD")
+        link = os.path.join(self.tmp, "link")
+        os.symlink("/Volumes/BigSSD/big", link)
+        entry = self.make_entry({"folder": "file://" + os.path.join(link, "proj")})
+        status, reason, _ = self.classify(entry)
+        self.assertEqual(status, STALE)
+        self.assertEqual(reason, "path gone")
+
+    # --- cloud storage is not a volume ------------------------------------
+    def test_unmaterialised_cloud_path_is_unresolved(self):
+        # iCloud Drive, OneDrive and Google Drive mount under
+        # ~/Library/CloudStorage, never under /Volumes, so the volume check
+        # cannot see them. A signed-out provider empties the tree, and every
+        # project in it would otherwise read as deleted.
+        cloud = os.path.join(
+            self.tmp, "Library", "CloudStorage", "OneDrive-Corp", "proj"
+        )
+        entry = self.make_entry({"folder": "file://" + cloud})
+        status, reason, _ = self.classify(entry)
+        self.assertEqual(status, UNRESOLVED)
+        self.assertIn("cloud storage", reason)
+
+    def test_materialised_cloud_path_is_live(self):
+        cloud = os.path.join(
+            self.tmp, "Library", "CloudStorage", "OneDrive-Corp", "proj"
+        )
+        os.makedirs(cloud)
+        entry = self.make_entry({"folder": "file://" + cloud})
+        status, _, path = self.classify(entry)
+        self.assertEqual(status, LIVE)
+        self.assertEqual(path, cloud)
+
+    # --- a path the filesystem cannot even represent ----------------------
+    def test_nul_in_path_is_unresolved_not_a_traceback(self):
+        # os.path.exists(), which os.lstat() replaced, folded ValueError into
+        # its False. os.lstat() raises it, and ValueError is not an OSError,
+        # so it escaped classify_entry and aborted the whole scan.
+        entry = self.make_entry({"folder": "file:///Users/me/x%00y"})
+        status, reason, _ = self.classify(entry)
+        self.assertEqual(status, UNRESOLVED)
+        self.assertIn("representable", reason)
+
+    def test_one_unrepresentable_entry_does_not_stop_the_scan(self):
+        # The reason it matters: main() aborted with a traceback, so
+        # step_workspacestorage kept every entry for every editor because of
+        # one bad manifest.
+        self.make_entry({"folder": "file:///Users/me/x%00y"})
+        gone = os.path.join(self.tmp, "definitely-gone")
+        self.make_entry({"folder": "file://" + gone})
+        live = self.make_project("still-here")
+        self.make_entry({"folder": "file://" + live})
+        results = workspace_scan.scan([self.root], volumes_dir=self.volumes)
+        self.assertEqual(len(results), 3)
+        by_status = sorted(r["status"] for r in results)
+        self.assertEqual(by_status, [LIVE, STALE, UNRESOLVED])
+
     def test_home_path_is_not_treated_as_a_volume(self):
         # Paths on the boot volume must not be shielded by the volume check,
         # or nothing would ever be collected.

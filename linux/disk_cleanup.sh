@@ -26,6 +26,7 @@ ASSUME_YES=0
 NO_SUDO=0
 DAYS=7
 HOME_DIR="${HOME:-}"
+HOME_OVERRIDE=0
 TMP_DIR="${TMPDIR:-}"
 TMP_OVERRIDE=0
 INCLUDE_TRASH=0
@@ -70,7 +71,8 @@ Options:
   --dry-run              Print every deletion without running it
   --yes, -y              Required for a run that actually deletes
   --days N               Only files older than N days (default: $DAYS; 0 = all)
-  --home DIR             User profile to clean (default: \$HOME)
+  --home DIR             User profile to clean (default: \$HOME); an ambient
+                         \$XDG_CACHE_HOME is ignored when this is given
   --tmp DIR              Extra temp directory to clean (default: \$TMPDIR)
   --no-sudo              Skip every step that needs root
   --include-trash        Empty ~/.local/share/Trash
@@ -119,8 +121,8 @@ while (( $# > 0 )); do
     --no-sudo)             NO_SUDO=1 ;;
     --days)                require_value "$1" "${2:-}"; DAYS="$2"; shift ;;
     --days=*)              DAYS="${1#*=}"; require_value "--days" "$DAYS" ;;
-    --home)                require_value "$1" "${2:-}"; HOME_DIR="$2"; shift ;;
-    --home=*)              HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR" ;;
+    --home)                require_value "$1" "${2:-}"; HOME_DIR="$2"; HOME_OVERRIDE=1; shift ;;
+    --home=*)              HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR"; HOME_OVERRIDE=1 ;;
     --tmp)                 require_value "$1" "${2:-}"; TMP_DIR="$2"; TMP_OVERRIDE=1; shift ;;
     --tmp=*)               TMP_DIR="${1#*=}"; require_value "--tmp" "$TMP_DIR"; TMP_OVERRIDE=1 ;;
     --include-trash)       INCLUDE_TRASH=1 ;;
@@ -397,6 +399,81 @@ clean_dir_contents() {
   fi
 }
 
+# The Trash is emptied whole, and clean_dir_contents above is the wrong tool
+# for it twice over. linux/stay_fresh.sh was fixed for exactly this and its
+# comment names this file; the fix did not travel, so here it is.
+#
+# A trashed *directory* is one item, not a container. `find -type f` deleted
+# files/SomeProject/big.bin and left files/SomeProject/ behind as an empty
+# skeleton — while info/SomeProject.trashinfo went with the files, so the item
+# could no longer be restored, or even identified.
+#
+# And when files/ is a symlink — the usual way to keep a trash off a small
+# SSD — `[[ -d ]]` follows the link but find does not, so -type f matched
+# nothing at all: the run printed "nothing in trash files" and freed zero
+# bytes on the machine most likely to need the space.
+#
+# `find "$dir/" -mindepth 1 -delete` is the form stay_fresh.sh settled on. The
+# trailing slash makes find descend into the target of a symlink, -mindepth 1
+# leaves behind the directory the FreeDesktop spec expects to exist, and
+# -delete removes trashed directories along with files. -xdev stays for the
+# reason it is everywhere else here: a mount below the trash is somebody
+# else's filesystem.
+#
+# -delete reports no sizes, so the total is measured in a pass beforehand
+# rather than accumulated one unlink at a time; the dry run is that pass and
+# nothing more. A -delete that could not finish credits nothing, which keeps
+# the closing "freed at least" honest. The cache directories keep
+# clean_dir_contents: leaving their tree in place is deliberate, and a cache
+# has no restore records to stay consistent with.
+empty_trash_dir() {
+  local dir="$1"
+  local label="$2"
+  local count=0
+  local bytes=0
+  local path size
+  [[ -d "$dir" ]] || { info "no $label ($dir)"; return 0; }
+
+  while IFS= read -r -d '' path; do
+    [[ -n "$path" ]] || continue
+    count=$((count + 1))
+    # Only a regular file carries bytes. A symlink in the trash is an item
+    # whose target is somewhere else, and a directory's own size is not space
+    # this run frees.
+    size=""
+    if [[ -f "$path" && ! -L "$path" ]]; then
+      size="$(file_size "$path")"
+      bytes=$((bytes + size))
+    fi
+    if (( DRY_RUN == 1 )); then
+      if [[ -n "$size" ]]; then
+        printf "  %s(dry-run)%s would remove %s (%s)\n" "$C_DIM" "$C_RESET" "$path" "$(human_bytes "$size")"
+      else
+        printf "  %s(dry-run)%s would remove %s\n" "$C_DIM" "$C_RESET" "$path"
+      fi
+    fi
+  done < <(find "$dir/" -xdev -mindepth 1 -print0 2>/dev/null)
+
+  if (( count == 0 )); then
+    info "nothing in $label"
+    return 0
+  fi
+
+  if (( DRY_RUN == 1 )); then
+    WOULD_BYTES=$((WOULD_BYTES + bytes))
+    info "$count item(s) in $label ($(human_bytes "$bytes"))"
+    return 0
+  fi
+
+  if find "$dir/" -xdev -mindepth 1 -delete 2>/dev/null; then
+    FREED_BYTES=$((FREED_BYTES + bytes))
+    info "$count item(s) from $label ($(human_bytes "$bytes"))"
+  else
+    warn "could not empty $label ($dir)"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
 info "owner: $OWNER · older than ${DAYS}d · home $HOME_DIR"
 
 # --- temp ------------------------------------------------------------------
@@ -424,15 +501,24 @@ done
 # --- thumbnails ------------------------------------------------------------
 step "thumbnails"
 clean_dir_contents "$HOME_DIR/.cache/thumbnails" "thumbnail cache"
+# XDG_CACHE_HOME describes the cache of the user running this script. With
+# --home the profile being cleaned is somebody else's — another account, or a
+# test fixture — and their cache is not where this process's environment says
+# it is. Honouring it anyway deleted files outside the directory --home named,
+# which is the one thing --home promises not to touch.
 if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-  clean_dir_contents "$XDG_CACHE_HOME/thumbnails" "XDG thumbnail cache"
+  if (( HOME_OVERRIDE )); then
+    info "XDG_CACHE_HOME ignored: it describes the caller's cache, not the profile --home names"
+  else
+    clean_dir_contents "$XDG_CACHE_HOME/thumbnails" "XDG thumbnail cache"
+  fi
 fi
 
 # --- trash -----------------------------------------------------------------
 if (( INCLUDE_TRASH == 1 )); then
   step "trash"
-  clean_dir_contents "$HOME_DIR/.local/share/Trash/files" "trash files"
-  clean_dir_contents "$HOME_DIR/.local/share/Trash/info" "trash info"
+  empty_trash_dir "$HOME_DIR/.local/share/Trash/files" "trash files"
+  empty_trash_dir "$HOME_DIR/.local/share/Trash/info" "trash info"
 else
   info "skipped: trash (pass --include-trash)"
 fi
@@ -584,11 +670,11 @@ fi
 
 printf "\n"
 if (( DRY_RUN == 1 )); then
-  info "would free at least $(human_bytes "$WOULD_BYTES") from age-filtered files"
+  info "would free at least $(human_bytes "$WOULD_BYTES") in total"
   printf "dry-run complete; no changes written\n"
   exit 0
 fi
-info "freed at least $(human_bytes "$FREED_BYTES") from age-filtered files"
+info "freed at least $(human_bytes "$FREED_BYTES") in total"
 if (( FAIL_COUNT > 0 )); then
   err "$FAIL_COUNT deletion(s) failed"
   exit 1
