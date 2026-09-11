@@ -18,6 +18,18 @@ and markdownlint job. Run `just ci` yourself after changing anything here.
 
 ---
 
+## Contents
+
+- [Layout](#layout)
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [One-shot mode](#one-shot-mode)
+- [After dependency changes](#after-dependency-changes)
+- [Linters](#linters)
+- [Optional: Go on the host](#optional-go-on-the-host)
+
+---
+
 ## Layout
 
 | Path | Role |

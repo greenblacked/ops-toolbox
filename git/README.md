@@ -9,6 +9,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 ## Contents
 
 - [Requirements](#requirements)
+- [Quick start](#quick-start)
 - [Scripts overview](#scripts-overview)
 - [Exit codes (conventions)](#exit-codes-conventions)
 - [Aliases](#aliases)
@@ -43,6 +44,27 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
 | **Python 3.9+** | Optional; only for the three `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
+
+## Quick start
+
+There is nothing to install. Every script here is self-contained and runs
+straight out of a clone. From the repository root:
+
+```bash
+./git/git_whoami.sh                      # the name and email this repo would commit as
+./git/git_status_summary.sh              # branch, upstream, ahead/behind, dirty counts
+./git/gacp.sh --dry-run -m "a message"   # what add + commit + push would run; changes nothing
+```
+
+Start with `git_whoami.sh`. It answers the question that costs the most to get
+wrong — the identity Git will actually use *here*, after every global setting
+and repository-local override has been applied — and it writes nothing.
+`--expect-email` turns the same report into a check that fails instead of
+merely printing, which is what makes it usable in a hook or in CI.
+
+Everything that would change a repository accepts `--dry-run` and prints the
+exact commands it would run first. When the scripts have earned their place,
+the [aliases](#aliases) give each one a short name.
 
 ## Scripts overview
 

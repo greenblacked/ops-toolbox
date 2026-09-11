@@ -31,12 +31,50 @@ one. Neither replaces the other.
 
 ## Contents
 
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
 - [winget_bootstrap.ps1](#winget_bootstrapps1)
 - [stay_fresh.ps1](#stay_freshps1)
 - [workstation_doctor.ps1](#workstation_doctorps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Windows 10 or 11** | Every script here exits `2` on anything else. |
+| **Windows PowerShell 5.1 or PowerShell 7** | Either edition; the platform guard tests the edition too, because Windows PowerShell does not define `$IsWindows`. |
+| **winget, from the Microsoft Store "App Installer"** | Needed by the two winget scripts, which exit `2` without it. `winget_configure.ps1` also needs **WinGet 1.6 or newer** — see its own [Requirements](#requirements-1) — and checks both at the point it invokes winget, so previewing a configuration still works on a machine that has neither. |
+| **Chocolatey** | Only for `choco_bootstrap.ps1`, which exits `2` when `choco.exe` is not on `PATH`. It is an alternative to the winget pair, not a companion to them. |
+| **An elevated shell** | Optional. `workstation_doctor.ps1` runs unelevated and says so, but BitLocker and Defender answer more fully with elevation. |
+
+## Quick start
+
+The read-only one first. Nothing in it changes anything, which is what makes it
+the safe thing to run on a machine you have just been handed:
+
+```powershell
+.\workstation_doctor.ps1
+```
+
+It reports BitLocker, Defender, pending reboot, disk headroom, WSL and
+execution policy in one pass.
+
+Then the two halves of package management, both in their non-destructive form.
+The first compares this machine against the curated list in
+[`configuration.winget`](configuration.winget) — the *intent*. The second
+captures what this particular box actually has — the *fact*:
+
+```powershell
+.\winget_configure.ps1 test
+.\winget_bootstrap.ps1 diff
+```
+
+`test` exits `1` when the machine has drifted from the file, and `diff` needs
+an existing `winget-packages.json` to compare against — run
+`.\winget_bootstrap.ps1 export` once to create it, then commit it.
 
 ## winget_bootstrap.ps1
 

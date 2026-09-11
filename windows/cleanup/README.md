@@ -6,6 +6,15 @@
 safe to lose. It never touches documents, downloads, application settings, or
 anything under your user profile except designated cache/temp locations.
 
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Windows 10 or 11** | The script reads `C:` and the current Windows identity at script scope, so it is a Windows-only file in a way the other scripts here are not. |
+| **Windows PowerShell 5.1 or PowerShell 7** | Either edition. See the repository's [execution policy note](../README.md#execution-policy-note) if PowerShell refuses to run it at all. |
+| **An elevated shell** | Optional. Without it the machine-wide targets (Windows temp, WER, Delivery Optimization, Windows Update cache) are skipped with a warning and the profile-owned ones still run. |
+| **Docker** | Optional, and only for the opt-in Docker target. When `docker` is not on `PATH` that target prints a `SKIP` line instead of failing the run. |
+
 ## Usage
 
 ```powershell

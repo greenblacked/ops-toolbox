@@ -21,6 +21,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 
 ## Contents
 
+- [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [Lifecycle: when to run what](#lifecycle-when-to-run-what)
 - [Kali VM bootstrap](#kali-vm-bootstrap)
@@ -61,6 +62,23 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`install_aliases.sh`](install_aliases.sh) | Install or remove the `bash_aliases.sh` source block in `~/.bashrc` |
 | [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh) | Install a user timer so `stay_fresh.sh` runs on a schedule |
 | [`tests/`](tests/) | Docker checks that **run** the scripts, across all three distros |
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Linux** | Every script here exits `2` on anything else. |
+| **One of `apt`, `dnf` or `pacman`** | Only the five scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Three of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other nine never ask. |
+| **Bash 3.2 or newer** | These scripts are held to the same Bash 3.2 floor as the macOS package, so they also run on a box with an old `/bin/bash`. |
+| **`sudo`, or root** | Optional. Steps that need root are skipped with a warning when `sudo` is missing, and `--no-sudo` skips them deliberately. Running as root needs neither. |
+| **A systemd user manager** | Only for [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh), which exits `2` without one. `install --print-only` still prints the units anywhere. |
+| **`openssl`** | Only for [`tls_expiry.sh`](tls_expiry.sh), which exits `2` without it. |
+| **Docker** | Only to run the suite in [`tests/`](tests/), which runs the scripts inside real Debian, Fedora and Arch containers. |
+
+Optional tools are handled the same way throughout: a missing one is recorded
+and skipped, not fatal. That is why these scripts use `set -u` and
+`set -o pipefail` without `-e` — a long maintenance run should report what it
+could not do and carry on.
 
 ## Quick start
 

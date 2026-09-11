@@ -17,6 +17,61 @@ rather than every run, and never swallowing a failed notification — are
 collected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), together with how the
 pinned CHR version and its digest are bumped.
 
+## Contents
+
+- [Requirements](#requirements)
+- [Quick start](#quick-start)
+- [Scripts overview](#scripts-overview)
+- [Installation](#installation)
+- [Script details](#script-details)
+- [Security action surface](#security-action-surface)
+- [Docker integration tests (CHR 7.24.2)](#docker-integration-tests-chr-7242)
+- [RouterOS 7.24.2 notes & gotchas](#routeros-7242-notes--gotchas)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.2**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
+| **Script policy** `read,write,policy,test,sensitive,ftp` | The policy set every `/system script` entry here is created with. `policy` is what lets a script read another script's source, `sensitive` covers the secrets, `ftp` covers `/tool fetch`. |
+| **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TG_BOT_TOKEN` / `TG_CHAT_ID` globals rather than editing each script. |
+| **Bash 3.2 or newer** | Host-side only, for `print_schedulers.sh` and `pull_router_backups.sh`. The `/bin/bash` that ships on macOS is enough. |
+| **Python 3.9+** | Host-side only, for `export_config.py` and `router_doctor.py`. Standard library only — no `pip install`, no venv, no `routeros-api`. |
+| **OpenSSH `ssh` and `scp`** | Host-side only. `pull_router_backups.sh` checks for both up front and exits `2` rather than letting a missing binary look like a router with no backups. `export_config.py --commit` additionally needs `git`. |
+| **Docker with the `compose` v2 plugin** | Optional, and only to run the integration suite in [`tests/`](tests/) against a real CHR instance. |
+
+## Quick start
+
+Nothing here is installed by a package manager. The `.lua` files are pasted into
+`/system script` on the router by hand — [Installation](#installation) walks
+through that — and the host-side helpers are run from a clone of this
+repository. The two worth running first are read-only; paths below are from the
+repository root, and the per-script sections further down invoke the same files
+from inside this folder.
+
+Before you touch a router, read the scheduler entries the `.lua` scripts are
+meant to get. This contacts nothing at all and writes nothing:
+
+```bash
+./mikrotik/print_schedulers.sh
+```
+
+Installing a script and scheduling it are separate acts, and the second one
+fails silently: a script nobody scheduled looks exactly like a script with
+nothing to report. Once the scripts are in place, ask the router which of them
+actually took:
+
+```bash
+./mikrotik/router_doctor.py --host 192.168.88.1
+```
+
+That is a read-only audit over ssh. It reports which of these scripts are in
+`/system script`, which of them a `/system scheduler` entry really runs, whether
+the globals they need are set, and whether a maintenance pause was left on —
+then prints the command that fixes what it found. It never writes to the router,
+and it asks for the *length* of `TG_BOT_TOKEN` and `TG_CHAT_ID` rather than
+their values, so no token crosses the wire.
+
 ## Scripts overview
 
 | File                            | Purpose                                                                 |
@@ -749,7 +804,7 @@ candidate testing and the manual workflow controls.
 
 The macOS setup scripts in this repo have a **separate** lightweight Docker
 harness (syntax + ShellCheck only, no Homebrew) — see
-[`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development--docker-checks).
+[`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development-docker-checks).
 
 ## RouterOS 7.24.2 notes & gotchas
 

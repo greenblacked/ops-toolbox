@@ -225,8 +225,8 @@ MikroTik. Use per [CHR licensing](https://help.mikrotik.com/docs/display/ROS/Clo
 ## See also
 
 - [`../README.md`](../README.md) — RouterOS runbook, policies, and scheduler hints.
-- [`../../macos-initial-setup/README.md`](../../macos-initial-setup/README.md#development--docker-checks) — **macOS** setup scripts: Docker-based `bash`/`shellcheck` checks (separate from this CHR test stack).
-- [Repository root `README.md`](../../README.md#testing-docker) — overview of both Docker test paths.
+- [`../../macos-initial-setup/README.md`](../../macos-initial-setup/README.md#development-docker-checks) — **macOS** setup scripts: Docker-based `bash`/`shellcheck` checks (separate from this CHR test stack).
+- [Repository root `README.md`](../../README.md#testing) — overview of both Docker test paths.
 
 ## Credits
 

@@ -27,6 +27,22 @@ gate is checked directly because it answers before the throwing line.
 | [`setup/`](setup/) | `winget_configure.ps1` — build a machine from [`configuration.winget`](setup/configuration.winget), a curated declarative list (`validate` / `show` / `test` / `apply`). `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `list` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy. `choco_bootstrap.ps1` — five verbs over a Chocolatey `packages.config`, the same set with `install` in place of `import`, for machines managed with choco rather than winget. |
 | [`tests/`](tests/) | Contract checks over every script here and in [`../templates/`](../templates/): parse, comment-based help, preview-before-changing, that documented flags exist, and that a `-DryRun` writes nothing. |
 
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **Windows 10 or 11** | The PowerShell scripts here exit `2` anywhere else. |
+| **Windows PowerShell 5.1 or PowerShell 7** | Both editions are supported, which is why the platform guard tests the edition as well: Windows PowerShell does not define `$IsWindows` at all. |
+| **An elevated shell** | Optional, and only for the system-wide work. Without it, `clean_disk_c.ps1` skips the machine-wide targets and still cleans the profile-owned ones, `workstation_doctor.ps1` says BitLocker and Defender may answer partially, and `wsl_manage.ps1` returns `4` from `compact`. |
+| **winget, from the Microsoft Store "App Installer"** | For `winget_configure.ps1` and `winget_bootstrap.ps1`. `winget_configure.ps1` additionally needs **WinGet 1.6 or newer**, since `winget configure` does not exist before it; both checks happen at the point winget is invoked, so previewing a configuration works on a machine that has not got it yet. |
+| **Chocolatey** | Only for `choco_bootstrap.ps1`, which exits `2` when `choco.exe` is not on `PATH`. |
+| **WSL** | Only for `wsl_manage.ps1`. The other scripts treat a missing `wsl.exe` as "WSL is not installed" and carry on. |
+| **Git Bash (MSYS2)** | Only for the dotfiles in [`git-bash/`](git-bash/), which are installed by a Bash script from inside Git Bash. |
+| **`pwsh`** | Only to run the checks in [`tests/`](tests/). The suite skips itself cleanly when `pwsh` is not installed, and needs no Docker. |
+
+Scripts are run from a clone; nothing here installs itself. If PowerShell
+refuses to run them at all, see [Execution policy note](#execution-policy-note).
+
 ## Quick start
 
 ```powershell

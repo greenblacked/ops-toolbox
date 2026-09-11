@@ -44,6 +44,19 @@ layout. `./templates/new_helper.py` prints the report shape a diagnostic is
 expected to produce; add `--json` for the same findings as one stable,
 machine-readable object.
 
+## Requirements
+
+To *run* the three templates, one each:
+
+| Template | Needs |
+| --- | --- |
+| [`new_script.sh`](new_script.sh) | Bash. Keep a copy destined for `git/`, `macos-initial-setup/` or `linux/` clear of Bash 4 constructs — the convention suite holds those three packages to the Bash 3.2 that ships on macOS. |
+| [`new_script.ps1`](new_script.ps1) | PowerShell. It carries no platform guard, so unlike the scripts in `windows/` it runs its dry run to completion on Linux and macOS under `pwsh` too. |
+| [`new_helper.py`](new_helper.py) | `python3`, standard library only and 3.9-clean, because `/usr/bin/python3` on macOS is 3.9. |
+
+Nothing else: no package manager, no virtualenv, no build step. Copying a
+template out of this folder gives you a file that already runs.
+
 ## Which one
 
 `new_script.sh` and `new_script.ps1` are for scripts that **change** a machine:

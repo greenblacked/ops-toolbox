@@ -21,6 +21,20 @@ here.
 
 ---
 
+## Contents
+
+- [Layout](#layout)
+- [Prerequisites](#prerequisites)
+- [Quick start (long-running container — recommended)](#quick-start-long-running-container--recommended)
+- [One-shot mode](#one-shot-mode)
+- [Linters](#linters)
+- [How it works](#how-it-works)
+- [Dependency management](#dependency-management)
+- [Optional: Ruby on the host](#optional-ruby-on-the-host)
+- [Adding your own cookbooks](#adding-your-own-cookbooks)
+
+---
+
 ## Layout
 
 | Path | Role |

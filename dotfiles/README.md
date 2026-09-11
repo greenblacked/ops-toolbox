@@ -19,6 +19,7 @@ tools, not by a shell.
 
 ## Contents
 
+- [Requirements](#requirements)
 - [Quick start](#quick-start)
 - [What is deliberately not here](#what-is-deliberately-not-here)
 - [`install_dotfiles.sh`](#install_dotfilessh)
@@ -31,6 +32,19 @@ tools, not by a shell.
 - [Package managers](#package-managers)
 - [Tools with no config file](#tools-with-no-config-file)
 - [Tests](#tests)
+
+## Requirements
+
+| Requirement | Notes |
+| --- | --- |
+| **macOS 12+ or Linux** | The installer and every config target both. |
+| **Bash 3.2 or newer** | Only [`install_dotfiles.sh`](install_dotfiles.sh) needs a shell at all; it stays Bash 3.2-clean like the macOS package, so the `/bin/bash` on a Mac is enough. |
+| **The tools themselves** | A config is inert until the tool that reads it is installed — nothing here installs one. `--only UNIT` limits any mode to the tools you actually have, and `--list` shows every unit name. |
+| **`git`** | Only for the suite in [`tests/`](tests/), which needs nothing else — no Docker. |
+
+Four of the configs are found only if the shell exports a path to them; see
+[Environment variables](#environment-variables) for the block to paste. The rest
+are read from their default `~/.config` or `~` location with no help.
 
 ## Quick start
 
