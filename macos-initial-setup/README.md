@@ -33,6 +33,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`brewfile.sh`](#brewfilesh)
 - [`macos_defaults.sh`](#macos_defaultssh)
+- [`status.sh`](#statussh)
 - [`workstation_doctor.sh`](#workstation_doctorsh)
 - [`hardening_audit.sh`](#hardening_auditsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
@@ -60,6 +61,7 @@ For returning users. Every command is idempotent.
 ./install_devtools.sh --dry-run --only terraform,helm
 
 # Read the machine, change nothing
+./status.sh                              # one-screen verdict
 ./workstation_doctor.sh                  # is this Mac well?
 ./hardening_audit.sh                     # is this Mac safe?
 ```
@@ -77,6 +79,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
 | `macos_defaults.sh` | Read-only preference drift report by default; explicitly apply selected settings or revert a validated backup. |
+| `status.sh` | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
@@ -200,6 +203,8 @@ through `brew` instead of each vendor's auto-updater.
 | `--dry-run` | Show the plan; change nothing. |
 | `-y`, `--yes` | Skip confirmation prompts. |
 | `-v`, `--verbose` | Stream `brew` output live (also runs `brew doctor` into the log). |
+| `--list-casks` | Print selectable cask ids and exit. No macOS preflight. |
+| `--list-formulae` | Print selectable formula ids and exit. No macOS preflight. |
 | `--only a,b,c` | Install only the listed casks. |
 | `--skip a,b,c` | Install everything except the listed casks. |
 | `--skip-upgrade` | Do not upgrade already-installed casks or formulae. |
@@ -866,6 +871,28 @@ before restoring it.
 
 **Exit codes:** `0` success · `1` apply/revert or backup failure · `2` not
 macOS · `3` bad arguments.
+
+---
+
+## `status.sh`
+
+One-screen verdict for the Mac you are sitting at. Read-only: no log, no
+sudo, no writes. The long reports stay `workstation_doctor.sh` and
+`hardening_audit.sh`.
+
+```bash
+./status.sh
+./status.sh --list-sections
+./status.sh --only disk,brew
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--only os,disk,brew,git,agent,security` | Run a subset. |
+| `--list-sections` | Print stable section ids and exit. No macOS preflight. |
+
+Exit `1` when a selected section warned, `2` off macOS, `3` on a bad
+`--only` id, `4` when `--only` selected nothing.
 
 ---
 

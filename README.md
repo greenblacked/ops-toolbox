@@ -295,6 +295,7 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   `Brewfile` and restores it elsewhere — `dump`, `check`, `install`, and `diff`
   to see what `dump` would change before overwriting anything. The curated
   installers above are the intent; the Brewfile is the fact.
+- `status.sh` is the one-screen verdict (`--only` / `--list-sections`).
 - `workstation_doctor.sh` is the read-only health report — is this Mac *well*?
   Security posture, free space, Command Line Tools, Homebrew, SSH keys and
   agent, Git identity, Time Machine, log footprint, LaunchAgents and login

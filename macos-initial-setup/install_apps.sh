@@ -104,6 +104,8 @@ CASKS=(
   # Collaboration & work tracking
   "linear-linear|Linear|Linear.app"
   "discord|Discord|Discord.app"
+  "obsidian|Obsidian|Obsidian.app"
+  "stats|Stats|Stats.app"
 )
 
 # ---------------------------------------------------------------------------
@@ -111,10 +113,11 @@ CASKS=(
 # Do not use formula name "flux" here: core "flux" is Influx's language, not Flux CD.
 # ---------------------------------------------------------------------------
 CLI_FORMULAE=(
-  argocd awscli azure-cli cilium-cli conftest cosign crane dive eksctl grpcurl
-  grype helm helmfile hey httpie infracost jq k9s kind krew kubectx kubescape
-  kustomize lazydocker minikube opa popeye skaffold stern terraform-docs
-  terragrunt tflint trivy velero vegeta yq
+  age argocd awscli azure-cli cilium-cli cloud-sql-proxy conftest cosign crane
+  dive eksctl fd fzf gh grpcurl grype hadolint helm helmfile hey httpie
+  infracost jq k6 k9s kind krew kubectx kubescape kustomize lazydocker
+  minikube opa packer popeye ripgrep shellcheck skaffold sops stern
+  terraform-docs terragrunt tflint trivy vault velero vegeta yq
 )
 
 # ---------------------------------------------------------------------------
@@ -128,6 +131,8 @@ SKIP_GCLOUD=0
 SKIP_CLI_OPS=0
 NO_GCLOUD_COMPONENTS=0
 VERBOSE=0
+LIST_CASKS=0
+LIST_FORMULAE=0
 ONLY_LIST=""
 SKIP_LIST=""
 ONLY_FORMULAE_LIST=""
@@ -160,6 +165,8 @@ ${C_BOLD}Options:${C_RESET}
   --no-gcloud-components   Don't install any gcloud components
   --verbose, -v            Show brew output live (default: captured to log)
   --help, -h               Show this help
+  --list-casks             Print selectable cask ids and exit
+  --list-formulae          Print selectable formula ids and exit
 
 ${C_BOLD}Cask apps:${C_RESET}
 EOF
@@ -210,10 +217,23 @@ while (( $# > 0 )); do
     --no-gcloud-components)   NO_GCLOUD_COMPONENTS=1 ;;
     -v|--verbose)             VERBOSE=1 ;;
     -h|--help)       usage; exit 0 ;;
+    --list-casks)    LIST_CASKS=1 ;;
+    --list-formulae) LIST_FORMULAE=1 ;;
     *)               err "unknown option: $1"; echo; usage; exit 3 ;;
   esac
   shift
 done
+
+if (( LIST_CASKS )); then
+  for entry in "${CASKS[@]}"; do
+    printf '%s\n' "${entry%%|*}"
+  done
+  exit 0
+fi
+if (( LIST_FORMULAE )); then
+  printf '%s\n' "${CLI_FORMULAE[@]}"
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # helpers

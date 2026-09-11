@@ -1501,6 +1501,33 @@ assert_contains "retry returns 0 on success" "$retry_out" "rc_ok=0"
 assert_contains "retry surfaces the command's exit code" "$retry_out" "rc_fail=1"
 assert_contains "retry rejects bad usage with 3-adjacent code 2" "$retry_out" "rc_usage=2"
 
+# --- status.sh and installer selection lists --------------------------------
+status_sections="$("$M/status.sh" --list-sections)"
+for section in os disk brew git agent security; do
+  assert_contains "status lists section $section" "$status_sections" "$section"
+done
+set +e
+"$M/status.sh" --only nosuch >/dev/null 2>&1; rc=$?
+set -e
+assert_eq "status rejects unknown --only section -> 3" "3" "$rc"
+set +e
+out="$(env -u HOME "$M/status.sh" --list-sections 2>&1)"; rc=$?
+set -e
+assert_eq "status --list-sections works with HOME unset" "0" "$rc"
+
+casks="$("$M/install_apps.sh" --list-casks)"
+assert_contains "install_apps lists brave-browser" "$casks" "brave-browser"
+assert_contains "install_apps lists obsidian" "$casks" "obsidian"
+assert_contains "install_apps lists stats" "$casks" "stats"
+formulae="$("$M/install_apps.sh" --list-formulae)"
+for pkg in gh sops age vault k6 fzf; do
+  assert_contains "install_apps lists formula $pkg" "$formulae" "$pkg"
+done
+set +e
+out="$(env -u HOME "$M/install_apps.sh" --list-casks 2>&1)"; rc=$?
+set -e
+assert_eq "install_apps --list-casks works with HOME unset" "0" "$rc"
+
 if (( failures )); then
   echo "=== $failures test(s) failed ===" >&2
   exit 1
