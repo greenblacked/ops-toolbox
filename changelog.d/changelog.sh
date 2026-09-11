@@ -448,12 +448,17 @@ check_claims() {
     # the same item is resolved against.
     while IFS=$'\t' read -r kind ln ex value; do
       [[ "$kind" == "FILE" && "$ln" == "$item" ]] || continue
-      if [[ "$ex" == 1 ]]; then CLAIMS_EXEMPT=$((CLAIMS_EXEMPT + 1)); continue; fi
-      CLAIMS_FILE=$((CLAIMS_FILE + 1))
+      if [[ "$ex" == 1 ]]; then CLAIMS_EXEMPT=$((CLAIMS_EXEMPT + 1)); else CLAIMS_FILE=$((CLAIMS_FILE + 1)); fi
       hits="$(paths_named "$value")"
       if [[ -z "$hits" ]]; then
-        err "$rel:$ln names \`$value\`, which is not a file in this tree"
-        bad=$((bad + 1))
+        # Exempt means "do not fail when it is gone", not "do not look": a
+        # removal sentence that does resolve still scopes this item's flags.
+        # It has to. #36's entry opened "`v1_stay_fresh.sh` no longer runs its
+        # fixed cleanup" — its only mention of the script — and announced
+        # `--legacy-run` three sentences later. Dropping the exempt mention
+        # from the scope sent that flag to a repo-wide search, which found it
+        # in the script's own test file and passed the lie.
+        [[ "$ex" == 1 ]] || { err "$rel:$ln names \`$value\`, which is not a file in this tree"; bad=$((bad + 1)); }
         continue
       fi
       while IFS= read -r h; do

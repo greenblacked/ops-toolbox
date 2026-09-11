@@ -314,7 +314,16 @@ claim_rejects "a false claim in a later sentence of a removal entry" \
   '- `real_tool.sh` no longer runs its fixed cleanup on a bare invocation.
   `--nowhere-flag` is the opt-in that keeps the old sequence.
 ' \
-  'says `--nowhere-flag`, which no script in this tree accepts'
+  'says `--nowhere-flag`, which tools/real_tool.sh does not accept'
+# And the exact shape of #36, which caught a bug in the first draft of this
+# check: the entry's only mention of its script sits in the removal sentence.
+# Exempting that mention from the *scope* as well as from the check sent the
+# flag to a repo-wide search, which found it in another script and passed.
+claim_rejects "a flag another script accepts, in an entry that names its own in a removal sentence" \
+  '- `real_tool.sh` no longer runs its fixed cleanup on a bare invocation.
+  `--other-flag` is the opt-in that keeps the old sequence.
+' \
+  'says `--other-flag`, which tools/real_tool.sh does not accept'
 
 # 5. The counts are reported, so a reader can see the check had subjects.
 claim_run '- `real_tool.sh` grew `--real-flag`, the same shape as
