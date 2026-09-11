@@ -124,7 +124,7 @@ if (Test-Want disk) {
         $drive = Get-PSDrive -Name C -ErrorAction Stop
         $free = [int64]$drive.Free
         if ($free -lt 20GB) {
-            Write-Warn ("disk      {0} free on C: — under 20 GB" -f (Format-Size $free))
+            Write-Warn ("disk      {0} free on C: - under 20 GB" -f (Format-Size $free))
         } else {
             Write-Ok ("disk      {0} free on C:" -f (Format-Size $free))
         }
@@ -138,7 +138,7 @@ if (Test-Want winget) {
     if ($cmd) {
         Write-Ok "winget    $($cmd.Source)"
     } else {
-        Write-Warn 'winget    not on PATH — run .\winget_configure.ps1 show'
+        Write-Warn 'winget    not on PATH - run .\winget_configure.ps1 show'
     }
 }
 
