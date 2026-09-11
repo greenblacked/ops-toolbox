@@ -375,7 +375,7 @@ done
 # says nothing in the script's own log lines because it never gets past the
 # parser. These three exist because of that; a :global with an underscore
 # slipping into any of them would be the defect they were written around.
-for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua"; do
+for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua" "$PKG/security_check.lua"; do
   n="$(basename "$f")"
   bad="$(grep -E '^[[:space:]]*:global +[A-Za-z0-9]*_' "$f" || true)"
   if [[ -z "$bad" ]]; then
@@ -384,6 +384,22 @@ for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua"
     err "$n declares an underscored :global, which RouterOS 7.24 refuses to run: $bad"
   fi
 done
+# security_check.lua is the one new script written to actually execute on 7.24,
+# so :local names are held to the same rule :global already is. A :local Foo_Bar
+# fails at /system/script/run on the CHR the same way a :global does.
+bad="$(grep -E '^[[:space:]]*:local +[A-Za-z0-9]*_' "$PKG/security_check.lua" || true)"
+if [[ -z "$bad" ]]; then
+  ok "security_check.lua declares no :local with an underscore in its name"
+else
+  err "security_check.lua declares an underscored :local, which RouterOS 7.24 refuses to run: $bad"
+fi
+# The findings quote the command that would fix them, inside <code>. The script
+# itself must not run those commands: it is the hardening_audit, not an --apply.
+if grep -v '<code>' "$PKG/security_check.lua" | grep -qE '/ip service (disable|set)|address-list add|/user remove|/snmp set |/ip socks set|/ip upnp set|/tool bandwidth-server set'; then
+  err "security_check.lua must stay read-only; fix commands belong in the Telegram text"
+else
+  ok "security_check.lua does not apply the hardening it reports"
+fi
 if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
    && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
   ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"

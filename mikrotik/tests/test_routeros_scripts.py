@@ -24,6 +24,7 @@ RUNNABLE_SCRIPTS = (
     "firewall_drift",
     "firewall_drift_baseline",
     "mac_allowlist_dhcp",
+    "security_check",
     # rogue_dns_check is intentionally NOT here: it calls :resolve which depends
     # on upstream DNS reachability from the CHR. Its parse step still runs via
     # test_script_add_remove_roundtrip below.
@@ -57,7 +58,7 @@ XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
 
 
 def _run_safe_script_param(script_name: str) -> Any:
-    if script_name == "detect_internet":
+    if script_name in ("detect_internet", "security_check"):
         return script_name
     return pytest.param(script_name, marks=XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE)
 
@@ -198,6 +199,36 @@ def test_run_safe_scripts(api: Any, script_resource: Any, script_name: str) -> N
             pytest.fail(f"running {script_name!r} on RouterOS failed: {e}")
     finally:
         _remove_by_name(script_resource, script_name)
+
+
+def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> None:
+    """security_check is underscore-free, so /system/script/run actually
+    executes it on the 7.24 CHR. The session-wide tg_send stub cannot be
+    :parse'd there (its :global has an underscore), so this test installs the
+    same underscore-free stub backup_update_check uses, under the name
+    security_check calls. A stock CHR has the API on (the suite uses it), so
+    the scan must produce a report rather than going silent."""
+    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    try:
+        _add_script(script_resource, "tg_send", TG_SEND_NEW_STUB_SOURCE)
+        _add_script(script_resource, "security_check", src)
+        _unset_global(api, "SecLastFp")
+        _unset_global(api, "PuTgLastMessage")
+        _unset_global(api, "pu_TG_LAST_MESSAGE")
+
+        _run_named(api, "security_check")
+
+        msg = _read_global(api, "PuTgLastMessage")
+        assert msg, "security_check did not send a Telegram scan report"
+        assert "security scan" in msg, f"expected a scan report, got: {msg!r}"
+        fp = _read_global(api, "SecLastFp")
+        assert fp, "security_check did not record SecLastFp after the scan"
+    finally:
+        _add_script(script_resource, "tg_send", SESSION_TG_SEND_STUB_SOURCE)
+        _remove_by_name(script_resource, "security_check")
+        _unset_global(api, "SecLastFp")
+        _unset_global(api, "PuTgLastMessage")
+        _unset_global(api, "pu_TG_LAST_MESSAGE")
 
 
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
@@ -748,6 +779,11 @@ def test_update_check_probe_records_how_status_moves(api: Any, script_resource: 
 # end-to-end run of update_check.lua on the CHR is an xfail; this stub, under
 # the name backup_update_check.lua calls by default, is what lets that script
 # run for real.
+SESSION_TG_SEND_STUB_SOURCE = (
+    ":global pu_TG_LAST_MESSAGE;\n"
+    ":set pu_TG_LAST_MESSAGE $MessageText;\n"
+    ':log info ("pu_ut tg_send STUB: " . $MessageText);\n'
+)
 TG_SEND_NEW_STUB_SOURCE = (
     ":global PuTgLastMessage;\n"
     ":set PuTgLastMessage $MessageText;\n"
