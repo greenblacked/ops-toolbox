@@ -347,6 +347,22 @@ assert_eq "profile full is the unfiltered catalogue" "$casks_out" "$full_casks"
 assert_eq "an explicit --only wins over the profile" "slack" "$only_wins"
 assert_eq "--profile=NAME and --profile NAME agree" "$prof_sp" "$prof_eq"
 
+# The listing reflects the invocation, so it has to honour both selectors. An
+# earlier version filtered by --only alone, which printed slack under
+# `--profile core --skip slack` - a list the run itself would not install.
+set +e
+skip_casks="$("$M/install_apps.sh" --profile core --skip slack --list-casks 2>&1)"
+skip_formulae="$("$M/install_apps.sh" --profile core --skip-formulae jq,yq --list-formulae 2>&1)"
+set -e
+assert_not_contains "--skip removes a cask from the profile's listing" \
+  "$skip_casks" "slack"
+assert_contains "--skip leaves the rest of the profile listed" \
+  "$skip_casks" "iterm2"
+assert_not_contains "--skip-formulae removes a formula from the listing" \
+  "$skip_formulae" "jq"
+assert_contains "--skip-formulae leaves the rest listed" \
+  "$skip_formulae" "ripgrep"
+
 set +e
 "$M/install_apps.sh" --profile nosuch --list-casks >/dev/null 2>&1; rc=$?
 set -e

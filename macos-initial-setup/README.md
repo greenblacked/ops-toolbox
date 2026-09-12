@@ -241,10 +241,6 @@ so there is nothing to agree to.
 | `--skip-cli-ops` | Skip the entire Homebrew **formula** batch (see below). |
 | `--only-formulae a,b,c` | Operate on only the named formulae; unknown names fail before preflight. |
 | `--skip-formulae a,b,c` | Skip individual formula names (comma-separated). |
-| `--list-casks` | Print selectable cask ids and exit without macOS preflight. |
-| `--list-formulae` | Print selectable formula names and exit without macOS preflight. |
-| `--profile NAME` | Use a named subset — `core`, `platform` or `full`. |
-| `--list-profiles` | Print profile names and their purpose, without macOS preflight. |
 | `--gcloud-components a,b,c` | Override the default component set. |
 | `--no-gcloud-components` | Install `gcloud` core only (no components). |
 | `-h`, `--help` | Show the built-in help (lists every cask and formula). |

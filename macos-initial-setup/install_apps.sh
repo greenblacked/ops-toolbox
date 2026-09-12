@@ -421,9 +421,15 @@ fi
 # over both no matter where it appears on the command line.)
 if (( LIST_CASKS )); then
   for entry in "${CASKS[@]}"; do
-    # in_list is defined below, so the profile filter is inline here: the
+    # The listing reflects what this invocation would act on, so it applies the
+    # same two selectors the run does - and both of them, not just the positive
+    # one: filtering by --only while ignoring --skip would print a list the run
+    # would not install. in_list is defined below, so these are inline: the
     # listings answer before the helpers, which is the whole point of them.
     if [[ -n "$ONLY_LIST" && ",$ONLY_LIST," != *",${entry%%|*},"* ]]; then
+      continue
+    fi
+    if [[ -n "$SKIP_LIST" && ",$SKIP_LIST," == *",${entry%%|*},"* ]]; then
       continue
     fi
     printf '%s\n' "${entry%%|*}"
@@ -434,6 +440,9 @@ fi
 if (( LIST_FORMULAE )); then
   for formula in "${CLI_FORMULAE[@]}"; do
     if [[ -n "$ONLY_FORMULAE_LIST" && ",$ONLY_FORMULAE_LIST," != *",$formula,"* ]]; then
+      continue
+    fi
+    if [[ -n "$SKIP_FORMULAE_LIST" && ",$SKIP_FORMULAE_LIST," == *",$formula,"* ]]; then
       continue
     fi
     printf '%s\n' "$formula"
