@@ -28,6 +28,11 @@ cd "$REPO_ROOT" || { echo "cannot enter $REPO_ROOT" >&2; exit 1; }
 # name is added here, which is the point: nobody has to remember.
 unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
 unset CHANGELOG_ROOT OS_RELEASE XDG_CONFIG_HOME
+# This file runs the scripts it checks (--help, bad flags), so it is a runner
+# like any suite and pins what they read. SYSTEMD_ANALYZE_CMD names a binary
+# stay_fresh_timer.sh executes; CPPFLAGS and LDFLAGS are exported into a pyenv
+# build by install_devtools.sh.
+unset SYSTEMD_ANALYZE_CMD CPPFLAGS LDFLAGS
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
@@ -619,6 +624,45 @@ host_env_vars() {
     | grep -Ev "$host_env_ignore" | sort > "$cache"
   cat "$cache"
 }
+
+# --- the scanner tells a defaulted read from a local assignment -------------
+# VAR="${VAR:-default}" keeps the host's value whenever the host has one, so it
+# is a read. Counting it as an assignment is what hid SYSTEMD_ANALYZE_CMD --
+# which names a binary stay_fresh_timer.sh executes -- along with CPPFLAGS and
+# LDFLAGS, which install_devtools.sh exports into a pyenv build.
+#
+# The opposite error matters as much: VAR="$VAROTHER/x" reads a different
+# variable that merely starts with the same letters, and reporting it would send
+# somebody to pin something the line above derives. Both directions are checked
+# here, because this scanner is the only thing standing between an ambient
+# variable and a suite that runs against it.
+host_env_probe="$host_env_scratch/scanner-probe.sh"
+cat > "$host_env_probe" <<'PROBE'
+SELFDEFAULT="${SELFDEFAULT:-/tmp}"
+APPENDED="-L/x ${APPENDED:-}"
+DERIVED="$DERIVEDBASE/x"
+LOCALONLY=1
+USESLOCAL="$LOCALONLY"
+PROBE
+probe_out=" $(awk -f "$HERE/host_env_vars.awk" -v lang=sh "$host_env_probe" | sort | tr '\n' ' ')"
+if [[ "$probe_out" == " " ]]; then
+  err "the foreign-variable scanner found nothing in its own probe — it is not scanning"
+else
+  for want in SELFDEFAULT APPENDED; do
+    if [[ "$probe_out" == *" $want "* ]]; then
+      ok "scanner reads $want from the host despite its own default"
+    else
+      err "scanner missed $want: a defaulted assignment still reads the host's value"
+    fi
+  done
+  for unwanted in DERIVED LOCALONLY USESLOCAL; do
+    if [[ "$probe_out" == *" $unwanted "* ]]; then
+      err "scanner reported $unwanted, which the script assigns itself"
+    else
+      ok "scanner leaves $unwanted alone; the script assigns it"
+    fi
+  done
+fi
 
 suites=()
 while IFS= read -r f; do
