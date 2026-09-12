@@ -229,7 +229,17 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
         fingerprint = _read_global(api, "SecLastFp")
         msg = _read_global(api, "PuTgLastMessage")
         if not msg:
-            log = "\n".join(_recent_log_lines(api, 40)) or "(router log empty or unreadable)"
+            # RouterOS logs a configuration change under system,info, and adding
+            # a 300-line script writes that whole source to the log. Unfiltered,
+            # the last 40 entries are the script echoing itself and any real
+            # error has already scrolled past. Keep what a person would read.
+            interesting = [
+                line
+                for line in _recent_log_lines(api, 400)
+                if "security_check" in line
+                or any(t in line.split(":", 1)[0] for t in ("error", "critical", "warning"))
+            ]
+            log = "\n".join(interesting[-25:]) or "(no script or error lines in the router log)"
             raise AssertionError(
                 "security_check did not send a Telegram scan report.\n"
                 f"SecSendError={send_error!r} (empty means the send was never attempted)\n"
