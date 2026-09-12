@@ -34,7 +34,7 @@ pinned CHR version and its digest are bumped.
 | --- | --- |
 | **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.2**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
 | **Script policy** `read,write,policy,test,sensitive,ftp` | The policy set every `/system script` entry here is created with. `policy` is what lets a script read another script's source, `sensitive` covers the secrets, `ftp` covers `/tool fetch`. |
-| **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TG_BOT_TOKEN` / `TG_CHAT_ID` globals rather than editing each script. |
+| **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TgBotToken` / `TgChatId` globals rather than editing each script. (RouterOS 7.24 refuses an underscored `:global`, so the older `TG_BOT_TOKEN` / `TG_CHAT_ID` spelling is read by nothing — see the migration note below.) |
 | **Bash 3.2 or newer** | Host-side only, for `print_schedulers.sh` and `pull_router_backups.sh`. The `/bin/bash` that ships on macOS is enough. |
 | **Python 3.9+** | Host-side only, for `export_config.py` and `router_doctor.py`. Standard library only — no `pip install`, no venv, no `routeros-api`. |
 | **OpenSSH `ssh` and `scp`** | Host-side only. `pull_router_backups.sh` checks for both up front and exits `2` rather than letting a missing binary look like a router with no backups. `export_config.py --commit` additionally needs `git`. |
@@ -69,10 +69,34 @@ That is a read-only audit over ssh. It reports which of these scripts are in
 `/system script`, which of them a `/system scheduler` entry really runs, whether
 the globals they need are set, and whether a maintenance pause was left on —
 then prints the command that fixes what it found. It never writes to the router,
-and it asks for the *length* of `TG_BOT_TOKEN` and `TG_CHAT_ID` rather than
+and it asks for the *length* of `TgBotToken` and `TgChatId` rather than
 their values, so no token crosses the wire.
 
 ## Scripts overview
+
+> **On RouterOS 7.24, 16 of these 27 scripts do not run at all.** That release
+> refuses to execute a script declaring a `:global` or `:local` whose name
+> contains an underscore — it stops in the parser, so the script logs nothing
+> and a scheduler entry that fires looks exactly like one with nothing to
+> report. This is the quietest failure in the package: you install the script,
+> schedule it, and never hear from it again.
+>
+> **Runs on 7.24:** `backup_file_cleanup.lua`, `backup_update_check.lua`,
+> `cert_expiry_watch.lua`, `change_WIFI_pw.lua`, `detect_internet.lua`,
+> `health_check.lua`, `netwatch_notify.lua`, `reboot-and-flush.lua`,
+> `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
+>
+> **Does not run on 7.24** (fine on 7.23 and earlier): `backup.lua`,
+> `bandwidth_spike.lua`, `brute_force_block.lua`, `ddns_update.lua`,
+> `dhcp_lease_watch.lua`, `firewall_drift.lua`, `firewall_drift_baseline.lua`,
+> `latency_monitor.lua`, `mac_allowlist_dhcp.lua`, `rogue_dns_check.lua`,
+> `traffic_quota.lua`, `update_check.lua`, `vpn_health.lua`,
+> `wan_failover_notify.lua`, `wan_link_flap_notify.lua`,
+> `wireless_client_watch.lua`.
+>
+> `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`.
+> The rest have no replacement yet; the integration suite marks each of them
+> `xfail` on the 7.24.2 CHR rather than pretending they pass.
 
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |
