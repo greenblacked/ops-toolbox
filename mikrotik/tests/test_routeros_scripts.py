@@ -219,17 +219,25 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
 
         _run_named(api, "security_check")
 
-        # security_check records why a send failed rather than going quiet, so
-        # a failure here names the cause instead of printing an empty string.
+        # security_check records why a send failed rather than going quiet.
+        # SecSendError empty with no message means the script never reached the
+        # notify block at all: /system/script/run returns cleanly when a script
+        # dies part way through, and the reason goes to the router's log rather
+        # than to the caller. So read the log too, or this assertion can only
+        # say that nothing happened.
         send_error = _read_global(api, "SecSendError")
+        fingerprint = _read_global(api, "SecLastFp")
         msg = _read_global(api, "PuTgLastMessage")
-        assert msg, (
-            "security_check did not send a Telegram scan report "
-            f"(SecSendError={send_error!r})"
-        )
+        if not msg:
+            log = "\n".join(_recent_log_lines(api, 40)) or "(router log empty or unreadable)"
+            raise AssertionError(
+                "security_check did not send a Telegram scan report.\n"
+                f"SecSendError={send_error!r} (empty means the send was never attempted)\n"
+                f"SecLastFp={fingerprint!r} (empty means the script did not reach its last line)\n"
+                f"router log:\n{log}"
+            )
         assert "security scan" in msg, f"expected a scan report, got: {msg!r}"
-        fp = _read_global(api, "SecLastFp")
-        assert fp, "security_check did not record SecLastFp after the scan"
+        assert fingerprint, "security_check did not record SecLastFp after the scan"
     finally:
         _add_script(script_resource, "tg_send", SESSION_TG_SEND_STUB_SOURCE)
         _remove_by_name(script_resource, "security_check")
