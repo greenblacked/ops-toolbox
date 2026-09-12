@@ -17,6 +17,12 @@ fi
 # the test passed here and failed in CI. Every test that needs one of these
 # supplies it itself; start from an environment holding none of them.
 unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+# install_devtools.sh appends to these and exports them into a `pyenv install`,
+# so a developer's build flags end up in a compile this suite triggered. They
+# were invisible to the foreign-variable check until it learned that
+# LDFLAGS="-L$ssl_prefix/lib ${LDFLAGS:-}" reads the host's value rather than
+# replacing it - see host_env_vars.awk.
+unset CPPFLAGS LDFLAGS
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID

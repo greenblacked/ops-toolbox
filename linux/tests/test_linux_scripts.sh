@@ -24,6 +24,13 @@ fi
 # at a scratch profile, so running this suite on a desktop Linux box emptied the
 # developer's real cache. Every test that needs one of these supplies it itself.
 unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME
+# SYSTEMD_ANALYZE_CMD names a binary stay_fresh_timer.sh executes to verify the
+# units it writes. Exported, it aims that execution at whatever the host says,
+# which is the worst of this class: not a path the run reads, a command the run
+# runs. It stayed invisible because the scanner counted its own
+# SYSTEMD_ANALYZE_CMD="${SYSTEMD_ANALYZE_CMD:-systemd-analyze}" as a local
+# assignment - see host_env_vars.awk.
+unset SYSTEMD_ANALYZE_CMD
 
 failures=0
 ok()  { echo "[ ok ] $*"; }
