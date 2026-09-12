@@ -156,7 +156,7 @@ for f in "${clis[@]}"; do
   while IFS= read -r flag; do
     [ -n "$flag" ] || continue
     checked_forms=$((checked_forms + 1))
-    if ! printf '%s\n' "$equals_arms" | grep -qx -- "$flag"; then
+    if ! grep -qx -- "$flag" <<<"$equals_arms"; then
       err "$f accepts '$flag VALUE' but not '$flag=VALUE'"
       missing_forms=$((missing_forms + 1))
     fi
@@ -166,6 +166,41 @@ if (( checked_forms == 0 )); then
   err "found no value-taking flags at all — this check has stopped checking"
 elif (( missing_forms == 0 )); then
   ok "every value-taking flag takes both forms ($checked_forms across the tree)"
+fi
+
+# --------------------------------------------------------------------------
+head_ "readers that exit early"
+# Under `set -o pipefail`, a reader that stops at the first match kills the
+# writer with SIGPIPE, the pipeline reports 141, and a match reads as a miss.
+# This file carried four of them at once -- one made macOS CI report that
+# set_git_profile.sh does not accept `--profile=VALUE` when it does -- in a file
+# that already explains the hazard in a comment. Prose did not hold the line, so
+# this does. A here-string has no writer to kill: `grep -q X <<<"$s"`.
+sigpipe_writer='(printf|echo)[^|]*'
+sigpipe_reader='(grep -[a-zA-Z]*q|head -n|awk .\{ *exit)'
+sigpipe_hits=0
+sigpipe_scanned=0
+# Every tracked shell file, test infrastructure included. `clis` leaves those
+# out because everything below it *runs* what it discovers and this suite once
+# recursed into itself; this check only reads. Excluding them here would have
+# exempted the very file that carried four of these, which is the mistake the
+# host-env check already had to unlearn: exempt means cannot fail, not not
+# looked at.
+while IFS= read -r f; do
+  [[ -n "$f" && -f "$f" ]] || continue
+  grep -q 'pipefail' "$f" || continue
+  sigpipe_scanned=$((sigpipe_scanned + 1))
+  while IFS= read -r hit; do
+    [[ -n "$hit" ]] || continue
+    case "$hit" in *'#'*) [[ "${hit%%#*}" == *'|'* ]] || continue ;; esac
+    err "$f:${hit%%:*} pipes into a reader that exits early; under pipefail that kills the writer, the pipeline reports 141, and a grep -q match reads as a miss — use a here-string"
+    sigpipe_hits=$((sigpipe_hits + 1))
+  done < <(grep -nE "$sigpipe_writer"'[[:space:]]*\|[[:space:]]*'"$sigpipe_reader" "$f" || true)
+done < <(cd "$REPO_ROOT" && git ls-files '*.sh')
+if (( sigpipe_scanned == 0 )); then
+  err "the SIGPIPE shape check inspected no file — it has stopped checking"
+elif (( sigpipe_hits == 0 )); then
+  ok "no pipefail script pipes into a reader that exits early ($sigpipe_scanned scanned)"
 fi
 
 # --------------------------------------------------------------------------
@@ -363,17 +398,17 @@ while IFS= read -r -d '' f; do
   grep -q '^require_value() {' "$f" || continue
   copies=$((copies + 1))
   body="$(extract_fn "$f" require_value)"
-  if ! printf '%s' "$body" | grep -qF 'if [[ -z "$value" || "$value" == --* ]]; then'; then
+  if ! grep -qF 'if [[ -z "$value" || "$value" == --* ]]; then' <<<"$body"; then
     err "require_value() in $f has a different guard condition"
     drifted=$((drifted + 1))
     continue
   fi
-  if ! printf '%s' "$body" | grep -qE '^[[:space:]]*exit 3$'; then
+  if ! grep -qE '^[[:space:]]*exit 3$' <<<"$body"; then
     err "require_value() in $f does not exit 3"
     drifted=$((drifted + 1))
     continue
   fi
-  if ! printf '%s' "$body" | grep -qE 'printf .* >&2|err "'; then
+  if ! grep -qE 'printf .* >&2|err "' <<<"$body"; then
     err "require_value() in $f does not report the failure to stderr"
     drifted=$((drifted + 1))
   fi
