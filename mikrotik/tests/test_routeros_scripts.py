@@ -233,11 +233,16 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
             # a 300-line script writes that whole source to the log. Unfiltered,
             # the last 40 entries are the script echoing itself and any real
             # error has already scrolled past. Keep what a person would read.
+            # Match the script's own log prefix, not the word anywhere in the
+            # line: RouterOS logs the whole source when the script is added, and
+            # that source contains every :log call in it, so "security_check in
+            # line" selects the echo it was meant to filter out.
+            own = re.compile(r"^[a-z,]+: security_check:")
             interesting = [
                 line
                 for line in _recent_log_lines(api, 400)
-                if "security_check" in line
-                or any(t in line.split(":", 1)[0] for t in ("error", "critical", "warning"))
+                if own.match(line)
+                or any(t in line.split(":", 1)[0] for t in ("error", "critical"))
             ]
             log = "\n".join(interesting[-25:]) or "(no script or error lines in the router log)"
             raise AssertionError(
