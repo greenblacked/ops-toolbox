@@ -314,13 +314,32 @@
     :do {
         $SendTelegramMessage MessageText=$MessageText;
     } on-error={
-        :set SendError ("'" . $TgSendScript . "' raised while sending the report");
+        :set SendError ("'" . $TgSendScript . "' raised on the full report");
     }
 }
+
+# A full report can be long: a router with seventeen findings produces one
+# built from seventeen quoted commands, and Telegram rejects a message over
+# its own limit outright. Losing the whole report then is the worst outcome
+# available, because the run that had most to say is the one that says
+# nothing. So a failed send falls back to the counts alone, which is short by
+# construction and still tells somebody to go and look.
+:if ([:len $SendError] > 0) do={
+    :local ShortText ("<b>" . $DeviceName . ":</b> security scan%0A" . \
+                      $counts . " (" . $posture . ")%0A" . \
+                      "full report could not be sent - run security_check by hand");
+    :do {
+        $SendTelegramMessage MessageText=$ShortText;
+        :set SendError ($SendError . "; counts-only fallback sent");
+    } on-error={
+        :set SendError ($SendError . "; the counts-only fallback failed too");
+    }
+}
+
 :global SecSendError;
 :set SecSendError $SendError;
 :if ([:len $SendError] > 0) do={
-    :log error ("security_check: report NOT sent - " . $SendError);
+    :log error ("security_check: " . $SendError);
 }
 
 :set SecLastFp $fp;

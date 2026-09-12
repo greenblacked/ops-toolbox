@@ -120,6 +120,24 @@ def _run_named(api: Any, name: str) -> None:
     res.call("run", {".id": rid})
 
 
+def _wait_for_global(api: Any, name: str, timeout: float = 30.0) -> str:
+    """Block until a global appears, or give up.
+
+    /system/script/run is asynchronous: it queues the script and returns, so
+    reading a global straight afterwards races a script that is still going.
+    security_check walks every service, user and firewall rule on the box, and
+    it lost that race every time — both of its globals read empty while the
+    router's own log showed the run finishing, with findings, seconds later.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = _read_global(api, name)
+        if value:
+            return value
+        time.sleep(0.5)
+    return ""
+
+
 def _read_global(api: Any, name: str) -> str:
     """Return the value of a :global, or '' if it is unset."""
     res = api.get_binary_resource("/system/script/environment")
@@ -218,6 +236,9 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
         _unset_global(api, "pu_TG_LAST_MESSAGE")
 
         _run_named(api, "security_check")
+        # SecLastFp is the script's last line, so waiting for it waits for the
+        # whole run rather than for a fixed number of seconds.
+        _wait_for_global(api, "SecLastFp")
 
         # security_check records why a send failed rather than going quiet.
         # SecSendError empty with no message means the script never reached the
