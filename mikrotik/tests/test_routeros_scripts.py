@@ -24,6 +24,7 @@ RUNNABLE_SCRIPTS = (
     "firewall_drift",
     "firewall_drift_baseline",
     "mac_allowlist_dhcp",
+    "security_check",
     # rogue_dns_check is intentionally NOT here: it calls :resolve which depends
     # on upstream DNS reachability from the CHR. Its parse step still runs via
     # test_script_add_remove_roundtrip below.
@@ -57,7 +58,7 @@ XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
 
 
 def _run_safe_script_param(script_name: str) -> Any:
-    if script_name == "detect_internet":
+    if script_name in ("detect_internet", "security_check"):
         return script_name
     return pytest.param(script_name, marks=XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE)
 
@@ -117,6 +118,24 @@ def _run_named(api: Any, name: str) -> None:
     rid = _find_id(res, name)
     assert rid is not None, f"script {name!r} not found"
     res.call("run", {".id": rid})
+
+
+def _wait_for_global(api: Any, name: str, timeout: float = 30.0) -> str:
+    """Block until a global appears, or give up.
+
+    /system/script/run is asynchronous: it queues the script and returns, so
+    reading a global straight afterwards races a script that is still going.
+    security_check walks every service, user and firewall rule on the box, and
+    it lost that race every time — both of its globals read empty while the
+    router's own log showed the run finishing, with findings, seconds later.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        value = _read_global(api, name)
+        if value:
+            return value
+        time.sleep(0.5)
+    return ""
 
 
 def _read_global(api: Any, name: str) -> str:
@@ -198,6 +217,70 @@ def test_run_safe_scripts(api: Any, script_resource: Any, script_name: str) -> N
             pytest.fail(f"running {script_name!r} on RouterOS failed: {e}")
     finally:
         _remove_by_name(script_resource, script_name)
+
+
+def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> None:
+    """security_check is underscore-free, so /system/script/run actually
+    executes it on the 7.24 CHR. The session-wide tg_send stub cannot be
+    :parse'd there (its :global has an underscore), so this test installs the
+    same underscore-free stub backup_update_check uses, under the name
+    security_check calls. A stock CHR has the API on (the suite uses it), so
+    the scan must produce a report rather than going silent."""
+    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    try:
+        _add_script(script_resource, "tg_send", TG_SEND_NEW_STUB_SOURCE)
+        _add_script(script_resource, "security_check", src)
+        _unset_global(api, "SecLastFp")
+        _unset_global(api, "SecSendError")
+        _unset_global(api, "PuTgLastMessage")
+        _unset_global(api, "pu_TG_LAST_MESSAGE")
+
+        _run_named(api, "security_check")
+        # SecLastFp is the script's last line, so waiting for it waits for the
+        # whole run rather than for a fixed number of seconds.
+        _wait_for_global(api, "SecLastFp")
+
+        # security_check records why a send failed rather than going quiet.
+        # SecSendError empty with no message means the script never reached the
+        # notify block at all: /system/script/run returns cleanly when a script
+        # dies part way through, and the reason goes to the router's log rather
+        # than to the caller. So read the log too, or this assertion can only
+        # say that nothing happened.
+        send_error = _read_global(api, "SecSendError")
+        fingerprint = _read_global(api, "SecLastFp")
+        msg = _read_global(api, "PuTgLastMessage")
+        if not msg:
+            # RouterOS logs a configuration change under system,info, and adding
+            # a 300-line script writes that whole source to the log. Unfiltered,
+            # the last 40 entries are the script echoing itself and any real
+            # error has already scrolled past. Keep what a person would read.
+            # Match the script's own log prefix, not the word anywhere in the
+            # line: RouterOS logs the whole source when the script is added, and
+            # that source contains every :log call in it, so "security_check in
+            # line" selects the echo it was meant to filter out.
+            own = re.compile(r"^[a-z,]+: security_check:")
+            interesting = [
+                line
+                for line in _recent_log_lines(api, 400)
+                if own.match(line)
+                or any(t in line.split(":", 1)[0] for t in ("error", "critical"))
+            ]
+            log = "\n".join(interesting[-25:]) or "(no script or error lines in the router log)"
+            raise AssertionError(
+                "security_check did not send a Telegram scan report.\n"
+                f"SecSendError={send_error!r} (empty means the send was never attempted)\n"
+                f"SecLastFp={fingerprint!r} (empty means the script did not reach its last line)\n"
+                f"router log:\n{log}"
+            )
+        assert "security scan" in msg, f"expected a scan report, got: {msg!r}"
+        assert fingerprint, "security_check did not record SecLastFp after the scan"
+    finally:
+        _add_script(script_resource, "tg_send", SESSION_TG_SEND_STUB_SOURCE)
+        _remove_by_name(script_resource, "security_check")
+        _unset_global(api, "SecLastFp")
+        _unset_global(api, "SecSendError")
+        _unset_global(api, "PuTgLastMessage")
+        _unset_global(api, "pu_TG_LAST_MESSAGE")
 
 
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
@@ -748,6 +831,11 @@ def test_update_check_probe_records_how_status_moves(api: Any, script_resource: 
 # end-to-end run of update_check.lua on the CHR is an xfail; this stub, under
 # the name backup_update_check.lua calls by default, is what lets that script
 # run for real.
+SESSION_TG_SEND_STUB_SOURCE = (
+    ":global pu_TG_LAST_MESSAGE;\n"
+    ":set pu_TG_LAST_MESSAGE $MessageText;\n"
+    ':log info ("pu_ut tg_send STUB: " . $MessageText);\n'
+)
 TG_SEND_NEW_STUB_SOURCE = (
     ":global PuTgLastMessage;\n"
     ":set PuTgLastMessage $MessageText;\n"

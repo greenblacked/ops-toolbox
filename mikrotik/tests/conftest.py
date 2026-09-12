@@ -113,6 +113,7 @@ _PRODUCTION_NAMED_TEST_SCRIPTS = {
     "backup",
     "update_check",
     "backup_update_check",
+    "security_check",
     # The stub backup_update_check calls by default. Separate from tg_send
     # because its :global carries no underscore, which is what lets a 7.24
     # CHR :parse it.
@@ -147,6 +148,7 @@ _TEST_OWNED_GLOBALS = (
     "UPDATE_CHECK_BACKUP",
     "UPDATE_CHECK_MAX_WAIT",
     "UPDATE_CHECK_NOTIFY_FAILURE",
+    "SecLastFp",
 )
 
 

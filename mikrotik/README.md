@@ -115,6 +115,7 @@ their values, so no token crosses the wire.
 | `firewall_drift_baseline.lua`   | Manual helper that re-arms `firewall_drift` after intentional changes.  |
 | `mac_allowlist_dhcp.lua`        | Flags (and optionally blocks) DHCP leases for non-allowlisted MACs.     |
 | `rogue_dns_check.lua`           | Detects DNS upstream hijack and clients using non-approved resolvers.   |
+| `security_check.lua`            | Read-only hardening audit; Telegrams findings with the command to fix.  |
 | `backup_file_cleanup.lua`       | Prunes old backup/export files so flash does not silently fill up.      |
 | `cert_expiry_watch.lua`         | Warns before a certificate expires, while there is still time to act.   |
 | `ddns_update.lua`               | Pushes the current WAN address to Cloudflare DNS when it changes.       |
@@ -235,6 +236,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 | `firewall_drift`       | `15m`                                                                    |
 | `mac_allowlist_dhcp`   | `5m`                                                                     |
 | `rogue_dns_check`      | `10m`                                                                    |
+| `security_check`       | `1d` at `05:20:00`                                                       |
 | `notify-boot` (inline) | `start-time=startup` — see [Reboot notifications](#reboot-notifications) |
 
 `detect_internet`, `reboot-and-flush`, and `firewall_drift_baseline` are
@@ -660,6 +662,34 @@ address-list `rogue-dns-clients` with a 1-hour timeout. Pair with a
 documented filter rule to redirect or drop their port-53 traffic (see
 [Security action surface](#security-action-surface) below).
 
+### `security_check.lua`
+
+Read-only hardening audit of the management plane — the RouterOS counterpart
+of `linux/hardening_audit.sh` and `macos-initial-setup/hardening_audit.sh`.
+It never writes firewall rules, address-lists, or service state. Each finding
+is graded critical / high / medium and shipped with the command that would
+close it.
+
+The scan covers:
+
+- IP services left enabled (`telnet`, `ftp`, `www`, unencrypted `api`) or
+  listening on all addresses (`winbox`, `ssh`, `www-ssl`, `api-ssl`)
+- the default identity `MikroTik` and the leftover `admin` user
+- neighbor discovery, MAC server and MAC Winbox allowed on `all`/`dynamic`
+- bandwidth-server, SOCKS, UPnP, SMB, PPTP, HTTP proxy, RoMON, IP Cloud DDNS
+- DNS `allow-remote-requests`, SNMP (including community `public`)
+- NTP client disabled
+- filter `input` with no drop/reject, and IPv6 enabled with an empty filter
+
+A daily Telegram report always goes out, including on a clean scan, so a
+muted bot is how you learn the scheduler died rather than silence. The
+finding set is fingerprinted in `:global SecLastFp`; the message says
+`initial scan`, `posture changed`, or `unchanged`. No underscored `:global`
+or `:local` names, so it actually runs on RouterOS 7.24.
+
+Schedule at `1d` / `05:20:00` — after `cert_expiry_watch`, well clear of the
+nightly backup/update slot.
+
 ### `export_config.py`
 
 **Runs on your machine, not on the router** — it is the only file here that is
@@ -810,7 +840,8 @@ the router but the transfer failed, `2` could not reach it, `3` usage.
 ## Security action surface
 
 The four security scripts above keep their actions on a small, reversible
-surface so a noisy detector cannot brick the router:
+surface so a noisy detector cannot brick the router. `security_check` is not
+on that list on purpose: it is read-only and never writes an address-list.
 
 | Address-list        | Populated by         | Purpose                                                    |
 | ------------------- | -------------------- | ---------------------------------------------------------- |

@@ -375,7 +375,7 @@ done
 # says nothing in the script's own log lines because it never gets past the
 # parser. These three exist because of that; a :global with an underscore
 # slipping into any of them would be the defect they were written around.
-for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua"; do
+for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua" "$PKG/security_check.lua"; do
   n="$(basename "$f")"
   bad="$(grep -E '^[[:space:]]*:global +[A-Za-z0-9]*_' "$f" || true)"
   if [[ -z "$bad" ]]; then
@@ -384,6 +384,49 @@ for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua"
     err "$n declares an underscored :global, which RouterOS 7.24 refuses to run: $bad"
   fi
 done
+# security_check.lua is the one new script written to actually execute on 7.24,
+# so :local names are held to the same rule :global already is. A :local Foo_Bar
+# fails at /system/script/run on the CHR the same way a :global does.
+bad="$(grep -E '^[[:space:]]*:local +[A-Za-z0-9]*_' "$PKG/security_check.lua" || true)"
+if [[ -z "$bad" ]]; then
+  ok "security_check.lua declares no :local with an underscore in its name"
+else
+  err "security_check.lua declares an underscored :local, which RouterOS 7.24 refuses to run: $bad"
+fi
+# The findings quote the command that would fix them, inside <code>. The script
+# itself must not run those commands: it is the hardening_audit, not an --apply.
+if grep -v '<code>' "$PKG/security_check.lua" | grep -qE '/ip service (disable|set)|address-list add|/user remove|/snmp set |/ip socks set|/ip upnp set|/tool bandwidth-server set'; then
+  err "security_check.lua must stay read-only; fix commands belong in the Telegram text"
+else
+  ok "security_check.lua does not apply the hardening it reports"
+fi
+# --- hex escapes are written the way RouterOS reads them -------------------
+# "\F0" is the byte 0xF0. "\\F0" is an escaped backslash followed by the letters
+# F and 0, so a message carries the text \F0 where an emoji should be.
+# security_check.lua arrived with 126 of them while every other script in this
+# folder used the single-backslash form.
+esc_bad=0
+esc_scanned=0
+for f in "${scripts[@]}"; do
+  n="$(basename "$f")"
+  esc_scanned=$((esc_scanned + 1))
+  # Comments are skipped: the header of reboot-and-flush.lua shows a shell
+  # command whose own quoting needs the doubled form, and documenting an escape
+  # is not writing one.
+  # A here-string, not a pipe: grep -q exits at the first match, which under
+  # `set -o pipefail` kills the upstream grep and makes the pipeline report 141
+  # — so a doubled escape would read as absent. This file sets pipefail.
+  if grep -q '\\\\[0-9A-F][0-9A-F]' <<<"$(grep -v '^[[:space:]]*#' "$f")"; then
+    err "$n writes a doubled hex escape; RouterOS reads that as a backslash and letters, not a byte"
+    esc_bad=$((esc_bad + 1))
+  fi
+done
+if (( esc_scanned == 0 )); then
+  err "the hex-escape check inspected no script — it has stopped checking"
+elif (( esc_bad == 0 )); then
+  ok "every script writes single-backslash hex escapes ($esc_scanned scanned)"
+fi
+
 if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
    && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
   ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"
