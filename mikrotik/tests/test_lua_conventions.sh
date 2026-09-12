@@ -391,6 +391,42 @@ else
   err "traffic_quota.lua must parse yyyy-MM-dd and baseline PREV on rollover"
 fi
 
+# --- the README's 7.24 compatibility lists match the scripts ----------------
+# The lists say which scripts run on 7.24 and which die in the parser. A script
+# that changes sides and is not moved turns the note into the quietest kind of
+# wrong: it tells somebody on 7.24 to install something that will never run, or
+# hides one that now would. Both lists are derived here and compared, rather
+# than trusted.
+compat_runs=0
+compat_dead=0
+compat_wrong=0
+for f in "${scripts[@]}"; do
+  n="$(basename "$f")"
+  if grep -qE '^[[:space:]]*:(global|local) +[A-Za-z0-9]*_' "$f"; then
+    compat_dead=$((compat_dead + 1))
+    if ! awk '/\*\*Does not run on 7\.24\*\*/,/^$/' "$README" | grep -qF "\`$n\`"; then
+      err "$n cannot run on 7.24 but the README does not list it as such"
+      compat_wrong=$((compat_wrong + 1))
+    fi
+  else
+    compat_runs=$((compat_runs + 1))
+    if ! awk '/\*\*Runs on 7\.24:\*\*/,/^$/' "$README" | grep -qF "\`$n\`"; then
+      err "$n runs on 7.24 but the README does not list it as such"
+      compat_wrong=$((compat_wrong + 1))
+    fi
+  fi
+done
+if (( compat_runs == 0 || compat_dead == 0 )); then
+  err "the 7.24 compatibility check classified nothing — it is not reading the scripts"
+elif (( compat_wrong == 0 )); then
+  ok "the README's 7.24 lists match the scripts ($compat_runs run, $compat_dead do not)"
+fi
+if grep -qE '\*\*On RouterOS 7\.24, '"$compat_dead"' of these '"${#scripts[@]}"' scripts do not run' "$README"; then
+  ok "the README's 7.24 headline count matches ($compat_dead of ${#scripts[@]})"
+else
+  err "the README's 7.24 headline count is stale: it should read $compat_dead of ${#scripts[@]}"
+fi
+
 echo
 if (( failures > 0 )); then
   echo "$failures RouterOS convention check(s) failed" >&2

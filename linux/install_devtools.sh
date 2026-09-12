@@ -329,7 +329,11 @@ fi
 step "versions"
 for tool in git jq python3 go terraform helm mise; do
   if have "$tool"; then
-    printf "  %-11s %s\n" "$tool" "$("$tool" --version 2>&1 | head -n 1)"
+    # head reads to its limit and exits, which under pipefail kills the tool
+    # with SIGPIPE and leaves "write error: Broken pipe" in the captured text.
+    # Capture first, trim after.
+    tool_version="$("$tool" --version 2>&1)"
+    printf "  %-11s %s\n" "$tool" "$(head -n 1 <<<"$tool_version")"
   else
     printf "  %-11s %s(not installed)%s\n" "$tool" "$C_DIM" "$C_RESET"
   fi

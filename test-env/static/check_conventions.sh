@@ -28,6 +28,11 @@ cd "$REPO_ROOT" || { echo "cannot enter $REPO_ROOT" >&2; exit 1; }
 # name is added here, which is the point: nobody has to remember.
 unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
 unset CHANGELOG_ROOT OS_RELEASE XDG_CONFIG_HOME
+# This file runs the scripts it checks (--help, bad flags), so it is a runner
+# like any suite and pins what they read. SYSTEMD_ANALYZE_CMD names a binary
+# stay_fresh_timer.sh executes; CPPFLAGS and LDFLAGS are exported into a pyenv
+# build by install_devtools.sh.
+unset SYSTEMD_ANALYZE_CMD CPPFLAGS LDFLAGS
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
@@ -156,7 +161,7 @@ for f in "${clis[@]}"; do
   while IFS= read -r flag; do
     [ -n "$flag" ] || continue
     checked_forms=$((checked_forms + 1))
-    if ! printf '%s\n' "$equals_arms" | grep -qx -- "$flag"; then
+    if ! grep -qx -- "$flag" <<<"$equals_arms"; then
       err "$f accepts '$flag VALUE' but not '$flag=VALUE'"
       missing_forms=$((missing_forms + 1))
     fi
@@ -166,6 +171,41 @@ if (( checked_forms == 0 )); then
   err "found no value-taking flags at all — this check has stopped checking"
 elif (( missing_forms == 0 )); then
   ok "every value-taking flag takes both forms ($checked_forms across the tree)"
+fi
+
+# --------------------------------------------------------------------------
+head_ "readers that exit early"
+# Under `set -o pipefail`, a reader that stops at the first match kills the
+# writer with SIGPIPE, the pipeline reports 141, and a match reads as a miss.
+# This file carried four of them at once -- one made macOS CI report that
+# set_git_profile.sh does not accept `--profile=VALUE` when it does -- in a file
+# that already explains the hazard in a comment. Prose did not hold the line, so
+# this does. A here-string has no writer to kill: `grep -q X <<<"$s"`.
+sigpipe_writer='(printf|echo)[^|]*'
+sigpipe_reader='(grep -[a-zA-Z]*q|head -n|awk .\{ *exit)'
+sigpipe_hits=0
+sigpipe_scanned=0
+# Every tracked shell file, test infrastructure included. `clis` leaves those
+# out because everything below it *runs* what it discovers and this suite once
+# recursed into itself; this check only reads. Excluding them here would have
+# exempted the very file that carried four of these, which is the mistake the
+# host-env check already had to unlearn: exempt means cannot fail, not not
+# looked at.
+while IFS= read -r f; do
+  [[ -n "$f" && -f "$f" ]] || continue
+  grep -q 'pipefail' "$f" || continue
+  sigpipe_scanned=$((sigpipe_scanned + 1))
+  while IFS= read -r hit; do
+    [[ -n "$hit" ]] || continue
+    case "$hit" in *'#'*) [[ "${hit%%#*}" == *'|'* ]] || continue ;; esac
+    err "$f:${hit%%:*} pipes into a reader that exits early; under pipefail that kills the writer, the pipeline reports 141, and a grep -q match reads as a miss — use a here-string"
+    sigpipe_hits=$((sigpipe_hits + 1))
+  done < <(grep -nE "$sigpipe_writer"'[[:space:]]*\|[[:space:]]*'"$sigpipe_reader" "$f" || true)
+done < <(cd "$REPO_ROOT" && git ls-files '*.sh')
+if (( sigpipe_scanned == 0 )); then
+  err "the SIGPIPE shape check inspected no file — it has stopped checking"
+elif (( sigpipe_hits == 0 )); then
+  ok "no pipefail script pipes into a reader that exits early ($sigpipe_scanned scanned)"
 fi
 
 # --------------------------------------------------------------------------
@@ -363,17 +403,17 @@ while IFS= read -r -d '' f; do
   grep -q '^require_value() {' "$f" || continue
   copies=$((copies + 1))
   body="$(extract_fn "$f" require_value)"
-  if ! printf '%s' "$body" | grep -qF 'if [[ -z "$value" || "$value" == --* ]]; then'; then
+  if ! grep -qF 'if [[ -z "$value" || "$value" == --* ]]; then' <<<"$body"; then
     err "require_value() in $f has a different guard condition"
     drifted=$((drifted + 1))
     continue
   fi
-  if ! printf '%s' "$body" | grep -qE '^[[:space:]]*exit 3$'; then
+  if ! grep -qE '^[[:space:]]*exit 3$' <<<"$body"; then
     err "require_value() in $f does not exit 3"
     drifted=$((drifted + 1))
     continue
   fi
-  if ! printf '%s' "$body" | grep -qE 'printf .* >&2|err "'; then
+  if ! grep -qE 'printf .* >&2|err "' <<<"$body"; then
     err "require_value() in $f does not report the failure to stderr"
     drifted=$((drifted + 1))
   fi
@@ -584,6 +624,45 @@ host_env_vars() {
     | grep -Ev "$host_env_ignore" | sort > "$cache"
   cat "$cache"
 }
+
+# --- the scanner tells a defaulted read from a local assignment -------------
+# VAR="${VAR:-default}" keeps the host's value whenever the host has one, so it
+# is a read. Counting it as an assignment is what hid SYSTEMD_ANALYZE_CMD --
+# which names a binary stay_fresh_timer.sh executes -- along with CPPFLAGS and
+# LDFLAGS, which install_devtools.sh exports into a pyenv build.
+#
+# The opposite error matters as much: VAR="$VAROTHER/x" reads a different
+# variable that merely starts with the same letters, and reporting it would send
+# somebody to pin something the line above derives. Both directions are checked
+# here, because this scanner is the only thing standing between an ambient
+# variable and a suite that runs against it.
+host_env_probe="$host_env_scratch/scanner-probe.sh"
+cat > "$host_env_probe" <<'PROBE'
+SELFDEFAULT="${SELFDEFAULT:-/tmp}"
+APPENDED="-L/x ${APPENDED:-}"
+DERIVED="$DERIVEDBASE/x"
+LOCALONLY=1
+USESLOCAL="$LOCALONLY"
+PROBE
+probe_out=" $(awk -f "$HERE/host_env_vars.awk" -v lang=sh "$host_env_probe" | sort | tr '\n' ' ')"
+if [[ "$probe_out" == " " ]]; then
+  err "the foreign-variable scanner found nothing in its own probe — it is not scanning"
+else
+  for want in SELFDEFAULT APPENDED; do
+    if [[ "$probe_out" == *" $want "* ]]; then
+      ok "scanner reads $want from the host despite its own default"
+    else
+      err "scanner missed $want: a defaulted assignment still reads the host's value"
+    fi
+  done
+  for unwanted in DERIVED LOCALONLY USESLOCAL; do
+    if [[ "$probe_out" == *" $unwanted "* ]]; then
+      err "scanner reported $unwanted, which the script assigns itself"
+    else
+      ok "scanner leaves $unwanted alone; the script assigns it"
+    fi
+  done
+fi
 
 suites=()
 while IFS= read -r f; do
