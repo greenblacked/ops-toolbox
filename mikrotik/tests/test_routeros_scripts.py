@@ -213,13 +213,20 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
         _add_script(script_resource, "tg_send", TG_SEND_NEW_STUB_SOURCE)
         _add_script(script_resource, "security_check", src)
         _unset_global(api, "SecLastFp")
+        _unset_global(api, "SecSendError")
         _unset_global(api, "PuTgLastMessage")
         _unset_global(api, "pu_TG_LAST_MESSAGE")
 
         _run_named(api, "security_check")
 
+        # security_check records why a send failed rather than going quiet, so
+        # a failure here names the cause instead of printing an empty string.
+        send_error = _read_global(api, "SecSendError")
         msg = _read_global(api, "PuTgLastMessage")
-        assert msg, "security_check did not send a Telegram scan report"
+        assert msg, (
+            "security_check did not send a Telegram scan report "
+            f"(SecSendError={send_error!r})"
+        )
         assert "security scan" in msg, f"expected a scan report, got: {msg!r}"
         fp = _read_global(api, "SecLastFp")
         assert fp, "security_check did not record SecLastFp after the scan"
@@ -227,6 +234,7 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
         _add_script(script_resource, "tg_send", SESSION_TG_SEND_STUB_SOURCE)
         _remove_by_name(script_resource, "security_check")
         _unset_global(api, "SecLastFp")
+        _unset_global(api, "SecSendError")
         _unset_global(api, "PuTgLastMessage")
         _unset_global(api, "pu_TG_LAST_MESSAGE")
 

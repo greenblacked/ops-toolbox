@@ -20,6 +20,9 @@
 #   SecLastFp   signature of the last finding set. Empty on first run after
 #               boot (globals die with the uptime), which is reported as an
 #               initial scan rather than as a flood of "new" findings.
+#   SecSendError why the Telegram report did not go out, or empty when it did.
+#               A scan nobody receives is worse than no scan, because it looks
+#               like a clean result; this is the value to alert on.
 
 # Fleet-wide maintenance switch; router_doctor.py reports when it is active.
 :global OpsToolboxPaused;
@@ -289,11 +292,35 @@
 }
 
 :log info ("security_check: " . $counts . " posture=" . $posture);
+
+# The send mirrors backup_update_check.lua, the one Telegram path this
+# repository proves end to end on a 7.24 CHR: the helper's name resolves
+# through a variable, it is parsed once, and the parsed function is called with
+# MessageText. The parse and the call are separate :do blocks on purpose. One
+# block around both could only say "tg_send unavailable", which is the same
+# sentence whether the script is missing, refuses to parse, or raises while
+# sending - and an audit that goes quiet for an unknown reason is the failure
+# mode this script exists to prevent. SecSendError names which half failed, and
+# survives the run so a scheduler or a test can read it.
+:local TgSendScript "tg_send";
+:local SendTelegramMessage "";
+:local SendError "";
 :do {
-    :local Send [:parse [/system script get tg_send source]];
-    $Send MessageText=$MessageText;
+    :set SendTelegramMessage [:parse [/system script get $TgSendScript source]];
 } on-error={
-    :log error "security_check: tg_send unavailable";
+    :set SendError ("cannot read or parse script '" . $TgSendScript . "'");
+}
+:if ([:len $SendError] = 0) do={
+    :do {
+        $SendTelegramMessage MessageText=$MessageText;
+    } on-error={
+        :set SendError ("'" . $TgSendScript . "' raised while sending the report");
+    }
+}
+:global SecSendError;
+:set SecSendError $SendError;
+:if ([:len $SendError] > 0) do={
+    :log error ("security_check: report NOT sent - " . $SendError);
 }
 
 :set SecLastFp $fp;
