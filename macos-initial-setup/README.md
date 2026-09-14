@@ -452,7 +452,11 @@ In the order they run:
    conditions met the boot caches (`com.apple.dyld`,
    `com.apple.kernelcaches`, `com.apple.bootstamps`) are excluded: removing
    them buys a few megabytes and costs a long, alarming first boot while the
-   kernel and dyld caches are rebuilt.
+   kernel and dyld caches are rebuilt. A handful of Apple service directories
+   under `/Library/Caches` itself (neural engine, AMS) stay unreachable the
+   same way; the sweep keeps them and the step still warns `could not fully
+   clear /Library/Caches`, unlike the user-cache step, which counts that class
+   of refusal without a warning. See [Expected warnings](#expected-warnings).
 4. Clear user caches (`~/Library/Caches`, Saved State, Xcode
    DerivedData, and related paths). What macOS refuses is sorted before it
    is reported: entries the privacy controls or SIP protect (HomeKit,
@@ -565,7 +569,9 @@ In the order they run:
 18. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
     index, then `kubectl krew upgrade` each plugin. krew itself is a Homebrew
     formula; the kubectl plugins it installs are not, and nothing else moves
-    them.
+    them. krew exits non-zero when a plugin is already at the newest version,
+    and this step counts that as a warning, so a machine whose plugins are
+    current still finishes WARN. See [Expected warnings](#expected-warnings).
 19. Run `gcloud components update`.
 20. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     `kubectl` and its krew, `terraform`, `docker`, and `gcloud`.
@@ -781,6 +787,45 @@ state without parsing a log: a prompt segment, a status-bar widget, the
 agent's `status`, which prints its headline and detail line. A notification
 that cannot be sent is reported on the terminal with the reason, and the
 clean run's log is discarded only after the notification has gone out.
+
+### Expected warnings
+
+A `WARN` verdict is not always leftover work. Two steps warn on a machine that
+has nothing left to clean, and `--fail-on-warn` (the LaunchAgent always passes
+it) treats those as exit `1`. The kept log under `~/Library/Logs/stay_fresh/`
+is the place to tell them apart from a real leftover: `grep '\[warn\]'` on
+that file.
+
+**Clear system caches** still warns `could not fully clear /Library/Caches —
+protected or recreated entries remain` when SIP leaves Apple-owned directories
+(neural engine, AMS engagement) in place. `find` prints `Operation not
+permitted` on those paths even as root. The rest of the sweep ran; granting
+nothing will make the next run quieter, because SIP is the point.
+
+**krew plugin refresh** warns `'kubectl krew upgrade <plugin>' failed` for
+every installed plugin that is already newest. krew's own message is `can't
+upgrade, the newest version is already installed`. After a run that did
+upgrade a plugin, the *next* run warns for that plugin too. krew also prints a
+PATH reminder on every invocation; that is not a warning.
+
+These look similar in the log and are not step warnings:
+
+- User-cache refusals for HomeKit, CloudKit, Safari and other TCC-protected
+  Apple services (step 4 counts them as kept).
+- `~/.Trash` behind Full Disk Access. The verdict may still say the Trash
+  needs it; the step itself is not warned.
+- `pip3 cache purge` printing `WARNING: No matching packages` on an empty
+  cache.
+- Homebrew naming a cask it has disabled (Gatekeeper), which is listed, not
+  counted.
+- Preflight `Xcode Command Line Tools version … does not match macOS major`
+  when `pkgutil` and `sw_vers` disagree on the major. That is not a step, and
+  brew may still upgrade.
+
+A gcloud log directory older than a week that `rm` cannot delete *is* a real
+warning (`gcloud logs older than 7 days cleanup incomplete`). Those leftovers
+are usually `root:wheel` under `~/.config/gcloud/logs/`; remove the dated
+directory with `sudo` and the next `dev-caches` step is clean.
 
 ### Exit codes
 
