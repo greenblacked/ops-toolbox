@@ -681,6 +681,11 @@ The scan covers:
 - NTP client disabled
 - filter `input` with no drop/reject, and IPv6 enabled with an empty filter
 
+It sends through `tg_send_new`, the same helper `backup_update_check.lua` and
+`stay_fresh.lua` default to — the operator's own copy, which is the one a 7.24
+router has, since the package's `tg_send.lua` is the older name. `SecuritySendScript`
+names a different one.
+
 A daily Telegram report always goes out, including on a clean scan, so a
 muted bot is how you learn the scheduler died rather than silence. The
 finding set is fingerprinted in `:global SecLastFp`; the message says

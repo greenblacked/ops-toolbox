@@ -23,6 +23,10 @@
 #   SecSendError why the Telegram report did not go out, or empty when it did.
 #               A scan nobody receives is worse than no scan, because it looks
 #               like a clean result; this is the value to alert on.
+#
+# Reads, never written here:
+#   SecuritySendScript  name of the Telegram helper, when it is neither
+#               tg_send_new nor whatever this router calls its own copy.
 
 # Fleet-wide maintenance switch; router_doctor.py reports when it is active.
 :global OpsToolboxPaused;
@@ -302,7 +306,13 @@
 # sending - and an audit that goes quiet for an unknown reason is the failure
 # mode this script exists to prevent. SecSendError names which half failed, and
 # survives the run so a scheduler or a test can read it.
-:local TgSendScript "tg_send";
+# Prefer the operator's own copy, the same default backup_update_check.lua and
+# stay_fresh.lua use. That is the helper a 7.24 router actually has: the
+# package's own tg_send is the one this folder shipped for years, and a router
+# that has both keeps the one it set up. SecuritySendScript names a third.
+:local TgSendScript "tg_send_new";
+:global SecuritySendScript;
+:if ([:len $SecuritySendScript] > 0) do={ :set TgSendScript $SecuritySendScript; }
 :local SendTelegramMessage "";
 :local SendError "";
 :do {
@@ -310,36 +320,26 @@
 } on-error={
     :set SendError ("cannot read or parse script '" . $TgSendScript . "'");
 }
-:if ([:len $SendError] = 0) do={
-    :do {
-        $SendTelegramMessage MessageText=$MessageText;
-    } on-error={
-        :set SendError ("'" . $TgSendScript . "' raised on the full report");
-    }
-}
-
-# A full report can be long: a router with seventeen findings produces one
-# built from seventeen quoted commands, and Telegram rejects a message over
-# its own limit outright. Losing the whole report then is the worst outcome
-# available, because the run that had most to say is the one that says
-# nothing. So a failed send falls back to the counts alone, which is short by
-# construction and still tells somebody to go and look.
-:if ([:len $SendError] > 0) do={
-    :local ShortText ("<b>" . $DeviceName . ":</b> security scan%0A" . \
-                      $counts . " (" . $posture . ")%0A" . \
-                      "full report could not be sent - run security_check by hand");
-    :do {
-        $SendTelegramMessage MessageText=$ShortText;
-        :set SendError ($SendError . "; counts-only fallback sent");
-    } on-error={
-        :set SendError ($SendError . "; the counts-only fallback failed too");
-    }
-}
-
+# The call is deliberately NOT inside :do{}on-error. backup_update_check.lua
+# parses its helper inside one, exactly as above, but calls it from a plain
+# :if - and that script sends on this CHR. This one wrapped the call too, and
+# the call raised for every message, a one-line fallback included, which is
+# what ruled out the message itself. So the shape that is known to work is the
+# shape used here.
+#
+# Losing the :do costs the guard around the send, so the marker takes its
+# place: SecSendError says the send did not return, and is cleared the moment
+# it does. A run that dies in tg_send leaves that sentence behind, along with
+# what the parsed value actually was - which is the thing still unexplained.
 :global SecSendError;
 :set SecSendError $SendError;
-:if ([:len $SendError] > 0) do={
-    :log error ("security_check: " . $SendError);
+:if ([:len $SendError] = 0) do={
+    :set SecSendError ("the send did not return; helper typeof=" . [:typeof $SendTelegramMessage]);
+    $SendTelegramMessage MessageText=$MessageText;
+    :set SecSendError "";
+}
+:if ([:len $SecSendError] > 0) do={
+    :log error ("security_check: " . $SecSendError);
 }
 
 :set SecLastFp $fp;
