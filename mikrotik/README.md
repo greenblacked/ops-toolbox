@@ -74,7 +74,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 16 of these 27 scripts do not run at all.** That release
+> **On RouterOS 7.24, 16 of these 28 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
@@ -84,7 +84,7 @@ their values, so no token crosses the wire.
 > **Runs on 7.24:** `backup_file_cleanup.lua`, `backup_update_check.lua`,
 > `cert_expiry_watch.lua`, `change_WIFI_pw.lua`, `detect_internet.lua`,
 > `health_check.lua`, `netwatch_notify.lua`, `reboot-and-flush.lua`,
-> `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
+> `security_check.lua`, `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
 >
 > **Does not run on 7.24** (fine on 7.23 and earlier): `backup.lua`,
 > `bandwidth_spike.lua`, `brute_force_block.lua`, `ddns_update.lua`,
