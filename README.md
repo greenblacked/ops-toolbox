@@ -667,32 +667,6 @@ static and k8s checks have to keep working on a host where Docker is
 unavailable. The k8s one is the pointed case — it checks the scripts that build
 a container image, and needs no container to do it.
 
-### Remote coding sessions
-
-A hosted coding session starts from a bare clone in a throwaway container:
-no `zsh`, a ShellCheck that may not match the pinned one, no Docker daemon
-for the macOS suites, and none of the local guard configuration. The
-startup hook at `.claude/hooks/session-start.sh` closes that gap before the
-first command runs. It reads the tool versions from `ci.yml` rather than
-carrying its own copy, installs ShellCheck, ruff and markdownlint-cli2 at
-those versions, adds `zsh`, and lays out `/repo` plus the two root-owned
-fixture directories `/rootonly` and `/rootlocked`, so the macOS steps and
-unprivileged suites can run directly without a daemon. It also plants
-`/.dockerenv`, but only in a session that is genuinely disposable: the steps
-suite reads that file as permission to clear absolute system paths, so `--force`
-on a real machine skips it rather than making the promise false. Finally it
-reinstalls the attribution guard from the user's skills directory. It is a
-no-op outside a remote session, so it never touches a developer's machine, and
-it is safe to re-run.
-
-```bash
-.claude/hooks/session-start.sh --check   # what is in place, what is missing; exit 1 if anything is
-.claude/hooks/session-start.sh --force   # run the setup on a machine that is not a remote session
-```
-
-The `.gitignore` re-admits only the hook and the settings file that registers
-it; everything else an agent keeps in that directory stays local.
-
 ### Continuous integration
 
 **CI** covers the git, macOS, Linux, Windows, Kubernetes, Python and
