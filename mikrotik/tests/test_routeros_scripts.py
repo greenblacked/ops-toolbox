@@ -222,13 +222,15 @@ def test_run_safe_scripts(api: Any, script_resource: Any, script_name: str) -> N
 def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> None:
     """security_check is underscore-free, so /system/script/run actually
     executes it on the 7.24 CHR. It calls tg_send_new, the same helper
-    backup_update_check and stay_fresh default to and the one the session
-    fixture installs an underscore-free stub for — the package's own tg_send
-    declares an underscored :global, which 7.24 refuses to :parse. A stock CHR
-    has the API on (the suite uses it), so the scan must produce a report
-    rather than going silent."""
+    backup_update_check and stay_fresh default to, so this test installs the
+    same underscore-free stub they do under that name — the package's own
+    tg_send declares an underscored :global, which 7.24 refuses to :parse, and
+    nothing installs tg_send_new session-wide: the conftest set of that name is
+    a cleanup list, not a fixture. A stock CHR has the API on (the suite uses
+    it), so the scan must produce a report rather than going silent."""
     src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
     try:
+        _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
         _add_script(script_resource, "security_check", src)
         _unset_global(api, "SecLastFp")
         _unset_global(api, "SecSendError")
@@ -276,6 +278,7 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
         assert fingerprint, "security_check did not record SecLastFp after the scan"
     finally:
         _remove_by_name(script_resource, "security_check")
+        _remove_by_name(script_resource, "tg_send_new")
         _unset_global(api, "SecLastFp")
         _unset_global(api, "SecSendError")
         _unset_global(api, "PuTgLastMessage")
