@@ -218,7 +218,7 @@ fi
 if [[ -n "$session_lines" ]]; then
   n_sess="$(printf '%s\n' "$session_lines" | grep -c . || true)"
   info "$n_sess login session(s)"
-  printf '%s\n' "$session_lines" | head -n 10 | sed 's/^/           /'
+  head -n 10 <<<"$session_lines" | sed 's/^/           /'
 else
   info "no login sessions"
 fi
@@ -547,7 +547,7 @@ if have needs-restarting; then
     ok "no processes listed as needing a restart"
   else
     warn "$stale_n process(es) still running old libraries" "needs-restarting  # or reboot"
-    printf '%s\n' "$stale" | head -n 10 | sed 's/^/           /'
+    head -n 10 <<<"$stale" | sed 's/^/           /'
   fi
 elif have needrestart; then
   stale="$(needrestart -b -r l 2>/dev/null || true)"
@@ -577,7 +577,7 @@ if have journalctl && [[ -d /run/log/journal || -d /var/log/journal || -d /run/s
       extra="; first 20 shown"
     fi
     warn "$journal_n error-level journal line(s) this boot${extra}" "journalctl -p err -b"
-    printf '%s\n' "$journal_out" | head -n 20 | sed 's/^/           /'
+    head -n 20 <<<"$journal_out" | sed 's/^/           /'
   fi
 else
   skip "no journald to read"
