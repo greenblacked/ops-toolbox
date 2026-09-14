@@ -263,7 +263,8 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
             raise AssertionError(
                 "security_check did not send a Telegram scan report.\n"
                 f"SecSendError={send_error!r} (empty means the send was never attempted)\n"
-                f"SecLastFp={fingerprint!r} (empty means the script did not reach its last line)\n"
+                f"SecLastFp={fingerprint!r} (empty means the script never reached"
+                " its last line — it may also never have started)\n"
                 f"router log:\n{log}"
             )
         assert "security scan" in msg, f"expected a scan report, got: {msg!r}"
@@ -275,6 +276,74 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
         _unset_global(api, "SecSendError")
         _unset_global(api, "PuTgLastMessage")
         _unset_global(api, "pu_TG_LAST_MESSAGE")
+
+
+# A helper that raises rather than one that is missing or unparseable: those two
+# are answered before the call, by the find and the :parse guard, and the script
+# never reaches the send. This one parses, is called, and then fails — the shape
+# a real Telegram outage takes — and it is the only one that can kill the run
+# part way through.
+TG_SEND_NEW_RAISING_STUB_SOURCE = (
+    ":global PuTgStubReached;\n"
+    ':set PuTgStubReached "yes";\n'
+    ':error "stub refuses to send";\n'
+)
+
+
+def test_security_check_survives_a_raising_helper(api: Any, script_resource: Any) -> None:
+    """A helper that raises mid-send costs the report, not the fingerprint.
+
+    The send is wrapped in :do{}on-error={} for this: without it the raise
+    propagates and the script dies before :set SecLastFp, so the next scan sees
+    no previous fingerprint and calls itself an initial scan. A posture audit
+    that forgets its own posture every time Telegram is down reports "initial
+    scan" forever and never once reports a change, which is the one thing it is
+    for. SecSendError has to name the raise too, or the router log says nothing
+    about why the report stopped arriving."""
+    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    try:
+        _add_script(script_resource, "tg_send_new", TG_SEND_NEW_RAISING_STUB_SOURCE)
+        _add_script(script_resource, "security_check", src)
+        _unset_global(api, "SecLastFp")
+        _unset_global(api, "SecSendError")
+        _unset_global(api, "PuTgStubReached")
+
+        # Wait on SecLastFp, not on the message: the point of the test is that
+        # the script reaches its last line even though the send raised.
+        _run_via_scheduler(
+            api,
+            "security_check",
+            lambda: _read_global(api, "SecLastFp") != "",
+            timeout=150.0,
+            interval="40s",
+        )
+
+        reached = _read_global(api, "PuTgStubReached")
+        send_error = _read_global(api, "SecSendError")
+        fingerprint = _read_global(api, "SecLastFp")
+
+        # Without this the test passes on a script that never called the helper
+        # at all — the find or the :parse guard short-circuiting would leave
+        # SecLastFp set and SecSendError populated, and nothing would have
+        # exercised the wrapper this test exists to check.
+        assert reached == "yes", (
+            "the raising helper was never called, so the send guard was not "
+            f"exercised: SecSendError={send_error!r}"
+        )
+        assert fingerprint, (
+            "security_check did not record SecLastFp after a raising helper — "
+            "the raise killed the run before the fingerprint was written.\n"
+            f"SecSendError={send_error!r}"
+        )
+        assert "raised while sending" in send_error, (
+            f"expected SecSendError to name the raise, got: {send_error!r}"
+        )
+    finally:
+        _remove_by_name(script_resource, "security_check")
+        _remove_by_name(script_resource, "tg_send_new")
+        _unset_global(api, "SecLastFp")
+        _unset_global(api, "SecSendError")
+        _unset_global(api, "PuTgStubReached")
 
 
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE

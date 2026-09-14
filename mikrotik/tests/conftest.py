@@ -149,6 +149,8 @@ _TEST_OWNED_GLOBALS = (
     "UPDATE_CHECK_MAX_WAIT",
     "UPDATE_CHECK_NOTIFY_FAILURE",
     "SecLastFp",
+    "SecSendError",
+    "PuTgStubReached",
 )
 
 
