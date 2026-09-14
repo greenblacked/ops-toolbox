@@ -3458,14 +3458,47 @@ step_krew() {
     info "no krew plugins installed — nothing to refresh"
     return 0
   fi
+  # krew installs plugins into $KREW_ROOT/bin and prints a four-line WARNING on
+  # every invocation when that directory is not on PATH. A scheduled run has
+  # the environment launchd hands it, not the one ~/.zshrc builds, so that
+  # warning appeared once per krew call in a log whose whole value is that a
+  # warning means something. Putting the directory on PATH here is also the
+  # honest fix rather than a filter: it is what makes the plugins runnable.
+  local krew_bin="${KREW_ROOT:-$HOME/.krew}/bin"
+  case ":$PATH:" in
+    *":$krew_bin:"*) ;;
+    *) [[ -d "$krew_bin" ]] && export PATH="$krew_bin:$PATH" ;;
+  esac
+
   run_cmd "kubectl krew update" kubectl krew update \
-    || warn "'kubectl krew update' failed"
-  local p
+    || warn_step "'kubectl krew update' failed"
+
+  # 'krew upgrade' exits non-zero when a plugin is already at the newest
+  # version. That is the answer "nothing to do", not a failure, and on a
+  # machine that is current it is the answer for every plugin: three warnings
+  # and a WARN verdict for a step that did exactly what it should. This
+  # package documented that exit code as expected first, which left the
+  # warnings in place — and a warning nobody should act on is what teaches
+  # people to skip the ones they should.
+  #
+  # capture_cmd rather than run_cmd because it does not count a failure
+  # itself: what the message says decides whether this is one.
+  local p current=0
   while IFS= read -r p; do
     [[ -z "$p" ]] && continue
-    run_cmd "kubectl krew upgrade $p" kubectl krew upgrade "$p" \
-      || warn "'kubectl krew upgrade $p' failed"
+    if CAPTURE_STDERR=1 capture_cmd "kubectl krew upgrade $p" \
+         kubectl krew upgrade "$p"; then
+      continue
+    fi
+    case "$CAPTURED" in
+      *"newest version is already installed"*) current=$(( current + 1 )) ;;
+      *) warn_step "'kubectl krew upgrade $p' failed" ;;
+    esac
   done <<< "$plugins"
+  if (( current > 0 )); then
+    info "$current krew plugin(s) already at the newest version"
+  fi
+  return 0
 }
 
 # gcloud components (e.g. gke-gcloud-auth-plugin, kubectl, beta, alpha) that
