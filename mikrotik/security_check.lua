@@ -315,10 +315,17 @@
 :if ([:len $SecuritySendScript] > 0) do={ :set TgSendScript $SecuritySendScript; }
 :local SendTelegramMessage "";
 :local SendError "";
-:do {
-    :set SendTelegramMessage [:parse [/system script get $TgSendScript source]];
-} on-error={
-    :set SendError ("cannot read or parse script '" . $TgSendScript . "'");
+# "cannot read or parse" covers two very different operator problems - the
+# helper was never installed, or it is there and broken - so they are told
+# apart here rather than left to whoever reads the log.
+:if ([:len [/system script find name=$TgSendScript]] = 0) do={
+    :set SendError ("no script named '" . $TgSendScript . "' is installed");
+} else={
+    :do {
+        :set SendTelegramMessage [:parse [/system script get $TgSendScript source]];
+    } on-error={
+        :set SendError ("script '" . $TgSendScript . "' is installed but will not parse");
+    }
 }
 # The call is deliberately NOT inside :do{}on-error. backup_update_check.lua
 # parses its helper inside one, exactly as above, but calls it from a plain
