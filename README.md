@@ -499,6 +499,13 @@ The MikroTik package is [`mikrotik/`](mikrotik/), verified against
 - `rogue_dns_check.lua` — verifies upstream DNS sanity and detects clients
   using non-approved DNS resolvers; tags offenders into
   `rogue-dns-clients`.
+- `security_check.lua` — read-only hardening audit of the router, the
+  counterpart of `linux/hardening_audit.sh` and
+  `macos-initial-setup/hardening_audit.sh`. Grades services on all
+  addresses, default identity/admin, discovery/MAC-server exposure, DNS
+  recursion, SNMP, UPnP, SOCKS, and an empty IPv6 filter, then Telegrams
+  the scan with the command that would close each finding. No underscored
+  `:global` names, so it runs on RouterOS 7.24.
 - `cert_expiry_watch.lua` — alerts when any non-disabled certificate is expired
   or expires within `WarnDays`. Schedule at most daily; the alert is not
   transition-gated, so a shorter interval repeats it.

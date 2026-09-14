@@ -6,7 +6,7 @@
 # Installing a script is the easy half. Scheduling it is where this package goes
 # quiet: a script that was never scheduled looks exactly like a script that has
 # nothing to report, and the mistake is invisible until the month you needed the
-# backup. Twenty-two scripts here are meant to run unattended and only ten of
+# backup. Twenty-three scripts here are meant to run unattended and only eleven of
 # them have an interval written down in README.md.
 #
 # Usage:
@@ -140,7 +140,7 @@ case "$POLICY" in
     ;;
 esac
 
-SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch backup_update_check stay_fresh"
+SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch backup_update_check stay_fresh security_check"
 
 known=0
 for name in $UPDATE_SCRIPTS; do
@@ -233,6 +233,7 @@ dhcp_lease_watch     5m
 firewall_drift       15m
 mac_allowlist_dhcp   5m
 rogue_dns_check      10m
+security_check       1d   05:20:00
 EOF
 
 comment "--- not in that table; taken from each script's own header comment ---"
