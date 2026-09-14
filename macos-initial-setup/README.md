@@ -569,9 +569,11 @@ In the order they run:
 18. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
     index, then `kubectl krew upgrade` each plugin. krew itself is a Homebrew
     formula; the kubectl plugins it installs are not, and nothing else moves
-    them. krew exits non-zero when a plugin is already at the newest version,
-    and this step counts that as a warning, so a machine whose plugins are
-    current still finishes WARN. See [Expected warnings](#expected-warnings).
+    them. krew exits non-zero when a plugin is already at the newest version;
+    the step reads the message rather than the exit code, so that counts as
+    nothing to do and only a real failure warns. It also puts `$KREW_ROOT/bin`
+    on `PATH` for its own calls, which is what stops krew printing its
+    four-line `WARNING` on every invocation under a scheduled run.
 19. Run `gcloud components update`.
 20. Report active versions of `pyenv`, `goenv`, `tfenv`, `tenv`, `helm`,
     `kubectl` and its krew, `terraform`, `docker`, and `gcloud`.
@@ -802,11 +804,13 @@ protected or recreated entries remain` when SIP leaves Apple-owned directories
 permitted` on those paths even as root. The rest of the sweep ran; granting
 nothing will make the next run quieter, because SIP is the point.
 
-**krew plugin refresh** warns `'kubectl krew upgrade <plugin>' failed` for
-every installed plugin that is already newest. krew's own message is `can't
-upgrade, the newest version is already installed`. After a run that did
-upgrade a plugin, the *next* run warns for that plugin too. krew also prints a
-PATH reminder on every invocation; that is not a warning.
+**krew plugin refresh** used to warn `'kubectl krew upgrade <plugin>' failed`
+for every plugin that was already newest, and printed krew's four-line PATH
+reminder on every invocation. Neither happens now: the step reads krew's own
+message — `can't upgrade, the newest version is already installed` — instead of
+its exit code, and puts `$KREW_ROOT/bin` on `PATH` for its own calls. A plugin
+that genuinely fails to upgrade still warns. If you see either of these, the
+script is older than this README.
 
 These look similar in the log and are not step warnings:
 

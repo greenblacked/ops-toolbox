@@ -333,6 +333,18 @@ if command -v goenv >/dev/null 2>&1; then
   eval "$(goenv init - 2>/dev/null || true)"
 fi
 
+# kubectl plugins installed by krew live in $KREW_ROOT/bin, which nothing else
+# puts on PATH. Without it kubectl cannot find them and krew prints a four-line
+# WARNING on every invocation telling you to add exactly this. Guarded on the
+# directory so a machine without krew gains nothing, and on PATH itself so
+# re-sourcing this file does not stack copies.
+if [[ -d "${KREW_ROOT:-$HOME/.krew}/bin" ]]; then
+  case ":$PATH:" in
+    *":${KREW_ROOT:-$HOME/.krew}/bin:"*) ;;
+    *) export PATH="${KREW_ROOT:-$HOME/.krew}/bin:$PATH" ;;
+  esac
+fi
+
 if command -v go >/dev/null 2>&1; then
   # Make `go install ...`-ed binaries available on PATH.
   export GOPATH="${GOPATH:-$HOME/go}"

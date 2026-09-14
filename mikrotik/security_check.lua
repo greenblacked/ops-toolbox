@@ -327,23 +327,32 @@
         :set SendError ("script '" . $TgSendScript . "' is installed but will not parse");
     }
 }
-# The call is deliberately NOT inside :do{}on-error. backup_update_check.lua
-# parses its helper inside one, exactly as above, but calls it from a plain
-# :if - and that script sends on this CHR. This one wrapped the call too, and
-# the call raised for every message, a one-line fallback included, which is
-# what ruled out the message itself. So the shape that is known to work is the
-# shape used here.
+# The call is wrapped, the same shape backup_update_check.lua uses at all three
+# of its send sites. An earlier revision of this file left it unwrapped, on a
+# note claiming that script calls its helper from a plain :if - it does not,
+# and the send that appeared to need the unwrapped form was failing for two
+# other reasons since fixed: the test installed no tg_send_new stub, and it ran
+# the script through /system/script/run, which this CHR refuses for any source
+# declaring an underscored :global.
 #
-# Losing the :do costs the guard around the send, so the marker takes its
-# place: SecSendError says the send did not return, and is cleared the moment
-# it does. A run that dies in tg_send leaves that sentence behind, along with
-# what the parsed value actually was - which is the thing still unexplained.
+# The guard matters for more than the message. Without it a raise inside the
+# helper kills the run before :set SecLastFp below, so a transient Telegram
+# outage throws away the fingerprint and the next scan reports "initial scan"
+# instead of the posture delta it exists to report.
+#
+# SecSendError still names which half failed, and survives the run so a
+# scheduler or a test can read it: set before the call, cleared the moment it
+# returns, and replaced by the on-error branch when it raises.
 :global SecSendError;
 :set SecSendError $SendError;
 :if ([:len $SendError] = 0) do={
     :set SecSendError ("the send did not return; helper typeof=" . [:typeof $SendTelegramMessage]);
-    $SendTelegramMessage MessageText=$MessageText;
-    :set SecSendError "";
+    :do {
+        $SendTelegramMessage MessageText=$MessageText;
+        :set SecSendError "";
+    } on-error={
+        :set SecSendError ("the helper raised while sending; typeof=" . [:typeof $SendTelegramMessage]);
+    }
 }
 :if ([:len $SecSendError] > 0) do={
     :log error ("security_check: " . $SecSendError);

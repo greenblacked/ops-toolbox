@@ -522,6 +522,76 @@ printf '%s\n' '#!/bin/sh' \
   'exit 0' > "$fake_macos/bin/defaults"
 chmod +x "$fake_macos/bin/"*
 
+# --- krew: "already newest" is not a failure -------------------------------
+# `kubectl krew upgrade` exits non-zero when a plugin is already at the newest
+# version. On a current machine that is the answer for every plugin, so the
+# step warned once per plugin and the run closed with a WARN verdict for doing
+# exactly what it should. A warning nobody should act on is what teaches
+# people to skip the ones they should, so the message decides, not the code.
+# Its own HOME and TMPDIR: this run is a real (if tiny) mutation, and the
+# assertion further down checks that the shared fake home was never written to.
+krew_home="$(mktemp -d)"
+mkdir -p "$krew_home/bin" "$krew_home/home" "$krew_home/tmp"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$krew_home/bin/kubectl-krew"
+printf '%s\n' '#!/bin/sh' \
+  'case "${1:-}" in' \
+  '  krew)' \
+  '    case "${2:-}" in' \
+  '      list) printf "PLUGIN\tVERSION\nctx\tv0.9.5\nns\tv0.9.5\n" ; exit 0 ;;' \
+  '      update) [ -n "${KREW_PATH_PROBE:-}" ] && printf "%s\\n" "$PATH" > "$KREW_PATH_PROBE"; exit 0 ;;' \
+  '      upgrade)' \
+  '        if [ "${KREW_REAL_FAILURE:-0}" = 1 ]; then' \
+  '          echo "failed to upgrade plugin \"$3\": network unreachable" >&2; exit 1' \
+  '        fi' \
+  '        echo "failed to upgrade plugin \"$3\": can'"'"'t upgrade, the newest version is already installed" >&2' \
+  '        exit 1 ;;' \
+  '    esac ;;' \
+  'esac' \
+  'exit 0' > "$krew_home/bin/kubectl"
+chmod +x "$krew_home/bin/"*
+
+set +e
+out="$(HOME="$krew_home/home" TMPDIR="$krew_home/tmp" \
+  PATH="$krew_home/bin:$fake_macos/bin:/usr/bin:/bin" \
+  "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null 2>&1)"
+rc=$?
+set -e
+assert_not_contains "an already-newest krew plugin is not a warning" "$out" \
+  "kubectl krew upgrade ctx' failed"
+assert_contains "stay_fresh says how many krew plugins were already current" \
+  "$out" "already at the newest version"
+assert_not_contains "a krew step with nothing to do does not end in WARN" "$out" \
+  "krew plugin refresh finished with"
+
+# The other direction: a real failure still has to be reported, or the case
+# above is just a mute button.
+set +e
+out="$(HOME="$krew_home/home" TMPDIR="$krew_home/tmp" KREW_REAL_FAILURE=1 \
+  PATH="$krew_home/bin:$fake_macos/bin:/usr/bin:/bin" \
+  "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null 2>&1)"
+set -e
+assert_contains "a krew upgrade that really failed is still reported" "$out" \
+  "kubectl krew upgrade ctx' failed"
+
+# krew prints a four-line WARNING on every invocation when its bin directory is
+# not on PATH, and a scheduled run has launchd's environment rather than the one
+# ~/.zshrc builds. The step puts it there itself, which silences that and is
+# what makes the plugins runnable in the first place.
+mkdir -p "$krew_home/krewroot/bin"
+set +e
+KREW_PATH_PROBE="$krew_home/path.txt" KREW_ROOT="$krew_home/krewroot" \
+  HOME="$krew_home/home" TMPDIR="$krew_home/tmp" \
+  PATH="$krew_home/bin:$fake_macos/bin:/usr/bin:/bin" \
+  "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null >/dev/null 2>&1
+set -e
+if [[ -s "$krew_home/path.txt" ]]; then
+  assert_contains "the krew step puts KREW_ROOT/bin on PATH for its own calls" \
+    "$(cat "$krew_home/path.txt")" "$krew_home/krewroot/bin"
+else
+  err "the krew PATH probe never ran — the step did not reach 'krew update'"
+fi
+rm -rf "$krew_home"
+
 set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" </dev/null 2>&1)"
