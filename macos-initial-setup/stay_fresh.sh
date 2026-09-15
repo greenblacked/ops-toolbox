@@ -3264,9 +3264,20 @@ step_brew() {
   # `brew upgrade --yes` (also -y / --no-ask) skips the confirmation prompt that
   # current Homebrew shows before downloading; an older Homebrew rejects the
   # flag as an invalid option, so probe for it instead of assuming.
+  #
+  # A here-string, not `brew upgrade --help | grep -q`. Under pipefail a reader
+  # that exits at the first match kills the writer with SIGPIPE, the pipeline
+  # reports 141, and the `if` reads a match as a miss. Measured here: a writer
+  # whose output fits the pipe buffer finishes before the reader leaves and is
+  # unaffected, and the flip is sharp - 0 of 25 runs lost the match up to about
+  # 120 KB, 25 of 25 from 128 KB up. Homebrew's help is a few KB, so this probe
+  # is not failing today; it is one shape away from failing silently, and what
+  # it guards is the run that cannot pay for it, since --yes exists to keep a
+  # scheduled run non-interactive and dropping it parks brew at a confirmation
+  # prompt with nobody there to answer.
   local -a brew_yes=()
   if (( ASSUME_YES )); then
-    if brew upgrade --help 2>/dev/null | grep -q -- '--yes'; then
+    if grep -q -- '--yes' <<<"$(brew upgrade --help 2>/dev/null)"; then
       brew_yes+=(--yes)
     else
       info "this Homebrew's 'brew upgrade' has no --yes flag; running without it"
@@ -3301,9 +3312,20 @@ step_brew() {
   log_mark=0
   (( DRY_RUN )) || log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)"
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
-  if (( DRY_RUN == 0 )) && tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null \
-       | grep -q -e 'index.lock' -e 'could not detach HEAD'; then
-    warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+  # A here-string, not `tail | grep -q`, and this is the one of the two with a
+  # plausible path to the 128 KB cliff described above: the reader only stops
+  # early when it finds a match, so the failure would land in the one direction
+  # that matters - the warning suppressed precisely when there is a lock to warn
+  # about. The writer here is brew update's own output since the mark, which is
+  # short on a healthy machine and grows with the number of taps, so whether
+  # this stays under the cliff is a property of the user's setup rather than of
+  # this code. Not worth leaving to that.
+  if (( DRY_RUN == 0 )); then
+    local since_mark
+    since_mark="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null || true)"
+    if grep -q -e 'index.lock' -e 'could not detach HEAD' <<<"$since_mark"; then
+      warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+    fi
   fi
   # Keep formulae and casks separate: generic `brew upgrade` considers both,
   # which made the following cask command a duplicate pass.
