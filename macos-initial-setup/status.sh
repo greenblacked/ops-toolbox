@@ -233,10 +233,18 @@ if want security; then
     *)                    info "security  FileVault status unknown" ;;
   esac
   sip="$(csrutil status 2>/dev/null || true)"
+  # Anchored on "status: ", not a bare "enabled". csrutil answers
+  # "status: unknown (Custom Configuration)" on a machine with individual
+  # protections turned off, and then lists them - "Kext Signing: enabled"
+  # among them. An unanchored match found that word and called the machine
+  # green while its filesystem protections were off. stay_fresh.sh's
+  # sip_status() and hardening_audit.sh were both anchored for this reason;
+  # this copy and workstation_doctor.sh were the two that were not.
   case "$sip" in
-    *"enabled"*)  ok "security  SIP enabled" ;;
-    *"disabled"*) note_warn "security  SIP disabled" ;;
-    *)            info "security  SIP status unknown" ;;
+    *"status: enabled"*|*"status: Enabled"*)   ok "security  SIP enabled" ;;
+    *"status: disabled"*|*"status: Disabled"*) note_warn "security  SIP disabled" ;;
+    *"Custom Configuration"*)                  note_warn "security  SIP partially disabled (custom configuration)" ;;
+    *)                                         info "security  SIP status unknown" ;;
   esac
 fi
 

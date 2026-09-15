@@ -1318,6 +1318,74 @@ set -e
 assert_eq "workstation_doctor default remains report-only" "0" "$doctor_default_rc"
 assert_eq "workstation_doctor --strict fails on warnings" "1" "$doctor_strict_rc"
 
+# --- SIP on a machine with a custom configuration ---------------------------
+# csrutil answers "status: unknown (Custom Configuration)" when individual
+# protections are off, then lists them — and that list contains
+# "Kext Signing: enabled". Both readers here used to match a bare "enabled"
+# anywhere in the block and call such a machine green. status.sh's security
+# section drives its exit code and workstation_doctor.sh is what the root
+# README calls the safe first thing to run on an unfamiliar machine, so a
+# false green is the worst answer either can give.
+cat > "$fake_macos/bin/csrutil" <<'CSRUTIL_EOF'
+#!/bin/sh
+case "${CSRUTIL_MODE:-custom}" in
+  enabled)  echo "System Integrity Protection status: enabled." ;;
+  disabled) echo "System Integrity Protection status: disabled." ;;
+  *)
+    echo "System Integrity Protection status: unknown (Custom Configuration)."
+    echo ""
+    echo "Configuration:"
+    printf '\tApple Internal: disabled\n'
+    printf '\tKext Signing: enabled\n'
+    printf '\tFilesystem Protections: disabled\n'
+    printf '\tDebugging Restrictions: enabled\n'
+    ;;
+esac
+exit 0
+CSRUTIL_EOF
+chmod +x "$fake_macos/bin/csrutil"
+
+set +e
+sip_custom_status="$(CSRUTIL_MODE=custom HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/status.sh" --only security 2>&1)"
+sip_custom_status_rc=$?
+sip_enabled_status="$(CSRUTIL_MODE=enabled HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/status.sh" --only security 2>&1)"
+sip_disabled_status="$(CSRUTIL_MODE=disabled HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/status.sh" --only security 2>&1)"
+set -e
+
+assert_not_contains "status.sh does not call a custom-configuration SIP enabled" \
+  "$sip_custom_status" "SIP enabled"
+assert_contains "status.sh names a custom-configuration SIP as partially disabled" \
+  "$sip_custom_status" "SIP partially disabled"
+assert_eq "a partially disabled SIP is a warning, so status.sh exits 1" \
+  "1" "$sip_custom_status_rc"
+assert_contains "status.sh still reports a genuinely enabled SIP" \
+  "$sip_enabled_status" "SIP enabled"
+assert_contains "status.sh still reports a disabled SIP" \
+  "$sip_disabled_status" "SIP disabled"
+
+set +e
+sip_custom_doctor="$(CSRUTIL_MODE=custom BREW_CALLS="$brew_calls" \
+  HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/workstation_doctor.sh" \
+  "${doctor_args[@]}" 2>&1)"
+sip_enabled_doctor="$(CSRUTIL_MODE=enabled BREW_CALLS="$brew_calls" \
+  HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
+  PATH="$fake_macos/bin:/usr/bin:/bin" "$M/workstation_doctor.sh" \
+  "${doctor_args[@]}" 2>&1)"
+set -e
+
+assert_not_contains "workstation_doctor does not call a custom-configuration SIP enabled" \
+  "$sip_custom_doctor" "SIP: enabled"
+assert_contains "workstation_doctor names a custom-configuration SIP as partially disabled" \
+  "$sip_custom_doctor" "SIP: partially disabled"
+assert_contains "workstation_doctor still reports a genuinely enabled SIP" \
+  "$sip_enabled_doctor" "SIP: enabled"
+
+rm -f "$fake_macos/bin/csrutil"
+
 # Agent log inspection is read-only and chooses the newest bounded log.
 mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
 printf 'old\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260101-000000-1.log"
