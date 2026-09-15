@@ -537,7 +537,7 @@ if [[ "$MANAGER" != "mise" ]] && (( SKIP_PYTHON == 0 )); then
     fi
 
     if [[ -n "$target_py" ]]; then
-      if pyenv versions --bare | grep -qx "$target_py"; then
+      if grep -qx "$target_py" <<<"$(pyenv versions --bare)"; then
         ok "Python $target_py already installed via pyenv"
         SKIPPED+=("Python $target_py")
       else
@@ -585,7 +585,7 @@ if [[ "$MANAGER" != "mise" ]] && (( SKIP_TERRAFORM == 0 )); then
 
   if [[ "$MANAGER" == "tenv" ]]; then
     # tenv is available on the 'tofuutils/tap' tap.
-    if ! brew tap | grep -qx "tofuutils/tap"; then
+    if ! grep -qx "tofuutils/tap" <<<"$(brew tap)"; then
       info "tapping tofuutils/tap for tenv..."
       run_logged "$LOG_FILE" brew tap tofuutils/tap || warn "failed to tap tofuutils/tap"
     fi
@@ -647,7 +647,7 @@ if [[ "$MANAGER" != "mise" ]] && (( SKIP_GO == 0 )); then
     fi
 
     if [[ -n "$target_go" ]]; then
-      if goenv versions --bare | grep -qx "$target_go"; then
+      if grep -qx "$target_go" <<<"$(goenv versions --bare)"; then
         ok "Go $target_go already installed via goenv"
         SKIPPED+=("Go $target_go")
       else
@@ -724,7 +724,8 @@ if (( SKIP_HELM == 0 )); then
           continue
         fi
       fi
-      if helm plugin list 2>/dev/null | awk 'NR>1 {print $1}' | grep -qx "$(basename "$url" | sed 's/^helm-//')"; then
+      if grep -qx "$(basename "$url" | sed 's/^helm-//')" \
+           <<<"$(helm plugin list 2>/dev/null | awk 'NR>1 {print $1}')"; then
         ok "helm plugin '$plugin' already installed"
         continue
       fi

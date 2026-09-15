@@ -121,6 +121,55 @@ else
   err "missing $zsh_file"
 fi
 
+# --- readers that exit early, in a tested condition -------------------------
+# Under `set -o pipefail` a reader that stops at the first match kills the
+# writer with SIGPIPE; the pipeline then reports 141 and a match reads as a
+# miss. It bites only when the writer's output outgrows the pipe buffer —
+# measured on this repo's own runner at 0 of 25 runs up to ~120 KB and 25 of 25
+# from 128 KB — so the shapes here are latent rather than broken today, and
+# whether they cross that line is a property of the machine's tap count, not of
+# the code. That is the argument for the shape rule instead of a size guess.
+#
+# Only a *tested* pipeline matters: SIGPIPE corrupts the exit status, not the
+# output, so `x="$(cmd | head -n1)"` is safe and is deliberately not flagged.
+#
+# The repo-wide equivalent in test-env/static lives behind a writer pattern of
+# (printf|echo), so it cannot see `brew upgrade --help | grep -q` at all. This
+# one is scoped to the scripts in this folder and looks at any writer.
+sigpipe_awk='
+{
+  line = $0
+  sub(/^[ \t]+/, "", line)
+  if (buf == "") { start = FNR; buf = line } else { buf = buf " " line }
+  if (buf ~ /\\$/) { sub(/\\$/, "", buf); next }
+  logical = buf; buf = ""
+  s = logical
+  sub(/[ \t]*#.*$/, "", s)
+  if (s !~ /^(if|elif|while|until)[ \t]/ && s !~ /^![ \t]/) next
+  if (s !~ /[^|][ \t]*\|[ \t]*(grep[ \t]+[^|]*-[a-zA-Z]*q|head[ \t]+-n|awk[ \t]+.\{[ \t]*exit)/) next
+  printf "%d\n", start
+}'
+sigpipe_scanned=0
+sigpipe_hits=0
+for f in "${sh_scripts[@]}"; do
+  rel="${f#"$REPO_ROOT/"}"
+  grep -q 'pipefail' "$f" || continue
+  sigpipe_scanned=$((sigpipe_scanned + 1))
+  while IFS= read -r lineno; do
+    [[ -n "$lineno" ]] || continue
+    err "$rel:$lineno tests a pipeline ending in a reader that exits early; under pipefail that can report 141 and read a match as a miss — use a here-string"
+    sigpipe_hits=$((sigpipe_hits + 1))
+  done < <(awk "$sigpipe_awk" "$f")
+done
+# The floor: a rule that inspected nothing must fail rather than report a clean
+# sweep. Every check in this folder carries one, for the reason #42 recorded —
+# exempt means cannot fail, not not looked at.
+if (( sigpipe_scanned == 0 )); then
+  err "the early-exit reader check inspected no pipefail script — it has stopped checking"
+elif (( sigpipe_hits == 0 )); then
+  ok "no pipefail script here tests a pipeline ending in an early-exit reader ($sigpipe_scanned scanned)"
+fi
+
 # --- --help (must work before macOS preflight) ---
 for f in "${sh_scripts[@]}"; do
   if "$f" --help >/dev/null 2>&1; then

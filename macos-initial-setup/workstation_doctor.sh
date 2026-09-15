@@ -122,15 +122,15 @@ else
   info "FileVault: could not parse status (see System Settings) — ${fv_line:-no output}"
 fi
 
-if spctl --status 2>/dev/null | grep -q "enabled"; then
+if grep -q "enabled" <<<"$(spctl --status 2>/dev/null)"; then
   ok "Gatekeeper: assessments enabled"
 else
   warn "Gatekeeper: $(spctl --status 2>/dev/null | tr -d '\n' || echo 'unknown')"
 fi
 
-if csrutil status 2>/dev/null | grep -q "enabled"; then
+if grep -q "enabled" <<<"$(csrutil status 2>/dev/null)"; then
   ok "SIP: enabled ($(csrutil status 2>/dev/null | head -n1 | tr -d '\n'))"
-elif csrutil status 2>/dev/null | grep -q "disabled"; then
+elif grep -q "disabled" <<<"$(csrutil status 2>/dev/null)"; then
   warn "SIP: disabled"
 else
   info "SIP: $(csrutil status 2>/dev/null | head -n1 || echo 'unknown')"
