@@ -128,13 +128,27 @@ else
   warn "Gatekeeper: $(spctl --status 2>/dev/null | tr -d '\n' || echo 'unknown')"
 fi
 
-if grep -q "enabled" <<<"$(csrutil status 2>/dev/null)"; then
-  ok "SIP: enabled ($(csrutil status 2>/dev/null | head -n1 | tr -d '\n'))"
-elif grep -q "disabled" <<<"$(csrutil status 2>/dev/null)"; then
-  warn "SIP: disabled"
-else
-  info "SIP: $(csrutil status 2>/dev/null | head -n1 || echo 'unknown')"
-fi
+# Anchored on "status: ", and read once rather than up to three times. csrutil
+# answers "status: unknown (Custom Configuration)" on a machine with individual
+# protections turned off, then lists them - and that list contains
+# "Kext Signing: enabled". Matching a bare "enabled" anywhere in the block
+# found that word and reported SIP green on a machine whose filesystem
+# protections were off, which is the opposite of what this script is for: the
+# root README calls it the safe first thing to run on a machine you have just
+# been handed. stay_fresh.sh's sip_status() and hardening_audit.sh already
+# anchored for this reason; this copy did not.
+sip_out="$(csrutil status 2>/dev/null || true)"
+sip_first="${sip_out%%$'\n'*}"
+case "$sip_out" in
+  *"status: enabled"*|*"status: Enabled"*)
+    ok "SIP: enabled ($sip_first)" ;;
+  *"status: disabled"*|*"status: Disabled"*)
+    warn "SIP: disabled" ;;
+  *"Custom Configuration"*)
+    warn "SIP: partially disabled — csrutil status lists which protections are off" ;;
+  *)
+    info "SIP: ${sip_first:-unknown}" ;;
+esac
 
 if [[ "$ARCH" == "arm64" ]]; then
   if arch -x86_64 /usr/bin/true 2>/dev/null; then
