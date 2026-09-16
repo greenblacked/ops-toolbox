@@ -436,19 +436,22 @@ out="$("$SCRIPT" --bad-flag 2>&1)"; rc=$?
 assert_eq "bad flag -> 3" 3 "$rc"
 ```
 
-`macos-initial-setup/tests/test_macos_initial_setup.sh` is the last suite still
-running under `-e` and wrapping each such call in a `set +e` / `set -e`
-sandwich; the static suite names it as the exception and fails the day a second
-suite joins it, or the day it is converted without leaving that list. Never
-write the sandwich in a file that has no `-e` at the top: `set -e` is not scoped
-to the function it appears in, so the first call turns errexit on for the rest
-of the file, and every unguarded command after it becomes an abort with no
-message (`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
+No suite runs under `-e` any more, and the static suite fails the day one
+does. Never write a `set +e` / `set -e` sandwich either: `set -e` is not
+scoped to the function it appears in, so in a file with no `-e` at the top
+the first call turns errexit on for the rest of the file, and every unguarded
+command after it becomes an abort with no message
+(`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
 
-A section that made no assertion is a failure, not a pass. `linux/tests` and
-`git/tests` open each block with `section "..."` and fail any block that closes
-with zero checks — the shape of a loop that ran over nothing, or a fixture that
-never reached its assertion.
+A section that made no assertion is a failure, not a pass. `linux/tests`,
+`git/tests` and the macOS native suite open each block with `section "..."`
+and fail any block that closes with zero checks — the shape of a loop that ran
+over nothing, or a fixture that never reached its assertion. It earned its
+keep on the first run: in two of the three files it found a heading that named
+a section which only built a fixture, its assertions having drifted under a
+heading inserted after it. The same reasoning applies to a loop whose subject
+list comes from a command rather than a literal: count the iterations and fail
+at zero, because the section around it usually asserts plenty either way.
 
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that

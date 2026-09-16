@@ -1030,17 +1030,17 @@ head_ "assertion suites do not run under set -e"
 # fight, not an accident. A failure belongs in an err() with a name, which is
 # the dialect every other suite here already uses (CONTRIBUTING.md, Tests).
 #
-# The two suites not yet converted are named, and named for a reason: a file
-# on the list must still enable errexit, so the list cannot outlive the last
-# `set -e` it excuses, and a file off the list must not, so a third -e suite
-# cannot arrive. Matched at column 1, plus the sandwich shape at any indent:
+# No suite is excused. The three that ran under -e were converted one at a
+# time, each behind a list of the ones still to go that this check policed
+# in both directions; the list is gone with the last of them, and a suite
+# that enables errexit now simply fails. Matched at column 1, plus the
+# sandwich shape at any indent:
 # a `set -euo pipefail` indented inside a fixture heredoc or a `bash -lc`
 # body belongs to the fixture, not the suite (test_k8s_toolbox.sh has three).
 # The sandwich shape matters on its own: `set -e` is not scoped to the
 # function it appears in, so a sandwich in a file with no -e at the top turns
 # errexit on for the rest of the file the first time the function runs.
 errexit_re='^set[[:space:]]+-[a-zA-Z]*e|^set[[:space:]]+-o[[:space:]]+errexit|^[[:space:]]*set[[:space:]]+-e[[:space:]]*$'
-errexit_still_allowed="macos-initial-setup/tests/test_macos_initial_setup.sh"
 
 # The pattern's own floor, both ways: it must match every shape it is written
 # for and none of the sanctioned dialect.
@@ -1063,30 +1063,15 @@ while IFS= read -r suite; do
   grep -q '^failures=0' "$suite" && grep -qE '^err\(\)' "$suite" || continue
   errexit_checked=$((errexit_checked + 1))
   hit="$(grep -nE "$errexit_re" "$suite" | head -n 1)"
-  case " $errexit_still_allowed " in
-    *" $suite "*)
-      if [[ -z "$hit" ]]; then
-        err "$suite no longer enables errexit but is still listed as an exception — remove it from errexit_still_allowed so the rule holds for it"
-        errexit_bad=$((errexit_bad + 1))
-      fi
-      ;;
-    *)
-      if [[ -n "$hit" ]]; then
-        err "$suite enables errexit at line ${hit%%:*} — an assertion suite reports failures through err(), not by dying on one (CONTRIBUTING.md, Tests)"
-        errexit_bad=$((errexit_bad + 1))
-      fi
-      ;;
-  esac
+  if [[ -n "$hit" ]]; then
+    err "$suite enables errexit at line ${hit%%:*} — an assertion suite reports failures through err(), not by dying on one (CONTRIBUTING.md, Tests)"
+    errexit_bad=$((errexit_bad + 1))
+  fi
 done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh' 'test-env/static/check_*.sh')
-errexit_excused=0
-for suite in $errexit_still_allowed; do
-  errexit_excused=$((errexit_excused + 1))
-  [[ -f "$suite" ]] || { err "errexit_still_allowed names $suite, which does not exist"; errexit_bad=$((errexit_bad + 1)); }
-done
 if (( errexit_checked == 0 )); then
   err "the errexit scan inspected no suite — its discovery globs or the suite shape have stopped matching"
 elif (( errexit_bad == 0 )); then
-  ok "$errexit_checked assertion suite(s) report every failure as a named assertion ($errexit_excused still excused, by name)"
+  ok "$errexit_checked assertion suite(s) report every failure as a named assertion"
 fi
 
 # --------------------------------------------------------------------------
