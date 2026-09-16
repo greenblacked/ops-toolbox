@@ -406,13 +406,34 @@ state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses �
 `failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `# --- section ---`
 comments — see `git/tests/test_git_scripts.sh`. No framework.
 
-Because `set -e` is on in test bodies, assert exit codes with the sandwich:
+Assertion suites run under `set -uo pipefail` — **no `-e`**. A suite that
+aborts on the first non-zero exit reports the shell's status and throws away
+the output it had just captured, so the real error is invisible: a Bash 3.2
+parse error surfaced in CI as "exit code 2" and nothing else. Every failure is
+a named `err()` instead, and an invocation whose result is judged only by what
+the filesystem looks like afterwards is guarded (`cmd || err "cmd exited $?"`),
+because a command that died on line one also changed nothing. Assert exit
+codes directly:
 
 ```bash
-set +e
 out="$("$SCRIPT" --bad-flag 2>&1)"; rc=$?
-set -e
+assert_eq "bad flag -> 3" 3 "$rc"
 ```
+
+`git/tests/test_git_scripts.sh` and
+`macos-initial-setup/tests/test_macos_initial_setup.sh` still run under `-e`
+and wrap each such call in a `set +e` / `set -e` sandwich; the static suite
+names them as the exceptions and fails the day a third suite joins them, or
+the day one of them is converted without leaving that list. Never write the
+sandwich in a file that has no `-e` at the top: `set -e` is not scoped to the
+function it appears in, so the first call turns errexit on for the rest of the
+file, and every unguarded command after it becomes an abort with no message
+(`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
+
+A section that made no assertion is a failure, not a pass. `linux/tests`
+opens each block with `section "..."` and fails any block that closes with
+zero checks — the shape of a loop that ran over nothing, or a fixture that
+never reached its assertion.
 
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that

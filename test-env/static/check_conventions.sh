@@ -860,6 +860,73 @@ else
 fi
 
 # --------------------------------------------------------------------------
+head_ "assertion suites do not run under set -e"
+# A suite that aborts on the first non-zero exit reports the shell's status and
+# throws away the output it had just captured. On #49 `Test / macos native`
+# died with "exit code 2" and no message; the Bash 3.2 parse error behind it
+# was found only after one call site was wrapped in `set +e` by hand. The
+# sandwiches across the -e suites are the evidence that this is a running
+# fight, not an accident. A failure belongs in an err() with a name, which is
+# the dialect every other suite here already uses (CONTRIBUTING.md, Tests).
+#
+# The two suites not yet converted are named, and named for a reason: a file
+# on the list must still enable errexit, so the list cannot outlive the last
+# `set -e` it excuses, and a file off the list must not, so a third -e suite
+# cannot arrive. Matched at column 1, plus the sandwich shape at any indent:
+# a `set -euo pipefail` indented inside a fixture heredoc or a `bash -lc`
+# body belongs to the fixture, not the suite (test_k8s_toolbox.sh has three).
+# The sandwich shape matters on its own: `set -e` is not scoped to the
+# function it appears in, so a sandwich in a file with no -e at the top turns
+# errexit on for the rest of the file the first time the function runs.
+errexit_re='^set[[:space:]]+-[a-zA-Z]*e|^set[[:space:]]+-o[[:space:]]+errexit|^[[:space:]]*set[[:space:]]+-e[[:space:]]*$'
+errexit_still_allowed="git/tests/test_git_scripts.sh macos-initial-setup/tests/test_macos_initial_setup.sh"
+
+# The pattern's own floor, both ways: it must match every shape it is written
+# for and none of the sanctioned dialect.
+if ! grep -qE "$errexit_re" <<<$'set -euo pipefail\nset -e\n  set -e\nset -o errexit\nset -eu'; then
+  err "the errexit pattern matches none of the shapes it is written for — the scan below checks nothing"
+elif grep -qE "$errexit_re" <<<$'set -uo pipefail\nset -u\nset -o pipefail\nset +e\n  set +e\n# set -e'; then
+  err "the errexit pattern matches the sanctioned dialect — the scan below would flag every suite"
+else
+  ok "the errexit pattern matches -e in its five spellings and leaves the sanctioned dialect alone"
+fi
+
+# An assertion suite counts its own failures and reports them through err().
+# The package runners (tests/run.sh) and the container entrypoints match the
+# glob and are not suites; they keep their own dialect and are excluded by
+# shape rather than by name.
+errexit_checked=0
+errexit_bad=0
+while IFS= read -r suite; do
+  [[ -n "$suite" && -f "$suite" ]] || continue
+  grep -q '^failures=0' "$suite" && grep -qE '^err\(\)' "$suite" || continue
+  errexit_checked=$((errexit_checked + 1))
+  hit="$(grep -nE "$errexit_re" "$suite" | head -n 1)"
+  case " $errexit_still_allowed " in
+    *" $suite "*)
+      if [[ -z "$hit" ]]; then
+        err "$suite no longer enables errexit but is still listed as an exception — remove it from errexit_still_allowed so the rule holds for it"
+        errexit_bad=$((errexit_bad + 1))
+      fi
+      ;;
+    *)
+      if [[ -n "$hit" ]]; then
+        err "$suite enables errexit at line ${hit%%:*} — an assertion suite reports failures through err(), not by dying on one (CONTRIBUTING.md, Tests)"
+        errexit_bad=$((errexit_bad + 1))
+      fi
+      ;;
+  esac
+done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh' 'test-env/static/check_*.sh')
+for suite in $errexit_still_allowed; do
+  [[ -f "$suite" ]] || { err "errexit_still_allowed names $suite, which does not exist"; errexit_bad=$((errexit_bad + 1)); }
+done
+if (( errexit_checked == 0 )); then
+  err "the errexit scan inspected no suite — its discovery globs or the suite shape have stopped matching"
+elif (( errexit_bad == 0 )); then
+  ok "$errexit_checked assertion suite(s) report every failure as a named assertion (2 still excused, by name)"
+fi
+
+# --------------------------------------------------------------------------
 head_ "winget configuration files"
 # yamllint covers the syntax of these. It cannot cover the shape, and the shape
 # is where the real defect was: an unquoted description containing a comma
