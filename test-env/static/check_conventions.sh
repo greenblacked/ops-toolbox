@@ -846,30 +846,38 @@ else
   # Linux, which is why the lint suite could never fetch actionlint or hadolint
   # on the Mac most likely to be running it.
   #
-  # Both halves are read out of the runner rather than repeated here: the tools
-  # from the case arms of fetch_tool(), the platforms from os_arch(). A tool or
-  # a platform the runner learns is covered by the commit that teaches it.
+  # Read out of the runner rather than repeated here, and as the pairs the
+  # runner actually handles: inside fetch_tool(), each tool's case arm lists
+  # the platforms it has an asset for. A tool×platform cross product accepted a
+  # digest for a pair no arm fetches — HADOLINT_SHA256_LINUX_ARM64 the moment
+  # ShellCheck alone learned LINUX_ARM64 — which is the unread digest this
+  # check exists to reject. The parse has a floor for the same reason: arms
+  # that were reindented would otherwise yield nothing and fail every Darwin
+  # digest with a message blaming the digest file rather than this parser.
   lint_runner="test-env/lint/run.sh"
-  lint_tools=""
-  lint_platforms=""
+  lint_pairs=""
   if [[ -f "$lint_runner" ]]; then
-    lint_tools="$(awk '/^fetch_tool\(\) \{/, /^\}/' "$lint_runner" |
-      sed -n 's/^    \([a-z0-9-]*\))$/\1/p' | tr '[:lower:]' '[:upper:]')"
-    lint_platforms="$(awk '/^os_arch\(\) \{/, /^\}/' "$lint_runner" |
-      sed -n "s/.*printf '\([A-Z][A-Z0-9_]*\)\\\\n'.*/\1/p")"
+    lint_pairs="$(awk '
+      /^fetch_tool\(\) \{/ { in_fn = 1; next }
+      in_fn && /^\}/       { in_fn = 0 }
+      in_fn && /^    [a-z0-9-]+\)$/ { tool = $1; sub(/\)$/, "", tool); next }
+      in_fn && tool != "" && /^        [A-Z][A-Z0-9_]*\)/ {
+        plat = $1; sub(/\)$/, "", plat); print toupper(tool) "_SHA256_" plat
+      }
+    ' "$lint_runner")"
+    if [[ -z "$lint_pairs" ]]; then
+      err "$lint_runner yielded no tool/platform arms from fetch_tool() — the parser in this check is broken, not the digest file"
+      pin_gaps=$((pin_gaps + 1))
+    fi
   fi
 
-  # Named by the runner when its tool is one the runner fetches and its
-  # platform is one the runner runs on. Anything else still has to be named by
-  # a step in ci.yml, so a digest for a tool nothing downloads keeps failing.
+  # Named by the runner when some arm fetches exactly this tool on exactly this
+  # platform. Anything else still has to be named by a step in ci.yml, so a
+  # digest for a pair nothing downloads keeps failing.
   read_by_lint_runner() {
-    local key="$1" tool="${1%%_SHA256_*}" platform="${1#*_SHA256_}" t p
-    [[ "$key" == *_SHA256_* ]] || return 1
-    for t in $lint_tools; do
-      [[ "$t" == "$tool" ]] || continue
-      for p in $lint_platforms; do
-        [[ "$p" == "$platform" ]] && return 0
-      done
+    local key="$1" pair
+    for pair in $lint_pairs; do
+      [[ "$pair" == "$key" ]] && return 0
     done
     return 1
   }
