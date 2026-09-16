@@ -1040,7 +1040,7 @@ head_ "assertion suites do not run under set -e"
 # function it appears in, so a sandwich in a file with no -e at the top turns
 # errexit on for the rest of the file the first time the function runs.
 errexit_re='^set[[:space:]]+-[a-zA-Z]*e|^set[[:space:]]+-o[[:space:]]+errexit|^[[:space:]]*set[[:space:]]+-e[[:space:]]*$'
-errexit_still_allowed="git/tests/test_git_scripts.sh macos-initial-setup/tests/test_macos_initial_setup.sh"
+errexit_still_allowed="macos-initial-setup/tests/test_macos_initial_setup.sh"
 
 # The pattern's own floor, both ways: it must match every shape it is written
 # for and none of the sanctioned dialect.
@@ -1078,13 +1078,15 @@ while IFS= read -r suite; do
       ;;
   esac
 done < <(git ls-files '*/tests/*.sh' 'test-env/static/test_*.sh' 'test-env/static/check_*.sh')
+errexit_excused=0
 for suite in $errexit_still_allowed; do
+  errexit_excused=$((errexit_excused + 1))
   [[ -f "$suite" ]] || { err "errexit_still_allowed names $suite, which does not exist"; errexit_bad=$((errexit_bad + 1)); }
 done
 if (( errexit_checked == 0 )); then
   err "the errexit scan inspected no suite — its discovery globs or the suite shape have stopped matching"
 elif (( errexit_bad == 0 )); then
-  ok "$errexit_checked assertion suite(s) report every failure as a named assertion (2 still excused, by name)"
+  ok "$errexit_checked assertion suite(s) report every failure as a named assertion ($errexit_excused still excused, by name)"
 fi
 
 # --------------------------------------------------------------------------

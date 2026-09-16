@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Run from the Linux tester container; repo root is mounted read-only at /repo.
-set -euo pipefail
+#
+# No `-e`. A suite that aborts on the first non-zero exit reports the shell's
+# status and discards the output it had just captured, so the real error is
+# invisible: a Bash 3.2 parse error surfaced in CI as "exit code 2" and nothing
+# else. Every failure below is a named assertion instead (CONTRIBUTING.md,
+# Tests).
+set -uo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/repo}"
 G="$REPO_ROOT/git"
@@ -31,9 +37,50 @@ if [[ ! -d "$G" ]]; then
   exit 1
 fi
 
+# Every fixture below starts from `mktemp -d`. Without `-e` a failed mktemp
+# leaves the variable empty, and `cd ""` succeeds and stays put, so a run whose
+# scratch space had gone would point `(cd "$repo" && "$SCRIPT")` at the checkout
+# itself. Prove once that scratch space works instead of guarding forty call
+# sites; every later step of a fixture still prints the path it made, so a
+# fixture that broke halfway leaves an empty directory, not an empty string.
+tmp_probe="$(mktemp -d 2>/dev/null)"
+if [[ -z "$tmp_probe" || ! -d "$tmp_probe" ]]; then
+  echo "cannot create scratch directories under ${TMPDIR:-/tmp}" >&2
+  exit 1
+fi
+rmdir "$tmp_probe"
+
 failures=0
-ok() { echo "[ ok ] $*"; }
-err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
+# Counted so the run can prove it asserted something. Without `-e` a suite that
+# dies early exits 0 with a short log, and nothing says so; the floor does.
+checks=0
+section_checks=0
+sections=0
+section_name=""
+ok()  { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[ ok ] $*"; }
+err() { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[fail] $*" >&2; failures=$((failures + 1)); }
+
+# The floor, per section rather than per file. Without `-e` the shape of a
+# silent failure changes: a section whose loop ran over nothing, or whose
+# fixture never got as far as an assertion, exits 0 with a shorter log and
+# nothing says so. Each `section` call closes the previous one and fails it if
+# it asserted nothing, and the end of the file closes the last. A count floor
+# for the whole file would need a number that goes stale every time a test is
+# added or retired; a section either asserted or it did not.
+section() {
+  end_section
+  section_name="$1"
+  section_checks=0
+  sections=$((sections + 1))
+}
+end_section() {
+  [[ -n "$section_name" ]] || return 0
+  if (( section_checks == 0 )); then
+    err "section '$section_name' made no assertion — its loop ran over nothing or its fixture never reached one"
+  fi
+  section_name=""
+  section_checks=0
+}
 
 assert_contains() {
   local haystack="$1"
@@ -93,7 +140,7 @@ run_with_home() {
   HOME="$home_dir" XDG_CONFIG_HOME="$home_dir/.config" "$@"
 }
 
-# --- static checks ---
+section "static checks"
 # Discovered rather than listed. A hardcoded array only covers a new script if
 # someone remembers to add it, and the macOS suite proves how that ends: its
 # list has silently never included brewfile.sh or launchd/stay_fresh_agent.sh.
@@ -134,10 +181,8 @@ for f in "${sh_scripts[@]}" "$G/git_aliases.sh"; do
   fi
 done
 
-set +e
 sc_err="$(shellcheck --severity=error -s zsh "$G/git_aliases.zsh" 2>&1)"
 sc_rc=$?
-set -e
 if [[ "$sc_rc" -eq 0 ]]; then
   ok "shellcheck git/git_aliases.zsh"
 elif grep -q "Unknown shell" <<<"$sc_err"; then
@@ -147,7 +192,7 @@ else
   err "shellcheck git/git_aliases.zsh"
 fi
 
-# --- help and validation ---
+section "help and validation"
 for f in "${sh_scripts[@]}"; do
   rel="${f#"$G/"}"
   if "$f" --help >/dev/null; then ok "$rel --help"; else err "$rel --help"; fi
@@ -166,7 +211,7 @@ else
   err "git_aliases.zsh covers more than gacp"
 fi
 
-# --- git_aliases.sh (bash) ---
+section "git_aliases.sh (bash)"
 if bash -c ". '$G/git_aliases.sh'" >/dev/null 2>&1; then
   ok "git_aliases.sh sources cleanly"
 else
@@ -181,29 +226,24 @@ assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers t
 # and with nothing of that name on PATH, it must define no aliases at all
 # rather than ones that fail later with a confusing message.
 guard_dir="$(mktemp -d /tmp/git-aliases-guard.XXXXXX)"
-cp "$G/git_aliases.sh" "$guard_dir/"
+cp "$G/git_aliases.sh" "$guard_dir/" ||
+  err "cp into the guard fixture exited $? — sourcing a file that is not there also defines no aliases"
 alias_out="$(bash -c ". '$guard_dir/git_aliases.sh'; alias" 2>/dev/null)"
 assert_not_contains "$alias_out" "gacp" "no alias is defined for a script that is not installed"
 
-set +e
 bash "$G/git_aliases.sh" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "$rc" "3" "git_aliases.sh executed directly -> exit 3"
 
 home="$(new_home)"
-set +e
 out="$(run_with_home "$home" "$SET" --definitely-invalid 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 3 ]]; then ok "unknown flag -> exit 3"; else err "unknown flag: expected exit 3, got $rc: $out"; fi
 
 for flag in --name --email --profile --save --save-current --state-file; do
   home="$(new_home)"
-  set +e
   out="$(run_with_home "$home" "$SET" "$flag" 2>&1)"
   rc=$?
-  set -e
   if [[ "$rc" -eq 3 ]]; then
     ok "$flag without value -> exit 3"
   else
@@ -212,7 +252,7 @@ for flag in --name --email --profile --save --save-current --state-file; do
   assert_contains "$out" "$flag requires a value" "$flag without value explains error"
 done
 
-# --- direct global set ---
+section "direct global set"
 home="$(new_home)"
 out="$(run_with_home "$home" "$SET" --name "Sergey" --email "sergey@example.com")"
 assert_contains "$out" "Git global profile updated" "direct set reports success"
@@ -221,7 +261,7 @@ actual_email="$(run_with_home "$home" git config --global --get user.email)"
 assert_eq "$actual_name" "Sergey" "direct set writes user.name"
 assert_eq "$actual_email" "sergey@example.com" "direct set writes user.email"
 
-# --- save named profile and apply it ---
+section "save named profile and apply it"
 home="$(new_home)"
 state="$home/.config/ops-toolbox/git-profiles.conf"
 out="$(run_with_home "$home" "$SET" --save personal --name "Sergey" --email "sergey@example.com")"
@@ -261,7 +301,7 @@ assert_contains "$out" "git config --local user.email" "--local dry-run previews
 assert_eq "$(git -C "$repo" config --local --get user.email)" "$before_local" \
   "--local dry-run writes nothing"
 
-# --- save current identity as named profile ---
+section "save current identity as named profile"
 home="$(new_home)"
 run_with_home "$home" git config --global user.name "Work Sergey"
 run_with_home "$home" git config --global user.email "work@example.com"
@@ -273,7 +313,7 @@ saved_email="$(run_with_home "$home" git config --file "$state" --get profile.wo
 assert_eq "$saved_name" "Work Sergey" "save-current writes name"
 assert_eq "$saved_email" "work@example.com" "save-current writes email"
 
-# --- profiles saved before the repository was renamed are still found ---
+section "profiles saved before the repository was renamed are still found"
 # This is the only part of the rename that could destroy someone's data: if the
 # lookup missed the old path, --list would report no profiles and the next
 # --save would write a fresh file, leaving the real one orphaned and invisible.
@@ -304,7 +344,7 @@ out="$(run_with_home "$home" "$SET" --list)"
 assert_contains "$out" "new: Current Sergey <current@example.com>" "the current path wins once it exists"
 assert_not_contains "$out" "Legacy Sergey" "the legacy file is not consulted after migration"
 
-# --- dry-run must not write state or global config ---
+section "dry-run must not write state or global config"
 home="$(new_home)"
 state="$home/.config/ops-toolbox/git-profiles.conf"
 out="$(run_with_home "$home" "$SET" --dry-run --save personal --name "Dry Sergey" --email "dry@example.com")"
@@ -334,15 +374,13 @@ actual_email="$(run_with_home "$home" git config --global --get user.email)"
 assert_eq "$actual_name" "Before" "dry-run direct set keeps existing user.name"
 assert_eq "$actual_email" "before@example.com" "dry-run direct set keeps existing user.email"
 
-# --- missing saved profile ---
+section "missing saved profile"
 home="$(new_home)"
-set +e
 out="$(run_with_home "$home" "$SET" --profile missing 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 4 ]]; then ok "missing profile -> exit 4"; else err "missing profile: expected exit 4, got $rc: $out"; fi
 
-# --- gacp ---
+section "gacp"
 repo="$(new_repo)"
 printf "dry\n" >>"$repo/file.txt"
 before_head="$(git -C "$repo" rev-parse HEAD)"
@@ -392,22 +430,18 @@ remote_subject="$(git --git-dir="$remote" log -1 --format=%s main)"
 assert_eq "$remote_subject" "push commit" "gacp updates remote branch"
 
 repo="$(new_repo)"
-set +e
 out="$(cd "$repo" && "$GACP" -m "nothing to do" 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 4 ]]; then ok "gacp clean tree -> exit 4"; else err "gacp clean tree: expected exit 4, got $rc: $out"; fi
 
 repo="$(new_repo)"
 git -C "$repo" switch -q --detach HEAD
 printf "detached\n" >>"$repo/file.txt"
-set +e
 out="$(cd "$repo" && "$GACP" -m "from detached" 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 5 ]]; then ok "gacp detached HEAD with push -> exit 5"; else err "gacp detached HEAD: expected exit 5, got $rc: $out"; fi
 
-# --- status summary ---
+section "status summary"
 repo="$(new_repo)"
 printf "dirty\n" >>"$repo/file.txt"
 printf "new\n" >"$repo/new.txt"
@@ -427,14 +461,12 @@ if (cd "$repo" && "$WHO" --expect-email test@example.com >/dev/null); then
 else
   err "git_whoami rejected the configured effective email"
 fi
-set +e
 out="$(cd "$repo" && "$WHO" --expect-email wrong@example.com 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "1" "git_whoami mismatched expected email -> exit 1"
 assert_contains "$out" "not in the expected set" "git_whoami explains an identity mismatch"
 
-# --- cleanup merged branches ---
+section "cleanup merged branches"
 repo="$(new_repo)"
 git -C "$repo" switch -q -c merged-feature
 printf "merged\n" >>"$repo/file.txt"
@@ -466,7 +498,8 @@ out="$(cd "$repo" && "$CLEANUP" --dry-run --base main \
 assert_contains "$out" "feature-delete" "cleanup include filter selects matching branch"
 assert_not_contains "$out" "feature-keep" "cleanup exclude filter wins over include"
 assert_not_contains "$out" "unrelated-merged" "cleanup include filter skips non-matches"
-(cd "$repo" && "$CLEANUP" --base main --include 'feature-*' --exclude '*-keep') >/dev/null
+(cd "$repo" && "$CLEANUP" --base main --include 'feature-*' --exclude '*-keep') >/dev/null ||
+  err "cleanup with filters exited $? — a run that deleted nothing also preserved the excluded branch"
 if ! git -C "$repo" show-ref --verify --quiet refs/heads/feature-delete; then
   ok "cleanup filters apply to real deletion"
 else
@@ -478,7 +511,7 @@ else
   err "cleanup filtered deletion removed excluded branch"
 fi
 
-# --- recent branches ---
+section "recent branches"
 repo="$(new_repo)"
 git -C "$repo" switch -q -c alpha
 printf "alpha\n" >"$repo/alpha.txt"
@@ -503,7 +536,7 @@ assert_contains "$out" "feat|pipe" "recent --names-only preserves pipe character
 out="$(cd "$repo" && "$RECENT" --switch 2)"
 assert_contains "$out" "switched to" "recent branches can switch by index"
 
-# --- sync default branch with local bare remote ---
+section "sync default branch with local bare remote"
 remote="$(mktemp -d /tmp/git-script-remote.XXXXXX)/origin.git"
 seed="$(mktemp -d /tmp/git-script-seed.XXXXXX)"
 work="$(mktemp -d /tmp/git-script-work.XXXXXX)"
@@ -565,10 +598,8 @@ printf "remote divergence\n" >"$updater/remote-divergence.txt"
 git -C "$updater" add remote-divergence.txt
 git -C "$updater" commit -m "remote divergence" >/dev/null
 git -C "$updater" push -q origin main
-set +e
 out="$(cd "$work" && "$SYNC" --branch main --restore 2>&1)"
 rc=$?
-set -e
 if (( rc != 0 )); then
   ok "sync --restore preserves the fast-forward failure"
 else
@@ -579,7 +610,7 @@ assert_contains "$out" "restored local-feature" \
 assert_eq "$(git -C "$work" branch --show-current)" "local-feature" \
   "sync --restore returns to the original branch after a failed update"
 
-# --- repo root ---
+section "repo root"
 repo="$(new_repo)"
 mkdir -p "$repo/nested/dir"
 got="$(cd "$repo/nested/dir" && "$ROOT")"
@@ -587,7 +618,7 @@ assert_eq "$got" "$repo" "git_repo_root prints toplevel from subdirectory"
 got="$(cd "$repo/nested/dir" && "$ROOT" --git-dir)"
 assert_eq "$got" "$repo/.git" "git_repo_root --git-dir prints absolute metadata path"
 
-# --- diff branch ---
+section "diff branch"
 repo="$(new_repo)"
 git -C "$repo" switch -q -c feature
 printf "extra\n" >"$repo/feature.txt"
@@ -602,7 +633,7 @@ git -C "$repo" add local.txt
 out="$(cd "$repo" && "$DIFFBR" --stat --base main --working-tree)"
 assert_contains "$out" "local.txt" "git_diff_branch --working-tree includes staged work"
 
-# --- undo last commit ---
+section "undo last commit"
 repo="$(new_repo)"
 printf "second\n" >>"$repo/file.txt"
 git -C "$repo" add file.txt
@@ -618,10 +649,8 @@ after_undo="$(git -C "$repo" rev-parse HEAD)"
 assert_eq "$after_undo" "$parent" "undo soft moves HEAD to parent"
 
 repo="$(new_repo)"
-set +e
 out="$(cd "$repo" && "$UNDO" 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 4 ]]; then ok "undo with single commit -> exit 4"; else err "undo single commit: expected exit 4, got $rc: $out"; fi
 
 repo="$(new_repo)"
@@ -635,16 +664,15 @@ assert_eq "$(git -C "$repo" rev-list --count HEAD)" "3" \
 assert_eq "$(cat "$repo/file.txt")" "initial" "undo --revert restores the previous tree"
 
 printf "dirty\n" >>"$repo/file.txt"
-set +e
 out="$(cd "$repo" && "$UNDO" --revert 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "4" "undo --revert refuses a dirty tree -> exit 4"
 
-# --- amend last ---
+section "amend last"
 repo="$(new_repo)"
 printf "amendment\n" >>"$repo/file.txt"
-(cd "$repo" && "$AMEND" --add-all) >/dev/null
+(cd "$repo" && "$AMEND" --add-all) >/dev/null ||
+  err "amend --add-all exited $? — all three assertions below already hold for the commit it was meant to change"
 count="$(git -C "$repo" rev-list --count HEAD)"
 assert_eq "$count" "1" "amend keeps single commit"
 last_line="$(git -C "$repo" show -s --format=%B HEAD | head -1)"
@@ -652,10 +680,8 @@ assert_eq "$last_line" "initial commit" "amend preserves commit message"
 assert_contains "$(git -C "$repo" show --stat HEAD)" "file.txt" "amend includes file change"
 
 repo="$(new_repo)"
-set +e
 out="$(cd "$repo" && "$AMEND" 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 4 ]]; then ok "amend without staged changes -> exit 4"; else err "amend empty: expected exit 4, got $rc: $out"; fi
 
 repo="$(new_repo)"
@@ -666,7 +692,7 @@ assert_eq "$(git -C "$repo" log -1 --format=%s)" "renamed initial commit" \
 assert_eq "$(git -C "$repo" rev-list --count HEAD)" "1" \
   "amend --message keeps history length unchanged"
 
-# --- prune gone filters ---
+section "prune gone filters"
 repo="$(new_repo)"
 remote="$(mktemp -d /tmp/git-prune-remote.XXXXXX)/origin.git"
 git init -q --bare -b main "$remote"
@@ -690,7 +716,8 @@ git -C "$prune_updater" config user.email "test@example.com"
 printf "remote update\n" >"$prune_updater/remote-update.txt"
 git -C "$prune_updater" add remote-update.txt
 git -C "$prune_updater" commit -m "remote update" >/dev/null
-git -C "$prune_updater" push -q origin main
+git -C "$prune_updater" push -q origin main ||
+  err "advancing origin/main exited $? — a tracking ref the remote never moved past is unchanged whether or not prune fetched"
 tracking_before="$(git -C "$repo" rev-parse refs/remotes/origin/main)"
 out="$(cd "$repo" && "$PRUNE" --dry-run)"
 assert_contains "$out" "no remote-tracking refs were changed" \
@@ -703,7 +730,8 @@ out="$(cd "$repo" && "$PRUNE" --no-fetch --dry-run \
   --include 'gone-*' --exclude '*-keep')"
 assert_contains "$out" "gone-delete" "prune include filter selects a gone branch"
 assert_not_contains "$out" "gone-keep" "prune exclude filter preserves a gone branch"
-(cd "$repo" && "$PRUNE" --no-fetch --include 'gone-*' --exclude '*-keep') >/dev/null
+(cd "$repo" && "$PRUNE" --no-fetch --include 'gone-*' --exclude '*-keep') >/dev/null ||
+  err "prune with filters exited $? — a run that deleted nothing also preserved the excluded branch"
 if ! git -C "$repo" show-ref --verify --quiet refs/heads/gone-delete; then
   ok "prune filters apply to real deletion"
 else
@@ -715,7 +743,7 @@ else
   err "prune filtered deletion removed excluded branch"
 fi
 
-# --- stale branch state filter ---
+section "stale branch state filter"
 repo="$(new_repo)"
 git -C "$repo" branch old-merged
 git -C "$repo" switch -q -c old-unmerged
@@ -727,10 +755,8 @@ out="$(cd "$repo" && "$STALE" --days 0 --state unmerged)"
 assert_contains "$out" "old-unmerged" "stale --state selects the requested state"
 assert_not_contains "$out" "old-merged" "stale --state omits other branch states"
 
-set +e
 out="$(cd "$repo" && "$STALE" --days 0 --state impossible 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "3" "stale rejects an invalid state -> exit 3"
 
 # A '|' is legal in a ref name. The previous '|' field separator treated
@@ -741,7 +767,7 @@ git -C "$repo" branch 'feat|pipe'
 out="$(cd "$repo" && "$STALE" --days 0)"
 assert_contains "$out" "feat|pipe" "stale preserves pipe characters in refs"
 
-# --- size report ref scope ---
+section "size report ref scope"
 repo="$(new_repo)"
 git -C "$repo" switch -q -c big-history
 head -c 4096 /dev/zero >"$repo/only-big.bin"
@@ -752,10 +778,8 @@ out="$(cd "$repo" && "$SIZE" --threshold 1000 --ref main)"
 assert_not_contains "$out" "only-big.bin" "size --ref excludes unreachable branch history"
 out="$(cd "$repo" && "$SIZE" --threshold 1000 --ref big-history)"
 assert_contains "$out" "only-big.bin" "size --ref includes objects reachable from the ref"
-set +e
 out="$(cd "$repo" && "$SIZE" --ref does-not-exist 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "4" "size missing ref -> exit 4"
 
 out="$(cd "$repo" && "$SIZE" --fast)"
@@ -763,29 +787,23 @@ assert_contains "$out" "on disk" "size --fast still prints on-disk totals"
 assert_contains "$out" "skipping the history walk" "size --fast skips the history walk"
 assert_not_contains "$out" "largest objects in history" "size --fast does not walk history"
 
-# --- quiet doctor mode ---
+section "quiet doctor mode"
 repo="$(new_repo)"
-set +e
 out="$(cd "$repo" && "$REMOTE_DOCTOR" --quiet \
   --url git@example.com:owner/repo.git 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "0" "remote doctor --quiet preserves a healthy exit code"
 assert_eq "$out" "" "remote doctor --quiet suppresses its report"
 
 empty_ssh="$(mktemp -d /tmp/git-doctor-ssh.XXXXXX)"
-set +e
 out="$(cd "$repo" && "$SSH_DOCTOR" --quiet --ssh-dir "$empty_ssh" \
   --host example.invalid 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "1" "ssh doctor --quiet preserves a failed verdict"
 assert_eq "$out" "" "ssh doctor --quiet suppresses its report"
 
-set +e
 out="$(cd "$repo" && "$SIGNING_DOCTOR" --quiet 2>&1)"
 rc=$?
-set -e
 if [[ "$rc" -eq 0 || "$rc" -eq 1 ]]; then
   ok "signing doctor --quiet preserves a diagnostic verdict"
 else
@@ -793,7 +811,7 @@ else
 fi
 assert_eq "$out" "" "signing doctor --quiet suppresses its report"
 
-# --- templates model the new automation controls ---
+section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"
 if printf '%s' "$out" | python3 -c \
@@ -808,7 +826,7 @@ assert_eq "$out" "" "Bash template --quiet suppresses successful informational o
 out="$("$BASH_TEMPLATE" --quiet --dry-run)"
 assert_contains "$out" "dry-run: would run" "Bash template quiet dry-run still shows planned changes"
 
-# --- git_hooks_install.sh ---
+section "git_hooks_install.sh"
 # The hook must judge the *staged blob*, never the working tree. The first
 # version of it read the working tree, which failed in both directions: a
 # private key staged and then deleted from disk was committed, and a clean
@@ -817,10 +835,8 @@ assert_contains "$out" "dry-run: would run" "Bash template quiet dry-run still s
 # only ever stages and commits in one step.
 commit_rc() {
   local repo="$1" msg="$2" rc
-  set +e
   git -C "$repo" commit -q -m "$msg" >/dev/null 2>&1
   rc=$?
-  set -e
   printf '%s\n' "$rc"
 }
 
@@ -897,10 +913,8 @@ assert_eq "$(commit_rc "$repo" "aws identifier docs")" "0" \
 repo="$(new_repo)"
 printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
 chmod +x "$repo/.git/hooks/pre-commit"
-set +e
 out="$(cd "$repo" && "$HOOKS" install 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "1" "install refuses to clobber a foreign hook -> exit 1"
 assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "the foreign hook is left untouched"
 
@@ -910,22 +924,21 @@ if [[ -f "$repo/.git/hooks/pre-commit.hooks-install-backup" ]]; then
 else
   err "--force did not back the foreign hook up"
 fi
-(cd "$repo" && "$HOOKS" uninstall) >/dev/null
+# The installed hook ends in `exit 0` of its own, so an uninstall that never
+# ran leaves a file the assertion below is perfectly happy with.
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null ||
+  err "uninstall exited $? — the hook it was meant to restore is judged only by what is on disk afterwards"
 assert_contains "$(cat "$repo/.git/hooks/pre-commit")" "exit 0" "uninstall restores the backed-up hook"
 
 # The restored hook is now foreign again, so a second uninstall must refuse it
 # rather than delete somebody else's work.
-set +e
 (cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "$rc" "1" "uninstall refuses to remove a hook it did not install"
 
 repo="$(new_repo)"
-set +e
 (cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "$rc" "4" "uninstall with nothing installed -> exit 4"
 
 out="$(cd "$repo" && "$HOOKS" install --dry-run 2>&1)"
@@ -936,7 +949,7 @@ else
   ok "install --dry-run wrote nothing"
 fi
 
-# --- the optional commit-msg hook ---
+section "the optional commit-msg hook"
 # Opt-in, and the default install must stay exactly what it was: a message
 # convention imposed on a repository that did not ask for one is a hook that
 # gets --no-verify'd on its first use and never runs again.
@@ -953,7 +966,8 @@ else
 fi
 
 repo="$(new_repo)"
-(cd "$repo" && "$HOOKS" install) >/dev/null
+(cd "$repo" && "$HOOKS" install) >/dev/null ||
+  err "plain install exited $? — an install that wrote nothing also leaves commit-msg alone and accepts any message"
 if [[ -e "$repo/.git/hooks/commit-msg" ]]; then
   err "a plain install wrote a commit-msg hook"
 else
@@ -997,12 +1011,11 @@ assert_eq "$(commit_rc "$repo" "fixup! feat(git): add a thing")" "0" \
 git -C "$repo" switch -q -c conventional-side
 printf 'side\n' >"$repo/side.txt"
 git -C "$repo" add side.txt
-git -C "$repo" commit -q -m "chore: side work"
+git -C "$repo" commit -q -m "chore: side work" ||
+  err "the side commit exited $? — with nothing to merge the merge below is a no-op the hook never sees"
 git -C "$repo" switch -q main
-set +e
 git -C "$repo" merge -q --no-ff -m "Merge branch 'conventional-side'" conventional-side >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "$rc" "0" "a merge message is exempt"
 
 out="$(cd "$repo" && "$HOOKS" uninstall 2>&1)"
@@ -1018,10 +1031,8 @@ fi
 repo="$(new_repo)"
 printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/commit-msg"
 chmod +x "$repo/.git/hooks/commit-msg"
-set +e
 out="$(cd "$repo" && "$HOOKS" install --commit-msg 2>&1)"
 rc=$?
-set -e
 assert_eq "$rc" "1" "a foreign commit-msg hook refuses the install -> exit 1"
 if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
   err "the refused install still wrote the pre-commit hook"
@@ -1029,7 +1040,7 @@ else
   ok "the refused install wrote nothing"
 fi
 
-# --- clone-repos.sh ---
+section "clone-repos.sh"
 # A bare repository stands in for the remote; the list mixes a default
 # destination, a nested one, and a line that is not a URL at all.
 clone_remote="$(mktemp -d /tmp/git-script-clone-remote.XXXXXX)/upstream.git"
@@ -1049,23 +1060,15 @@ printf '# repositories\n%s\n%s   nested/second\nnot-a-url\n' "$clone_remote" "$c
 
 out="$("$CLONE" --help)"
 assert_contains "$out" "Exit codes:" "clone help documents exit codes"
-set +e
 "$CLONE" --bogus >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "$rc" "3" "clone rejects an unknown flag with 3"
-set +e
 "$CLONE" --dir >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "$rc" "3" "clone --dir without a value exits 3"
-set +e
 "$CLONE" "$clone_dest/missing.txt" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "$rc" "2" "clone exits 2 for a missing list"
 
 before_tree="$(find "$clone_dest" | sort)"
-set +e
 out="$("$CLONE" --dry-run --dir "$clone_dest/out" "$clone_list" 2>&1)"; rc=$?
-set -e
 assert_contains "$out" "dry-run: would run: git clone -- $clone_remote $clone_dest/out/upstream" "clone dry-run previews the default destination"
 assert_contains "$out" "dry-run: would run: git clone -- $clone_remote $clone_dest/out/nested/second" "clone dry-run previews the nested destination"
 assert_contains "$out" "not a git URL or path: not-a-url" "clone dry-run reports the bad line"
@@ -1073,25 +1076,19 @@ assert_contains "$out" "dry-run complete; no changes written" "clone dry-run clo
 assert_eq "$rc" "1" "clone dry-run exits 1 because one line failed"
 assert_eq "$(find "$clone_dest" | sort)" "$before_tree" "clone dry-run wrote nothing"
 
-set +e
 out="$("$CLONE" --dir="$clone_dest/out" "$clone_list" 2>&1)"; rc=$?
-set -e
 assert_eq "$rc" "1" "clone exits 1 when a line failed"
 assert_eq "$(git -C "$clone_dest/out/upstream" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "clone landed the default destination"
 assert_eq "$(git -C "$clone_dest/out/nested/second" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "clone landed the nested destination"
 
-set +e
 out="$("$CLONE" --dir "$clone_dest/out" "$clone_list" 2>&1)"; rc=$?
-set -e
 assert_contains "$out" "already cloned: $clone_dest/out/upstream" "a second run skips what is cloned"
 assert_contains "$out" "already present 2" "a second run counts the skips"
 
 printf '%s\n' "$clone_remote" >"$clone_dest/good.txt"
 mkdir -p "$clone_dest/busy/upstream"
 touch "$clone_dest/busy/upstream/keep"
-set +e
 out="$("$CLONE" --dir "$clone_dest/busy" "$clone_dest/good.txt" 2>&1)"; rc=$?
-set -e
 assert_eq "$rc" "1" "an occupied destination fails the line"
 assert_contains "$out" "destination exists and is not a git checkout" "an occupied destination is named"
 if [[ -e "$clone_dest/busy/upstream/keep" ]]; then
@@ -1101,14 +1098,21 @@ else
 fi
 
 printf '# only comments\n\n' >"$clone_dest/empty.txt"
-set +e
 "$CLONE" --dry-run "$clone_dest/empty.txt" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "$rc" "4" "an empty list exits 4"
 
+end_section
+# The file's own floor: it reached this line having opened sections, each of
+# which asserted something. Reaching it at all is what the removal of `-e` put
+# in question, and the count of sections is what a truncated copy of this file
+# would get wrong.
+if (( sections == 0 || checks == 0 )); then
+  echo "no section ran ($sections sections, $checks checks) — the suite is not asserting anything" >&2
+  exit 1
+fi
 if (( failures )); then
-  echo "=== $failures test(s) failed ===" >&2
+  echo "=== $failures of $checks test(s) failed ===" >&2
   exit 1
 fi
 
-echo "=== all git script (docker) checks passed ==="
+echo "=== all $checks git script (docker) checks passed in $sections sections ==="

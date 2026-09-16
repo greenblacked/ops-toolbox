@@ -419,8 +419,8 @@ copies of seven invocations.
 
 The Docker suites mount the repository **read-only** at `/repo`, so all scratch
 state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses —
-`failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `# --- section ---`
-comments — see `git/tests/test_git_scripts.sh`. No framework.
+`failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `section "..."`
+headings — see `git/tests/test_git_scripts.sh`. No framework.
 
 Assertion suites run under `set -uo pipefail` — **no `-e`**. A suite that
 aborts on the first non-zero exit reports the shell's status and throws away
@@ -436,19 +436,18 @@ out="$("$SCRIPT" --bad-flag 2>&1)"; rc=$?
 assert_eq "bad flag -> 3" 3 "$rc"
 ```
 
-`git/tests/test_git_scripts.sh` and
-`macos-initial-setup/tests/test_macos_initial_setup.sh` still run under `-e`
-and wrap each such call in a `set +e` / `set -e` sandwich; the static suite
-names them as the exceptions and fails the day a third suite joins them, or
-the day one of them is converted without leaving that list. Never write the
-sandwich in a file that has no `-e` at the top: `set -e` is not scoped to the
-function it appears in, so the first call turns errexit on for the rest of the
-file, and every unguarded command after it becomes an abort with no message
-(`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
+`macos-initial-setup/tests/test_macos_initial_setup.sh` is the last suite still
+running under `-e` and wrapping each such call in a `set +e` / `set -e`
+sandwich; the static suite names it as the exception and fails the day a second
+suite joins it, or the day it is converted without leaving that list. Never
+write the sandwich in a file that has no `-e` at the top: `set -e` is not scoped
+to the function it appears in, so the first call turns errexit on for the rest
+of the file, and every unguarded command after it becomes an abort with no
+message (`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
 
-A section that made no assertion is a failure, not a pass. `linux/tests`
-opens each block with `section "..."` and fails any block that closes with
-zero checks — the shape of a loop that ran over nothing, or a fixture that
+A section that made no assertion is a failure, not a pass. `linux/tests` and
+`git/tests` open each block with `section "..."` and fail any block that closes
+with zero checks — the shape of a loop that ran over nothing, or a fixture that
 never reached its assertion.
 
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
