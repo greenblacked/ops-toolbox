@@ -5,7 +5,7 @@
   `Kext Signing: enabled`. Both readers matched a bare `enabled` anywhere in
   the block, found that line, and called the machine green. `status.sh` went
   further and exited 0, so its security section passed a Mac with filesystem
-  protections off. Both now anchor on `status: `, as `stay_fresh.sh`'s
+  protections off. Both now anchor on the `status:` prefix, as `stay_fresh.sh`'s
   `sip_status()` and `hardening_audit.sh` already did — the comment in
   `sip_status()` names this exact failure ("on a machine with a custom
   configuration it answers 'unknown'. All of those used to read as 'SIP is
