@@ -561,21 +561,46 @@ def _clear_backup_files(api: Any) -> None:
                 res.call("remove", {".id": _row_id(row)})
 
 
+# `/export file=` writes through this temporary and renames when it is done.
+EXPORT_IN_PROGRESS_SUFFIX = ".in_progress"
+
+
 def _backup_files(api: Any) -> list[str]:
+    """The finished backup files. A half-written export is not one of them.
+
+    The suffix matters more than it looks. `/export file=` returns before the
+    export is finished, writing through `<name>.rsc.in_progress` and renaming
+    at the end, so a router mid-export already shows two files whose names
+    start with the prefix — the .backup and the temporary. Counting those two
+    as the pair let every waiter below return early: the assertion then saw
+    `.rsc.in_progress` where it wanted `.rsc`, and, worse, the teardown that
+    follows deleted the file RouterOS was still writing, which is the last
+    thing the API connection did before the rest of the session failed on a
+    dead socket.
+    """
     res = api.get_binary_resource("/file")
     return sorted(
         n
         for n in (_row_str(r, "name") for r in res.get())
-        if n.startswith(BACKUP_PREFIX)
+        if n.startswith(BACKUP_PREFIX) and not n.endswith(EXPORT_IN_PROGRESS_SUFFIX)
     )
 
 
-def _wait_for_backup_files(api: Any, count: int, timeout: float = 30.0) -> list[str]:
-    """Poll until `count` backup files exist, or give up.
+def _wait_for_backup_files(api: Any, count: int, timeout: float = 120.0) -> list[str]:
+    """Poll until `count` finished backup files exist, or give up.
 
     `/export file=` returns before the file is necessarily on disk, so asserting
     straight after the run is a race that passes on a fast boot and fails on a
-    contended runner.
+    contended runner. _backup_files() ignores the .in_progress temporary, so
+    reaching the count here means the export finished rather than started.
+
+    Thirty seconds was enough while the temporary counted toward `count`, which
+    is to say while this returned as soon as the export had *begun*. Waiting for
+    it to finish is a longer wait, and on a CHR under emulation that has just
+    written one backup pair it is longer still: the second of the two backup
+    tests timed out at thirty with the .backup on disk and the .rsc still being
+    written. The number is a ceiling on a poll loop, not a delay - a run that
+    finishes in two seconds still takes two seconds.
     """
     deadline = time.monotonic() + timeout
     names = _backup_files(api)
@@ -679,7 +704,6 @@ def _router_date(api: Any) -> str:
     return _row_str(rows[0], "date").replace("/", "-")
 
 
-@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_backup_names_the_pair_by_date_and_version(
     api: Any,
     script_resource: Any,
@@ -708,7 +732,6 @@ def test_backup_names_the_pair_by_date_and_version(
     assert "/" not in stem, f"filename would create a directory: {stem!r}"
 
 
-@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_backup_removes_the_previous_generation(
     api: Any,
     script_resource: Any,

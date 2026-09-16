@@ -29,7 +29,7 @@ crossing it off. Every claim below was re-checked against the current tree on
 - `v1_stay_fresh.sh` is a documented preserved original, with suite exceptions
   by name. It is not leftover clutter.
 - **RouterOS is still the open defect, and it is now a measured one.**
-  Sixteen of the 28 `.lua` files declare a `:global` whose name contains an
+  Fifteen of the 28 `.lua` files declare a `:global` whose name contains an
   underscore, which 7.24 refuses to execute. What changed is that this is no
   longer silent: `mikrotik/README.md` opens with the count and carries a
   per-script compatibility list, `test_lua_conventions.sh` fails when that list
@@ -54,13 +54,21 @@ You cannot leave a compatibility `:global TG_BOT_TOKEN` in the script body.
 The declaration itself is what 7.24 rejects, so dual-read inside one file is
 impossible for the old names.
 
-Wave A (`tg_send.lua`) is merged. What remains:
+Wave A (`tg_send.lua`) is merged. Wave B is done, and split, because the
+premise this file gave for retiring both halves did not survive checking.
+`backup_update_check.lua` replaces `update_check.lua` — same job, and it runs —
+so that one is retired for 7.24 and stays for 7.23. It does **not** replace
+`backup.lua`: it writes a pair only when an update is offered, `stay_fresh.lua`
+only ahead of an upgrade, and `backup_file_cleanup.lua` only deletes. Nothing
+on 7.24 took a routine backup, so retiring `backup.lua` would have left a
+scheduled job that fires when an upgrade happens to appear and reads as
+covered. Its two globals are now `BackupPassword` and `BackupRemovePrevious`
+and it runs on 7.24. The lesson generalises to Wave C: check that the named
+replacement does the same job before retiring anything.
 
-1. **Wave B — backup / update.** `backup.lua` and `update_check.lua`, or
-   retire them in the README as 7.23-and-older and point 7.24 operators at
-   `backup_update_check.lua` / `stay_fresh.lua`, both of which already run.
-   Retiring is smaller and safer if you no longer have a pre-7.24 router.
-2. **Wave C — watches.** One script per pull request, from the fourteen left:
+What remains:
+
+1. **Wave C — watches.** One script per pull request, from the fourteen left:
    `wan_failover_notify`, `dhcp_lease_watch`, `traffic_quota`, `ddns_update`,
    `latency_monitor`, `rogue_dns_check`, `mac_allowlist_dhcp`,
    `bandwidth_spike`, `brute_force_block`, `firewall_drift`,
@@ -126,7 +134,5 @@ with its own tests, invoked as a subprocess by absolute path. Not
 
 ## Next pull requests
 
-1. `fix/routeros-backup-update-names` — Wave B, or the README matrix that
-   retires those two scripts for 7.24.
-2. `chore/v0.1.0` — the release move plus the `SECURITY.md` sentence.
-3. Wave C, one script at a time, in the order you actually run them.
+1. `chore/v0.1.0` — the release move plus the `SECURITY.md` sentence.
+2. Wave C, one script at a time, in the order you actually run them.

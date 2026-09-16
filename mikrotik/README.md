@@ -74,19 +74,20 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 16 of these 28 scripts do not run at all.** That release
+> **On RouterOS 7.24, 15 of these 28 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
 > report. This is the quietest failure in the package: you install the script,
 > schedule it, and never hear from it again.
 >
-> **Runs on 7.24:** `backup_file_cleanup.lua`, `backup_update_check.lua`,
-> `cert_expiry_watch.lua`, `change_WIFI_pw.lua`, `detect_internet.lua`,
-> `health_check.lua`, `netwatch_notify.lua`, `reboot-and-flush.lua`,
-> `security_check.lua`, `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
+> **Runs on 7.24:** `backup.lua`, `backup_file_cleanup.lua`,
+> `backup_update_check.lua`, `cert_expiry_watch.lua`, `change_WIFI_pw.lua`,
+> `detect_internet.lua`, `health_check.lua`, `netwatch_notify.lua`,
+> `reboot-and-flush.lua`, `security_check.lua`, `stay_fresh.lua`,
+> `tg_send.lua`, `wireguard_watch.lua`.
 >
-> **Does not run on 7.24** (fine on 7.23 and earlier): `backup.lua`,
+> **Does not run on 7.24** (fine on 7.23 and earlier):
 > `bandwidth_spike.lua`, `brute_force_block.lua`, `ddns_update.lua`,
 > `dhcp_lease_watch.lua`, `firewall_drift.lua`, `firewall_drift_baseline.lua`,
 > `latency_monitor.lua`, `mac_allowlist_dhcp.lua`, `rogue_dns_check.lua`,
@@ -94,9 +95,21 @@ their values, so no token crosses the wire.
 > `wan_failover_notify.lua`, `wan_link_flap_notify.lua`,
 > `wireless_client_watch.lua`.
 >
-> `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`.
-> The rest have no replacement yet; the integration suite marks each of them
-> `xfail` on the 7.24.2 CHR rather than pretending they pass.
+> `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`,
+> which is **retired on 7.24**: it declares six underscored globals, the
+> replacement does the same job, and it is not being renamed. It stays here,
+> unchanged and supported, for routers on 7.23 and earlier.
+>
+> `backup.lua` was in the second list until its two globals were renamed to
+> `BackupPassword` and `BackupRemovePrevious`. It was renamed rather than
+> retired because nothing else here takes a *routine* backup: on 7.24
+> `backup_update_check.lua` and `stay_fresh.lua` write a pair only when an
+> update is offered, and `backup_file_cleanup.lua` only deletes. Retiring it
+> would have left a 7.24 router with a scheduled backup job that fires when an
+> upgrade happens to appear, which reads as covered and is not.
+>
+> The remaining fourteen have no replacement yet; the integration suite marks
+> each of them `xfail` on the 7.24.2 CHR rather than pretending they pass.
 
 | File                            | Purpose                                                                 |
 | ------------------------------- | ----------------------------------------------------------------------- |
@@ -294,7 +307,7 @@ matters most on a rollback, because a `.backup` restored onto a different
 release is not guaranteed to load.
 
 `RemovePrevious` (default `true`, overridable with
-`:global BACKUP_REMOVE_PREVIOUS false`) deletes every other `backup-*` file
+`:global BackupRemovePrevious false`) deletes every other `backup-*` file
 once the new pair has been written, leaving exactly one generation on the
 router. It runs only after a successful save — the failure path ends in
 `:error` before it is reached — so a backup that failed never takes the last
@@ -356,8 +369,8 @@ where only this script was pasted still gets a rollback point. The filename is
 `backup-IDENTITY-DATE-VERSION-pre-upgrade`, and that version is the running
 one — the release this file restores you to. It keeps the `backup-` prefix so
 `pull_router_backups.sh` still collects it and `backup_file_cleanup.lua` still
-ages it out. Encrypt it by setting `:global BACKUP_PASSWORD`, the same one
-`backup.lua` reads; set `:global UPDATE_CHECK_BACKUP false` to only notify. A
+ages it out. Encrypt it by setting `:global BACKUP_PASSWORD`; set
+`:global UPDATE_CHECK_BACKUP false` to only notify. A
 failed backup does not suppress the update notification — the message says the
 backup failed, which is louder than silence and is the state you most need to
 know about before upgrading.
@@ -372,10 +385,16 @@ sort. Everything starting with the new base name is kept, not just the two
 exact names — `/export file=` writes through a `<name>.rsc.in_progress`
 temporary and returns before the export finishes, so an exact-name test leaves
 that file matching `^backup-`, excluded by neither name, and the sweep deletes
-a half-written export. It reads the same `:global BACKUP_REMOVE_PREVIOUS` that
-`backup.lua` does, because how many generations live on a router is one policy
-and not two — set it `false` and both scripts keep every generation for
-`backup_file_cleanup.lua` to age out at 30 days. The caveat from `backup.lua`
+a half-written export. It reads `:global BACKUP_REMOVE_PREVIOUS`.
+
+> **The two names diverged when `backup.lua` was made 7.24-safe.** They used to
+> be one setting: `backup.lua` and this script both read
+> `BACKUP_REMOVE_PREVIOUS` and `BACKUP_PASSWORD`, because how many generations
+> live on a router is one policy and not two. `backup.lua` now reads
+> `BackupRemovePrevious` and `BackupPassword`, and this script is retired on
+> 7.24 rather than renamed, so on a 7.23 router running **both** you have to
+> set both spellings or the two will disagree about retention and encryption.
+> On 7.24, only `backup.lua` runs and only the CamelCase pair matters. The caveat from `backup.lua`
 carries over: one generation means a corrupt backup is the only backup, so this
 is retention on the router, not a backup policy.
 

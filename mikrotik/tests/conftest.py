@@ -143,8 +143,13 @@ _TEST_OWNED_GLOBALS = (
     "DNS_EXPECTED",
     "DNS_ALLOWED_RESOLVERS",
     "RDNS_LAST_FLAG",
+    # Both spellings: backup.lua reads the CamelCase pair so it runs on 7.24,
+    # and update_check.lua still declares the underscored one, which is why it
+    # does not. Same reason pu_TG_LAST_MESSAGE sits beside PuTgLastMessage.
     "BACKUP_PASSWORD",
     "BACKUP_REMOVE_PREVIOUS",
+    "BackupPassword",
+    "BackupRemovePrevious",
     "UPDATE_CHECK_BACKUP",
     "UPDATE_CHECK_MAX_WAIT",
     "UPDATE_CHECK_NOTIFY_FAILURE",

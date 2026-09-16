@@ -34,11 +34,17 @@
 # tracked, so a password written into it lands in the next commit. Same
 # mechanism tg_send.lua and ddns_update.lua use:
 #
-#     /system script add name=startup source={:global BACKUP_PASSWORD "s3cret";}
+#     /system script add name=startup source={:global BackupPassword "s3cret";}
 #     /system scheduler add name=startup on-event=startup start-time=startup
-:local BackupPassword "";
-:global BACKUP_PASSWORD;
-:if ([:len $BACKUP_PASSWORD] > 0) do={ :set BackupPassword $BACKUP_PASSWORD; }
+#
+# No :global here carries an underscore in its name. RouterOS 7.24 refuses to
+# execute a script that declares one, which is why the old BACKUP_PASSWORD /
+# BACKUP_REMOVE_PREVIOUS pair is gone. The local below keeps the plain name and
+# the global takes the operator-facing one, the same split tg_send.lua makes
+# between BotToken and TgBotToken.
+:local Password "";
+:global BackupPassword;
+:if ([:len $BackupPassword] > 0) do={ :set Password $BackupPassword; }
 
 # Retention: after a successful save, delete every older backup-* file.
 #
@@ -55,12 +61,12 @@
 # keep generations there. Set the global to false to keep every generation and
 # let backup_file_cleanup.lua age them out at 30 days instead.
 :local RemovePrevious true;
-:global BACKUP_REMOVE_PREVIOUS;
-:if ([:typeof $BACKUP_REMOVE_PREVIOUS] = "bool") do={ :set RemovePrevious $BACKUP_REMOVE_PREVIOUS; }
+:global BackupRemovePrevious;
+:if ([:typeof $BackupRemovePrevious] = "bool") do={ :set RemovePrevious $BackupRemovePrevious; }
 
 :do {
-    :if ([:len $BackupPassword] > 0) do={
-        /system backup save name=$Filename password=$BackupPassword;
+    :if ([:len $Password] > 0) do={
+        /system backup save name=$Filename password=$Password;
     } else={
         /system backup save name=$Filename dont-encrypt=yes;
     }
