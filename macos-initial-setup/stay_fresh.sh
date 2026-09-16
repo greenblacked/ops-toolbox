@@ -795,6 +795,18 @@ case "$NOTIFY_WHEN" in
   always|warn|fail) ;;
   *) err "--notify-when must be always, warn or fail (got: $NOTIFY_WHEN)"; exit 3 ;;
 esac
+# auto: a banner is the only way a scheduled run gets seen; at a terminal the
+# summary is already on screen.
+#
+# Decided here rather than in preflight, where it used to live. Every guard
+# between here and there can exit 2 - not macOS, running as root, no terminal
+# without --yes, another run holding the lock - and notify_fatal() below has to
+# know which channels to use by then. Only the decision moved; the
+# NOTIFY_CHANNELS string and the line that announces it stay in preflight, so
+# the order of what preflight prints is unchanged.
+if (( NOTIFY_AUTO )) && [[ ! -t 0 ]]; then
+  NOTIFY_MACOS=1
+fi
 [[ "$NOTIFY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
   err "STAY_FRESH_NOTIFY_TIMEOUT must be a positive whole number of seconds (got: $NOTIFY_TIMEOUT)"
   exit 3
@@ -1634,6 +1646,37 @@ notify_slack() {
   return 0
 }
 
+# A run that never got as far as doing any work still has to say so.
+#
+# The end-of-run notification lives past the step loop, so every guard that
+# exits 2 before that point was silent on every channel: not macOS, running as
+# root, no terminal without --yes, HOME unset, and - the one that repeats -
+# another run holding the lock. A schedule that stops firing usefully looks
+# exactly like a schedule with nothing to do, which is the failure this whole
+# notification path exists to prevent.
+#
+# Deliberately not gated on --notify-when: warn and fail describe the verdict
+# of a run that ran, and a run that could not start has no verdict. --notify
+# none still silences it, because that is an instruction rather than a filter.
+#
+# macOS-only when HOME is unusable: the Telegram token and the Slack webhook
+# are read from the login Keychain or from a file under HOME, and the paths
+# that log the attempt are poisoned too. A banner needs neither.
+notify_fatal() {
+  local reason="$1"
+  (( DRY_RUN )) && return 0
+  local headline="stay_fresh FAILED: $reason"
+  local sent=0
+  if (( NOTIFY_MACOS )); then
+    notify_macos "$headline" "no work was done — run stay_fresh.sh by hand to see why" && sent=1
+  fi
+  if (( HOME_USABLE )); then
+    (( NOTIFY_TELEGRAM )) && { notify_telegram "$headline" && sent=1; }
+    (( NOTIFY_SLACK ))    && { notify_slack    "$headline" && sent=1; }
+  fi
+  return $(( 1 - sent ))
+}
+
 # Minimal JSON string quoting for last-run.json: backslash, double quote,
 # and the control characters that can appear in a step label.
 json_str() {
@@ -1700,6 +1743,7 @@ preflight_fail() {
     return 0
   fi
   err "$1"
+  notify_fatal "$1" || true
   exit 2
 }
 
@@ -1722,11 +1766,18 @@ ok "running as user: $(id -un)"
 # before log creation, sudo, package-manager probes, or any other side effect.
 if (( DRY_RUN == 0 && ASSUME_YES == 0 )) && [[ ! -t 0 ]]; then
   err "non-interactive execution requires --yes; refusing to make changes"
+  notify_fatal "non-interactive execution requires --yes" || true
   exit 2
 fi
 
 if (( DRY_RUN == 0 )); then
-  acquire_lock || exit 2
+  acquire_lock || {
+    # The commonest repeat offender: a lock whose pid is still alive is not
+    # stale, so acquire_lock correctly refuses - and every scheduled firing
+    # after it refused in silence.
+    notify_fatal "another run holds the lock, or it could not be acquired" || true
+    exit 2
+  }
 fi
 
 # A dry run writes nothing — including this script's own log. See the same
@@ -1909,11 +1960,6 @@ fi
 
 SKIP_DIAGNOSTICS_SYS="${SKIP_DIAGNOSTICS_SYS:-0}"
 
-# auto: a banner is the only way a scheduled run gets seen; at a terminal the
-# summary is already on screen.
-if (( NOTIFY_AUTO )) && [[ ! -t 0 ]]; then
-  NOTIFY_MACOS=1
-fi
 (( NOTIFY_MACOS ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }macos"
 (( NOTIFY_TELEGRAM )) && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }telegram"
 (( NOTIFY_SLACK ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }slack"
@@ -3721,8 +3767,24 @@ step_snapshots() {
   # A backup in progress copies from the newest of these snapshots. Deleting
   # it under the backup makes Time Machine start the pass over, and tmutil
   # will not refuse; this run keeps the list and the next run thins.
-  local tm_status
-  tm_status="$(tmutil status 2>>"$LOG_SINK" || true)"
+  # Through capture_cmd, so --step-timeout bounds it. As a bare command
+  # substitution this was the one probe in the step that could not be stopped:
+  # `tmutil status` talks to backupd, and on a Mac whose destination is an
+  # unreachable network share it blocks, taking the whole run with it however
+  # small --step-timeout was set.
+  #
+  # The failure path had to change with it, and in the safe direction. The old
+  # `|| true` left tm_status empty, the Running test did not match, and the run
+  # thinned — fine while the only way to get here was a quick answer, but a
+  # timeout would then have meant "thin under a backup we could not see", which
+  # is the exact outcome this guard exists to prevent and worse than the hang it
+  # replaced. A probe that cannot answer now keeps the snapshots.
+  local tm_status=""
+  if ! capture_cmd "tmutil status" tmutil status; then
+    warn "could not read Time Machine status — snapshots listed, not thinned this run"
+    return 0
+  fi
+  tm_status="$CAPTURED"
   if grep -Eq 'Running *= *1' <<<"$tm_status"; then
     info "a Time Machine backup is running — snapshots listed, not thinned this run"
     return 0

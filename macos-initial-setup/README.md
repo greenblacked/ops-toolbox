@@ -1263,6 +1263,14 @@ kept. `logs` finds the newest timestamped file and prints its last 80 lines (or
 the positive count passed through `--tail`) without starting, stopping, or
 reloading the agent.
 
+A firing that fails before it can open that log leaves nothing in it — the
+script missing or not executable because the checkout moved, a log directory
+that cannot be created, `stay_fresh.sh` refusing at preflight. launchd appends
+whatever such a firing wrote to stderr to
+`~/Library/Logs/stay_fresh/agent-launchd.err` instead, which is the file to read
+when the schedule has quietly stopped producing timestamped logs. It is
+appended to and never rotated, because a healthy schedule never writes to it.
+
 ---
 
 ## `zsh_aliases.zsh`

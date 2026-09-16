@@ -165,6 +165,7 @@ run_sf() {
     SNAPSHOTS="${SNAPSHOTS:-}" \
     TM_RUNNING="${TM_RUNNING:-}" \
     TM_DELETE_HANG="${TM_DELETE_HANG:-}" \
+    TM_STATUS_HANG="${TM_STATUS_HANG:-}" \
     TM_DELETE_FAIL="${TM_DELETE_FAIL:-}" \
     DOCKER_INFO_HANG="${DOCKER_INFO_HANG:-}" \
     SU_HANG="${SU_HANG:-}" \
@@ -1484,6 +1485,43 @@ assert_called "the banner title is the verdict" "$d/calls" 'with title "stay_fre
 assert_contains "the preflight names the channel" "$out" "notify: macos"
 rm -rf "$d"
 
+# A run that never started still has to say so. The end-of-run notification
+# lives past the step loop, so every guard that exits 2 before it — not macOS,
+# running as root, no terminal without --yes, and this one, another run holding
+# the lock — used to be silent on every channel. A schedule that has stopped
+# doing anything then looks exactly like a schedule with nothing to do.
+#
+# The lock is the one that repeats: a pid that is still alive is not stale, so
+# acquire_lock correctly refuses, and every firing after it refused in silence.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+# STAY_FRESH_LOCK_DIR names the *parent*; the lock itself is run.lock inside
+# it. This test's own pid is certainly alive, so acquire_lock sees a held lock
+# rather than a stale one and refuses — which is correct, and was silent.
+held_parent="$d/held"
+mkdir -p "$held_parent/run.lock"
+printf '%s\n' "$$" > "$held_parent/run.lock/pid"
+out="$(STAY_FRESH_LOCK_DIR="$held_parent" STAY_FRESH_NOTIFY=macos \
+  run_sf "$d" --yes --only versions 2>&1)"; rc=$?
+assert_eq "a run blocked by a held lock still exits 2" "2" "$rc"
+assert_contains "the held lock is named on stderr" "$out" "another stay_fresh run is active"
+# Asserted on the FAILED title, not on 'display notification': a run that got
+# as far as its summary posts a banner too, and that assertion would pass on
+# the ordinary end-of-run one without the fatal path working at all.
+assert_called "a run that could not start posts a failure banner" "$d/calls" \
+  'with title "stay_fresh FAILED:'
+assert_not_called "the blocked run never reached its own summary" "$d/calls" \
+  'with title "stay_fresh OK'
+rm -rf "$d"
+
+# The same guard under --dry-run notifies nobody: a preview that refuses is not
+# a failed run, and a dry run must not reach out to anything.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
+STAY_FRESH_NOTIFY=macos run_sf "$d" --dry-run --only versions >/dev/null 2>&1 || true
+assert_not_called "a dry run posts no failure banner" "$d/calls" 'stay_fresh FAILED'
+rm -rf "$d"
+
 # A dry run notifies nobody, whatever the mode says.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
@@ -1688,7 +1726,8 @@ snap_env() {
     '  listlocalsnapshots) echo "Snapshots for disk /:"' \
     '    [ -n "${SNAPSHOTS:-}" ] && { echo "com.apple.TimeMachine.2026-09-01-101010.local"; echo "com.apple.TimeMachine.2026-09-07-030000.local"; } ;;' \
     '  deletelocalsnapshots) [ -n "${TM_DELETE_FAIL:-}" ] && exit 1 ;;' \
-  '  status) echo "Backup session status:"; echo "{"' \
+  '  status) [ -n "${TM_STATUS_HANG:-}" ] && sleep 60' \
+    '    echo "Backup session status:"; echo "{"' \
     '    if [ -n "${TM_RUNNING:-}" ]; then echo "    BackupPhase = Copying;"; echo "    Running = 1;"; else echo "    Running = 0;"; fi' \
     '    echo "}" ;;' \
     'esac; exit 0'
@@ -1698,6 +1737,35 @@ d="$(snap_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only snapshots)"; rc=$?
 assert_eq "no snapshots is a clean step" "0" "$rc"
 assert_contains "no snapshots is said" "$out" "no local Time Machine snapshots"
+rm -rf "$d"
+
+# `tmutil status` talks to backupd. On a Mac whose destination is an
+# unreachable network share it blocks, and as a bare command substitution it
+# took the whole run with it however small --step-timeout was: it was the one
+# probe in this step the timeout could not reach.
+#
+# The failure path matters as much as the timeout. The old code swallowed the
+# error and left the status empty, so the "is a backup running" test did not
+# match and the run thinned — which, once a hang became a timeout, would have
+# meant thinning under a backup it could not see. That is the outcome the guard
+# exists to prevent, and worse than the hang. A probe that cannot answer keeps
+# the snapshots.
+d="$(snap_env)"; : > "$d/calls"
+started="$(date +%s)"
+out="$(SNAPSHOTS=1 TM_STATUS_HANG=1 run_sf "$d" --yes --only snapshots \
+  --thin-snapshots --step-timeout 1)"; rc=$?
+elapsed=$(( $(date +%s) - started ))
+assert_eq "a hanging tmutil status does not fail the run" "0" "$rc"
+if (( elapsed <= 20 )); then
+  ok "a hanging tmutil status is stopped by --step-timeout (${elapsed}s)"
+else
+  err "the run took ${elapsed}s — tmutil status was not stopped"
+fi
+assert_contains "the stopped status probe is reported" "$out" "stopped after 1s (--step-timeout)"
+assert_contains "a status that could not answer keeps the snapshots" "$out" \
+  "could not read Time Machine status"
+assert_not_called "nothing is thinned when the backup state is unknown" "$d/calls" \
+  "deletelocalsnapshots"
 rm -rf "$d"
 
 d="$(snap_env)"; : > "$d/calls"

@@ -1742,8 +1742,18 @@ assert data["ProgramArguments"][0] == "/bin/bash"
 assert data["ProgramArguments"][-3:] == ["run-scheduled", "--profile", "safe"]
 assert data["StartCalendarInterval"] == {"Hour": 3, "Minute": 5}
 assert "/opt/homebrew/bin" in data["EnvironmentVariables"]["PATH"].split(":")
+# stdout stays discarded: the run writes its own timestamped transcript and
+# duplicating it here would grow without bound.
 assert data["StandardOutPath"] == "/dev/null"
-assert data["StandardErrorPath"] == "/dev/null"
+# stderr must NOT be discarded. Everything that can stop a firing before it
+# reaches that transcript - this script missing after the checkout moved, a log
+# directory that cannot be created, stay_fresh.sh refusing at preflight - is
+# written by err() to stderr, and with both streams on /dev/null the schedule
+# died with no output anywhere. It has to be a real path, under the same log
+# directory the installer creates, and not the transcript itself.
+err_path = data["StandardErrorPath"]
+assert err_path != "/dev/null", "stderr is discarded; a failed firing would leave no trace"
+assert err_path.endswith("/Library/Logs/stay_fresh/agent-launchd.err"), err_path
 assert "StartCalendarIntervalRunMissed" not in data
 PY
   then
