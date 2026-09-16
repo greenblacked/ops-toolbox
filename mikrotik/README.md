@@ -569,7 +569,7 @@ is never edited per router:
 | `StayFreshRemovePrevious` | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                               |
 | `StayFreshMaxWait`        | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                                |
 | `StayFreshTgSend`         | unset   | Name of the Telegram helper script, if it is neither `tg_send_new` nor `tg_send`.                                 |
-| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup.lua` and `backup_update_check` read.                                       |
+| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup.lua` and `backup_update_check` read.                       |
 
 The verdict is `status`, never `installed != latest`, for the reason under
 `update_check.lua`: switch a router from `stable` to `long-term` and the
