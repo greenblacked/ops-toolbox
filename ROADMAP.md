@@ -62,7 +62,7 @@ so that one is retired for 7.24 and stays for 7.23. It does **not** replace
 only ahead of an upgrade, and `backup_file_cleanup.lua` only deletes. Nothing
 on 7.24 took a routine backup, so retiring `backup.lua` would have left a
 scheduled job that fires when an upgrade happens to appear and reads as
-covered. Its two globals are now `BackupPassword` and `BackupRemovePrevious`
+covered. Its two globals are now `RouterBackupPassword` and `BackupRemovePrevious`
 and it runs on 7.24. The lesson generalises to Wave C: check that the named
 replacement does the same job before retiring anything.
 

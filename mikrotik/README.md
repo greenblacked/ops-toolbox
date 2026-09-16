@@ -101,7 +101,7 @@ their values, so no token crosses the wire.
 > unchanged and supported, for routers on 7.23 and earlier.
 >
 > `backup.lua` was in the second list until its two globals were renamed to
-> `BackupPassword` and `BackupRemovePrevious`. It was renamed rather than
+> `RouterBackupPassword` and `BackupRemovePrevious`. It was renamed rather than
 > retired because nothing else here takes a *routine* backup: on 7.24
 > `backup_update_check.lua` and `stay_fresh.lua` write a pair only when an
 > update is offered, and `backup_file_cleanup.lua` only deletes. Retiring it
@@ -297,7 +297,7 @@ the startup script.
 
 Creates a binary backup (`.backup`) and a config export (`.rsc`) and sends a
 Telegram notification with the resulting filename. Optional binary-backup
-encryption via `BackupPassword`. Sanitizes the date so non-ISO `date-format`
+encryption via `RouterBackupPassword`. Sanitizes the date so non-ISO `date-format`
 settings don't accidentally produce filenames with `/` (which would create
 sub-folders on disk).
 
@@ -391,7 +391,7 @@ a half-written export. It reads `:global BACKUP_REMOVE_PREVIOUS`.
 > be one setting: `backup.lua` and this script both read
 > `BACKUP_REMOVE_PREVIOUS` and `BACKUP_PASSWORD`, because how many generations
 > live on a router is one policy and not two. `backup.lua` now reads
-> `BackupRemovePrevious` and `BackupPassword`, and this script is retired on
+> `BackupRemovePrevious` and `RouterBackupPassword`, and this script is retired on
 > 7.24 rather than renamed, so on a 7.23 router running **both** you have to
 > set both spellings or the two will disagree about retention and encryption.
 > On 7.24, only `backup.lua` runs and only the CamelCase pair matters. The caveat from `backup.lua`
@@ -569,7 +569,7 @@ is never edited per router:
 | `StayFreshRemovePrevious` | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                               |
 | `StayFreshMaxWait`        | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                                |
 | `StayFreshTgSend`         | unset   | Name of the Telegram helper script, if it is neither `tg_send_new` nor `tg_send`.                                 |
-| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup_update_check` reads.                                       |
+| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup.lua` and `backup_update_check` read.                                       |
 
 The verdict is `status`, never `installed != latest`, for the reason under
 `update_check.lua`: switch a router from `stable` to `long-term` and the

@@ -553,7 +553,28 @@ BACKUP_PREFIX = "backup-"
 PARSE_WRAPPER = "pu_ut_parse_wrapper"
 
 
-def _clear_backup_files(api: Any) -> None:
+def _exports_in_progress(api: Any) -> list[str]:
+    res = api.get_binary_resource("/file")
+    return [
+        n
+        for n in (_row_str(r, "name") for r in res.get())
+        if n.startswith(BACKUP_PREFIX) and n.endswith(EXPORT_IN_PROGRESS_SUFFIX)
+    ]
+
+
+def _clear_backup_files(api: Any, settle: float = 120.0) -> None:
+    """Remove every backup-* file, once nothing is still being written.
+
+    Deleting a <name>.rsc.in_progress while RouterOS is mid-export is the last
+    thing the API connection did before the rest of a session failed on a dead
+    socket. So this waits, bounded, for the exports to settle first. On the
+    failure path that wait is the only thing standing between one red test and
+    a red session; on the success path there is nothing in progress and it
+    costs one listing.
+    """
+    deadline = time.monotonic() + settle
+    while _exports_in_progress(api) and time.monotonic() < deadline:
+        time.sleep(1)
     res = api.get_binary_resource("/file")
     for row in list(res.get()):
         if _row_str(row, "name").startswith(BACKUP_PREFIX):
@@ -713,7 +734,12 @@ def test_backup_names_the_pair_by_date_and_version(
     src = (MIKROTIK_DIR / "backup.lua").read_text(encoding="utf-8", errors="replace")
     try:
         _add_script(script_resource, "backup", src)
-        _run_via_scheduler(api, "backup", lambda: len(_backup_files(api)) >= 2)
+        # The gate answers "did the script run" - the .backup is written
+        # synchronously, so one finished file is that answer. The export that
+        # follows is what _wait_for_backup_files waits for, with a ceiling
+        # sized for it; asking this 60s gate for the pair put the slow-export
+        # failure on the wrong wait, and on the wrong side of the teardown.
+        _run_via_scheduler(api, "backup", lambda: len(_backup_files(api)) >= 1)
         names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup")

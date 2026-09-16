@@ -148,7 +148,7 @@ _TEST_OWNED_GLOBALS = (
     # does not. Same reason pu_TG_LAST_MESSAGE sits beside PuTgLastMessage.
     "BACKUP_PASSWORD",
     "BACKUP_REMOVE_PREVIOUS",
-    "BackupPassword",
+    "RouterBackupPassword",
     "BackupRemovePrevious",
     "UPDATE_CHECK_BACKUP",
     "UPDATE_CHECK_MAX_WAIT",

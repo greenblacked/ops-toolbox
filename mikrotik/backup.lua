@@ -34,17 +34,25 @@
 # tracked, so a password written into it lands in the next commit. Same
 # mechanism tg_send.lua and ddns_update.lua use:
 #
-#     /system script add name=startup source={:global BackupPassword "s3cret";}
+#     /system script add name=startup source={:global RouterBackupPassword "s3cret";}
 #     /system scheduler add name=startup on-event=startup start-time=startup
 #
 # No :global here carries an underscore in its name. RouterOS 7.24 refuses to
 # execute a script that declares one, which is why the old BACKUP_PASSWORD /
-# BACKUP_REMOVE_PREVIOUS pair is gone. The local below keeps the plain name and
-# the global takes the operator-facing one, the same split tg_send.lua makes
-# between BotToken and TgBotToken.
+# BACKUP_REMOVE_PREVIOUS pair is gone. RouterBackupPassword is the name
+# backup_update_check.lua and stay_fresh.lua already read for the same secret,
+# so a router configured for either of them encrypts this backup too; a third
+# name for one password would have left this one in plaintext on exactly the
+# routers set up most carefully.
+#
+# A router whose startup script still sets the old BACKUP_PASSWORD reads an
+# empty password here. That is not recoverable from inside this file - the old
+# declaration is what 7.24 refuses to run - so the message below says
+# "Encryption: none" rather than letting a nightly "backup created" pass for
+# an encrypted one.
 :local Password "";
-:global BackupPassword;
-:if ([:len $BackupPassword] > 0) do={ :set Password $BackupPassword; }
+:global RouterBackupPassword;
+:if ([:len $RouterBackupPassword] > 0) do={ :set Password $RouterBackupPassword; }
 
 # Retention: after a successful save, delete every older backup-* file.
 #
@@ -111,7 +119,9 @@
     :set RemovedLine ("%0A<b>Removed:</b> <code>" . $Removed . " older file(s)</code>");
 }
 
-:local MessageText ("\F0\9F\92\BE <b>$DeviceName:</b> backup created.%0A<b>File:</b> <code>$Filename</code>%0A<b>Version:</b> <code>$Ver</code>" . $RemovedLine);
+:local EncryptionLine "";
+:if ([:len $Password] = 0) do={ :set EncryptionLine "%0A<b>Encryption:</b> none (set :global RouterBackupPassword)"; }
+:local MessageText ("\F0\9F\92\BE <b>$DeviceName:</b> backup created.%0A<b>File:</b> <code>$Filename</code>%0A<b>Version:</b> <code>$Ver</code>" . $RemovedLine . $EncryptionLine);
 :do {
     :local Send [:parse [/system script get tg_send source]];
     $Send MessageText=$MessageText;
