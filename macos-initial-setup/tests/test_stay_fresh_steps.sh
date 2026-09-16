@@ -589,6 +589,30 @@ assert_gone   "nested trash is emptied"  "$d/home/.Trash/folder"
 assert_exists "~/.Trash itself is kept"  "$d/home/.Trash"
 rm -rf "$d"
 
+# A Trash moved off a small internal SSD is a symlink. `[[ -d ]]` follows it,
+# but find -P does not descend into a symlinked start point and du does not
+# measure through one, so the step walked nothing, deleted nothing and printed
+# "freed 0B" — on the machine most likely to need the space. A trailing slash
+# on the start point resolves the link; -mindepth 1 still leaves the directory,
+# and the symlink, in place.
+d="$(new_env)"
+mkdir -p "$d/relocated/folder"
+bytes_file "$d/relocated/big" 256
+: > "$d/relocated/.hidden"
+: > "$d/relocated/folder/nested"
+ln -s "$d/relocated" "$d/home/.Trash"
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "a relocated trash does not fail the run" "0" "$rc"
+assert_gone   "the relocated trash is emptied"      "$d/relocated/big"
+assert_gone   "hidden entries too"                  "$d/relocated/.hidden"
+assert_gone   "nested entries too"                  "$d/relocated/folder"
+assert_exists "the relocation target survives"      "$d/relocated"
+assert_exists "and the symlink with it"             "$d/home/.Trash"
+assert_contains "what it freed is measured through the link" "$out" "K from ~/.Trash"
+assert_not_contains "a full trash is never reported as freeing nothing" "$out" \
+  "freed 0B from ~/.Trash"
+rm -rf "$d"
+
 # ===========================================================================
 section "docker (local prune, remote refusal, failure routing)"
 docker_fake() {
@@ -1780,13 +1804,31 @@ rm -rf "$d"
 
 # ===========================================================================
 section "snapshots (listed by default, deleted only with --thin-snapshots)"
+#
+# The fake answers per mount point, and remembers: a date deleted is gone from
+# every volume that had it, which is what the man page describes
+# (deletelocalsnapshots takes a date, not a volume). The step reports what it
+# thinned by listing again afterwards, so a fake that kept answering with the
+# snapshots it had just been told to delete would let a run claim a disk was
+# cleaned while it was still full — the bug two of these tests exist for.
 snap_env() {
   local d; d="$(new_env)"
   mkbin "$d/bin/tmutil" 'echo "tmutil $*" >> "$CALLS"' \
+    'st="$CALLS.deleted"' \
     'case "${1:-}" in' \
-    '  listlocalsnapshots) echo "Snapshots for disk /:"' \
-    '    [ -n "${SNAPSHOTS:-}" ] && { echo "com.apple.TimeMachine.2026-09-01-101010.local"; echo "com.apple.TimeMachine.2026-09-07-030000.local"; } ;;' \
-    '  deletelocalsnapshots) [ -n "${TM_DELETE_FAIL:-}" ] && exit 1 ;;' \
+    '  listlocalsnapshots) mp="${2:-}"; echo "Snapshots for disk $mp:"' \
+    '    [ -z "${SNAPSHOTS:-}" ] && exit 0' \
+    '    case "$mp" in' \
+    '      /) dates="2026-09-01-101010 2026-09-07-030000" ;;' \
+    '      /Volumes/Ext) dates="2026-09-07-030000 2026-09-08-120000" ;;' \
+    '      *) dates="" ;;' \
+    '    esac' \
+    '    for dt in $dates; do' \
+    '      grep -qx "$dt" "$st" 2>/dev/null && continue' \
+    '      echo "com.apple.TimeMachine.$dt.local"' \
+    '    done ;;' \
+    '  deletelocalsnapshots) [ -n "${TM_DELETE_FAIL:-}" ] && exit 1' \
+    '    echo "${2:-}" >> "$st" ;;' \
   '  status) [ -n "${TM_STATUS_HANG:-}" ] && sleep 60' \
     '    echo "Backup session status:"; echo "{"' \
     '    if [ -n "${TM_RUNNING:-}" ]; then echo "    BackupPhase = Copying;"; echo "    Running = 1;"; else echo "    Running = 0;"; fi' \
@@ -1889,6 +1931,62 @@ assert_contains "--no-sudo explains that thinning is off" "$out" "listed, not de
 assert_not_called "--no-sudo deletes nothing" "$d/calls" "deletelocalsnapshots"
 assert_contains "the snapshots are still listed" "$out" "2 local snapshot(s):"
 rm -rf "$d"
+
+# Every mounted local volume keeps snapshots of its own, and
+# `tmutil listlocalsnapshots /` never sees them: a run could report "no local
+# Time Machine snapshots" beside a second APFS volume holding a fortnight of
+# them. The volumes come from the same mount table step_trash reads, so a
+# network share is skipped by its type before the path is touched and the boot
+# volume's /Volumes symlink is not asked about twice.
+snap_vol_env() {
+  local d; d="$(snap_env)"
+  mkbin "$d/bin/mount" 'echo "/dev/disk3s1s1 on / (apfs, sealed, local, journaled)"' \
+    'echo "/dev/disk5s1 on /Volumes/Ext (apfs, local, nodev, nosuid, journaled)"' \
+    'echo "//user@nas/share on /Volumes/NAS (smbfs, nodev, nosuid)"'
+  mkdir -p /Volumes/Ext
+  ln -sfn / "/Volumes/Macintosh HD"
+  printf '%s' "$d"
+}
+d="$(snap_vol_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 run_sf "$d" --yes --only snapshots)"; rc=$?
+assert_eq "listing every volume succeeds" "0" "$rc"
+assert_called "the boot volume is listed" "$d/calls" "tmutil listlocalsnapshots /"
+assert_called "and so is the second local volume" "$d/calls" \
+  "tmutil listlocalsnapshots /Volumes/Ext"
+assert_not_called "a network volume is never asked" "$d/calls" \
+  "tmutil listlocalsnapshots /Volumes/NAS"
+assert_not_called "nor is the boot volume again under its /Volumes symlink" "$d/calls" \
+  "tmutil listlocalsnapshots /Volumes/Macintosh HD"
+assert_contains "every volume's snapshots are counted" "$out" "4 local snapshot(s) on 2 volumes:"
+assert_contains "the second volume is named" "$out" "/Volumes/Ext"
+assert_contains "a snapshot only the second volume has is listed" "$out" "2026-09-08-120000"
+assert_contains "listing every volume is not a warning" "$out" "warn steps:  0"
+rm -rf /Volumes "$d"
+
+# tmutil deletes by date, not by volume, so a date two volumes share is asked
+# for once: asking again for what tmutil has already taken off both would fail
+# and report a working run as a failed one.
+d="$(snap_vol_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "thinning every volume succeeds" "0" "$rc"
+assert_called "the date only the boot volume has is deleted" "$d/calls" \
+  "sudo tmutil deletelocalsnapshots 2026-09-01-101010"
+assert_called "the date only the second volume has is deleted too" "$d/calls" \
+  "sudo tmutil deletelocalsnapshots 2026-09-08-120000"
+assert_eq "a date held by both volumes is asked for once" "1" \
+  "$(grep -c 'sudo tmutil deletelocalsnapshots 2026-09-07-030000' "$d/calls")"
+assert_contains "the verdict counts every volume" "$out" "4 local snapshot(s) thinned"
+rm -rf /Volumes "$d"
+
+# The floor: nothing deleted is nothing thinned, and that is measured by
+# listing the volumes again rather than inferred from tmutil's exit status.
+d="$(snap_vol_env)"; : > "$d/calls"
+out="$(SNAPSHOTS=1 TM_DELETE_FAIL=1 run_sf "$d" --yes --only snapshots --thin-snapshots)"; rc=$?
+assert_eq "every deletion failing across volumes is a warned run" "0" "$rc"
+assert_contains "the verdict says kept when nothing was deleted" "$out" "4 local snapshot(s) kept"
+assert_not_contains "a run that deleted nothing does not claim to have thinned across volumes" \
+  "$out" "snapshot(s) thinned"
+rm -rf /Volumes "$d"
 
 # ===========================================================================
 section "user-logs (files older than 30 days; directories, DiagnosticReports and stay_fresh's own kept)"
@@ -2284,6 +2382,25 @@ assert_exists "the volume's own trash is left alone too" /Volumes/USB/.Trashes/5
 assert_gone   "~/.Trash is still emptied without a uid" "$d/home/.Trash/own"
 rm -rf /Volumes "$d"
 
+# A volume's .Trashes/<uid> can be relocated the same way ~/.Trash can, and the
+# probe that decides whether the volume is worth opening ran without the
+# trailing slash too: the volume was passed over as empty and its Trash kept
+# every byte.
+d="$(new_env)"
+mkdir -p /Volumes/Ext/.Trashes "$d/vol-trash/folder"
+bytes_file "$d/vol-trash/old" 128
+: > "$d/vol-trash/folder/nested"
+ln -s "$d/vol-trash" /Volumes/Ext/.Trashes/501
+mkbin "$d/bin/mount" 'echo "/dev/disk3s1s1 on / (apfs, sealed, local, journaled)"' \
+  'echo "/dev/disk5s1 on /Volumes/Ext (apfs, local, nodev, nosuid, journaled)"'
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_eq "a relocated volume trash does not fail the run" "0" "$rc"
+assert_contains "the volume is not passed over as empty" "$out" "K from Trash on Ext"
+assert_gone   "the relocated volume trash is emptied" "$d/vol-trash/old"
+assert_gone   "nested entries too"                    "$d/vol-trash/folder"
+assert_exists "the relocation target survives"        "$d/vol-trash"
+rm -rf /Volumes "$d"
+
 # ===========================================================================
 section "df unreadable (the summary reports no measurement rather than a wrong one)"
 # An empty free-space reading used to flow into every later size calculation,
@@ -2301,9 +2418,11 @@ mkbin "$d/bin/df" 'exit 1'
 out="$(run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "an unreadable df does not fail the run" "0" "$rc"
 assert_contains "the unreadable df is reported once" "$out" \
-  "could not read free space on / — this run will report no reclaimed total"
-assert_contains "the preflight still prints a number" "$out" "disk free on /: 0B"
-assert_contains "the summary declines to invent a figure" "$out" "disk free:   unknown (df could not read /)"
+  "could not read free space on the volume holding ~ — this run will report no reclaimed total"
+assert_contains "the preflight still prints a number" "$out" \
+  "disk free on the volume holding ~: 0B"
+assert_contains "the summary declines to invent a figure" "$out" \
+  "disk free:   unknown (df could not read the volume holding ~)"
 assert_not_contains "and does not present the absence as a measurement" "$out" "0B reclaimed"
 assert_not_contains "no printf complains about an empty number" "$out" "invalid number"
 assert_contains "the run still reaches its verdict" "$out" "stay_fresh OK"
@@ -2313,6 +2432,31 @@ if python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert isinstanc
 else
   err "last-run.json reclaimed_bytes is not a number"
 fi
+rm -rf "$d"
+
+# Which volume the reading is taken on. Since Catalina / is the sealed System
+# volume and every byte this script deletes is on the Data volume, where $HOME
+# is: the two usually share one APFS container, so a figure read off / was
+# right by construction rather than by measurement, and wrong for a $HOME on
+# another volume or an external disk. The fake df answers per path so the
+# assertion can tell which one was asked about.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" 'echo "df $*" >> "$CALLS"' \
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
+  'p=/' \
+  'for a in "$@"; do case "$a" in -*) continue ;; *) p="$a" ;; esac; done' \
+  'case "$p" in' \
+  '  /) echo "/dev/disk3s1s1 1000000 900000 100000 90% /" ;;' \
+  '  *) echo "/dev/disk3s5 4000000 3000000 1000000 75% /System/Volumes/Data" ;;' \
+  'esac'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "the run succeeds" "0" "$rc"
+assert_called "df is asked about \$HOME" "$d/calls" "df -k $d/home"
+if grep -qx -- "df -k /" "$d/calls"; then
+  err "the sealed System volume is not measured (df -k / was still run)"
+else ok "the sealed System volume is not measured"; fi
+assert_contains "the reading is the one from \$HOME's volume" "$out" "976.56M"
+assert_not_contains "not the sealed System volume's" "$out" "97.66M"
 rm -rf "$d"
 
 # ===========================================================================

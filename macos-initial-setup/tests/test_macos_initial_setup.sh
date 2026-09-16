@@ -580,6 +580,51 @@ printf '%s\n' '#!/bin/sh' \
   'exit 0' > "$fake_macos/bin/defaults"
 chmod +x "$fake_macos/bin/"*
 
+# --- the trailing slash that empties a relocated Trash ---------------------
+# stay_fresh.sh empties a Trash with `find "$dir/" -mindepth 1 -delete` and
+# measures it with `du -sk "$dir/"`. The slash is the whole of that fix: a
+# Trash relocated to another disk is a symlink, `[[ -d ]]` follows it, and
+# neither find -P nor du resolves a symlinked start point without it — so the
+# step used to walk nothing, delete nothing and report "freed 0B" on the
+# machine most likely to need the space.
+#
+# The step itself is covered by the container-only steps suite. The primitive
+# is asserted here because this is the file that also runs on macOS, where
+# find and du are BSD and not GNU, and nothing else in CI would notice if the
+# two disagreed about a trailing slash.
+slash_d="$(mktemp -d)"
+mkdir -p "$slash_d/target/sub" "$slash_d/home"
+: > "$slash_d/target/file"
+: > "$slash_d/target/.hidden"
+: > "$slash_d/target/sub/nested"
+dd if=/dev/urandom of="$slash_d/target/big" bs=1024 count=256 2>/dev/null
+ln -s "$slash_d/target" "$slash_d/home/.Trash"
+assert_eq "find does not descend into a symlinked start point" \
+  "0" "$(find "$slash_d/home/.Trash" -mindepth 1 | wc -l | tr -d ' ')"
+assert_eq "a trailing slash makes it descend" \
+  "5" "$(find "$slash_d/home/.Trash/" -mindepth 1 | wc -l | tr -d ' ')"
+slash_kb="$(du -sk "$slash_d/home/.Trash" | awk 'NR == 1 { print $1 }')"
+if (( slash_kb < 256 )); then
+  ok "du does not measure through a symlink either"
+else
+  err "du measured through a symlink without a slash ($slash_kb KB)"
+fi
+slash_kb="$(du -sk "$slash_d/home/.Trash/" | awk 'NR == 1 { print $1 }')"
+if (( slash_kb >= 256 )); then
+  ok "with a trailing slash it measures the relocated contents"
+else
+  err "du with a slash still measured the link ($slash_kb KB)"
+fi
+find "$slash_d/home/.Trash/" -mindepth 1 -delete
+assert_eq "the slashed form empties the relocation" \
+  "0" "$(find "$slash_d/home/.Trash/" -mindepth 1 | wc -l | tr -d ' ')"
+if [[ -d "$slash_d/target" && -L "$slash_d/home/.Trash" ]]; then
+  ok "and leaves the relocation and the link in place"
+else
+  err "the slashed form removed the relocation or the link"
+fi
+rm -rf "$slash_d"
+
 # --- krew: "already newest" is not a failure -------------------------------
 # `kubectl krew upgrade` exits non-zero when a plugin is already at the newest
 # version. On a current machine that is the answer for every plugin, so the

@@ -589,7 +589,9 @@ In the order they run:
     reported and does not count against the step either, for the same reason.
     Not probed under `--dry-run`: the catalogue scan is a system action that
     takes time on the network.
-22. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
+22. List **local Time Machine snapshots** on `/` and on every mounted local
+    volume (`tmutil listlocalsnapshots <mount>`, one call per volume; a network
+    share is skipped by its type before the path is touched).
     APFS keeps every block a snapshot references, so a run can free gigabytes
     and `df` still not move; macOS thins the snapshots on its own only under
     disk pressure. Listing is read-only. `--thin-snapshots` deletes them with
