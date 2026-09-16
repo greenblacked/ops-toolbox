@@ -37,3 +37,18 @@
   which does not treat a heredoc body inside `$( )` as opaque — read it as an
   unterminated quote and followed it to end of file. The suite then died at the
   first script it ran, reporting the shell's exit code and nothing else.
+- CI gained the check that would have caught all of this: a
+  `Parse with Apple Bash 3.2` step on `macos-15`, the only runner with a real
+  `/bin/bash` 3.2. It calls that interpreter by absolute path — a bare `bash`
+  there is Homebrew's 5, which is the whole problem — over every tracked script
+  in the directories `CONTRIBUTING.md` requires to be 3.2-clean, with the same
+  `*/tests/*` exclusion `check_conventions.sh` applies to `BASH32_DIRS`. It is
+  gated on its own `bash32` path filter rather than by widening `native_macos`,
+  because `git/` and `linux/` need the parse check and do not need the macOS
+  suites: seconds instead of seven minutes. Before this, a construct Bash 3.2
+  refuses had no job anywhere that could see it — `Lint` runs `bash -n` on
+  Ubuntu, the static check greps for keywords rather than parsing, and the one
+  job with Apple Bash did not even run for a change to `git/` or `linux/`. Two
+  floors: the step fails if `/bin/bash` is no longer 3.x, and fails if its
+  globs match no file, because either would leave it passing while checking
+  nothing.

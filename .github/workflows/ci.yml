@@ -118,6 +118,7 @@ jobs:
       # not exported: the Docker Test / macos job reads its verdict from the
       # matrix entry, and this job was its only other consumer.
       native_macos: ${{ steps.filter.outputs.native_macos }}
+      bash32: ${{ steps.filter.outputs.bash32 }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -219,6 +220,22 @@ jobs:
           # "a dry run writes nothing" section compared "" to "" and passed for
           # every script it checked.
           emit native_macos  '^(macos-initial-setup/|test-env/|k8s-toolbox/|dotfiles/|run-tests\.sh$)'
+
+          # CONTRIBUTING.md requires git/, macos-initial-setup/ and linux/ to
+          # run under the Bash 3.2 that /bin/bash still is on every Mac;
+          # check_conventions.sh adds dotfiles/ to the same set. Nothing in CI
+          # could enforce it. Lint's `bash -n` runs on ubuntu-24.04, where bash
+          # is 5, and a parse error is a property of the parser rather than of
+          # any keyword the static check greps for - so a construct 3.2 refuses
+          # rode through every job green. Two of these have now reached CI: a
+          # `case` inside $( ), and an apostrophe inside a heredoc inside $( ),
+          # which 3.2 reads as an unterminated quote and follows to end of file.
+          #
+          # This is deliberately its own filter and not a widening of
+          # native_macos: git/ and linux/ do not need the macOS suites, which
+          # cost seven minutes, and they do need a parse check that costs
+          # seconds on the only runner that has the right interpreter.
+          emit bash32        '^(git/|macos-initial-setup/|linux/|dotfiles/)'
 
           # Suites come from the aggregator's own table, not a copy of it
           # here. `run-tests.sh --list` prints name, package directory and
@@ -751,9 +768,68 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     steps:
+      # Checked out for either gate: the parse check below runs on changes to
+      # git/ and linux/, which the macOS suites deliberately ignore.
       - name: Check out repository
-        if: needs.changes.outputs.native_macos == 'true'
+        if: >-
+          needs.changes.outputs.native_macos == 'true' ||
+          needs.changes.outputs.bash32 == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      # First, because it takes seconds and everything below it takes minutes.
+      #
+      # /bin/bash by absolute path, never `bash`. This runner has Homebrew's
+      # Bash 5 ahead of /bin on PATH, so a bare `bash` is the one interpreter
+      # that cannot answer the question being asked. That is not a hypothetical
+      # either: the suite's own `bash -n` loop resolved through PATH for exactly
+      # this reason and passed a file 3.2 refuses.
+      - name: Parse with Apple Bash 3.2
+        if: needs.changes.outputs.bash32 == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')"
+          echo "/bin/bash is $ver"
+          # A floor, like every check in this repository carries. If Apple ever
+          # ships a newer /bin/bash, this step keeps passing while checking
+          # nothing anyone cares about, and the first thing to notice would be
+          # a user's Mac. Fail loudly instead and let somebody retire the rule.
+          case "$ver" in
+            3.*) ;;
+            *) echo "::error::/bin/bash is $ver, not 3.x — this check no longer tests what it claims to"; exit 1 ;;
+          esac
+          # The same directories CONTRIBUTING.md names and check_conventions.sh
+          # lists in BASH32_DIRS, and the same */tests/* exclusion that check
+          # applies - so this enforces a rule the repository already states
+          # rather than a wider one invented here. Losing the suites costs
+          # nothing: macos native already runs them under /bin/bash, so a parse
+          # error in one fails this job anyway, and loudly.
+          # Tracked files only, so an untracked scratch copy cannot fail a build.
+          n=0
+          failed=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in */tests/*) continue ;; esac
+            n=$(( n + 1 ))
+            if ! /bin/bash -n "$f"; then
+              echo "::error file=$f::does not parse under Apple Bash $ver"
+              failed=$(( failed + 1 ))
+            fi
+          done < <(git ls-files 'git/*.sh' 'macos-initial-setup/*.sh' \
+                     'macos-initial-setup/**/*.sh' 'linux/*.sh' 'linux/**/*.sh' \
+                     'dotfiles/*.sh' 'dotfiles/**/*.sh')
+          # The second floor: a glob that stops matching is a check that stops
+          # checking, and it would do so silently.
+          if (( n == 0 )); then
+            echo "::error::the Bash 3.2 parse check inspected no file — its globs have stopped matching"
+            exit 1
+          fi
+          echo "parsed $n file(s) under Apple Bash $ver; $failed refused"
+          (( failed == 0 ))
+          {
+            printf '### Apple Bash %s parse\n\n' "$ver"
+            printf '%s file(s) parsed, %s refused\n' "$n" "$failed"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install ShellCheck
         if: needs.changes.outputs.native_macos == 'true'
