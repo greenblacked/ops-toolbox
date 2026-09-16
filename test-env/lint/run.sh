@@ -327,16 +327,19 @@ for dot in "${DOTFILES[@]}"; do
   fi
 done
 if (( ${#BASH_SOURCES[@]} == 0 )); then
-  printf 'the Bash source list is empty — the glob matched nothing, so bash -n and ShellCheck would both pass having read no file\n' >&2
+  printf 'the Bash source list is empty — the glob matched nothing, so the syntax check and ShellCheck would both pass having read no file\n' >&2
   collect_ok=0
 fi
 (( collect_ok )) || rc=1
 printf 'collected %d bash sources (%d of them dotfiles)\n' "${#BASH_SOURCES[@]}" "${#DOTFILES[@]}"
 
-# --- bash -n --------------------------------------------------------------
-printf '\n--- bash -n ---\n'
+# --- syntax ---------------------------------------------------------------
+# "${BASH:-bash}", not a bare bash: the interpreter running this suite, which
+# is what the rest of the repository's suites use and what the static suite
+# checks for. In the Lint job that is the runner's bash either way.
+printf '\n--- syntax ("bash -n") ---\n'
 if (( collect_ok )); then
-  if bash -n "${BASH_SOURCES[@]}"; then
+  if "${BASH:-bash}" -n "${BASH_SOURCES[@]}"; then
     pass "bash -n over ${#BASH_SOURCES[@]} scripts"
   else
     fail "bash -n"
