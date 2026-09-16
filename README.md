@@ -259,6 +259,15 @@ repositories and local bare remotes:
   that make `git remote -v` disagree with what git dials, and credential
   helpers — which accumulate across scopes and are emptied by a single blank
   value. Passwords in URLs are redacted before anything is printed. Read-only.
+- `git_ignore_doctor.py` — explains why a path is ignored, or why it stubbornly
+  is not. Asks git twice, with the index and without, so the commonest cause —
+  the file was committed before the rule existed, which makes the rule inert and
+  which `git check-ignore` reports as no match at all — is told apart from a
+  pattern that simply does not match. Names dead negations under an excluded
+  directory and prints the full ladder of lines that re-includes the file, since
+  git skips every directory on the way down and the one-line repair does
+  nothing. With no argument it sweeps the repository for tracked files an ignore
+  rule claims. Read-only.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.

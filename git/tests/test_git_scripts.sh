@@ -29,6 +29,7 @@ CLONE="$G/clone-repos.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
+IGNORE_DOCTOR="$G/git_ignore_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -196,6 +197,30 @@ section "help and validation"
 for f in "${sh_scripts[@]}"; do
   rel="${f#"$G/"}"
   if "$f" --help >/dev/null; then ok "$rel --help"; else err "$rel --help"; fi
+done
+
+# The doctors are discovered for the same reason the shell scripts above are:
+# they were named one by one further up, so the fourth one added arrived with
+# no --help smoke at all until this loop existed. Every doctor parses its
+# arguments with argparse, so --help is exit 0 and a usage line, and a doctor
+# that cannot even print that is broken before any diagnosis runs.
+py_doctors=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  py_doctors+=("$f")
+done < <(find "$G" -maxdepth 1 -name '*_doctor.py' -type f | sort)
+
+if (( ${#py_doctors[@]} == 0 )); then
+  echo "discovered no doctors under $G — discovery is broken" >&2
+  exit 1
+fi
+ok "discovered ${#py_doctors[@]} doctors under git/"
+for f in "${py_doctors[@]}"; do
+  rel="${f#"$G/"}"
+  out="$("$f" --help 2>&1)"
+  rc=$?
+  assert_eq "$rc" "0" "$rel --help -> exit 0"
+  assert_contains "$out" "usage:" "$rel --help prints usage"
 done
 
 repo="$(new_repo)"
@@ -810,6 +835,39 @@ else
   err "signing doctor --quiet returned unexpected exit $rc"
 fi
 assert_eq "$out" "" "signing doctor --quiet suppresses its report"
+
+# A fresh repository has no ignore rules, so the sweep finds nothing and the
+# verdict is healthy. Asserted before the failing case below so a doctor that
+# reports a problem for every repository cannot pass on the exit code alone.
+out="$(cd "$repo" && "$IGNORE_DOCTOR" --quiet 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ignore doctor --quiet is healthy in a repo with no rules"
+assert_eq "$out" "" "ignore doctor --quiet suppresses its report"
+
+# The trap the doctor exists for: a file committed before the rule that now
+# claims it. Ignore rules apply to untracked paths only, so the rule does
+# nothing while the file stays in the index, and `git check-ignore` says
+# nothing either because it skips tracked files by default. The file has to be
+# staged with -f, which is precisely how it gets committed in the first place.
+claimed_repo="$(new_repo)"
+printf 'secrets.txt\n' >"$claimed_repo/.gitignore"
+printf 'token\n' >"$claimed_repo/secrets.txt"
+git -C "$claimed_repo" add -f .gitignore secrets.txt
+git -C "$claimed_repo" commit -qm "rule and the file it fails to ignore" >/dev/null
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" --quiet 2>&1)"
+rc=$?
+assert_eq "$rc" "1" "ignore doctor --quiet reports a tracked file a rule claims"
+assert_eq "$out" "" "ignore doctor --quiet suppresses that report too"
+
+# The same repository, loud: the exit code above only says something is wrong,
+# and a verdict that cannot name the file is not a diagnosis.
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" 2>&1)"
+assert_contains "$out" "secrets.txt" "ignore doctor names the tracked file"
+assert_contains "$out" "git rm --cached" "ignore doctor prints the repair"
+
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" /etc 2>&1)"
+rc=$?
+assert_eq "$rc" "3" "ignore doctor rejects a path outside the repository -> exit 3"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
