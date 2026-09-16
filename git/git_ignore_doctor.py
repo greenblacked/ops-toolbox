@@ -85,7 +85,30 @@ def rel(root, path):
     shape with the home directory folded back to `~`.
     """
     inside = os.path.relpath(path, root)
-    return path if inside.startswith("..") else inside
+    return path if is_outside(inside) else inside
+
+
+def is_outside(relative):
+    """Whether a relpath leaves the repository.
+
+    `..` as a whole component, not a prefix: a tracked file named `..config`
+    has a relative path that starts with two dots and is inside.
+    """
+    return relative == ".." or relative.startswith("../")
+
+
+def recipe_base(source):
+    """The directory a rule in `source` is anchored to, repo-relative.
+
+    `.git/info/exclude` and a core.excludesFile are read as if they sat at the
+    repository root, so their base is the root - not `.git/info`, and not
+    wherever the global file lives. A recipe built from those directories is a
+    ladder of `../` that matches nothing.
+    """
+    base = os.path.dirname(source)
+    if os.path.isabs(base) or base in (".", ".git/info", os.path.join(".git", "info")):
+        return ""
+    return base
 
 
 def bulk_timeout(count):
@@ -100,6 +123,15 @@ def bulk_timeout(count):
     return max(15, min(600, 15 + count // 500))
 
 
+# The repository root once it is known; every git call after that runs there.
+# Paths are rewritten relative to the root, and git used to be run wherever the
+# doctor was started, so from a subdirectory `sub/secret.txt` was evaluated as
+# `sub/sub/secret.txt`, the no-argument sweep listed only the subtree, and the
+# check that exists to find a committed secret returned a clean exit for a
+# repository whose root held one.
+GIT_CWD = None
+
+
 def run(cmd, stdin=None, timeout=15):
     """Run a command, returning (rc, stdout, stderr). Never raises."""
     try:
@@ -108,6 +140,7 @@ def run(cmd, stdin=None, timeout=15):
             input=stdin,
             capture_output=True,
             timeout=timeout,
+            cwd=GIT_CWD,
         )
         return (
             p.returncode,
@@ -208,7 +241,9 @@ def classify_pattern(pattern):
         body = body[1:]
     dir_only = len(body) > 1 and body.endswith("/")
     core = body[:-1] if dir_only else body
-    anchored = "/" in core
+    # A leading `**/` is the one slash that means the opposite of anchoring:
+    # `**/logs` matches at every depth. It is the remainder that decides.
+    anchored = "/" in (core[3:] if core.startswith("**/") else core)
     return PatternShape(body, negated, dir_only, anchored, trailing_space)
 
 
@@ -317,9 +352,21 @@ def check_ignore(paths, no_index=False):
 
 
 def is_ignored(path):
-    """Whether git considers one path ignored, index rules and all."""
-    rc, _, _ = run(["git", "check-ignore", "-q", "--", path])
-    return rc == 0
+    """Whether a rule excludes one path: True, False, or None if git could not say.
+
+    `--no-index` because this asks about the rules, not the index: with index
+    matching a directory that holds any tracked file is never reported ignored,
+    so the excluded directory above a dead negation was never found. And a
+    non-zero exit other than 1 is git declining to answer - a timeout, a
+    corrupt repository - not a verdict; reading it as False silenced the whole
+    dead-negation diagnosis on exactly the runs that needed a second look.
+    """
+    rc, _, _ = run(["git", "check-ignore", "-q", "--no-index", "--", path])
+    if rc == 0:
+        return True
+    if rc == 1:
+        return False
+    return None
 
 
 def tracked_files():
@@ -358,7 +405,15 @@ def active_ignore_files(root, paths):
     question; listing every `.gitignore` in a large checkout would bury the two
     that matter.
     """
-    found = [os.path.join(root, ".git", "info", "exclude")]
+    # Asked of git, not assumed: in a linked worktree or a submodule `.git` is
+    # a file and info/exclude lives in the common directory, and the hard-coded
+    # path denied the file existed two lines above citing a rule from it.
+    rc, out, _ = run(["git", "rev-parse", "--git-path", "info/exclude"])
+    if rc == 0 and out.strip():
+        exclude = os.path.normpath(os.path.join(root, out.strip()))
+    else:
+        exclude = os.path.join(root, ".git", "info", "exclude")
+    found = [exclude]
     directories = {""}
     for path in paths:
         for parent in ancestors(path) + [""]:
@@ -424,7 +479,7 @@ def report_pattern_shape(record):
     """Say what the matched pattern actually means, where that is surprising."""
     shape = classify_pattern(record.pattern)
     if shape.anchored:
-        source_dir = os.path.dirname(record.source) or "the repository root"
+        source_dir = recipe_base(record.source) or "the repository root"
         info("a slash inside the pattern anchors it to %s; it does not match at "
              "other depths" % source_dir)
     if shape.dir_only:
@@ -491,7 +546,12 @@ def diagnose_path(path, rule, rule_no_index, all_rules):
 
     blocked_by = None
     for parent in ancestors(path):
-        if is_ignored(parent):
+        verdict = is_ignored(parent)
+        if verdict is None:
+            bad("git check-ignore could not answer for %s; whether a negation "
+                "below it is dead cannot be told" % parent)
+            return 1
+        if verdict:
             blocked_by = parent
             break
     if blocked_by is None:
@@ -512,7 +572,7 @@ def diagnose_path(path, rule, rule_no_index, all_rules):
     # so they are anchored the same way. Printing the negation as the user
     # typed it in some other ignore file would paste into a rule that points
     # somewhere else.
-    base = os.path.dirname(rule.source)
+    base = recipe_base(rule.source)
     exclude = os.path.relpath(blocked_by, base) if base else blocked_by
     keep = os.path.relpath(path, base) if base else path
     if exclude == ".":
@@ -561,15 +621,20 @@ def scan_tracked(root):
 
 
 def run_report(args):
+    global GIT_CWD
     root = repo_root()
     if root is None:
         bad("not inside a Git repository")
         return 2
+    GIT_CWD = root
 
     paths = []
     for given in args.path:
-        path = os.path.relpath(os.path.abspath(given), root)
-        if path.startswith(".."):
+        # realpath on the argument because git reports its physical toplevel:
+        # on a Mac /tmp is /private/tmp, and a repository under a symlinked
+        # ~/code was refused as outside itself.
+        path = os.path.relpath(os.path.realpath(given), root)
+        if is_outside(path):
             # Report what was typed: the relpath of an outside path is a stack
             # of `../` that names nothing the reader passed in.
             bad("%s is outside the repository at %s" % (given, shorten(root)))

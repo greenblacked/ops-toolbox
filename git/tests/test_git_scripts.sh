@@ -869,6 +869,65 @@ out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" /etc 2>&1)"
 rc=$?
 assert_eq "$rc" "3" "ignore doctor rejects a path outside the repository -> exit 3"
 
+# From a subdirectory. Every path the doctor hands git is rewritten relative
+# to the repository root, and git was run wherever the doctor was started, so
+# `cd sub && doctor secret.txt` asked about sub/sub/secret.txt, and the
+# no-argument sweep listed the subtree only: a clean exit from a package
+# directory of a repository whose root held a tracked, claimed file.
+cwd_repo="$(new_repo)"
+mkdir -p "$cwd_repo/sub"
+printf '/sub/secret.txt\n' >"$cwd_repo/.gitignore"
+printf 'token\n' >"$cwd_repo/sub/secret.txt"
+git -C "$cwd_repo" add -f .gitignore sub/secret.txt
+git -C "$cwd_repo" commit -qm "a claimed file under sub" >/dev/null
+(cd "$cwd_repo" && "$IGNORE_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "ignore doctor sweep from the root finds the claimed file"
+(cd "$cwd_repo/sub" && "$IGNORE_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "ignore doctor sweep from a subdirectory finds it too"
+out="$(cd "$cwd_repo/sub" && "$IGNORE_DOCTOR" secret.txt 2>&1)"
+assert_contains "$out" "git rm --cached" "ignore doctor from a subdirectory reads the path relative to the root"
+
+# Through a symlink, and a file whose name starts with two dots. The outside-
+# the-repository test compared an unresolved absolute path against git's
+# physical toplevel and refused anything reached through a symlink - /tmp on a
+# Mac, every repository under a symlinked ~/code - and also a tracked file
+# literally named ..config, whose relative path starts with two dots too.
+link_dir="$(mktemp -d /tmp/git-doctor-link.XXXXXX)"; rmdir "$link_dir"
+ln -s "$cwd_repo" "$link_dir"
+out="$(cd "$link_dir" && "$IGNORE_DOCTOR" "$link_dir/sub/secret.txt" 2>&1)"; rc=$?
+if [[ "$rc" -ne 3 ]]; then
+  ok "ignore doctor accepts a path reached through a symlink"
+else
+  err "ignore doctor refused a symlinked path as outside the repository: $out"
+fi
+printf 'x\n' >"$cwd_repo/..config"
+git -C "$cwd_repo" add -f -- ..config && git -C "$cwd_repo" commit -qm "a dotdot name" >/dev/null
+(cd "$cwd_repo" && "$IGNORE_DOCTOR" ..config >/dev/null 2>&1); rc=$?
+if [[ "$rc" -ne 3 ]]; then
+  ok "ignore doctor accepts a file named ..config"
+else
+  err "ignore doctor refused ..config as outside the repository"
+fi
+
+# A linked worktree, where .git is a file and info/exclude lives in the common
+# directory. The path was hard-coded as <root>/.git/info/exclude, so the doctor
+# denied the file existed two lines above citing a rule from it.
+wt_dir="$(mktemp -d /tmp/git-doctor-wt.XXXXXX)"; rmdir "$wt_dir"
+git -C "$cwd_repo" worktree add -q "$wt_dir" -b wt-branch 2>/dev/null
+printf 'wt-only.txt\n' >>"$cwd_repo/.git/info/exclude"
+printf 'w\n' >"$wt_dir/wt-only.txt"
+out="$(cd "$wt_dir" && "$IGNORE_DOCTOR" wt-only.txt 2>&1)"
+assert_contains "$out" "ignored by" "ignore doctor in a worktree sees the common exclude file's rule"
+assert_not_contains "$out" "no .git/info/exclude" "ignore doctor in a worktree does not deny the exclude file exists"
+
+# A leading **/ means every depth. It was reported as anchored, with a line
+# telling the reader it did not match elsewhere - the opposite of the truth.
+printf '**/logs\n' >"$cwd_repo/.gitignore"
+mkdir -p "$cwd_repo/a/b/logs" && printf 'l\n' >"$cwd_repo/a/b/logs/x"
+out="$(cd "$cwd_repo" && "$IGNORE_DOCTOR" a/b/logs/x 2>&1)"
+assert_contains "$out" "ignored by" "ignore doctor reports the **/ match"
+assert_not_contains "$out" "anchors it to" "ignore doctor does not call a leading **/ anchored"
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"

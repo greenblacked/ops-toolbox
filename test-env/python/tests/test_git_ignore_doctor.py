@@ -26,6 +26,29 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "git"))
 import git_ignore_doctor as doctor  # noqa: E402
 
 
+class PathTestCase(unittest.TestCase):
+    def test_dotdot_component_is_outside(self):
+        self.assertTrue(doctor.is_outside(".."))
+        self.assertTrue(doctor.is_outside("../x"))
+
+    def test_a_name_starting_with_two_dots_is_inside(self):
+        # A tracked file literally named ..config was refused as outside.
+        self.assertFalse(doctor.is_outside("..config"))
+        self.assertFalse(doctor.is_outside("sub/..config"))
+
+    def test_rel_keeps_a_dotdot_named_file(self):
+        self.assertEqual(doctor.rel("/r", "/r/..config"), "..config")
+
+    def test_recipe_base_of_the_exclude_file_is_the_root(self):
+        self.assertEqual(doctor.recipe_base(".git/info/exclude"), "")
+
+    def test_recipe_base_of_a_global_excludes_file_is_the_root(self):
+        self.assertEqual(doctor.recipe_base("/home/u/.config/git/ignore"), "")
+
+    def test_recipe_base_of_a_nested_ignore_file_is_its_directory(self):
+        self.assertEqual(doctor.recipe_base("sub/.gitignore"), "sub")
+
+
 class ParseCheckIgnoreTestCase(unittest.TestCase):
     def test_matching_record(self):
         data = ".gitignore\0001\000build/\000build/keep/note.txt\000"
@@ -97,6 +120,14 @@ class ClassifyPatternTestCase(unittest.TestCase):
         shape = doctor.classify_pattern("!build/keep/note.txt")
         self.assertTrue(shape.negated)
         self.assertEqual(shape.body, "build/keep/note.txt")
+
+    def test_leading_doublestar_does_not_anchor(self):
+        # `**/logs` matches at every depth; the doctor called it anchored and
+        # told the reader it did not match elsewhere.
+        self.assertFalse(doctor.classify_pattern("**/logs").anchored)
+
+    def test_doublestar_in_the_middle_still_anchors(self):
+        self.assertTrue(doctor.classify_pattern("a/**/b").anchored)
 
     def test_interior_slash_anchors(self):
         self.assertTrue(doctor.classify_pattern("src/build").anchored)
