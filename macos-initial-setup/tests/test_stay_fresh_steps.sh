@@ -2152,12 +2152,25 @@ rm -rf "$d"
 
 # ===========================================================================
 section "downloads (reported by default, removed only with --prune-downloads-days)"
+# The sizes are chosen so the total cannot depend on the filesystem under the
+# container. step_downloads totals with `du -sk`, which measures blocks on disk,
+# and `du -sk` of a directory counts the directory itself: one 4K block on ext4
+# and APFS, nothing at all on the overlayfs the tester usually runs on. With a
+# 2048K file beside a 64K one that difference decided the last digit — 2112K
+# reads as 2.06M and 2116K as 2.07M — so this assertion passed or failed
+# according to the host's Docker storage driver, and it was the expectation
+# that was wrong rather than the script.
+#
+# 2048K + 1024K lands on exactly 3.00M, and human_bytes prints %.2f, so the
+# directory's block costs 0.0039M and rounds away whether it is charged or not.
+# The directory is still here, and still smaller than the file beside it, so
+# "counted recursively" and "largest named first" are both still asserted.
 dl_env() {
   local d; d="$(new_env)"
   local dl="$d/home/Downloads"
   mkdir -p "$dl/old-project" "$dl/fresh-project"
-  bytes_file "$dl/installer.dmg" 2048;   touch -d '120 days ago' "$dl/installer.dmg"
-  bytes_file "$dl/old-project/a.txt" 64; touch -d '120 days ago' "$dl/old-project/a.txt" "$dl/old-project"
+  bytes_file "$dl/installer.dmg" 2048;     touch -d '120 days ago' "$dl/installer.dmg"
+  bytes_file "$dl/old-project/a.txt" 1024; touch -d '120 days ago' "$dl/old-project/a.txt" "$dl/old-project"
   bytes_file "$dl/recent.zip" 512
   : > "$dl/.DS_Store";                    touch -d '400 days ago' "$dl/.DS_Store"
   printf '%s' "$d"
@@ -2165,7 +2178,7 @@ dl_env() {
 d="$(dl_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only downloads)"; rc=$?
 assert_eq "downloads step succeeds" "0" "$rc"
-assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: 2.07M"
+assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: 3.00M"
 assert_contains "the largest old entry is named first" "$(grep -A1 'untouched for 90 days' <<<"$out")" "installer.dmg"
 assert_contains "the report says how to remove them" "$out" "--prune-downloads-days 90 removes them"
 assert_exists "the report removes nothing" "$d/home/Downloads/installer.dmg"
