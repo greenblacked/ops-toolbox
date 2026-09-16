@@ -9,6 +9,11 @@ what happened.
 There is no formal response window — this is a personal collection of helper
 scripts, not a product.
 
+A tag, when there is one, is a snapshot of the tree on the day it was cut. It
+is not a supported release: there is no backport branch, and a fix lands on
+`master` and waits for the next tag. Run the tag if you want a fixed set of
+scripts to copy from; track `master` if you want the fixes.
+
 ## What matters most here
 
 These scripts run with real privileges on real machines. The failure modes worth

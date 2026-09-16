@@ -874,6 +874,11 @@ covered from that moment on. The checklist for a new script, including the two
 documentation entries it is not finished without, is
 [in `CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-script).
 
+[`ROADMAP.md`](ROADMAP.md) is the working order: what is true about the tree
+today, what is still broken, and the things deliberately not being done. Read it
+before opening a pull request that adds a script, so the work lands in the order
+the defects do.
+
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in
 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md), and what changed when in
