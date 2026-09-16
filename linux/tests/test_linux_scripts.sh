@@ -92,7 +92,10 @@ echo "=== distro: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '\"') (e
 
 # --- syntax ---
 for f in "${scripts[@]}" "$L/bash_aliases.sh"; do
-  if bash -n "$f"; then ok "bash -n ${f#"$REPO_ROOT/"}"; else err "bash -n ${f#"$REPO_ROOT/"}"; fi
+  # "${BASH:-bash}", not "bash": a bare `bash` resolves through PATH rather
+  # than naming the shell running this file. See the same note in
+  # git/tests/test_git_scripts.sh — linux/ is a Bash 3.2 package too.
+  if "${BASH:-bash}" -n "$f"; then ok "bash -n ${f#"$REPO_ROOT/"}"; else err "bash -n ${f#"$REPO_ROOT/"}"; fi
 done
 
 # --- help contract, before any preflight ---

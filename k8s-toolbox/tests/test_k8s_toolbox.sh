@@ -79,11 +79,16 @@ done
 # --------------------------------------------------------------------------
 head_ "syntax"
 for f in "${scripts[@]}"; do
-  if bash -n "$f" 2>/dev/null; then
+  # "${BASH:-bash}", not "bash". This is the suite that most needs it: CI runs
+  # `./run-tests.sh static k8s dotfiles` on macos-15 under Apple's /bin/bash,
+  # and a bare `bash` there is Homebrew's Bash 5 ahead of /bin on PATH — so the
+  # syntax check would be asking a different interpreter than the one running
+  # every other assertion in this file.
+  if "${BASH:-bash}" -n "$f" 2>/dev/null; then
     ok "bash -n ${f##*/}"
   else
     err "bash -n ${f##*/}"
-    bash -n "$f"
+    "${BASH:-bash}" -n "$f"
   fi
 done
 

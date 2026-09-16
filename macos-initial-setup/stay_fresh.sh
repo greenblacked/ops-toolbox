@@ -3123,14 +3123,26 @@ step_downloads() {
   local days="${PRUNE_DOWNLOADS_DAYS:-$DOWNLOADS_OLD_DAYS}"
   local -a old=()
   local scan_out p
+  # warn, not warn_step, in both failures below. This step reports; the
+  # LaunchAgent runs --fail-on-warn, so a warn_step here makes a missing
+  # scratch directory or an unreadable ~/Downloads a red daily verdict on a
+  # machine with nothing wrong, which is the thing the comment above warn_step
+  # asks not to do. Nothing is lost: a prune that fails is counted by
+  # clear_paths, which raises warn_step of its own.
   scan_out="$(scratch_file)" || {
-    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — Downloads scan skipped"
+    warn "no scratch space in $LOG_DIR or $STATE_DIR — Downloads scan skipped"
     return 0
   }
   if find "$dl" -mindepth 1 -maxdepth 1 ! -name '.*' -mtime +"$days" -print0 >"$scan_out" 2>>"$LOG_SINK"; then
     while IFS= read -r -d '' p; do old+=("$p"); done <"$scan_out"
   else
-    warn_step "could not scan $dl"
+    # Returning here rather than falling through. A scan that failed has not
+    # found nothing: the count below would read zero entries and print
+    # "nothing in ~/Downloads untouched for N days", which is a probe that
+    # could not answer being reported as an answer.
+    warn "could not scan $dl — this run does not know what is in ~/Downloads"
+    rm -f "$scan_out"
+    return 0
   fi
   rm -f "$scan_out"
   DOWNLOADS_OLD=${#old[@]}
@@ -3337,7 +3349,7 @@ step_brew() {
   # after an interrupted brew. A lock older than five minutes with no git
   # process running is stale and is removed; a fresh one, or one with git
   # alive, is left alone and named.
-  local brew_repo brew_lock log_mark
+  local brew_repo brew_lock log_mark log_mark_ok
   brew_repo="$(brew --repository 2>/dev/null)"
   brew_lock="${brew_repo:+$brew_repo/.git/index.lock}"
   if [[ -n "$brew_repo" && -e "$brew_lock" ]]; then
@@ -3355,8 +3367,25 @@ step_brew() {
   # Every line counts, blank ones included: tail -n +N below counts them all,
   # and a mark taken with grep -c . fell short by the blank lines docker and
   # the cache sweeps had written, so the reads started inside an earlier step.
+  #
+  # A mark that could not be taken is not a mark of 0. `wc -l < "$LOG_FILE"`
+  # fails whenever the log is /dev/null-ed, unreadable, or wc itself is
+  # unusable, and the old fallback to 0 aimed every reader below at line 1 of
+  # the log - which is to say at the whole run. The counting readers survive
+  # that (they match brew's own output shapes, and nothing else writes
+  # "==> Upgrading"); the git-lock detector does not, because "index.lock" is
+  # ordinary text that an earlier step can log, and it raises warn_step, which
+  # the LaunchAgent's --fail-on-warn turns into a red daily run. So the mark
+  # carries whether it is real, and the detector below refuses to guess.
   log_mark=0
-  (( DRY_RUN )) || log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)"
+  log_mark_ok=0
+  if (( DRY_RUN == 0 )); then
+    log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ')"
+    case "$log_mark" in
+      '' | *[!0-9]*) log_mark=0 ;;
+      *)             log_mark_ok=1 ;;
+    esac
+  fi
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
   # A here-string, not `tail | grep -q`, and this is the one of the two with a
   # plausible path to the 128 KB cliff described above: the reader only stops
@@ -3367,10 +3396,18 @@ step_brew() {
   # this stays under the cliff is a property of the user's setup rather than of
   # this code. Not worth leaving to that.
   if (( DRY_RUN == 0 )); then
-    local since_mark
-    since_mark="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null || true)"
-    if grep -q -e 'index.lock' -e 'could not detach HEAD' <<<"$since_mark"; then
-      warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+    if (( log_mark_ok == 0 )); then
+      # info, not warn_step: the taps may well have refreshed, and a report
+      # that could not be made is not a fault of the machine. Said out loud
+      # all the same, so a run where this detector was silent cannot be read
+      # as a run where it found nothing.
+      info "could not read the log position before 'brew update' — not checking whether the taps refreshed"
+    else
+      local since_mark
+      since_mark="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null || true)"
+      if grep -q -e 'index.lock' -e 'could not detach HEAD' <<<"$since_mark"; then
+        warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+      fi
     fi
   fi
   # Keep formulae and casks separate: generic `brew upgrade` considers both,

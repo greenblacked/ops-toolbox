@@ -637,7 +637,7 @@ assert_called "--prune-docker-volumes runs volume prune -f" "$d/calls" \
 rm -rf "$d"
 
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
-DOCKER_ENDPOINT="tcp://build-farm.internal:2375" out="$(run_sf "$d" --yes --only docker)"; rc=$?
+out="$(DOCKER_ENDPOINT="tcp://build-farm.internal:2375" run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "a remote docker context does not fail the run" "0" "$rc"
 assert_contains "a remote docker context is refused" "$out" "points to non-local host"
 assert_not_called "nothing is pruned on a remote context" "$d/calls" "prune"
@@ -820,6 +820,67 @@ assert_contains "the fresh lock is named with the remedy" "$out" "Homebrew git l
 assert_contains "an update that could not refresh the taps is reported" "$out" \
   "brew update did not refresh the taps"
 assert_contains "the blocked update is accounted a warning" "$out" "warn steps:  1"
+rm -rf "$d"
+
+# The tap detector reads the log from a mark taken just before `brew update`.
+# The mark is `wc -l < "$LOG_FILE"`, and a wc that cannot answer used to send
+# it to 0 — so the reader started at line 1 and every earlier step's output
+# was attributed to brew. An "index.lock" written by the docker step ahead of
+# it then produced "brew update did not refresh the taps" on a machine whose
+# taps refreshed perfectly, and --fail-on-warn turned the daily run red for it.
+# A mark that cannot be taken is not a mark of 0: the detector is skipped and
+# the run says so.
+lost_mark_env() {
+  local d; d="$(brew_lock_env)"
+  # An earlier step that merely mentions index.lock. docker runs before brew,
+  # and run_cmd tees its output into the same log the detector reads.
+  mkbin "$d/bin/docker" 'echo "docker $*" >> "$CALLS"' \
+                        'case "${1:-}" in' \
+                        '  info) exit 0 ;;' \
+                        '  context)' \
+                        '    case "${2:-}" in' \
+                        '      show) echo default ;;' \
+                        '      inspect) echo "$DOCKER_ENDPOINT" ;;' \
+                        '    esac' \
+                        '    exit 0 ;;' \
+                        '  system) printf "Images\t1.5GB\n"; exit 0 ;;' \
+                        '  container) echo "fatal: Unable to create index.lock: File exists" ;;' \
+                        'esac' \
+                        'exit 0'
+  printf '%s' "$d"
+}
+# DOCKER_ENDPOINT is pinned on the run_sf call itself, not left to the default
+# in run_sf. The docker section above writes
+# `DOCKER_ENDPOINT=tcp://... out="$(run_sf ...)"`, which is two assignments
+# rather than a prefixed command — exactly the hazard run_sf's own comment
+# describes — so that value is still set in this shell when these tests run,
+# and the docker step here refused a "remote" context until it was pinned.
+#
+# Control: the same fixture with a working wc. The mark lands after docker, so
+# its index.lock is behind the reader and nothing warns. This is what makes the
+# assertion below about the broken wc mean anything — the only difference
+# between the two runs is whether the mark could be taken.
+d="$(lost_mark_env)"; : > "$d/calls"
+out="$(DOCKER_ENDPOINT=unix:///var/run/docker.sock \
+  BREW_REPO="$d/brewrepo" run_sf "$d" --yes --only docker,brew)"; rc=$?
+assert_eq "the lost-mark fixture succeeds with a working wc" "0" "$rc"
+assert_called "the earlier step really ran" "$d/calls" "docker container prune"
+assert_not_contains "an index.lock before the mark is not brew's" "$out" \
+  "did not refresh the taps"
+assert_contains "and the control run carries no warning" "$out" "warn steps:  0"
+rm -rf "$d"
+
+# The same run with a wc that cannot count lines.
+d="$(lost_mark_env)"; : > "$d/calls"
+mkbin "$d/bin/wc" 'case "${1:-}" in -l) exit 1 ;; esac' 'exec /usr/bin/wc "$@"'
+out="$(DOCKER_ENDPOINT=unix:///var/run/docker.sock \
+  BREW_REPO="$d/brewrepo" run_sf "$d" --yes --only docker,brew)"; rc=$?
+assert_eq "brew survives a mark that cannot be taken" "0" "$rc"
+assert_not_contains "an unreadable mark does not invent a tap warning" "$out" \
+  "did not refresh the taps"
+assert_contains "the skipped detector says what it could not do" "$out" \
+  "not checking whether the taps refreshed"
+assert_contains "a skipped detector is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
 # ===========================================================================
