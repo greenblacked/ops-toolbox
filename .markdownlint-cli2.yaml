@@ -7,3 +7,9 @@ config:
 
 ignores:
   - '**/.git/**'
+
+# Honour .gitignore, so the glob above sees the same files here as in CI's
+# clean checkout. Without it, an ignored directory such as a coding tool's
+# worktree copies is linted too, and a local run can fail on a file that is
+# not in the tree it claims to lint.
+gitignore: true

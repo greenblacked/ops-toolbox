@@ -564,9 +564,10 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          ~/.cache and ~/Downloads (slow on a full disk)
 
 ${C_BOLD}Notes:${C_RESET}
-  Snapshots: macOS keeps local Time Machine snapshots on the boot volume and
-  purges them itself only under disk pressure, so a run can free gigabytes and
-  df still not move. The step names them; --thin-snapshots deletes them with
+  Snapshots: macOS keeps local Time Machine snapshots on every local volume
+  and purges them itself only under disk pressure, so a run can free gigabytes
+  and df still not move. The step lists each mounted local volume and names
+  what it holds; --thin-snapshots deletes them with
   'tmutil deletelocalsnapshots'. Nothing on the backup disk is touched.
 
   Notifications: the Telegram bot token and chat id are read from
@@ -795,6 +796,18 @@ case "$NOTIFY_WHEN" in
   always|warn|fail) ;;
   *) err "--notify-when must be always, warn or fail (got: $NOTIFY_WHEN)"; exit 3 ;;
 esac
+# auto: a banner is the only way a scheduled run gets seen; at a terminal the
+# summary is already on screen.
+#
+# Decided here rather than in preflight, where it used to live. Every guard
+# between here and there can exit 2 - not macOS, running as root, no terminal
+# without --yes, another run holding the lock - and notify_fatal() below has to
+# know which channels to use by then. Only the decision moved; the
+# NOTIFY_CHANNELS string and the line that announces it stay in preflight, so
+# the order of what preflight prints is unchanged.
+if (( NOTIFY_AUTO )) && [[ ! -t 0 ]]; then
+  NOTIFY_MACOS=1
+fi
 [[ "$NOTIFY_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || {
   err "STAY_FRESH_NOTIFY_TIMEOUT must be a positive whole number of seconds (got: $NOTIFY_TIMEOUT)"
   exit 3
@@ -916,13 +929,22 @@ human_bytes() {
   fi
 }
 
-# Disk free in bytes on /. Always prints an integer; returns 1 when df could
-# not be read, so the caller can say so once rather than passing the empty
-# string into every later size calculation.
+# Disk free in bytes on the volume holding a path. Always prints an integer;
+# returns 1 when df could not be read, so the caller can say so once rather
+# than passing the empty string into every later size calculation.
+#
+# The path is the argument and not /. Since Catalina / is the sealed System
+# volume; every byte this script deletes is on the Data volume, where $HOME
+# is. The two usually share one APFS container, so a reading taken on / was
+# right by construction rather than by measurement — and wrong for a $HOME on
+# another volume, another container, or an external disk, which is exactly the
+# machine whose owner is watching the number. An empty path is not silently
+# read as /: that would be the old bug with an extra step.
 disk_free_bytes() {
-  local kb
+  local kb path="${1:-}"
+  [[ -n "$path" ]] || { printf '0'; return 1; }
   # df -k prints 1024-byte blocks
-  kb="$(df -k / 2>/dev/null | awk 'NR==2 { print $4 }')"
+  kb="$(df -k "$path" 2>/dev/null | awk 'NR==2 { print $4 }')"
   if [[ "$kb" =~ ^[0-9]+$ ]]; then
     printf '%s' "$(( kb * 1024 ))"
     return 0
@@ -1634,6 +1656,37 @@ notify_slack() {
   return 0
 }
 
+# A run that never got as far as doing any work still has to say so.
+#
+# The end-of-run notification lives past the step loop, so every guard that
+# exits 2 before that point was silent on every channel: not macOS, running as
+# root, no terminal without --yes, HOME unset, and - the one that repeats -
+# another run holding the lock. A schedule that stops firing usefully looks
+# exactly like a schedule with nothing to do, which is the failure this whole
+# notification path exists to prevent.
+#
+# Deliberately not gated on --notify-when: warn and fail describe the verdict
+# of a run that ran, and a run that could not start has no verdict. --notify
+# none still silences it, because that is an instruction rather than a filter.
+#
+# macOS-only when HOME is unusable: the Telegram token and the Slack webhook
+# are read from the login Keychain or from a file under HOME, and the paths
+# that log the attempt are poisoned too. A banner needs neither.
+notify_fatal() {
+  local reason="$1"
+  (( DRY_RUN )) && return 0
+  local headline="stay_fresh FAILED: $reason"
+  local sent=0
+  if (( NOTIFY_MACOS )); then
+    notify_macos "$headline" "no work was done — run stay_fresh.sh by hand to see why" && sent=1
+  fi
+  if (( HOME_USABLE )); then
+    (( NOTIFY_TELEGRAM )) && { notify_telegram "$headline" && sent=1; }
+    (( NOTIFY_SLACK ))    && { notify_slack    "$headline" && sent=1; }
+  fi
+  return $(( 1 - sent ))
+}
+
 # Minimal JSON string quoting for last-run.json: backslash, double quote,
 # and the control characters that can appear in a step label.
 json_str() {
@@ -1700,6 +1753,7 @@ preflight_fail() {
     return 0
   fi
   err "$1"
+  notify_fatal "$1" || true
   exit 2
 }
 
@@ -1722,11 +1776,18 @@ ok "running as user: $(id -un)"
 # before log creation, sudo, package-manager probes, or any other side effect.
 if (( DRY_RUN == 0 && ASSUME_YES == 0 )) && [[ ! -t 0 ]]; then
   err "non-interactive execution requires --yes; refusing to make changes"
+  notify_fatal "non-interactive execution requires --yes" || true
   exit 2
 fi
 
 if (( DRY_RUN == 0 )); then
-  acquire_lock || exit 2
+  acquire_lock || {
+    # The commonest repeat offender: a lock whose pid is still alive is not
+    # stale, so acquire_lock correctly refuses - and every scheduled firing
+    # after it refused in silence.
+    notify_fatal "another run holds the lock, or it could not be acquired" || true
+    exit 2
+  }
 fi
 
 # A dry run writes nothing — including this script's own log. See the same
@@ -1757,9 +1818,9 @@ fi
 
 # 3. Disk free before
 FREE_BEFORE_KNOWN=1
-FREE_BEFORE_B="$(disk_free_bytes)" \
-  || { FREE_BEFORE_KNOWN=0; warn "could not read free space on / — this run will report no reclaimed total"; }
-ok "disk free on /: $(human_bytes "$FREE_BEFORE_B")"
+FREE_BEFORE_B="$(disk_free_bytes "$HOME")" \
+  || { FREE_BEFORE_KNOWN=0; warn "could not read free space on the volume holding ~ — this run will report no reclaimed total"; }
+ok "disk free on the volume holding ~: $(human_bytes "$FREE_BEFORE_B")"
 
 # 4. Homebrew check (only relevant if we aren't skipping it)
 if (( SKIP_BREW == 0 )); then
@@ -1909,11 +1970,6 @@ fi
 
 SKIP_DIAGNOSTICS_SYS="${SKIP_DIAGNOSTICS_SYS:-0}"
 
-# auto: a banner is the only way a scheduled run gets seen; at a terminal the
-# summary is already on screen.
-if (( NOTIFY_AUTO )) && [[ ! -t 0 ]]; then
-  NOTIFY_MACOS=1
-fi
 (( NOTIFY_MACOS ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }macos"
 (( NOTIFY_TELEGRAM )) && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }telegram"
 (( NOTIFY_SLACK ))    && NOTIFY_CHANNELS="${NOTIFY_CHANNELS:+$NOTIFY_CHANNELS, }slack"
@@ -2523,7 +2579,16 @@ empty_trash_dir() {
   local trash="$1" label="$2"
   local before_b after_b delta delete_rc=0 remaining="" verify_rc=0
   TRASH_RC=0
-  before_b="$(path_bytes "$trash")"
+  # Every path below carries a trailing slash, and it is load-bearing. A Trash
+  # relocated to another disk is a symlink — the usual way to keep it off a
+  # small internal SSD. `[[ -d ]]` follows the link, but find -P does not
+  # descend into a symlinked start point and du does not measure through one,
+  # so the step walked nothing, deleted nothing, measured nothing, and printed
+  # "freed 0B" as though the Trash had been empty. A trailing slash makes both
+  # resolve the link, and -mindepth 1 still leaves the directory itself (and
+  # the symlink) in place. linux/stay_fresh.sh settled on the same form.
+  local trash_slash="${trash%/}/"
+  before_b="$(path_bytes "$trash_slash")"
   printf "  %s %s(%s)%s\n" "$label" "$C_DIM" "$(human_bytes "$before_b")" "$C_RESET"
   if (( DRY_RUN )); then
     printf "  %s(dry-run) would empty %s%s\n" "$C_DIM" "$label" "$C_RESET"
@@ -2533,14 +2598,16 @@ empty_trash_dir() {
   # -mindepth 1 skips $trash itself; -delete handles hidden files and avoids the
   # '.' / '..' issues that 'rm -rf "$trash"/.*' produces.
   local errs_text
-  errs_text="$( { find "$trash" -mindepth 1 -delete ; } 2>&1 >/dev/null )" || delete_rc=$?
+  errs_text="$( { find "$trash_slash" -mindepth 1 -delete ; } 2>&1 >/dev/null )" || delete_rc=$?
   [[ -z "$errs_text" ]] || printf '%s\n' "$errs_text" >>"$LOG_FILE"
-  if grep -q "${trash}: Operation not permitted$" <<<"$errs_text"; then
+  # find names the start point exactly as it was given, trailing slash and all,
+  # so the EPERM the privacy controls answer with is matched in that spelling.
+  if grep -q "${trash_slash}: Operation not permitted$" <<<"$errs_text"; then
     TRASH_RC=1
     return 0
   fi
-  remaining="$(find "$trash" -mindepth 1 -print -quit 2>>"$LOG_FILE")" || verify_rc=$?
-  after_b="$(path_bytes "$trash")"
+  remaining="$(find "$trash_slash" -mindepth 1 -print -quit 2>>"$LOG_FILE")" || verify_rc=$?
+  after_b="$(path_bytes "$trash_slash")"
   delta=$(( before_b - after_b ))
   (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
   printf "  %s->%s freed %s from %s\n" "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$label"
@@ -2642,7 +2709,9 @@ step_trash() {
     [[ -d "$vol" && ! -L "$vol" ]] || continue
     vtrash="$vol/.Trashes/$uid"
     [[ -d "$vtrash" ]] || continue
-    [[ -n "$(find "$vtrash" -mindepth 1 -print -quit 2>/dev/null)" ]] || continue
+    # Trailing slash: this volume's .Trashes/<uid> can be a symlink too, and
+    # without it the probe finds nothing and the volume is passed over.
+    [[ -n "$(find "$vtrash/" -mindepth 1 -print -quit 2>/dev/null)" ]] || continue
     empty_trash_dir "$vtrash" "Trash on ${vol#/Volumes/}"
     case "$TRASH_RC" in
       1)
@@ -3077,14 +3146,26 @@ step_downloads() {
   local days="${PRUNE_DOWNLOADS_DAYS:-$DOWNLOADS_OLD_DAYS}"
   local -a old=()
   local scan_out p
+  # warn, not warn_step, in both failures below. This step reports; the
+  # LaunchAgent runs --fail-on-warn, so a warn_step here makes a missing
+  # scratch directory or an unreadable ~/Downloads a red daily verdict on a
+  # machine with nothing wrong, which is the thing the comment above warn_step
+  # asks not to do. Nothing is lost: a prune that fails is counted by
+  # clear_paths, which raises warn_step of its own.
   scan_out="$(scratch_file)" || {
-    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — Downloads scan skipped"
+    warn "no scratch space in $LOG_DIR or $STATE_DIR — Downloads scan skipped"
     return 0
   }
   if find "$dl" -mindepth 1 -maxdepth 1 ! -name '.*' -mtime +"$days" -print0 >"$scan_out" 2>>"$LOG_SINK"; then
     while IFS= read -r -d '' p; do old+=("$p"); done <"$scan_out"
   else
-    warn_step "could not scan $dl"
+    # Returning here rather than falling through. A scan that failed has not
+    # found nothing: the count below would read zero entries and print
+    # "nothing in ~/Downloads untouched for N days", which is a probe that
+    # could not answer being reported as an answer.
+    warn "could not scan $dl — this run does not know what is in ~/Downloads"
+    rm -f "$scan_out"
+    return 0
   fi
   rm -f "$scan_out"
   DOWNLOADS_OLD=${#old[@]}
@@ -3291,7 +3372,7 @@ step_brew() {
   # after an interrupted brew. A lock older than five minutes with no git
   # process running is stale and is removed; a fresh one, or one with git
   # alive, is left alone and named.
-  local brew_repo brew_lock log_mark
+  local brew_repo brew_lock log_mark log_mark_ok
   brew_repo="$(brew --repository 2>/dev/null)"
   brew_lock="${brew_repo:+$brew_repo/.git/index.lock}"
   if [[ -n "$brew_repo" && -e "$brew_lock" ]]; then
@@ -3309,8 +3390,25 @@ step_brew() {
   # Every line counts, blank ones included: tail -n +N below counts them all,
   # and a mark taken with grep -c . fell short by the blank lines docker and
   # the cache sweeps had written, so the reads started inside an earlier step.
+  #
+  # A mark that could not be taken is not a mark of 0. `wc -l < "$LOG_FILE"`
+  # fails whenever the log is /dev/null-ed, unreadable, or wc itself is
+  # unusable, and the old fallback to 0 aimed every reader below at line 1 of
+  # the log - which is to say at the whole run. The counting readers survive
+  # that (they match brew's own output shapes, and nothing else writes
+  # "==> Upgrading"); the git-lock detector does not, because "index.lock" is
+  # ordinary text that an earlier step can log, and it raises warn_step, which
+  # the LaunchAgent's --fail-on-warn turns into a red daily run. So the mark
+  # carries whether it is real, and the detector below refuses to guess.
   log_mark=0
-  (( DRY_RUN )) || log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ' || echo 0)"
+  log_mark_ok=0
+  if (( DRY_RUN == 0 )); then
+    log_mark="$(wc -l < "$LOG_FILE" 2>/dev/null | tr -d ' ')"
+    case "$log_mark" in
+      '' | *[!0-9]*) log_mark=0 ;;
+      *)             log_mark_ok=1 ;;
+    esac
+  fi
   run_cmd     "brew update"         brew update    || warn "'brew update' had issues"
   # A here-string, not `tail | grep -q`, and this is the one of the two with a
   # plausible path to the 128 KB cliff described above: the reader only stops
@@ -3321,10 +3419,18 @@ step_brew() {
   # this stays under the cliff is a property of the user's setup rather than of
   # this code. Not worth leaving to that.
   if (( DRY_RUN == 0 )); then
-    local since_mark
-    since_mark="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null || true)"
-    if grep -q -e 'index.lock' -e 'could not detach HEAD' <<<"$since_mark"; then
-      warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+    if (( log_mark_ok == 0 )); then
+      # info, not warn_step: the taps may well have refreshed, and a report
+      # that could not be made is not a fault of the machine. Said out loud
+      # all the same, so a run where this detector was silent cannot be read
+      # as a run where it found nothing.
+      info "could not read the log position before 'brew update' — not checking whether the taps refreshed"
+    else
+      local since_mark
+      since_mark="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null || true)"
+      if grep -q -e 'index.lock' -e 'could not detach HEAD' <<<"$since_mark"; then
+        warn_step "brew update did not refresh the taps (git lock in the way) — the upgrade below used the previous index"
+      fi
     fi
   fi
   # Keep formulae and casks separate: generic `brew upgrade` considers both,
@@ -3689,31 +3795,78 @@ step_os_updates() {
   fi
 }
 
-# Local Time Machine snapshots live on the boot volume and are the usual
-# answer to "the run freed 8G and df moved by nothing": APFS keeps the deleted
-# blocks for as long as a snapshot references them. macOS thins them on its
-# own only under disk pressure. Listing is read-only; deletion is the opt-in.
+# The mount points that can carry local snapshots: / and every mounted local
+# volume. A network volume is filtered out by its type before the path is
+# touched at all, and the boot volume's /Volumes symlink is skipped so it is
+# not listed twice — both exactly as step_trash does it, from the same
+# mounted_volumes table.
+snapshot_mounts() {
+  local vname vtype
+  printf '/\n'
+  while IFS=$'\t' read -r vname vtype; do
+    [[ -n "$vname" ]] || continue
+    volume_type_is_network "$vtype" && continue
+    [[ -d "/Volumes/$vname" && ! -L "/Volumes/$vname" ]] || continue
+    printf '/Volumes/%s\n' "$vname"
+  done <<<"$(mounted_volumes)"
+}
+
+# Local Time Machine snapshots are the usual answer to "the run freed 8G and
+# df moved by nothing": APFS keeps the deleted blocks for as long as a
+# snapshot references them. macOS thins them on its own only under disk
+# pressure. Listing is read-only; deletion is the opt-in.
+#
+# Every local volume is asked, not only /. A second APFS volume or an external
+# disk keeps snapshots of its own that `tmutil listlocalsnapshots /` never
+# sees, so a run could report "no local Time Machine snapshots" beside a disk
+# holding a fortnight of them.
+#
+# tmutil deletes by DATE, not by volume, and one deletion may take that date
+# off every volume that has it. What a thinning run achieved is therefore
+# measured, not inferred: the volumes are listed again afterwards and the
+# verdict comes from what is left.
 step_snapshots() {
   if ! command -v tmutil >/dev/null 2>&1; then
     info "tmutil not available — nothing to report"
     return 0
   fi
-  local rc=0
-  capture_cmd "tmutil listlocalsnapshots /" tmutil listlocalsnapshots / || rc=$?
-  if (( rc != 0 )); then
-    warn "could not list local snapshots (tmutil exited $rc) — see log"
-    return 0
-  fi
+  local mp rc mp_dates mp_n listing="" pairs="" vol_n=0 snap_n=0
+  while IFS= read -r mp; do
+    [[ -n "$mp" ]] || continue
+    rc=0
+    capture_cmd "tmutil listlocalsnapshots $mp" tmutil listlocalsnapshots "$mp" || rc=$?
+    if (( rc != 0 )); then
+      # A volume tmutil will not answer for contributes no dates, so nothing
+      # on it is ever deleted. / failing is the case that warranted a warning
+      # before and still does; a mounted disk with no snapshot support is a
+      # line of context, not a warning about the machine.
+      if [[ "$mp" == "/" ]]; then
+        warn "could not list local snapshots on / (tmutil exited $rc) — see log"
+      else
+        printf "  %s%s could not be listed (tmutil exited %d)%s\n" \
+          "$C_DIM" "$mp" "$rc" "$C_RESET"
+      fi
+      continue
+    fi
+    (( DRY_RUN )) && continue
+    mp_dates="$(sed -n 's/^com\.apple\.TimeMachine\.\(.*\)\.local$/\1/p' <<<"$CAPTURED")"
+    [[ -n "$mp_dates" ]] || continue
+    mp_n="$(grep -c . <<<"$mp_dates")"
+    vol_n=$(( vol_n + 1 ))
+    snap_n=$(( snap_n + mp_n ))
+    listing="$listing      $mp ($mp_n):"$'\n'"$(awk '{ print "        " $0 }' <<<"$mp_dates")"$'\n'
+    pairs="$pairs$(awk -v m="$mp" '{ print m "\t" $0 }' <<<"$mp_dates")"$'\n'
+  done <<<"$(snapshot_mounts)"
   (( DRY_RUN )) && return 0
-  local dates
-  dates="$(sed -n 's/^com\.apple\.TimeMachine\.\(.*\)\.local$/\1/p' <<<"$CAPTURED")"
-  if [[ -z "$dates" ]]; then
+  if (( snap_n == 0 )); then
     ok "no local Time Machine snapshots"
     return 0
   fi
-  SNAPSHOTS_FOUND="$(grep -c . <<<"$dates")"
-  printf "  %s%d local snapshot(s):%s\n" "$C_YELLOW" "$SNAPSHOTS_FOUND" "$C_RESET"
-  awk '{ print "      " $0 }' <<<"$dates"
+  SNAPSHOTS_FOUND="$snap_n"
+  local vol_suffix=""
+  (( vol_n > 1 )) && vol_suffix=" on $vol_n volumes"
+  printf "  %s%d local snapshot(s)%s:%s\n" "$C_YELLOW" "$SNAPSHOTS_FOUND" "$vol_suffix" "$C_RESET"
+  printf '%s' "$listing"
   if (( THIN_SNAPSHOTS == 0 )); then
     printf "  %sthey hold every block deleted since they were taken; remove with --thin-snapshots (the backup disk is not touched)%s\n" "$C_DIM" "$C_RESET"
     return 0
@@ -3721,27 +3874,62 @@ step_snapshots() {
   # A backup in progress copies from the newest of these snapshots. Deleting
   # it under the backup makes Time Machine start the pass over, and tmutil
   # will not refuse; this run keeps the list and the next run thins.
-  local tm_status
-  tm_status="$(tmutil status 2>>"$LOG_SINK" || true)"
+  # Through capture_cmd, so --step-timeout bounds it. As a bare command
+  # substitution this was the one probe in the step that could not be stopped:
+  # `tmutil status` talks to backupd, and on a Mac whose destination is an
+  # unreachable network share it blocks, taking the whole run with it however
+  # small --step-timeout was set.
+  #
+  # The failure path had to change with it, and in the safe direction. The old
+  # `|| true` left tm_status empty, the Running test did not match, and the run
+  # thinned — fine while the only way to get here was a quick answer, but a
+  # timeout would then have meant "thin under a backup we could not see", which
+  # is the exact outcome this guard exists to prevent and worse than the hang it
+  # replaced. A probe that cannot answer now keeps the snapshots.
+  local tm_status=""
+  if ! capture_cmd "tmutil status" tmutil status; then
+    warn "could not read Time Machine status — snapshots listed, not thinned this run"
+    return 0
+  fi
+  tm_status="$CAPTURED"
   if grep -Eq 'Running *= *1' <<<"$tm_status"; then
     info "a Time Machine backup is running — snapshots listed, not thinned this run"
     return 0
   fi
-  # Set after the loop, from what the loop achieved: tmutil can refuse every
-  # date — a snapshot pinned by a mount, sudo gone stale mid-run — and the
-  # verdict line and the notification both read this flag. Announcing "thinned"
-  # over a run that deleted nothing is how a disk stays full while the report
-  # says it was cleaned.
-  local d deleted=0
+  # One deletion per date, not one per volume-and-date: the argument is a
+  # date, and asking twice for a date tmutil has already taken off every
+  # volume would fail the second time and report a working run as a failure.
+  local d
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
-    if run_cmd "tmutil deletelocalsnapshots $d" sudo tmutil deletelocalsnapshots "$d"; then
-      deleted=$(( deleted + 1 ))
-    else
-      warn "could not delete snapshot $d"
+    run_cmd "tmutil deletelocalsnapshots $d" sudo tmutil deletelocalsnapshots "$d" \
+      || warn "could not delete snapshot $d"
+  done <<<"$(awk -F'\t' 'NF == 2 { print $2 }' <<<"$pairs" | sort -u)"
+  # What is left, per volume, is the only honest answer to "was it thinned".
+  # The flag behind the verdict line and the notification used to be set from
+  # the deletion loop's own exit statuses; tmutil exiting 0 is not the same
+  # claim as the snapshot being gone, and announcing "thinned" over a disk
+  # that is still full is how a report stops being worth reading. A volume
+  # that cannot be listed a second time counts as unchanged: a thinning claim
+  # needs evidence, and an unread volume is not evidence.
+  local remaining=0
+  while IFS= read -r mp; do
+    [[ -n "$mp" ]] || continue
+    rc=0
+    capture_cmd "tmutil listlocalsnapshots $mp" tmutil listlocalsnapshots "$mp" || rc=$?
+    if (( rc != 0 )); then
+      remaining=$(( remaining + $(awk -F'\t' -v m="$mp" 'NF == 2 && $1 == m' <<<"$pairs" | grep -c . || true) ))
+      continue
     fi
-  done <<<"$dates"
-  (( deleted > 0 )) && SNAPSHOTS_THINNED=1
+    mp_dates="$(sed -n 's/^com\.apple\.TimeMachine\.\(.*\)\.local$/\1/p' <<<"$CAPTURED")"
+    [[ -n "$mp_dates" ]] || continue
+    remaining=$(( remaining + $(grep -c . <<<"$mp_dates") ))
+  done <<<"$(snapshot_mounts)"
+  if (( remaining < SNAPSHOTS_FOUND )); then
+    SNAPSHOTS_THINNED=1
+    (( remaining > 0 )) && printf "  %s%d local snapshot(s) remain%s\n" \
+      "$C_DIM" "$remaining" "$C_RESET"
+  fi
   return 0
 }
 
@@ -3822,13 +4010,13 @@ ELAPSED=$(( $(date +%s) - START_ALL ))
 # number travels: the summary, last-run.json, history.tsv, and every --trend
 # average computed from them afterwards. Unknown is its own answer.
 FREE_AFTER_KNOWN=1
-FREE_AFTER_B="$(disk_free_bytes)" || FREE_AFTER_KNOWN=0
+FREE_AFTER_B="$(disk_free_bytes "$HOME")" || FREE_AFTER_KNOWN=0
 if (( FREE_AFTER_KNOWN && FREE_BEFORE_KNOWN )); then
   RECLAIMED_B=$(( FREE_AFTER_B - FREE_BEFORE_B ))
 else
   RECLAIMED_B=0
   FREE_AFTER_B=""
-  warn "free space on / could not be read; this run reports no reclaimed total"
+  warn "free space on the volume holding ~ could not be read; this run reports no reclaimed total"
 fi
 
 # ---------------------------------------------------------------------------
@@ -3845,7 +4033,7 @@ if (( FREE_AFTER_KNOWN && FREE_BEFORE_KNOWN )); then
 else
   # Saying 0B here would be a measurement; this is the absence of one, and the
   # per-step total below is still real.
-  printf "  disk free:   %sunknown (df could not read /)%s\n" "$C_DIM" "$C_RESET"
+  printf "  disk free:   %sunknown (df could not read the volume holding ~)%s\n" "$C_DIM" "$C_RESET"
 fi
 printf "  steps freed: %s%s%s %s(sum of per-step deltas; more precise than df)%s\n" \
   "$C_GREEN" "$(human_bytes "$TOTAL_FREED_B")" "$C_RESET" "$C_DIM" "$C_RESET"

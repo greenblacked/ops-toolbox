@@ -100,6 +100,19 @@ targets Git Bash, which ships Bash 5 — `windows/git-bash/.bashrc` uses `local 
 and `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
 and runs on Ubuntu. Do not "fix" either.
 
+**The keyword list above is not the whole rule.** Some things 3.2 refuses are
+properties of its parser rather than of any keyword a grep can find, so nothing
+static will catch them and Bash 5 accepts them everywhere you are likely to
+test. Two have reached CI: a `case` statement inside `$( )`, and an apostrophe
+inside a heredoc inside `$( )` — 3.2 does not treat that body as opaque, reads
+the quote, and follows it to end of file. Both parse cleanly under Bash 5.
+
+The `Parse with Apple Bash 3.2` step in `Test / macos native` is what enforces
+this: `macos-15` is the only runner with a real `/bin/bash` 3.2, and the step
+calls it by absolute path because that runner has Homebrew's Bash 5 ahead of
+`/bin` on `PATH`. It runs on any change under the directories named above and
+costs seconds. `Lint` runs `bash -n` on Ubuntu and cannot stand in for it.
+
 ### Duplicated blocks
 
 Copy these verbatim rather than inventing a variant. The canonical copy of
@@ -399,20 +412,46 @@ The suite table at the top of `run-tests.sh` is also what CI reads. The
 each suite's package directory, and builds the `Test / <suite>` matrix from
 the result, so a suite added to that table gets its job without an edit to
 the workflow. The exceptions are named in the workflow: `python` and `static`
-have jobs of their own, and `mikrotik` runs in its own workflow.
+have jobs of their own, `mikrotik` runs in its own workflow, and `lint` *is*
+the `Lint` job — that job installs the pinned linters and then runs
+`./run-tests.sh lint`, so the local suite and CI are one command, not two
+copies of seven invocations.
 
 The Docker suites mount the repository **read-only** at `/repo`, so all scratch
 state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses —
-`failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `# --- section ---`
-comments — see `git/tests/test_git_scripts.sh`. No framework.
+`failures=0`, `ok()`/`err()`, `assert_contains`/`assert_eq`, `section "..."`
+headings — see `git/tests/test_git_scripts.sh`. No framework.
 
-Because `set -e` is on in test bodies, assert exit codes with the sandwich:
+Assertion suites run under `set -uo pipefail` — **no `-e`**. A suite that
+aborts on the first non-zero exit reports the shell's status and throws away
+the output it had just captured, so the real error is invisible: a Bash 3.2
+parse error surfaced in CI as "exit code 2" and nothing else. Every failure is
+a named `err()` instead, and an invocation whose result is judged only by what
+the filesystem looks like afterwards is guarded (`cmd || err "cmd exited $?"`),
+because a command that died on line one also changed nothing. Assert exit
+codes directly:
 
 ```bash
-set +e
 out="$("$SCRIPT" --bad-flag 2>&1)"; rc=$?
-set -e
+assert_eq "bad flag -> 3" 3 "$rc"
 ```
+
+No suite runs under `-e` any more, and the static suite fails the day one
+does. Never write a `set +e` / `set -e` sandwich either: `set -e` is not
+scoped to the function it appears in, so in a file with no `-e` at the top
+the first call turns errexit on for the rest of the file, and every unguarded
+command after it becomes an abort with no message
+(`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
+
+A section that made no assertion is a failure, not a pass. `linux/tests`,
+`git/tests` and the macOS native suite open each block with `section "..."`
+and fail any block that closes with zero checks — the shape of a loop that ran
+over nothing, or a fixture that never reached its assertion. It earned its
+keep on the first run: in two of the three files it found a heading that named
+a section which only built a fixture, its assertions having drifted under a
+heading inserted after it. The same reasoning applies to a loop whose subject
+list comes from a command rather than a literal: count the iterations and fail
+at zero, because the section around it usually asserts plenty either way.
 
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that

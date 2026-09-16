@@ -10,6 +10,12 @@ yaml-files:
   - '.yamllint'
   - '*.winget'
 
+# Honour .gitignore, so `yamllint .` sees the same files here as in CI's clean
+# checkout. Without it an ignored directory - a coding tool's worktree copies,
+# say - is walked too, and a local run can fail on a file that is not in the
+# tree it claims to lint.
+ignore-from-file: .gitignore
+
 rules:
   document-start: disable
   line-length: disable

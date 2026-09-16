@@ -316,7 +316,11 @@ if (( SKIP_CACHES == 0 )); then
   # relocation was gone, and the run said "empty". A trailing slash makes
   # find descend into the target of a symlink, so the same line empties a
   # relocated trash and a plain one and leaves both in place afterwards.
-  # macos-initial-setup/stay_fresh.sh empties ~/.Trash the same way.
+  # macos-initial-setup/stay_fresh.sh empties ~/.Trash and each mounted
+  # volume's .Trashes/<uid> the same way, in its empty_trash_dir(). It did
+  # not when this line was written: it passed the path without the slash, so
+  # a relocated ~/.Trash there reported "freed 0B" and deleted nothing, and
+  # this comment sent the next reader to a reference that did not hold.
   for trash in "$HOME/.local/share/Trash/files" "$HOME/.local/share/Trash/info"; do
     [[ -d "$trash" ]] || continue
     run_cmd "empty ${trash#"$HOME"/}" find "$trash/" -mindepth 1 -delete

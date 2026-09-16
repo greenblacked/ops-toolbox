@@ -36,8 +36,8 @@ fi
 # must run under the Bash 3.2 that ships on macOS, which has no associative
 # arrays. See CONTRIBUTING.md.
 
-SUITE_ALL="git macos linux k8s dotfiles python static windows mikrotik"
-SUITE_FAST="git macos linux k8s dotfiles python static windows"
+SUITE_ALL="git macos linux k8s dotfiles python static lint windows mikrotik"
+SUITE_FAST="git macos linux k8s dotfiles python static lint windows"
 
 suite_runner() {
   case "$1" in
@@ -48,6 +48,7 @@ suite_runner() {
     dotfiles) printf '%s\n' "$HERE/dotfiles/tests/run.sh" ;;
     python)   printf '%s\n' "$HERE/test-env/python/run.sh" ;;
     static)   printf '%s\n' "$HERE/test-env/static/run.sh" ;;
+    lint)     printf '%s\n' "$HERE/test-env/lint/run.sh" ;;
     windows)  printf '%s\n' "$HERE/windows/tests/run.sh" ;;
     mikrotik) printf '%s\n' "$HERE/mikrotik/tests/run.sh" ;;
   esac
@@ -87,6 +88,7 @@ suite_blurb() {
     dotfiles) printf '%s\n' "Tool configs + installer   (bash only; parsers used when present)" ;;
     python)   printf '%s\n' "Python libs: ruff + pytest (host python3, no Docker)" ;;
     static)   printf '%s\n' "Repo-wide conventions     (bash + git only, no Docker)" ;;
+    lint)     printf '%s\n' "The linters CI's Lint job runs (pinned tools when present; LINT_FETCH=1 fetches them)" ;;
     windows)  printf '%s\n' "PowerShell contract checks (pwsh, no Docker; skipped without it)" ;;
     mikrotik) printf '%s\n' "RouterOS CHR integration  (Docker + QEMU, minutes — not in default)" ;;
   esac

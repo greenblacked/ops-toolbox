@@ -7,7 +7,13 @@
 #
 # The mount is read-only, so anything that writes must be pointed at /tmp. A
 # test that quietly wrote into /repo would pass here and fail in CI.
-set -euo pipefail
+#
+# No `-e`. A suite that aborts on the first non-zero exit reports the shell's
+# status and discards the output it had just captured, so the real error is
+# invisible: a Bash 3.2 parse error in stay_fresh_agent.sh surfaced only as
+# "exit code 2" with no message. Every failure below is a named assertion,
+# which is the same dialect test_stay_fresh_steps.sh already uses.
+set -uo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/repo}"
 L="$REPO_ROOT/linux"
@@ -17,6 +23,16 @@ if [[ ! -d "$L" ]]; then
   echo "expected linux/ at $L" >&2
   exit 1
 fi
+
+# Every fixture below starts from `mktemp -d`. Without `-e` a failed mktemp
+# leaves the variable empty and the paths built from it absolute, so prove
+# once that scratch space works instead of guarding forty call sites.
+tmp_probe="$(mktemp -d 2>/dev/null)"
+if [[ -z "$tmp_probe" || ! -d "$tmp_probe" ]]; then
+  echo "cannot create scratch directories under ${TMPDIR:-/tmp}" >&2
+  exit 1
+fi
+rmdir "$tmp_probe"
 
 # These name a file or directory outside the fixtures, and the scripts under
 # test read them straight from the environment. XDG_CACHE_HOME is the one that
@@ -33,8 +49,36 @@ unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME
 unset SYSTEMD_ANALYZE_CMD
 
 failures=0
-ok()  { echo "[ ok ] $*"; }
-err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
+# Counted so the run can prove it asserted something. Without `-e` a suite that
+# dies early exits 0 with a short log, and nothing says so; the floor does.
+checks=0
+section_checks=0
+sections=0
+section_name=""
+ok()  { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[ ok ] $*"; }
+err() { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[fail] $*" >&2; failures=$((failures + 1)); }
+
+# The floor, per section rather than per file. Without `-e` the shape of a
+# silent failure changes: a section whose loop ran over nothing, or whose
+# fixture never got as far as an assertion, exits 0 with a shorter log and
+# nothing says so. Each `section` call closes the previous one and fails it if
+# it asserted nothing, and the end of the file closes the last. A count floor
+# for the whole file would need a number that goes stale every time a test is
+# added or retired; a section either asserted or it did not.
+section() {
+  end_section
+  section_name="$1"
+  section_checks=0
+  sections=$((sections + 1))
+}
+end_section() {
+  [[ -n "$section_name" ]] || return 0
+  if (( section_checks == 0 )); then
+    err "section '$section_name' made no assertion — its loop ran over nothing or its fixture never reached one"
+  fi
+  section_name=""
+  section_checks=0
+}
 
 assert_eq() {
   local label="$1" expected="$2" actual="$3"
@@ -90,26 +134,27 @@ ok "discovered ${#scripts[@]} scripts under linux/"
 
 echo "=== distro: $(sed -n 's/^PRETTY_NAME=//p' /etc/os-release | tr -d '\"') (expecting $EXPECT_PKG_MGR) ==="
 
-# --- syntax ---
+section "syntax"
 for f in "${scripts[@]}" "$L/bash_aliases.sh"; do
-  if bash -n "$f"; then ok "bash -n ${f#"$REPO_ROOT/"}"; else err "bash -n ${f#"$REPO_ROOT/"}"; fi
+  # "${BASH:-bash}", not "bash": a bare `bash` resolves through PATH rather
+  # than naming the shell running this file. See the same note in
+  # git/tests/test_git_scripts.sh — linux/ is a Bash 3.2 package too.
+  if "${BASH:-bash}" -n "$f"; then ok "bash -n ${f#"$REPO_ROOT/"}"; else err "bash -n ${f#"$REPO_ROOT/"}"; fi
 done
 
-# --- help contract, before any preflight ---
+section "help contract, before any preflight"
 for f in "${scripts[@]}"; do
   if "$f" --help >/dev/null 2>&1; then ok "${f##*/} --help"; else err "${f##*/} --help"; fi
 done
 
-# --- unknown flag -> 3 ---
+section "unknown flag -> 3"
 for f in "${scripts[@]}"; do
-  set +e
   "$f" --definitely-not-a-valid-flag-12345 >/dev/null 2>&1
   rc=$?
-  set -e
   assert_eq "${f##*/} unknown flag -> 3" "3" "$rc"
 done
 
-# --- distro detection picks the right package manager ---
+section "distro detection picks the right package manager"
 out="$("$L/stay_fresh.sh" --dry-run 2>&1)"
 assert_contains "stay_fresh detects $EXPECT_PKG_MGR" "$out" "package manager: $EXPECT_PKG_MGR"
 if command -v needs-restarting >/dev/null 2>&1 || command -v needrestart >/dev/null 2>&1; then
@@ -122,21 +167,21 @@ else
   ok "stay_fresh stale-process note skipped (no needrestart)"
 fi
 
-# --- an unsupported distro exits 2 ---
+section "an unsupported distro exits 2"
 # The whole reason detect_pkg_mgr reads $OS_RELEASE instead of /etc/os-release
 # directly: without the seam this path is untestable, since a container cannot
 # pretend to be Gentoo.
 fake="/tmp/fake-os-release"
 printf 'ID=gentoo\nID_LIKE=gentoo\n' > "$fake"
-set +e
 OS_RELEASE="$fake" "$L/stay_fresh.sh" --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "unsupported distro -> 2" "2" "$rc"
 
-# --- dry run changes nothing ---
 # Counting installed packages before and after is the assertion that actually
-# matters: the dry-run promise is the core of this repository.
+# matters: the dry-run promise is the core of this repository. The helper is
+# defined here; the section that uses it opens below the Kali contracts, which
+# were inserted between the two — under the old comment heading that looked
+# like one section and was two.
 count_packages() {
   case "$EXPECT_PKG_MGR" in
     apt)    dpkg-query -f '.\n' -W 2>/dev/null | wc -l ;;
@@ -145,7 +190,7 @@ count_packages() {
   esac
 }
 
-# --- Kali cloud-init contracts -------------------------------------------
+section "Kali cloud-init contracts"
 KALI_CLOUD_INIT="$L/cloud-init/kali-vm-init.yaml"
 if python3 - "$KALI_CLOUD_INIT" <<'PY'
 import sys
@@ -215,19 +260,22 @@ if "$KALI_STATUS" --help 2>&1 | grep -q 'Exit codes:'; then
 else
   err "embedded kali-lab-status --help contract"
 fi
-set +e
 "$KALI_STATUS" --definitely-not-valid >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "embedded kali-lab-status unknown flag -> 3" "3" "$rc"
 
+section "dry run changes nothing"
 before="$(count_packages)"
-"$L/stay_fresh.sh" --dry-run >/dev/null 2>&1
-"$L/install_devtools.sh" --dry-run >/dev/null 2>&1
+# Guarded because the assertion below cannot see the difference: a dry run that
+# died on line one also installed nothing, so an unguarded failure here reads as
+# a pass. The same applies at every `>/dev/null` invocation whose result is
+# judged by what the filesystem looks like afterwards.
+"$L/stay_fresh.sh" --dry-run >/dev/null 2>&1 || err "stay_fresh --dry-run exited $? before the package count was taken"
+"$L/install_devtools.sh" --dry-run >/dev/null 2>&1 || err "install_devtools --dry-run exited $? before the package count was taken"
 after="$(count_packages)"
 assert_eq "dry runs installed nothing" "$before" "$after"
 
-# --- dry run says so, and says nothing was written ---
+section "dry run says so, and says nothing was written"
 out="$("$L/install_devtools.sh" --dry-run 2>&1)"
 assert_contains "install_devtools dry-run reports no changes" "$out" "dry-run complete; no changes written"
 
@@ -246,43 +294,33 @@ assert_contains "stay_fresh --only runs selected step" "$out" "== user caches ==
 assert_contains "stay_fresh --only names every skipped step" "$out" "skipped: flatpak"
 assert_contains "stay_fresh --only names snap among them too" "$out" "skipped: snap"
 
-set +e
 "$L/stay_fresh.sh" --dry-run --only caches --skip-snap >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "stay_fresh rejects mixed scoping styles -> 3" "3" "$rc"
 
-# --- HOME builds every path stay_fresh removes ---
+section "HOME builds every path stay_fresh removes"
 # Empty rather than unset is the dangerous one: set -u does not fire, and
 # "$HOME/.cache/pip" becomes "/.cache/pip", so the rm -rf addresses the root
 # filesystem. The flags that need no home directory still answer.
-set +e
 env -u HOME "$L/stay_fresh.sh" --help >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "stay_fresh --help works with HOME unset" "0" "$rc"
-set +e
 env -u HOME "$L/stay_fresh.sh" --list-steps >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "stay_fresh --list-steps works with HOME unset" "0" "$rc"
 for home_case in unset empty; do
-  set +e
   if [[ "$home_case" == unset ]]; then
     out="$(env -u HOME "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"; rc=$?
   else
     out="$(HOME="" "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"; rc=$?
   fi
-  set -e
   assert_eq "stay_fresh with HOME $home_case is refused -> 2" "2" "$rc"
   assert_contains "stay_fresh with HOME $home_case says why" "$out" "HOME is not set"
   assert_not_contains "stay_fresh with HOME $home_case names no root path" "$out" "/.cache/pip"
 done
-set +e
 out="$(HOME="$L/stay_fresh.sh" "$L/stay_fresh.sh" --dry-run --only caches 2>&1)"; rc=$?
-set -e
 assert_eq "stay_fresh with a HOME that is a file is refused -> 2" "2" "$rc"
 assert_contains "a non-directory HOME is named" "$out" "HOME is not a directory"
 
-# --- the Trash is emptied whole, or the desktop shows phantom entries ---
+section "the Trash is emptied whole, or the desktop shows phantom entries"
 sf_home="$(mktemp -d)"
 mkdir -p "$sf_home/.local/share/Trash/files" "$sf_home/.local/share/Trash/info"
 : > "$sf_home/.local/share/Trash/files/doc.txt"
@@ -299,9 +337,7 @@ mkdir -p "$sf_home/.local/share/Trash/files/sub" "$sf_home/.local/share/Trash/in
 : > "$sf_home/.local/share/Trash/files/doc.txt"
 : > "$sf_home/.local/share/Trash/files/sub/deep.txt"
 : > "$sf_home/.local/share/Trash/info/doc.txt.trashinfo"
-set +e
 HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --yes --only caches >/dev/null 2>&1
-set -e
 assert_eq "the Trash files/ directory itself survives" "yes" \
   "$([[ -d "$sf_home/.local/share/Trash/files" ]] && echo yes || echo no)"
 assert_eq "the Trash info/ directory itself survives" "yes" \
@@ -323,9 +359,7 @@ mkdir -p "$sf_home/.local/share/Trash" "$other_disk/files"
 ln -s "$other_disk/files" "$sf_home/.local/share/Trash/files"
 mkdir -p "$sf_home/.local/share/Trash/info"
 : > "$sf_home/.local/share/Trash/info/big.iso.trashinfo"
-set +e
 HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --yes --only caches >/dev/null 2>&1
-set -e
 assert_eq "a relocated Trash keeps its symlink" "yes" \
   "$([[ -L "$sf_home/.local/share/Trash/files" ]] && echo yes || echo no)"
 assert_eq "a relocated Trash is actually emptied" "" \
@@ -333,17 +367,14 @@ assert_eq "a relocated Trash is actually emptied" "" \
 rm -rf "$sf_home" "$other_disk"
 sf_home="$(mktemp -d)"
 
-# --- a clean run leaves no log behind ---
+section "a clean run leaves no log behind"
 # One file per run accumulated in TMPDIR forever, never read and never removed.
-# set +e as every other real invocation in this file does: the suite runs
-# under `set -euo pipefail`, so an unbracketed nonzero exit kills it here,
-# before rc is assigned - which made the assertion below unfailable and took
-# the ~40 assertions after it with it, leaving CI a bare exit 1 and no
-# failing-test line.
-set +e
+# This invocation is why the file no longer runs under `-e`: when it did, an
+# unbracketed nonzero exit killed the suite here, before rc was assigned -
+# which made the assertion below unfailable and took the ~40 assertions after
+# it with it, leaving CI a bare exit 1 and no failing-test line.
 out="$(HOME="$sf_home" TMPDIR="$sf_home" "$L/stay_fresh.sh" --only caches 2>&1)"
 rc=$?
-set -e
 assert_eq "stay_fresh clean run succeeds" "0" "$rc"
 if [[ -z "$(find "$sf_home" -maxdepth 1 -name 'linux_stay_fresh-*.log' -print -quit)" ]]; then
   ok "stay_fresh discards a clean run's log"
@@ -352,14 +383,12 @@ else
 fi
 rm -rf "$sf_home"
 
-# --- installing without --yes refuses rather than proceeding ---
-set +e
+section "installing without --yes refuses rather than proceeding"
 "$L/install_devtools.sh" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "install_devtools without --yes -> 3" "3" "$rc"
 
-# --- packages.sh round-trips through a real package database ---
+section "packages.sh round-trips through a real package database"
 dump="/tmp/packages.$EXPECT_PKG_MGR.txt"
 rm -f "$dump"
 if "$L/packages.sh" dump --file "$dump" >/dev/null 2>&1; then
@@ -383,7 +412,7 @@ fi
 
 # dump twice; the file must be identical or diffs are noise
 cp "$dump" /tmp/first.txt
-"$L/packages.sh" dump --file "$dump" --force >/dev/null 2>&1
+"$L/packages.sh" dump --file "$dump" --force >/dev/null 2>&1 || err "packages.sh dump --force exited $? — the stability check below would compare the first dump with itself"
 if diff -q <(grep -vE '^\s*#' /tmp/first.txt) <(grep -vE '^\s*#' "$dump") >/dev/null; then
   ok "dump is stable across runs"
 else
@@ -391,24 +420,18 @@ else
 fi
 
 # everything just dumped is by definition installed
-set +e
 "$L/packages.sh" check --file "$dump" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "check passes against a fresh dump" "0" "$rc"
 
 # a package that cannot exist must make check fail with 1, not crash
 printf 'definitely-not-a-real-package-12345\n' >> "$dump"
-set +e
 "$L/packages.sh" check --file "$dump" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "check reports a missing package as 1" "1" "$rc"
 
-set +e
 out="$("$L/packages.sh" install --file "$dump" --dry-run 2>&1)"
 rc=$?
-set -e
 assert_eq "install --dry-run exits 0" "0" "$rc"
 assert_contains "install --dry-run names the missing package" "$out" "definitely-not-a-real-package-12345"
 assert_contains "install --dry-run reports no changes" "$out" "dry-run complete; no changes written"
@@ -421,10 +444,8 @@ assert_not_contains "install --dry-run does not mix git grammar" "$out" "dry-run
 # leave that semantics alone and use a fresh absent path instead.
 dump_preview="$(mktemp /tmp/packages-dump-dry-run.XXXXXX)"
 rm -f "$dump_preview"
-set +e
 out="$("$L/packages.sh" dump --file "$dump_preview" --dry-run 2>&1)"
 rc=$?
-set -e
 assert_eq "dump --dry-run exits 0" "0" "$rc"
 assert_contains "dump --dry-run reports no changes" "$out" "dry-run complete; no changes written"
 if [[ -e "$dump_preview" ]]; then
@@ -433,13 +454,11 @@ else
   ok "dump --dry-run left the path absent"
 fi
 
-set +e
 "$L/packages.sh" dump --file --force >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "packages.sh --file rejects the next flag as a path -> 3" "3" "$rc"
 
-# --- aliases are sourceable, and guarded ---
+section "aliases are sourceable, and guarded"
 if bash -c ". $L/bash_aliases.sh" >/dev/null 2>&1; then
   ok "bash_aliases.sh sources cleanly"
 else
@@ -478,10 +497,8 @@ assert_contains "bash_aliases adds Kubernetes context helpers" "$out" "kubectl c
 rm -rf "$kubectl_stub"
 
 # Running it instead of sourcing it should say so rather than doing nothing.
-set +e
 bash "$L/bash_aliases.sh" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "bash_aliases.sh executed directly -> 3" "3" "$rc"
 
 out="$(bash -c ". '$L/bash_aliases.sh'; alias stay-fresh; alias net-doctor; alias disk-cleanup; alias linux-status; toolbox-help" 2>&1)"
@@ -496,25 +513,21 @@ assert_contains "toolbox-help lists tls-expiry" "$out" "tls-expiry"
 assert_contains "toolbox-help lists config-backup" "$out" "config-backup"
 assert_contains "toolbox-help lists ssh-client-doctor" "$out" "ssh-client-doctor"
 
-# --- stay_fresh degrades rather than failing when a tool is absent ---
+section "stay_fresh degrades rather than failing when a tool is absent"
 # journald is not present in these containers. That must be a note, not a
 # failure: the warn vs failure split is the documented contract.
-set +e
 out="$("$L/stay_fresh.sh" --yes --no-sudo --skip-packages --skip-containers 2>&1)"
 rc=$?
-set -e
 assert_eq "stay_fresh survives missing optional tools" "0" "$rc"
 assert_contains "stay_fresh reports the run finished" "$out" "done"
 
-# --- the systemd timer builds its units without a running systemd ---
+section "the systemd timer builds its units without a running systemd"
 # --print-only is the seam that makes this testable at all: a container has no
 # user manager, so install can never get past preflight here. Where
 # systemd-analyze exists (fedora, arch) the script verifies the units before
 # printing them, so a zero exit below is a real validation, not just a render.
 TIMER="$L/systemd/stay_fresh_timer.sh"
-set +e
 out="$("$TIMER" install --print-only 2>&1)"; rc=$?
-set -e
 assert_eq "timer --print-only exits 0" "0" "$rc"
 assert_contains "timer defaults to Monday 10:30" "$out" "OnCalendar=Mon *-*-* 10:30:00"
 assert_contains "timer runs stay_fresh.sh" "$out" "$L/stay_fresh.sh\" --yes --no-sudo"
@@ -535,7 +548,7 @@ assert_contains "timer exposes read-only log inspection" "$out" "logs [--lines N
 # --print-only must write nothing, the same promise --dry-run makes elsewhere.
 scratch_home="$(mktemp -d)"
 HOME="$scratch_home" XDG_CONFIG_HOME="$scratch_home/.config" \
-  "$TIMER" install --print-only >/dev/null 2>&1
+  "$TIMER" install --print-only >/dev/null 2>&1 || err "timer install --print-only exited $? — a run that never started also writes nothing"
 if [[ -e "$scratch_home/.config/systemd" ]]; then
   err "timer --print-only wrote into HOME"
 else
@@ -548,10 +561,8 @@ rm -rf "$scratch_home"
 # `enable --now`. The run above pairs --print-only with --dry-run, so the
 # print-only branch short-circuited and the dry-run path was never reached.
 scratch_home="$(mktemp -d)"
-set +e
 HOME="$scratch_home" XDG_CONFIG_HOME="$scratch_home/.config" \
   "$TIMER" install --dry-run >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "timer install --dry-run exits 0" "0" "$rc"
 if [[ -n "$(find "$scratch_home" -type f 2>/dev/null)" ]]; then
   err "timer install --dry-run wrote into HOME"
@@ -561,11 +572,9 @@ fi
 rm -rf "$scratch_home"
 
 for bad in "--weekday 9" "--hour 24" "--minute 60"; do
-  set +e
   # shellcheck disable=SC2086  # the pair is meant to split into two arguments
   "$TIMER" install $bad >/dev/null 2>&1
   rc=$?
-  set -e
   assert_eq "timer rejects $bad -> 3" "3" "$rc"
 done
 
@@ -578,42 +587,34 @@ timer_scratch="$(mktemp -d)"
 for bad in "uninstall --hour 3" "uninstall --dry-run" "uninstall --lines 5" \
            "status --lines 5" "run-now --hour 3" "logs --hour 3" \
            "install --lines 5"; do
-  set +e
   # shellcheck disable=SC2086  # the pair is meant to split into separate arguments
   HOME="$timer_scratch" XDG_CONFIG_HOME="$timer_scratch/.config" "$TIMER" $bad >/dev/null 2>&1
   rc=$?
-  set -e
   assert_eq "timer rejects '$bad' -> 3" "3" "$rc"
 done
 
 # ...and the check must not start refusing the pairings that are correct. logs
 # needs journalctl, which these containers may not have, so what is asserted is
 # that this is not a usage error - not that it succeeds.
-set +e
 HOME="$timer_scratch" XDG_CONFIG_HOME="$timer_scratch/.config" \
   "$TIMER" logs --lines 5 >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "timer still accepts logs --lines" "no" "$([[ "$rc" == "3" ]] && echo yes || echo no)"
 rm -rf "$timer_scratch"
 
 # No user manager in a container, so a real install must report the wrong
 # environment rather than half-writing units.
-set +e
 "$TIMER" install >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "timer install without systemd -> 2" "2" "$rc"
 
-# --- hardening_audit is read-only and grades correctly ---
+section "hardening_audit is read-only and grades correctly"
 # The whole value of this script is that it never changes the machine, so that
 # is asserted directly rather than assumed: snapshot the files it inspects and
 # require them to be untouched.
 before="$( { stat -c '%a %Y' /etc/shadow /etc/passwd 2>/dev/null; ls /etc/ssh 2>/dev/null; } || true )"
-set +e
 out="$("$L/hardening_audit.sh" 2>&1)"
 rc=$?
-set -e
 after="$( { stat -c '%a %Y' /etc/shadow /etc/passwd 2>/dev/null; ls /etc/ssh 2>/dev/null; } || true )"
 assert_eq "hardening_audit changed nothing it inspected" "$before" "$after"
 assert_contains "hardening_audit prints a summary" "$out" "== summary =="
@@ -668,24 +669,18 @@ else
 fi
 
 # --fail-on warn must be stricter than the default, never looser.
-set +e
 "$L/hardening_audit.sh" >/dev/null 2>&1; rc_default=$?
 "$L/hardening_audit.sh" --fail-on warn >/dev/null 2>&1; rc_strict=$?
-set -e
 if (( rc_strict >= rc_default )); then
   ok "--fail-on warn is at least as strict as the default ($rc_default -> $rc_strict)"
 else
   err "--fail-on warn ($rc_strict) was looser than the default ($rc_default)"
 fi
 
-set +e
 "$L/hardening_audit.sh" --only nosuchgroup >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "hardening_audit rejects an unknown group -> 3" "3" "$rc"
 
-set +e
 out="$("$L/hardening_audit.sh" --only kernel 2>&1)"; rc=$?
-set -e
 assert_contains "hardening_audit has kernel controls" "$out" "== kernel =="
 if [[ "$rc" == "0" || "$rc" == "1" ]]; then
   ok "hardening_audit kernel group reports rather than errors ($rc)"
@@ -699,9 +694,7 @@ else
   printf '%s\n' "$out" | head -30 >&2
 fi
 
-set +e
 out="$("$L/hardening_audit.sh" --only files 2>&1)"; rc=$?
-set -e
 assert_contains "hardening_audit has files group" "$out" "== files =="
 if [[ "$rc" == "0" || "$rc" == "1" ]]; then
   ok "hardening_audit files group reports rather than errors ($rc)"
@@ -715,9 +708,7 @@ else
   printf '%s\n' "$out" | head -30 >&2
 fi
 
-set +e
 out="$("$L/hardening_audit.sh" --only updates 2>&1)"; rc=$?
-set -e
 assert_contains "hardening_audit has updates group" "$out" "== updates =="
 if [[ "$rc" == "0" || "$rc" == "1" ]]; then
   ok "hardening_audit updates group reports rather than errors ($rc)"
@@ -731,15 +722,13 @@ else
   printf '%s\n' "$out" | head -30 >&2
 fi
 
-# --- system_doctor reports rather than grades ------------------------------
+section "system_doctor reports rather than grades"
 # A container has no systemd, no sshd, no firewall and no container engine, so
 # this is the environment where a health report is most likely to trip over
 # something absent. Exiting 0 here is the assertion: every probe has to degrade
 # to a note.
 scratch_home="$(mktemp -d)"
-set +e
 out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$L/system_doctor.sh" 2>&1)"; rc=$?
-set -e
 assert_eq "system_doctor exits 0 with almost nothing installed" "0" "$rc"
 assert_contains "system_doctor prints a summary" "$out" "== summary =="
 assert_contains "system_doctor names the package manager" "$out" "package manager: $EXPECT_PKG_MGR"
@@ -790,11 +779,9 @@ fi
 assert_contains "system_doctor --quiet still summarises" "$out" "== summary =="
 
 for bad in "--min-free 101" "--min-free notanumber" "--min-memory 101" "--min-memory notanumber"; do
-  set +e
   # shellcheck disable=SC2086  # the pair is meant to split into two arguments
   "$L/system_doctor.sh" $bad >/dev/null 2>&1
   rc=$?
-  set -e
   assert_eq "system_doctor rejects $bad -> 3" "3" "$rc"
 done
 
@@ -815,16 +802,14 @@ printf 'Inst openssl [3.0.11-1] (3.0.14-1 Debian:12/stable [amd64])\n'
 printf 'Conf libc6 (2.36-9+deb12u1 Debian:12/stable [amd64])\n'
 STUB
 chmod +x "$doctor_stub/apt-get"
-set +e
 out="$(OS_RELEASE="$doctor_stub/os-release" PATH="$doctor_stub:$PATH" \
   "$L/system_doctor.sh" 2>&1)"; rc=$?
-set -e
 assert_eq "system_doctor with pending upgrades exits 0" "0" "$rc"
 assert_contains "system_doctor counts the pending upgrades" "$out" "2 pending upgrade(s)"
 assert_contains "system_doctor prints the hint beside the count" "$out" "preview: stay_fresh.sh --dry-run"
 rm -rf "$doctor_stub"
 
-# --- install_aliases.sh ---------------------------------------------------
+section "install_aliases.sh"
 # The whole point of this script is that a second run does not append a
 # second copy, and that --dry-run writes nothing. Both are asserted against
 # a scratch HOME rather than $HOME, because the mount is read-only at /repo
@@ -839,9 +824,7 @@ alias_link_home="$(mktemp -d)"
 alias_link_repo="$(mktemp -d)"
 printf '# managed by a dotfiles repo\nexport OPS_TOOLBOX_TEST=1\n' > "$alias_link_repo/.bashrc"
 ln -s "$alias_link_repo/.bashrc" "$alias_link_home/.bashrc"
-set +e
 HOME="$alias_link_home" "$ALIASES" --home "$alias_link_home" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "install_aliases through a symlink exits 0" "0" "$rc"
 if [[ -L "$alias_link_home/.bashrc" ]]; then
   ok "install_aliases kept the ~/.bashrc symlink"
@@ -861,9 +844,7 @@ fi
 rm -rf "$alias_link_home" "$alias_link_repo"
 
 alias_home="$(mktemp -d)"
-set +e
 out="$(HOME="$alias_home" "$ALIASES" --dry-run --home "$alias_home" 2>&1)"; rc=$?
-set -e
 assert_eq "install_aliases --dry-run exits 0" "0" "$rc"
 assert_contains "install_aliases dry-run names bashrc" "$out" "would create"
 if [[ -e "$alias_home/.bashrc" ]]; then
@@ -872,9 +853,7 @@ else
   ok "install_aliases --dry-run wrote nothing"
 fi
 
-set +e
 out="$("$ALIASES" --home "$alias_home" 2>&1)"; rc=$?
-set -e
 assert_eq "install_aliases install exits 0" "0" "$rc"
 if grep -q 'ops-toolbox bash_aliases' "$alias_home/.bashrc"; then
   ok "install_aliases wrote a marked block"
@@ -882,24 +861,18 @@ else
   err "install_aliases did not write the marked block"
 fi
 first_bashrc="$(cat "$alias_home/.bashrc")"
-set +e
 "$ALIASES" --home "$alias_home" >/dev/null 2>&1
-set -e
 if [[ "$first_bashrc" == "$(cat "$alias_home/.bashrc")" ]]; then
   ok "install_aliases second run is a no-op"
 else
   err "install_aliases second run rewrote .bashrc"
 fi
 
-set +e
 out="$("$ALIASES" --status --home "$alias_home" 2>&1)"; rc=$?
-set -e
 assert_eq "install_aliases --status MATCH -> 0" "0" "$rc"
 assert_contains "install_aliases --status says MATCH" "$out" "MATCH"
 
-set +e
 out="$("$ALIASES" --uninstall --dry-run --home "$alias_home" 2>&1)"; rc=$?
-set -e
 assert_eq "install_aliases uninstall --dry-run exits 0" "0" "$rc"
 if grep -q 'ops-toolbox bash_aliases' "$alias_home/.bashrc"; then
   ok "uninstall --dry-run left the block in place"
@@ -907,9 +880,7 @@ else
   err "uninstall --dry-run removed the block"
 fi
 
-set +e
 "$ALIASES" --uninstall --home "$alias_home" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "install_aliases uninstall exits 0" "0" "$rc"
 if grep -q 'ops-toolbox bash_aliases' "$alias_home/.bashrc" 2>/dev/null; then
   err "uninstall left the marked block behind"
@@ -918,11 +889,9 @@ else
 fi
 rm -rf "$alias_home"
 
-# --- disk_cleanup.sh ------------------------------------------------------
+section "disk_cleanup.sh"
 CLEAN="$L/disk_cleanup.sh"
-set +e
 "$CLEAN" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "disk_cleanup without --yes -> 3" "3" "$rc"
 
 clean_home="$(mktemp -d)"
@@ -934,9 +903,7 @@ printf 'old-bytes\n' > "$old_file"
 printf 'new-bytes\n' > "$new_file"
 touch -d '10 days ago' "$old_file"
 
-set +e
 out="$("$CLEAN" --dry-run --days 1 --home "$clean_home" --tmp "$clean_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup --dry-run exits 0" "0" "$rc"
 assert_contains "disk_cleanup dry-run names the old file" "$out" "old.txt"
 assert_contains "disk_cleanup dry-run reports no changes" "$out" "dry-run complete; no changes written"
@@ -946,9 +913,7 @@ else
   err "disk_cleanup --dry-run deleted a temp file"
 fi
 
-set +e
 out="$("$CLEAN" --yes --days 1 --home "$clean_home" --tmp "$clean_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup --yes exits 0" "0" "$rc"
 if [[ ! -f "$old_file" && -f "$new_file" ]]; then
   ok "disk_cleanup deleted the old file and kept the new one"
@@ -965,10 +930,8 @@ fi
 xdg_outside="$(mktemp -d)"
 mkdir -p "$xdg_outside/thumbnails"
 printf 'not-ours\n' > "$xdg_outside/thumbnails/keep.png"
-set +e
 out="$(XDG_CACHE_HOME="$xdg_outside" "$CLEAN" --yes --days 1 \
   --home "$clean_home" --tmp "$clean_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup --home with an ambient XDG_CACHE_HOME exits 0" "0" "$rc"
 if [[ -f "$xdg_outside/thumbnails/keep.png" ]]; then
   ok "--home makes an ambient XDG_CACHE_HOME inert"
@@ -980,10 +943,8 @@ assert_contains "the ignored XDG_CACHE_HOME is announced" "$out" "XDG_CACHE_HOME
 # The variable is not being distrusted, only re-aimed: without --home it is the
 # caller's own cache and must still be cleaned.
 printf 'ours\n' > "$xdg_outside/thumbnails/mine.png"
-set +e
 out="$(HOME="$clean_home" XDG_CACHE_HOME="$xdg_outside" "$CLEAN" --yes --days 1 \
   --tmp "$clean_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup without --home exits 0" "0" "$rc"
 if [[ ! -f "$xdg_outside/thumbnails/mine.png" ]]; then
   ok "without --home the XDG thumbnail cache is still cleaned"
@@ -1006,32 +967,24 @@ printf 'old-core\n' > "$old_core"
 printf 'new-core\n' > "$new_core"
 touch -d '10 days ago' "$old_core"
 
-set +e
 "$CLEAN" --coredump-dir / --dry-run --home "$core_home" --tmp "$core_tmp" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "disk_cleanup --coredump-dir / -> 3" "3" "$rc"
 
 # The literal '/' above was the only spelling this suite checked, and an exact
 # string guard passed everything else through to a recursive, sudo-escalating
 # delete of the whole filesystem. Each of these names root just as surely.
 for core_root in '//' '/.' '/../' '/var/..' '/tmp/../'; do
-  set +e
   "$CLEAN" --coredump-dir "$core_root" --include-coredumps --days 0 --dry-run \
     --home "$core_home" --tmp "$core_tmp" >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "disk_cleanup --coredump-dir $core_root -> 3" "3" "$rc"
 done
 
 # ...and the guard must not become so eager that a real directory is refused.
-set +e
 "$CLEAN" --coredump-dir "$core_dir" --include-coredumps --days 0 --dry-run \
   --home "$core_home" --tmp "$core_tmp" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "disk_cleanup --coredump-dir <real dir> -> 0" "0" "$rc"
 
-set +e
 out="$("$CLEAN" --yes --days 1 --home "$core_home" --tmp "$core_tmp" --coredump-dir "$core_dir" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup without --include-coredumps exits 0" "0" "$rc"
 if [[ -f "$old_core" && -f "$new_core" ]]; then
   ok "disk_cleanup left coredumps alone without --include-coredumps"
@@ -1040,9 +993,7 @@ else
 fi
 assert_contains "disk_cleanup names the coredump skip" "$out" "skipped: coredumps"
 
-set +e
 out="$("$CLEAN" --dry-run --days 1 --home "$core_home" --tmp "$core_tmp" --include-coredumps --coredump-dir "$core_dir" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup --include-coredumps --dry-run exits 0" "0" "$rc"
 assert_contains "disk_cleanup coredump dry-run names the old file" "$out" "old.core"
 assert_contains "disk_cleanup coredump dry-run reports no changes" "$out" "dry-run complete; no changes written"
@@ -1052,9 +1003,7 @@ else
   err "disk_cleanup coredump --dry-run deleted a file"
 fi
 
-set +e
 out="$("$CLEAN" --yes --days 1 --home "$core_home" --tmp "$core_tmp" --include-coredumps --coredump-dir "$core_dir" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup --include-coredumps --yes exits 0" "0" "$rc"
 if [[ ! -f "$old_core" && -f "$new_core" ]]; then
   ok "disk_cleanup deleted the old coredump and kept the new one"
@@ -1079,9 +1028,7 @@ printf 'payload\n' > "$trash_home/.local/share/Trash/files/project/nested/big.bi
 printf 'loose\n'   > "$trash_home/.local/share/Trash/files/loose.txt"
 : > "$trash_home/.local/share/Trash/info/project.trashinfo"
 
-set +e
 out="$("$CLEAN" --yes --include-trash --home "$trash_home" --tmp "$trash_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup --include-trash exits 0" "0" "$rc"
 assert_eq "disk_cleanup removes a trashed directory, not just its files" "" \
   "$(ls -A "$trash_home/.local/share/Trash/files" 2>/dev/null)"
@@ -1104,9 +1051,7 @@ mkdir -p "$trash_home/.local/share/Trash/info" "$other_disk/files"
 printf 'many-bytes-of-iso\n' > "$other_disk/files/big.iso"
 ln -s "$other_disk/files" "$trash_home/.local/share/Trash/files"
 
-set +e
 out="$("$CLEAN" --dry-run --include-trash --home "$trash_home" --tmp "$trash_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup trash --dry-run exits 0" "0" "$rc"
 assert_contains "disk_cleanup dry-run names the file in a relocated trash" "$out" "big.iso"
 assert_not_contains "disk_cleanup does not call a relocated trash empty" "$out" "nothing in trash files"
@@ -1119,9 +1064,7 @@ else
   err "disk_cleanup trash --dry-run emptied a relocated trash"
 fi
 
-set +e
 out="$("$CLEAN" --yes --include-trash --home "$trash_home" --tmp "$trash_tmp" 2>&1)"; rc=$?
-set -e
 assert_eq "disk_cleanup relocated trash exits 0" "0" "$rc"
 assert_eq "disk_cleanup keeps a relocated Trash symlink" "yes" \
   "$([[ -L "$trash_home/.local/share/Trash/files" ]] && echo yes || echo no)"
@@ -1130,12 +1073,10 @@ assert_eq "disk_cleanup empties a relocated Trash" "" \
 assert_not_contains "disk_cleanup counts what a relocated trash freed" "$out" "freed at least 0B"
 rm -rf "$trash_home" "$trash_tmp" "$other_disk"
 
-# --- net_doctor.sh --------------------------------------------------------
+section "net_doctor.sh"
 NET="$L/net_doctor.sh"
 scratch_home="$(mktemp -d)"
-set +e
 out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$NET" 2>&1)"; rc=$?
-set -e
 assert_eq "net_doctor exits 0 with almost nothing installed" "0" "$rc"
 assert_contains "net_doctor prints a summary" "$out" "== summary =="
 assert_contains "net_doctor has a routes section" "$out" "== routes =="
@@ -1169,12 +1110,10 @@ else
 fi
 assert_contains "net_doctor --quiet still summarises" "$out" "== summary =="
 
-# --- schedule_report.sh ---------------------------------------------------
+section "schedule_report.sh"
 SCHED="$L/schedule_report.sh"
 scratch_home="$(mktemp -d)"
-set +e
 out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$SCHED" 2>&1)"; rc=$?
-set -e
 assert_eq "schedule_report exits 0 with almost nothing installed" "0" "$rc"
 assert_contains "schedule_report prints a summary" "$out" "== summary =="
 assert_contains "schedule_report has a crontab section" "$out" "== crontab =="
@@ -1198,18 +1137,14 @@ else
 fi
 assert_contains "schedule_report --quiet still summarises" "$out" "== summary =="
 
-# --- sysctl_defaults.sh ---------------------------------------------------
+section "sysctl_defaults.sh"
 SYSCTL="$L/sysctl_defaults.sh"
-set +e
 out="$("$SYSCTL" --list-groups 2>&1)"; rc=$?
-set -e
 assert_eq "sysctl_defaults --list-groups exits 0" "0" "$rc"
 assert_contains "sysctl_defaults lists inotify" "$out" "inotify"
 assert_contains "sysctl_defaults lists vm" "$out" "vm"
 
-set +e
 out="$("$SYSCTL" --only nosuchgroup 2>&1)"; rc=$?
-set -e
 assert_eq "sysctl_defaults rejects an unknown group -> 3" "3" "$rc"
 
 # Apply is tested against a fake procfs and sysctl.d, so a container that
@@ -1222,22 +1157,18 @@ printf '128\n' > "$sysctl_root/proc/fs/inotify/max_user_instances"
 printf '16384\n' > "$sysctl_root/proc/fs/inotify/max_queued_events"
 printf '60\n' > "$sysctl_root/proc/vm/swappiness"
 
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --only inotify 2>&1
 )"; rc=$?
-set -e
 assert_eq "sysctl_defaults report exits 0" "0" "$rc"
 assert_contains "sysctl_defaults reports the current watch count" "$out" "8192"
 assert_contains "sysctl_defaults names the desired watch count" "$out" "524288"
 
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --apply --dry-run --only inotify --backup-file "$sysctl_root/tmp/backup.txt" 2>&1
 )"; rc=$?
-set -e
 assert_eq "sysctl_defaults --apply --dry-run exits 0" "0" "$rc"
 assert_contains "sysctl_defaults dry-run names the drop-in" "$out" "99-ops-toolbox.conf"
 if [[ -e "$sysctl_root/sysctl.d/99-ops-toolbox.conf" || -e "$sysctl_root/tmp/backup.txt" ]]; then
@@ -1246,12 +1177,10 @@ else
   ok "sysctl_defaults --apply --dry-run wrote nothing"
 fi
 
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --apply --only inotify --backup-file "$sysctl_root/tmp/backup.txt" 2>&1
 )"; rc=$?
-set -e
 assert_eq "sysctl_defaults --apply exits 0 against a fake procfs" "0" "$rc"
 if [[ -f "$sysctl_root/sysctl.d/99-ops-toolbox.conf" ]]; then
   ok "sysctl_defaults wrote the drop-in"
@@ -1272,12 +1201,10 @@ else
   err "sysctl_defaults did not apply the live inotify value"
 fi
 
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --revert --revert-from "$sysctl_root/tmp/backup.txt" 2>&1
 )"; rc=$?
-set -e
 assert_eq "sysctl_defaults --revert exits 0" "0" "$rc"
 if [[ ! -e "$sysctl_root/sysctl.d/99-ops-toolbox.conf" ]]; then
   ok "sysctl_defaults --revert removed the drop-in"
@@ -1297,23 +1224,19 @@ fi
 planted="$sysctl_root/tmp/sysctl_defaults-backup-99999999-999999.txt"
 printf 'kernel.core_pattern=|/tmp/owned.sh\n' > "$planted"
 chmod 666 "$planted"
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --revert 2>&1
 )"; rc=$?
-set -e
 assert_eq "sysctl_defaults --revert ignores a world-writable backup" "3" "$rc"
 
 # Even from a file the caller owns, a key outside the managed table is data,
 # not an instruction.
 chmod 600 "$planted"
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --revert --revert-from "$planted" 2>&1
 )"; rc=$?
-set -e
 assert_contains "sysctl_defaults --revert skips an unmanaged key" \
   "$out" "not a key this script manages"
 
@@ -1323,100 +1246,74 @@ assert_contains "sysctl_defaults --revert skips an unmanaged key" \
 rm -f "$sysctl_root/proc/fs/inotify/max_user_watches"
 printf 'fs.inotify.max_user_watches=8192\n' > "$sysctl_root/tmp/sandbox.txt"
 chmod 600 "$sysctl_root/tmp/sandbox.txt"
-set +e
 out="$(
   SYSCTL_D="$sysctl_root/sysctl.d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
     "$SYSCTL" --revert --revert-from "$sysctl_root/tmp/sandbox.txt" 2>&1
 )"; rc=$?
-set -e
 assert_contains "sysctl_defaults refuses sysctl(8) under a PROC_SYS override" \
   "$out" "refusing 'sysctl -w"
 
 rm -rf "$sysctl_root"
 
-# --- tls_expiry.sh --------------------------------------------------------
+section "tls_expiry.sh"
 TLS="$L/tls_expiry.sh"
-set +e
 "$TLS" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "tls_expiry without --file or --host -> 3" "3" "$rc"
 
-set +e
 "$TLS" --days notanumber --file /dev/null >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "tls_expiry rejects --days notanumber -> 3" "3" "$rc"
 
-set +e
 "$TLS" --fail-on nope --file /dev/null >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "tls_expiry rejects --fail-on nope -> 3" "3" "$rc"
 
-set +e
 "$TLS" --file --days 7 >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "tls_expiry --file rejects the next flag as a path -> 3" "3" "$rc"
 
 # openssl is not in the tester image on purpose (see tester/Dockerfile): a
 # missing binary must be exit 2, not a crash, and --help already ran above.
 if ! command -v openssl >/dev/null 2>&1; then
-  set +e
   PATH="/usr/bin:/bin" "$TLS" --file /dev/null >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "tls_expiry without openssl -> 2" "2" "$rc"
   ok "tls_expiry PEM checks skipped (openssl not installed)"
 else
   expired="$L/tests/fixtures/expired.pem"
-  set +e
   out="$("$TLS" --file "$expired" 2>&1)"; rc=$?
-  set -e
   assert_eq "tls_expiry expired fixture -> 1" "1" "$rc"
   assert_contains "tls_expiry names the expired leaf" "$out" "expired"
   assert_contains "tls_expiry prints a summary" "$out" "== summary =="
 
-  set +e
   out="$("$TLS" --file "$expired" --fail-on never 2>&1)"; rc=$?
-  set -e
   assert_eq "tls_expiry --fail-on never stays 0" "0" "$rc"
 
   soon="$(mktemp --suffix=.pem)"
   soon_key="$(mktemp)"
   openssl req -x509 -newkey rsa:2048 -keyout "$soon_key" -out "$soon" -days 7 -nodes -subj "/CN=soon.test" >/dev/null 2>&1
   rm -f "$soon_key"
-  set +e
   out="$("$TLS" --file "$soon" --days 30 --fail-on expired 2>&1)"; rc=$?
-  set -e
   assert_eq "tls_expiry soon-to-expire is warn not fail" "0" "$rc"
   assert_contains "tls_expiry warns inside the window" "$out" "[warn]"
-  set +e
   "$TLS" --file "$soon" --days 30 --fail-on warn >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "tls_expiry --fail-on warn exits 1 inside the window" "1" "$rc"
 
   valid="$(mktemp --suffix=.pem)"
   valid_key="$(mktemp)"
   openssl req -x509 -newkey rsa:2048 -keyout "$valid_key" -out "$valid" -days 3650 -nodes -subj "/CN=valid.test" >/dev/null 2>&1
   rm -f "$valid_key"
-  set +e
   out="$("$TLS" --file "$valid" --days 30 2>&1)"; rc=$?
-  set -e
   assert_eq "tls_expiry long-lived cert exits 0" "0" "$rc"
   assert_contains "tls_expiry passes a long-lived cert" "$out" "[pass]"
 
   globdir="$(mktemp -d)"
   cp "$expired" "$globdir/a.pem"
   cp "$expired" "$globdir/b.pem"
-  set +e
   out="$("$TLS" --file "$globdir/*.pem" --fail-on never 2>&1)"; rc=$?
-  set -e
   assert_eq "tls_expiry quoted glob exits 0 with --fail-on never" "0" "$rc"
   assert_contains "tls_expiry glob expands a.pem" "$out" "a.pem"
   assert_contains "tls_expiry glob expands b.pem" "$out" "b.pem"
   rm -rf "$globdir"
 
   scratch_home="$(mktemp -d)"
-  set +e
   HOME="$scratch_home" TMPDIR="$scratch_home" "$TLS" --file "$valid" >/dev/null 2>&1
-  set -e
   if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
     ok "tls_expiry wrote nothing"
   else
@@ -1425,30 +1322,22 @@ else
   rm -rf "$scratch_home" "$soon" "$valid"
 fi
 
-# --- config_backup.sh -----------------------------------------------------
+section "config_backup.sh"
 BACKUP="$L/config_backup.sh"
-set +e
 "$BACKUP" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "config_backup without --yes -> 3" "3" "$rc"
 
-set +e
 "$BACKUP" --yes --paths / >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "config_backup refuses to archive / -> 3" "3" "$rc"
 
 # As with disk_cleanup, the literal '/' was the only spelling checked here, and
 # every one of these reaches the same directory — with tar pointed at --dest.
 for backup_root in '//' '/.' '/../' '/etc/..'; do
-  set +e
   "$BACKUP" --yes --paths "$backup_root" --dest /tmp >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "config_backup refuses --paths $backup_root -> 3" "3" "$rc"
 done
 
-set +e
 "$BACKUP" --yes --paths relative/path --dest /tmp >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "config_backup rejects a relative path -> 3" "3" "$rc"
 
 src="$(mktemp -d)"
@@ -1457,9 +1346,7 @@ printf 'keep-me\n' > "$src/payload.txt"
 mkdir -p "$src/nested"
 printf 'also\n' > "$src/nested/file.txt"
 
-set +e
 out="$("$BACKUP" --dry-run --paths "$src" --dest "$dest" 2>&1)"; rc=$?
-set -e
 assert_eq "config_backup --dry-run exits 0" "0" "$rc"
 assert_contains "config_backup dry-run names the archive" "$out" "would write"
 assert_contains "config_backup dry-run reports no changes" "$out" "dry-run complete; no changes written"
@@ -1469,9 +1356,7 @@ else
   err "config_backup --dry-run wrote into dest: $(ls -A "$dest" | tr '\n' ' ')"
 fi
 
-set +e
 out="$("$BACKUP" --yes --paths "$src" --dest "$dest" --keep 2 2>&1)"; rc=$?
-set -e
 assert_eq "config_backup --yes exits 0" "0" "$rc"
 archive="$(ls -1 "$dest"/config-*.tar.gz 2>/dev/null | head -n 1)"
 if [[ -n "$archive" && -s "$archive" ]]; then
@@ -1495,43 +1380,35 @@ fi
 # the suite happened to inherit, and a separate --prefix keeps this archive out
 # of the rotation counted below.
 mode_dest="$(mktemp -d)"
-set +e
 ( umask 022; "$BACKUP" --yes --paths "$src" --dest "$mode_dest" --prefix modecheck >/dev/null 2>&1 )
-set -e
 mode_archive="$(ls -1 "$mode_dest"/modecheck-*.tar.gz 2>/dev/null | head -n 1)"
 assert_eq "config_backup writes the archive mode 600" "600" \
   "$(stat -c '%a' "$mode_archive" 2>/dev/null || printf 'no-archive')"
 rm -rf "$mode_dest"
 
-set +e
 out="$("$BACKUP" --list --dest "$dest" 2>&1)"; rc=$?
-set -e
 assert_eq "config_backup --list exits 0" "0" "$rc"
 assert_contains "config_backup --list shows the payload" "$out" "payload.txt"
 
 empty_dest="$(mktemp -d)"
-set +e
 "$BACKUP" --list --dest "$empty_dest" >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "config_backup --list with no archives -> 3" "3" "$rc"
 rmdir "$empty_dest"
 
 # Second write, then a third with --keep 1, must leave a single archive.
 sleep 1
-"$BACKUP" --yes --paths "$src" --dest "$dest" --keep 2 >/dev/null 2>&1
+"$BACKUP" --yes --paths "$src" --dest "$dest" --keep 2 >/dev/null 2>&1 || err "config_backup --keep 2 exited $? — the retention count below would be met by the first archive alone"
 sleep 1
-"$BACKUP" --yes --paths "$src" --dest "$dest" --keep 1 >/dev/null 2>&1
+"$BACKUP" --yes --paths "$src" --dest "$dest" --keep 1 >/dev/null 2>&1 || err "config_backup --keep 1 exited $? — the retention count below would be met by the first archive alone"
 left="$(ls -1 "$dest"/config-*.tar.gz 2>/dev/null | grep -c . || true)"
 assert_eq "config_backup --keep 1 retains one archive" "1" "$left"
 rm -rf "$src" "$dest"
 
-# --- ssh_client_doctor.sh -------------------------------------------------
+section "ssh_client_doctor.sh"
 SSHDOC="$L/ssh_client_doctor.sh"
 missing_dir="$(mktemp -d)"
 rmdir "$missing_dir"
-set +e
 out="$("$SSHDOC" --ssh-dir "$missing_dir" 2>&1)"; rc=$?
-set -e
 assert_eq "ssh_client_doctor missing dir exits 0" "0" "$rc"
 assert_contains "ssh_client_doctor skips a missing dir" "$out" "does not exist"
 
@@ -1546,9 +1423,7 @@ chmod 644 "$good/id_ed25519.pub"
 printf 'IdentityFile id_ed25519\nIdentityFile missing-key\n' > "$good/config"
 chmod 600 "$good/config"
 
-set +e
 out="$("$SSHDOC" --ssh-dir "$good" 2>&1)"; rc=$?
-set -e
 assert_eq "ssh_client_doctor clean dir with missing IdentityFile -> 0 (warn only)" "0" "$rc"
 assert_contains "ssh_client_doctor passes 700 on the directory" "$out" "mode 700"
 
@@ -1558,36 +1433,26 @@ assert_contains "ssh_client_doctor passes 700 on the directory" "$out" "mode 700
 # files being writable by group or other, not readable: 755 grants no write and
 # must pass, 660 does and must not.
 chmod 755 "$good/config"
-set +e
 out="$("$SSHDOC" --ssh-dir "$good" 2>&1)"; rc=$?
-set -e
 assert_eq "ssh_client_doctor accepts config mode 755 (no group/other write)" "0" "$rc"
 assert_contains "ssh_client_doctor names the accepted mode" "$out" "config mode 755"
 
 chmod 660 "$good/config"
-set +e
 out="$("$SSHDOC" --ssh-dir "$good" 2>&1)"; rc=$?
-set -e
 assert_eq "ssh_client_doctor rejects config mode 660 (group write) -> 1" "1" "$rc"
 chmod 600 "$good/config"
 assert_contains "ssh_client_doctor warns on a missing IdentityFile" "$out" "missing-key"
 
-set +e
 "$SSHDOC" --ssh-dir "$good" --fail-on warn >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "ssh_client_doctor --fail-on warn exits 1 for missing IdentityFile" "1" "$rc"
 
 chmod 644 "$good/id_ed25519"
-set +e
 out="$("$SSHDOC" --ssh-dir "$good" 2>&1)"; rc=$?
-set -e
 assert_eq "ssh_client_doctor world-readable private key -> 1" "1" "$rc"
 assert_contains "ssh_client_doctor fails a 644 private key" "$out" "id_ed25519 mode 644"
 
 scratch_home="$(mktemp -d)"
-set +e
 HOME="$scratch_home" TMPDIR="$scratch_home" "$SSHDOC" --ssh-dir "$good" >/dev/null 2>&1
-set -e
 if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
   ok "ssh_client_doctor wrote nothing"
 else
@@ -1595,33 +1460,34 @@ else
 fi
 rm -rf "$scratch_home" "$good"
 
-# --- status.sh --------------------------------------------------------------
+section "status.sh"
 status_sections="$("$L/status.sh" --list-sections)"
 for section in os disk packages reboot timer git; do
   assert_contains "status lists section $section" "$status_sections" "$section"
 done
-set +e
 "$L/status.sh" --only nosuch >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "status rejects unknown --only section -> 3" "3" "$rc"
-set +e
 "$L/status.sh" --only , >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "status --only empty selection -> 4" "4" "$rc"
-set +e
 out="$(env -u HOME "$L/status.sh" --list-sections 2>&1)"; rc=$?
-set -e
 assert_eq "status --list-sections works with HOME unset" "0" "$rc"
-set +e
 out="$("$L/status.sh" --only os 2>&1)"; rc=$?
-set -e
 assert_eq "status --only os exits 0" "0" "$rc"
 assert_contains "status --only os prints the os section" "$out" "os"
 
 echo
-if (( failures > 0 )); then
-  echo "$failures linux script check(s) failed" >&2
+end_section
+# The file's own floor: it reached this line having opened sections, each of
+# which asserted something. Reaching it at all is what the removal of `-e`
+# put in question, and the count of sections is what a truncated copy of this
+# file would get wrong.
+if (( sections == 0 || checks == 0 )); then
+  echo "no section ran ($sections sections, $checks checks) — the suite is not asserting anything" >&2
   exit 1
 fi
-echo "=== all linux script checks passed ($EXPECT_PKG_MGR) ==="
+if (( failures > 0 )); then
+  echo "$failures of $checks linux script check(s) failed" >&2
+  exit 1
+fi
+echo "=== all $checks linux script checks passed in $sections sections ($EXPECT_PKG_MGR) ==="
 exit 0

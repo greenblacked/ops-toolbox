@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
-# Run from the Linux tester container; repo root is mounted at /repo.
-set -euo pipefail
+# Run from the Linux tester container, where the repo root is mounted at /repo,
+# and natively on a macOS runner, where /bin/bash is 3.2 — so nothing here may
+# use a Bash 4 construct (CONTRIBUTING.md).
+#
+# No `-e`. A suite that aborts on the first non-zero exit reports the shell's
+# status and discards the output it had just captured, so the real error is
+# invisible. This file is where that was learned: an unguarded
+# `out="$(… stay_fresh_agent.sh logs …)"` met a Bash 3.2 parse error in the
+# script it was calling, and the macOS job reported "exit 2" and nothing else —
+# no [fail] line, no message, every assertion below it silently unrun. The
+# diagnosis only arrived after that one call site was wrapped in `set +e` by
+# hand. The 84 sandwiches this file had grown were the evidence of a running
+# fight. Every failure below is a named assertion, which is the dialect
+# test_stay_fresh_steps.sh already uses.
+set -uo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/repo}"
 M="$REPO_ROOT/macos-initial-setup"
@@ -9,6 +22,17 @@ if [[ ! -d "$M" ]]; then
   echo "expected macos-initial-setup at $M" >&2
   exit 1
 fi
+
+# Sixteen fixtures below start from `mktemp -d` or `mktemp`. Without `-e` a
+# failed mktemp leaves the variable empty, and every path built from it then
+# addresses the root of the filesystem rather than a scratch directory. Prove
+# once that scratch space works instead of guarding sixteen call sites.
+tmp_probe="$(mktemp -d 2>/dev/null)"
+if [[ -z "$tmp_probe" || ! -d "$tmp_probe" ]]; then
+  echo "cannot create scratch directories under ${TMPDIR:-/tmp}" >&2
+  exit 1
+fi
+rmdir "$tmp_probe"
 
 # stay_fresh.sh reads these from the environment to locate somebody else's cache
 # or to reach a notifier, and a developer's shell — or this container — often
@@ -28,8 +52,36 @@ unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
 
 failures=0
-ok()  { echo "[ ok ] $*"; }
-err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
+# Counted so the run can prove it asserted something. Without `-e` a suite that
+# dies early exits 0 with a short log, and nothing says so; the floor does.
+checks=0
+section_checks=0
+sections=0
+section_name=""
+ok()  { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[ ok ] $*"; }
+err() { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[fail] $*" >&2; failures=$((failures + 1)); }
+
+# The floor, per section rather than per file. Without `-e` the shape of a
+# silent failure changes: a section whose loop ran over nothing, or whose
+# fixture never got as far as an assertion, exits 0 with a shorter log and
+# nothing says so. Each `section` call closes the previous one and fails it if
+# it asserted nothing, and the end of the file closes the last. A count floor
+# for the whole file would need a number that goes stale every time a test is
+# added or retired; a section either asserted or it did not.
+section() {
+  end_section
+  section_name="$1"
+  section_checks=0
+  sections=$((sections + 1))
+}
+end_section() {
+  [[ -n "$section_name" ]] || return 0
+  if (( section_checks == 0 )); then
+    err "section '$section_name' made no assertion — its loop ran over nothing or its fixture never reached one"
+  fi
+  section_name=""
+  section_checks=0
+}
 
 assert_eq() {
   local label="$1" expected="$2" actual="$3"
@@ -60,7 +112,7 @@ assert_not_contains() {
   fi
 }
 
-# --- discovery -------------------------------------------------------------
+section "discovery"
 # Discovered rather than listed. The hardcoded array this replaced named four
 # scripts and the package has grown to nine, so brewfile.sh, macos_defaults.sh,
 # workstation_doctor.sh and launchd/stay_fresh_agent.sh had no coverage here at
@@ -84,16 +136,25 @@ if (( ${#sh_scripts[@]} == 0 )); then
 fi
 ok "discovered ${#sh_scripts[@]} scripts under macos-initial-setup/"
 
-# --- bash -n (syntax) ---
+section "bash -n (syntax)"
+# "$BASH", not "bash". Test / macos native runs this suite with /bin/bash, the
+# Apple Bash 3.2 every Mac ships and the only interpreter here that parses like
+# the one a user's machine will use — but a bare `bash` resolves through PATH,
+# and that runner has Homebrew's Bash 5 ahead of /bin. So the one check whose
+# job is to catch a 3.2 parse error was asking Bash 5, and passed a file 3.2
+# refuses: an apostrophe inside a heredoc inside a $( ) command substitution,
+# which 3.2 reads as an unterminated quote and follows to end of file. The
+# suite then died at the first script it tried to run, with the shell's exit
+# code and no message. "$BASH" is the interpreter actually running this file.
 for f in "${sh_scripts[@]}"; do
-  if bash -n "$f"; then
+  if "${BASH:-bash}" -n "$f"; then
     ok "bash -n ${f#"$REPO_ROOT/"}"
   else
     err "bash -n ${f#"$REPO_ROOT/"}"
   fi
 done
 
-# --- shellcheck (errors only; warnings are too noisy for legacy/v1 script style) ---
+section "shellcheck (errors only; warnings are too noisy for legacy/v1 script style)"
 for f in "${sh_scripts[@]}"; do
   rel="${f#"$REPO_ROOT/"}"
   if shellcheck --severity=error -x -s bash "$f"; then
@@ -105,10 +166,8 @@ done
 
 zsh_file="$M/zsh_aliases.zsh"
 if [[ -f "$zsh_file" ]]; then
-  set +e
   sc_err="$(shellcheck --severity=error -s zsh "$zsh_file" 2>&1)"
   sc_rc=$?
-  set -e
   if [[ "$sc_rc" -eq 0 ]]; then
     ok "shellcheck (zsh) ${zsh_file#"$REPO_ROOT/"}"
   elif grep -q "Unknown shell" <<<"$sc_err"; then
@@ -121,7 +180,7 @@ else
   err "missing $zsh_file"
 fi
 
-# --- readers that exit early, in a tested condition -------------------------
+section "readers that exit early, in a tested condition"
 # Under `set -o pipefail` a reader that stops at the first match kills the
 # writer with SIGPIPE; the pipeline then reports 141 and a match reads as a
 # miss. It bites only when the writer's output outgrows the pipe buffer —
@@ -170,7 +229,7 @@ elif (( sigpipe_hits == 0 )); then
   ok "no pipefail script here tests a pipeline ending in an early-exit reader ($sigpipe_scanned scanned)"
 fi
 
-# --- --help (must work before macOS preflight) ---
+section "--help (must work before macOS preflight)"
 for f in "${sh_scripts[@]}"; do
   if "$f" --help >/dev/null 2>&1; then
     ok "${f#"$M/"} --help"
@@ -179,7 +238,7 @@ for f in "${sh_scripts[@]}"; do
   fi
 done
 
-# --- HOME: every path the script clears is built from it ------------------
+section "HOME: every path the script clears is built from it"
 # Unset, `set -u` aborted with a bare "HOME: unbound variable" before --help
 # could answer. Empty was worse and silent: "$HOME/Library/Caches" is
 # "/Library/Caches", the system cache directory, and "$HOME/.Trash" is
@@ -187,45 +246,33 @@ done
 # The flags that need no home directory still work; anything that touches a
 # path stops with exit 2 and says why.
 sf="$M/stay_fresh.sh"
-set +e
 out="$(env -u HOME "$sf" --help 2>&1)"; rc=$?
-set -e
 assert_eq "stay_fresh --help works with HOME unset" "0" "$rc"
 assert_contains "the help is the real help" "$out" "macOS housekeeping in one script"
-set +e
 out="$(env -u HOME "$sf" --list-steps 2>&1)"; rc=$?
-set -e
 assert_eq "stay_fresh --list-steps works with HOME unset" "0" "$rc"
 assert_contains "the step ids are listed without a home directory" "$out" "user-caches"
 # The agent asks this exact question to validate --notify, so it must not
 # need a home directory either.
-set +e
 env -u HOME "$sf" --list-steps --notify macos,slack >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "the agent's --notify probe works with HOME unset" "0" "$rc"
 for home_case in unset empty; do
-  set +e
   if [[ "$home_case" == unset ]]; then
     out="$(env -u HOME "$sf" --yes --no-sudo --only user-caches 2>&1)"; rc=$?
   else
     out="$(HOME="" "$sf" --yes --no-sudo --only user-caches 2>&1)"; rc=$?
   fi
-  set -e
   assert_eq "a run with HOME $home_case is refused -> 2" "2" "$rc"
   assert_contains "a run with HOME $home_case says why" "$out" "HOME is not set"
   assert_not_contains "a run with HOME $home_case never names a system path" "$out" "/Library/Caches"
 done
-set +e
 out="$(HOME="$M/stay_fresh.sh" "$sf" --yes --no-sudo --only user-caches 2>&1)"; rc=$?
-set -e
 assert_eq "a HOME that is not a directory is refused -> 2" "2" "$rc"
 assert_contains "a non-directory HOME is named" "$out" "HOME is not a directory"
 
-# --- unknown CLI -> exit 3 (parsed before preflight) ---
+section "unknown CLI -> exit 3 (parsed before preflight)"
 for f in "${sh_scripts[@]}"; do
-  set +e
   out="$("$f" --definitely-not-a-valid-flag-12345 2>&1)"; rc=$?
-  set -e
   if [[ "$rc" -eq 3 ]]; then
     ok "${f#"$M/"} unknown flag -> exit 3"
   else
@@ -233,7 +280,7 @@ for f in "${sh_scripts[@]}"; do
   fi
 done
 
-# --- Linux / non-Darwin: preflight should reject (documented exit 2) ---
+section "Linux / non-Darwin: preflight should reject (documented exit 2)"
 # Discovery again, with a table for the two scripts that need an argument to
 # reach their preflight at all. Naming exceptions rather than subjects is what
 # keeps this from rotting the way the old list did: a new script is covered the
@@ -259,10 +306,8 @@ if [[ "$(uname -s)" == "Linux" ]]; then
       ok "$name: skipped, it has no platform guard by design"
       continue
     fi
-    set +e
     # shellcheck disable=SC2046  # an empty argument list must vanish, not become ''
     out="$("$f" $(preflight_args "$f") 2>&1)"; rc=$?
-    set -e
     if [[ "$rc" -ne 2 ]]; then
       err "$name: expected exit 2 on Linux, got $rc"
     elif ! grep -q "macOS" <<<"$out"; then
@@ -275,40 +320,28 @@ else
   ok "skipping Linux preflight assertions (unusual host OS: $(uname -s))"
 fi
 
-# --- selection CLIs validate before macOS-only preflight -------------------
+section "selection CLIs validate before macOS-only preflight"
 tools_out="$("$M/install_devtools.sh" --list-tools)"
 for tool in python terraform go helm; do
   assert_contains "install_devtools lists selectable $tool" "$tools_out" "$tool"
 done
-set +e
 "$M/install_devtools.sh" --only python,nosuch >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "install_devtools rejects unknown --only tool -> 3" "3" "$rc"
 
 steps_out="$("$M/stay_fresh.sh" --list-steps)"
 for step_id in brew docker workspace-storage krew versions os-updates; do
   assert_contains "stay_fresh lists selectable $step_id" "$steps_out" "$step_id"
 done
-set +e
 "$M/stay_fresh.sh" --only nosuch >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "stay_fresh rejects unknown --only step -> 3" "3" "$rc"
-set +e
 "$M/stay_fresh.sh" --only memory >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "stay_fresh keeps memory purge behind explicit opt-in" "3" "$rc"
-set +e
 "$M/stay_fresh.sh" --step-timeout abc >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "stay_fresh rejects a non-numeric --step-timeout -> 3" "3" "$rc"
-set +e
 "$M/stay_fresh.sh" --step-timeout >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "stay_fresh rejects --step-timeout without a value -> 3" "3" "$rc"
 
-set +e
 "$M/install_apps.sh" --only-formulae nosuch >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "install_apps rejects unknown --only-formulae -> 3" "3" "$rc"
 
 # install_apps.sh's two catalogues answer here, on Linux, ahead of every
@@ -321,15 +354,11 @@ assert_eq "install_apps rejects unknown --only-formulae -> 3" "3" "$rc"
 # said to these flags before they existed. Both would satisfy an assertion
 # that only looked at the ids being absent, which is the shape of a test that
 # passes while proving nothing.
-set +e
 casks_out="$("$M/install_apps.sh" --list-casks 2>&1)"; rc=$?
-set -e
 assert_eq "install_apps --list-casks answers before the macOS preflight" "0" "$rc"
 assert_not_contains "install_apps --list-casks starts no preflight" "$casks_out" \
   "preflight checks"
-set +e
 formulae_out="$("$M/install_apps.sh" --list-formulae 2>&1)"; rc=$?
-set -e
 assert_eq "install_apps --list-formulae answers before the macOS preflight" "0" "$rc"
 assert_not_contains "install_apps --list-formulae starts no preflight" "$formulae_out" \
   "preflight checks"
@@ -353,16 +382,14 @@ else
   ok "install_apps --list-casks prints one bare cask id per line"
 fi
 
-# --- install_apps profiles --------------------------------------------------
+section "install_apps profiles"
 # The contract: a profile answers before preflight, filters both listings,
 # loses to an explicit --only, and refuses a name it does not know.
 #
 # The membership assertion is the one that earns its keep. A typo in a profile
 # list selects nothing, and selecting nothing looks exactly like the `full`
 # profile — so without this, a misspelled cask id would ship silently.
-set +e
 profiles_out="$("$M/install_apps.sh" --list-profiles 2>&1)"; rc=$?
-set -e
 assert_eq "install_apps --list-profiles answers before the macOS preflight" "0" "$rc"
 assert_not_contains "install_apps --list-profiles starts no preflight" "$profiles_out" \
   "preflight checks"
@@ -372,18 +399,14 @@ for profile_name in core platform full; do
 done
 
 for profile_name in core platform; do
-  set +e
   prof_casks="$("$M/install_apps.sh" --profile "$profile_name" --list-casks 2>&1)"
   prof_formulae="$("$M/install_apps.sh" --profile "$profile_name" --list-formulae 2>&1)"
-  set -e
   # Asserted through the exit code, not by inspecting the listing. An id the
   # catalogue lacks is filtered OUT of the listing, so comparing the listing
   # against the catalogue can never see it - that version of this test passed
   # against a deliberately typo'd profile. The script refuses instead, so a
   # healthy profile exiting 0 here is the real assertion.
-  set +e
   "$M/install_apps.sh" --profile "$profile_name" --list-casks >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "every member of profile $profile_name resolves in the catalogue" "0" "$rc"
   if (( $(grep -c . <<<"$prof_casks") < $(grep -c . <<<"$casks_out") )); then
     ok "profile $profile_name narrows the cask catalogue"
@@ -392,12 +415,10 @@ for profile_name in core platform; do
   fi
 done
 
-set +e
 full_casks="$("$M/install_apps.sh" --profile full --list-casks 2>&1)"
 only_wins="$("$M/install_apps.sh" --profile core --only slack --list-casks 2>&1)"
 prof_eq="$("$M/install_apps.sh" --profile=core --list-casks 2>&1)"
 prof_sp="$("$M/install_apps.sh" --profile core --list-casks 2>&1)"
-set -e
 assert_eq "profile full is the unfiltered catalogue" "$casks_out" "$full_casks"
 assert_eq "an explicit --only wins over the profile" "slack" "$only_wins"
 assert_eq "--profile=NAME and --profile NAME agree" "$prof_sp" "$prof_eq"
@@ -405,10 +426,8 @@ assert_eq "--profile=NAME and --profile NAME agree" "$prof_sp" "$prof_eq"
 # The listing reflects the invocation, so it has to honour both selectors. An
 # earlier version filtered by --only alone, which printed slack under
 # `--profile core --skip slack` - a list the run itself would not install.
-set +e
 skip_casks="$("$M/install_apps.sh" --profile core --skip slack --list-casks 2>&1)"
 skip_formulae="$("$M/install_apps.sh" --profile core --skip-formulae jq,yq --list-formulae 2>&1)"
-set -e
 assert_not_contains "--skip removes a cask from the profile's listing" \
   "$skip_casks" "slack"
 assert_contains "--skip leaves the rest of the profile listed" \
@@ -418,17 +437,11 @@ assert_not_contains "--skip-formulae removes a formula from the listing" \
 assert_contains "--skip-formulae leaves the rest listed" \
   "$skip_formulae" "ripgrep"
 
-set +e
 "$M/install_apps.sh" --profile nosuch --list-casks >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "an unknown profile exits 3" "3" "$rc"
-set +e
 "$M/install_apps.sh" --profile >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "--profile with no value exits 3" "3" "$rc"
-set +e
 "$M/install_apps.sh" --profile= >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "--profile= with an empty value exits 3" "3" "$rc"
 
 for formula in jq gh sops age vault packer cloud-sql-proxy fzf ripgrep fd k6 \
@@ -475,11 +488,9 @@ done
 # returns for half a dozen other reasons. What matters either way is that the
 # run was stopped by a *preflight* and not by argument validation: exit 3 is
 # the one code that would mean a listed name was rejected.
-set +e
 out="$("$M/install_apps.sh" --only-formulae "$(tr '\n' ',' <<<"$formulae_out")" \
   </dev/null 2>&1)"
 rc=$?
-set -e
 assert_not_contains "every listed formula is one --only-formulae accepts" "$out" \
   "unknown formula in --only-formulae"
 assert_eq "the listed-formulae probe is stopped by a preflight, not by usage -> 2" \
@@ -496,7 +507,7 @@ legacy_help="$("$M/v1_stay_fresh.sh" --help)"
 assert_contains "legacy maintenance help carries deprecation warning" "$legacy_help" "DEPRECATED"
 assert_contains "legacy maintenance help documents the opt-in flag" "$legacy_help" "--legacy-run"
 
-# --- v1_stay_fresh: the fixed sequence is opt-in --------------------------
+section "v1_stay_fresh: the fixed sequence is opt-in"
 # The deprecation notice printed on every run and then the run happened
 # anyway: Xcode Archives deleted, `brew --cache` emptied, `killall Finder`,
 # with no dry run to preview it and no skip flag to hold any of it back. A
@@ -515,11 +526,9 @@ mkdir -p "$v1_scratch/bin" "$v1_scratch/home" "$v1_scratch/tmp"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$v1_scratch/bin/dscl"
 printf '%s\n' '#!/bin/sh' 'exit 0' > "$v1_scratch/bin/sudo"
 chmod +x "$v1_scratch/bin/dscl" "$v1_scratch/bin/sudo"
-set +e
 out="$(HOME="$v1_scratch/home" TMPDIR="$v1_scratch/tmp" \
   PATH="$v1_scratch/bin:/usr/bin:/bin" "$M/v1_stay_fresh.sh" </dev/null 2>&1)"
 rc=$?
-set -e
 assert_eq "v1_stay_fresh refuses a bare run -> 3" "3" "$rc"
 assert_contains "a refused v1_stay_fresh run still prints the deprecation" "$out" \
   "DEPRECATED"
@@ -538,9 +547,13 @@ else
 fi
 rm -rf "$v1_scratch"
 
-# --- stay_fresh safety contracts ------------------------------------------
-# Fake only the three host-identification commands. Everything that can mutate
-# is either dry-run or confined to a scratch HOME/TMPDIR below.
+# The shared macOS fake. Only the host-identification commands are faked;
+# everything that can mutate is either dry-run or confined to a scratch
+# HOME/TMPDIR below. This is the fixture for the safety contracts, which open
+# further down: the krew block was inserted between the two, so the old
+# "stay_fresh safety contracts" heading sat above a fixture and nothing else,
+# and its assertions ran under the krew heading. Naming a section is a claim
+# that it asserts something, so the name now sits with the assertions.
 fake_macos="$(mktemp -d)"
 mkdir -p "$fake_macos/bin" "$fake_macos/home" "$fake_macos/tmp"
 printf '%s\n' '#!/bin/sh' \
@@ -571,7 +584,52 @@ printf '%s\n' '#!/bin/sh' \
   'exit 0' > "$fake_macos/bin/defaults"
 chmod +x "$fake_macos/bin/"*
 
-# --- krew: "already newest" is not a failure -------------------------------
+section "the trailing slash that empties a relocated Trash"
+# stay_fresh.sh empties a Trash with `find "$dir/" -mindepth 1 -delete` and
+# measures it with `du -sk "$dir/"`. The slash is the whole of that fix: a
+# Trash relocated to another disk is a symlink, `[[ -d ]]` follows it, and
+# neither find -P nor du resolves a symlinked start point without it — so the
+# step used to walk nothing, delete nothing and report "freed 0B" on the
+# machine most likely to need the space.
+#
+# The step itself is covered by the container-only steps suite. The primitive
+# is asserted here because this is the file that also runs on macOS, where
+# find and du are BSD and not GNU, and nothing else in CI would notice if the
+# two disagreed about a trailing slash.
+slash_d="$(mktemp -d)"
+mkdir -p "$slash_d/target/sub" "$slash_d/home"
+: > "$slash_d/target/file"
+: > "$slash_d/target/.hidden"
+: > "$slash_d/target/sub/nested"
+dd if=/dev/urandom of="$slash_d/target/big" bs=1024 count=256 2>/dev/null
+ln -s "$slash_d/target" "$slash_d/home/.Trash"
+assert_eq "find does not descend into a symlinked start point" \
+  "0" "$(find "$slash_d/home/.Trash" -mindepth 1 | wc -l | tr -d ' ')"
+assert_eq "a trailing slash makes it descend" \
+  "5" "$(find "$slash_d/home/.Trash/" -mindepth 1 | wc -l | tr -d ' ')"
+slash_kb="$(du -sk "$slash_d/home/.Trash" | awk 'NR == 1 { print $1 }')"
+if (( slash_kb < 256 )); then
+  ok "du does not measure through a symlink either"
+else
+  err "du measured through a symlink without a slash ($slash_kb KB)"
+fi
+slash_kb="$(du -sk "$slash_d/home/.Trash/" | awk 'NR == 1 { print $1 }')"
+if (( slash_kb >= 256 )); then
+  ok "with a trailing slash it measures the relocated contents"
+else
+  err "du with a slash still measured the link ($slash_kb KB)"
+fi
+find "$slash_d/home/.Trash/" -mindepth 1 -delete
+assert_eq "the slashed form empties the relocation" \
+  "0" "$(find "$slash_d/home/.Trash/" -mindepth 1 | wc -l | tr -d ' ')"
+if [[ -d "$slash_d/target" && -L "$slash_d/home/.Trash" ]]; then
+  ok "and leaves the relocation and the link in place"
+else
+  err "the slashed form removed the relocation or the link"
+fi
+rm -rf "$slash_d"
+
+section 'krew: "already newest" is not a failure'
 # `kubectl krew upgrade` exits non-zero when a plugin is already at the newest
 # version. On a current machine that is the answer for every plugin, so the
 # step warned once per plugin and the run closed with a WARN verdict for doing
@@ -599,12 +657,10 @@ printf '%s\n' '#!/bin/sh' \
   'exit 0' > "$krew_home/bin/kubectl"
 chmod +x "$krew_home/bin/"*
 
-set +e
 out="$(HOME="$krew_home/home" TMPDIR="$krew_home/tmp" \
   PATH="$krew_home/bin:$fake_macos/bin:/usr/bin:/bin" \
   "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null 2>&1)"
 rc=$?
-set -e
 assert_not_contains "an already-newest krew plugin is not a warning" "$out" \
   "kubectl krew upgrade ctx' failed"
 assert_contains "stay_fresh says how many krew plugins were already current" \
@@ -614,11 +670,9 @@ assert_not_contains "a krew step with nothing to do does not end in WARN" "$out"
 
 # The other direction: a real failure still has to be reported, or the case
 # above is just a mute button.
-set +e
 out="$(HOME="$krew_home/home" TMPDIR="$krew_home/tmp" KREW_REAL_FAILURE=1 \
   PATH="$krew_home/bin:$fake_macos/bin:/usr/bin:/bin" \
   "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null 2>&1)"
-set -e
 assert_contains "a krew upgrade that really failed is still reported" "$out" \
   "kubectl krew upgrade ctx' failed"
 
@@ -626,13 +680,17 @@ assert_contains "a krew upgrade that really failed is still reported" "$out" \
 # not on PATH, and a scheduled run has launchd's environment rather than the one
 # ~/.zshrc builds. The step puts it there itself, which silences that and is
 # what makes the plugins runnable in the first place.
+#
+# Guarded, like every invocation below whose result is judged only by what the
+# filesystem looks like afterwards: a run that died on line one also wrote no
+# probe file, and without the guard the failure would be reported as the step
+# not reaching `krew update` rather than as the run not starting.
 mkdir -p "$krew_home/krewroot/bin"
-set +e
 KREW_PATH_PROBE="$krew_home/path.txt" KREW_ROOT="$krew_home/krewroot" \
   HOME="$krew_home/home" TMPDIR="$krew_home/tmp" \
   PATH="$krew_home/bin:$fake_macos/bin:/usr/bin:/bin" \
-  "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null >/dev/null 2>&1
-set -e
+  "$M/stay_fresh.sh" --yes --no-sudo --only krew </dev/null >/dev/null 2>&1 \
+  || err "the krew PATH probe run exited $? before its probe file was read"
 if [[ -s "$krew_home/path.txt" ]]; then
   assert_contains "the krew step puts KREW_ROOT/bin on PATH for its own calls" \
     "$(cat "$krew_home/path.txt")" "$krew_home/krewroot/bin"
@@ -641,11 +699,10 @@ else
 fi
 rm -rf "$krew_home"
 
-set +e
+section "stay_fresh safety contracts"
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" </dev/null 2>&1)"
 rc=$?
-set -e
 assert_eq "stay_fresh refuses non-interactive mutation without --yes" "2" "$rc"
 assert_contains "stay_fresh explains the non-interactive guard" "$out" \
   "non-interactive execution requires --yes"
@@ -731,12 +788,10 @@ fi
 # manual-vs-agent overlap the lock exists to prevent went unprevented.
 mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 printf '%s\n' "$$" > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${skip_for_plan[@]}" 2>&1)"
 rc=$?
-set -e
 assert_eq "overlapping stay_fresh run is rejected" "2" "$rc"
 assert_contains "overlap refusal identifies the active run" "$out" \
   "another stay_fresh run is active"
@@ -744,12 +799,10 @@ assert_contains "overlap refusal identifies the active run" "$out" \
 # The case the TMPDIR lock could not catch: same machine, different TMPDIR —
 # exactly what an agent-context run looks like next to a terminal run.
 mkdir -p "$fake_macos/tmp2"
-set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp2" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${skip_for_plan[@]}" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "overlap is rejected even from a different TMPDIR" "2" "$rc"
 rm -f "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
 rmdir "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
@@ -762,12 +815,10 @@ rmdir "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 printf '%s\n' "$$" > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
 printf '1\n' > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/boot"
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${skip_for_plan[@]}" 2>&1)"
 rc=$?
-set -e
 assert_eq "a lock from before the last reboot does not block the run" "0" "$rc"
 assert_contains "the pre-reboot lock is named as such" "$out" \
   "removing stale stay_fresh lock from before the last reboot"
@@ -787,12 +838,10 @@ if [[ "$boot_now" =~ ^[0-9]+$ ]]; then
   mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
   printf '%s\n' "$$" > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid"
   printf '%s\n' $(( boot_now - 30 )) > "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/boot"
-  set +e
   out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
     PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
     "${skip_for_plan[@]}" 2>&1)"
   rc=$?
-  set -e
   assert_eq "a live lock whose boot time drifted by seconds is still respected" "2" "$rc"
   assert_contains "the drifted live lock is reported as active" "$out" "another stay_fresh run is active"
   rm -f "$fake_macos/home/Library/Application Support/stay_fresh/run.lock/pid" \
@@ -852,8 +901,15 @@ rm -f "$fake_macos/bin/docker"
 # Every id printed by --list-steps must be accepted by --only, or the two
 # halves of the interface drift apart: a step gets renamed in one place and
 # the documented spelling starts exiting 3.
+#
+# The count is this loop's own floor. Its subject list comes from a command
+# that can fail, and a loop that ran over nothing asserts nothing and says
+# nothing — the section floor cannot see it, because the section around it
+# asserts plenty either way.
+listed_steps=0
 while IFS= read -r step_id; do
   [[ -n "$step_id" ]] || continue
+  listed_steps=$((listed_steps + 1))
   extra=()
   [[ "$step_id" == memory ]] && extra=(--purge-memory)
   if HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
@@ -864,6 +920,7 @@ while IFS= read -r step_id; do
     err "--only rejects a step id that --list-steps advertises: $step_id"
   fi
 done < <("$M/stay_fresh.sh" --list-steps | awk '{print $1}')
+(( listed_steps > 0 )) || err "--list-steps printed no step id — the --only round trip above ran over nothing"
 
 # TMPDIR is where both the log and the run lock live, and nothing guarantees it
 # exists: launchd hands a job its own per-user temp dir, and `TMPDIR=... stay_fresh`
@@ -872,12 +929,10 @@ done < <("$M/stay_fresh.sh" --list-steps | awk '{print $1}')
 # by a refusal to run — a lock that never existed, blamed for a directory that
 # was simply not there.
 missing_tmp="$fake_macos/tmp/not/created/yet"
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$missing_tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   --only versions 2>&1)"
 rc=$?
-set -e
 assert_eq "stay_fresh creates a missing TMPDIR rather than failing the lock" "0" "$rc"
 assert_not_contains "missing TMPDIR is not misreported as a stale lock" "$out" \
   "stale stay_fresh lock"
@@ -901,36 +956,30 @@ rm -rf "$fake_macos/tmp/not"
 # the code under test.
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_macos/bin/docker"
 chmod +x "$fake_macos/bin/docker"
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   --only docker 2>&1)"
 rc=$?
-set -e
 assert_eq "a fully voided --only selection fails preflight -> 2" "2" "$rc"
 assert_contains "voided --only names the step that cannot run" "$out" \
   "--only docker: the Docker daemon is unreachable"
 
 # The same reconciliation must respect --no-sudo, which disables root-owned
 # steps just as effectively as a missing binary does.
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   --only system-caches 2>&1)"
 rc=$?
-set -e
 assert_eq "--only system-caches under --no-sudo fails preflight -> 2" "2" "$rc"
 assert_contains "--no-sudo explains the voided selection" "$out" \
   "--only system-caches: --no-sudo was passed"
 
 # A partially voided selection is a warning, not a failure: the steps that can
 # run still should.
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   --only docker,versions 2>&1)"
 rc=$?
-set -e
 assert_eq "a partially voided --only still runs the rest" "0" "$rc"
 assert_contains "partially voided --only warns about the lost step" "$out" \
   "--only docker: the Docker daemon is unreachable"
@@ -939,12 +988,10 @@ assert_contains "partially voided --only runs the surviving step" "$out" \
 rm -f "$fake_macos/bin/docker"
 
 # A dry run previews rather than stopping, matching every other preflight check.
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --dry-run --yes \
   --only docker 2>&1)"
 rc=$?
-set -e
 assert_eq "a voided --only still previews under --dry-run" "0" "$rc"
 assert_contains "the dry-run preview says a real run would stop" "$out" \
   "a real run would stop here"
@@ -973,12 +1020,10 @@ assert_not_contains "opt-in memory is not blamed on --no-sudo" "$out" \
 # --only already took every unnamed step off the list. Tagging those with
 # "--no-sudo was passed" makes a versions-only run look like three root-owned
 # steps were refused, when they were never selected.
-set +e
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   --only versions 2>&1)"
 rc=$?
-set -e
 assert_eq "--only versions under --no-sudo still runs" "0" "$rc"
 assert_not_contains "--only does not blame unselected dns on --no-sudo" "$out" \
   "Flush DNS cache (--no-sudo was passed)"
@@ -1034,7 +1079,8 @@ brew_skip=(
 )
 BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
-  "${brew_skip[@]}" >/dev/null 2>&1
+  "${brew_skip[@]}" >/dev/null 2>&1 \
+  || err "the unattended Homebrew run exited $? before its call log was read"
 assert_eq "unattended Homebrew formula pass runs once" "1" \
   "$(grep -c '^upgrade --formula --yes$' "$brew_calls")"
 if grep -q '^upgrade --cask' "$brew_calls"; then
@@ -1088,17 +1134,15 @@ fi
 # make: an id that is not in CASKS matches nothing, the filter leaves TARGETS
 # empty, and the script exits 3 saying so — a failure, not a quiet omission.
 #
-# `set +e` around the capture, and the exit code asserted on its own line. The
-# suite runs under `set -e`, so an unguarded out="$(...)" of a run that exits
-# non-zero takes the whole file down at that point: no [fail] line, no message,
-# and every test below it silently unrun. Written the obvious way first, this
-# very assertion did exactly that against the unmodified script.
-set +e
+# The exit code is captured on its own line and asserted by name. Written the
+# obvious way first — and back when this file ran under `set -e` — this very
+# assertion took the whole file down at this point against the unmodified
+# script: no [fail] line, no message, and every test below it silently unrun.
+# That is the shape the suite no longer has.
 out="$(BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/install_apps.sh" --dry-run \
   --only obsidian,stats --skip-gcloud --skip-cli-ops 2>&1)"
 rc=$?
-set -e
 assert_eq "a dry run of the two new casks reaches its plan -> 0" "0" "$rc"
 assert_contains "install_apps can plan exactly the two new casks" "$out" "Plan (2 apps)"
 assert_contains "install_apps plans Obsidian" "$out" "Obsidian"
@@ -1109,13 +1153,11 @@ assert_contains "install_apps plans Stats" "$out" "Stats"
 # all is the assertion; the count then proves every one of the ten was kept
 # rather than silently dropped. brave-browser keeps the cask side down to one
 # app, since this is a statement about formulae.
-set +e
 out="$(BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/install_apps.sh" --dry-run \
   --only brave-browser --skip-gcloud \
   --only-formulae gh,sops,age,cloud-sql-proxy,fzf,ripgrep,fd,k6,shellcheck,hadolint 2>&1)"
 rc=$?
-set -e
 assert_eq "a dry run of the ten new formulae reaches its plan -> 0" "0" "$rc"
 assert_contains "install_apps can plan all ten new formulae" "$out" \
   "CLI formulae (10 selected)"
@@ -1127,7 +1169,7 @@ for formula in gh sops age cloud-sql-proxy fzf ripgrep fd k6 shellcheck hadolint
   fi
 done
 
-# --- installers refuse a non-interactive real run without --yes -----------
+section "installers refuse a non-interactive real run without --yes"
 # stay_fresh.sh has enforced this for a while and the two bootstrap scripts
 # did not. install_apps.sh printed "non-interactive stdin — auto-proceeding"
 # and carried on; install_devtools.sh asked only when `[[ -t 0 ]]`, so with no
@@ -1147,12 +1189,10 @@ done
 for installer in install_apps install_devtools; do
   inst_scratch="$(mktemp -d)"
   mkdir -p "$inst_scratch/home" "$inst_scratch/tmp"
-  set +e
   out="$(printf 'y\n' | BREW_CALLS="$brew_calls" HOME="$inst_scratch/home" \
     TMPDIR="$inst_scratch/tmp" SHELL=/bin/zsh \
     PATH="$fake_macos/bin:/usr/bin:/bin" "$M/$installer.sh" 2>&1)"
   rc=$?
-  set -e
   assert_eq "$installer refuses piped stdin without --yes -> 2" "2" "$rc"
   assert_contains "$installer explains the non-interactive guard" "$out" \
     "non-interactive execution requires --yes"
@@ -1174,12 +1214,10 @@ for installer in install_apps install_devtools; do
   # The other half of the contract, and the reason the guard tests DRY_RUN
   # first: a preview changes nothing, so there is nothing to consent to and
   # --yes stays unnecessary. Piped exactly the same way.
-  set +e
   out="$(printf 'y\n' | BREW_CALLS="$brew_calls" HOME="$inst_scratch/home" \
     TMPDIR="$inst_scratch/tmp" SHELL=/bin/zsh \
     PATH="$fake_macos/bin:/usr/bin:/bin" "$M/$installer.sh" --dry-run 2>&1)"
   rc=$?
-  set -e
   assert_eq "$installer --dry-run needs no --yes on piped stdin" "0" "$rc"
   assert_contains "$installer --dry-run reaches its plan" "$out" \
     "Dry run — no changes will be made."
@@ -1188,18 +1226,25 @@ done
 
 # Brewfile reconciliation previews without --force and mutates only when that
 # explicit flag is present.
+#
+# All three runs are guarded. Two of the three verdicts are "the call log does
+# not contain --force", and an invocation that never started leaves a call log
+# that contains nothing at all: without the guard those two assertions cannot
+# fail, whatever the script does.
 brewfile_fixture="$fake_macos/Brewfile"
 printf 'brew "jq"\n' > "$brewfile_fixture"
 : > "$brew_calls"
 BREW_CALLS="$brew_calls" HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
-  "$M/brewfile.sh" cleanup --file "$brewfile_fixture" >/dev/null
+  "$M/brewfile.sh" cleanup --file "$brewfile_fixture" >/dev/null \
+  || err "the brewfile cleanup preview exited $? before its call log was read"
 if grep -q -- '--force' "$brew_calls"; then
   err "brewfile cleanup preview passed --force"
 else
   ok "brewfile cleanup preview is non-mutating"
 fi
 BREW_CALLS="$brew_calls" HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
-  "$M/brewfile.sh" cleanup --file "$brewfile_fixture" --force >/dev/null
+  "$M/brewfile.sh" cleanup --file "$brewfile_fixture" --force >/dev/null \
+  || err "the brewfile cleanup --force run exited $? before its call log was read"
 if grep -q '^bundle cleanup .*--force' "$brew_calls"; then
   ok "brewfile cleanup requires and forwards explicit --force"
 else
@@ -1207,7 +1252,8 @@ else
 fi
 : > "$brew_calls"
 BREW_CALLS="$brew_calls" HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
-  "$M/brewfile.sh" cleanup --file "$brewfile_fixture" --force --dry-run >/dev/null
+  "$M/brewfile.sh" cleanup --file "$brewfile_fixture" --force --dry-run >/dev/null \
+  || err "the brewfile cleanup --force --dry-run run exited $? before its call log was read"
 if grep -q -- '--force' "$brew_calls"; then
   err "brewfile cleanup --dry-run did not override --force"
 else
@@ -1228,26 +1274,20 @@ assert_contains "macos_defaults plans the validated restore" "$out" \
   "defaults write com.apple.finder ShowPathbar -bool false"
 bad_backup="$fake_macos/bad-defaults-backup.txt"
 printf 'not a trusted backup\n' > "$bad_backup"
-set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/macos_defaults.sh" \
   --revert-from "$bad_backup" --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "macos_defaults rejects an unrecognized backup -> 1" "1" "$rc"
-set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/macos_defaults.sh" \
   --revert-from "$selected_backup" --apply --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "macos_defaults rejects mixed apply/revert modes -> 3" "3" "$rc"
-set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/macos_defaults.sh" \
   --revert-from "$selected_backup" --only finder --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "macos_defaults rejects --only with revert -> 3" "3" "$rc"
 
 # A real apply remains confined to the fake defaults binary and scratch backup
@@ -1257,18 +1297,17 @@ apply_backup="$fake_macos/applied-defaults-backup.txt"
 : > "$defaults_calls"
 DEFAULTS_CALLS="$defaults_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/macos_defaults.sh" \
-  --apply --only finder --backup-file "$apply_backup" >/dev/null
+  --apply --only finder --backup-file "$apply_backup" >/dev/null \
+  || err "the macos_defaults real apply exited $? before its backup was inspected"
 if [[ -s "$apply_backup" ]] && grep -q '^write ' "$defaults_calls"; then
   ok "macos_defaults real apply writes a new backup before fake defaults calls"
 else
   err "macos_defaults real apply did not create its backup/apply settings"
 fi
-set +e
 DEFAULTS_CALLS="$defaults_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/macos_defaults.sh" \
   --apply --only nosuch --backup-file "$fake_macos/must-not-exist.txt" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "macos_defaults validates --only before backup creation -> 3" "3" "$rc"
 if [[ ! -e "$fake_macos/must-not-exist.txt" ]]; then
   ok "macos_defaults invalid --only leaves no backup artifact"
@@ -1279,33 +1318,26 @@ fi
 unset_backup="$fake_macos/unset-defaults-backup.txt"
 printf '%s\n' '# macos_defaults.sh backup - test' \
   'com.apple.finder|ShowPathbar|bool|(unset)' > "$unset_backup"
-set +e
 DEFAULTS_FAIL_DELETE=1 DEFAULTS_CALLS="$defaults_calls" HOME="$fake_macos/home" \
   TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$M/macos_defaults.sh" --revert-from "$unset_backup" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "macos_defaults reports a failed revert delete -> 1" "1" "$rc"
 
-set +e
 DEFAULTS_FAIL_DELETE=1 DEFAULTS_READ_EMPTY=1 DEFAULTS_CALLS="$defaults_calls" \
   HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$M/macos_defaults.sh" --revert-from "$unset_backup" >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "macos_defaults accepts delete failure when the key is already absent" "0" "$rc"
 
-set +e
 "$M/stay_fresh.sh" --prune-xcode-archives-days zero >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "archive retention rejects a non-number -> 3" "3" "$rc"
 
 # The doctor keeps its historical report-only exit code unless strict mode is
 # explicitly requested.
 doctor_args=(--skip-brew-doctor --skip-login-items --skip-time-machine --skip-log-sizes --skip-launchd)
-set +e
 BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/workstation_doctor.sh" \
   "${doctor_args[@]}" >/dev/null 2>&1
@@ -1314,11 +1346,10 @@ BREW_CALLS="$brew_calls" HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/workstation_doctor.sh" \
   --strict "${doctor_args[@]}" >/dev/null 2>&1
 doctor_strict_rc=$?
-set -e
 assert_eq "workstation_doctor default remains report-only" "0" "$doctor_default_rc"
 assert_eq "workstation_doctor --strict fails on warnings" "1" "$doctor_strict_rc"
 
-# --- SIP on a machine with a custom configuration ---------------------------
+section "SIP on a machine with a custom configuration"
 # csrutil answers "status: unknown (Custom Configuration)" when individual
 # protections are off, then lists them — and that list contains
 # "Kext Signing: enabled". Both readers here used to match a bare "enabled"
@@ -1345,7 +1376,6 @@ exit 0
 CSRUTIL_EOF
 chmod +x "$fake_macos/bin/csrutil"
 
-set +e
 sip_custom_status="$(CSRUTIL_MODE=custom HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/status.sh" --only security 2>&1)"
 sip_custom_status_rc=$?
@@ -1353,7 +1383,6 @@ sip_enabled_status="$(CSRUTIL_MODE=enabled HOME="$fake_macos/home" TMPDIR="$fake
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/status.sh" --only security 2>&1)"
 sip_disabled_status="$(CSRUTIL_MODE=disabled HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/status.sh" --only security 2>&1)"
-set -e
 
 assert_not_contains "status.sh does not call a custom-configuration SIP enabled" \
   "$sip_custom_status" "SIP enabled"
@@ -1366,7 +1395,6 @@ assert_contains "status.sh still reports a genuinely enabled SIP" \
 assert_contains "status.sh still reports a disabled SIP" \
   "$sip_disabled_status" "SIP disabled"
 
-set +e
 sip_custom_doctor="$(CSRUTIL_MODE=custom BREW_CALLS="$brew_calls" \
   HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/workstation_doctor.sh" \
@@ -1375,7 +1403,6 @@ sip_enabled_doctor="$(CSRUTIL_MODE=enabled BREW_CALLS="$brew_calls" \
   HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/workstation_doctor.sh" \
   "${doctor_args[@]}" 2>&1)"
-set -e
 
 assert_not_contains "workstation_doctor does not call a custom-configuration SIP enabled" \
   "$sip_custom_doctor" "SIP: enabled"
@@ -1390,8 +1417,18 @@ rm -f "$fake_macos/bin/csrutil"
 mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
 printf 'old\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260101-000000-1.log"
 printf 'one\ntwo\nthree\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260102-000000-2.log"
+# The site that taught this file to run without `-e`: a non-zero exit here
+# once aborted the whole run with the shell's status and no message at all,
+# and the output it had just captured, which named the reason, died with it.
+# The rc is asserted instead, so a failure is one named assertion with the
+# agent's own words attached and the suite carries on.
 out="$(HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$M/launchd/stay_fresh_agent.sh" logs --tail 2 2>&1)"
+agent_logs_rc=$?
+assert_eq "agent logs command succeeds" "0" "$agent_logs_rc"
+if (( agent_logs_rc != 0 )); then
+  printf 'agent logs exited %s; it said:\n%s\n' "$agent_logs_rc" "$out" >&2
+fi
 assert_contains "agent logs command identifies the newest log" "$out" \
   "agent-20260102-000000-2.log"
 assert_contains "agent logs command tails requested lines" "$out" $'two\nthree'
@@ -1419,33 +1456,34 @@ agent_plist="$fake_macos/home/Library/LaunchAgents/com.pretty-useful.stay-fresh.
 mkdir -p "$(dirname "$agent_plist")"
 printf 'original plist\n' > "$agent_plist"
 : > "$agent_calls"
+# The sharpest case for the guard in this file: both verdicts below are
+# "nothing happened" — the plist still says what it said, and the call log is
+# still empty. An invocation that never started satisfies both, so without the
+# guard this pair of assertions cannot fail whatever uninstall --dry-run does.
 AGENT_CALLS="$agent_calls" AGENT_LOADED=1 \
   HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
-  "$agent" uninstall --dry-run >/dev/null 2>&1
+  "$agent" uninstall --dry-run >/dev/null 2>&1 \
+  || err "the agent uninstall --dry-run exited $? before the plist and the call log were read"
 assert_eq "agent uninstall --dry-run keeps the plist" "original plist" \
   "$(cat "$agent_plist")"
 assert_eq "agent uninstall --dry-run does not call launchctl" "0" \
   "$(wc -l < "$agent_calls" | tr -d ' ')"
 
-set +e
 AGENT_CALLS="$agent_calls" HOME="$fake_macos/home" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$agent" run-now --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "run-now rejects an ambiguous --dry-run -> 3" "3" "$rc"
 
 # A failed replacement bootstrap restores both the old plist and the old loaded
 # job. The first bootstrap is the new job and fails; the second is rollback.
 : > "$agent_calls"
 rm -f "$agent_bootstrap_n"
-set +e
 AGENT_CALLS="$agent_calls" AGENT_BOOTSTRAP_N="$agent_bootstrap_n" \
   AGENT_BOOTSTRAP_FAIL_ONCE=1 AGENT_LOADED=1 \
   HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$agent" install --profile full --hour 4 >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "a failed replacement install exits 1" "1" "$rc"
 assert_eq "a failed replacement restores the old plist" "original plist" \
   "$(cat "$agent_plist")"
@@ -1486,10 +1524,8 @@ fresh_when="$(stamp_days_ago 0)"
 write_last_run "$fresh_when"
 rm -f "$sched_stamp"
 touch "$agent_plist"
-set +e
 out="$(agent_status)"
 rc=$?
-set -e
 assert_eq "agent status with a fresh install and no scheduled run yet exits 0" "0" "$rc"
 assert_contains "agent status shows the last run's headline" "$out" \
   "last run: $fresh_when — stay_fresh WARN: freed 1.20G in 4m10s"
@@ -1514,10 +1550,8 @@ assert_not_contains "a fresh install is not called stale" "$out" "the job is not
 # two, so with no stamp the age is reported and the exit stays 0; the real
 # signal arrives at the next firing.
 touch -t 202001010000 "$agent_plist"
-set +e
 out="$(agent_status)"
 rc=$?
-set -e
 assert_eq "an old install with no stamp is not declared dead" "0" "$rc"
 assert_contains "the age since the install is still reported" "$out" \
   "no run-scheduled stamp yet and the plist was installed"
@@ -1527,10 +1561,8 @@ assert_not_contains "an old install with no stamp is not called dead" "$out" \
   "the job is not running"
 touch "$agent_plist"
 printf '%s\t%s\n' "$(stamp_days_ago 3)" 0 > "$sched_stamp"
-set +e
 out="$(agent_status)"
 rc=$?
-set -e
 assert_eq "agent status with a stale daily schedule exits 1" "1" "$rc"
 assert_contains "the last scheduled run is shown with its exit code" "$out" "last scheduled run: $(stamp_days_ago 3 | cut -c1-10)"
 assert_contains "a stale daily schedule is called out with its age" "$out" \
@@ -1538,17 +1570,13 @@ assert_contains "a stale daily schedule is called out with its age" "$out" \
 # The same three days against a weekly schedule are on time.
 printf '%s\n' '<key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer></dict>' \
   > "$agent_plist"
-set +e
 out="$(agent_status)"
 rc=$?
-set -e
 assert_eq "three days against a weekly schedule exits 0" "0" "$rc"
 assert_not_contains "three days against a weekly schedule is not stale" "$out" "the job is not running"
 printf '%s\t%s\n' "$(stamp_days_ago 20)" 1 > "$sched_stamp"
-set +e
 out="$(agent_status)"
 rc=$?
-set -e
 assert_eq "twenty days against a weekly schedule exits 1" "1" "$rc"
 assert_contains "a stale weekly schedule names the weekly yardstick" "$out" \
   "no scheduled run in 20 day(s) since the last scheduled run, and the schedule fires every 7 day(s)"
@@ -1559,11 +1587,9 @@ rm -f "$sched_stamp"
 # run-scheduled, not in the plist, so it is checked from the transcript of a
 # dry scheduled run: the two read-only reports are in, the deletions out.
 rm -rf "$fake_macos/home/Library/Logs/stay_fresh"
-set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$agent" run-scheduled --profile safe --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "a dry scheduled run under the safe profile succeeds" "0" "$rc"
 sched_log="$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev/null | head -n 1)"
 if [[ -n "$sched_log" ]]; then
@@ -1592,10 +1618,9 @@ else
   err "a dry scheduled run wrote the scheduled-run stamp"
 fi
 # A real scheduled run stamps when it fired and how it ended, for status.
-set +e
 HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
-  STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe >/dev/null 2>&1
-set -e
+  STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe >/dev/null 2>&1 \
+  || err "the real scheduled run exited $? before its stamp was read"
 # The stamp gained a third field saying whether the firing did the full job
 # (empty when it did), so the shape is now three tab-separated fields with the
 # last possibly empty. status reads it with a third variable; a reader that
@@ -1608,17 +1633,15 @@ fi
 assert_eq "an undisturbed scheduled run records no deferral" "" \
   "$(cut -f3 "$sched_stamp" 2>/dev/null)"
 
-# --- --trend turns the recorded runs into an answer ------------------------
+section "--trend turns the recorded runs into an answer"
 # A single run says what it freed today. Only the history says whether the
 # cleaning is keeping up, which steps do the work, and which are slowing down.
 trend_home="$(mktemp -d)"
 trend_state="$trend_home/Library/Logs/stay_fresh"
 mkdir -p "$trend_state"
 trend() {
-  set +e
   HOME="$trend_home" TMPDIR="$trend_home" PATH="$fake_macos/bin:/usr/bin:/bin" \
     "$sf" --trend 2>&1
-  set -e
 }
 
 out="$(trend)"
@@ -1656,22 +1679,22 @@ assert_contains "and names which one, with the before and after" "$(grep -A2 'Sl
 assert_not_contains "--trend does not flag a step that is steady" "$(grep -A3 'Slowing down' <<<"$out")" "trash"
 
 # Read-only: a report that rewrites the data it reports on is not a report.
+# Guarded, because the assertion cannot tell the two apart: a --trend that died
+# on line one also wrote nothing, and reads here as a pass.
 before="$(find "$trend_home" -type f -exec ls -ld {} + 2>/dev/null | sort)"
-trend >/dev/null
+trend >/dev/null || err "--trend exited $? before the read-only comparison"
 after="$(find "$trend_home" -type f -exec ls -ld {} + 2>/dev/null | sort)"
 assert_eq "--trend writes nothing" "$before" "$after"
 rm -rf "$trend_home"
 
-# --- a scheduled run is not worth a battery or an interruption -------------
+section "a scheduled run is not worth a battery or an interruption"
 # Neither probe is faked above, so power_source answers "unknown" and the idle
 # probe answers nothing: the runs before this took the ordinary path, which is
 # what a desktop with no battery must also get.
 sched_run() {
   rm -rf "$fake_macos/home/Library/Logs/stay_fresh"
-  set +e
   HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
     STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe "$@" 2>&1
-  set -e
 }
 fake_power() {
   printf '%s\n' '#!/bin/sh' "echo \"Now drawing from '$1'\"" > "$fake_macos/bin/pmset"
@@ -1691,7 +1714,12 @@ assert_eq "the deferral is recorded in the stamp" "deferred:battery" \
 assert_eq "a deferred run does not run stay_fresh.sh at all" "" \
   "$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev/null)"
 
-out="$(sched_run --ignore-power)"
+# Guarded, unlike the deferral above it: both verdicts here are negative ones.
+# A firing that never started says nothing about deferring, and sched_run wipes
+# the log directory before each call, so the stamp it did not write reads as
+# the empty third field this asserts. Neither assertion can fail without this.
+out="$(sched_run --ignore-power)" \
+  || err "the --ignore-power scheduled run exited $? before its output and stamp were read"
 assert_not_contains "--ignore-power runs on battery anyway" "$out" "deferring this run"
 assert_eq "and records no deferral" "" \
   "$(cut -f3 "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled" 2>/dev/null)"
@@ -1716,9 +1744,12 @@ else
   err "the downgraded scheduled run wrote no transcript"
 fi
 
-# Idle long enough: the ordinary run.
+# Idle long enough: the ordinary run. Guarded for the same reason as the
+# --ignore-power case: two negative verdicts, both of which a firing that never
+# started satisfies.
 fake_idle 3600
-out="$(sched_run)"
+out="$(sched_run)" \
+  || err "the idle-machine scheduled run exited $? before its output and stamp were read"
 assert_not_contains "an idle machine on mains runs normally" "$out" "read-only reports only"
 assert_eq "and records no deferral" "" \
   "$(cut -f3 "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled" 2>/dev/null)"
@@ -1727,12 +1758,10 @@ assert_eq "and records no deferral" "" \
 printf '%s\t0\tdeferred:battery\n' "$(stamp_days_ago 0)" \
   > "$fake_macos/home/Library/Logs/stay_fresh/last-scheduled"
 touch "$agent_plist"
-set +e
 out="$(agent_status)"
-set -e
 assert_contains "status says the last firing was deferred" "$out" "deferred:battery"
 
-# --- rotation is a real firing's business, not a preview's -----------------
+section "rotation is a real firing's business, not a preview's"
 # One transcript per firing, the ten newest kept. That rotation sat below
 # note_scheduled_run with nothing guarding it, so `run-scheduled --dry-run` —
 # which exists to show what a firing *would* do — deleted genuine transcripts
@@ -1755,10 +1784,12 @@ run_sched() {
     STAY_FRESH_NOTIFY=none "$agent" run-scheduled --profile safe "$@"
 }
 
+# Guarded for the reason this whole section exists: "deleted nothing" is also
+# what a firing that never started looks like, so the assertion below is
+# unfailable without it.
 seed_sched_logs
-set +e
-run_sched --dry-run >/dev/null 2>&1
-set -e
+run_sched --dry-run >/dev/null 2>&1 \
+  || err "the dry scheduled run exited $? before the transcripts were counted"
 survived=0
 for d in $sched_log_days; do
   if [[ -f "$sched_logs/agent-202601${d}-000000-1.log" ]]; then
@@ -1770,9 +1801,8 @@ assert_eq "a dry scheduled run deletes no past transcript" "14" "$survived"
 # The other half of the guard: a real firing must still rotate, or bounding the
 # logs has simply been turned off.
 seed_sched_logs
-set +e
-run_sched >/dev/null 2>&1
-set -e
+run_sched >/dev/null 2>&1 \
+  || err "the real scheduled run exited $? before the transcripts were counted"
 assert_eq "a real scheduled run keeps the ten newest transcripts" "10" \
   "$(ls -1 "$sched_logs"/agent-*.log 2>/dev/null | wc -l | tr -d ' ')"
 
@@ -1781,20 +1811,28 @@ assert_eq "a real scheduled run keeps the ten newest transcripts" "10" \
 # back both report an unnamed file on stderr, and the rotation stops happening
 # on the one machine that needed it. Skipping rotation is the honest outcome,
 # and it has to be silent about it.
+#
+# The one run in this file that cannot be guarded by its exit code: it is
+# expected to end non-zero, that being what a firing on a full disk does. The
+# verdict is a negative one — nothing was said about an unnamed file — which a
+# firing that never started also satisfies. So the guard is the evidence
+# instead: this firing writes a transcript of its own before it gets as far as
+# rotation, and the seeded fourteen being exactly what is left means it did
+# not.
 printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_macos/bin/mktemp"
 chmod +x "$fake_macos/bin/mktemp"
 seed_sched_logs
-set +e
 out="$(run_sched 2>&1 >/dev/null)"
-set -e
 rm -f "$fake_macos/bin/mktemp"
+nomktemp_logs="$(ls -1 "$sched_logs"/agent-*.log 2>/dev/null | wc -l | tr -d ' ')"
+(( nomktemp_logs != 14 )) || err "the firing with mktemp broken left the fourteen seeded transcripts and wrote none of its own — it stopped before the rotation this case is about"
 assert_not_contains "a scratch file that cannot be made is never redirected into" \
   "$out" "No such file or directory"
 
 rm -f "$fake_macos/bin/pmset" "$fake_macos/bin/ioreg"
 rm -rf "$fake_macos"
 
-# --- LaunchAgent plist semantics ------------------------------------------
+section "LaunchAgent plist semantics"
 agent="$M/launchd/stay_fresh_agent.sh"
 plist_tmp="$(mktemp)"
 if "$agent" install --print-only --weekday daily --hour 3 --minute 5 --dry-run \
@@ -1810,8 +1848,18 @@ assert data["ProgramArguments"][0] == "/bin/bash"
 assert data["ProgramArguments"][-3:] == ["run-scheduled", "--profile", "safe"]
 assert data["StartCalendarInterval"] == {"Hour": 3, "Minute": 5}
 assert "/opt/homebrew/bin" in data["EnvironmentVariables"]["PATH"].split(":")
+# stdout stays discarded: the run writes its own timestamped transcript and
+# duplicating it here would grow without bound.
 assert data["StandardOutPath"] == "/dev/null"
-assert data["StandardErrorPath"] == "/dev/null"
+# stderr must NOT be discarded. Everything that can stop a firing before it
+# reaches that transcript - this script missing after the checkout moved, a log
+# directory that cannot be created, stay_fresh.sh refusing at preflight - is
+# written by err() to stderr, and with both streams on /dev/null the schedule
+# died with no output anywhere. It has to be a real path, under the same log
+# directory the installer creates, and not the transcript itself.
+err_path = data["StandardErrorPath"]
+assert err_path != "/dev/null", "stderr is discarded; a failed firing would leave no trace"
+assert err_path.endswith("/Library/Logs/stay_fresh/agent-launchd.err"), err_path
 assert "StartCalendarIntervalRunMissed" not in data
 PY
   then
@@ -1847,10 +1895,8 @@ rm -f "$plist_tmp"
 # Everywhere else the flag has nothing to turn off, and a flag that is accepted
 # and ignored is the failure above in a different costume.
 for ip_cmd in status run-now logs uninstall; do
-  set +e
   "$agent" "$ip_cmd" --ignore-power >/dev/null 2>&1
   rc=$?
-  set -e
   assert_eq "agent $ip_cmd does not take --ignore-power" "3" "$rc"
 done
 
@@ -1870,20 +1916,14 @@ else
   err "LaunchAgent plist does not carry --notify"
 fi
 rm -f "$plist_tmp"
-set +e
 "$agent" install --print-only --notify pager --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "agent rejects an unknown --notify mode" "3" "$rc"
-set +e
 "$agent" install --print-only --notify macos,pager --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "agent rejects an unknown channel inside a --notify list" "3" "$rc"
-set +e
 "$agent" install --print-only --notify= --dry-run >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "agent rejects an empty --notify" "3" "$rc"
 # --notify-when rides into the plist the same way, and is checked the same way.
 plist_tmp="$(mktemp)"
@@ -1900,24 +1940,18 @@ else
   err "LaunchAgent plist does not carry --notify-when"
 fi
 rm -f "$plist_tmp"
-set +e
 out="$("$agent" install --print-only --notify-when sometimes --dry-run 2>&1 >/dev/null)"
 rc=$?
-set -e
 assert_eq "agent rejects an unknown --notify-when" "3" "$rc"
 assert_contains "the agent relays stay_fresh.sh's --notify-when reason" "$out" \
   "--notify-when must be always, warn or fail"
-set +e
 "$agent" status --notify-when warn >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "agent status does not take --notify-when" "3" "$rc"
 # The check is stay_fresh.sh's own, so the two cannot disagree: a value the
 # scheduled run would refuse is refused at install, with the same message.
-set +e
 out="$("$agent" install --print-only --notify none,macos --dry-run 2>&1 >/dev/null)"
 rc=$?
-set -e
 assert_eq "agent rejects none combined with a channel, as stay_fresh.sh does" "3" "$rc"
 assert_contains "the agent relays stay_fresh.sh's reason" "$out" \
   "--notify none and auto cannot be combined with other channels"
@@ -1936,10 +1970,8 @@ else
   err "LaunchAgent plist does not carry a --notify channel list"
 fi
 rm -f "$plist_tmp"
-set +e
 "$agent" status --notify macos >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "agent status does not take --notify" "3" "$rc"
 
 if grep -q 'kickstart -k' "$agent"; then
@@ -1948,28 +1980,22 @@ else
   ok "LaunchAgent run-now does not use kickstart -k"
 fi
 
-# --- hardening_audit: the group flags answer before preflight ---
+section "hardening_audit: the group flags answer before preflight"
 # --list-groups and group validation are the two things this suite can check
 # about the audit on Linux, and they are the two worth checking: both have to
 # happen ahead of the macOS-only probes, exactly like --help does.
 AUDIT="$M/hardening_audit.sh"
 if [[ -x "$AUDIT" ]]; then
-  set +e
   groups_out="$("$AUDIT" --list-groups 2>&1)"; rc=$?
-  set -e
   assert_eq "hardening_audit --list-groups exits 0" "0" "$rc"
   for g in sharing firewall updates disk lock sip gatekeeper; do
     assert_contains "hardening_audit lists the $g group" "$groups_out" "$g"
   done
 
-  set +e
   "$AUDIT" --only nosuchgroup >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "hardening_audit rejects an unknown group -> 3" "3" "$rc"
 
-  set +e
   "$AUDIT" --fail-on sometimes >/dev/null 2>&1; rc=$?
-  set -e
   assert_eq "hardening_audit rejects a bad --fail-on -> 3" "3" "$rc"
 else
   err "missing $AUDIT"
@@ -1986,15 +2012,13 @@ chmod +x "$audit_fake/bin/"*
 out="$(PATH="$audit_fake/bin:/usr/bin:/bin" "$AUDIT" --only lock 2>&1)"
 assert_contains "hardening audit passes an immediate screen lock" "$out" \
   "password is required immediately"
-set +e
 LOCK_STATE='screenLock is off' PATH="$audit_fake/bin:/usr/bin:/bin" \
   "$AUDIT" --only lock >/dev/null 2>&1
 rc=$?
-set -e
 assert_eq "hardening audit fails when screen lock is off" "1" "$rc"
 rm -rf "$audit_fake"
 
-# --- lib/: stay_fresh.sh hard-depends on the scanner at runtime ---
+section "lib/: stay_fresh.sh hard-depends on the scanner at runtime"
 # The dependency is invoked by absolute path from a step that only runs on
 # macOS, so nothing else in this suite would notice the file being renamed,
 # moved or broken. Check it here.
@@ -2051,7 +2075,7 @@ else
   err "stay_fresh.sh no longer pins an absolute interpreter path"
 fi
 
-# --- zsh_aliases: the header scopes the file to an interactive shell -------
+section "zsh_aliases: the header scopes the file to an interactive shell"
 # Sourcing this file is not the side-effect-free act a list of aliases looks
 # like: it sets HISTSIZE and turns on SHARE_HISTORY and AUTO_CD, all of which
 # belong to a session with a human at the keyboard. Sourced from ~/.zshenv —
@@ -2071,7 +2095,7 @@ for opt in HISTSIZE SHARE_HISTORY AUTO_CD; do
     "$zsh_header" "$opt"
 done
 
-# --- zsh_aliases: must source cleanly in zsh (Linux) ---
+section "zsh_aliases: must source cleanly in zsh (Linux)"
 if zsh -f -c "source '$M/zsh_aliases.zsh'"; then
   ok "zsh: source zsh_aliases.zsh"
 else
@@ -2134,18 +2158,14 @@ assert_contains "retry returns 0 on success" "$retry_out" "rc_ok=0"
 assert_contains "retry surfaces the command's exit code" "$retry_out" "rc_fail=1"
 assert_contains "retry rejects bad usage with 3-adjacent code 2" "$retry_out" "rc_usage=2"
 
-# --- status.sh and installer selection lists --------------------------------
+section "status.sh and installer selection lists"
 status_sections="$("$M/status.sh" --list-sections)"
 for section in os disk brew git agent security; do
   assert_contains "status lists section $section" "$status_sections" "$section"
 done
-set +e
 "$M/status.sh" --only nosuch >/dev/null 2>&1; rc=$?
-set -e
 assert_eq "status rejects unknown --only section -> 3" "3" "$rc"
-set +e
 out="$(env -u HOME "$M/status.sh" --list-sections 2>&1)"; rc=$?
-set -e
 assert_eq "status --list-sections works with HOME unset" "0" "$rc"
 
 casks="$("$M/install_apps.sh" --list-casks)"
@@ -2156,14 +2176,21 @@ formulae="$("$M/install_apps.sh" --list-formulae)"
 for pkg in gh sops age k6 fzf; do
   assert_contains "install_apps lists formula $pkg" "$formulae" "$pkg"
 done
-set +e
 out="$(env -u HOME "$M/install_apps.sh" --list-casks 2>&1)"; rc=$?
-set -e
 assert_eq "install_apps --list-casks works with HOME unset" "0" "$rc"
 
-if (( failures )); then
-  echo "=== $failures test(s) failed ===" >&2
+end_section
+# The file's own floor: it reached this line having opened sections, each of
+# which asserted something. Reaching it at all is what the removal of `-e` put
+# in question, and the count of sections is what a truncated copy of this file
+# — or a fixture that exited the shell on its way past — would get wrong.
+if (( sections == 0 || checks == 0 )); then
+  echo "no section ran ($sections sections, $checks checks) — the suite is not asserting anything" >&2
   exit 1
 fi
-echo "=== all macos-initial-setup (docker) checks passed ==="
+if (( failures > 0 )); then
+  echo "=== $failures of $checks macos-initial-setup check(s) failed ===" >&2
+  exit 1
+fi
+echo "=== all $checks macos-initial-setup checks passed in $sections sections ==="
 exit 0
