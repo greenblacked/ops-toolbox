@@ -738,10 +738,10 @@ lands is `--out`, the output directory, and `--name`, the basename, which
 defaults to the host.
 
 `--stdout`, `--diff` and `--commit` are mutually exclusive and the script exits
-`2` if you pass more than one. Two flags change the export itself:
+`3` if you pass more than one. Two flags change the export itself:
 `--no-normalise` keeps the volatile header that would otherwise make every run
 differ, and `--show-sensitive` keeps the secrets that are stripped by default.
-`--show-sensitive` with `--commit` is refused outright, also exit `2` — that
+`--show-sensitive` with `--commit` is refused outright, also exit `3` — that
 combination writes router credentials into git history.
 
 Transport is ssh, so it needs **nothing installed**: no `routeros-api`, no pip,
