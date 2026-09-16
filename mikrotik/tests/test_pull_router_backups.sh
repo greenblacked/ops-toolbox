@@ -47,10 +47,8 @@ EOF
 
   rm -rf "${DEST:?}"/*
   local rc
-  set +e
   PATH="$STUB_DIR/bin:$PATH" "$SCRIPT" --timeout 2 admin@router "$DEST" >/dev/null 2>&1
   rc=$?
-  set -e
 
   if [[ "$rc" == "$expected" ]]; then
     ok "$label -> $rc"
@@ -79,10 +77,8 @@ run_case "scp missing from PATH"       1 0   127 "bash: scp: command not found" 
 check_rc() {
   local label="$1" expected="$2"; shift 2
   local rc
-  set +e
   "$SCRIPT" "$@" >/dev/null 2>&1
   rc=$?
-  set -e
   if [[ "$rc" == "$expected" ]]; then ok "$label -> $rc"; else err "$label: expected $expected, got $rc"; fi
 }
 

@@ -230,10 +230,8 @@ else
   else
     err "print_schedulers.sh default output schedules $update_lines update scripts, expected only update_check"
   fi
-  set +e
   NO_COLOR=1 "$PRINTER" --update-script nosuch >/dev/null 2>&1
   bad_update_rc=$?
-  set -e
   if (( bad_update_rc == 3 )); then
     ok "print_schedulers.sh rejects an unknown --update-script"
   else
@@ -255,10 +253,8 @@ else
     err "print_schedulers.sh --list is incomplete"
   fi
 
-  set +e
   NO_COLOR=1 "$PRINTER" --only definitely_missing >/dev/null 2>&1
   bad_only_rc=$?
-  set -e
   if (( bad_only_rc == 3 )); then
     ok "print_schedulers.sh rejects an unknown --only name"
   else
