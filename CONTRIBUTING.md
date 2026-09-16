@@ -100,6 +100,19 @@ targets Git Bash, which ships Bash 5 — `windows/git-bash/.bashrc` uses `local 
 and `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
 and runs on Ubuntu. Do not "fix" either.
 
+**The keyword list above is not the whole rule.** Some things 3.2 refuses are
+properties of its parser rather than of any keyword a grep can find, so nothing
+static will catch them and Bash 5 accepts them everywhere you are likely to
+test. Two have reached CI: a `case` statement inside `$( )`, and an apostrophe
+inside a heredoc inside `$( )` — 3.2 does not treat that body as opaque, reads
+the quote, and follows it to end of file. Both parse cleanly under Bash 5.
+
+The `Parse with Apple Bash 3.2` step in `Test / macos native` is what enforces
+this: `macos-15` is the only runner with a real `/bin/bash` 3.2, and the step
+calls it by absolute path because that runner has Homebrew's Bash 5 ahead of
+`/bin` on `PATH`. It runs on any change under the directories named above and
+costs seconds. `Lint` runs `bash -n` on Ubuntu and cannot stand in for it.
+
 ### Duplicated blocks
 
 Copy these verbatim rather than inventing a variant. The canonical copy of

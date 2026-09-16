@@ -115,7 +115,13 @@ fi
 ok "discovered ${#sh_scripts[@]} scripts under git/"
 for f in "${sh_scripts[@]}" "$G/git_aliases.sh"; do
   rel="${f#"$REPO_ROOT/"}"
-  if bash -n "$f"; then
+  # "${BASH:-bash}", not "bash". A bare `bash` resolves through PATH, which is
+  # not the shell running this file: on a Mac, PATH puts Homebrew's Bash 5
+  # ahead of /bin while CONTRIBUTING.md requires git/ to parse under the Apple
+  # Bash 3.2 that /bin/bash still is. The macOS suite made exactly this mistake
+  # and passed a file 3.2 refuses. This suite runs on Linux today, so the fix
+  # buys consistency now and correctness the day it does not.
+  if "${BASH:-bash}" -n "$f"; then
     ok "bash -n $rel"
   else
     err "bash -n $rel"

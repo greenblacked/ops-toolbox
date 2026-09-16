@@ -511,6 +511,7 @@ case "$CMD" in
 
     xml_agent_script="$(xml_escape "$AGENT_SCRIPT")"
     xml_agent_path="$(xml_escape "$AGENT_PATH")"
+    xml_launchd_err="$(xml_escape "$LOG_DIR/agent-launchd.err")"
     plist_body="$(cat <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -539,10 +540,24 @@ $schedule
     <true/>
     <key>Nice</key>
     <integer>10</integer>
+    <!-- No apostrophe may appear in this heredoc. It sits inside a $( )
+         command substitution, and Bash 3.2 - the /bin/bash every Mac ships -
+         does not treat the body as opaque there: it reads the quote, looks for
+         a match to the end of the file, and reports a syntax error at EOF.
+         Bash 5 parses it correctly, so this is invisible off a Mac.
+         stdout stays discarded: the chatter of a scheduled run is already in
+         its own timestamped log under this directory, and duplicating it here
+         would grow without bound. stderr is not chatter. Everything that can
+         stop a firing before it reaches that log - this script missing or not
+         executable after the checkout moved, a log directory that cannot be
+         created, stay_fresh.sh refusing at preflight - is written by err() to
+         stderr, and with both streams discarded the schedule died with no
+         output anywhere and no way to find out why. Appended, a few lines per
+         failed firing; the install below creates this directory first. -->
     <key>StandardOutPath</key>
     <string>/dev/null</string>
     <key>StandardErrorPath</key>
-    <string>/dev/null</string>
+    <string>$xml_launchd_err</string>
   </dict>
 </plist>
 PLIST_EOF

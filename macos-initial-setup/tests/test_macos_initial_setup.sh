@@ -85,8 +85,17 @@ fi
 ok "discovered ${#sh_scripts[@]} scripts under macos-initial-setup/"
 
 # --- bash -n (syntax) ---
+# "$BASH", not "bash". Test / macos native runs this suite with /bin/bash, the
+# Apple Bash 3.2 every Mac ships and the only interpreter here that parses like
+# the one a user's machine will use — but a bare `bash` resolves through PATH,
+# and that runner has Homebrew's Bash 5 ahead of /bin. So the one check whose
+# job is to catch a 3.2 parse error was asking Bash 5, and passed a file 3.2
+# refuses: an apostrophe inside a heredoc inside a $( ) command substitution,
+# which 3.2 reads as an unterminated quote and follows to end of file. The
+# suite then died at the first script it tried to run, with the shell's exit
+# code and no message. "$BASH" is the interpreter actually running this file.
 for f in "${sh_scripts[@]}"; do
-  if bash -n "$f"; then
+  if "${BASH:-bash}" -n "$f"; then
     ok "bash -n ${f#"$REPO_ROOT/"}"
   else
     err "bash -n ${f#"$REPO_ROOT/"}"
@@ -570,6 +579,51 @@ printf '%s\n' '#!/bin/sh' \
   'if [ "${1:-}" = delete ]; then printf "%s\n" "$*" >> "$DEFAULTS_CALLS"; [ "${DEFAULTS_FAIL_DELETE:-0}" = 1 ] && exit 73; exit 0; fi' \
   'exit 0' > "$fake_macos/bin/defaults"
 chmod +x "$fake_macos/bin/"*
+
+# --- the trailing slash that empties a relocated Trash ---------------------
+# stay_fresh.sh empties a Trash with `find "$dir/" -mindepth 1 -delete` and
+# measures it with `du -sk "$dir/"`. The slash is the whole of that fix: a
+# Trash relocated to another disk is a symlink, `[[ -d ]]` follows it, and
+# neither find -P nor du resolves a symlinked start point without it — so the
+# step used to walk nothing, delete nothing and report "freed 0B" on the
+# machine most likely to need the space.
+#
+# The step itself is covered by the container-only steps suite. The primitive
+# is asserted here because this is the file that also runs on macOS, where
+# find and du are BSD and not GNU, and nothing else in CI would notice if the
+# two disagreed about a trailing slash.
+slash_d="$(mktemp -d)"
+mkdir -p "$slash_d/target/sub" "$slash_d/home"
+: > "$slash_d/target/file"
+: > "$slash_d/target/.hidden"
+: > "$slash_d/target/sub/nested"
+dd if=/dev/urandom of="$slash_d/target/big" bs=1024 count=256 2>/dev/null
+ln -s "$slash_d/target" "$slash_d/home/.Trash"
+assert_eq "find does not descend into a symlinked start point" \
+  "0" "$(find "$slash_d/home/.Trash" -mindepth 1 | wc -l | tr -d ' ')"
+assert_eq "a trailing slash makes it descend" \
+  "5" "$(find "$slash_d/home/.Trash/" -mindepth 1 | wc -l | tr -d ' ')"
+slash_kb="$(du -sk "$slash_d/home/.Trash" | awk 'NR == 1 { print $1 }')"
+if (( slash_kb < 256 )); then
+  ok "du does not measure through a symlink either"
+else
+  err "du measured through a symlink without a slash ($slash_kb KB)"
+fi
+slash_kb="$(du -sk "$slash_d/home/.Trash/" | awk 'NR == 1 { print $1 }')"
+if (( slash_kb >= 256 )); then
+  ok "with a trailing slash it measures the relocated contents"
+else
+  err "du with a slash still measured the link ($slash_kb KB)"
+fi
+find "$slash_d/home/.Trash/" -mindepth 1 -delete
+assert_eq "the slashed form empties the relocation" \
+  "0" "$(find "$slash_d/home/.Trash/" -mindepth 1 | wc -l | tr -d ' ')"
+if [[ -d "$slash_d/target" && -L "$slash_d/home/.Trash" ]]; then
+  ok "and leaves the relocation and the link in place"
+else
+  err "the slashed form removed the relocation or the link"
+fi
+rm -rf "$slash_d"
 
 # --- krew: "already newest" is not a failure -------------------------------
 # `kubectl krew upgrade` exits non-zero when a plugin is already at the newest
@@ -1390,8 +1444,20 @@ rm -f "$fake_macos/bin/csrutil"
 mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
 printf 'old\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260101-000000-1.log"
 printf 'one\ntwo\nthree\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260102-000000-2.log"
+# Not a bare command substitution: this suite runs under `set -e`, so a
+# non-zero exit here aborted the whole run with the shell's status and no
+# message at all — the output it had just captured, which names the reason,
+# died with it. The rc is asserted instead, so a failure is one named
+# assertion with the agent's own words attached and the suite carries on.
+set +e
 out="$(HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$M/launchd/stay_fresh_agent.sh" logs --tail 2 2>&1)"
+agent_logs_rc=$?
+set -e
+assert_eq "agent logs command succeeds" "0" "$agent_logs_rc"
+if (( agent_logs_rc != 0 )); then
+  printf 'agent logs exited %s; it said:\n%s\n' "$agent_logs_rc" "$out" >&2
+fi
 assert_contains "agent logs command identifies the newest log" "$out" \
   "agent-20260102-000000-2.log"
 assert_contains "agent logs command tails requested lines" "$out" $'two\nthree'
@@ -1810,8 +1876,18 @@ assert data["ProgramArguments"][0] == "/bin/bash"
 assert data["ProgramArguments"][-3:] == ["run-scheduled", "--profile", "safe"]
 assert data["StartCalendarInterval"] == {"Hour": 3, "Minute": 5}
 assert "/opt/homebrew/bin" in data["EnvironmentVariables"]["PATH"].split(":")
+# stdout stays discarded: the run writes its own timestamped transcript and
+# duplicating it here would grow without bound.
 assert data["StandardOutPath"] == "/dev/null"
-assert data["StandardErrorPath"] == "/dev/null"
+# stderr must NOT be discarded. Everything that can stop a firing before it
+# reaches that transcript - this script missing after the checkout moved, a log
+# directory that cannot be created, stay_fresh.sh refusing at preflight - is
+# written by err() to stderr, and with both streams on /dev/null the schedule
+# died with no output anywhere. It has to be a real path, under the same log
+# directory the installer creates, and not the transcript itself.
+err_path = data["StandardErrorPath"]
+assert err_path != "/dev/null", "stderr is discarded; a failed firing would leave no trace"
+assert err_path.endswith("/Library/Logs/stay_fresh/agent-launchd.err"), err_path
 assert "StartCalendarIntervalRunMissed" not in data
 PY
   then

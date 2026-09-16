@@ -589,7 +589,9 @@ In the order they run:
     reported and does not count against the step either, for the same reason.
     Not probed under `--dry-run`: the catalogue scan is a system action that
     takes time on the network.
-22. List **local Time Machine snapshots** (`tmutil listlocalsnapshots /`).
+22. List **local Time Machine snapshots** on `/` and on every mounted local
+    volume (`tmutil listlocalsnapshots <mount>`, one call per volume; a network
+    share is skipped by its type before the path is touched).
     APFS keeps every block a snapshot references, so a run can free gigabytes
     and `df` still not move; macOS thins the snapshots on its own only under
     disk pressure. Listing is read-only. `--thin-snapshots` deletes them with
@@ -1262,6 +1264,14 @@ Each invocation writes
 kept. `logs` finds the newest timestamped file and prints its last 80 lines (or
 the positive count passed through `--tail`) without starting, stopping, or
 reloading the agent.
+
+A firing that fails before it can open that log leaves nothing in it — the
+script missing or not executable because the checkout moved, a log directory
+that cannot be created, `stay_fresh.sh` refusing at preflight. launchd appends
+whatever such a firing wrote to stderr to
+`~/Library/Logs/stay_fresh/agent-launchd.err` instead, which is the file to read
+when the schedule has quietly stopped producing timestamped logs. It is
+appended to and never rotated, because a healthy schedule never writes to it.
 
 ---
 

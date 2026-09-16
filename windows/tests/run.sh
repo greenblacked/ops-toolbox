@@ -13,7 +13,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
 echo "=== Running Windows Git Bash contract checks ==="
-bash -n \
+# "${BASH:-bash}", not "bash". These files target Git Bash, so the right
+# interpreter is whichever shell is running this suite — on windows-2025 that
+# is Git Bash itself. A bare `bash` resolves through PATH and need not be it.
+"${BASH:-bash}" -n \
   "$REPO_ROOT/windows/git-bash/install_dotfiles.sh" \
   "$REPO_ROOT/windows/git-bash/.aliases" \
   "$REPO_ROOT/windows/git-bash/.bashrc" \

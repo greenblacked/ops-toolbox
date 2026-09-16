@@ -413,7 +413,10 @@ clean_dir_contents() {
 # nothing at all: the run printed "nothing in trash files" and freed zero
 # bytes on the machine most likely to need the space.
 #
-# `find "$dir/" -mindepth 1 -delete` is the form stay_fresh.sh settled on. The
+# `find "$dir/" -mindepth 1 -delete` is the form linux/stay_fresh.sh settled
+# on — named in full because the macOS stay_fresh.sh carried the unslashed
+# form for as long as this comment read "stay_fresh.sh", and had the same bug
+# on a relocated ~/.Trash. It empties its Trash this way now too. The
 # trailing slash makes find descend into the target of a symlink, -mindepth 1
 # leaves behind the directory the FreeDesktop spec expects to exist, and
 # -delete removes trashed directories along with files. -xdev stays for the

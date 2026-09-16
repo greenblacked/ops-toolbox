@@ -860,6 +860,167 @@ else
 fi
 
 # --------------------------------------------------------------------------
+head_ "report-only steps do not fail the scheduled run"
+# The LaunchAgent fires stay_fresh.sh as `--yes --no-sudo --fail-on-warn`, so
+# every warn_step anywhere in the run is a red daily verdict. stay_fresh.sh
+# states the rule in a comment above warn_step -- warn_step is for work the
+# step could not do, not for a condition a healthy machine produces -- and
+# nothing enforced it. The steps where breaking it costs most are the ones
+# that only report: a pending macOS update and a pile of local snapshots are
+# the reason to read the verdict at all, and a report that warns on an
+# ordinary machine is exactly how somebody learns to stop reading it.
+#
+# The subject list is not written here. stay_fresh.sh already defines it: the
+# --reports flag is, in its own words, "the other fixed list: the steps that
+# change nothing", and it is the only list in the tree that means read-only.
+# A step added to it is covered by the commit that adds it; a step that stops
+# being read-only leaves the list and stops being checked, in the same commit.
+# The agent's own safe --only profile is the wrong source and was the tempting
+# one: it is a superset that also sweeps caches, so half of it may warn_step.
+sf_script="macos-initial-setup/stay_fresh.sh"
+sf_agent="macos-initial-setup/launchd/stay_fresh_agent.sh"
+
+report_ids=""
+report_fns=""
+sweep_fns=""
+report_bad=0
+report_checked=0
+
+if [[ ! -f "$sf_script" || ! -f "$sf_agent" ]]; then
+  err "$sf_script or $sf_agent is missing — this check cannot run and has stopped checking"
+else
+  # The premise, checked rather than assumed. If the scheduled run stops
+  # passing --fail-on-warn, a report-only warn_step costs nothing and this
+  # whole section is enforcing a rule nobody needs any more.
+  sched_args="$(awk '/^run_scheduled\(\)/ { inb = 1 } inb && /args=\(/ { print; inb = 0 }' "$sf_agent")"
+  case "$sched_args" in
+    *--fail-on-warn*)
+      ok "the scheduled run still passes --fail-on-warn, so warn_step is still a red verdict" ;;
+    "")
+      err "could not find the scheduled run's argument list in $sf_agent — the premise of this check is unverifiable" ;;
+    *)
+      err "$sf_agent's scheduled run no longer passes --fail-on-warn — either restore it or retire this check" ;;
+  esac
+
+  # `--reports` sets ONLY_STEPS to a comma-separated list of step ids. Read
+  # that one assignment, not any of the others (--quick sets ONLY_STEPS too).
+  report_ids="$(awk '
+    /^if \(\( REPORTS \)\); then/ { inb = 1 }
+    inb && /ONLY_STEPS=/ { line = $0; inb = 0 }
+    END { print line }' "$sf_script" \
+    | sed -e 's/[^"]*"//' -e 's/".*//' -e 's/,/ /g')"
+
+  # Every step id and its function, from the step table itself.
+  all_pairs="$(awk -F'|' 'NF == 5 && $1 ~ /^[a-z][a-z-]*$/ && $3 ~ /^step_[a-z_]+$/ { print $1 " " $3 }' "$sf_script")"
+
+  for step_id in $report_ids; do
+    fn="$(awk -v want="$step_id" '$1 == want { print $2; exit }' <<<"$all_pairs")"
+    if [[ -z "$fn" ]]; then
+      err "--reports names the step id '$step_id', which step_table() in $sf_script does not define"
+      report_bad=$((report_bad + 1))
+      continue
+    fi
+    report_fns="$report_fns $fn"
+  done
+  # Everything else in the table, for the positive control below.
+  while IFS=' ' read -r step_id fn; do
+    [[ -n "$fn" ]] || continue
+    case " $report_fns " in *" $fn "*) continue ;; esac
+    sweep_fns="$sweep_fns $fn"
+  done <<<"$all_pairs"
+
+  # Whole-line comments are stripped, the same way the Bash 3.2 keyword scan
+  # does it: stay_fresh.sh explains warn_step in prose above several steps.
+  step_warn_step_lines() {
+    awk -v fn="$2" '
+      $0 == fn "() {" { inb = 1; next }
+      inb && $0 == "}" { inb = 0; next }
+      inb {
+        line = $0
+        sub(/^[[:space:]]*#.*$/, "", line)
+        if (line ~ /warn_step/) print NR
+      }' "$1"
+  }
+
+  for fn in $report_fns; do
+    report_checked=$((report_checked + 1))
+    hits="$(step_warn_step_lines "$sf_script" "$fn")"
+    for n in $hits; do
+      err "$sf_script:$n — $fn() is a --reports step and calls warn_step; the LaunchAgent runs --fail-on-warn, so this turns the daily verdict red on a machine with nothing wrong. Report it with warn (see the comment above warn_step)"
+      report_bad=$((report_bad + 1))
+    done
+  done
+
+  # The floors. A list that stops being read, a table that stops being parsed,
+  # or a pattern that stops matching all look identical from here: zero hits.
+  control=0
+  for fn in $sweep_fns; do
+    [[ -n "$(step_warn_step_lines "$sf_script" "$fn")" ]] && control=$((control + 1))
+  done
+  if (( report_checked == 0 )); then
+    err "the report-only scan inspected no step function — --reports' id list or step_table() has moved, and this check just checked nothing"
+  elif (( control == 0 )); then
+    err "no step outside the --reports list calls warn_step — the function-body scan has stopped matching, so the clean result above means nothing"
+  elif (( report_bad == 0 )); then
+    ok "$report_checked read-only step(s) raise no warn_step ($control sweeping step(s) do, so the scan works)"
+  fi
+fi
+
+# --------------------------------------------------------------------------
+head_ "a suite's syntax check uses the suite's own interpreter"
+# A suite that parses its package by shelling out to an unqualified `bash`
+# resolves it through PATH, which is not the interpreter running the suite. On
+# macos-15 those differ: CI starts the macOS suite with /bin/bash, the Apple
+# 3.2 that is the entire point of that job, while PATH there puts Homebrew's
+# Bash 5 ahead of /bin. The one check whose job was to catch a 3.2 parse error
+# was asking Bash 5, and passed a file 3.2 refuses -- an apostrophe inside a
+# heredoc inside a command substitution. "$BASH" is the shell actually running
+# the suite, on every runner, and needs no per-platform knowledge to be right.
+#
+# This file is one of its own subjects, so it never spells the construct it
+# looks for; the probe below builds it instead, which also proves the pattern
+# still matches something.
+#
+# A match preceded by a quote is a label, not a command: every one of these
+# suites prints its result as ok "<the command> <file>", and reporting those
+# would bury the three real invocations in six false ones. The cost is that a
+# genuine `eval "..."` form would be missed; no suite here uses one, and a
+# scan nobody reads catches less than a narrow one people believe.
+bashn_re='(^|[^-[:alnum:]_/"'"'"'])bash[[:space:]]+-n([^[:alnum:]_]|$)'
+bashn_probe="$host_env_scratch/interpreter-probe.sh"
+{
+  printf 'if %s -n "$f"; then :; fi\n' 'bash'
+  printf '"${BASH:-bash}" -n "$f"\n'
+  printf '"$BASH" -n "$f"\n'
+  printf '/bin/%s -n "$f"\n' 'bash'
+  printf 'ok "%s -n $rel"\n' 'bash'
+} > "$bashn_probe"
+probe_hits="$(grep -cE "$bashn_re" "$bashn_probe")"
+if [[ "$probe_hits" != "1" ]]; then
+  err "the interpreter probe matched $probe_hits of its 5 lines, expected exactly 1 — this scan no longer tells the bare form from the correct ones"
+else
+  ok "the interpreter scan matches the bare form and leaves \"\$BASH\", \"\${BASH:-bash}\", an absolute path and a printed label alone"
+fi
+
+bashn_checked=0
+bashn_hits=0
+while IFS= read -r f; do
+  [[ -n "$f" && -f "$f" ]] || continue
+  bashn_checked=$((bashn_checked + 1))
+  while IFS= read -r hit; do
+    [[ -n "$hit" ]] || continue
+    err "$f:${hit%%:*} syntax-checks a script through an unqualified 'bash', which PATH resolves — on macos-15 that is Homebrew's Bash 5 while the suite itself runs under /bin/bash 3.2. Use \"\${BASH:-bash}\", the interpreter running the suite"
+    bashn_hits=$((bashn_hits + 1))
+  done < <(sed 's/^[[:space:]]*#.*$//' "$f" | grep -nE "$bashn_re" || true)
+done < <(git ls-files '*/tests/*.sh' 'test-env/*/run.sh' \
+  'test-env/static/test_*.sh' 'test-env/static/check_*.sh')
+if (( bashn_checked == 0 )); then
+  err "the interpreter scan inspected no suite — its discovery globs have stopped matching"
+elif (( bashn_hits == 0 )); then
+  ok "every one of $bashn_checked suite(s) parses with the interpreter that is running it"
+fi
+
+# --------------------------------------------------------------------------
 head_ "winget configuration files"
 # yamllint covers the syntax of these. It cannot cover the shape, and the shape
 # is where the real defect was: an unquoted description containing a comma
