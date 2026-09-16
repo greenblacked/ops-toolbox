@@ -51,10 +51,10 @@ than once, and focused on reducing repeat manual work.
 Three rules hold everywhere, and the test suites enforce them:
 
 - **`--help` works before anything else**, including on a machine the script
-  refuses to run on. An unrecognised flag exits `3` — from the Bash and
-  PowerShell scripts. The Python CLIs use `argparse`, which exits `2` by
-  its own convention; `check_conventions.sh` exempts them by extension rather
-  than fighting it.
+  refuses to run on. An unrecognised flag exits `3`, from every script in the
+  tree — Bash, PowerShell and Python alike. The Python CLIs carry a small
+  `argparse` subclass to get there, because argparse's own convention is to
+  exit `2`, and `2` here means "wrong environment".
 - **A dry run writes nothing.** Anything that changes a machine supports
   `--dry-run` (or `-DryRun`), and anything destructive is behind an explicit
   opt-in flag.

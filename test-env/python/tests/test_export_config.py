@@ -107,14 +107,14 @@ class ArgumentGuardTestCase(unittest.TestCase):
             rc = export_config.main(
                 ["--host", "192.0.2.1", "--show-sensitive", "--commit"]
             )
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 3)
         self.assertIn("secrets", (out.getvalue() + errout.getvalue()).lower())
 
     def test_output_modes_are_mutually_exclusive(self):
         rc = export_config.main(
             ["--host", "192.0.2.1", "--stdout", "--diff"]
         )
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 3)
 
 
 class DiffModeTestCase(unittest.TestCase):

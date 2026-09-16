@@ -129,8 +129,29 @@ def git(args, cwd):
     )
 
 
+class Usage3Parser(argparse.ArgumentParser):
+    """An ArgumentParser that exits 3 on a usage error, the way the rest of the
+    tree does.
+
+    CONTRIBUTING.md asks the same thing of every command-line script here: an
+    unknown flag prints a message on stderr, then the usage, then exits 3. The
+    Bash half of the repository does that and is held to it. Argparse exits 2
+    instead, which this repository spends on "wrong environment" — so a
+    mistyped flag came back indistinguishable from a machine that could not
+    answer, and in the diagnostics that document an exit 2 of their own,
+    literally the same number for a typo and for a finding.
+
+    Copied rather than shared, like require_value() in the shell scripts: what
+    is asserted about the copies is their contract, not their bytes.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(3, "%s: error: %s\n" % (self.prog, message))
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(
+    parser = Usage3Parser(
         description="Export a RouterOS config over ssh and version it."
     )
     parser.add_argument("--host", required=True, help="router hostname or address")
@@ -159,14 +180,18 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
+    # 3, not 2. Both of these are bad CLI arguments, which the exit table in
+    # this file's own docstring spends 3 on; 2 is preflight — ssh missing, the
+    # router unreachable. They returned 2, so a caller that retried on "could
+    # not reach it" retried a flag combination that will never work.
     if sum((args.stdout, args.diff, args.commit)) > 1:
         bad("--stdout, --diff and --commit are mutually exclusive")
-        return 2
+        return 3
 
     if args.show_sensitive and args.commit:
         bad("--show-sensitive with --commit would write router secrets into git history")
         info("drop one of the two; secrets do not belong in a repository")
-        return 2
+        return 3
 
     rc, text, err = fetch_export(
         args.host, args.user, args.identity, args.port, args.timeout,

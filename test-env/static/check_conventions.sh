@@ -106,11 +106,18 @@ done
 
 # --------------------------------------------------------------------------
 head_ "unknown-flag contract"
-# Bash scripts exit 3 on an unrecognised flag. The Python helpers use argparse,
-# which exits 2 by its own convention and is not worth fighting — they are
-# checked for --help above, and for nothing here.
+# Every command-line script exits 3 on an unrecognised flag, Python included.
+#
+# The Python helpers used to be exempt here, on the grounds that argparse exits
+# 2 by its own convention and it was not worth fighting. That was defensible
+# while 2 meant nothing in particular. It stopped being defensible once the
+# diagnostics started documenting an exit 2 of their own — git_ignore_doctor.py
+# spends it on "not inside a Git repository" and git_remote_doctor.py on "git
+# config unavailable" — because a mistyped flag then returned the same number
+# as a real finding, and a caller reading the exit code could not tell a typo
+# from a diagnosis. Each of them now carries a parser that exits 3, and the
+# exemption that hid this is gone rather than documented.
 for f in "${clis[@]}"; do
-  case "$f" in *.py) continue ;; esac
   rc=0
   guard "./$f" --definitely-not-a-valid-flag-12345 >/dev/null 2>&1
   rc=$?
