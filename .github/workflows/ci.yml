@@ -80,6 +80,13 @@ env:
   YAMLLINT_VERSION: '1.38.0'
   RUFF_VERSION: '0.15.8'
   PSSA_VERSION: '1.23.0'
+  # markdownlint used to be the one linter with no version pinned anywhere: it
+  # arrived through markdownlint-cli2-action, and the action's SHA was the only
+  # thing fixed. That is a real pin for CI and no pin at all for anyone running
+  # the linter by hand, because nothing in the tree said which markdownlint they
+  # should run. The value below is the version that action depends on, named
+  # here so the local lint suite and the workflow agree on it.
+  MARKDOWNLINT_VERSION: '0.23.2'
 
 jobs:
   # Which parts of the repository a change actually touches.
@@ -228,15 +235,22 @@ jobs:
           # the dotfiles suite arrived with four hand edits to this file and
           # its summary row was the one that got missed.
           #
-          # Three suites are not matrix entries: python and static have jobs
-          # of their own (static runs on every change), and mikrotik boots a
-          # router under QEMU in its own workflow.
+          # Four suites are not matrix entries: python and static have jobs
+          # of their own (static runs on every change), mikrotik boots a
+          # router under QEMU in its own workflow, and lint *is* the Lint job
+          # below — it is the aggregator's name for the checks that job runs,
+          # and the job calls it. A matrix entry for it would stand up a second
+          # ubuntu runner, install none of the pinned linters, and report a
+          # duplicate `Test / lint` verdict from whatever happened to be on the
+          # image. Its package prefix would be wrong too: test-env/lint/ is
+          # where the runner lives, not what it lints, so the gate would fire
+          # on edits to the runner and on nothing else.
           echo
           echo "suites:"
           matrix='[]'
           while IFS=$'\t' read -r suite pkg _blurb; do
             [ -n "$suite" ] || continue
-            case "$suite" in python|static|mikrotik) continue ;; esac
+            case "$suite" in python|static|mikrotik|lint) continue ;; esac
             emit "suite_$suite" "^${pkg}/"
             changed="$(grep "^suite_$suite=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2)"
             case "$suite" in
@@ -304,54 +318,48 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      # The file list the Bash checks operate on, built once and reused.
+      # Which of the six checks this change needs, in the form the suite takes.
       #
-      # It used to be duplicated verbatim in the `bash -n` step and the
-      # ShellCheck step, which is exactly the shape of thing that drifts: drop a
-      # path from one copy and the other still looks right. It is built here,
-      # NUL-delimited, and both consumers read it.
+      # The verdicts are the same per-filter ones the install steps below are
+      # gated on; this step only joins them, so the job still does nothing
+      # expensive for a change that touches nothing lintable.
       #
-      # The six Git Bash dotfiles have no .sh extension, so a plain '*.sh' glob
-      # has never covered them. They are real bash and they pass, so they are
-      # listed by name — and the presence of every one of them is asserted,
-      # because a silently shrinking file list is a silently weakening gate.
-      - name: Collect Bash sources
-        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
+      # The shell checks are selected by a workflow change as well as a shell
+      # one, because actionlint shells out to ShellCheck to analyse `run:`
+      # blocks: without the binary present that gate quietly analyses nothing.
+      - name: Select checks
+        id: checks
         shell: bash
+        env:
+          SHELL_CHANGED: ${{ needs.changes.outputs.shell }}
+          WORKFLOW_CHANGED: ${{ needs.changes.outputs.workflow }}
+          DOCKERFILE_CHANGED: ${{ needs.changes.outputs.dockerfile }}
+          POWERSHELL_CHANGED: ${{ needs.changes.outputs.powershell }}
+          YAML_CHANGED: ${{ needs.changes.outputs.yaml }}
+          MARKDOWN_CHANGED: ${{ needs.changes.outputs.markdown }}
         run: |
           set -euo pipefail
-          dotfiles=(
-            windows/git-bash/.bashrc
-            windows/git-bash/.bash_profile
-            windows/git-bash/.aliases
-            windows/git-bash/default-git-bash/.bashrc
-            windows/git-bash/default-git-bash/.bash_profile
-            windows/git-bash/default-git-bash/.aliases
-          )
-          git ls-files -z '*.sh' "${dotfiles[@]}" > "$RUNNER_TEMP/bash-sources"
-          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
-
-          for want in "${dotfiles[@]}"; do
-            found=0
-            for got in "${scripts[@]}"; do
-              [ "$got" = "$want" ] && { found=1; break; }
-            done
-            if [ "$found" -eq 0 ]; then
-              echo "::error::$want is not in the ShellCheck file list — it was renamed, moved or deleted, and the linter would silently stop covering it"
-              exit 1
-            fi
-          done
-
-          printf 'collected %d bash sources (%d of them dotfiles)\n' \
-            "${#scripts[@]}" "${#dotfiles[@]}"
-
-      - name: Check Bash syntax
-        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
-          bash -n "${scripts[@]}"
+          checks=()
+          # Written as `if`, not `[ x ] && checks+=(...)`: under `set -e` a
+          # trailing && list that evaluates false is a failed command and takes
+          # the whole step with it, so the last filter to come back false would
+          # kill this step rather than leave its check unselected.
+          if [ "$SHELL_CHANGED" = true ] || [ "$WORKFLOW_CHANGED" = true ]; then
+            checks+=(shell)
+          fi
+          if [ "$WORKFLOW_CHANGED" = true ];   then checks+=(workflow);   fi
+          if [ "$DOCKERFILE_CHANGED" = true ]; then checks+=(dockerfile); fi
+          if [ "$POWERSHELL_CHANGED" = true ]; then checks+=(powershell); fi
+          if [ "$YAML_CHANGED" = true ];       then checks+=(yaml);       fi
+          if [ "$MARKDOWN_CHANGED" = true ];   then checks+=(markdown);   fi
+          list="$(IFS=,; printf '%s' "${checks[*]-}")"
+          printf 'list=%s\n' "$list" >> "$GITHUB_OUTPUT"
+          if [ -n "$list" ]; then
+            printf 'any=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'any=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'checks: %s\n' "${list:-<none>}"
 
       # Fetched from the upstream release rather than apt. apt-get update alone
       # costs ~20s before a byte of the tool is downloaded, and it leaves the
@@ -423,33 +431,6 @@ jobs:
             exit 1
           fi
 
-      # -x follows `source` directives, matching what the Docker suites already
-      # do. Without it, sourced files are invisible to the analysis.
-      # --shell=bash is required for the dotfiles: with no shebang ShellCheck
-      # cannot detect the dialect and SC2148 fires at error severity.
-      - name: Run ShellCheck
-        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
-          shellcheck --severity=error -x --shell=bash "${scripts[@]}"
-
-      # A second pass on SC2183 alone. It is a warning, so the error-severity
-      # pass above lets it through - and it is not a style opinion: a printf
-      # whose format wants more arguments than it is given prints the wrong
-      # thing on every run, silently. install_apps.sh's summary joined a colour
-      # and a count into one word, %d then consumed the reset escape, and the
-      # adopted line rendered "00" for zero adoptions. Nothing else catches it:
-      # the summary block sits past the dry-run exit, so no suite can reach it.
-      - name: Run ShellCheck (printf argument counts)
-        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -d '' scripts < "$RUNNER_TEMP/bash-sources"
-          shellcheck --include=SC2183 -x --shell=bash "${scripts[@]}"
-
       - name: Install actionlint
         if: needs.changes.outputs.workflow == 'true'
         shell: bash
@@ -478,10 +459,6 @@ jobs:
             echo "::error::wanted actionlint $ACTIONLINT_VERSION, got '$got'"
             exit 1
           fi
-
-      - name: Lint GitHub Actions workflows
-        if: needs.changes.outputs.workflow == 'true'
-        run: actionlint
 
       - name: Install Hadolint
         if: needs.changes.outputs.dockerfile == 'true'
@@ -518,22 +495,6 @@ jobs:
               ;;
           esac
 
-      - name: Lint Dockerfiles
-        if: needs.changes.outputs.dockerfile == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -d '' dockerfiles < <(
-            git ls-files -z | while IFS= read -r -d '' file; do
-              [ "${file##*/}" = Dockerfile ] && printf '%s\0' "$file"
-            done
-          )
-          if [ "${#dockerfiles[@]}" -eq 0 ]; then
-            echo "::error::Dockerfile filter ran but no tracked Dockerfiles were found"
-            exit 1
-          fi
-          hadolint --failure-threshold error "${dockerfiles[@]}"
-
       # PSGallery installs are the slowest thing in this job by a wide margin,
       # and the module is pinned, so the cache key is exact and never stale.
       - name: Cache PSScriptAnalyzer
@@ -550,27 +511,6 @@ jobs:
         run: |
           Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION `
             -Force -Scope CurrentUser -AllowClobber
-
-      # Gated at Error *and* Warning; see PSScriptAnalyzerSettings.psd1 for why
-      # mirroring `shellcheck --severity=error` literally would find nothing.
-      - name: Run PSScriptAnalyzer
-        if: needs.changes.outputs.powershell == 'true'
-        shell: pwsh
-        run: |
-          # -RequiredVersion so a cached or preinstalled copy of a different
-          # version fails loudly instead of silently changing the ruleset.
-          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION -ErrorAction Stop
-          $files = git ls-files '*.ps1' '*.psm1'
-          if (-not $files) { Write-Host 'no PowerShell files'; exit 0 }
-          $found = @()
-          foreach ($f in $files) {
-            $found += Invoke-ScriptAnalyzer -Path $f -Settings ./PSScriptAnalyzerSettings.psd1
-          }
-          if ($found.Count) {
-            $found | Format-Table -AutoSize RuleName, Severity, ScriptName, Line, Message
-            exit 1
-          }
-          Write-Host ('PSScriptAnalyzer clean over {0} files' -f $files.Count)
 
       - name: Cache pip downloads
         if: needs.changes.outputs.yaml == 'true'
@@ -593,16 +533,45 @@ jobs:
             exit 1
           fi
 
-      - name: Lint YAML
-        if: needs.changes.outputs.yaml == 'true'
-        run: yamllint --config-file .yamllint.yml .
-
-      - name: Lint Markdown
+      # markdownlint-cli2-action used to do this, and it was the only linter in
+      # the job with no counterpart anyone could run by hand. Installed here
+      # instead, from the version the action itself depends on, so the workflow
+      # and test-env/lint/run.sh invoke one binary at one version.
+      - name: Install markdownlint-cli2
         if: needs.changes.outputs.markdown == 'true'
-        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff  # v24.2.0
-        with:
-          config: .markdownlint-cli2.yaml
-          globs: '**/*.md'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g "markdownlint-cli2@${MARKDOWNLINT_VERSION}"
+          # No --version flag: the banner is the first line of every run,
+          # --help included, and --help exits 2 without reading a file.
+          got="$({ markdownlint-cli2 --help 2>&1 || true; } | head -n 1)"
+          case "$got" in
+            "markdownlint-cli2 v$MARKDOWNLINT_VERSION "*) ;;
+            *)
+              echo "::error::wanted markdownlint-cli2 $MARKDOWNLINT_VERSION, got '$got'"
+              exit 1
+              ;;
+          esac
+
+      # The whole point of the job, in one step. It runs the same entry point a
+      # developer runs, which is what `run-tests.sh` has claimed since its first
+      # line and what the Lint job was the last holdout from: every check above
+      # used to be a second copy of an invocation, and the copies had no way to
+      # be compared. A markdownlint violation reached a pull request because
+      # nothing local ran markdownlint at all.
+      #
+      # LINT_STRICT=1 because every tool was just installed on purpose above. On
+      # a developer's machine a missing Hadolint is a named skip and the rest of
+      # the lint still runs; here a skip means an install step stopped working
+      # and the gate silently shrank, so it fails the job.
+      - name: Run the lint suite
+        if: steps.checks.outputs.any == 'true'
+        shell: bash
+        env:
+          LINT_CHECKS: ${{ steps.checks.outputs.list }}
+          LINT_STRICT: '1'
+        run: ./run-tests.sh lint
 
       - name: Summarise
         if: always()
@@ -622,7 +591,9 @@ jobs:
               "$PSSA_VERSION" '${{ needs.changes.outputs.powershell }}'
             printf '| yamllint %s | %s |\n' \
               "$YAMLLINT_VERSION" '${{ needs.changes.outputs.yaml }}'
-            printf '| markdownlint | %s |\n' '${{ needs.changes.outputs.markdown }}'
+            printf '| markdownlint-cli2 %s | %s |\n' \
+              "$MARKDOWNLINT_VERSION" '${{ needs.changes.outputs.markdown }}'
+            printf '\nRun the same checks locally with `./run-tests.sh lint`.\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
   validate:

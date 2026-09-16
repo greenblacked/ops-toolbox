@@ -13,6 +13,7 @@ what a test here has to assert.
 | --- | --- | --- |
 | [`static/`](static/) | The repository-wide convention checks (`./run-tests.sh static`) | **yes**, and by CI |
 | [`python/`](python/) | The unit tests for the Python helpers (`./run-tests.sh python`) | **yes**, and by CI |
+| [`lint/`](lint/) | The linters CI's `Lint` job runs — `bash -n`, ShellCheck, actionlint, Hadolint, PSScriptAnalyzer, yamllint, markdownlint — at CI's pinned versions (`./run-tests.sh lint`) | **yes**, and by CI: the `Lint` job calls it |
 | [`lib/`](lib/) | `discover_clis.sh`, the "which tracked files are command-line scripts" rule | sourced by `static/check_conventions.sh`; `static/test_doc_citations.sh` applies the same exclusion rule but reimplements it, and the python suite does not use it |
 | [`chef/`](chef/) | A self-contained Chef cookbook sandbox | **no** |
 | [`go/`](go/) | A self-contained Go sandbox | **no** |
@@ -28,16 +29,18 @@ form of the distinction above.
 | **`python3`** | [`python/`](python/) | The suite picks `/usr/bin/python3` on macOS deliberately — that is the interpreter the shell scripts call, and it is 3.9. It runs under stdlib `unittest`, so nothing has to be installed. |
 | **`python3` with PyYAML** | [`static/`](static/), optionally | Only for the `.winget` configuration shape check, which prints a `warn` and skips itself when either is missing. |
 | **`ruff`** | [`python/`](python/), optionally | Lints the repository if installed; the suite says it skipped the lint if not. |
+| **The pinned linters** | [`lint/`](lint/), each optionally | ShellCheck, actionlint and Hadolint at the versions in `.github/ci-tool-checksums.env`; yamllint, PSScriptAnalyzer and markdownlint-cli2 at the versions in `ci.yml`. A missing or differently-versioned tool is a named skip, never a pass; `LINT_FETCH=1` downloads the three release binaries and verifies them against the recorded digests, `LINT_ALLOW_UNPINNED=1` runs whatever version is on PATH with a warning. A run in which no linter ran fails. **No network unless `LINT_FETCH=1`.** |
 | **Docker with Compose v2** | [`chef/`](chef/), [`go/`](go/) | Only the sandboxes. Neither is part of `./run-tests.sh` or of CI. |
 
 ## Quick start
 
-Both of the suites that run are called through the aggregator at the repository
-root, so this is the same command CI uses:
+The suites that run are called through the aggregator at the repository root,
+so this is the same command CI uses:
 
 ```bash
 ./run-tests.sh static      # repository-wide conventions: bash + git, no Docker
 ./run-tests.sh python      # the Python helpers' unit tests, on the host python3
+./run-tests.sh lint        # what CI's Lint job runs, with CI's pins; skips name the missing tool
 ./run-tests.sh --list      # every suite, its package directory and what it needs
 ```
 
@@ -58,6 +61,15 @@ dry-run promise checked against the filesystem, and the rule that a suite must
 pin every environment variable the scripts it runs read from the host
 (`host_env_vars.awk` derives that set from each script). **No Docker and no
 network.**
+
+**[`lint/`](lint/)** — `run.sh`, the local counterpart of the `Lint` job in
+`.github/workflows/ci.yml`, and the command that job runs. The seven
+invocations are copies of CI's, flag for flag and glob for glob, and the
+versions are read from the same two files CI reads rather than from whatever is
+on PATH. It exists because those linters had no local entry point at all: a
+changelog fragment reached a pull request with a markdownlint violation while
+the linter sat installed on the same machine. Every zero-file case is a
+failure, a missing tool is a named skip, and a run in which nothing ran fails.
 Almost all of it is bash + git; the one exception is the `.winget`
 configuration shape check, which shells out to `python3` with PyYAML and
 prints a `warn` and skips if either is missing.

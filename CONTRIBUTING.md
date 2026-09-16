@@ -399,7 +399,10 @@ The suite table at the top of `run-tests.sh` is also what CI reads. The
 each suite's package directory, and builds the `Test / <suite>` matrix from
 the result, so a suite added to that table gets its job without an edit to
 the workflow. The exceptions are named in the workflow: `python` and `static`
-have jobs of their own, and `mikrotik` runs in its own workflow.
+have jobs of their own, `mikrotik` runs in its own workflow, and `lint` *is*
+the `Lint` job — that job installs the pinned linters and then runs
+`./run-tests.sh lint`, so the local suite and CI are one command, not two
+copies of seven invocations.
 
 The Docker suites mount the repository **read-only** at `/repo`, so all scratch
 state goes under `/tmp` via `mktemp -d`. Test bodies are hand-rolled harnesses —
