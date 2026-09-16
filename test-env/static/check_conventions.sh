@@ -831,11 +831,47 @@ else
     done <<<"$(grep -E '^[A-Za-z_][A-Za-z0-9_]*_VERSION=' "$sums_env")"
   fi
 
+  # The digests have a second reader. test-env/lint/run.sh fetches the same
+  # pinned binaries when the lint suite is run with LINT_FETCH=1, and it builds
+  # its key as ${TOOL}_SHA256_${PLATFORM} at runtime — so the literal never
+  # appears in it and a grep for the key finds only ci.yml. Requiring ci.yml to
+  # name every digest therefore capped the file at what CI downloads, which is
+  # Linux, which is why the lint suite could never fetch actionlint or hadolint
+  # on the Mac most likely to be running it.
+  #
+  # Both halves are read out of the runner rather than repeated here: the tools
+  # from the case arms of fetch_tool(), the platforms from os_arch(). A tool or
+  # a platform the runner learns is covered by the commit that teaches it.
+  lint_runner="test-env/lint/run.sh"
+  lint_tools=""
+  lint_platforms=""
+  if [[ -f "$lint_runner" ]]; then
+    lint_tools="$(awk '/^fetch_tool\(\) \{/, /^\}/' "$lint_runner" |
+      sed -n 's/^    \([a-z0-9-]*\))$/\1/p' | tr '[:lower:]' '[:upper:]')"
+    lint_platforms="$(awk '/^os_arch\(\) \{/, /^\}/' "$lint_runner" |
+      sed -n "s/.*printf '\([A-Z][A-Z0-9_]*\)\\\\n'.*/\1/p")"
+  fi
+
+  # Named by the runner when its tool is one the runner fetches and its
+  # platform is one the runner runs on. Anything else still has to be named by
+  # a step in ci.yml, so a digest for a tool nothing downloads keeps failing.
+  read_by_lint_runner() {
+    local key="$1" tool="${1%%_SHA256_*}" platform="${1#*_SHA256_}" t p
+    [[ "$key" == *_SHA256_* ]] || return 1
+    for t in $lint_tools; do
+      [[ "$t" == "$tool" ]] || continue
+      for p in $lint_platforms; do
+        [[ "$p" == "$platform" ]] && return 0
+      done
+    done
+    return 1
+  }
+
   while read -r digest_key; do
     [[ -n "$digest_key" ]] || continue
     digest_count=$((digest_count + 1))
-    if ! grep -q "$digest_key" "$ci_yml"; then
-      err "$sums_env records $digest_key and no step in $ci_yml names it — an unread digest is exactly the state this whole file was in"
+    if ! grep -q "$digest_key" "$ci_yml" && ! read_by_lint_runner "$digest_key"; then
+      err "$sums_env records $digest_key and neither a step in $ci_yml nor $lint_runner reads it — an unread digest is exactly the state this whole file was in"
       pin_gaps=$((pin_gaps + 1))
     fi
     digest_tool="${digest_key%%_SHA256_*}"
@@ -855,7 +891,7 @@ else
   elif (( digest_count == 0 )); then
     err "no *_SHA256_* digests found in $sums_env — every binary ci.yml downloads is installing on a version pin alone"
   elif (( pin_gaps == 0 )); then
-    ok "$ci_pin_count CI tool pin(s) agree with $sums_env; $digest_count digest(s), each named by a step in $ci_yml"
+    ok "$ci_pin_count CI tool pin(s) agree with $sums_env; $digest_count digest(s), each read by a step in $ci_yml or by $lint_runner"
   fi
 fi
 

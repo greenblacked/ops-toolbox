@@ -241,15 +241,35 @@ fetch_tool() {
       install -m 0755 "$tmp/shellcheck-v${want}/shellcheck" "$dest" || { rm -rf "$tmp"; return 1; }
       ;;
     actionlint)
+      # Selected per platform, like ShellCheck above. These two spent their
+      # whole life asking for the linux_amd64 asset whatever machine was
+      # asking: on a Mac the download either failed outright or, worse, would
+      # have installed a Linux binary had its digest matched. With no Darwin
+      # digest recorded either, the lint suite simply skipped them, so the one
+      # platform most likely to run it locally is the one that ran neither.
+      case "$PLATFORM" in
+        LINUX_AMD64)  asset="actionlint_${want}_linux_amd64.tar.gz" ;;
+        DARWIN_ARM64) asset="actionlint_${want}_darwin_arm64.tar.gz" ;;
+        DARWIN_AMD64) asset="actionlint_${want}_darwin_amd64.tar.gz" ;;
+        *)            rm -rf "$tmp"; return 1 ;;
+      esac
       fetch_verified \
-        "https://github.com/rhysd/actionlint/releases/download/v${want}/actionlint_${want}_linux_amd64.tar.gz" \
+        "https://github.com/rhysd/actionlint/releases/download/v${want}/${asset}" \
         "$tmp/a.tar.gz" "$key" || { rm -rf "$tmp"; return 1; }
       tar -xzf "$tmp/a.tar.gz" -C "$tmp" actionlint || { rm -rf "$tmp"; return 1; }
       install -m 0755 "$tmp/actionlint" "$dest" || { rm -rf "$tmp"; return 1; }
       ;;
     hadolint)
+      # Hadolint names its macOS builds "macos", not "darwin", and ships them
+      # as bare binaries like the Linux one — there is nothing to unpack.
+      case "$PLATFORM" in
+        LINUX_AMD64)  asset="hadolint-linux-x86_64" ;;
+        DARWIN_ARM64) asset="hadolint-macos-arm64" ;;
+        DARWIN_AMD64) asset="hadolint-macos-x86_64" ;;
+        *)            rm -rf "$tmp"; return 1 ;;
+      esac
       fetch_verified \
-        "https://github.com/hadolint/hadolint/releases/download/v${want}/hadolint-linux-x86_64" \
+        "https://github.com/hadolint/hadolint/releases/download/v${want}/${asset}" \
         "$tmp/hadolint" "$key" || { rm -rf "$tmp"; return 1; }
       install -m 0755 "$tmp/hadolint" "$dest" || { rm -rf "$tmp"; return 1; }
       ;;
