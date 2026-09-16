@@ -1322,8 +1322,20 @@ assert_eq "workstation_doctor --strict fails on warnings" "1" "$doctor_strict_rc
 mkdir -p "$fake_macos/home/Library/Logs/stay_fresh"
 printf 'old\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260101-000000-1.log"
 printf 'one\ntwo\nthree\n' > "$fake_macos/home/Library/Logs/stay_fresh/agent-20260102-000000-2.log"
+# Not a bare command substitution: this suite runs under `set -e`, so a
+# non-zero exit here aborted the whole run with the shell's status and no
+# message at all — the output it had just captured, which names the reason,
+# died with it. The rc is asserted instead, so a failure is one named
+# assertion with the agent's own words attached and the suite carries on.
+set +e
 out="$(HOME="$fake_macos/home" PATH="$fake_macos/bin:/usr/bin:/bin" \
   "$M/launchd/stay_fresh_agent.sh" logs --tail 2 2>&1)"
+agent_logs_rc=$?
+set -e
+assert_eq "agent logs command succeeds" "0" "$agent_logs_rc"
+if (( agent_logs_rc != 0 )); then
+  printf 'agent logs exited %s; it said:\n%s\n' "$agent_logs_rc" "$out" >&2
+fi
 assert_contains "agent logs command identifies the newest log" "$out" \
   "agent-20260102-000000-2.log"
 assert_contains "agent logs command tails requested lines" "$out" $'two\nthree'
