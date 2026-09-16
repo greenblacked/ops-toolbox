@@ -85,8 +85,17 @@ fi
 ok "discovered ${#sh_scripts[@]} scripts under macos-initial-setup/"
 
 # --- bash -n (syntax) ---
+# "$BASH", not "bash". Test / macos native runs this suite with /bin/bash, the
+# Apple Bash 3.2 every Mac ships and the only interpreter here that parses like
+# the one a user's machine will use — but a bare `bash` resolves through PATH,
+# and that runner has Homebrew's Bash 5 ahead of /bin. So the one check whose
+# job is to catch a 3.2 parse error was asking Bash 5, and passed a file 3.2
+# refuses: an apostrophe inside a heredoc inside a $( ) command substitution,
+# which 3.2 reads as an unterminated quote and follows to end of file. The
+# suite then died at the first script it tried to run, with the shell's exit
+# code and no message. "$BASH" is the interpreter actually running this file.
 for f in "${sh_scripts[@]}"; do
-  if bash -n "$f"; then
+  if "${BASH:-bash}" -n "$f"; then
     ok "bash -n ${f#"$REPO_ROOT/"}"
   else
     err "bash -n ${f#"$REPO_ROOT/"}"

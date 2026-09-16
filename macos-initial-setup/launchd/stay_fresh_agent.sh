@@ -540,7 +540,12 @@ $schedule
     <true/>
     <key>Nice</key>
     <integer>10</integer>
-    <!-- stdout stays discarded: a scheduled run's normal chatter is already in
+    <!-- No apostrophe may appear in this heredoc. It sits inside a $( )
+         command substitution, and Bash 3.2 - the /bin/bash every Mac ships -
+         does not treat the body as opaque there: it reads the quote, looks for
+         a match to the end of the file, and reports a syntax error at EOF.
+         Bash 5 parses it correctly, so this is invisible off a Mac.
+         stdout stays discarded: the chatter of a scheduled run is already in
          its own timestamped log under this directory, and duplicating it here
          would grow without bound. stderr is not chatter. Everything that can
          stop a firing before it reaches that log - this script missing or not

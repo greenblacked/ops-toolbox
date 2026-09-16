@@ -25,3 +25,15 @@
   Once a hang becomes a timeout that would mean thinning under a backup it
   could not see — the exact outcome the guard exists to prevent, and worse than
   the hang. A probe that cannot answer now keeps the snapshots.
+- The macOS suite's own `bash -n` check ran under the wrong interpreter.
+  `Test / macos native` starts the suite with `/bin/bash` — the Bash 3.2 every
+  Mac ships, and the only interpreter in CI that parses the way a user's
+  machine will — but the check shelled out to a bare `bash`, which resolves
+  through `PATH`, and that runner has Homebrew's Bash 5 ahead of `/bin`. So the
+  one check whose job is to catch a Bash 3.2 parse error was asking Bash 5, and
+  passed a file 3.2 refuses. It now uses `"$BASH"`, the interpreter actually
+  running the suite. This was found the hard way: an apostrophe added to the
+  LaunchAgent plist heredoc parsed cleanly under Bash 5 everywhere, and 3.2 —
+  which does not treat a heredoc body inside `$( )` as opaque — read it as an
+  unterminated quote and followed it to end of file. The suite then died at the
+  first script it ran, reporting the shell's exit code and nothing else.
