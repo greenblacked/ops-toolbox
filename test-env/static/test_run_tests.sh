@@ -108,7 +108,7 @@ else
   printf 'not ok - --list exits 0\n' >&2
   failures=$(( failures + 1 ))
 fi
-for suite in git macos linux k8s dotfiles python static windows mikrotik; do
+for suite in git macos linux k8s dotfiles python static lint windows mikrotik; do
   check "--list emits the $suite suite" grep -q "^$suite"$'\t' "$list_output"
 done
 # The second column is the package directory CI matches changed files
