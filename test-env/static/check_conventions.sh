@@ -26,7 +26,7 @@ cd "$REPO_ROOT" || { echo "cannot enter $REPO_ROOT" >&2; exit 1; }
 # The list is checked against the scripts themselves further down. A script that
 # starts reading a new variable from the environment fails this suite until the
 # name is added here, which is the point: nobody has to remember.
-unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR GRADLE_USER_HOME PIP_CACHE_DIR
 unset CHANGELOG_ROOT OS_RELEASE XDG_CONFIG_HOME
 # This file runs the scripts it checks (--help, bad flags), so it is a runner
 # like any suite and pins what they read. SYSTEMD_ANALYZE_CMD names a binary

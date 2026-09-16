@@ -40,7 +40,7 @@ rmdir "$tmp_probe"
 # an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
 # the test passed here and failed in CI. Every test that needs one of these
 # supplies it itself; start from an environment holding none of them.
-unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR GRADLE_USER_HOME PIP_CACHE_DIR
 # install_devtools.sh appends to these and exports them into a `pyenv install`,
 # so a developer's build flags end up in a compile this suite triggered. They
 # were invisible to the foreign-variable check until it learned that
@@ -1040,10 +1040,10 @@ assert_not_contains "an --only run does not warn about unselected sudo steps" "$
 
 # Force find(1) to fail during a real cleanup confined to the scratch HOME. The
 # target must remain and the step must be yellow, not falsely green.
-mkdir -p "$fake_macos/failbin" "$fake_macos/home/Library/Caches/protected"
-printf 'keep\n' > "$fake_macos/home/Library/Caches/protected/data"
-printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_macos/failbin/find"
-chmod +x "$fake_macos/failbin/find"
+mkdir -p "$fake_macos/failbin" "$fake_macos/home/Library/Caches/com.google.Chrome"
+printf 'keep\n' > "$fake_macos/home/Library/Caches/com.google.Chrome/data"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$fake_macos/failbin/rm"
+chmod +x "$fake_macos/failbin/rm"
 cleanup_skip=(
   --skip-dns --skip-syscaches --skip-appcaches --skip-workspacestorage
   --skip-trash --skip-brew --skip-devcaches --skip-docker --skip-xcode
@@ -1052,8 +1052,8 @@ cleanup_skip=(
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/failbin:$fake_macos/bin:/usr/bin:/bin" \
   "$M/stay_fresh.sh" --yes --no-sudo "${cleanup_skip[@]}" 2>&1)"
-assert_contains "failed cache deletion is reported" "$out" "could not fully clear"
-if [[ -f "$fake_macos/home/Library/Caches/protected/data" ]]; then
+assert_contains "failed cache deletion is reported" "$out" "user cache entries cleanup incomplete"
+if [[ -f "$fake_macos/home/Library/Caches/com.google.Chrome/data" ]]; then
   ok "failed cache deletion leaves the target visible"
 else
   err "failed cache deletion unexpectedly removed the target"

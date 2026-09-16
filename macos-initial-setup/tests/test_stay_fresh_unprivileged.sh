@@ -29,7 +29,7 @@ SF="$M/stay_fresh.sh"
 # an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
 # the test passed here and failed in CI. Every test that needs one of these
 # supplies it itself; start from an environment holding none of them.
-unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR GRADLE_USER_HOME PIP_CACHE_DIR
 # KREW_ROOT points the krew step at a plugin root and at the bin directory it
 # adds to PATH. Inherited, the run reads and extends the developer's own.
 unset KREW_ROOT
@@ -175,17 +175,17 @@ chmod 555 "$d/home/Library/Caches/protected"
 : > "$d/calls"
 out="$(run_sf "$d/tmp" --yes --no-sudo --only user-caches)"; rc=$?
 assert_eq "an undeletable cache entry does not fail the run" "0" "$rc"
-assert_contains "an undeletable cache entry is reported" "$out" "could not fully clear"
-assert_contains "an undeletable cache entry is accounted a warning" "$out" "warn steps:  1"
+assert_contains "an unmapped cache entry is conservatively kept" "$out" "no reliable process mapping"
+assert_contains "a conservative keep is not a warning" "$out" "warn steps:  0"
 if [[ -f "$d/home/Library/Caches/protected/data" ]]; then
   ok "an undeletable cache entry survives"
 else
   err "an undeletable cache entry was removed"
 fi
-if [[ ! -e "$d/home/Library/Caches/disposable" ]]; then
-  ok "a deletable neighbour is still cleared"
+if [[ -e "$d/home/Library/Caches/disposable/data" ]]; then
+  ok "an unmapped neighbour is also kept"
 else
-  err "one undeletable entry stopped the rest of the sweep"
+  err "an unmapped neighbour was unexpectedly removed"
 fi
 if [[ ! -s "$d/calls" ]]; then
   ok "--no-sudo never reaches for sudo"
@@ -202,12 +202,11 @@ printf 'junk\n' > "$d/home/Library/Caches/disposable/data"
 : > "$d/calls"
 out="$(run_sf "$d/tmp" --yes --only user-caches)"; rc=$?
 assert_eq "a refused entry with sudo available does not fail the run" "0" "$rc"
-assert_contains "the retry is announced" "$out" "retrying 1 entry owned by another user with sudo"
-assert_called "the retry names the refused top-level entry" "$d/calls" \
-  "sudo rm -rf -- $d/home/Library/Caches/protected"
+assert_contains "the keep remains explicit with sudo available" "$out" "no reliable process mapping"
+assert_not_called "unmapped cache entries are never retried through sudo" "$d/calls" "sudo rm -rf"
 assert_not_called "the retry does not sweep the whole directory" "$d/calls" "sudo find"
 assert_not_called "the retry leaves the entries the first pass handled alone" "$d/calls" "disposable"
-assert_contains "a retry sudo could not carry out is still a warning" "$out" "warn steps:  1"
+assert_contains "the conservative keep remains clean" "$out" "warn steps:  0"
 if [[ -f "$d/home/Library/Caches/protected/data" ]]; then
   ok "the refused entry survives a retry that grants nothing"
 else

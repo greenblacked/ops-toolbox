@@ -39,7 +39,7 @@ SF="$M/stay_fresh.sh"
 # an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
 # the test passed here and failed in CI. Every test that needs one of these
 # supplies it itself; start from an environment holding none of them.
-unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR GRADLE_USER_HOME PIP_CACHE_DIR
 # KREW_ROOT points the krew step at a plugin root and at the bin directory it
 # adds to PATH. Inherited, the run reads and extends the developer's own.
 unset KREW_ROOT
@@ -178,6 +178,8 @@ run_sf() {
     TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-}" \
     CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-}" \
     UV_CACHE_DIR="${UV_CACHE_DIR:-}" \
+    GRADLE_USER_HOME="${GRADLE_USER_HOME:-}" \
+    PIP_CACHE_DIR="${PIP_CACHE_DIR:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -311,8 +313,8 @@ bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 128
 out="$(run_sf "$d" --yes --no-sudo --only user-caches)"; rc=$?
 assert_eq "a protected entry does not fail the run" "0" "$rc"
 assert_exists "the protected entry survives" "$d/home/Library/Caches/com.apple.homed/state"
-assert_gone   "the ordinary neighbour is still cleared" "$d/home/Library/Caches/com.vendor.app"
-assert_contains "protected entries are reported as kept" "$out" "entries kept: protected by macOS"
+assert_exists "the unmapped neighbour is kept conservatively" "$d/home/Library/Caches/com.vendor.app/blob"
+assert_contains "unmapped entries are reported as kept" "$out" "no reliable process mapping"
 assert_contains "a protected entry is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
@@ -338,15 +340,14 @@ mkdir -p "$d/home/Library/Caches/com.vendor.app"
 bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 64
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "an ownership refusal with sudo available succeeds" "0" "$rc"
-assert_contains "the sudo retry is announced with its count" "$out" "retrying 1 entry owned by another user with sudo"
+assert_contains "an unmapped updater cache is kept" "$out" "no reliable process mapping"
 # The retry names the entry rm refused, and nothing else: a sudo sweep of the
 # whole directory would also take the entries the privacy controls protect.
-assert_called "the retry removes exactly the refused entry through sudo" "$d/calls" \
-  "sudo rm -rf -- $d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_not_called "the conservative sweep does not escalate through sudo" "$d/calls" "sudo rm -rf"
 assert_not_called "the retry does not sweep the whole directory" "$d/calls" "sudo find"
 assert_not_called "the retry does not touch the neighbour" "$d/calls" "com.vendor.app"
-assert_gone "the root-owned leftover is removed by the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
-assert_gone "the ordinary neighbour went in the first pass" "$d/home/Library/Caches/com.vendor.app"
+assert_exists "the updater cache remains" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/update"
+assert_exists "the unmapped neighbour remains" "$d/home/Library/Caches/com.vendor.app/blob"
 assert_contains "a retried ownership refusal is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
@@ -377,12 +378,11 @@ mkdir -p "$d/home/Library/Caches/com.apple.homed" "$d/home/Library/Caches/com.ti
 : > "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/pending/update"
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "a protected entry beside a refused one is a clean step" "0" "$rc"
-assert_called "the nested refusal is retried at its top-level entry" "$d/calls" \
-  "sudo rm -rf -- $d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_not_called "the nested unmapped entry is not retried" "$d/calls" "sudo rm -rf"
 assert_not_called "sudo is not pointed at the protected entry" "$d/calls" "com.apple.homed"
-assert_gone   "the refused entry is gone after the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_exists "the refused entry is kept without a process mapping" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/pending/update"
 assert_exists "the protected entry survives the retry" "$d/home/Library/Caches/com.apple.homed/state"
-assert_contains "the protected entry is still reported as kept" "$out" "entries kept: protected by macOS"
+assert_contains "the protected entry is reported as unmapped and kept" "$out" "no reliable process mapping"
 assert_contains "neither is a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
@@ -398,11 +398,12 @@ rm -rf /Library/Caches /.Trash
 mkdir -p /Library/Caches /.Trash "$d/home/Library/Caches/vendor" "$d/home/.Trash"
 : > /Library/Caches/CANARY
 : > /.Trash/CANARY
-bytes_file "$d/home/Library/Caches/vendor/blob" 64
+mkdir -p "$d/home/Library/Caches/com.google.Chrome"
+bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 64
 : > "$d/home/.Trash/junk"
 out="$(run_sf "$d" --yes --no-sudo --only user-caches,trash,dev-caches,user-logs)"; rc=$?
 assert_eq "the sweep succeeds" "0" "$rc"
-assert_gone   "the scratch HOME cache was cleared"  "$d/home/Library/Caches/vendor"
+assert_gone   "the scratch HOME cache was cleared"  "$d/home/Library/Caches/com.google.Chrome"
 assert_gone   "the scratch HOME trash was emptied"  "$d/home/.Trash/junk"
 assert_exists "the system cache directory is untouched" /Library/Caches/CANARY
 assert_exists "the root .Trash is untouched"            /.Trash/CANARY
@@ -411,19 +412,19 @@ rm -rf /Library/Caches /.Trash "$d"
 # ===========================================================================
 section "user-caches (contents cleared, directories kept, bytes counted)"
 d="$(new_env)"
-for sub in "Caches/vendor" "Saved Application State/app.savedState" \
+for sub in "Caches/com.google.Chrome" "Saved Application State/app.savedState" \
            "Developer/Xcode/DerivedData/Proj-abc" "Application Support/Caches/thing"; do
   mkdir -p "$d/home/Library/$sub"
 done
-bytes_file "$d/home/Library/Caches/vendor/blob" 1024
+bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 1024
 : > "$d/home/Library/Saved Application State/app.savedState/data"
 : > "$d/home/Library/Developer/Xcode/DerivedData/Proj-abc/index"
 : > "$d/home/Library/Application Support/Caches/thing/data"
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "user-caches step succeeds" "0" "$rc"
-assert_gone   "user cache contents are removed"   "$d/home/Library/Caches/vendor"
+assert_gone   "known idle user cache contents are removed"   "$d/home/Library/Caches/com.google.Chrome"
 assert_exists "~/Library/Caches itself is kept"   "$d/home/Library/Caches"
-assert_gone   "saved application state is removed" "$d/home/Library/Saved Application State/app.savedState"
+assert_exists "saved application state is preserved" "$d/home/Library/Saved Application State/app.savedState"
 assert_gone   "Xcode DerivedData is removed"      "$d/home/Library/Developer/Xcode/DerivedData/Proj-abc"
 assert_gone   "Application Support caches are removed" "$d/home/Library/Application Support/Caches/thing"
 if grep -Eq 'steps freed: +[0-9]+\.[0-9]+[KMG]' <<<"$out"; then
@@ -431,6 +432,31 @@ if grep -Eq 'steps freed: +[0-9]+\.[0-9]+[KMG]' <<<"$out"; then
 else
   err "freed bytes were not reported"; grep -i 'steps freed' <<<"$out" >&2
 fi
+rm -rf "$d"
+
+# ===========================================================================
+section "user-caches (active and unmapped application caches are kept)"
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/Codex" "$d/home/Library/Caches/unknown.vendor" \
+  "$d/home/Library/Saved Application State/app.savedState"
+: > "$d/home/Library/Caches/Codex/data"
+: > "$d/home/Library/Caches/unknown.vendor/data"
+: > "$d/home/Library/Saved Application State/app.savedState/data"
+RUNNING_APPS="Codex" out="$(run_sf "$d" --yes --only user-caches,ai-caches)"; rc=$?
+assert_eq "combined user/AI cache sweep succeeds with Codex running" "0" "$rc"
+assert_exists "broad user sweep keeps a running Codex cache" "$d/home/Library/Caches/Codex/data"
+assert_exists "unmapped user caches are kept conservatively" "$d/home/Library/Caches/unknown.vendor/data"
+assert_exists "Saved Application State is always kept" "$d/home/Library/Saved Application State/app.savedState/data"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/outside" "$d/home/Library/Caches"
+: > "$d/outside/keep"
+ln -s "$d/outside" "$d/home/Library/Caches/com.google.Chrome"
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_eq "a symlinked known cache is refused without failing the run" "0" "$rc"
+assert_exists "a cache symlink cannot escape HOME" "$d/outside/keep"
+assert_contains "the symlink refusal is explicit" "$out" "target is a symlink"
 rm -rf "$d"
 
 # ===========================================================================
@@ -639,8 +665,8 @@ docker_fake() {
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "docker step succeeds against a local daemon" "0" "$rc"
-assert_called "stopped containers are pruned by age, not wholesale" "$d/calls" \
-  "docker container prune -f --filter until=168h"
+assert_not_called "stopped containers are untouched by default" "$d/calls" "docker container prune"
+assert_contains "the run explains the container opt-in" "$out" "--prune-docker-containers"
 for sub in "network prune -f" \
            "image prune -f" "builder prune -af"; do
   assert_called "docker step runs $sub" "$d/calls" "docker $sub"
@@ -651,6 +677,14 @@ done
 assert_not_called "docker volumes are untouched by default" "$d/calls" \
   "docker volume prune"
 assert_contains "the run says why volumes were kept" "$out" "volumes kept"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
+out="$(run_sf "$d" --yes --only docker --prune-docker-containers)"; rc=$?
+assert_eq "docker container opt-in succeeds" "0" "$rc"
+assert_called "container opt-in uses Docker's creation-age filter" "$d/calls" \
+  "docker container prune -f --filter until=168h"
+assert_contains "container wording says created, not stopped duration" "$out" "created over 168h ago"
 rm -rf "$d"
 
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
@@ -888,7 +922,7 @@ d="$(lost_mark_env)"; : > "$d/calls"
 out="$(DOCKER_ENDPOINT=unix:///var/run/docker.sock \
   BREW_REPO="$d/brewrepo" run_sf "$d" --yes --only docker,brew)"; rc=$?
 assert_eq "the lost-mark fixture succeeds with a working wc" "0" "$rc"
-assert_called "the earlier step really ran" "$d/calls" "docker container prune"
+assert_called "the earlier step really ran" "$d/calls" "docker network prune"
 assert_not_contains "an index.lock before the mark is not brew's" "$out" \
   "did not refresh the taps"
 assert_contains "and the control run carries no warning" "$out" "warn steps:  0"
@@ -1399,8 +1433,8 @@ out="$(run_sf "$qd" --yes --quick)"; rc=$?
 assert_eq "--quick runs for real" "0" "$rc"
 assert_not_called "--quick never reaches for sudo, warm or otherwise" "$qd/calls" "sudo"
 assert_exists "--quick leaves the entry it cannot unlink" "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
-assert_gone   "--quick still clears what it can" "$qd/home/Library/Caches/vendor"
-assert_contains "--quick reports the entry it could not take" "$out" "entries owned by another user remain"
+assert_exists "--quick keeps an unmapped cache" "$qd/home/Library/Caches/vendor/blob"
+assert_contains "--quick explains the conservative keep" "$out" "no reliable process mapping"
 rm -rf "$qd"
 
 run_sf "$d" --dry-run --quick --only trash >/dev/null; rc=$?
@@ -1469,15 +1503,15 @@ rm -rf "$d"
 # A dry run adds up what the deletions would remove, so the preview answers
 # the question it is run for: how much would this free.
 d="$(new_env)"
-mkdir -p "$d/home/Library/Caches/com.vendor.app" "$d/home/.Trash"
-bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 2048
+mkdir -p "$d/home/Library/Caches/com.google.Chrome" "$d/home/.Trash"
+bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 2048
 bytes_file "$d/home/.Trash/old" 1024
 out="$(run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
 assert_eq "a dry run with an estimate succeeds" "0" "$rc"
-assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "3."
+assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "1."
 assert_contains "the estimate names its unit" "$out" "would free:"
 assert_contains "the real freed total stays zero under a dry run" "$out" "steps freed: 0B"
-assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.vendor.app/blob"
+assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.google.Chrome/blob"
 rm -rf "$d"
 
 # Every id --list-steps prints is one --only accepts, and the run loop runs
@@ -2121,7 +2155,7 @@ assert_eq "dev-caches with build caches present succeeds" "0" "$rc"
 assert_exists "the Gradle cache is kept by default" "$d/home/.gradle/caches/modules-2/dep.jar"
 assert_exists "the Maven repository is kept by default" "$d/home/.m2/repository/org/dep.pom"
 assert_contains "the kept Gradle cache is named" "$out" "~/.gradle/caches kept; pass --prune-build-caches to clear it"
-assert_contains "the kept Maven repository is named" "$out" "~/.m2/repository kept; pass --prune-build-caches to clear it"
+assert_contains "the kept Maven repository is named" "$out" "~/.m2/repository kept; it may contain locally installed artifacts"
 assert_exists "the Gradle wrapper distributions are kept by default" \
   "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123/gradle-8.5.zip"
 assert_contains "the kept wrapper distributions are named" "$out" \
@@ -2133,21 +2167,87 @@ d="$(build_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only dev-caches --prune-build-caches)"; rc=$?
 assert_eq "--prune-build-caches succeeds" "0" "$rc"
 assert_gone   "--prune-build-caches clears the Gradle cache"   "$d/home/.gradle/caches/modules-2"
-assert_gone   "--prune-build-caches clears the Maven repository" "$d/home/.m2/repository/org"
+assert_exists "--prune-build-caches preserves the Maven repository" "$d/home/.m2/repository/org/dep.pom"
 assert_gone   "--prune-build-caches clears the Gradle wrapper distributions" \
   "$d/home/.gradle/wrapper/dists/gradle-8.5-bin"
 assert_exists "the wrapper dists directory itself stays" "$d/home/.gradle/wrapper/dists"
 assert_exists "the Gradle cache directory itself stays"   "$d/home/.gradle/caches"
 assert_exists "the Maven repository directory itself stays" "$d/home/.m2/repository"
-assert_contains "the plan names the build caches" "$(grep "dev-tool caches" <<<"$out")" "gradle/maven caches"
+assert_contains "the plan names the build caches" "$(grep "dev-tool caches" <<<"$out")" "Gradle"
 assert_contains "the Gradle sweep reports its size" "$(grep 'freed .* from .*/.gradle/caches' <<<"$out")" "freed 2"
-assert_contains "the Maven sweep reports its size"  "$(grep 'freed .* from .*/.m2/repository' <<<"$out")" "freed 6"
+assert_not_contains "the Maven repository is never swept" "$out" "freed 64.0K from $d/home/.m2/repository"
 rm -rf "$d"
 
 d="$(build_env)"; : > "$d/calls"
 out="$(run_sf "$d" --dry-run --only dev-caches --prune-build-caches)"; rc=$?
 assert_exists "a dry run keeps the Gradle cache" "$d/home/.gradle/caches/modules-2/dep.jar"
 assert_contains "a dry run previews the Gradle sweep" "$out" "(dry-run) would remove contents of $d/home/.gradle/caches"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"' \
+  '[ "$1 $2" = "info --json" ] && { printf "{\"pkgs_dirs\":[\"%s/.conda/pkgs\"]}\n" "$HOME"; exit 0; }' \
+  'exit 0'
+mkdir -p "$d/home/.conda/pkgs"
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "deep clean with Conda succeeds" "0" "$rc"
+assert_called "deep clean limits Conda to reviewed cache classes" "$d/calls" \
+  "conda clean --yes --tarballs --index-cache --logfiles"
+assert_not_called "deep clean never requests all Conda data" "$d/calls" "--all"
+assert_not_called "deep clean preserves extracted Conda packages" "$d/calls" "--packages"
+assert_called "deep clean discovers Conda package roots" "$d/calls" "conda info --json"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.conda/pkgs" "$d/outside-logs"
+: > "$d/outside-logs/marker"
+ln -s "$d/outside-logs" "$d/home/.conda/pkgs/.logs"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"' \
+  '[ "$1 $2" = "info --json" ] && { printf "{\"pkgs_dirs\":[\"%s/.conda/pkgs\"]}\n" "$HOME"; exit 0; }' \
+  'exit 0'
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "unsafe Conda log child keeps cleanup non-fatal" "0" "$rc"
+assert_contains "unsafe Conda log child is refused" "$out" "unsafe Conda cache child kept"
+assert_not_called "Conda cleanup is skipped for a symlinked log child" "$d/calls" "conda clean"
+assert_exists "external log marker survives" "$d/outside-logs/marker"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.conda/pkgs"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"' \
+  '[ "$1 $2" = "info --json" ] && { printf "{\"pkgs_dirs\":[\"%s/.conda/missing\",\"%s/.conda/pkgs\"]}\n" "$HOME" "$HOME"; exit 0; }' \
+  'exit 0'
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "a missing Conda root does not disable an existing safe root" "0" "$rc"
+assert_called "Conda cleanup still runs for the validated existing root" "$d/calls" "conda clean --yes --tarballs --index-cache --logfiles"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"; exit 0'
+out="$(run_sf "$d" --dry-run --only dev-caches --deep-clean)"; rc=$?
+assert_eq "deep-clean dry run succeeds" "0" "$rc"
+assert_not_called "deep-clean dry run does not invoke Conda" "$d/calls" "conda clean"
+assert_contains "deep-clean dry run previews exact Conda command" "$out" \
+  "conda clean --yes --tarballs --index-cache --logfiles"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.gradle/caches" "$d/outside-uv"
+bytes_file "$d/outside-uv/blob" 64
+mkbin "$d/bin/npm" 'echo "npm $*" >> "$CALLS"; mkdir -p "$HOME/.npm/_logs"'
+out="$(UV_CACHE_DIR="$d/outside-uv" run_sf "$d" --cache-report)"; rc=$?
+assert_eq "standalone cache report succeeds without --yes" "0" "$rc"
+assert_contains "outside-HOME configured cache is kept unknown" "$out" "kept/unknown"
+assert_not_called "cache report does not clean uv" "$d/calls" "uv cache clean"
+assert_not_called "read-only cache report never invokes npm" "$d/calls" "npm"
+assert_gone "cache report does not let npm create its log directory" "$d/home/.npm/_logs"
+assert_exists "cache report changes nothing" "$d/outside-uv/blob"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+out="$(UV_CACHE_DIR="$d/home" run_sf "$d" --cache-report)"; rc=$?
+assert_eq "cache report refuses a configured HOME root safely" "0" "$rc"
+assert_contains "HOME is not measured as a cache" "$out" "unsafe or relative configured path"
 rm -rf "$d"
 
 # ===========================================================================
@@ -2285,6 +2385,35 @@ assert_exists "a system-level orphan is never removed" /Library/LaunchDaemons/co
 assert_not_called "system-level plists are never unloaded" "$d/calls" "system/com.gone.daemon"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 
+# A symlinked plist. The path guard refused every symlink, so --prune-orphan-agents
+# booted the job out and then left the link on disk: the orphan returned at the
+# next login, and because the refusal is a warn_step the run reported WARN for
+# the condition the flag exists to fix — on every run, forever. Deleting a
+# symlink removes the link and never follows it, which is the whole job here.
+d="$(agents_env)"; : > "$d/calls"
+la="$d/home/Library/LaunchAgents"
+printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/Applications/Gone.app/Contents/MacOS/helper</string></dict></plist>' \
+  > "$d/home/linked-orphan-source.plist"
+ln -s "$d/home/linked-orphan-source.plist" "$la/com.linked.gone.plist"
+out="$(run_sf "$d" --yes --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_eq "pruning succeeds with a symlinked plist present" "0" "$rc"
+assert_called "the symlinked orphan is unloaded" "$d/calls" "launchctl bootout gui/501/com.linked.gone"
+assert_gone "the symlinked orphan plist is removed" "$la/com.linked.gone.plist"
+assert_not_contains "and deleting a symlink is not a refusal" "$out" "refusing to clear"
+assert_contains "so the run is not left permanently yellow" "$out" "warn steps:  0"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# The other half of the same guard: a sweep that descends into a symlinked
+# directory lands wherever the link points, which is the redirection it was
+# written for and must still be refused.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/Library/Caches" "$d/outside"
+: > "$d/outside/keepme"
+ln -s "$d/outside" "$d/home/Library/Caches/redirected"
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_eq "the sweep still succeeds" "0" "$rc"
+assert_exists "a symlinked cache directory is not followed" "$d/outside/keepme"
+rm -rf "$d"
 d="$(new_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
 assert_contains "no plists anywhere is a clean step" "$out" "no launchd plists under"

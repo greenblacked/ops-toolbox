@@ -458,16 +458,12 @@ In the order they run:
    same way; the sweep keeps them and the step still warns `could not fully
    clear /Library/Caches`, unlike the user-cache step, which counts that class
    of refusal without a warning. See [Expected warnings](#expected-warnings).
-4. Clear user caches (`~/Library/Caches`, Saved State, Xcode
-   DerivedData, and related paths). What macOS refuses is sorted before it
-   is reported: entries the privacy controls or SIP protect (HomeKit,
-   CloudKit, Safari, a dozen Apple services) are counted and kept without a
-   warning, since no run can change that; an entry owned by another user,
-   such as the root-owned directory Slack's updater leaves behind, is
-   retried with sudo when a credential is already in hand and warned about
-   otherwise, since that one a person can fix. The retry names exactly the
-   entries `rm` refused; it never sweeps the whole directory as root, so the
-   protected entries stay protected.
+4. Clear safe user caches (`~/Library/Caches`, Xcode DerivedData, and related
+   paths). Saved Application State is preserved. Known application cache roots
+   are cleared only when the matching application is confirmed idle; unmapped
+   roots and roots whose process state cannot be checked are kept. Every
+   deletion target is resolved beneath the canonical home directory first;
+   symlinks, unverifiable ownership, and nested mount points are refused.
 5. Clear **per-app caches** — the disposable data that lives outside
    `~/Library/Caches` and is therefore invisible to step 4: the
    Chromium-internal directories (`Cache`, `Code Cache`, `GPUCache`,
@@ -503,11 +499,10 @@ In the order they run:
    except network shares (SMB, NFS, AFP, WebDAV), which are named and
    skipped: a share whose server went away blocks `find` for as long as the
    kernel retries, and a scheduled run has nobody to interrupt it.
-9. Prune Docker / OrbStack (stopped containers older than 7 days, networks,
-   builder cache, and **dangling images only** — tagged images are kept).
-   The container age filter is deliberate: a bare `container prune` also
-   removes the stopped container you exited five minutes ago and meant to
-   `docker start` again. Unused volumes are
+9. Prune Docker / OrbStack (networks, builder cache, and **dangling images
+   only** — tagged images are kept). Stopped containers are kept unless
+   `--prune-docker-containers` is passed. Docker's `until=168h` filter uses
+   creation time, not time since the container stopped. Unused volumes are
    kept unless `--prune-docker-volumes` is passed: volumes hold data, not
    cache, and a stopped project's database volume counts as "unused" the
    moment its container is removed.
@@ -562,10 +557,10 @@ In the order they run:
     directories older than a week, and run `pre-commit gc`, which drops hook
     repositories no config points at. Old installed gem versions are package
     state, not cache, and are kept unless `--cleanup-old-gems` is explicit.
-    Gradle's `~/.gradle/caches` and Maven's `~/.m2/repository` are named on
-    every run and cleared only with `--prune-build-caches`: they are the
-    largest thing under `HOME` on a JVM workstation, and the slowest to get
-    back, because the next build downloads every dependency again.
+    Gradle's cache and wrapper distributions (under `GRADLE_USER_HOME` when
+    configured) are cleared only with `--prune-build-caches`. Maven's
+    `~/.m2/repository` is always preserved because it can contain artifacts
+    installed by local builds that no remote repository can restore.
 17. Update installed Helm plugins.
 18. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
     index, then `kubectl krew upgrade` each plugin. krew itself is a Homebrew
@@ -634,7 +629,9 @@ last ten rows.
 ./stay_fresh.sh --reports         # the read-only subset: versions, OS updates, snapshots, downloads, launch agents, disk report
 ./stay_fresh.sh --prune-downloads-days 180 --dry-run # list what an old-downloads prune would remove
 ./stay_fresh.sh --prune-orphan-agents               # also remove orphaned user LaunchAgents
-./stay_fresh.sh --prune-build-caches # also clear ~/.gradle/caches and ~/.m2/repository
+./stay_fresh.sh --prune-build-caches # also clear Gradle caches; Maven local artifacts stay
+./stay_fresh.sh --deep-clean         # add safe Conda tarball/index/log cleanup
+./stay_fresh.sh --cache-report       # measure developer caches; change nothing
 ./stay_fresh.sh --thin-snapshots  # also delete local Time Machine snapshots
 ./stay_fresh.sh --disk-report     # also list the largest entries under ~/Library etc.
 ./stay_fresh.sh --history         # the last ten runs: result, freed, duration
@@ -700,7 +697,10 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`uv`/`go`/kubectl cache cleanup. |
 | `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
-| `--prune-build-caches` | Also clear `~/.gradle/caches`, `~/.gradle/wrapper/dists` and `~/.m2/repository` (step 16); off by default because the next build downloads every dependency, and every wrapper distribution, again. |
+| `--prune-build-caches` | Also clear Gradle caches and wrapper distributions (step 16). Maven's local repository is preserved because it may contain locally installed artifacts. |
+| `--deep-clean` | Add Conda's native cleanup for tarballs, index cache, and logs after every existing package-cache root and its cleanup children pass the same path guards. Missing roots are ignored; environments and extracted package caches are preserved. |
+| `--cache-report` | Standalone read-only measurement of validated developer cache paths. It uses explicit environment settings and read-only pip, uv, and Conda discovery; npm is never invoked, so without `npm_config_cache` its default path is clearly labeled as a guess. It performs no cleanup and accepts no cleanup/prune options. |
+| `--prune-docker-containers` | Remove stopped containers created more than 168 hours ago. Docker filters by creation age, so this is opt-in. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
