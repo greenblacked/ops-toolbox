@@ -1012,8 +1012,14 @@ assert_contains "an all-skipped run counts each step exactly once" "$out" \
   "skipped:     21"
 assert_not_contains "the auto-skipped step is not booked a second time" "$out" \
   "brew (not installed)"
-assert_contains "a skipped step reports why it was skipped" "$out" \
-  "Homebrew update / upgrade / cleanup (Homebrew is not installed)"
+# The label and the reason on one line, with any amount of space between them:
+# the summary pads the label into a column, and this used to pin the single
+# space that a one-off printf happened to leave there.
+if grep -Eq 'Homebrew update / upgrade / cleanup +\(Homebrew is not installed\)' <<<"$out"; then
+  ok "a skipped step reports why it was skipped"
+else
+  err "a skipped step reports why it was skipped (no line pairs the label with its reason)"
+fi
 assert_not_contains "opt-in memory is not blamed on --no-sudo" "$out" \
   "Purge inactive memory (--no-sudo was passed)"
 

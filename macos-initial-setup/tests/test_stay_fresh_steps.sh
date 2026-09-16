@@ -2415,6 +2415,114 @@ assert_exists "the relocation target survives"        "$d/vol-trash"
 rm -rf /Volumes "$d"
 
 # ===========================================================================
+section "the step counter and the plan cannot drift apart"
+# Each step header carries [n/total]. The total is counted by the plan as it
+# prints, the index by the one dispatcher every step goes through, and the two
+# are separate counters over what is supposed to be the same list of steps. A
+# step dispatched without a plan row, or a plan row with no step behind it,
+# shows up here as a last index that is not the total, or as a number of headers
+# that is not the total. Nothing is hardcoded: the numbers are read back out of
+# the run, so adding a step keeps this honest without editing it.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes)"; rc=$?
+assert_eq "a full dry run succeeds" "0" "$rc"
+counter_total="$(printf '%s\n' "$out" | sed -n 's/^==> .*\[[0-9]\{1,\}\/\([0-9]\{1,\}\)\]$/\1/p' | tail -1)"
+counter_last="$(printf '%s\n' "$out" | sed -n 's/^==> .*\[\([0-9]\{1,\}\)\/[0-9]\{1,\}\]$/\1/p' | tail -1)"
+counter_seen="$(printf '%s\n' "$out" | grep -c '^==> ' | tr -d ' ')"
+if [[ -n "$counter_total" ]] && (( counter_total > 1 )); then
+  ok "the plan counted $counter_total steps"
+else
+  err "no [n/total] counter in the step headers — the plan counted ${counter_total:-nothing}"
+fi
+assert_eq "the last step is the last of the plan" "$counter_total" "$counter_last"
+assert_eq "every planned step printed a header"  "$counter_total" "$counter_seen"
+rm -rf "$d"
+
+# The plan's own columns. "run" is three characters and "skip" four, so without
+# padding the DETAIL text sat one column left on every run row than on every
+# skip row beside it.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes --skip-trash)"
+assert_contains "the plan names all three columns" "$out" "STEP                               DO   DETAIL"
+# awk on the exact column, not a regex with \| in it: that is a GNU extension
+# BSD sed does not take, so the same assertion would have quietly matched
+# nothing on a Mac while passing in the Linux container.
+plan_offsets="$(printf '%s\n' "$out" |
+  awk '/^  [a-z]/ { v = substr($0, 38, 4); if (v == "run " || v == "skip") print v }' |
+  sort -u | tr '\n' ',')"
+assert_eq "run and skip occupy the same width" "run ,skip," "$plan_offsets"
+rm -rf "$d"
+
+# The summary's outcome lists. Each entry is "Label  (duration · freed)" or
+# "Label (reason)", and with labels of every length the parenthesis opened at a
+# different column on every line, so the durations could not be read down as a
+# column. Padded at print time only: the same strings are written to
+# last-run.json and must not carry the padding there. The check is that every
+# parenthesis in a group opens at one column, and that there were at least two
+# of them, so an empty group cannot pass this by having nothing to line up.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes --no-sudo)"; rc=$?
+assert_eq "the run that feeds the lists succeeds" "0" "$rc"
+group_columns() {
+  # $1 = group title; prints "<distinct columns> <lines with a parenthesis>"
+  printf '%s\n' "$out" | awk -v title="$1:" '
+    $0 == title { g = 1; next }
+    /^$/        { g = 0 }
+    g && /^  - / && index($0, "(") { print index($0, "(") }
+  ' | awk '{ seen[$1]++; n++ } END { printf "%d %d\n", length(seen), n }'
+}
+# Not pinned to a count: how many steps land in each group depends on which
+# tools the fixture stubs, and a number copied from one machine is the kind of
+# expectation this file has already had to unlearn once.
+for group in OK Skipped; do
+  read -r distinct lines <<<"$(group_columns "$group")"
+  if (( distinct == 1 && lines >= 2 )); then
+    ok "the $group list opens every parenthesis in one column ($lines lines)"
+  else
+    err "the $group list is ragged: $distinct distinct columns over $lines lines"
+  fi
+done
+rm -rf "$d"
+
+# ===========================================================================
+section "a dry run does not claim to have reclaimed anything"
+# The summary subtracts the free-space reading taken at the end from the one
+# taken at the start and prints it, in green, as "(N reclaimed)". A dry run
+# deletes nothing, so that delta is whatever else the machine did while the run
+# was going - and on a busy machine it is negative, which put "-478.43M
+# reclaimed" in green directly above "steps freed: 0B" on a preview that had
+# removed nothing.
+#
+# df is stubbed to fall on every call, so the delta is negative by construction
+# rather than by luck. Two readings are taken per run, before and after.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" \
+  'n=0; [ -f "$HOME/.dfn" ] && n=$(cat "$HOME/.dfn"); n=$((n + 1)); echo "$n" >"$HOME/.dfn"' \
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
+  'echo "/dev/disk3s5 500000000 100000000 $((400000000 - n * 100000)) 20% /"'
+out="$(run_sf "$d" --dry-run --yes --only versions)"; rc=$?
+assert_eq "the dry run still succeeds" "0" "$rc"
+assert_not_contains "a dry run never claims a reclaimed total" "$out" "reclaimed)"
+assert_contains "it says why the two readings differ" "$out" \
+  "a dry run frees nothing"
+assert_contains "and still shows what it read" "$out" "disk free:"
+assert_not_contains "no dry run writes a history row" "$out" "could not append"
+rm -rf "$d"
+
+# The same machine, running for real: the delta is this run's to report, and a
+# negative one is a fact rather than a win. It must not print in green.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" \
+  'n=0; [ -f "$HOME/.dfn" ] && n=$(cat "$HOME/.dfn"); n=$((n + 1)); echo "$n" >"$HOME/.dfn"' \
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
+  'echo "/dev/disk3s5 500000000 100000000 $((400000000 - n * 100000)) 20% /"'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "the real run still succeeds" "0" "$rc"
+assert_contains "a real run does report the delta" "$out" "reclaimed)"
+assert_contains "and the delta it reports is the negative one" "$out" "-97.66M reclaimed"
+rm -rf "$d"
+
+# ===========================================================================
 section "df unreadable (the summary reports no measurement rather than a wrong one)"
 # An empty free-space reading used to flow into every later size calculation,
 # so this asserted it was "treated as zero" and the summary printed

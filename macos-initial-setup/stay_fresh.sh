@@ -120,8 +120,35 @@ warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; log_line "[warn
 # you to stop reading the summary, which costs more than it catches.
 warn_step() { warn "$*"; STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); }
 err()   { printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; log_line "[err ] $*"; }
-step()  { printf "\n%s==>%s %s%s%s\n" "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"; }
-hr()    { printf "%s%s%s\n" "$C_DIM" "--------------------------------------------------------------" "$C_RESET"; }
+step()  {
+  # --list-steps, --history and --trend print no plan, so there is nothing to
+  # count against and the counter is left off rather than printed as [1/0].
+  if (( PLAN_TOTAL > 0 )); then
+    printf "\n%s==>%s %s%s%s %s[%d/%d]%s\n" \
+      "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET" \
+      "$C_DIM" "$STEP_INDEX" "$PLAN_TOTAL" "$C_RESET"
+  else
+    printf "\n%s==>%s %s%s%s\n" "$C_CYAN" "$C_RESET" "$C_BOLD" "$*" "$C_RESET"
+  fi
+}
+# The rule was 62 dashes whatever it was drawn on: short of a full line on a
+# wide terminal, and wrapped onto a second, two-dash line on an 80-column one.
+# UI_WIDTH is resolved once, and only from a terminal — with output captured to
+# a file or a pipe there is no width to honour, so it stays 62 and every log and
+# test transcript keeps the bytes it had.
+UI_WIDTH=62
+if [[ -t 1 ]]; then
+  ui_cols="${COLUMNS:-}"
+  [[ "$ui_cols" =~ ^[0-9]+$ ]] || ui_cols="$(tput cols 2>/dev/null || true)"
+  if [[ "$ui_cols" =~ ^[0-9]+$ ]] && (( ui_cols >= 40 )); then
+    UI_WIDTH=$(( ui_cols > 100 ? 100 : ui_cols ))
+  fi
+fi
+UI_RULE=""
+while (( ${#UI_RULE} < UI_WIDTH )); do UI_RULE="$UI_RULE----------"; done
+UI_RULE="${UI_RULE:0:UI_WIDTH}"
+
+hr()    { printf "%s%s%s\n" "$C_DIM" "$UI_RULE" "$C_RESET"; }
 
 # ---------------------------------------------------------------------------
 # defaults / CLI parsing
@@ -263,7 +290,28 @@ EXPLICIT_SKIP=0
 PURGE_MEMORY_EXPLICIT=0
 
 LOG_DIR="${TMPDIR:-/tmp}"
+# macOS hands out a TMPDIR that already ends in a slash, so every path built
+# from it rendered as ".../T//stay_fresh-....log" — in the preflight line the
+# run opens with, and in the warnings that name the directory when it cannot be
+# written. It opens fine; it just reads like a bug to whoever is being asked to
+# go and look there. A case, not ${VAR%/}, so TMPDIR=/ does not become "".
+case "$LOG_DIR" in
+  /) ;;
+  */) LOG_DIR="${LOG_DIR%/}" ;;
+esac
 LOG_FILE="$LOG_DIR/stay_fresh-$(date +%Y%m%d-%H%M%S).log"
+
+# How many rows the plan printed, and how many steps have been dispatched. The
+# header of each step reads "[4/23]" from these: on a run where Homebrew and
+# Xcode take minutes apiece, "==> Dev-tool caches" alone does not say whether
+# the run is a third of the way through or nearly done.
+#
+# The total comes from the plan rather than from a second list of steps, so the
+# two cannot disagree about what is in the run. That they stay in step is
+# asserted by the suite, not assumed: a step dispatched without a plan row
+# would number itself past the total.
+PLAN_TOTAL=0
+STEP_INDEX=0
 
 # step accounting
 STEPS_OK=()
@@ -2011,15 +2059,17 @@ fi
 # ---------------------------------------------------------------------------
 hr
 bold "Plan:"
-printf "  %-34s %s\n" "STEP" "STATUS"
-printf "  %-34s %s\n" "----" "------"
+# Three columns, and the middle one padded. "run" is three characters and
+# "skip" is four, and neither was padded, so every detail in the table started
+# one column left of the one above or below it. The header called the whole
+# right-hand side STATUS, which named the verb and not the sentence beside it.
+printf "  %-34s %-4s %s\n" "STEP" "DO" "DETAIL"
+printf "  %-34s %-4s %s\n" "----" "----" "------"
 plan_line() {
-  local name="$1" active="$2" extra="${3:-}"
-  if (( active )); then
-    printf "  %-34s %brun%b %s\n" "$name" "$C_GREEN" "$C_RESET" "$extra"
-  else
-    printf "  %-34s %bskip%b %s\n" "$name" "$C_DIM" "$C_RESET" "$extra"
-  fi
+  local name="$1" active="$2" extra="${3:-}" verb color
+  PLAN_TOTAL=$(( PLAN_TOTAL + 1 ))
+  if (( active )); then verb=run; color="$C_GREEN"; else verb=skip; color="$C_DIM"; fi
+  printf "  %-34s %b%-4s%b %s\n" "$name" "$color" "$verb" "$C_RESET" "$extra"
 }
 plan_line "purge disk caches"                 "$(( 1 - SKIP_MEMORY      ))" "sudo purge (opt-in troubleshooting)"
 plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dscacheutil + mDNSResponder"
@@ -3980,6 +4030,7 @@ START_ALL=$(date +%s)
 
 run_or_skip() {
   local label="$1" skip_flag="$2" fn="$3" step_id="${4:-}" why=""
+  STEP_INDEX=$(( STEP_INDEX + 1 ))
   if (( skip_flag )); then
     [[ -n "$step_id" ]] && why="$(auto_skip_reason "$step_id")"
     step "$label"
@@ -4026,10 +4077,31 @@ hr
 bold "=== stay_fresh: summary ==="
 printf "  elapsed:     %s\n" "$(human_duration "$ELAPSED")"
 if (( FREE_AFTER_KNOWN && FREE_BEFORE_KNOWN )); then
-  printf "  disk free:   %s -> %s  %s(%s reclaimed)%s\n" \
-    "$(human_bytes "$FREE_BEFORE_B")" \
-    "$(human_bytes "$FREE_AFTER_B")" \
-    "$C_GREEN" "$(human_bytes "$RECLAIMED_B")" "$C_RESET"
+  if (( DRY_RUN )); then
+    # A dry run deletes nothing, so this delta is whatever else the machine did
+    # while it ran - Spotlight, a browser cache, a build. It printed in green as
+    # "(N reclaimed)" directly above "steps freed: 0B", and on a busy machine N
+    # is negative, so a preview that removed nothing reported reclaiming minus
+    # half a gigabyte. The two readings are still worth showing; the claim about
+    # what this run did is not, because this run did nothing.
+    printf "  disk free:   %s -> %s  %s(moved by other activity; a dry run frees nothing)%s\n" \
+      "$(human_bytes "$FREE_BEFORE_B")" \
+      "$(human_bytes "$FREE_AFTER_B")" \
+      "$C_DIM" "$C_RESET"
+  else
+    # Green is the colour of "we got space back", and a real run can land
+    # negative too when something else wrote more than the sweep freed. Saying
+    # that in green reads as a win; it is the opposite of one.
+    if (( RECLAIMED_B < 0 )); then
+      RECLAIMED_COLOR="$C_YELLOW"
+    else
+      RECLAIMED_COLOR="$C_GREEN"
+    fi
+    printf "  disk free:   %s -> %s  %s(%s reclaimed)%s\n" \
+      "$(human_bytes "$FREE_BEFORE_B")" \
+      "$(human_bytes "$FREE_AFTER_B")" \
+      "$RECLAIMED_COLOR" "$(human_bytes "$RECLAIMED_B")" "$C_RESET"
+  fi
 else
   # Saying 0B here would be a measurement; this is the absence of one, and the
   # per-step total below is still real.
@@ -4046,12 +4118,41 @@ printf "  warn steps:  %s%d%s\n" "$C_YELLOW" "${#STEPS_WARN[@]}" "$C_RESET"
 printf "  skipped:     %s%d%s\n" "$C_DIM"    "${#STEPS_SKIP[@]}" "$C_RESET"
 printf "  failed:      %s%d%s\n" "$C_RED"    "${#STEPS_FAIL[@]}" "$C_RESET"
 
+# The label is padded here, at print time, and not where the entry is built:
+# the same strings go into last-run.json, and a reader of that file should not
+# get labels with a run of trailing spaces because the terminal wanted columns.
+#
+# Without the padding the durations and freed totals scattered across the
+# line, one per label length, so "which step took the time" and "which step
+# freed the space" meant reading every parenthesis rather than one column.
 print_group() {
   local title="$1" color="$2"; shift 2
   (( $# == 0 )) && return 0
   printf "\n%s%s:%s\n" "$color" "$title" "$C_RESET"
-  local item
-  for item in "$@"; do printf "  - %s\n" "$item"; done
+  local item label detail width=0
+  for item in "$@"; do
+    label="$(group_label "$item")"
+    (( ${#label} > width )) && width=${#label}
+  done
+  for item in "$@"; do
+    label="$(group_label "$item")"
+    detail="${item#"$label"}"
+    detail="${detail#"${detail%%[! ]*}"}"
+    if [[ -n "$detail" ]]; then
+      printf "  - %-*s  %s\n" "$width" "$label" "$detail"
+    else
+      printf "  - %s\n" "$label"
+    fi
+  done
+}
+# The entry formats are do_step's "Label  (dur · freed X)" and run_or_skip's
+# "Label (why)" or bare "Label": the label ends at the first " (" either way.
+group_label() {
+  local item="$1"
+  case "$item" in
+    *" ("*) printf '%s' "${item%% (*}" ;;
+    *)      printf '%s' "$item" ;;
+  esac
 }
 
 (( ${#STEPS_OK[@]}   > 0 )) && print_group "OK"      "$C_GREEN"  "${STEPS_OK[@]}"
