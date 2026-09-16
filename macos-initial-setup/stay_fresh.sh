@@ -104,10 +104,10 @@ log_line() {
   printf '# %s %s\n' "$(date '+%H:%M:%S')" "$*" >>"$LOG_SINK" 2>/dev/null || true
 }
 
-bold()  { printf "%s%s%s\n" "$C_BOLD"    "$*" "$C_RESET"; }
-info()  { printf "%s[info]%s %s\n"  "$C_BLUE"   "$C_RESET" "$*"; }
-ok()    { printf "%s[ ok ]%s %s\n"  "$C_GREEN"  "$C_RESET" "$*"; }
-warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; log_line "[warn] $*"; }
+bold()  { live_clear; printf "%s%s%s\n" "$C_BOLD"    "$*" "$C_RESET"; }
+info()  { live_clear; printf "%s[info]%s %s\n"  "$C_BLUE"   "$C_RESET" "$*"; }
+ok()    { live_clear; printf "%s[ ok ]%s %s\n"  "$C_GREEN"  "$C_RESET" "$*"; }
+warn()  { live_clear; printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; log_line "[warn] $*"; }
 # warn() only prints. Inside a step that is not enough: do_step decides OK vs
 # WARN from STEP_WARN_COUNT, so a bare warn leaves the step reporting [ ok ] and
 # landing in STEPS_OK however loudly it complained.
@@ -119,8 +119,9 @@ warn()  { printf "%s[warn]%s %s\n"  "$C_YELLOW" "$C_RESET" "$*"; log_line "[warn
 # Those stay plain warn. A step that reports WARN on every ordinary run trains
 # you to stop reading the summary, which costs more than it catches.
 warn_step() { warn "$*"; STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 )); }
-err()   { printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; log_line "[err ] $*"; }
+err()   { live_clear; printf "%s[err ]%s %s\n"  "$C_RED"    "$C_RESET" "$*" 1>&2; log_line "[err ] $*"; }
 step()  {
+  live_clear
   # --list-steps, --history and --trend print no plan, so there is nothing to
   # count against and the counter is left off rather than printed as [1/0].
   if (( PLAN_TOTAL > 0 )); then
@@ -149,6 +150,89 @@ while (( ${#UI_RULE} < UI_WIDTH )); do UI_RULE="$UI_RULE----------"; done
 UI_RULE="${UI_RULE:0:UI_WIDTH}"
 
 hr()    { printf "%s%s%s\n" "$C_DIM" "$UI_RULE" "$C_RESET"; }
+
+# ---------------------------------------------------------------------------
+# the live step line
+# ---------------------------------------------------------------------------
+# While a step runs, a single line rewrites itself on the terminal with the
+# step, its position and how long it has been going. Homebrew and Xcode take
+# minutes and say nothing while they do, and a static "==> Homebrew" gives no
+# way to tell a slow step from a hung one.
+#
+# It is written to /dev/tty, never to stdout. That is the whole safety
+# argument: the log file, a pipe, a captured test run and CI see exactly the
+# bytes they saw before, so nothing that reads this script's output has to know
+# the line exists. When there is no terminal to write to, every function here
+# is a no-op.
+#
+# Piping the step through a filter would have been the tidy way to keep the
+# line clear of the step's own output, and it is not available: a piped step
+# runs in a subshell, and STEP_FREED_B and STEP_WARN_COUNT set in there would
+# never reach do_step. So the line coexists instead, and two things keep the
+# collisions rare. It waits a second before drawing anything, by which time a
+# step has printed its opening lines and gone quiet - and a step that finishes
+# inside that second never draws at all, which is most of them. And the output
+# helpers erase it before they print. A step that prints from a bare printf
+# after the first second can still land on the same line; that is cosmetic, it
+# is repaired by the next frame, and it is the price of not putting the step in
+# a subshell.
+PROGRESS="${STAY_FRESH_PROGRESS:-auto}"
+LIVE_PID=""
+LIVE_DRAWN=0
+
+live_supported() {
+  [[ "$PROGRESS" != "0" ]] || return 1
+  [[ -t 1 ]] || return 1
+  [[ -w /dev/tty ]] || return 1
+  case "${TERM:-}" in ""|dumb) return 1 ;; esac
+  return 0
+}
+
+# Braille where the locale says the terminal can render it, ASCII otherwise.
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *[Uu][Tt][Ff]8*|*[Uu][Tt][Ff]-8*) LIVE_FRAMES='⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏' ;;
+  *)                                LIVE_FRAMES='| / - \' ;;
+esac
+
+live_clear() {
+  (( LIVE_DRAWN )) || return 0
+  LIVE_DRAWN=0
+  printf '\r\033[K' >/dev/tty 2>/dev/null || true
+}
+
+live_start() {
+  live_supported || return 0
+  local label="$1" index="$2" total="$3"
+  {
+    sleep 1
+    local started frames i=0 secs mins elapsed frame
+    started="$(date +%s)"
+    frames=($LIVE_FRAMES)
+    while :; do
+      secs=$(( $(date +%s) - started ))
+      mins=$(( secs / 60 ))
+      if (( mins > 0 )); then elapsed="${mins}m$(( secs % 60 ))s"; else elapsed="${secs}s"; fi
+      frame="${frames[$(( i % ${#frames[@]} ))]}"
+      i=$(( i + 1 ))
+      printf '\r\033[K%s%s%s %s %s[%d/%d]%s %s%s%s' \
+        "$C_CYAN" "$frame" "$C_RESET" "$label" \
+        "$C_DIM" "$index" "$total" "$C_RESET" \
+        "$C_DIM" "$elapsed" "$C_RESET" >/dev/tty 2>/dev/null || exit 0
+      sleep 0.2
+    done
+  } &
+  LIVE_PID=$!
+  LIVE_DRAWN=1
+}
+
+live_stop() {
+  if [[ -n "$LIVE_PID" ]]; then
+    kill "$LIVE_PID" 2>/dev/null || true
+    wait "$LIVE_PID" 2>/dev/null || true
+    LIVE_PID=""
+  fi
+  live_clear
+}
 
 # ---------------------------------------------------------------------------
 # defaults / CLI parsing
@@ -343,6 +427,7 @@ LOCK_HELD=0
 SUDO_KEEPALIVE_PID=""
 
 cleanup_on_exit() {
+  live_stop
   if [[ -n "${SUDO_KEEPALIVE_PID:-}" ]]; then
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
@@ -522,6 +607,8 @@ ${C_BOLD}General options:${C_RESET}
   --dry-run              Preview actions, change nothing
   --yes, -y              Authorize non-interactive mutation; suppress prompts
   --verbose, -v          Stream command output (default: captured to log)
+  --no-progress          Do not draw the live step line (env STAY_FRESH_PROGRESS=0).
+                         It is drawn only on a terminal, never into a log or a pipe
   --fail-on-warn         Exit 1 when any step finishes with a real warning
   --no-sudo              Skip root-owned steps and Homebrew cask upgrades
   --only STEP1,STEP2     Run only the named steps (see --list-steps)
@@ -718,6 +805,7 @@ while (( $# > 0 )); do
     --dry-run)         DRY_RUN=1 ;;
     -y|--yes)          ASSUME_YES=1 ;;
     -v|--verbose)      VERBOSE=1 ;;
+    --no-progress)     PROGRESS=0 ;;
     --fail-on-warn)    FAIL_ON_WARN=1 ;;
     --no-sudo)         USE_SUDO=0 ;;
     --only)            require_value "$1" "${2:-}"; shift; ONLY_STEPS="$1" ;;
@@ -2157,7 +2245,9 @@ do_step() {
   STEP_WARN_COUNT=0
   STEP_FREED_B=0
   t_start=$(date +%s)
+  live_start "$label" "$STEP_INDEX" "$PLAN_TOTAL"
   if "$fn"; then rc=0; else rc=$?; fi
+  live_stop
   t_end=$(date +%s)
   dur="$(human_duration $(( t_end - t_start )))"
   if (( STEP_FREED_B > 0 )); then

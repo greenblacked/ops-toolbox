@@ -2415,6 +2415,29 @@ assert_exists "the relocation target survives"        "$d/vol-trash"
 rm -rf /Volumes "$d"
 
 # ===========================================================================
+section "the live step line never reaches anything but a terminal"
+# While a step runs, a line rewrites itself on the terminal with the step, its
+# position and its elapsed time. It is written to /dev/tty, which is the whole
+# reason the rest of this suite did not have to change: a log, a pipe and every
+# assertion in this file see the bytes they saw before. What that costs is that
+# the drawing itself cannot be asserted here, where there is no terminal - so
+# what is asserted is the invariant that makes it safe, and that the opt-out
+# exists whether or not there is anything to opt out of.
+cr="$(printf '\r')"
+esc_k="$(printf '\033[K')"
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes --only versions)"; rc=$?
+assert_eq "a captured run still succeeds" "0" "$rc"
+assert_not_contains "no erase sequence reaches a pipe"  "$out" "$esc_k"
+assert_not_contains "no carriage return reaches a pipe" "$out" "$cr"
+out="$(run_sf "$d" --dry-run --yes --no-progress --only versions)"; rc=$?
+assert_eq "--no-progress is accepted with no terminal to draw on" "0" "$rc"
+assert_not_contains "and still prints no control sequence" "$out" "$esc_k"
+out="$(STAY_FRESH_PROGRESS=0 run_sf "$d" --dry-run --yes --only versions)"; rc=$?
+assert_eq "STAY_FRESH_PROGRESS=0 is accepted too" "0" "$rc"
+rm -rf "$d"
+
+# ===========================================================================
 section "the step counter and the plan cannot drift apart"
 # Each step header carries [n/total]. The total is counted by the plan as it
 # prints, the index by the one dispatcher every step goes through, and the two
