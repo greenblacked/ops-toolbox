@@ -322,6 +322,23 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   via `/usr/bin/python3`; stdlib-only and unit-tested. It refuses to call an
   entry stale when its volume is not mounted, so an unplugged drive is never
   mistaken for a deleted project.
+- `lib/npx_cache.py` classifies old default npx cache entries for optional
+  deep cleanup, preserving entries when Node tools are running or inspection
+  is uncertain. The disk report also exposes model stores and app containers
+  without treating them as disposable caches.
+- `lib/large_storage.py` classifies idle Claude renderer caches for
+  `stay_fresh.sh`. VM bundles, GeForce NOW data, JetBrains recovery history
+  and Chrome's downloaded on-device model remain kept, even with `--deep-clean`.
+- `lib/jetbrains_versions.py` supports explicit removal of selected obsolete
+  JetBrains version folders with `--prune-jetbrains-version NAME`. Selected
+  settings, plugins and Local History are removed; newest/unselected versions
+  and active or uninspectable IDEs are preserved.
+- `lib/app_cache_inventory.py` maps installed third-party apps to their exact
+  bundle-ID and sandbox cache directories, plus Teams WebView cache leaves.
+  Running apps, unknown activity, databases and recordings remain protected.
+- `lib/system_logs.py` removes selected rotated system log archives older
+  than 30 days only when requested, preserving current logs and other system
+  data. Preview it through `stay_fresh.sh --prune-system-logs --dry-run`.
 - `macos_defaults.sh` sets the system preferences worth changing on a new Mac
   (Finder, Dock, key repeat, screenshot location). **Read-only by default**:
   with no flags it prints current versus desired and writes nothing, `--apply`

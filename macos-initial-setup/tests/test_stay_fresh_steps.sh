@@ -489,7 +489,7 @@ assert_exists "sandbox containers are kept by default" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 RUNNING_APPS="Slack" out="$(run_sf "$d" --yes --force-active-app-caches --only app-caches)"
 assert_gone "--force-active-app-caches clears a running app" "$as/Slack/Cache"
-assert_gone "--force-active-app-caches clears sandbox containers" \
+assert_exists "force preserves sandbox caches with unknown activity" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 assert_exists "the sandbox Caches directory itself is kept" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches"
@@ -575,7 +575,7 @@ d="$(new_env)"
 as="$d/home/Library/Application Support"
 mkdir -p "$as/Codex/Default/GPUCache"
 : > "$as/Codex/Default/GPUCache/data"
-PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
+out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "an unavailable process check keeps AI cleanup non-fatal" "0" "$rc"
 assert_exists "an unavailable process check fails closed" "$as/Codex/Default/GPUCache/data"
 assert_contains "an unavailable process check explains the safe refusal" "$out" \
@@ -583,6 +583,326 @@ assert_contains "an unavailable process check explains the safe refusal" "$out" 
 assert_contains "an unavailable process check records a warning" "$out" \
   "warn steps:  1"
 rm -rf "$d"
+
+# ===========================================================================
+section "large storage (Claude, GeForce NOW, JetBrains caches; models kept)"
+unset PGREP_RC RUNNING_APPS
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$as/Claude/vm_bundles/claudevm.bundle" \
+         "$as/Claude/Session Storage" \
+         "$d/home/Movies/NVIDIA/GeForceNOW" \
+         "$d/home/Library/Caches/JetBrains/PyCharm2026.2" \
+         "$as/JetBrains/PyCharm2026.2" \
+         "$as/Google/Chrome/OptGuideOnDeviceModel" \
+         "$d/home/.lmstudio/models/prism-ml" \
+         "$d/home/Movies/iMovie Library.imovielibrary"
+: > "$as/Claude/Cache/data"
+: > "$as/Claude/vm_bundles/claudevm.bundle/image"
+: > "$as/Claude/Session Storage/state"
+: > "$d/home/Movies/NVIDIA/GeForceNOW/game"
+: > "$d/home/Library/Caches/JetBrains/PyCharm2026.2/index"
+: > "$as/JetBrains/PyCharm2026.2/options"
+: > "$as/Google/Chrome/OptGuideOnDeviceModel/model"
+: > "$d/home/.lmstudio/models/prism-ml/weights"
+: > "$d/home/Movies/iMovie Library.imovielibrary/event"
+out="$(run_sf "$d" --yes --only ai-caches,app-caches)"; rc=$?
+assert_eq "classified extra-cache sweep succeeds" "0" "$rc"
+assert_contains "idle extra caches are classified for deletion" "$out" "classified extra caches"
+assert_gone "idle Claude renderer cache is removed" "$as/Claude/Cache"
+assert_exists "GeForce NOW data is kept" "$d/home/Movies/NVIDIA/GeForceNOW"
+assert_exists "JetBrains Caches including recovery history is kept" \
+  "$d/home/Library/Caches/JetBrains/PyCharm2026.2"
+assert_exists "Claude VM bundles are kept" "$as/Claude/vm_bundles/claudevm.bundle/image"
+assert_exists "Claude session storage is kept" "$as/Claude/Session Storage/state"
+assert_exists "JetBrains application state is kept" "$as/JetBrains/PyCharm2026.2/options"
+assert_exists "Chrome on-device model is kept without --deep-clean" \
+  "$as/Google/Chrome/OptGuideOnDeviceModel/model"
+assert_exists "LM Studio models are kept" "$d/home/.lmstudio/models/prism-ml/weights"
+assert_exists "iMovie libraries are kept" \
+  "$d/home/Movies/iMovie Library.imovielibrary/event"
+assert_contains "the run names the kept Chrome model" "$out" \
+  "Chrome downloaded on-device model kept"
+out="$(run_sf "$d" --yes --only app-caches --deep-clean)"
+assert_exists "--deep-clean preserves Chrome's downloaded model" \
+  "$as/Google/Chrome/OptGuideOnDeviceModel"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$d/home/Movies/NVIDIA/GeForceNOW"
+: > "$as/Claude/Cache/data"
+: > "$d/home/Movies/NVIDIA/GeForceNOW/game"
+out="$(RUNNING_APPS=Claude run_sf "$d" --yes --only ai-caches,app-caches)"; rc=$?
+assert_eq "a running Claude does not fail extra-cache cleanup" "0" "$rc"
+assert_exists "a running Claude keeps its renderer cache" "$as/Claude/Cache/data"
+assert_exists "GeForce NOW is kept beside a running Claude" \
+  "$d/home/Movies/NVIDIA/GeForceNOW"
+assert_contains "the run explains why Claude extra caches were kept" "$out" \
+  "Claude is running - keeping its extra caches"
+assert_not_contains "a named running Claude is not an unknown process probe" "$out" \
+  "cannot determine whether Claude is running"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache"
+: > "$as/Claude/Cache/data"
+out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "an unavailable process check keeps classified Claude caches" "0" "$rc"
+assert_exists "a silent process probe does not delete Claude caches" \
+  "$as/Claude/Cache/data"
+assert_contains "a silent process probe explains the Claude refusal" "$out" \
+  "cannot determine whether Claude is running - keeping its extra caches"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$as/Claude/vm_bundles"
+: > "$as/Claude/Cache/data"
+: > "$as/Claude/vm_bundles/image"
+mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only ai-caches)"; rc=$?
+assert_eq "classified extra-cache dry run succeeds" "0" "$rc"
+assert_exists "classified extra-cache dry run writes nothing" "$as/Claude/Cache/data"
+assert_exists "classified extra-cache dry run keeps the VM bundle" \
+  "$as/Claude/vm_bundles/image"
+assert_not_called "classified extra-cache dry run creates no scanner temporary file" \
+  "$d/calls" "mktemp"
+rm -rf "$d"
+
+# ===========================================================================
+section "renderer state boundaries and helper-only activity"
+for app in Slack Codex; do
+  d="$(new_env)"
+  as="$d/home/Library/Application Support"
+  if [[ "$app" == Slack ]]; then step=app-caches; else step=ai-caches; fi
+  for relative in "Cache" "Default/GPUCache" "Service Worker/Database" \
+      "Service Worker/CacheStorage" "blob_storage" "Session Storage/Cache" \
+      "Default/Session Storage/GPUCache"; do
+    mkdir -p "$as/$app/$relative"
+    : > "$as/$app/$relative/data"
+  done
+  out="$(run_sf "$d" --yes --only "$step")"; rc=$?
+  assert_eq "$app restricted cache sweep succeeds" "0" "$rc"
+  assert_gone "$app direct cache removed" "$as/$app/Cache"
+  assert_gone "$app direct profile GPU cache removed" "$as/$app/Default/GPUCache"
+  for relative in "Service Worker/Database" "Service Worker/CacheStorage" \
+      "blob_storage" "Session Storage/Cache" "Default/Session Storage/GPUCache"; do
+    assert_exists "$app preserves $relative" "$as/$app/$relative/data"
+  done
+  mkdir -p "$as/$app/Cache"
+  : > "$as/$app/Cache/data"
+  mkbin "$d/bin/pgrep" \
+    'case "$1" in' \
+    '  -x) exit 1 ;;' \
+    "  -f) printf '%s\\n' '/Applications/$app.app/Contents/Frameworks/$app Helper.app/Contents/MacOS/$app Helper' | grep -E -- \"\$2\" >/dev/null ;;" \
+    '  *) exit 2 ;;' \
+    'esac'
+  out="$(run_sf "$d" --yes --only "$step")"; rc=$?
+  assert_eq "$app helper-only probe succeeds" "0" "$rc"
+  assert_exists "$app helper keeps renderer cache" "$as/$app/Cache/data"
+  rm -rf "$d"
+done
+
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/com.tinyspeck.slackmacgap"
+: > "$d/home/Library/Caches/com.tinyspeck.slackmacgap/data"
+PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --force-active-app-caches --only user-caches)"; rc=$?
+assert_eq "forced unknown app state remains nonfatal" "0" "$rc"
+assert_exists "force cannot override unknown process state" \
+  "$d/home/Library/Caches/com.tinyspeck.slackmacgap/data"
+rm -rf "$d"
+
+# ===========================================================================
+section "force preserves active AI user caches"
+d="$(new_env)"
+for name in Cursor com.todesktop.230313mzl4w4u92; do
+  mkdir -p "$d/home/Library/Caches/$name"
+  : > "$d/home/Library/Caches/$name/data"
+done
+RUNNING_APPS=Cursor out="$(RUNNING_APPS=Cursor run_sf "$d" --yes --force-active-app-caches --only user-caches)"; rc=$?
+assert_eq "active Cursor force sweep succeeds" "0" "$rc"
+for name in Cursor com.todesktop.230313mzl4w4u92; do
+  assert_exists "force keeps active Cursor $name" "$d/home/Library/Caches/$name/data"
+done
+rm -rf "$d"
+
+# ===========================================================================
+section "app cache preview never allocates scratch files"
+d="$(new_env)"
+mkdir -p "$d/home/Library/Application Support/Slack/Cache"
+: > "$d/home/Library/Application Support/Slack/Cache/data"
+mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+out="$(run_sf "$d" --dry-run --only app-caches)"; rc=$?
+assert_eq "app cache preview succeeds" "0" "$rc"
+assert_not_called "app cache preview creates no transient files" "$d/calls" "mktemp"
+assert_exists "app cache preview preserves data" "$d/home/Library/Application Support/Slack/Cache/data"
+rm -rf "$d"
+
+# ===========================================================================
+section "explicit old JetBrains versions"
+unset RUNNING_APPS PGREP_RC
+d="$(new_env)"
+for base in "Application Support" Caches Logs; do
+  for version in PyCharm2025.2 PyCharm2026.1 PyCharm2026.2; do
+    mkdir -p "$d/home/Library/$base/JetBrains/$version"
+    : > "$d/home/Library/$base/JetBrains/$version/data"
+  done
+done
+out="$(run_sf "$d" --yes --only app-caches --prune-jetbrains-version PyCharm2025.2)"; rc=$?
+assert_eq "selected old JetBrains cleanup succeeds" "0" "$rc"
+for base in "Application Support" Caches Logs; do
+  assert_gone "selected $base version removed" "$d/home/Library/$base/JetBrains/PyCharm2025.2"
+  assert_exists "unselected $base version preserved" "$d/home/Library/$base/JetBrains/PyCharm2026.1/data"
+  assert_exists "newest $base version preserved" "$d/home/Library/$base/JetBrains/PyCharm2026.2/data"
+done
+rm -rf "$d"
+
+# ===========================================================================
+section "JetBrains explicit selection protections"
+for mode in preview newest busy unknown helper aqua_system aqua_ide; do
+  unset RUNNING_APPS PGREP_RC
+  d="$(new_env)"
+  old="$d/home/Library/Application Support/JetBrains/PyCharm2025.2"
+  new="$d/home/Library/Application Support/JetBrains/PyCharm2026.2"
+  mkdir -p "$old/LocalHistory" "$new"
+  : > "$old/LocalHistory/record"
+  : > "$new/data"
+  case "$mode" in
+    preview)
+      mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+      out="$(run_sf "$d" --dry-run --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "JetBrains preview succeeds" "0" "$rc"
+      assert_not_called "JetBrains preview allocates no scratch" "$d/calls" "mktemp"
+      assert_contains "JetBrains preview names actual folder" "$out" "$old"
+      ;;
+    newest)
+      out="$(run_sf "$d" --yes --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2026.2)"; rc=$?
+      assert_eq "newest JetBrains refusal is a warning" "1" "$rc"
+      ;;
+    busy)
+      RUNNING_APPS=PyCharm out="$(RUNNING_APPS=PyCharm run_sf "$d" --yes --force-active-app-caches --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "active JetBrains stays protected under force" "1" "$rc"
+      ;;
+    unknown)
+      PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --force-active-app-caches --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "unknown activity preserves JetBrains under force" "1" "$rc"
+      ;;
+    helper)
+      mkbin "$d/bin/pgrep" 'case "$1" in' \
+        ' -x) exit 1 ;;' \
+        ' -f) printf "%s\n" "/Applications/PyCharm2026.2.app/Contents/jbr/Contents/Home/bin/java" | grep -E -- "$2" >/dev/null ;;' \
+        ' *) exit 2 ;;' 'esac'
+      out="$(run_sf "$d" --yes --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "versioned IDE JVM helper is protected" "1" "$rc"
+      ;;
+    aqua_system|aqua_ide)
+      if [[ "$mode" == aqua_system ]]; then
+        helper_path='/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/Resources/AquaAppearanceHelper.app/Contents/MacOS/AquaAppearanceHelper'
+      else
+        helper_path='/Applications/Aqua2026.2.app/Contents/jbr/Contents/Home/bin/java'
+      fi
+      mkbin "$d/bin/pgrep" 'case "$1" in' \
+        ' -x) exit 1 ;;' \
+        " -f) printf '%s\\n' '$helper_path' | grep -E -- \"\$2\" >/dev/null ;;" \
+        ' *) exit 2 ;;' 'esac'
+      out="$(run_sf "$d" --yes --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      if [[ "$mode" == aqua_system ]]; then
+        assert_eq "Apple appearance helper does not block old IDE removal" "0" "$rc"
+      else
+        assert_eq "actual Aqua IDE still blocks old IDE removal" "1" "$rc"
+      fi
+      ;;
+  esac
+  if [[ "$mode" == aqua_system ]]; then
+    assert_gone "Apple appearance helper permits selected old version removal" "$old"
+  else
+    assert_exists "$mode preserves selected settings/history" "$old/LocalHistory/record"
+  fi
+  assert_exists "$mode preserves newest version" "$new/data"
+  rm -rf "$d"
+done
+
+d="$(new_env)"
+unset RUNNING_APPS PGREP_RC
+for invalid in ../PyCharm2025.2 PyCharm2025.2/ Unknown2025.2; do
+  out="$(run_sf "$d" --yes --only app-caches --prune-jetbrains-version "$invalid")"; rc=$?
+  assert_eq "invalid JetBrains selection rejected: $invalid" "3" "$rc"
+done
+for conflict in --reports --cache-report --skip-appcaches --only=dev-caches; do
+  out="$(run_sf "$d" --yes "$conflict" --prune-jetbrains-version PyCharm2025.2)"; rc=$?
+  assert_eq "JetBrains conflicting selection rejected: $conflict" "3" "$rc"
+done
+mkdir -p "$d/home/Library/Application Support/JetBrains/PyCharm2025.2" \
+  "$d/home/Library/Application Support/JetBrains/PyCharm2026.1" \
+  "$d/home/Library/Application Support/JetBrains/PyCharm2026.2"
+out="$(run_sf "$d" --yes --only app-caches --prune-jetbrains-version PyCharm2025.2 --prune-jetbrains-version=PyCharm2026.1)"; rc=$?
+assert_eq "repeated JetBrains selection succeeds" "0" "$rc"
+assert_gone "first selected version removed" "$d/home/Library/Application Support/JetBrains/PyCharm2025.2"
+assert_gone "second selected version removed" "$d/home/Library/Application Support/JetBrains/PyCharm2026.1"
+assert_exists "repeated selection preserves latest" "$d/home/Library/Application Support/JetBrains/PyCharm2026.2"
+rm -rf "$d"
+
+# ===========================================================================
+section "installed application cache mapping"
+unset PGREP_RC RUNNING_APPS
+for mode in idle active helper unknown inventory_failed preview; do
+  d="$(new_env)"
+  app="$d/home/Applications/Fixture Editor.app"
+  cache="$d/home/Library/Caches/org.example.fixture"
+  sandbox="$d/home/Library/Containers/org.example.fixture/Data/Library"
+  mkdir -p "$app/Contents" "$cache" "$sandbox/Caches" "$sandbox/Application Support"
+  cat >"$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0"?><plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.example.fixture</string>
+<key>CFBundleExecutable</key><string>Fixture</string>
+</dict></plist>
+PLIST
+  : > "$cache/data"
+  : > "$sandbox/Caches/data"
+  : > "$sandbox/Application Support/session"
+  unset PGREP_RC RUNNING_APPS
+  case "$mode" in
+    active) RUNNING_APPS=Fixture ;;
+    unknown) PGREP_RC=2 ;;
+    helper)
+      mkbin "$d/bin/pgrep" '
+        [ "$1" = -f ] || exit 1
+        printf "%s\n" "$HOME/Applications/Fixture Editor.app/Contents/Frameworks/Worker.app/Contents/MacOS/Worker" | grep -E -- "$2" >/dev/null
+      '
+      ;;
+    inventory_failed)
+      # A malformed XML plist makes the subprocess fail before emitting records.
+      mkdir -p "$d/home/Applications/Broken.app/Contents"
+      printf '<plist><dict><key>broken</key>' > "$d/home/Applications/Broken.app/Contents/Info.plist"
+      ;;
+  esac
+  if [[ "$mode" == preview ]]; then
+    mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+    out="$(run_sf "$d" --dry-run --only app-caches)"; rc=$?
+    assert_not_called "installed app preview creates no scratch files" "$d/calls" "mktemp"
+    assert_contains "installed app preview names the actual cache" "$out" "$cache"
+  else
+    out="$(run_sf "$d" --yes --only app-caches)"; rc=$?
+  fi
+  assert_eq "$mode mapped cache run succeeds" "0" "$rc"
+  if [[ "$mode" == inventory_failed ]]; then
+    assert_contains "failed classifier reports incomplete inventory" "$out" "installed-app cache inventory incomplete"
+  fi
+  if [[ "$mode" == idle ]]; then
+    assert_gone "idle installed app cache contents removed" "$cache/data"
+    assert_gone "idle mapped sandbox cache contents removed" "$sandbox/Caches/data"
+  else
+    assert_exists "$mode keeps installed app cache" "$cache/data"
+    assert_exists "$mode keeps mapped sandbox cache" "$sandbox/Caches/data"
+  fi
+  assert_exists "$mode keeps sandbox cache root ACL directory" "$sandbox/Caches"
+  assert_exists "$mode keeps app session state" "$sandbox/Application Support/session"
+  rm -rf "$d"
+done
+unset PGREP_RC RUNNING_APPS
 
 # ===========================================================================
 section "workspace-storage (stale entries only)"
@@ -1506,9 +1826,10 @@ d="$(new_env)"
 mkdir -p "$d/home/Library/Caches/com.google.Chrome" "$d/home/.Trash"
 bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 2048
 bytes_file "$d/home/.Trash/old" 1024
-out="$(run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
+expected_estimate="$(du -sk "$d/home/Library/Caches/com.google.Chrome" "$d/home/.Trash" | awk '{sum += $1} END {printf "%.2fM", sum / 1024}')"
+out="$(PGREP_RC=1 RUNNING_APPS= run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
 assert_eq "a dry run with an estimate succeeds" "0" "$rc"
-assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "1."
+assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "$expected_estimate"
 assert_contains "the estimate names its unit" "$out" "would free:"
 assert_contains "the real freed total stays zero under a dry run" "$out" "steps freed: 0B"
 assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.google.Chrome/blob"
@@ -2252,19 +2573,7 @@ rm -rf "$d"
 
 # ===========================================================================
 section "downloads (reported by default, removed only with --prune-downloads-days)"
-# The sizes are chosen so the total cannot depend on the filesystem under the
-# container. step_downloads totals with `du -sk`, which measures blocks on disk,
-# and `du -sk` of a directory counts the directory itself: one 4K block on ext4
-# and APFS, nothing at all on the overlayfs the tester usually runs on. With a
-# 2048K file beside a 64K one that difference decided the last digit — 2112K
-# reads as 2.06M and 2116K as 2.07M — so this assertion passed or failed
-# according to the host's Docker storage driver, and it was the expectation
-# that was wrong rather than the script.
-#
-# 2048K + 1024K lands on exactly 3.00M, and human_bytes prints %.2f, so the
-# directory's block costs 0.0039M and rounds away whether it is charged or not.
-# The directory is still here, and still smaller than the file beside it, so
-# "counted recursively" and "largest named first" are both still asserted.
+# Allocation varies with the Docker filesystem; measure the fixture itself.
 dl_env() {
   local d; d="$(new_env)"
   local dl="$d/home/Downloads"
@@ -2276,9 +2585,10 @@ dl_env() {
   printf '%s' "$d"
 }
 d="$(dl_env)"; : > "$d/calls"
+expected_old_size="$(du -sk "$d/home/Downloads/installer.dmg" "$d/home/Downloads/old-project" | awk '{sum += $1} END {printf "%.2fM", sum / 1024}')"
 out="$(run_sf "$d" --yes --only downloads)"; rc=$?
 assert_eq "downloads step succeeds" "0" "$rc"
-assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: 3.00M"
+assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: $expected_old_size"
 assert_contains "the largest old entry is named first" "$(grep -A1 'untouched for 90 days' <<<"$out")" "installer.dmg"
 assert_contains "the report says how to remove them" "$out" "--prune-downloads-days 90 removes them"
 assert_exists "the report removes nothing" "$d/home/Downloads/installer.dmg"
@@ -2359,7 +2669,7 @@ assert_not_contains "an interpreter with a present script is fine" "$out" "com.w
 assert_not_contains "a present program is fine" "$out" "com.ok.plist ->"
 assert_contains "a system-level orphan is named with its command" "$out" \
   "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
-assert_contains "a binary plist without plutil is left uninspected" "$out" "1 binary plist(s) not inspected"
+assert_contains "an invalid binary plist is left uninspected" "$out" "1 plist(s) not inspected"
 assert_not_contains "an XML-escaped program path is resolved before it is judged" "$out" "com.amp.ok.plist"
 assert_contains "user-level orphans are kept by default" "$out" "2 user-level plist(s) kept; --prune-orphan-agents"
 assert_contains "orphans reach the verdict" "$out" "3 orphaned launch agent(s)"
@@ -2926,6 +3236,219 @@ assert_eq "--fail-on-warn turns a warned step into exit 1" "1" "$rc"
 assert_contains "strict warning failure is explained" "$out" \
   "warnings are fatal because --fail-on-warn was requested"
 rm -rf "$d"
+
+# ===========================================================================
+section "review regressions: previews, discovery and plist precedence"
+for step in krew versions helm-plugins; do
+  d="$(new_env)"
+  for tool in kubectl kubectl-krew helm; do
+    mkbin "$d/bin/$tool" 'mkdir -p "$HOME/tool-state"' 'echo "called $*" >> "$CALLS"' 'echo krew'
+  done
+  out="$(run_sf "$d" --dry-run --only "$step")"; rc=$?
+  assert_eq "$step preview succeeds" 0 "$rc"
+  assert_gone "$step preview invokes no package query" "$d/home/tool-state"
+  rm -rf "$d"
+done
+for tool in helm kubectl gcloud; do
+  for behavior in failure timeout; do
+    d="$(new_env)"
+    mkbin "$d/bin/kubectl-krew" 'exit 0'
+    if [[ "$behavior" == timeout ]]; then
+      mkbin "$d/bin/$tool" 'echo discovery-stderr >&2' 'sleep 3; exit 0'
+    else
+      mkbin "$d/bin/$tool" 'echo discovery-stderr >&2' 'exit 7'
+    fi
+    case "$tool" in helm) step=helm-plugins ;; kubectl) step=krew ;; *) step=gcloud ;; esac
+    out="$(run_sf "$d" --yes --only "$step" --step-timeout 1 --fail-on-warn)"; rc=$?
+    assert_eq "$step $behavior discovery is a warning" 1 "$rc"
+    [[ "$behavior" != timeout ]] || assert_contains "$step discovery deadline is named" "$out" 'timed out'
+    assert_contains "$step discovery stderr reaches logs" "$(cat "$d/home/Library/Logs/stay_fresh/"*.log 2>/dev/null)" discovery-stderr
+    rm -rf "$d"
+  done
+done
+d="$(new_env)"; la="$d/home/Library/LaunchAgents"; mkdir -p "$la"
+python3 - "$la" <<'PYPLIST'
+import os, plistlib, sys
+for binary in (False, True):
+    for reverse in (False, True):
+        entries = [('ProgramArguments', ['/missing/argv0', '/missing/arg']), ('Program', '/bin/echo')]
+        if reverse:
+            entries.reverse()
+        with open(os.path.join(sys.argv[1], f'valid-{binary}-{reverse}.plist'), 'wb') as f:
+            plistlib.dump(dict(entries), f, fmt=plistlib.FMT_BINARY if binary else plistlib.FMT_XML, sort_keys=False)
+PYPLIST
+out="$(run_sf "$d" --yes --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_eq "valid plist precedence run succeeds" 0 "$rc"
+for f in "$la"/valid-*; do assert_exists "Program overrides argv0 regardless of format/key order" "$f"; done
+assert_eq "all four valid plists survive" 4 "$(find "$la" -name '*.plist' | wc -l | tr -d ' ')"
+rm -rf "$d"
+
+section "lock publication contention and owner checked release"
+d="$(new_env)"
+mkbin "$d/bin/mkdir" '/bin/mkdir "$@" || exit $?' \
+  'case "$*" in */run.lock) if [ ! -e "$HOME/published" ]; then touch "$HOME/published"; while [ ! -e "$HOME/release" ]; do sleep 0.05; done; fi ;; esac'
+run_sf "$d" --yes --only versions >"$d/first.out" & first=$!
+for ((n=0; n<100; n++)); do [[ ! -e "$d/home/published" ]] || break; sleep 0.05; done
+assert_exists "first owner paused before metadata" "$d/home/published"
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "incomplete owner is contention" 2 "$rc"
+touch "$d/home/release"
+wait "$first"; rc=$?
+assert_eq "first owner completes" 0 "$rc"
+rm -rf "$d"
+d="$(new_env)"
+mkbin "$d/bin/pyenv" 'printf "99999999\n" > "$HOME/Library/Application Support/stay_fresh/run.lock/pid"' 'echo 3.12'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "owner substitution fixture completes" 0 "$rc"
+assert_exists "exit preserves replacement owner metadata" "$d/home/Library/Application Support/stay_fresh/run.lock/pid"
+rm -rf "$d"
+
+# Stale reclaimers overlap while the first owns the claim but has not renamed.
+d="$(new_env)"; lock="$d/home/Library/Application Support/stay_fresh/run.lock"
+mkdir -p "$lock"; printf '99999999\n' > "$lock/pid"
+mkbin "$d/bin/mv" 'case "$1" in */run.lock) touch "$HOME/retiring"; while [ ! -e "$HOME/release" ]; do sleep 0.05; done ;; esac' 'exec /bin/mv "$@"'
+run_sf "$d" --yes --only versions >"$d/first.out" & first=$!
+for ((n=0; n<100; n++)); do [[ ! -e "$d/home/retiring" ]] || break; sleep 0.05; done
+assert_exists "stale owner retirement barrier reached" "$d/home/retiring"
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "second stale reclaimer is refused" 2 "$rc"
+touch "$d/home/release"
+wait "$first"; rc=$?
+assert_eq "first stale reclaimer completes" 0 "$rc"
+assert_gone "reclaimed owner releases its lock" "$lock"
+rm -rf "$d"
+
+section "bounded version and capability probes"
+d="$(new_env)"
+mkbin "$d/bin/pyenv" 'sleep 3; echo 3.12'
+out="$(run_sf "$d" --yes --only versions --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "version timeout affects verdict" 1 "$rc"
+assert_contains "version timeout is explicit" "$out" 'pyenv version timed out'
+rm -rf "$d"
+d="$(new_env)"
+mkbin "$d/bin/gcloud" 'case "$1" in help) sleep 3 ;; esac; exit 0'
+out="$(run_sf "$d" --yes --only gcloud --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "capability timeout affects verdict" 1 "$rc"
+assert_contains "capability timeout is explicit" "$out" 'gcloud Python update capability timed out'
+rm -rf "$d"
+
+section "deep-clean npx cache classification and preview"
+make_npx_fixture() {
+  mkdir -p "$1/home/.npm/_npx/0123456789abcdef/node_modules"
+  printf '%s\n' '{"dependencies":{"tool":"1.0"}}' > "$1/home/.npm/_npx/0123456789abcdef/package.json"
+  printf 'credential\n' > "$1/home/.npm/credentials"
+  find "$1/home/.npm/_npx" -exec touch -a -m -d '10 days ago' {} +
+}
+d="$(new_env)"
+make_npx_fixture "$d"
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"'
+out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "ordinary cleanup succeeds" 0 "$rc"
+assert_exists "ordinary cleanup preserves npx entries" "$d/home/.npm/_npx/0123456789abcdef"
+mkbin "$d/bin/node" 'exit 0'
+mkbin "$d/bin/npm" 'echo "npm $*" >> "$CALLS"; mkdir -p "$HOME/npm-wrote"'
+out="$(run_sf "$d" --dry-run --only dev-caches --deep-clean)"; rc=$?
+assert_eq "npx preview succeeds" 0 "$rc"
+assert_contains "npx preview reports eligible old entry" "$out" "npx cache entries unchanged for at least 7 days: 1 path(s)"
+assert_exists "npx preview keeps cache" "$d/home/.npm/_npx/0123456789abcdef"
+assert_gone "npx preview never invokes npm" "$d/home/npm-wrote"
+assert_not_called "no npm calls during preview" "$d/calls" "npm "
+rm "$d/bin/npm"
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "deep cleanup succeeds" 0 "$rc"
+assert_gone "deep cleanup removes old idle npx entry" "$d/home/.npm/_npx/0123456789abcdef"
+assert_exists "npm credentials survive deep cleanup" "$d/home/.npm/credentials"
+assert_contains "npx cleanup reports freed bytes" "$out" "npx cache entries unchanged for at least 7 days)"
+rm -rf "$d"
+for probe in silent failed malformed localized active; do
+  d="$(new_env)"
+  make_npx_fixture "$d"
+  case "$probe" in
+    silent) mkbin "$d/bin/ps" 'exit 0' ;;
+    failed) mkbin "$d/bin/ps" 'exit 2' ;;
+    malformed) mkbin "$d/bin/ps" 'echo "PID COMMAND"' ;;
+    localized) mkbin "$d/bin/ps" 'echo "Zugriff verweigert"' ;;
+    active) mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n9 node\n" "$PPID"' ;;
+  esac
+  out="$(run_sf "$d" --yes --only dev-caches --deep-clean --fail-on-warn)"; rc=$?
+  if [[ "$probe" == active ]]; then
+    assert_eq "active npx process is a safe skip" 0 "$rc"
+  else
+    assert_eq "$probe process probe raises warning verdict" 1 "$rc"
+  fi
+  assert_exists "$probe probe preserves npx cache" "$d/home/.npm/_npx/0123456789abcdef"
+  rm -rf "$d"
+done
+
+section "disk report includes large application data roots"
+d="$(new_env)"
+for report_root in 'Library/Group Containers' Library/pnpm .npm .lmstudio .ollama; do
+  mkdir -p "$d/home/$report_root"
+done
+out="$(run_sf "$d" --dry-run --only disk-report)"; rc=$?
+assert_eq "expanded disk report preview succeeds" 0 "$rc"
+for report_root in 'Library/Group Containers' Library/pnpm .npm .lmstudio .ollama; do
+  assert_contains "disk report names $report_root" "$out" "~/$report_root"
+done
+assert_contains "System Data explanation avoids promising disposable cache" "$out" "System Data is not all cache"
+rm -rf "$d"
+
+d="$(new_env)"
+mkdir -p "$d/home/.npm"
+mkbin "$d/bin/du" 'case "$*" in *"-d 1"*) printf "12\t%s/visible\n12\t%s\n" "$HOME/.npm" "$HOME/.npm"; exit 1 ;; esac; exec /usr/bin/du "$@"'
+out="$(run_sf "$d" --yes --only disk-report --fail-on-warn)"; rc=$?
+assert_eq "partial disk query remains report-only" 0 "$rc"
+assert_contains "partial disk query does not claim accurate total" "$out" "partial or unreadable; total unknown"
+mkbin "$d/bin/du" 'case "$*" in *"-d 1"*) sleep 3 ;; esac; exec /usr/bin/du "$@"'
+out="$(run_sf "$d" --yes --only disk-report --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "disk query timeout remains report-only" 0 "$rc"
+assert_contains "disk timeout leaves unknown total" "$out" "partial or unreadable; total unknown"
+rm -rf "$d"
+
+section "explicit rotated system log cleanup"
+mkdir -p /private/var/log
+chmod 755 /private /private/var /private/var/log
+make_system_log_fixture() {
+  printf 'old rotated fixture\n' > /private/var/log/system.log.999.gz
+  touch -a -m -d '40 days ago' /private/var/log/system.log.999.gz
+  printf 'current fixture\n' > /private/var/log/system.log
+}
+mkbin /usr/sbin/lsof 'printf "p%s\nn/private/var/log\n" "$PPID"'
+d="$(new_env)"
+make_system_log_fixture
+out="$(run_sf "$d" --yes --only diagnostics)"; rc=$?
+assert_eq "ordinary diagnostics remains successful" 0 "$rc"
+assert_exists "ordinary diagnostics preserves rotated system logs" /private/var/log/system.log.999.gz
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only diagnostics --prune-system-logs)"; rc=$?
+assert_eq "system log preview succeeds" 0 "$rc"
+assert_contains "system log preview explains fixed retention" "$out" "rotated system logs unchanged for at least 30 days"
+assert_exists "system log preview preserves rotated file" /private/var/log/system.log.999.gz
+assert_not_called "preview never invokes privileged Python" "$d/calls" "sudo /usr/bin/python3"
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs --no-sudo)"; rc=$?
+assert_eq "system log no-sudo skip succeeds" 0 "$rc"
+assert_exists "no-sudo preserves rotated system logs" /private/var/log/system.log.999.gz
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs)"; rc=$?
+assert_eq "explicit system log cleanup succeeds" 0 "$rc"
+assert_gone "explicit system log cleanup deletes old compressed rotation" /private/var/log/system.log.999.gz
+assert_exists "explicit system log cleanup preserves current log" /private/var/log/system.log
+assert_contains "system log cleanup accounts real deletion" "$out" "rotated system logs: removed 1"
+assert_called "privileged helper uses isolated Python" "$d/calls" "sudo /usr/bin/python3 -I -B"
+make_system_log_fixture
+mkbin /usr/sbin/lsof 'exit 0'
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs --fail-on-warn)"; rc=$?
+assert_eq "silent system log open-file probe warns" 1 "$rc"
+assert_exists "silent system log probe preserves rotation" /private/var/log/system.log.999.gz
+out="$(run_sf "$d" --reports --prune-system-logs)"; rc=$?
+assert_eq "reports rejects destructive system log flag" 3 "$rc"
+out="$(run_sf "$d" --cache-report --prune-system-logs)"; rc=$?
+assert_eq "cache report rejects destructive system log flag" 3 "$rc"
+mkbin "$d/bin/sudo" 'exit 1'
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs)"; rc=$?
+assert_exists "sudo failure preserves rotated logs" /private/var/log/system.log.999.gz
+assert_contains "sudo failure reports preserved logs" "$out" "rotated system logs kept"
+rm -rf "$d"
+rm -f /private/var/log/system.log.999.gz /private/var/log/system.log /usr/sbin/lsof
 
 # ===========================================================================
 if (( failures )); then

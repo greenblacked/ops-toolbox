@@ -8,9 +8,12 @@
 #     belonging to applications that are running or cannot be checked)
 #   - clear per-app caches missed by the above: Chromium/Electron dirs under
 #     known Application Support roots and cached extension .vsix archives;
-#     sandboxed app caches require an explicit force flag
+#     sandboxed app caches are kept when activity cannot be mapped
 #   - clear disposable AI desktop/CLI caches while preserving sessions,
-#     credentials, projects, extensions, runtimes, and downloaded models
+#     credentials, projects, extensions, runtimes, and downloaded models;
+#     Claude renderer caches are classified by lib/large_storage.py
+#   - keep unclassified GeForce NOW data, JetBrains recovery history and
+#     Chrome's downloaded on-device model, including during deep cleanup
 #   - prune VS Code workspaceStorage for projects that no longer exist
 #   - empty ~/.Trash
 #   - clean developer tool caches (npm, yarn, pnpm, pip, uv, go, kubectl
@@ -348,6 +351,8 @@ FORCE_SYSTEM_CACHES=0
 # Deleting a simulator takes its data container with it: installed builds,
 # app databases, screenshots. Opt-in, like the Xcode archives.
 PRUNE_UNAVAILABLE_SIMULATORS=0
+PRUNE_SYSTEM_LOGS=0
+JETBRAINS_VERSIONS=()
 # A stopped container's writable layer is data when nothing mounted a volume.
 # Only containers idle for this long are pruned.
 DOCKER_CONTAINER_KEEP_HOURS=168
@@ -505,10 +510,31 @@ cleanup_on_exit() {
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
   fi
-  if (( LOCK_HELD )); then
-    rm -f "$LOCK_DIR/pid" "$LOCK_DIR/boot"
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+  if (( LOCK_HELD )) && mkdir "$LOCK_DIR/reclaim" 2>/dev/null; then
+    if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" == "$$" ]]; then
+      retire_lock || true
+    else
+      rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
+    fi
   fi
+}
+
+# Called only while holding run.lock/reclaim. Rename before removing metadata:
+# a successor may acquire run.lock immediately, and cleanup stays on the old
+# directory. A unique empty sibling prevents mv from targeting another lock.
+retire_lock() {
+  local retired
+  retired="$(mktemp -d "$LOCK_PARENT/retired.XXXXXX")" || {
+    rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
+    return 1
+  }
+  if ! mv "$LOCK_DIR" "$retired/lock"; then
+    rmdir "$retired" "$LOCK_DIR/reclaim" 2>/dev/null || true
+    return 1
+  fi
+  rm -f "$retired/lock/pid" "$retired/lock/boot"
+  rmdir "$retired/lock/reclaim" "$retired/lock" "$retired" 2>/dev/null || true
+  return 0
 }
 
 # When this kernel booted, in epoch seconds: the macOS sysctl, or /proc/stat
@@ -564,9 +590,20 @@ acquire_lock() {
     return 1
   fi
 
+  # Serialize stale recovery inside the existing directory. Missing metadata
+  # can belong to a live process between mkdir and publication; never reap it.
+  if ! mkdir "$LOCK_DIR/reclaim" 2>/dev/null; then
+    err "another stay_fresh run is acquiring the lock"
+    return 1
+  fi
   local existing_pid="" existing_boot="" now_boot=""
   [[ -r "$LOCK_DIR/pid" ]]  && read -r existing_pid  < "$LOCK_DIR/pid"
   [[ -r "$LOCK_DIR/boot" ]] && read -r existing_boot < "$LOCK_DIR/boot"
+  if [[ ! "$existing_pid" =~ ^[1-9][0-9]*$ ]]; then
+    rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
+    err "stay_fresh lock has incomplete owner metadata — keeping it"
+    return 1
+  fi
   now_boot="$(boot_epoch)"
   # A reboot moves the boot time by minutes at the very least. It also drifts
   # by seconds without one: XNU re-derives kern.boottime whenever the clock is
@@ -580,15 +617,14 @@ acquire_lock() {
   if (( boot_drift > 300 )); then
     warn "removing stale stay_fresh lock from before the last reboot (pid ${existing_pid:-?})"
   elif [[ "$existing_pid" =~ ^[0-9]+$ ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
     err "another stay_fresh run is active (pid $existing_pid)"
     return 1
-  elif [[ -n "$existing_pid" ]]; then
-    warn "removing stale stay_fresh lock for pid $existing_pid"
   else
-    warn "removing stale stay_fresh lock without a live pid"
+    warn "removing stale stay_fresh lock for pid $existing_pid"
   fi
-  rm -f "$LOCK_DIR/pid" "$LOCK_DIR/boot"
-  if rmdir "$LOCK_DIR" 2>/dev/null && mkdir "$LOCK_DIR" 2>/dev/null; then
+  retire_lock || return 1
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
     if ! write_lock_metadata; then
       rmdir "$LOCK_DIR" 2>/dev/null || true
       err "cannot write run lock metadata at $LOCK_DIR/pid"
@@ -697,8 +733,9 @@ ${C_BOLD}General options:${C_RESET}
   --cache-report         Measure known developer cache locations and exit;
                          follows configured cache roots but never deletes them
   --deep-clean           Add reviewed native cleanup: Conda tarballs, index
-                         cache and log files. Environments and extracted
-                         packages are preserved
+                         cache and log files, and guarded old npx entries.
+                         Environments, extracted packages and downloaded
+                         models stay
   --step-timeout N       Stop any one command inside a step after N seconds
                          and count the step as warned (default 1800; 0 disables;
                          env STAY_FRESH_STEP_TIMEOUT). Prompts are never limited
@@ -724,8 +761,13 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-usercaches      Don't clear ~/Library/Caches et al.
   --skip-appcaches       Don't clear per-app caches (see Notes)
   --force-active-app-caches
-                         Also clear running known-app and sandboxed-app caches
+                         Also clear known-running non-AI app caches; unknown activity stays kept
   --skip-aicaches        Don't clear AI desktop/CLI temporary caches
+  --prune-jetbrains-version NAME
+                         Remove only a selected older JetBrains version's
+                         settings, plugins, Local History, caches and logs.
+                         Repeat for multiple versions; app-caches step only.
+                         Newest observed version and active/unknown IDEs stay.
   --skip-workspacestorage
                          Don't prune stale VS Code workspace storage
   --skip-trash           Don't empty ~/.Trash
@@ -755,6 +797,9 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-xcode           Don't clean Xcode DeviceSupport/simulators/old Archives
   --prune-xcode-archives-days N
                          Remove only .xcarchive bundles older than N days
+  --prune-system-logs    Also prune root-owned rotated compressed system/install/wifi
+                         logs in /private/var/log unchanged for at least 30 days;
+                         diagnostics step only, requires sudo, excludes open files
   --skip-diagnostics     Don't remove crash / diagnostic reports (see Notes)
   --skip-user-logs       Don't remove files under ~/Library/Logs older than
                          30 days (see Notes)
@@ -776,8 +821,9 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
   --skip-snapshots       Don't list local Time Machine snapshots
   --thin-snapshots       Delete local Time Machine snapshots (needs sudo; see Notes)
   --disk-report          Also print the largest entries under ~/Library/Caches,
-                         Application Support, Containers, Developer, Logs,
-                         ~/.cache and ~/Downloads (slow on a full disk)
+                         Application Support, Containers, Group Containers,
+                         Developer, Logs, ~/.cache, ~/Downloads and ~/Movies
+                         (slow on a full disk)
 
 ${C_BOLD}Notes:${C_RESET}
   Snapshots: macOS keeps local Time Machine snapshots on every local volume
@@ -804,17 +850,18 @@ ${C_BOLD}Notes:${C_RESET}
   step). Such a selection is reported by name; if every id you named is
   disabled the run stops with exit 2 instead of doing nothing quietly.
 
-  Per-app caches: covers Chromium-internal dirs (Cache, Code Cache, GPUCache,
-  Service Worker, blob_storage) under known Application Support roots, plus
-  cached extension .vsix archives. Roots belonging to running applications are
-  kept. Sandboxed-container caches cannot be mapped reliably to process state,
-  so they are also kept unless --force-active-app-caches is explicit.
+  Per-app caches: covers Chromium-internal dirs (Cache, Code Cache, GPUCache
+  and related shader caches) under known Application Support roots, plus
+  cached extension .vsix archives. GeForce NOW data, JetBrains caches (they
+  hold Local History), iMovie libraries and Apple TV downloads are named and
+  kept. Roots belonging to running applications are kept. Sandboxed-container
+  caches cannot be mapped reliably to process state, so they stay kept.
 
-  AI caches: clears disposable caches for Codex, ChatGPT, Cursor, and Windsurf
-  only while the matching tool is confirmed not running. If process
+  AI caches: clears disposable caches for Codex, ChatGPT, Cursor, Windsurf and
+  Claude only while the matching tool is confirmed not running. If process
   state cannot be checked, caches are kept. Credentials, settings,
-  conversations/sessions, projects, extensions, runtimes, and local models are
-  always kept.
+  conversations/sessions, projects, extensions, runtimes, local models and
+  Claude VM bundles are always kept.
 
   Workspace storage: VS Code and its forks keep a workspaceStorage entry per
   folder ever opened and never garbage-collect them. Only entries whose recorded
@@ -935,6 +982,13 @@ while (( $# > 0 )); do
         exit 3
       }
       ;;
+    --prune-jetbrains-version)
+      require_value "$1" "${2:-}"
+      JETBRAINS_VERSIONS+=("$2"); shift ;;
+    --prune-jetbrains-version=*)
+      require_value "--prune-jetbrains-version" "${1#*=}"
+      JETBRAINS_VERSIONS+=("${1#*=}") ;;
+    --prune-system-logs) PRUNE_SYSTEM_LOGS=1 ;;
     --skip-diagnostics) SKIP_DIAGNOSTICS=1; EXPLICIT_SKIP=1 ;;
     --skip-user-logs)  SKIP_USER_LOGS=1; EXPLICIT_SKIP=1 ;;
     --skip-downloads)  SKIP_DOWNLOADS=1; EXPLICIT_SKIP=1 ;;
@@ -1041,6 +1095,22 @@ if (( LIST_STEPS )); then
   exit 0
 fi
 
+if (( ${#JETBRAINS_VERSIONS[@]} )); then
+  (( CACHE_REPORT == 0 && REPORTS == 0 && SKIP_APPCACHES == 0 )) || {
+    err "--prune-jetbrains-version requires app-caches and cannot be combined with report modes"
+    exit 3
+  }
+  if [[ -n "$ONLY_STEPS" && ",$ONLY_STEPS," != *,app-caches,* ]]; then
+    err "--prune-jetbrains-version requires app-caches in --only"
+    exit 3
+  fi
+  jetbrains_args=()
+  for jetbrains_version in "${JETBRAINS_VERSIONS[@]}"; do
+    jetbrains_args+=(--version "$jetbrains_version")
+  done
+  /usr/bin/python3 -I -B "$SCRIPT_DIR/lib/jetbrains_versions.py" --validate-only "${jetbrains_args[@]}" || exit 3
+fi
+
 # Everything past this point resolves a path under HOME.
 if (( HOME_USABLE == 0 )); then
   err "HOME is not set — every path this script clears is built from it, and without one they would resolve to system directories"
@@ -1054,7 +1124,7 @@ fi
 if (( CACHE_REPORT )); then
   if (( DEEP_CLEAN || PRUNE_BUILD_CACHES || PRUNE_DOCKER_CONTAINERS || PRUNE_DOCKER_VOLUMES \
         || THIN_SNAPSHOTS || PRUNE_ORPHAN_AGENTS || FORCE_SYSTEM_CACHES \
-        || PRUNE_UNAVAILABLE_SIMULATORS )) || [[ -n "$PRUNE_DOWNLOADS_DAYS$XCODE_ARCHIVE_DAYS$ONLY_STEPS" ]]; then
+        || PRUNE_UNAVAILABLE_SIMULATORS || PRUNE_SYSTEM_LOGS )) || [[ -n "$PRUNE_DOWNLOADS_DAYS$XCODE_ARCHIVE_DAYS$ONLY_STEPS" ]]; then
     err "--cache-report is standalone and cannot be combined with cleanup or prune options"
     exit 3
   fi
@@ -1079,6 +1149,7 @@ if (( REPORTS )); then
   (( PRUNE_ORPHAN_AGENTS == 0 )) || { err "--reports is read-only and cannot be combined with --prune-orphan-agents"; exit 3; }
   (( FORCE_SYSTEM_CACHES == 0 )) || { err "--reports is read-only and cannot be combined with --force-system-caches"; exit 3; }
   (( PRUNE_UNAVAILABLE_SIMULATORS == 0 )) || { err "--reports is read-only and cannot be combined with --prune-unavailable-simulators"; exit 3; }
+  (( PRUNE_SYSTEM_LOGS == 0 )) || { err "--reports is read-only and cannot be combined with --prune-system-logs"; exit 3; }
   (( DEEP_CLEAN == 0 )) || { err "--reports is read-only and cannot be combined with --deep-clean"; exit 3; }
   ONLY_STEPS="versions,os-updates,snapshots,downloads,launch-agents,disk-report"
 fi
@@ -2508,8 +2579,8 @@ plan_line "flush DNS cache"                   "$(( 1 - SKIP_DNS         ))" "dsc
 plan_line "clear system caches"               "$(( 1 - SKIP_SYSCACHES   ))" "/Library/Caches, /System/Library/Caches"
 plan_group "Cleanup"
 plan_line "clear user caches"                 "$(( 1 - SKIP_USERCACHES  ))" "~/Library/Caches, Saved State, DerivedData, ..."
-plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, sandboxed containers, VSIX"
-plan_line "clear AI tool caches"              "$(( 1 - SKIP_AICACHES    ))" "Codex, ChatGPT, Cursor, Windsurf"
+plan_line "clear per-app caches"              "$(( 1 - SKIP_APPCACHES   ))" "Chromium, VSIX; JetBrains removed only with explicit version selection"
+plan_line "clear AI tool caches"              "$(( 1 - SKIP_AICACHES    ))" "Codex, ChatGPT, Cursor, Windsurf, Claude"
 plan_line "prune workspace storage"           "$(( 1 - SKIP_WORKSPACESTORAGE ))" "VS Code, deleted projects only"
 plan_line "empty trash"                       "$(( 1 - SKIP_TRASH       ))" "~/.Trash"
 if (( PRUNE_DOCKER_VOLUMES )); then
@@ -2552,7 +2623,7 @@ fi
 if (( PRUNE_BUILD_CACHES )); then
   devcache_plan="$devcache_plan + Gradle caches; Maven repository kept"
 fi
-(( DEEP_CLEAN )) && devcache_plan="$devcache_plan + safe Conda caches"
+(( DEEP_CLEAN )) && devcache_plan="$devcache_plan + safe Conda and old idle npx caches"
 plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
 plan_line "krew plugin refresh"               "$(( 1 - SKIP_KREW        ))" "kubectl krew update · upgrade <name>"
@@ -2744,11 +2815,11 @@ step_usercaches() {
   local -a entries=() known_names=(
     "Codex|AI" "com.openai.codex|AI" "com.openai.chat|AI" "ChatGPT|AI"
     "com.openai.sky.CUAService|AI" "Windsurf|AI" "com.exafunction.windsurf|AI"
-    "Cursor|/Cursor.app/Contents/MacOS/" "com.todesktop.230313mzl4w4u92|/Cursor.app/Contents/MacOS/"
-    "com.microsoft.VSCode|/Visual Studio Code.app/Contents/MacOS/"
-    "com.google.Chrome|/Google Chrome.app/Contents/MacOS/"
-    "com.brave.Browser|/Brave Browser.app/Contents/MacOS/"
-    "com.tinyspeck.slackmacgap|/Slack.app/Contents/MacOS/"
+    "Cursor|AI" "com.todesktop.230313mzl4w4u92|AI"
+    "com.microsoft.VSCode|/Visual Studio Code\.app/Contents/"
+    "com.google.Chrome|/Google Chrome\.app/Contents/"
+    "com.brave.Browser|/Brave Browser\.app/Contents/"
+    "com.tinyspeck.slackmacgap|/Slack\.app/Contents/"
   )
   if [[ -d "$caches" ]]; then
     for d in "$caches"/*; do
@@ -2770,29 +2841,28 @@ step_usercaches() {
       active=0; uncertain=0
       if [[ "$process" == "AI" ]]; then
         local ai_probe
-        for ai_probe in Codex codex ChatGPT Windsurf; do
+        for ai_probe in Codex codex ChatGPT Windsurf Cursor; do
           pgrep -x "$ai_probe" >/dev/null 2>&1; rc=$?
           (( rc == 0 )) && active=1
           (( rc > 1 )) && uncertain=1
         done
-        for ai_probe in Codex ChatGPT Windsurf; do
-          pgrep -f "/${ai_probe}.app/Contents/MacOS/" >/dev/null 2>&1; rc=$?
+        for ai_probe in Codex ChatGPT Windsurf Cursor; do
+          pgrep -f "/${ai_probe}\.app/Contents/" >/dev/null 2>&1; rc=$?
           (( rc == 0 )) && active=1
           (( rc > 1 )) && uncertain=1
         done
-      elif (( FORCE_ACTIVE_APP_CACHES == 0 )); then
+      else
         pgrep -f "$process" >/dev/null 2>&1; rc=$?
         (( rc == 0 )) && active=1
         (( rc > 1 )) && uncertain=1
       fi
-      if (( FORCE_ACTIVE_APP_CACHES == 0 )) || [[ "$process" == "AI" ]]; then
-        if (( active )); then
-          info "an application using $d is running — keeping it"
-          continue
-        elif (( uncertain )); then
-          warn_step "cannot determine whether an application using $d is running — keeping it"
-          continue
-        fi
+      if (( uncertain )); then
+        warn_step "cannot determine whether an application using $d is running — keeping it"
+        continue
+      fi
+      if (( active )) && { (( FORCE_ACTIVE_APP_CACHES == 0 )) || [[ "$process" == "AI" ]]; }; then
+        info "an application using $d is running — keeping it"
+        continue
       fi
       entries+=("$d")
     done
@@ -2825,6 +2895,8 @@ step_appcaches() {
   local root="$HOME/Library/Application Support"
   if [[ ! -d "$root" ]]; then
     warn "$root not found"
+    clear_discovered_app_caches
+    prune_jetbrains_versions
     return 0
   fi
 
@@ -2855,7 +2927,7 @@ step_appcaches() {
     proc="${app_bundles[$i]}"
     app_root="$root/${app_dirs[$i]}"
     [[ -d "$app_root" ]] || continue
-    pgrep -f "/${proc}.app/Contents/MacOS/" >/dev/null 2>&1; rc=$?
+    pgrep -f "/${proc}\.app/Contents/" >/dev/null 2>&1; rc=$?
     if (( rc == 0 )); then
       running+=("$proc")
       if (( FORCE_ACTIVE_APP_CACHES )); then
@@ -2878,64 +2950,47 @@ step_appcaches() {
     fi
   fi
 
-  # -prune keeps find from descending into a directory it already matched, so
-  # nested hits aren't reported (and re-deleted) twice. A temporary file keeps
-  # the exit status observable while retaining the NUL-safe path contract.
-  local -a hits=()
-  local d scan_out
-  scan_out="$(scratch_file)" || {
-    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — application cache scan skipped"
-    return 0
-  }
+  # Scan direct app/profile leaves only; persistent state is never traversed.
+  local -a hits=() profile_roots=() scan_args=()
+  local d scan_out profile_root
   for app_root in ${scan_roots[@]+"${scan_roots[@]}"}; do
-    find "$app_root" -maxdepth 5 -type d \( \
-           -iname "Cache"              -o \
-           -iname "CachedData"         -o \
-           -iname "Code Cache"         -o \
-           -iname "GPUCache"           -o \
-           -iname "Service Worker"     -o \
-           -iname "blob_storage"       -o \
-           -iname "DawnCache"          -o \
-           -iname "DawnGraphiteCache"  -o \
-           -iname "DawnWebGPUCache"    -o \
-           -iname "ShaderCache"        -o \
-           -iname "GrShaderCache"      -o \
-           -iname "PersistentCache"      \
-         \) -prune -print0 >>"$scan_out" 2>>"$LOG_SINK" \
-      || warn_step "could not scan application caches under $app_root"
+    for profile_root in "$app_root" "$app_root/Default" "$app_root"/Profile\ *; do
+      [[ -d "$profile_root" && ! -L "$profile_root" ]] && profile_roots+=("$profile_root")
+    done
   done
-  while IFS= read -r -d '' d; do
-    hits+=("$d")
-  done < "$scan_out"
-  rm -f "$scan_out"
+  if (( ${#profile_roots[@]} )); then
+    scan_args=("${profile_roots[@]}" -mindepth 1 -maxdepth 1 -type d \(
+      -iname "Cache" -o -iname "CachedData" -o -iname "Code Cache"
+      -o -iname "GPUCache" -o -iname "DawnCache" -o -iname "DawnGraphiteCache"
+      -o -iname "DawnWebGPUCache" -o -iname "ShaderCache"
+      -o -iname "GrShaderCache" -o -iname "PersistentCache" \) -print0)
+    if (( DRY_RUN )); then
+      # Validate discovery without allocating a temporary file during previews.
+      if ! find "${scan_args[@]}" >/dev/null 2>>"$LOG_SINK"; then
+        warn_step "could not scan application caches — keeping scanned roots"
+        return 0
+      fi
+      while IFS= read -r -d '' d; do hits+=("$d"); done < <(
+        find "${scan_args[@]}" 2>>"$LOG_SINK"
+      )
+    else
+      scan_out="$(scratch_file)" || {
+        warn_step "no scratch space in $LOG_DIR or $STATE_DIR — application cache scan skipped"
+        return 0
+      }
+      if ! find "${scan_args[@]}" >"$scan_out" 2>>"$LOG_SINK"; then
+        warn_step "could not scan application caches — keeping scanned roots"
+        rm -f "$scan_out"
+        return 0
+      fi
+      while IFS= read -r -d '' d; do hits+=("$d"); done < "$scan_out"
+      rm -f "$scan_out"
+    fi
+  fi
 
   clear_paths "Electron/Chromium caches" dir ${hits[@]+"${hits[@]}"}
 
-  # Sandboxed apps (Teams, Outlook, Mail, Weather, ...) can't see ~/Library,
-  # so macOS gives each one a private Caches dir inside its container. Same
-  # disposable data as ~/Library/Caches, invisible to step_usercaches.
-  # Contents only: the Caches dir itself carries sandbox ACLs worth keeping.
-  local containers="$HOME/Library/Containers"
-  local -a ccaches=()
-  if (( FORCE_ACTIVE_APP_CACHES )); then
-    if [[ -d "$containers" ]]; then
-      local container_scan
-      if container_scan="$(scratch_file)"; then
-        find "$containers" -maxdepth 4 -type d -path "*/Data/Library/Caches" \
-          -print0 >"$container_scan" 2>>"$LOG_SINK" \
-          || warn_step "could not scan sandboxed application caches"
-        while IFS= read -r -d '' d; do
-          ccaches+=("$d")
-        done < "$container_scan"
-        rm -f "$container_scan"
-      else
-        warn_step "no scratch space in $LOG_DIR or $STATE_DIR — sandboxed application cache scan skipped"
-      fi
-    fi
-    clear_paths "sandboxed app caches" contents ${ccaches[@]+"${ccaches[@]}"}
-  else
-    info "sandboxed app caches kept; activity cannot be mapped reliably (use --force-active-app-caches)"
-  fi
+  info "unmapped sandbox caches kept; installed-app mappings are checked separately"
 
   # VS Code keeps the downloaded .vsix archive for every extension
   # after installing it. Purely a download cache; the installed extension lives
@@ -2953,6 +3008,9 @@ step_appcaches() {
   done
   clear_paths "extension VSIX cache" contents ${vsix[@]+"${vsix[@]}"}
 
+  apply_large_storage app
+  clear_discovered_app_caches
+  prune_jetbrains_versions
 }
 
 # AI tools keep large disposable browser caches beside persistent application
@@ -2966,7 +3024,7 @@ ai_process_running() {
     rc=$?
     (( rc == 0 )) && return 0
     (( rc == 1 )) || process_check_failed=1
-    pgrep -f "/${process}.app/Contents/MacOS/" >/dev/null 2>&1
+    pgrep -f "/${process}\.app/Contents/" >/dev/null 2>&1
     rc=$?
     (( rc == 0 )) && return 0
     (( rc == 1 )) || process_check_failed=1
@@ -2992,37 +3050,33 @@ clear_ai_support_caches() {
       ;;
   esac
 
-  local scan_out d
-  local -a hits=()
+  local scan_out d profile_root
+  local -a hits=() profile_roots=() scan_args=()
+  for profile_root in "$root" "$root/Default" "$root"/Profile\ *; do
+    [[ -d "$profile_root" && ! -L "$profile_root" ]] && profile_roots+=("$profile_root")
+  done
+  (( ${#profile_roots[@]} )) || return 0
+  scan_args=("${profile_roots[@]}" -mindepth 1 -maxdepth 1 -type d \(
+    -name "Cache" -o -name "Code Cache" -o -name "GPUCache"
+    -o -name "DawnGraphiteCache" -o -name "DawnWebGPUCache"
+    -o -name "GraphiteDawnCache" \) -print0)
   if (( DRY_RUN )); then
-    # Process substitution keeps preview discovery read-only. The real path
-    # below uses a temporary file so it can retain find's exit status.
+    if ! find "${scan_args[@]}" >/dev/null 2>>"$LOG_SINK"; then
+      warn_step "could not scan $label application caches"
+      return 0
+    fi
     while IFS= read -r -d '' d; do hits+=("$d"); done < <(
-      find "$root" -maxdepth 4 -type d \( \
-        -name "Cache"              -o \
-        -name "Code Cache"         -o \
-        -name "GPUCache"           -o \
-        -name "DawnGraphiteCache"  -o \
-        -name "DawnWebGPUCache"    -o \
-        -name "GraphiteDawnCache"  -o \
-        -name "blob_storage" \
-      \) -prune -print0 2>>"$LOG_SINK"
+      find "${scan_args[@]}" 2>>"$LOG_SINK"
     )
   else
     scan_out="$(scratch_file)" || {
       warn_step "no scratch space in $LOG_DIR or $STATE_DIR — $label application cache scan skipped"
       return 0
     }
-    if ! find "$root" -maxdepth 4 -type d \( \
-         -name "Cache"              -o \
-         -name "Code Cache"         -o \
-         -name "GPUCache"           -o \
-         -name "DawnGraphiteCache"  -o \
-         -name "DawnWebGPUCache"    -o \
-         -name "GraphiteDawnCache"  -o \
-         -name "blob_storage" \
-       \) -prune -print0 >"$scan_out" 2>>"$LOG_SINK"; then
+    if ! find "${scan_args[@]}" >"$scan_out" 2>>"$LOG_SINK"; then
       warn_step "could not scan $label application caches"
+      rm -f "$scan_out"
+      return 0
     fi
     while IFS= read -r -d '' d; do hits+=("$d"); done < "$scan_out"
     rm -f "$scan_out"
@@ -3063,9 +3117,247 @@ clear_ai_cache_roots() {
   done
 }
 
+clear_discovered_app_caches() {
+  local helper="$SCRIPT_DIR/lib/app_cache_inventory.py" scan_out rc
+  local label executable pattern path last_pattern="" state=1 query_rc
+  local -a records=() candidates=()
+  if [[ ! -x /usr/bin/python3 || ! -f "$helper" ]]; then
+    warn_step "installed-app cache classifier unavailable — additional caches kept"
+    return 0
+  fi
+  if (( DRY_RUN )); then
+    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" >/dev/null 2>>"$LOG_SINK"; then
+      warn_step "installed-app cache inventory incomplete — additional caches kept"
+      return 0
+    fi
+    while IFS= read -r -d '' label && IFS= read -r -d '' executable \
+        && IFS= read -r -d '' pattern && IFS= read -r -d '' path; do
+      records+=("$label" "$executable" "$pattern" "$path")
+    done < <(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" 2>>"$LOG_SINK")
+  else
+    scan_out="$(scratch_file)" || {
+      warn_step "no scratch space — additional app caches kept"
+      return 0
+    }
+    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" >"$scan_out" 2>>"$LOG_SINK"; then
+      rm -f "$scan_out"
+      warn_step "installed-app cache inventory incomplete — additional caches kept; see log"
+      return 0
+    fi
+    while IFS= read -r -d '' label && IFS= read -r -d '' executable \
+        && IFS= read -r -d '' pattern && IFS= read -r -d '' path; do
+      records+=("$label" "$executable" "$pattern" "$path")
+    done < "$scan_out"
+    rm -f "$scan_out"
+  fi
+  local i
+  for (( i=0; i<${#records[@]}; i+=4 )); do
+    label="${records[$i]}"; executable="${records[$((i+1))]}"
+    pattern="${records[$((i+2))]}"; path="${records[$((i+3))]}"
+    if [[ "$pattern" != "$last_pattern" ]]; then
+      last_pattern="$pattern"; state=1
+      pgrep -x "$executable" >/dev/null 2>&1; rc=$?
+      pgrep -f "$pattern" >/dev/null 2>&1; query_rc=$?
+      if (( rc > 1 || query_rc > 1 )); then
+        state=2
+        warn_step "cannot inspect $label activity — its additional caches kept"
+      elif (( rc == 0 || query_rc == 0 )); then
+        state=0
+      fi
+    fi
+    if (( state == 1 )); then
+      printf '  eligible %s cache: %s (%s)\n' "$label" "$path" "$(human_bytes "$(path_bytes "$path")")"
+      candidates+=("$path")
+    else
+      printf '  kept %s cache (running or unknown activity): %s (%s)\n' "$label" "$path" "$(human_bytes "$(path_bytes "$path")")"
+    fi
+  done
+  clear_paths "installed-app caches" contents ${candidates[@]+"${candidates[@]}"}
+}
+
+prune_jetbrains_versions() {
+  (( ${#JETBRAINS_VERSIONS[@]} )) || return 0
+  local helper="$SCRIPT_DIR/lib/jetbrains_versions.py" path scan_out rc
+  local -a args=() paths=()
+  if [[ ! -x /usr/bin/python3 || ! -f "$helper" ]]; then
+    warn_step "JetBrains classifier unavailable — selected versions kept"
+    return 0
+  fi
+  ai_process_running "IntelliJ IDEA" idea idea64 PyCharm pycharm WebStorm webstorm \
+    PhpStorm phpstorm RubyMine rubymine CLion clion DataGrip datagrip GoLand goland \
+    Rider rider RustRover rustrover DataSpell dataspell Aqua aqua Gateway gateway jetbrains
+  rc=$?
+  if (( rc == 1 )); then
+    # Include renamed/versioned bundles, JVM helpers and custom IDE launches.
+    pgrep -f '/(JetBrains|jetbrains)/|/(IntelliJ IDEA( CE)?|PyCharm( CE)?|WebStorm|PhpStorm|RubyMine|CLion|DataGrip|GoLand|Rider|RustRover|DataSpell|Aqua|Gateway)([ ._-]?[0-9][0-9._-]*)?\.app/Contents/|/jbr/Contents/Home/bin/java|com\.intellij\.idea\.Main' >/dev/null 2>&1
+    rc=$?
+  fi
+  if (( rc != 1 )); then
+    warn_step "JetBrains IDE active or activity unknown — selected versions kept"
+    return 0
+  fi
+  for path in "${JETBRAINS_VERSIONS[@]}"; do args+=(--version "$path"); done
+  warn "selected JetBrains versions include settings, plugins and Local History: ${JETBRAINS_VERSIONS[*]}"
+  if (( DRY_RUN )); then
+    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" "${args[@]}" >/dev/null 2>>"$LOG_SINK"; then
+      warn_step "JetBrains version inventory unsafe or incomplete — all selected versions kept"
+      return 0
+    fi
+    while IFS= read -r -d '' path; do paths+=("$path"); done < <(
+      with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" "${args[@]}" 2>>"$LOG_SINK"
+    )
+  else
+    scan_out="$(scratch_file)" || {
+      warn_step "no scratch space — selected JetBrains versions kept"
+      return 0
+    }
+    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" "${args[@]}" >"$scan_out" 2>>"$LOG_SINK"; then
+      rm -f "$scan_out"
+      warn_step "JetBrains version inventory unsafe or incomplete — all selected versions kept; see log"
+      return 0
+    fi
+    while IFS= read -r -d '' path; do paths+=("$path"); done < "$scan_out"
+    rm -f "$scan_out"
+  fi
+  for path in ${paths[@]+"${paths[@]}"}; do
+    printf '  selected folder: %s (%s)\n' "$path" "$(human_bytes "$(path_bytes "$path")")"
+  done
+  clear_paths "selected old JetBrains version folders" dir ${paths[@]+"${paths[@]}"}
+}
+
+large_storage_family_busy() {
+  case "$1" in
+    Claude) ai_process_running Claude ;;
+    GeForceNOW) ai_process_running GeForceNOW "GeForce NOW" ;;
+    JetBrains) ai_process_running PyCharm "IntelliJ IDEA" WebStorm CLion GoLand PhpStorm RubyMine DataGrip Rider ;;
+    Chrome) ai_process_running "Google Chrome" ;;
+    *) return 2 ;;
+  esac
+}
+
+# Extra large disposable caches are classified by lib/large_storage.py rather
+# than inlined here. Process state and deletion stay in this script.
+apply_large_storage() {
+  local scope="$1"
+  local py=/usr/bin/python3
+  local scanner="$SCRIPT_DIR/lib/large_storage.py"
+  local extra=() rc=0 status family path reason found=0
+  local -a disposable=() busy_families=() failed_families=()
+  (( DEEP_CLEAN )) && extra+=(--deep-clean)
+  if [[ ! -x "$py" || ! -f "$scanner" ]]; then
+    warn_step "large storage scanner unavailable — keeping extra caches"
+    return 0
+  fi
+
+  local scan_out=""
+  if (( DRY_RUN )); then
+    "$py" -B "$scanner" --scope "$scope" ${extra[@]+"${extra[@]}"} >/dev/null 2>>"$LOG_SINK" || rc=$?
+    if (( rc == 4 )); then
+      return 0
+    fi
+    if (( rc != 0 )); then
+      warn_step "large storage scanner failed — keeping extra caches (see log)"
+      return 0
+    fi
+    while IFS= read -r -d '' status \
+      && IFS= read -r -d '' family \
+      && IFS= read -r -d '' path \
+      && IFS= read -r -d '' reason; do
+      case "$status" in
+        kept)
+          found=1
+          if [[ "$family" == JetBrains ]] && (( ${#JETBRAINS_VERSIONS[@]} )); then
+            continue
+          fi
+          info "$reason" ;;
+        disposable) found=1; disposable+=("$family"$'\t'"$path") ;;
+      esac
+    done < <("$py" -B "$scanner" --scope "$scope" ${extra[@]+"${extra[@]}"} 2>>"$LOG_SINK")
+  else
+    scan_out="$(scratch_file)" || {
+      warn_step "no scratch space in $LOG_DIR or $STATE_DIR — keeping extra caches"
+      return 0
+    }
+    "$py" -B "$scanner" --scope "$scope" ${extra[@]+"${extra[@]}"} >"$scan_out" 2>>"$LOG_SINK" || rc=$?
+    if (( rc == 4 )); then
+      rm -f "$scan_out"
+      return 0
+    fi
+    if (( rc != 0 )); then
+      rm -f "$scan_out"
+      warn_step "large storage scanner failed — keeping extra caches (see log)"
+      return 0
+    fi
+    while IFS= read -r -d '' status \
+      && IFS= read -r -d '' family \
+      && IFS= read -r -d '' path \
+      && IFS= read -r -d '' reason; do
+      case "$status" in
+        kept)
+          found=1
+          if [[ "$family" == JetBrains ]] && (( ${#JETBRAINS_VERSIONS[@]} )); then
+            continue
+          fi
+          info "$reason" ;;
+        disposable) found=1; disposable+=("$family"$'\t'"$path") ;;
+      esac
+    done < "$scan_out"
+    rm -f "$scan_out"
+  fi
+
+  [[ "$scope" == "ai" ]] && (( found )) && AI_CACHE_FOUND=1
+  local -a to_clear=() seen_family=()
+  local item busy_rc already seen i
+  for (( i=0; i<${#disposable[@]}; i++ )); do
+    item="${disposable[$i]}"
+    family="${item%%$'\t'*}"
+    path="${item#*$'\t'}"
+    already=0
+    for seen in ${seen_family[@]+"${seen_family[@]}"}; do
+      [[ "$seen" == "$family" ]] && already=1
+    done
+    if (( already == 0 )); then
+      seen_family+=("$family")
+      large_storage_family_busy "$family"
+      busy_rc=$?
+      if (( FORCE_ACTIVE_APP_CACHES == 0 )) || [[ "$family" == "Claude" ]]; then
+        case "$busy_rc" in
+          0)
+            warn "$family is running - keeping its extra caches"
+            busy_families+=("$family")
+            continue
+            ;;
+          2)
+            warn_step "cannot determine whether $family is running - keeping its extra caches"
+            failed_families+=("$family")
+            continue
+            ;;
+        esac
+      elif (( busy_rc == 0 )); then
+        warn "$family is running — force flag allows its extra caches to be cleared"
+      elif (( busy_rc == 2 )); then
+        warn_step "cannot determine whether $family is running - keeping its extra caches"
+        failed_families+=("$family")
+        continue
+      fi
+    else
+      for seen in ${busy_families[@]+"${busy_families[@]}"}; do
+        [[ "$seen" == "$family" ]] && continue 2
+      done
+      for seen in ${failed_families[@]+"${failed_families[@]}"}; do
+        [[ "$seen" == "$family" ]] && continue 2
+      done
+    fi
+    to_clear+=("$path")
+  done
+  (( ${#to_clear[@]} > 0 )) || return 0
+  clear_paths "classified extra caches" dir ${to_clear[@]+"${to_clear[@]}"}
+}
+
 step_aicaches() {
   AI_CACHE_FOUND=0
 
+  apply_large_storage ai
   clear_ai_support_caches "Codex" \
     "$HOME/Library/Application Support/Codex" ChatGPT Codex codex
   clear_ai_support_caches "ChatGPT" \
@@ -3324,8 +3616,35 @@ step_trash() {
   done <<<"$(mounted_volumes)"
 }
 
+# Classification stays in a substantial read-only helper. Capture its status
+# without a scratch file so even previews leave no files behind.
+clean_npx_cache() {
+  local scanner="$SCRIPT_DIR/lib/npx_cache.py" listing rc entry
+  local -a entries=()
+  if [[ ! -x /usr/bin/python3 || ! -f "$scanner" ]]; then
+    warn_step "npx cache scanner unavailable — keeping all entries"
+    return 0
+  fi
+  listing="$(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -B "$scanner" 2>&1)"; rc=$?
+  if (( rc == 4 )); then
+    info "$listing"
+  elif (( rc != 0 )); then
+    warn_step "${listing:-npx cache scanner failed; keeping all entries}"
+  else
+    while IFS= read -r entry; do
+      [[ -n "$entry" ]] && entries+=("$entry")
+    done <<<"$listing"
+    clear_paths "npx cache entries unchanged for at least 7 days" dir ${entries[@]+"${entries[@]}"}
+  fi
+  return 0
+}
+
 step_devcaches() {
   local any=0
+  if (( DEEP_CLEAN )); then
+    any=1
+    clean_npx_cache
+  fi
   local node_ok=0
   if command -v node >/dev/null 2>&1 && node -v >/dev/null 2>&1; then
     node_ok=1
@@ -3712,7 +4031,49 @@ step_xcode() {
   fi
 }
 
+# The privileged helper owns its narrow allowlist and descriptor-relative
+# deletion. Do not add /private/var/log to generic recursive cleanup guards.
+prune_system_logs() {
+  local helper="$SCRIPT_DIR/lib/system_logs.py" payload parsed rc eligible estimated removed freed errors opened
+  local -a command=(/usr/bin/python3 -I -B "$helper")
+  if (( USE_SUDO == 0 || SKIP_DIAGNOSTICS_SYS )); then
+    info "rotated system logs kept (--no-sudo or sudo unavailable)"
+    return 0
+  fi
+  if [[ ! -x /usr/bin/python3 || ! -f "$helper" ]]; then
+    warn_step "system log helper unavailable — keeping rotated system logs"
+    return 0
+  fi
+  (( DRY_RUN )) || command=(sudo -n /usr/bin/python3 -I -B "$helper" --apply)
+  payload="$(with_timeout "$STEP_TIMEOUT" "${command[@]}" 2>>"$LOG_SINK")"; rc=$?
+  parsed="$(printf '%s' "$payload" | /usr/bin/python3 -I -B -c '
+import json, sys
+r = json.load(sys.stdin)
+k = ("eligible", "eligible_bytes", "removed", "freed_bytes", "kept_open")
+assert all(type(r[x]) is int and r[x] >= 0 for x in k)
+assert isinstance(r["errors"], list)
+print("\t".join(str(r[x]) for x in k) + "\t" + str(len(r["errors"])))
+' 2>/dev/null)" || {
+    warn_step "system log helper failed or returned an invalid result (exit $rc); see log"
+    return 0
+  }
+  IFS=$'\t' read -r eligible estimated removed freed opened errors <<<"$parsed"
+  if (( DRY_RUN )); then
+    printf "  (dry-run) would consider %s rotated system logs unchanged for at least 30 days (%s); apply checks open files\n" "$eligible" "$(human_bytes "$estimated")"
+    DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + estimated ))
+  else
+    STEP_FREED_B=$(( STEP_FREED_B + freed ))
+    printf "  rotated system logs: removed %s, freed %s, kept %s open files\n" "$removed" "$(human_bytes "$freed")" "$opened"
+    printf '%s\n' "$payload" >>"$LOG_SINK"
+  fi
+  if (( rc != 0 || errors > 0 )); then
+    warn_step "rotated system log cleanup incomplete: $payload"
+  fi
+  return 0
+}
+
 step_diagnostics() {
+  (( PRUNE_SYSTEM_LOGS )) && prune_system_logs
   # User diagnostic / crash reports
   local user_dirs=(
     "$HOME/Library/Logs/DiagnosticReports"
@@ -3865,47 +4226,32 @@ step_downloads() {
     "$C_DIM" "$days" "$C_RESET"
 }
 
-# The program a launchd plist runs: the Program key, else the first entry of
-# ProgramArguments, and the second entry too when the first is an interpreter
-# handed a script. Prints one path per line. XML is read as is; a binary
-# plist goes through plutil where macOS provides it and is otherwise not
-# inspected (return 1).
+# Parse the complete dictionary: Program takes precedence over argv[0],
+# independent of XML key order, entities or binary encoding. Unknown data is kept.
 plist_program() {
-  local f="$1" xml
-  if [[ "$(head -c 6 "$f" 2>/dev/null)" == "bplist" ]]; then
-    command -v plutil >/dev/null 2>&1 || return 1
-    xml="$(plutil -convert xml1 -o - "$f" 2>/dev/null)" || return 1
-  else
-    xml="$(cat "$f" 2>/dev/null)" || return 1
-  fi
-  # Keys, arrays and strings may share a line or each take one; the scan
-  # keeps going on the remainder of a line after a key it recognised.
-  awk '
-    {
-      line = $0
-      if (line ~ /<key>Program<\/key>/) {
-        want = "p"; sub(/.*<key>Program<\/key>/, "", line)
-      } else if (line ~ /<key>ProgramArguments<\/key>/) {
-        want = "a"; sub(/.*<key>ProgramArguments<\/key>/, "", line)
-      }
-      while (want != "" && match(line, /<string>[^<]*<\/string>/)) {
-        v = substr(line, RSTART + 8, RLENGTH - 17)
-        line = substr(line, RSTART + RLENGTH)
-        # A path is stored XML-escaped: "R&D Tools" is written R&amp;D Tools.
-        # Compared raw against the filesystem it never exists, so the agent
-        # reads as orphaned and --prune-orphan-agents deletes a live one.
-        # &amp; goes last, or &amp;lt; would decode twice into <.
-        gsub(/&lt;/, "<", v); gsub(/&gt;/, ">", v)
-        gsub(/&quot;/, "\"", v); gsub(/&apos;/, "'"'"'", v)
-        gsub(/&amp;/, "\\&", v)
-        if (want == "p") { print v; exit }
-        args[++n] = v
-        if (n == 2) exit
-      }
-      if (want == "a" && line ~ /<\/array>/) exit
-    }
-    END { for (i = 1; i <= n; i++) print args[i] }
-  ' <<<"$xml"
+  [[ -x /usr/bin/python3 ]] || return 1
+  /usr/bin/python3 - "$1" <<'PYPLIST'
+import plistlib
+import sys
+try:
+    with open(sys.argv[1], "rb") as stream:
+        data = plistlib.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError("plist is not a dictionary")
+    args = data.get("ProgramArguments", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ValueError("invalid arguments")
+    program = data["Program"] if "Program" in data else (args[0] if args else "")
+    label = data.get("Label", "")
+    values = [program, args[1] if len(args) > 1 else "", label]
+    if not all(isinstance(v, str) and "\n" not in v and "\r" not in v for v in values):
+        raise ValueError("invalid plist fields")
+    if not program:
+        raise ValueError("missing program")
+    print("\n".join(values))
+except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
+    sys.exit(1)
+PYPLIST
 }
 
 # Every tool that ever installed a background helper left a plist behind, and
@@ -3915,8 +4261,8 @@ plist_program() {
 # system-level ones belong to root and are only ever named, with the command.
 step_launch_agents() {
   local -a roots=("$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons")
-  local -a user_orphans=() system_orphans=()
-  local root f progs prog arg1 target scanned=0 uninspected=0 label
+  local -a user_orphans=() user_labels=() system_orphans=()
+  local root f progs prog arg1 target scanned=0 uninspected=0 label i=0
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
     for f in "$root"/*.plist; do
@@ -3928,6 +4274,7 @@ step_launch_agents() {
       fi
       prog="$(sed -n 1p <<<"$progs")"
       arg1="$(sed -n 2p <<<"$progs")"
+      label="$(sed -n 3p <<<"$progs")"
       [[ -n "$prog" ]] || continue
       target="$prog"
       case "$prog" in
@@ -3935,12 +4282,22 @@ step_launch_agents() {
           [[ "$arg1" == /* ]] && target="$arg1" ;;
       esac
       if [[ "$target" == /* ]]; then
-        [[ -e "$target" ]] && continue
+        # A denied stat is not proof that the program is gone.
+        /usr/bin/python3 - "$target" <<'PYSTAT'
+import errno, os, sys
+try:
+    os.stat(sys.argv[1])
+except OSError as exc:
+    sys.exit(0 if exc.errno in (errno.ENOENT, errno.ENOTDIR) else 1)
+sys.exit(1)
+PYSTAT
+        if (( $? != 0 )); then continue; fi
       else
         command -v "$target" >/dev/null 2>&1 && continue
       fi
       if [[ "$root" == "$HOME/Library/LaunchAgents" ]]; then
         user_orphans+=("$f")
+        user_labels+=("${label:-$(basename "$f" .plist)}")
       else
         system_orphans+=("$f")
       fi
@@ -3953,10 +4310,10 @@ step_launch_agents() {
     return 0
   fi
   if (( uninspected > 0 )); then
-    printf "  %s%d binary plist(s) not inspected (plutil not available)%s\n" "$C_DIM" "$uninspected" "$C_RESET"
+    printf "  %s%d plist(s) not inspected (unreadable, invalid or parser unavailable)%s\n" "$C_DIM" "$uninspected" "$C_RESET"
   fi
   if (( ORPHAN_AGENTS == 0 )); then
-    ok "every launchd plist points at a program that exists ($scanned checked)"
+    ok "no proven orphaned launchd plists ($scanned scanned, $uninspected uninspected)"
     return 0
   fi
   if (( ${#system_orphans[@]} > 0 )); then
@@ -3974,7 +4331,8 @@ step_launch_agents() {
     return 0
   fi
   for f in "${user_orphans[@]}"; do
-    label="$(basename "$f" .plist)"
+    label="${user_labels[$i]}"
+    i=$(( i + 1 ))
     if (( DRY_RUN )); then
       printf "  %s(dry-run) launchctl bootout gui/%s/%s%s\n" "$C_DIM" "$(id -u)" "$label" "$C_RESET"
     else
@@ -4213,13 +4571,30 @@ step_brew() {
 
 # Helm plugins are outside of brew's world, so they go stale quickly.
 # 'helm plugin update <name>' pulls the latest release for each one.
+inventory_query() {
+  local label="$1" rc=0
+  shift
+  INVENTORY="$(with_timeout "$STEP_TIMEOUT" "$@" 2>>"$LOG_SINK")" || rc=$?
+  if (( rc == 124 )); then
+    warn_step "$label timed out after ${STEP_TIMEOUT}s"
+  elif (( rc != 0 )); then
+    warn_step "$label failed (exit $rc; see log)"
+  fi
+  return "$rc"
+}
+
 step_helm_plugins() {
   if ! command -v helm >/dev/null 2>&1; then
     info "helm not installed — nothing to refresh"
     return 0
   fi
   local plugins
-  plugins="$(helm plugin list 2>/dev/null | awk 'NR>1 && NF {print $1}')"
+  if (( DRY_RUN )); then
+    info "(dry-run) would list and update installed Helm plugins"
+    return 0
+  fi
+  inventory_query "helm plugin inventory" helm plugin list || return 0
+  plugins="$(awk 'NR>1 && NF {print $1}' <<<"$INVENTORY")"
   if [[ -z "$plugins" ]]; then
     info "no helm plugins installed — nothing to refresh"
     return 0
@@ -4250,7 +4625,12 @@ step_krew() {
   # krew prints a PLUGIN/VERSION table to a terminal and bare names to a
   # pipe; the header is dropped by name so both shapes parse.
   local plugins
-  plugins="$(kubectl krew list 2>/dev/null | awk 'NF && $1 != "PLUGIN" {print $1}')"
+  if (( DRY_RUN )); then
+    info "(dry-run) would list, update and upgrade installed krew plugins"
+    return 0
+  fi
+  inventory_query "krew plugin inventory" kubectl krew list || return 0
+  plugins="$(awk 'NF && $1 != "PLUGIN" {print $1}' <<<"$INVENTORY")"
   if [[ -z "$plugins" ]]; then
     info "no krew plugins installed — nothing to refresh"
     return 0
@@ -4318,16 +4698,13 @@ step_gcloud() {
   fi
   # Some gcloud builds disable the in-place component manager (e.g. when
   # installed from a distro package); in that case there's nothing to do.
-  if ! with_timeout "$STEP_TIMEOUT" gcloud components list --quiet >/dev/null 2>&1; then
-    info "gcloud present but component manager unavailable — skipping components update"
-    return 0
-  fi
+  inventory_query "gcloud component inventory" gcloud components list --quiet || return 0
   run_cmd "gcloud components update --quiet" gcloud components update --quiet \
     || warn "'gcloud components update' had issues"
 
   # Some gcloud installs on macOS require a separate Python/runtime update step.
   # Best-effort: if it exists, run it to avoid the recurring warning.
-  if gcloud help components update-macos-python >/dev/null 2>&1; then
+  if inventory_query "gcloud Python update capability" gcloud help components update-macos-python; then
     run_cmd "gcloud components update-macos-python" gcloud components update-macos-python --quiet \
       || warn "'gcloud components update-macos-python' had issues"
   fi
@@ -4339,29 +4716,33 @@ step_gcloud() {
 # to a new Python/Go/Terraform minor.
 step_versions() {
   local any=0 line
+  if (( DRY_RUN )); then
+    info "(dry-run) would report active tool versions; package queries skipped"
+    return 0
+  fi
   if command -v pyenv >/dev/null 2>&1; then
     any=1
-    line="$(pyenv version-name 2>/dev/null || echo '?')"
+    inventory_query "pyenv version" pyenv version-name; line="${INVENTORY:-?}"
     printf "  pyenv active:  %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   fi
   if command -v goenv >/dev/null 2>&1; then
     any=1
-    line="$(goenv version-name 2>/dev/null || echo '?')"
+    inventory_query "goenv version" goenv version-name; line="${INVENTORY:-?}"
     printf "  goenv active:  %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   fi
   if command -v tfenv >/dev/null 2>&1; then
     any=1
-    line="$(tfenv version-name 2>/dev/null || echo '?')"
+    inventory_query "tfenv version" tfenv version-name; line="${INVENTORY:-?}"
     printf "  tfenv active:  %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   fi
   if command -v tenv >/dev/null 2>&1; then
     any=1
-    line="$(tenv tf current 2>/dev/null || echo '?')"
+    inventory_query "tenv version" tenv tf current; line="${INVENTORY:-?}"
     printf "  tenv   active: %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   fi
   if command -v helm >/dev/null 2>&1; then
     any=1
-    line="$(helm version --short 2>/dev/null | head -n1 || echo '?')"
+    inventory_query "helm version" helm version --short; line="$(head -n1 <<<"$INVENTORY")"
     printf "  helm:          %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   fi
   # The tools the run maintains and did not name: kubectl and its krew plugins,
@@ -4369,27 +4750,32 @@ step_versions() {
   # from phoning home and writing its checkpoint cache during a version print.
   if command -v kubectl >/dev/null 2>&1; then
     any=1
-    line="$(kubectl version --client 2>/dev/null | sed -n 's/^Client Version: *//p' | head -n1)"
+    inventory_query "kubectl version" kubectl version --client
+    line="$(sed -n 's/^Client Version: *//p' <<<"$INVENTORY" | head -n1)"
     printf "  kubectl:       %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
     if command -v kubectl-krew >/dev/null 2>&1; then
-      line="$(kubectl krew version 2>/dev/null | awk '$1 == "GitTag" { print $2 }' | head -n1)"
+      inventory_query "krew version" kubectl krew version
+      line="$(awk '$1 == "GitTag" { print $2 }' <<<"$INVENTORY" | head -n1)"
       printf "  krew:          %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
     fi
   fi
   if command -v terraform >/dev/null 2>&1; then
     any=1
-    line="$(CHECKPOINT_DISABLE=1 terraform version 2>/dev/null | head -n1 | sed 's/^Terraform *//')"
+    inventory_query "terraform version" env CHECKPOINT_DISABLE=1 terraform version
+    line="$(head -n1 <<<"$INVENTORY" | sed 's/^Terraform *//')"
     printf "  terraform:     %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
   fi
   if command -v docker >/dev/null 2>&1; then
     any=1
-    line="$(docker --version 2>/dev/null | sed 's/^Docker version *//')"
+    inventory_query "docker version" docker --version
+    line="$(sed 's/^Docker version *//' <<<"$INVENTORY")"
     printf "  docker:        %s%s%s\n" "$C_DIM" "${line:-?}" "$C_RESET"
   fi
   if command -v gcloud >/dev/null 2>&1 && (( DRY_RUN == 0 )); then
     any=1
     # The version print would otherwise check for updates over the network.
-    line="$(CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 with_timeout "$STEP_TIMEOUT" gcloud version 2>/dev/null | head -n1 || echo '?')"
+    inventory_query "gcloud version" env CLOUDSDK_COMPONENT_MANAGER_DISABLE_UPDATE_CHECK=1 gcloud version
+    line="$(head -n1 <<<"$INVENTORY")"
     printf "  gcloud:        %s%s%s\n" "$C_DIM" "$line" "$C_RESET"
   elif command -v gcloud >/dev/null 2>&1; then
     any=1
@@ -4610,34 +4996,58 @@ DISK_REPORT_ROOTS=(
   "$HOME/Library/Caches"
   "$HOME/Library/Application Support"
   "$HOME/Library/Containers"
+  "$HOME/Library/Group Containers"
+  "$HOME/Library/pnpm"
+  "$HOME/.npm"
+  "$HOME/.lmstudio"
+  "$HOME/.ollama"
+  "/Library/Caches"
+  "/private/var/folders"
   "$HOME/Library/Developer"
   "$HOME/Library/Logs"
   "$HOME/.cache"
   "$HOME/Downloads"
+  "$HOME/Movies"
 )
 step_disk_report() {
-  local root listing line kb name total_b
+  local root listing kb name total_b query_rc shown
+  info "System Data is not all cache: models, virtual machines, app data and backups may be included; report roots can overlap."
   for root in "${DISK_REPORT_ROOTS[@]}"; do
     [[ -d "$root" ]] || continue
     if (( DRY_RUN )); then
       printf "  %s(dry-run) would measure the largest entries under %s%s\n" "$C_DIM" "${root/#$HOME/\~}" "$C_RESET"
       continue
     fi
-    total_b="$(path_bytes "$root")"
-    printf "  %s%s%s %s(%s)%s\n" "$C_BOLD" "${root/#$HOME/\~}" "$C_RESET" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
-    listing="$(find "$root" -mindepth 1 -maxdepth 1 -print0 2>>"$LOG_SINK" \
-      | xargs -0 du -sk 2>>"$LOG_SINK" | sort -rn | head -n 5)"
-    [[ -n "$listing" ]] || { printf "      %s(empty)%s\n" "$C_DIM" "$C_RESET"; continue; }
+    query_rc=0
+    listing="$(with_timeout "$STEP_TIMEOUT" du -a -k -x -d 1 "$root" 2>>"$LOG_SINK")" || query_rc=$?
+    total_b=""
     while IFS=$'\t' read -r kb name; do
-      [[ -n "$name" ]] || continue
-      printf "      %8s  %s\n" "$(human_bytes $(( kb * 1024 )))" "${name#"$root"/}"
+      if [[ "$name" == "$root" && "$kb" =~ ^[0-9]+$ ]]; then
+        total_b=$(( kb * 1024 ))
+      fi
     done <<<"$listing"
+    if (( query_rc != 0 )) || [[ -z "$total_b" ]]; then
+      printf "  %s%s%s (partial or unreadable; total unknown)\n" "$C_BOLD" "${root/#$HOME/\~}" "$C_RESET"
+      warn "disk report could not fully measure $root (exit $query_rc; see log)"
+    else
+      printf "  %s%s%s %s(%s)%s\n" "$C_BOLD" "${root/#$HOME/\~}" "$C_RESET" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
+    fi
+    shown=0
+    while IFS=$'\t' read -r kb name; do
+      [[ -n "$name" && "$name" != "$root" && "$kb" =~ ^[0-9]+$ ]] || continue
+      printf "      %8s  %s\n" "$(human_bytes $(( kb * 1024 )))" "${name#"$root"/}"
+      shown=$(( shown + 1 ))
+      (( shown < 5 )) || break
+    done <<<"$(printf '%s\n' "$listing" | sort -rn)"
+    if (( shown == 0 && query_rc == 0 )) && [[ -n "$total_b" ]]; then
+      printf "      %s(no visible child entries)%s\n" "$C_DIM" "$C_RESET"
+    fi
   done
   # Device backups are the single largest thing most people never look at.
   local backups="$HOME/Library/Application Support/MobileSync/Backup"
   if [[ -d "$backups" ]] && (( DRY_RUN == 0 )); then
     printf "  %siPhone/iPad backups:%s %s %s(Finder → device → Manage Backups)%s\n" \
-      "$C_BOLD" "$C_RESET" "$(human_bytes "$(path_bytes "$backups")")" "$C_DIM" "$C_RESET"
+      "$C_BOLD" "$C_RESET" "$backups" "$C_DIM" "$C_RESET"
   fi
   (( DRY_RUN )) || printf "  %sread-only; nothing above was changed%s\n" "$C_DIM" "$C_RESET"
 }

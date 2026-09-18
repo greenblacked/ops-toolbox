@@ -851,19 +851,20 @@ else
   err "could not read the boot time to test the lock's drift tolerance"
 fi
 
-# A kill can land after mkdir(2) but before the pid file is written. That empty
-# directory is stale and must not disable maintenance forever.
+# An owner may still be publishing its PID. Missing metadata cannot establish
+# that it died, so preserve the lock rather than admitting a second owner.
 mkdir -p "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" \
   PATH="$fake_macos/bin:/usr/bin:/bin" "$M/stay_fresh.sh" --yes --no-sudo \
   "${skip_for_plan[@]}" 2>&1)"
-assert_contains "empty stale lock is recovered" "$out" \
-  "removing stale stay_fresh lock without a live pid"
-if [[ ! -d "$fake_macos/home/Library/Application Support/stay_fresh/run.lock" ]]; then
-  ok "recovered stale lock is released after the run"
+rc=$?
+assert_eq "an unpublished lock blocks a contender" "2" "$rc"
+if [[ -d "$fake_macos/home/Library/Application Support/stay_fresh/run.lock" ]]; then
+  ok "an unpublished lock is preserved"
 else
-  err "recovered stale lock remained after the run"
+  err "a contender removed an unpublished lock"
 fi
+rmdir "$fake_macos/home/Library/Application Support/stay_fresh/run.lock"
 
 # Volumes hold data, not cache: the LaunchAgent runs this script with --yes,
 # so a default `docker volume prune` would delete a stopped project's database
@@ -1590,16 +1591,14 @@ printf 'original plist\n' > "$agent_plist"
 rm -f "$sched_stamp"
 
 # The safe profile is what the plist runs by default. Its step list lives in
-# run-scheduled, not in the plist, so it is checked from the transcript of a
+# run-scheduled, not in the plist, so it is checked from the stdout of a
 # dry scheduled run: the two read-only reports are in, the deletions out.
 rm -rf "$fake_macos/home/Library/Logs/stay_fresh"
-HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
-  "$agent" run-scheduled --profile safe --dry-run >/dev/null 2>&1
+sched_out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+  "$agent" run-scheduled --profile safe --dry-run 2>&1)"
 rc=$?
 assert_eq "a dry scheduled run under the safe profile succeeds" "0" "$rc"
-sched_log="$(ls -1 "$fake_macos/home/Library/Logs/stay_fresh"/agent-*.log 2>/dev/null | head -n 1)"
-if [[ -n "$sched_log" ]]; then
-  sched_out="$(cat "$sched_log")"
+if [[ -n "$sched_out" ]]; then
   for want in "clear per-app caches" "clear AI tool caches" "prune workspace storage" \
               "report active versions" "pending OS / App Store updates" "local Time Machine snapshots" \
               "old downloads" "orphaned launch agents"; do
@@ -1616,7 +1615,12 @@ if [[ -n "$sched_log" ]]; then
   assert_contains "the safe profile lists snapshots read-only" \
     "$(grep "local Time Machine snapshots" <<<"$sched_out")" "read-only"
 else
-  err "a dry scheduled run wrote no transcript"
+  err "a dry scheduled run printed no preview"
+fi
+if [[ ! -e "$fake_macos/home/Library/Logs/stay_fresh" ]]; then
+  ok "a dry scheduled run creates no log directory or transcript"
+else
+  err "a dry scheduled run created its log directory"
 fi
 if [[ ! -e "$sched_stamp" ]]; then
   ok "a dry scheduled run leaves no scheduled-run stamp"
@@ -1771,9 +1775,8 @@ section "rotation is a real firing's business, not a preview's"
 # One transcript per firing, the ten newest kept. That rotation sat below
 # note_scheduled_run with nothing guarding it, so `run-scheduled --dry-run` —
 # which exists to show what a firing *would* do — deleted genuine transcripts
-# of real past firings on its way out. A dry run removes nothing. The single
-# file it may leave behind is its own transcript, which the safe-profile check
-# above reads; that one is written before this point and is not at issue here.
+# of real past firings on its way out. A dry run must neither remove existing
+# records nor create a transcript, stamp or scratch file.
 fake_power 'AC Power'; fake_idle 3600
 sched_logs="$fake_macos/home/Library/Logs/stay_fresh"
 sched_log_days="01 02 03 04 05 06 07 08 09 10 11 12 13 14"
@@ -1794,8 +1797,17 @@ run_sched() {
 # what a firing that never started looks like, so the assertion below is
 # unfailable without it.
 seed_sched_logs
+preview_before="$(find "$fake_macos/home" "$fake_macos/tmp" -type f -exec cksum {} + | sort)"
 run_sched --dry-run >/dev/null 2>&1 \
   || err "the dry scheduled run exited $? before the transcripts were counted"
+assert_eq "a scheduled preview preserves file contents and creates no files" "$preview_before" \
+  "$(find "$fake_macos/home" "$fake_macos/tmp" -type f -exec cksum {} + | sort)"
+fake_power 'Battery Power'
+run_sched --dry-run >/dev/null 2>&1 \
+  || err "the battery preview exited $?"
+assert_eq "a deferred preview preserves files and stamps" "$preview_before" \
+  "$(find "$fake_macos/home" "$fake_macos/tmp" -type f -exec cksum {} + | sort)"
+fake_power 'AC Power'
 survived=0
 for d in $sched_log_days; do
   if [[ -f "$sched_logs/agent-202601${d}-000000-1.log" ]]; then

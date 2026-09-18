@@ -370,7 +370,9 @@ run_scheduled() {
     err "stay_fresh.sh not found or not executable at $STAY_FRESH"
     return 2
   fi
-  mkdir -p "$LOG_DIR" || { err "cannot create log directory: $LOG_DIR"; return 1; }
+  if (( AGENT_DRY_RUN == 0 )); then
+    mkdir -p "$LOG_DIR" || { err "cannot create log directory: $LOG_DIR"; return 1; }
+  fi
 
   local run_log="$LOG_DIR/agent-$(date +%Y%m%d-%H%M%S)-$$.log"
   local -a args=(--yes --no-sudo --fail-on-warn)
@@ -410,7 +412,12 @@ run_scheduled() {
   fi
   (( NOTIFY_SET )) && args+=(--notify "$NOTIFY")
   (( NOTIFY_WHEN_SET )) && args+=(--notify-when "$NOTIFY_WHEN")
-  (( AGENT_DRY_RUN )) && args+=(--dry-run)
+  if (( AGENT_DRY_RUN )); then
+    # A preview has no transcript, stamp or retention side effects. Return
+    # the child's status directly so a failed preview is still observable.
+    /bin/bash "$STAY_FRESH" "${args[@]}" --dry-run
+    return $?
+  fi
 
   /bin/bash "$STAY_FRESH" "${args[@]}" >"$run_log" 2>&1
   local rc=$?
@@ -419,17 +426,6 @@ run_scheduled() {
 
   # One bounded, complete transcript per invocation. launchd itself writes to
   # /dev/null, so fixed agent.out/agent.err files cannot grow without limit.
-  #
-  # A preview stops here. This rotation deletes transcripts of real past
-  # firings, and --dry-run exists to show what a firing would do, not to do the
-  # irreversible half of it: previewing a schedule change used to destroy the
-  # oldest surviving records of what the schedule had actually been doing, and
-  # every preview destroyed one more, because the preview's own transcript
-  # pushed the next one over the edge.
-  # The transcript this invocation just wrote is the one file a dry run leaves
-  # behind, and that is deliberate - it is the step list being previewed - so
-  # it counts towards the ten at the next real firing, not at this one.
-  (( AGENT_DRY_RUN == 0 )) || return "$rc"
 
   # mktemp fails on the full disk this whole script exists to postpone.
   # Unchecked, the scratch path is the empty string, and every line below it
