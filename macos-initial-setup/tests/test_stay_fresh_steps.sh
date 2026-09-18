@@ -2679,7 +2679,8 @@ assert_contains "a report is not a warning" "$out" "warn steps:  0"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 
 d="$(agents_env)"; : > "$d/calls"
-out="$(run_sf "$d" --dry-run --only launch-agents --prune-orphan-agents)"; rc=$?
+out="$(PYTHONPYCACHEPREFIX="$d/bytecode" run_sf "$d" --dry-run --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_gone "plist preview writes no Python bytecode cache" "$d/bytecode"
 assert_contains "a prune dry run names the unload" "$out" "(dry-run) launchctl bootout gui/501/com.gone.helper"
 assert_not_called "a prune dry run unloads nothing" "$d/calls" "launchctl"
 assert_exists "a prune dry run removes nothing" "$d/home/Library/LaunchAgents/com.gone.helper.plist"

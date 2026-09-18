@@ -1293,7 +1293,7 @@ cache_report() {
   candidates+=("uv (tool/env/default)|$uv_dir")
   if command -v conda >/dev/null 2>&1; then
     conda_json="$(with_timeout "$STEP_TIMEOUT" conda info --json 2>/dev/null || true)"
-    conda_dirs="$(printf '%s' "$conda_json" | /usr/bin/python3 -c \
+    conda_dirs="$(printf '%s' "$conda_json" | /usr/bin/python3 -I -B -c \
       'import json,sys; d=json.load(sys.stdin); p=d.get("pkgs_dirs",[]); print("\n".join(x for x in p if isinstance(x,str)))' \
       2>/dev/null || true)"
     while IFS= read -r probe; do
@@ -3844,7 +3844,7 @@ step_devcaches() {
       if (( rc != 0 )) || [[ -z "$conda_json" ]]; then
         warn_step "cannot discover Conda package-cache roots — keeping all Conda data"
       else
-        conda_paths="$(printf '%s' "$conda_json" | /usr/bin/python3 -c \
+        conda_paths="$(printf '%s' "$conda_json" | /usr/bin/python3 -I -B -c \
           'import json,sys; d=json.load(sys.stdin); p=d.get("pkgs_dirs"); assert isinstance(p,list) and p and all(isinstance(x,str) and "\n" not in x and "," not in x for x in p); print("\n".join(p))' \
           2>>"$LOG_SINK")" || rc=$?
         if (( rc != 0 )) || [[ -z "$conda_paths" ]]; then
@@ -4230,7 +4230,7 @@ step_downloads() {
 # independent of XML key order, entities or binary encoding. Unknown data is kept.
 plist_program() {
   [[ -x /usr/bin/python3 ]] || return 1
-  /usr/bin/python3 - "$1" <<'PYPLIST'
+  /usr/bin/python3 -I -B - "$1" <<'PYPLIST'
 import plistlib
 import sys
 try:
@@ -4283,7 +4283,7 @@ step_launch_agents() {
       esac
       if [[ "$target" == /* ]]; then
         # A denied stat is not proof that the program is gone.
-        /usr/bin/python3 - "$target" <<'PYSTAT'
+        /usr/bin/python3 -I -B - "$target" <<'PYSTAT'
 import errno, os, sys
 try:
     os.stat(sys.argv[1])
