@@ -577,6 +577,10 @@ printf '%s\n' '#!/bin/sh' \
 printf '%s\n' '#!/bin/sh' \
   'echo "Filesystem 1G-blocks Used Available Capacity Mounted on"' \
   'echo "/dev/test 100 20 80 20% /"' > "$fake_macos/bin/df"
+# The isolated PATH excludes macOS /sbin. Supply a deterministic mount inventory
+# rather than depending on mount(8) being in /usr/bin as it is on Linux.
+printf '%s\n' '#!/bin/sh' \
+  'echo "/dev/test on / (apfs, local)"' > "$fake_macos/bin/mount"
 printf '%s\n' '#!/bin/sh' \
   'if [ "${1:-}" = read ]; then [ "${DEFAULTS_READ_EMPTY:-0}" = 1 ] && exit 1; echo false; exit 0; fi' \
   'if [ "${1:-}" = write ]; then printf "%s\n" "$*" >> "$DEFAULTS_CALLS"; exit 0; fi' \
