@@ -2966,6 +2966,51 @@ done
 rm -rf "$d"
 
 # ===========================================================================
+section "a cache a daemon rewrites is not the step's failure"
+# /Library/Caches refills within the same second on every healthy Mac: rm
+# removes an entry and a running daemon writes it again. That came back as
+# warn_step "could not fully clear ... protected or recreated entries remain",
+# so a clean machine reported WARN on every run - and the text offered
+# "protected" for entries that were never protected, only rewritten. The
+# fixture reproduces exactly that: a directory whose contents are removable and
+# whose entry reappears, with nothing denied and nothing protected.
+d="$(new_env)"; : > "$d/calls"
+# clear_dir is what verifies emptiness afterwards, and in this step it is
+# called on ~/Library/Application Support/Caches. The first fixture aimed at a
+# ~/Library/Caches entry, which clear_paths deletes without ever reaching that
+# verification - so the assertion passed against the unfixed script too.
+target="$d/home/Library/Application Support/Caches"
+mkdir -p "$target"; : > "$target/entry"
+# rm succeeds; the wrapper writes the entry back, the way a daemon would.
+mkbin "$d/bin/rm" 'for a in "$@"; do case "$a" in -*) continue ;; esac; /bin/rm -rf "$a"; done' \
+                  'mkdir -p "$HOME/Library/Application Support/Caches" 2>/dev/null' \
+                  ': > "$HOME/Library/Application Support/Caches/entry" 2>/dev/null; exit 0'
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_contains "the fixture reached the directory that verifies" "$out" "Application Support/Caches"
+assert_eq "the run still succeeds" "0" "$rc"
+assert_not_contains "a rewritten cache is not blamed on the step" "$out" "warn steps:  1"
+assert_not_contains "and the word protected is not used for it" "$out" "protected or recreated"
+rm -rf "$d"
+
+# The names of running applications. "${running[*]}" joins on IFS, so two
+# multi-word names arrived as one unbroken run of words - "Visual Studio Code
+# Brave Browser" - naming an application nobody could look for.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/Library/Application Support/Code/Cache"
+mkdir -p "$d/home/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cache"
+out="$(RUNNING_APPS="Visual Studio Code
+Brave Browser" run_sf "$d" --yes --only app-caches)"; rc=$?
+assert_eq "the app-cache step still succeeds" "0" "$rc"
+if grep -q "running now:.*, " <<<"$out"; then
+  ok "two running applications are separated by a comma"
+elif grep -q "running now:" <<<"$out"; then
+  err "running applications are still run together: $(grep -m1 'running now:' <<<"$out")"
+else
+  ok "no application was reported running in this fixture"
+fi
+rm -rf "$d"
+
+# ===========================================================================
 section "a dry run does not claim to have reclaimed anything"
 # The summary subtracts the free-space reading taken at the end from the one
 # taken at the start and prints it, in green, as "(N reclaimed)". A dry run

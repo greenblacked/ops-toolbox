@@ -1220,6 +1220,17 @@ human_duration() {
 }
 
 # Convert a byte delta to a signed human-readable size (KB/MB/GB).
+# Names joined with ", ". "${a[*]}" joins on the first character of IFS, a
+# space, so "Visual Studio Code" and "Brave Browser" arrived as one unbroken
+# run of words naming no application anybody could look for.
+join_names() {
+  local out="" name
+  for name in "$@"; do
+    out="${out:+$out, }$name"
+  done
+  printf '%s' "$out"
+}
+
 human_bytes() {
   local b="$1" sign=""
   if (( b < 0 )); then sign="-"; b=$(( -b )); fi
@@ -1800,13 +1811,24 @@ clear_dir() {
   delta=$(( before_b - after_b ))
   (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
   printf "  %s->%s freed %s from %s\n" "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$dir"
-  if (( OTHER_N > 0 || DENIED_N > 0 || verify_rc != 0 )) \
-     || { [[ -n "$remaining" ]] && (( PROTECTED_N == 0 )); }; then
+  # Three outcomes, and only two of them are the step's fault.
+  #
+  # Entries that are back with nothing denied, nothing errored and nothing
+  # protected were recreated while the sweep ran: rm removed them and a running
+  # daemon wrote them again, which /Library/Caches does within the same second
+  # on every healthy Mac. That was a warn_step, so a clean machine reported WARN
+  # on every run - the exact thing the comment above warn_step forbids, because
+  # a verdict that is always yellow is one nobody reads. It is a plain warn now,
+  # still printed, and it says what actually happened rather than offering
+  # "protected or recreated" when PROTECTED_N is zero and nothing was protected.
+  if (( OTHER_N > 0 || DENIED_N > 0 || verify_rc != 0 )); then
     if (( DENIED_N > 0 )); then
       warn_step "could not fully clear $dir — entries owned by another user remain (a run with sudo available can remove them)"
     else
-      warn_step "could not fully clear $dir — protected or recreated entries remain"
+      warn_step "could not fully clear $dir — some entries could not be removed"
     fi
+  elif [[ -n "$remaining" ]] && (( PROTECTED_N == 0 )); then
+    warn "$dir is not empty — entries were recreated while the sweep ran; a running process owns them"
   elif (( PROTECTED_N > 0 )); then
     if [[ "$use_sudo" == "sudo" ]]; then
       kept="$(sudo find "$dir" -mindepth 1 -maxdepth 1 2>/dev/null | grep -c . || true)"
@@ -2943,9 +2965,9 @@ step_appcaches() {
   done
   if (( ${#running[@]} > 0 )); then
     if (( FORCE_ACTIVE_APP_CACHES )); then
-      warn "running now: ${running[*]} — force flag allows their caches to be cleared"
+      warn "running now: $(join_names ${running[@]+"${running[@]}"}) — force flag allows their caches to be cleared"
     else
-      warn "running now: ${running[*]} — their cache roots will be kept"
+      warn "running now: $(join_names ${running[@]+"${running[@]}"}) — their cache roots will be kept"
     fi
   fi
 
