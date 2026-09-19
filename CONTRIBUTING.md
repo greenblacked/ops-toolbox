@@ -371,10 +371,10 @@ The `.lua` extension is for editor highlighting only — these are RouterOS
 scripting language, not Lua.
 
 - **Secrets never appear in a script body.** Read them from `:global` variables
-  set once at boot, the way `mikrotik/tg_send.lua` reads `TgBotToken`
+  set once at boot, the way `mikrotik/core/tg_send.lua` reads `TgBotToken`
   and `TgChatId`.
 - Send notifications through `tg_send`, wrapped so a missing helper degrades to
-  a log line instead of an error (`mikrotik/backup.lua`).
+  a log line instead of an error (`mikrotik/core/backup.lua`).
 - **Alert on transitions, not on every run.** Keep the previous state in a
   `:global` and compare — `wan_failover_notify.lua` is the reference. A script
   that alerts every five minutes gets muted, which makes it worse than nothing.

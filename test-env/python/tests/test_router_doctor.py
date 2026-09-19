@@ -1,4 +1,4 @@
-"""Tests for mikrotik/router_doctor.py.
+"""Tests for mikrotik/monitoring/router_doctor.py.
 
 Only the layer between the router's answer and the verdict is covered, which is
 where all the judgement lives: what counts as "scheduled", what counts as a
@@ -26,7 +26,7 @@ from unittest import mock
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "monitoring"))
 
 import router_doctor  # noqa: E402
 

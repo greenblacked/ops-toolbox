@@ -554,7 +554,7 @@ with `--dry-run` instead.
 ## `tls_expiry.sh`
 
 The Linux counterpart of
-[`mikrotik/cert_expiry_watch.lua`](../mikrotik/cert_expiry_watch.lua).
+[`mikrotik/monitoring/cert_expiry_watch.lua`](../mikrotik/monitoring/cert_expiry_watch.lua).
 Read-only. It reports when a **leaf** certificate has expired or will expire
 within `--days` (30). It never walks `/etc/ssl/certs`: that directory is a CA
 trust store, and a distro root expiring next month is not your outage.

@@ -32,7 +32,7 @@ reporting are:
 RouterOS scripts in [`mikrotik/`](mikrotik/) never contain credentials in the
 script body. Bot tokens, chat IDs and upload credentials are read from
 `:global` variables set once at boot, so the scripts stay copy-pasteable and
-shareable — see [`mikrotik/tg_send.lua`](mikrotik/tg_send.lua) for the pattern.
+shareable — see [`mikrotik/core/tg_send.lua`](mikrotik/core/tg_send.lua) for the pattern.
 
 If you are adapting these scripts, keep that split. A router configuration
 export contains the source of every `/system script`, so a token pasted into a

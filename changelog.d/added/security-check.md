@@ -1,4 +1,4 @@
-- `mikrotik/security_check.lua` is a read-only hardening audit of a
+- `mikrotik/core/security_check.lua` is a read-only hardening audit of a
   RouterOS box — the counterpart of `linux/hardening_audit.sh` and
   `macos-initial-setup/hardening_audit.sh`. It grades services listening
   on all addresses, default identity/admin, discovery and MAC-server

@@ -32,6 +32,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The package root, one level up: this file lives in monitoring/ and the scripts
+# it compares the router against are split across core/ and monitoring/.
+PACKAGE_DIR = os.path.dirname(HERE)
 
 # Scripts that are meant to be run by hand. "No scheduler" is the correct state
 # for these, and print_schedulers.sh does not emit entries for them either —
@@ -197,12 +200,26 @@ def global_state(name, env):
 
 
 def local_script_names(directory):
-    """The .lua scripts next to this file, under the names they take on the router."""
+    """The package's .lua scripts, under the names they take on the router.
+
+    Walks, because the scripts live in core/ and monitoring/ rather than in one
+    flat directory, and this file sits in one of them. A router script's name
+    has no folder in it - core/backup is `backup` on the router - so the names
+    this returns are unchanged by how the files are arranged. tests/ is skipped:
+    a fixture .lua there is not a script anyone installs.
+
+    An unreadable directory returns [], which the caller must not read as "the
+    router is missing nothing": every comparison against this list would come
+    back clean. build_findings() is given the count and says so.
+    """
+    names = []
     try:
-        entries = os.listdir(directory)
+        for _root, dirs, files in os.walk(directory):
+            dirs[:] = [d for d in dirs if d != "tests"]
+            names.extend(name[:-4] for name in files if name.endswith(".lua"))
     except OSError:
         return []
-    return sorted(name[:-4] for name in entries if name.endswith(".lua"))
+    return sorted(names)
 
 
 def build_findings(local, installed, schedulers, env):
@@ -389,7 +406,7 @@ def main(argv=None):
         default="text",
         help="output format (default: text)",
     )
-    parser.add_argument("--scripts-dir", default=HERE, help=argparse.SUPPRESS)
+    parser.add_argument("--scripts-dir", default=PACKAGE_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     rc, out, err = probe(args.host, args.user, args.identity, args.port, args.timeout)

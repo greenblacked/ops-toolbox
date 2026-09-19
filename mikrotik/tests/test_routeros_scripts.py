@@ -13,7 +13,24 @@ from routeros_api import exceptions as ros_exc
 
 MIKROTIK_DIR = pathlib.Path(__file__).resolve().parent.parent
 EXPECT_VER = os.environ["EXPECT_ROUTEROS_VERSION"]
-SCRIPT_FILES = sorted(p for p in MIKROTIK_DIR.glob("*.lua") if p.is_file())
+# rglob, because the scripts live in core/ and monitoring/ rather than at the
+# top of the package. tests/ is excluded by name: nothing there is a router
+# script, and a fixture .lua added later must not be loaded onto the router.
+SCRIPT_FILES = sorted(
+    p
+    for p in MIKROTIK_DIR.rglob("*.lua")
+    if p.is_file() and "tests" not in p.relative_to(MIKROTIK_DIR).parts
+)
+# A floor, not a skip. This used to be `skipif(not SCRIPT_FILES)`, so the day
+# the glob stopped matching - the day the scripts moved into subdirectories,
+# for instance - the suite that parses every script on a real router would
+# have reported success having loaded none of them. An empty list is the one
+# result that cannot be true of this repository.
+if not SCRIPT_FILES:
+    raise AssertionError(
+        f"no .lua scripts discovered under {MIKROTIK_DIR} - discovery is broken, "
+        "and a suite that checks nothing must not pass"
+    )
 
 # Scripts safe to load+run during tests (no reboot, no upstream calls).
 RUNNABLE_SCRIPTS = (
@@ -147,7 +164,6 @@ def _remove_address_list_entries(api: Any, list_name: str) -> None:
                 res.call("remove", {".id": _row_id(row)})
 
 
-@pytest.mark.skipif(not SCRIPT_FILES, reason="no .lua files under mikrotik/")
 def test_script_files_are_non_empty() -> None:
     for p in SCRIPT_FILES:
         assert p.read_text(encoding="utf-8", errors="strict").strip(), f"empty: {p.name}"

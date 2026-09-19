@@ -481,7 +481,7 @@ dry_run_args() {
     macos-initial-setup/launchd/stay_fresh_agent.sh) printf '%s\n' "install --dry-run" ;;
     macos-initial-setup/brewfile.sh)         printf '%s\n' "dump --file @SCRATCH@/Brewfile --dry-run" ;;
     k8s-toolbox/debug_pod.sh)                printf '%s\n' "--pod dry-run-probe --dry-run" ;;
-    mikrotik/pull_router_backups.sh)         printf '%s\n' "--dry-run probe@localhost" ;;
+    mikrotik/core/pull_router_backups.sh)         printf '%s\n' "--dry-run probe@localhost" ;;
     git/gacp.sh)                             printf '%s\n' "--dry-run -m dry-run probe" ;;
     git/clone-repos.sh)                      printf '%s\n' "--dry-run git/repos.txt.example" ;;
     git/set_git_profile.sh)                  printf '%s\n' "--dry-run --name Probe --email probe@example.invalid" ;;
