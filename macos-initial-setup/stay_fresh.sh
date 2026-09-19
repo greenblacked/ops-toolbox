@@ -1219,7 +1219,6 @@ human_duration() {
   fi
 }
 
-# Convert a byte delta to a signed human-readable size (KB/MB/GB).
 # Names joined with ", ". "${a[*]}" joins on the first character of IFS, a
 # space, so "Visual Studio Code" and "Brave Browser" arrived as one unbroken
 # run of words naming no application anybody could look for.
@@ -1231,6 +1230,7 @@ join_names() {
   printf '%s' "$out"
 }
 
+# Convert a byte delta to a signed human-readable size (KB/MB/GB).
 human_bytes() {
   local b="$1" sign=""
   if (( b < 0 )); then sign="-"; b=$(( -b )); fi
