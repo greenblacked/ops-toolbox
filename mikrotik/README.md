@@ -11,7 +11,7 @@ live in `/system script` on the router and are run either manually or from
 > RouterOS scripts, not Lua. Paste the file contents into the *Source* field
 > of a `/system script` entry on the router.
 
-Writing or changing one? The conventions the convention suite enforces — the
+Security/update reporting semantics, including what is observed versus inferred, are documented in [`SECURITY_REPORTING.md`](SECURITY_REPORTING.md).\n\nWriting or changing one? The conventions the convention suite enforces — the
 `OpsToolboxPaused` guard, secrets read from `:global`, alerting on transitions
 rather than every run, and never swallowing a failed notification — are
 collected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), together with how the

@@ -24,7 +24,7 @@ than once, and focused on reducing repeat manual work.
 | [`macos-initial-setup/`](macos-initial-setup/) | Bootstrap a fresh macOS workstation, install common apps and developer tools, keep Homebrew/toolchains fresh, and load useful zsh aliases. |
 | [`windows/`](windows/) | Windows dev machine: Git Bash dotfiles (`git-bash/`), WSL maintenance — backups and VHDX shrinking (`wsl/`), and safe disk C: cleanup with dry-run (`cleanup/`). |
 | [`linux/`](linux/) | Debian/Ubuntu, Fedora and Arch: install toolchains, keep a machine fresh, free space, capture/restore its package set, back up `/etc`, and report on health, network, certificates, SSH client dirs and sysctl. |
-| [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health checks, and Telegram notifications. |
+| [`mikrotik/`](mikrotik/) | RouterOS 7.x scripts for backups, WiFi password rotation, WAN-state monitoring, health/security checks, evidence-aware update reporting, and Telegram notifications. |
 | [`k8s-toolbox/`](k8s-toolbox/) | A container image with the Kubernetes CLIs already in it (GKE-focused), the scripts that build and run it, read-only cluster triage, and `kubectl debug` for a pod with no shell of its own. |
 | [`dotfiles/`](dotfiles/) | Configuration for the tools on a DevOps workstation — git, ssh, gpg, starship, k9s, the AWS and Terraform CLIs, the terminal emulators, the scanners — each setting commented with why, plus the script that links them into a home directory and reports drift. |
 | [`templates/`](templates/) | Starting points for a new Bash or PowerShell script. Working no-ops, checked by CI, so the conventions cannot drift away from them. |
