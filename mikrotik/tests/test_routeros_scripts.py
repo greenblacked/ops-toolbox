@@ -13,7 +13,7 @@ from routeros_api import exceptions as ros_exc
 
 MIKROTIK_DIR = pathlib.Path(__file__).resolve().parent.parent
 EXPECT_VER = os.environ["EXPECT_ROUTEROS_VERSION"]
-# rglob, because the scripts live in core/ and monitoring/ rather than at the
+# rglob, because the scripts live in core/ and features/ rather than at the
 # top of the package. tests/ is excluded by name: nothing there is a router
 # script, and a fixture .lua added later must not be loaded onto the router.
 SCRIPT_FILES = sorted(
@@ -31,6 +31,26 @@ if not SCRIPT_FILES:
         f"no .lua scripts discovered under {MIKROTIK_DIR} - discovery is broken, "
         "and a suite that checks nothing must not pass"
     )
+
+
+def script_path(filename: str) -> pathlib.Path:
+    """The package script with this filename, wherever in the package it lives.
+
+    Tests read a script's source to assert on what it says. They used to build
+    that path as MIKROTIK_DIR / name, which broke the moment the scripts moved
+    into core/ and features/ - eight tests died on FileNotFoundError. Resolving
+    through the discovered set means a later move needs no test edit. Anything
+    other than exactly one match raises, never skips: zero means the check
+    cannot run, and two would apply the assertion to whichever copy sorted
+    first.
+    """
+    matches = [p for p in SCRIPT_FILES if p.name == filename]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"{filename} resolved to {len(matches)} files under {MIKROTIK_DIR} "
+            f"({[str(m) for m in matches]}) - expected exactly one"
+        )
+    return matches[0]
 
 # Scripts safe to load+run during tests (no reboot, no upstream calls).
 RUNNABLE_SCRIPTS = (
@@ -206,7 +226,7 @@ def test_run_safe_scripts(api: Any, script_resource: Any, script_name: str) -> N
     and execute it once. tg_send is already a stub from the session fixture.
     detect_internet writes to /interface detect-internet which exists on CHR.
     """
-    src = (MIKROTIK_DIR / f"{script_name}.lua").read_text(encoding="utf-8", errors="replace")
+    src = script_path(f"{script_name}.lua").read_text(encoding="utf-8", errors="replace")
     try:
         _add_script(script_resource, script_name, src)
         try:
@@ -226,7 +246,7 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
     nothing installs tg_send_new session-wide: the conftest set of that name is
     a cleanup list, not a fixture. A stock CHR has the API on (the suite uses
     it), so the scan must produce a report rather than going silent."""
-    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    src = script_path("security_check.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
         _add_script(script_resource, "security_check", src)
@@ -316,7 +336,7 @@ def test_security_check_survives_a_raising_helper(api: Any, script_resource: Any
     scan" forever and never once reports a change, which is the one thing it is
     for. SecSendError has to name the raise too, or the router log says nothing
     about why the report stopped arriving."""
-    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    src = script_path("security_check.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "tg_send_new", TG_SEND_NEW_RAISING_STUB_SOURCE)
         _add_script(script_resource, "security_check", src)
@@ -365,8 +385,8 @@ def test_security_check_survives_a_raising_helper(api: Any, script_resource: Any
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_firewall_drift_detects_added_rule(api: Any, script_resource: Any) -> None:
     """End-to-end: baseline a clean firewall, add a rule, second run reports drift."""
-    drift_src = (MIKROTIK_DIR / "firewall_drift.lua").read_text(encoding="utf-8")
-    baseline_src = (MIKROTIK_DIR / "firewall_drift_baseline.lua").read_text(encoding="utf-8")
+    drift_src = script_path("firewall_drift.lua").read_text(encoding="utf-8")
+    baseline_src = script_path("firewall_drift_baseline.lua").read_text(encoding="utf-8")
 
     test_rule_id: str | None = None
     try:
@@ -435,7 +455,7 @@ def test_firewall_drift_detects_added_rule(api: Any, script_resource: Any) -> No
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_mac_allowlist_dhcp_failsafe_empty_list(api: Any, script_resource: Any) -> None:
     """With MAC_ALLOWLIST empty, the script must do nothing (no alert, no list entry)."""
-    src = (MIKROTIK_DIR / "mac_allowlist_dhcp.lua").read_text(encoding="utf-8")
+    src = script_path("mac_allowlist_dhcp.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "mac_allowlist_dhcp", src)
         _unset_global(api, "MAC_ALLOWLIST")
@@ -469,7 +489,7 @@ def test_brute_force_block_failsafe_zero_threshold(
     api: Any, script_resource: Any
 ) -> None:
     """With BF_MAX_FAILURES=0 the script must refuse to block anyone."""
-    src = (MIKROTIK_DIR / "brute_force_block.lua").read_text(encoding="utf-8")
+    src = script_path("brute_force_block.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "brute_force_block", src)
         _unset_global(api, "BF_MAX_FAILURES")
@@ -507,7 +527,7 @@ def test_brute_force_block_failsafe_zero_threshold(
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_dhcp_lease_watch_baseline_silent(api: Any, script_resource: Any) -> None:
     """First run on a clean router establishes the baseline silently (no alert)."""
-    src = (MIKROTIK_DIR / "dhcp_lease_watch.lua").read_text(encoding="utf-8")
+    src = script_path("dhcp_lease_watch.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "dhcp_lease_watch", src)
         _unset_global(api, "DHCP_KNOWN_MACS")
@@ -747,7 +767,7 @@ def test_backup_names_the_pair_by_date_and_version(
 ) -> None:
     """One run leaves a .backup/.rsc pair carrying the date and the version."""
     _clear_backup_files(api)
-    src = (MIKROTIK_DIR / "backup.lua").read_text(encoding="utf-8", errors="replace")
+    src = script_path("backup.lua").read_text(encoding="utf-8", errors="replace")
     try:
         _add_script(script_resource, "backup", src)
         # The gate answers "did the script run" - the .backup is written
@@ -803,7 +823,7 @@ def test_backup_removes_the_previous_generation(
         assert _wait_for_backup_files(api, 1), "decoy backup was not created"
         assert f"{stale}.backup" in _backup_files(api)
 
-        src = (MIKROTIK_DIR / "backup.lua").read_text(
+        src = script_path("backup.lua").read_text(
             encoding="utf-8", errors="replace"
         )
         _add_script(script_resource, "backup", src)
@@ -835,7 +855,7 @@ def test_update_check_reports_a_failed_check(
     started blocking, which it is not supposed to do.
     """
     _unset_global(api, "pu_TG_LAST_MESSAGE")
-    src = (MIKROTIK_DIR / "update_check.lua").read_text(
+    src = script_path("update_check.lua").read_text(
         encoding="utf-8", errors="replace"
     )
     try:
@@ -982,7 +1002,7 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
     """
     _unset_global(api, "PuTgLastMessage")
     _clear_backup_files(api)
-    src = (MIKROTIK_DIR / "backup_update_check.lua").read_text(
+    src = script_path("backup_update_check.lua").read_text(
         encoding="utf-8", errors="replace"
     )
     try:
@@ -1141,7 +1161,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
     """
     _unset_global(api, "PuTgLastMessage")
     _clear_backup_files(api)
-    src = (MIKROTIK_DIR / "backup_update_check.lua").read_text(
+    src = script_path("backup_update_check.lua").read_text(
         encoding="utf-8", errors="replace"
     )
     patched = src.replace(':local updChannel "stable"', ':local updChannel "development"', 1)

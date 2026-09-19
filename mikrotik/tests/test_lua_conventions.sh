@@ -23,14 +23,18 @@ err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
 
 # The scripts live under core/ and features/. Every check below names one by
 # filename and asks for its path, so moving a script between the two folders -
-# or adding a third - needs no edit here. A name that resolves to nothing is a
-# named failure plus a path that cannot be read, so the check that wanted it
-# fails too rather than quietly greping an empty file list.
+# or adding a third - needs no edit here.
+#
+# Resolution failure cannot be reported from in here. Every call site reads it
+# as a command substitution, so an err inside this function increments the
+# counter of a subshell and the parent never learns. Three checks below capture
+# grep output with `|| true`, which then reports [ ok ] having read an empty
+# file. The names are therefore resolved once, up front, by the block that
+# follows - which is also the only place that can stop the run.
 sfile() {
   local name="$1" hit
   hit="$(find "$PKG" -name "$name" -type f -not -path "$PKG/tests/*" | sort | head -n 1)"
   if [[ -z "$hit" ]]; then
-    err "no file named $name under mikrotik/ — the check that wanted it cannot run"
     printf '%s\n' "$PKG/__unresolved__/$name"
     return 1
   fi
@@ -47,6 +51,45 @@ if (( ${#scripts[@]} == 0 )); then
   exit 1
 fi
 ok "discovered ${#scripts[@]} RouterOS scripts"
+
+# --- every name a check asks for resolves ----------------------------------
+# The list is scraped out of this file rather than written by hand, so a check
+# added later cannot name a script that nobody verified exists. An unresolvable
+# name stops the run here: every check that wanted it is unrunnable, and an
+# unrunnable check must not print [ ok ].
+named=0
+unresolved=0
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  named=$((named + 1))
+  if ! sfile "$name" >/dev/null 2>&1; then
+    err "no file named $name under mikrotik/ — the checks that name it cannot run"
+    unresolved=$((unresolved + 1))
+  fi
+done < <(grep -oE 'sfile [A-Za-z0-9_]+\.(lua|sh)' "$0" | cut -d' ' -f2 | sort -u)
+if (( named == 0 )); then
+  echo "no sfile call site found in $0 — the name resolution check inspected nothing" >&2
+  exit 1
+fi
+if (( unresolved > 0 )); then
+  echo "=== $unresolved script name(s) unresolved; the checks that name them cannot run ===" >&2
+  exit 1
+fi
+ok "all $named named script(s) resolve under mikrotik/"
+
+# --- one script per filename -----------------------------------------------
+# sfile takes the first match, and every discoverer in the package keys on the
+# basename: the CHR suite loads a script onto the router under it, router_doctor
+# compares it against what the router reports. Two files sharing a name means
+# each of those looks at one copy and reports on the other.
+dupes="$(for f in "${scripts[@]}"; do basename "$f"; done | sort | uniq -d)"
+if [[ -n "$dupes" ]]; then
+  while IFS= read -r d; do
+    err "two or more scripts are named $d — every check that resolves it by name reads only one"
+  done <<<"$dupes"
+else
+  ok "no two scripts share a filename"
+fi
 
 # --- the layout holds ------------------------------------------------------
 # core/ is what this fleet actually runs; features/ is everything the package

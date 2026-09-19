@@ -21,7 +21,13 @@
   returns are unchanged because a router script's name carries no folder. The
   convention suite's `find -maxdepth 1` would at least have failed loudly, and
   now resolves each script by filename, so a script that moves between the two
-  folders needs no edit there.
+  folders needs no edit there. Both suites resolve a name to exactly one file
+  and treat anything else as a failure: the checks that read a script's source
+  to assert on what it says used to build that path a directory at a time, and a
+  missing file either raised at setup or - where the check captured grep output
+  with `|| true` - reported success having read nothing. Two scripts sharing a
+  filename now fails as well, because every discoverer in the package keys on
+  the basename and would report on one copy while reading the other.
 - The convention suite gained the check that keeps the split honest: a script
   sitting loose at the top of the package fails, and so does one in neither
   folder, with a floor that fails if the check inspected nothing.
