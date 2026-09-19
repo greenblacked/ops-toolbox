@@ -2895,6 +2895,27 @@ out="$(STAY_FRESH_PROGRESS=0 run_sf "$d" --dry-run --yes --only versions)"; rc=$
 assert_eq "STAY_FRESH_PROGRESS=0 is accepted too" "0" "$rc"
 rm -rf "$d"
 
+# The assertions above cannot fail on their own. There is no terminal here, so
+# live_supported() is false, the line never draws, and stdout stays clean
+# whether it would have been written to /dev/tty or to stdout - which is
+# exactly what happened when the redirection was removed to test them. The
+# invariant that keeps every other assertion in this file valid is that the
+# drawing goes to /dev/tty and nowhere else, so it is asserted where it can be
+# seen: in the source.
+live_writes="$(awk '/^live_start\(\) \{/, /^\}/' "$SF" | grep -c "printf" || true)"
+live_to_tty="$(awk '/^live_start\(\) \{/, /^\}/' "$SF" | grep -c ">/dev/tty" || true)"
+if (( live_writes > 0 && live_writes == live_to_tty )); then
+  ok "every write in live_start goes to /dev/tty ($live_to_tty of $live_writes)"
+else
+  err "live_start has $live_writes printf(s) and $live_to_tty redirected to /dev/tty — output that is not on /dev/tty reaches the log and every captured run"
+fi
+live_clear_to_tty="$(awk '/^live_clear\(\) \{/, /^\}/' "$SF" | grep -c ">/dev/tty" || true)"
+if (( live_clear_to_tty > 0 )); then
+  ok "live_clear erases on /dev/tty"
+else
+  err "live_clear does not write to /dev/tty — its erase would land in captured output"
+fi
+
 # ===========================================================================
 section "the step counter and the plan cannot drift apart"
 # Each step header carries [n/total]. The total is counted by the plan as it
@@ -2925,13 +2946,17 @@ rm -rf "$d"
 d="$(new_env)"; : > "$d/calls"
 out="$(run_sf "$d" --dry-run --yes --skip-trash)"
 assert_contains "the plan names all three columns" "$out" "STEP                               DO   DETAIL"
-# awk on the exact column, not a regex with \| in it: that is a GNU extension
-# BSD sed does not take, so the same assertion would have quietly matched
-# nothing on a Mac while passing in the Linux container.
+# The column DETAIL starts in, not the verb. Reading the verb field as four
+# characters could not fail: unpadded output is "run " plus the separator, which
+# is the same four characters the padded form produces, so the assertion held
+# either way. What the padding actually decides is where the detail begins -
+# one column earlier on every "run" row when the verb is not padded - so the
+# measurement is the width of the verb and the spaces after it, and the check
+# is that every row agrees on it.
 plan_offsets="$(printf '%s\n' "$out" |
-  awk '/^  [a-z]/ { v = substr($0, 38, 4); if (v == "run " || v == "skip") print v }' |
+  awk '/^  [a-z]/ { rest = substr($0, 38); if (match(rest, /^(run|skip) +/)) print RLENGTH }' |
   sort -u | tr '\n' ',')"
-assert_eq "run and skip occupy the same width" "run ,skip," "$plan_offsets"
+assert_eq "run and skip put DETAIL in the same column" "5," "$plan_offsets"
 rm -rf "$d"
 
 # The summary's outcome lists. Each entry is "Label  (duration · freed)" or
