@@ -7,7 +7,7 @@
 #
 # Three outcomes, three messages. "Update is required" carries the backup, the
 # firmware state, the package list and the resources an upgrade depends on.
-# "Not required" is the daily heartbeat. "Check FAILED" is the one the plain
+# "No newer release offered" is the daily heartbeat. "Check FAILED" is the one the plain
 # design used to hide. It used to wait a fixed 15 seconds and compare
 # installed-version with latest-version. Measured on a 7.24.2 CHR: issuing the
 # check clears latest-version at once, a good check refills it in about a
@@ -450,7 +450,7 @@
     }
 
     :log info ("backup_update_check: $InstalledVersion -> $LatestVersion on channel $Channel")
-    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is required." . \
+    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is available for review." . \
     "\0A\0A<b>Update info</b>" . \
     "\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
@@ -492,7 +492,7 @@
     # The daily one. Shorter on purpose: it is a heartbeat, and what it has to
     # answer is "is anything pending" and "is there room" - not repeat the
     # board and architecture every morning.
-    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is not required." . \
+    :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS: no newer release is currently offered." . \
     "\0A\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
