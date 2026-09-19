@@ -39,7 +39,7 @@ SF="$M/stay_fresh.sh"
 # an exported BUN_INSTALL once satisfied a relocation assertion from ~/.bun, so
 # the test passed here and failed in CI. Every test that needs one of these
 # supplies it itself; start from an environment holding none of them.
-unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR GRADLE_USER_HOME PIP_CACHE_DIR
 # KREW_ROOT points the krew step at a plugin root and at the bin directory it
 # adds to PATH. Inherited, the run reads and extends the developer's own.
 unset KREW_ROOT
@@ -152,8 +152,7 @@ run_sf() {
     RUNNING_APPS="${RUNNING_APPS:-}" \
     PGREP_RC="${PGREP_RC:-}" \
     DOCKER_ENDPOINT="${DOCKER_ENDPOINT:-unix:///var/run/docker.sock}" \
-    DOCKER_INFO_FAIL_AFTER="${DOCKER_INFO_FAIL_AFTER:-}" \
-    DOCKER_INFO_N="$d/docker.info.n" \
+    DOCKER_DAEMON_GONE="${DOCKER_DAEMON_GONE:-}" \
     NODE_RC="${NODE_RC:-0}" \
     HELM_UPDATE_RC="${HELM_UPDATE_RC:-0}" \
     KREW_UPGRADE_RC="${KREW_UPGRADE_RC:-0}" \
@@ -178,6 +177,8 @@ run_sf() {
     TF_PLUGIN_CACHE_DIR="${TF_PLUGIN_CACHE_DIR:-}" \
     CLOUDSDK_CONFIG="${CLOUDSDK_CONFIG:-}" \
     UV_CACHE_DIR="${UV_CACHE_DIR:-}" \
+    GRADLE_USER_HOME="${GRADLE_USER_HOME:-}" \
+    PIP_CACHE_DIR="${PIP_CACHE_DIR:-}" \
     "$SF" "$@" </dev/null 2>&1
 }
 
@@ -311,8 +312,8 @@ bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 128
 out="$(run_sf "$d" --yes --no-sudo --only user-caches)"; rc=$?
 assert_eq "a protected entry does not fail the run" "0" "$rc"
 assert_exists "the protected entry survives" "$d/home/Library/Caches/com.apple.homed/state"
-assert_gone   "the ordinary neighbour is still cleared" "$d/home/Library/Caches/com.vendor.app"
-assert_contains "protected entries are reported as kept" "$out" "entries kept: protected by macOS"
+assert_exists "the unmapped neighbour is kept conservatively" "$d/home/Library/Caches/com.vendor.app/blob"
+assert_contains "unmapped entries are reported as kept" "$out" "no reliable process mapping"
 assert_contains "a protected entry is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
@@ -338,15 +339,14 @@ mkdir -p "$d/home/Library/Caches/com.vendor.app"
 bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 64
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "an ownership refusal with sudo available succeeds" "0" "$rc"
-assert_contains "the sudo retry is announced with its count" "$out" "retrying 1 entry owned by another user with sudo"
+assert_contains "an unmapped updater cache is kept" "$out" "no reliable process mapping"
 # The retry names the entry rm refused, and nothing else: a sudo sweep of the
 # whole directory would also take the entries the privacy controls protect.
-assert_called "the retry removes exactly the refused entry through sudo" "$d/calls" \
-  "sudo rm -rf -- $d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_not_called "the conservative sweep does not escalate through sudo" "$d/calls" "sudo rm -rf"
 assert_not_called "the retry does not sweep the whole directory" "$d/calls" "sudo find"
 assert_not_called "the retry does not touch the neighbour" "$d/calls" "com.vendor.app"
-assert_gone "the root-owned leftover is removed by the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
-assert_gone "the ordinary neighbour went in the first pass" "$d/home/Library/Caches/com.vendor.app"
+assert_exists "the updater cache remains" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/update"
+assert_exists "the unmapped neighbour remains" "$d/home/Library/Caches/com.vendor.app/blob"
 assert_contains "a retried ownership refusal is not a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
@@ -377,12 +377,11 @@ mkdir -p "$d/home/Library/Caches/com.apple.homed" "$d/home/Library/Caches/com.ti
 : > "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/pending/update"
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "a protected entry beside a refused one is a clean step" "0" "$rc"
-assert_called "the nested refusal is retried at its top-level entry" "$d/calls" \
-  "sudo rm -rf -- $d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_not_called "the nested unmapped entry is not retried" "$d/calls" "sudo rm -rf"
 assert_not_called "sudo is not pointed at the protected entry" "$d/calls" "com.apple.homed"
-assert_gone   "the refused entry is gone after the retry" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
+assert_exists "the refused entry is kept without a process mapping" "$d/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt/pending/update"
 assert_exists "the protected entry survives the retry" "$d/home/Library/Caches/com.apple.homed/state"
-assert_contains "the protected entry is still reported as kept" "$out" "entries kept: protected by macOS"
+assert_contains "the protected entry is reported as unmapped and kept" "$out" "no reliable process mapping"
 assert_contains "neither is a warning" "$out" "warn steps:  0"
 rm -rf "$d"
 
@@ -398,11 +397,12 @@ rm -rf /Library/Caches /.Trash
 mkdir -p /Library/Caches /.Trash "$d/home/Library/Caches/vendor" "$d/home/.Trash"
 : > /Library/Caches/CANARY
 : > /.Trash/CANARY
-bytes_file "$d/home/Library/Caches/vendor/blob" 64
+mkdir -p "$d/home/Library/Caches/com.google.Chrome"
+bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 64
 : > "$d/home/.Trash/junk"
 out="$(run_sf "$d" --yes --no-sudo --only user-caches,trash,dev-caches,user-logs)"; rc=$?
 assert_eq "the sweep succeeds" "0" "$rc"
-assert_gone   "the scratch HOME cache was cleared"  "$d/home/Library/Caches/vendor"
+assert_gone   "the scratch HOME cache was cleared"  "$d/home/Library/Caches/com.google.Chrome"
 assert_gone   "the scratch HOME trash was emptied"  "$d/home/.Trash/junk"
 assert_exists "the system cache directory is untouched" /Library/Caches/CANARY
 assert_exists "the root .Trash is untouched"            /.Trash/CANARY
@@ -411,19 +411,19 @@ rm -rf /Library/Caches /.Trash "$d"
 # ===========================================================================
 section "user-caches (contents cleared, directories kept, bytes counted)"
 d="$(new_env)"
-for sub in "Caches/vendor" "Saved Application State/app.savedState" \
+for sub in "Caches/com.google.Chrome" "Saved Application State/app.savedState" \
            "Developer/Xcode/DerivedData/Proj-abc" "Application Support/Caches/thing"; do
   mkdir -p "$d/home/Library/$sub"
 done
-bytes_file "$d/home/Library/Caches/vendor/blob" 1024
+bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 1024
 : > "$d/home/Library/Saved Application State/app.savedState/data"
 : > "$d/home/Library/Developer/Xcode/DerivedData/Proj-abc/index"
 : > "$d/home/Library/Application Support/Caches/thing/data"
 out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
 assert_eq "user-caches step succeeds" "0" "$rc"
-assert_gone   "user cache contents are removed"   "$d/home/Library/Caches/vendor"
+assert_gone   "known idle user cache contents are removed"   "$d/home/Library/Caches/com.google.Chrome"
 assert_exists "~/Library/Caches itself is kept"   "$d/home/Library/Caches"
-assert_gone   "saved application state is removed" "$d/home/Library/Saved Application State/app.savedState"
+assert_exists "saved application state is preserved" "$d/home/Library/Saved Application State/app.savedState"
 assert_gone   "Xcode DerivedData is removed"      "$d/home/Library/Developer/Xcode/DerivedData/Proj-abc"
 assert_gone   "Application Support caches are removed" "$d/home/Library/Application Support/Caches/thing"
 if grep -Eq 'steps freed: +[0-9]+\.[0-9]+[KMG]' <<<"$out"; then
@@ -431,6 +431,31 @@ if grep -Eq 'steps freed: +[0-9]+\.[0-9]+[KMG]' <<<"$out"; then
 else
   err "freed bytes were not reported"; grep -i 'steps freed' <<<"$out" >&2
 fi
+rm -rf "$d"
+
+# ===========================================================================
+section "user-caches (active and unmapped application caches are kept)"
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/Codex" "$d/home/Library/Caches/unknown.vendor" \
+  "$d/home/Library/Saved Application State/app.savedState"
+: > "$d/home/Library/Caches/Codex/data"
+: > "$d/home/Library/Caches/unknown.vendor/data"
+: > "$d/home/Library/Saved Application State/app.savedState/data"
+RUNNING_APPS="Codex" out="$(run_sf "$d" --yes --only user-caches,ai-caches)"; rc=$?
+assert_eq "combined user/AI cache sweep succeeds with Codex running" "0" "$rc"
+assert_exists "broad user sweep keeps a running Codex cache" "$d/home/Library/Caches/Codex/data"
+assert_exists "unmapped user caches are kept conservatively" "$d/home/Library/Caches/unknown.vendor/data"
+assert_exists "Saved Application State is always kept" "$d/home/Library/Saved Application State/app.savedState/data"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/outside" "$d/home/Library/Caches"
+: > "$d/outside/keep"
+ln -s "$d/outside" "$d/home/Library/Caches/com.google.Chrome"
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_eq "a symlinked known cache is refused without failing the run" "0" "$rc"
+assert_exists "a cache symlink cannot escape HOME" "$d/outside/keep"
+assert_contains "the symlink refusal is explicit" "$out" "target is a symlink"
 rm -rf "$d"
 
 # ===========================================================================
@@ -463,7 +488,7 @@ assert_exists "sandbox containers are kept by default" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 RUNNING_APPS="Slack" out="$(run_sf "$d" --yes --force-active-app-caches --only app-caches)"
 assert_gone "--force-active-app-caches clears a running app" "$as/Slack/Cache"
-assert_gone "--force-active-app-caches clears sandbox containers" \
+assert_exists "force preserves sandbox caches with unknown activity" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches/blob"
 assert_exists "the sandbox Caches directory itself is kept" \
   "$d/home/Library/Containers/com.x/Data/Library/Caches"
@@ -549,7 +574,7 @@ d="$(new_env)"
 as="$d/home/Library/Application Support"
 mkdir -p "$as/Codex/Default/GPUCache"
 : > "$as/Codex/Default/GPUCache/data"
-PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
+out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
 assert_eq "an unavailable process check keeps AI cleanup non-fatal" "0" "$rc"
 assert_exists "an unavailable process check fails closed" "$as/Codex/Default/GPUCache/data"
 assert_contains "an unavailable process check explains the safe refusal" "$out" \
@@ -557,6 +582,326 @@ assert_contains "an unavailable process check explains the safe refusal" "$out" 
 assert_contains "an unavailable process check records a warning" "$out" \
   "warn steps:  1"
 rm -rf "$d"
+
+# ===========================================================================
+section "large storage (Claude, GeForce NOW, JetBrains caches; models kept)"
+unset PGREP_RC RUNNING_APPS
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$as/Claude/vm_bundles/claudevm.bundle" \
+         "$as/Claude/Session Storage" \
+         "$d/home/Movies/NVIDIA/GeForceNOW" \
+         "$d/home/Library/Caches/JetBrains/PyCharm2026.2" \
+         "$as/JetBrains/PyCharm2026.2" \
+         "$as/Google/Chrome/OptGuideOnDeviceModel" \
+         "$d/home/.lmstudio/models/prism-ml" \
+         "$d/home/Movies/iMovie Library.imovielibrary"
+: > "$as/Claude/Cache/data"
+: > "$as/Claude/vm_bundles/claudevm.bundle/image"
+: > "$as/Claude/Session Storage/state"
+: > "$d/home/Movies/NVIDIA/GeForceNOW/game"
+: > "$d/home/Library/Caches/JetBrains/PyCharm2026.2/index"
+: > "$as/JetBrains/PyCharm2026.2/options"
+: > "$as/Google/Chrome/OptGuideOnDeviceModel/model"
+: > "$d/home/.lmstudio/models/prism-ml/weights"
+: > "$d/home/Movies/iMovie Library.imovielibrary/event"
+out="$(run_sf "$d" --yes --only ai-caches,app-caches)"; rc=$?
+assert_eq "classified extra-cache sweep succeeds" "0" "$rc"
+assert_contains "idle extra caches are classified for deletion" "$out" "classified extra caches"
+assert_gone "idle Claude renderer cache is removed" "$as/Claude/Cache"
+assert_exists "GeForce NOW data is kept" "$d/home/Movies/NVIDIA/GeForceNOW"
+assert_exists "JetBrains Caches including recovery history is kept" \
+  "$d/home/Library/Caches/JetBrains/PyCharm2026.2"
+assert_exists "Claude VM bundles are kept" "$as/Claude/vm_bundles/claudevm.bundle/image"
+assert_exists "Claude session storage is kept" "$as/Claude/Session Storage/state"
+assert_exists "JetBrains application state is kept" "$as/JetBrains/PyCharm2026.2/options"
+assert_exists "Chrome on-device model is kept without --deep-clean" \
+  "$as/Google/Chrome/OptGuideOnDeviceModel/model"
+assert_exists "LM Studio models are kept" "$d/home/.lmstudio/models/prism-ml/weights"
+assert_exists "iMovie libraries are kept" \
+  "$d/home/Movies/iMovie Library.imovielibrary/event"
+assert_contains "the run names the kept Chrome model" "$out" \
+  "Chrome downloaded on-device model kept"
+out="$(run_sf "$d" --yes --only app-caches --deep-clean)"
+assert_exists "--deep-clean preserves Chrome's downloaded model" \
+  "$as/Google/Chrome/OptGuideOnDeviceModel"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$d/home/Movies/NVIDIA/GeForceNOW"
+: > "$as/Claude/Cache/data"
+: > "$d/home/Movies/NVIDIA/GeForceNOW/game"
+out="$(RUNNING_APPS=Claude run_sf "$d" --yes --only ai-caches,app-caches)"; rc=$?
+assert_eq "a running Claude does not fail extra-cache cleanup" "0" "$rc"
+assert_exists "a running Claude keeps its renderer cache" "$as/Claude/Cache/data"
+assert_exists "GeForce NOW is kept beside a running Claude" \
+  "$d/home/Movies/NVIDIA/GeForceNOW"
+assert_contains "the run explains why Claude extra caches were kept" "$out" \
+  "Claude is running - keeping its extra caches"
+assert_not_contains "a named running Claude is not an unknown process probe" "$out" \
+  "cannot determine whether Claude is running"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache"
+: > "$as/Claude/Cache/data"
+out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "an unavailable process check keeps classified Claude caches" "0" "$rc"
+assert_exists "a silent process probe does not delete Claude caches" \
+  "$as/Claude/Cache/data"
+assert_contains "a silent process probe explains the Claude refusal" "$out" \
+  "cannot determine whether Claude is running - keeping its extra caches"
+rm -rf "$d"
+
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Claude/Cache" "$as/Claude/vm_bundles"
+: > "$as/Claude/Cache/data"
+: > "$as/Claude/vm_bundles/image"
+mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only ai-caches)"; rc=$?
+assert_eq "classified extra-cache dry run succeeds" "0" "$rc"
+assert_exists "classified extra-cache dry run writes nothing" "$as/Claude/Cache/data"
+assert_exists "classified extra-cache dry run keeps the VM bundle" \
+  "$as/Claude/vm_bundles/image"
+assert_not_called "classified extra-cache dry run creates no scanner temporary file" \
+  "$d/calls" "mktemp"
+rm -rf "$d"
+
+# ===========================================================================
+section "renderer state boundaries and helper-only activity"
+for app in Slack Codex; do
+  d="$(new_env)"
+  as="$d/home/Library/Application Support"
+  if [[ "$app" == Slack ]]; then step=app-caches; else step=ai-caches; fi
+  for relative in "Cache" "Default/GPUCache" "Service Worker/Database" \
+      "Service Worker/CacheStorage" "blob_storage" "Session Storage/Cache" \
+      "Default/Session Storage/GPUCache"; do
+    mkdir -p "$as/$app/$relative"
+    : > "$as/$app/$relative/data"
+  done
+  out="$(run_sf "$d" --yes --only "$step")"; rc=$?
+  assert_eq "$app restricted cache sweep succeeds" "0" "$rc"
+  assert_gone "$app direct cache removed" "$as/$app/Cache"
+  assert_gone "$app direct profile GPU cache removed" "$as/$app/Default/GPUCache"
+  for relative in "Service Worker/Database" "Service Worker/CacheStorage" \
+      "blob_storage" "Session Storage/Cache" "Default/Session Storage/GPUCache"; do
+    assert_exists "$app preserves $relative" "$as/$app/$relative/data"
+  done
+  mkdir -p "$as/$app/Cache"
+  : > "$as/$app/Cache/data"
+  mkbin "$d/bin/pgrep" \
+    'case "$1" in' \
+    '  -x) exit 1 ;;' \
+    "  -f) printf '%s\\n' '/Applications/$app.app/Contents/Frameworks/$app Helper.app/Contents/MacOS/$app Helper' | grep -E -- \"\$2\" >/dev/null ;;" \
+    '  *) exit 2 ;;' \
+    'esac'
+  out="$(run_sf "$d" --yes --only "$step")"; rc=$?
+  assert_eq "$app helper-only probe succeeds" "0" "$rc"
+  assert_exists "$app helper keeps renderer cache" "$as/$app/Cache/data"
+  rm -rf "$d"
+done
+
+d="$(new_env)"
+mkdir -p "$d/home/Library/Caches/com.tinyspeck.slackmacgap"
+: > "$d/home/Library/Caches/com.tinyspeck.slackmacgap/data"
+PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --force-active-app-caches --only user-caches)"; rc=$?
+assert_eq "forced unknown app state remains nonfatal" "0" "$rc"
+assert_exists "force cannot override unknown process state" \
+  "$d/home/Library/Caches/com.tinyspeck.slackmacgap/data"
+rm -rf "$d"
+
+# ===========================================================================
+section "force preserves active AI user caches"
+d="$(new_env)"
+for name in Cursor com.todesktop.230313mzl4w4u92; do
+  mkdir -p "$d/home/Library/Caches/$name"
+  : > "$d/home/Library/Caches/$name/data"
+done
+RUNNING_APPS=Cursor out="$(RUNNING_APPS=Cursor run_sf "$d" --yes --force-active-app-caches --only user-caches)"; rc=$?
+assert_eq "active Cursor force sweep succeeds" "0" "$rc"
+for name in Cursor com.todesktop.230313mzl4w4u92; do
+  assert_exists "force keeps active Cursor $name" "$d/home/Library/Caches/$name/data"
+done
+rm -rf "$d"
+
+# ===========================================================================
+section "app cache preview never allocates scratch files"
+d="$(new_env)"
+mkdir -p "$d/home/Library/Application Support/Slack/Cache"
+: > "$d/home/Library/Application Support/Slack/Cache/data"
+mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+out="$(run_sf "$d" --dry-run --only app-caches)"; rc=$?
+assert_eq "app cache preview succeeds" "0" "$rc"
+assert_not_called "app cache preview creates no transient files" "$d/calls" "mktemp"
+assert_exists "app cache preview preserves data" "$d/home/Library/Application Support/Slack/Cache/data"
+rm -rf "$d"
+
+# ===========================================================================
+section "explicit old JetBrains versions"
+unset RUNNING_APPS PGREP_RC
+d="$(new_env)"
+for base in "Application Support" Caches Logs; do
+  for version in PyCharm2025.2 PyCharm2026.1 PyCharm2026.2; do
+    mkdir -p "$d/home/Library/$base/JetBrains/$version"
+    : > "$d/home/Library/$base/JetBrains/$version/data"
+  done
+done
+out="$(run_sf "$d" --yes --only app-caches --prune-jetbrains-version PyCharm2025.2)"; rc=$?
+assert_eq "selected old JetBrains cleanup succeeds" "0" "$rc"
+for base in "Application Support" Caches Logs; do
+  assert_gone "selected $base version removed" "$d/home/Library/$base/JetBrains/PyCharm2025.2"
+  assert_exists "unselected $base version preserved" "$d/home/Library/$base/JetBrains/PyCharm2026.1/data"
+  assert_exists "newest $base version preserved" "$d/home/Library/$base/JetBrains/PyCharm2026.2/data"
+done
+rm -rf "$d"
+
+# ===========================================================================
+section "JetBrains explicit selection protections"
+for mode in preview newest busy unknown helper aqua_system aqua_ide; do
+  unset RUNNING_APPS PGREP_RC
+  d="$(new_env)"
+  old="$d/home/Library/Application Support/JetBrains/PyCharm2025.2"
+  new="$d/home/Library/Application Support/JetBrains/PyCharm2026.2"
+  mkdir -p "$old/LocalHistory" "$new"
+  : > "$old/LocalHistory/record"
+  : > "$new/data"
+  case "$mode" in
+    preview)
+      mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+      out="$(run_sf "$d" --dry-run --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "JetBrains preview succeeds" "0" "$rc"
+      assert_not_called "JetBrains preview allocates no scratch" "$d/calls" "mktemp"
+      assert_contains "JetBrains preview names actual folder" "$out" "$old"
+      ;;
+    newest)
+      out="$(run_sf "$d" --yes --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2026.2)"; rc=$?
+      assert_eq "newest JetBrains refusal is a warning" "1" "$rc"
+      ;;
+    busy)
+      RUNNING_APPS=PyCharm out="$(RUNNING_APPS=PyCharm run_sf "$d" --yes --force-active-app-caches --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "active JetBrains stays protected under force" "1" "$rc"
+      ;;
+    unknown)
+      PGREP_RC=2 out="$(PGREP_RC=2 run_sf "$d" --yes --force-active-app-caches --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "unknown activity preserves JetBrains under force" "1" "$rc"
+      ;;
+    helper)
+      mkbin "$d/bin/pgrep" 'case "$1" in' \
+        ' -x) exit 1 ;;' \
+        ' -f) printf "%s\n" "/Applications/PyCharm2026.2.app/Contents/jbr/Contents/Home/bin/java" | grep -E -- "$2" >/dev/null ;;' \
+        ' *) exit 2 ;;' 'esac'
+      out="$(run_sf "$d" --yes --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      assert_eq "versioned IDE JVM helper is protected" "1" "$rc"
+      ;;
+    aqua_system|aqua_ide)
+      if [[ "$mode" == aqua_system ]]; then
+        helper_path='/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/Resources/AquaAppearanceHelper.app/Contents/MacOS/AquaAppearanceHelper'
+      else
+        helper_path='/Applications/Aqua2026.2.app/Contents/jbr/Contents/Home/bin/java'
+      fi
+      mkbin "$d/bin/pgrep" 'case "$1" in' \
+        ' -x) exit 1 ;;' \
+        " -f) printf '%s\\n' '$helper_path' | grep -E -- \"\$2\" >/dev/null ;;" \
+        ' *) exit 2 ;;' 'esac'
+      out="$(run_sf "$d" --yes --fail-on-warn --only app-caches --prune-jetbrains-version=PyCharm2025.2)"; rc=$?
+      if [[ "$mode" == aqua_system ]]; then
+        assert_eq "Apple appearance helper does not block old IDE removal" "0" "$rc"
+      else
+        assert_eq "actual Aqua IDE still blocks old IDE removal" "1" "$rc"
+      fi
+      ;;
+  esac
+  if [[ "$mode" == aqua_system ]]; then
+    assert_gone "Apple appearance helper permits selected old version removal" "$old"
+  else
+    assert_exists "$mode preserves selected settings/history" "$old/LocalHistory/record"
+  fi
+  assert_exists "$mode preserves newest version" "$new/data"
+  rm -rf "$d"
+done
+
+d="$(new_env)"
+unset RUNNING_APPS PGREP_RC
+for invalid in ../PyCharm2025.2 PyCharm2025.2/ Unknown2025.2; do
+  out="$(run_sf "$d" --yes --only app-caches --prune-jetbrains-version "$invalid")"; rc=$?
+  assert_eq "invalid JetBrains selection rejected: $invalid" "3" "$rc"
+done
+for conflict in --reports --cache-report --skip-appcaches --only=dev-caches; do
+  out="$(run_sf "$d" --yes "$conflict" --prune-jetbrains-version PyCharm2025.2)"; rc=$?
+  assert_eq "JetBrains conflicting selection rejected: $conflict" "3" "$rc"
+done
+mkdir -p "$d/home/Library/Application Support/JetBrains/PyCharm2025.2" \
+  "$d/home/Library/Application Support/JetBrains/PyCharm2026.1" \
+  "$d/home/Library/Application Support/JetBrains/PyCharm2026.2"
+out="$(run_sf "$d" --yes --only app-caches --prune-jetbrains-version PyCharm2025.2 --prune-jetbrains-version=PyCharm2026.1)"; rc=$?
+assert_eq "repeated JetBrains selection succeeds" "0" "$rc"
+assert_gone "first selected version removed" "$d/home/Library/Application Support/JetBrains/PyCharm2025.2"
+assert_gone "second selected version removed" "$d/home/Library/Application Support/JetBrains/PyCharm2026.1"
+assert_exists "repeated selection preserves latest" "$d/home/Library/Application Support/JetBrains/PyCharm2026.2"
+rm -rf "$d"
+
+# ===========================================================================
+section "installed application cache mapping"
+unset PGREP_RC RUNNING_APPS
+for mode in idle active helper unknown inventory_failed preview; do
+  d="$(new_env)"
+  app="$d/home/Applications/Fixture Editor.app"
+  cache="$d/home/Library/Caches/org.example.fixture"
+  sandbox="$d/home/Library/Containers/org.example.fixture/Data/Library"
+  mkdir -p "$app/Contents" "$cache" "$sandbox/Caches" "$sandbox/Application Support"
+  cat >"$app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0"?><plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>org.example.fixture</string>
+<key>CFBundleExecutable</key><string>Fixture</string>
+</dict></plist>
+PLIST
+  : > "$cache/data"
+  : > "$sandbox/Caches/data"
+  : > "$sandbox/Application Support/session"
+  unset PGREP_RC RUNNING_APPS
+  case "$mode" in
+    active) RUNNING_APPS=Fixture ;;
+    unknown) PGREP_RC=2 ;;
+    helper)
+      mkbin "$d/bin/pgrep" '
+        [ "$1" = -f ] || exit 1
+        printf "%s\n" "$HOME/Applications/Fixture Editor.app/Contents/Frameworks/Worker.app/Contents/MacOS/Worker" | grep -E -- "$2" >/dev/null
+      '
+      ;;
+    inventory_failed)
+      # A malformed XML plist makes the subprocess fail before emitting records.
+      mkdir -p "$d/home/Applications/Broken.app/Contents"
+      printf '<plist><dict><key>broken</key>' > "$d/home/Applications/Broken.app/Contents/Info.plist"
+      ;;
+  esac
+  if [[ "$mode" == preview ]]; then
+    mkbin "$d/bin/mktemp" 'echo "mktemp $*" >> "$CALLS"; exec /usr/bin/mktemp "$@"'
+    out="$(run_sf "$d" --dry-run --only app-caches)"; rc=$?
+    assert_not_called "installed app preview creates no scratch files" "$d/calls" "mktemp"
+    assert_contains "installed app preview names the actual cache" "$out" "$cache"
+  else
+    out="$(run_sf "$d" --yes --only app-caches)"; rc=$?
+  fi
+  assert_eq "$mode mapped cache run succeeds" "0" "$rc"
+  if [[ "$mode" == inventory_failed ]]; then
+    assert_contains "failed classifier reports incomplete inventory" "$out" "installed-app cache inventory incomplete"
+  fi
+  if [[ "$mode" == idle ]]; then
+    assert_gone "idle installed app cache contents removed" "$cache/data"
+    assert_gone "idle mapped sandbox cache contents removed" "$sandbox/Caches/data"
+  else
+    assert_exists "$mode keeps installed app cache" "$cache/data"
+    assert_exists "$mode keeps mapped sandbox cache" "$sandbox/Caches/data"
+  fi
+  assert_exists "$mode keeps sandbox cache root ACL directory" "$sandbox/Caches"
+  assert_exists "$mode keeps app session state" "$sandbox/Application Support/session"
+  rm -rf "$d"
+done
+unset PGREP_RC RUNNING_APPS
 
 # ===========================================================================
 section "workspace-storage (stale entries only)"
@@ -621,10 +966,6 @@ docker_fake() {
     'case "${1:-}" in' \
     '  info)' \
     '    [ -n "${DOCKER_INFO_HANG:-}" ] && sleep 60' \
-    '    if [ -n "${DOCKER_INFO_FAIL_AFTER:-}" ]; then' \
-    '      n=$(cat "$DOCKER_INFO_N" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DOCKER_INFO_N"' \
-    '      [ "$n" -gt "$DOCKER_INFO_FAIL_AFTER" ] && exit 1' \
-    '    fi' \
     '    exit 0 ;;' \
     '  context)' \
     '    case "${2:-}" in' \
@@ -632,15 +973,26 @@ docker_fake() {
     '      inspect) [ -n "${DOCKER_INSPECT_FAIL:-}" ] && exit 1; echo "$DOCKER_ENDPOINT" ;;' \
     '    esac' \
     '    exit 0 ;;' \
-    '  system) printf "Images\t1.5GB\n"; exit 0 ;;' \
+    '  system)' \
+    '    [ -n "${DOCKER_DAEMON_GONE:-}" ] && exit 1' \
+    '    printf "Images\t1.5GB\n"; exit 0 ;;' \
+    '  network|image|builder|volume|container)' \
+    '    [ -n "${DOCKER_DAEMON_GONE:-}" ] && exit 1' \
+    '    exit 0 ;;' \
     'esac' \
     'exit 0'
 }
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "docker step succeeds against a local daemon" "0" "$rc"
-assert_called "stopped containers are pruned by age, not wholesale" "$d/calls" \
-  "docker container prune -f --filter until=168h"
+assert_not_called "stopped containers are untouched by default" "$d/calls" "docker container prune"
+assert_contains "the run explains the container opt-in" "$out" "--prune-docker-containers"
+# The second probe is gone: preflight already ran `docker info` under
+# --step-timeout, and a daemon that then hung held the run lock for another
+# full limit. What remains is `docker system df`, which the step needs for the
+# size line anyway and is the first call here that reaches the socket.
+assert_eq "docker info is probed once, at preflight" "1" \
+  "$(grep -c '^docker info$' "$d/calls" | tr -d ' ')"
 for sub in "network prune -f" \
            "image prune -f" "builder prune -af"; do
   assert_called "docker step runs $sub" "$d/calls" "docker $sub"
@@ -651,6 +1003,14 @@ done
 assert_not_called "docker volumes are untouched by default" "$d/calls" \
   "docker volume prune"
 assert_contains "the run says why volumes were kept" "$out" "volumes kept"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
+out="$(run_sf "$d" --yes --only docker --prune-docker-containers)"; rc=$?
+assert_eq "docker container opt-in succeeds" "0" "$rc"
+assert_called "container opt-in uses Docker's creation-age filter" "$d/calls" \
+  "docker container prune -f --filter until=168h"
+assert_contains "container wording says created, not stopped duration" "$out" "created over 168h ago"
 rm -rf "$d"
 
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
@@ -676,11 +1036,19 @@ assert_not_called "nothing is pruned when endpoint inspection fails" "$d/calls" 
 rm -rf "$d"
 
 # A daemon that answers preflight and then goes away is the case that has to
-# reach STEPS_FAIL and exit 1 rather than being reported as a clean run.
+# reach STEPS_FAIL and exit 1 rather than being reported as a clean run. It is
+# also the case `docker context show` cannot see: that reads the CLI's own
+# context store, never the socket, so it answers "default" with the daemon
+# dead. Checking it instead of a real call left every prune below to discover
+# the death on its own - each one warning rather than failing, so the step
+# ended WARN and the run exited 0, and each one waiting a full --step-timeout
+# first if the daemon hung rather than died.
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
-DOCKER_INFO_FAIL_AFTER=1 out="$(run_sf "$d" --yes --only docker)"; rc=$?
+DOCKER_DAEMON_GONE=1 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "a step that hard-fails exits 1" "1" "$rc"
 assert_contains "a hard failure is counted" "$out" "failed:      1"
+assert_contains "the failure names the call that noticed" "$out" "docker system df"
+assert_not_called "a dead daemon stops the step before the prunes" "$d/calls" "prune"
 rm -rf "$d"
 
 # A daemon that accepts the socket and never answers used to hang the
@@ -888,7 +1256,7 @@ d="$(lost_mark_env)"; : > "$d/calls"
 out="$(DOCKER_ENDPOINT=unix:///var/run/docker.sock \
   BREW_REPO="$d/brewrepo" run_sf "$d" --yes --only docker,brew)"; rc=$?
 assert_eq "the lost-mark fixture succeeds with a working wc" "0" "$rc"
-assert_called "the earlier step really ran" "$d/calls" "docker container prune"
+assert_called "the earlier step really ran" "$d/calls" "docker network prune"
 assert_not_contains "an index.lock before the mark is not brew's" "$out" \
   "did not refresh the taps"
 assert_contains "and the control run carries no warning" "$out" "warn steps:  0"
@@ -1399,8 +1767,8 @@ out="$(run_sf "$qd" --yes --quick)"; rc=$?
 assert_eq "--quick runs for real" "0" "$rc"
 assert_not_called "--quick never reaches for sudo, warm or otherwise" "$qd/calls" "sudo"
 assert_exists "--quick leaves the entry it cannot unlink" "$qd/home/Library/Caches/com.tinyspeck.slackmacgap.ShipIt"
-assert_gone   "--quick still clears what it can" "$qd/home/Library/Caches/vendor"
-assert_contains "--quick reports the entry it could not take" "$out" "entries owned by another user remain"
+assert_exists "--quick keeps an unmapped cache" "$qd/home/Library/Caches/vendor/blob"
+assert_contains "--quick explains the conservative keep" "$out" "no reliable process mapping"
 rm -rf "$qd"
 
 run_sf "$d" --dry-run --quick --only trash >/dev/null; rc=$?
@@ -1469,15 +1837,16 @@ rm -rf "$d"
 # A dry run adds up what the deletions would remove, so the preview answers
 # the question it is run for: how much would this free.
 d="$(new_env)"
-mkdir -p "$d/home/Library/Caches/com.vendor.app" "$d/home/.Trash"
-bytes_file "$d/home/Library/Caches/com.vendor.app/blob" 2048
+mkdir -p "$d/home/Library/Caches/com.google.Chrome" "$d/home/.Trash"
+bytes_file "$d/home/Library/Caches/com.google.Chrome/blob" 2048
 bytes_file "$d/home/.Trash/old" 1024
-out="$(run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
+expected_estimate="$(du -sk "$d/home/Library/Caches/com.google.Chrome" "$d/home/.Trash" | awk '{sum += $1} END {printf "%.2fM", sum / 1024}')"
+out="$(PGREP_RC=1 RUNNING_APPS= run_sf "$d" --dry-run --only user-caches,trash)"; rc=$?
 assert_eq "a dry run with an estimate succeeds" "0" "$rc"
-assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "3."
+assert_contains "the dry run totals what would go" "$(grep 'would free:' <<<"$out")" "$expected_estimate"
 assert_contains "the estimate names its unit" "$out" "would free:"
 assert_contains "the real freed total stays zero under a dry run" "$out" "steps freed: 0B"
-assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.vendor.app/blob"
+assert_exists "the estimate removed nothing" "$d/home/Library/Caches/com.google.Chrome/blob"
 rm -rf "$d"
 
 # Every id --list-steps prints is one --only accepts, and the run loop runs
@@ -1615,8 +1984,8 @@ assert_contains "a dry run says it would notify" "$out" "would notify via macos"
 assert_not_called "a dry run posts no banner" "$d/calls" "display notification"
 rm -rf "$d"
 
-# Telegram: the token rides in a curl config on stdin, never on the command
-# line, and the chat id and text are form fields.
+# Telegram: the token and chat id ride in a curl config on stdin, never on
+# the command line; the message text is a form field.
 tg_env() {
   local d; d="$(new_env)"
   mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat > "$CALLS.curl-config"; exit 0'
@@ -1627,7 +1996,9 @@ out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_TG_BOT_TOKEN=123:secret-token STAY_
   run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "a run with a Telegram notification succeeds" "0" "$rc"
 assert_contains "the Telegram send is reported" "$out" "telegram notification sent"
-assert_called "the chat id is a form field" "$d/calls" "chat_id=42"
+assert_contains "the chat id is in the stdin config" "$(cat "$d/calls.curl-config")" \
+  'data-urlencode = "chat_id=42"'
+assert_not_called "the chat id is not on the curl command line" "$d/calls" "chat_id=42"
 assert_called "the text starts with the verdict" "$d/calls" "text=stay_fresh OK: freed"
 assert_not_called "the token is not on the curl command line" "$d/calls" "secret-token"
 assert_contains "the token is in the stdin config" "$(cat "$d/calls.curl-config")" \
@@ -1640,7 +2011,8 @@ mkbin "$d/bin/security" 'echo "security $*" >> "$CALLS"' \
   'case "$*" in *"-a bot-token"*) echo "kc:token" ;; *"-a chat-id"*) echo 77 ;; esac'
 out="$(STAY_FRESH_NOTIFY=telegram run_sf "$d" --yes --only versions)"; rc=$?
 assert_called "the Keychain is asked for the token" "$d/calls" "find-generic-password -s stay_fresh-telegram -a bot-token -w"
-assert_called "the Keychain chat id is used" "$d/calls" "chat_id=77"
+assert_contains "the Keychain chat id is used" "$(cat "$d/calls.curl-config")" \
+  'data-urlencode = "chat_id=77"'
 assert_contains "the Keychain token reaches curl" "$(cat "$d/calls.curl-config")" "botkc:token/"
 rm -rf "$d"
 
@@ -1798,7 +2170,8 @@ out="$(STAY_FRESH_NOTIFY=both STAY_FRESH_TG_BOT_TOKEN=123:tok STAY_FRESH_TG_CHAT
   STAY_FRESH_SLACK_WEBHOOK="$hook" run_sf "$d" --yes --only versions)"; rc=$?
 assert_contains "both means macos and telegram" "$out" "notify: macos, telegram"
 assert_called "both posts the banner" "$d/calls" "display notification"
-assert_called "both posts to Telegram" "$d/calls" "chat_id=42"
+assert_contains "both posts to Telegram" "$(cat "$d/calls.curl-config")" \
+  'data-urlencode = "chat_id=42"'
 assert_not_called "both does not post to Slack" "$d/calls" "application/json"
 rm -rf "$d"
 
@@ -2121,7 +2494,7 @@ assert_eq "dev-caches with build caches present succeeds" "0" "$rc"
 assert_exists "the Gradle cache is kept by default" "$d/home/.gradle/caches/modules-2/dep.jar"
 assert_exists "the Maven repository is kept by default" "$d/home/.m2/repository/org/dep.pom"
 assert_contains "the kept Gradle cache is named" "$out" "~/.gradle/caches kept; pass --prune-build-caches to clear it"
-assert_contains "the kept Maven repository is named" "$out" "~/.m2/repository kept; pass --prune-build-caches to clear it"
+assert_contains "the kept Maven repository is named" "$out" "~/.m2/repository kept; it may contain locally installed artifacts"
 assert_exists "the Gradle wrapper distributions are kept by default" \
   "$d/home/.gradle/wrapper/dists/gradle-8.5-bin/abc123/gradle-8.5.zip"
 assert_contains "the kept wrapper distributions are named" "$out" \
@@ -2133,15 +2506,15 @@ d="$(build_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only dev-caches --prune-build-caches)"; rc=$?
 assert_eq "--prune-build-caches succeeds" "0" "$rc"
 assert_gone   "--prune-build-caches clears the Gradle cache"   "$d/home/.gradle/caches/modules-2"
-assert_gone   "--prune-build-caches clears the Maven repository" "$d/home/.m2/repository/org"
+assert_exists "--prune-build-caches preserves the Maven repository" "$d/home/.m2/repository/org/dep.pom"
 assert_gone   "--prune-build-caches clears the Gradle wrapper distributions" \
   "$d/home/.gradle/wrapper/dists/gradle-8.5-bin"
 assert_exists "the wrapper dists directory itself stays" "$d/home/.gradle/wrapper/dists"
 assert_exists "the Gradle cache directory itself stays"   "$d/home/.gradle/caches"
 assert_exists "the Maven repository directory itself stays" "$d/home/.m2/repository"
-assert_contains "the plan names the build caches" "$(grep "dev-tool caches" <<<"$out")" "gradle/maven caches"
+assert_contains "the plan names the build caches" "$(grep "dev-tool caches" <<<"$out")" "Gradle"
 assert_contains "the Gradle sweep reports its size" "$(grep 'freed .* from .*/.gradle/caches' <<<"$out")" "freed 2"
-assert_contains "the Maven sweep reports its size"  "$(grep 'freed .* from .*/.m2/repository' <<<"$out")" "freed 6"
+assert_not_contains "the Maven repository is never swept" "$out" "freed 64.0K from $d/home/.m2/repository"
 rm -rf "$d"
 
 d="$(build_env)"; : > "$d/calls"
@@ -2150,22 +2523,90 @@ assert_exists "a dry run keeps the Gradle cache" "$d/home/.gradle/caches/modules
 assert_contains "a dry run previews the Gradle sweep" "$out" "(dry-run) would remove contents of $d/home/.gradle/caches"
 rm -rf "$d"
 
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"' \
+  '[ "$1 $2" = "info --json" ] && { printf "{\"pkgs_dirs\":[\"%s/.conda/pkgs\"]}\n" "$HOME"; exit 0; }' \
+  'exit 0'
+mkdir -p "$d/home/.conda/pkgs"
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "deep clean with Conda succeeds" "0" "$rc"
+assert_called "deep clean limits Conda to reviewed cache classes" "$d/calls" \
+  "conda clean --yes --tarballs --index-cache --logfiles"
+assert_not_called "deep clean never requests all Conda data" "$d/calls" "--all"
+assert_not_called "deep clean preserves extracted Conda packages" "$d/calls" "--packages"
+assert_called "deep clean discovers Conda package roots" "$d/calls" "conda info --json"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.conda/pkgs" "$d/outside-logs"
+: > "$d/outside-logs/marker"
+ln -s "$d/outside-logs" "$d/home/.conda/pkgs/.logs"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"' \
+  '[ "$1 $2" = "info --json" ] && { printf "{\"pkgs_dirs\":[\"%s/.conda/pkgs\"]}\n" "$HOME"; exit 0; }' \
+  'exit 0'
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "unsafe Conda log child keeps cleanup non-fatal" "0" "$rc"
+assert_contains "unsafe Conda log child is refused" "$out" "unsafe Conda cache child kept"
+assert_not_called "Conda cleanup is skipped for a symlinked log child" "$d/calls" "conda clean"
+assert_exists "external log marker survives" "$d/outside-logs/marker"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.conda/pkgs"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"' \
+  '[ "$1 $2" = "info --json" ] && { printf "{\"pkgs_dirs\":[\"%s/.conda/missing\",\"%s/.conda/pkgs\"]}\n" "$HOME" "$HOME"; exit 0; }' \
+  'exit 0'
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "a missing Conda root does not disable an existing safe root" "0" "$rc"
+assert_called "Conda cleanup still runs for the validated existing root" "$d/calls" "conda clean --yes --tarballs --index-cache --logfiles"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/conda" 'echo "conda $*" >> "$CALLS"; exit 0'
+out="$(run_sf "$d" --dry-run --only dev-caches --deep-clean)"; rc=$?
+assert_eq "deep-clean dry run succeeds" "0" "$rc"
+assert_not_called "deep-clean dry run does not invoke Conda" "$d/calls" "conda clean"
+assert_contains "deep-clean dry run previews exact Conda command" "$out" \
+  "conda clean --yes --tarballs --index-cache --logfiles"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/.gradle/caches" "$d/outside-uv"
+bytes_file "$d/outside-uv/blob" 64
+mkbin "$d/bin/npm" 'echo "npm $*" >> "$CALLS"; mkdir -p "$HOME/.npm/_logs"'
+out="$(UV_CACHE_DIR="$d/outside-uv" run_sf "$d" --cache-report)"; rc=$?
+assert_eq "standalone cache report succeeds without --yes" "0" "$rc"
+assert_contains "outside-HOME configured cache is kept unknown" "$out" "kept/unknown"
+assert_not_called "cache report does not clean uv" "$d/calls" "uv cache clean"
+assert_not_called "read-only cache report never invokes npm" "$d/calls" "npm"
+assert_gone "cache report does not let npm create its log directory" "$d/home/.npm/_logs"
+assert_exists "cache report changes nothing" "$d/outside-uv/blob"
+rm -rf "$d"
+
+d="$(new_env)"; : > "$d/calls"
+out="$(UV_CACHE_DIR="$d/home" run_sf "$d" --cache-report)"; rc=$?
+assert_eq "cache report refuses a configured HOME root safely" "0" "$rc"
+assert_contains "HOME is not measured as a cache" "$out" "unsafe or relative configured path"
+rm -rf "$d"
+
 # ===========================================================================
 section "downloads (reported by default, removed only with --prune-downloads-days)"
+# Allocation varies with the Docker filesystem; measure the fixture itself.
 dl_env() {
   local d; d="$(new_env)"
   local dl="$d/home/Downloads"
   mkdir -p "$dl/old-project" "$dl/fresh-project"
-  bytes_file "$dl/installer.dmg" 2048;   touch -d '120 days ago' "$dl/installer.dmg"
-  bytes_file "$dl/old-project/a.txt" 64; touch -d '120 days ago' "$dl/old-project/a.txt" "$dl/old-project"
+  bytes_file "$dl/installer.dmg" 2048;     touch -d '120 days ago' "$dl/installer.dmg"
+  bytes_file "$dl/old-project/a.txt" 1024; touch -d '120 days ago' "$dl/old-project/a.txt" "$dl/old-project"
   bytes_file "$dl/recent.zip" 512
   : > "$dl/.DS_Store";                    touch -d '400 days ago' "$dl/.DS_Store"
   printf '%s' "$d"
 }
 d="$(dl_env)"; : > "$d/calls"
+expected_old_size="$(du -sk "$d/home/Downloads/installer.dmg" "$d/home/Downloads/old-project" | awk '{sum += $1} END {printf "%.2fM", sum / 1024}')"
 out="$(run_sf "$d" --yes --only downloads)"; rc=$?
 assert_eq "downloads step succeeds" "0" "$rc"
-assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: 2.07M"
+assert_contains "old entries are counted with their size" "$out" "2 entries in ~/Downloads untouched for 90 days: $expected_old_size"
 assert_contains "the largest old entry is named first" "$(grep -A1 'untouched for 90 days' <<<"$out")" "installer.dmg"
 assert_contains "the report says how to remove them" "$out" "--prune-downloads-days 90 removes them"
 assert_exists "the report removes nothing" "$d/home/Downloads/installer.dmg"
@@ -2246,7 +2687,7 @@ assert_not_contains "an interpreter with a present script is fine" "$out" "com.w
 assert_not_contains "a present program is fine" "$out" "com.ok.plist ->"
 assert_contains "a system-level orphan is named with its command" "$out" \
   "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
-assert_contains "a binary plist without plutil is left uninspected" "$out" "1 binary plist(s) not inspected"
+assert_contains "an invalid binary plist is left uninspected" "$out" "1 plist(s) not inspected"
 assert_not_contains "an XML-escaped program path is resolved before it is judged" "$out" "com.amp.ok.plist"
 assert_contains "user-level orphans are kept by default" "$out" "2 user-level plist(s) kept; --prune-orphan-agents"
 assert_contains "orphans reach the verdict" "$out" "3 orphaned launch agent(s)"
@@ -2256,7 +2697,8 @@ assert_contains "a report is not a warning" "$out" "warn steps:  0"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 
 d="$(agents_env)"; : > "$d/calls"
-out="$(run_sf "$d" --dry-run --only launch-agents --prune-orphan-agents)"; rc=$?
+out="$(PYTHONPYCACHEPREFIX="$d/bytecode" run_sf "$d" --dry-run --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_gone "plist preview writes no Python bytecode cache" "$d/bytecode"
 assert_contains "a prune dry run names the unload" "$out" "(dry-run) launchctl bootout gui/501/com.gone.helper"
 assert_not_called "a prune dry run unloads nothing" "$d/calls" "launchctl"
 assert_exists "a prune dry run removes nothing" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
@@ -2272,6 +2714,35 @@ assert_exists "a system-level orphan is never removed" /Library/LaunchDaemons/co
 assert_not_called "system-level plists are never unloaded" "$d/calls" "system/com.gone.daemon"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 
+# A symlinked plist. The path guard refused every symlink, so --prune-orphan-agents
+# booted the job out and then left the link on disk: the orphan returned at the
+# next login, and because the refusal is a warn_step the run reported WARN for
+# the condition the flag exists to fix — on every run, forever. Deleting a
+# symlink removes the link and never follows it, which is the whole job here.
+d="$(agents_env)"; : > "$d/calls"
+la="$d/home/Library/LaunchAgents"
+printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/Applications/Gone.app/Contents/MacOS/helper</string></dict></plist>' \
+  > "$d/home/linked-orphan-source.plist"
+ln -s "$d/home/linked-orphan-source.plist" "$la/com.linked.gone.plist"
+out="$(run_sf "$d" --yes --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_eq "pruning succeeds with a symlinked plist present" "0" "$rc"
+assert_called "the symlinked orphan is unloaded" "$d/calls" "launchctl bootout gui/501/com.linked.gone"
+assert_gone "the symlinked orphan plist is removed" "$la/com.linked.gone.plist"
+assert_not_contains "and deleting a symlink is not a refusal" "$out" "refusing to clear"
+assert_contains "so the run is not left permanently yellow" "$out" "warn steps:  0"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# The other half of the same guard: a sweep that descends into a symlinked
+# directory lands wherever the link points, which is the redirection it was
+# written for and must still be refused.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/Library/Caches" "$d/outside"
+: > "$d/outside/keepme"
+ln -s "$d/outside" "$d/home/Library/Caches/redirected"
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_eq "the sweep still succeeds" "0" "$rc"
+assert_exists "a symlinked cache directory is not followed" "$d/outside/keepme"
+rm -rf "$d"
 d="$(new_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
 assert_contains "no plists anywhere is a clean step" "$out" "no launchd plists under"
@@ -2400,6 +2871,207 @@ assert_gone   "the relocated volume trash is emptied" "$d/vol-trash/old"
 assert_gone   "nested entries too"                    "$d/vol-trash/folder"
 assert_exists "the relocation target survives"        "$d/vol-trash"
 rm -rf /Volumes "$d"
+
+# ===========================================================================
+section "the live step line never reaches anything but a terminal"
+# While a step runs, a line rewrites itself on the terminal with the step, its
+# position and its elapsed time. It is written to /dev/tty, which is the whole
+# reason the rest of this suite did not have to change: a log, a pipe and every
+# assertion in this file see the bytes they saw before. What that costs is that
+# the drawing itself cannot be asserted here, where there is no terminal - so
+# what is asserted is the invariant that makes it safe, and that the opt-out
+# exists whether or not there is anything to opt out of.
+cr="$(printf '\r')"
+esc_k="$(printf '\033[K')"
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes --only versions)"; rc=$?
+assert_eq "a captured run still succeeds" "0" "$rc"
+assert_not_contains "no erase sequence reaches a pipe"  "$out" "$esc_k"
+assert_not_contains "no carriage return reaches a pipe" "$out" "$cr"
+out="$(run_sf "$d" --dry-run --yes --no-progress --only versions)"; rc=$?
+assert_eq "--no-progress is accepted with no terminal to draw on" "0" "$rc"
+assert_not_contains "and still prints no control sequence" "$out" "$esc_k"
+out="$(STAY_FRESH_PROGRESS=0 run_sf "$d" --dry-run --yes --only versions)"; rc=$?
+assert_eq "STAY_FRESH_PROGRESS=0 is accepted too" "0" "$rc"
+rm -rf "$d"
+
+# The assertions above cannot fail on their own. There is no terminal here, so
+# live_supported() is false, the line never draws, and stdout stays clean
+# whether it would have been written to /dev/tty or to stdout - which is
+# exactly what happened when the redirection was removed to test them. The
+# invariant that keeps every other assertion in this file valid is that the
+# drawing goes to /dev/tty and nowhere else, so it is asserted where it can be
+# seen: in the source.
+live_writes="$(awk '/^live_start\(\) \{/, /^\}/' "$SF" | grep -c "printf" || true)"
+live_to_tty="$(awk '/^live_start\(\) \{/, /^\}/' "$SF" | grep -c ">/dev/tty" || true)"
+if (( live_writes > 0 && live_writes == live_to_tty )); then
+  ok "every write in live_start goes to /dev/tty ($live_to_tty of $live_writes)"
+else
+  err "live_start has $live_writes printf(s) and $live_to_tty redirected to /dev/tty — output that is not on /dev/tty reaches the log and every captured run"
+fi
+live_clear_to_tty="$(awk '/^live_clear\(\) \{/, /^\}/' "$SF" | grep -c ">/dev/tty" || true)"
+if (( live_clear_to_tty > 0 )); then
+  ok "live_clear erases on /dev/tty"
+else
+  err "live_clear does not write to /dev/tty — its erase would land in captured output"
+fi
+
+# ===========================================================================
+section "the step counter and the plan cannot drift apart"
+# Each step header carries [n/total]. The total is counted by the plan as it
+# prints, the index by the one dispatcher every step goes through, and the two
+# are separate counters over what is supposed to be the same list of steps. A
+# step dispatched without a plan row, or a plan row with no step behind it,
+# shows up here as a last index that is not the total, or as a number of headers
+# that is not the total. Nothing is hardcoded: the numbers are read back out of
+# the run, so adding a step keeps this honest without editing it.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes)"; rc=$?
+assert_eq "a full dry run succeeds" "0" "$rc"
+counter_total="$(printf '%s\n' "$out" | sed -n 's/^==> .*\[[0-9]\{1,\}\/\([0-9]\{1,\}\)\]$/\1/p' | tail -1)"
+counter_last="$(printf '%s\n' "$out" | sed -n 's/^==> .*\[\([0-9]\{1,\}\)\/[0-9]\{1,\}\]$/\1/p' | tail -1)"
+counter_seen="$(printf '%s\n' "$out" | grep -c '^==> ' | tr -d ' ')"
+if [[ -n "$counter_total" ]] && (( counter_total > 1 )); then
+  ok "the plan counted $counter_total steps"
+else
+  err "no [n/total] counter in the step headers — the plan counted ${counter_total:-nothing}"
+fi
+assert_eq "the last step is the last of the plan" "$counter_total" "$counter_last"
+assert_eq "every planned step printed a header"  "$counter_total" "$counter_seen"
+rm -rf "$d"
+
+# The plan's own columns. "run" is three characters and "skip" four, so without
+# padding the DETAIL text sat one column left on every run row than on every
+# skip row beside it.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes --skip-trash)"
+assert_contains "the plan names all three columns" "$out" "STEP                               DO   DETAIL"
+# The column DETAIL starts in, not the verb. Reading the verb field as four
+# characters could not fail: unpadded output is "run " plus the separator, which
+# is the same four characters the padded form produces, so the assertion held
+# either way. What the padding actually decides is where the detail begins -
+# one column earlier on every "run" row when the verb is not padded - so the
+# measurement is the width of the verb and the spaces after it, and the check
+# is that every row agrees on it.
+plan_offsets="$(printf '%s\n' "$out" |
+  awk '/^  [a-z]/ { rest = substr($0, 38); if (match(rest, /^(run|skip) +/)) print RLENGTH }' |
+  sort -u | tr '\n' ',')"
+assert_eq "run and skip put DETAIL in the same column" "5," "$plan_offsets"
+rm -rf "$d"
+
+# The summary's outcome lists. Each entry is "Label  (duration · freed)" or
+# "Label (reason)", and with labels of every length the parenthesis opened at a
+# different column on every line, so the durations could not be read down as a
+# column. Padded at print time only: the same strings are written to
+# last-run.json and must not carry the padding there. The check is that every
+# parenthesis in a group opens at one column, and that there were at least two
+# of them, so an empty group cannot pass this by having nothing to line up.
+d="$(new_env)"; : > "$d/calls"
+out="$(run_sf "$d" --dry-run --yes --no-sudo)"; rc=$?
+assert_eq "the run that feeds the lists succeeds" "0" "$rc"
+group_columns() {
+  # $1 = group title; prints "<distinct columns> <lines with a parenthesis>"
+  printf '%s\n' "$out" | awk -v title="$1:" '
+    $0 == title { g = 1; next }
+    /^$/        { g = 0 }
+    g && /^  - / && index($0, "(") { print index($0, "(") }
+  ' | awk '{ seen[$1]++; n++ } END { printf "%d %d\n", length(seen), n }'
+}
+# Not pinned to a count: how many steps land in each group depends on which
+# tools the fixture stubs, and a number copied from one machine is the kind of
+# expectation this file has already had to unlearn once.
+for group in OK Skipped; do
+  read -r distinct lines <<<"$(group_columns "$group")"
+  if (( distinct == 1 && lines >= 2 )); then
+    ok "the $group list opens every parenthesis in one column ($lines lines)"
+  else
+    err "the $group list is ragged: $distinct distinct columns over $lines lines"
+  fi
+done
+rm -rf "$d"
+
+# ===========================================================================
+section "a cache a daemon rewrites is not the step's failure"
+# /Library/Caches refills within the same second on every healthy Mac: rm
+# removes an entry and a running daemon writes it again. That came back as
+# warn_step "could not fully clear ... protected or recreated entries remain",
+# so a clean machine reported WARN on every run - and the text offered
+# "protected" for entries that were never protected, only rewritten. The
+# fixture reproduces exactly that: a directory whose contents are removable and
+# whose entry reappears, with nothing denied and nothing protected.
+d="$(new_env)"; : > "$d/calls"
+# clear_dir is what verifies emptiness afterwards, and in this step it is
+# called on ~/Library/Application Support/Caches. The first fixture aimed at a
+# ~/Library/Caches entry, which clear_paths deletes without ever reaching that
+# verification - so the assertion passed against the unfixed script too.
+target="$d/home/Library/Application Support/Caches"
+mkdir -p "$target"; : > "$target/entry"
+# rm succeeds; the wrapper writes the entry back, the way a daemon would.
+mkbin "$d/bin/rm" 'for a in "$@"; do case "$a" in -*) continue ;; esac; /bin/rm -rf "$a"; done' \
+                  'mkdir -p "$HOME/Library/Application Support/Caches" 2>/dev/null' \
+                  ': > "$HOME/Library/Application Support/Caches/entry" 2>/dev/null; exit 0'
+out="$(run_sf "$d" --yes --only user-caches)"; rc=$?
+assert_contains "the fixture reached the directory that verifies" "$out" "Application Support/Caches"
+assert_eq "the run still succeeds" "0" "$rc"
+assert_not_contains "a rewritten cache is not blamed on the step" "$out" "warn steps:  1"
+assert_not_contains "and the word protected is not used for it" "$out" "protected or recreated"
+rm -rf "$d"
+
+# The names of running applications. "${running[*]}" joins on IFS, so two
+# multi-word names arrived as one unbroken run of words - "Visual Studio Code
+# Brave Browser" - naming an application nobody could look for.
+d="$(new_env)"; : > "$d/calls"
+mkdir -p "$d/home/Library/Application Support/Code/Cache"
+mkdir -p "$d/home/Library/Application Support/BraveSoftware/Brave-Browser/Default/Cache"
+out="$(RUNNING_APPS="Visual Studio Code
+Brave Browser" run_sf "$d" --yes --only app-caches)"; rc=$?
+assert_eq "the app-cache step still succeeds" "0" "$rc"
+if grep -q "running now:.*, " <<<"$out"; then
+  ok "two running applications are separated by a comma"
+elif grep -q "running now:" <<<"$out"; then
+  err "running applications are still run together: $(grep -m1 'running now:' <<<"$out")"
+else
+  ok "no application was reported running in this fixture"
+fi
+rm -rf "$d"
+
+# ===========================================================================
+section "a dry run does not claim to have reclaimed anything"
+# The summary subtracts the free-space reading taken at the end from the one
+# taken at the start and prints it, in green, as "(N reclaimed)". A dry run
+# deletes nothing, so that delta is whatever else the machine did while the run
+# was going - and on a busy machine it is negative, which put "-478.43M
+# reclaimed" in green directly above "steps freed: 0B" on a preview that had
+# removed nothing.
+#
+# df is stubbed to fall on every call, so the delta is negative by construction
+# rather than by luck. Two readings are taken per run, before and after.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" \
+  'n=0; [ -f "$HOME/.dfn" ] && n=$(cat "$HOME/.dfn"); n=$((n + 1)); echo "$n" >"$HOME/.dfn"' \
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
+  'echo "/dev/disk3s5 500000000 100000000 $((400000000 - n * 100000)) 20% /"'
+out="$(run_sf "$d" --dry-run --yes --only versions)"; rc=$?
+assert_eq "the dry run still succeeds" "0" "$rc"
+assert_not_contains "a dry run never claims a reclaimed total" "$out" "reclaimed)"
+assert_contains "it says why the two readings differ" "$out" \
+  "a dry run frees nothing"
+assert_contains "and still shows what it read" "$out" "disk free:"
+assert_not_contains "no dry run writes a history row" "$out" "could not append"
+rm -rf "$d"
+
+# The same machine, running for real: the delta is this run's to report, and a
+# negative one is a fact rather than a win. It must not print in green.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/df" \
+  'n=0; [ -f "$HOME/.dfn" ] && n=$(cat "$HOME/.dfn"); n=$((n + 1)); echo "$n" >"$HOME/.dfn"' \
+  'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
+  'echo "/dev/disk3s5 500000000 100000000 $((400000000 - n * 100000)) 20% /"'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "the real run still succeeds" "0" "$rc"
+assert_contains "a real run does report the delta" "$out" "reclaimed)"
+assert_contains "and the delta it reports is the negative one" "$out" "-97.66M reclaimed"
+rm -rf "$d"
 
 # ===========================================================================
 section "df unreadable (the summary reports no measurement rather than a wrong one)"
@@ -2653,6 +3325,219 @@ assert_eq "--fail-on-warn turns a warned step into exit 1" "1" "$rc"
 assert_contains "strict warning failure is explained" "$out" \
   "warnings are fatal because --fail-on-warn was requested"
 rm -rf "$d"
+
+# ===========================================================================
+section "review regressions: previews, discovery and plist precedence"
+for step in krew versions helm-plugins; do
+  d="$(new_env)"
+  for tool in kubectl kubectl-krew helm; do
+    mkbin "$d/bin/$tool" 'mkdir -p "$HOME/tool-state"' 'echo "called $*" >> "$CALLS"' 'echo krew'
+  done
+  out="$(run_sf "$d" --dry-run --only "$step")"; rc=$?
+  assert_eq "$step preview succeeds" 0 "$rc"
+  assert_gone "$step preview invokes no package query" "$d/home/tool-state"
+  rm -rf "$d"
+done
+for tool in helm kubectl gcloud; do
+  for behavior in failure timeout; do
+    d="$(new_env)"
+    mkbin "$d/bin/kubectl-krew" 'exit 0'
+    if [[ "$behavior" == timeout ]]; then
+      mkbin "$d/bin/$tool" 'echo discovery-stderr >&2' 'sleep 3; exit 0'
+    else
+      mkbin "$d/bin/$tool" 'echo discovery-stderr >&2' 'exit 7'
+    fi
+    case "$tool" in helm) step=helm-plugins ;; kubectl) step=krew ;; *) step=gcloud ;; esac
+    out="$(run_sf "$d" --yes --only "$step" --step-timeout 1 --fail-on-warn)"; rc=$?
+    assert_eq "$step $behavior discovery is a warning" 1 "$rc"
+    [[ "$behavior" != timeout ]] || assert_contains "$step discovery deadline is named" "$out" 'timed out'
+    assert_contains "$step discovery stderr reaches logs" "$(cat "$d/home/Library/Logs/stay_fresh/"*.log 2>/dev/null)" discovery-stderr
+    rm -rf "$d"
+  done
+done
+d="$(new_env)"; la="$d/home/Library/LaunchAgents"; mkdir -p "$la"
+python3 - "$la" <<'PYPLIST'
+import os, plistlib, sys
+for binary in (False, True):
+    for reverse in (False, True):
+        entries = [('ProgramArguments', ['/missing/argv0', '/missing/arg']), ('Program', '/bin/echo')]
+        if reverse:
+            entries.reverse()
+        with open(os.path.join(sys.argv[1], f'valid-{binary}-{reverse}.plist'), 'wb') as f:
+            plistlib.dump(dict(entries), f, fmt=plistlib.FMT_BINARY if binary else plistlib.FMT_XML, sort_keys=False)
+PYPLIST
+out="$(run_sf "$d" --yes --only launch-agents --prune-orphan-agents)"; rc=$?
+assert_eq "valid plist precedence run succeeds" 0 "$rc"
+for f in "$la"/valid-*; do assert_exists "Program overrides argv0 regardless of format/key order" "$f"; done
+assert_eq "all four valid plists survive" 4 "$(find "$la" -name '*.plist' | wc -l | tr -d ' ')"
+rm -rf "$d"
+
+section "lock publication contention and owner checked release"
+d="$(new_env)"
+mkbin "$d/bin/mkdir" '/bin/mkdir "$@" || exit $?' \
+  'case "$*" in */run.lock) if [ ! -e "$HOME/published" ]; then touch "$HOME/published"; while [ ! -e "$HOME/release" ]; do sleep 0.05; done; fi ;; esac'
+run_sf "$d" --yes --only versions >"$d/first.out" & first=$!
+for ((n=0; n<100; n++)); do [[ ! -e "$d/home/published" ]] || break; sleep 0.05; done
+assert_exists "first owner paused before metadata" "$d/home/published"
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "incomplete owner is contention" 2 "$rc"
+touch "$d/home/release"
+wait "$first"; rc=$?
+assert_eq "first owner completes" 0 "$rc"
+rm -rf "$d"
+d="$(new_env)"
+mkbin "$d/bin/pyenv" 'printf "99999999\n" > "$HOME/Library/Application Support/stay_fresh/run.lock/pid"' 'echo 3.12'
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "owner substitution fixture completes" 0 "$rc"
+assert_exists "exit preserves replacement owner metadata" "$d/home/Library/Application Support/stay_fresh/run.lock/pid"
+rm -rf "$d"
+
+# Stale reclaimers overlap while the first owns the claim but has not renamed.
+d="$(new_env)"; lock="$d/home/Library/Application Support/stay_fresh/run.lock"
+mkdir -p "$lock"; printf '99999999\n' > "$lock/pid"
+mkbin "$d/bin/mv" 'case "$1" in */run.lock) touch "$HOME/retiring"; while [ ! -e "$HOME/release" ]; do sleep 0.05; done ;; esac' 'exec /bin/mv "$@"'
+run_sf "$d" --yes --only versions >"$d/first.out" & first=$!
+for ((n=0; n<100; n++)); do [[ ! -e "$d/home/retiring" ]] || break; sleep 0.05; done
+assert_exists "stale owner retirement barrier reached" "$d/home/retiring"
+out="$(run_sf "$d" --yes --only versions)"; rc=$?
+assert_eq "second stale reclaimer is refused" 2 "$rc"
+touch "$d/home/release"
+wait "$first"; rc=$?
+assert_eq "first stale reclaimer completes" 0 "$rc"
+assert_gone "reclaimed owner releases its lock" "$lock"
+rm -rf "$d"
+
+section "bounded version and capability probes"
+d="$(new_env)"
+mkbin "$d/bin/pyenv" 'sleep 3; echo 3.12'
+out="$(run_sf "$d" --yes --only versions --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "version timeout affects verdict" 1 "$rc"
+assert_contains "version timeout is explicit" "$out" 'pyenv version timed out'
+rm -rf "$d"
+d="$(new_env)"
+mkbin "$d/bin/gcloud" 'case "$1" in help) sleep 3 ;; esac; exit 0'
+out="$(run_sf "$d" --yes --only gcloud --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "capability timeout affects verdict" 1 "$rc"
+assert_contains "capability timeout is explicit" "$out" 'gcloud Python update capability timed out'
+rm -rf "$d"
+
+section "deep-clean npx cache classification and preview"
+make_npx_fixture() {
+  mkdir -p "$1/home/.npm/_npx/0123456789abcdef/node_modules"
+  printf '%s\n' '{"dependencies":{"tool":"1.0"}}' > "$1/home/.npm/_npx/0123456789abcdef/package.json"
+  printf 'credential\n' > "$1/home/.npm/credentials"
+  find "$1/home/.npm/_npx" -exec touch -a -m -d '10 days ago' {} +
+}
+d="$(new_env)"
+make_npx_fixture "$d"
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"'
+out="$(run_sf "$d" --yes --only dev-caches)"; rc=$?
+assert_eq "ordinary cleanup succeeds" 0 "$rc"
+assert_exists "ordinary cleanup preserves npx entries" "$d/home/.npm/_npx/0123456789abcdef"
+mkbin "$d/bin/node" 'exit 0'
+mkbin "$d/bin/npm" 'echo "npm $*" >> "$CALLS"; mkdir -p "$HOME/npm-wrote"'
+out="$(run_sf "$d" --dry-run --only dev-caches --deep-clean)"; rc=$?
+assert_eq "npx preview succeeds" 0 "$rc"
+assert_contains "npx preview reports eligible old entry" "$out" "npx cache entries unchanged for at least 7 days: 1 path(s)"
+assert_exists "npx preview keeps cache" "$d/home/.npm/_npx/0123456789abcdef"
+assert_gone "npx preview never invokes npm" "$d/home/npm-wrote"
+assert_not_called "no npm calls during preview" "$d/calls" "npm "
+rm "$d/bin/npm"
+out="$(run_sf "$d" --yes --only dev-caches --deep-clean)"; rc=$?
+assert_eq "deep cleanup succeeds" 0 "$rc"
+assert_gone "deep cleanup removes old idle npx entry" "$d/home/.npm/_npx/0123456789abcdef"
+assert_exists "npm credentials survive deep cleanup" "$d/home/.npm/credentials"
+assert_contains "npx cleanup reports freed bytes" "$out" "npx cache entries unchanged for at least 7 days)"
+rm -rf "$d"
+for probe in silent failed malformed localized active; do
+  d="$(new_env)"
+  make_npx_fixture "$d"
+  case "$probe" in
+    silent) mkbin "$d/bin/ps" 'exit 0' ;;
+    failed) mkbin "$d/bin/ps" 'exit 2' ;;
+    malformed) mkbin "$d/bin/ps" 'echo "PID COMMAND"' ;;
+    localized) mkbin "$d/bin/ps" 'echo "Zugriff verweigert"' ;;
+    active) mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n9 node\n" "$PPID"' ;;
+  esac
+  out="$(run_sf "$d" --yes --only dev-caches --deep-clean --fail-on-warn)"; rc=$?
+  if [[ "$probe" == active ]]; then
+    assert_eq "active npx process is a safe skip" 0 "$rc"
+  else
+    assert_eq "$probe process probe raises warning verdict" 1 "$rc"
+  fi
+  assert_exists "$probe probe preserves npx cache" "$d/home/.npm/_npx/0123456789abcdef"
+  rm -rf "$d"
+done
+
+section "disk report includes large application data roots"
+d="$(new_env)"
+for report_root in 'Library/Group Containers' Library/pnpm .npm .lmstudio .ollama; do
+  mkdir -p "$d/home/$report_root"
+done
+out="$(run_sf "$d" --dry-run --only disk-report)"; rc=$?
+assert_eq "expanded disk report preview succeeds" 0 "$rc"
+for report_root in 'Library/Group Containers' Library/pnpm .npm .lmstudio .ollama; do
+  assert_contains "disk report names $report_root" "$out" "~/$report_root"
+done
+assert_contains "System Data explanation avoids promising disposable cache" "$out" "System Data is not all cache"
+rm -rf "$d"
+
+d="$(new_env)"
+mkdir -p "$d/home/.npm"
+mkbin "$d/bin/du" 'case "$*" in *"-d 1"*) printf "12\t%s/visible\n12\t%s\n" "$HOME/.npm" "$HOME/.npm"; exit 1 ;; esac; exec /usr/bin/du "$@"'
+out="$(run_sf "$d" --yes --only disk-report --fail-on-warn)"; rc=$?
+assert_eq "partial disk query remains report-only" 0 "$rc"
+assert_contains "partial disk query does not claim accurate total" "$out" "partial or unreadable; total unknown"
+mkbin "$d/bin/du" 'case "$*" in *"-d 1"*) sleep 3 ;; esac; exec /usr/bin/du "$@"'
+out="$(run_sf "$d" --yes --only disk-report --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "disk query timeout remains report-only" 0 "$rc"
+assert_contains "disk timeout leaves unknown total" "$out" "partial or unreadable; total unknown"
+rm -rf "$d"
+
+section "explicit rotated system log cleanup"
+mkdir -p /private/var/log
+chmod 755 /private /private/var /private/var/log
+make_system_log_fixture() {
+  printf 'old rotated fixture\n' > /private/var/log/system.log.999.gz
+  touch -a -m -d '40 days ago' /private/var/log/system.log.999.gz
+  printf 'current fixture\n' > /private/var/log/system.log
+}
+mkbin /usr/sbin/lsof 'printf "p%s\nn/private/var/log\n" "$PPID"'
+d="$(new_env)"
+make_system_log_fixture
+out="$(run_sf "$d" --yes --only diagnostics)"; rc=$?
+assert_eq "ordinary diagnostics remains successful" 0 "$rc"
+assert_exists "ordinary diagnostics preserves rotated system logs" /private/var/log/system.log.999.gz
+: > "$d/calls"
+out="$(run_sf "$d" --dry-run --only diagnostics --prune-system-logs)"; rc=$?
+assert_eq "system log preview succeeds" 0 "$rc"
+assert_contains "system log preview explains fixed retention" "$out" "rotated system logs unchanged for at least 30 days"
+assert_exists "system log preview preserves rotated file" /private/var/log/system.log.999.gz
+assert_not_called "preview never invokes privileged Python" "$d/calls" "sudo /usr/bin/python3"
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs --no-sudo)"; rc=$?
+assert_eq "system log no-sudo skip succeeds" 0 "$rc"
+assert_exists "no-sudo preserves rotated system logs" /private/var/log/system.log.999.gz
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs)"; rc=$?
+assert_eq "explicit system log cleanup succeeds" 0 "$rc"
+assert_gone "explicit system log cleanup deletes old compressed rotation" /private/var/log/system.log.999.gz
+assert_exists "explicit system log cleanup preserves current log" /private/var/log/system.log
+assert_contains "system log cleanup accounts real deletion" "$out" "rotated system logs: removed 1"
+assert_called "privileged helper uses isolated Python" "$d/calls" "sudo /usr/bin/python3 -I -B"
+make_system_log_fixture
+mkbin /usr/sbin/lsof 'exit 0'
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs --fail-on-warn)"; rc=$?
+assert_eq "silent system log open-file probe warns" 1 "$rc"
+assert_exists "silent system log probe preserves rotation" /private/var/log/system.log.999.gz
+out="$(run_sf "$d" --reports --prune-system-logs)"; rc=$?
+assert_eq "reports rejects destructive system log flag" 3 "$rc"
+out="$(run_sf "$d" --cache-report --prune-system-logs)"; rc=$?
+assert_eq "cache report rejects destructive system log flag" 3 "$rc"
+mkbin "$d/bin/sudo" 'exit 1'
+out="$(run_sf "$d" --yes --only diagnostics --prune-system-logs)"; rc=$?
+assert_exists "sudo failure preserves rotated logs" /private/var/log/system.log.999.gz
+assert_contains "sudo failure reports preserved logs" "$out" "rotated system logs kept"
+rm -rf "$d"
+rm -f /private/var/log/system.log.999.gz /private/var/log/system.log /usr/sbin/lsof
 
 # ===========================================================================
 if (( failures )); then

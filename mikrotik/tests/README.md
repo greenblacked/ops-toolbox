@@ -3,7 +3,8 @@
 [Ops Toolbox](../../README.md) / **MikroTik script tests (RouterOS 7.24.2)**
 
 Integration tests that run **real RouterOS CHR 7.24.2** in QEMU inside Docker and
-exercise every `*.lua` in `../`. Two services run side by side:
+exercise every `*.lua` in the package — `../core/` and `../features/` alike.
+Two services run side by side:
 
 - `chr` — Alpine + QEMU + the official CHR 7.24.2 disk (talks to host on
   `127.0.0.1:8728` for ad‑hoc inspection).
@@ -112,7 +113,7 @@ docker compose down -v
 
 1. **Version** — `/system resource` `version` starts with the exact requested
    release (a patch suffix is accepted only when the requested version omits it).
-2. **Source acceptance** — every `mikrotik/*.lua` is added as a
+2. **Source acceptance** — every `.lua` under `mikrotik/` is added as a
    `/system script` and removed. RouterOS rejects malformed source at `add`
    time, so this catches syntax issues against the live 7.24.2 parser.
 3. **Safe execution** — `wan_failover_notify`, `health_check`, and

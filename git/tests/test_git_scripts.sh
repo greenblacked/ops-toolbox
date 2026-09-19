@@ -29,6 +29,7 @@ CLONE="$G/clone-repos.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
+IGNORE_DOCTOR="$G/git_ignore_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -196,6 +197,30 @@ section "help and validation"
 for f in "${sh_scripts[@]}"; do
   rel="${f#"$G/"}"
   if "$f" --help >/dev/null; then ok "$rel --help"; else err "$rel --help"; fi
+done
+
+# The doctors are discovered for the same reason the shell scripts above are:
+# they were named one by one further up, so the fourth one added arrived with
+# no --help smoke at all until this loop existed. Every doctor parses its
+# arguments with argparse, so --help is exit 0 and a usage line, and a doctor
+# that cannot even print that is broken before any diagnosis runs.
+py_doctors=()
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  py_doctors+=("$f")
+done < <(find "$G" -maxdepth 1 -name '*_doctor.py' -type f | sort)
+
+if (( ${#py_doctors[@]} == 0 )); then
+  echo "discovered no doctors under $G — discovery is broken" >&2
+  exit 1
+fi
+ok "discovered ${#py_doctors[@]} doctors under git/"
+for f in "${py_doctors[@]}"; do
+  rel="${f#"$G/"}"
+  out="$("$f" --help 2>&1)"
+  rc=$?
+  assert_eq "$rc" "0" "$rel --help -> exit 0"
+  assert_contains "$out" "usage:" "$rel --help prints usage"
 done
 
 repo="$(new_repo)"
@@ -810,6 +835,98 @@ else
   err "signing doctor --quiet returned unexpected exit $rc"
 fi
 assert_eq "$out" "" "signing doctor --quiet suppresses its report"
+
+# A fresh repository has no ignore rules, so the sweep finds nothing and the
+# verdict is healthy. Asserted before the failing case below so a doctor that
+# reports a problem for every repository cannot pass on the exit code alone.
+out="$(cd "$repo" && "$IGNORE_DOCTOR" --quiet 2>&1)"
+rc=$?
+assert_eq "$rc" "0" "ignore doctor --quiet is healthy in a repo with no rules"
+assert_eq "$out" "" "ignore doctor --quiet suppresses its report"
+
+# The trap the doctor exists for: a file committed before the rule that now
+# claims it. Ignore rules apply to untracked paths only, so the rule does
+# nothing while the file stays in the index, and `git check-ignore` says
+# nothing either because it skips tracked files by default. The file has to be
+# staged with -f, which is precisely how it gets committed in the first place.
+claimed_repo="$(new_repo)"
+printf 'secrets.txt\n' >"$claimed_repo/.gitignore"
+printf 'token\n' >"$claimed_repo/secrets.txt"
+git -C "$claimed_repo" add -f .gitignore secrets.txt
+git -C "$claimed_repo" commit -qm "rule and the file it fails to ignore" >/dev/null
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" --quiet 2>&1)"
+rc=$?
+assert_eq "$rc" "1" "ignore doctor --quiet reports a tracked file a rule claims"
+assert_eq "$out" "" "ignore doctor --quiet suppresses that report too"
+
+# The same repository, loud: the exit code above only says something is wrong,
+# and a verdict that cannot name the file is not a diagnosis.
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" 2>&1)"
+assert_contains "$out" "secrets.txt" "ignore doctor names the tracked file"
+assert_contains "$out" "git rm --cached" "ignore doctor prints the repair"
+
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" /etc 2>&1)"
+rc=$?
+assert_eq "$rc" "3" "ignore doctor rejects a path outside the repository -> exit 3"
+
+# From a subdirectory. Every path the doctor hands git is rewritten relative
+# to the repository root, and git was run wherever the doctor was started, so
+# `cd sub && doctor secret.txt` asked about sub/sub/secret.txt, and the
+# no-argument sweep listed the subtree only: a clean exit from a package
+# directory of a repository whose root held a tracked, claimed file.
+cwd_repo="$(new_repo)"
+mkdir -p "$cwd_repo/sub"
+printf '/sub/secret.txt\n' >"$cwd_repo/.gitignore"
+printf 'token\n' >"$cwd_repo/sub/secret.txt"
+git -C "$cwd_repo" add -f .gitignore sub/secret.txt
+git -C "$cwd_repo" commit -qm "a claimed file under sub" >/dev/null
+(cd "$cwd_repo" && "$IGNORE_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "ignore doctor sweep from the root finds the claimed file"
+(cd "$cwd_repo/sub" && "$IGNORE_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "ignore doctor sweep from a subdirectory finds it too"
+out="$(cd "$cwd_repo/sub" && "$IGNORE_DOCTOR" secret.txt 2>&1)"
+assert_contains "$out" "git rm --cached" "ignore doctor from a subdirectory reads the path relative to the root"
+
+# Through a symlink, and a file whose name starts with two dots. The outside-
+# the-repository test compared an unresolved absolute path against git's
+# physical toplevel and refused anything reached through a symlink - /tmp on a
+# Mac, every repository under a symlinked ~/code - and also a tracked file
+# literally named ..config, whose relative path starts with two dots too.
+link_dir="$(mktemp -d /tmp/git-doctor-link.XXXXXX)"; rmdir "$link_dir"
+ln -s "$cwd_repo" "$link_dir"
+out="$(cd "$link_dir" && "$IGNORE_DOCTOR" "$link_dir/sub/secret.txt" 2>&1)"; rc=$?
+if [[ "$rc" -ne 3 ]]; then
+  ok "ignore doctor accepts a path reached through a symlink"
+else
+  err "ignore doctor refused a symlinked path as outside the repository: $out"
+fi
+printf 'x\n' >"$cwd_repo/..config"
+git -C "$cwd_repo" add -f -- ..config && git -C "$cwd_repo" commit -qm "a dotdot name" >/dev/null
+(cd "$cwd_repo" && "$IGNORE_DOCTOR" ..config >/dev/null 2>&1); rc=$?
+if [[ "$rc" -ne 3 ]]; then
+  ok "ignore doctor accepts a file named ..config"
+else
+  err "ignore doctor refused ..config as outside the repository"
+fi
+
+# A linked worktree, where .git is a file and info/exclude lives in the common
+# directory. The path was hard-coded as <root>/.git/info/exclude, so the doctor
+# denied the file existed two lines above citing a rule from it.
+wt_dir="$(mktemp -d /tmp/git-doctor-wt.XXXXXX)"; rmdir "$wt_dir"
+git -C "$cwd_repo" worktree add -q "$wt_dir" -b wt-branch 2>/dev/null
+printf 'wt-only.txt\n' >>"$cwd_repo/.git/info/exclude"
+printf 'w\n' >"$wt_dir/wt-only.txt"
+out="$(cd "$wt_dir" && "$IGNORE_DOCTOR" wt-only.txt 2>&1)"
+assert_contains "$out" "ignored by" "ignore doctor in a worktree sees the common exclude file's rule"
+assert_not_contains "$out" "no .git/info/exclude" "ignore doctor in a worktree does not deny the exclude file exists"
+
+# A leading **/ means every depth. It was reported as anchored, with a line
+# telling the reader it did not match elsewhere - the opposite of the truth.
+printf '**/logs\n' >"$cwd_repo/.gitignore"
+mkdir -p "$cwd_repo/a/b/logs" && printf 'l\n' >"$cwd_repo/a/b/logs/x"
+out="$(cd "$cwd_repo" && "$IGNORE_DOCTOR" a/b/logs/x 2>&1)"
+assert_contains "$out" "ignored by" "ignore doctor reports the **/ match"
+assert_not_contains "$out" "anchors it to" "ignore doctor does not call a leading **/ anchored"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"

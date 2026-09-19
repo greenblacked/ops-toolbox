@@ -51,10 +51,10 @@ than once, and focused on reducing repeat manual work.
 Three rules hold everywhere, and the test suites enforce them:
 
 - **`--help` works before anything else**, including on a machine the script
-  refuses to run on. An unrecognised flag exits `3` — from the Bash and
-  PowerShell scripts. The Python CLIs use `argparse`, which exits `2` by
-  its own convention; `check_conventions.sh` exempts them by extension rather
-  than fighting it.
+  refuses to run on. An unrecognised flag exits `3`, from every script in the
+  tree — Bash, PowerShell and Python alike. The Python CLIs carry a small
+  `argparse` subclass to get there, because argparse's own convention is to
+  exit `2`, and `2` here means "wrong environment".
 - **A dry run writes nothing.** Anything that changes a machine supports
   `--dry-run` (or `-DryRun`), and anything destructive is behind an explicit
   opt-in flag.
@@ -259,6 +259,15 @@ repositories and local bare remotes:
   that make `git remote -v` disagree with what git dials, and credential
   helpers — which accumulate across scopes and are emptied by a single blank
   value. Passwords in URLs are redacted before anything is printed. Read-only.
+- `git_ignore_doctor.py` — explains why a path is ignored, or why it stubbornly
+  is not. Asks git twice, with the index and without, so the commonest cause —
+  the file was committed before the rule existed, which makes the rule inert and
+  which `git check-ignore` reports as no match at all — is told apart from a
+  pattern that simply does not match. Names dead negations under an excluded
+  directory and prints the full ladder of lines that re-includes the file, since
+  git skips every directory on the way down and the one-line repair does
+  nothing. With no argument it sweeps the repository for tracked files an ignore
+  rule claims. Read-only.
 
 See [`git/README.md`](git/README.md) for command examples, exit-code
 conventions, alias setup, and Docker test details.
@@ -313,6 +322,23 @@ The macOS package is [`macos-initial-setup/`](macos-initial-setup/):
   via `/usr/bin/python3`; stdlib-only and unit-tested. It refuses to call an
   entry stale when its volume is not mounted, so an unplugged drive is never
   mistaken for a deleted project.
+- `lib/npx_cache.py` classifies old default npx cache entries for optional
+  deep cleanup, preserving entries when Node tools are running or inspection
+  is uncertain. The disk report also exposes model stores and app containers
+  without treating them as disposable caches.
+- `lib/large_storage.py` classifies idle Claude renderer caches for
+  `stay_fresh.sh`. VM bundles, GeForce NOW data, JetBrains recovery history
+  and Chrome's downloaded on-device model remain kept, even with `--deep-clean`.
+- `lib/jetbrains_versions.py` supports explicit removal of selected obsolete
+  JetBrains version folders with `--prune-jetbrains-version NAME`. Selected
+  settings, plugins and Local History are removed; newest/unselected versions
+  and active or uninspectable IDEs are preserved.
+- `lib/app_cache_inventory.py` maps installed third-party apps to their exact
+  bundle-ID and sandbox cache directories, plus Teams WebView cache leaves.
+  Running apps, unknown activity, databases and recordings remain protected.
+- `lib/system_logs.py` removes selected rotated system log archives older
+  than 30 days only when requested, preserving current logs and other system
+  data. Preview it through `stay_fresh.sh --prune-system-logs --dry-run`.
 - `macos_defaults.sh` sets the system preferences worth changing on a new Mac
   (Finder, Dock, key repeat, screenshot location). **Read-only by default**:
   with no flags it prints current versus desired and writes nothing, `--apply`
@@ -434,7 +460,7 @@ OS, so behaviour is actually exercised across all three package managers:
   session. A missing scheduler is a skip, not a failure.
 - `tls_expiry.sh` — read-only leaf certificate expiry for named PEMs and
   hostnames. Does not scan the CA trust store. Counterpart of
-  `mikrotik/cert_expiry_watch.lua`.
+  `mikrotik/features/cert_expiry_watch.lua`.
 - `config_backup.sh` — dated tar of `/etc` (or `--paths`) with rotation.
   A copy, not a restore; `--yes` required.
 - `ssh_client_doctor.sh` — read-only `~/.ssh` modes and IdentityFile paths.
@@ -864,6 +890,11 @@ zero times and the suite passes without having looked at it. Staged, it is
 covered from that moment on. The checklist for a new script, including the two
 documentation entries it is not finished without, is
 [in `CONTRIBUTING.md`](CONTRIBUTING.md#adding-a-script).
+
+[`ROADMAP.md`](ROADMAP.md) is the working order: what is true about the tree
+today, what is still broken, and the things deliberately not being done. Read it
+before opening a pull request that adds a script, so the work lands in the order
+the defects do.
 
 Licensed under the [MIT licence](LICENSE). Security reporting is covered in
 [`SECURITY.md`](SECURITY.md), behaviour in

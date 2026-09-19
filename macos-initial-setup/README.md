@@ -86,6 +86,8 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
+| `lib/npx_cache.py` | Classifier for old npx cache entries; used by the optional deep cleanup. Keeps entries when activity or cache ownership is uncertain. |
+| `lib/system_logs.py` | Guarded cleanup of selected rotated system logs older than 30 days. Called by the diagnostics step only when requested. |
 | `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions: git, docker, kubernetes (with server-side dry-run and completion for `k`), terraform, helm, aws profile switching, ansible, and a `retry` helper with exponential backoff. `find` and `grep` are deliberately never shadowed by `fd`/`rg` - the flags differ, and a command copied from a runbook has to work as written. |
 | `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development-docker-checks). |
 
@@ -122,6 +124,7 @@ code looks the way it does.
 | **Idempotent** | Re-running a script upgrades in place. No duplicate installs, no appended shell-rc blocks, no runaway cache. |
 | **Fail-soft** | One failing step never aborts the rest of the run. Missing tools are skipped with a note, not treated as errors. |
 | **Dry-run first** | `--dry-run` is supported on every script that mutates state (except the explicitly minimal `v1_stay_fresh.sh`). No `sudo` prompt is triggered in dry-run. |
+| **Live line** | While a step runs, `stay_fresh.sh` rewrites one line on the terminal with the step, its position and how long it has been going, so a slow step is distinguishable from a hung one. It is drawn on a terminal only — written to `/dev/tty`, never into the log or a pipe — and appears only once a step passes a second, so the quick ones do not flicker. `--no-progress`, or `STAY_FRESH_PROGRESS=0`, turns it off. |
 | **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh`, `status.sh` and `v1_stay_fresh.sh` write none. |
 | **No hidden writes** | Shell rc files are modified only when you pass `--setup-shell`. Every such block is bracketed by markers so it can be found and removed. |
 | **Opt-out, not opt-in** | `stay_fresh.sh` has a skip flag for every step. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
@@ -457,35 +460,36 @@ In the order they run:
    same way; the sweep keeps them and the step still warns `could not fully
    clear /Library/Caches`, unlike the user-cache step, which counts that class
    of refusal without a warning. See [Expected warnings](#expected-warnings).
-4. Clear user caches (`~/Library/Caches`, Saved State, Xcode
-   DerivedData, and related paths). What macOS refuses is sorted before it
-   is reported: entries the privacy controls or SIP protect (HomeKit,
-   CloudKit, Safari, a dozen Apple services) are counted and kept without a
-   warning, since no run can change that; an entry owned by another user,
-   such as the root-owned directory Slack's updater leaves behind, is
-   retried with sudo when a credential is already in hand and warned about
-   otherwise, since that one a person can fix. The retry names exactly the
-   entries `rm` refused; it never sweeps the whole directory as root, so the
-   protected entries stay protected.
-5. Clear **per-app caches** — the disposable data that lives outside
-   `~/Library/Caches` and is therefore invisible to step 4: the
-   Chromium-internal directories (`Cache`, `Code Cache`, `GPUCache`,
-   `Service Worker`, `blob_storage`) that Electron apps keep under
-   known Application Support roots, Spotify's `PersistentCache` (a streaming
-   cache that routinely reaches several gigabytes and lives nowhere near
-   `~/Library/Caches`), and downloaded extension `.vsix` archives.
-   Cache roots for running applications are kept. "Running" is decided from
-   the bundle's executable path (`/Visual Studio Code.app/Contents/MacOS/`),
-   not from a process name: Electron apps run as `Electron`, `Code Helper` or
-   a renderer, so a name match saw an open editor as idle and cleared the
-   cache underneath it. Sandboxed-container caches, whose activity cannot be
-   mapped reliably, are kept unless `--force-active-app-caches` is explicitly
-   passed.
-6. Clear **AI tool caches** for Codex, ChatGPT, Cursor, and Windsurf when the
-   matching process is confirmed not running. If process state cannot be
-   checked, the caches are kept. Only exact browser-cache directories, known
-   macOS bundle caches, and `~/.codex/tmp` are removed. Credentials, settings, conversations/sessions,
-   projects, extensions, Codex runtimes, and Ollama/downloaded models are kept.
+4. Clear safe user caches (`~/Library/Caches`, Xcode DerivedData, and related
+   paths). Saved Application State is preserved. Known application cache roots
+   are cleared only when the matching application is confirmed idle; unmapped
+   roots and roots whose process state cannot be checked are kept. Every
+   deletion target is resolved beneath the canonical home directory first;
+   symlinks, unverifiable ownership, and nested mount points are refused.
+5. Clear **per-app caches** outside `~/Library/Caches`: recognized cache
+   directories such as `Cache`, `Code Cache` and `GPUCache` directly under
+   known Application Support roots or their `Default` / `Profile *` profiles,
+   Spotify's `PersistentCache`, and downloaded extension `.vsix` archives.
+   Service Worker data, blob storage and nested session state are preserved.
+   JetBrains system directories contain Local History and are kept unless an
+   older version is explicitly selected with `--prune-jetbrains-version`; GeForce
+   NOW data and downloaded models also remain kept, even with `--deep-clean`.
+   [`lib/large_storage.py`](lib/large_storage.py) classifies extra storage.
+   [`lib/app_cache_inventory.py`](lib/app_cache_inventory.py) also maps installed
+   third-party bundles to their exact `~/Library/Caches/<bundle-ID>` and
+   sandbox `Data/Library/Caches` directories. It includes named Teams WebView
+   cache leaves. These additional targets require confirmed idle app and helper
+   processes, even with the force flag; their cache roots remain in place.
+   Running applications are detected across their bundle's `Contents/` tree,
+   including helper executables. `--force-active-app-caches` overrides a known
+   running non-AI application; failed process checks and unmapped sandbox
+   caches are always preserved.
+6. Clear **AI tool caches** for Codex, ChatGPT, Cursor, Windsurf and Claude
+   when the matching process is confirmed not running. If process state cannot
+   be checked, the caches are kept. Only exact browser-cache directories, known
+   macOS bundle caches, `~/.codex/tmp`, and Claude renderer caches classified
+   by [`lib/large_storage.py`](lib/large_storage.py) are removed. Credentials, settings, conversations/sessions,
+   projects, extensions, Codex runtimes, Claude VM bundles, and Ollama/downloaded models are kept.
 7. Prune **stale workspace storage**. VS Code (stable and Insiders) keeps
    a `workspaceStorage` entry for every folder ever opened and never
    garbage-collects them. Only entries whose recorded path is genuinely gone
@@ -502,11 +506,10 @@ In the order they run:
    except network shares (SMB, NFS, AFP, WebDAV), which are named and
    skipped: a share whose server went away blocks `find` for as long as the
    kernel retries, and a scheduled run has nobody to interrupt it.
-9. Prune Docker / OrbStack (stopped containers older than 7 days, networks,
-   builder cache, and **dangling images only** — tagged images are kept).
-   The container age filter is deliberate: a bare `container prune` also
-   removes the stopped container you exited five minutes ago and meant to
-   `docker start` again. Unused volumes are
+9. Prune Docker / OrbStack (networks, builder cache, and **dangling images
+   only** — tagged images are kept). Stopped containers are kept unless
+   `--prune-docker-containers` is passed. Docker's `until=168h` filter uses
+   creation time, not time since the container stopped. Unused volumes are
    kept unless `--prune-docker-volumes` is passed: volumes hold data, not
    cache, and a stopped project's database volume counts as "unused" the
    moment its container is removed.
@@ -518,6 +521,11 @@ In the order they run:
    those devices. Archives are kept unless an age threshold is explicitly set
    with `--prune-xcode-archives-days N`.
 11. Remove diagnostic and crash reports (user, plus system with `sudo`).
+    `--prune-system-logs` also removes selected rotated log archives older
+    than 30 days directly under `/private/var/log`: numbered archives of
+    `system.log`, `install.log` and `wifi.log`. Current logs, recent archives,
+    unrelated files and subdirectories are preserved. This deletes historical
+    troubleshooting records and is off by default, including with `--deep-clean`.
 12. Remove **old user logs**: files under `~/Library/Logs` older than 30 days.
     Every app, daemon and installer writes there and nothing prunes it, so a
     machine a few years old carries gigabytes of Homebrew, Docker, Adobe and
@@ -561,10 +569,15 @@ In the order they run:
     directories older than a week, and run `pre-commit gc`, which drops hook
     repositories no config points at. Old installed gem versions are package
     state, not cache, and are kept unless `--cleanup-old-gems` is explicit.
-    Gradle's `~/.gradle/caches` and Maven's `~/.m2/repository` are named on
-    every run and cleared only with `--prune-build-caches`: they are the
-    largest thing under `HOME` on a JVM workstation, and the slowest to get
-    back, because the next build downloads every dependency again.
+    Gradle's cache and wrapper distributions (under `GRADLE_USER_HOME` when
+    configured) are cleared only with `--prune-build-caches`. Maven's
+    `~/.m2/repository` is always preserved because it can contain artifacts
+    installed by local builds that no remote repository can restore.
+    With `--deep-clean`, also consider entries in the default `~/.npm/_npx`
+    cache whose contents have not been modified for at least seven days. Running Node, npm or
+    npx processes, failed process inspection, and ambiguous npm configuration
+    keep this cache untouched. This cache is separate from npm's downloaded
+    package cache; future npx runs may need to download packages again.
 17. Update installed Helm plugins.
 18. Update installed [krew](https://krew.sigs.k8s.io/) plugins: refresh the
     index, then `kubectl krew upgrade` each plugin. krew itself is a Homebrew
@@ -602,9 +615,12 @@ In the order they run:
     snapshots are listed and the next run thins.
 23. Print a **disk report**, opt-in (`--disk-report` or `--only disk-report`):
     the five largest entries under `~/Library/Caches`, `Application Support`,
-    `Containers`, `Developer`, `Logs`, `~/.cache` and `~/Downloads`, plus the
-    size of iPhone/iPad backups. Read-only, and off by default because `du`
-    over a full home directory takes minutes.
+    `Containers`, `Group Containers`, `Developer`, `Logs`, `~/.cache`,
+    `~/Downloads`, `~/Movies`, npm and pnpm data, and local model stores, plus a location
+    hint for iPhone/iPad backups. System cache and temporary-data roots are included
+    where readable. Read-only, and off by default because directory scans
+    can take minutes. These sizes describe storage, not guaranteed reclaimable
+    space: model libraries, virtual machines and app databases are preserved.
 
 Every real run then ends with a one-line verdict (`stay_fresh OK: freed 1.2G
 in 4m10s`, then step counts, packages Homebrew upgraded, casks still outdated,
@@ -633,7 +649,9 @@ last ten rows.
 ./stay_fresh.sh --reports         # the read-only subset: versions, OS updates, snapshots, downloads, launch agents, disk report
 ./stay_fresh.sh --prune-downloads-days 180 --dry-run # list what an old-downloads prune would remove
 ./stay_fresh.sh --prune-orphan-agents               # also remove orphaned user LaunchAgents
-./stay_fresh.sh --prune-build-caches # also clear ~/.gradle/caches and ~/.m2/repository
+./stay_fresh.sh --prune-build-caches # also clear Gradle caches; Maven local artifacts stay
+./stay_fresh.sh --deep-clean         # add Conda and guarded old npx cleanup
+./stay_fresh.sh --cache-report       # measure developer caches; change nothing
 ./stay_fresh.sh --thin-snapshots  # also delete local Time Machine snapshots
 ./stay_fresh.sh --disk-report     # also list the largest entries under ~/Library etc.
 ./stay_fresh.sh --history         # the last ten runs: result, freed, duration
@@ -641,6 +659,91 @@ last ten rows.
 ./stay_fresh.sh --yes --notify macos,slack # a banner and a Slack message
 ./stay_fresh.sh --yes --notify-when warn  # notify only when the run warned or failed
 ```
+
+### Investigating large System Data
+
+Additional installed-app cleanup follows Apple's
+[cache directory contract](https://developer.apple.com/documentation/foundation/using-the-file-system-effectively):
+files in `Library/Caches` must be disposable and recreatable. It does not infer
+that arbitrary Application Support folders are cache. An app that stores
+irreplaceable files inside its cache directory violates that contract; inspect
+the listed paths in preview when an app's behavior is uncertain.
+
+For messengers, Slack's named renderer caches and installed bundle caches are
+eligible when idle. Teams cleanup targets cache leaves, preserving IndexedDB,
+Service Worker, WebStorage and other account state. Zoom's models, plugins,
+account data and recordings remain outside the cache targets. Telegram's
+message/media database is also preserved; use its in-app storage controls for
+downloaded media. A full app-data reset is a separate action and can sign you out
+or discard local state.
+
+macOS **System Data** is a storage category, not one cache directory. Large
+app support directories, VM disks and downloaded models need an informed
+decision about what to keep. The disk report shows common locations without
+making them cleanup targets:
+
+```bash
+./stay_fresh.sh --only disk-report --no-sudo --yes
+./stay_fresh.sh --only dev-caches --deep-clean --no-sudo --dry-run
+./stay_fresh.sh --only dev-caches --deep-clean --no-sudo --yes
+```
+
+The first command measures storage; it still writes the normal maintenance
+log and history. The second previews cleanup without writes. The third applies
+developer-cache cleanup. Close Node-based development tools before running it
+if you want the old npx entries to be eligible. Custom npm cache locations are
+kept by the npx classifier. `stay_fresh.sh` clears idle Claude renderer caches
+while preserving its VM bundles and sessions. JetBrains recovery history,
+GeForce NOW data and downloaded models stay kept. Manage models in their owning
+app, Telegram
+media through its storage settings, iMovie and Apple TV libraries by hand, and
+virtual machines through their VM manager. Do not delete their complete support
+directories.
+
+For **obsolete JetBrains versions you no longer use**, select each exact version
+name explicitly. This removes its actual folders from the default user
+`Application Support/JetBrains`, `Caches/JetBrains`, and `Logs/JetBrains` roots,
+including that version's settings, plugins and Local History. Classification is handled by
+[`lib/jetbrains_versions.py`](lib/jetbrains_versions.py), separately from
+disposable cache cleanup:
+
+```bash
+./stay_fresh.sh --only app-caches --prune-jetbrains-version PyCharm2025.2 --prune-jetbrains-version PyCharm2026.1 --dry-run
+```
+
+The preview prints each selected folder and its measured size. After reviewing
+those paths and deciding you no longer need their contents, replace `--dry-run`
+with `--yes` to remove them. A newer recognized version of the same product must
+exist in at least one of the three default roots. The newest/only observed
+version, unselected versions and custom data locations remain untouched.
+Versioned backups cannot prove a newer installed version; ambiguous version
+names, unsafe paths and failed inventories preserve the selection. Active IDEs
+or unknown process state also preserve it, even with `--force-active-app-caches`.
+A newer directory is a safeguard, not proof that the selected version is unused.
+This flag is never enabled by `--deep-clean` or scheduled defaults and cannot be
+combined with report modes or a selection that excludes `app-caches`.
+
+JetBrains documents these locations and its own **Help → Delete Leftover IDE
+Directories** action in its [directory reference](https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html).
+
+For additional system cleanup, preview the system-cache and diagnostics steps:
+
+```bash
+./stay_fresh.sh --only system-caches,diagnostics --prune-system-logs --dry-run
+./stay_fresh.sh --only system-caches,diagnostics --prune-system-logs --yes
+```
+
+The second command requests sudo and applies cleanup. The new log option
+does not clear live logs, unified logging databases, swap, update assets,
+snapshots, or the contents of `/private/var/folders`. It never disables System
+Integrity Protection. Reclaimable space depends on the old archives present;
+the System Data total is not a cleanup estimate.
+
+Protected locations may be unreadable, and APFS snapshots can retain blocks
+after files are removed. A directory scan therefore cannot reproduce the
+Storage settings total or promise to reclaim all of it.
+
+### Notifications
 
 Telegram credentials come from `STAY_FRESH_TG_BOT_TOKEN` and
 `STAY_FRESH_TG_CHAT_ID`, or from the login Keychain, which is the right place
@@ -651,10 +754,10 @@ security add-generic-password -s stay_fresh-telegram -a bot-token -w '<bot token
 security add-generic-password -s stay_fresh-telegram -a chat-id  -w '<chat id>'
 ```
 
-The token is handed to `curl` as a config file on stdin, so it never appears
-in `ps` output. Slack (`--notify slack`) posts to an incoming webhook whose
-URL is the credential; it comes from `STAY_FRESH_SLACK_WEBHOOK` or the
-Keychain, and travels the same way:
+The token and chat id are handed to `curl` as a config file on stdin, so
+neither appears in `ps` output. Slack (`--notify slack`) posts to an incoming
+webhook whose URL is the credential; it comes from `STAY_FRESH_SLACK_WEBHOOK`
+or the Keychain, and travels the same way:
 
 ```bash
 security add-generic-password -s stay_fresh-slack -a webhook -w 'https://hooks.slack.com/services/...'
@@ -691,22 +794,27 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-syscaches` | Skip system-cache cleanup. |
 | `--force-system-caches` | Also clear `/System/Library/Caches`, and only then, and only when SIP is positively reported disabled. Boot caches stay. |
 | `--skip-usercaches` | Skip user-cache cleanup. |
-| `--skip-appcaches` | Skip per-app caches (step 5: Chromium/Electron directories, sandboxed containers, `.vsix`). |
-| `--force-active-app-caches` | Also clear running known-app roots and generic sandbox-container caches. |
-| `--skip-aicaches` | Skip Codex/ChatGPT/Cursor/Windsurf temporary-cache cleanup. |
+| `--skip-appcaches` | Skip per-app caches (step 5: recognized Chromium/Electron cache directories and `.vsix` downloads). |
+| `--prune-jetbrains-version NAME` | Remove one explicitly selected older JetBrains version from its three default user data roots, including settings/plugins/Local History. Repeat for multiple selections. Requires app-caches; newest versions and active/unknown IDEs remain protected. |
+| `--force-active-app-caches` | Also clear known-running non-AI caches from the fixed app list. Unknown process state and additional installed-app mappings, including sandbox caches, remain protected. |
+| `--skip-aicaches` | Skip Codex/ChatGPT/Cursor/Windsurf/Claude temporary-cache cleanup. |
 | `--skip-workspacestorage` | Skip pruning stale VS Code workspace storage (step 7). |
 | `--skip-trash` | Skip emptying `~/.Trash`. |
 | `--skip-brew` | Skip Homebrew update/upgrade/cleanup. |
 | `--skip-devcaches` | Skip `npm`/`yarn`/`pnpm`/`pip`/`uv`/`go`/kubectl cache cleanup. |
 | `--cleanup-old-gems` | Also run `gem cleanup`, which uninstalls old versions from `GEM_HOME`; disabled by default because this changes installed packages. |
-| `--prune-build-caches` | Also clear `~/.gradle/caches`, `~/.gradle/wrapper/dists` and `~/.m2/repository` (step 16); off by default because the next build downloads every dependency, and every wrapper distribution, again. |
+| `--prune-build-caches` | Also clear Gradle caches and wrapper distributions (step 16). Maven's local repository is preserved because it may contain locally installed artifacts. |
+| `--deep-clean` | Add Conda's native cleanup for tarballs, index cache, and logs after path validation, and guarded cleanup of default npx entries older than seven days. Recent or active npx entries, ambiguous configuration, Conda environments, extracted package caches and downloaded models are preserved. |
+| `--cache-report` | Standalone read-only measurement of validated developer cache paths. It uses explicit environment settings and read-only pip, uv, and Conda discovery; npm is never invoked, so without `npm_config_cache` its default path is clearly labeled as a guess. It performs no cleanup and accepts no cleanup/prune options. |
+| `--prune-docker-containers` | Remove stopped containers created more than 168 hours ago. Docker filters by creation age, so this is opt-in. |
 | `--skip-docker` | Skip Docker / OrbStack prune. |
 | `--prune-docker-volumes` | Also remove unused Docker volumes (kept by default — they hold data, not cache). |
 | `--skip-xcode` | Skip Xcode extras cleanup. |
 | `--prune-xcode-archives-days N` | Remove only `.xcarchive` bundles older than positive integer `N`; archives are otherwise kept. |
 | `--prune-unavailable-simulators` | Run `simctl delete unavailable`; unavailable devices and their data are otherwise only reported. |
 | `--trend` | Summarise the recorded runs and exit: whether free space is keeping up, which steps do the work, which are slowing down. Read-only. |
-| `--skip-diagnostics` | Skip diagnostic and crash-report cleanup. |
+| `--skip-diagnostics` | Skip diagnostic and crash-report cleanup, including optional rotated system logs. |
+| `--prune-system-logs` | With the diagnostics step, remove allowlisted rotated system log archives older than 30 days. Requires sudo for deletion; previews do not request sudo. `--no-sudo` keeps the system logs. |
 | `--skip-user-logs` | Skip removing files under `~/Library/Logs` older than 30 days (step 12). |
 | `--skip-downloads` | Skip the old-downloads report (step 13). |
 | `--prune-downloads-days N` | Remove top-level `~/Downloads` entries untouched for positive integer `N` days (step 13); off by default, the report only names them. |
@@ -753,7 +861,12 @@ cannot alter a cleanup target.
 Only one real run per user can be active at a time; the lock records the
 boot it was taken in, so one left by a run the last reboot ended is recognised
 as stale even when its pid has been reused (a boot time that moved by
-seconds is clock drift, not a reboot; only minutes count). Every command a
+seconds is clock drift, not a reboot; only minutes count). An incomplete lock
+is preserved because its owner may still be starting. Interrupted startup or
+stale-lock recovery can leave an abandoned `run.lock` (including its `reclaim`
+directory). Confirm that no maintenance run remains before removing that lock
+under `~/Library/Application Support/stay_fresh/`.
+Every command a
 step runs is under `--step-timeout` (30 minutes by default), the daemon and
 component-manager probes included: `brew update`, `softwareupdate --list`,
 `docker info`, `gcloud`, `helm` and `krew` all talk to the network or a
@@ -1206,9 +1319,9 @@ deliberately, and a machine with no battery — or one where `pmset` and `ioreg`
 cannot be read — takes the ordinary path.
 
 A scheduled run keeps the ten newest transcripts in
-`~/Library/Logs/stay_fresh/` and deletes the rest. `--dry-run` is exempt: it
-writes its own transcript, so you can read what the firing would have done, and
-deletes nothing.
+`~/Library/Logs/stay_fresh/` and deletes the rest. `--dry-run` prints the preview
+to stdout and creates no log directory, transcript or scheduled-run stamp;
+existing logs remain unchanged.
 
 **The agent cannot use `sudo`, and that is not a limitation to work around.** A
 LaunchAgent runs in your GUI login session with no terminal attached, so a
@@ -1259,7 +1372,7 @@ and both Homebrew locations. The agent is `ProcessType Background` with
 schedule missed while the Mac sleeps into one wake-time run. `run-now` refuses
 to interrupt an execution already in progress.
 
-Each invocation writes
+Each real invocation writes
 `~/Library/Logs/stay_fresh/agent-<timestamp>-<pid>.log`; the ten newest logs are
 kept. `logs` finds the newest timestamped file and prints its last 80 lines (or
 the positive count passed through `--tail`) without starting, stopping, or
@@ -1470,7 +1583,8 @@ Homebrew / `pyenv` / `goenv` commands.
 - Deletes per-app cache contents outside `~/Library/Caches`: the
   Chromium-internal directories under known Application Support roots and
   downloaded `.vsix` archives. Running application roots are skipped;
-  sandbox-container caches require `--force-active-app-caches`.
+  installed bundle mappings also cover exact third-party sandbox cache roots
+  when app and helper processes are confirmed idle. Unmapped containers stay kept.
 - Deletes exact disposable cache directories for idle Codex, ChatGPT, Cursor,
   and Windsurf installations, plus their known bundle caches and CLI
   temp roots. Active or unknown process state keeps the cache. It preserves

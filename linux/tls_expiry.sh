@@ -2,7 +2,7 @@
 # tls_expiry.sh
 # Read-only TLS certificate expiry check for a Linux machine.
 #
-# The counterpart of mikrotik/cert_expiry_watch.lua. That script watches the
+# The counterpart of mikrotik/features/cert_expiry_watch.lua. That script watches the
 # RouterOS certificate store; this one watches the PEMs and hostnames you
 # actually serve. It never scans /etc/ssl/certs — that directory is a CA
 # trust store, and paging on a distro root that expires next month is noise.

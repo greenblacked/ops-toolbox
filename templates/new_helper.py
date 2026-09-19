@@ -175,8 +175,29 @@ def run(cmd, timeout=15):
     )
 
 
+class Usage3Parser(argparse.ArgumentParser):
+    """An ArgumentParser that exits 3 on a usage error, the way the rest of the
+    tree does.
+
+    CONTRIBUTING.md asks the same thing of every command-line script here: an
+    unknown flag prints a message on stderr, then the usage, then exits 3. The
+    Bash half of the repository does that and is held to it. Argparse exits 2
+    instead, which this repository spends on "wrong environment" — so a
+    mistyped flag came back indistinguishable from a machine that could not
+    answer, and in the diagnostics that document an exit 2 of their own,
+    literally the same number for a typo and for a finding.
+
+    Copied rather than shared, like require_value() in the shell scripts: what
+    is asserted about the copies is their contract, not their bytes.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(3, "%s: error: %s\n" % (self.prog, message))
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(
+    parser = Usage3Parser(
         description="Read-only report on whether a command is installed and "
                     "which version it claims to be.",
         epilog="Exit codes: 0 findings printed, 4 nothing to report.",

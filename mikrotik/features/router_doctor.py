@@ -32,6 +32,9 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# The package root, one level up: this file lives in features/ and the scripts
+# it compares the router against are split across core/ and features/.
+PACKAGE_DIR = os.path.dirname(HERE)
 
 # Scripts that are meant to be run by hand. "No scheduler" is the correct state
 # for these, and print_schedulers.sh does not emit entries for them either —
@@ -197,12 +200,34 @@ def global_state(name, env):
 
 
 def local_script_names(directory):
-    """The .lua scripts next to this file, under the names they take on the router."""
-    try:
-        entries = os.listdir(directory)
-    except OSError:
+    """The package's .lua scripts, under the names they take on the router.
+
+    Walks, because the scripts live in core/ and features/ rather than in one
+    flat directory, and this file sits in one of them. A router script's name
+    has no folder in it - core/backup is `backup` on the router - so the names
+    this returns are unchanged by how the files are arranged. tests/ is skipped:
+    a fixture .lua there is not a script anyone installs.
+
+    A directory that is not there returns [] - this file has to survive being
+    copied on its own into ~/bin, with no package beside it, and main() says
+    so. A directory that is there and cannot be read raises instead. os.walk
+    swallows those by default, one directory at a time, and the result is the
+    worst answer this function can give: a list that looks complete and is
+    short. Every name it lost is then reported as a script the router has and
+    the package does not - with core/ unreadable, the three deployed scripts
+    come back as strangers.
+    """
+    def fail(exc):
+        raise exc
+
+    if not os.path.isdir(directory):
         return []
-    return sorted(name[:-4] for name in entries if name.endswith(".lua"))
+
+    names = []
+    for _root, dirs, files in os.walk(directory, onerror=fail):
+        dirs[:] = [d for d in dirs if d != "tests"]
+        names.extend(name[:-4] for name in files if name.endswith(".lua"))
+    return sorted(names)
 
 
 def build_findings(local, installed, schedulers, env):
@@ -350,8 +375,29 @@ def probe(host, user, identity, port, timeout, command=PROBE):
     )
 
 
+class Usage3Parser(argparse.ArgumentParser):
+    """An ArgumentParser that exits 3 on a usage error, the way the rest of the
+    tree does.
+
+    CONTRIBUTING.md asks the same thing of every command-line script here: an
+    unknown flag prints a message on stderr, then the usage, then exits 3. The
+    Bash half of the repository does that and is held to it. Argparse exits 2
+    instead, which this repository spends on "wrong environment" — so a
+    mistyped flag came back indistinguishable from a machine that could not
+    answer, and in the diagnostics that document an exit 2 of their own,
+    literally the same number for a typo and for a finding.
+
+    Copied rather than shared, like require_value() in the shell scripts: what
+    is asserted about the copies is their contract, not their bytes.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(3, "%s: error: %s\n" % (self.prog, message))
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(
+    parser = Usage3Parser(
         description="Read-only check of which RouterOS scripts are installed, "
                     "scheduled, and configured.",
         epilog="Exit codes: 0 findings printed, 1 connected but the probe failed, "
@@ -368,7 +414,7 @@ def main(argv=None):
         default="text",
         help="output format (default: text)",
     )
-    parser.add_argument("--scripts-dir", default=HERE, help=argparse.SUPPRESS)
+    parser.add_argument("--scripts-dir", default=PACKAGE_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     rc, out, err = probe(args.host, args.user, args.identity, args.port, args.timeout)
@@ -408,7 +454,25 @@ def main(argv=None):
         return 1
 
     installed, schedulers, env = parse_report(out)
-    local = local_script_names(args.scripts_dir)
+    # Preflight, even though it runs after the ssh probe: the comparison below
+    # is only meaningful against the whole package, and half of it read is
+    # worse than none - every script that could not be read is reported as one
+    # the router has and the package does not.
+    try:
+        local = local_script_names(args.scripts_dir)
+    except OSError as exc:
+        if args.format == "json":
+            print(json.dumps({
+                "host": args.host,
+                "reachable": True,
+                "probe_ok": True,
+                "scripts_dir": args.scripts_dir,
+                "errors": ["cannot read the scripts: %s" % exc],
+            }, sort_keys=True))
+            return 2
+        bad("cannot read the scripts under %s: %s" % (args.scripts_dir, exc))
+        info("pass --scripts-dir to point at the mikrotik package")
+        return 2
 
     findings = build_findings(local, installed, schedulers, env)
     if args.format == "json":
@@ -444,8 +508,8 @@ def main(argv=None):
     info("/system script holds %d entries; /system scheduler holds %d"
          % (len(installed), len(schedulers)))
     if not local:
-        warn("no .lua files next to this script — only what the router has can "
-             "be checked")
+        warn("no .lua files under %s — only what the router has can be checked"
+             % args.scripts_dir)
 
     head("findings")
     for level, message in findings:

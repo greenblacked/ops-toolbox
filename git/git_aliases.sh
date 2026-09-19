@@ -71,6 +71,7 @@ _pus_git_alias gprofile set_git_profile.sh
 _pus_git_alias gssh     git_ssh_doctor.py
 _pus_git_alias gsign    git_signing_doctor.py
 _pus_git_alias gremote  git_remote_doctor.py
+_pus_git_alias gignore  git_ignore_doctor.py
 
 unset -f _pus_git_alias
 unset _pus_git_aliases_dir

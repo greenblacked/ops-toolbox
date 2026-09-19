@@ -9,6 +9,11 @@ what happened.
 There is no formal response window — this is a personal collection of helper
 scripts, not a product.
 
+A tag, when there is one, is a snapshot of the tree on the day it was cut. It
+is not a supported release: there is no backport branch, and a fix lands on
+`master` and waits for the next tag. Run the tag if you want a fixed set of
+scripts to copy from; track `master` if you want the fixes.
+
 ## What matters most here
 
 These scripts run with real privileges on real machines. The failure modes worth
@@ -27,7 +32,7 @@ reporting are:
 RouterOS scripts in [`mikrotik/`](mikrotik/) never contain credentials in the
 script body. Bot tokens, chat IDs and upload credentials are read from
 `:global` variables set once at boot, so the scripts stay copy-pasteable and
-shareable — see [`mikrotik/tg_send.lua`](mikrotik/tg_send.lua) for the pattern.
+shareable — see [`mikrotik/core/tg_send.lua`](mikrotik/core/tg_send.lua) for the pattern.
 
 If you are adapting these scripts, keep that split. A router configuration
 export contains the source of every `/system script`, so a token pasted into a

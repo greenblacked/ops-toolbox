@@ -1,4 +1,4 @@
-"""Tests for mikrotik/export_config.py.
+"""Tests for mikrotik/features/export_config.py.
 
 Only normalisation is covered, and deliberately so: it is the part with a
 judgement call in it. Strip too little and every export is a noisy diff; strip
@@ -20,7 +20,7 @@ from unittest import mock
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "features"))
 
 import export_config  # noqa: E402
 
@@ -107,14 +107,14 @@ class ArgumentGuardTestCase(unittest.TestCase):
             rc = export_config.main(
                 ["--host", "192.0.2.1", "--show-sensitive", "--commit"]
             )
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 3)
         self.assertIn("secrets", (out.getvalue() + errout.getvalue()).lower())
 
     def test_output_modes_are_mutually_exclusive(self):
         rc = export_config.main(
             ["--host", "192.0.2.1", "--stdout", "--diff"]
         )
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 3)
 
 
 class DiffModeTestCase(unittest.TestCase):
@@ -170,6 +170,29 @@ class DiffModeTestCase(unittest.TestCase):
                     "--host", "router", "--name", "router", "--out", tmp, "--diff"
                 ])
             self.assertEqual(rc, 1)
+
+
+class DefaultOutputTestCase(unittest.TestCase):
+    """Where an export lands when --out is not given.
+
+    The history is the operator's, not the package's: it is not tracked here
+    (`.gitignore`), it predates the core/features split, and the README points
+    at `mikrotik/config-history/`. Keying the default off this file's own
+    folder moved it to `mikrotik/features/config-history/` when the file moved
+    - silently, into an empty directory, with `--diff` comparing a live export
+    against nothing while every stored export sat where it had always been.
+    """
+
+    def test_default_out_is_the_package_root_not_this_file_s_folder(self):
+        package = os.path.join(REPO_ROOT, "mikrotik")
+        self.assertEqual(
+            export_config.DEFAULT_OUT, os.path.join(package, "config-history")
+        )
+        self.assertNotEqual(
+            os.path.dirname(export_config.DEFAULT_OUT),
+            os.path.dirname(os.path.abspath(export_config.__file__)),
+            "the export history must not follow the script between folders",
+        )
 
 
 if __name__ == "__main__":

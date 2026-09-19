@@ -57,6 +57,7 @@ _pretty_git_alias gprofile set_git_profile.sh
 _pretty_git_alias gssh     git_ssh_doctor.py
 _pretty_git_alias gsign    git_signing_doctor.py
 _pretty_git_alias gremote  git_remote_doctor.py
+_pretty_git_alias gignore  git_ignore_doctor.py
 
 unfunction _pretty_git_alias
 unset _pretty_git_aliases_file _pretty_git_aliases_dir
