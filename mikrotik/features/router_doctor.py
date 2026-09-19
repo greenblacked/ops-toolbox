@@ -32,8 +32,8 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-# The package root, one level up: this file lives in monitoring/ and the scripts
-# it compares the router against are split across core/ and monitoring/.
+# The package root, one level up: this file lives in features/ and the scripts
+# it compares the router against are split across core/ and features/.
 PACKAGE_DIR = os.path.dirname(HERE)
 
 # Scripts that are meant to be run by hand. "No scheduler" is the correct state
@@ -202,23 +202,31 @@ def global_state(name, env):
 def local_script_names(directory):
     """The package's .lua scripts, under the names they take on the router.
 
-    Walks, because the scripts live in core/ and monitoring/ rather than in one
+    Walks, because the scripts live in core/ and features/ rather than in one
     flat directory, and this file sits in one of them. A router script's name
     has no folder in it - core/backup is `backup` on the router - so the names
     this returns are unchanged by how the files are arranged. tests/ is skipped:
     a fixture .lua there is not a script anyone installs.
 
-    An unreadable directory returns [], which the caller must not read as "the
-    router is missing nothing": every comparison against this list would come
-    back clean. build_findings() is given the count and says so.
+    A directory that is not there returns [] - this file has to survive being
+    copied on its own into ~/bin, with no package beside it, and main() says
+    so. A directory that is there and cannot be read raises instead. os.walk
+    swallows those by default, one directory at a time, and the result is the
+    worst answer this function can give: a list that looks complete and is
+    short. Every name it lost is then reported as a script the router has and
+    the package does not - with core/ unreadable, the three deployed scripts
+    come back as strangers.
     """
-    names = []
-    try:
-        for _root, dirs, files in os.walk(directory):
-            dirs[:] = [d for d in dirs if d != "tests"]
-            names.extend(name[:-4] for name in files if name.endswith(".lua"))
-    except OSError:
+    def fail(exc):
+        raise exc
+
+    if not os.path.isdir(directory):
         return []
+
+    names = []
+    for _root, dirs, files in os.walk(directory, onerror=fail):
+        dirs[:] = [d for d in dirs if d != "tests"]
+        names.extend(name[:-4] for name in files if name.endswith(".lua"))
     return sorted(names)
 
 
@@ -446,7 +454,25 @@ def main(argv=None):
         return 1
 
     installed, schedulers, env = parse_report(out)
-    local = local_script_names(args.scripts_dir)
+    # Preflight, even though it runs after the ssh probe: the comparison below
+    # is only meaningful against the whole package, and half of it read is
+    # worse than none - every script that could not be read is reported as one
+    # the router has and the package does not.
+    try:
+        local = local_script_names(args.scripts_dir)
+    except OSError as exc:
+        if args.format == "json":
+            print(json.dumps({
+                "host": args.host,
+                "reachable": True,
+                "probe_ok": True,
+                "scripts_dir": args.scripts_dir,
+                "errors": ["cannot read the scripts: %s" % exc],
+            }, sort_keys=True))
+            return 2
+        bad("cannot read the scripts under %s: %s" % (args.scripts_dir, exc))
+        info("pass --scripts-dir to point at the mikrotik package")
+        return 2
 
     findings = build_findings(local, installed, schedulers, env)
     if args.format == "json":
@@ -482,8 +508,8 @@ def main(argv=None):
     info("/system script holds %d entries; /system scheduler holds %d"
          % (len(installed), len(schedulers)))
     if not local:
-        warn("no .lua files next to this script — only what the router has can "
-             "be checked")
+        warn("no .lua files under %s — only what the router has can be checked"
+             % args.scripts_dir)
 
     head("findings")
     for level, message in findings:

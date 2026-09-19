@@ -152,8 +152,7 @@ run_sf() {
     RUNNING_APPS="${RUNNING_APPS:-}" \
     PGREP_RC="${PGREP_RC:-}" \
     DOCKER_ENDPOINT="${DOCKER_ENDPOINT:-unix:///var/run/docker.sock}" \
-    DOCKER_INFO_FAIL_AFTER="${DOCKER_INFO_FAIL_AFTER:-}" \
-    DOCKER_INFO_N="$d/docker.info.n" \
+    DOCKER_DAEMON_GONE="${DOCKER_DAEMON_GONE:-}" \
     NODE_RC="${NODE_RC:-0}" \
     HELM_UPDATE_RC="${HELM_UPDATE_RC:-0}" \
     KREW_UPGRADE_RC="${KREW_UPGRADE_RC:-0}" \
@@ -967,23 +966,19 @@ docker_fake() {
     'case "${1:-}" in' \
     '  info)' \
     '    [ -n "${DOCKER_INFO_HANG:-}" ] && sleep 60' \
-    '    if [ -n "${DOCKER_INFO_FAIL_AFTER:-}" ]; then' \
-    '      n=$(cat "$DOCKER_INFO_N" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$DOCKER_INFO_N"' \
-    '      [ "$n" -gt "$DOCKER_INFO_FAIL_AFTER" ] && exit 1' \
-    '    fi' \
     '    exit 0 ;;' \
     '  context)' \
     '    case "${2:-}" in' \
-    '      show)' \
-    '        if [ -n "${DOCKER_INFO_FAIL_AFTER:-}" ]; then' \
-    '          n=$(cat "$DOCKER_INFO_N" 2>/dev/null || echo 0)' \
-    '          [ "$n" -ge "$DOCKER_INFO_FAIL_AFTER" ] && exit 1' \
-    '        fi' \
-    '        echo default ;;' \
+    '      show) echo default ;;' \
     '      inspect) [ -n "${DOCKER_INSPECT_FAIL:-}" ] && exit 1; echo "$DOCKER_ENDPOINT" ;;' \
     '    esac' \
     '    exit 0 ;;' \
-    '  system) printf "Images\t1.5GB\n"; exit 0 ;;' \
+    '  system)' \
+    '    [ -n "${DOCKER_DAEMON_GONE:-}" ] && exit 1' \
+    '    printf "Images\t1.5GB\n"; exit 0 ;;' \
+    '  network|image|builder|volume|container)' \
+    '    [ -n "${DOCKER_DAEMON_GONE:-}" ] && exit 1' \
+    '    exit 0 ;;' \
     'esac' \
     'exit 0'
 }
@@ -994,7 +989,8 @@ assert_not_called "stopped containers are untouched by default" "$d/calls" "dock
 assert_contains "the run explains the container opt-in" "$out" "--prune-docker-containers"
 # The second probe is gone: preflight already ran `docker info` under
 # --step-timeout, and a daemon that then hung held the run lock for another
-# full limit. `docker context show` is the liveness check that remains.
+# full limit. What remains is `docker system df`, which the step needs for the
+# size line anyway and is the first call here that reaches the socket.
 assert_eq "docker info is probed once, at preflight" "1" \
   "$(grep -c '^docker info$' "$d/calls" | tr -d ' ')"
 for sub in "network prune -f" \
@@ -1040,11 +1036,19 @@ assert_not_called "nothing is pruned when endpoint inspection fails" "$d/calls" 
 rm -rf "$d"
 
 # A daemon that answers preflight and then goes away is the case that has to
-# reach STEPS_FAIL and exit 1 rather than being reported as a clean run.
+# reach STEPS_FAIL and exit 1 rather than being reported as a clean run. It is
+# also the case `docker context show` cannot see: that reads the CLI's own
+# context store, never the socket, so it answers "default" with the daemon
+# dead. Checking it instead of a real call left every prune below to discover
+# the death on its own - each one warning rather than failing, so the step
+# ended WARN and the run exited 0, and each one waiting a full --step-timeout
+# first if the daemon hung rather than died.
 d="$(new_env)"; : > "$d/calls"; docker_fake "$d"
-DOCKER_INFO_FAIL_AFTER=1 out="$(run_sf "$d" --yes --only docker)"; rc=$?
+DOCKER_DAEMON_GONE=1 out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "a step that hard-fails exits 1" "1" "$rc"
 assert_contains "a hard failure is counted" "$out" "failed:      1"
+assert_contains "the failure names the call that noticed" "$out" "docker system df"
+assert_not_called "a dead daemon stops the step before the prunes" "$d/calls" "prune"
 rm -rf "$d"
 
 # A daemon that accepts the socket and never answers used to hang the

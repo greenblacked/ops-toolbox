@@ -43,7 +43,13 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_OUT = os.path.join(HERE, "config-history")
+# The package root, not this file's folder. The history is an operator's, not
+# the package's: it predates the core/features split, and keying the default
+# off HERE would have moved it to mikrotik/features/config-history/ when this
+# file moved - silently, writing into an empty directory and diffing --diff
+# against nothing, with every previous export still sitting where it was.
+PACKAGE_DIR = os.path.dirname(HERE)
+DEFAULT_OUT = os.path.join(PACKAGE_DIR, "config-history")
 
 # The header RouterOS stamps on every export. Both the timestamp and the version
 # line change independently of the configuration itself.

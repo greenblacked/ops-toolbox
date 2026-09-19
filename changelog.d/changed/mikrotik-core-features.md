@@ -1,8 +1,9 @@
 - The RouterOS scripts are split into `mikrotik/core/` and
   `mikrotik/features/`, by whether this fleet runs them. `core/` holds the three
   that are deployed and scheduled — `backup_update_check.lua`,
-  `detect_internet.lua`, and the Telegram helper they both need, `tg_send.lua`
-  (installed on the router as `tg_send_new`). `features/` holds everything else
+  `detect_internet.lua`, and the Telegram helper they send through,
+  `tg_send.lua`, installed under its own name (`backup_update_check` defaults
+  to the operator's separate copy, `tg_send_new`). `features/` holds everything else
   the package offers and nobody has deployed: the other backup and update paths,
   the hardening audit, the watchers and notifiers, and the two host-side tools.
   Being in `features/` says nothing about quality — both folders are held to the

@@ -3911,14 +3911,13 @@ step_docker() {
     warn "docker not on PATH"
     return 1
   fi
-  # Preflight already ran `docker info` under --step-timeout. A second probe
-  # here, on a daemon that then hung, held the run lock for another full
-  # limit (default 1800s). context show is the liveness check that remains:
-  # if the daemon has gone away since preflight, fail the step the way info
-  # used to, rather than warning and reporting a clean run.
+  # Which daemon this CLI talks to, and whether it is local. Both of these
+  # read ~/.docker/contexts — the CLI's own store — and neither opens the
+  # socket, so a failure here means the context is unusable, not that the
+  # daemon is down. The liveness check is `docker system df` below.
   local ctx host
   if ! ctx="$(docker context show 2>>"$LOG_SINK")" || [[ -z "$ctx" ]]; then
-    warn "docker daemon not reachable"
+    warn "cannot read the current Docker context"
     return 1
   fi
   if ! host="$(docker context inspect "$ctx" --format '{{ (index .Endpoints "docker").Host }}' 2>>"$LOG_SINK")" \
@@ -3931,9 +3930,20 @@ step_docker() {
     return 0
   fi
 
-  # Size before
-  local before after
-  before="$(with_timeout "$STEP_TIMEOUT" docker system df --format '{{.Type}}\t{{.Size}}' 2>/dev/null | awk -F'\t' '{print $1": "$2}' | paste -sd ', ' - || echo 'unknown')"
+  # Size before, and the one call in this step that proves the daemon is
+  # still there. Preflight already ran `docker info` under --step-timeout; a
+  # second probe here, on a daemon that then hung, held the run lock for
+  # another full limit (default 1800s). This is the first command that has to
+  # reach the socket anyway, so checking its exit status costs nothing and
+  # fails the step in one timeout rather than letting each prune below spend
+  # its own finding out the same thing.
+  local before after df_out
+  if ! df_out="$(with_timeout "$STEP_TIMEOUT" docker system df --format '{{.Type}}\t{{.Size}}' 2>>"$LOG_SINK")"; then
+    warn "docker daemon not reachable ('docker system df' failed)"
+    return 1
+  fi
+  before="$(printf '%s\n' "$df_out" | awk -F'\t' '{print $1": "$2}' | paste -sd ', ' -)"
+  [[ -n "$before" ]] || before="unknown"
   printf "  docker disk usage: %s%s%s\n" "$C_DIM" "$before" "$C_RESET"
 
   # Keep tagged images, remove only dangling (<none>) ones.

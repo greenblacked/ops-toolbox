@@ -17,7 +17,7 @@ Two folders: what this fleet runs, and what the package offers.
 
 | Folder | What is in it |
 | --- | --- |
-| [`core/`](core/) | The scripts actually deployed and scheduled on the routers: `backup_update_check.lua`, `detect_internet.lua` and the Telegram helper they both need, `tg_send.lua` (installed on the router as `tg_send_new`). If one of these stops working, something real stops working. |
+| [`core/`](core/) | The scripts actually deployed and scheduled on the routers: `backup_update_check.lua`, `detect_internet.lua` and the Telegram helper they send through, `tg_send.lua` (installed under its own name, `tg_send` — `backup_update_check` is pointed at the operator's separate copy, `tg_send_new`, by default). If one of these stops working, something real stops working. |
 | [`features/`](features/) | Everything else the package offers and this fleet has not deployed — the other backup and update paths, the hardening audit, the watchers and notifiers, and the two host-side tools. Written, tested on the CHR and ready; not in use. |
 
 Being in `features/` says nothing about quality: every script in both folders is
