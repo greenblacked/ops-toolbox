@@ -35,6 +35,15 @@
 :global OpsToolboxPaused;
 :if (([:typeof $OpsToolboxPaused] = "bool") and $OpsToolboxPaused) do={ :return ""; }
 
+# Optional operator-reviewed explanation for this exact observed version pair.
+# These values are evidence labels only; the script does not fetch or validate
+# a vulnerability feed.
+:global RouterUpdateInstalled;
+:global RouterUpdateTarget;
+:global RouterUpdateReason;
+:global RouterUpdatePriority;
+:global RouterUpdateSource;
+
 # --- settings ----------------------------------------------------------------
 # The Telegram helper to call. Defaults to tg_send_new, the operator's own
 # copy, so a router that already has one keeps using it. The package's
@@ -166,6 +175,23 @@
 :local CheckOk ([:len $Reason] = 0)
 :local UpdateOffered ([:typeof [:find $Status "New version is available"]] != "nil")
 :local StatusText [$HtmlEscape $Status]
+
+# Availability and urgency are different questions. Default to REVIEW and only
+# display operator-reviewed evidence when it matches the exact observed pair.
+:local UpdateReason "A newer release is offered on this channel. Review the official changelog and affected/fixed ranges; availability alone does not prove security urgency."
+:local UpdatePriority "review"
+:local UpdateSource "https://mikrotik.com/download/changelogs"
+:if (($RouterUpdateInstalled = $InstalledVersion) and ($RouterUpdateTarget = $LatestVersion) and     ([:len [:tostr $RouterUpdateReason]] > 0)) do={
+    :set UpdateReason [:tostr $RouterUpdateReason]
+    :if (($RouterUpdatePriority = "monitor only") or         ($RouterUpdatePriority = "next maintenance window") or         ($RouterUpdatePriority = "immediate")) do={
+        :set UpdatePriority $RouterUpdatePriority
+    }
+    :if (([:len [:tostr $RouterUpdateSource]] > 8) and         ([:pick [:tostr $RouterUpdateSource] 0 8] = "https://")) do={
+        :set UpdateSource [:tostr $RouterUpdateSource]
+    }
+}
+:local UpdateReasonText [$HtmlEscape $UpdateReason]
+:local UpdateSourceText [$HtmlEscape $UpdateSource]
 
 :local BoardName "unknown"
 :local Architecture "unknown"
@@ -456,6 +482,9 @@
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
     "\0AStatus: <code>" . $StatusText . "</code>" . \
+    "\0APriority: <code>" . $UpdatePriority . "</code>" . \
+    "\0AReason: <code>" . $UpdateReasonText . "</code>" . \
+    "\0AEvidence: " . $UpdateSourceText . \
     $FirmwareLine . \
     $BackupLine . \
     "\0AChangelog: https://mikrotik.com/download/changelogs" . \
