@@ -30,6 +30,16 @@ The folders are for the reader, not for RouterOS. A script's name in
 extension — `backup_update_check`, not `core/backup_update_check` — so **a
 router already running these needs no change.**
 
+Security and update reporting draw a line between what a script observed and
+what it inferred; [`SECURITY_REPORTING.md`](SECURITY_REPORTING.md) says which
+is which, and what the scan deliberately does not claim.
+
+Writing or changing one? The conventions the convention suite enforces — the
+`OpsToolboxPaused` guard, secrets read from `:global`, alerting on transitions
+rather than every run, and never swallowing a failed notification — are
+collected in [`CONTRIBUTING.md`](../CONTRIBUTING.md), together with how the
+pinned CHR version and its digest are bumped.
+
 ## Contents
 
 - [Requirements](#requirements)
