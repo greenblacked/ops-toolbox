@@ -17,7 +17,14 @@ class NpxCacheTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        # realpath, because safe_root walks the ancestry with lstat and refuses
+        # a symlinked component - the guard that stops a redirected ancestor
+        # aiming the sweep elsewhere. On macOS tempfile hands back a path under
+        # /var/folders and /var is a symlink to /private/var, so every test here
+        # raised Unsafe("cache ancestry is not a real directory") and the fault
+        # was the fixture's, not the code's. Linux has a real /tmp, which is why
+        # CI stayed green while the suite could not run on a Mac at all.
+        self.home = Path(os.path.realpath(self.tmp.name))
         self.root = self.home / ".npm" / "_npx"
         self.entry = self.root / "0123456789abcdef"
         (self.entry / "node_modules").mkdir(parents=True)

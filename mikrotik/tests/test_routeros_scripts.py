@@ -94,8 +94,24 @@ XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
 )
 
 
+def _declares_underscored_name(script_name: str) -> bool:
+    """Whether the script declares a :global or :local whose name has an underscore.
+
+    That declaration is what 7.24 refuses to execute, so it is the only thing
+    that decides whether running the script can work - and reading it from the
+    source is what keeps this honest. The exemption used to be a hand-kept pair
+    of names, and it went stale the moment a script was renamed clean:
+    health_check declares none and was still marked xfail, so it reported XPASS
+    on every run, which is a test asserting the opposite of the truth and is
+    tolerated only because the marker is not strict. Derived, each Wave C
+    rename flips its own case with no edit here.
+    """
+    source = script_path(f"{script_name}.lua").read_text(encoding="utf-8", errors="replace")
+    return re.search(r"^\s*:(?:global|local)\s+[A-Za-z0-9]*_", source, re.M) is not None
+
+
 def _run_safe_script_param(script_name: str) -> Any:
-    if script_name in ("detect_internet", "security_check"):
+    if not _declares_underscored_name(script_name):
         return script_name
     return pytest.param(script_name, marks=XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE)
 
