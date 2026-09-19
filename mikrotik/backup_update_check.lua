@@ -6,7 +6,10 @@
 # because it runs where that one does not.
 #
 # Three outcomes, three messages. "Update is required" carries the backup, the
-# firmware state, the package list and the resources an upgrade depends on.
+# firmware state, the package list and the resources an upgrade depends on, and
+# the word ALARM on its own line under the headline: it is the one outcome that
+# wants an operator, and a heartbeat that reads the same as a call to act is a
+# heartbeat nobody reads.
 # "Not required" is the daily heartbeat. "Check FAILED" is the one the plain
 # design used to hide. It used to wait a fixed 15 seconds and compare
 # installed-version with latest-version. Measured on a 7.24.2 CHR: issuing the
@@ -451,6 +454,7 @@
 
     :log info ("backup_update_check: $InstalledVersion -> $LatestVersion on channel $Channel")
     :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is required." . \
+    "\0AALARM" . \
     "\0A\0A<b>Update info</b>" . \
     "\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \

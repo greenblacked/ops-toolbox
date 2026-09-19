@@ -1002,6 +1002,10 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
     if "update is required" in message:
         assert len(backups) >= 2, f"newer release offered but no backup pair: {backups}"
+    else:
+        # Only the update-required outcome alarms. A heartbeat that reads the
+        # same as a call to act is a heartbeat nobody reads.
+        assert "ALARM" not in message, f"a non-actionable outcome alarmed: {message!r}"
 
 
 # The hostnames the update check talks to. Overridden with static DNS entries
@@ -1157,6 +1161,12 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
         pytest.skip("the development channel offers nothing newer than the pinned release")
 
     assert "RouterOS update is required." in message, f"no known headline: {message!r}"
+    # The one outcome that wants an operator says so in one word, on its own
+    # line under the headline. Asserted with the newline: "ALARM" anywhere in a
+    # message that long could be a board name or a log entry quoted back.
+    assert "RouterOS update is required.\nALARM\n" in message, (
+        f"the update-required message carries no ALARM line: {message!r}"
+    )
     assert "Status: <code>New version is available" in message, message
     assert len(names) >= 2, f"a release was offered but no backup pair exists: {names}"
     stems = {n.rsplit(".", 1)[0] for n in names}

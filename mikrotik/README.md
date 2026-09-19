@@ -478,7 +478,11 @@ verdict is RouterOS's own, the same as `update_check.lua`. The sibling
 scripts' comments used to say `latest-version` kept the previous check's
 answer; the CHR says otherwise, and they now say what was measured.
 
-Three messages, one per outcome. "Update is required" carries the backup, the
+Three messages, one per outcome, and only one of them alarms: "update is
+required" carries the word `ALARM` on its own line under the headline, because
+it is the outcome that wants an operator. The heartbeat and the failure notice
+do not, and the suite asserts both halves of that — a heartbeat that reads the
+same as a call to act is a heartbeat nobody reads. "Update is required" carries the backup, the
 firmware state, the license level, the installed packages with their versions
 (a disabled one marked, since it is upgraded with the rest), the board's health
 readings where it has any, the resources an upgrade depends on, a changelog
