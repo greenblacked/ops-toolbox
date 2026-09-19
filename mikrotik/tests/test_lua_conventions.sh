@@ -33,7 +33,7 @@ err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
 # follows - which is also the only place that can stop the run.
 sfile() {
   local name="$1" hit
-  hit="$(find "$PKG" -name "$name" -type f -not -path "$PKG/tests/*" | sort | head -n 1)"
+  hit="$(find "$PKG" -name "$name" -type f -not -path "*/tests/*" | sort | head -n 1)"
   if [[ -z "$hit" ]]; then
     printf '%s\n' "$PKG/__unresolved__/$name"
     return 1
@@ -41,10 +41,13 @@ sfile() {
   printf '%s\n' "$hit"
 }
 
+# */tests/*, not $PKG/tests/*: the CHR suite drops any directory named tests at
+# any depth, and a fixture .lua under features/tests/ counted by one discoverer
+# and skipped by the other is a script the two suites disagree about.
 scripts=()
 while IFS= read -r f; do
   [ -n "$f" ] && scripts+=("$f")
-done < <(find "$PKG" -name '*.lua' -type f -not -path "$PKG/tests/*" | sort)
+done < <(find "$PKG" -name '*.lua' -type f -not -path "*/tests/*" | sort)
 
 if (( ${#scripts[@]} == 0 )); then
   echo "found no .lua scripts under $PKG — discovery is broken" >&2
@@ -252,7 +255,7 @@ else
   missing=0
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if [[ -z "$(find "$PKG" -name "$name" -type f -not -path "$PKG/tests/*" | head -n 1)" ]]; then
+    if [[ -z "$(find "$PKG" -name "$name" -type f -not -path "*/tests/*" | head -n 1)" ]]; then
       err "mikrotik/README.md refers to $name, which does not exist"
       missing=$((missing + 1))
     fi
