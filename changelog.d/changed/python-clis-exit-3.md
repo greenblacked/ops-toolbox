@@ -9,7 +9,7 @@
   and a caller could not tell a typo from a diagnosis. The exemption is gone
   rather than documented, so the suite now holds all eight to it, the two
   templates included.
-- `mikrotik/core/export_config.py` returns `3`, not `2`, when `--stdout`, `--diff`
+- `mikrotik/features/export_config.py` returns `3`, not `2`, when `--stdout`, `--diff`
   and `--commit` are combined or when `--show-sensitive` is passed with
   `--commit`. Its own docstring spends `2` on a failed preflight — ssh missing,
   the router unreachable — and `3` on bad CLI arguments, and both of those are

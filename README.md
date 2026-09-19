@@ -460,7 +460,7 @@ OS, so behaviour is actually exercised across all three package managers:
   session. A missing scheduler is a skip, not a failure.
 - `tls_expiry.sh` — read-only leaf certificate expiry for named PEMs and
   hostnames. Does not scan the CA trust store. Counterpart of
-  `mikrotik/monitoring/cert_expiry_watch.lua`.
+  `mikrotik/features/cert_expiry_watch.lua`.
 - `config_backup.sh` — dated tar of `/etc` (or `--paths`) with rotation.
   A copy, not a restore; `--yes` required.
 - `ssh_client_doctor.sh` — read-only `~/.ssh` modes and IdentityFile paths.

@@ -21,7 +21,7 @@ failures=0
 ok()  { echo "[ ok ] $*"; }
 err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
 
-# The scripts live under core/ and monitoring/. Every check below names one by
+# The scripts live under core/ and features/. Every check below names one by
 # filename and asks for its path, so moving a script between the two folders -
 # or adding a third - needs no edit here. A name that resolves to nothing is a
 # named failure plus a path that cannot be read, so the check that wanted it
@@ -49,15 +49,15 @@ fi
 ok "discovered ${#scripts[@]} RouterOS scripts"
 
 # --- the layout holds ------------------------------------------------------
-# core/ is the notification transport, the backups, the update checks and the
-# hardening audit; monitoring/ is everything that watches and reports. A script
-# dropped at the top of the package is the failure this checks for: it would
+# core/ is what this fleet actually runs; features/ is everything the package
+# offers that is not deployed. A script dropped at the top of the package is
+# the failure this checks for: it would
 # still be discovered by the loops above and by the CHR suite, so nothing would
 # fail, and the folder that says how much its failure costs would be a lie.
 loose=0
 while IFS= read -r f; do
   [ -n "$f" ] || continue
-  err "mikrotik/${f##*/} sits at the top of the package — move it into core/ or monitoring/"
+  err "mikrotik/${f##*/} sits at the top of the package — move it into core/ or features/"
   loose=$((loose + 1))
 done < <(find "$PKG" -maxdepth 1 \( -name '*.lua' -o -name '*.sh' -o -name '*.py' \) -type f | sort)
 (( loose == 0 )) && ok "no script sits loose at the top of the package"
@@ -67,16 +67,16 @@ placed=0
 for f in "${scripts[@]}"; do
   rel="${f#"$PKG"/}"
   case "$rel" in
-    core/*|monitoring/*) placed=$((placed + 1)) ;;
-    *) err "$rel is in neither core/ nor monitoring/"; misplaced=$((misplaced + 1)) ;;
+    core/*|features/*) placed=$((placed + 1)) ;;
+    *) err "$rel is in neither core/ nor features/"; misplaced=$((misplaced + 1)) ;;
   esac
 done
 # A floor: the case above passes vacuously if the loop runs over nothing, and
 # the count is what says it did not.
 if (( placed == 0 )); then
-  err "no script resolved into core/ or monitoring/ — the layout check inspected nothing"
+  err "no script resolved into core/ or features/ — the layout check inspected nothing"
 elif (( misplaced == 0 )); then
-  ok "all $placed script(s) live in core/ or monitoring/"
+  ok "all $placed script(s) live in core/ or features/"
 fi
 
 # --- balanced delimiters ---------------------------------------------------

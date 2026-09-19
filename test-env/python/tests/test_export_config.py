@@ -1,4 +1,4 @@
-"""Tests for mikrotik/core/export_config.py.
+"""Tests for mikrotik/features/export_config.py.
 
 Only normalisation is covered, and deliberately so: it is the part with a
 judgement call in it. Strip too little and every export is a noisy diff; strip
@@ -20,7 +20,7 @@ from unittest import mock
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "core"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "features"))
 
 import export_config  # noqa: E402
 

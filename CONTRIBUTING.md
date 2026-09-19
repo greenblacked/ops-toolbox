@@ -374,7 +374,7 @@ scripting language, not Lua.
   set once at boot, the way `mikrotik/core/tg_send.lua` reads `TgBotToken`
   and `TgChatId`.
 - Send notifications through `tg_send`, wrapped so a missing helper degrades to
-  a log line instead of an error (`mikrotik/core/backup.lua`).
+  a log line instead of an error (`mikrotik/features/backup.lua`).
 - **Alert on transitions, not on every run.** Keep the previous state in a
   `:global` and compare — `wan_failover_notify.lua` is the reference. A script
   that alerts every five minutes gets muted, which makes it worse than nothing.

@@ -3,8 +3,8 @@
 # Dated tar of selected paths (default: /etc) so an upgrade or an edit has
 # something to roll back to.
 #
-# This is the Linux counterpart of mikrotik/core/backup.lua and
-# mikrotik/core/export_config.py: a copy you can keep, not a restore tool. It never
+# This is the Linux counterpart of mikrotik/features/backup.lua and
+# mikrotik/features/export_config.py: a copy you can keep, not a restore tool. It never
 # writes back into the paths it archives. A dry run writes nothing, including
 # logs. A real run requires --yes. The archive is created mode 0600, because
 # what it holds is /etc.

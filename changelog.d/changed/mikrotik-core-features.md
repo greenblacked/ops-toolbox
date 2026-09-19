@@ -1,9 +1,13 @@
 - The RouterOS scripts are split into `mikrotik/core/` and
-  `mikrotik/monitoring/`, by what a failure costs. `core/` holds the
-  notification transport every other script calls, the backups, the two update
-  checks and the hardening audit — lose those and there is no way back and no
-  alert to say so. `monitoring/` holds the watchers and notifiers: lose one and
-  a signal arrives late. Nothing changes on a router: a script's name in
+  `mikrotik/features/`, by whether this fleet runs them. `core/` holds the three
+  that are deployed and scheduled — `backup_update_check.lua`,
+  `detect_internet.lua`, and the Telegram helper they both need, `tg_send.lua`
+  (installed on the router as `tg_send_new`). `features/` holds everything else
+  the package offers and nobody has deployed: the other backup and update paths,
+  the hardening audit, the watchers and notifiers, and the two host-side tools.
+  Being in `features/` says nothing about quality — both folders are held to the
+  same conventions and the CHR suite runs all of them — only that no running
+  router depends on it yet. Nothing changes on a router: a script's name in
   `/system script` and `/system scheduler` is still its filename without the
   extension, so `backup_update_check` is what it was.
 - Three discoverers only looked one directory deep, and two of them would have
