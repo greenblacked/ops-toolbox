@@ -754,10 +754,10 @@ security add-generic-password -s stay_fresh-telegram -a bot-token -w '<bot token
 security add-generic-password -s stay_fresh-telegram -a chat-id  -w '<chat id>'
 ```
 
-The token is handed to `curl` as a config file on stdin, so it never appears
-in `ps` output. Slack (`--notify slack`) posts to an incoming webhook whose
-URL is the credential; it comes from `STAY_FRESH_SLACK_WEBHOOK` or the
-Keychain, and travels the same way:
+The token and chat id are handed to `curl` as a config file on stdin, so
+neither appears in `ps` output. Slack (`--notify slack`) posts to an incoming
+webhook whose URL is the credential; it comes from `STAY_FRESH_SLACK_WEBHOOK`
+or the Keychain, and travels the same way:
 
 ```bash
 security add-generic-password -s stay_fresh-slack -a webhook -w 'https://hooks.slack.com/services/...'

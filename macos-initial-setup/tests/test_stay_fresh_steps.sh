@@ -974,7 +974,12 @@ docker_fake() {
     '    exit 0 ;;' \
     '  context)' \
     '    case "${2:-}" in' \
-    '      show) echo default ;;' \
+    '      show)' \
+    '        if [ -n "${DOCKER_INFO_FAIL_AFTER:-}" ]; then' \
+    '          n=$(cat "$DOCKER_INFO_N" 2>/dev/null || echo 0)' \
+    '          [ "$n" -ge "$DOCKER_INFO_FAIL_AFTER" ] && exit 1' \
+    '        fi' \
+    '        echo default ;;' \
     '      inspect) [ -n "${DOCKER_INSPECT_FAIL:-}" ] && exit 1; echo "$DOCKER_ENDPOINT" ;;' \
     '    esac' \
     '    exit 0 ;;' \
@@ -987,6 +992,11 @@ out="$(run_sf "$d" --yes --only docker)"; rc=$?
 assert_eq "docker step succeeds against a local daemon" "0" "$rc"
 assert_not_called "stopped containers are untouched by default" "$d/calls" "docker container prune"
 assert_contains "the run explains the container opt-in" "$out" "--prune-docker-containers"
+# The second probe is gone: preflight already ran `docker info` under
+# --step-timeout, and a daemon that then hung held the run lock for another
+# full limit. `docker context show` is the liveness check that remains.
+assert_eq "docker info is probed once, at preflight" "1" \
+  "$(grep -c '^docker info$' "$d/calls" | tr -d ' ')"
 for sub in "network prune -f" \
            "image prune -f" "builder prune -af"; do
   assert_called "docker step runs $sub" "$d/calls" "docker $sub"
@@ -1970,8 +1980,8 @@ assert_contains "a dry run says it would notify" "$out" "would notify via macos"
 assert_not_called "a dry run posts no banner" "$d/calls" "display notification"
 rm -rf "$d"
 
-# Telegram: the token rides in a curl config on stdin, never on the command
-# line, and the chat id and text are form fields.
+# Telegram: the token and chat id ride in a curl config on stdin, never on
+# the command line; the message text is a form field.
 tg_env() {
   local d; d="$(new_env)"
   mkbin "$d/bin/curl" 'echo "curl $*" >> "$CALLS"; cat > "$CALLS.curl-config"; exit 0'
@@ -1982,7 +1992,9 @@ out="$(STAY_FRESH_NOTIFY=telegram STAY_FRESH_TG_BOT_TOKEN=123:secret-token STAY_
   run_sf "$d" --yes --only versions)"; rc=$?
 assert_eq "a run with a Telegram notification succeeds" "0" "$rc"
 assert_contains "the Telegram send is reported" "$out" "telegram notification sent"
-assert_called "the chat id is a form field" "$d/calls" "chat_id=42"
+assert_contains "the chat id is in the stdin config" "$(cat "$d/calls.curl-config")" \
+  'data-urlencode = "chat_id=42"'
+assert_not_called "the chat id is not on the curl command line" "$d/calls" "chat_id=42"
 assert_called "the text starts with the verdict" "$d/calls" "text=stay_fresh OK: freed"
 assert_not_called "the token is not on the curl command line" "$d/calls" "secret-token"
 assert_contains "the token is in the stdin config" "$(cat "$d/calls.curl-config")" \
@@ -1995,7 +2007,8 @@ mkbin "$d/bin/security" 'echo "security $*" >> "$CALLS"' \
   'case "$*" in *"-a bot-token"*) echo "kc:token" ;; *"-a chat-id"*) echo 77 ;; esac'
 out="$(STAY_FRESH_NOTIFY=telegram run_sf "$d" --yes --only versions)"; rc=$?
 assert_called "the Keychain is asked for the token" "$d/calls" "find-generic-password -s stay_fresh-telegram -a bot-token -w"
-assert_called "the Keychain chat id is used" "$d/calls" "chat_id=77"
+assert_contains "the Keychain chat id is used" "$(cat "$d/calls.curl-config")" \
+  'data-urlencode = "chat_id=77"'
 assert_contains "the Keychain token reaches curl" "$(cat "$d/calls.curl-config")" "botkc:token/"
 rm -rf "$d"
 
@@ -2153,7 +2166,8 @@ out="$(STAY_FRESH_NOTIFY=both STAY_FRESH_TG_BOT_TOKEN=123:tok STAY_FRESH_TG_CHAT
   STAY_FRESH_SLACK_WEBHOOK="$hook" run_sf "$d" --yes --only versions)"; rc=$?
 assert_contains "both means macos and telegram" "$out" "notify: macos, telegram"
 assert_called "both posts the banner" "$d/calls" "display notification"
-assert_called "both posts to Telegram" "$d/calls" "chat_id=42"
+assert_contains "both posts to Telegram" "$(cat "$d/calls.curl-config")" \
+  'data-urlencode = "chat_id=42"'
 assert_not_called "both does not post to Slack" "$d/calls" "application/json"
 rm -rf "$d"
 

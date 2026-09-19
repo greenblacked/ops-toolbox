@@ -839,7 +839,7 @@ ${C_BOLD}Notes:${C_RESET}
   The Slack channel posts to an incoming webhook whose URL comes from
   STAY_FRESH_SLACK_WEBHOOK or the login Keychain:
     security add-generic-password -s stay_fresh-slack -a webhook -w '<webhook url>'
-  Neither the token nor the webhook URL ever appears on a command line. macOS
+  The token, chat id and webhook URL never appear on a command line. macOS
   banners go through osascript and need no setup.
 
   History: every real run appends one line to ~/Library/Logs/stay_fresh/history.tsv
@@ -2092,9 +2092,9 @@ telegram_credentials() {
   [[ -n "$TG_TOKEN" && -n "$TG_CHAT" ]]
 }
 
-# Send one plain-text Telegram message. The URL carries the bot token, so it
-# goes to curl as a config file on stdin rather than as an argument that
-# every `ps` on the machine could read.
+# Send one plain-text Telegram message. The URL carries the bot token and the
+# form carries the chat id, so both go to curl as a config file on stdin
+# rather than as arguments that every `ps` on the machine could read.
 notify_telegram() {
   local text="$1"
   command -v curl >/dev/null 2>&1 || { warn "telegram notification skipped: curl not found"; return 1; }
@@ -2106,9 +2106,8 @@ notify_telegram() {
   # blocked network used to vanish into a log that was already discarded. The
   # token is scrubbed from the reason in case curl ever echoes the URL.
   local out rc=0
-  out="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$TG_TOKEN" \
+  out="$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata-urlencode = "chat_id=%s"\n' "$TG_TOKEN" "$TG_CHAT" \
     | curl -fsS --max-time "$NOTIFY_TIMEOUT" -K - \
-        --data-urlencode "chat_id=$TG_CHAT" \
         --data-urlencode "text=$text" \
         -o /dev/null 2>&1)" || rc=$?
   out="${out//$TG_TOKEN/***}"
@@ -3912,16 +3911,15 @@ step_docker() {
     warn "docker not on PATH"
     return 1
   fi
-  if ! with_timeout "$STEP_TIMEOUT" docker info >/dev/null 2>&1; then
-    warn "docker daemon not reachable"
-    return 1
-  fi
-
-  # Safety: avoid pruning a remote Docker context.
+  # Preflight already ran `docker info` under --step-timeout. A second probe
+  # here, on a daemon that then hung, held the run lock for another full
+  # limit (default 1800s). context show is the liveness check that remains:
+  # if the daemon has gone away since preflight, fail the step the way info
+  # used to, rather than warning and reporting a clean run.
   local ctx host
   if ! ctx="$(docker context show 2>>"$LOG_SINK")" || [[ -z "$ctx" ]]; then
-    warn_step "cannot resolve the active Docker context — skipping prune"
-    return 0
+    warn "docker daemon not reachable"
+    return 1
   fi
   if ! host="$(docker context inspect "$ctx" --format '{{ (index .Endpoints "docker").Host }}' 2>>"$LOG_SINK")" \
      || [[ -z "$host" ]]; then
