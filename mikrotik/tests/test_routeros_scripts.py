@@ -932,7 +932,7 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
             interval="40s",
         )
         message = _read_global(api, "PuTgLastMessage")
-        backups = _backup_files(api) if "update is required" in message else []
+        backups = _backup_files(api) if UPDATE_OFFERED in message else []
     finally:
         _remove_by_name(script_resource, "backup_update_check")
         _remove_by_name(script_resource, "tg_send_new")
@@ -940,18 +940,14 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
         _clear_backup_files(api)
 
     warnings.warn("backup_update_check message:\n" + message, stacklevel=2)
-    headlines = (
-        "RouterOS update is required.",
-        "RouterOS update is not required.",
-        "RouterOS update check FAILED.",
-    )
+    headlines = (UPDATE_OFFERED, UPDATE_NONE, UPDATE_FAILED)
     assert any(h in message for h in headlines), f"no known headline: {message!r}"
     assert "Status: <code>" in message, f"status line missing: {message!r}"
     assert "Checked: <code>" in message, f"clock line missing: {message!r}"
     assert "installed packages <code>" in message, f"package size missing: {message!r}"
     stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
-    if "update is required" in message:
+    if UPDATE_OFFERED in message:
         assert len(backups) >= 2, f"newer release offered but no backup pair: {backups}"
 
 
@@ -959,6 +955,16 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
 # pointing at the router itself, a check fails fast - connection refused on a
 # port nothing listens on - instead of waiting out a timeout, and the failure is
 # undone by removing the entries.
+# The three headlines backup_update_check.lua can send, spelled once. They were
+# written out at seven call sites, and when the reporting became evidence-aware
+# - "available for review" rather than "required", because availability alone
+# does not prove urgency - two assertions failed and the other five quietly
+# stopped matching, turning gates that guard real assertions into gates that
+# are never taken and skips that always fire.
+UPDATE_OFFERED = "RouterOS update is available for review."
+UPDATE_NONE = "RouterOS: no newer release is currently offered."
+UPDATE_FAILED = "RouterOS update check FAILED."
+
 UPDATE_HOSTS = ("upgrade.mikrotik.com", "download.mikrotik.com")
 PROBE_DNS_COMMENT = "pu_ut probe"
 
@@ -1063,7 +1069,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
 ) -> None:
     """On the development channel the CHR is usually offered a newer build.
 
-    That is the one way to reach the "update is required" path on a router
+    That is the one way to reach the offered-release path on a router
     pinned to the current stable release without installing anything: the
     script only ever checks, backs up and reports. The channel setting is
     patched in the installed copy, and the router is put back on stable in
@@ -1091,7 +1097,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
             interval="40s",
         )
         message = _read_global(api, "PuTgLastMessage")
-        if "update is required" in message:
+        if UPDATE_OFFERED in message:
             names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup_update_check")
@@ -1102,12 +1108,12 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
             update.call("set", {"channel": b"stable"})
 
     warnings.warn("backup_update_check on the development channel:\n" + message, stacklevel=2)
-    if "update check FAILED" in message:
+    if UPDATE_FAILED in message:
         pytest.skip(f"the runner cannot reach the update server: {message!r}")
-    if "update is not required" in message:
+    if UPDATE_NONE in message:
         pytest.skip("the development channel offers nothing newer than the pinned release")
 
-    assert "RouterOS update is required." in message, f"no known headline: {message!r}"
+    assert UPDATE_OFFERED in message, f"no known headline: {message!r}"
     assert "Status: <code>New version is available" in message, message
     assert len(names) >= 2, f"a release was offered but no backup pair exists: {names}"
     stems = {n.rsplit(".", 1)[0] for n in names}
