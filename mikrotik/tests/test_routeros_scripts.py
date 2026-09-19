@@ -1033,7 +1033,7 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
             interval="40s",
         )
         message = _read_global(api, "PuTgLastMessage")
-        backups = _backup_files(api) if "update is required" in message else []
+        backups = _backup_files(api) if UPDATE_OFFERED in message else []
     finally:
         _remove_by_name(script_resource, "backup_update_check")
         _remove_by_name(script_resource, "tg_send_new")
@@ -1041,24 +1041,35 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
         _clear_backup_files(api)
 
     warnings.warn("backup_update_check message:\n" + message, stacklevel=2)
-    headlines = (
-        "RouterOS update is required.",
-        "RouterOS update is not required.",
-        "RouterOS update check FAILED.",
-    )
+    headlines = (UPDATE_OFFERED, UPDATE_NONE, UPDATE_FAILED)
     assert any(h in message for h in headlines), f"no known headline: {message!r}"
     assert "Status: <code>" in message, f"status line missing: {message!r}"
     assert "Checked: <code>" in message, f"clock line missing: {message!r}"
     assert "installed packages <code>" in message, f"package size missing: {message!r}"
     stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
-    if "update is required" in message:
+    if UPDATE_OFFERED in message:
         assert len(backups) >= 2, f"newer release offered but no backup pair: {backups}"
     else:
         # Only the update-required outcome alarms. A heartbeat that reads the
         # same as a call to act is a heartbeat nobody reads.
         assert "ALARM" not in message, f"a non-actionable outcome alarmed: {message!r}"
 
+
+# The three headlines backup_update_check.lua can send, spelled once here.
+# They used to be written out at seven call sites, and only two of those were
+# assertions. The other five were gates, and a gate does not fail when it stops
+# matching - it goes quiet:
+# `backups = _backup_files(api) if "update is required" in message else []`
+# collects nothing, so the assertion that a pre-upgrade pair exists is never
+# reached, and the skip that protects the development-channel test from a run
+# with nothing newer on offer stops firing. Any future rewording lands in one
+# place, and the contract test in the fast python suite fails in a second if
+# these drift from what the script actually sends - which a six-minute CHR boot
+# would otherwise be the first to notice.
+UPDATE_OFFERED = "RouterOS update is required."
+UPDATE_NONE = "RouterOS update is not required."
+UPDATE_FAILED = "RouterOS update check FAILED."
 
 # The hostnames the update check talks to. Overridden with static DNS entries
 # pointing at the router itself, a check fails fast - connection refused on a
@@ -1168,7 +1179,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
 ) -> None:
     """On the development channel the CHR is usually offered a newer build.
 
-    That is the one way to reach the "update is required" path on a router
+    That is the one way to reach the offered-release path on a router
     pinned to the current stable release without installing anything: the
     script only ever checks, backs up and reports. The channel setting is
     patched in the installed copy, and the router is put back on stable in
@@ -1196,7 +1207,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
             interval="40s",
         )
         message = _read_global(api, "PuTgLastMessage")
-        if "update is required" in message:
+        if UPDATE_OFFERED in message:
             names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup_update_check")
@@ -1207,16 +1218,16 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
             update.call("set", {"channel": b"stable"})
 
     warnings.warn("backup_update_check on the development channel:\n" + message, stacklevel=2)
-    if "update check FAILED" in message:
+    if UPDATE_FAILED in message:
         pytest.skip(f"the runner cannot reach the update server: {message!r}")
-    if "update is not required" in message:
+    if UPDATE_NONE in message:
         pytest.skip("the development channel offers nothing newer than the pinned release")
 
-    assert "RouterOS update is required." in message, f"no known headline: {message!r}"
+    assert UPDATE_OFFERED in message, f"no known headline: {message!r}"
     # The one outcome that wants an operator says so in one word, on its own
     # line under the headline. Asserted with the newline: "ALARM" anywhere in a
     # message that long could be a board name or a log entry quoted back.
-    assert "RouterOS update is required.\nALARM\n" in message, (
+    assert f"{UPDATE_OFFERED}\nALARM\n" in message, (
         f"the update-required message carries no ALARM line: {message!r}"
     )
     assert "Status: <code>New version is available" in message, message
