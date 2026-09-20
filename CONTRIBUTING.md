@@ -89,9 +89,14 @@ Three `set` dialects, chosen by role — do not mix them:
 
 ### Bash 3.2 compatibility
 
-`git/`, `macos-initial-setup/` and `linux/` must run under the Bash 3.2 that
-ships as `/bin/bash` on macOS. No `mapfile`/`readarray`, no `declare -A` or
-`local -A`, no `${x,,}`/`${x^^}`, no `coproc`, no `&>>`. Build lists with a
+`git/`, `macos-initial-setup/`, `linux/` and `dotfiles/` must run under the
+Bash 3.2 that ships as `/bin/bash` on macOS. That list is `BASH32_DIRS` in
+`test-env/static/check_conventions.sh`, and the `Parse with Apple Bash 3.2` step
+in `.github/workflows/ci.yml` globs the same four — including their `tests/`
+subdirectories, which the keyword scan treats separately (see below).
+
+No `mapfile`/`readarray`, no `declare -A` or `local -A`, no `${x,,}`/`${x^^}`,
+no `coproc`, no `&>>`. Build lists with a
 `while IFS= read -r` loop instead — there is a worked example and an explanatory
 comment above the `branches=()` loop in `git/git_recent_branches.sh`.
 
@@ -99,6 +104,18 @@ comment above the `branches=()` loop in `git/git_recent_branches.sh`.
 targets Git Bash, which ships Bash 5 — `windows/git-bash/.bashrc` uses `local -A`
 and `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
 and runs on Ubuntu. Do not "fix" either.
+
+**`test-env/static/check_conventions.sh`'s keyword scan skips `*/tests/*`, with
+one named exception.** Almost no test file ever meets the real interpreter:
+most run inside a Linux container, and the ones the native macOS job reaches
+through `run-tests.sh` resolve a bare `bash` to whatever sits ahead of
+`/bin/bash` on that runner's `PATH` — the same substitution the enforcement
+paragraph below works around. `macos-initial-setup/tests/test_macos_initial_setup.sh`
+is the one file that does not: the `Run contracts with Apple Bash` step in
+`Test / macos native` hands it to `/bin/bash` by absolute path, so it is named
+in that section's `BASH32_TEST_FILES` and held to this rule like the packages
+themselves. A test file added to `Test / macos native` the same way belongs in
+that list too.
 
 **The keyword list above is not the whole rule.** Some things 3.2 refuses are
 properties of its parser rather than of any keyword a grep can find, so nothing
@@ -371,10 +388,10 @@ The `.lua` extension is for editor highlighting only — these are RouterOS
 scripting language, not Lua.
 
 - **Secrets never appear in a script body.** Read them from `:global` variables
-  set once at boot, the way `mikrotik/tg_send.lua` reads `TgBotToken`
+  set once at boot, the way `mikrotik/core/tg_send.lua` reads `TgBotToken`
   and `TgChatId`.
 - Send notifications through `tg_send`, wrapped so a missing helper degrades to
-  a log line instead of an error (`mikrotik/backup.lua`).
+  a log line instead of an error (`mikrotik/features/backup.lua`).
 - **Alert on transitions, not on every run.** Keep the previous state in a
   `:global` and compare — `wan_failover_notify.lua` is the reference. A script
   that alerts every five minutes gets muted, which makes it worse than nothing.
@@ -444,14 +461,15 @@ command after it becomes an abort with no message
 (`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
 
 A section that made no assertion is a failure, not a pass. `linux/tests`,
-`git/tests` and the macOS native suite open each block with `section "..."`
-and fail any block that closes with zero checks — the shape of a loop that ran
-over nothing, or a fixture that never reached its assertion. It earned its
-keep on the first run: in two of the three files it found a heading that named
-a section which only built a fixture, its assertions having drifted under a
-heading inserted after it. The same reasoning applies to a loop whose subject
-list comes from a command rather than a literal: count the iterations and fail
-at zero, because the section around it usually asserts plenty either way.
+`git/tests`, the macOS native suite and `test_stay_fresh_steps.sh` open each
+block with `section "..."` and fail any block that closes with zero checks —
+the shape of a loop that ran over nothing, or a fixture that never reached its
+assertion. It earned its keep on the first run: in two of the three converted
+files it found a heading that named a section which only built a fixture, its
+assertions having drifted under a heading inserted after it. The same
+reasoning applies to a loop whose subject list comes from a command rather
+than a literal: count the iterations and fail at zero, because the section
+around it usually asserts plenty either way.
 
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that

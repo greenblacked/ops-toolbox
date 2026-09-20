@@ -13,7 +13,44 @@ from routeros_api import exceptions as ros_exc
 
 MIKROTIK_DIR = pathlib.Path(__file__).resolve().parent.parent
 EXPECT_VER = os.environ["EXPECT_ROUTEROS_VERSION"]
-SCRIPT_FILES = sorted(p for p in MIKROTIK_DIR.glob("*.lua") if p.is_file())
+# rglob, because the scripts live in core/ and features/ rather than at the
+# top of the package. tests/ is excluded by name: nothing there is a router
+# script, and a fixture .lua added later must not be loaded onto the router.
+SCRIPT_FILES = sorted(
+    p
+    for p in MIKROTIK_DIR.rglob("*.lua")
+    if p.is_file() and "tests" not in p.relative_to(MIKROTIK_DIR).parts
+)
+# A floor, not a skip. This used to be `skipif(not SCRIPT_FILES)`, so the day
+# the glob stopped matching - the day the scripts moved into subdirectories,
+# for instance - the suite that parses every script on a real router would
+# have reported success having loaded none of them. An empty list is the one
+# result that cannot be true of this repository.
+if not SCRIPT_FILES:
+    raise AssertionError(
+        f"no .lua scripts discovered under {MIKROTIK_DIR} - discovery is broken, "
+        "and a suite that checks nothing must not pass"
+    )
+
+
+def script_path(filename: str) -> pathlib.Path:
+    """The package script with this filename, wherever in the package it lives.
+
+    Tests read a script's source to assert on what it says. They used to build
+    that path as MIKROTIK_DIR / name, which broke the moment the scripts moved
+    into core/ and features/ - eight tests died on FileNotFoundError. Resolving
+    through the discovered set means a later move needs no test edit. Anything
+    other than exactly one match raises, never skips: zero means the check
+    cannot run, and two would apply the assertion to whichever copy sorted
+    first.
+    """
+    matches = [p for p in SCRIPT_FILES if p.name == filename]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"{filename} resolved to {len(matches)} files under {MIKROTIK_DIR} "
+            f"({[str(m) for m in matches]}) - expected exactly one"
+        )
+    return matches[0]
 
 # Scripts safe to load+run during tests (no reboot, no upstream calls).
 RUNNABLE_SCRIPTS = (
@@ -57,8 +94,24 @@ XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
 )
 
 
+def _declares_underscored_name(script_name: str) -> bool:
+    """Whether the script declares a :global or :local whose name has an underscore.
+
+    That declaration is what 7.24 refuses to execute, so it is the only thing
+    that decides whether running the script can work - and reading it from the
+    source is what keeps this honest. The exemption used to be a hand-kept pair
+    of names, and it went stale the moment a script was renamed clean:
+    health_check declares none and was still marked xfail, so it reported XPASS
+    on every run, which is a test asserting the opposite of the truth and is
+    tolerated only because the marker is not strict. Derived, each Wave C
+    rename flips its own case with no edit here.
+    """
+    source = script_path(f"{script_name}.lua").read_text(encoding="utf-8", errors="replace")
+    return re.search(r"^\s*:(?:global|local)\s+[A-Za-z0-9]*_", source, re.M) is not None
+
+
 def _run_safe_script_param(script_name: str) -> Any:
-    if script_name in ("detect_internet", "security_check"):
+    if not _declares_underscored_name(script_name):
         return script_name
     return pytest.param(script_name, marks=XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE)
 
@@ -147,7 +200,6 @@ def _remove_address_list_entries(api: Any, list_name: str) -> None:
                 res.call("remove", {".id": _row_id(row)})
 
 
-@pytest.mark.skipif(not SCRIPT_FILES, reason="no .lua files under mikrotik/")
 def test_script_files_are_non_empty() -> None:
     for p in SCRIPT_FILES:
         assert p.read_text(encoding="utf-8", errors="strict").strip(), f"empty: {p.name}"
@@ -190,7 +242,7 @@ def test_run_safe_scripts(api: Any, script_resource: Any, script_name: str) -> N
     and execute it once. tg_send is already a stub from the session fixture.
     detect_internet writes to /interface detect-internet which exists on CHR.
     """
-    src = (MIKROTIK_DIR / f"{script_name}.lua").read_text(encoding="utf-8", errors="replace")
+    src = script_path(f"{script_name}.lua").read_text(encoding="utf-8", errors="replace")
     try:
         _add_script(script_resource, script_name, src)
         try:
@@ -210,7 +262,7 @@ def test_security_check_sends_scan_report(api: Any, script_resource: Any) -> Non
     nothing installs tg_send_new session-wide: the conftest set of that name is
     a cleanup list, not a fixture. A stock CHR has the API on (the suite uses
     it), so the scan must produce a report rather than going silent."""
-    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    src = script_path("security_check.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
         _add_script(script_resource, "security_check", src)
@@ -300,7 +352,7 @@ def test_security_check_survives_a_raising_helper(api: Any, script_resource: Any
     scan" forever and never once reports a change, which is the one thing it is
     for. SecSendError has to name the raise too, or the router log says nothing
     about why the report stopped arriving."""
-    src = (MIKROTIK_DIR / "security_check.lua").read_text(encoding="utf-8")
+    src = script_path("security_check.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "tg_send_new", TG_SEND_NEW_RAISING_STUB_SOURCE)
         _add_script(script_resource, "security_check", src)
@@ -349,8 +401,8 @@ def test_security_check_survives_a_raising_helper(api: Any, script_resource: Any
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_firewall_drift_detects_added_rule(api: Any, script_resource: Any) -> None:
     """End-to-end: baseline a clean firewall, add a rule, second run reports drift."""
-    drift_src = (MIKROTIK_DIR / "firewall_drift.lua").read_text(encoding="utf-8")
-    baseline_src = (MIKROTIK_DIR / "firewall_drift_baseline.lua").read_text(encoding="utf-8")
+    drift_src = script_path("firewall_drift.lua").read_text(encoding="utf-8")
+    baseline_src = script_path("firewall_drift_baseline.lua").read_text(encoding="utf-8")
 
     test_rule_id: str | None = None
     try:
@@ -419,7 +471,7 @@ def test_firewall_drift_detects_added_rule(api: Any, script_resource: Any) -> No
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_mac_allowlist_dhcp_failsafe_empty_list(api: Any, script_resource: Any) -> None:
     """With MAC_ALLOWLIST empty, the script must do nothing (no alert, no list entry)."""
-    src = (MIKROTIK_DIR / "mac_allowlist_dhcp.lua").read_text(encoding="utf-8")
+    src = script_path("mac_allowlist_dhcp.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "mac_allowlist_dhcp", src)
         _unset_global(api, "MAC_ALLOWLIST")
@@ -453,7 +505,7 @@ def test_brute_force_block_failsafe_zero_threshold(
     api: Any, script_resource: Any
 ) -> None:
     """With BF_MAX_FAILURES=0 the script must refuse to block anyone."""
-    src = (MIKROTIK_DIR / "brute_force_block.lua").read_text(encoding="utf-8")
+    src = script_path("brute_force_block.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "brute_force_block", src)
         _unset_global(api, "BF_MAX_FAILURES")
@@ -491,7 +543,7 @@ def test_brute_force_block_failsafe_zero_threshold(
 @XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_dhcp_lease_watch_baseline_silent(api: Any, script_resource: Any) -> None:
     """First run on a clean router establishes the baseline silently (no alert)."""
-    src = (MIKROTIK_DIR / "dhcp_lease_watch.lua").read_text(encoding="utf-8")
+    src = script_path("dhcp_lease_watch.lua").read_text(encoding="utf-8")
     try:
         _add_script(script_resource, "dhcp_lease_watch", src)
         _unset_global(api, "DHCP_KNOWN_MACS")
@@ -553,7 +605,28 @@ BACKUP_PREFIX = "backup-"
 PARSE_WRAPPER = "pu_ut_parse_wrapper"
 
 
-def _clear_backup_files(api: Any) -> None:
+def _exports_in_progress(api: Any) -> list[str]:
+    res = api.get_binary_resource("/file")
+    return [
+        n
+        for n in (_row_str(r, "name") for r in res.get())
+        if n.startswith(BACKUP_PREFIX) and n.endswith(EXPORT_IN_PROGRESS_SUFFIX)
+    ]
+
+
+def _clear_backup_files(api: Any, settle: float = 120.0) -> None:
+    """Remove every backup-* file, once nothing is still being written.
+
+    Deleting a <name>.rsc.in_progress while RouterOS is mid-export is the last
+    thing the API connection did before the rest of a session failed on a dead
+    socket. So this waits, bounded, for the exports to settle first. On the
+    failure path that wait is the only thing standing between one red test and
+    a red session; on the success path there is nothing in progress and it
+    costs one listing.
+    """
+    deadline = time.monotonic() + settle
+    while _exports_in_progress(api) and time.monotonic() < deadline:
+        time.sleep(1)
     res = api.get_binary_resource("/file")
     for row in list(res.get()):
         if _row_str(row, "name").startswith(BACKUP_PREFIX):
@@ -561,21 +634,46 @@ def _clear_backup_files(api: Any) -> None:
                 res.call("remove", {".id": _row_id(row)})
 
 
+# `/export file=` writes through this temporary and renames when it is done.
+EXPORT_IN_PROGRESS_SUFFIX = ".in_progress"
+
+
 def _backup_files(api: Any) -> list[str]:
+    """The finished backup files. A half-written export is not one of them.
+
+    The suffix matters more than it looks. `/export file=` returns before the
+    export is finished, writing through `<name>.rsc.in_progress` and renaming
+    at the end, so a router mid-export already shows two files whose names
+    start with the prefix — the .backup and the temporary. Counting those two
+    as the pair let every waiter below return early: the assertion then saw
+    `.rsc.in_progress` where it wanted `.rsc`, and, worse, the teardown that
+    follows deleted the file RouterOS was still writing, which is the last
+    thing the API connection did before the rest of the session failed on a
+    dead socket.
+    """
     res = api.get_binary_resource("/file")
     return sorted(
         n
         for n in (_row_str(r, "name") for r in res.get())
-        if n.startswith(BACKUP_PREFIX)
+        if n.startswith(BACKUP_PREFIX) and not n.endswith(EXPORT_IN_PROGRESS_SUFFIX)
     )
 
 
-def _wait_for_backup_files(api: Any, count: int, timeout: float = 30.0) -> list[str]:
-    """Poll until `count` backup files exist, or give up.
+def _wait_for_backup_files(api: Any, count: int, timeout: float = 120.0) -> list[str]:
+    """Poll until `count` finished backup files exist, or give up.
 
     `/export file=` returns before the file is necessarily on disk, so asserting
     straight after the run is a race that passes on a fast boot and fails on a
-    contended runner.
+    contended runner. _backup_files() ignores the .in_progress temporary, so
+    reaching the count here means the export finished rather than started.
+
+    Thirty seconds was enough while the temporary counted toward `count`, which
+    is to say while this returned as soon as the export had *begun*. Waiting for
+    it to finish is a longer wait, and on a CHR under emulation that has just
+    written one backup pair it is longer still: the second of the two backup
+    tests timed out at thirty with the .backup on disk and the .rsc still being
+    written. The number is a ceiling on a poll loop, not a delay - a run that
+    finishes in two seconds still takes two seconds.
     """
     deadline = time.monotonic() + timeout
     names = _backup_files(api)
@@ -679,17 +777,21 @@ def _router_date(api: Any) -> str:
     return _row_str(rows[0], "date").replace("/", "-")
 
 
-@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_backup_names_the_pair_by_date_and_version(
     api: Any,
     script_resource: Any,
 ) -> None:
     """One run leaves a .backup/.rsc pair carrying the date and the version."""
     _clear_backup_files(api)
-    src = (MIKROTIK_DIR / "backup.lua").read_text(encoding="utf-8", errors="replace")
+    src = script_path("backup.lua").read_text(encoding="utf-8", errors="replace")
     try:
         _add_script(script_resource, "backup", src)
-        _run_via_scheduler(api, "backup", lambda: len(_backup_files(api)) >= 2)
+        # The gate answers "did the script run" - the .backup is written
+        # synchronously, so one finished file is that answer. The export that
+        # follows is what _wait_for_backup_files waits for, with a ceiling
+        # sized for it; asking this 60s gate for the pair put the slow-export
+        # failure on the wrong wait, and on the wrong side of the teardown.
+        _run_via_scheduler(api, "backup", lambda: len(_backup_files(api)) >= 1)
         names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup")
@@ -708,7 +810,6 @@ def test_backup_names_the_pair_by_date_and_version(
     assert "/" not in stem, f"filename would create a directory: {stem!r}"
 
 
-@XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE
 def test_backup_removes_the_previous_generation(
     api: Any,
     script_resource: Any,
@@ -738,7 +839,7 @@ def test_backup_removes_the_previous_generation(
         assert _wait_for_backup_files(api, 1), "decoy backup was not created"
         assert f"{stale}.backup" in _backup_files(api)
 
-        src = (MIKROTIK_DIR / "backup.lua").read_text(
+        src = script_path("backup.lua").read_text(
             encoding="utf-8", errors="replace"
         )
         _add_script(script_resource, "backup", src)
@@ -770,7 +871,7 @@ def test_update_check_reports_a_failed_check(
     started blocking, which it is not supposed to do.
     """
     _unset_global(api, "pu_TG_LAST_MESSAGE")
-    src = (MIKROTIK_DIR / "update_check.lua").read_text(
+    src = script_path("update_check.lua").read_text(
         encoding="utf-8", errors="replace"
     )
     try:
@@ -917,7 +1018,7 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
     """
     _unset_global(api, "PuTgLastMessage")
     _clear_backup_files(api)
-    src = (MIKROTIK_DIR / "backup_update_check.lua").read_text(
+    src = script_path("backup_update_check.lua").read_text(
         encoding="utf-8", errors="replace"
     )
     try:
@@ -932,7 +1033,7 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
             interval="40s",
         )
         message = _read_global(api, "PuTgLastMessage")
-        backups = _backup_files(api) if "update is required" in message else []
+        backups = _backup_files(api) if UPDATE_OFFERED in message else []
     finally:
         _remove_by_name(script_resource, "backup_update_check")
         _remove_by_name(script_resource, "tg_send_new")
@@ -940,20 +1041,35 @@ def test_backup_update_check_runs_end_to_end(api: Any, script_resource: Any) -> 
         _clear_backup_files(api)
 
     warnings.warn("backup_update_check message:\n" + message, stacklevel=2)
-    headlines = (
-        "RouterOS update is required.",
-        "RouterOS update is not required.",
-        "RouterOS update check FAILED.",
-    )
+    headlines = (UPDATE_OFFERED, UPDATE_NONE, UPDATE_FAILED)
     assert any(h in message for h in headlines), f"no known headline: {message!r}"
     assert "Status: <code>" in message, f"status line missing: {message!r}"
     assert "Checked: <code>" in message, f"clock line missing: {message!r}"
     assert "installed packages <code>" in message, f"package size missing: {message!r}"
     stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
-    if "update is required" in message:
+    if UPDATE_OFFERED in message:
         assert len(backups) >= 2, f"newer release offered but no backup pair: {backups}"
+    else:
+        # Only the update-required outcome alarms. A heartbeat that reads the
+        # same as a call to act is a heartbeat nobody reads.
+        assert "ALARM" not in message, f"a non-actionable outcome alarmed: {message!r}"
 
+
+# The three headlines backup_update_check.lua can send, spelled once here.
+# They used to be written out at seven call sites, and only two of those were
+# assertions. The other five were gates, and a gate does not fail when it stops
+# matching - it goes quiet:
+# `backups = _backup_files(api) if "update is required" in message else []`
+# collects nothing, so the assertion that a pre-upgrade pair exists is never
+# reached, and the skip that protects the development-channel test from a run
+# with nothing newer on offer stops firing. Any future rewording lands in one
+# place, and the contract test in the fast python suite fails in a second if
+# these drift from what the script actually sends - which a six-minute CHR boot
+# would otherwise be the first to notice.
+UPDATE_OFFERED = "RouterOS update is required."
+UPDATE_NONE = "RouterOS update is not required."
+UPDATE_FAILED = "RouterOS update check FAILED."
 
 # The hostnames the update check talks to. Overridden with static DNS entries
 # pointing at the router itself, a check fails fast - connection refused on a
@@ -1063,7 +1179,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
 ) -> None:
     """On the development channel the CHR is usually offered a newer build.
 
-    That is the one way to reach the "update is required" path on a router
+    That is the one way to reach the offered-release path on a router
     pinned to the current stable release without installing anything: the
     script only ever checks, backs up and reports. The channel setting is
     patched in the installed copy, and the router is put back on stable in
@@ -1072,7 +1188,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
     """
     _unset_global(api, "PuTgLastMessage")
     _clear_backup_files(api)
-    src = (MIKROTIK_DIR / "backup_update_check.lua").read_text(
+    src = script_path("backup_update_check.lua").read_text(
         encoding="utf-8", errors="replace"
     )
     patched = src.replace(':local updChannel "stable"', ':local updChannel "development"', 1)
@@ -1091,7 +1207,7 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
             interval="40s",
         )
         message = _read_global(api, "PuTgLastMessage")
-        if "update is required" in message:
+        if UPDATE_OFFERED in message:
             names = _wait_for_backup_files(api, 2)
     finally:
         _remove_by_name(script_resource, "backup_update_check")
@@ -1102,12 +1218,18 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
             update.call("set", {"channel": b"stable"})
 
     warnings.warn("backup_update_check on the development channel:\n" + message, stacklevel=2)
-    if "update check FAILED" in message:
+    if UPDATE_FAILED in message:
         pytest.skip(f"the runner cannot reach the update server: {message!r}")
-    if "update is not required" in message:
+    if UPDATE_NONE in message:
         pytest.skip("the development channel offers nothing newer than the pinned release")
 
-    assert "RouterOS update is required." in message, f"no known headline: {message!r}"
+    assert UPDATE_OFFERED in message, f"no known headline: {message!r}"
+    # The one outcome that wants an operator says so in one word, on its own
+    # line under the headline. Asserted with the newline: "ALARM" anywhere in a
+    # message that long could be a board name or a log entry quoted back.
+    assert f"{UPDATE_OFFERED}\nALARM\n" in message, (
+        f"the update-required message carries no ALARM line: {message!r}"
+    )
     assert "Status: <code>New version is available" in message, message
     assert len(names) >= 2, f"a release was offered but no backup pair exists: {names}"
     stems = {n.rsplit(".", 1)[0] for n in names}

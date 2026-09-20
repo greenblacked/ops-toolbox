@@ -1,4 +1,4 @@
-"""Tests for mikrotik/router_doctor.py.
+"""Tests for mikrotik/features/router_doctor.py.
 
 Only the layer between the router's answer and the verdict is covered, which is
 where all the judgement lives: what counts as "scheduled", what counts as a
@@ -26,7 +26,7 @@ from unittest import mock
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
-sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik"))
+sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "features"))
 
 import router_doctor  # noqa: E402
 
@@ -187,6 +187,36 @@ class LocalScriptNamesTestCase(unittest.TestCase):
     def test_a_missing_directory_is_not_an_error(self):
         # The script has to survive being copied on its own into ~/bin.
         self.assertEqual(router_doctor.local_script_names("/nonexistent/mikrotik"), [])
+
+    def test_an_unreadable_subdirectory_raises_rather_than_shortening(self):
+        """A partial list is the worst answer here, so it is not an answer.
+
+        os.walk swallows a per-directory scandir error by default and keeps
+        going, which returns a list that looks complete. build_findings() then
+        reports every script it could not read as one the router has and the
+        package does not - with core/ unreadable, the three deployed scripts
+        come back as strangers, under 'info', in a tool whose whole job is to
+        say what is missing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            core = os.path.join(tmp, "core")
+            os.mkdir(core)
+            for path in (os.path.join(core, "backup.lua"),
+                         os.path.join(tmp, "tg_send.lua")):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("x")
+            # chmod cannot revoke read access from root, which is who the
+            # container suite runs as, so the failure is injected where os.walk
+            # meets the filesystem.
+            real_scandir = os.scandir
+
+            def refuse_core(path=".", *args, **kwargs):
+                if str(path) == core:
+                    raise PermissionError(13, "Permission denied", str(path))
+                return real_scandir(path, *args, **kwargs)
+
+            with mock.patch("os.scandir", refuse_core), self.assertRaises(OSError):
+                router_doctor.local_script_names(tmp)
 
     def test_this_repository_ships_the_scripts_it_documents(self):
         names = router_doctor.local_script_names(os.path.join(REPO_ROOT, "mikrotik"))

@@ -26,7 +26,7 @@ cd "$REPO_ROOT" || { echo "cannot enter $REPO_ROOT" >&2; exit 1; }
 # The list is checked against the scripts themselves further down. A script that
 # starts reading a new variable from the environment fails this suite until the
 # name is added here, which is the point: nobody has to remember.
-unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR
+unset BUN_INSTALL CLOUDSDK_CONFIG TF_PLUGIN_CACHE_DIR UV_CACHE_DIR GRADLE_USER_HOME PIP_CACHE_DIR
 unset CHANGELOG_ROOT OS_RELEASE XDG_CONFIG_HOME
 # This file runs the scripts it checks (--help, bad flags), so it is a runner
 # like any suite and pins what they read. SYSTEMD_ANALYZE_CMD names a binary
@@ -106,11 +106,18 @@ done
 
 # --------------------------------------------------------------------------
 head_ "unknown-flag contract"
-# Bash scripts exit 3 on an unrecognised flag. The Python helpers use argparse,
-# which exits 2 by its own convention and is not worth fighting — they are
-# checked for --help above, and for nothing here.
+# Every command-line script exits 3 on an unrecognised flag, Python included.
+#
+# The Python helpers used to be exempt here, on the grounds that argparse exits
+# 2 by its own convention and it was not worth fighting. That was defensible
+# while 2 meant nothing in particular. It stopped being defensible once the
+# diagnostics started documenting an exit 2 of their own — git_ignore_doctor.py
+# spends it on "not inside a Git repository" and git_remote_doctor.py on "git
+# config unavailable" — because a mistyped flag then returned the same number
+# as a real finding, and a caller reading the exit code could not tell a typo
+# from a diagnosis. Each of them now carries a parser that exits 3, and the
+# exemption that hid this is gone rather than documented.
 for f in "${clis[@]}"; do
-  case "$f" in *.py) continue ;; esac
   rc=0
   guard "./$f" --definitely-not-a-valid-flag-12345 >/dev/null 2>&1
   rc=$?
@@ -322,15 +329,57 @@ done < <(git ls-files -z)
 # --------------------------------------------------------------------------
 head_ "Bash 3.2 compatibility"
 # macOS ships bash 3.2 as /bin/bash and that is what these packages run under.
+#
+# The */tests/* skip below is right for almost every test file: git/tests and
+# linux/tests run only inside a Linux tester container (their own file headers
+# say so), macos-initial-setup/tests/test_stay_fresh_steps.sh and
+# test_stay_fresh_unprivileged.sh refuse to start anywhere else, and
+# dotfiles/tests reaches the macos-native runner only through
+# `./run-tests.sh`, whose `#!/usr/bin/env bash` shebang resolves to Homebrew's
+# Bash 5 there — it sits ahead of /bin on that runner's PATH, which is also
+# why k8s-toolbox/tests/test_k8s_toolbox.sh's own syntax check uses
+# "${BASH:-bash}" instead of a bare `bash`. None of those ever meet the real
+# interpreter, so holding them to this rule would invent a stricter contract
+# than CI enforces.
+#
+# One file is the exception. ci.yml's "Run contracts with Apple Bash" step
+# hands macos-initial-setup/tests/test_macos_initial_setup.sh to /bin/bash by
+# absolute path, forcing the real 3.2 — and that file's own header already
+# says so ("and natively on a macOS runner, where /bin/bash is 3.2 — so
+# nothing here may use a Bash 4 construct"). `*/tests/*) continue` exempted it
+# anyway: a `declare -A` added to it would pass this suite and fail only on a
+# real Mac. Named here rather than matched by a directory or a pattern, so the
+# day CI hands a second test file to /bin/bash this way, that line is a
+# one-word addition instead of a silent gap reopening.
+BASH32_TEST_FILES="macos-initial-setup/tests/test_macos_initial_setup.sh"
+
+bash4_scan() {
+  # Strip whole-line comments first. git_recent_branches.sh explains in a
+  # comment that it avoids mapfile, and matching that would be absurd.
+  sed 's/^[[:space:]]*#.*$//' "$1" | grep -nE \
+    '(^|[^[:alnum:]_])(mapfile|readarray|coproc)([^[:alnum:]_]|$)|(declare|local)[[:space:]]+-[A-Za-z]*A([[:space:]]|$)|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)'
+}
+
+# A floor for the scanner itself: a probe built here, on the fly, containing a
+# construct the regex above targets. It is not one of the files scanned below,
+# so this proves the function still matches a known-bad construct rather than
+# proving the real subjects happen to be clean — the same gap that let a typo'd
+# regex report "no Bash 4+ constructs" forever.
+bash4_probe="$(mktemp)"
+printf '#!/usr/bin/env bash\ndeclare -A bash4_probe\n' > "$bash4_probe"
+if [[ -z "$(bash4_scan "$bash4_probe")" ]]; then
+  err "the Bash 3.2 construct scanner missed its own known-bad probe (declare -A) — it has stopped scanning"
+fi
+rm -f "$bash4_probe"
+
 bash4_hits=0
+bash4_checked=0
 for d in $BASH32_DIRS; do
   [[ -d "$d" ]] || continue
   while IFS= read -r -d '' f; do
     case "$f" in */tests/*) continue ;; esac
-    # Strip whole-line comments first. git_recent_branches.sh explains in a
-    # comment that it avoids mapfile, and matching that would be absurd.
-    hits="$(sed 's/^[[:space:]]*#.*$//' "$f" | grep -nE \
-      '(^|[^[:alnum:]_])(mapfile|readarray|coproc)([^[:alnum:]_]|$)|(declare|local)[[:space:]]+-[A-Za-z]*A([[:space:]]|$)|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)')"
+    bash4_checked=$((bash4_checked + 1))
+    hits="$(bash4_scan "$f")"
     if [[ -n "$hits" ]]; then
       err "$f uses a Bash 4+ construct (see CONTRIBUTING.md)"
       printf '%s\n' "$hits" | head -3 >&2
@@ -338,7 +387,26 @@ for d in $BASH32_DIRS; do
     fi
   done < <(git ls-files -z -- "$d/*.sh")
 done
-(( bash4_hits == 0 )) && ok "no Bash 4+ constructs in: $BASH32_DIRS"
+
+for f in $BASH32_TEST_FILES; do
+  if [[ ! -f "$f" ]]; then
+    err "BASH32_TEST_FILES names $f, which no longer exists — update the list"
+    continue
+  fi
+  bash4_checked=$((bash4_checked + 1))
+  hits="$(bash4_scan "$f")"
+  if [[ -n "$hits" ]]; then
+    err "$f uses a Bash 4+ construct (see CONTRIBUTING.md)"
+    printf '%s\n' "$hits" | head -3 >&2
+    bash4_hits=$((bash4_hits + 1))
+  fi
+done
+
+if (( bash4_checked == 0 )); then
+  err "the Bash 3.2 construct scan inspected no file — this check has stopped checking"
+elif (( bash4_hits == 0 )); then
+  ok "no Bash 4+ constructs in: $BASH32_DIRS (plus $BASH32_TEST_FILES)"
+fi
 
 # A `case` inside a multi-line $( ) is a Bash 3.2 parse error, and neither the
 # keyword scan above nor shellcheck says a word about it. Bash 3.2 parses `$(`
@@ -474,7 +542,7 @@ dry_run_args() {
     macos-initial-setup/launchd/stay_fresh_agent.sh) printf '%s\n' "install --dry-run" ;;
     macos-initial-setup/brewfile.sh)         printf '%s\n' "dump --file @SCRATCH@/Brewfile --dry-run" ;;
     k8s-toolbox/debug_pod.sh)                printf '%s\n' "--pod dry-run-probe --dry-run" ;;
-    mikrotik/pull_router_backups.sh)         printf '%s\n' "--dry-run probe@localhost" ;;
+    mikrotik/features/pull_router_backups.sh)         printf '%s\n' "--dry-run probe@localhost" ;;
     git/gacp.sh)                             printf '%s\n' "--dry-run -m dry-run probe" ;;
     git/clone-repos.sh)                      printf '%s\n' "--dry-run git/repos.txt.example" ;;
     git/set_git_profile.sh)                  printf '%s\n' "--dry-run --name Probe --email probe@example.invalid" ;;
@@ -831,11 +899,55 @@ else
     done <<<"$(grep -E '^[A-Za-z_][A-Za-z0-9_]*_VERSION=' "$sums_env")"
   fi
 
+  # The digests have a second reader. test-env/lint/run.sh fetches the same
+  # pinned binaries when the lint suite is run with LINT_FETCH=1, and it builds
+  # its key as ${TOOL}_SHA256_${PLATFORM} at runtime — so the literal never
+  # appears in it and a grep for the key finds only ci.yml. Requiring ci.yml to
+  # name every digest therefore capped the file at what CI downloads, which is
+  # Linux, which is why the lint suite could never fetch actionlint or hadolint
+  # on the Mac most likely to be running it.
+  #
+  # Read out of the runner rather than repeated here, and as the pairs the
+  # runner actually handles: inside fetch_tool(), each tool's case arm lists
+  # the platforms it has an asset for. A tool×platform cross product accepted a
+  # digest for a pair no arm fetches — HADOLINT_SHA256_LINUX_ARM64 the moment
+  # ShellCheck alone learned LINUX_ARM64 — which is the unread digest this
+  # check exists to reject. The parse has a floor for the same reason: arms
+  # that were reindented would otherwise yield nothing and fail every Darwin
+  # digest with a message blaming the digest file rather than this parser.
+  lint_runner="test-env/lint/run.sh"
+  lint_pairs=""
+  if [[ -f "$lint_runner" ]]; then
+    lint_pairs="$(awk '
+      /^fetch_tool\(\) \{/ { in_fn = 1; next }
+      in_fn && /^\}/       { in_fn = 0 }
+      in_fn && /^    [a-z0-9-]+\)$/ { tool = $1; sub(/\)$/, "", tool); next }
+      in_fn && tool != "" && /^        [A-Z][A-Z0-9_]*\)/ {
+        plat = $1; sub(/\)$/, "", plat); print toupper(tool) "_SHA256_" plat
+      }
+    ' "$lint_runner")"
+    if [[ -z "$lint_pairs" ]]; then
+      err "$lint_runner yielded no tool/platform arms from fetch_tool() — the parser in this check is broken, not the digest file"
+      pin_gaps=$((pin_gaps + 1))
+    fi
+  fi
+
+  # Named by the runner when some arm fetches exactly this tool on exactly this
+  # platform. Anything else still has to be named by a step in ci.yml, so a
+  # digest for a pair nothing downloads keeps failing.
+  read_by_lint_runner() {
+    local key="$1" pair
+    for pair in $lint_pairs; do
+      [[ "$pair" == "$key" ]] && return 0
+    done
+    return 1
+  }
+
   while read -r digest_key; do
     [[ -n "$digest_key" ]] || continue
     digest_count=$((digest_count + 1))
-    if ! grep -q "$digest_key" "$ci_yml"; then
-      err "$sums_env records $digest_key and no step in $ci_yml names it — an unread digest is exactly the state this whole file was in"
+    if ! grep -q "$digest_key" "$ci_yml" && ! read_by_lint_runner "$digest_key"; then
+      err "$sums_env records $digest_key and neither a step in $ci_yml nor $lint_runner reads it — an unread digest is exactly the state this whole file was in"
       pin_gaps=$((pin_gaps + 1))
     fi
     digest_tool="${digest_key%%_SHA256_*}"
@@ -855,7 +967,7 @@ else
   elif (( digest_count == 0 )); then
     err "no *_SHA256_* digests found in $sums_env — every binary ci.yml downloads is installing on a version pin alone"
   elif (( pin_gaps == 0 )); then
-    ok "$ci_pin_count CI tool pin(s) agree with $sums_env; $digest_count digest(s), each named by a step in $ci_yml"
+    ok "$ci_pin_count CI tool pin(s) agree with $sums_env; $digest_count digest(s), each read by a step in $ci_yml or by $lint_runner"
   fi
 fi
 

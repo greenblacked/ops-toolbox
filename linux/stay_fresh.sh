@@ -31,6 +31,15 @@ SKIP_FLATPAK=0
 SKIP_SNAP=0
 
 LOG_DIR="${TMPDIR:-/tmp}"
+# macOS hands out a TMPDIR that already ends in a slash, so every path built
+# from it rendered as ".../T//stay_fresh-....log" — in the preflight line the
+# run opens with, and in the warnings that name the directory when it cannot be
+# written. It opens fine; it just reads like a bug to whoever is being asked to
+# go and look there. A case, not ${VAR%/}, so TMPDIR=/ does not become "".
+case "$LOG_DIR" in
+  /) ;;
+  */) LOG_DIR="${LOG_DIR%/}" ;;
+esac
 LOG_FILE="$LOG_DIR/linux_stay_fresh-$(date +%Y%m%d-%H%M%S).log"
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then

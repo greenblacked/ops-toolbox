@@ -11,6 +11,29 @@ live in `/system script` on the router and are run either manually or from
 > RouterOS scripts, not Lua. Paste the file contents into the *Source* field
 > of a `/system script` entry on the router.
 
+## Layout
+
+Two folders: what this fleet runs, and what the package offers.
+
+| Folder | What is in it |
+| --- | --- |
+| [`core/`](core/) | The scripts actually deployed and scheduled on the routers: `backup_update_check.lua`, `detect_internet.lua` and the Telegram helper they send through, `tg_send.lua` (installed under its own name, `tg_send` — `backup_update_check` is pointed at the operator's separate copy, `tg_send_new`, by default). If one of these stops working, something real stops working. |
+| [`features/`](features/) | Everything else the package offers and this fleet has not deployed — the other backup and update paths, the hardening audit, the watchers and notifiers, and the two host-side tools. Written, tested on the CHR and ready; not in use. |
+
+Being in `features/` says nothing about quality: every script in both folders is
+held to the same conventions and the same CHR suite runs all of them. It says
+only that nobody is depending on it yet, so a change there cannot break a
+running router.
+
+The folders are for the reader, not for RouterOS. A script's name in
+`/system script` and `/system scheduler` is still its filename without the
+extension — `backup_update_check`, not `core/backup_update_check` — so **a
+router already running these needs no change.**
+
+Security and update reporting draw a line between what a script observed and
+what it inferred; [`SECURITY_REPORTING.md`](SECURITY_REPORTING.md) says which
+is which, and what the scan deliberately does not claim.
+
 Writing or changing one? The conventions the convention suite enforces — the
 `OpsToolboxPaused` guard, secrets read from `:global`, alerting on transitions
 rather than every run, and never swallowing a failed notification — are
@@ -53,7 +76,7 @@ Before you touch a router, read the scheduler entries the `.lua` scripts are
 meant to get. This contacts nothing at all and writes nothing:
 
 ```bash
-./mikrotik/print_schedulers.sh
+./mikrotik/features/print_schedulers.sh
 ```
 
 Installing a script and scheduling it are separate acts, and the second one
@@ -62,7 +85,7 @@ nothing to report. Once the scripts are in place, ask the router which of them
 actually took:
 
 ```bash
-./mikrotik/router_doctor.py --host 192.168.88.1
+./mikrotik/features/router_doctor.py --host 192.168.88.1
 ```
 
 That is a read-only audit over ssh. It reports which of these scripts are in
@@ -74,19 +97,20 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 16 of these 28 scripts do not run at all.** That release
+> **On RouterOS 7.24, 15 of these 28 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
 > report. This is the quietest failure in the package: you install the script,
 > schedule it, and never hear from it again.
 >
-> **Runs on 7.24:** `backup_file_cleanup.lua`, `backup_update_check.lua`,
-> `cert_expiry_watch.lua`, `change_WIFI_pw.lua`, `detect_internet.lua`,
-> `health_check.lua`, `netwatch_notify.lua`, `reboot-and-flush.lua`,
-> `security_check.lua`, `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
+> **Runs on 7.24:** `backup.lua`, `backup_file_cleanup.lua`,
+> `backup_update_check.lua`, `cert_expiry_watch.lua`, `change_WIFI_pw.lua`,
+> `detect_internet.lua`, `health_check.lua`, `netwatch_notify.lua`,
+> `reboot-and-flush.lua`, `security_check.lua`, `stay_fresh.lua`,
+> `tg_send.lua`, `wireguard_watch.lua`.
 >
-> **Does not run on 7.24** (fine on 7.23 and earlier): `backup.lua`,
+> **Does not run on 7.24** (fine on 7.23 and earlier):
 > `bandwidth_spike.lua`, `brute_force_block.lua`, `ddns_update.lua`,
 > `dhcp_lease_watch.lua`, `firewall_drift.lua`, `firewall_drift_baseline.lua`,
 > `latency_monitor.lua`, `mac_allowlist_dhcp.lua`, `rogue_dns_check.lua`,
@@ -94,44 +118,56 @@ their values, so no token crosses the wire.
 > `wan_failover_notify.lua`, `wan_link_flap_notify.lua`,
 > `wireless_client_watch.lua`.
 >
-> `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`.
-> The rest have no replacement yet; the integration suite marks each of them
-> `xfail` on the 7.24.2 CHR rather than pretending they pass.
+> `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`,
+> which is **retired on 7.24**: it declares six underscored globals, the
+> replacement does the same job, and it is not being renamed. It stays here,
+> unchanged and supported, for routers on 7.23 and earlier.
+>
+> `backup.lua` was in the second list until its two globals were renamed to
+> `RouterBackupPassword` and `BackupRemovePrevious`. It was renamed rather than
+> retired because nothing else here takes a *routine* backup: on 7.24
+> `backup_update_check.lua` and `stay_fresh.lua` write a pair only when an
+> update is offered, and `backup_file_cleanup.lua` only deletes. Retiring it
+> would have left a 7.24 router with a scheduled backup job that fires when an
+> upgrade happens to appear, which reads as covered and is not.
+>
+> The remaining fourteen have no replacement yet; the integration suite marks
+> each of them `xfail` on the 7.24.2 CHR rather than pretending they pass.
 
-| File                            | Purpose                                                                 |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| `tg_send.lua`                   | Generic Telegram text-message helper used by every other script.        |
-| `backup.lua`                    | Dated, version-stamped backup + export; prunes the previous one.        |
-| `change_WIFI_pw.lua`            | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
-| `health_check.lua`              | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
-| `update_check.lua`              | Backs up, then notifies when a newer RouterOS version appears.          |
-| `backup_update_check.lua`       | Same job, plainer; runs on RouterOS 7.24 where update_check will not.   |
-| `stay_fresh.lua`                | Backs up, installs the update in a window, then the firmware. Reboots.  |
-| `wan_failover_notify.lua`       | One-shot Telegram alert on built-in WAN-detect state transitions.       |
-| `detect_internet.lua`           | Re-runs RouterOS WAN/LAN auto-detection (manual reset).                 |
-| `reboot-and-flush.lua`          | Flushes DNS + connection tracking, then reboots. No pre-reboot ping.    |
-| `dhcp_lease_watch.lua`          | Alerts on new MACs, duplicate hostnames, and lease churn.               |
-| `firewall_drift.lua`            | Diffs current firewall rules against a saved baseline; alerts on drift. |
-| `firewall_drift_baseline.lua`   | Manual helper that re-arms `firewall_drift` after intentional changes.  |
-| `mac_allowlist_dhcp.lua`        | Flags (and optionally blocks) DHCP leases for non-allowlisted MACs.     |
-| `rogue_dns_check.lua`           | Detects DNS upstream hijack and clients using non-approved resolvers.   |
-| `security_check.lua`            | Read-only hardening audit; Telegrams findings with the command to fix.  |
-| `backup_file_cleanup.lua`       | Prunes old backup/export files so flash does not silently fill up.      |
-| `cert_expiry_watch.lua`         | Warns before a certificate expires, while there is still time to act.   |
-| `ddns_update.lua`               | Pushes the current WAN address to Cloudflare DNS when it changes.       |
-| `netwatch_notify.lua`           | Turns RouterOS netwatch up/down events into Telegram alerts.            |
-| `wan_link_flap_notify.lua`      | Alerts on a WAN link flapping, which a plain up/down check misses.      |
-| `latency_monitor.lua`           | Tracks RTT to chosen targets and alerts on sustained degradation.       |
-| `bandwidth_spike.lua`           | Alerts when interface throughput jumps well above its recent norm.      |
-| `traffic_quota.lua`             | Tracks monthly volume per interface and warns before a cap is hit.      |
-| `brute_force_block.lua`         | Detects repeated auth failures and adds the source to a block list.     |
-| `vpn_health.lua`                | Watches IPsec / OVPN / WireGuard sessions and alerts on state changes.  |
-| `wireguard_watch.lua`           | Alerts when a WireGuard peer stops handshaking.                         |
-| `wireless_client_watch.lua`     | Alerts on wireless clients joining, leaving, or with poor signal.       |
-| `export_config.py`              | Host-side: exports `/export` over ssh and versions it in git.           |
-| `print_schedulers.sh`           | Host-side: prints the `/system scheduler add` lines for these scripts.  |
-| `router_doctor.py`              | Host-side: read-only audit of what is installed, scheduled and set.     |
-| `pull_router_backups.sh`        | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
+| File                                         | Purpose                                                                 |
+| -------------------------------------------- | ----------------------------------------------------------------------- |
+| `core/tg_send.lua`                           | Generic Telegram text-message helper used by every other script.        |
+| `features/backup.lua`                        | Dated, version-stamped backup + export; prunes the previous one.        |
+| `features/change_WIFI_pw.lua`                | Rotates 2.4 GHz / 5 GHz WPA2 PSK and announces it via Telegram.         |
+| `features/health_check.lua`                  | CPU / RAM / disk / temperature watchdog with threshold alerts.          |
+| `features/update_check.lua`                  | Backs up, then notifies when a newer RouterOS version appears.          |
+| `core/backup_update_check.lua`               | Same job, plainer; runs on RouterOS 7.24 where update_check will not.   |
+| `features/stay_fresh.lua`                    | Backs up, installs the update in a window, then the firmware. Reboots.  |
+| `features/wan_failover_notify.lua`           | One-shot Telegram alert on built-in WAN-detect state transitions.       |
+| `core/detect_internet.lua`                   | Re-runs RouterOS WAN/LAN auto-detection (manual reset).                 |
+| `features/reboot-and-flush.lua`              | Flushes DNS + connection tracking, then reboots. No pre-reboot ping.    |
+| `features/dhcp_lease_watch.lua`              | Alerts on new MACs, duplicate hostnames, and lease churn.               |
+| `features/firewall_drift.lua`                | Diffs current firewall rules against a saved baseline; alerts on drift. |
+| `features/firewall_drift_baseline.lua`       | Manual helper that re-arms `firewall_drift` after intentional changes.  |
+| `features/mac_allowlist_dhcp.lua`            | Flags (and optionally blocks) DHCP leases for non-allowlisted MACs.     |
+| `features/rogue_dns_check.lua`               | Detects DNS upstream hijack and clients using non-approved resolvers.   |
+| `features/security_check.lua`                | Read-only hardening audit; Telegrams findings with the command to fix.  |
+| `features/backup_file_cleanup.lua`           | Prunes old backup/export files so flash does not silently fill up.      |
+| `features/cert_expiry_watch.lua`             | Warns before a certificate expires, while there is still time to act.   |
+| `features/ddns_update.lua`                   | Pushes the current WAN address to Cloudflare DNS when it changes.       |
+| `features/netwatch_notify.lua`               | Turns RouterOS netwatch up/down events into Telegram alerts.            |
+| `features/wan_link_flap_notify.lua`          | Alerts on a WAN link flapping, which a plain up/down check misses.      |
+| `features/latency_monitor.lua`               | Tracks RTT to chosen targets and alerts on sustained degradation.       |
+| `features/bandwidth_spike.lua`               | Alerts when interface throughput jumps well above its recent norm.      |
+| `features/traffic_quota.lua`                 | Tracks monthly volume per interface and warns before a cap is hit.      |
+| `features/brute_force_block.lua`             | Detects repeated auth failures and adds the source to a block list.     |
+| `features/vpn_health.lua`                    | Watches IPsec / OVPN / WireGuard sessions and alerts on state changes.  |
+| `features/wireguard_watch.lua`               | Alerts when a WireGuard peer stops handshaking.                         |
+| `features/wireless_client_watch.lua`         | Alerts on wireless clients joining, leaving, or with poor signal.       |
+| `features/export_config.py`                  | Host-side: exports `/export` over ssh and versions it in git.           |
+| `features/print_schedulers.sh`               | Host-side: prints the `/system scheduler add` lines for these scripts.  |
+| `features/router_doctor.py`                  | Host-side: read-only audit of what is installed, scheduled and set.     |
+| `features/pull_router_backups.sh`            | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
 ## Installation
 
@@ -242,7 +278,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 `detect_internet`, `reboot-and-flush`, and `firewall_drift_baseline` are
 intentionally manual / on-demand — don't schedule them.
 
-[`print_schedulers.sh`](#print_schedulerssh) prints all of this as ready-to-paste
+[`features/print_schedulers.sh`](#featuresprint_schedulerssh) prints all of this as ready-to-paste
 `/system scheduler add` commands, including the twelve scripts the table above
 does not cover:
 
@@ -268,7 +304,7 @@ to reach Telegram.
 
 ## Script details
 
-### `tg_send.lua`
+### `core/tg_send.lua`
 
 Generic Telegram text-message helper. All other scripts call it via
 `[:parse [/system script get tg_send source]]`. Posts to `sendMessage` with
@@ -280,11 +316,11 @@ names, so the old `TG_BOT_TOKEN` / `TG_CHAT_ID` globals are not read and cannot
 be re-declared there — see the migration note above, which includes rewriting
 the startup script.
 
-### `backup.lua`
+### `features/backup.lua`
 
 Creates a binary backup (`.backup`) and a config export (`.rsc`) and sends a
 Telegram notification with the resulting filename. Optional binary-backup
-encryption via `BackupPassword`. Sanitizes the date so non-ISO `date-format`
+encryption via `RouterBackupPassword`. Sanitizes the date so non-ISO `date-format`
 settings don't accidentally produce filenames with `/` (which would create
 sub-folders on disk).
 
@@ -294,7 +330,7 @@ matters most on a rollback, because a `.backup` restored onto a different
 release is not guaranteed to load.
 
 `RemovePrevious` (default `true`, overridable with
-`:global BACKUP_REMOVE_PREVIOUS false`) deletes every other `backup-*` file
+`:global BackupRemovePrevious false`) deletes every other `backup-*` file
 once the new pair has been written, leaving exactly one generation on the
 router. It runs only after a successful save — the failure path ends in
 `:error` before it is reached — so a backup that failed never takes the last
@@ -308,7 +344,7 @@ With `RemovePrevious` off, files accumulate in `/file` and
 `print_schedulers.sh`) ages them out instead; running both is harmless, since
 the age sweep finds nothing left to remove.
 
-### `change_WIFI_pw.lua`
+### `features/change_WIFI_pw.lua`
 
 Generates fresh random passwords for the 2.4 GHz and 5 GHz security profiles
 and announces the new credentials via Telegram. Uses the SCEP-OTP generator
@@ -317,28 +353,28 @@ otherwise. Set `UseWifiWave2` to `true` for routers using the new
 `/interface wifi` (WiFiWave2) stack instead of the legacy
 `/interface wireless`.
 
-### `reboot-and-flush.lua`
+### `features/reboot-and-flush.lua`
 
 Flushes DNS cache + connection tracking and reboots after a 1-second grace
 period. Use sparingly — flushing connection tracking drops every active
 session. Intentionally has no Telegram step; pair it with the `notify-boot`
 scheduler entry above for a "back online" alert after each reboot.
 
-### `detect_internet.lua`
+### `core/detect_internet.lua`
 
 Forces RouterOS to re-run its WAN/LAN role auto-detection by toggling
 `detect-interface-list`. Helpful after ISP outages where interfaces stay
 tagged `unknown`. Also enables detect-internet on **all** interfaces, which
 is the prerequisite for `wan_failover_notify`.
 
-### `health_check.lua`
+### `features/health_check.lua`
 
 Reads CPU / memory / disk / temperature, compares against thresholds (default
 85 % / 85 % / 90 % / 75 °C) and only Telegrams when something is wrong.
 Temperature lookup iterates `/system health` entries (`temperature`,
 `cpu-temperature`, `board-temperature`) so it works across hardware lines.
 
-### `update_check.lua`
+### `features/update_check.lua`
 
 Asks the official update server whether a newer RouterOS version exists on
 your channel, and notifies once when one appears. Does **not** auto-install.
@@ -356,8 +392,8 @@ where only this script was pasted still gets a rollback point. The filename is
 `backup-IDENTITY-DATE-VERSION-pre-upgrade`, and that version is the running
 one — the release this file restores you to. It keeps the `backup-` prefix so
 `pull_router_backups.sh` still collects it and `backup_file_cleanup.lua` still
-ages it out. Encrypt it by setting `:global BACKUP_PASSWORD`, the same one
-`backup.lua` reads; set `:global UPDATE_CHECK_BACKUP false` to only notify. A
+ages it out. Encrypt it by setting `:global BACKUP_PASSWORD`; set
+`:global UPDATE_CHECK_BACKUP false` to only notify. A
 failed backup does not suppress the update notification — the message says the
 backup failed, which is louder than silence and is the state you most need to
 know about before upgrading.
@@ -372,10 +408,16 @@ sort. Everything starting with the new base name is kept, not just the two
 exact names — `/export file=` writes through a `<name>.rsc.in_progress`
 temporary and returns before the export finishes, so an exact-name test leaves
 that file matching `^backup-`, excluded by neither name, and the sweep deletes
-a half-written export. It reads the same `:global BACKUP_REMOVE_PREVIOUS` that
-`backup.lua` does, because how many generations live on a router is one policy
-and not two — set it `false` and both scripts keep every generation for
-`backup_file_cleanup.lua` to age out at 30 days. The caveat from `backup.lua`
+a half-written export. It reads `:global BACKUP_REMOVE_PREVIOUS`.
+
+> **The two names diverged when `backup.lua` was made 7.24-safe.** They used to
+> be one setting: `backup.lua` and this script both read
+> `BACKUP_REMOVE_PREVIOUS` and `BACKUP_PASSWORD`, because how many generations
+> live on a router is one policy and not two. `backup.lua` now reads
+> `BackupRemovePrevious` and `RouterBackupPassword`, and this script is retired on
+> 7.24 rather than renamed, so on a 7.23 router running **both** you have to
+> set both spellings or the two will disagree about retention and encryption.
+> On 7.24, only `backup.lua` runs and only the CamelCase pair matters. The caveat from `backup.lua`
 carries over: one generation means a corrupt backup is the only backup, so this
 is retention on the router, not a backup policy.
 
@@ -419,7 +461,7 @@ the way — which is exactly the case where a router sits on an unpatched
 release with nothing saying so. A fully offline router cannot report anything,
 and no arrangement here changes that.
 
-### `backup_update_check.lua`
+### `core/backup_update_check.lua`
 
 The same job as `update_check.lua` in a plainer style, and the one to install
 on RouterOS 7.24. That release refuses to execute a script declaring a
@@ -459,7 +501,11 @@ verdict is RouterOS's own, the same as `update_check.lua`. The sibling
 scripts' comments used to say `latest-version` kept the previous check's
 answer; the CHR says otherwise, and they now say what was measured.
 
-Three messages, one per outcome. "Update is required" carries the backup, the
+Three messages, one per outcome, and only one of them alarms: "update is
+required" carries the word `ALARM` on its own line under the headline, because
+it is the outcome that wants an operator. The heartbeat and the failure notice
+do not, and the suite asserts both halves of that — a heartbeat that reads the
+same as a call to act is a heartbeat nobody reads. "Update is required" carries the backup, the
 firmware state, the license level, the installed packages with their versions
 (a disabled one marked, since it is upgraded with the rest), the board's health
 readings where it has any, the resources an upgrade depends on, a changelog
@@ -505,7 +551,7 @@ described above, and `MaxWait` the number of five-second attempts to wait for
 the verdict. Install it **instead of** `update_check`,
 not alongside it, or every update is reported twice.
 
-### `stay_fresh.lua`
+### `features/stay_fresh.lua`
 
 The RouterOS counterpart of the macOS and Linux `stay_fresh.sh`: the two
 update checks above tell you a release is waiting and leave the install to
@@ -550,7 +596,7 @@ is never edited per router:
 | `StayFreshRemovePrevious` | `true`  | Prune older `backup-*` files after the new pair is written, leaving one generation.                               |
 | `StayFreshMaxWait`        | `12`    | Polls of 5 s to wait for a verdict after a 5 s settle; about 65 s.                                                |
 | `StayFreshTgSend`         | unset   | Name of the Telegram helper script, if it is neither `tg_send_new` nor `tg_send`.                                 |
-| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup_update_check` reads.                                       |
+| `RouterBackupPassword`    | unset   | Encrypts the binary backup; the same `:global` `backup.lua` and `backup_update_check` read.                       |
 
 The verdict is `status`, never `installed != latest`, for the reason under
 `update_check.lua`: switch a router from `stable` to `long-term` and the
@@ -584,7 +630,7 @@ Pause it with the fleet-wide `OpsToolboxPaused`, or set `StayFreshInstall`
 and `StayFreshFirmware` to `false` at boot to keep the checks and the
 heartbeat while planned work rules out a reboot.
 
-### `wan_failover_notify.lua`
+### `features/wan_failover_notify.lua`
 
 Polls the WAN interface's built-in `detect-internet-state` property and sends
 a Telegram message **only on transitions** (e.g. `internet → no-link`). State
@@ -602,7 +648,7 @@ Requires detect-internet to be enabled on the interface — run
 Edit `WanInterface` at the top of the script if your WAN port isn't
 `ether1`.
 
-### `dhcp_lease_watch.lua`
+### `features/dhcp_lease_watch.lua`
 
 Periodically scans `/ip dhcp-server lease` and alerts on three conditions:
 new MACs not seen before (relative to `:global DHCP_KNOWN_MACS`), the same
@@ -614,7 +660,7 @@ timeout so you can pin a forward rule to it. Sticky `:global DHCP_DUPS_FLAG`
 and `DHCP_CHURN_FLAG` suppress repeat alerts while the same condition
 persists.
 
-### `firewall_drift.lua`
+### `features/firewall_drift.lua`
 
 Stores a signature string of every `/ip firewall filter` and `/ip firewall
 nat` rule (`chain|action|src-address|dst-port|protocol|comment`) in
@@ -626,14 +672,14 @@ router carries a router-side audit trail. Run `firewall_drift_baseline.lua`
 after intentional firewall changes to clear the global; the next
 `firewall_drift` run silently re-baselines.
 
-### `firewall_drift_baseline.lua`
+### `features/firewall_drift_baseline.lua`
 
 Manual helper. Sets `:global FW_BASELINE` to empty string. Does not touch
 firewall rules. Run after intentional firewall edits before the next
 scheduled `firewall_drift` run, otherwise the change will be reported as
 drift.
 
-### `mac_allowlist_dhcp.lua`
+### `features/mac_allowlist_dhcp.lua`
 
 Iterates `/ip dhcp-server lease` and flags any lease whose MAC is not on the
 allowlist. The allowlist comes from `:global MAC_ALLOWLIST` (delimited
@@ -647,7 +693,7 @@ to the right position). Refuses to do anything if `MAC_ALLOWLIST` is empty,
 to avoid accidentally locking every device out of an unconfigured router.
 Re-alerts only when the set of unknown MACs changes between runs.
 
-### `rogue_dns_check.lua`
+### `features/rogue_dns_check.lua`
 
 Two checks per run. First, it `:resolve`s a control hostname (default
 `one.one.one.one`, Cloudflare's anycast name for 1.1.1.1 / 1.0.0.1 —
@@ -662,7 +708,7 @@ address-list `rogue-dns-clients` with a 1-hour timeout. Pair with a
 documented filter rule to redirect or drop their port-53 traffic (see
 [Security action surface](#security-action-surface) below).
 
-### `security_check.lua`
+### `features/security_check.lua`
 
 Read-only hardening audit of the management plane — the RouterOS counterpart
 of `linux/hardening_audit.sh` and `macos-initial-setup/hardening_audit.sh`.
@@ -695,7 +741,7 @@ or `:local` names, so it actually runs on RouterOS 7.24.
 Schedule at `1d` / `05:20:00` — after `cert_expiry_watch`, well clear of the
 nightly backup/update slot.
 
-### `export_config.py`
+### `features/export_config.py`
 
 **Runs on your machine, not on the router** — it is the only file here that is
 not a RouterOS script.
@@ -719,10 +765,10 @@ lands is `--out`, the output directory, and `--name`, the basename, which
 defaults to the host.
 
 `--stdout`, `--diff` and `--commit` are mutually exclusive and the script exits
-`2` if you pass more than one. Two flags change the export itself:
+`3` if you pass more than one. Two flags change the export itself:
 `--no-normalise` keeps the volatile header that would otherwise make every run
 differ, and `--show-sensitive` keeps the secrets that are stripped by default.
-`--show-sensitive` with `--commit` is refused outright, also exit `2` — that
+`--show-sensitive` with `--commit` is refused outright, also exit `3` — that
 combination writes router credentials into git history.
 
 Transport is ssh, so it needs **nothing installed**: no `routeros-api`, no pip,
@@ -745,7 +791,7 @@ accident.
 against the configured output file without creating or changing that file.
 `--stdout`, `--diff`, and `--commit` are intentionally mutually exclusive.
 
-### `print_schedulers.sh`
+### `features/print_schedulers.sh`
 
 **Runs on your machine, not on the router**, and contacts nothing at all: it
 prints the `/system scheduler add` command for every script here that is meant
@@ -782,7 +828,7 @@ Everything it emits is valid RouterOS input, commentary included (the notes are
 `#` comment lines, and the colour only appears on a terminal), so the output can
 go into a file and be pasted from there.
 
-### `router_doctor.py`
+### `features/router_doctor.py`
 
 **Runs on your machine, not on the router.** Read-only, like the other
 diagnostics in this repository: it asks a router over ssh which of these scripts
@@ -816,7 +862,7 @@ is deliberately omitted because an inline `on-event` can contain credentials.
 It preserves the same exit semantics: `0` findings printed, `1` connected but
 the probe failed, `2` could not connect, `4` nothing wrong.
 
-### `pull_router_backups.sh`
+### `features/pull_router_backups.sh`
 
 **Runs on your machine, not on the router.** Copies the files `backup.lua`
 creates — `backup-*.backup` and `backup-*.rsc` — off the router into a local

@@ -32,6 +32,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_ssh_doctor.py`](#git_ssh_doctorpy)
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
+- [`git_ignore_doctor.py`](#git_ignore_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
 
@@ -42,7 +43,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | **Bash** | 3.2 or newer (`/bin/bash` on macOS is enough). |
 | **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). |
 | **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
-| **Python 3.9+** | Optional; only for the three `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
+| **Python 3.9+** | Optional; only for the four `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
 
 ## Quick start
@@ -91,6 +92,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_ssh_doctor.py` | Diagnose SSH auth; `--quiet` exposes only the verdict exit code. |
 | `git_signing_doctor.py` | Diagnose signing backends; `--quiet` supports CI probes. |
 | `git_remote_doctor.py` | Diagnose remote URLs/rewrites/credentials; `--quiet` supports CI probes. |
+| `git_ignore_doctor.py` | Explain why a path is ignored or is not; with no argument, find tracked files a rule claims. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -134,6 +136,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `gwho` | `git_whoami.sh` | `gssh` | `git_ssh_doctor.py` |
 | | | `gsign` | `git_signing_doctor.py` |
 | | | `gremote` | `git_remote_doctor.py` |
+| | | `gignore` | `git_ignore_doctor.py` |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
 
@@ -598,6 +601,38 @@ Anything it prints is redacted first: `https://x-access-token:TOKEN@github.com/`
 `--quiet` suppresses all diagnostic text while keeping those exit codes. URL
 redaction is still applied internally before any report is produced; quiet
 mode never exposes embedded credentials.
+
+---
+
+## `git_ignore_doctor.py`
+
+The fourth read-only diagnostic. `git check-ignore -v` answers one question — which rule matched — and says nothing about why the rule you wrote is not the one in the answer.
+
+```bash
+./git/git_ignore_doctor.py                       # tracked files an ignore rule claims
+./git/git_ignore_doctor.py .env
+./git/git_ignore_doctor.py build/keep/note.txt
+./git/git_ignore_doctor.py --quiet .env
+```
+
+Run with no path it does the sweep worth doing on any repository you inherited: every **tracked file that matches an ignore rule**. Ignore rules apply to untracked paths only, so a `.env` committed once before the rule existed keeps turning up in every diff, and `git check-ignore` agrees with your despair — it skips tracked files by default and reports no match at all. The script asks twice, with the index and with `--no-index`, and the difference is the diagnosis.
+
+Given a path it explains that path:
+
+- **The file is tracked**, so the rule that should ignore it is inert. It names the rule that would have matched and prints the `git rm --cached` that makes it live.
+- **A negation under an excluded directory is dead.** Git does not descend into an excluded directory, so `!build/keep/note.txt` beneath `build/` is never reached. The repair is not one line: `build/*` alone still leaves the file ignored, because git skips `build/keep` on the way down. The script prints the whole ladder — `build/*`, `!build/keep/`, `!build/keep/note.txt` — anchored to the ignore file that holds the exclusion.
+- **Which ignore file is in effect.** Every `.gitignore` on the way down to the path, `.git/info/exclude`, and whatever `core.excludesFile` points at, with the config file that set it. A `core.excludesFile` naming a path that does not exist is reported: git reads no global ignore file at all and never mentions it.
+- **What the pattern actually means.** A slash inside a pattern anchors it to the directory of the file it is written in; a trailing space is dropped before matching; a trailing slash restricts it to directories.
+
+A negation is a match like any other to `check-ignore`, so a path whose deciding rule is a `!` is reported as *re-included*, not as ignored.
+
+Read-only: it never edits an ignore file, the index, or config. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
+
+**Exit codes:** `1` problems found, `2` not inside a Git repository, `3` a path outside the repository.
+
+A git that cannot answer is a problem, not a clean result. `check-ignore` exits `1` when nothing matched, which is an answer; anything else is reported with git's own message and exits `1`, because an empty result and "no rule matches this path" are the same value and a diagnostic must not confuse them. The no-argument scan raises its timeout with the size of the repository for the same reason — the call most likely to expire is the one whose empty result would read as an all-clear.
+
+`--quiet` suppresses the report and preserves the verdict exit code.
 
 ---
 

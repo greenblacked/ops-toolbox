@@ -6,7 +6,10 @@
 # because it runs where that one does not.
 #
 # Three outcomes, three messages. "Update is required" carries the backup, the
-# firmware state, the package list and the resources an upgrade depends on.
+# firmware state, the package list and the resources an upgrade depends on, and
+# the word ALARM on its own line under the headline: it is the one outcome that
+# wants an operator, and a heartbeat that reads the same as a call to act is a
+# heartbeat nobody reads.
 # "Not required" is the daily heartbeat. "Check FAILED" is the one the plain
 # design used to hide. It used to wait a fixed 15 seconds and compare
 # installed-version with latest-version. Measured on a 7.24.2 CHR: issuing the
@@ -34,6 +37,15 @@
 # Fleet-wide maintenance switch; router_doctor.py reports when it is active.
 :global OpsToolboxPaused;
 :if (([:typeof $OpsToolboxPaused] = "bool") and $OpsToolboxPaused) do={ :return ""; }
+
+# Optional operator-reviewed explanation for this exact observed version pair.
+# These values are evidence labels only; the script does not fetch or validate
+# a vulnerability feed.
+:global RouterUpdateInstalled;
+:global RouterUpdateTarget;
+:global RouterUpdateReason;
+:global RouterUpdatePriority;
+:global RouterUpdateSource;
 
 # --- settings ----------------------------------------------------------------
 # The Telegram helper to call. Defaults to tg_send_new, the operator's own
@@ -166,6 +178,23 @@
 :local CheckOk ([:len $Reason] = 0)
 :local UpdateOffered ([:typeof [:find $Status "New version is available"]] != "nil")
 :local StatusText [$HtmlEscape $Status]
+
+# Availability and urgency are different questions. Default to REVIEW and only
+# display operator-reviewed evidence when it matches the exact observed pair.
+:local UpdateReason "A newer release is offered on this channel. Review the official changelog and affected/fixed ranges; availability alone does not prove security urgency."
+:local UpdatePriority "review"
+:local UpdateSource "https://mikrotik.com/download/changelogs"
+:if (($RouterUpdateInstalled = $InstalledVersion) and ($RouterUpdateTarget = $LatestVersion) and     ([:len [:tostr $RouterUpdateReason]] > 0)) do={
+    :set UpdateReason [:tostr $RouterUpdateReason]
+    :if (($RouterUpdatePriority = "monitor only") or         ($RouterUpdatePriority = "next maintenance window") or         ($RouterUpdatePriority = "immediate")) do={
+        :set UpdatePriority $RouterUpdatePriority
+    }
+    :if (([:len [:tostr $RouterUpdateSource]] > 8) and         ([:pick [:tostr $RouterUpdateSource] 0 8] = "https://")) do={
+        :set UpdateSource [:tostr $RouterUpdateSource]
+    }
+}
+:local UpdateReasonText [$HtmlEscape $UpdateReason]
+:local UpdateSourceText [$HtmlEscape $UpdateSource]
 
 :local BoardName "unknown"
 :local Architecture "unknown"
@@ -451,11 +480,15 @@
 
     :log info ("backup_update_check: $InstalledVersion -> $LatestVersion on channel $Channel")
     :local MessageText ("<b>" . $DeviceLabel . ":</b> RouterOS update is required." . \
+    "\0AALARM" . \
     "\0A\0A<b>Update info</b>" . \
     "\0AChannel: <code>" . $Channel . "</code>" . \
     "\0AInstalled: <code>" . $InstalledVersion . "</code>" . \
     "\0ALatest: <code>" . $LatestVersion . "</code>" . \
     "\0AStatus: <code>" . $StatusText . "</code>" . \
+    "\0APriority: <code>" . $UpdatePriority . "</code>" . \
+    "\0AReason: <code>" . $UpdateReasonText . "</code>" . \
+    "\0AEvidence: " . $UpdateSourceText . \
     $FirmwareLine . \
     $BackupLine . \
     "\0AChangelog: https://mikrotik.com/download/changelogs" . \

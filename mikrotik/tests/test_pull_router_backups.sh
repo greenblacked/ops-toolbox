@@ -11,7 +11,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="$HERE/../pull_router_backups.sh"
+SCRIPT="$HERE/../features/pull_router_backups.sh"
 
 if [[ ! -x "$SCRIPT" ]]; then
   echo "expected an executable at $SCRIPT" >&2

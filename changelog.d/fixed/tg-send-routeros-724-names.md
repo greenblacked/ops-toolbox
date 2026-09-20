@@ -1,4 +1,4 @@
-- `mikrotik/tg_send.lua` reads `:global TgBotToken` / `TgChatId` instead of
+- `mikrotik/core/tg_send.lua` reads `:global TgBotToken` / `TgChatId` instead of
   `TG_BOT_TOKEN` / `TG_CHAT_ID`, so it runs on RouterOS 7.24, which refuses to
   execute a script declaring an underscored name. This is a breaking change for
   a router already sending notifications, and the old values are not

@@ -21,16 +21,109 @@ failures=0
 ok()  { echo "[ ok ] $*"; }
 err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
 
+# The scripts live under core/ and features/. Every check below names one by
+# filename and asks for its path, so moving a script between the two folders -
+# or adding a third - needs no edit here.
+#
+# Resolution failure cannot be reported from in here. Every call site reads it
+# as a command substitution, so an err inside this function increments the
+# counter of a subshell and the parent never learns. Three checks below capture
+# grep output with `|| true`, which then reports [ ok ] having read an empty
+# file. The names are therefore resolved once, up front, by the block that
+# follows - which is also the only place that can stop the run.
+sfile() {
+  local name="$1" hit
+  hit="$(find "$PKG" -name "$name" -type f -not -path "*/tests/*" | sort | head -n 1)"
+  if [[ -z "$hit" ]]; then
+    printf '%s\n' "$PKG/__unresolved__/$name"
+    return 1
+  fi
+  printf '%s\n' "$hit"
+}
+
+# */tests/*, not $PKG/tests/*: the CHR suite drops any directory named tests at
+# any depth, and a fixture .lua under features/tests/ counted by one discoverer
+# and skipped by the other is a script the two suites disagree about.
 scripts=()
 while IFS= read -r f; do
   [ -n "$f" ] && scripts+=("$f")
-done < <(find "$PKG" -maxdepth 1 -name '*.lua' -type f | sort)
+done < <(find "$PKG" -name '*.lua' -type f -not -path "*/tests/*" | sort)
 
 if (( ${#scripts[@]} == 0 )); then
   echo "found no .lua scripts under $PKG — discovery is broken" >&2
   exit 1
 fi
 ok "discovered ${#scripts[@]} RouterOS scripts"
+
+# --- every name a check asks for resolves ----------------------------------
+# The list is scraped out of this file rather than written by hand, so a check
+# added later cannot name a script that nobody verified exists. An unresolvable
+# name stops the run here: every check that wanted it is unrunnable, and an
+# unrunnable check must not print [ ok ].
+named=0
+unresolved=0
+while IFS= read -r name; do
+  [ -n "$name" ] || continue
+  named=$((named + 1))
+  if ! sfile "$name" >/dev/null 2>&1; then
+    err "no file named $name under mikrotik/ — the checks that name it cannot run"
+    unresolved=$((unresolved + 1))
+  fi
+done < <(grep -oE 'sfile [A-Za-z0-9_]+\.(lua|sh)' "$0" | cut -d' ' -f2 | sort -u)
+if (( named == 0 )); then
+  echo "no sfile call site found in $0 — the name resolution check inspected nothing" >&2
+  exit 1
+fi
+if (( unresolved > 0 )); then
+  echo "=== $unresolved script name(s) unresolved; the checks that name them cannot run ===" >&2
+  exit 1
+fi
+ok "all $named named script(s) resolve under mikrotik/"
+
+# --- one script per filename -----------------------------------------------
+# sfile takes the first match, and every discoverer in the package keys on the
+# basename: the CHR suite loads a script onto the router under it, router_doctor
+# compares it against what the router reports. Two files sharing a name means
+# each of those looks at one copy and reports on the other.
+dupes="$(for f in "${scripts[@]}"; do basename "$f"; done | sort | uniq -d)"
+if [[ -n "$dupes" ]]; then
+  while IFS= read -r d; do
+    err "two or more scripts are named $d — every check that resolves it by name reads only one"
+  done <<<"$dupes"
+else
+  ok "no two scripts share a filename"
+fi
+
+# --- the layout holds ------------------------------------------------------
+# core/ is what this fleet actually runs; features/ is everything the package
+# offers that is not deployed. A script dropped at the top of the package is
+# the failure this checks for: it would
+# still be discovered by the loops above and by the CHR suite, so nothing would
+# fail, and the folder that says how much its failure costs would be a lie.
+loose=0
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  err "mikrotik/${f##*/} sits at the top of the package — move it into core/ or features/"
+  loose=$((loose + 1))
+done < <(find "$PKG" -maxdepth 1 \( -name '*.lua' -o -name '*.sh' -o -name '*.py' \) -type f | sort)
+(( loose == 0 )) && ok "no script sits loose at the top of the package"
+
+misplaced=0
+placed=0
+for f in "${scripts[@]}"; do
+  rel="${f#"$PKG"/}"
+  case "$rel" in
+    core/*|features/*) placed=$((placed + 1)) ;;
+    *) err "$rel is in neither core/ nor features/"; misplaced=$((misplaced + 1)) ;;
+  esac
+done
+# A floor: the case above passes vacuously if the loop runs over nothing, and
+# the count is what says it did not.
+if (( placed == 0 )); then
+  err "no script resolved into core/ or features/ — the layout check inspected nothing"
+elif (( misplaced == 0 )); then
+  ok "all $placed script(s) live in core/ or features/"
+fi
 
 # --- balanced delimiters ---------------------------------------------------
 # RouterOS reports an unbalanced brace as a runtime parse failure on the router,
@@ -162,7 +255,7 @@ else
   missing=0
   while IFS= read -r name; do
     [ -n "$name" ] || continue
-    if [[ ! -f "$PKG/$name" ]]; then
+    if [[ -z "$(find "$PKG" -name "$name" -type f -not -path "*/tests/*" | head -n 1)" ]]; then
       err "mikrotik/README.md refers to $name, which does not exist"
       missing=$((missing + 1))
     fi
@@ -176,7 +269,7 @@ fi
 # runs — the same drift the README check above exists for, with a quieter
 # failure. The manual scripts are checked in the other direction: putting
 # reboot-and-flush on a timer is a surprise nobody wants twice.
-PRINTER="$PKG/print_schedulers.sh"
+PRINTER="$(sfile print_schedulers.sh)"
 MANUAL_ONLY="tg_send detect_internet reboot-and-flush firewall_drift_baseline change_WIFI_pw"
 
 UPDATE_SCRIPTS="update_check backup_update_check stay_fresh"
@@ -266,21 +359,21 @@ fi
 # CONTRIBUTING.md: any script that deletes or blocks needs a floor, and that
 # floor should be its first test. The behavioural tests live in the CHR suite;
 # these string checks keep the floor itself from disappearing on the PR path.
-if grep -q 'MaxFailures < 1' "$PKG/brute_force_block.lua" \
-   && grep -q 'skipping (fail-safe)' "$PKG/brute_force_block.lua"; then
+if grep -q 'MaxFailures < 1' "$(sfile brute_force_block.lua)" \
+   && grep -q 'skipping (fail-safe)' "$(sfile brute_force_block.lua)"; then
   ok "brute_force_block.lua refuses MaxFailures < 1"
 else
   err "brute_force_block.lua is missing its MaxFailures < 1 fail-safe"
 fi
 # The tally stores ";IP:COUNT;". Looking up ";IP;" never matches an existing
 # entry, so the counter stays at 1 and MaxFailures is never reached.
-if grep -qF '";" . $ip . ":"' "$PKG/brute_force_block.lua"; then
+if grep -qF '";" . $ip . ":"' "$(sfile brute_force_block.lua)"; then
   ok "brute_force_block.lua looks up tally entries as IP:COUNT"
 else
   err "brute_force_block.lua tally lookup must include the colon before COUNT"
 fi
-if grep -q 'MAC_ALLOWLIST empty' "$PKG/mac_allowlist_dhcp.lua" \
-   && grep -q 'fail-safe' "$PKG/mac_allowlist_dhcp.lua"; then
+if grep -q 'MAC_ALLOWLIST empty' "$(sfile mac_allowlist_dhcp.lua)" \
+   && grep -q 'fail-safe' "$(sfile mac_allowlist_dhcp.lua)"; then
   ok "mac_allowlist_dhcp.lua refuses an empty allowlist"
 else
   err "mac_allowlist_dhcp.lua is missing its empty-allowlist fail-safe"
@@ -289,7 +382,7 @@ fi
 # --- HTTPS fetches verify TLS certificates ---------------------------------
 # /tool fetch defaults check-certificate to no. A script that posts a bot or
 # API token without enabling it will hand the secret to any MITM.
-for f in "$PKG/tg_send.lua" "$PKG/ddns_update.lua"; do
+for f in "$(sfile tg_send.lua)" "$(sfile ddns_update.lua)"; do
   n="$(basename "$f")"
   if grep -q 'check-certificate=yes' "$f"; then
     ok "$n enables check-certificate on HTTPS fetch"
@@ -299,13 +392,13 @@ for f in "$PKG/tg_send.lua" "$PKG/ddns_update.lua"; do
 done
 
 # --- defaults that must not false-alarm or ignore their own knobs ----------
-if grep -qE ':local[[:space:]]+CtrlHost[[:space:]]+"one\.one\.one\.one"' "$PKG/rogue_dns_check.lua"; then
+if grep -qE ':local[[:space:]]+CtrlHost[[:space:]]+"one\.one\.one\.one"' "$(sfile rogue_dns_check.lua)"; then
   ok "rogue_dns_check.lua uses one.one.one.one as the control hostname"
 else
   err "rogue_dns_check.lua must default CtrlHost to one.one.one.one (not dns.cloudflare.com)"
 fi
-if grep -q 'RetentionDays \* 1d\|\$RetentionDays \* 1d' "$PKG/backup_file_cleanup.lua" \
-   && grep -qF 'name~"^backup-"' "$PKG/backup_file_cleanup.lua"; then
+if grep -q 'RetentionDays \* 1d\|\$RetentionDays \* 1d' "$(sfile backup_file_cleanup.lua)" \
+   && grep -qF 'name~"^backup-"' "$(sfile backup_file_cleanup.lua)"; then
   ok "backup_file_cleanup.lua honours RetentionDays and prefixes backup-"
 else
   err "backup_file_cleanup.lua must use RetentionDays and a ^backup- prefix match"
@@ -317,8 +410,8 @@ fi
 # backup taken at the moment it matters most is the one nothing ever collects
 # and nothing ever deletes - a leak and a gap at once, both silent. $installed
 # is what makes the name answer "restores to which version".
-if grep -qF '("backup-" . $rawName' "$PKG/update_check.lua" \
-   && grep -qF '$installed . "-pre-upgrade"' "$PKG/update_check.lua"; then
+if grep -qF '("backup-" . $rawName' "$(sfile update_check.lua)" \
+   && grep -qF '$installed . "-pre-upgrade"' "$(sfile update_check.lua)"; then
   ok "update_check.lua names its pre-upgrade backup backup-...-VERSION-pre-upgrade"
 else
   err "update_check.lua must name the pre-upgrade pair backup-<identity>-<date>-<installed>-pre-upgrade"
@@ -327,7 +420,7 @@ fi
 # succeeded. Ungate it and a router that failed to write a backup deletes the
 # last good one on its way past - the two defects that have to coincide for a
 # rollback to be impossible, in one edit.
-if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/update_check.lua"; then
+if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$(sfile update_check.lua)"; then
   ok "update_check.lua prunes previous backups only after a successful save"
 else
   err "update_check.lua must gate previous-backup removal on the save having succeeded"
@@ -337,19 +430,19 @@ fi
 # invariants as update_check.lua, plus the one that is its own: the install is
 # refused without a written backup. Ungate that and an upgrade with nothing to
 # roll back to is exactly the run that goes ahead.
-if grep -qF '("backup-" . $rawName' "$PKG/stay_fresh.lua" \
-   && grep -qF '$installed . "-pre-upgrade"' "$PKG/stay_fresh.lua"; then
+if grep -qF '("backup-" . $rawName' "$(sfile stay_fresh.lua)" \
+   && grep -qF '$installed . "-pre-upgrade"' "$(sfile stay_fresh.lua)"; then
   ok "stay_fresh.lua names its pre-upgrade backup backup-...-VERSION-pre-upgrade"
 else
   err "stay_fresh.lua must name the pre-upgrade pair backup-<identity>-<date>-<installed>-pre-upgrade"
 fi
-if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$PKG/stay_fresh.lua"; then
+if grep -qF ':if ($BackupOk and $RemovePrevious) do={' "$(sfile stay_fresh.lua)"; then
   ok "stay_fresh.lua prunes previous backups only after a successful save"
 else
   err "stay_fresh.lua must gate previous-backup removal on the save having succeeded"
 fi
-if grep -qF ':if ((!$BackupOk) and $RequireBackup) do={' "$PKG/stay_fresh.lua" \
-   && grep -q 'New version is available' "$PKG/stay_fresh.lua"; then
+if grep -qF ':if ((!$BackupOk) and $RequireBackup) do={' "$(sfile stay_fresh.lua)" \
+   && grep -q 'New version is available' "$(sfile stay_fresh.lua)"; then
   ok "stay_fresh.lua refuses to install without a backup and gates on the RouterOS verdict"
 else
   err "stay_fresh.lua must refuse the install without a backup and gate on RouterOS's own verdict"
@@ -357,9 +450,9 @@ fi
 # The install and the reboot must both sit behind the window and the dry run:
 # each action line is preceded, somewhere above it, by the two guards.
 for action in '/system package update install;' '/system reboot;' '/system routerboard upgrade;'; do
-  if grep -qF "$action" "$PKG/stay_fresh.lua" \
-     && grep -q ':if (!\$InWindow) do={' "$PKG/stay_fresh.lua" \
-     && grep -q ':if (\$DryRun) do={' "$PKG/stay_fresh.lua"; then
+  if grep -qF "$action" "$(sfile stay_fresh.lua)" \
+     && grep -q ':if (!\$InWindow) do={' "$(sfile stay_fresh.lua)" \
+     && grep -q ':if (\$DryRun) do={' "$(sfile stay_fresh.lua)"; then
     ok "stay_fresh.lua guards '$action' with the window and the dry run"
   else
     err "stay_fresh.lua must guard '$action' with the maintenance window and StayFreshDryRun"
@@ -369,9 +462,16 @@ done
 # --- the scripts meant for RouterOS 7.24 declare no underscored :global ----
 # 7.24 refuses to execute a script that declares one, from every path, and
 # says nothing in the script's own log lines because it never gets past the
-# parser. These three exist because of that; a :global with an underscore
+# parser. Most of these exist because of that; a :global with an underscore
 # slipping into any of them would be the defect they were written around.
-for f in "$PKG/backup_update_check.lua" "$PKG/stay_fresh.lua" "$PKG/tg_send.lua" "$PKG/security_check.lua"; do
+#
+# backup.lua is the exception: it was written before 7.24 and was renamed into
+# the list rather than replaced, because nothing else here takes a routine
+# backup — the others write a pair only ahead of an upgrade. Naming it here
+# keeps BACKUP_PASSWORD and BACKUP_REMOVE_PREVIOUS from coming back, which the
+# blanket list below would not catch on its own, since that one only checks
+# what the README already claims.
+for f in "$(sfile backup.lua)" "$(sfile backup_update_check.lua)" "$(sfile stay_fresh.lua)" "$(sfile tg_send.lua)" "$(sfile security_check.lua)"; do
   n="$(basename "$f")"
   bad="$(grep -E '^[[:space:]]*:global +[A-Za-z0-9]*_' "$f" || true)"
   if [[ -z "$bad" ]]; then
@@ -383,7 +483,7 @@ done
 # security_check.lua is the one new script written to actually execute on 7.24,
 # so :local names are held to the same rule :global already is. A :local Foo_Bar
 # fails at /system/script/run on the CHR the same way a :global does.
-bad="$(grep -E '^[[:space:]]*:local +[A-Za-z0-9]*_' "$PKG/security_check.lua" || true)"
+bad="$(grep -E '^[[:space:]]*:local +[A-Za-z0-9]*_' "$(sfile security_check.lua)" || true)"
 if [[ -z "$bad" ]]; then
   ok "security_check.lua declares no :local with an underscore in its name"
 else
@@ -391,7 +491,7 @@ else
 fi
 # The findings quote the command that would fix them, inside <code>. The script
 # itself must not run those commands: it is the hardening_audit, not an --apply.
-if grep -v '<code>' "$PKG/security_check.lua" | grep -qE '/ip service (disable|set)|address-list add|/user remove|/snmp set |/ip socks set|/ip upnp set|/tool bandwidth-server set'; then
+if grep -v '<code>' "$(sfile security_check.lua)" | grep -qE '/ip service (disable|set)|address-list add|/user remove|/snmp set |/ip socks set|/ip upnp set|/tool bandwidth-server set'; then
   err "security_check.lua must stay read-only; fix commands belong in the Telegram text"
 else
   ok "security_check.lua does not apply the hardening it reports"
@@ -423,8 +523,8 @@ elif (( esc_bad == 0 )); then
   ok "every script writes single-backslash hex escapes ($esc_scanned scanned)"
 fi
 
-if grep -qF '[:pick $now 0 7]' "$PKG/traffic_quota.lua" \
-   && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$PKG/traffic_quota.lua"; then
+if grep -qF '[:pick $now 0 7]' "$(sfile traffic_quota.lua)" \
+   && grep -qF ':set QUOTA_PREV_RX $rawRx;' "$(sfile traffic_quota.lua)"; then
   ok "traffic_quota.lua parses ISO dates and baselines PREV on month rollover"
 else
   err "traffic_quota.lua must parse yyyy-MM-dd and baseline PREV on rollover"

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # print_schedulers.sh
 # Print the `/system scheduler add` commands for the RouterOS scripts in this
-# folder, ready to review and paste into a router terminal.
+# package - core/ and features/ both - ready to review and paste into a router
+# terminal.
 #
 # Installing a script is the easy half. Scheduling it is where this package goes
 # quiet: a script that was never scheduled looks exactly like a script that has
