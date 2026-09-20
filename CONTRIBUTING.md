@@ -100,6 +100,18 @@ targets Git Bash, which ships Bash 5 — `windows/git-bash/.bashrc` uses `local 
 and `shopt -s globstar` legitimately. `.github/workflows/ci.yml` uses `mapfile`
 and runs on Ubuntu. Do not "fix" either.
 
+**`test-env/static/check_conventions.sh`'s keyword scan skips `*/tests/*`, with
+one named exception.** Almost no test file ever meets the real interpreter:
+most run inside a Linux container, and the ones the native macOS job reaches
+through `run-tests.sh` resolve a bare `bash` to whatever sits ahead of
+`/bin/bash` on that runner's `PATH` — the same substitution the enforcement
+paragraph below works around. `macos-initial-setup/tests/test_macos_initial_setup.sh`
+is the one file that does not: the `Run contracts with Apple Bash` step in
+`Test / macos native` hands it to `/bin/bash` by absolute path, so it is named
+in that section's `BASH32_TEST_FILES` and held to this rule like the packages
+themselves. A test file added to `Test / macos native` the same way belongs in
+that list too.
+
 **The keyword list above is not the whole rule.** Some things 3.2 refuses are
 properties of its parser rather than of any keyword a grep can find, so nothing
 static will catch them and Bash 5 accepts them everywhere you are likely to

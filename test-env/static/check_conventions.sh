@@ -329,15 +329,57 @@ done < <(git ls-files -z)
 # --------------------------------------------------------------------------
 head_ "Bash 3.2 compatibility"
 # macOS ships bash 3.2 as /bin/bash and that is what these packages run under.
+#
+# The */tests/* skip below is right for almost every test file: git/tests and
+# linux/tests run only inside a Linux tester container (their own file headers
+# say so), macos-initial-setup/tests/test_stay_fresh_steps.sh and
+# test_stay_fresh_unprivileged.sh refuse to start anywhere else, and
+# dotfiles/tests reaches the macos-native runner only through
+# `./run-tests.sh`, whose `#!/usr/bin/env bash` shebang resolves to Homebrew's
+# Bash 5 there — it sits ahead of /bin on that runner's PATH, which is also
+# why k8s-toolbox/tests/test_k8s_toolbox.sh's own syntax check uses
+# "${BASH:-bash}" instead of a bare `bash`. None of those ever meet the real
+# interpreter, so holding them to this rule would invent a stricter contract
+# than CI enforces.
+#
+# One file is the exception. ci.yml's "Run contracts with Apple Bash" step
+# hands macos-initial-setup/tests/test_macos_initial_setup.sh to /bin/bash by
+# absolute path, forcing the real 3.2 — and that file's own header already
+# says so ("and natively on a macOS runner, where /bin/bash is 3.2 — so
+# nothing here may use a Bash 4 construct"). `*/tests/*) continue` exempted it
+# anyway: a `declare -A` added to it would pass this suite and fail only on a
+# real Mac. Named here rather than matched by a directory or a pattern, so the
+# day CI hands a second test file to /bin/bash this way, that line is a
+# one-word addition instead of a silent gap reopening.
+BASH32_TEST_FILES="macos-initial-setup/tests/test_macos_initial_setup.sh"
+
+bash4_scan() {
+  # Strip whole-line comments first. git_recent_branches.sh explains in a
+  # comment that it avoids mapfile, and matching that would be absurd.
+  sed 's/^[[:space:]]*#.*$//' "$1" | grep -nE \
+    '(^|[^[:alnum:]_])(mapfile|readarray|coproc)([^[:alnum:]_]|$)|(declare|local)[[:space:]]+-[A-Za-z]*A([[:space:]]|$)|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)'
+}
+
+# A floor for the scanner itself: a probe built here, on the fly, containing a
+# construct the regex above targets. It is not one of the files scanned below,
+# so this proves the function still matches a known-bad construct rather than
+# proving the real subjects happen to be clean — the same gap that let a typo'd
+# regex report "no Bash 4+ constructs" forever.
+bash4_probe="$(mktemp)"
+printf '#!/usr/bin/env bash\ndeclare -A bash4_probe\n' > "$bash4_probe"
+if [[ -z "$(bash4_scan "$bash4_probe")" ]]; then
+  err "the Bash 3.2 construct scanner missed its own known-bad probe (declare -A) — it has stopped scanning"
+fi
+rm -f "$bash4_probe"
+
 bash4_hits=0
+bash4_checked=0
 for d in $BASH32_DIRS; do
   [[ -d "$d" ]] || continue
   while IFS= read -r -d '' f; do
     case "$f" in */tests/*) continue ;; esac
-    # Strip whole-line comments first. git_recent_branches.sh explains in a
-    # comment that it avoids mapfile, and matching that would be absurd.
-    hits="$(sed 's/^[[:space:]]*#.*$//' "$f" | grep -nE \
-      '(^|[^[:alnum:]_])(mapfile|readarray|coproc)([^[:alnum:]_]|$)|(declare|local)[[:space:]]+-[A-Za-z]*A([[:space:]]|$)|\$\{[A-Za-z_][A-Za-z0-9_]*(,,|\^\^)')"
+    bash4_checked=$((bash4_checked + 1))
+    hits="$(bash4_scan "$f")"
     if [[ -n "$hits" ]]; then
       err "$f uses a Bash 4+ construct (see CONTRIBUTING.md)"
       printf '%s\n' "$hits" | head -3 >&2
@@ -345,7 +387,26 @@ for d in $BASH32_DIRS; do
     fi
   done < <(git ls-files -z -- "$d/*.sh")
 done
-(( bash4_hits == 0 )) && ok "no Bash 4+ constructs in: $BASH32_DIRS"
+
+for f in $BASH32_TEST_FILES; do
+  if [[ ! -f "$f" ]]; then
+    err "BASH32_TEST_FILES names $f, which no longer exists — update the list"
+    continue
+  fi
+  bash4_checked=$((bash4_checked + 1))
+  hits="$(bash4_scan "$f")"
+  if [[ -n "$hits" ]]; then
+    err "$f uses a Bash 4+ construct (see CONTRIBUTING.md)"
+    printf '%s\n' "$hits" | head -3 >&2
+    bash4_hits=$((bash4_hits + 1))
+  fi
+done
+
+if (( bash4_checked == 0 )); then
+  err "the Bash 3.2 construct scan inspected no file — this check has stopped checking"
+elif (( bash4_hits == 0 )); then
+  ok "no Bash 4+ constructs in: $BASH32_DIRS (plus $BASH32_TEST_FILES)"
+fi
 
 # A `case` inside a multi-line $( ) is a Bash 3.2 parse error, and neither the
 # keyword scan above nor shellcheck says a word about it. Bash 3.2 parses `$(`
