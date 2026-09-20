@@ -89,9 +89,14 @@ Three `set` dialects, chosen by role — do not mix them:
 
 ### Bash 3.2 compatibility
 
-`git/`, `macos-initial-setup/` and `linux/` must run under the Bash 3.2 that
-ships as `/bin/bash` on macOS. No `mapfile`/`readarray`, no `declare -A` or
-`local -A`, no `${x,,}`/`${x^^}`, no `coproc`, no `&>>`. Build lists with a
+`git/`, `macos-initial-setup/`, `linux/` and `dotfiles/` must run under the
+Bash 3.2 that ships as `/bin/bash` on macOS. That list is `BASH32_DIRS` in
+`test-env/static/check_conventions.sh`, and the `Parse with Apple Bash 3.2` step
+in `.github/workflows/ci.yml` globs the same four — including their `tests/`
+subdirectories, which the keyword scan treats separately (see below).
+
+No `mapfile`/`readarray`, no `declare -A` or `local -A`, no `${x,,}`/`${x^^}`,
+no `coproc`, no `&>>`. Build lists with a
 `while IFS= read -r` loop instead — there is a worked example and an explanatory
 comment above the `branches=()` loop in `git/git_recent_branches.sh`.
 
