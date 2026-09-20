@@ -444,14 +444,15 @@ command after it becomes an abort with no message
 (`mikrotik/tests/test_pull_router_backups.sh` had exactly that).
 
 A section that made no assertion is a failure, not a pass. `linux/tests`,
-`git/tests` and the macOS native suite open each block with `section "..."`
-and fail any block that closes with zero checks — the shape of a loop that ran
-over nothing, or a fixture that never reached its assertion. It earned its
-keep on the first run: in two of the three files it found a heading that named
-a section which only built a fixture, its assertions having drifted under a
-heading inserted after it. The same reasoning applies to a loop whose subject
-list comes from a command rather than a literal: count the iterations and fail
-at zero, because the section around it usually asserts plenty either way.
+`git/tests`, the macOS native suite and `test_stay_fresh_steps.sh` open each
+block with `section "..."` and fail any block that closes with zero checks —
+the shape of a loop that ran over nothing, or a fixture that never reached its
+assertion. It earned its keep on the first run: in two of the three converted
+files it found a heading that named a section which only built a fixture, its
+assertions having drifted under a heading inserted after it. The same
+reasoning applies to a loop whose subject list comes from a command rather
+than a literal: count the iterations and fail at zero, because the section
+around it usually asserts plenty either way.
 
 Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that
