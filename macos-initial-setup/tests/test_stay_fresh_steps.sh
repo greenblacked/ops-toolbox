@@ -48,8 +48,37 @@ unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
 
 failures=0
-ok()  { echo "[ ok ] $*"; }
-err() { echo "[fail] $*" >&2; failures=$((failures + 1)); }
+# Counted so the run can prove it asserted something. Without `-e` a suite that
+# dies early exits 0 with a short log, and nothing says so; the floor does.
+checks=0
+section_checks=0
+sections=0
+section_name=""
+ok()  { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[ ok ] $*"; }
+err() { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[fail] $*" >&2; failures=$((failures + 1)); }
+
+# The floor, per section rather than per file. Without `-e` the shape of a
+# silent failure changes: a section whose loop ran over nothing, or whose
+# fixture never got as far as an assertion, exits 0 with a shorter log and
+# nothing says so. Each `section` call closes the previous one and fails it if
+# it asserted nothing, and the end of the file closes the last. A count floor
+# for the whole file would need a number that goes stale every time a test is
+# added or retired; a section either asserted or it did not.
+section() {
+  end_section
+  section_name="$1"
+  section_checks=0
+  sections=$((sections + 1))
+  echo; echo "--- $* ---"
+}
+end_section() {
+  [[ -n "$section_name" ]] || return 0
+  if (( section_checks == 0 )); then
+    err "section '$section_name' made no assertion — its loop ran over nothing or its fixture never reached one"
+  fi
+  section_name=""
+  section_checks=0
+}
 
 assert_eq() {
   local label="$1" expected="$2" actual="$3"
@@ -186,8 +215,6 @@ run_sf() {
 # output, and a zero-filled file measures near nothing on a btrfs or ZFS
 # runner with compression on, failing tests on code that is correct.
 bytes_file() { dd if=/dev/urandom of="$1" bs=1024 count="${2:-512}" status=none; }
-
-section() { echo; echo "--- $* ---"; }
 
 # ===========================================================================
 section "memory (sudo purge)"
@@ -1879,7 +1906,8 @@ d="$(new_env)"
 out="$(run_sf "$d" --history)"; rc=$?
 assert_eq "--history works before any run" "0" "$rc"
 assert_contains "--history says when there is nothing yet" "$out" "no history yet"
-out="$(run_sf "$d" --dry-run --only versions)"
+out="$(run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a dry run before the first real run succeeds" "0" "$rc"
 assert_gone "a dry run records no history" "$d/home/Library/Logs/stay_fresh/history.tsv"
 assert_gone "a dry run records no per-step figures either" "$d/home/Library/Logs/stay_fresh/steps.tsv"
 # The kernel boot time feeds the "up Nd Nh" part of the verdict.
@@ -1972,7 +2000,8 @@ rm -rf "$d"
 # a failed run, and a dry run must not reach out to anything.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 0'
-STAY_FRESH_NOTIFY=macos run_sf "$d" --dry-run --only versions >/dev/null 2>&1 || true
+STAY_FRESH_NOTIFY=macos run_sf "$d" --dry-run --only versions >/dev/null 2>&1; rc=$?
+assert_eq "the guarded dry run itself succeeds" "0" "$rc"
 assert_not_called "a dry run posts no failure banner" "$d/calls" 'stay_fresh FAILED'
 rm -rf "$d"
 
@@ -2072,6 +2101,7 @@ assert_contains "the hung banner is reported as timed out" "$out" "macOS notific
 if (( elapsed <= 20 )); then ok "the banner call was bounded (${elapsed}s)"
 else err "the run took ${elapsed}s — osascript was not bounded"; fi
 run_sf "$d" --dry-run --only versions >/dev/null; rc=$?
+assert_eq "a plain dry run after a hung notifier still succeeds" "0" "$rc"
 out="$(STAY_FRESH_NOTIFY_TIMEOUT=soon run_sf "$d" --dry-run --only versions)"; rc=$?
 assert_eq "a non-numeric notifier timeout is refused" "3" "$rc"
 rm -rf "$d"
@@ -2294,6 +2324,7 @@ rm -rf "$d"
 # Listing never asks: tmutil status is only consulted before a deletion.
 d="$(snap_env)"; : > "$d/calls"
 out="$(SNAPSHOTS=1 TM_RUNNING=1 run_sf "$d" --yes --only snapshots)"; rc=$?
+assert_eq "a listing run succeeds" "0" "$rc"
 assert_not_called "a listing does not probe the backup state" "$d/calls" "tmutil status"
 rm -rf "$d"
 
@@ -3173,7 +3204,8 @@ assert_contains "an Intel Homebrew beside the Apple silicon one is named" "$out"
   "an Intel Homebrew is also installed at /usr/local/Homebrew"
 rmdir /usr/local/Homebrew
 : > "$d/calls"
-out="$(run_sf "$d" --dry-run --only brew)"
+out="$(run_sf "$d" --dry-run --only brew)"; rc=$?
+assert_eq "a dry run over brew succeeds" "0" "$rc"
 assert_not_called "a dry run does not list services" "$d/calls" "brew services"
 rm -rf "$d"
 
@@ -3230,7 +3262,8 @@ rm -rf "$d"
 
 # A dry run still writes nothing, warnings included.
 d="$(new_env)"; : > "$d/calls"
-out="$(run_sf "$d" --dry-run --only versions)"
+out="$(run_sf "$d" --dry-run --only versions)"; rc=$?
+assert_eq "a dry run with a pending warning still succeeds" "0" "$rc"
 if [[ -z "$(find "$d/tmp" "$d/home" -type f -print -quit 2>/dev/null)" ]]; then
   ok "a dry run writes no log even though warnings now reach one"
 else
@@ -3540,9 +3573,18 @@ rm -rf "$d"
 rm -f /private/var/log/system.log.999.gz /private/var/log/system.log /usr/sbin/lsof
 
 # ===========================================================================
+end_section
+# The file's own floor: it reached this line having opened sections, each of
+# which asserted something. Reaching it at all is what the removal of `-e`
+# put in question, and the count of sections is what a truncated copy of this
+# file — or a fixture that exited the shell on its way past — would get wrong.
+if (( sections == 0 || checks == 0 )); then
+  echo "no section ran ($sections sections, $checks checks) — the suite is not asserting anything" >&2
+  exit 1
+fi
 if (( failures )); then
   echo; echo "=== $failures stay_fresh step test(s) failed ===" >&2
   exit 1
 fi
-echo; echo "=== all stay_fresh step (docker) checks passed ==="
+echo; echo "=== all $checks stay_fresh step (docker) checks passed in $sections sections ==="
 exit 0
