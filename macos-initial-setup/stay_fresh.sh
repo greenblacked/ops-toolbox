@@ -242,6 +242,15 @@ ui_metric() {
 # after the first second can still land on the same line; that is cosmetic, it
 # is repaired by the next frame, and it is the price of not putting the step in
 # a subshell.
+# "~" for display, held in a variable because neither literal survives both
+# shells. A bare ~ in the replacement of ${var/#pat/repl} is tilde-expanded by
+# bash 5 and comes back as the real home path; \~ is left as a literal
+# backslash-tilde by the bash 3.2 that /bin/bash is on macOS - the shell this
+# script actually runs under, where the disk report has been printing
+# "\~/Library/Caches" while the suite, on bash 5, saw the tilde it expected. A
+# variable is substituted as-is by both.
+HOME_TILDE="~"
+
 PROGRESS="${STAY_FRESH_PROGRESS:-auto}"
 LIVE_PID=""
 LIVE_DRAWN=0
@@ -3846,7 +3855,7 @@ step_devcaches() {
     if (( PRUNE_BUILD_CACHES )); then
       clear_dir "$build_cache"
     else
-      info "${build_cache/#$HOME/\~} kept; pass --prune-build-caches to clear it"
+      info "${build_cache/#$HOME/$HOME_TILDE} kept; pass --prune-build-caches to clear it"
     fi
   done
   if [[ -d "$HOME/.m2/repository" ]]; then
@@ -4331,7 +4340,7 @@ PYSTAT
       else
         system_orphans+=("$f")
       fi
-      printf "  %s%s%s -> %s (missing)\n" "$C_YELLOW" "${f/#$HOME/\~}" "$C_RESET" "$target"
+      printf "  %s%s%s -> %s (missing)\n" "$C_YELLOW" "${f/#$HOME/$HOME_TILDE}" "$C_RESET" "$target"
     done
   done
   ORPHAN_AGENTS=$(( ${#user_orphans[@]} + ${#system_orphans[@]} ))
@@ -5045,22 +5054,59 @@ step_disk_report() {
   for root in "${DISK_REPORT_ROOTS[@]}"; do
     [[ -d "$root" ]] || continue
     if (( DRY_RUN )); then
-      printf "  %s(dry-run) would measure the largest entries under %s%s\n" "$C_DIM" "${root/#$HOME/\~}" "$C_RESET"
+      printf "  %s(dry-run) would measure the largest entries under %s%s\n" "$C_DIM" "${root/#$HOME/$HOME_TILDE}" "$C_RESET"
       continue
     fi
     query_rc=0
-    listing="$(with_timeout "$STEP_TIMEOUT" du -a -k -x -d 1 "$root" 2>>"$LOG_SINK")" || query_rc=$?
+    # BSD du spells its usage "[-a | -s | -d depth]" - the three are mutually
+    # exclusive - and exits 64, EX_USAGE, for `-a -d 1`. So the single command
+    # this whole report was built on had never run on macOS: every root printed
+    # "total unknown" and warned, ten warnings a run, on the only platform this
+    # script targets. GNU du accepts the pair, which is why the Linux container
+    # the suite runs in never saw it.
+    #
+    # -s on the root, then -s on each depth-1 entry, is the portable spelling.
+    # It keeps files, which `-d 1` alone would drop, and ~/Downloads and
+    # ~/Movies are exactly where one large file is the answer. -exec {} + rather
+    # than a pipe into xargs: with no matches, xargs would run du with no
+    # arguments and measure the working directory instead.
+    #
+    # Only the root's own total decides whether the measurement failed. A
+    # child that cannot be read is expected under these roots and must not
+    # throw away the total that was read successfully.
+    query_rc=0
+    listing="$(with_timeout "$STEP_TIMEOUT" bash -c '
+      root="$1"
+      rc=0
+      # Not `|| exit`: du exits 1 for a root whose children include one it
+      # cannot enter, which is every ~/Library root on a healthy Mac, and
+      # leaving here skipped the listing that is the point of the report - the
+      # totals printed with nothing under them.
+      du -s -k -x -- "$root" || rc=$?
+      find "$root" -mindepth 1 -maxdepth 1 -exec du -s -k -x -- {} + 2>/dev/null
+      exit "$rc"
+    ' bash "$root" 2>>"$LOG_SINK")" || query_rc=$?
     total_b=""
     while IFS=$'\t' read -r kb name; do
       if [[ "$name" == "$root" && "$kb" =~ ^[0-9]+$ ]]; then
         total_b=$(( kb * 1024 ))
       fi
     done <<<"$listing"
-    if (( query_rc != 0 )) || [[ -z "$total_b" ]]; then
-      printf "  %s%s%s (partial or unreadable; total unknown)\n" "$C_BOLD" "${root/#$HOME/\~}" "$C_RESET"
-      warn "disk report could not fully measure $root (exit $query_rc; see log)"
+    # A total that was read is a total, whatever du exited. Under
+    # ~/Library/Caches and ~/Library/Containers macOS keeps directories this
+    # user cannot enter, so du prints the sum it managed and exits 1 - on every
+    # healthy machine. Treating that as a failed measurement threw away a real
+    # number and warned about a normal condition, which is how a report earns
+    # being ignored. Only an unreadable root is a warning now; a partial sum
+    # says it is partial and stays a plain line.
+    if [[ -z "$total_b" ]]; then
+      printf "  %s%s%s (unreadable; total unknown)\n" "$C_BOLD" "${root/#$HOME/$HOME_TILDE}" "$C_RESET"
+      warn "disk report could not measure $root at all (exit $query_rc; see log)"
+    elif (( query_rc != 0 )); then
+      printf "  %s%s%s %s(at least %s; some entries are not readable)%s\n" \
+        "$C_BOLD" "${root/#$HOME/$HOME_TILDE}" "$C_RESET" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
     else
-      printf "  %s%s%s %s(%s)%s\n" "$C_BOLD" "${root/#$HOME/\~}" "$C_RESET" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
+      printf "  %s%s%s %s(%s)%s\n" "$C_BOLD" "${root/#$HOME/$HOME_TILDE}" "$C_RESET" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
     fi
     shown=0
     while IFS=$'\t' read -r kb name; do
