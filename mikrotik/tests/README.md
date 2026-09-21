@@ -80,6 +80,12 @@ prints the digest for a version. The digest is mandatory and an empty one is
 fatal: the CHR image boots as a kernel with this repository mounted, so it is
 never downloaded without an integrity check.
 
+`record-hash` refuses to print a digest for a transfer it cannot show was
+complete, and names the host and byte count on stderr. Hashing a partial
+download is worse than failing to hash one, because the result looks like an
+answer: two scheduled checks recorded two different digests for the same
+archive before the length was compared.
+
 `EXPECT_ROUTEROS_VERSION` follows `ROUTEROS_VERSION` automatically, so the
 suite proves that the requested image is the image that actually booted.
 
