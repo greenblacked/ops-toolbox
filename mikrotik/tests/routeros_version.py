@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import re
 import sys
 import urllib.error
@@ -37,6 +38,10 @@ DOCUMENTATION_FILES = (
 )
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+# The 7.24.x CHR archives are upwards of 100 MB. This is two orders of
+# magnitude below that on purpose: it exists to reject an error page served
+# under a 200, not to hold any release to a size.
+MINIMUM_CHR_ARCHIVE_BYTES = 8 * 1024 * 1024
 # The bracket holds every channel the release currently sits in, not one. A
 # release is promoted through them over time, so 7.24 was published as
 # "RouterOS 7.24 [stable, testing, development]" and this pattern — which
@@ -97,24 +102,95 @@ def _write_pinned_sha256(digest: str, path: Path = VERSION_FILE) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def compute_sha256(version: str, timeout: int = 300) -> str:
+class IncompleteDownload(ReleaseError):
+    """The transfer ended before the announced body had been delivered."""
+
+
+def _stream_sha256(url: str, timeout: int) -> tuple[str, int]:
+    """Hash one URL's body, refusing to return a digest for a partial transfer.
+
+    Nothing below urllib establishes that a body arrived whole, and this is
+    the one place in the project where that matters: the digest becomes the
+    pin for an image that boots as a kernel with the repository mounted.
+
+    http.client.HTTPResponse.read(amt) returns b"" and closes the connection
+    when a Content-Length body is cut short, rather than raising - the stdlib
+    says so in a comment, deliberately, for compatibility. So a chunk loop
+    reads a truncated body to what looks like EOF and hashes it without error.
+    Two scheduled runs recorded two different digests for the same
+    chr-7.24.4.vdi.zip that way, four days apart, and each then failed the
+    Dockerfile's own sha256sum -c against wget's complete download. An
+    immutable artifact has one digest; a short read had been producing a
+    confident answer about however many bytes happened to arrive.
+
+    Chunked responses are left to the stdlib, which does raise IncompleteRead
+    for them. A body with neither a length nor chunk framing ends when the
+    connection does, so a dropped connection is indistinguishable from the end
+    of the file and no digest is worth returning.
+
+    The type and size floor cover the other way a short body reaches here
+    intact: an error or interstitial page served under a 200 with a correct
+    Content-Length is complete by every test above, and would be hashed and
+    pinned as though it were the image. The floor is a sanity bound, not an
+    assertion about any release's size.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": "ops-toolbox/1"})
+    digest = hashlib.sha256()
+    received = 0
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        declared = response.headers.get("Content-Length")
+        content_type = response.headers.get("Content-Type", "")
+        chunked = bool(getattr(response, "chunked", False))
+        for chunk in iter(lambda: response.read(1024 * 1024), b""):
+            digest.update(chunk)
+            received += len(chunk)
+    if declared is not None:
+        try:
+            expected = int(declared)
+        except ValueError:
+            raise IncompleteDownload(
+                f"unreadable Content-Length {declared!r}"
+            ) from None
+        if received != expected:
+            raise IncompleteDownload(
+                f"transfer ended after {received} of {expected} bytes"
+            )
+    elif not chunked:
+        raise IncompleteDownload("no Content-Length and no chunked framing")
+    if content_type.split(";", 1)[0].strip().lower().startswith("text/"):
+        raise IncompleteDownload(f"served {content_type!r}, not an archive")
+    if received < MINIMUM_CHR_ARCHIVE_BYTES:
+        raise IncompleteDownload(
+            f"{received} bytes is too small to be a CHR archive "
+            f"(floor {MINIMUM_CHR_ARCHIVE_BYTES})"
+        )
+    return digest.hexdigest(), received
+
+
+def compute_sha256(version: str, timeout: int = 300, attempts: int = 3) -> str:
     """Stream the CHR archive and hash it without holding it in memory.
 
     Tries the same hosts as the Dockerfile, in the same order, so a digest can
-    be recorded for anything the build is capable of downloading.
+    be recorded for anything the build is capable of downloading, and retries
+    each host the way the Dockerfile's `wget --tries=3` does. A truncated
+    transfer is transient; failing the scheduled release check on the first
+    one would trade a wrong answer for a needless red run.
+
+    The host and byte count go to stderr, never stdout: `record-hash --print`
+    is assigned directly in the workflow, so stdout carries the digest alone.
+    A digest that cannot be traced to a host is what made two mirrors serving
+    two bodies indistinguishable from a truncated download.
     """
     errors = []
     for url in chr_download_urls(version):
-        request = urllib.request.Request(url, headers={"User-Agent": "ops-toolbox/1"})
-        digest = hashlib.sha256()
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                for chunk in iter(lambda: response.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        except (OSError, urllib.error.URLError) as exc:
-            errors.append(f"{url}: {exc}")
-            continue
-        return digest.hexdigest()
+        for attempt in range(1, attempts + 1):
+            try:
+                digest, received = _stream_sha256(url, timeout)
+            except (OSError, http.client.HTTPException, IncompleteDownload) as exc:
+                errors.append(f"{url} (attempt {attempt}/{attempts}): {exc}")
+                continue
+            print(f"hashed {received} bytes from {url}", file=sys.stderr)
+            return digest
     raise ReleaseError("cannot download the CHR archive: " + "; ".join(errors))
 
 

@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import io
+import socket
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -245,6 +248,190 @@ class RecordHashCliTests(unittest.TestCase):
             self.assertEqual(
                 routeros_version.read_pinned_sha256(version_file), self.CANDIDATE
             )
+
+
+class TruncatingServer:
+    """A server that promises a Content-Length and then delivers less.
+
+    A real mirror does this by dropping the connection mid-body. Nothing above
+    the socket distinguishes that from the end of the file, which is the whole
+    point of the tests below, so the condition is produced rather than mocked:
+    a mock of urlopen would have to encode the very assumption under test.
+    """
+
+    def __init__(
+        self,
+        body: bytes,
+        send_bytes: int | None = None,
+        framing: str = "length",
+        content_type: str = "application/zip",
+    ):
+        self.body = body
+        self.send_bytes = len(body) if send_bytes is None else send_bytes
+        self.framing = framing
+        self.content_type = content_type
+        self.requests = 0
+        self._socket = socket.socket()
+        self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._socket.bind(("127.0.0.1", 0))
+        self._socket.listen(8)
+        self.url = "http://127.0.0.1:{}/routeros/7.24.4/chr-7.24.4.vdi.zip".format(
+            self._socket.getsockname()[1]
+        )
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                conn, _address = self._socket.accept()
+            except OSError:
+                return
+            self.requests += 1
+            with conn:
+                try:
+                    conn.recv(65536)
+                    if self.framing == "length":
+                        header = (
+                            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"
+                            b"Content-Type: %s\r\nConnection: close\r\n\r\n"
+                            % (len(self.body), self.content_type.encode())
+                        )
+                    else:
+                        # HTTP/1.0 with no length: the body ends when the
+                        # connection does, so completeness is unknowable.
+                        header = b"HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n"
+                    conn.sendall(header)
+                    conn.sendall(self.body[: self.send_bytes])
+                except OSError:
+                    continue
+
+    def close(self) -> None:
+        self._socket.close()
+
+
+class ComputeSha256Tests(unittest.TestCase):
+    """The digest must describe the whole artifact or not exist.
+
+    Two scheduled RouterOS checks recorded two different digests for the same
+    chr-7.24.4.vdi.zip, and both were then rejected by the Dockerfile's own
+    sha256sum -c against wget's download. compute_sha256 had been hashing a
+    truncated body without error, because http.client.HTTPResponse.read(amt)
+    closes and returns b"" on a short Content-Length body instead of raising -
+    the stdlib says as much in a comment. A digest over "whatever arrived" is
+    worse than no digest: it is the pin for an image that boots as a kernel.
+    """
+
+    BODY = b"chr-image-bytes" * 500
+
+    def whole_digest(self) -> str:
+        return hashlib.sha256(self.BODY).hexdigest()
+
+    def hash_through(self, *servers: TruncatingServer, floor: int = 64) -> str:
+        """Hash through these hosts in order, with the size floor lowered.
+
+        The floor is what rejects an error page served under a 200, and it is
+        two orders of magnitude larger than anything worth pushing through a
+        loopback socket in a unit test. Lowering it keeps these tests about
+        the transfer; the floor itself is exercised on its own below.
+        """
+        urls = [server.url for server in servers]
+        with mock.patch.object(
+            routeros_version, "chr_download_urls", lambda v: urls
+        ), mock.patch.object(
+            routeros_version, "MINIMUM_CHR_ARCHIVE_BYTES", floor
+        ):
+            return routeros_version.compute_sha256("7.24.4", timeout=10)
+
+    def test_a_complete_transfer_is_hashed(self) -> None:
+        server = TruncatingServer(self.BODY)
+        self.addCleanup(server.close)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            digest = self.hash_through(server)
+
+        self.assertEqual(digest, self.whole_digest())
+        # record-hash --print is assigned directly in the workflow, so the
+        # provenance note belongs on stderr and stdout carries the digest alone.
+        self.assertEqual(out.getvalue(), "")
+        self.assertIn(str(len(self.BODY)), err.getvalue())
+        self.assertIn(server.url, err.getvalue())
+
+    def test_a_truncated_transfer_is_refused(self) -> None:
+        # The regression. Before the length check this returned
+        # hashlib.sha256(self.BODY[:half]).hexdigest() and reported success.
+        half = len(self.BODY) // 2
+        server = TruncatingServer(self.BODY, send_bytes=half)
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(server)
+
+        message = str(caught.exception)
+        self.assertIn(f"{half} of {len(self.BODY)} bytes", message)
+        self.assertIn(server.url, message)
+
+    def test_a_truncating_host_is_retried_before_it_is_abandoned(self) -> None:
+        # wget --tries=3 in the Dockerfile treats a cut transfer as transient,
+        # and so must this: one bad read should not fail a scheduled check.
+        server = TruncatingServer(self.BODY, send_bytes=8)
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ):
+            self.hash_through(server)
+
+        self.assertEqual(server.requests, 3)
+
+    def test_the_next_host_is_tried_when_the_first_truncates(self) -> None:
+        # The Dockerfile falls back from download.mikrotik.com to the CDN, and
+        # a digest recorded from one host must still be a digest the build can
+        # verify, so the fallback has to survive the stricter check.
+        broken = TruncatingServer(self.BODY, send_bytes=8)
+        healthy = TruncatingServer(self.BODY)
+        self.addCleanup(broken.close)
+        self.addCleanup(healthy.close)
+        with contextlib.redirect_stderr(io.StringIO()):
+            digest = self.hash_through(broken, healthy)
+
+        self.assertEqual(digest, self.whole_digest())
+
+    def test_a_complete_body_too_small_to_be_an_archive_is_refused(self) -> None:
+        # The other way a short body arrives intact: an error or interstitial
+        # page under a 200 with a correct Content-Length passes every framing
+        # check and would be hashed and pinned as though it were the image.
+        server = TruncatingServer(self.BODY)
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(server, floor=routeros_version.MINIMUM_CHR_ARCHIVE_BYTES)
+
+        self.assertIn("too small to be a CHR archive", str(caught.exception))
+
+    def test_an_html_body_is_refused(self) -> None:
+        server = TruncatingServer(self.BODY, content_type="text/html; charset=utf-8")
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(server)
+
+        self.assertIn("not an archive", str(caught.exception))
+
+    def test_a_body_of_unknowable_length_is_refused(self) -> None:
+        # No Content-Length and no chunk framing: a dropped connection and the
+        # end of the file are the same event. Refuse rather than pin bytes
+        # nothing can vouch for.
+        server = TruncatingServer(self.BODY, framing="close")
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(server)
+
+        self.assertIn("no Content-Length", str(caught.exception))
 
 
 class ChangelogInsertionTests(unittest.TestCase):
