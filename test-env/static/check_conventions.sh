@@ -1079,6 +1079,41 @@ else
 fi
 
 # --------------------------------------------------------------------------
+head_ "du is spelled the way BSD du accepts"
+# BSD du's usage is "[-a | -s | -d depth]": the three are mutually exclusive,
+# and it exits 64 - EX_USAGE - for any pair of them. GNU du accepts `-a -d 1`
+# happily, and every suite in this repository runs in a Linux container, so the
+# combination passes every test here and fails on every Mac.
+#
+# It had already happened. stay_fresh.sh's disk report - the step whose whole
+# job is to say what is large - ran `du -a -k -x -d 1` against ten roots, so on
+# macOS each one printed "total unknown" and warned, ten warnings a run, and
+# the report had never produced a number on the only platform that script
+# targets. The portable spelling is -s on the root and -s on each entry.
+du_flag_gaps=0
+du_scanned=0
+while IFS= read -r script; do
+  [[ -n "$script" ]] || continue
+  du_scanned=$((du_scanned + 1))
+  # Each du invocation on one line, comments stripped, flags only.
+  while IFS= read -r invocation; do
+    [[ -n "$invocation" ]] || continue
+    has_a=0; has_s=0; has_d=0
+    grep -qE '(^|[^-[:alnum:]])-[a-zA-Z]*a' <<<"$invocation" && has_a=1
+    grep -qE '(^|[^-[:alnum:]])-[a-zA-Z]*s' <<<"$invocation" && has_s=1
+    grep -qE '(^|[^-[:alnum:]])-d([[:space:]]|$)' <<<"$invocation" && has_d=1
+    if (( has_a + has_s + has_d > 1 )); then
+      err "$script runs du with more than one of -a, -s and -d ($invocation) — BSD du exits 64 for that, so it fails on every Mac and passes every suite here"
+      du_flag_gaps=$((du_flag_gaps + 1))
+    fi
+  done < <(grep -vE '^[[:space:]]*#' "$script" | grep -oE '\bdu( +-[^|;&)"'"'"']*)+' || true)
+done < <(git ls-files '*.sh' | grep -v '/tests/')
+if (( du_scanned == 0 )); then
+  err "no shell scripts scanned for du flags — discovery is broken"
+elif (( du_flag_gaps == 0 )); then
+  ok "du is spelled portably in $du_scanned script(s)"
+fi
+
 head_ "a suite's syntax check uses the suite's own interpreter"
 # A suite that parses its package by shelling out to an unqualified `bash`
 # resolves it through PATH, which is not the interpreter running the suite. On

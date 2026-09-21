@@ -3517,14 +3517,23 @@ rm -rf "$d"
 
 d="$(new_env)"
 mkdir -p "$d/home/.npm"
-mkbin "$d/bin/du" 'case "$*" in *"-d 1"*) printf "12\t%s/visible\n12\t%s\n" "$HOME/.npm" "$HOME/.npm"; exit 1 ;; esac; exec /usr/bin/du "$@"'
+# A du that prints the sum it managed and still exits 1 - what BSD du does for
+# a root holding a directory this user cannot enter, which is every ~/Library
+# root on a healthy Mac. The stub matched "-d 1" before, a flag combination BSD
+# du rejects outright and the script no longer uses, so it fell through to the
+# real du and this assertion stopped exercising anything.
+mkbin "$d/bin/du" 'for a in "$@"; do case "$a" in -*) ;; *) printf "12\t%s\n" "$a" ;; esac; done; exit 1'
 out="$(run_sf "$d" --yes --only disk-report --fail-on-warn)"; rc=$?
 assert_eq "partial disk query remains report-only" 0 "$rc"
-assert_contains "partial disk query does not claim accurate total" "$out" "partial or unreadable; total unknown"
-mkbin "$d/bin/du" 'case "$*" in *"-d 1"*) sleep 3 ;; esac; exec /usr/bin/du "$@"'
+assert_contains "a partial total is reported as a floor, not discarded" "$out" "at least"
+assert_contains "and it says why it is a floor" "$out" "some entries are not readable"
+assert_not_contains "a partial read is not called unreadable" "$out" "unreadable; total unknown"
+assert_not_contains "and a normal protected directory is not a warning" "$out" "could not measure"
+mkbin "$d/bin/du" 'sleep 3; exec /usr/bin/du "$@"'
 out="$(run_sf "$d" --yes --only disk-report --step-timeout 1 --fail-on-warn)"; rc=$?
 assert_eq "disk query timeout remains report-only" 0 "$rc"
-assert_contains "disk timeout leaves unknown total" "$out" "partial or unreadable; total unknown"
+assert_contains "a root that produced no total at all is unreadable" "$out" "unreadable; total unknown"
+assert_contains "and that one is worth a warning" "$out" "could not measure"
 rm -rf "$d"
 
 section "explicit rotated system log cleanup"
