@@ -84,7 +84,11 @@ never downloaded without an integrity check.
 complete, and names the host and byte count on stderr. Hashing a partial
 download is worse than failing to hash one, because the result looks like an
 answer: two scheduled checks recorded two different digests for the same
-archive before the length was compared.
+archive before the length was compared. The body must also open with a ZIP
+signature, so an error page served under a 200 is refused whatever its
+`Content-Type` claims. A host is retried three times with a growing pause, the
+way the Dockerfile's `wget --tries=3` retries it, except after a 404 or another
+4xx that no retry can change, when the next mirror is tried at once.
 
 `EXPECT_ROUTEROS_VERSION` follows `ROUTEROS_VERSION` automatically, so the
 suite proves that the requested image is the image that actually booted.

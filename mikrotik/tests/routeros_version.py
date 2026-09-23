@@ -8,10 +8,11 @@ import hashlib
 import http.client
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -42,6 +43,16 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # magnitude below that on purpose: it exists to reject an error page served
 # under a 200, not to hold any release to a size.
 MINIMUM_CHR_ARCHIVE_BYTES = 8 * 1024 * 1024
+# Every .vdi.zip opens with a ZIP local file header. Unlike Content-Type and
+# size, this is a property of the bytes being hashed, so it also catches an
+# error page served as application/xml or a CDN handing back the wrong object.
+ZIP_SIGNATURE = b"PK\x03\x04"
+# Seconds; the wait before retry n on the same host is n times this, the linear
+# backoff wget applies between its --tries.
+RETRY_DELAY_SECONDS = 2.0
+# A client error that another request to the same host cannot change. 408 and
+# 429 are the 4xx a server sends when a retry is exactly what it wants.
+RETRYABLE_CLIENT_ERRORS = frozenset({408, 429})
 # The bracket holds every channel the release currently sits in, not one. A
 # release is promoted through them over time, so 7.24 was published as
 # "RouterOS 7.24 [stable, testing, development]" and this pattern — which
@@ -103,7 +114,7 @@ def _write_pinned_sha256(digest: str, path: Path = VERSION_FILE) -> None:
 
 
 class IncompleteDownload(ReleaseError):
-    """The transfer ended before the announced body had been delivered."""
+    """The transfer did not deliver a whole CHR archive."""
 
 
 def _stream_sha256(url: str, timeout: int) -> tuple[str, int]:
@@ -128,37 +139,57 @@ def _stream_sha256(url: str, timeout: int) -> tuple[str, int]:
     connection does, so a dropped connection is indistinguishable from the end
     of the file and no digest is worth returning.
 
-    The type and size floor cover the other way a short body reaches here
-    intact: an error or interstitial page served under a 200 with a correct
-    Content-Length is complete by every test above, and would be hashed and
-    pinned as though it were the image. The floor is a sanity bound, not an
-    assertion about any release's size.
+    The type, size floor and ZIP signature cover the other way a short body
+    reaches here intact: an error or interstitial page served under a 200 with
+    a correct Content-Length is complete by every test above, and would be
+    hashed and pinned as though it were the image. The floor is a sanity bound,
+    not an assertion about any release's size. The signature is the one of the
+    three that reads the body rather than what the server says about it.
+
+    Whatever the headers already rule out is refused before the body is read,
+    so a mirror answering with a page costs one round trip per attempt rather
+    than a download the size of the image.
     """
     request = urllib.request.Request(url, headers={"User-Agent": "ops-toolbox/1"})
     digest = hashlib.sha256()
     received = 0
+    head = b""
     with urllib.request.urlopen(request, timeout=timeout) as response:
         declared = response.headers.get("Content-Length")
         content_type = response.headers.get("Content-Type", "")
         chunked = bool(getattr(response, "chunked", False))
+        expected = None
+        if declared is not None:
+            try:
+                expected = int(declared)
+            except ValueError:
+                raise IncompleteDownload(
+                    f"unreadable Content-Length {declared!r}"
+                ) from None
+        elif not chunked:
+            raise IncompleteDownload("no Content-Length and no chunked framing")
+        if content_type.split(";", 1)[0].strip().lower().startswith("text/"):
+            raise IncompleteDownload(f"served {content_type!r}, not an archive")
+        if expected is not None and expected < MINIMUM_CHR_ARCHIVE_BYTES:
+            raise IncompleteDownload(
+                f"{expected} bytes is too small to be a CHR archive "
+                f"(floor {MINIMUM_CHR_ARCHIVE_BYTES})"
+            )
         for chunk in iter(lambda: response.read(1024 * 1024), b""):
+            if len(head) < len(ZIP_SIGNATURE):
+                head += chunk[: len(ZIP_SIGNATURE) - len(head)]
+                if len(head) == len(ZIP_SIGNATURE) and head != ZIP_SIGNATURE:
+                    raise IncompleteDownload(
+                        f"body starts with {head!r}, not a ZIP signature"
+                    )
             digest.update(chunk)
             received += len(chunk)
-    if declared is not None:
-        try:
-            expected = int(declared)
-        except ValueError:
-            raise IncompleteDownload(
-                f"unreadable Content-Length {declared!r}"
-            ) from None
-        if received != expected:
-            raise IncompleteDownload(
-                f"transfer ended after {received} of {expected} bytes"
-            )
-    elif not chunked:
-        raise IncompleteDownload("no Content-Length and no chunked framing")
-    if content_type.split(";", 1)[0].strip().lower().startswith("text/"):
-        raise IncompleteDownload(f"served {content_type!r}, not an archive")
+    if expected is not None and received != expected:
+        raise IncompleteDownload(
+            f"transfer ended after {received} of {expected} bytes"
+        )
+    if head != ZIP_SIGNATURE:
+        raise IncompleteDownload(f"body starts with {head!r}, not a ZIP signature")
     if received < MINIMUM_CHR_ARCHIVE_BYTES:
         raise IncompleteDownload(
             f"{received} bytes is too small to be a CHR archive "
@@ -167,14 +198,26 @@ def _stream_sha256(url: str, timeout: int) -> tuple[str, int]:
     return digest.hexdigest(), received
 
 
-def compute_sha256(version: str, timeout: int = 300, attempts: int = 3) -> str:
+def compute_sha256(
+    version: str,
+    timeout: int = 300,
+    attempts: int = 3,
+    retry_delay: float = RETRY_DELAY_SECONDS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> str:
     """Stream the CHR archive and hash it without holding it in memory.
 
     Tries the same hosts as the Dockerfile, in the same order, so a digest can
     be recorded for anything the build is capable of downloading, and retries
-    each host the way the Dockerfile's `wget --tries=3` does. A truncated
-    transfer is transient; failing the scheduled release check on the first
-    one would trade a wrong answer for a needless red run.
+    each host the way the Dockerfile's `wget --tries=3` does - after a pause
+    that grows with each attempt, because a retry fired the instant a CDN edge
+    cut a transfer usually reaches the same edge in the same state. A
+    truncated transfer is transient; failing the scheduled release check on
+    the first one would trade a wrong answer for a needless red run.
+
+    A 4xx other than 408 or 429 is not transient: a version that is not
+    published yet answers 404 however often it is asked. Such a host is left
+    for the next one at once, rather than spending its remaining attempts.
 
     The host and byte count go to stderr, never stdout: `record-hash --print`
     is assigned directly in the workflow, so stdout carries the digest alone.
@@ -184,8 +227,15 @@ def compute_sha256(version: str, timeout: int = 300, attempts: int = 3) -> str:
     errors = []
     for url in chr_download_urls(version):
         for attempt in range(1, attempts + 1):
+            if attempt > 1:
+                sleep(retry_delay * (attempt - 1))
             try:
                 digest, received = _stream_sha256(url, timeout)
+            except urllib.error.HTTPError as exc:
+                errors.append(f"{url} (attempt {attempt}/{attempts}): HTTP {exc.code}")
+                if 400 <= exc.code < 500 and exc.code not in RETRYABLE_CLIENT_ERRORS:
+                    break
+                continue
             except (OSError, http.client.HTTPException, IncompleteDownload) as exc:
                 errors.append(f"{url} (attempt {attempt}/{attempts}): {exc}")
                 continue
@@ -437,8 +487,25 @@ def _record_hash(args: argparse.Namespace) -> int:
     return 0
 
 
+class Usage3Parser(argparse.ArgumentParser):
+    """An ArgumentParser that exits 3 on a usage error, the way the rest of the
+    tree does.
+
+    CONTRIBUTING.md spends exit 3 on invalid usage and 2 on a wrong
+    environment; argparse's own 2 blurred the two. Subparsers inherit the
+    class, so `check`, `bump` and `record-hash` exit 3 on a bad flag too.
+
+    Copied rather than shared, like require_value() in the shell scripts: what
+    is asserted about the copies is their contract, not their bytes.
+    """
+
+    def error(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(3, "%s: error: %s\n" % (self.prog, message))
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = Usage3Parser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     check = subparsers.add_parser("check", help="resolve the newest RouterOS release")
