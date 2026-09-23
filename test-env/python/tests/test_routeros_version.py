@@ -265,11 +265,13 @@ class TruncatingServer:
         send_bytes: int | None = None,
         framing: str = "length",
         content_type: str = "application/zip",
+        status: int = 200,
     ):
         self.body = body
         self.send_bytes = len(body) if send_bytes is None else send_bytes
         self.framing = framing
         self.content_type = content_type
+        self.status = status
         self.requests = 0
         self._socket = socket.socket()
         self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -293,9 +295,9 @@ class TruncatingServer:
                     conn.recv(65536)
                     if self.framing == "length":
                         header = (
-                            b"HTTP/1.1 200 OK\r\nContent-Length: %d\r\n"
+                            b"HTTP/1.1 %d Status\r\nContent-Length: %d\r\n"
                             b"Content-Type: %s\r\nConnection: close\r\n\r\n"
-                            % (len(self.body), self.content_type.encode())
+                            % (self.status, len(self.body), self.content_type.encode())
                         )
                     else:
                         # HTTP/1.0 with no length: the body ends when the
@@ -307,7 +309,14 @@ class TruncatingServer:
                     continue
 
     def close(self) -> None:
+        # close() alone does not reliably wake an accept() blocked in another
+        # thread on Linux, which left one serving thread behind per test.
+        # shutdown() does; macOS refuses it on a listening socket, where
+        # close() is enough.
+        with contextlib.suppress(OSError):
+            self._socket.shutdown(socket.SHUT_RDWR)
         self._socket.close()
+        self._thread.join(timeout=5)
 
 
 class ComputeSha256Tests(unittest.TestCase):
@@ -322,7 +331,10 @@ class ComputeSha256Tests(unittest.TestCase):
     worse than no digest: it is the pin for an image that boots as a kernel.
     """
 
-    BODY = b"chr-image-bytes" * 500
+    BODY = routeros_version.ZIP_SIGNATURE + b"chr-image-bytes" * 500
+
+    def setUp(self) -> None:
+        self.sleeps: list[float] = []
 
     def whole_digest(self) -> str:
         return hashlib.sha256(self.BODY).hexdigest()
@@ -333,7 +345,8 @@ class ComputeSha256Tests(unittest.TestCase):
         The floor is what rejects an error page served under a 200, and it is
         two orders of magnitude larger than anything worth pushing through a
         loopback socket in a unit test. Lowering it keeps these tests about
-        the transfer; the floor itself is exercised on its own below.
+        the transfer; the floor itself is exercised on its own below. The
+        pauses between retries are recorded in self.sleeps, not slept.
         """
         urls = [server.url for server in servers]
         with mock.patch.object(
@@ -341,7 +354,9 @@ class ComputeSha256Tests(unittest.TestCase):
         ), mock.patch.object(
             routeros_version, "MINIMUM_CHR_ARCHIVE_BYTES", floor
         ):
-            return routeros_version.compute_sha256("7.24.4", timeout=10)
+            return routeros_version.compute_sha256(
+                "7.24.4", timeout=10, sleep=self.sleeps.append
+            )
 
     def test_a_complete_transfer_is_hashed(self) -> None:
         server = TruncatingServer(self.BODY)
@@ -383,6 +398,12 @@ class ComputeSha256Tests(unittest.TestCase):
             self.hash_through(server)
 
         self.assertEqual(server.requests, 3)
+        # wget waits between tries, linearly longer each time; a retry fired
+        # the instant an edge cut a transfer tends to meet the same edge.
+        self.assertEqual(
+            self.sleeps,
+            [routeros_version.RETRY_DELAY_SECONDS, 2 * routeros_version.RETRY_DELAY_SECONDS],
+        )
 
     def test_the_next_host_is_tried_when_the_first_truncates(self) -> None:
         # The Dockerfile falls back from download.mikrotik.com to the CDN, and
@@ -432,6 +453,97 @@ class ComputeSha256Tests(unittest.TestCase):
             self.hash_through(server)
 
         self.assertIn("no Content-Length", str(caught.exception))
+
+    def test_a_body_without_a_zip_signature_is_refused(self) -> None:
+        # Complete, large enough and not text/*: an application/xml error
+        # page from a CDN, or the wrong object, passes every other check. The
+        # signature is the one that reads the bytes being hashed.
+        server = TruncatingServer(b"<?xml" + self.BODY[5:])
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(server)
+
+        self.assertIn("not a ZIP signature", str(caught.exception))
+
+    def test_a_page_the_headers_rule_out_is_refused_before_its_body(self) -> None:
+        # The server sends headers and no body at all. Had the body been read
+        # first, the refusal would name a truncated transfer; naming the type
+        # or the size instead shows the headers decided it without a download.
+        html = TruncatingServer(self.BODY, send_bytes=0, content_type="text/html")
+        small = TruncatingServer(self.BODY, send_bytes=0)
+        self.addCleanup(html.close)
+        self.addCleanup(small.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(html)
+        self.assertIn("not an archive", str(caught.exception))
+        self.assertNotIn("transfer ended", str(caught.exception))
+
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(small, floor=len(self.BODY) + 1)
+        self.assertIn("too small to be a CHR archive", str(caught.exception))
+        self.assertNotIn("transfer ended", str(caught.exception))
+
+    def test_a_missing_file_moves_to_the_next_host_at_once(self) -> None:
+        # A version not yet on the primary answers 404 however often it is
+        # asked. Retrying it only delays the mirror that has the file.
+        missing = TruncatingServer(b"not found", content_type="application/zip", status=404)
+        healthy = TruncatingServer(self.BODY)
+        self.addCleanup(missing.close)
+        self.addCleanup(healthy.close)
+        with contextlib.redirect_stderr(io.StringIO()):
+            digest = self.hash_through(missing, healthy)
+
+        self.assertEqual(digest, self.whole_digest())
+        self.assertEqual(missing.requests, 1)
+        self.assertEqual(self.sleeps, [])
+
+    def test_a_server_error_is_retried(self) -> None:
+        # The negative half: a 5xx is the server's own trouble and may clear,
+        # so it keeps its attempts. Without this the test above would pass
+        # if every HTTP error abandoned the host.
+        server = TruncatingServer(b"busy", status=503)
+        self.addCleanup(server.close)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(
+            routeros_version.ReleaseError
+        ) as caught:
+            self.hash_through(server)
+
+        self.assertEqual(server.requests, 3)
+        self.assertIn("HTTP 503", str(caught.exception))
+
+
+class UsageExitCodeTests(unittest.TestCase):
+    """CONTRIBUTING.md spends exit 3 on invalid usage and 2 on a wrong
+    environment; argparse's default 2 made a mistyped flag look like the
+    latter."""
+
+    def assert_usage_error(self, argv: list[str]) -> None:
+        with contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(
+            SystemExit
+        ) as caught:
+            routeros_version.main(argv)
+        self.assertEqual(caught.exception.code, 3)
+        self.assertIn("error:", err.getvalue())
+
+    def test_an_unknown_flag_exits_3(self) -> None:
+        self.assert_usage_error(["--definitely-not-a-valid-flag-12345"])
+
+    def test_an_unknown_subcommand_flag_exits_3(self) -> None:
+        # Subparsers inherit the parser class; this is what shows they did.
+        self.assert_usage_error(["record-hash", "--definitely-not-a-valid-flag-12345"])
+
+    def test_help_still_exits_0(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(
+            SystemExit
+        ) as caught:
+            routeros_version.main(["--help"])
+        self.assertEqual(caught.exception.code, 0)
 
 
 class ChangelogInsertionTests(unittest.TestCase):
