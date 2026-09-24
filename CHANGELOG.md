@@ -1726,6 +1726,7 @@ that directory existed and stay here until the first release moves them.
 
 ### Changed
 
+- RouterOS CHR compatibility was bumped from 7.24.2 to 7.24.4 after the full Docker integration suite passed.
 - `stay_fresh_agent.sh`'s `safe` profile now also runs the two read-only
   reports, `os-updates` and `snapshots` (listing only; the agent has no
   sudo, so nothing is thinned). A pending macOS update and a pile of local
