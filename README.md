@@ -704,7 +704,8 @@ QEMU: it runs nightly, on demand, and on the pull requests that touch
 `mikrotik/`, so a red badge there does not necessarily mean a red pull request.
 
 The two lint badges are static labels for the gates CI enforces, not live
-results — the CI badge is the one that reflects the current state of `master`.
+results — the CI and Security badges are the ones that reflect the current
+state of `master`.
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs every suite except
 the RouterOS one — through `run-tests.sh`, so the aggregator is exercised too
@@ -873,7 +874,7 @@ to `master`, weekly, and on demand:
 | `Repository secret scan` | Trivy over the working tree | yes |
 | `Git history secret scan` | gitleaks over full history (`fetch-depth: 0`) | no — reported |
 | `Workflow security audit` | zizmor against every workflow | no — reported |
-| `CodeQL` | `actions` and `python`, the only two languages here it supports | no — reported |
+| `CodeQL` | `actions` and `python`; the only other supported languages here (Go, Ruby) exist solely as `test-env/` fixtures and are left out | no — reported |
 | `OpenSSF Scorecard` | branch protection, permissions, pinned dependencies | `master` only |
 
 Only the working-tree secret scan gates: a credential committed here is always

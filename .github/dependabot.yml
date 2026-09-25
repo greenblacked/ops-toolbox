@@ -19,10 +19,14 @@ version: 2
 # security release is never more than `default-days` behind schedule rather
 # than adopted immediately.
 #
-# `default-days` is the only cooldown key valid for these two ecosystems —
-# the `semver-*-days` variants are rejected for both, since neither
-# github-actions nor docker resolves its version as semver (actions read a
-# ref, docker reads a tag).
+# `default-days` is the only cooldown key set for these two ecosystems.
+# Dependabot's schema documents `semver-*-days` as applying only to package
+# managers that support SemVer, so on github-actions and docker — where a
+# version is a ref or a tag, not a SemVer string — those keys have nothing
+# to apply to and are expected to be ignored rather than acted on. That is
+# a documented scope limit, not a validation error; nobody has confirmed
+# the exact server-side behaviour of setting them here anyway, so this file
+# just does not set them.
 updates:
   - package-ecosystem: github-actions
     directory: /
