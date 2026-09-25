@@ -85,13 +85,17 @@ changelog.d/changelog.sh preview                       # the section as it will 
 changelog.d/changelog.sh check                         # every fragment would paste cleanly
 changelog.d/changelog.sh release 1.0.0 --dry-run       # what a release would rewrite
 changelog.d/changelog.sh release 1.0.0 --date 2026-10-01
+changelog.d/changelog.sh latest                        # newest released version
+changelog.d/changelog.sh notes 1.0.0                   # that version's section, for release notes
 ```
 
 | Command | What it does |
 | --- | --- |
 | `preview` | Prints `[Unreleased]` as it will read: the fragments first, then whatever the section already holds, type by type. Writes nothing. |
 | `check` | Validates every fragment twice over: the shape that would paste (type directory, `.md`, starts with a dash and a space, two-space continuations, no headings, no tabs, no trailing whitespace, final newline), and the claims it makes about this tree — see [What `check` reads in your backticks](#what-check-reads-in-your-backticks). The static suite runs it, so a fragment that would not paste, or that describes work this branch does not contain, fails the pull request. |
-| `release VERSION` | Moves the fragments and the entries still under `[Unreleased]` under `## [VERSION] - DATE`, leaves `[Unreleased]` empty, and deletes the fragment files. Refuses a version already in the file, and refuses to run while `check` fails. |
+| `release VERSION` | Moves the fragments and the entries still under `[Unreleased]` under `## [VERSION] - DATE`, leaves `[Unreleased]` empty, and deletes the fragment files. Refuses a version already in the file, a version that is not `MAJOR.MINOR.PATCH`, and one that is not newer than the latest release, and refuses to run while `check` fails. |
+| `latest` | Prints the newest released version, the first `## [X.Y.Z]` heading, alone on stdout. The dated history sections have no brackets and never match. Exits 4 when nothing has been released. |
+| `notes VERSION` | Prints the body of that version's section, its `###` subsections included and its heading left out, up to the next `##` heading. Exits 1 when the file has no such section. |
 
 | Option | Meaning |
 | --- | --- |
@@ -103,19 +107,47 @@ changelog.d/changelog.sh release 1.0.0 --date 2026-10-01
 `CHANGELOG.md` and a `changelog.d/`; the test in
 `test-env/static/test_changelog.sh` uses it to run against a scratch copy.
 
-Exit codes: `0` done, `1` a fragment would not paste or the release could not
-proceed, `3` bad arguments, `4` nothing to release.
+Exit codes: `0` done, `1` a fragment would not paste, the release could not
+proceed, or `notes` found no section, `3` bad arguments, `4` nothing to
+release or nothing released.
 
 ## Cutting a release
+
+Releases are cut by
+[`.github/workflows/release.yml`](../.github/workflows/release.yml), in two
+steps, so every release is a reviewed pull request and a tag only ever lands on
+a commit that is already on `master`.
+
+1. **Actions → Release → Run workflow**, from `master`, with the version
+   (`1.0.0`). The workflow refuses a version that is not `MAJOR.MINOR.PATCH`,
+   is not newer than the latest release, or already has a tag. It runs
+   `changelog.sh release` on a `chore/release-<version>` branch, dispatches CI
+   on that branch, and opens the release pull request. The release commit
+   removes every fragment file, so it is the one commit that touches many of
+   them at once, and nothing else goes in it.
+2. **Merge that pull request.** The push adds `## [<version>]` to
+   `CHANGELOG.md` on `master`. The workflow's publish job tags that commit
+   `v<version>` (annotated) and creates a GitHub Release whose notes are
+   `changelog.sh notes <version>`. Notes too long for a release description,
+   which the first release's are, are replaced by a link to the section at the
+   tag, and the full notes are attached to the release as a file.
+
+Only the push that adds a version's heading is tagged. A later edit to
+`CHANGELOG.md` finds the tag already there and leaves it alone, so a release
+never moves onto an unrelated commit. If tagging succeeded and publishing the
+release did not, re-running the failed job finishes it.
+
+By hand, the same thing is:
 
 ```bash
 changelog.d/changelog.sh release 1.0.0 --dry-run   # read what will move
 changelog.d/changelog.sh release 1.0.0
 git add CHANGELOG.md changelog.d
 git commit -m "chore: release 1.0.0"
-git tag -a v1.0.0 -m "1.0.0"
+# open it as its own pull request; once merged, on master:
+git tag -a v1.0.0 -m "1.0.0" && git push origin v1.0.0
 ```
 
-The release commit removes the fragment files, so it is the one commit that
-touches many of them at once; open it as its own pull request with nothing
-else in it.
+To withdraw a release, delete the GitHub Release and then the tag
+(`git push origin :refs/tags/v1.0.0`). The `CHANGELOG.md` section stays; the
+next release is cut as a newer version rather than reusing the number.

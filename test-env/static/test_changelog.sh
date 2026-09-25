@@ -102,15 +102,26 @@ root="$(fresh_root)"
 run "$root" --help
 expect "--help exits 0 and describes release" rc_is 0
 expect "--help names the release command" has "$out" "release VERSION"
+expect "--help names the latest command" has "$out" "latest "
+expect "--help names the notes command" has "$out" "notes VERSION"
 run "$root" --bogus;                     expect "unknown flag exits 3 (got $rc)" rc_is 3
 run "$root";                             expect "no command exits 3 (got $rc)" rc_is 3
 run "$root" frobnicate;                  expect "unknown command exits 3 (got $rc)" rc_is 3
 run "$root" release;                     expect "release without VERSION exits 3 (got $rc)" rc_is 3
-run "$root" release 1.0 extra;           expect "extra positional exits 3 (got $rc)" rc_is 3
+run "$root" release 1.0.0 extra;         expect "extra positional exits 3 (got $rc)" rc_is 3
 run "$root" preview --dry-run;           expect "--dry-run outside release exits 3 (got $rc)" rc_is 3
 run "$root" check --date 2026-01-01;     expect "--date outside release exits 3 (got $rc)" rc_is 3
 run "$root" release --date;              expect "--date without a value exits 3 (got $rc)" rc_is 3
-run "$root" release 1.0 --date 2026-1-1; expect "malformed --date exits 3 (got $rc)" rc_is 3
+run "$root" release 1.0.0 --date 2026-1-1; expect "malformed --date exits 3 (got $rc)" rc_is 3
+# The version becomes a tag, v<VERSION>, so it is held to MAJOR.MINOR.PATCH
+# before anything is read. Each of these used to be accepted as one token.
+for bad in 1.0 v1.0.0 1.0.0-rc.1 1.0.0.0 '1.0.0 '; do
+  run "$root" release "$bad"; expect "release '$bad' exits 3 (got $rc)" rc_is 3
+done
+run "$root" notes;                       expect "notes without VERSION exits 3 (got $rc)" rc_is 3
+run "$root" notes 1.2;                   expect "notes with a malformed VERSION exits 3 (got $rc)" rc_is 3
+run "$root" latest 1.2.3;                expect "latest takes no VERSION, exits 3 (got $rc)" rc_is 3
+run "$root" latest --dry-run;            expect "--dry-run outside release exits 3 (got $rc)" rc_is 3
 
 # --- a large [Unreleased] must not break preview ---------------------------
 # unreleased_preamble() piped part_unreleased into an awk that exited at the
@@ -407,14 +418,62 @@ left="$(find "$root/changelog.d" -mindepth 2 -type f | wc -l | tr -d ' ')"
 expect "release removes the fragment files (left: $left)" same "$left" 0
 expect "CHANGELOG.md still ends with a newline" same "$(tail -c 1 "$f" | od -An -c | tr -d ' ')" '\n'
 
+# --- latest and notes -----------------------------------------------------
+# release.yml reads these to decide what to tag and what the release says, so
+# stdout must hold the answer alone.
+run "$(fresh_root)" latest
+expect "latest with only dated history exits 4 (got $rc)" rc_is 4
+expect "latest with nothing released names no version" lacks "$out" "2026-01-01"
+out="$(CHANGELOG_ROOT="$root" "$SCRIPT" latest 2>/dev/null)"; rc=$?
+expect "latest exits 0 after a release (got $rc)" rc_is 0
+expect "latest prints the version alone on stdout (got '$out')" same "$out" "1.2.3"
+run "$root" notes 1.2.3
+expect "notes exits 0 (got $rc)" rc_is 0
+expect "notes starts at the first subsection, not the version heading" starts "$out" "### Added"
+expect "notes carries a fragment" has "$out" "Fragment A, added."
+expect "notes carries a continuation line" has "$out" "  continued."
+expect "notes stops before the history below" lacks "$out" "Old item"
+expect "notes leaves out the version heading" lacks "$out" "## [1.2.3]"
+n="$(printf '%s\n' "$out" | grep -c '^- ')"
+expect "notes lists all six items (got $n)" same "$n" 6
+run "$root" notes 1.2.4
+expect "notes for a version not in the file exits 1 (got $rc)" rc_is 1
+
+# A second release: latest moves to it, and each version's notes stay its own.
+# 1.10.0 is also the case a string comparison orders before 1.9.x.
+printf -- '- Second release item.\n' > "$root/changelog.d/added/second.md"
+run "$root" release 1.10.0 --date 2026-03-01
+expect "a second release exits 0 (got $rc)" rc_is 0
+out="$(CHANGELOG_ROOT="$root" "$SCRIPT" latest 2>/dev/null)"
+expect "latest names the newer release (got '$out')" same "$out" "1.10.0"
+run "$root" notes 1.10.0
+expect "the new version's notes hold its item" has "$out" "Second release item."
+expect "the new version's notes stop at the previous version" lacks "$out" "Fragment A, added."
+run "$root" notes 1.2.3
+expect "the previous version's notes are unchanged" has "$out" "Fragment A, added."
+expect "the previous version's notes do not pick up the new item" lacks "$out" "Second release item."
+# notes matches the whole "## [VERSION]" token, not a prefix of it.
+run "$root" notes 1.1.0
+expect "notes does not match 1.1.0 inside 1.10.0 (exit $rc)" rc_is 1
+
 # --- release refusals ------------------------------------------------------
 before="$(snapshot "$root")"
 run "$root" release 1.2.3
 after="$(snapshot "$root")"
 expect "a version already in the file is refused (exit $rc)" rc_is 1
 expect "a refused re-release touches nothing" same "$before" "$after"
-run "$root" release 1.2.4 --dry-run
+run "$root" release 1.10.1 --dry-run
 expect "nothing to release exits 4 (got $rc)" rc_is 4
+# A version older than the latest one is refused before anything is written:
+# tags are ordered, and a 1.9.0 after 1.10.0 would read as a downgrade.
+printf -- '- Late item.\n' > "$root/changelog.d/fixed/late.md"
+before="$(snapshot "$root")"
+run "$root" release 1.9.0
+after="$(snapshot "$root")"
+expect "a version older than the latest is refused (exit $rc)" rc_is 1
+expect "the refusal names the latest version" has "$out" "not newer than 1.10.0"
+expect "a refused older release touches nothing" same "$before" "$after"
+rm -f "$root/changelog.d/fixed/late.md"
 run "$root" preview
 expect "preview of an empty section exits 0 (got $rc)" rc_is 0
 expect "preview of an empty section is just its heading" same "$out" "## [Unreleased]"

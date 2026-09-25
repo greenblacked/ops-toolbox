@@ -3,14 +3,14 @@
 All notable changes to this repository are recorded here.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
-releases will follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
-once there is a tag to hang a version on.
+releases follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Each
+release is tagged `v<version>` on the commit that adds its section here; see
+[Cutting a release](changelog.d/README.md#cutting-a-release).
 
-There is no tag yet, so nothing below carries a release number. The dated
-sections are reconstructed from the merge commits in `git log` and are grouped
-by the day each pull request landed on `master`; they are history, not releases.
-The first tagged version will be cut from `[Unreleased]`, and from then on every
-entry here belongs to a version.
+The dated sections at the bottom predate versioning. They are reconstructed
+from the merge commits in `git log` and grouped by the day each pull request
+landed on `master`; they are history, not releases. The first version is cut
+from `[Unreleased]`, and from then on every entry here belongs to a version.
 
 New entries are not added to `[Unreleased]` by hand. Each change ships one
 file under [`changelog.d/`](changelog.d/README.md), and

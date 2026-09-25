@@ -31,6 +31,18 @@
 #                     [Unreleased] under "## [VERSION] - DATE", leave
 #                     [Unreleased] empty, and delete the fragment files.
 #                     --dry-run prints what would happen and writes nothing.
+#                     VERSION is MAJOR.MINOR.PATCH and must be newer than the
+#                     latest version already in the file.
+#   latest            Print the newest released version - the first
+#                     "## [X.Y.Z]" heading - and nothing else. Exit 4 when
+#                     nothing has been released yet.
+#   notes VERSION     Print the body of VERSION's section, headings below it
+#                     included, for the release notes. Writes nothing.
+#
+# latest and notes exist for .github/workflows/release.yml, which tags the
+# commit that adds a version's heading and publishes its section as the
+# release notes. Parsing CHANGELOG.md here rather than in the workflow keeps
+# the parser beside its tests.
 #
 # Options:
 #   -n, --dry-run     For release: describe the rewrite, change nothing.
@@ -43,9 +55,10 @@
 #
 # Exit codes:
 #   0   done
-#   1   check found a fragment it would not paste, or release could not proceed
+#   1   check found a fragment it would not paste, release could not proceed,
+#       or notes found no section for VERSION
 #   3   bad CLI arguments
-#   4   release found nothing to release
+#   4   release found nothing to release, or latest found no released version
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -55,6 +68,12 @@ FRAGMENTS="$ROOT/changelog.d"
 
 # Keep a Changelog section order; a type outside this list is a typo.
 TYPES="added changed deprecated removed fixed security"
+
+# A released version, and so a tag once v is prepended. Pre-release suffixes
+# are refused rather than half-supported: ordering 1.0.0-rc.1 before 1.0.0
+# takes more than comparing three numbers, and a check that got it wrong would
+# refuse the very release the candidate was for.
+SEMVER_RE='^[0-9]+\.[0-9]+\.[0-9]+$'
 
 DRY_RUN=0
 DATE=""
@@ -76,7 +95,10 @@ Commands:
   check              Validate every fragment under changelog.d/ — its shape, and the
                      files and flags it names against this tree; exit 1 on a problem
   release VERSION    Move the fragments and the current [Unreleased] entries under
-                     "## [VERSION] - DATE" in CHANGELOG.md and delete the fragments
+                     "## [VERSION] - DATE" in CHANGELOG.md and delete the fragments;
+                     VERSION is MAJOR.MINOR.PATCH, newer than the latest release
+  latest             Print the newest released version; exit 4 if there is none
+  notes VERSION      Print VERSION's section body, for release notes; writes nothing
 
 Options:
   -n, --dry-run      For release: print what would change and write nothing
@@ -93,8 +115,10 @@ Examples:
   $(basename "$0") check
   $(basename "$0") release 1.0.0 --dry-run
   $(basename "$0") release 1.0.0 --date 2026-10-01
+  $(basename "$0") latest
+  $(basename "$0") notes 1.0.0
 
-Exit codes: 0 done, 1 problem found, 3 usage, 4 nothing to release
+Exit codes: 0 done, 1 problem found, 3 usage, 4 nothing to release or released
 EOF
 }
 
@@ -129,7 +153,7 @@ while (( $# > 0 )); do
     *)
       if [[ -z "$command" ]]; then
         command="$1"
-      elif [[ -z "$version" && "$command" == "release" ]]; then
+      elif [[ -z "$version" && ( "$command" == "release" || "$command" == "notes" ) ]]; then
         version="$1"
       else
         err "unexpected argument: $1"
@@ -144,7 +168,7 @@ done
 for extra in "$@"; do
   if [[ -z "$command" ]]; then
     command="$extra"
-  elif [[ -z "$version" && "$command" == "release" ]]; then
+  elif [[ -z "$version" && ( "$command" == "release" || "$command" == "notes" ) ]]; then
     version="$extra"
   else
     err "unexpected argument: $extra"
@@ -154,9 +178,9 @@ for extra in "$@"; do
 done
 
 case "$command" in
-  preview|check|release) ;;
+  preview|check|release|latest|notes) ;;
   "")
-    err "a command is required: preview, check or release"
+    err "a command is required: preview, check, release, latest or notes"
     usage >&2
     exit 3
     ;;
@@ -166,9 +190,13 @@ case "$command" in
     exit 3
     ;;
 esac
-if [[ "$command" == "release" && -z "$version" ]]; then
-  err "release needs a VERSION"
+if [[ ( "$command" == "release" || "$command" == "notes" ) && -z "$version" ]]; then
+  err "$command needs a VERSION"
   usage >&2
+  exit 3
+fi
+if [[ -n "$version" && ! "$version" =~ $SEMVER_RE ]]; then
+  err "VERSION must be MAJOR.MINOR.PATCH, e.g. 1.0.0: $version"
   exit 3
 fi
 if [[ "$command" != "release" && -n "$DATE" ]]; then
@@ -648,6 +676,28 @@ do_check() {
   return 0
 }
 
+# --- versions --------------------------------------------------------------
+# The newest released version: the first "## [X.Y.Z]" heading, which is the
+# topmost because release always writes under [Unreleased]. The dated history
+# sections below ("## 2026-08-02") carry no brackets and are never matched.
+# awk reads the file itself, so exiting at the first match closes no pipe.
+latest_version() {
+  awk '/^## \[[0-9]+\.[0-9]+\.[0-9]+\]/ {
+    v = substr($0, 5); sub(/\].*/, "", v); print v; exit
+  }' "$CHANGELOG"
+}
+
+# version_gt A B: A is a higher MAJOR.MINOR.PATCH than B. Numeric per field,
+# so 1.10.0 is newer than 1.9.0, which a string comparison gets backwards.
+version_gt() {
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<< "$1"
+  IFS=. read -r b1 b2 b3 <<< "$2"
+  (( 10#$a1 != 10#$b1 )) && { (( 10#$a1 > 10#$b1 )); return; }
+  (( 10#$a2 != 10#$b2 )) && { (( 10#$a2 > 10#$b2 )); return; }
+  (( 10#$a3 > 10#$b3 ))
+}
+
 # --- preview ---------------------------------------------------------------
 do_preview() {
   need_changelog
@@ -659,10 +709,6 @@ do_preview() {
 do_release() {
   need_changelog
   do_check >/dev/null || { err "fix the fragments before releasing"; exit 1; }
-  if [[ "$version" == *[[:space:]]* || "$version" == "["* ]]; then
-    err "VERSION must be a single token without brackets: $version"
-    exit 3
-  fi
   if [[ -z "$DATE" ]]; then
     DATE="$(date -u +%Y-%m-%d)"
   elif [[ ! "$DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
@@ -671,6 +717,12 @@ do_release() {
   fi
   if grep -q "^## \[$version\]" "$CHANGELOG"; then
     err "CHANGELOG.md already has a section for [$version]"
+    exit 1
+  fi
+  local previous
+  previous="$(latest_version)"
+  if [[ -n "$previous" ]] && ! version_gt "$version" "$previous"; then
+    err "$version is not newer than $previous, the latest version in CHANGELOG.md"
     exit 1
   fi
 
@@ -727,8 +779,47 @@ do_release() {
   info "commit CHANGELOG.md and the removed fragments together; the [Unreleased] section is empty again"
 }
 
+# --- latest ----------------------------------------------------------------
+do_latest() {
+  need_changelog
+  local found
+  found="$(latest_version)"
+  if [[ -z "$found" ]]; then
+    warn "no released version in CHANGELOG.md yet" >&2
+    exit 4
+  fi
+  # The version alone on stdout, so a caller can assign it directly.
+  printf '%s\n' "$found"
+}
+
+# --- notes -----------------------------------------------------------------
+# The body of one version's section, up to the next "## " heading. Matched on
+# the whole "## [VERSION]" token, so 1.0.1 is not found inside 1.0.10.
+do_notes() {
+  need_changelog
+  local want="## [$version]" body
+  if ! awk -v want="$want" '
+      index($0, want) == 1 && (length($0) == length(want) || substr($0, length(want) + 1, 1) == " ") { f = 1 }
+      END { exit !f }' "$CHANGELOG"; then
+    err "CHANGELOG.md has no section for [$version]"
+    exit 1
+  fi
+  body="$(awk -v want="$want" '
+      s && /^## / { exit }
+      s { print }
+      index($0, want) == 1 && (length($0) == length(want) || substr($0, length(want) + 1, 1) == " ") { s = 1 }
+    ' "$CHANGELOG" | trim_blank)"
+  if [[ -z "$body" ]]; then
+    err "the [$version] section of CHANGELOG.md is empty"
+    exit 1
+  fi
+  printf '%s\n' "$body"
+}
+
 case "$command" in
   preview) do_preview ;;
   check)   do_check ;;
   release) do_release ;;
+  latest)  do_latest ;;
+  notes)   do_notes ;;
 esac
