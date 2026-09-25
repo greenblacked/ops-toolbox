@@ -1,0 +1,298 @@
+name: Security
+
+# Repository-level security checks, kept out of ci.yml on purpose.
+#
+# ci.yml's Lint job checks that a script, a workflow or a manifest is *well
+# formed* — ShellCheck, actionlint, Hadolint, kubeconform, ruff. None of that
+# looks for a committed credential, a workflow that lets a pull-request title
+# or an issue body reach a `run:` block, or a dependency pulled in on a
+# compromised release. That is a different threat model, and this repository
+# is a public collection of ops and admin scripts — the kind of thing that is
+# routinely cloned and run with real privileges, per SECURITY.md — so a
+# credential landing here is a live incident, not a lint finding.
+#
+# Separate file so a finding here can never block the suites in ci.yml, and so
+# it still runs on weeks when nothing under a package directory changed —
+# ci.yml's path filters would otherwise skip a workflow-only or
+# dependabot-only change entirely.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    # Target branches, the same convention ci.yml and chr.yml use and explain:
+    # this list matches theirs so a pull request stacked onto a typed branch
+    # still gets checked, instead of silently running nothing because the
+    # target matched no pattern.
+    branches:
+      - master
+      - 'feat/**'
+      - 'feature/**'
+      - 'ci/**'
+      - 'chore/**'
+      - 'fix/**'
+  schedule:
+    # Monday 05:41 UTC — an off-round minute for the reason chr.yml's and
+    # routeros-version.yml's crons give (the top of the hour is heavily
+    # contended and a round schedule lands hours late) — and a time that does
+    # not share a slot with chr.yml (daily 03:37), routeros-version.yml
+    # (Mon/Thu 04:19) or k8s-image-smoke.yml (Mon 04:17).
+    - cron: '41 5 * * 1'
+  workflow_dispatch: {}
+
+permissions: {}
+
+concurrency:
+  group: security-${{ github.event.pull_request.number || github.ref }}
+  # A superseded pull-request push is worth cancelling, same as ci.yml.
+  # Scheduled and master runs are not: each one is the verdict for that day,
+  # and Scorecard's publish step in particular should not be cut off mid-run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Secrets committed to the working tree. Gates: a credential in a public
+  # repository is always fixable from here — remove it, rotate it, commit —
+  # so there is no reason to let one merge.
+  repo-secrets:
+    name: Repository secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Trivy filesystem secret scan (SARIF)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          format: sarif
+          output: trivy-repo-secrets.sarif
+          exit-code: '0'
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          sarif_file: trivy-repo-secrets.sarif
+          category: repo-secrets
+
+      - name: Secret gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          format: table
+          exit-code: '1'
+
+  # Secrets in git *history*, which the working-tree scan above cannot see: a
+  # credential committed and later removed is still fetchable by anyone who
+  # clones. fetch-depth: 0 because a shallow clone has no history to scan.
+  #
+  # Reported, not gating. A history finding cannot be fixed by a commit — it
+  # needs a rewrite plus rotation — so failing the build on it would block
+  # every unrelated pull request until that happens. Read the log; treat a
+  # hit as an incident, not a broken build.
+  git-history-secrets:
+    name: Git history secret scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Pinned release binary, checksum-verified — the same pattern this
+      # repository already uses for ShellCheck, actionlint, Hadolint,
+      # kubeconform and ruff in ci.yml (see .github/ci-tool-checksums.env).
+      # Not tracked in that file: its enforcement is scoped to ci.yml's own
+      # env: block, and this pin belongs to this workflow alone. Not
+      # `docker run gitleaks:latest` either — a mutable tag adopts a release
+      # the moment it is published, which is exactly the window
+      # dependabot.yml's cooldown exists to avoid for everything else this
+      # repository pulls in.
+      - name: Gitleaks
+        continue-on-error: true
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          curl -fsSLo gitleaks.tgz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tgz" > gitleaks.sum
+          sha256sum --check --strict gitleaks.sum
+          tar -xzf gitleaks.tgz gitleaks
+          ./gitleaks detect --source . --redact --verbose --exit-code 0 \
+            | tee gitleaks.log
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Git history secret scan"
+            echo
+            echo '```'
+            tail -40 gitleaks.log 2>/dev/null || echo "(no output)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gitleaks-log
+          path: gitleaks.log
+          retention-days: 90
+          if-no-files-found: warn
+
+  # Static analysis of the workflows themselves: template injection through
+  # ${{ }} interpolation into a run: block, over-broad permissions, unpinned
+  # actions, cache poisoning, artifact leakage. actionlint (in ci.yml) checks
+  # that a workflow is *valid* YAML with valid expressions; zizmor checks that
+  # it is *safe*.
+  #
+  # Reported, not gating, so a new finding class does not block an unrelated
+  # pull request the day zizmor's rules change. The SARIF upload still puts it
+  # in the Security tab.
+  #
+  # Runs zizmor's default policy, including hash-pin-for-uses — every action
+  # in this repository is already pinned by commit SHA (dependabot.yml keeps
+  # them current), so there is no carve-out to make. If this starts flagging
+  # unpinned-uses, someone added a tag-pinned action; pin it rather than
+  # relaxing the policy.
+  workflow-audit:
+    name: Workflow security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4  # v10.1.0
+
+      - name: Run zizmor
+        continue-on-error: true
+        run: |
+          uvx zizmor --format sarif . > zizmor.sarif || true
+          uvx zizmor --format plain . || true
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          sarif_file: zizmor.sarif
+          category: workflow-audit
+
+  # CodeQL, one language per matrix leg so each gets its own SARIF category.
+  #
+  # `actions` covers the four workflows in .github/workflows/ — dataflow
+  # analysis that follows an untrusted value (a PR title, a branch name, an
+  # issue body) from a trigger through an expression into a sink, which
+  # catches an injection path a pattern matcher such as zizmor reads as safe.
+  # The overlap with workflow-audit above is deliberate and costs nothing but
+  # runner minutes; findings land in the same Security tab either way.
+  #
+  # `python` covers the helper scripts under macos-initial-setup/lib/,
+  # mikrotik/features/ and mikrotik/tests/ — the repository's one language
+  # CodeQL actually supports beyond `actions`. Everything else here is Bash,
+  # PowerShell or RouterOS script, none of which CodeQL analyses, so no other
+  # language is added just to have one.
+  #
+  # Known conflict, same as any advanced-setup CodeQL workflow: if this
+  # repository ever enables CodeQL "default setup" in Settings -> Code
+  # security, GitHub rejects SARIF from this workflow and the analyze step
+  # fails. The fix is one click there, not a workflow change.
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - actions
+          - python
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          category: /language:${{ matrix.language }}
+
+  # OpenSSF Scorecard: branch protection, token permissions, pinned
+  # dependencies, dangerous workflow patterns, maintenance signals. Several of
+  # its checks inspect repository settings rather than the tree, so it is only
+  # meaningful against the branch those settings actually protect — this
+  # repository's default branch is master, not main, so that is what the
+  # trigger above and this condition both key off. It does not run on pull
+  # requests.
+  scorecard:
+    name: OpenSSF Scorecard
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+      # Required for the badge and for Scorecard's own OIDC-based checks.
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc  # v2.4.4
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: scorecard-results
+          path: scorecard.sarif
+          retention-days: 90
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@b96794f015dfd88f77b49b1c93e0fa7110f94c63  # v4.38.0
+        with:
+          sarif_file: scorecard.sarif
+          category: scorecard
