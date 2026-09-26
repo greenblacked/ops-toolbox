@@ -1,0 +1,313 @@
+name: Release
+
+# Cutting a release is two steps, so that every release is a reviewed pull
+# request and a tag is only ever created on a commit that is already on master.
+#
+#   1. Run this workflow by hand with a version. The prepare job runs
+#      changelog.d/changelog.sh release on a chore/release-<version> branch
+#      and opens it as a pull request: the release commit, with nothing else in
+#      it, as changelog.d/README.md asks.
+#   2. Merging that pull request pushes CHANGELOG.md to master with the new
+#      "## [<version>]" heading in it. The publish job tags that commit
+#      v<version> and creates a GitHub Release whose notes are the version's
+#      section.
+#
+# Nothing here writes to master. The version is chosen by a person and the
+# release commit is reviewed like any other; the only thing automated after the
+# merge is the tag, and it is placed only on the push that added the heading.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, MAJOR.MINOR.PATCH (e.g. 1.0.0); tagged v<version>
+        required: true
+        type: string
+  push:
+    branches:
+      - master
+    paths:
+      - CHANGELOG.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open release pull request
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write        # dispatch ci.yml on the release branch
+      contents: write       # push the release branch
+      pull-requests: write  # open the release pull request
+    env:
+      # Through the environment, never interpolated into a script: the input
+      # is free text typed into a form.
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Validate the request
+        shell: bash
+        run: |
+          set -euo pipefail
+          # A release is cut from master. Dispatching from another branch would
+          # open a pull request carrying that branch's unmerged work with it.
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::run this workflow from master, not ${GITHUB_REF#refs/heads/}"
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be MAJOR.MINOR.PATCH, e.g. 1.0.0 (got '$VERSION')"
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists"
+            exit 1
+          fi
+
+      - name: Check for an existing release pull request
+        id: existing
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url="$(gh pr list --state open --head "chore/release-$VERSION" --json url --jq '.[0].url // ""')"
+          if [ -n "$url" ]; then
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+            echo "Existing pull request: $url"
+          fi
+
+      # changelog.sh refuses a version already in CHANGELOG.md, one not newer
+      # than the latest release, a fragment that would not paste, and a
+      # release with nothing in it, so none of that is repeated here.
+      - name: Move the fragments under the version
+        if: steps.existing.outputs.url == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          changelog.d/changelog.sh release "$VERSION" --dry-run
+          changelog.d/changelog.sh release "$VERSION"
+
+      - name: Commit release branch
+        id: commit
+        if: steps.existing.outputs.url == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="chore/release-${VERSION}"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          # Read the remote tip before any local work and pass it to
+          # --force-with-lease explicitly; routeros-version.yml explains why a
+          # bare lease is a plain --force in practice.
+          remote_sha=""
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            git fetch origin "$branch:refs/remotes/origin/$branch"
+            remote_sha="$(git rev-parse "refs/remotes/origin/$branch")"
+          fi
+
+          git switch -C "$branch"
+          # -A on the directory: release deletes the fragment files, and the
+          # deletions belong in the same commit as the section they moved to.
+          git add CHANGELOG.md
+          git add -A changelog.d
+          git commit -m "chore: release ${VERSION}"
+
+          if [ -n "$remote_sha" ]; then
+            git push --force-with-lease="refs/heads/$branch:$remote_sha" \
+              --set-upstream origin "$branch"
+          else
+            git push --set-upstream origin "$branch"
+          fi
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+      # Events created by GITHUB_TOKEN do not start other workflows, so the
+      # pull request below would otherwise have no checks at all.
+      - name: Dispatch standard CI for the release branch
+        if: steps.commit.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.commit.outputs.branch }}
+        run: gh workflow run ci.yml --ref "$RELEASE_BRANCH"
+
+      - name: Open release pull request
+        id: pull_request
+        if: steps.commit.outcome == 'success'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_BRANCH: ${{ steps.commit.outputs.branch }}
+        run: |
+          set -euo pipefail
+          body="$(cat <<EOF
+          Moves every fragment under \`changelog.d/\` and the entries still under \`[Unreleased]\` into \`## [${VERSION}]\` in \`CHANGELOG.md\`, and deletes the fragments.
+
+          Merging this tags the merge commit \`v${VERSION}\` and publishes a GitHub Release from that section (the publish job in \`release.yml\`). Squash or merge; either way the tag lands on the commit that reaches master.
+
+          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          EOF
+          )"
+          url="$(gh pr create \
+            --base master \
+            --head "$RELEASE_BRANCH" \
+            --title "chore: release ${VERSION}" \
+            --body "$body")"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        env:
+          EXISTING_URL: ${{ steps.existing.outputs.url }}
+          CREATED_URL: ${{ steps.pull_request.outputs.url }}
+        run: |
+          {
+            printf '### Release %s\n\n' "$VERSION"
+            if [ -n "$EXISTING_URL" ]; then
+              printf 'A release pull request is already open: %s\n' "$EXISTING_URL"
+            elif [ -n "$CREATED_URL" ]; then
+              printf 'Opened %s. Merging it tags `v%s` and publishes the release.\n' "$CREATED_URL" "$VERSION"
+            else
+              printf 'No pull request was opened; see the failed step above.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    name: Tag and publish release
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # push the tag and create the release
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Decide what to tag
+        id: plan
+        shell: bash
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          rc=0
+          version="$(changelog.d/changelog.sh latest)" || rc=$?
+          if [ "$rc" -eq 4 ]; then
+            echo "CHANGELOG.md has no released version yet; nothing to tag."
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            # Already tagged: an ordinary later edit to CHANGELOG.md, or a
+            # re-run after the release step failed. The release step below
+            # still runs, so a re-run finishes what the first attempt started.
+            echo "$tag already exists; not tagging again."
+            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Tag only the push that introduced the heading. A later push that
+          # edits CHANGELOG.md for any other reason must not move the release
+          # onto whatever commit it happened to land on. The first push to a
+          # branch reports an all-zero "before"; compare with the parent then.
+          base="$BEFORE"
+          if ! git rev-parse --verify -q "${base}^{commit}" >/dev/null; then
+            base="${GITHUB_SHA}^"
+          fi
+          # grep without -q, so it reads all of git show's output. -q exits at
+          # the first match, git show dies of SIGPIPE writing the rest, and
+          # pipefail turns the pipeline into 141 - read here as "not found",
+          # which tagged whatever later commit edited CHANGELOG.md.
+          if git show "$base:CHANGELOG.md" 2>/dev/null | grep -F "## [$version]" >/dev/null; then
+            echo "::error::$tag does not exist, but [$version] was already in CHANGELOG.md before this push; tag the release commit by hand"
+            exit 1
+          fi
+          echo "create_tag=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag
+        if: steps.plan.outputs.create_tag == 'true'
+        shell: bash
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git tag -a "$TAG" -m "$VERSION" "$GITHUB_SHA"
+          # A tag pushed with GITHUB_TOKEN starts no other workflow; anything
+          # that should build on a release belongs in this job.
+          git push origin "refs/tags/$TAG"
+
+      - name: Create GitHub Release
+        if: steps.plan.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          notes="$RUNNER_TEMP/notes.md"
+          changelog.d/changelog.sh notes "$VERSION" > "$notes"
+
+          # GitHub caps a release body at 125,000 characters, and the first
+          # release carries every entry written before versions existed -
+          # over 200 KB. Past the cap the body links to the section at the
+          # tag instead, and the full notes are attached so nothing is lost.
+          # Bytes are counted, which is never fewer than characters.
+          if [ "$(wc -c < "$notes")" -le 120000 ]; then
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$notes"
+          else
+            asset="$RUNNER_TEMP/CHANGELOG-$VERSION.md"
+            cp "$notes" "$asset"
+            items="$(grep -c '^- ' "$notes" || true)"
+            short="$RUNNER_TEMP/short.md"
+            {
+              printf 'This release has %s changelog entries, more than a release description can hold.\n\n' "$items"
+              printf 'Read them in [CHANGELOG.md at %s](%s/%s/blob/%s/CHANGELOG.md), or download the attached `CHANGELOG-%s.md`.\n' \
+                "$TAG" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$TAG" "$VERSION"
+            } > "$short"
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$short" "$asset"
+          fi
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          CREATE_TAG: ${{ steps.plan.outputs.create_tag }}
+        run: |
+          {
+            printf '### Release publish\n\n'
+            if [ -z "$TAG" ]; then
+              printf 'No released version in CHANGELOG.md; nothing tagged.\n'
+            elif [ "$CREATE_TAG" = 'true' ]; then
+              printf 'Tagged `%s` at `%s`.\n' "$TAG" "$GITHUB_SHA"
+            else
+              printf '`%s` already existed; checked the release only.\n' "$TAG"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

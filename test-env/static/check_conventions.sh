@@ -546,7 +546,10 @@ dry_run_args() {
     git/gacp.sh)                             printf '%s\n' "--dry-run -m dry-run probe" ;;
     git/clone-repos.sh)                      printf '%s\n' "--dry-run git/repos.txt.example" ;;
     git/set_git_profile.sh)                  printf '%s\n' "--dry-run --name Probe --email probe@example.invalid" ;;
-    changelog.d/changelog.sh)                printf '%s\n' "release 0.0.0-probe --dry-run" ;;
+    # A real MAJOR.MINOR.PATCH, since release refuses anything else with exit 3,
+    # and one far above any release so "not newer than the latest" never
+    # stops the probe short of the dry run.
+    changelog.d/changelog.sh)                printf '%s\n' "release 999999.0.0 --dry-run" ;;
     *)                                       printf '%s\n' "--dry-run" ;;
   esac
 }
