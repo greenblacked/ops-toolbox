@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/greenblacked/ops-toolbox/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/greenblacked/ops-toolbox/actions/workflows/ci.yml?query=branch%3Amaster)
 [![RouterOS CHR](https://github.com/greenblacked/ops-toolbox/actions/workflows/chr.yml/badge.svg)](https://github.com/greenblacked/ops-toolbox/actions/workflows/chr.yml)
+[![Security](https://github.com/greenblacked/ops-toolbox/actions/workflows/security.yml/badge.svg?branch=master)](https://github.com/greenblacked/ops-toolbox/actions/workflows/security.yml?query=branch%3Amaster)
 [![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 [![ShellCheck](https://img.shields.io/badge/shellcheck-clean-brightgreen.svg)](CONTRIBUTING.md#bash-scripts)
 [![PSScriptAnalyzer](https://img.shields.io/badge/PSScriptAnalyzer-clean-brightgreen.svg)](PSScriptAnalyzerSettings.psd1)
@@ -703,7 +704,8 @@ QEMU: it runs nightly, on demand, and on the pull requests that touch
 `mikrotik/`, so a red badge there does not necessarily mean a red pull request.
 
 The two lint badges are static labels for the gates CI enforces, not live
-results — the CI badge is the one that reflects the current state of `master`.
+results — the CI and Security badges are the ones that reflect the current
+state of `master`.
 
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs every suite except
 the RouterOS one — through `run-tests.sh`, so the aggregator is exercised too
@@ -818,7 +820,10 @@ anything. The runner image is pinned too (`ubuntu-24.04`, not `ubuntu-latest`).
 Actions are pinned to commit SHAs with the tag in a trailing comment, because a
 tag is mutable and a SHA is what actually runs.
 [`.github/dependabot.yml`](.github/dependabot.yml) re-resolves them monthly in a
-single grouped pull request, so the pins stay current instead of rotting.
+single grouped pull request, so the pins stay current instead of rotting. Every
+ecosystem it watches also sets a seven-day cooldown, so a release is not
+adopted the same day it is published — the window in which a compromised
+release is most likely to still look clean.
 
 PSScriptAnalyzer — by far the slowest install, and the only one that has to come
 from PowerShell Gallery — is cached against its pinned version.
@@ -856,6 +861,34 @@ branch and opens a pull request. It never commits directly to `master`; an
 existing open bump pull request is reused rather than duplicated. Because bot
 events do not recursively start workflows, the version workflow explicitly
 dispatches the standard CI workflow for the bump branch before opening its PR.
+
+### Security scanning
+
+[`.github/workflows/security.yml`](.github/workflows/security.yml) covers what
+`Lint` does not: it checks whether the repository is *safe*, not whether a
+script or a workflow is well formed. It runs on every pull request, on pushes
+to `master`, weekly, and on demand:
+
+| Job | What it checks | Gates? |
+| --- | --- | --- |
+| `Repository secret scan` | Trivy over the working tree | yes |
+| `Git history secret scan` | gitleaks over full history (`fetch-depth: 0`) | no — reported |
+| `Workflow security audit` | zizmor against every workflow | no — reported |
+| `CodeQL` | `actions` and `python`; the only other supported languages here (Go, Ruby) exist solely as `test-env/` fixtures and are left out | no — reported |
+| `OpenSSF Scorecard` | branch protection, permissions, pinned dependencies | `master` only |
+
+Only the working-tree secret scan gates: a credential committed here is always
+fixable from this repository, so there is no reason to let one merge. A
+history finding cannot be fixed by a commit — it needs a rewrite plus
+rotation — so failing the build on one would block every unrelated pull
+request until that happens; it is reported to the Security tab instead and
+treated as an incident. The workflow-audit and CodeQL jobs overlap on
+purpose: zizmor is a rules engine over the workflow YAML, CodeQL follows
+untrusted input through an expression into a sink, and the two catch
+different shapes of the same injection class.
+
+Every SARIF-producing tool uploads to GitHub's code scanning, so findings land
+in one place regardless of which job produced them.
 
 ## Agent skills
 

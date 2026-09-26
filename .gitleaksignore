@@ -1,0 +1,18 @@
+# Fingerprints suppressed from the git-history-secrets job's gitleaks scan
+# (.github/workflows/security.yml). Reported, not gated, but every run still
+# lists these two on every scheduled run because the "secret" is permanently
+# in history, so without this file readers learn to skim past the job.
+#
+# Both are the `private-key` rule matching the PEM header text
+# "-----BEGIN OPENSSH PRIVATE KEY-----" / "-----BEGIN RSA PRIVATE KEY-----"
+# used as fixture data in test-env/python/tests/test_git_ssh_doctor.py
+# (commit 0dd07bdf04f89232a72902dbbadecad3830cfa50). The bytes after the
+# header are the literal string "x" — not real key material, never were —
+# used to exercise git_ssh_doctor.discover_keys()'s file-format detection.
+# Confirmed by reading the file before adding these lines.
+
+# test_finds_keys_at_any_depth: fixture OpenSSH key header, body is "x"
+0dd07bdf04f89232a72902dbbadecad3830cfa50:test-env/python/tests/test_git_ssh_doctor.py:private-key:153
+
+# test_loose_permissions_are_flagged: fixture OpenSSH key header, body is "x"
+0dd07bdf04f89232a72902dbbadecad3830cfa50:test-env/python/tests/test_git_ssh_doctor.py:private-key:169

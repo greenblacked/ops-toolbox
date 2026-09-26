@@ -8,12 +8,33 @@ version: 2
 #
 # Pull requests land on master, which is where CI's `pull_request` trigger
 # points, so they get the full gate like any other change.
+#
+# Every entry below also sets the same `cooldown`: do not adopt a release the
+# day it is published. The window between a release going out and a
+# compromise in it being discovered is exactly the window a same-day bump
+# would land in — npm's and PyPI's supply-chain incidents were both found
+# within days, not hours, of the poisoned version going out. A short wait
+# costs nothing here: nobody is depending on same-day upgrades of a GitHub
+# Action or a base image, and the monthly interval already means a real
+# security release is never more than `default-days` behind schedule rather
+# than adopted immediately.
+#
+# `default-days` is the only cooldown key set for these two ecosystems.
+# Dependabot's schema documents `semver-*-days` as applying only to package
+# managers that support SemVer, so on github-actions and docker — where a
+# version is a ref or a tag, not a SemVer string — those keys have nothing
+# to apply to and are expected to be ignored rather than acted on. That is
+# a documented scope limit, not a validation error; nobody has confirmed
+# the exact server-side behaviour of setting them here anyway, so this file
+# just does not set them.
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: ci
     groups:
@@ -43,6 +64,8 @@ updates:
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
+    cooldown:
+      default-days: 7
     commit-message:
       prefix: chore
     groups:

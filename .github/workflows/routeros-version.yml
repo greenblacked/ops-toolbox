@@ -32,10 +32,13 @@ on:
         default: false
         type: boolean
 
-permissions:
-  actions: write
-  contents: write
-  pull-requests: write
+# Nothing here needs a repository-wide grant: the only job commits a branch,
+# opens a pull request and dispatches CI, and holding those three scopes at
+# the top level would hand them to any job added to this workflow later with
+# no review able to tell. Least privilege lives on the job instead, so a
+# future job here starts with nothing rather than inheriting three write
+# scopes it never asked for.
+permissions: {}
 
 concurrency:
   group: routeros-version-check
@@ -46,6 +49,13 @@ jobs:
     name: Check, test, and propose RouterOS bump
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    permissions:
+      # Dispatches the CHR suite against the bump branch.
+      actions: write
+      # Commits the version bump to a branch this job creates.
+      contents: write
+      # Opens (and updates) the pull request that proposes the bump.
+      pull-requests: write
     env:
       RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
       REQUESTED_VERSION: ${{ inputs.version || '' }}
