@@ -48,8 +48,8 @@ pinned CHR version and its digest are bumped.
 - [Installation](#installation)
 - [Script details](#script-details)
 - [Security action surface](#security-action-surface)
-- [Docker integration tests (CHR 7.24.4)](#docker-integration-tests-chr-7242)
-- [RouterOS 7.24.4 notes & gotchas](#routeros-7242-notes--gotchas)
+- [Docker integration tests (CHR 7.24.4)](#docker-integration-tests-chr-7244)
+- [RouterOS 7.24.4 notes & gotchas](#routeros-7244-notes--gotchas)
 
 ## Requirements
 
@@ -448,7 +448,7 @@ Completion is detected by polling `status` until it reaches a verdict, up to
 about 65 seconds (`:global UPDATE_CHECK_MAX_WAIT` in five-second units, for a
 slow or contended link), rather than waiting a fixed interval or waiting for
 `latest-version` to fill. That field cannot be the signal: measured on the
-7.24.4 CHR, issuing the check clears it at once, a good check refills it in
+7.24.2 CHR, issuing the check clears it at once, a good check refills it in
 about a second, and a failed check leaves it empty, so a loop waiting for it to
 fill hangs on a failure and a read after a fixed wait cannot tell mid-check
 from failed. (This section used to say RouterOS kept the previous check's
@@ -473,7 +473,7 @@ one line of the script's own logging reaching the log. `update_check.lua`
 declares six such names. This script declares none: its only globals are
 `OpsToolboxPaused` and `RouterBackupPassword`.
 
-The suite runs it end to end on the 7.24.4 CHR: once on the stable channel,
+The suite runs it end to end on the 7.24.2 CHR: once on the stable channel,
 where it sends the heartbeat, and once with the channel patched to
 `development`, where a newer build is usually offered and it writes the
 `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair and sends the full message.
@@ -487,7 +487,7 @@ the `.rsc.in_progress` temporary.
 The rest keeps the plain design where it was sound — a message on **every**
 run rather than only on a transition, no `:global` knobs — and drops it where
 the CHR showed it lying. The original waited a fixed 15 seconds and compared
-`installed` with `latest`. Measured on a 7.24.4 CHR: issuing the check clears
+`installed` with `latest`. Measured on a 7.24.2 CHR: issuing the check clears
 `latest-version` at once, a good check refills it in about a second, and a
 failed check leaves it empty with an `ERROR:` line in `status` — with the
 update hosts unreachable, "ERROR: IPv4: server is not responding / IPv6: no
@@ -603,7 +603,7 @@ The verdict is `status`, never `installed != latest`, for the reason under
 strings differ while `latest` is *older*, and a script that installs on a
 difference test downgrades the router. A check that errors or never
 completes installs nothing and sends a message saying so rather than reading
-as "nothing to install" — on 7.24.4 a failed check leaves `latest-version`
+as "nothing to install" — on 7.24.2 a failed check leaves `latest-version`
 empty, and an empty field compared with `installed` would read as "differs,
 nothing offered", the silence that looks like up to date and means the
 opposite. The channel is read and reported, never written.

@@ -339,16 +339,43 @@ def _replace_documented_version(
 ) -> None:
     # Anchored, not a bare str.replace. An unanchored replace of a two-part pin
     # such as "7.23" also rewrites the "7.23.3" occurrences around it, turning
-    # them into "7.24.3". The lookahead stops the match at a version boundary
-    # while still allowing "7.23." followed by nothing version-like.
-    pattern = re.compile(rf"(?<![0-9.]){re.escape(current)}(?![0-9.])")
+    # them into "7.24.3". A trailing sentence period is allowed, while
+    # a period followed by another version component is not.
+    pattern = re.compile(rf"(?<![0-9.]){re.escape(current)}(?![0-9]|\.[0-9])")
+    # Results measured on a particular CHR remain evidence for that release.
+    # The bump has tested the new pin, but it has not re-run the experiments
+    # described in those paragraphs (notably failed upgrade checks).
+    historical = re.compile(
+        rf"(?i)\bmeasured on (?:a|the)?\s*{re.escape(current)}\b"
+        rf"|\bthe suite runs it end to end on the {re.escape(current)}\b"
+        rf"|\bon {re.escape(current)} a failed check\b"
+    )
+    compact_current = current.replace(".", "")
+    compact_target = target.replace(".", "")
+    toc_link = re.compile(r"\[(?P<label>[^\]\n]+)\]\(#(?P<anchor>[^)\n]+)\)")
     updates = []
     for relative in files:
         path = repo_root / relative
         text = path.read_text(encoding="utf-8")
         if not pattern.search(text):
             raise ReleaseError(f"expected {current!r} in {relative}; refusing partial bump")
-        updates.append((path, pattern.sub(target, text)))
+        protected = [match.span() for match in historical.finditer(text)]
+
+        def replace_version(match: re.Match[str]) -> str:
+            return current if any(start <= match.start() < end for start, end in protected) else target
+
+        rewritten = pattern.sub(replace_version, text)
+
+        # GitHub removes punctuation in heading slugs: 7.24.2 -> 7242.
+        # Update a fragment only when its link label was bumped, leaving
+        # unrelated numeric anchors (and older historical links) alone.
+        def replace_toc_link(match: re.Match[str]) -> str:
+            label, anchor = match.group("label", "anchor")
+            if target not in label or compact_current not in anchor:
+                return match.group()
+            return f"[{label}](#{anchor.replace(compact_current, compact_target)})"
+
+        updates.append((path, toc_link.sub(replace_toc_link, rewritten)))
     for path, text in updates:
         path.write_text(text, encoding="utf-8")
 
