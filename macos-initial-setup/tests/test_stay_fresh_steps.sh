@@ -216,14 +216,20 @@ run_sf() {
 # itself remains terminal-less, as required by its launchd checks.
 run_sf_tty() {
   local d="$1"; shift
-  HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" \
+  HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" COLUMNS=512 \
     CALLS="$d/calls" NO_COLOR=1 STAY_FRESH_NOTIFY=none \
     python3 - "$SF" "$@" <<'PY'
 import os
 import sys
+import fcntl
+import struct
+import termios
 
 pid, master = os.forkpty()
 if pid == 0:
+    # The default 80-column PTY inserts line breaks inside long messages;
+    # assertions on a complete diagnostic then fail even when it is printed.
+    fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 512, 0, 0))
     os.execv("/bin/bash", ["bash", sys.argv[1], *sys.argv[2:]])
 while True:
     try:
@@ -1282,12 +1288,6 @@ assert_eq "failed sudo preflight leaves formulae runnable" "0" "$rc"
 assert_eq "failed preflight attempts sudo once" "1" "$(grep -c '^sudo -v$' "$d/calls")"
 assert_called "failed preflight still upgrades formulae" "$d/calls" "brew upgrade --formula"
 assert_not_called "failed preflight does not upgrade casks" "$d/calls" "brew upgrade --cask"
-if [[ "$out" != *"sudo preflight did not succeed"* ]]; then
-  printf '[diag] failed-preflight output is %s bytes; relevant lines:\n' "${#out}" >&2
-  printf '%s\n' "$out" | grep -E 'sudo|cask|brew upgrade|preflight|error' >&2 || true
-  printf '[diag] recorded sudo calls:\n' >&2
-  grep 'sudo' "$d/calls" >&2 || true
-fi
 assert_contains "failed preflight explains the cask skip" "$out" "sudo preflight did not succeed"
 rm -rf "$d"
 
