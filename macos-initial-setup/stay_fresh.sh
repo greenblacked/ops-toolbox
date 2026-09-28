@@ -2432,6 +2432,7 @@ fi
 # 5. sudo availability
 SUDO_AVAILABLE=0
 NEEDS_SUDO=0
+BREW_CASKS_SUDO_PREFLIGHT=0
 (( SKIP_MEMORY      == 0 )) && NEEDS_SUDO=1
 (( SKIP_DNS         == 0 )) && NEEDS_SUDO=1
 (( SKIP_SYSCACHES   == 0 )) && NEEDS_SUDO=1
@@ -2442,6 +2443,7 @@ NEEDS_SUDO=0
 # A headless run never starts casks and must not request a password for them.
 if (( SKIP_BREW == 0 && BREW_CASKS && USE_SUDO )) && { (( DRY_RUN )) || have_tty; }; then
   NEEDS_SUDO=1
+  BREW_CASKS_SUDO_PREFLIGHT=1
 fi
 
 # Snapshots are listed as the user; only deleting them is root's.
@@ -4523,6 +4525,8 @@ step_brew() {
     info "skipping cask upgrades by default; pass --brew-casks to include them"
   elif (( USE_SUDO == 0 )); then
     info "skipping cask upgrades: --no-sudo was passed"
+  elif (( DRY_RUN == 0 && BREW_CASKS_SUDO_PREFLIGHT && SUDO_AVAILABLE == 0 )); then
+    info "skipping cask upgrades: sudo preflight did not succeed"
   elif (( DRY_RUN == 0 )) && ! have_tty; then
     info "skipping cask upgrades: no controlling terminal for possible password prompts"
   elif (( DRY_RUN == 0 && SUDO_AVAILABLE == 0 )); then
