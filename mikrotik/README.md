@@ -2,7 +2,7 @@
 
 [Ops Toolbox](../README.md) / **MikroTik RouterOS scripts**
 
-A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.2**)
+A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.4**)
 for backups, WiFi rotation, monitoring and Telegram notifications. All scripts
 live in `/system script` on the router and are run either manually or from
 `/system scheduler`.
@@ -48,14 +48,14 @@ pinned CHR version and its digest are bumped.
 - [Installation](#installation)
 - [Script details](#script-details)
 - [Security action surface](#security-action-surface)
-- [Docker integration tests (CHR 7.24.2)](#docker-integration-tests-chr-7242)
-- [RouterOS 7.24.2 notes & gotchas](#routeros-7242-notes--gotchas)
+- [Docker integration tests (CHR 7.24.4)](#docker-integration-tests-chr-7244)
+- [RouterOS 7.24.4 notes & gotchas](#routeros-7244-notes--gotchas)
 
 ## Requirements
 
 | Requirement | Notes |
 | --- | --- |
-| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.2**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
+| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.4**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
 | **Script policy** `read,write,policy,test,sensitive,ftp` | The policy set every `/system script` entry here is created with. `policy` is what lets a script read another script's source, `sensitive` covers the secrets, `ftp` covers `/tool fetch`. |
 | **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TgBotToken` / `TgChatId` globals rather than editing each script. (RouterOS 7.24 refuses an underscored `:global`, so the older `TG_BOT_TOKEN` / `TG_CHAT_ID` spelling is read by nothing — see the migration note below.) |
 | **Bash 3.2 or newer** | Host-side only, for `print_schedulers.sh` and `pull_router_backups.sh`. The `/bin/bash` that ships on macOS is enough. |
@@ -132,7 +132,7 @@ their values, so no token crosses the wire.
 > upgrade happens to appear, which reads as covered and is not.
 >
 > The remaining fourteen have no replacement yet; the integration suite marks
-> each of them `xfail` on the 7.24.2 CHR rather than pretending they pass.
+> each of them `xfail` on the 7.24.4 CHR rather than pretending they pass.
 
 | File                                         | Purpose                                                                 |
 | -------------------------------------------- | ----------------------------------------------------------------------- |
@@ -926,9 +926,9 @@ To re-baseline the firewall drift detector after an intentional change,
 either run `/system script run firewall_drift_baseline` from the terminal or
 schedule it manually before applying the change.
 
-## Docker integration tests (CHR 7.24.2)
+## Docker integration tests (CHR 7.24.4)
 
-To validate all scripts on **real RouterOS 7.24.2** inside Docker (QEMU + official CHR
+To validate all scripts on **real RouterOS 7.24.4** inside Docker (QEMU + official CHR
 image), use [`tests/README.md`](tests/README.md) and from the repo root run
 `./mikrotik/tests/run.sh`. This is the closest practical “emulation” of your router:
 MikroTik does not ship a standalone script interpreter, so the tests talk to a live
@@ -945,7 +945,7 @@ The macOS setup scripts in this repo have a **separate** lightweight Docker
 harness (syntax + ShellCheck only, no Homebrew) — see
 [`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development-docker-checks).
 
-## RouterOS 7.24.2 notes & gotchas
+## RouterOS 7.24.4 notes & gotchas
 
 - RouterOS scripts use `/` for paths and `:` for built-in commands
   (`:local`, `:if`, `:foreach`). `:interface ...` is **not** valid syntax —

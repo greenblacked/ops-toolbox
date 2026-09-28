@@ -131,12 +131,51 @@ class RouterOSVersionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             doc = root / "doc.md"
-            doc.write_text("CHR 7.23, CHR 7.23.3, build 17.23\n", encoding="utf-8")
+            doc.write_text("CHR 7.23, CHR 7.23.3, build 17.23. Tested on 7.23.\n", encoding="utf-8")
             routeros_version._replace_documented_version(
                 root, "7.23", "7.24", files=[Path("doc.md")]
             )
             self.assertEqual(doc.read_text(encoding="utf-8").strip(),
-                             "CHR 7.24, CHR 7.23.3, build 17.23")
+                             "CHR 7.24, CHR 7.23.3, build 17.23. Tested on 7.24.")
+
+    def test_bump_updates_heading_fragments_but_preserves_measured_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            doc = root / "doc.md"
+            doc.write_text(
+                "- [Docker integration tests (CHR 7.24.2)](#docker-integration-tests-chr-7242)\n"
+                "- [RouterOS 7.24.2 notes & gotchas](#routeros-7242-notes--gotchas)\n"
+                "## Docker integration tests (CHR 7.24.2)\n"
+                "## RouterOS 7.24.2 notes & gotchas\n"
+                "Verified against RouterOS 7.24.2.\n"
+                "That field cannot be the signal: measured on the\n"
+                "7.24.2 CHR, issuing the check clears it.\n"
+                "Measured on a 7.24.2 CHR: issuing the check clears it.\n"
+                "The suite runs it end to end on the 7.24.2 CHR.\n"
+                "A failed check leaves `latest-version` empty — on 7.24.2 a failed check.\n"
+                "The first hand run, on a 7.24.1 CHR, found an update.\n",
+                encoding="utf-8",
+            )
+            routeros_version._replace_documented_version(
+                root, "7.24.2", "7.24.4", files=[Path("doc.md")]
+            )
+            expected = doc.read_text(encoding="utf-8")
+            self.assertIn(
+                "[Docker integration tests (CHR 7.24.4)](#docker-integration-tests-chr-7244)",
+                expected,
+            )
+            self.assertIn(
+                "[RouterOS 7.24.4 notes & gotchas](#routeros-7244-notes--gotchas)",
+                expected,
+            )
+            self.assertIn("## Docker integration tests (CHR 7.24.4)", expected)
+            self.assertIn("## RouterOS 7.24.4 notes & gotchas", expected)
+            self.assertIn("Verified against RouterOS 7.24.4.", expected)
+            self.assertIn("measured on the\n7.24.2 CHR", expected)
+            self.assertIn("Measured on a 7.24.2 CHR", expected)
+            self.assertIn("The suite runs it end to end on the 7.24.2 CHR", expected)
+            self.assertIn("on 7.24.2 a failed check", expected)
+            self.assertIn("on a 7.24.1 CHR", expected)
 
     def test_validate_sha256(self) -> None:
         self.assertEqual(routeros_version.validate_sha256("A" * 64), "a" * 64)
