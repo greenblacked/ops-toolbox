@@ -1,6 +1,6 @@
 # Test runner image — Python + RouterOS-api + pytest.
 # Building this in a container removes any host-Python dependency (pyenv, pip, etc).
-FROM python:3.12-alpine3.21
+FROM python:3.14-alpine3.21
 
 RUN apk add --no-cache bash
 
