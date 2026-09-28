@@ -127,7 +127,7 @@ code looks the way it does.
 | **Live line** | While a step runs, `stay_fresh.sh` rewrites one line on the terminal with the step, its position and how long it has been going, so a slow step is distinguishable from a hung one. It is drawn on a terminal only — written to `/dev/tty`, never into the log or a pipe — and appears only once a step passes a second, so the quick ones do not flicker. `--no-progress`, or `STAY_FRESH_PROGRESS=0`, turns it off. |
 | **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh`, `status.sh` and `v1_stay_fresh.sh` write none. |
 | **No hidden writes** | Shell rc files are modified only when you pass `--setup-shell`. Every such block is bracketed by markers so it can be found and removed. |
-| **Opt-out, not opt-in** | `stay_fresh.sh` has a skip flag for every step. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
+| **Explicit changes** | `stay_fresh.sh` has a skip flag for every step and requires `--brew-casks` for cask upgrades. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
 | **Sudo only when needed** | Scripts request `sudo` once at startup, keep it warm for the run, and release it on exit. Running as `root` is refused. |
 
 ## Requirements
@@ -548,8 +548,9 @@ In the order they run:
     `--prune-orphan-agents` unloads and removes the user-level ones. The
     system-level ones are never touched, and the `sudo` command to remove
     them is printed. Binary plists are inspected through `plutil` on macOS.
-15. Update and upgrade Homebrew formulae, then casks once when an interactive
-    sudo-capable run permits them; run `cleanup -s` and `autoremove`. A stale
+15. Update and upgrade Homebrew formulae, then run `cleanup -s` and
+    `autoremove`. Cask upgrades require an explicit interactive `--brew-casks`
+    run; the default only lists outdated casks. A stale
     git lock in the Homebrew repository makes `brew update` print "Already
     up-to-date" and exit 0 with the taps untouched, so the upgrade runs on
     the previous index; a lock older than five minutes with no git process
@@ -635,7 +636,8 @@ last ten rows.
 ./stay_fresh.sh                   # interactive, full run
 ./stay_fresh.sh --dry-run         # preview the plan
 ./stay_fresh.sh --yes --verbose   # non-interactive; stream output live
-./stay_fresh.sh --brew-greedy     # also upgrade :latest / auto_updates casks
+./stay_fresh.sh --brew-casks      # upgrade casks interactively; installers may request a password
+./stay_fresh.sh --brew-casks --brew-greedy # include :latest / auto_updates casks
 ./stay_fresh.sh --no-sudo         # skip every step that requires sudo
 ./stay_fresh.sh --purge-memory     # explicit cold-cache troubleshooting
 ./stay_fresh.sh --only brew,versions
@@ -779,6 +781,7 @@ reported on the terminal with the reason and never fails the run.
 | `--fail-on-warn` | Exit `1` when a step records a real warning; scheduled runs enable this. |
 | `--step-timeout N` | Stop any one command inside a step after `N` seconds and count the step as warned (default `1800`; `0` disables; env `STAY_FRESH_STEP_TIMEOUT`). Interactive commands such as cask upgrades are never limited. |
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, system diagnostics, and Homebrew cask upgrades. |
+| `--brew-casks` | Opt into cask upgrades in an interactive run. Sudo is checked once before the steps, including with `--only brew`; individual installers can still request a password. Skipped with `--no-sudo`, failed sudo preflight, or without a controlling terminal. |
 | `--only STEP1,STEP2` | Run only named stable step ids; use `--list-steps`. Cannot be mixed with individual `--skip-*` flags. |
 | `--quick` | Same as `--only user-caches,app-caches,ai-caches,workspace-storage,trash,user-logs,dev-caches`: everything a user can clear without sudo, Homebrew or the network. Never uses sudo, not even a credential another shell left warm. Cannot be mixed with `--only` or `--skip-*`. |
 | `--reports` | Same as `--only versions,os-updates,snapshots,downloads,launch-agents,disk-report`: the read-only subset. Cannot be mixed with `--only`, `--quick`, `--skip-*`, `--thin-snapshots`, `--prune-downloads-days` or `--prune-orphan-agents`. |
@@ -786,7 +789,7 @@ reported on the terminal with the reason and never fails the run.
 | `--history` | Print the last ten rows of `~/Library/Logs/stay_fresh/history.tsv` and exit. |
 | `--notify MODE` | `none`, `macos`, `telegram`, `slack`, `both` (`macos,telegram`), `auto` (default; env `STAY_FRESH_NOTIFY`), or a comma-separated list of channels. Sent after the summary of a real run, never under `--dry-run`. |
 | `--notify-when WHEN` | `always` (default; env `STAY_FRESH_NOTIFY_WHEN`), `warn` (only a WARN or FAILED run) or `fail` (only a FAILED run). A withheld notification is said on the terminal. |
-| `--brew-greedy` | Upgrade casks that self-update (`auto_updates true`, `:latest`). |
+| `--brew-greedy` | With `--brew-casks`, also upgrade self-updating casks (`auto_updates true`, `:latest`). Alone, it changes the outdated-cask report but does not start upgrades. |
 | `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-krew --skip-gcloud --skip-versions`. |
 | `--purge-memory` | Opt into `sudo purge` for cold-cache troubleshooting. |
 | `--skip-memory` | Keep purge disabled; compatibility flag matching the default. |
@@ -1338,7 +1341,7 @@ With `--profile full`, everything else — user caches, safe per-app caches,
 workspace storage, trash, Homebrew formulae, Docker, Xcode extras, and dev-tool
 caches — runs normally. Cask upgrades are skipped because they may invoke an
 interactive sudo prompt. Run `stay_fresh.sh` by hand for root-owned steps and
-casks.
+casks. To upgrade casks manually, use `stay_fresh.sh --brew-casks` in a terminal.
 
 Every scheduled run passes `--fail-on-warn`, so incomplete cleanup or a failed
 update produces a non-zero launchd exit status instead of appearing healthy.
@@ -1624,8 +1627,8 @@ Homebrew / `pyenv` / `goenv` commands.
   - Skips pruning entirely when the active Docker context points to a non-local
     daemon (non-`unix://…` host), or when the endpoint cannot be resolved, to
     avoid cleaning a remote engine by mistake.
-- Upgrades Homebrew formulae and casks (greedy upgrade only with
-  `--brew-greedy`).
+- Upgrades Homebrew formulae. Casks require an interactive `--brew-casks` run;
+  add `--brew-greedy` to include self-updating casks.
 - Updates Helm plugins and `gcloud` components when those tools are
   installed.
 - Refuses to run when `HOME` is unset, empty or not a directory (exit `2`):

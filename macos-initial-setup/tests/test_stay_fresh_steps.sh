@@ -151,8 +151,8 @@ new_env() {
   # sudo is absent from the image. Authenticate trivially and otherwise exec the
   # command, so the sudo-gated steps run their real work against scratch paths.
   mkbin "$d/bin/sudo" 'case "${1:-}" in' \
-                      '  -v) exit 0 ;;' \
-                      '  -n) shift; case "${1:-}" in true) exit 0 ;; esac ;;' \
+                      '  -v) echo "sudo -v" >> "$CALLS"; exit 0 ;;' \
+                      '  -n) shift; case "${1:-}" in true) exit 0 ;; -v) echo "sudo -n -v" >> "$CALLS"; exit 0 ;; esac ;;' \
                       'esac' \
                       'echo "sudo $*" >> "$CALLS"' \
                       'exec "$@"'
@@ -209,6 +209,40 @@ run_sf() {
     GRADLE_USER_HOME="${GRADLE_USER_HOME:-}" \
     PIP_CACHE_DIR="${PIP_CACHE_DIR:-}" \
     "$SF" "$@" </dev/null 2>&1
+}
+
+# A real controlling terminal is needed to prove cask opt-in and sudo
+# preflight. Python's forkpty gives the child a terminal while this suite
+# itself remains terminal-less, as required by its launchd checks.
+run_sf_tty() {
+  local d="$1"; shift
+  HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" COLUMNS=512 \
+    CALLS="$d/calls" NO_COLOR=1 STAY_FRESH_NOTIFY=none \
+    python3 - "$SF" "$@" <<'PY'
+import os
+import sys
+import fcntl
+import struct
+import termios
+
+pid, master = os.forkpty()
+if pid == 0:
+    # The default 80-column PTY inserts line breaks inside long messages;
+    # assertions on a complete diagnostic then fail even when it is printed.
+    fcntl.ioctl(1, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 512, 0, 0))
+    os.execv("/bin/bash", ["bash", sys.argv[1], *sys.argv[2:]])
+while True:
+    try:
+        chunk = os.read(master, 65536)
+    except OSError:
+        break
+    if not chunk:
+        break
+    os.write(1, chunk)
+os.close(master)
+_, status = os.waitpid(pid, 0)
+sys.exit(os.waitstatus_to_exitcode(status))
+PY
 }
 
 # /dev/urandom, not /dev/zero: several assertions below compare rendered `du`
@@ -1174,15 +1208,87 @@ assert_called "brew step upgrades formulae" "$d/calls" "brew upgrade --formula"
 assert_called "brew step runs a scrub cleanup" "$d/calls" "brew cleanup -s"
 assert_called "brew step autoremoves"  "$d/calls" "brew autoremove"
 assert_called "brew step disables nested auto-update" "$d/calls" "env HOMEBREW_NO_AUTO_UPDATE=1"
-assert_contains "cask upgrades are skipped without a terminal" "$out" \
-  "skipping cask upgrades"
+assert_contains "default skips cask upgrades explicitly" "$out" \
+  "skipping cask upgrades by default; pass --brew-casks"
 assert_not_called "no cask upgrade is attempted without a terminal" "$d/calls" \
   "brew upgrade --cask"
+assert_not_called "default brew-only run does not request sudo" "$d/calls" "sudo -v"
 assert_contains "a terminal-less brew run stays clean" "$out" "warn steps:  0"
 assert_not_called "no --yes is passed to a brew whose upgrade help lacks it" "$d/calls" \
   "brew upgrade --formula --yes"
 assert_contains "the missing --yes flag is reported" "$out" \
   "has no --yes flag"
+rm -rf "$d"
+
+# Even an explicitly selected cask upgrade must remain safe in a scheduled
+# run without a controlling terminal. --brew-greedy alone does not opt in.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+  'exit 0'
+out="$(run_sf "$d" --yes --only brew --brew-casks)"; rc=$?
+assert_eq "headless explicit cask run succeeds safely" "0" "$rc"
+assert_not_called "headless opt-in does not request sudo" "$d/calls" "sudo -v"
+assert_not_called "headless opt-in does not run cask upgrade" "$d/calls" "brew upgrade --cask"
+assert_contains "headless opt-in explains the skip" "$out" "no controlling terminal"
+: > "$d/calls"
+out="$(run_sf "$d" --yes --only brew --brew-greedy)"; rc=$?
+assert_eq "greedy alone succeeds without starting casks" "0" "$rc"
+assert_not_called "greedy alone does not request sudo" "$d/calls" "sudo -v"
+assert_not_called "greedy alone does not upgrade casks" "$d/calls" "brew upgrade --cask"
+assert_called "greedy alone still reports self-updating casks" "$d/calls" "brew outdated --cask --quiet --greedy"
+rm -rf "$d"
+
+# On a terminal, opt-in requests sudo once before the Homebrew step. Even
+# with --only brew there are no other privileged steps to trigger preflight.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+  'exit 0'
+out="$(run_sf_tty "$d" --yes --only brew)"; rc=$?
+assert_eq "terminal brew default succeeds" "0" "$rc"
+assert_not_called "terminal default does not request sudo" "$d/calls" "sudo -v"
+assert_not_called "terminal default does not upgrade casks" "$d/calls" "brew upgrade --cask"
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only brew --brew-casks)"; rc=$?
+assert_eq "terminal plain cask opt-in succeeds" "0" "$rc"
+assert_called "plain opt-in upgrades casks" "$d/calls" "brew upgrade --cask"
+assert_not_called "plain opt-in does not add greedy" "$d/calls" "brew upgrade --cask --greedy"
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only brew --brew-casks --brew-greedy)"; rc=$?
+assert_eq "terminal cask opt-in succeeds" "0" "$rc"
+assert_eq "terminal opt-in preflights sudo exactly once" "1" "$(grep -c '^sudo -v$' "$d/calls")"
+assert_called "terminal opt-in checks sudo without another prompt before casks" "$d/calls" "sudo -n -v"
+assert_called "terminal opt-in upgrades casks including greedy" "$d/calls" "brew upgrade --cask --greedy"
+assert_called "terminal opt-in still upgrades formulae" "$d/calls" "brew upgrade --formula"
+assert_called "terminal opt-in still cleans up" "$d/calls" "brew cleanup -s"
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --no-sudo --only brew --brew-casks)"; rc=$?
+assert_eq "no-sudo opt-in still runs formulae" "0" "$rc"
+assert_not_called "no-sudo opt-in does not preflight" "$d/calls" "sudo -v"
+assert_not_called "no-sudo opt-in does not run casks" "$d/calls" "brew upgrade --cask"
+assert_contains "no-sudo opt-in explains the skip" "$out" "--no-sudo was passed"
+mkbin "$d/bin/sudo" 'case "${1:-} ${2:-}" in' \
+  '  "-v ") echo "sudo -v" >> "$CALLS"; exit 0 ;;' \
+  '  "-n -v") echo "sudo -n -v" >> "$CALLS"; exit 1 ;;' \
+  '  "-n true") exit 0 ;;' \
+  'esac; exit 1'
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only brew --brew-casks)"; rc=$?
+assert_eq "expired credential leaves formulae runnable" "0" "$rc"
+assert_eq "expired credential has one interactive preflight" "1" "$(grep -c '^sudo -v$' "$d/calls")"
+assert_called "expired credential gets a noninteractive check" "$d/calls" "sudo -n -v"
+assert_not_called "expired credential does not start cask upgrade" "$d/calls" "brew upgrade --cask"
+assert_contains "expired credential explains the skip" "$out" "sudo credential expired"
+mkbin "$d/bin/sudo" 'case "${1:-}" in -v) echo "sudo -v" >> "$CALLS"; exit 1 ;; esac' \
+  'exit 1'
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only brew --brew-casks)"; rc=$?
+assert_eq "failed sudo preflight leaves formulae runnable" "0" "$rc"
+assert_eq "failed preflight attempts sudo once" "1" "$(grep -c '^sudo -v$' "$d/calls")"
+assert_called "failed preflight still upgrades formulae" "$d/calls" "brew upgrade --formula"
+assert_not_called "failed preflight does not upgrade casks" "$d/calls" "brew upgrade --cask"
+assert_contains "failed preflight explains the cask skip" "$out" "sudo preflight did not succeed"
 rm -rf "$d"
 
 # A current Homebrew documents --yes on brew upgrade; --yes runs pass it through
