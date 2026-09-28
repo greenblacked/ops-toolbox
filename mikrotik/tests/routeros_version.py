@@ -359,10 +359,14 @@ def _replace_documented_version(
         text = path.read_text(encoding="utf-8")
         if not pattern.search(text):
             raise ReleaseError(f"expected {current!r} in {relative}; refusing partial bump")
-        protected = [match.span() for match in historical.finditer(text)]
+        protected = tuple(match.span() for match in historical.finditer(text))
 
-        def replace_version(match: re.Match[str]) -> str:
-            return current if any(start <= match.start() < end for start, end in protected) else target
+        def replace_version(
+            match: re.Match[str], protected_ranges: tuple[tuple[int, int], ...] = protected
+        ) -> str:
+            if any(start <= match.start() < end for start, end in protected_ranges):
+                return current
+            return target
 
         rewritten = pattern.sub(replace_version, text)
 
