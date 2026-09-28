@@ -2,7 +2,7 @@
 
 [Ops Toolbox](../README.md) / **MikroTik RouterOS scripts**
 
-A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.2**)
+A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.4**)
 for backups, WiFi rotation, monitoring and Telegram notifications. All scripts
 live in `/system script` on the router and are run either manually or from
 `/system scheduler`.
@@ -48,14 +48,14 @@ pinned CHR version and its digest are bumped.
 - [Installation](#installation)
 - [Script details](#script-details)
 - [Security action surface](#security-action-surface)
-- [Docker integration tests (CHR 7.24.2)](#docker-integration-tests-chr-7242)
-- [RouterOS 7.24.2 notes & gotchas](#routeros-7242-notes--gotchas)
+- [Docker integration tests (CHR 7.24.4)](#docker-integration-tests-chr-7242)
+- [RouterOS 7.24.4 notes & gotchas](#routeros-7242-notes--gotchas)
 
 ## Requirements
 
 | Requirement | Notes |
 | --- | --- |
-| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.2**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
+| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.4**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
 | **Script policy** `read,write,policy,test,sensitive,ftp` | The policy set every `/system script` entry here is created with. `policy` is what lets a script read another script's source, `sensitive` covers the secrets, `ftp` covers `/tool fetch`. |
 | **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TgBotToken` / `TgChatId` globals rather than editing each script. (RouterOS 7.24 refuses an underscored `:global`, so the older `TG_BOT_TOKEN` / `TG_CHAT_ID` spelling is read by nothing — see the migration note below.) |
 | **Bash 3.2 or newer** | Host-side only, for `print_schedulers.sh` and `pull_router_backups.sh`. The `/bin/bash` that ships on macOS is enough. |
@@ -132,7 +132,7 @@ their values, so no token crosses the wire.
 > upgrade happens to appear, which reads as covered and is not.
 >
 > The remaining fourteen have no replacement yet; the integration suite marks
-> each of them `xfail` on the 7.24.2 CHR rather than pretending they pass.
+> each of them `xfail` on the 7.24.4 CHR rather than pretending they pass.
 
 | File                                         | Purpose                                                                 |
 | -------------------------------------------- | ----------------------------------------------------------------------- |
@@ -448,7 +448,7 @@ Completion is detected by polling `status` until it reaches a verdict, up to
 about 65 seconds (`:global UPDATE_CHECK_MAX_WAIT` in five-second units, for a
 slow or contended link), rather than waiting a fixed interval or waiting for
 `latest-version` to fill. That field cannot be the signal: measured on the
-7.24.2 CHR, issuing the check clears it at once, a good check refills it in
+7.24.4 CHR, issuing the check clears it at once, a good check refills it in
 about a second, and a failed check leaves it empty, so a loop waiting for it to
 fill hangs on a failure and a read after a fixed wait cannot tell mid-check
 from failed. (This section used to say RouterOS kept the previous check's
@@ -473,7 +473,7 @@ one line of the script's own logging reaching the log. `update_check.lua`
 declares six such names. This script declares none: its only globals are
 `OpsToolboxPaused` and `RouterBackupPassword`.
 
-The suite runs it end to end on the 7.24.2 CHR: once on the stable channel,
+The suite runs it end to end on the 7.24.4 CHR: once on the stable channel,
 where it sends the heartbeat, and once with the channel patched to
 `development`, where a newer build is usually offered and it writes the
 `backup-IDENTITY-DATE-VERSION-pre-upgrade` pair and sends the full message.
@@ -487,7 +487,7 @@ the `.rsc.in_progress` temporary.
 The rest keeps the plain design where it was sound — a message on **every**
 run rather than only on a transition, no `:global` knobs — and drops it where
 the CHR showed it lying. The original waited a fixed 15 seconds and compared
-`installed` with `latest`. Measured on a 7.24.2 CHR: issuing the check clears
+`installed` with `latest`. Measured on a 7.24.4 CHR: issuing the check clears
 `latest-version` at once, a good check refills it in about a second, and a
 failed check leaves it empty with an `ERROR:` line in `status` — with the
 update hosts unreachable, "ERROR: IPv4: server is not responding / IPv6: no
@@ -603,7 +603,7 @@ The verdict is `status`, never `installed != latest`, for the reason under
 strings differ while `latest` is *older*, and a script that installs on a
 difference test downgrades the router. A check that errors or never
 completes installs nothing and sends a message saying so rather than reading
-as "nothing to install" — on 7.24.2 a failed check leaves `latest-version`
+as "nothing to install" — on 7.24.4 a failed check leaves `latest-version`
 empty, and an empty field compared with `installed` would read as "differs,
 nothing offered", the silence that looks like up to date and means the
 opposite. The channel is read and reported, never written.
@@ -926,9 +926,9 @@ To re-baseline the firewall drift detector after an intentional change,
 either run `/system script run firewall_drift_baseline` from the terminal or
 schedule it manually before applying the change.
 
-## Docker integration tests (CHR 7.24.2)
+## Docker integration tests (CHR 7.24.4)
 
-To validate all scripts on **real RouterOS 7.24.2** inside Docker (QEMU + official CHR
+To validate all scripts on **real RouterOS 7.24.4** inside Docker (QEMU + official CHR
 image), use [`tests/README.md`](tests/README.md) and from the repo root run
 `./mikrotik/tests/run.sh`. This is the closest practical “emulation” of your router:
 MikroTik does not ship a standalone script interpreter, so the tests talk to a live
@@ -945,7 +945,7 @@ The macOS setup scripts in this repo have a **separate** lightweight Docker
 harness (syntax + ShellCheck only, no Homebrew) — see
 [`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development-docker-checks).
 
-## RouterOS 7.24.2 notes & gotchas
+## RouterOS 7.24.4 notes & gotchas
 
 - RouterOS scripts use `/` for paths and `:` for built-in commands
   (`:local`, `:if`, `:foreach`). `:interface ...` is **not** valid syntax —
