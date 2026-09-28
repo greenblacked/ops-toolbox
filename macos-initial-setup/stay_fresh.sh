@@ -29,7 +29,7 @@
 #     --prune-downloads-days N)
 #   - report LaunchAgents and LaunchDaemons whose program no longer exists
 #     (remove the user-level ones only with --prune-orphan-agents)
-#   - Homebrew: update, upgrade (formulae + casks), cleanup -s, autoremove
+#   - Homebrew: update, upgrade formulae, cleanup -s, autoremove; casks opt-in
 #   - refresh dev toolchains (helm plugins, krew plugins, gcloud components)
 #     installed by install_apps.sh / install_devtools.sh
 #   - report pending macOS and App Store updates (read-only; never installs)
@@ -51,7 +51,7 @@
 #                   [--skip-usercaches] [--skip-appcaches]
 #                   [--skip-aicaches]
 #                   [--skip-workspacestorage] [--skip-trash]
-#                   [--skip-brew] [--brew-greedy] [--skip-devcaches]
+#                   [--skip-brew] [--brew-casks] [--brew-greedy] [--skip-devcaches]
 #                   [--cleanup-old-gems] [--prune-build-caches] [--fail-on-warn]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-krew]
 #                   [--skip-gcloud]
@@ -439,6 +439,7 @@ BREW_SERVICES_ERROR=0
 DRY_ESTIMATE_B=0
 TRASH_PROTECTED=0
 BREW_GREEDY=0
+BREW_CASKS=0
 CLEANUP_OLD_GEMS=0
 PRUNE_BUILD_CACHES=0
 FORCE_ACTIVE_APP_CACHES=0
@@ -781,8 +782,10 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          Don't prune stale VS Code workspace storage
   --skip-trash           Don't empty ~/.Trash
   --skip-brew            Don't run Homebrew maintenance (see Notes)
-  --brew-greedy          Also upgrade casks with 'auto_updates true' / 'version :latest'
-                         (may prompt for sudo during cask postinstalls)
+  --brew-casks           Also upgrade casks (interactive; installers may prompt
+                         for a password even after sudo preflight)
+  --brew-greedy          With --brew-casks, include 'auto_updates true' /
+                         'version :latest' casks
   --skip-devcaches       Don't clean npm/yarn/pnpm/pip/uv/go/kubectl/terraform
                          caches, stale gcloud logs, or unused pre-commit repos
   --cleanup-old-gems     Uninstall old gem versions during dev-cache cleanup
@@ -919,10 +922,11 @@ ${C_BOLD}Notes:${C_RESET}
   Read-only: it names what is pending and how to install it, and never installs
   anything itself, because a macOS update can reboot the machine.
 
-  Homebrew: runs brew update; brew upgrade (formulae, then casks); brew cleanup -s;
-  brew autoremove; brew doctor only when --verbose. Casks may prompt for sudo during
-  postinstall and are skipped with --no-sudo or without a controlling terminal
-  (--brew-greedy changes which casks upgrade).
+  Homebrew: runs brew update; brew upgrade --formula; brew cleanup -s;
+  brew autoremove; brew doctor only when --verbose. Casks are listed but not
+  upgraded unless --brew-casks is explicit. Cask installers may still prompt
+  for a password after sudo preflight, so run interactively; --no-sudo,
+  unavailable sudo, and runs without a terminal skip cask upgrades.
 
 Log file: $LOG_FILE
 EOF
@@ -959,6 +963,7 @@ while (( $# > 0 )); do
     --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1; EXPLICIT_SKIP=1 ;;
     --skip-trash)      SKIP_TRASH=1; EXPLICIT_SKIP=1 ;;
     --skip-brew)       SKIP_BREW=1; EXPLICIT_SKIP=1 ;;
+    --brew-casks)      BREW_CASKS=1 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
     --skip-devcaches)  SKIP_DEVCACHES=1; EXPLICIT_SKIP=1 ;;
     --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
@@ -2432,6 +2437,12 @@ NEEDS_SUDO=0
 (( SKIP_SYSCACHES   == 0 )) && NEEDS_SUDO=1
 (( SKIP_DIAGNOSTICS == 0 )) && NEEDS_SUDO=1
 (( SKIP_SNAPSHOTS == 0 && THIN_SNAPSHOTS )) && NEEDS_SUDO=1
+# Explicit interactive cask upgrades can run an installer that needs sudo.
+# Authenticate once before entering the brew step, including --only brew.
+# A headless run never starts casks and must not request a password for them.
+if (( SKIP_BREW == 0 && BREW_CASKS && USE_SUDO )) && { (( DRY_RUN )) || have_tty; }; then
+  NEEDS_SUDO=1
+fi
 
 # Snapshots are listed as the user; only deleting them is root's.
 if (( THIN_SNAPSHOTS && SKIP_SNAPSHOTS == 0 )) && ! command -v tmutil >/dev/null 2>&1; then
@@ -2503,7 +2514,7 @@ if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
     fi
   fi
 elif (( DRY_RUN && NEEDS_SUDO )); then
-  info "(dry-run) would request sudo for memory/DNS/system-caches/diagnostics/snapshot steps"
+  info "(dry-run) would request sudo for selected root-owned steps or opted-in cask upgrades"
 fi
 
 SKIP_DIAGNOSTICS_SYS="${SKIP_DIAGNOSTICS_SYS:-0}"
@@ -4395,13 +4406,6 @@ step_brew() {
     info "an Intel Homebrew is also installed at /usr/local/Homebrew; this run maintains only $(brew --prefix 2>/dev/null). Remove it if nothing under Rosetta still needs it"
   fi
 
-  # Some casks (Docker, Karabiner, VirtualBox, ...) invoke sudo during their
-  # postinstall. Re-prime the sudo timestamp right before we start so brew's
-  # internal `sudo -n` calls find a valid credential.
-  if (( USE_SUDO )) && (( SUDO_AVAILABLE )) && (( DRY_RUN == 0 )); then
-    sudo -v 2>/dev/null || true
-  fi
-
   # Avoid brew kicking off an extra `brew update` under each subcommand —
   # we call it explicitly below.
   export HOMEBREW_NO_AUTO_UPDATE=1
@@ -4512,10 +4516,19 @@ step_brew() {
     fi
   fi
 
-  # A cask postinstall can invoke sudo even though Homebrew itself is running as
-  # the user. Never attempt that from --no-sudo or without a controlling TTY.
-  if (( USE_SUDO == 0 )) || { (( DRY_RUN == 0 )) && ! have_tty; }; then
-    info "skipping cask upgrades: they may require an interactive sudo prompt"
+  # Homebrew cask postinstalls can invoke sudo even after preflight; only an
+  # explicit, interactive run may start them. A failed preflight must not
+  # leave brew free to request credentials later in the step.
+  if (( BREW_CASKS == 0 )); then
+    info "skipping cask upgrades by default; pass --brew-casks to include them"
+  elif (( USE_SUDO == 0 )); then
+    info "skipping cask upgrades: --no-sudo was passed"
+  elif (( DRY_RUN == 0 )) && ! have_tty; then
+    info "skipping cask upgrades: no controlling terminal for possible password prompts"
+  elif (( DRY_RUN == 0 && SUDO_AVAILABLE == 0 )); then
+    info "skipping cask upgrades: sudo preflight did not succeed"
+  elif (( DRY_RUN == 0 )) && ! sudo -n -v >/dev/null 2>&1; then
+    info "skipping cask upgrades: sudo credential expired during Homebrew maintenance"
   elif (( BREW_GREEDY )); then
     run_cmd_tty "brew upgrade --cask --greedy" brew upgrade --cask --greedy \
       ${brew_yes[@]+"${brew_yes[@]}"} || warn "'brew upgrade --cask --greedy' had issues"
