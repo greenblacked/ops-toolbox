@@ -1282,6 +1282,12 @@ assert_eq "failed sudo preflight leaves formulae runnable" "0" "$rc"
 assert_eq "failed preflight attempts sudo once" "1" "$(grep -c '^sudo -v$' "$d/calls")"
 assert_called "failed preflight still upgrades formulae" "$d/calls" "brew upgrade --formula"
 assert_not_called "failed preflight does not upgrade casks" "$d/calls" "brew upgrade --cask"
+if [[ "$out" != *"sudo preflight did not succeed"* ]]; then
+  printf '[diag] failed-preflight output is %s bytes; relevant lines:\n' "${#out}" >&2
+  printf '%s\n' "$out" | grep -E 'sudo|cask|brew upgrade|preflight|error' >&2 || true
+  printf '[diag] recorded sudo calls:\n' >&2
+  grep 'sudo' "$d/calls" >&2 || true
+fi
 assert_contains "failed preflight explains the cask skip" "$out" "sudo preflight did not succeed"
 rm -rf "$d"
 
