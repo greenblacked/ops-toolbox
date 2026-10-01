@@ -172,6 +172,78 @@ class DiffModeTestCase(unittest.TestCase):
             self.assertEqual(rc, 1)
 
 
+class PrivateAtomicOutputTestCase(unittest.TestCase):
+    def run_export(self, directory, **patches):
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(
+                export_config, "fetch_export", return_value=(0, "new config\n", "")
+            ))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(contextlib.redirect_stderr(io.StringIO()))
+            for name, effect in patches.items():
+                stack.enter_context(mock.patch(name, side_effect=effect))
+            return export_config.main(["--host", "router", "--out", directory])
+
+    def test_output_is_private_with_permissive_umask_and_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "router.rsc")
+            old_umask = os.umask(0)
+            try:
+                for mask in (0o000, 0o022, 0o077):
+                    os.umask(mask)
+                    for existing in (False, True):
+                        if os.path.exists(dest):
+                            os.unlink(dest)
+                        if existing:
+                            with open(dest, "w") as fh:
+                                # Even unchanged exports must harden an old file.
+                                fh.write("new config\n")
+                            os.chmod(dest, 0o644)
+                        self.assertEqual(self.run_export(tmp), 0)
+                        self.assertEqual(os.stat(dest).st_mode & 0o777, 0o600)
+            finally:
+                os.umask(old_umask)
+
+    def test_symlink_is_refused_without_reading_or_overwriting_target(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "target")
+            with open(target, "w") as fh:
+                fh.write("old config\n")
+            os.symlink(target, os.path.join(tmp, "router.rsc"))
+            self.assertEqual(self.run_export(tmp), 1)
+            with open(target) as fh:
+                self.assertEqual(fh.read(), "old config\n")
+
+    def test_dangling_symlink_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "missing")
+            dest = os.path.join(tmp, "router.rsc")
+            os.symlink(target, dest)
+            self.assertEqual(self.run_export(tmp), 1)
+            self.assertTrue(os.path.islink(dest))
+            self.assertFalse(os.path.exists(target))
+
+    def test_failed_publish_preserves_old_artifact_and_removes_staging_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "router.rsc")
+            with open(dest, "w") as fh:
+                fh.write("old config\n")
+            self.assertEqual(self.run_export(tmp, **{"os.replace": OSError("disk failure")}), 1)
+            with open(dest) as fh:
+                self.assertEqual(fh.read(), "old config\n")
+            self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+    def test_failed_write_preserves_old_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "router.rsc")
+            with open(dest, "w") as fh:
+                fh.write("old config\n")
+            self.assertEqual(self.run_export(tmp, **{"os.fsync": OSError("disk full")}), 1)
+            with open(dest) as fh:
+                self.assertEqual(fh.read(), "old config\n")
+            self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+
 class DefaultOutputTestCase(unittest.TestCase):
     """Where an export lands when --out is not given.
 
