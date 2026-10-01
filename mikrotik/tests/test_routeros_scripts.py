@@ -1450,7 +1450,10 @@ def test_rogue_dns_find_result_types(api: Any, script_resource: Any) -> None:
         _unset_global(api, probe)
 
 
-@pytest.mark.parametrize("failure", ["enumeration", "protocol", "router-addresses"])
+@pytest.mark.parametrize("failure", [
+    "enumeration", "protocol", "protocol-nil", "protocol-empty",
+    "destination-nil", "source-nil", "router-addresses",
+])
 def test_rogue_dns_incomplete_scan_preserves_alert_state(
     api: Any, script_resource: Any, failure: str
 ) -> None:
@@ -1473,12 +1476,35 @@ def test_rogue_dns_incomplete_scan_preserves_alert_state(
             ':error "injected enumeration failure"; '
             ':foreach cid in=[/ip firewall connection find] do={',
         )
-    elif failure == "protocol":
-        # Force an invalid connection id; production get must surface the error.
+    elif failure in (
+        "protocol", "protocol-nil", "protocol-empty", "destination-nil", "source-nil"
+    ):
+        # :toarray guarantees one iteration; singleton braces need a separate
+        # runtime probe rather than an assumption about their representation.
         source = source.replace(
             ':foreach cid in=[/ip firewall connection find] do={',
-            ':foreach cid in={"*DEADBEEF"} do={',
+            ':foreach cid in=[:toarray "*DEADBEEF"] do={ '
+            ':global RdnsTestReadCount; :set RdnsTestReadCount ($RdnsTestReadCount + 1);',
         )
+        if failure == "protocol":
+            source = source.replace(
+                ':local proto [/ip firewall connection get $cid protocol];',
+                ':local proto; :global RdnsTestGetProbe; :set RdnsTestGetProbe "entered"; '
+                ':do { :set proto [/ip firewall connection get $cid protocol]; '
+                ':set RdnsTestGetProbe ("type=" . [:typeof $proto] . '
+                '"|value=" . [:tostr $proto]); } on-error={ '
+                ':set RdnsTestGetProbe "raised"; :error "invalid connection read failed"; };',
+            )
+        else:
+            protocol = {"protocol-nil": "[:nothing]", "protocol-empty": '""'}
+            source = source.replace(
+                '[/ip firewall connection get $cid protocol]', protocol.get(failure, '"udp"')
+            )
+            if failure in ("destination-nil", "source-nil"):
+                source = source.replace(
+                    '[/ip firewall connection get $cid dst-address]',
+                    '[:nothing]' if failure == "destination-nil" else '"9.9.9.9:53"',
+                ).replace('[/ip firewall connection get $cid src-address]', '[:nothing]')
     else:
         source = source.replace(
             ':foreach aid in=[/ip address find] do={',
@@ -1492,7 +1518,8 @@ def test_rogue_dns_incomplete_scan_preserves_alert_state(
         ':global RdnsSendError "pending delivery failure"; '
         ':global RdnsScanError ""; '
         f':global RdnsSendScript "{helper}"; '
-        ':global RdnsTestAttempts 0; '
+        ':global RdnsTestAttempts 0; :global RdnsTestReadCount 0; '
+        ':global RdnsTestGetProbe ""; '
     )
     try:
         _add_script(
@@ -1511,7 +1538,23 @@ def test_rogue_dns_incomplete_scan_preserves_alert_state(
             policy=ROGUE_DNS_POLICY,
         )
         assert _read_global(api, "OpsToolboxPaused") == "false"
-        assert _read_global(api, "RdnsScanError")
+        if failure in (
+            "protocol", "protocol-nil", "protocol-empty", "destination-nil", "source-nil"
+        ):
+            assert _read_global(api, "RdnsTestReadCount") == "1"
+        if failure == "protocol":
+            getter_result = _read_global(api, "RdnsTestGetProbe")
+            assert getter_result == "raised" or getter_result.startswith("type="), getter_result
+            warnings.warn(
+                "invalid connection getter: " + _read_global(api, "RdnsTestGetProbe"),
+                stacklevel=2,
+            )
+        assert _read_global(api, "RdnsScanError"), {
+            "read_count": _read_global(api, "RdnsTestReadCount"),
+            "getter": _read_global(api, "RdnsTestGetProbe"),
+            "delivered": _read_global(api, "RdnsDeliveredSig"),
+            "send_error": _read_global(api, "RdnsSendError"),
+        }
         assert _read_global(api, "RdnsDeliveredSig") == "old acknowledged alert"
         assert _read_global(api, "RdnsSendError") == "pending delivery failure"
         assert _read_global(api, "RdnsTestAttempts") == "0"
@@ -1538,6 +1581,7 @@ def test_rogue_dns_incomplete_scan_preserves_alert_state(
             "DnsExpected", "RdnsDeliveredSig", "RdnsSendError", "RdnsScanError",
             "RdnsSendScript", "RdnsTestAttempts", "DnsAllowedResolvers",
             "RdnsTestComplete", "OpsToolboxPaused",
+            "RdnsTestReadCount", "RdnsTestGetProbe",
         ):
             _unset_global(api, variable)
 
@@ -1632,3 +1676,45 @@ def test_rogue_dns_client_allowlists_and_pair_deduplication(
             _remove_by_name(script_resource, name)
         for name in names:
             _unset_global(api, name)
+
+
+
+@pytest.mark.parametrize("iterable", ['{"*DEADBEEF"}', '[:toarray "*DEADBEEF"]'])
+def test_rogue_dns_invalid_connection_get_probe(
+    api: Any, script_resource: Any, iterable: str
+) -> None:
+    """Report iterable shape, actual loop entry, and missing-id get behavior."""
+    name = "pu_ut_rogue_get_probe"
+    probe = "RdnsTestGetProbe"
+    complete = "RdnsTestGetProbeComplete"
+    _unset_global(api, complete)
+    source = (
+        f':local entries {iterable}; '
+        ':global RdnsTestGetProbe ("iterable=" . [:typeof $entries]); '
+        ':local count 0; :foreach cid in=$entries do={ '
+        ':set count ($count + 1); :do { '
+        ':local value [/ip firewall connection get $cid protocol]; '
+        ':set RdnsTestGetProbe ($RdnsTestGetProbe . "|type=" . [:typeof $value] . '
+        '"|value=" . [:tostr $value]); } on-error={ '
+        ':set RdnsTestGetProbe ($RdnsTestGetProbe . "|raised=true"); }; }; '
+        ':set RdnsTestGetProbe ($RdnsTestGetProbe . "|iterations=" . $count); '
+        ':global RdnsTestGetProbeComplete true;'
+    )
+    try:
+        _add_script(script_resource, name, source, policy=ROGUE_DNS_POLICY)
+        _run_via_scheduler(
+            api, name, lambda: _read_global(api, complete) == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+        result = _read_global(api, probe)
+        warnings.warn("invalid-id diagnostic: " + result, stacklevel=2)
+        if iterable.startswith("[:toarray"):
+            assert "iterable=array" in result, result
+            assert result.endswith("|iterations=1"), result
+            assert "|raised=true" in result or "|type=" in result, result
+        else:
+            assert "iterable=" in result and "|iterations=" in result, result
+    finally:
+        _remove_by_name(script_resource, name)
+        _unset_global(api, probe)
+        _unset_global(api, complete)

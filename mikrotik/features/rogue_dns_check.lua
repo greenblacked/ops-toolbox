@@ -104,8 +104,10 @@
 :do {
     :foreach cid in=[/ip firewall connection find] do={
         :local proto [/ip firewall connection get $cid protocol];
+        :if ([:len [:tostr $proto]] = 0) do={ :error "connection protocol unavailable"; }
         :if (($proto = "udp") or ($proto = "tcp")) do={
             :local dst [/ip firewall connection get $cid dst-address];
+            :if ([:len [:tostr $dst]] = 0) do={ :error "connection destination unavailable"; }
             :local colon [:find $dst ":"];
             :local dstPort "";
             :local dstIp $dst;
@@ -117,6 +119,7 @@
                 :if ([:typeof [:find $allowed (";" . $dstIp . ";")]] != "num") do={
                     :if ([:typeof [:find $routerIps (";" . $dstIp . ";")]] != "num") do={
                         :local src [/ip firewall connection get $cid src-address];
+                        :if ([:len [:tostr $src]] = 0) do={ :error "connection source unavailable"; }
                         :local sColon [:find $src ":"];
                         :local srcIp $src;
                         :if ([:typeof $sColon] = "num") do={ :set srcIp [:pick $src 0 $sColon]; }
