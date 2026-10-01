@@ -32,15 +32,18 @@ class NativeStayFreshTests(unittest.TestCase):
     def test_log_cleanup_preserves_open_and_recent_files(self):
         root = self.home / "Library/Logs"
         root.mkdir(parents=True)
-        for name in ("old.log", "open.log", "recent.log"):
+        for name in ("old.log", "open.log", "recent.log", "open\nlog", "open-é.log"):
             path = root / name
             path.write_text("temporary test log")
             if name != "recent.log":
                 os.utime(path, (time.time() - 40 * 86400,) * 2)
-        with (root / "open.log").open():
+        with (root / "open.log").open(), (root / "open\nlog").open(), \
+                (root / "open-é.log").open():
             self.run_script("--only", "user-logs", "--yes", "--fail-on-warn")
         self.assertFalse((root / "old.log").exists())
         self.assertTrue((root / "open.log").exists())
+        self.assertTrue((root / "open\nlog").exists())
+        self.assertTrue((root / "open-é.log").exists())
         self.assertTrue((root / "recent.log").exists())
 
     def test_messenger_preview_and_cleanup_preserve_state(self):

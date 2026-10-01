@@ -86,8 +86,9 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
-| `lib/npx_cache.py` | Classifier for old npx cache entries; used by the optional deep cleanup. Keeps entries when activity or cache ownership is uncertain. |
+| `lib/npx_cache.py` | Classifier for old npx cache entries; used by deep cleanup and the age-limited presets. Keeps entries when activity or cache ownership is uncertain. |
 | `lib/system_logs.py` | Guarded cleanup of selected rotated system logs older than 30 days. Called by the diagnostics step only when requested. |
+| `lib/user_logs.py` | Guarded cleanup of old user logs. Keeps open files and filenames whose `lsof` spelling cannot be matched safely. |
 | `zsh_aliases.zsh` | Optional interactive-shell aliases and helper functions: git, docker, kubernetes (with server-side dry-run and completion for `k`), terraform, helm, aws profile switching, ansible, and a `retry` helper with exponential backoff. `find` and `grep` are deliberately never shadowed by `fd`/`rg` - the flags differ, and a command copied from a runbook has to work as written. |
 | `tests/` | Docker-based **static** checks (ShellCheck, `bash -n`, CLI smoke tests). See [Development: Docker checks](#development-docker-checks). |
 

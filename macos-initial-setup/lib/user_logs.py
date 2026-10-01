@@ -20,6 +20,14 @@ class Unsafe(Exception):
     """The target or its activity cannot be checked."""
 
 
+def lsof_path_safe(path):
+    """Keep names whose lsof spelling may differ from the filesystem name."""
+    # lsof escapes nonprintable characters (and can escape non-ASCII under a
+    # different locale). Comparing that spelling to an original name could
+    # miss an open file, so only unambiguous names may be deleted.
+    return all(32 <= ord(char) <= 126 and char != "\\" for char in path)
+
+
 def secure_dir(home, path):
     if os.path.commonpath((home, path)) != home:
         raise Unsafe("directory outside HOME")
@@ -85,7 +93,7 @@ def clean(home, apply=False, now=None, probe=None, verbose=False, keep_days=30, 
     result = dict(eligible=0, eligible_bytes=0, removed=0, freed_bytes=0,
                   kept_open=0, kept_changed=0, errors=[], paths=[], candidates=[])
     if (not home or not os.path.isabs(home) or home == "/"
-            or os.path.normpath(home) != home):
+            or os.path.normpath(home) != home or not lsof_path_safe(home)):
         result["errors"].append("invalid HOME")
         return result
     root = os.path.join(home, "Library", "Logs")
@@ -101,6 +109,8 @@ def clean(home, apply=False, now=None, probe=None, verbose=False, keep_days=30, 
             candidates = []
             for name in sorted(os.listdir(fd)):
                 if path == root and name in ("DiagnosticReports", "stay_fresh"):
+                    continue
+                if not lsof_path_safe(name):
                     continue
                 meta = os.stat(name, dir_fd=fd, follow_symlinks=False)
                 if stat.S_ISDIR(meta.st_mode):

@@ -146,6 +146,23 @@ class UserLogsTests(unittest.TestCase):
         self.assertEqual(result["kept_open"], 1)
         self.assertEqual(result["freed_bytes"], 0)
 
+    def test_lsof_escaped_names_never_delete_open_logs(self):
+        # lsof writes a literal backslash-n for a newline in a filename. A
+        # string comparison against the original name would miss the open fd.
+        unsafe = [self.make("open\nlog", 40), self.make("open\\nlog", 40),
+                  self.make("caf\u00e9.log", 40)]
+        idle = self.make("idle.log", 40)
+        output = "p%s\nf4\nn%s\nf5\nn%s\n" % (
+            os.getpid(), self.root, str(unsafe[0]).replace("\n", "\\n"))
+        with unsafe[0].open("rb"), patch.object(user_logs.subprocess, "run",
+                return_value=subprocess.CompletedProcess([], 0, output, "")):
+            result = user_logs.clean(str(self.home), True, self.now)
+        self.assertEqual(result["errors"], [])
+        self.assertFalse(self.old.exists())
+        self.assertFalse(idle.exists())
+        for path in unsafe:
+            self.assertTrue(path.exists(), str(path))
+
     def test_refreshed_file_is_kept(self):
         def probe(_):
             self.old.write_text("new log contents")
