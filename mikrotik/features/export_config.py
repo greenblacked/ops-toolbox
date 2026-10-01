@@ -39,8 +39,10 @@ import argparse
 import difflib
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # The package root, not this file's folder. The history is an operator's, not
@@ -135,6 +137,22 @@ def git(args, cwd):
     )
 
 
+def write_private_export(dest, content):
+    """Publish a complete 0600 file without truncating the previous generation."""
+    fd, temporary = tempfile.mkstemp(prefix=".export-", dir=os.path.dirname(dest))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            os.fchmod(fh.fileno(), 0o600)
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        # Replacing a name never follows a symlink created after the read.
+        os.replace(temporary, dest)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class Usage3Parser(argparse.ArgumentParser):
     """An ArgumentParser that exits 3 on a usage error, the way the rest of the
     tree does.
@@ -225,15 +243,24 @@ def main(argv=None):
     dest = os.path.join(out_dir, name)
 
     previous = None
-    if os.path.exists(dest):
-        try:
-            with open(dest, encoding="utf-8") as fh:
-                previous = fh.read()
-        except OSError as exc:
-            bad("could not read existing %s: %s" % (dest, exc))
-            return 1
+    previous_mode = None
+    try:
+        # O_NOFOLLOW also rejects dangling symlinks; fstat rejects devices and
+        # directories rather than reading them as an export.
+        fd = os.open(dest, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "r", encoding="utf-8") as fh:
+            metadata = os.fstat(fh.fileno())
+            if not stat.S_ISREG(metadata.st_mode):
+                raise OSError("existing destination is not a regular file")
+            previous_mode = stat.S_IMODE(metadata.st_mode)
+            previous = fh.read()
+    except FileNotFoundError:
+        pass
+    except (OSError, UnicodeError) as exc:
+        bad("could not read existing %s: %s" % (dest, exc))
+        return 1
 
-    if previous == content:
+    if previous == content and (args.diff or previous_mode == 0o600):
         ok("no change: %s" % dest)
         return 0
 
@@ -256,8 +283,7 @@ def main(argv=None):
 
     try:
         os.makedirs(out_dir, exist_ok=True)
-        with open(dest, "w", encoding="utf-8") as fh:
-            fh.write(content)
+        write_private_export(dest, content)
     except OSError as exc:
         bad("could not write %s: %s" % (dest, exc))
         return 1

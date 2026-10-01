@@ -40,7 +40,10 @@ EOF
 #!/usr/bin/env bash
 dest="\${@: -1}"
 if [ "$pulls" = "yes" ]; then printf 'backup\n' >"\$dest/backup-1.backup"; fi
-[ -n "$scp_msg" ] && printf '%s\n' "$scp_msg" >&2
+msg="$scp_msg"
+remote="\${@: -2:1}"
+if [[ "\$remote" == *.rsc ]]; then msg="\${msg//.backup/.rsc}"; fi
+[ -n "\$msg" ] && printf '%s\n' "\$msg" >&2
 exit $scp_rc
 EOF
   chmod +x "$STUB_DIR/bin/ssh" "$STUB_DIR/bin/scp"
@@ -72,6 +75,41 @@ run_case "backups pulled"              0 0   0 ""                               
 # found" and turned a missing scp binary back into a cheerful success.
 run_case "unrecognised scp failure"    1 0   1 "scp: some new message nobody predicted"   no
 run_case "scp missing from PATH"       1 0   127 "bash: scp: command not found"            no
+
+# Each extension has its own result; failed transfers may leave partial files.
+run_mixed_case() {
+  local label="$1" backup_rc="$2" backup_msg="$3" rsc_rc="$4" rsc_msg="$5" expected="$6"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$STUB_DIR/bin/ssh"
+  cat >"$STUB_DIR/bin/scp" <<EOF
+#!/usr/bin/env bash
+dest="\${@: -1}"
+remote="\${@: -2:1}"
+if [[ "\$remote" == *.backup ]]; then
+  printf 'new backup\n' >"\$dest/backup-old.backup"
+  printf '%s\n' '$backup_msg' >&2
+  exit $backup_rc
+fi
+printf 'new export\n' >"\$dest/backup-old.rsc"
+printf '%s\n' '$rsc_msg' >&2
+exit $rsc_rc
+EOF
+  chmod +x "$STUB_DIR/bin/ssh" "$STUB_DIR/bin/scp"
+  printf 'old backup\n' >"$DEST/backup-old.backup"
+  printf 'old export\n' >"$DEST/backup-old.rsc"
+  PATH="$STUB_DIR/bin:$PATH" "$SCRIPT" admin@router "$DEST" >/dev/null 2>&1
+  local rc=$?
+  if [[ "$rc" == "$expected" ]]; then ok "$label -> $rc"; else err "$label: expected $expected, got $rc"; fi
+  if (( backup_rc == 0 )) && [[ "$(cat "$DEST/backup-old.backup")" != "new backup" ]]; then err "$label did not publish successful backup"; fi
+  if (( rsc_rc == 0 )) && [[ "$(cat "$DEST/backup-old.rsc")" != "new export" ]]; then err "$label did not publish successful export"; fi
+  if (( backup_rc != 0 )) && [[ "$(cat "$DEST/backup-old.backup")" != "old backup" ]]; then err "$label overwrote good backup with partial transfer"; fi
+  if (( rsc_rc != 0 )) && [[ "$(cat "$DEST/backup-old.rsc")" != "old export" ]]; then err "$label overwrote good export with partial transfer"; fi
+}
+run_mixed_case "backup succeeds export fails" 0 "" 1 "Permission denied" 1
+run_mixed_case "backup fails export succeeds" 1 "Permission denied" 0 "" 1
+run_mixed_case "missing backup cannot mask export failure" 1 "scp: backup-*.backup: No such file or directory" 1 "Permission denied" 1
+run_mixed_case "mixed missing and real error" 1 $'scp: backup-*.backup: No such file or directory\nPermission denied' 1 "scp: backup-*.rsc: No such file or directory" 1
+run_mixed_case "nontransfer status with missing text" 127 "scp: backup-*.backup: No such file or directory" 1 "scp: backup-*.rsc: No such file or directory" 1
+run_mixed_case "success plus absent extension" 0 "" 1 "scp: backup-*.rsc: No such file or directory" 0
 
 # Argument contract, checked here too so it cannot drift from the exit codes.
 check_rc() {
