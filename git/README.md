@@ -298,23 +298,71 @@ then wins. Quote patterns so the current shell does not expand them as files.
 
 ## `git_prune_gone.sh`
 
-Fetches with `--prune`, then deletes local branches whose configured upstream
-is reported as `[gone]`. This covers squash/rebase merges that are not ancestors
-of the default branch. Every real deletion prints the old SHA and a restore
-command; `--no-fetch` uses the refs already on disk.
+Fetches the selected remote with `git fetch --prune`, then considers only local
+branches whose configured upstream belongs to that remote and is `[gone]`.
+`--remote NAME` defaults to `origin`; this restriction also applies with
+`--no-fetch`, which uses the remote-tracking refs already on disk.
+
+Tips not reachable from `HEAD` are skipped unless you pass `--allow-unmerged`.
+Review them first: a deleted upstream cannot distinguish squash/rebase merges
+from abandoned work. `--force` only overrides protected names and does not grant
+consent for unmerged tips. Current branches, branches checked out in any linked
+worktree, and symbolic branch aliases are always skipped. Pruning pauses entirely
+while any worktree has an active rebase or bisect, including detached HEADs and
+branches reserved by rebase updates. The repeatable
+`--include GLOB` / `--exclude GLOB` filters match the contract of
+`git_cleanup_merged.sh`: any exclude wins.
 
 ```bash
 ./git/git_prune_gone.sh --dry-run
-./git/git_prune_gone.sh --no-fetch --include 'feature/*' --exclude '*keep*'
+./git/git_prune_gone.sh --remote origin --no-fetch --include 'feature/*' --exclude '*keep*'
+# After reviewing work that is not reachable from HEAD:
+./git/git_prune_gone.sh --no-fetch --allow-unmerged --include 'feature/reviewed'
 ```
 
-Dry-run never fetches or rewrites remote-tracking refs; it previews the current
-snapshot and names the fetch it would perform. Run `git fetch --prune` first
-when you need a fresh preview without allowing this helper to mutate refs.
+Dry-run never fetches or rewrites refs, recovery state, or lock files. It previews
+the current snapshot and names the fetch it would perform. Run
+`git fetch --prune origin` first when you need a fresh preview.
 
-It uses the same repeatable `--include` / `--exclude` contract as
-`git_cleanup_merged.sh`. Current and protected-looking branches remain guarded
-after filtering; `--force` is still required to remove a protected name.
+Before **any** deletion, all eligible tips are saved atomically as direct refs
+under `refs/ops-toolbox/prune-gone/<branch-name-hash>/<full-tip-SHA>`. A failed
+recovery transaction leaves every candidate branch intact. Each deletion prints
+the full SHA, recovery ref, and a quoted `git branch -- NAME SHA` restore command.
+These refs keep commits reachable through reflog expiry and garbage collection;
+deleting a branch removes its own reflog, so that reflog is not a recovery plan.
+Deletion compares the full saved SHA and refuses a tip that changed in the
+meantime. Branch configuration is retained for restoration (including its
+upstream), rather than removed as with `git branch -D`.
+
+Recovery storage is bounded to **1,000 refs per repository**, shared by linked
+worktrees. Saving the same branch and tip reuses its ref. The cap counts refs,
+not bytes of reachable history; even one retained tip may keep substantial
+history. A run that would exceed the cap fails before any deletion. Recovery
+refs have **no automatic expiration**, because expiring the only remaining copy
+would silently discard work. List them and explicitly delete individual refs
+only after restoring or verifying that you no longer need those commits:
+
+```bash
+git for-each-ref --format='%(refname) %(objectname)' refs/ops-toolbox/prune-gone/
+# Replace RECOVERY_REF and FULL_SHA with one reviewed row above:
+git branch -- recovered-work FULL_SHA
+git update-ref --no-deref -d RECOVERY_REF FULL_SHA
+```
+
+Removing a recovery ref may make its history eligible for garbage collection.
+Do not edit recovery refs or concurrently check out candidate branches while
+pruning. An atomic lock directory in the common Git directory serializes helper
+runs, including their capacity checks. A crashed run leaves the lock in place
+and later runs fail closed. After confirming no prune helper is running, remove
+only that empty directory and retry:
+
+```bash
+rmdir "$(git rev-parse --git-common-dir)/ops-toolbox-prune-gone.lock"
+```
+
+Exit codes: `0` success (including no eligible branches), `1` recovery, lock,
+reachability, worktree inspection, or deletion failed, `2` not a repository,
+`3` invalid usage, `4` remote not found.
 
 ---
 
