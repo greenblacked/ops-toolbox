@@ -1267,12 +1267,18 @@ def test_rogue_dns_retries_until_acknowledged_with_scheduler_policy(
         "DnsExpected", "DnsAllowedResolvers", "RdnsDeliveredSig",
         "RdnsSendError", "RdnsSendScript", "RdnsTestRuns",
         "RdnsTestAttempts", "RdnsTestMessage", "RdnsTestPlain",
+        "RdnsScanError", "RdnsTestResolved", "OpsToolboxPaused",
     )
     for name in names:
         _unset_global(api, name)
     source = script_path("rogue_dns_check.lua").read_text(encoding="utf-8")
     source = source.replace('"one.one.one.one"', f'"{host}"')
     source = source.replace(":local Enforce      true;", ":local Enforce      false;")
+    # This test isolates upstream transitions from conntrack left by other tests.
+    source = source.replace(
+        ':foreach cid in=[/ip firewall connection find] do={',
+        ':foreach cid in=[:toarray ""] do={',
+    )
     source += (
         '\n:global RdnsTestRuns; :set RdnsTestRuns ($RdnsTestRuns + 1);\n'
     )
@@ -1298,10 +1304,12 @@ def test_rogue_dns_retries_until_acknowledged_with_scheduler_policy(
     def configure(expected: str) -> None:
         _add_script(
             script_resource, setup,
+            ':global OpsToolboxPaused false; '
             f':global DnsExpected "{expected}"; '
             ':global RdnsDeliveredSig ""; :global RdnsSendError ""; '
             f':global RdnsSendScript "{helper}"; '
             ':global RdnsTestRuns 0; :global RdnsTestAttempts 0; '
+            f':global RdnsTestResolved [:tostr [:resolve "{host}"]]; '
             ':global RdnsTestReady true;',
             policy=ROGUE_DNS_POLICY,
         )
@@ -1310,6 +1318,11 @@ def test_rogue_dns_retries_until_acknowledged_with_scheduler_policy(
             api, setup, lambda: _read_global(api, "RdnsTestReady") == "true",
             policy=ROGUE_DNS_POLICY,
         )
+
+        assert _read_global(api, "OpsToolboxPaused") == "false"
+        assert _read_global(api, "DnsExpected") == expected
+        assert _read_global(api, "RdnsSendScript") == helper
+        assert _read_global(api, "RdnsTestResolved") == "203.0.113.99"
 
     try:
         dns.call("add", {"name": host.encode(), "address": b"203.0.113.99"})
@@ -1354,7 +1367,14 @@ def test_rogue_dns_retries_until_acknowledged_with_scheduler_policy(
             _remove_by_name(script_resource, helper)
         run_once()
         assert _read_global(api, "RdnsDeliveredSig") == ""
-        assert _read_global(api, "RdnsSendError")
+        assert _read_global(api, "RdnsSendError"), {
+            "expected": _read_global(api, "DnsExpected"),
+            "resolved": _read_global(api, "RdnsTestResolved"),
+            "helper": _read_global(api, "RdnsSendScript"),
+            "scan_error": _read_global(api, "RdnsScanError"),
+            "attempts": _read_global(api, "RdnsTestAttempts"),
+            "log": _recent_log_lines(api),
+        }
         # Repeat the unchanged finding with the same failed sender.
         attempts = int(_read_global(api, "RdnsTestAttempts") or "0")
         run_once()
@@ -1400,4 +1420,215 @@ def test_rogue_dns_retries_until_acknowledged_with_scheduler_policy(
         for name in (watcher, helper, setup):
             _remove_by_name(script_resource, name)
         for name in (*names, "RdnsTestReady"):
+            _unset_global(api, name)
+
+
+def test_rogue_dns_find_result_types(api: Any, script_resource: Any) -> None:
+    """Discriminate bare nil from a missing search and an index-zero match."""
+    name = "pu_ut_rogue_find_probe"
+    probe = "RdnsTestFindProbe"
+    _unset_global(api, probe)
+    source = (
+        ':global RdnsTestFindProbe ([:typeof nil] . "|" . '
+        '[:typeof [:find "abc" "z"]] . "|" . '
+        '([:find "abc" "z"] = nil) . "|" . '
+        '([:typeof [:find "abc" "z"]] != "num") . "|" . '
+        '[:typeof [:find "abc" "a"]] . "|" . [:find "abc" "a"]);'
+    )
+    try:
+        _add_script(script_resource, name, source, policy=ROGUE_DNS_POLICY)
+        _run_via_scheduler(
+            api, name, lambda: bool(_read_global(api, probe)), policy=ROGUE_DNS_POLICY
+        )
+        result = _read_global(api, probe)
+        fields = result.split("|")
+        assert fields[0] == "str", result
+        assert fields[1] in ("nil", "nothing"), result
+        assert fields[2:] == ["false", "true", "num", "0"], result
+    finally:
+        _remove_by_name(script_resource, name)
+        _unset_global(api, probe)
+
+
+@pytest.mark.parametrize("failure", ["enumeration", "protocol", "router-addresses"])
+def test_rogue_dns_incomplete_scan_preserves_alert_state(
+    api: Any, script_resource: Any, failure: str
+) -> None:
+    """A failed observation cannot clear an acknowledged or pending alert."""
+    name = "pu_ut_rogue_incomplete"
+    helper = "pu_ut_rogue_incomplete_sender"
+    runner = "pu_ut_rogue_incomplete_runner"
+    _unset_global(api, "RdnsTestComplete")
+    source = script_path("rogue_dns_check.lua").read_text(encoding="utf-8")
+    source = source.replace(':local resolved [:resolve $CtrlHost];', ':local resolved 1.1.1.1;')
+    source = source.replace(':local Enforce      true;', ':local Enforce      false;')
+    # Recovery tests a complete clean scan, independent of prior updater DNS.
+    clean_source = source.replace(
+        ':foreach cid in=[/ip firewall connection find] do={',
+        ':foreach cid in=[:toarray ""] do={',
+    )
+    if failure == "enumeration":
+        source = source.replace(
+            ':foreach cid in=[/ip firewall connection find] do={',
+            ':error "injected enumeration failure"; '
+            ':foreach cid in=[/ip firewall connection find] do={',
+        )
+    elif failure == "protocol":
+        # Force an invalid connection id; production get must surface the error.
+        source = source.replace(
+            ':foreach cid in=[/ip firewall connection find] do={',
+            ':foreach cid in={"*DEADBEEF"} do={',
+        )
+    else:
+        source = source.replace(
+            ':foreach aid in=[/ip address find] do={',
+            ':error "injected address enumeration failure"; '
+            ':foreach aid in=[/ip address find] do={',
+        )
+    seed = (
+        ':global OpsToolboxPaused false; '
+        ':global DnsExpected ";1.1.1.1;"; '
+        ':global RdnsDeliveredSig "old acknowledged alert"; '
+        ':global RdnsSendError "pending delivery failure"; '
+        ':global RdnsScanError ""; '
+        f':global RdnsSendScript "{helper}"; '
+        ':global RdnsTestAttempts 0; '
+    )
+    try:
+        _add_script(
+            script_resource, helper,
+            ':global RdnsTestAttempts; :set RdnsTestAttempts ($RdnsTestAttempts + 1); '
+            ':return true;', policy=ROGUE_DNS_POLICY,
+        )
+        _add_script(script_resource, name, source, policy=ROGUE_DNS_POLICY)
+        _add_script(
+            script_resource, runner,
+            seed + f':local Watch [:parse [/system script get "{name}" source]]; '
+            '$Watch; :global RdnsTestComplete true;', policy=ROGUE_DNS_POLICY,
+        )
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "RdnsTestComplete") == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+        assert _read_global(api, "OpsToolboxPaused") == "false"
+        assert _read_global(api, "RdnsScanError")
+        assert _read_global(api, "RdnsDeliveredSig") == "old acknowledged alert"
+        assert _read_global(api, "RdnsSendError") == "pending delivery failure"
+        assert _read_global(api, "RdnsTestAttempts") == "0"
+        # A complete clean observation must recover and clear the old alert.
+        _unset_global(api, "RdnsTestComplete")
+        _add_script(script_resource, name, clean_source, policy=ROGUE_DNS_POLICY)
+        _add_script(
+            script_resource, runner,
+            f':local Watch [:parse [/system script get "{name}" source]]; '
+            '$Watch; :global RdnsTestComplete true;', policy=ROGUE_DNS_POLICY,
+        )
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "RdnsTestComplete") == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+        assert _read_global(api, "RdnsScanError") == ""
+        assert _read_global(api, "RdnsDeliveredSig") == ""
+        assert _read_global(api, "RdnsSendError") == ""
+        assert _read_global(api, "RdnsTestAttempts") == "0"
+    finally:
+        for script in (name, helper, runner):
+            _remove_by_name(script_resource, script)
+        for variable in (
+            "DnsExpected", "RdnsDeliveredSig", "RdnsSendError", "RdnsScanError",
+            "RdnsSendScript", "RdnsTestAttempts", "DnsAllowedResolvers",
+            "RdnsTestComplete", "OpsToolboxPaused",
+        ):
+            _unset_global(api, variable)
+
+
+
+def test_rogue_dns_client_allowlists_and_pair_deduplication(
+    api: Any, script_resource: Any
+) -> None:
+    """Exercise the production classifier with deterministic connection values."""
+    watcher = "pu_ut_rogue_clients"
+    runner = "pu_ut_rogue_clients_runner"
+    helper = "pu_ut_rogue_clients_sender"
+    source = script_path("rogue_dns_check.lua").read_text(encoding="utf-8")
+    source = source.replace(':local Enforce      true;', ':local Enforce      false;')
+    source = source.replace(':local resolved [:resolve $CtrlHost];', ':local resolved 1.1.1.1;')
+    # Only replace data reads; production matching, filtering, aggregation,
+    # delivery state and formatting run unchanged. No network traffic is sent.
+    source = source.replace(
+        ':foreach aid in=[/ip address find] do={', ':foreach aid in={"self"} do={'
+    ).replace('[/ip address get $aid address]', '"192.0.2.1/24"')
+    connections = (
+        ("udp", "1.1.1.1:53", "192.0.2.10:41000"),  # approved resolver
+        ("tcp", "192.0.2.1:53", "192.0.2.20:41001"),  # router itself
+        ("udp", "9.9.9.9:53", "192.0.2.30:41002"),  # one offender
+        ("tcp", "9.9.9.9:53", "192.0.2.30:41003"),  # same IP pair
+        ("udp", "9.9.9.9:123", "192.0.2.40:41004"),  # other port
+        ("icmp", "9.9.9.9:53", "192.0.2.50:41005"),  # other protocol
+    )
+    rows = ";".join(
+        '{"protocol"="%s";"dst-address"="%s";"src-address"="%s"}' % row
+        for row in connections
+    )
+    source = source.replace(
+        ':foreach cid in=[/ip firewall connection find] do={',
+        f':local testConnections {{{rows}}}; :foreach cid in={{0;1;2;3;4;5}} do={{',
+    )
+    for field in ("protocol", "dst-address", "src-address"):
+        source = source.replace(
+            f'[/ip firewall connection get $cid {field}]',
+            f'($testConnections->$cid->"{field}")',
+        )
+    initialize = (
+        ':global OpsToolboxPaused false; :global DnsExpected ";1.1.1.1;"; '
+        ':global DnsAllowedResolvers ";1.1.1.1;"; :global RdnsDeliveredSig ""; '
+        ':global RdnsSendError ""; :global RdnsScanError ""; '
+        ':global RdnsTestAttempts 0; '
+        f':global RdnsSendScript "{helper}"; '
+    )
+    invoke = (
+        f':local Watch [:parse [/system script get "{watcher}" source]]; '
+        '$Watch; :global RdnsTestComplete true;'
+    )
+    names = (
+        "OpsToolboxPaused", "DnsExpected", "DnsAllowedResolvers", "RdnsDeliveredSig",
+        "RdnsSendError", "RdnsScanError", "RdnsTestAttempts", "RdnsSendScript",
+        "RdnsTestComplete", "RdnsTestMessage", "RdnsTestPlain",
+    )
+    for name in names:
+        _unset_global(api, name)
+    try:
+        _add_script(
+            script_resource, helper,
+            ':global RdnsTestAttempts; :global RdnsTestMessage; :global RdnsTestPlain; '
+            ':set RdnsTestAttempts ($RdnsTestAttempts + 1); '
+            ':set RdnsTestMessage $MessageText; :set RdnsTestPlain $MessagePlainText; '
+            ':return true;', policy=ROGUE_DNS_POLICY,
+        )
+        _add_script(script_resource, watcher, source, policy=ROGUE_DNS_POLICY)
+        _add_script(script_resource, runner, initialize + invoke, policy=ROGUE_DNS_POLICY)
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "RdnsTestComplete") == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+        assert _read_global(api, "RdnsScanError") == ""
+        assert _read_global(api, "RdnsSendError") == ""
+        assert _read_global(api, "RdnsTestAttempts") == "1"
+        assert _read_global(api, "RdnsDeliveredSig") == "|;192.0.2.30->9.9.9.9;"
+        assert _read_global(api, "RdnsTestPlain") == "true"
+        message = _read_global(api, "RdnsTestMessage")
+        assert "Client offenders (1):\n  192.0.2.30 -> 9.9.9.9" in message
+        for excluded in ("192.0.2.10", "192.0.2.20", "192.0.2.40", "192.0.2.50"):
+            assert excluded not in message
+        _unset_global(api, "RdnsTestComplete")
+        _add_script(script_resource, runner, invoke, policy=ROGUE_DNS_POLICY)
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "RdnsTestComplete") == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+        assert _read_global(api, "RdnsTestAttempts") == "1"
+    finally:
+        for name in (watcher, runner, helper):
+            _remove_by_name(script_resource, name)
+        for name in names:
             _unset_global(api, name)

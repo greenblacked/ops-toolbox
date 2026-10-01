@@ -110,10 +110,11 @@ their values, so no token crosses the wire.
 > `reboot-and-flush.lua`, `security_check.lua`, `stay_fresh.lua`,
 > `tg_send.lua`, `wireguard_watch.lua`.
 >
-> **Migrated source; runtime verification pending:** `rogue_dns_check.lua`.
-> Its variable names now avoid the 7.24 parser restriction. The pinned 7.24.4
-> CHR tests were blocked while building the local environment, so scheduler
-> execution and delivery behavior are not yet verified on that release.
+> **Migrated source; targeted CHR coverage:** `rogue_dns_check.lua`.
+> Its variable names avoid the 7.24 parser restriction. The pinned 7.24.4 tests
+> cover scheduler permissions, local DNS observations, and stub acknowledgements.
+> Those checks do not verify real Telegram delivery, address-list enforcement,
+> or compatibility with an operator's installed firmware.
 >
 > **Does not run on 7.24** (fine on 7.23 and earlier):
 > `bandwidth_spike.lua`, `brute_force_block.lua`, `ddns_update.lua`,
@@ -717,7 +718,10 @@ Telegram receives ordinary text through `tg_send` (override with
 `:global RdnsSendScript "tg_send_new"`). Only an explicit `true` acknowledgement
 updates `RdnsDeliveredSig`; a failed or missing helper records `RdnsSendError`
 and the unchanged alert retries next run. External values are sent literally,
-including HTML-looking text and percent escapes.
+including HTML-looking text and percent escapes. An incomplete router-address
+or client-connection scan records `RdnsScanError` and logs the failure. It
+preserves `RdnsDeliveredSig` and `RdnsSendError` rather than reporting a cleared
+alert; a later complete scan resumes normal notification handling.
 
 RouterOS 7.24 requires names without underscores. When updating this script,
 copy any custom `DNS_EXPECTED` / `DNS_ALLOWED_RESOLVERS` values into

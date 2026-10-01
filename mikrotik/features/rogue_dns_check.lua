@@ -16,6 +16,7 @@
 #                           automatically.
 #   RdnsDeliveredSig        signature Telegram acknowledged; suppresses repeats.
 #   RdnsSendError           last delivery failure.
+#   RdnsScanError           last incomplete observation; never clears state.
 #   RdnsSendScript          helper name (default tg_send).
 # Names omit underscores for RouterOS 7.24 execution compatibility.
 #
@@ -42,6 +43,8 @@
 :global DnsAllowedResolvers;
 :global RdnsDeliveredSig;
 :global RdnsSendError;
+:global RdnsScanError;
+:set RdnsScanError "";
 :global RdnsSendScript;
 
 :if ([:typeof $DnsExpected] != "str") do={ :set DnsExpected ";1.1.1.1;1.0.0.1;"; }
@@ -65,10 +68,16 @@
     :foreach aid in=[/ip address find] do={
         :local a [/ip address get $aid address];
         :local slash [:find $a "/"];
-        :if ($slash != nil) do={ :set a [:pick $a 0 $slash]; }
+        :if ([:typeof $slash] = "num") do={ :set a [:pick $a 0 $slash]; }
         :set routerIps ($routerIps . $a . ";");
     }
-} on-error={};
+} on-error={
+    :set RdnsScanError "could not inspect router addresses";
+    :log error ("rogue_dns_check: " . $RdnsScanError);
+}
+
+# Do not classify or enforce client traffic without the router-self allowlist.
+:if ([:len $RdnsScanError] > 0) do={ :return ""; }
 
 # Check 1: upstream sanity.
 :local upstreamAlert "";
@@ -76,7 +85,7 @@
     :local resolved [:resolve $CtrlHost];
     :local resolvedStr ($resolved . "");
     :if ([:len $resolvedStr] > 0) do={
-        :if ([:find $expected (";" . $resolvedStr . ";")] = nil) do={
+        :if ([:typeof [:find $expected (";" . $resolvedStr . ";")]] != "num") do={
             :set upstreamAlert ("\nUpstream sanity: " . $CtrlHost . \
                                 " -> " . $resolvedStr . " (not in DnsExpected)");
         }
@@ -94,26 +103,25 @@
 
 :do {
     :foreach cid in=[/ip firewall connection find] do={
-        :local proto "";
-        :do { :set proto [/ip firewall connection get $cid protocol]; } on-error={};
+        :local proto [/ip firewall connection get $cid protocol];
         :if (($proto = "udp") or ($proto = "tcp")) do={
             :local dst [/ip firewall connection get $cid dst-address];
             :local colon [:find $dst ":"];
             :local dstPort "";
             :local dstIp $dst;
-            :if ($colon != nil) do={
+            :if ([:typeof $colon] = "num") do={
                 :set dstIp [:pick $dst 0 $colon];
                 :set dstPort [:pick $dst ($colon + 1) [:len $dst]];
             }
             :if ($dstPort = "53") do={
-                :if ([:find $allowed (";" . $dstIp . ";")] = nil) do={
-                    :if ([:find $routerIps (";" . $dstIp . ";")] = nil) do={
+                :if ([:typeof [:find $allowed (";" . $dstIp . ";")]] != "num") do={
+                    :if ([:typeof [:find $routerIps (";" . $dstIp . ";")]] != "num") do={
                         :local src [/ip firewall connection get $cid src-address];
                         :local sColon [:find $src ":"];
                         :local srcIp $src;
-                        :if ($sColon != nil) do={ :set srcIp [:pick $src 0 $sColon]; }
+                        :if ([:typeof $sColon] = "num") do={ :set srcIp [:pick $src 0 $sColon]; }
                         :local key (";" . $srcIp . "->" . $dstIp . ";");
-                        :if ([:find $seenPairs $key] = nil) do={
+                        :if ([:typeof [:find $seenPairs $key]] != "num") do={
                             :set seenPairs ($seenPairs . $srcIp . "->" . $dstIp . ";");
                             :set offenderCount ($offenderCount + 1);
                             :set offenderSig ($offenderSig . $srcIp . "->" . $dstIp . ";");
@@ -134,8 +142,13 @@
         }
     }
 } on-error={
-    :log error "rogue_dns_check: failed to iterate connections";
+    :set RdnsScanError "could not completely inspect client connections";
+    :log error ("rogue_dns_check: " . $RdnsScanError);
 }
+
+# Missing observations are not a clean scan. Preserve the acknowledged alert
+# and delivery failure state so the next complete observation can retry.
+:if ([:len $RdnsScanError] > 0) do={ :return ""; }
 
 :local body $upstreamAlert;
 :if ($offenderCount > 0) do={
