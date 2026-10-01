@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # kubectl_pod_diag.sh
-# Read-only cluster triage: non-Running pods, Warning events, CrashLoopBackOff
-# previous logs, unbound PVCs, and node pressure conditions.
+# Read-only cluster triage: unhealthy pods and containers, Warning events,
+# failing container logs, unbound PVCs, and node pressure conditions.
 #
 # Usage:
 #   ./kubectl_pod_diag.sh [--namespace NS] [--context CTX] [--all-namespaces]
 #                         [--since 30m|2h|1d]
 #
 # Exit codes:
-#   0 findings reported (or cluster healthy after listing)
-#   1 kubectl failed
+#   0 findings reported
+#   1 query or JSON parsing failed
 #   2 kubectl missing / cannot reach cluster
 #   3 bad arguments
 #   4 nothing to report
@@ -51,7 +51,7 @@ Options:
   --since DURATION        Warning-event lookback (default: 1h; units m, h, d)
   -h, --help              Show this help
 
-Exit codes: 0 reported findings or healthy summary, 1 kubectl error,
+Exit codes: 0 reported findings, 1 query or JSON parsing error,
             2 wrong environment, 3 usage, 4 nothing to report
 EOF
 }
@@ -115,55 +115,80 @@ fi
 
 section() { printf "\n%s== %s ==%s\n" "$C_BOLD" "$*" "$C_RESET"; }
 
-KUBECTL_ERRORS=0
+CHECK_ERRORS=0
 
-section "Non-Running pods"
+section "Unhealthy pods"
 pod_json=""
 pod_rc=0
 pod_json="$("${KUBECTL[@]}" get pods "${ns_args[@]}" -o json 2>/dev/null)" || pod_rc=$?
 if (( pod_rc != 0 )) || [[ -z "$pod_json" ]]; then
   warn "could not list pods"
-  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
+  CHECK_ERRORS=$((CHECK_ERRORS + 1))
 else
-  bad_pods="$(printf '%s' "$pod_json" | python3 -c '
+  if ! bad_pods="$(printf '%s' "$pod_json" | python3 -c '
 import json,sys
 doc=json.load(sys.stdin)
-items=doc.get("items") or []
+items=doc["items"]
+if not isinstance(items,list) or any(not isinstance(p,dict) for p in items):
+  raise ValueError("expected a Kubernetes items list")
 rows=[]
 for p in items:
-  phase=(p.get("status") or {}).get("phase","")
-  if phase in ("Running","Succeeded"):
-    # Still surface CrashLoopBackOff containers on Running pods.
-    bad=False
-    for cs in (p.get("status") or {}).get("containerStatuses") or []:
-      waiting=((cs.get("state") or {}).get("waiting") or {})
-      if waiting.get("reason") in ("CrashLoopBackOff","ImagePullBackOff","ErrImagePull"):
-        bad=True
-        break
-    if not bad:
-      continue
+  status=p.get("status") or {}
+  phase=status.get("phase","")
+  if phase == "Succeeded":
+    continue
   ns=p.get("metadata",{}).get("namespace","")
   name=p.get("metadata",{}).get("name","")
-  reason=phase
-  for cs in (p.get("status") or {}).get("containerStatuses") or []:
-    waiting=((cs.get("state") or {}).get("waiting") or {})
-    if waiting.get("reason"):
-      reason=waiting["reason"]
-      break
-  rows.append("%s\t%s\t%s" % (ns, name, reason))
+  if not ns or not name:
+    raise ValueError("pod metadata must identify namespace and name")
+  sidecars={c["name"] for c in (p.get("spec") or {}).get("initContainers") or []
+            if c.get("restartPolicy") == "Always"}
+  pod_rows=[]
+  for kind,key in (("container","containerStatuses"),("init container","initContainerStatuses")):
+    for cs in status.get(key) or []:
+      container=cs["name"]
+      state=cs.get("state") or {}
+      waiting=state.get("waiting") or {}
+      terminated=state.get("terminated")
+      reason=""
+      logs="-"
+      if waiting:
+        reason=waiting.get("reason") or "Waiting"
+        if reason == "CrashLoopBackOff":
+          logs="previous"
+      elif terminated is not None:
+        if terminated.get("exitCode",0) != 0:
+          reason=terminated.get("reason") or "Failed"
+          logs="current"
+        elif phase == "Running" and (kind == "container" or container in sidecars):
+          reason=terminated.get("reason") or "Terminated"
+      elif cs.get("ready") is False and (kind == "container" or container in sidecars):
+        reason="NotReady"
+      if reason:
+        label="sidecar" if container in sidecars and kind == "init container" else kind
+        pod_rows.append("%s\t%s\t%s %s: %s\t%s\t%s" %
+                        (ns,name,label,container,reason,container,logs))
+  if pod_rows:
+    rows.extend(pod_rows)
+  elif phase != "Running":
+    rows.append("%s\t%s\t%s\t-\t-" % (ns,name,phase or "Unknown"))
 print("\n".join(rows))
-')"
-  if [[ -z "$bad_pods" ]]; then
+' 2>/dev/null)"; then
+    warn "could not parse pods JSON"
+    CHECK_ERRORS=$((CHECK_ERRORS + 1))
+  elif [[ -z "$bad_pods" ]]; then
     ok "no unhealthy pods"
   else
-    while IFS=$'\t' read -r ns name reason; do
+    while IFS=$'\t' read -r ns name reason container logs; do
       [[ -n "$ns" ]] || continue
       warn "pod ${ns}/${name}: ${reason}"
       FINDINGS=$((FINDINGS + 1))
-      if [[ "$reason" == "CrashLoopBackOff" ]]; then
-        info "previous logs for ${ns}/${name}:"
-        "${KUBECTL[@]}" logs -n "$ns" "$name" --previous --tail=40 2>/dev/null \
-          | sed 's/^/    /' || warn "  (no previous logs)"
+      if [[ "$logs" != "-" ]]; then
+        log_args=()
+        [[ "$logs" == "previous" ]] && log_args+=(--previous)
+        info "${logs} logs for ${ns}/${name} (container ${container}):"
+        "${KUBECTL[@]}" logs -n "$ns" "$name" -c "$container" ${log_args[@]+"${log_args[@]}"} --tail=40 2>/dev/null \
+          | sed 's/^/    /' || warn "  (no ${logs} logs for ${container})"
       fi
     done <<<"$bad_pods"
   fi
@@ -175,9 +200,9 @@ event_rc=0
 event_json="$("${KUBECTL[@]}" get events "${ns_args[@]}" --field-selector type=Warning -o json 2>/dev/null)" || event_rc=$?
 if (( event_rc != 0 )) || [[ -z "$event_json" ]]; then
   warn "could not list events"
-  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
+  CHECK_ERRORS=$((CHECK_ERRORS + 1))
 else
-  warns="$(printf '%s' "$event_json" | python3 -c '
+  if ! warns="$(printf '%s' "$event_json" | python3 -c '
 import json,sys,datetime
 doc=json.load(sys.stdin)
 now=datetime.datetime.now(datetime.timezone.utc)
@@ -187,24 +212,40 @@ unit=raw[-1]
 seconds=amount * {"m": 60, "h": 3600, "d": 86400}[unit]
 cutoff=now-datetime.timedelta(seconds=seconds)
 rows=[]
-for e in doc.get("items") or []:
-  ts=e.get("lastTimestamp") or e.get("eventTime") or e.get("metadata",{}).get("creationTimestamp")
-  if not ts:
-    continue
-  try:
-    when=datetime.datetime.fromisoformat(ts.replace("Z","+00:00"))
-  except ValueError:
-    continue
+items=doc["items"]
+if not isinstance(items,list) or any(not isinstance(e,dict) for e in items):
+  raise ValueError("expected a Kubernetes items list")
+for e in items:
+  # A series records the latest repetition; eventTime records the first one.
+  timestamps=((e.get("series") or {}).get("lastObservedTime"),e.get("lastTimestamp"),
+              e.get("deprecatedLastTimestamp"),e.get("eventTime"),
+              (e.get("metadata") or {}).get("creationTimestamp"))
+  when=None
+  for ts in timestamps:
+    if not ts:
+      continue
+    try:
+      candidate=datetime.datetime.fromisoformat(ts.replace("Z","+00:00"))
+      if candidate.tzinfo is None:
+        continue
+      when=candidate
+      break
+    except (ValueError,TypeError,AttributeError):
+      continue
+  if when is None:
+    raise ValueError("Warning event has no usable observation timestamp")
   if when < cutoff:
     continue
   ns=e.get("metadata",{}).get("namespace","")
   name=(e.get("involvedObject") or {}).get("name","")
-  reason=e.get("reason","")
+  reason=e.get("reason") or "Warning"
   msg=(e.get("message") or "").replace("\n"," ")
   rows.append("%s\t%s\t%s\t%s" % (ns, name, reason, msg[:120]))
 print("\n".join(rows[:40]))
-' "$SINCE")"
-  if [[ -z "$warns" ]]; then
+' "$SINCE" 2>/dev/null)"; then
+    warn "could not parse events JSON or Warning observation timestamps"
+    CHECK_ERRORS=$((CHECK_ERRORS + 1))
+  elif [[ -z "$warns" ]]; then
     ok "no recent Warning events"
   else
     while IFS=$'\t' read -r ns name reason msg; do
@@ -221,22 +262,29 @@ pvc_rc=0
 pvc_json="$("${KUBECTL[@]}" get pvc "${ns_args[@]}" -o json 2>/dev/null)" || pvc_rc=$?
 if (( pvc_rc != 0 )) || [[ -z "$pvc_json" ]]; then
   warn "could not list PVCs"
-  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
+  CHECK_ERRORS=$((CHECK_ERRORS + 1))
 else
-  unbound="$(printf '%s' "$pvc_json" | python3 -c '
+  if ! unbound="$(printf '%s' "$pvc_json" | python3 -c '
 import json,sys
 doc=json.load(sys.stdin)
 rows=[]
-for p in doc.get("items") or []:
+items=doc["items"]
+if not isinstance(items,list) or any(not isinstance(p,dict) for p in items):
+  raise ValueError("expected a Kubernetes items list")
+for p in items:
   phase=(p.get("status") or {}).get("phase","")
   if phase == "Bound":
     continue
   ns=p.get("metadata",{}).get("namespace","")
   name=p.get("metadata",{}).get("name","")
+  if not ns or not name:
+    raise ValueError("PVC metadata must identify namespace and name")
   rows.append("%s\t%s\t%s" % (ns, name, phase or "?"))
 print("\n".join(rows))
-')"
-  if [[ -z "$unbound" ]]; then
+' 2>/dev/null)"; then
+    warn "could not parse PVCs JSON"
+    CHECK_ERRORS=$((CHECK_ERRORS + 1))
+  elif [[ -z "$unbound" ]]; then
     ok "no unbound PVCs"
   else
     while IFS=$'\t' read -r ns name phase; do
@@ -253,14 +301,19 @@ node_rc=0
 node_json="$("${KUBECTL[@]}" get nodes -o json 2>/dev/null)" || node_rc=$?
 if (( node_rc != 0 )) || [[ -z "$node_json" ]]; then
   warn "could not list nodes"
-  KUBECTL_ERRORS=$((KUBECTL_ERRORS + 1))
+  CHECK_ERRORS=$((CHECK_ERRORS + 1))
 else
-  pressure="$(printf '%s' "$node_json" | python3 -c '
+  if ! pressure="$(printf '%s' "$node_json" | python3 -c '
 import json,sys
 doc=json.load(sys.stdin)
 rows=[]
-for n in doc.get("items") or []:
+items=doc["items"]
+if not isinstance(items,list) or any(not isinstance(n,dict) for n in items):
+  raise ValueError("expected a Kubernetes items list")
+for n in items:
   name=n.get("metadata",{}).get("name","")
+  if not name:
+    raise ValueError("node metadata must identify name")
   for c in (n.get("status") or {}).get("conditions") or []:
     ctype=c.get("type","")
     status=c.get("status","")
@@ -269,8 +322,10 @@ for n in doc.get("items") or []:
     if ctype == "Ready" and status != "True":
       rows.append("%s\tReady=%s\t%s" % (name, status, c.get("reason","")))
 print("\n".join(rows))
-')"
-  if [[ -z "$pressure" ]]; then
+' 2>/dev/null)"; then
+    warn "could not parse nodes JSON"
+    CHECK_ERRORS=$((CHECK_ERRORS + 1))
+  elif [[ -z "$pressure" ]]; then
     ok "no node pressure conditions"
   else
     while IFS=$'\t' read -r name ctype msg; do
@@ -282,8 +337,8 @@ print("\n".join(rows))
 fi
 
 printf "\n"
-if (( KUBECTL_ERRORS > 0 )); then
-  err "${KUBECTL_ERRORS} kubectl query(ies) failed"
+if (( CHECK_ERRORS > 0 )); then
+  err "${CHECK_ERRORS} query or JSON parsing check(s) failed; health check incomplete"
   exit 1
 fi
 if (( FINDINGS == 0 )); then

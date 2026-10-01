@@ -15,4 +15,7 @@ if [[ "${K8S_IMAGE_SMOKE:-0}" == "1" ]] && ! command -v docker >/dev/null 2>&1; 
   exit 1
 fi
 
-exec "$HERE/test_k8s_toolbox.sh" "$@"
+rc=0
+"$HERE/test_k8s_toolbox.sh" "$@" || rc=1
+"$HERE/test_pod_diag.sh" || rc=1
+exit "$rc"

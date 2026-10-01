@@ -67,12 +67,12 @@ Find out what is unhappy in a cluster, in one read-only pass:
 ./kubectl_pod_diag.sh
 ```
 
-It reports pods that are neither Running nor Succeeded (including Running pods
-whose containers are in `CrashLoopBackOff` or `ImagePullBackOff`), recent
-`Warning` events, unbound PVCs, and nodes under pressure — and for a crash-looping
-pod, the last lines of the *previous* container's logs, which is where the reason
-usually is. It exits `4` when it found nothing, distinct from `0`, so it can
-drive a scheduled check without parsing its output.
+It reports unhealthy pods and containers, recent `Warning` events, unbound PVCs,
+and nodes under pressure. Running pods with unready containers, failing init
+containers, and unhealthy restartable sidecars are findings too. For a crashing
+container it fetches that named container's logs. It exits `4` when every check
+completed and found nothing, distinct from `0` for findings and `1` for an
+incomplete check, so it can drive a scheduled check without parsing its output.
 
 Then build the image the rest of the package is about:
 
@@ -215,20 +215,34 @@ earlier `--namespace` in a wrapper or an alias.
 
 It reports, in order:
 
-- pods that are neither Running nor Succeeded, plus Running pods whose
-  containers are in `CrashLoopBackOff`, `ImagePullBackOff` or `ErrImagePull` —
-  a pod can be "Running" and completely broken
+- pods that are neither Running nor Succeeded, plus waiting, failed, or unready
+  regular containers, failing init containers, and unhealthy restartable
+  sidecars; completed init containers and healthy Running/Succeeded pods stay
+  quiet
 - `Warning` events from the configured `--since` lookback (one hour by
   default), truncated to something readable
 - PVCs that are not `Bound`
 - nodes reporting memory, disk or PID pressure, or not `Ready`
 
-For a pod in `CrashLoopBackOff` it also prints the last 40 lines of the
-*previous* container's logs, which is where the reason for the crash is — the
-current container has usually not got far enough to say anything.
+For each container in `CrashLoopBackOff` it prints the last 40 lines of that
+named container's *previous* logs. For a container terminated with a nonzero
+exit code it fetches its current logs, including failed init containers. Every
+log request specifies the container, so a healthy sibling cannot supply the
+crash evidence by accident. Missing logs are reported alongside the finding.
 
-Exit code `4` means nothing was found. That is distinct from `0` (findings
-reported) on purpose, so it can drive a scheduled check without parsing output.
+Warning lookback uses the first usable timestamp in this order:
+`series.lastObservedTime`, `lastTimestamp`, `deprecatedLastTimestamp`,
+`eventTime`, then `metadata.creationTimestamp`. A fresh repetition therefore
+remains visible even when its first occurrence is old. Invalid timestamps fall
+back to the next field; an event with no usable timestamp makes the check
+incomplete.
+
+Exit code `4` means every query and JSON filter succeeded and nothing was found.
+That is distinct from `0` (findings reported) on purpose, so it can drive a
+scheduled check without parsing output. Failed queries, empty responses, and
+invalid JSON produce a section diagnostic and exit `1` after the remaining
+checks finish, even when other checks found problems. Incomplete checks never
+print the final "cluster looks quiet" summary.
 Exit `2` covers both halves of the environment this script needs: no `kubectl`,
 and no `python3` — the JSON from each `kubectl get` is reduced by a
 standard-library `python3 -c` filter.
@@ -351,7 +365,10 @@ installed, the `--help` and unknown-flag contracts, flags that require a value,
 the dry-run promise **asserted against the filesystem** rather than against the
 script's own claim to have written nothing, exit `2` when `kubectl` or Docker
 is missing, agreement between `versions.env`, the Dockerfile and `build.sh`,
-and the Pod Security posture of the examples.
+and the Pod Security posture of the examples. Secret-free stubbed `kubectl`
+fixtures cover container readiness, init failures, restartable sidecars, named
+container logs, Warning last-observation timestamps, and query/JSON failures
+across every diagnostic section. These tests never contact a real cluster.
 
 To build the image and probe it for real:
 

@@ -147,7 +147,8 @@ mkdir -p "$D"
 
 probe_err="$(mktemp)"
 scp_err="$(mktemp)"
-trap 'rm -f "$probe_err" "$scp_err"' EXIT
+stage="$(mktemp -d "$D/.pull-backups.XXXXXXXX")"
+trap 'rm -f "$probe_err" "$scp_err"; rm -rf "$stage"' EXIT
 
 # Prove the router is reachable *before* an empty result is allowed to mean
 # "no backups yet". Without this the two are indistinguishable: a dead host, a
@@ -172,34 +173,50 @@ if (( probe_rc == 255 )); then
   exit 2
 fi
 
+# Stage each extension independently. A failed scp may leave truncated files;
+# none of that attempt is allowed to replace an existing good generation.
 got=0
+failed=0
 for ext in backup rsc; do
-  if scp "${SSH_OPTS[@]}" -p "$R:backup-*.$ext" "$D/" 2>>"$scp_err"; then
-    got=1
+  mkdir "$stage/$ext"
+  : >"$scp_err"
+  if scp "${SSH_OPTS[@]}" -p "$R:backup-*.$ext" "$stage/$ext/" 2>"$scp_err"; then
+    for file in "$stage/$ext"/backup-*.$ext; do
+      [[ -f "$file" && ! -L "$file" ]] || continue
+      name="${file##*/}"
+      if [[ -d "$D/$name" ]] || ! mv -f "$file" "$D/$name"; then
+        printf 'could not publish %s into %s\n' "$name" "$D" >&2
+        failed=1
+      else
+        got=1
+      fi
+    done
+  else
+    transfer_rc=$?
+    # Only an entire, recognised missing-pattern diagnostic is benign. A
+    # missing-file line mixed with permission/transport errors is a failure.
+    missing=1
+    lines=0
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" ]] || continue
+      lines=$((lines + 1))
+      if [[ "$line" != "scp: backup-*.$ext: No such file or directory" &&
+            "$line" != "scp: /backup-*.$ext: No such file or directory" &&
+            "$line" != "scp: stat remote: \"backup-*.$ext\": No such file or directory" ]]; then
+        missing=0
+      fi
+    done <"$scp_err"
+    if (( transfer_rc != 1 || missing == 0 || lines == 0 )); then
+      printf 'reached %s but could not pull backup-*.%s\n' "$R" "$ext" >&2
+      sed 's/^/  /' "$scp_err" >&2
+      failed=1
+    fi
   fi
 done
 
 if (( got )); then
-  echo "Pulled backup-* files into $D"
-  exit 0
-fi
-
-# We reached the router, so the only benign explanation for an empty result is
-# that no backup file exists yet. scp says so explicitly; anything else — SFTP
-# disabled, permission denied on the file, a full disk — is a real failure and
-# must not be reported as success.
-#
-# Matched narrowly and deliberately fail-closed: an unrecognised message exits
-# 1 rather than 0. An earlier draft of this also accepted "not found", which
-# matched the shell's own "command not found" and turned a missing scp binary
-# back into a cheerful "no backups yet".
-if grep -qi 'no such file' "$scp_err"; then
+  printf 'Pulled backup-* files into %s\n' "$D"
+elif (( failed == 0 )); then
   printf 'No backup-*.backup / backup-*.rsc on %s yet — nothing to pull.\n' "$R" >&2
-  exit 0
 fi
-
-printf 'reached %s but could not pull backups\n' "$R" >&2
-if [[ -s "$scp_err" ]]; then
-  sed 's/^/  /' "$scp_err" >&2
-fi
-exit 1
+exit "$failed"
