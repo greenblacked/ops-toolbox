@@ -175,7 +175,14 @@ for fixture in unready regular-crash init-crash init-failed sidecar-crash sideca
       fi
       ;;
     pending) assert_contains 'Pending phase remains a finding' 'pod demo/api: Pending' ;;
-    failed) assert_contains 'failed regular container is identified' 'container api: Error' ;;
+    failed)
+      assert_contains 'failed regular container is identified' 'container api: Error'
+      if [[ "$calls" == *'logs -n demo api -c api --tail=40'* && "$calls" != *'--previous'* ]]; then
+        ok 'failed regular current logs target api'
+      else
+        err "wrong failed regular logs: $calls"
+      fi
+      ;;
   esac
 done
 

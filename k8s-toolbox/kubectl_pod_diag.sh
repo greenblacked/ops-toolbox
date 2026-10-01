@@ -187,7 +187,7 @@ print("\n".join(rows))
         log_args=()
         [[ "$logs" == "previous" ]] && log_args+=(--previous)
         info "${logs} logs for ${ns}/${name} (container ${container}):"
-        "${KUBECTL[@]}" logs -n "$ns" "$name" -c "$container" "${log_args[@]}" --tail=40 2>/dev/null \
+        "${KUBECTL[@]}" logs -n "$ns" "$name" -c "$container" ${log_args[@]+"${log_args[@]}"} --tail=40 2>/dev/null \
           | sed 's/^/    /' || warn "  (no ${logs} logs for ${container})"
       fi
     done <<<"$bad_pods"
