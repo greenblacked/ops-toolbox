@@ -768,6 +768,10 @@ else
   err "prune filtered deletion removed excluded branch"
 fi
 
+section "prune durable recovery contracts"
+out="$(bash "$G/tests/test_prune_gone.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "prune recovery contract suite succeeds: $out"
+
 section "stale branch state filter"
 repo="$(new_repo)"
 git -C "$repo" branch old-merged
