@@ -24,7 +24,7 @@
 #   --minute N    0-59 (default 30)
 #   --profile P   'safe' runs protected app/AI-cache cleanup, workspace cleanup,
 #                 version reporting, the pending-OS-update report and the
-#                 snapshot listing; 'full' keeps the original broad behavior
+#                 snapshot listing; 'full' selects stay_fresh.sh --full
 #                 (default safe)
 #   --notify M    Passed to stay_fresh.sh as --notify: none, macos, telegram,
 #                 slack, both, auto, or a comma-separated list of channels
@@ -395,12 +395,12 @@ run_scheduled() {
       # reports run instead: they are the part worth having daily, and they
       # neither sweep nor upgrade anything.
       info "active ${idle}s ago — running the read-only reports only, not the sweep"
-      args+=(--reports)
+      args+=(--only versions,os-updates,snapshots,downloads,launch-agents)
       deferred="reports-only:active"
     fi
   fi
   if [[ -n "$deferred" ]]; then
-    : # --reports is already in args, and it refuses to be joined with --only
+    : # The lightweight report selection is already in args.
   elif [[ "$PROFILE" == "safe" ]]; then
     # Scheduled cleanup must be conservative by default. These steps protect
     # active/unknown application state and remove workspace data only when the
@@ -409,6 +409,8 @@ run_scheduled() {
     # macOS update and a pile of local snapshots are what a scheduled run can
     # tell you that you would not otherwise notice.
     args+=(--only app-caches,ai-caches,workspace-storage,versions,os-updates,snapshots,downloads,launch-agents)
+  else
+    args+=(--full)
   fi
   (( NOTIFY_SET )) && args+=(--notify "$NOTIFY")
   (( NOTIFY_WHEN_SET )) && args+=(--notify-when "$NOTIFY_WHEN")
@@ -452,6 +454,72 @@ if [[ "$CMD" == "run-scheduled" ]]; then
   run_scheduled
   exit $?
 fi
+
+# Preserve the old configuration until both the plist and launchd operation
+# commit. EXIT also runs for signals caught while an external command returns.
+AGENT_TX_ACTIVE=0
+AGENT_TX_BACKUP=""
+AGENT_TX_STAGED=""
+AGENT_TX_LOADED=0
+AGENT_TX_STOPPED=0
+AGENT_TX_STOP_ATTEMPTED=0
+AGENT_TX_REPLACED=0
+agent_transaction_exit() {
+  local status=$? restored=1
+  trap - EXIT
+  trap '' INT TERM HUP
+  if (( AGENT_TX_ACTIVE )); then
+    if (( AGENT_TX_REPLACED )); then
+      if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+        launchctl bootout "$DOMAIN/$LABEL" >/dev/null 2>&1 || restored=0
+      fi
+      if [[ -n "$AGENT_TX_BACKUP" ]]; then
+        if mv -f "$AGENT_TX_BACKUP" "$PLIST"; then
+          AGENT_TX_BACKUP=""
+        else
+          restored=0
+        fi
+      else
+        rm -f "$PLIST" || restored=0
+      fi
+    fi
+    if (( AGENT_TX_LOADED && AGENT_TX_STOP_ATTEMPTED )); then
+      if (( AGENT_TX_STOPPED || AGENT_TX_REPLACED )) || ! launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
+        if (( restored )) && [[ -f "$PLIST" ]]; then
+          launchctl bootstrap "$DOMAIN" "$PLIST" || restored=0
+        else
+          restored=0
+        fi
+      fi
+    fi
+    if (( restored == 0 )); then
+      err "scheduler rollback incomplete; inspect $PLIST; backup retained at ${AGENT_TX_BACKUP:-<none>}"
+      status=1
+    fi
+  fi
+  [[ -z "$AGENT_TX_STAGED" ]] || rm -f "$AGENT_TX_STAGED"
+  if (( restored )); then
+    [[ -z "$AGENT_TX_BACKUP" ]] || rm -f "$AGENT_TX_BACKUP"
+  fi
+  exit "$status"
+}
+begin_agent_transaction() {
+  AGENT_TX_ACTIVE=1
+  trap agent_transaction_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+  if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then AGENT_TX_LOADED=1; fi
+  if [[ -f "$PLIST" ]]; then
+    AGENT_TX_BACKUP="$(mktemp "$(dirname "$PLIST")/.${LABEL}.old.XXXXXX")" \
+      && cp -p "$PLIST" "$AGENT_TX_BACKUP" || {
+        err "cannot back up the existing LaunchAgent plist"; return 1;
+      }
+  elif (( AGENT_TX_LOADED )); then
+    err "cannot safely change a loaded job without its previous plist at $PLIST"
+    return 1
+  fi
+}
 
 case "$CMD" in
   install)
@@ -598,70 +666,30 @@ PLIST_EOF
       exit 0
     fi
 
-    # Stage in the destination directory so the final rename is atomic. Keep a
-    # byte-for-byte backup until the new job has bootstrapped; an update failure
-    # must leave the previous schedule running, not merely leave a valid file.
+    begin_agent_transaction || exit 1
     agent_dir="$(dirname "$PLIST")"
-    if ! staged_plist="$(mktemp "$agent_dir/.${LABEL}.new.XXXXXX")"; then
-      err "cannot stage LaunchAgent plist in $agent_dir"
-      exit 1
+    AGENT_TX_STAGED="$(mktemp "$agent_dir/.${LABEL}.new.XXXXXX")" || {
+      err "cannot stage LaunchAgent plist in $agent_dir"; exit 1;
+    }
+    printf '%s\n' "$plist_body" >"$AGENT_TX_STAGED" || {
+      err "cannot write staged LaunchAgent plist"; exit 1;
+    }
+    if (( AGENT_TX_LOADED )); then
+      AGENT_TX_STOP_ATTEMPTED=1
+      launchctl bootout "$DOMAIN/$LABEL" || {
+        err "could not stop the existing $LABEL job; configuration was not changed"; exit 1;
+      }
+      AGENT_TX_STOPPED=1
     fi
-    if ! printf '%s\n' "$plist_body" >"$staged_plist"; then
-      rm -f "$staged_plist"
-      err "cannot write staged LaunchAgent plist"
-      exit 1
-    fi
-
-    backup_plist=""
-    if [[ -f "$PLIST" ]]; then
-      if ! backup_plist="$(mktemp "$agent_dir/.${LABEL}.old.XXXXXX")" \
-         || ! cp -p "$PLIST" "$backup_plist"; then
-        rm -f "$staged_plist" ${backup_plist:+"$backup_plist"}
-        err "cannot back up the existing LaunchAgent plist"
-        exit 1
-      fi
-    fi
-
-    was_loaded=0
-    if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-      was_loaded=1
-      if ! launchctl bootout "$DOMAIN/$LABEL"; then
-        rm -f "$staged_plist" ${backup_plist:+"$backup_plist"}
-        err "could not stop the existing $LABEL job; configuration was not changed"
-        exit 1
-      fi
-    fi
-
-    if ! mv -f "$staged_plist" "$PLIST"; then
-      (( was_loaded )) && launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1
-      rm -f "$staged_plist" ${backup_plist:+"$backup_plist"}
-      err "could not install the new LaunchAgent plist"
-      exit 1
-    fi
-
+    AGENT_TX_REPLACED=1
+    mv -f "$AGENT_TX_STAGED" "$PLIST" || {
+      err "could not install the new LaunchAgent plist"; exit 1;
+    }
     if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
       err "launchctl bootstrap failed for $LABEL; restoring the previous configuration"
-      rm -f "$PLIST"
-      rollback_ok=1
-      if [[ -n "$backup_plist" ]]; then
-        if mv -f "$backup_plist" "$PLIST"; then
-          backup_plist=""
-        else
-          rollback_ok=0
-          err "could not restore the previous plist"
-        fi
-      fi
-      if (( was_loaded )) && [[ -f "$PLIST" ]]; then
-        if ! launchctl bootstrap "$DOMAIN" "$PLIST"; then
-          rollback_ok=0
-          err "could not restart the previous $LABEL job"
-        fi
-      fi
-      rm -f ${backup_plist:+"$backup_plist"}
-      (( rollback_ok )) || err "manual recovery is required: inspect $PLIST"
       exit 1
     fi
-    rm -f ${backup_plist:+"$backup_plist"}
+    AGENT_TX_ACTIVE=0
 
     ok "installed $LABEL — runs $when (profile: $PROFILE)"
     info "as you, without sudo: memory purge, DNS flush, system caches and"
@@ -669,7 +697,7 @@ PLIST_EOF
     if [[ "$PROFILE" == "safe" ]]; then
       info "safe profile: app/AI caches, stale workspace storage, versions, pending OS updates, the snapshot listing, old downloads and orphaned launch agents (both reported, never removed)"
     else
-      info "full profile: cask upgrades are skipped; formulae update unattended"
+      info "full profile: age-limited cleanup and formula updates; skipped cask upgrades report an incomplete cycle"
     fi
     printf "  %slogs: %s%s\n" "$C_DIM" "$LOG_DIR/agent-<timestamp>-<pid>.log (10 kept)" "$C_RESET"
     ;;
@@ -684,24 +712,22 @@ PLIST_EOF
       exit 0
     fi
 
+    begin_agent_transaction || exit 1
     removed=0
-    if launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
-      if ! launchctl bootout "$DOMAIN/$LABEL"; then
-        err "could not stop $LABEL; plist was not removed"
-        exit 1
-      fi
+    if (( AGENT_TX_LOADED )); then
+      AGENT_TX_STOP_ATTEMPTED=1
+      launchctl bootout "$DOMAIN/$LABEL" || {
+        err "could not stop $LABEL; plist was not removed"; exit 1;
+      }
+      AGENT_TX_STOPPED=1
       removed=1
     fi
     if [[ -f "$PLIST" ]]; then
-      if ! rm -f "$PLIST"; then
-        err "could not remove $PLIST"
-        # If bootout succeeded but deletion did not, put the still-present
-        # configuration back into service rather than silently disabling it.
-        (( removed )) && launchctl bootstrap "$DOMAIN" "$PLIST" >/dev/null 2>&1
-        exit 1
-      fi
+      AGENT_TX_REPLACED=1
+      rm -f "$PLIST" || { err "could not remove $PLIST"; exit 1; }
       removed=1
     fi
+    AGENT_TX_ACTIVE=0
     if (( removed )); then
       ok "removed $LABEL"
     else

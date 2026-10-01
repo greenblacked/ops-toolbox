@@ -57,6 +57,9 @@ def parse_open_files(text, root, own_pid):
     for line in text.splitlines():
         if re.fullmatch(r"p[1-9][0-9]*", line):
             pid = int(line[1:])
+        elif re.fullmatch(r"f(?:[0-9]+|cwd|rtd|txt|mem|DEL)", line) and pid is not None:
+            # Darwin emits file-descriptor fields even when only pn is requested.
+            pass
         elif line.startswith("n/") and pid is not None:
             path = line[1:]
             paths.add(path)
@@ -72,13 +75,17 @@ def parse_open_files(text, root, own_pid):
 def open_files(root):
     try:
         result = subprocess.run(
-            ["/usr/sbin/lsof", "-nP", "-F", "pn", "+d", root],
+            ["/usr/sbin/lsof", "-nP", "-F", "pfn", "+d", root],
             capture_output=True, text=True, timeout=10, check=False,
             env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LC_ALL": "C"},
         )
     except (OSError, subprocess.TimeoutExpired, UnicodeError) as exc:
         raise Unsafe("open-file inspection unavailable") from exc
-    if result.returncode or result.stderr.strip():
+    # +d searches every directory entry. Exit 1 also means some entries
+    # were not open, which is expected during cleanup. Accept it only with
+    # no diagnostics and the validated own-directory witness below.
+    # https://github.com/lsof-org/lsof/blob/master/docs/tutorial.md
+    if result.returncode not in (0, 1) or result.stderr.strip():
         raise Unsafe("open-file inspection failed")
     return parse_open_files(result.stdout, root, os.getpid())
 
@@ -95,17 +102,18 @@ def identity(metadata):
             metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_blocks)
 
 
-def clean(root, apply=False, now=None, probe=None):
+def clean(root, apply=False, now=None, probe=None, progress=None, verbose=False):
     """Only tests inject root/time/probe; the CLI exposes none of those knobs."""
     result = {"eligible": 0, "eligible_bytes": 0, "removed": 0,
-              "freed_bytes": 0, "kept_open": 0, "errors": []}
+              "freed_bytes": 0, "kept_open": 0, "errors": [], "candidates": []}
     descriptor = None
     try:
         if apply and os.geteuid() != 0:
             raise Unsafe("apply requires root; no logs removed")
         descriptor = open_secure_root(root)
         directory = os.fstat(descriptor)
-        cutoff = (time.time() if now is None else now) - RETENTION_SECONDS
+        now = time.time() if now is None else now
+        cutoff = now - RETENTION_SECONDS
         candidates = []
         for name in sorted(os.listdir(descriptor)):
             if not LOG_NAME.fullmatch(name):
@@ -115,6 +123,12 @@ def clean(root, apply=False, now=None, probe=None):
                 candidates.append((name, metadata))
                 result["eligible"] += 1
                 result["eligible_bytes"] += metadata.st_blocks * 512
+                if verbose:
+                    result["candidates"].append(dict(path=os.path.join(root, name),
+                        bytes=metadata.st_blocks * 512,
+                        age_days=int((now - metadata.st_mtime) // 86400),
+                        reason="old compressed system log from allowlist; "
+                               "history cannot be recreated"))
         if not apply or not candidates:
             return result
         opened = (probe or open_files)(root)
@@ -139,6 +153,10 @@ def clean(root, apply=False, now=None, probe=None):
                 os.unlink(name, dir_fd=descriptor)
                 result["removed"] += 1
                 result["freed_bytes"] += original.st_blocks * 512
+                result["last_removed"] = dict(path=os.path.join(root, name),
+                                            bytes=original.st_blocks * 512)
+                if progress:
+                    progress(result)
             except OSError as exc:
                 result["errors"].append("could not remove %s: %s" % (name, exc))
     except (OSError, Unsafe) as exc:
@@ -158,8 +176,13 @@ class Usage3Parser(argparse.ArgumentParser):
 def main(argv=None):
     parser = Usage3Parser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="remove eligible logs (requires root)")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--progress", action="store_true",
+                        help="emit confirmed removal checkpoints")
     args = parser.parse_args(argv)
-    result = clean(ROOT, args.apply)
+    result = clean(ROOT, args.apply, progress=(lambda r: print(
+                       json.dumps({**r, "candidates": []}), flush=True))
+                   if args.progress else None, verbose=args.verbose)
     print(json.dumps(result, sort_keys=True))
     return 1 if result["errors"] else 0
 

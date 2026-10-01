@@ -1,5 +1,8 @@
 """Rotated system-log safety contracts, using disposable Docker fixtures."""
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -11,6 +14,25 @@ from unittest.mock import patch
 LIB = Path(__file__).resolve().parents[3] / "macos-initial-setup" / "lib"
 sys.path.insert(0, str(LIB))
 import system_logs
+
+
+class NativeOpenFileTests(unittest.TestCase):
+    def test_native_descriptor_listing(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = str(Path(scratch).resolve())
+            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                if not Path("/usr/sbin/lsof").exists():
+                    self.skipTest("native /usr/sbin/lsof unavailable")
+                self.assertIn(root, system_logs.open_files(root))
+            finally:
+                os.close(fd)
+
+    def test_descriptor_fields_require_a_process(self):
+        with self.assertRaises(system_logs.Unsafe):
+            system_logs.parse_open_files("f4\np1\nn/test\n", "/test", 1)
+        self.assertEqual(system_logs.parse_open_files("p1\nf4\nn/test\n", "/test", 1),
+                         {"/test"})
 
 
 @unittest.skipUnless(os.geteuid() == 0, "secure root-owned fixtures require Docker root")
@@ -31,6 +53,35 @@ class SystemLogsTests(unittest.TestCase):
 
     def clean(self, apply=False, probe=None):
         return system_logs.clean(str(self.root), apply, self.now, probe or (lambda _: set()))
+
+    def test_verbose_cli_checkpoints_are_compact_and_final_candidates_remain(self):
+        for index in range(1, 11):
+            self.make("system.log.%d.gz" % index)
+        output = io.StringIO()
+        with patch.object(system_logs, "ROOT", str(self.root)), \
+                patch.object(system_logs, "open_files", return_value=set()), \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(system_logs.main(["--apply", "--verbose", "--progress"]), 0)
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(len(records), 12)
+        for index, record in enumerate(records[:-1], 1):
+            self.assertEqual(record["candidates"], [])
+            self.assertEqual(record["removed"], index)
+            self.assertIn("path", record["last_removed"])
+        self.assertEqual(len(records[-1]["candidates"]), 11)
+        self.assertEqual(records[-1]["removed"], 11)
+
+    def test_checkpoint_survives_interruption_after_unlink(self):
+        checkpoints = []
+        def progress(result):
+            checkpoints.append(dict(result))
+            raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            system_logs.clean(str(self.root), True, self.now, lambda _: set(), progress=progress)
+        self.assertFalse(self.old.exists())
+        self.assertEqual(checkpoints[-1]["removed"], 1)
+        self.assertEqual(checkpoints[-1]["last_removed"]["path"], str(self.old))
+        self.assertGreater(checkpoints[-1]["freed_bytes"], 0)
 
     def test_preview_preserves_files_and_reports_allocated_size(self):
         before = self.old.stat()
@@ -181,6 +232,18 @@ class OpenFileProbeTests(unittest.TestCase):
         for output in ("", "localized error", "p14\nn/private/var/log\n", "p12\nbroken\n"):
             with self.subTest(output=output), self.assertRaises(system_logs.Unsafe):
                 system_logs.parse_open_files(output, root, 12)
+
+    def test_valid_listing_with_unmatched_closed_files_is_accepted(self):
+        root = "/private/var/log"
+        output = "p%s\nn%s\n" % (os.getpid(), root)
+        result = system_logs.subprocess.CompletedProcess([], 1, output, "")
+        with patch.object(system_logs.subprocess, "run", return_value=result):
+            self.assertEqual(system_logs.open_files(root), {root})
+        for rc, stderr in ((2, ""), (1, "permission denied")):
+            result = system_logs.subprocess.CompletedProcess([], rc, output, stderr)
+            with patch.object(system_logs.subprocess, "run", return_value=result), \
+                    self.assertRaises(system_logs.Unsafe):
+                system_logs.open_files(root)
 
     def test_missing_failed_silent_lsof_is_unknown(self):
         for failure in (FileNotFoundError(), PermissionError()):

@@ -439,6 +439,88 @@ End-to-end macOS housekeeping. Each step is independent, measures the
 disk space freed, and degrades gracefully when a tool is missing or a
 path is protected by System Integrity Protection.
 
+### Full updates and age-limited cleanup
+
+Use `--full` for the combined maintenance cycle:
+
+```bash
+./macos-initial-setup/stay_fresh.sh --full --dry-run --verbose --notify none
+./macos-initial-setup/stay_fresh.sh --full --yes --verbose --notify none
+```
+
+This runs the age-limited cleanup described below, then Homebrew's explicit
+update, formula upgrade, cask upgrade with `--greedy`, `cleanup -s`, and
+`autoremove`. It also refreshes installed Helm and krew plugins and supported
+non-Homebrew gcloud components, and reports versions and pending macOS/App Store
+updates. OS updates are listed, not installed.
+
+Upgrade totals compare installed Homebrew versions before and after updates;
+progress announcements are not counted as successful upgrades.
+
+The Homebrew portion uses Homebrew's own eligibility rules, not the log/npx age
+thresholds: cleanup can remove recent cached downloads and old installed
+versions, and autoremove can uninstall dependencies no longer needed by other
+formulae. Other app caches, personal files and backups remain preserved.
+
+Run the apply command in an interactive macOS terminal with sudo enabled for
+cask upgrades. With `--no-sudo` or no controlling terminal, cask upgrades are
+skipped and the full cycle reports a warning. With `--fail-on-warn`, this
+partial cycle exits nonzero. Missing tools are skipped
+and failures are reported. Add `--fail-on-warn` when warning status must produce
+a nonzero exit code. `--full` and `--old-only` are alternative presets.
+
+### Clean only old disposable data, including system logs
+
+Use `--old-only` to select the age-limited profile. Preview the candidates first
+from the repository root:
+
+```bash
+./macos-initial-setup/stay_fresh.sh --old-only --dry-run --verbose --notify none
+# Apply the same profile after reviewing the preview:
+./macos-initial-setup/stay_fresh.sh --old-only --yes --verbose --notify none
+```
+
+| Location | What qualifies | Action |
+| --- | --- | --- |
+| `~/Library/Logs` | Regular files with modification age matching `find -mtime +30` (at least 31 complete days); excludes DiagnosticReports and stay_fresh history | Delete old logs after open-file and identity checks; preserve directories. Verbose output names candidates. |
+| `/private/var/log` | Only `system.log.N`, `install.log.N`, `wifi.log.N` ending in `.gz` or `.bz2`, unchanged for at least 30 days | Delete qualifying root-owned, single-link files after an open-file check and identity recheck. Needs sudo; uncertain or open files stay. |
+| `~/.npm/_npx` | Validated package entries whose entire tree is unchanged for at least 7 days | Delete only when Node/npm/npx processes are absent. Unknown process state, npm configuration overrides, recent children and unsafe paths preserve entries. |
+| `~/Downloads` | Top-level non-hidden entries with modification age matching `find -mtime +90` | Report only. Age does not establish that personal files are unwanted. |
+| Local Time Machine snapshots and large storage directories | Existing snapshots and measured disk usage | Report only; no snapshot deletion. |
+
+Set retention directly in `stay_fresh.sh` using `--user-log-days N` and
+`--npx-cache-days N`. Both accept 1 through 36500, without leading zeroes.
+Defaults remain 30 and 7. These options change retention without enabling
+otherwise skipped steps; npx cleanup runs with `--full`, `--old-only`, or
+`--deep-clean`. System logs retain their fixed 30-day policy.
+
+```bash
+./macos-initial-setup/stay_fresh.sh --full --user-log-days 60 --npx-cache-days 14 --dry-run --verbose --notify none
+```
+
+This previews the full update cycle, user logs aged at least 61 complete days
+(the `find -mtime +60` convention), and npx entries unchanged for at least 14
+days. Remove `--dry-run` and add `--yes` to apply the same settings.
+
+File age means **last modification**, not last use. Old logs may still be useful
+for investigating an incident, and removed npx packages may need downloading
+again. This profile deliberately has a narrow deletion scope; it does not
+claim to identify every unused file on the Mac.
+
+Apple's **System Data** is a storage category covering Apple and third-party
+files that do not fit another category, rather than a directory that can be
+emptied ([Apple storage guidance](https://support.apple.com/en-gb/102624)).
+The included disk report helps locate large directories. Backups, snapshots,
+models, app data, system caches, recent caches, Trash and installed software are
+preserved by this profile. `--no-sudo` also preserves the rotated system logs.
+
+`--deep-clean` alone extends the **normal full run**: it still clears caches
+without age limits, empties Trash and runs software updates. It additionally
+cleans selected Conda caches and old idle npx entries. It is not an old-files-only
+switch. Combining it with `--old-only` keeps the narrow profile above: Conda and
+bulk cache cleaning remain disabled. Other presets, individual step selections,
+skip flags and broader prune/force options are rejected with `--old-only`.
+
 ### Steps
 
 In the order they run:
@@ -550,7 +632,7 @@ In the order they run:
     them is printed. Binary plists are inspected through `plutil` on macOS.
 15. Update and upgrade Homebrew formulae, then run `cleanup -s` and
     `autoremove`. Cask upgrades require an explicit interactive `--brew-casks`
-    run; the default only lists outdated casks. A stale
+    or `--full` run; the default only lists outdated casks. A stale
     git lock in the Homebrew repository makes `brew update` print "Already
     up-to-date" and exit 0 with the taps untouched, so the upgrade runs on
     the previous index; a lock older than five minutes with no git process
@@ -1282,7 +1364,7 @@ a per-user LaunchAgent that runs `stay_fresh.sh` on a schedule.
 ```bash
 ./launchd/stay_fresh_agent.sh install                      # Mondays, 10:30
 ./launchd/stay_fresh_agent.sh install --weekday daily --hour 3
-./launchd/stay_fresh_agent.sh install --profile full       # original broad maintenance
+./launchd/stay_fresh_agent.sh install --profile full       # age-limited cleanup and software updates
 ./launchd/stay_fresh_agent.sh install --notify telegram    # verdict to Telegram after each run
 ./launchd/stay_fresh_agent.sh install --dry-run            # preview install only
 ./launchd/stay_fresh_agent.sh install --print-only         # show plist, install nothing
@@ -1303,7 +1385,8 @@ OS update, a pile of local snapshots, a gigabyte of installers and a helper
 launchd retries at every login are what a Mac accumulates without anyone
 noticing. It does not empty Trash, prune Docker, remove broad
 user/Xcode/developer caches or old logs, upgrade packages, or update plugins.
-Pass `install --profile full` to retain the previous broad scheduled behavior.
+Pass `install --profile full` to select the same age-limited cleanup and
+software-update preset as manual `stay_fresh.sh --full`.
 `install --notify-when warn` keeps the channel quiet on a clean run.
 
 **A scheduled run checks two things before it sweeps.** On battery it **defers
@@ -1337,11 +1420,14 @@ on every scheduled run:
 - system caches (`/Library/Caches`, `/System/Library/Caches`)
 - system diagnostic and crash reports
 
-With `--profile full`, everything else — user caches, safe per-app caches,
-workspace storage, trash, Homebrew formulae, Docker, Xcode extras, and dev-tool
-caches — runs normally. Cask upgrades are skipped because they may invoke an
-interactive sudo prompt. Run `stay_fresh.sh` by hand for root-owned steps and
-casks. To upgrade casks manually, use `stay_fresh.sh --brew-casks` in a terminal.
+With `--profile full`, old user logs and guarded npx entries are cleaned,
+Homebrew formulae and supported developer tools are updated, and storage/update
+reports run. Bulk caches, Trash, Docker data and Xcode data remain preserved.
+Cask upgrades are part of that preset, but a LaunchAgent has no sudo and no
+terminal, so the scheduled run skips them and warns. That warning exits
+nonzero under `--fail-on-warn`. Run `stay_fresh.sh --full` in an interactive
+terminal for the cask and root-owned steps, or `stay_fresh.sh --brew-casks`
+when only casks are wanted.
 
 Every scheduled run passes `--fail-on-warn`, so incomplete cleanup or a failed
 update produces a non-zero launchd exit status instead of appearing healthy.
@@ -1593,6 +1679,13 @@ Homebrew / `pyenv` / `goenv` commands.
   temp roots. Active or unknown process state keeps the cache. It preserves
   credentials, settings, conversations/sessions, project state, extensions,
   Codex runtimes, and downloaded models.
+- Clears Cursor's `CachedExtensionVSIXs` downloaded extension packages during
+  `ai-caches`, keeping installed extensions and settings. Running Cursor or
+  unknown activity keeps these packages, including with the force flag.
+  Preview with `--only app-caches,ai-caches --deep-clean --dry-run --verbose`.
+  This clears regenerable caches regardless of age; use `--old-only` for
+  age-limited cleanup. Claude VM bundles and OrbStack VM data are persistent
+  data and are not disposable cache targets.
 - Keeps Xcode Archives by default. `--prune-xcode-archives-days N` removes only
   old `.xcarchive` bundles matching the explicit retention threshold.
 - Keeps unavailable simulators and their data by default; deleting them needs
@@ -1703,3 +1796,85 @@ way and is meant to be run with `sudo` for the checks that need it.
 | `install_devtools.sh` | Same as above, only via Homebrew where required. |
 | `stay_fresh.sh` | `purge`, DNS flush, `/Library/Caches` cleanup, system diagnostic cleanup. Pass `--no-sudo` to skip all of these. |
 | `v1_stay_fresh.sh` | `purge`, under `--legacy-run` only. No way to opt out — use `stay_fresh.sh --no-sudo` instead. |
+
+### Understanding old-data cleanup
+
+Preview with `./stay_fresh.sh --old-only --dry-run --verbose`. User-log and rotated-system-log
+candidates show their path, allocated size, age and selection reason. Log history
+cannot be recreated. npx candidates show their newest modification age and why
+npm can recreate them; the size is shown alongside the selected path. Recreating
+these packages can require a network connection. Recent files, open logs,
+changed files and uncertain process state are preserved.
+
+npx cleanup requires owned, non-group/world-writable cache directories and
+contents, and rechecks eligibility and Node activity after sizing, immediately before
+removing each entry. Missing cache roots fail this final check. This reduces
+the activity window but cannot lock out applications starting concurrently.
+Close Node/npm workloads before applying cleanup.
+
+Log helpers stream confirmed removal checkpoints, including the path and
+allocated bytes of each removed file in the run log. An interrupted run reports
+the last complete checkpoint as a minimum, warns that cleanup is incomplete,
+and retains the timeout. A termination between unlink and checkpoint can still
+leave a small amount unaccounted for.
+
+System Data is a storage category, not a disposable directory. Review logs,
+caches, snapshots, backups and virtual-machine data separately. Docker volumes
+and stopped containers require their existing explicit prune options; unused
+volumes can still hold databases. Image pruning targets dangling images, while
+build-cache pruning removes unused build cache and can make subsequent builds
+slower. Neither is a backup of container data.
+
+Full Homebrew runs report remaining outdated formulae and preserve intentional
+pins. Scheduled runs while the user is active omit the recursive disk report.
+
+### Deeper messenger caches
+
+Preview with `./stay_fresh.sh --only app-caches --deep-clean --dry-run --verbose`.
+Apply after quitting your messengers with
+`./stay_fresh.sh --only app-caches --deep-clean --yes`.
+
+In addition to existing app caches, deep mode recognizes installed Slack,
+Signal, Discord and classic Teams Electron profiles and partitions, including
+sandboxed Slack. It selects only named network, compiled-code and GPU/shader
+cache leaves. New Teams WebView caches and installed apps' exact bundle/sandbox
+cache directories retain their existing coverage. Telegram and WhatsApp app
+stores are not treated as Electron profiles.
+
+Conversation databases, cookies, session/local storage, service-worker offline
+stores, attachments, downloaded files and Telegram `tdata` stay intact. Whole
+Application Support directories, containers and group containers are never
+selected by this extension. Cache content may need downloading again. The new
+paths require installed-app metadata, safe directory ownership/permissions,
+and successful idle-process checks; active or unknown apps are kept even with
+`--force-active-app-caches`. Deep mode also protects the existing Slack, Signal,
+Discord and Teams profile caches from that override. Quit apps before applying;
+a process can still start between inspection and deletion.
+
+This follows the distinction between cache and persistent storage in the
+[Electron session API](https://www.electronjs.org/docs/latest/api/session).
+For app-managed recovery, Slack also offers
+[Clear Cache and Restart](https://slack.com/help/articles/205138367-Troubleshoot-connection-issues).
+
+### Messenger-only cleanup and reliability
+
+Use `./stay_fresh.sh --messenger-caches --dry-run --verbose` to preview only
+messenger caches. Select specific apps with repeated options such as
+`--messenger slack --messenger signal`. Supported names are `slack`, `signal`,
+`discord`, `teams`, `telegram`, and `whatsapp`; native apps still use only their
+identified bundle/sandbox cache directories. `--only messenger-caches` is an
+alias. After quitting the selected apps, replace `--dry-run` with `--yes` to apply.
+The preset leaves other apps and all update steps unselected.
+
+Per-app summaries show eligible folder counts and sizes, plus folders kept for
+activity. Each installed-app cache gets another process check after sizing,
+immediately before clearing; active or unknown activity preserves it. This
+reduces the race window but cannot prevent another application starting during
+an actual deletion.
+
+Run-lock retirement space is reserved before acquisition, so normal release and
+failed metadata publication do not require another temporary directory on a
+full disk. Filesystem errors that prevent renames can still require recovery.
+Scheduler install/uninstall retain the previous plist and restore the prior
+loaded job on ordinary failures or INT/TERM/HUP before commit. SIGKILL and power
+loss cannot run shell rollback; retained backup files may be needed for recovery.
