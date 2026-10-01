@@ -849,6 +849,16 @@ jobs:
             exit 1
           }
 
+      - name: Test cleanup helpers on native macOS fixtures
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_user_logs.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_npx_cache.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_system_logs.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_app_cache_inventory.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_native_stay_fresh.py' -v
+
       - name: Run contracts with Apple Bash
         if: needs.changes.outputs.native_macos == 'true'
         shell: bash
@@ -1063,6 +1073,11 @@ jobs:
             echo "::error::wanted ruff $RUFF_VERSION, got '$got'"
             exit 1
           fi
+
+      - name: Test privileged log helper against temporary fixtures
+        if: needs.changes.outputs.python == 'true'
+        shell: bash
+        run: sudo "$(command -v python)" -B -m unittest discover -s test-env/python/tests -p 'test_system_logs.py' -v
 
       - name: Run python suite
         if: needs.changes.outputs.python == 'true'

@@ -1501,6 +1501,44 @@ assert_eq "a failed replacement restores the old plist" "original plist" \
 assert_eq "a failed replacement bootstraps the rollback" "2" \
   "$(grep -c '^bootstrap ' "$agent_calls")"
 
+# Interrupt real transaction code using only a fake launchctl and fixture plist.
+cp "$fake_macos/bin/launchctl" "$fake_macos/launchctl-original"
+printf '%s\n' '#!/bin/sh' \
+  'echo "$*" >> "$AGENT_CALLS"' \
+  'case "$1" in' \
+  'print) test -f "$AGENT_STATE"; exit $? ;;' \
+  'bootout) rm -f "$AGENT_STATE" ;;' \
+  'bootstrap) touch "$AGENT_STATE" ;;' \
+  'esac' \
+  'if [ "$1" = "$AGENT_INTERRUPT_AT" ] && [ ! -f "$AGENT_MARKER" ]; then' \
+  'touch "$AGENT_MARKER"; kill -"$AGENT_SIGNAL" "$PPID"' \
+  'fi; exit 0' > "$fake_macos/bin/launchctl"
+for action in install uninstall; do
+  for signal in TERM HUP INT; do
+    for point in bootout bootstrap; do
+      [[ "$action" == uninstall && "$point" == bootstrap ]] && continue
+      printf 'original plist\n' > "$agent_plist"
+      touch "$fake_macos/job-loaded"
+      rm -f "$fake_macos/interrupted"
+      out="$(AGENT_CALLS="$agent_calls" AGENT_STATE="$fake_macos/job-loaded" \
+        AGENT_MARKER="$fake_macos/interrupted" AGENT_SIGNAL="$signal" AGENT_INTERRUPT_AT="$point" \
+        HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+        "$agent" "$action" 2>&1)"; rc=$?
+      case "$signal" in TERM) expected=143 ;; HUP) expected=129 ;; INT) expected=130 ;; esac
+      assert_eq "$action handles $signal during $point" "$expected" "$rc"
+      assert_eq "$action $signal $point restores previous plist" "original plist" "$(cat "$agent_plist")"
+      if [[ -f "$fake_macos/job-loaded" ]]; then
+        ok "$action $signal $point restores loaded job"
+      else
+        err "$action $signal $point left the previous job unloaded"
+      fi
+      leftovers="$(find "$(dirname "$agent_plist")" -name '.com.pretty-useful.stay-fresh.*' -print)"
+      assert_eq "$action $signal $point leaves no staging artifacts" "" "$leftovers"
+    done
+  done
+done
+mv "$fake_macos/launchctl-original" "$fake_macos/bin/launchctl"
+
 # status reads the verdict stay_fresh.sh writes for it, and says so when
 # there is none yet.
 rm -f "$fake_macos/home/Library/Logs/stay_fresh/last-run.json"
@@ -1593,6 +1631,14 @@ assert_contains "a stale weekly schedule names the weekly yardstick" "$out" \
   "no scheduled run in 20 day(s) since the last scheduled run, and the schedule fires every 7 day(s)"
 printf 'original plist\n' > "$agent_plist"
 rm -f "$sched_stamp"
+
+# Scheduled full shares the manual full preset, including its incomplete-cycle
+# warning because launchd uses --no-sudo and cannot upgrade casks.
+sched_out="$(HOME="$fake_macos/home" TMPDIR="$fake_macos/tmp" PATH="$fake_macos/bin:/usr/bin:/bin" \
+  "$agent" run-scheduled --profile full --ignore-power --dry-run 2>&1)"
+assert_contains "scheduled full uses age-limited developer cleanup" "$sched_out" "only validated npx entries"
+assert_contains "scheduled full retains the Homebrew cycle" "$sched_out" "brew autoremove"
+assert_contains "scheduled full reports incomplete cask updates" "$sched_out" "full update cycle is incomplete"
 
 # The safe profile is what the plist runs by default. Its step list lives in
 # run-scheduled, not in the plist, so it is checked from the stdout of a
@@ -1751,6 +1797,8 @@ if [[ -n "$sched_log" ]]; then
   sched_out="$(cat "$sched_log")"
   assert_contains "the downgraded run still reports pending OS updates" \
     "$(grep "pending OS / App Store updates" <<<"$sched_out")" "run"
+  assert_contains "active-user reports skip recursive disk sizing" \
+    "$(grep 'disk report' <<<"$sched_out")" "skip"
   for keep in "clear per-app caches" "prune workspace storage" "empty trash"; do
     assert_contains "the downgraded run sweeps nothing: $keep" "$(grep -i "$keep" <<<"$sched_out")" "skip"
   done

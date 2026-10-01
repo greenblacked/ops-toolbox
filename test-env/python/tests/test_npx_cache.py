@@ -42,6 +42,60 @@ class NpxCacheTests(unittest.TestCase):
     def scan(self):
         return npx_cache.classify(str(self.home), {}, self.now)
 
+    def test_custom_retention_and_exact_boundary(self):
+        self.assertEqual(npx_cache.classify(str(self.home), {}, self.now, 10), [])
+        self.assertEqual(npx_cache.classify(str(self.home), {}, self.now, 9),
+                         [str(self.entry)])
+
+    def test_invalid_retention_is_rejected(self):
+        for days in (0, -1, 36501, "7", True):
+            with self.subTest(days=days), self.assertRaises(ValueError):
+                npx_cache.classify(str(self.home), {}, self.now, days)
+
+    def test_writable_ancestry_is_rejected(self):
+        for directory in (self.home, self.root.parent, self.root):
+            original = directory.stat().st_mode
+            try:
+                directory.chmod(0o777)
+                with self.subTest(directory=directory), self.assertRaises(npx_cache.Unsafe):
+                    self.scan()
+            finally:
+                directory.chmod(original)
+
+    def test_writable_contents_are_preserved(self):
+        (self.entry / "package.json").chmod(0o666)
+        self.assertEqual(self.scan(), [])
+
+    def test_foreign_owner_is_preserved(self):
+        with patch.object(npx_cache.os, "geteuid", return_value=os.geteuid() + 1), \
+                self.assertRaises(npx_cache.Unsafe):
+            self.scan()
+
+    def test_selected_entry_revalidation_refuses_new_node_process(self):
+        with patch.dict(os.environ, {"HOME": str(self.home)}, clear=True), \
+                patch.object(npx_cache, "probe_processes", side_effect=[True, False]):
+            self.assertEqual(npx_cache.main(["--check-entry", str(self.entry)]), 4)
+        self.assertTrue(self.entry.exists())
+
+    def test_selected_entry_revalidation_refuses_recent_change(self):
+        (self.entry / "package.json").touch()
+        with patch.dict(os.environ, {"HOME": str(self.home)}, clear=True), \
+                patch.object(npx_cache, "probe_processes", return_value=True):
+            self.assertEqual(npx_cache.main(["--check-entry", str(self.entry)]), 1)
+        self.assertTrue(self.entry.exists())
+
+    def test_missing_root_rejects_final_check_but_allows_empty_discovery(self):
+        self.root.rename(self.root.with_name("moved"))
+        with patch.dict(os.environ, {"HOME": str(self.home)}, clear=True), \
+                patch.object(npx_cache, "probe_processes") as probe:
+            self.assertEqual(npx_cache.main(["--check-entry", str(self.entry)]), 1)
+            self.assertEqual(npx_cache.main([]), 0)
+            probe.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "darwin", "native macOS process contract")
+    def test_native_process_listing_is_understood(self):
+        self.assertIsInstance(npx_cache.probe_processes(), bool)
+
     def test_old_cache_is_eligible(self):
         self.assertEqual(self.scan(), [str(self.entry)])
 

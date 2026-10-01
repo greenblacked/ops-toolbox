@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     shellcheck \
     zsh \
     python3 \
+    lsof \
     && rm -rf /var/lib/apt/lists/*
 
 # A non-root user for tests/test_stay_fresh_unprivileged.sh. Running as root

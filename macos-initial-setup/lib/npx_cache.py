@@ -19,8 +19,6 @@ import subprocess
 import sys
 import time
 
-RETENTION_SECONDS = 7 * 86400
-
 
 class Unsafe(Exception):
     """Classification cannot safely establish disposable cache entries."""
@@ -84,8 +82,11 @@ def safe_root(home, environ):
         # HOME may live on its own volume; the cache must stay on that volume.
         if current == home:
             device = metadata.st_dev
-        if device is not None and metadata.st_dev != device:
-            raise Unsafe("cache crosses a mount boundary")
+        if device is not None:
+            if metadata.st_dev != device:
+                raise Unsafe("cache crosses a mount boundary")
+            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                raise Unsafe("cache ancestry has unsafe ownership or permissions")
     return root
 
 
@@ -95,7 +96,9 @@ def old_entry(entry, device, cutoff):
     while pending:
         path = pending.pop()
         metadata = os.lstat(path)
-        if metadata.st_dev != device or metadata.st_mtime > cutoff:
+        if (metadata.st_dev != device or metadata.st_mtime > cutoff
+                or metadata.st_uid != os.geteuid()
+                or (not stat.S_ISLNK(metadata.st_mode) and metadata.st_mode & 0o022)):
             return False
         if stat.S_ISLNK(metadata.st_mode):
             target = os.path.realpath(path)
@@ -119,7 +122,9 @@ def old_entry(entry, device, cutoff):
             and all(isinstance(k, str) and isinstance(v, str) for k, v in deps.items()))
 
 
-def classify(home, environ, now):
+def classify(home, environ, now, keep_days=7):
+    if type(keep_days) is not int or not 1 <= keep_days <= 36500:
+        raise ValueError("keep_days must be an integer from 1 to 36500")
     root = safe_root(home, environ)
     if root is None:
         return []
@@ -131,7 +136,7 @@ def classify(home, environ, now):
                 continue
             try:
                 if (entry.is_dir(follow_symlinks=False)
-                        and old_entry(entry.path, device, now - RETENTION_SECONDS)):
+                        and old_entry(entry.path, device, now - keep_days * 86400)):
                     eligible.append(entry.path)
             except (OSError, ValueError):
                 # An unreadable or changing entry is never an empty entry.
@@ -141,22 +146,47 @@ def classify(home, environ, now):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
+    parser.add_argument("--keep-days", type=int, default=7)
+    parser.add_argument("--check-entry", help="revalidate one previously selected entry")
+    parser.add_argument("--explain", action="store_true")
+    args = parser.parse_args(argv)
+    if not 1 <= args.keep_days <= 36500:
+        parser.error("--keep-days must be from 1 to 36500")
     try:
         home = os.environ.get("HOME", "")
         root = safe_root(home, os.environ)
         if root is None:
+            if args.check_entry:
+                raise Unsafe("selected cache root disappeared")
             return 0
         if not probe_processes():
             print("npx cache kept: a Node/npm/npx process is running", file=sys.stderr)
             return 4
-        eligible = classify(home, os.environ, time.time())
+        now = time.time()
+        if args.check_entry:
+            entry = args.check_entry
+            if (os.path.dirname(entry) != root
+                    or not re.fullmatch(r"[0-9a-f]{16}", os.path.basename(entry))
+                    or not stat.S_ISDIR(os.lstat(entry).st_mode)
+                    or not old_entry(entry, os.lstat(root).st_dev, now - args.keep_days * 86400)):
+                raise Unsafe("selected entry changed or is no longer eligible")
+            eligible = [entry]
+        else:
+            eligible = classify(home, os.environ, now, args.keep_days)
         # Recheck after potentially lengthy traversal before offering deletion.
         if not probe_processes():
             print("npx cache kept: a Node/npm/npx process started", file=sys.stderr)
             return 4
         for entry in eligible:
-            print(entry)
+            if args.explain:
+                newest = max(os.lstat(os.path.join(directory, name)).st_mtime
+                             for directory, dirs, files in os.walk(entry)
+                             for name in ["."] + dirs + files)
+                print("%s: newest modification %d complete days ago; validated npm cache; "
+                      "npm can download packages again (network access may be required)"
+                      % (entry, (now - newest) // 86400))
+            else:
+                print(entry)
         return 0
     except (Unsafe, OSError) as exc:
         print("npx cache kept: %s" % exc, file=sys.stderr)

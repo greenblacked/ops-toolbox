@@ -110,6 +110,51 @@ class AppCacheInventoryTests(unittest.TestCase):
             self.directory(base + "/" + relative)
         self.assertEqual([r[3] for r in self.scan()], [str(wanted)])
 
+    def test_messenger_selection_excludes_other_apps_and_other_messengers(self):
+        self.app("Slack", "com.tinyspeck.slackmacgap", "Slack")
+        self.app("Signal", "org.whispersystems.signal-desktop", "Signal")
+        self.app()
+        for bundle in ("com.tinyspeck.slackmacgap", "org.whispersystems.signal-desktop",
+                       "org.example.app"):
+            self.directory("Library/Caches/" + bundle)
+        all_messengers = ac.classify(str(self.home), [str(self.apps)], True, True)
+        self.assertEqual({r[0] for r in all_messengers}, {"Slack", "Signal"})
+        selected = ac.classify(str(self.home), [str(self.apps)], True, True, ["slack"])
+        self.assertEqual([r[0] for r in selected], ["Slack"])
+
+    def test_deep_messenger_profiles_preserve_persistent_state(self):
+        self.app("Slack", "com.tinyspeck.slackmacgap", "Slack")
+        roots = ["Library/Application Support/Slack",
+                 "Library/Containers/com.tinyspeck.slackmacgap/Data/Library/"
+                 "Application Support/Slack"]
+        wanted = set()
+        for root in roots:
+            for profile in ("", "Default/", "Partitions/workspace/"):
+                wanted.add(str(self.directory(root + "/" + profile + "Code Cache")))
+            for state in ("IndexedDB", "Local Storage", "Session Storage", "attachments",
+                          "Service Worker/CacheStorage", "Downloads", "tdata"):
+                self.directory(root + "/Partitions/workspace/" + state + "/Cache")
+        self.assertEqual(self.scan(), [])
+        records = ac.classify(str(self.home), [str(self.apps)], deep_clean=True)
+        self.assertEqual({r[3] for r in records}, wanted)
+
+    def test_deep_messenger_partition_links_and_writable_paths_are_kept(self):
+        self.app("Signal", "org.whispersystems.signal-desktop", "Signal")
+        base = "Library/Application Support/Signal/Partitions"
+        target = self.directory("outside/GPUCache")
+        partitions = self.directory(base)
+        (partitions / "redirect").symlink_to(target.parent)
+        writable = self.directory(base + "/unsafe/Cache")
+        writable.parent.chmod(0o777)
+        self.assertEqual(ac.classify(str(self.home), [str(self.apps)], True), [])
+
+    def test_native_messenger_data_is_not_an_electron_profile(self):
+        for label, bundle in (("Telegram", "ru.keepcoder.Telegram"),
+                              ("WhatsApp", "net.whatsapp.WhatsApp")):
+            self.app(label, bundle, label)
+            self.directory("Library/Application Support/" + label + "/Cache")
+        self.assertEqual(ac.classify(str(self.home), [str(self.apps)], True), [])
+
     def test_failed_root_scan_is_not_successful_empty_inventory(self):
         with patch.object(ac.os, "listdir", side_effect=PermissionError), \
                 self.assertRaises(PermissionError):
