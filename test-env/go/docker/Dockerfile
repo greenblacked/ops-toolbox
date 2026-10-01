@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 FROM golang:1.27-bookworm
 
-ARG GOLANGCI_LINT_VERSION=v1.61.0
+ARG GOLANGCI_LINT_VERSION=v2.14.0
 ARG TARGETARCH
 ARG HADOLINT_VERSION=2.12.0
 
@@ -14,9 +14,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       git make ca-certificates curl shellcheck yamllint \
     && rm -rf /var/lib/apt/lists/*
 
-# golangci-lint via official installer (pinned).
-RUN curl -fsSL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-    | sh -s -- -b /usr/local/bin ${GOLANGCI_LINT_VERSION}
+# golangci-lint from its pinned release, checked against the published digest.
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+      amd64|arm64) lint_arch="${TARGETARCH:-amd64}" ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    lint_version="${GOLANGCI_LINT_VERSION#v}"; \
+    archive="golangci-lint-${lint_version}-linux-${lint_arch}.tar.gz"; \
+    release="https://github.com/golangci/golangci-lint/releases/download/${GOLANGCI_LINT_VERSION}"; \
+    curl -fsSL -o "/tmp/${archive}" "${release}/${archive}"; \
+    curl -fsSL -o /tmp/golangci-checksums.txt \
+      "${release}/golangci-lint-${lint_version}-checksums.txt"; \
+    expected="$(awk -v file="${archive}" '$2 == file { print $1 }' /tmp/golangci-checksums.txt)"; \
+    test -n "${expected}"; \
+    printf '%s  %s\n' "${expected}" "/tmp/${archive}" > /tmp/golangci-verify.txt; \
+    sha256sum -c /tmp/golangci-verify.txt; \
+    tar -xzf "/tmp/${archive}" -C /usr/local/bin --strip-components=1 \
+      "golangci-lint-${lint_version}-linux-${lint_arch}/golangci-lint"; \
+    rm "/tmp/${archive}" /tmp/golangci-checksums.txt /tmp/golangci-verify.txt
 
 # hadolint (Dockerfile linter) — single static binary.
 RUN set -eux; \

@@ -31,11 +31,11 @@ build:
 
 # go test (race detector + verbose on failures only via -count=1).
 test:
-    {{run}} go test -race -count=1 ./...
+    {{run}} env CGO_ENABLED=1 go test -race -count=1 ./...
 
 # go test with coverage report.
 cov:
-    {{run}} go test -race -coverprofile=coverage.out -covermode=atomic ./...
+    {{run}} env CGO_ENABLED=1 go test -race -coverprofile=coverage.out -covermode=atomic ./...
     {{run}} go tool cover -func=coverage.out
 
 # go vet.
