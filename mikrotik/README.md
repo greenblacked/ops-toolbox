@@ -97,7 +97,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 15 of these 28 scripts do not run at all.** That release
+> **On RouterOS 7.24, 14 of these 28 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
@@ -110,10 +110,15 @@ their values, so no token crosses the wire.
 > `reboot-and-flush.lua`, `security_check.lua`, `stay_fresh.lua`,
 > `tg_send.lua`, `wireguard_watch.lua`.
 >
+> **Migrated source; runtime verification pending:** `rogue_dns_check.lua`.
+> Its variable names now avoid the 7.24 parser restriction. The pinned 7.24.4
+> CHR tests were blocked while building the local environment, so scheduler
+> execution and delivery behavior are not yet verified on that release.
+>
 > **Does not run on 7.24** (fine on 7.23 and earlier):
 > `bandwidth_spike.lua`, `brute_force_block.lua`, `ddns_update.lua`,
 > `dhcp_lease_watch.lua`, `firewall_drift.lua`, `firewall_drift_baseline.lua`,
-> `latency_monitor.lua`, `mac_allowlist_dhcp.lua`, `rogue_dns_check.lua`,
+> `latency_monitor.lua`, `mac_allowlist_dhcp.lua`,
 > `traffic_quota.lua`, `update_check.lua`, `vpn_health.lua`,
 > `wan_failover_notify.lua`, `wan_link_flap_notify.lua`,
 > `wireless_client_watch.lua`.
@@ -699,14 +704,29 @@ Two checks per run. First, it `:resolve`s a control hostname (default
 `one.one.one.one`, Cloudflare's anycast name for 1.1.1.1 / 1.0.0.1 —
 `dns.cloudflare.com` resolves elsewhere and false-alarms on a healthy
 resolver) and warns if the answer is not in `:global
-DNS_EXPECTED` — a sign of upstream DNS hijack or a wrong/leaking resolver
+DnsExpected` — a sign of upstream DNS hijack or a wrong/leaking resolver
 config. Second, it walks `/ip firewall connection` for outbound
 UDP/TCP `dst-port=53` flows whose destination is neither a router-self IP
-nor an entry in `:global DNS_ALLOWED_RESOLVERS`, aggregates offenders by
+nor an entry in `:global DnsAllowedResolvers`, aggregates offenders by
 source IP, and (with `Enforce=true`, default) tags those source IPs into
 address-list `rogue-dns-clients` with a 1-hour timeout. Pair with a
 documented filter rule to redirect or drop their port-53 traffic (see
 [Security action surface](#security-action-surface) below).
+
+Telegram receives ordinary text through `tg_send` (override with
+`:global RdnsSendScript "tg_send_new"`). Only an explicit `true` acknowledgement
+updates `RdnsDeliveredSig`; a failed or missing helper records `RdnsSendError`
+and the unchanged alert retries next run. External values are sent literally,
+including HTML-looking text and percent escapes.
+
+RouterOS 7.24 requires names without underscores. When updating this script,
+copy any custom `DNS_EXPECTED` / `DNS_ALLOWED_RESOLVERS` values into
+`DnsExpected` / `DnsAllowedResolvers`. The old `RDNS_LAST_FLAG` state is unused;
+the next active finding will be sent again. Create both the script and its
+scheduler with the same explicit `policy=read,write,policy,test,ftp` for
+connection/address-list access, helper source reads, DNS resolution, and fetch.
+This scoped policy needs verification on your RouterOS release; it grants no
+permission bypass.
 
 ### `features/security_check.lua`
 

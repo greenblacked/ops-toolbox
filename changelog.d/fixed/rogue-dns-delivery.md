@@ -1,0 +1,1 @@
+- Retry unchanged rogue DNS alerts until Telegram explicitly acknowledges delivery, send external values as literal plain text, and use RouterOS 7.24-compatible global names with documented scheduler policy and configuration migration.

@@ -154,14 +154,16 @@ def _remove_by_name(resource: Any, name: str) -> None:
 SCRIPT_POLICY = b"ftp,reboot,read,write,policy,test,password,sniff,sensitive,romon"
 
 
-def _add_script(resource: Any, name: str, source: str) -> None:
+def _add_script(
+    resource: Any, name: str, source: str, policy: bytes = SCRIPT_POLICY
+) -> None:
     _remove_by_name(resource, name)
     resource.call(
         "add",
         {
             "name": name.encode("utf-8"),
             "source": source.encode("utf-8"),
-            "policy": SCRIPT_POLICY,
+            "policy": policy,
         },
     )
 
@@ -701,6 +703,7 @@ def _run_via_scheduler(
     ready,
     timeout: float = 60.0,
     interval: str = "1s",
+    policy: bytes = SCRIPT_POLICY,
 ) -> None:
     """Run an installed script from the scheduler, and wait for its effect.
 
@@ -731,7 +734,7 @@ def _run_via_scheduler(
             "name": SCHEDULER_NAME.encode("utf-8"),
             "on-event": name.encode("utf-8"),
             "interval": interval.encode("utf-8"),
-            "policy": SCRIPT_POLICY,
+            "policy": policy,
         },
     )
     try:
@@ -1242,3 +1245,159 @@ def test_backup_update_check_backs_up_when_a_release_is_offered(
         assert needle in message, f"{needle!r} missing: {message!r}"
     stray = re.search(r"%(?![0-9A-Fa-f]{2})", message)
     assert stray is None, f"bare percent at {stray.start()}: {message!r}"
+
+
+ROGUE_DNS_POLICY = b"read,write,policy,test,ftp"
+
+
+@pytest.mark.parametrize("failure", ["false", "nil", "empty", "error", "missing"])
+def test_rogue_dns_retries_until_acknowledged_with_scheduler_policy(
+    api: Any, script_resource: Any, failure: str
+) -> None:
+    """Drive real scheduler execution with local DNS and a no-network sender."""
+    watcher = "pu_ut_rogue_dns"
+    helper = "pu_ut_rogue_sender"
+    setup = "pu_ut_rogue_setup"
+    host = "ops-toolbox-rogue-test.invalid"
+    dns = api.get_binary_resource("/ip/dns/static")
+    identity = api.get_binary_resource("/system/identity")
+    old_identity = _row_str(list(identity.get())[0], "name")
+    literal_identity = "router <tag>& 100% %0A %26 ?#"
+    names = (
+        "DnsExpected", "DnsAllowedResolvers", "RdnsDeliveredSig",
+        "RdnsSendError", "RdnsSendScript", "RdnsTestRuns",
+        "RdnsTestAttempts", "RdnsTestMessage", "RdnsTestPlain",
+    )
+    for name in names:
+        _unset_global(api, name)
+    source = script_path("rogue_dns_check.lua").read_text(encoding="utf-8")
+    source = source.replace('"one.one.one.one"', f'"{host}"')
+    source = source.replace(":local Enforce      true;", ":local Enforce      false;")
+    source += (
+        '\n:global RdnsTestRuns; :set RdnsTestRuns ($RdnsTestRuns + 1);\n'
+    )
+    capture = (
+        ':global RdnsTestAttempts; :global RdnsTestMessage; :global RdnsTestPlain; '
+        ':set RdnsTestAttempts ($RdnsTestAttempts + 1); '
+        ':set RdnsTestMessage $MessageText; :set RdnsTestPlain $MessagePlainText; '
+    )
+    failures = {
+        "false": ":return false;", "nil": ":local noResult; :return $noResult;",
+        "empty": ':return "";',
+        "error": ':error "test delivery failure";',
+    }
+
+    def run_once() -> None:
+        before = int(_read_global(api, "RdnsTestRuns") or "0")
+        _run_via_scheduler(
+            api, watcher,
+            lambda: int(_read_global(api, "RdnsTestRuns") or "0") > before,
+            policy=ROGUE_DNS_POLICY,
+        )
+
+    def configure(expected: str) -> None:
+        _add_script(
+            script_resource, setup,
+            f':global DnsExpected "{expected}"; '
+            ':global RdnsDeliveredSig ""; :global RdnsSendError ""; '
+            f':global RdnsSendScript "{helper}"; '
+            ':global RdnsTestRuns 0; :global RdnsTestAttempts 0; '
+            ':global RdnsTestReady true;',
+            policy=ROGUE_DNS_POLICY,
+        )
+        _unset_global(api, "RdnsTestReady")
+        _run_via_scheduler(
+            api, setup, lambda: _read_global(api, "RdnsTestReady") == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+
+    try:
+        dns.call("add", {"name": host.encode(), "address": b"203.0.113.99"})
+        identity.call("set", {"name": literal_identity.encode()})
+        configure(";192.0.2.1;")
+        _add_script(script_resource, watcher, source, policy=ROGUE_DNS_POLICY)
+        if failure == "false":
+            # Direct-name scheduler execution requires enough permissions for
+            # the installed script, rather than bypassing the policy check.
+            scheduler = api.get_binary_resource("/system/scheduler")
+            _remove_by_name(scheduler, SCHEDULER_NAME)
+            scheduler.call("add", {
+                "name": SCHEDULER_NAME.encode(), "on-event": watcher.encode(),
+                "interval": b"1s", "policy": b"read,test",
+            })
+            try:
+                deadline = time.monotonic() + 15
+                fired = denied = False
+                while time.monotonic() < deadline:
+                    for row in scheduler.get():
+                        if _row_str(row, "name") == SCHEDULER_NAME:
+                            fired = int(_row_str(row, "run-count") or "0") > 0
+                    denied = any(
+                        "not enough permissions" in line
+                        and (watcher in line or SCHEDULER_NAME in line)
+                        for line in _recent_log_lines(api, limit=50)
+                    )
+                    if fired and denied:
+                        break
+                    time.sleep(1)
+                assert fired, "reduced-policy scheduler never fired"
+                assert denied, "no name-scoped permission-denied log observed"
+                assert _read_global(api, "RdnsTestRuns") == "0"
+            finally:
+                _remove_by_name(scheduler, SCHEDULER_NAME)
+        if failure != "missing":
+            _add_script(
+                script_resource, helper, capture + failures[failure],
+                policy=ROGUE_DNS_POLICY,
+            )
+        else:
+            _remove_by_name(script_resource, helper)
+        run_once()
+        assert _read_global(api, "RdnsDeliveredSig") == ""
+        assert _read_global(api, "RdnsSendError")
+        # Repeat the unchanged finding with the same failed sender.
+        attempts = int(_read_global(api, "RdnsTestAttempts") or "0")
+        run_once()
+        if failure != "missing":
+            assert int(_read_global(api, "RdnsTestAttempts")) > attempts
+        assert _read_global(api, "RdnsDeliveredSig") == ""
+        _add_script(
+            script_resource, helper, capture + ":return true;",
+            policy=ROGUE_DNS_POLICY,
+        )
+        run_once()
+        assert _read_global(api, "RdnsDeliveredSig")
+        assert _read_global(api, "RdnsSendError") == ""
+        assert _read_global(api, "RdnsTestPlain") == "true"
+        message = _read_global(api, "RdnsTestMessage")
+        assert literal_identity in message
+        assert "\nUpstream sanity:" in message
+        attempts = int(_read_global(api, "RdnsTestAttempts"))
+        run_once()
+        assert int(_read_global(api, "RdnsTestAttempts")) == attempts
+        # Clear with an allowed local answer, then reintroduce the same finding.
+        _add_script(
+            script_resource, setup,
+            ':global DnsExpected ";203.0.113.99;"; :global RdnsTestReady true;',
+            policy=ROGUE_DNS_POLICY,
+        )
+        _unset_global(api, "RdnsTestReady")
+        _run_via_scheduler(
+            api, setup, lambda: _read_global(api, "RdnsTestReady") == "true",
+            policy=ROGUE_DNS_POLICY,
+        )
+        run_once()
+        assert _read_global(api, "RdnsDeliveredSig") == ""
+        configure(";192.0.2.1;")
+        run_once()
+        assert _read_global(api, "RdnsDeliveredSig")
+        assert int(_read_global(api, "RdnsTestAttempts")) >= 1
+    finally:
+        identity.call("set", {"name": old_identity.encode()})
+        for row in dns.get():
+            if _row_str(row, "name") == host:
+                dns.call("remove", {".id": _row_id(row)})
+        for name in (watcher, helper, setup):
+            _remove_by_name(script_resource, name)
+        for name in (*names, "RdnsTestReady"):
+            _unset_global(api, name)

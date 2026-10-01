@@ -549,8 +549,8 @@ for f in "${scripts[@]}"; do
     fi
   else
     compat_runs=$((compat_runs + 1))
-    if ! awk '/\*\*Runs on 7\.24:\*\*/,/^$/' "$README" | grep -qF "\`$n\`"; then
-      err "$n runs on 7.24 but the README does not list it as such"
+    if ! awk '/\*\*Runs on 7\.24:\*\*|\*\*Migrated source; runtime verification pending:\*\*/,/^$/' "$README" | grep -qF "\`$n\`"; then
+      err "$n has compatible variable names but the README does not list its status"
       compat_wrong=$((compat_wrong + 1))
     fi
   fi
