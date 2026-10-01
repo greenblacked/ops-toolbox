@@ -601,6 +601,25 @@ source is `/etc`, and a run that can read all of it is a run with `shadow`, the
 sshd host keys and `sudoers` in the tarball. `--dest` keeps the mode it already
 has: the secret is the file, not the directory holding it.
 
+Each run creates a private staging directory in `--dest`, validates the gzip
+stream and a nonempty tar member listing, and publishes a unique timestamped
+name with an atomic hard link. An occupied filename or symlink is never overwritten or followed.
+Concurrent publication and rotation use `flock` from util-linux; the destination
+filesystem must support hard links and advisory locking. The destination and
+its parent directories must not be writable by untrusted users. Staging is
+removed on normal exit and handled signals. A forced kill may leave a hidden
+staging directory, which is excluded from listing and retention.
+
+Tar exit `0` with every requested source present produces a complete archive.
+Tar exit `1` with a valid archive, or a skipped missing requested path, produces
+a `*.partial.tar.gz` archive and exits `1` with a warning. Fatal tar errors,
+invalid archives, and staging or publication failures publish nothing and leave
+previous generations intact. Rotation starts only after successful publication.
+`--keep N` retains up to N complete archives and N partial archives separately;
+a partial run rotates only partial archives, preserving every complete copy.
+`--keep 0` retains all generations. `--list` includes both kinds, with the
+filename identifying a partial backup.
+
 ## `ssh_client_doctor.sh`
 
 `hardening_audit.sh` grades **sshd**.
