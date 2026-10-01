@@ -1404,6 +1404,9 @@ left="$(ls -1 "$dest"/config-*.tar.gz 2>/dev/null | grep -c . || true)"
 assert_eq "config_backup --keep 1 retains one archive" "1" "$left"
 rm -rf "$src" "$dest"
 
+bash "$L/tests/test_config_backup.sh"
+assert_eq "config_backup publication regression suite exits 0" "0" "$?"
+
 section "ssh_client_doctor.sh"
 SSHDOC="$L/ssh_client_doctor.sh"
 missing_dir="$(mktemp -d)"
