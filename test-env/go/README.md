@@ -3,7 +3,7 @@
 [Ops Toolbox](../../README.md) / **Go test environment**
 
 Develop and run checks in **Docker** so your laptop does not need a local Go
-toolchain. The image ships **Go 1.23**, **golangci-lint**, **goimports**,
+toolchain. The image ships **Go 1.27**, **golangci-lint**, **goimports**,
 **govulncheck**, plus the meta-linters **shellcheck**, **hadolint**, and
 **yamllint** for the test-env scaffolding itself. Module + build caches live
 in named Compose volumes so recompiles are quick.
@@ -36,7 +36,7 @@ and markdownlint job. Run `just ci` yourself after changing anything here.
 | --- | --- |
 | [`run.sh`](run.sh) | Entrypoint. Subcommands: `up`/`down`/`logs`/`ps`/`shell`. Flags: `--once`, `--rebuild`. |
 | [`justfile`](justfile) | Shortcuts: `just up`, `just test`, `just lint`, `just ci`, … |
-| [`docker/Dockerfile`](docker/Dockerfile) | `golang:1.23-bookworm` + golangci-lint + goimports + govulncheck + **shellcheck / hadolint / yamllint** |
+| [`docker/Dockerfile`](docker/Dockerfile) | `golang:1.27-bookworm` + golangci-lint + goimports + govulncheck + **shellcheck / hadolint / yamllint** |
 | [`docker/docker-compose.yml`](docker/docker-compose.yml) | Long-running `dev` service, `go-mod-cache` + `go-build-cache` volumes |
 | [`.golangci.yml`](.golangci.yml) | Lint config (errcheck, staticcheck, gosec, revive, …) |
 | [`go.mod`](go.mod) | Module — `github.com/greenblacked/ops-toolbox/test-env/go` |
