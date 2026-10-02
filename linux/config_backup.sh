@@ -15,8 +15,8 @@
 # one you run before editing sshd_config.
 #
 # Exit codes:
-#   0   archive written (or dry-run completed)
-#   1   tar or rotation failed
+#   0   complete archive written (or dry-run completed)
+#   1   partial backup, or staging, validation, publication or rotation failed
 #   2   preflight failed (not Linux)
 #   3   bad CLI arguments
 set -u
@@ -48,7 +48,9 @@ usage() {
   cat <<EOF
 config_backup.sh - dated tar of selected paths (default: /etc)
 
-Writes a gzip archive and rotates older copies in --dest. The archive is
+Validates and publishes a unique gzip archive, then rotates older copies in
+--dest. Partial backups are named *.partial.tar.gz and return exit 1. Requires
+flock (util-linux) and a destination filesystem supporting hard links. Files are
 created mode 0600: the default source is /etc, which holds shadow, sudoers and
 the sshd host keys. A dry run writes nothing. A real run requires --yes. This
 is a copy, not a restore.
@@ -65,11 +67,11 @@ Options:
   --list [FILE]      Show contents of FILE, or of the newest archive in --dest
   --paths LIST       Comma-separated absolute paths (repeatable; default: /etc)
   --dest DIR         Directory for archives (default: ~/ops-toolbox-backups)
-  --keep N           Archives to retain after a successful write (default: $KEEP; 0 = keep all)
+  --keep N           Complete and partial archives to retain separately (default: $KEEP; 0 = keep all)
   --prefix NAME      Filename prefix (default: $PREFIX)
   --help, -h         Show this help
 
-Exit codes: 0 success, 1 tar or rotation failed, 2 not Linux, 3 usage
+Exit codes: 0 complete backup, 1 partial backup or failure, 2 preflight, 3 usage
 EOF
 }
 
@@ -185,7 +187,7 @@ fi
 resolve_dest
 
 stamp="$(date +%Y%m%d-%H%M%S)"
-archive="$DEST/${PREFIX}-${stamp}.tar.gz"
+archive="$DEST/${PREFIX}-${stamp}-UNIQUE.tar.gz"
 
 rels=()
 missing=0
@@ -230,21 +232,43 @@ done
 rotate_old() {
   local keep="$1"
   local do_it="$2"
-  local match removed
+  local partial_only="${3:-0}"
+  local match old name complete_count partial_count count
+  local candidates=()
   [[ "$keep" == "0" ]] && return 0
   [[ -d "$DEST" ]] || return 0
-  match="$(ls -1t "$DEST"/"$PREFIX"-*.tar.gz 2>/dev/null || true)"
+  # Read basenames so even a destination containing a newline is safe. All
+  # generated basenames use only the validated prefix and a fixed alphabet.
+  for old in "$DEST"/"$PREFIX"-*.tar.gz; do
+    [[ -f "$old" && ! -L "$old" ]] || continue
+    name="${old##*/}"
+    # Unrecognised names are not ours to rotate. In particular, ls output for
+    # a newline-containing name could otherwise become two deletion targets.
+    case "$name" in *[!A-Za-z0-9._-]*) continue ;; esac
+    candidates+=("$name")
+  done
+  (( ${#candidates[@]} > 0 )) || return 0
+  match="$(cd "$DEST" && ls -1t -- "${candidates[@]}" 2>/dev/null || true)"
   [[ -n "$match" ]] || return 0
-  # Dry-run has not written the new archive yet, so count it as the newest
-  # entry; otherwise --keep 1 would leave one old copy plus the new one.
-  removed=0
-  (( do_it )) || removed=1
+  complete_count=0
+  partial_count=0
+  # A preview assumes a new complete archive. It writes no staging or lock.
+  (( do_it )) || complete_count=1
   while IFS= read -r old; do
     [[ -n "$old" ]] || continue
-    removed=$((removed + 1))
-    if (( removed > keep )); then
+    old="$DEST/$old"
+    # Symlinks and directories are not generations owned by this script.
+    [[ -f "$old" && ! -L "$old" ]] || continue
+    case "$old" in
+      *.partial.tar.gz) partial_count=$((partial_count + 1)); count="$partial_count" ;;
+      *)
+        (( partial_only )) && continue
+        complete_count=$((complete_count + 1)); count="$complete_count"
+        ;;
+    esac
+    if (( count > keep )); then
       if (( do_it )); then
-        if rm -f "$old"; then
+        if rm -f -- "$old"; then
           ok "rotated $old"
         else
           err "could not remove $old"
@@ -259,57 +283,94 @@ rotate_old() {
 
 if (( DRY_RUN )); then
   info "would create $DEST"
-  info "would write $archive"
+  info "would write $DEST/${PREFIX}-${stamp}-UNIQUE.tar.gz (validated before publication)"
   rotate_old "$KEEP" 0
   info "dry-run complete; no changes written"
   exit 0
 fi
 
-if ! mkdir -p "$DEST"; then
+for tool in tar gzip mktemp flock ln; do
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    err "required tool is missing: $tool"
+    exit 2
+  fi
+done
+
+if ! mkdir -p -- "$DEST"; then
   err "could not create $DEST"
   exit 1
 fi
 
-# -C / so the archive contains etc/ssh/... rather than an absolute path that
-# restores on top of the live tree by accident. GNU and BusyBox tar both
-# accept this form. Unreadable files are a warning from tar, not a reason to
-# skip the rest of the tree. No `set -e`: a warning must not abort rotation.
-#
-# umask 077 around the tar, so the archive is created 0600 rather than at
-# whatever the caller inherited. This script has no mode of its own anywhere
-# else, so a stock 022 gave it 0644 — and the default --paths is /etc on a run
-# that plainly expects to be privileged (it treats tar's exit 1 as "unreadable
-# files under /etc, archive still written"). `sudo ./config_backup.sh --yes`
-# therefore left /etc/shadow, the sshd host keys and sudoers in a tarball every
-# local account could read, under a predictable name. The umask is set around
-# the tar alone and restored afterwards: mkdir -p above keeps the caller's mode
-# on purpose, because --dest is a directory the operator chose and may already
-# share with a backup agent, and the secret is the file, not the folder.
-old_umask="$(umask)"
-umask 077
-tar -czf "$archive" -C / "${rels[@]}"
-tar_rc=$?
-umask "$old_umask"
-if (( tar_rc != 0 )); then
-  # tar exits 1 for warnings (unreadable files under /etc) and 2 for fatal.
-  # A warning still produced an archive, which is the useful outcome on a
-  # machine where /etc/shadow is root-only and the caller is not root.
-  if [[ -s "$archive" ]] && (( tar_rc == 1 )); then
-    warn "tar reported unreadable files; archive still written"
-  else
-    err "tar failed (exit $tar_rc)"
-    FAIL_COUNT=$((FAIL_COUNT + 1))
-    rm -f "$archive"
-  fi
+# The private directory keeps the staged pathname out of other users' reach.
+# mktemp creates it atomically; the file is 0600 before tar writes any secrets.
+# Staging under --dest also guarantees publication stays on one filesystem.
+stage_dir="$(umask 077; mktemp -d "$DEST/.${PREFIX}-stage.XXXXXXXX")" || {
+  err "could not create private staging directory in $DEST"
+  exit 1
+}
+trap 'if ! rm -rf -- "$stage_dir"; then err "could not remove staging directory: $stage_dir"; exit 1; fi' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+staged_archive="$stage_dir/archive.tar.gz"
+if ! (umask 077; set -C; : > "$staged_archive"); then
+  err "could not create private staged archive"
+  exit 1
 fi
 
-if [[ -f "$archive" ]]; then
-  ok "wrote $archive ($(stat -c '%s' "$archive") bytes)"
-  rotate_old "$KEEP" 1
-else
-  err "archive was not written"
-  FAIL_COUNT=$((FAIL_COUNT + 1))
+# -C / keeps member names relative to the filesystem root. A tar warning can
+# produce a useful partial copy, but neither an exit code nor a nonempty file
+# proves the gzip stream and tar members are readable.
+tar -czf "$staged_archive" -C / "${rels[@]}"
+tar_rc=$?
+if (( tar_rc > 1 )); then
+  err "tar failed (exit $tar_rc); previous archives preserved"
+  exit 1
 fi
+# GNU tar accepts an empty stream (and some short non-tar streams) as an
+# empty archive. At least one listed member is required: every included file
+# or directory should contribute one. Drain the listing to avoid SIGPIPE.
+if ! gzip -t -- "$staged_archive" || ! tar -tzf "$staged_archive" | (
+  found=0
+  while IFS= read -r; do found=1; done
+  (( found ))
+); then
+  err "staged archive failed validation; previous archives preserved"
+  exit 1
+fi
+
+archive="$DEST/${PREFIX}-${stamp}-${stage_dir##*.}"
+partial=0
+if (( tar_rc == 1 || missing > 0 )); then
+  archive="$archive.partial.tar.gz"
+  partial=1
+  warn "partial backup: tar exit $tar_rc, $missing requested path(s) missing"
+  FAIL_COUNT=$((FAIL_COUNT + 1))
+else
+  archive="$archive.tar.gz"
+fi
+
+# Lock the destination directory's inode rather than a predictable writable
+# lock file. Publication and rotation share this lock across concurrent runs;
+# staging and validation may proceed independently. The descriptor closes on
+# exit, including signals, so an interrupted run cannot leave a stale lock.
+if ! exec 9<"$DEST"; then
+  err "could not open destination for locking"
+  exit 1
+fi
+if ! flock -x 9; then
+  err "could not lock destination; previous archives preserved"
+  exit 1
+fi
+
+# link(2) publishes the already validated inode atomically and refuses an
+# occupied name. -T prevents ln from following a destination directory symlink.
+# Never use mv here: its normal replacement behavior would destroy a backup.
+if ! ln -T -- "$staged_archive" "$archive"; then
+  err "could not publish $archive; previous archives preserved"
+  exit 1
+fi
+ok "wrote $archive ($(stat -c '%s' "$archive") bytes)"
+rotate_old "$KEEP" 1 "$partial"
 
 if (( FAIL_COUNT > 0 )); then
   exit 1

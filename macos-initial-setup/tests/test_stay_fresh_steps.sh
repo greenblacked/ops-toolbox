@@ -156,6 +156,7 @@ new_env() {
                       'esac' \
                       'echo "sudo $*" >> "$CALLS"' \
                       'exec "$@"'
+  mkbin "$d/bin/lsof" 'for path; do :; done; printf "p%s\nn%s\n" "$PPID" "$path"'
   printf '%s' "$d"
 }
 
@@ -572,6 +573,27 @@ rm -rf "$d"
 
 # ===========================================================================
 section "ai-caches (temporary data only, active tools kept)"
+d="$(new_env)"
+as="$d/home/Library/Application Support"
+mkdir -p "$as/Cursor/CachedExtensionVSIXs" "$as/Cursor/User" "$d/home/.cursor/extensions"
+: > "$as/Cursor/CachedExtensionVSIXs/package.vsix"
+: > "$as/Cursor/User/settings.json"
+: > "$d/home/.cursor/extensions/installed"
+out="$(run_sf "$d" --dry-run --only ai-caches)"
+assert_contains "preview explains Cursor package cache" "$out" "Cursor extension download cache"
+assert_exists "preview keeps Cursor packages" "$as/Cursor/CachedExtensionVSIXs/package.vsix"
+out="$(RUNNING_APPS=Cursor run_sf "$d" --yes --force-active-app-caches --only ai-caches)"
+assert_exists "active Cursor keeps extension packages even with force" "$as/Cursor/CachedExtensionVSIXs/package.vsix"
+out="$(PGREP_RC=2 run_sf "$d" --yes --only ai-caches)"
+assert_exists "unknown Cursor activity keeps extension packages" "$as/Cursor/CachedExtensionVSIXs/package.vsix"
+out="$(run_sf "$d" --yes --only ai-caches)"; rc=$?
+assert_eq "idle Cursor package cleanup succeeds" "0" "$rc"
+assert_gone "idle Cursor downloaded package removed" "$as/Cursor/CachedExtensionVSIXs/package.vsix"
+assert_exists "Cursor package directory retained" "$as/Cursor/CachedExtensionVSIXs"
+assert_exists "Cursor settings retained" "$as/Cursor/User/settings.json"
+assert_exists "Cursor installed extensions retained" "$d/home/.cursor/extensions/installed"
+rm -rf "$d"
+
 d="$(new_env)"
 as="$d/home/Library/Application Support"
 mkdir -p "$as/Codex/Default/GPUCache" "$as/Codex/Default/Session Storage" \
@@ -1936,6 +1958,7 @@ rm -rf "$d"
 d="$(new_env)"
 out="$(run_sf "$d" --dry-run --reports)"; rc=$?
 assert_eq "--reports previews" "0" "$rc"
+(( rc == 0 )) || printf '%s\n' "$out" >&2
 for want in "report active versions" "pending OS / App Store updates" \
             "local Time Machine snapshots" "old downloads" "orphaned launch agents" "disk report"; do
   assert_contains "--reports runs: $want" "$(grep "$want" <<<"$out")" "run"
@@ -3274,13 +3297,14 @@ d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
   'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; --repository) echo "$HOME/brewrepo" ;; esac' \
   'case "${1:-} ${2:-}" in' \
+  '  "list --versions") if [ "$3" = --formula ]; then if [ -e "$HOME/upgraded" ]; then printf "fzf 0.61\njq 1.8\n"; else printf "fzf 0.60\njq 1.7\n"; fi; fi ;;' \
   '  "upgrade --help") echo "--yes" ;;' \
-  '  "upgrade --formula") echo "==> Upgrading 2 outdated packages:"; echo "fzf 0.60 -> 0.61"; echo "jq 1.7 -> 1.8"; echo "==> Upgrading fzf"; echo "==> Upgrading jq" ;;' \
+  '  "upgrade --formula") touch "$HOME/upgraded"; echo "==> Upgrading 2 outdated packages:"; echo "fzf 0.60 -> 0.61"; echo "jq 1.7 -> 1.8"; echo "==> Upgrading fzf"; echo "==> Upgrading jq" ;;' \
   '  "outdated --cask") echo alacritty; echo unetbootin ;;' \
   'esac; exit 0'
 out="$(run_sf "$d" --yes --only brew)"; rc=$?
 assert_eq "brew step succeeds" "0" "$rc"
-assert_contains "upgraded packages are counted and named" "$out" "upgraded 2 package(s): fzf jq"
+assert_contains "upgraded packages are counted and named" "$out" "upgraded 2 package(s): formula:fzf formula:jq"
 assert_called "outdated casks are asked for" "$d/calls" "brew outdated --cask --quiet"
 assert_contains "outdated casks are named" "$out" "2 cask(s) still outdated:"
 assert_contains "the manual cask command is given" "$out" "brew upgrade --cask alacritty unetbootin"
@@ -3686,6 +3710,400 @@ assert_exists "sudo failure preserves rotated logs" /private/var/log/system.log.
 assert_contains "sudo failure reports preserved logs" "$out" "rotated system logs kept"
 rm -rf "$d"
 rm -f /private/var/log/system.log.999.gz /private/var/log/system.log /usr/sbin/lsof
+
+section "old-only age-limited cleanup including system logs"
+d="$(new_env)"
+make_npx_fixture "$d"
+make_system_log_fixture
+mkbin /usr/sbin/lsof 'printf "p%s\nn/private/var/log\n" "$PPID"'
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"'
+for tool in npm conda brew docker; do
+  mkbin "$d/bin/$tool" 'echo "unexpected bulk tool" >> "$CALLS"; exit 1'
+done
+mkdir -p "$d/home/Library/Logs/DiagnosticReports" "$d/home/.Trash" "$d/home/Downloads" "$d/home/Library/Caches"
+printf old > "$d/home/Library/Logs/old.log"
+touch -d '40 days ago' "$d/home/Library/Logs/old.log"
+for kept in Library/Logs/recent.log Library/Logs/DiagnosticReports/old.crash .Trash/keep Downloads/keep Library/Caches/keep; do
+  printf keep > "$d/home/$kept"
+done
+touch -d '120 days ago' "$d/home/Downloads/keep" "$d/home/Library/Logs/DiagnosticReports/old.crash"
+cp -a "$d/home/.npm/_npx/0123456789abcdef" "$d/home/.npm/_npx/fedcba9876543210"
+touch "$d/home/.npm/_npx/fedcba9876543210/package.json"
+out="$(run_sf "$d" --old-only --deep-clean --dry-run --verbose)"; rc=$?
+assert_eq "old-only preview succeeds with deep-clean" 0 "$rc"
+assert_contains "preview names the old user log" "$out" "eligible old log: \"$d/home/Library/Logs/old.log\""
+assert_contains "preview explains narrow developer scope" "$out" "only validated npx entries unchanged >=7 days"
+assert_contains "preview explains system log scope" "$out" "only system/install/wifi.log.N.gz or .bz2 >=30 days"
+assert_exists "preview keeps old logs" "$d/home/Library/Logs/old.log"
+assert_exists "preview keeps old npx" "$d/home/.npm/_npx/0123456789abcdef"
+assert_exists "preview keeps system logs" /private/var/log/system.log.999.gz
+assert_not_called "preview avoids sudo" "$d/calls" "sudo"
+out="$(run_sf "$d" --old-only --deep-clean --yes)"; rc=$?
+assert_eq "old-only cleanup succeeds" 0 "$rc"
+assert_gone "old-only removes old user logs" "$d/home/Library/Logs/old.log"
+assert_gone "old-only removes old idle npx" "$d/home/.npm/_npx/0123456789abcdef"
+assert_gone "old-only removes eligible system logs" /private/var/log/system.log.999.gz
+assert_exists "old-only keeps active system log" /private/var/log/system.log
+assert_exists "old-only keeps npx with recent child" "$d/home/.npm/_npx/fedcba9876543210"
+for kept in Library/Logs/recent.log Library/Logs/DiagnosticReports/old.crash .Trash/keep Downloads/keep Library/Caches/keep; do
+  assert_exists "old-only preserves $kept" "$d/home/$kept"
+done
+assert_not_called "old-only never invokes bulk cleanup/update tools" "$d/calls" "unexpected bulk tool"
+make_system_log_fixture
+out="$(run_sf "$d" --old-only --yes --no-sudo)"; rc=$?
+assert_eq "old-only supports no-sudo" 0 "$rc"
+assert_exists "no-sudo keeps system logs in old-only" /private/var/log/system.log.999.gz
+for incompatible in --quick --reports --cache-report --skip-trash --thin-snapshots --prune-docker-volumes --prune-build-caches --force-active-app-caches --cleanup-old-gems --prune-unavailable-simulators; do
+  run_sf "$d" --old-only "$incompatible" --dry-run >/dev/null; rc=$?
+  assert_eq "old-only rejects $incompatible" 3 "$rc"
+done
+run_sf "$d" --old-only --only trash --dry-run >/dev/null; rc=$?
+assert_eq "old-only rejects explicit step selection" 3 "$rc"
+run_sf "$d" --prune-downloads-days 90 --old-only --dry-run >/dev/null; rc=$?
+assert_eq "old-only rejects Downloads deletion regardless of order" 3 "$rc"
+rm -rf "$d"
+rm -f /private/var/log/system.log.999.gz /private/var/log/system.log /usr/sbin/lsof
+
+section "Homebrew review regressions"
+d="$(new_env)"
+mkbin "$d/bin/brew" \
+  'case "$1 $2" in "list --versions") [ "$3" != --formula ] || echo "ghost 1.0" ;; "upgrade --formula") echo "==> Upgrading ghost"; exit 1 ;; esac' \
+  'exit 0'
+out="$(run_sf "$d" --only brew --yes --no-sudo)"
+assert_not_contains "failed upgrade announcement is not counted" "$out" "upgraded 1 package(s)"
+assert_contains "unchanged installed versions are reported accurately" "$out" "no installed Homebrew version changes verified"
+assert_eq "failed upgrade count in history is zero" 0 "$(cut -f10 "$d/home/Library/Logs/stay_fresh/history.tsv")"
+mkdir -p "$d/repo/.git"
+printf lock > "$d/repo/.git/index.lock"
+touch -d '10 minutes ago' "$d/repo/.git/index.lock"
+mkbin "$d/bin/brew" "case \"\$1\" in --repository) echo '$d/repo' ;; esac" 'exit 0'
+PGREP_RC=2 out="$(run_sf "$d" --only brew --yes --no-sudo)"
+assert_exists "unknown Git activity preserves the Homebrew lock" "$d/repo/.git/index.lock"
+unset PGREP_RC
+rm -rf "$d"
+
+section "full maintenance preset"
+d="$(new_env)"
+make_npx_fixture "$d"
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"'
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
+  'exit 0'
+mkdir -p "$d/home/.Trash"
+printf keep > "$d/home/.Trash/keep"
+out="$(run_sf "$d" --full --dry-run)"; rc=$?
+assert_eq "full preview succeeds" 0 "$rc"
+for command in 'brew update' 'brew upgrade --formula' 'brew upgrade --cask --greedy' 'brew cleanup -s' 'brew autoremove'; do
+  assert_contains "full previews $command" "$out" "$command"
+  assert_not_called "full preview does not execute $command" "$d/calls" "$command"
+done
+assert_exists "full preview keeps npx data" "$d/home/.npm/_npx/0123456789abcdef"
+out="$(run_sf "$d" --full --yes --no-sudo)"; rc=$?
+assert_eq "full runs with no-sudo" 0 "$rc"
+for command in 'brew update' 'brew upgrade --formula' 'brew cleanup -s' 'brew autoremove'; do
+  assert_called "full executes $command" "$d/calls" "$command"
+done
+sequence="$(grep -E '^brew (update|upgrade --formula|cleanup -s|autoremove)$' "$d/calls")"
+assert_eq "full maintains the Homebrew cycle order" $'brew update\nbrew upgrade --formula\nbrew cleanup -s\nbrew autoremove' "$sequence"
+assert_contains "full explains skipped casks" "$out" "skipping cask upgrades"
+assert_contains "full marks skipped casks incomplete" "$out" "full update cycle is incomplete"
+out="$(run_sf "$d" --full --yes --no-sudo --fail-on-warn)"; rc=$?
+assert_eq "partial full cycle fails strict automation" 1 "$rc"
+assert_gone "full cleans eligible npx data" "$d/home/.npm/_npx/0123456789abcdef"
+assert_exists "full keeps personal Trash" "$d/home/.Trash/keep"
+for incompatible in --old-only --quick --reports --cache-report --skip-brew --prune-build-caches; do
+  run_sf "$d" --full "$incompatible" --dry-run >/dev/null; rc=$?
+  assert_eq "full rejects $incompatible" 3 "$rc"
+done
+rm -rf "$d"
+
+section "retention controls in stay_fresh"
+d="$(new_env)"
+make_npx_fixture "$d"
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"'
+mkdir -p "$d/home/Library/Logs"
+printf old > "$d/home/Library/Logs/old.log"
+touch -d '40 days ago' "$d/home/Library/Logs/old.log"
+out="$(run_sf "$d" --old-only --yes --no-sudo --user-log-days 60 --npx-cache-days=14)"; rc=$?
+assert_eq "custom retention run succeeds" 0 "$rc"
+assert_exists "60-day policy keeps a 40-day user log" "$d/home/Library/Logs/old.log"
+assert_exists "14-day policy keeps a 10-day npx entry" "$d/home/.npm/_npx/0123456789abcdef"
+assert_contains "plan shows custom log retention" "$out" "files older than 60d"
+assert_contains "plan shows custom npx retention" "$out" "npx entries unchanged >=14 days"
+out="$(run_sf "$d" --old-only --yes --no-sudo --user-log-days=30 --npx-cache-days 7)"; rc=$?
+assert_eq "shorter explicit retention run succeeds" 0 "$rc"
+assert_gone "30-day policy removes the old log" "$d/home/Library/Logs/old.log"
+assert_gone "7-day policy removes the old npx entry" "$d/home/.npm/_npx/0123456789abcdef"
+mkbin "$d/bin/brew" 'exit 0'
+out="$(run_sf "$d" --full --dry-run --user-log-days 60 --npx-cache-days 14)"; rc=$?
+assert_eq "full accepts retention settings" 0 "$rc"
+assert_contains "retention preserves full cask update plan" "$out" "brew upgrade --cask --greedy"
+assert_contains "full plan shows custom log retention" "$out" "files older than 60d"
+for option in --user-log-days --npx-cache-days; do
+  for bad in '' 0 -1 01 1.5 abc 36501 999999999999999999999999; do
+    run_sf "$d" "$option=$bad" --list-steps >/dev/null; rc=$?
+    assert_eq "retention rejects $option=$bad" 3 "$rc"
+  done
+  run_sf "$d" "$option" >/dev/null; rc=$?
+  assert_eq "retention requires a value for $option" 3 "$rc"
+done
+rm -rf "$d"
+
+section "bounded Homebrew probes and verification failures"
+for probe in '--version' '--prefix' 'upgrade --help' '--repository'; do
+  d="$(new_env)"
+  printf '%s' "$probe" > "$d/home/hang-probe"
+  mkbin "$d/bin/brew" \
+    'if [ "$*" = "$(cat "$HOME/hang-probe")" ]; then sleep 3; touch "$HOME/probe-finished"; fi' \
+    'exit 0'
+  out="$(run_sf "$d" --yes --only brew --no-sudo --step-timeout 1 --fail-on-warn)"; rc=$?
+  assert_eq "hung $probe makes the cycle incomplete" 1 "$rc"
+  assert_gone "hung $probe is stopped before completing" "$d/home/probe-finished"
+  assert_contains "hung $probe explains its failure" "$out" "failed or timed out"
+  rm -rf "$d"
+done
+d="$(new_env)"
+mkbin "$d/bin/brew" 'case "$1" in outdated) echo "inventory unavailable" >&2; exit 1 ;; esac' 'exit 0'
+out="$(run_sf "$d" --yes --only brew --no-sudo --fail-on-warn)"; rc=$?
+assert_eq "failed cask verification fails strict automation" 1 "$rc"
+assert_contains "failed cask verification is explicit" "$out" "cannot verify remaining outdated Homebrew casks"
+rm -rf "$d"
+
+section "full cask upgrades with a controlling terminal"
+d="$(new_env)"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "$1 $2" in' \
+  '  "upgrade --help") echo --yes ;;' \
+  '  "list --versions") if [ "$3" = --cask ]; then if [ -e "$HOME/cask-updated" ]; then echo "example 2.0"; else echo "example 1.0"; fi; fi ;;' \
+  '  "upgrade --cask") [ -t 0 ] || exit 91; touch "$HOME/cask-updated" ;;' \
+  'esac; exit 0'
+# The suite itself remains detached. Give only this child a controlling PTY;
+# stdout stays a pipe, while run_cmd_tty must successfully open /dev/tty.
+out="$(env -i HOME="$d/home" TMPDIR="$d/tmp" PATH="$d/bin:/usr/bin:/bin" \
+  CALLS="$d/calls" NO_COLOR=1 STAY_FRESH_NOTIFY=none /usr/bin/python3 - "$SF" <<'PY'
+import fcntl
+import os
+import pty
+import signal
+import subprocess
+import sys
+import termios
+
+master, slave = pty.openpty()
+def attach():
+    os.setsid()
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+try:
+    process = subprocess.Popen(
+        ["/bin/bash", sys.argv[1], "--full", "--yes", "--no-progress", "--fail-on-warn"],
+        stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        preexec_fn=attach,
+    )
+    os.close(slave)
+    slave = None
+    try:
+        output, _ = process.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        output, _ = process.communicate()
+        sys.stdout.buffer.write(output)
+        raise SystemExit(124)
+    sys.stdout.buffer.write(output)
+    raise SystemExit(process.returncode)
+finally:
+    os.close(master)
+    if slave is not None:
+        os.close(slave)
+PY
+)"; rc=$?
+assert_eq "full interactive cycle succeeds" 0 "$rc"
+assert_called "full upgrades greedy casks through the terminal" "$d/calls" "brew upgrade --cask --greedy --yes"
+assert_exists "interactive cask actually completed" "$d/home/cask-updated"
+assert_contains "interactive cask version change is verified" "$out" "upgraded 1 package(s): cask:example"
+assert_not_contains "interactive full does not skip casks" "$out" "skipping cask upgrades"
+sequence="$(grep -E '^brew (update|upgrade --formula --yes|upgrade --cask --greedy --yes|cleanup -s|autoremove)$' "$d/calls")"
+assert_eq "interactive full preserves the entire update order" \
+  $'brew update\nbrew upgrade --formula --yes\nbrew upgrade --cask --greedy --yes\nbrew cleanup -s\nbrew autoremove' "$sequence"
+rm -rf "$d"
+
+section "candidate explanations and final npx activity guard"
+d="$(new_env)"
+make_npx_fixture "$d"
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"' \
+  'if [ -e "$HOME/node-started" ]; then printf "999 node\n"; fi; exit 0'
+out="$(run_sf "$d" --old-only --dry-run --verbose --no-sudo)"; rc=$?
+assert_eq "explained npx preview succeeds" 0 "$rc"
+assert_contains "npx preview describes recreation" "$out" "npm can download packages again"
+assert_contains "npx preview describes age" "$out" "newest modification"
+mkbin "$d/bin/du" 'for item; do case "$item" in */.npm/_npx/*) touch "$HOME/node-started" ;; esac; done' \
+  'exec /usr/bin/du "$@"'
+out="$(run_sf "$d" --old-only --yes --no-sudo --fail-on-warn)"; rc=$?
+assert_eq "activity starting during sizing warns" 1 "$rc"
+assert_exists "activity after sizing preserves npx data" "$d/home/.npm/_npx/0123456789abcdef"
+assert_contains "activity guard explains preservation" "$out" "keeping selected entries"
+rm -rf "$d"
+
+section "partial log cleanup checkpoints reach shell accounting"
+d="$(new_env)"
+mkdir -p "$d/home/Library/Logs/nested"
+printf 'old log data' > "$d/home/Library/Logs/old.log"
+printf 'old nested log' > "$d/home/Library/Logs/nested/old.log"
+touch -d '40 days ago' "$d/home/Library/Logs/old.log" "$d/home/Library/Logs/nested/old.log"
+out="$(run_sf "$d" --only user-logs --dry-run --verbose)"; rc=$?
+assert_eq "log explanation preview succeeds" 0 "$rc"
+assert_contains "log explanation includes age" "$out" "40 complete days old"
+assert_contains "log explanation describes irrecoverable history" "$out" "cannot be recreated"
+mkbin "$d/bin/lsof" 'for path; do :; done' \
+  'case "$path" in */nested) sleep 5 ;; esac' 'printf "p%s\nn%s\n" "$PPID" "$path"'
+out="$(run_sf "$d" --only user-logs --yes --step-timeout 1 --fail-on-warn)"; rc=$?
+assert_eq "interrupted log helper warns" 1 "$rc"
+assert_gone "first confirmed log was removed" "$d/home/Library/Logs/old.log"
+assert_exists "interrupted directory log remains" "$d/home/Library/Logs/nested/old.log"
+assert_contains "confirmed removal reaches summary" "$out" "1 logs removed"
+assert_contains "partial accounting is labeled" "$out" "confirmed minimums"
+rm -rf "$d"
+
+section "full formula verification respects pins"
+d="$(new_env)"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "$*" in "outdated --formula --quiet") printf "pinned-tool\nstale-tool\n" ;; "list --formula --pinned --full-name") echo pinned-tool ;; esac' 'exit 0'
+out="$(run_sf "$d" --full --yes --no-sudo)"; rc=$?
+assert_contains "intentional pin is explained" "$out" "intentionally pinned: pinned-tool"
+assert_contains "unexpected outdated formula warns" "$out" "formula remains outdated: stale-tool"
+assert_not_called "formula audit never unpins packages" "$d/calls" "brew unpin"
+rm -rf "$d"
+
+section "npx checks stay adjacent to deletion and ignore inherited controls"
+d="$(new_env)"
+make_npx_fixture "$d"
+cp -a "$d/home/.npm/_npx/0123456789abcdef" "$d/home/.npm/_npx/fedcba9876543210"
+mkbin "$d/bin/ps" 'printf "1 /sbin/launchd\n%s /usr/bin/python3\n" "$PPID"' \
+  'echo probe >> "$CALLS"'
+mkbin "$d/bin/rm" 'for item; do' \
+  'case "$item" in */.npm/_npx/0123456789abcdef)' \
+  'echo remove-first >> "$CALLS"' \
+  'dd if=/dev/urandom of="$HOME/.npm/_npx/fedcba9876543210/new-data" bs=1024 count=1024 2>/dev/null' \
+  'touch "$HOME/.npm/_npx/fedcba9876543210/package.json" ;; esac; done' \
+  'exec /bin/rm "$@"'
+out="$(run_sf "$d" --old-only --yes --no-sudo --fail-on-warn)"; rc=$?
+assert_eq "changed later npx entry warns" 1 "$rc"
+assert_gone "first npx entry removed after its own check" "$d/home/.npm/_npx/0123456789abcdef"
+assert_exists "later entry refreshed between removals survives" "$d/home/.npm/_npx/fedcba9876543210"
+sequence="$(grep -E '^(probe|remove-first)$' "$d/calls")"
+assert_eq "no later entry probe separates first check from deletion" \
+  $'probe\nprobe\nprobe\nprobe\nremove-first\nprobe' "$sequence"
+assert_contains "partial npx removal still reports freed bytes" "$out" "-> freed"
+assert_not_contains "growth in a kept entry does not erase freed bytes" \
+  "$(grep '^stay_fresh WARN:' <<<"$out")" "freed 0B"
+rm -rf "$d"
+
+d="$(new_env)"
+make_npx_fixture "$d"
+mkdir -p "$d/home/Downloads"
+printf keep > "$d/home/Downloads/old-installer"
+touch -d '60 days ago' "$d/home/Downloads/old-installer"
+out="$(CLEANUP_RECHECK=npx run_sf "$d" --only downloads --prune-downloads-days 30 --yes --no-sudo --fail-on-warn)"; rc=$?
+assert_eq "inherited cleanup control has no effect" 0 "$rc"
+assert_gone "explicitly selected Download is cleaned despite inherited control" "$d/home/Downloads/old-installer"
+assert_exists "unrelated cleanup keeps npx cache" "$d/home/.npm/_npx/0123456789abcdef"
+rm -rf "$d"
+
+section "deep messenger caches preserve conversation data and active apps"
+d="$(new_env)"
+base="$d/home/Library/Containers/com.tinyspeck.slackmacgap/Data/Library/Application Support/Slack"
+mkdir -p "$d/home/Applications/Slack.app/Contents" "$base/Partitions/workspace/Code Cache"
+python3 - "$d/home/Applications/Slack.app/Contents/Info.plist" <<'PYMESSENGER'
+import plistlib, sys
+with open(sys.argv[1], "wb") as stream:
+    plistlib.dump(dict(CFBundleIdentifier="com.tinyspeck.slackmacgap", CFBundleExecutable="Slack"), stream)
+PYMESSENGER
+printf cache > "$base/Partitions/workspace/Code Cache/data"
+mkdir -p "$d/home/Library/Application Support/Slack/Cache"
+printf cache > "$d/home/Library/Application Support/Slack/Cache/data"
+for state in IndexedDB 'Local Storage' 'Session Storage' attachments 'Service Worker/CacheStorage'; do
+  mkdir -p "$base/Partitions/workspace/$state"
+  printf keep > "$base/Partitions/workspace/$state/data"
+done
+out="$(run_sf "$d" --only app-caches --deep-clean --dry-run --verbose)"; rc=$?
+assert_eq "deep messenger preview succeeds" 0 "$rc"
+assert_contains "deep preview names messenger cache" "$out" "eligible Slack cache"
+assert_not_contains "deep preview does not duplicate messenger roots in legacy scan" "$out" "Electron/Chromium caches: "
+assert_contains "deep preview still includes standard Slack cache" "$out" "$d/home/Library/Application Support/Slack/Cache"
+assert_exists "preview retains messenger cache" "$base/Partitions/workspace/Code Cache/data"
+out="$(RUNNING_APPS=Slack run_sf "$d" --only app-caches --deep-clean --yes --force-active-app-caches)"
+assert_exists "active messenger keeps deep cache even with force" "$base/Partitions/workspace/Code Cache/data"
+out="$(PGREP_RC=2 run_sf "$d" --only app-caches --deep-clean --yes --fail-on-warn)"; rc=$?
+assert_eq "unknown messenger activity warns" 1 "$rc"
+assert_exists "unknown activity retains messenger cache" "$base/Partitions/workspace/Code Cache/data"
+out="$(run_sf "$d" --only app-caches --deep-clean --yes)"; rc=$?
+assert_eq "idle deep messenger cleanup succeeds" 0 "$rc"
+assert_gone "idle messenger render cache is emptied" "$base/Partitions/workspace/Code Cache/data"
+for state in IndexedDB 'Local Storage' 'Session Storage' attachments 'Service Worker/CacheStorage'; do
+  assert_exists "messenger state survives: $state" "$base/Partitions/workspace/$state/data"
+done
+rm -rf "$d"
+
+section "messenger-only selection and activity beginning during sizing"
+d="$(new_env)"
+base="$d/home/Library/Application Support/Slack/Cache"
+mkdir -p "$base" "$d/home/Applications/Slack.app/Contents" "$d/home/Library/Application Support/Notion/Cache"
+printf cache > "$base/data"
+printf keep > "$d/home/Library/Application Support/Notion/Cache/data"
+python3 - "$d/home/Applications/Slack.app/Contents/Info.plist" <<'PYSELECT'
+import plistlib, sys
+with open(sys.argv[1], "wb") as stream:
+    plistlib.dump(dict(CFBundleIdentifier="com.tinyspeck.slackmacgap", CFBundleExecutable="Slack"), stream)
+PYSELECT
+out="$(run_sf "$d" --messenger-caches --messenger slack --dry-run)"; rc=$?
+assert_eq "messenger preset previews successfully" 0 "$rc"
+assert_contains "preview shows per-app total" "$out" "Slack: 1 eligible cache folders"
+assert_not_contains "messenger preset excludes other app caches" "$out" "eligible Notion"
+run_sf "$d" --messenger-caches --messenger unknown --dry-run >/dev/null; rc=$?
+assert_eq "unknown messenger is rejected" 3 "$rc"
+run_sf "$d" --messenger slack --dry-run >/dev/null; rc=$?
+assert_eq "messenger filter requires narrow preset" 3 "$rc"
+mkbin "$d/bin/du" 'case "$*" in *Slack/Cache*)' \
+  'n=$(cat "$HOME/du-count" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$HOME/du-count"' \
+  '[ "$n" -lt 3 ] || touch "$HOME/app-started" ;; esac' 'exec /usr/bin/du "$@"'
+mkbin "$d/bin/pgrep" '[ -f "$HOME/app-started" ] && exit 0; exit 1'
+out="$(run_sf "$d" --messenger-caches --messenger slack --yes)"; rc=$?
+assert_eq "late app activity safely skips cleanup" 0 "$rc"
+assert_exists "cache survives app starting during final sizing" "$base/data"
+assert_contains "late activity is explained" "$out" "started or is running"
+assert_contains "app summary counts late activity" "$out" "1 kept for activity"
+rm -f "$d/bin/du" "$d/bin/pgrep"
+mkbin "$d/bin/pgrep" 'exit 1'
+out="$(run_sf "$d" --only messenger-caches --messenger slack --yes)"; rc=$?
+assert_eq "messenger alias applies successfully when idle" 0 "$rc"
+assert_gone "selected Slack cache is cleared" "$base/data"
+assert_exists "unselected Notion cache survives apply" "$d/home/Library/Application Support/Notion/Cache/data"
+rm -rf "$d"
+
+section "lock retirement does not allocate after acquisition"
+d="$(new_env)"
+mkbin "$d/bin/mkdir" 'case "$*" in */run.lock/reclaim) exit 1 ;; esac' 'exec /bin/mkdir "$@"'
+mkbin "$d/bin/mktemp" 'case "$*" in *retired.*)' \
+  'n=$(cat "$HOME/reservations" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$HOME/reservations"' \
+  '[ "$n" -eq 1 ] || exit 1 ;; esac' 'exec /usr/bin/mktemp "$@"'
+out="$(run_sf "$d" --only versions --yes)"; rc=$?
+assert_eq "run completes when exit-time allocations fail" 0 "$rc"
+assert_eq "retirement reserved only once before work" 1 "$(cat "$d/home/reservations")"
+assert_gone "owned lock released without exit-time allocation" "$d/home/Library/Application Support/stay_fresh/run.lock"
+rm -f "$d/bin/mkdir" "$d/bin/mktemp"
+out="$(run_sf "$d" --only versions --yes)"; rc=$?
+assert_eq "next run can acquire the lock" 0 "$rc"
+rm -rf "$d"
+
+d="$(new_env)"
+mkbin "$d/bin/mkdir" '/bin/mkdir "$@" || exit $?' \
+  'case "$*" in */run.lock) for last; do :; done; ln -s /dev/full "$last/pid" ;; esac'
+out="$(run_sf "$d" --only versions --yes)"; rc=$?
+assert_eq "metadata publication failure is reported" 2 "$rc"
+assert_gone "failed metadata publication leaves no permanent lock" "$d/home/Library/Application Support/stay_fresh/run.lock"
+rm -f "$d/bin/mkdir"
+out="$(run_sf "$d" --only versions --yes)"; rc=$?
+assert_eq "run succeeds after metadata failure is resolved" 0 "$rc"
+rm -rf "$d"
 
 # ===========================================================================
 end_section

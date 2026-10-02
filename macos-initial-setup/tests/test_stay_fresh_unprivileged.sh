@@ -82,6 +82,7 @@ mkbin "$d/bin/sw_vers" 'case "${1:-}" in -productVersion) echo 15.0 ;; -buildVer
 mkbin "$d/bin/df" 'echo "Filesystem 1024-blocks Used Available Capacity Mounted on"' \
                   'echo "/dev/test 1000000 200000 800000 20% /"'
 mkbin "$d/bin/pgrep" 'exit 1'
+mkbin "$d/bin/lsof" 'for path; do :; done; printf "p%s\nn%s\n" "$PPID" "$path"'
 mkbin "$d/bin/xcode-select" 'exit 0'
 # sudo is absent from the image. This one reports a warm credential and then
 # runs the command as the same unprivileged user, which is the point: the
@@ -122,7 +123,7 @@ out="$(STAY_FRESH_LOCK_DIR=/rootlocked \
   run_sf "$d/tmp" --yes --no-sudo --only versions)"; rc=$?
 assert_eq "an unwritable lock dir fails preflight -> 2" "2" "$rc"
 assert_contains "an unwritable lock dir reports the lock it could not take" "$out" \
-  "cannot acquire run lock"
+  "cannot reserve run-lock retirement space"
 assert_not_contains "an unwritable lock dir is not blamed on a stale lock" "$out" \
   "stale stay_fresh lock"
 

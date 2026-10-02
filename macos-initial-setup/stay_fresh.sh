@@ -42,11 +42,12 @@
 # Usage:
 #   ./stay_fresh.sh [--dry-run] [--yes] [--verbose] [--quick] [--reports]
 #                   [--step-timeout SECONDS]
+#                   [--user-log-days N] [--npx-cache-days N]
 #                   [--only STEP1,STEP2] [--list-steps] [--history] [--trend]
 #                   [--notify none|macos|telegram|slack|both|auto|CH1,CH2]
 #                   [--notify-when always|warn|fail]
 #                   [--skip-snapshots] [--thin-snapshots] [--disk-report]
-#                   [--cache-report] [--deep-clean]
+#                   [--cache-report] [--deep-clean] [--old-only] [--full]
 #                   [--purge-memory] [--skip-memory] [--skip-dns] [--skip-syscaches]
 #                   [--skip-usercaches] [--skip-appcaches]
 #                   [--skip-aicaches]
@@ -345,6 +346,7 @@ SKIP_DIAGNOSTICS=0
 # Files under ~/Library/Logs older than this many days are removed.
 SKIP_USER_LOGS=0
 USER_LOG_DAYS=30
+NPX_CACHE_DAYS=7
 # ~/Downloads is reported, never cleared, unless --prune-downloads-days says
 # how old an entry must be to go.
 SKIP_DOWNLOADS=0
@@ -373,6 +375,8 @@ THIN_SNAPSHOTS=0
 SKIP_DISK_REPORT=1
 CACHE_REPORT=0
 DEEP_CLEAN=0
+OLD_ONLY=0
+FULL=0
 QUICK=0
 REPORTS=0
 SHOW_HISTORY=0
@@ -440,11 +444,15 @@ DRY_ESTIMATE_B=0
 TRASH_PROTECTED=0
 BREW_GREEDY=0
 BREW_CASKS=0
+BREW_PREFIX_TEXT=""
+BREW_PREFLIGHT_INCOMPLETE=0
 CLEANUP_OLD_GEMS=0
 PRUNE_BUILD_CACHES=0
 FORCE_ACTIVE_APP_CACHES=0
 XCODE_ARCHIVE_DAYS=""
 ONLY_STEPS=""
+MESSENGER_ONLY=0
+MESSENGER_FILTERS=()
 # Step ids named by --only, and the subset of those that preflight went on to
 # disable. A step the user asked for by name and did not get is a different
 # outcome from one they never mentioned, and the summary has to say so.
@@ -512,6 +520,7 @@ STEP_WARN_COUNT=0
 LOCK_PARENT="${STAY_FRESH_LOCK_DIR:-$HOME/Library/Application Support/stay_fresh}"
 LOCK_DIR="$LOCK_PARENT/run.lock"
 LOCK_HELD=0
+LOCK_RETIRE_DIR=""
 SUDO_KEEPALIVE_PID=""
 
 cleanup_on_exit() {
@@ -520,30 +529,31 @@ cleanup_on_exit() {
     kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
     wait "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
   fi
-  if (( LOCK_HELD )) && mkdir "$LOCK_DIR/reclaim" 2>/dev/null; then
+  if (( LOCK_HELD )) && { mkdir "$LOCK_DIR/reclaim" 2>/dev/null || [[ ! -d "$LOCK_DIR/reclaim" ]]; }; then
     if [[ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" == "$$" ]]; then
-      retire_lock || true
+      retire_lock || warn "could not retire owned run lock at $LOCK_DIR"
     else
       rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
     fi
   fi
+  [[ -z "$LOCK_RETIRE_DIR" ]] || rmdir "$LOCK_RETIRE_DIR" 2>/dev/null || true
 }
 
-# Called only while holding run.lock/reclaim. Rename before removing metadata:
+# Called while holding run.lock/reclaim, or by the live owner on exit when
+# no reclaim directory exists and allocating one failed.
+# Rename before removing metadata:
 # a successor may acquire run.lock immediately, and cleanup stays on the old
 # directory. A unique empty sibling prevents mv from targeting another lock.
 retire_lock() {
-  local retired
-  retired="$(mktemp -d "$LOCK_PARENT/retired.XXXXXX")" || {
-    rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
-    return 1
-  }
+  local retired="$LOCK_RETIRE_DIR"
+  [[ -n "$retired" && -d "$retired" && ! -e "$retired/lock" ]] || return 1
   if ! mv "$LOCK_DIR" "$retired/lock"; then
-    rmdir "$retired" "$LOCK_DIR/reclaim" 2>/dev/null || true
+    rmdir "$LOCK_DIR/reclaim" 2>/dev/null || true
     return 1
   fi
   rm -f "$retired/lock/pid" "$retired/lock/boot"
-  rmdir "$retired/lock/reclaim" "$retired/lock" "$retired" 2>/dev/null || true
+  rmdir "$retired/lock/reclaim" 2>/dev/null || true
+  rmdir "$retired/lock" 2>/dev/null || true
   return 0
 }
 
@@ -581,9 +591,15 @@ acquire_lock() {
     err "cannot create $LOCK_PARENT to hold the run lock"
     return 1
   fi
+  # Reserve retirement space before acquiring/publishing the lock. Exit and
+  # failed metadata publication must not need another mktemp on a full disk.
+  LOCK_RETIRE_DIR="$(mktemp -d "$LOCK_PARENT/retired.XXXXXX")" || {
+    err "cannot reserve run-lock retirement space in $LOCK_PARENT"
+    return 1
+  }
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     if ! write_lock_metadata; then
-      rmdir "$LOCK_DIR" 2>/dev/null || true
+      retire_lock || true
       err "cannot write run lock metadata at $LOCK_DIR/pid"
       return 1
     fi
@@ -636,7 +652,7 @@ acquire_lock() {
   retire_lock || return 1
   if mkdir "$LOCK_DIR" 2>/dev/null; then
     if ! write_lock_metadata; then
-      rmdir "$LOCK_DIR" 2>/dev/null || true
+      retire_lock || true
       err "cannot write run lock metadata at $LOCK_DIR/pid"
       return 1
     fi
@@ -742,10 +758,31 @@ ${C_BOLD}General options:${C_RESET}
                          those ids
   --cache-report         Measure known developer cache locations and exit;
                          follows configured cache roots but never deletes them
-  --deep-clean           Add reviewed native cleanup: Conda tarballs, index
+  --full                 Age-limited macOS cleanup plus the complete Homebrew
+                         update, formula/cask upgrade (--greedy), cleanup and
+                         autoremove cycle; refresh Helm/krew/gcloud and report
+                         versions and pending OS updates. Cask upgrades require
+                         an interactive terminal and sudo enabled
+  --old-only             Age-limited cleanup (defaults: user logs >30 days,
+                         compressed system logs >=30 days (sudo; open files kept),
+                         and validated idle npx entries >=7 days). List Downloads
+                         and snapshots; show disk usage. Keep other caches,
+                         Trash, backups and installed software. --deep-clean
+                         may be added but does not broaden this mode
+  --messenger-caches      Only messenger caches (alias: --only messenger-caches).
+  --messenger NAME        Restrict messenger-only cleanup; repeat for multiple apps.
+                         Names: slack, signal, discord, teams, telegram, whatsapp.
+  --deep-clean           Add guarded messenger profile caches (keep messages/login data).
+                         Extends normal cleanup (NOT old-only). Add native cleanup: Conda tarballs, index
                          cache and log files, and guarded old npx entries.
                          Environments, extracted packages and downloaded
                          models stay
+  --user-log-days N      Keep user logs for N complete days (default 30).
+                         Eligible at N+1 days, matching find -mtime +N
+  --npx-cache-days N     Keep npx entries unchanged for less than N days
+                         (default 7). Used by --full, --old-only or --deep-clean
+                         Both retention options accept 1..36500 days and do
+                         not enable otherwise skipped cleanup steps
   --step-timeout N       Stop any one command inside a step after N seconds
                          and count the step as warned (default 1800; 0 disables;
                          env STAY_FRESH_STEP_TIMEOUT). Prompts are never limited
@@ -924,9 +961,10 @@ ${C_BOLD}Notes:${C_RESET}
 
   Homebrew: runs brew update; brew upgrade --formula; brew cleanup -s;
   brew autoremove; brew doctor only when --verbose. Casks are listed but not
-  upgraded unless --brew-casks is explicit. Cask installers may still prompt
-  for a password after sudo preflight, so run interactively; --no-sudo,
-  unavailable sudo, and runs without a terminal skip cask upgrades.
+  upgraded unless --brew-casks or --full is explicit. Cask installers may still
+  prompt for a password after sudo preflight, so run interactively; --no-sudo,
+  unavailable sudo, and runs without a terminal skip cask upgrades. A skipped
+  cask upgrade during --full is a warning, not a silent omission.
 
 Log file: $LOG_FILE
 EOF
@@ -969,6 +1007,18 @@ while (( $# > 0 )); do
     --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
     --prune-build-caches) PRUNE_BUILD_CACHES=1 ;;
     --deep-clean)       DEEP_CLEAN=1 ;;
+    --messenger-caches) MESSENGER_ONLY=1 ;;
+    --messenger) require_value "$1" "${2:-}"; shift; MESSENGER_FILTERS+=("$1") ;;
+    --messenger=*) MESSENGER_FILTERS+=("${1#*=}") ;;
+    --user-log-days|--npx-cache-days)
+      retention_option="$1"
+      require_value "$1" "${2:-}"; shift
+      if [[ "$retention_option" == --user-log-days ]]; then USER_LOG_DAYS="$1"
+      else NPX_CACHE_DAYS="$1"; fi ;;
+    --user-log-days=*) USER_LOG_DAYS="${1#*=}" ;;
+    --npx-cache-days=*) NPX_CACHE_DAYS="${1#*=}" ;;
+    --old-only)         OLD_ONLY=1 ;;
+    --full)             FULL=1 ;;
     --cache-report)     CACHE_REPORT=1 ;;
     --skip-devtools)   SKIP_DEVTOOLS=1; EXPLICIT_SKIP=1 ;;
     --skip-helm-plugins) SKIP_HELM_PLUGINS=1; EXPLICIT_SKIP=1 ;;
@@ -1047,6 +1097,16 @@ while (( $# > 0 )); do
   shift
 done
 
+# Bound the decimal inputs before any shell arithmetic or helper invocation.
+# Reject leading zeroes to avoid Bash interpreting a day count as octal.
+for retention_pair in "--user-log-days:$USER_LOG_DAYS" "--npx-cache-days:$NPX_CACHE_DAYS"; do
+  retention_value="${retention_pair#*:}"
+  if [[ ! "$retention_value" =~ ^[1-9][0-9]{0,4}$ ]] || (( retention_value > 36500 )); then
+    err "${retention_pair%%:*} must be a whole number from 1 to 36500 (no leading zeroes)"
+    exit 3
+  fi
+done
+
 # The flag arms check their own value; the environment variable the help
 # offers as an alternative used to skip the check, and `30m` then became a
 # 30-second limit through perl's numification while `abc` disabled it.
@@ -1054,6 +1114,25 @@ done
   err "--step-timeout / STAY_FRESH_STEP_TIMEOUT must be a whole number of seconds (got: $STEP_TIMEOUT)"
   exit 3
 }
+
+if [[ "$ONLY_STEPS" == messenger-caches ]]; then
+  MESSENGER_ONLY=1
+  ONLY_STEPS="app-caches"
+fi
+if (( MESSENGER_ONLY )); then
+  [[ -z "$ONLY_STEPS" || "$ONLY_STEPS" == app-caches ]] || {
+    err "--messenger-caches cannot be combined with other --only steps"; exit 3;
+  }
+  ONLY_STEPS="app-caches"
+  DEEP_CLEAN=1
+elif (( ${#MESSENGER_FILTERS[@]} )); then
+  err "--messenger requires --messenger-caches"; exit 3
+fi
+for messenger in ${MESSENGER_FILTERS[@]+"${MESSENGER_FILTERS[@]}"}; do
+  case "$messenger" in slack|signal|discord|teams|telegram|whatsapp) ;;
+    *) err "--messenger must be slack, signal, discord, teams, telegram or whatsapp"; exit 3 ;;
+  esac
+done
 
 # One channel, or a comma-separated list of them. `both` predates the Slack
 # channel and stays as the pair it always meant. none and auto describe the
@@ -1141,6 +1220,36 @@ if (( CACHE_REPORT )); then
         || PRUNE_UNAVAILABLE_SIMULATORS || PRUNE_SYSTEM_LOGS )) || [[ -n "$PRUNE_DOWNLOADS_DAYS$XCODE_ARCHIVE_DAYS$ONLY_STEPS" ]]; then
     err "--cache-report is standalone and cannot be combined with cleanup or prune options"
     exit 3
+  fi
+fi
+
+# Full maintenance adds managed software updates to the age-limited profile.
+# Resolve it after parsing so argument order cannot widen the cleanup scope.
+if (( FULL )); then
+  (( OLD_ONLY == 0 )) || { err "--full cannot be combined with --old-only"; exit 3; }
+  OLD_ONLY=1
+fi
+
+# A fixed age-limited profile. Reject options that suggest broader deletion
+# instead of silently ignoring them or allowing argument order to widen scope.
+if (( OLD_ONLY )); then
+  if (( QUICK || REPORTS || CACHE_REPORT || EXPLICIT_SKIP || PURGE_MEMORY_EXPLICIT \
+        || FORCE_ACTIVE_APP_CACHES || FORCE_SYSTEM_CACHES || CLEANUP_OLD_GEMS \
+        || PRUNE_BUILD_CACHES || PRUNE_DOCKER_CONTAINERS || PRUNE_DOCKER_VOLUMES \
+        || THIN_SNAPSHOTS || PRUNE_ORPHAN_AGENTS || PRUNE_UNAVAILABLE_SIMULATORS \
+        || (BREW_GREEDY && FULL == 0) || ${#JETBRAINS_VERSIONS[@]} )) \
+      || [[ -n "$ONLY_STEPS$PRUNE_DOWNLOADS_DAYS$XCODE_ARCHIVE_DAYS" ]]; then
+    err "--old-only/--full cannot be combined with other presets, --only, --skip-* or broader prune/force options"
+    exit 3
+  fi
+  ONLY_STEPS="diagnostics,user-logs,downloads,dev-caches,snapshots,disk-report"
+  PRUNE_SYSTEM_LOGS=1
+  if (( FULL )); then
+    ONLY_STEPS="$ONLY_STEPS,brew,helm-plugins,krew,gcloud,versions,os-updates"
+    # --full is the explicit opt-in that master otherwise requires via
+    # --brew-casks. A scheduled or --no-sudo run still skips the upgrades.
+    BREW_CASKS=1
+    BREW_GREEDY=1
   fi
 fi
 
@@ -1859,11 +1968,25 @@ clear_dir() {
 # a few hundred directories and one line each drowns the summary.
 #   mode "dir"      -> remove the directories themselves
 #   mode "contents" -> keep each directory, remove what is inside it
-# Usage: clear_paths <label> <dir|contents> <path>...
+#   mode "npx"      -> revalidate each npx entry immediately before removal
+# Usage: clear_paths <label> <dir|contents|entry|npx> <path>...
 clear_paths() {
   local label="$1" mode="$2" guard_links; shift 2
+  local recheck_executable="" recheck_pattern="" probe_rc query_rc
+  if [[ "$mode" == guarded-contents ]]; then
+    recheck_executable="$1"; recheck_pattern="$2"; shift 2
+    mode=contents
+  fi
   if (( $# == 0 )); then
     printf "  %s- no %s found%s\n" "$C_DIM" "$label" "$C_RESET"
+    return 0
+  fi
+
+  # npx entries may be kept independently after their final check. Account
+  # each separately so growth in a kept entry cannot hide another removal.
+  if [[ "$mode" == npx ]] && (( $# > 1 )); then
+    local entry
+    for entry in "$@"; do clear_paths "$label" npx "$entry"; done
     return 0
   fi
 
@@ -1915,8 +2038,30 @@ clear_paths() {
     return 0
   fi
 
+  if [[ -n "$recheck_executable" && -n "$recheck_pattern" ]]; then
+    with_timeout "$STEP_TIMEOUT" pgrep -x "$recheck_executable" >/dev/null 2>&1; probe_rc=$?
+    with_timeout "$STEP_TIMEOUT" pgrep -f "$recheck_pattern" >/dev/null 2>&1; query_rc=$?
+    if (( probe_rc > 1 || query_rc > 1 )); then
+      warn_step "cannot recheck $label activity — keeping cache"
+      return 4
+    elif (( probe_rc == 0 || query_rc == 0 )); then
+      info "$label started or is running — keeping cache"
+      return 4
+    fi
+  fi
   local delete_failures=0 verify_failures=0 remaining_count=0 remaining=""
-  if [[ "$mode" == "contents" ]]; then
+  if [[ "$mode" == npx ]]; then
+    # After sizing, validate and remove each entry together.
+    # Do not traverse other entries between this final check and its removal.
+    for p in "$@"; do
+      if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B \
+        "$SCRIPT_DIR/lib/npx_cache.py" --keep-days "$NPX_CACHE_DAYS" --check-entry "$p" >>"$LOG_SINK" 2>&1; then
+        warn_step "npx entry changed or activity could not be ruled out — keeping selected entries that remain"
+        break
+      fi
+      rm -rf "$p" 2>>"$LOG_FILE" || delete_failures=$(( delete_failures + 1 ))
+    done
+  elif [[ "$mode" == "contents" ]]; then
     for p in "$@"; do
       find "$p" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>>"$LOG_FILE" \
         || delete_failures=$(( delete_failures + 1 ))
@@ -2368,7 +2513,13 @@ ok "disk free on the volume holding ~: $(human_bytes "$FREE_BEFORE_B")"
 # 4. Homebrew check (only relevant if we aren't skipping it)
 if (( SKIP_BREW == 0 )); then
   if command -v brew >/dev/null 2>&1; then
-    ok "$(brew --version | head -n1) (prefix: $(brew --prefix))"
+    brew_version_text="$(with_timeout "$STEP_TIMEOUT" brew --version 2>>"$LOG_SINK")" || BREW_PREFLIGHT_INCOMPLETE=1
+    BREW_PREFIX_TEXT="$(with_timeout "$STEP_TIMEOUT" brew --prefix 2>>"$LOG_SINK")" || BREW_PREFLIGHT_INCOMPLETE=1
+    if (( BREW_PREFLIGHT_INCOMPLETE )); then
+      warn "Homebrew identification failed or timed out; maintenance will report an incomplete check"
+    else
+      ok "${brew_version_text%%$'\n'*} (prefix: $BREW_PREFIX_TEXT)"
+    fi
   else
     warn "Homebrew not installed — brew step will be skipped"
     SKIP_BREW=1
@@ -2642,7 +2793,9 @@ else
   xcode_plan="DeviceSupport, simulators; Archives kept"
 fi
 plan_line "xcode extras"                      "$(( 1 - SKIP_XCODE       ))" "$xcode_plan"
-plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "user (+ system if sudo)"
+diagnostic_plan="user (+ system if sudo)"
+(( OLD_ONLY )) && diagnostic_plan="only system/install/wifi.log.N.gz or .bz2 >=30 days; open files kept; sudo required"
+plan_line "diagnostic / crash reports"        "$(( 1 - SKIP_DIAGNOSTICS ))" "$diagnostic_plan"
 plan_line "old user logs"                     "$(( 1 - SKIP_USER_LOGS   ))" "~/Library/Logs files older than ${USER_LOG_DAYS}d; DiagnosticReports and stay_fresh's own kept"
 if [[ -n "$PRUNE_DOWNLOADS_DAYS" ]]; then
   downloads_plan="remove ~/Downloads entries untouched for ${PRUNE_DOWNLOADS_DAYS}d"
@@ -2666,7 +2819,8 @@ fi
 if (( PRUNE_BUILD_CACHES )); then
   devcache_plan="$devcache_plan + Gradle caches; Maven repository kept"
 fi
-(( DEEP_CLEAN )) && devcache_plan="$devcache_plan + safe Conda and old idle npx caches"
+(( DEEP_CLEAN )) && devcache_plan="$devcache_plan + safe Conda and idle npx entries >=${NPX_CACHE_DAYS} days"
+(( OLD_ONLY )) && devcache_plan="only validated npx entries unchanged >=${NPX_CACHE_DAYS} days; active/unknown Node state kept"
 plan_line "dev-tool caches"                   "$(( 1 - SKIP_DEVCACHES   ))" "$devcache_plan"
 plan_line "helm plugin refresh"               "$(( 1 - SKIP_HELM_PLUGINS))" "helm plugin update <name>"
 plan_line "krew plugin refresh"               "$(( 1 - SKIP_KREW        ))" "kubectl krew update · upgrade <name>"
@@ -2935,6 +3089,10 @@ step_usercaches() {
 # walk of Application Support cannot prove that every directory named "Cache"
 # belongs to a Chromium profile.
 step_appcaches() {
+  if (( MESSENGER_ONLY )); then
+    clear_discovered_app_caches
+    return 0
+  fi
   local root="$HOME/Library/Application Support"
   if [[ ! -d "$root" ]]; then
     warn "$root not found"
@@ -2968,12 +3126,18 @@ step_appcaches() {
   local i proc app_root rc
   for (( i=0; i<${#app_bundles[@]}; i++ )); do
     proc="${app_bundles[$i]}"
+    if (( DEEP_CLEAN )) && [[ "$proc" == Slack || "$proc" == Signal || "$proc" == Discord || "$proc" == "Microsoft Teams" ]]; then
+      # Deep messenger cleanup uses installed metadata and one inventory pass,
+      # including standard roots. Avoid double-counting those roots in previews.
+      continue
+    fi
     app_root="$root/${app_dirs[$i]}"
     [[ -d "$app_root" ]] || continue
     pgrep -f "/${proc}\.app/Contents/" >/dev/null 2>&1; rc=$?
     if (( rc == 0 )); then
       running+=("$proc")
-      if (( FORCE_ACTIVE_APP_CACHES )); then
+      if (( FORCE_ACTIVE_APP_CACHES )) && { (( DEEP_CLEAN == 0 )) ||
+          [[ "$proc" != Slack && "$proc" != Signal && "$proc" != Discord && "$proc" != "Microsoft Teams" ]]; }; then
         scan_roots+=("$app_root")
       else
         skipped_roots+=("$app_root")
@@ -2987,7 +3151,7 @@ step_appcaches() {
   done
   if (( ${#running[@]} > 0 )); then
     if (( FORCE_ACTIVE_APP_CACHES )); then
-      warn "running now: $(join_names ${running[@]+"${running[@]}"}) — force flag allows their caches to be cleared"
+      warn "running now: $(join_names ${running[@]+"${running[@]}"}) — force flag allows eligible caches; deep messenger caches stay protected"
     else
       warn "running now: $(join_names ${running[@]+"${running[@]}"}) — their cache roots will be kept"
     fi
@@ -3163,26 +3327,36 @@ clear_ai_cache_roots() {
 clear_discovered_app_caches() {
   local helper="$SCRIPT_DIR/lib/app_cache_inventory.py" scan_out rc
   local label executable pattern path last_pattern="" state=1 query_rc
-  local -a records=() candidates=()
+  local -a records=() inventory_args=()
+  local selected
+  (( MESSENGER_ONLY )) && inventory_args+=(--messengers-only)
+  for selected in ${MESSENGER_FILTERS[@]+"${MESSENGER_FILTERS[@]}"}; do
+    inventory_args+=(--messenger "$selected")
+  done
+  if (( DEEP_CLEAN )); then
+    inventory_args+=(--deep-clean)
+    info "deep messenger cleanup: renderer/network caches only; messages, login state, attachments and offline stores kept"
+    info "Telegram tdata, Signal attachments, WhatsApp databases and whole containers are never deep-cache targets"
+  fi
   if [[ ! -x /usr/bin/python3 || ! -f "$helper" ]]; then
     warn_step "installed-app cache classifier unavailable — additional caches kept"
     return 0
   fi
   if (( DRY_RUN )); then
-    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" >/dev/null 2>>"$LOG_SINK"; then
+    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" ${inventory_args[@]+"${inventory_args[@]}"} >/dev/null 2>>"$LOG_SINK"; then
       warn_step "installed-app cache inventory incomplete — additional caches kept"
       return 0
     fi
     while IFS= read -r -d '' label && IFS= read -r -d '' executable \
         && IFS= read -r -d '' pattern && IFS= read -r -d '' path; do
       records+=("$label" "$executable" "$pattern" "$path")
-    done < <(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" 2>>"$LOG_SINK")
+    done < <(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" ${inventory_args[@]+"${inventory_args[@]}"} 2>>"$LOG_SINK")
   else
     scan_out="$(scratch_file)" || {
       warn_step "no scratch space — additional app caches kept"
       return 0
     }
-    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" >"$scan_out" 2>>"$LOG_SINK"; then
+    if ! with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$helper" ${inventory_args[@]+"${inventory_args[@]}"} >"$scan_out" 2>>"$LOG_SINK"; then
       rm -f "$scan_out"
       warn_step "installed-app cache inventory incomplete — additional caches kept; see log"
       return 0
@@ -3193,10 +3367,16 @@ clear_discovered_app_caches() {
     done < "$scan_out"
     rm -f "$scan_out"
   fi
-  local i
+  local i summary_label="" eligible_count=0 eligible_bytes=0 kept_count=0 cache_bytes
   for (( i=0; i<${#records[@]}; i+=4 )); do
     label="${records[$i]}"; executable="${records[$((i+1))]}"
     pattern="${records[$((i+2))]}"; path="${records[$((i+3))]}"
+    if [[ -n "$summary_label" && "$summary_label" != "$label" ]]; then
+      info "$summary_label: $eligible_count eligible cache folders ($(human_bytes "$eligible_bytes")); $kept_count kept for activity"
+      eligible_count=0; eligible_bytes=0; kept_count=0
+    fi
+    summary_label="$label"
+    cache_bytes="$(path_bytes "$path")"
     if [[ "$pattern" != "$last_pattern" ]]; then
       last_pattern="$pattern"; state=1
       pgrep -x "$executable" >/dev/null 2>&1; rc=$?
@@ -3210,12 +3390,22 @@ clear_discovered_app_caches() {
     fi
     if (( state == 1 )); then
       printf '  eligible %s cache: %s (%s)\n' "$label" "$path" "$(human_bytes "$(path_bytes "$path")")"
-      candidates+=("$path")
+      eligible_count=$(( eligible_count + 1 )); eligible_bytes=$(( eligible_bytes + cache_bytes ))
+      clear_paths "$label installed-app caches" guarded-contents "$executable" "$pattern" "$path"; rc=$?
+      if (( rc == 4 )); then
+        eligible_count=$(( eligible_count - 1 )); eligible_bytes=$(( eligible_bytes - cache_bytes ))
+        kept_count=$(( kept_count + 1 ))
+      fi
     else
+      kept_count=$(( kept_count + 1 ))
       printf '  kept %s cache (running or unknown activity): %s (%s)\n' "$label" "$path" "$(human_bytes "$(path_bytes "$path")")"
     fi
   done
-  clear_paths "installed-app caches" contents ${candidates[@]+"${candidates[@]}"}
+  if [[ -n "$summary_label" ]]; then
+    info "$summary_label: $eligible_count eligible cache folders ($(human_bytes "$eligible_bytes")); $kept_count kept for activity"
+  else
+    info "no matching installed-app cache folders found"
+  fi
 }
 
 prune_jetbrains_versions() {
@@ -3407,6 +3597,19 @@ step_aicaches() {
     "$HOME/Library/Application Support/com.openai.chat" ChatGPT
   clear_ai_support_caches "Cursor" \
     "$HOME/Library/Application Support/Cursor" Cursor
+  # Downloaded extension packages are separate from installed extensions and
+  # workspace state. Keep the directory, and recheck activity after sizing.
+  local cursor_vsix="$HOME/Library/Application Support/Cursor/CachedExtensionVSIXs" cursor_rc
+  if [[ -d "$cursor_vsix" ]]; then
+    AI_CACHE_FOUND=1
+    ai_process_running Cursor; cursor_rc=$?
+    case "$cursor_rc" in
+      1) clear_paths "Cursor extension download cache" guarded-contents \
+           'Cursor|Cursor Helper.*' '/Cursor\.app/Contents/' "$cursor_vsix" ;;
+      0) info "Cursor is running - keeping its extension download cache" ;;
+      *) warn_step "Cursor activity unknown - keeping its extension download cache" ;;
+    esac
+  fi
   clear_ai_support_caches "Windsurf" \
     "$HOME/Library/Application Support/Windsurf" Windsurf
 
@@ -3668,7 +3871,7 @@ clean_npx_cache() {
     warn_step "npx cache scanner unavailable — keeping all entries"
     return 0
   fi
-  listing="$(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -B "$scanner" 2>&1)"; rc=$?
+  listing="$(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -B "$scanner" --keep-days "$NPX_CACHE_DAYS" 2>&1)"; rc=$?
   if (( rc == 4 )); then
     info "$listing"
   elif (( rc != 0 )); then
@@ -3677,13 +3880,22 @@ clean_npx_cache() {
     while IFS= read -r entry; do
       [[ -n "$entry" ]] && entries+=("$entry")
     done <<<"$listing"
-    clear_paths "npx cache entries unchanged for at least 7 days" dir ${entries[@]+"${entries[@]}"}
+    if (( VERBOSE )); then
+      with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B "$scanner" --keep-days "$NPX_CACHE_DAYS" --explain \
+        || warn_step "npx explanation unavailable; selection will be rechecked before deletion"
+    fi
+    clear_paths "npx cache entries unchanged for at least $NPX_CACHE_DAYS days" npx ${entries[@]+"${entries[@]}"}
   fi
   return 0
 }
 
 step_devcaches() {
   local any=0
+  if (( OLD_ONLY )); then
+    info "old-only: npx entries unchanged >=${NPX_CACHE_DAYS} days; all other developer caches kept"
+    clean_npx_cache
+    return 0
+  fi
   if (( DEEP_CLEAN )); then
     any=1
     clean_npx_cache
@@ -4015,6 +4227,8 @@ step_docker() {
   else
     info "volumes kept (data, not cache) — pass --prune-docker-volumes to remove unused ones"
   fi
+  info "Docker images: removes dangling images; images used by containers are retained."
+  info "Docker build cache: removes all unused build cache; later builds may rebuild or download layers."
   run_cmd "docker image prune -f" docker image prune -f \
     || warn "'docker image prune' failed"
   run_cmd "docker builder prune -af"          docker builder prune -af \
@@ -4096,11 +4310,19 @@ prune_system_logs() {
     warn_step "system log helper unavailable — keeping rotated system logs"
     return 0
   fi
-  (( DRY_RUN )) || command=(sudo -n /usr/bin/python3 -I -B "$helper" --apply)
+  (( DRY_RUN )) || command=(sudo -n /usr/bin/python3 -I -B "$helper" --apply --progress)
+  (( VERBOSE )) && command+=(--verbose)
   payload="$(with_timeout "$STEP_TIMEOUT" "${command[@]}" 2>>"$LOG_SINK")"; rc=$?
   parsed="$(printf '%s' "$payload" | /usr/bin/python3 -I -B -c '
 import json, sys
-r = json.load(sys.stdin)
+r = None
+for line in sys.stdin:
+    try:
+        candidate = json.loads(line)
+    except ValueError:
+        continue
+    r = candidate
+assert isinstance(r, dict)
 k = ("eligible", "eligible_bytes", "removed", "freed_bytes", "kept_open")
 assert all(type(r[x]) is int and r[x] >= 0 for x in k)
 assert isinstance(r["errors"], list)
@@ -4110,6 +4332,19 @@ print("\t".join(str(r[x]) for x in k) + "\t" + str(len(r["errors"])))
     return 0
   }
   IFS=$'\t' read -r eligible estimated removed freed opened errors <<<"$parsed"
+  if (( VERBOSE )); then
+    printf '%s' "$payload" | /usr/bin/python3 -I -B -c '
+import json, sys
+r = {}
+for line in sys.stdin:
+    try:
+        r = json.loads(line)
+    except ValueError:
+        pass
+for item in r.get("candidates", []):
+    print("  eligible rotated log: %s (%d allocated bytes; %d complete days old) — %s" %
+          (json.dumps(item["path"], ensure_ascii=True), item["bytes"], item["age_days"], item["reason"]))'
+  fi
   if (( DRY_RUN )); then
     printf "  (dry-run) would consider %s rotated system logs unchanged for at least 30 days (%s); apply checks open files\n" "$eligible" "$(human_bytes "$estimated")"
     DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + estimated ))
@@ -4119,13 +4354,17 @@ print("\t".join(str(r[x]) for x in k) + "\t" + str(len(r["errors"])))
     printf '%s\n' "$payload" >>"$LOG_SINK"
   fi
   if (( rc != 0 || errors > 0 )); then
-    warn_step "rotated system log cleanup incomplete: $payload"
+    warn_step "rotated system log cleanup incomplete; reported removals are confirmed minimums: $payload"
   fi
   return 0
 }
 
 step_diagnostics() {
   (( PRUNE_SYSTEM_LOGS )) && prune_system_logs
+  if (( OLD_ONLY )); then
+    info "old-only: only selected compressed system logs >=30 days; crash reports kept"
+    return 0
+  fi
   # User diagnostic / crash reports
   local user_dirs=(
     "$HOME/Library/Logs/DiagnosticReports"
@@ -4149,68 +4388,69 @@ step_diagnostics() {
   fi
 }
 
-# ~/Library/Logs is where every app, daemon and installer writes and nothing
-# reads back: a machine a few years old carries gigabytes of Homebrew,
-# Docker, Adobe and IDE transcripts nobody will open. Files older than a
-# month go; the directories stay, because an app that finds its log directory
-# missing may not recreate it. Two subtrees are left alone: DiagnosticReports,
-# which the diagnostics step owns, and this script's own state directory,
-# where the history and the kept logs live.
-#
-# The list never becomes an argument vector. The machine this step exists for
-# carries tens of thousands of eligible files, more than ARG_MAX holds, so
-# the NUL-separated list stays in a file and xargs batches every pass over
-# it. A directory find could not enter costs a warning, not the sweep: what
-# it did list is still removed.
-old_user_logs() {
-  find "$HOME/Library/Logs" \( -path "$HOME/Library/Logs/DiagnosticReports" -o -path "$STATE_DIR" \) -prune \
-    -o -type f -mtime +"$USER_LOG_DAYS" -print0
-}
+# The helper scans and unlinks through directory descriptors. It rechecks file
+# identity after checking open files; size accounting includes actual unlinks.
 step_user_logs() {
   local root="$HOME/Library/Logs" label="log files older than $USER_LOG_DAYS days"
   if [[ ! -d "$root" ]]; then
     info "no $root — nothing to do"
     return 0
   fi
-  local scan_out scan_rc=0 count total_kb total_b=0 rm_rc=0 left left_kb left_b=0 delta
-  scan_out="$(scratch_file)" || {
-    warn_step "no scratch space in $LOG_DIR or $STATE_DIR — old log sweep skipped"
+  if [[ ! -x /usr/bin/python3 || ! -f "$SCRIPT_DIR/lib/user_logs.py" ]]; then
+    warn_step "user log helper unavailable — keeping all user logs"
+    return 0
+  fi
+  local payload parsed rc=0 count total_b removed freed opened changed errors
+  local -a args=(--keep-days "$USER_LOG_DAYS")
+  (( DRY_RUN )) || args+=(--apply --progress)
+  (( VERBOSE )) && args+=(--verbose)
+  payload="$(with_timeout "$STEP_TIMEOUT" /usr/bin/python3 -I -B \
+    "$SCRIPT_DIR/lib/user_logs.py" ${args[@]+"${args[@]}"} 2>>"$LOG_SINK")" || rc=$?
+  parsed="$(printf '%s' "$payload" | /usr/bin/python3 -I -B -c '
+import json, sys
+r = None
+for line in sys.stdin:
+    try:
+        candidate = json.loads(line)
+    except ValueError:
+        continue
+    r = candidate
+assert isinstance(r, dict)
+k = ("eligible", "eligible_bytes", "removed", "freed_bytes", "kept_open", "kept_changed")
+assert all(type(r[x]) is int and r[x] >= 0 for x in k)
+assert isinstance(r["errors"], list)
+print("\t".join(str(r[x]) for x in k) + "\t" + str(len(r["errors"])))
+' 2>/dev/null)" || {
+    warn_step "user log helper failed or returned an invalid result — see log"
     return 0
   }
-  old_user_logs >"$scan_out" 2>>"$LOG_SINK" || scan_rc=$?
-  count="$(tr -cd '\0' <"$scan_out" | wc -c | tr -d ' ')"
-  if (( count > 0 )); then
-    total_kb="$(xargs -0 du -sk <"$scan_out" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s + 0 }')"
-    total_b=$(( total_kb * 1024 ))
-  fi
-  printf "  %s: %d path(s), %s%s%s\n" "$label" "$count" "$C_DIM" "$(human_bytes "$total_b")" "$C_RESET"
-  if (( scan_rc != 0 )); then
-    warn_step "$root could not be fully scanned — a directory in it is unreadable, see log"
+  IFS=$'\t' read -r count total_b removed freed opened changed errors <<<"$parsed"
+  printf '  %s: %d path(s), %s\n' "$label" "$count" "$(human_bytes "$total_b")"
+  if (( VERBOSE )); then
+    printf '%s' "$payload" | /usr/bin/python3 -I -B -c '
+import json, sys
+r = {}
+for line in sys.stdin:
+    try:
+        r = json.loads(line)
+    except ValueError:
+        pass
+for item in r.get("candidates", []):
+    print("  eligible old log: %s (%d allocated bytes; %d complete days old) — %s" %
+          (json.dumps(item["path"], ensure_ascii=True), item["bytes"], item["age_days"], item["reason"]))'
   fi
   if (( DRY_RUN )); then
-    rm -f "$scan_out"
-    printf "  %s(dry-run) would clear %d path(s)%s\n" "$C_DIM" "$count" "$C_RESET"
+    printf '  (dry-run) would clear %d path(s); apply checks open and changed files\n' "$count"
     DRY_ESTIMATE_B=$(( DRY_ESTIMATE_B + total_b ))
-    return 0
+  else
+    STEP_FREED_B=$(( STEP_FREED_B + freed ))
+    printf '  -> freed %s (%s)\n' "$(human_bytes "$freed")" "$label"
+    info "$removed logs removed; $opened open and $changed changed logs kept"
+    printf '%s\n' "$payload" >>"$LOG_SINK"
   fi
-  if (( count > 0 )); then
-    xargs -0 rm -f <"$scan_out" 2>>"$LOG_FILE" || rm_rc=$?
-    # What is still there afterwards is what the sweep could not take.
-    old_user_logs >"$scan_out" 2>/dev/null || true
-    left="$(tr -cd '\0' <"$scan_out" | wc -c | tr -d ' ')"
-    if (( left > 0 )); then
-      left_kb="$(xargs -0 du -sk <"$scan_out" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f", s + 0 }')"
-      left_b=$(( left_kb * 1024 ))
-    fi
-    delta=$(( total_b - left_b ))
-    (( delta > 0 )) && STEP_FREED_B=$(( STEP_FREED_B + delta ))
-    printf "  %s->%s freed %s %s(%s)%s\n" \
-      "$C_GREEN" "$C_RESET" "$(human_bytes "$delta")" "$C_DIM" "$label" "$C_RESET"
-    if (( rm_rc != 0 || left > 0 )); then
-      warn_step "$label cleanup incomplete — $left path(s) still there"
-    fi
+  if (( rc != 0 || errors > 0 )); then
+    warn_step "$root could not be fully scanned or safely cleaned — reported removals are confirmed minimums; see log"
   fi
-  rm -f "$scan_out"
 }
 
 # ~/Downloads is where installers, archives and one-off exports land and
@@ -4396,18 +4636,44 @@ PYSTAT
   clear_paths "orphaned LaunchAgents" entry "${user_orphans[@]}"
 }
 
+# Machine-readable version sets, separated by package kind to avoid collisions.
+# Empty output is valid when no packages of that kind are installed.
+brew_version_inventory() {
+  local kind listing
+  for kind in formula cask; do
+    listing="$(with_timeout "$STEP_TIMEOUT" brew list --versions "--$kind" 2>>"$LOG_SINK")" || return 1
+    if [[ -n "$listing" ]]; then
+      printf '%s\n' "$listing" | awk -v kind="$kind" '
+        NF < 2 { bad=1; next }
+        { $1=kind ":" $1; print }
+        END { exit bad }' || return 1
+    fi
+  done
+}
+
 step_brew() {
   if ! command -v brew >/dev/null 2>&1; then
     warn "brew not on PATH"
     return 1
   fi
+  (( BREW_PREFLIGHT_INCOMPLETE )) && warn_step "Homebrew identification failed or timed out during preflight"
   # A second, Intel Homebrew under /usr/local on Apple silicon is common on
   # a migrated machine and is not what this run maintains.
   if [[ "$(uname -m 2>/dev/null)" == "arm64" && -d /usr/local/Homebrew ]] \
-     && [[ "$(brew --prefix 2>/dev/null)" != "/usr/local" ]]; then
-    info "an Intel Homebrew is also installed at /usr/local/Homebrew; this run maintains only $(brew --prefix 2>/dev/null). Remove it if nothing under Rosetta still needs it"
+     && [[ -n "$BREW_PREFIX_TEXT" && "$BREW_PREFIX_TEXT" != "/usr/local" ]]; then
+    info "an Intel Homebrew is also installed at /usr/local/Homebrew; this run maintains only $BREW_PREFIX_TEXT. Remove it if nothing under Rosetta still needs it"
   fi
 
+  # Sudo for casks is authenticated once in preflight. Do not prompt again
+  # here: a failed or headless preflight must not be turned into a second ask.
+  local versions_before="" versions_after="" versions_known=0
+  if (( DRY_RUN == 0 )); then
+    if versions_before="$(brew_version_inventory)"; then
+      versions_known=1
+    else
+      warn_step "cannot inventory installed Homebrew versions before upgrading; upgrade count will be unverified"
+    fi
+  fi
   # Avoid brew kicking off an extra `brew update` under each subcommand —
   # we call it explicitly below.
   export HOMEBREW_NO_AUTO_UPDATE=1
@@ -4430,7 +4696,10 @@ step_brew() {
   # prompt with nobody there to answer.
   local -a brew_yes=()
   if (( ASSUME_YES )); then
-    if grep -q -- '--yes' <<<"$(brew upgrade --help 2>/dev/null)"; then
+    local brew_upgrade_help
+    if ! brew_upgrade_help="$(with_timeout "$STEP_TIMEOUT" brew upgrade --help 2>>"$LOG_SINK")"; then
+      warn_step "Homebrew upgrade capability check failed or timed out; proceeding without --yes"
+    elif grep -q -- '--yes' <<<"$brew_upgrade_help"; then
       brew_yes+=(--yes)
     else
       info "this Homebrew's 'brew upgrade' has no --yes flag; running without it"
@@ -4445,10 +4714,15 @@ step_brew() {
   # process running is stale and is removed; a fresh one, or one with git
   # alive, is left alone and named.
   local brew_repo brew_lock log_mark log_mark_ok
-  brew_repo="$(brew --repository 2>/dev/null)"
+  if ! brew_repo="$(with_timeout "$STEP_TIMEOUT" brew --repository 2>>"$LOG_SINK")"; then
+    brew_repo=""
+    warn_step "Homebrew repository check failed or timed out; lock inspection skipped"
+  fi
   brew_lock="${brew_repo:+$brew_repo/.git/index.lock}"
   if [[ -n "$brew_repo" && -e "$brew_lock" ]]; then
-    if ! pgrep -x git >/dev/null 2>&1 && [[ -n "$(find "$brew_lock" -mmin +5 2>/dev/null)" ]]; then
+    local git_probe=0
+    pgrep -x git >/dev/null 2>&1 || git_probe=$?
+    if (( git_probe == 1 )) && [[ -n "$(find "$brew_lock" -mmin +5 2>/dev/null)" ]]; then
       if (( DRY_RUN )); then
         printf "  %s(dry-run) would remove stale Homebrew git lock %s%s\n" "$C_DIM" "$brew_lock" "$C_RESET"
       elif rm -f "$brew_lock"; then
@@ -4520,19 +4794,28 @@ step_brew() {
 
   # Homebrew cask postinstalls can invoke sudo even after preflight; only an
   # explicit, interactive run may start them. A failed preflight must not
-  # leave brew free to request credentials later in the step.
+  # leave brew free to request credentials later in the step. --full opts in,
+  # but a skip during that cycle is a warning rather than a quiet omission.
+  local cask_skip=""
   if (( BREW_CASKS == 0 )); then
-    info "skipping cask upgrades by default; pass --brew-casks to include them"
+    cask_skip="skipping cask upgrades by default; pass --brew-casks to include them"
   elif (( USE_SUDO == 0 )); then
-    info "skipping cask upgrades: --no-sudo was passed"
+    cask_skip="skipping cask upgrades: --no-sudo was passed"
   elif (( DRY_RUN == 0 && BREW_CASKS_SUDO_PREFLIGHT && SUDO_AVAILABLE == 0 )); then
-    info "skipping cask upgrades: sudo preflight did not succeed"
+    cask_skip="skipping cask upgrades: sudo preflight did not succeed"
   elif (( DRY_RUN == 0 )) && ! have_tty; then
-    info "skipping cask upgrades: no controlling terminal for possible password prompts"
+    cask_skip="skipping cask upgrades: no controlling terminal for possible password prompts"
   elif (( DRY_RUN == 0 && SUDO_AVAILABLE == 0 )); then
-    info "skipping cask upgrades: sudo preflight did not succeed"
+    cask_skip="skipping cask upgrades: sudo preflight did not succeed"
   elif (( DRY_RUN == 0 )) && ! sudo -n -v >/dev/null 2>&1; then
-    info "skipping cask upgrades: sudo credential expired during Homebrew maintenance"
+    cask_skip="skipping cask upgrades: sudo credential expired during Homebrew maintenance"
+  fi
+  if [[ -n "$cask_skip" ]]; then
+    if (( FULL )); then
+      warn_step "$cask_skip; full update cycle is incomplete (interactive terminal and sudo required)"
+    else
+      info "$cask_skip"
+    fi
   elif (( BREW_GREEDY )); then
     run_cmd_tty "brew upgrade --cask --greedy" brew upgrade --cask --greedy \
       ${brew_yes[@]+"${brew_yes[@]}"} || warn "'brew upgrade --cask --greedy' had issues"
@@ -4560,27 +4843,49 @@ step_brew() {
     fi
   fi
 
-  # What the upgrades actually changed, for the headline. Homebrew announces
-  # each package it upgrades with "==> Upgrading <name>"; the count line
-  # ("==> Upgrading N outdated packages:") is the fallback when a version of
-  # Homebrew stops printing the per-package line.
+  # A printed "Upgrading" line precedes the work and can be followed by a
+  # failure. Count only an added installed version of an existing package.
+  # Compare before cleanup, which may remove old versions without upgrading.
   if (( DRY_RUN == 0 )); then
-    local upgraded_names
-    upgraded_names="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null \
-      | sed -n 's/^==> Upgrading \([^[:space:]]*\)$/\1/p' | sort -u | tr '\n' ' ')"
-    upgraded_names="${upgraded_names% }"
-    if [[ -n "$upgraded_names" ]]; then
-      BREW_UPGRADED_NAMES="$upgraded_names"
-      BREW_UPGRADED="$(wc -w <<<"$upgraded_names" | tr -d ' ')"
+    if (( versions_known )) && versions_after="$(brew_version_inventory)"; then
+      BREW_UPGRADED_NAMES="$(printf '%s\n' "$versions_before" '__AFTER__' "$versions_after" | awk '
+        $0 == "__AFTER__" { after=1; next }
+        NF < 2 { next }
+        !after { known[$1]=1; for(i=2;i<=NF;i++) old[$1 SUBSEP $i]=1; next }
+        known[$1] { for(i=2;i<=NF;i++) if (!(($1 SUBSEP $i) in old)) changed[$1]=1 }
+        END { for (name in changed) print name }' | sort | paste -sd ' ' -)"
+      if [[ -n "$BREW_UPGRADED_NAMES" ]]; then
+        BREW_UPGRADED="$(wc -w <<<"$BREW_UPGRADED_NAMES" | tr -d ' ')"
+        ok "upgraded $BREW_UPGRADED package(s): $BREW_UPGRADED_NAMES (installed versions verified)"
+      else
+        info "no installed Homebrew version changes verified"
+      fi
     else
-      BREW_UPGRADED="$(tail -n +"$(( log_mark + 1 ))" "$LOG_FILE" 2>/dev/null \
-        | sed -n 's/^==> Upgrading \([0-9][0-9]*\) outdated package.*/\1/p' \
-        | awk '{ n += $1 } END { print n + 0 }')"
+      warn_step "Homebrew upgrade count unavailable: installed versions could not be compared"
     fi
-    if (( BREW_UPGRADED > 0 )); then
-      ok "upgraded $BREW_UPGRADED package(s)${BREW_UPGRADED_NAMES:+: $BREW_UPGRADED_NAMES}"
+  fi
+
+  if (( FULL && DRY_RUN == 0 )); then
+    local remaining_formulae pins formula
+    if capture_cmd "brew outdated --formula" brew outdated --formula --quiet; then
+      remaining_formulae="$CAPTURED"
+      if [[ -n "$remaining_formulae" ]]; then
+        if capture_cmd "brew list --pinned" brew list --formula --pinned --full-name; then
+          pins="$CAPTURED"
+          while IFS= read -r formula; do
+            [[ -n "$formula" ]] || continue
+            if grep -Fxq -- "$formula" <<<"$pins"; then
+              info "outdated formula intentionally pinned: $formula (pin preserved)"
+            else
+              warn_step "formula remains outdated: $formula; full update cycle is incomplete"
+            fi
+          done <<<"$remaining_formulae"
+        else
+          warn_step "cannot inspect Homebrew pins; remaining outdated formulae: $remaining_formulae"
+        fi
+      fi
     else
-      info "nothing to upgrade"
+      warn_step "cannot verify remaining outdated Homebrew formulae; update status is incomplete"
     fi
   fi
 
@@ -4589,12 +4894,15 @@ step_brew() {
   # the exact command; --greedy matches whatever the upgrade above used.
   local -a outdated_opts=(--cask --quiet)
   (( BREW_GREEDY )) && outdated_opts+=(--greedy)
-  if capture_cmd "brew outdated --cask" brew outdated "${outdated_opts[@]}" && (( DRY_RUN == 0 )); then
-    if [[ -n "$CAPTURED" ]]; then
+  if capture_cmd "brew outdated --cask" brew outdated "${outdated_opts[@]}"; then
+    if (( DRY_RUN == 0 )) && [[ -n "$CAPTURED" ]]; then
       CASKS_OUTDATED="$(grep -c . <<<"$CAPTURED" || true)"
+      (( FULL )) && warn_step "$CASKS_OUTDATED cask(s) remain outdated; full update cycle is incomplete"
       printf "  %s%d cask(s) still outdated:%s %s\n" "$C_YELLOW" "$CASKS_OUTDATED" "$C_RESET" "$(tr '\n' ' ' <<<"$CAPTURED" | sed 's/ $//')"
       printf "  %supgrade by hand: brew upgrade --cask %s%s\n" "$C_DIM" "$(tr '\n' ' ' <<<"$CAPTURED" | sed 's/ $//')" "$C_RESET"
     fi
+  elif (( DRY_RUN == 0 )); then
+    warn_step "cannot verify remaining outdated Homebrew casks; update status is incomplete"
   fi
 
   RUN_CMD_FILTER='^Warning: Skipping .*most recent version .* not installed$' \
@@ -5067,6 +5375,7 @@ DISK_REPORT_ROOTS=(
 )
 step_disk_report() {
   local root listing kb name total_b query_rc shown
+  info "System Data is not a deletion target. Review each category and its retention policy before cleaning."
   info "System Data is not all cache: models, virtual machines, app data and backups may be included; report roots can overlap."
   for root in "${DISK_REPORT_ROOTS[@]}"; do
     [[ -d "$root" ]] || continue

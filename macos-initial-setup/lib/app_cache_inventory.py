@@ -9,6 +9,7 @@ Exit codes: 0 complete, 1 unsafe or incomplete inventory.
 
 from __future__ import annotations
 
+import argparse
 import os
 import plistlib
 import re
@@ -21,6 +22,40 @@ CACHE_NAMES = ("Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCach
 EXCLUDED_NAMES = ("jetbrains", "pycharm", "intellij", "webstorm", "phpstorm", "rubymine",
                   "clion", "datagrip", "goland", "rider", "rustrover", "dataspell", "aqua",
                   "gateway", "ollama", "lm studio", "locally ai")
+
+# Exact Electron application roots; never traverse message stores or arbitrary
+# directories named Cache. Native messengers use the bundle/sandbox caches.
+MESSENGERS = {
+    "com.tinyspeck.slackmacgap": "Slack",
+    "org.whispersystems.signal-desktop": "Signal",
+    "com.hnc.Discord": "discord",
+    "com.microsoft.teams": "Microsoft/Teams",
+}
+
+MESSENGER_IDS = {
+    "com.tinyspeck.slackmacgap": "slack", "org.whispersystems.signal-desktop": "signal",
+    "com.hnc.Discord": "discord", "com.microsoft.teams": "teams",
+    "com.microsoft.teams2": "teams", "ru.keepcoder.Telegram": "telegram",
+    "org.telegram.desktop": "telegram", "net.whatsapp.WhatsApp": "whatsapp",
+}
+
+
+def messenger_caches(base, home, device):
+    if not owned_dir(base, home, device):
+        return []
+    profiles = [base]
+    for name in os.listdir(base):
+        if name == "Default" or re.fullmatch(r"Profile [0-9]+", name):
+            profile = os.path.join(base, name)
+            if owned_dir(profile, home, device):
+                profiles.append(profile)
+    partitions = os.path.join(base, "Partitions")
+    if owned_dir(partitions, home, device):
+        for name in os.listdir(partitions):
+            profile = os.path.join(partitions, name)
+            if text_safe(name) and owned_dir(profile, home, device):
+                profiles.append(profile)
+    return [os.path.join(profile, name) for profile in profiles for name in CACHE_NAMES]
 
 
 class Unsafe(Exception):
@@ -92,7 +127,7 @@ def installed_apps(roots):
     return apps
 
 
-def classify(home, roots):
+def classify(home, roots, deep_clean=False, messengers_only=False, messengers=()):
     if (not text_safe(home) or not os.path.isabs(home) or home == "/"
             or os.path.normpath(home) != home):
         raise Unsafe("unsafe HOME")
@@ -103,12 +138,19 @@ def classify(home, roots):
     device = metadata.st_dev
     records = []
     for bundle, apps in sorted(installed_apps(roots).items()):
+        messenger = MESSENGER_IDS.get(bundle)
+        if messengers_only and (not messenger or (messengers and messenger not in messengers)):
+            continue
         label = os.path.basename(apps[0][0])[:-4]
         executable = "|".join(sorted({re.escape(app[1]) for app in apps}))
         pattern = "|".join(re.escape(app[0]) + "/Contents/" for app in apps)
         candidates = [os.path.join(home, "Library", "Caches", bundle)]
         container = os.path.join(home, "Library", "Containers", bundle, "Data", "Library")
         candidates.append(os.path.join(container, "Caches"))
+        if deep_clean and bundle in MESSENGERS:
+            for library in (os.path.join(home, "Library"), container):
+                base = os.path.join(library, "Application Support", MESSENGERS[bundle])
+                candidates.extend(messenger_caches(base, home, device))
         if bundle == "com.microsoft.teams2":
             web = os.path.join(
                 container, "Application Support", "Microsoft", "MSTeams", "EBWebView"
@@ -129,9 +171,18 @@ def classify(home, roots):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--deep-clean", action="store_true")
+    parser.add_argument("--messengers-only", action="store_true")
+    parser.add_argument("--messenger", action="append", default=[],
+                        choices=sorted(set(MESSENGER_IDS.values())))
+    args = parser.parse_args()
+    if args.messenger and not args.messengers_only:
+        parser.error("--messenger requires --messengers-only")
     home = os.environ.get("HOME", "")
     try:
-        records = classify(home, ("/Applications", os.path.join(home, "Applications")))
+        records = classify(home, ("/Applications", os.path.join(home, "Applications")),
+                           args.deep_clean, args.messengers_only, args.messenger)
     except (OSError, Unsafe) as exc:
         print("installed-app cache inventory kept: %s" % exc, file=sys.stderr)
         return 1
