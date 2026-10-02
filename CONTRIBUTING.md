@@ -26,6 +26,7 @@ the checks that enforce it; this document stays the published reference.
 - [RouterOS scripts](#routeros-scripts)
 - [Python helpers](#python-helpers)
 - [Tests](#tests)
+- [Branch names](#branch-names)
 - [Adding a script](#adding-a-script)
 - [File modes and line endings](#file-modes-and-line-endings)
 - [Repository settings](#repository-settings)
@@ -475,6 +476,54 @@ Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that
 creates it.
 
+## Branch names
+
+A branch is `<type>/<slug>`: the type says what kind of change it is, the slug
+says which one, in lowercase letters, digits, `.`, `_` and `-`
+(`fix/routeros-record-hash-hardening`, `feat/macos/stay-fresh-presets`).
+
+| Type | For |
+| --- | --- |
+| `feat/` | A new script, flag or behaviour. |
+| `fix/` | A bug fix. |
+| `docs/` | Documentation only. |
+| `ci/` | Workflows, linters, the static suite. |
+| `test/` | Tests only. |
+| `perf/` | Faster, same behaviour. |
+| `refactor/` | Same behaviour, different shape. |
+| `deps/` | A version bump: a pinned tool, an image, a RouterOS release. The RouterOS version workflow opens `deps/routeros-<version>`. |
+| `release/` | A release pull request, `release/<MAJOR.MINOR.PATCH>`, opened by the Release workflow. |
+
+`dependabot/` is the one other prefix: Dependabot names its own branches and
+offers no way to change that. Its commit and pull request titles use `deps:`.
+
+There is no `chore/`, and no `chore:` type in a pull request title. "Chore"
+says only that a change is not a feature, which every type above says better.
+A tool-named prefix (`claude/`, `ai/`, `bot/`, `codex/`, `copilot/`) is
+refused too: a branch name is the source ref in the merge commit subject, so
+it stays in `git log` after the branch is deleted. Name it after the change.
+
+Use the branch's type in the pull request title as well (`deps(mikrotik): test
+against RouterOS 7.24.6`, `release: 1.0.0`). A squash merge makes the title
+the commit subject on `master`.
+
+The rule lives in
+[`test-env/static/check_branch_name.sh`](test-env/static/check_branch_name.sh),
+and the [`Branch name`](.github/workflows/branch-name.yml) workflow runs it on
+every pull request, including when its title is edited. The static suite checks
+that every type is a `pull_request` target in `ci.yml`, `chr.yml` and
+`security.yml`. A pull request stacked onto a branch whose type a filter
+leaves out runs no checks and merges green. It also checks that the branches
+the bot workflows build pass the same rule. Check a name before you push it:
+
+```bash
+test-env/static/check_branch_name.sh fix/my-change
+test-env/static/check_branch_name.sh --title "fix(git): keep gone branch tips" fix/my-change
+```
+
+To add a type, add it to `TYPES` in that script. The static suite then fails
+until the workflow filters list it too.
+
 ## Adding a script
 
 The rules above are per-topic. This is the order to do them in, and the two
@@ -572,7 +621,7 @@ an issue.
 - [ ] **Workflow pull requests.** Enable *Settings → Actions → General →
       Workflow permissions → Allow GitHub Actions to create and approve pull
       requests*. The twice-weekly RouterOS version workflow needs this to open
-      its tested `chore/routeros-VERSION` bump PR; it still cannot bypass branch
+      its tested `deps/routeros-VERSION` bump PR; it still cannot bypass branch
       protection or write directly to `master`.
 - [ ] **Labels.** At minimum `good first issue` and `help wanted` — GitHub
       surfaces both in its own contributor-facing views.

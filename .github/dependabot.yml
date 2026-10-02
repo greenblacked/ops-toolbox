@@ -67,7 +67,7 @@ updates:
     cooldown:
       default-days: 7
     commit-message:
-      prefix: chore
+      prefix: deps
     groups:
       docker:
         patterns:

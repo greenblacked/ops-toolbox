@@ -221,7 +221,7 @@ The `RouterOS version check` GitHub Actions workflow runs every Monday and
 Thursday at 04:19 UTC and can also be started manually. When it finds a newer
 stable release it boots that candidate in Docker first. Only a passing candidate is
 written to `routeros-version.env`, propagated through the documentation, and
-proposed in a `chore/routeros-VERSION` pull request. `check_only` runs the same
+proposed in a `deps/routeros-VERSION` pull request. `check_only` runs the same
 test without creating a branch or pull request. The canonical pin follows the
 stable channel; select both `long-term` and `check_only` to compatibility-test a
 long-term release without replacing that pin. The workflow rejects a long-term

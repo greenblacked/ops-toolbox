@@ -4,7 +4,7 @@ name: Release
 # request and a tag is only ever created on a commit that is already on master.
 #
 #   1. Run this workflow by hand with a version. The prepare job runs
-#      changelog.d/changelog.sh release on a chore/release-<version> branch
+#      changelog.d/changelog.sh release on a release/<version> branch
 #      and opens it as a pull request: the release commit, with nothing else in
 #      it, as changelog.d/README.md asks.
 #   2. Merging that pull request pushes CHANGELOG.md to master with the new
@@ -81,7 +81,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          url="$(gh pr list --state open --head "chore/release-$VERSION" --json url --jq '.[0].url // ""')"
+          url="$(gh pr list --state open --head "release/$VERSION" --json url --jq '.[0].url // ""')"
           if [ -n "$url" ]; then
             echo "url=$url" >> "$GITHUB_OUTPUT"
             echo "Existing pull request: $url"
@@ -104,7 +104,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          branch="chore/release-${VERSION}"
+          branch="release/${VERSION}"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
@@ -122,7 +122,7 @@ jobs:
           # deletions belong in the same commit as the section they moved to.
           git add CHANGELOG.md
           git add -A changelog.d
-          git commit -m "chore: release ${VERSION}"
+          git commit -m "release: ${VERSION}"
 
           if [ -n "$remote_sha" ]; then
             git push --force-with-lease="refs/heads/$branch:$remote_sha" \
@@ -162,7 +162,7 @@ jobs:
           url="$(gh pr create \
             --base master \
             --head "$RELEASE_BRANCH" \
-            --title "chore: release ${VERSION}" \
+            --title "release: ${VERSION}" \
             --body "$body")"
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
