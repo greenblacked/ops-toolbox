@@ -138,6 +138,30 @@ class RouterOSVersionTests(unittest.TestCase):
             self.assertEqual(doc.read_text(encoding="utf-8").strip(),
                              "CHR 7.24, CHR 7.23.3, build 17.23. Tested on 7.24.")
 
+    def test_documented_version_replacement_allows_trailing_period(self) -> None:
+        """A pin ending a sentence is still a match.
+
+        The root README mentions the pin once, at the end of a table cell
+        sentence. A lookahead that rejects any following "." finds nothing
+        there and aborts the whole bump as a partial one.
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            doc = root / "doc.md"
+            doc.write_text(
+                "| `mikrotik/` | current CHR integration pin: RouterOS 7.24.5. |\n"
+                "RouterOS 7.24.50 and 7.24.5.1 are other releases.\n",
+                encoding="utf-8",
+            )
+            routeros_version._replace_documented_version(
+                root, "7.24.5", "7.24.6", files=[Path("doc.md")]
+            )
+            self.assertEqual(
+                doc.read_text(encoding="utf-8"),
+                "| `mikrotik/` | current CHR integration pin: RouterOS 7.24.6. |\n"
+                "RouterOS 7.24.50 and 7.24.5.1 are other releases.\n",
+            )
+
     def test_bump_updates_heading_fragments_but_preserves_measured_results(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
