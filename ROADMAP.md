@@ -134,5 +134,5 @@ with its own tests, invoked as a subprocess by absolute path. Not
 
 ## Next pull requests
 
-1. `chore/v0.1.0` — the release move plus the `SECURITY.md` sentence.
+1. `release/1.0.0` — the release move plus the `SECURITY.md` sentence.
 2. Wave C, one script at a time, in the order you actually run them.

@@ -1,0 +1,44 @@
+name: Branch name
+
+# Holds every pull request's head branch to the naming convention, and its
+# title to "no chore type" - see CONTRIBUTING.md, "Branch names", and
+# test-env/static/check_branch_name.sh, which is the rule itself.
+#
+# A workflow of its own rather than a job in ci.yml: "edited" is here so that
+# fixing a title re-runs the check, and in ci.yml it would re-run the whole
+# matrix for a one-word change. No branch filter either - the convention holds
+# whatever the pull request targets.
+#
+# pull_request, not pull_request_target: the job reads only the checked-out
+# script and two event fields, needs no secrets, and must never run code from
+# a fork with a write token.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-name-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Branch name
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check branch name and title
+        shell: bash
+        env:
+          # Through the environment, never interpolated into the script: both
+          # are typed by whoever opened the pull request.
+          HEAD_REF: ${{ github.head_ref }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: test-env/static/check_branch_name.sh --title "$PR_TITLE" "$HEAD_REF"

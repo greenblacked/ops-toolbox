@@ -43,9 +43,14 @@ on:
       - master
       - 'feat/**'
       - 'feature/**'
-      - 'ci/**'
-      - 'chore/**'
       - 'fix/**'
+      - 'docs/**'
+      - 'ci/**'
+      - 'test/**'
+      - 'perf/**'
+      - 'refactor/**'
+      - 'deps/**'
+      - 'release/**'
     paths:
       - 'mikrotik/**'
       - 'run-tests.sh'

@@ -1,7 +1,8 @@
 name: CI
 
-# Triggers follow the repository's typed-branch convention — feat/, ci/,
-# chore/, fix/ — and are arranged so a change is built once rather than twice.
+# Triggers follow the repository's typed-branch convention (CONTRIBUTING.md,
+# "Branch names"; test-env/static/check_branch_name.sh is the rule) and are
+# arranged so a change is built once rather than twice.
 #
 # `push` was previously unfiltered, so a branch with an open pull request ran
 # the whole matrix on the push event and then again on the pull_request event.
@@ -30,9 +31,14 @@ on:
       # the older prefix does not silently lose coverage either.
       - 'feat/**'
       - 'feature/**'
-      - 'ci/**'
-      - 'chore/**'
       - 'fix/**'
+      - 'docs/**'
+      - 'ci/**'
+      - 'test/**'
+      - 'perf/**'
+      - 'refactor/**'
+      - 'deps/**'
+      - 'release/**'
   workflow_dispatch: {}
 
 permissions:

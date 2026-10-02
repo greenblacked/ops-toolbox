@@ -27,9 +27,14 @@ on:
       - master
       - 'feat/**'
       - 'feature/**'
-      - 'ci/**'
-      - 'chore/**'
       - 'fix/**'
+      - 'docs/**'
+      - 'ci/**'
+      - 'test/**'
+      - 'perf/**'
+      - 'refactor/**'
+      - 'deps/**'
+      - 'release/**'
   schedule:
     # Monday 05:41 UTC — an off-round minute for the reason chr.yml's and
     # routeros-version.yml's crons give (the top of the hour is heavily

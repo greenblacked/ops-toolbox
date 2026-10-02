@@ -89,7 +89,7 @@ jobs:
           TARGET_VERSION: ${{ steps.release.outputs.latest }}
         run: |
           set -euo pipefail
-          branch="chore/routeros-${TARGET_VERSION}"
+          branch="deps/routeros-${TARGET_VERSION}"
           url="$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // ""')"
           if [ -n "$url" ]; then
             echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -187,7 +187,7 @@ jobs:
           TARGET_VERSION: ${{ steps.release.outputs.latest }}
         run: |
           set -euo pipefail
-          branch="chore/routeros-${TARGET_VERSION}"
+          branch="deps/routeros-${TARGET_VERSION}"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
 
@@ -210,7 +210,7 @@ jobs:
             mikrotik/tests/routeros-version.env \
             README.md mikrotik/README.md mikrotik/tests/README.md \
             .github/workflows/chr.yml CHANGELOG.md
-          git commit -m "chore(mikrotik): test against RouterOS ${TARGET_VERSION}"
+          git commit -m "deps(mikrotik): test against RouterOS ${TARGET_VERSION}"
 
           if [ -n "$remote_sha" ]; then
             git push --force-with-lease="refs/heads/$branch:$remote_sha" \
@@ -255,7 +255,7 @@ jobs:
           url="$(gh pr create \
             --base master \
             --head "$BUMP_BRANCH" \
-            --title "chore(mikrotik): test against RouterOS ${TARGET_VERSION}" \
+            --title "deps(mikrotik): test against RouterOS ${TARGET_VERSION}" \
             --body "$body")"
           echo "url=$url" >> "$GITHUB_OUTPUT"
 

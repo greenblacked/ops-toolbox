@@ -51,6 +51,9 @@ printf '\n--- RouterOS script conventions ---\n'
 printf '\n--- run-tests.sh automation contract ---\n'
 "$HERE/test_run_tests.sh" || rc=1
 
+printf '\n--- branch names ---\n'
+"$HERE/test_branch_name.sh" || rc=1
+
 printf '\n--- documentation citations ---\n'
 "$HERE/test_doc_citations.sh" || rc=1
 
