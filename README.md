@@ -67,7 +67,7 @@ fixtures. The main collections are:
 | [`macos-initial-setup/`](macos-initial-setup/) | App and tool setup, maintenance, workstation reports and preferences. |
 | [`windows/`](windows/) | [Git Bash configuration](windows/git-bash/README.md), [WSL management](windows/wsl/README.md), [disk cleanup](windows/cleanup/README.md) and [workstation setup](windows/setup/README.md). |
 | [`linux/`](linux/) | Workstation and server reports, package/tool setup, maintenance, backups and [cloud-init](linux/cloud-init/README.md). |
-| [`mikrotik/`](mikrotik/) | RouterOS scripts for backups, connectivity, updates, health checks and notifications; current CHR integration pin: RouterOS 7.24.4. |
+| [`mikrotik/`](mikrotik/) | RouterOS scripts for backups, connectivity, updates, health checks and notifications; current CHR integration pin: RouterOS 7.24.5. |
 | [`k8s-toolbox/`](k8s-toolbox/) | A Debian-based, GKE-oriented CLI image, build/run helpers and cluster diagnostics. |
 | [`dotfiles/`](dotfiles/) | Tool configuration and a per-file link/copy installer with drift reporting. |
 
