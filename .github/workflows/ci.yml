@@ -1,1 +1,1187 @@
-PLACEHOLDER_DO_NOT_USE
+name: CI
+
+# Triggers follow the repository's typed-branch convention (CONTRIBUTING.md,
+# "Branch names"; test-env/static/check_branch_name.sh is the rule) and are
+# arranged so a change is built once rather than twice.
+#
+# `push` was previously unfiltered, so a branch with an open pull request ran
+# the whole matrix on the push event and then again on the pull_request event.
+# Each event now owns one path: `pull_request` covers development branches (and
+# tests the *merge result*, which a branch push cannot), and `push` covers only
+# master, where there is no pull request to do it.
+#
+# The tradeoff, stated plainly: a typed branch with no pull request open gets no
+# CI. Open the PR as a draft, or use `workflow_dispatch` (Actions -> CI -> Run
+# workflow) if you want a verdict before review.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    # These are *target* branches, not source branches. master is the ordinary
+    # case; the typed prefixes are listed so a stacked pull request onto another
+    # feature branch is checked too, instead of silently running nothing.
+    branches:
+      - master
+      # feat/, not feature/ — the convention changed after this list was
+      # written, so a pull request stacked onto a feat/ branch matched nothing
+      # and ran no checks at all. A target branch that matches no pattern does
+      # not fail the pull request; it merges green because nothing ever ran,
+      # which is the worst way for a filter to be wrong. feature/ is kept so
+      # the older prefix does not silently lose coverage either.
+      - 'feat/**'
+      - 'feature/**'
+      - 'fix/**'
+      - 'docs/**'
+      - 'ci/**'
+      - 'test/**'
+      - 'perf/**'
+      - 'refactor/**'
+      - 'deps/**'
+      - 'release/**'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  # Superseded pull-request pushes are worth cancelling. Runs on master are not:
+  # every commit that lands on the default branch should get its own verdict.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Every external tool this workflow installs is pinned, for the same reason the
+# CHR image, ruff's target-version and the tester images are: a release on
+# somebody else's schedule should not turn a green repository red. Bumping one
+# of these is a deliberate commit with a test run behind it.
+#
+# The GitHub Actions used below are pinned to commit SHAs rather than moving
+# tags, with the tag in a trailing comment. A tag is mutable; a SHA is what
+# actually gets executed. .github/dependabot.yml keeps them current.
+#
+# A version pin answers "which release", not "which bytes". The asset behind a
+# pinned URL can be replaced, and a download that only pins the version installs
+# whatever answers. So every binary fetched below is checked against the SHA-256
+# recorded in .github/ci-tool-checksums.env before it is unpacked or installed,
+# and the step fails on a mismatch.
+#
+# That file spent its whole life as documentation. It declared itself the source
+# of truth for these digests while nothing in the tree read it — a grep for its
+# name returned the file and nothing else — so the two Darwin digests written
+# for the macos-native job below had never once been compared against anything,
+# and a bump that edited a *_VERSION here and forgot the digest file was
+# invisible. A digest nobody checks is worse than no digest, because it reads
+# like a control.
+#
+# The other half of that is at review time: test-env/static/check_conventions.sh
+# asserts this block and that file agree version for version, that every tool
+# pinned here either records a digest or is named as installed through a package
+# manager that does its own verification, and that every digest recorded there is
+# named by a step below. Neither half can rot back into decoration unnoticed.
+env:
+  SHELLCHECK_VERSION: '0.10.0'
+  ACTIONLINT_VERSION: '1.7.12'
+  HADOLINT_VERSION: '2.15.1'
+  KUBECONFORM_VERSION: '0.8.0'
+  YAMLLINT_VERSION: '1.38.0'
+  RUFF_VERSION: '0.15.8'
+  PSSA_VERSION: '1.23.0'
+  # markdownlint used to be the one linter with no version pinned anywhere: it
+  # arrived through markdownlint-cli2-action, and the action's SHA was the only
+  # thing fixed. That is a real pin for CI and no pin at all for anyone running
+  # the linter by hand, because nothing in the tree said which markdownlint they
+  # should run. The value below is the version that action depends on, named
+  # here so the local lint suite and the workflow agree on it.
+  MARKDOWNLINT_VERSION: '0.23.2'
+
+jobs:
+  # Which parts of the repository a change actually touches.
+  #
+  # Every output below is consumed by a *step-level* `if`, never a job-level
+  # one. That is deliberate: a job skipped at the job level reports "skipped"
+  # rather than "success", and a required status check that never reports leaves
+  # a pull request unmergeable forever. Skipping at the step level keeps every
+  # job name reporting green with no branch-protection changes needed, at the
+  # cost of ~20s of runner start-up for a job with nothing to do. The saving
+  # this buys is the part that matters: a README-only change no longer builds
+  # and boots the Docker suites.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      shell: ${{ steps.filter.outputs.shell }}
+      powershell: ${{ steps.filter.outputs.powershell }}
+      markdown: ${{ steps.filter.outputs.markdown }}
+      yaml: ${{ steps.filter.outputs.yaml }}
+      python: ${{ steps.filter.outputs.python }}
+      workflow: ${{ steps.filter.outputs.workflow }}
+      dockerfile: ${{ steps.filter.outputs.dockerfile }}
+      manifests: ${{ steps.filter.outputs.manifests }}
+      compose: ${{ steps.filter.outputs.compose }}
+      # The Test / <suite> matrix, built from `run-tests.sh --list` below so
+      # a suite added to the aggregator gets its job without an edit here.
+      matrix: ${{ steps.filter.outputs.matrix }}
+      # The two native jobs are not matrix entries and read their suite's
+      # verdict directly.
+      suite_windows: ${{ steps.filter.outputs.suite_windows }}
+      # The native macOS job runs the no-Docker suites as well as its own
+      # package, so its gate is wider than one package prefix and is built by
+      # its own filter line rather than by the per-suite loop. suite_macos is
+      # not exported: the Docker Test / macos job reads its verdict from the
+      # matrix entry, and this job was its only other consumer.
+      native_macos: ${{ steps.filter.outputs.native_macos }}
+      bash32: ${{ steps.filter.outputs.bash32 }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+          # The diff needs the base commit, which a default depth-1 clone does
+          # not have. This repository is small enough that a full clone costs
+          # about a second.
+          fetch-depth: 0
+
+      - name: Work out what changed
+        id: filter
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Fail open. Anything this step is not certain about is reported as
+          # "changed", so a bug here can only ever make CI do more work than it
+          # needs to, never less. That is the only safe direction for a filter
+          # sitting in front of the test suites.
+          full=1
+          files=''
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              if [ -n "$BASE_SHA" ] && git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+                files="$(git diff --name-only "$BASE_SHA" "$HEAD_SHA")"
+                full=0
+              fi
+              ;;
+            push)
+              zero=0000000000000000000000000000000000000000
+              if [ -n "$BEFORE_SHA" ] && [ "$BEFORE_SHA" != "$zero" ] &&
+                 git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+                files="$(git diff --name-only "$BEFORE_SHA" "$HEAD_SHA")"
+                full=0
+              fi
+              ;;
+          esac
+
+          # A change to CI itself, to the aggregator, or to the shared test
+          # helpers invalidates every assumption below it, so treat it as a
+          # change to everything.
+          #
+          # templates/ is here for a different reason: nothing under it is a
+          # suite's package, so a templates-only change matched no suite at
+          # all. The templates are exercised by git/tests/test_git_scripts.sh
+          # and windows/tests/contract.ps1, both gated on their own package,
+          # so the one change that most needs those two suites was the one
+          # change that ran neither. contract.ps1 says in as many words that
+          # the templates exist so the conventions cannot drift away from
+          # them, "which only works if the same checks run against them".
+          if [ "$full" -eq 0 ] && printf '%s\n' "$files" |
+              grep -Eq '^(\.github/|run-tests\.sh$|test-env/lib/|templates/)'; then
+            full=1
+          fi
+
+          if [ "$full" -eq 1 ]; then
+            echo "no usable base diff, or CI/aggregator changed — running everything"
+          else
+            echo "changed files:"
+            printf '%s\n' "$files" | sed 's/^/  /'
+          fi
+
+          emit() {
+            local name="$1" pattern="$2" value=false
+            if [ "$full" -eq 1 ] || printf '%s\n' "$files" | grep -Eq "$pattern"; then
+              value=true
+            fi
+            printf '%s=%s\n' "$name" "$value" >> "$GITHUB_OUTPUT"
+            printf '  %-14s %s\n' "$name" "$value"
+          }
+
+          echo
+          echo "filters:"
+          # The shell filter covers the Git Bash dotfiles by name as well as by
+          # extension, for the same reason the lint job lists them explicitly:
+          # they are real bash with no .sh on the end.
+          emit shell         '(\.sh|\.zsh|\.bashrc|\.bash_profile|\.aliases)$'
+          emit powershell    '(\.ps1|\.psm1|\.psd1)$'
+          emit markdown      '(\.md$|markdownlint)'
+          emit yaml          '(\.ya?ml|\.winget)$'
+          emit python        '(\.py$|^pyproject\.toml$|^test-env/python/)'
+          emit workflow      '^\.github/workflows/.*\.ya?ml$'
+          emit dockerfile    '(^|/)Dockerfile$'
+          emit manifests     '^(k8s-toolbox/(examples|debug)/|linux/cloud-init/).*\.ya?ml$'
+          emit compose       '(^|/)docker-compose[^/]*\.ya?ml$'
+
+          # macos-15 is the only runner in this repository where BSD find, sed,
+          # stat and date meet the test harness, so it is the only place a
+          # GNU-ism in a suite can be caught. It was running one file. The
+          # suites added to it below are the no-Docker ones, which cost seconds
+          # on a runner that is already booted - and the gate has to cover
+          # their packages too, or a change to test-env/ would not wake the one
+          # job able to judge it. That is not hypothetical: check_conventions.sh
+          # used GNU-only `find -printf` with no fallback, so on macOS its
+          # "a dry run writes nothing" section compared "" to "" and passed for
+          # every script it checked.
+          emit native_macos  '^(macos-initial-setup/|test-env/|k8s-toolbox/|dotfiles/|run-tests\.sh$)'
+
+          # CONTRIBUTING.md requires git/, macos-initial-setup/ and linux/ to
+          # run under the Bash 3.2 that /bin/bash still is on every Mac;
+          # check_conventions.sh adds dotfiles/ to the same set. Nothing in CI
+          # could enforce it. Lint's `bash -n` runs on ubuntu-24.04, where bash
+          # is 5, and a parse error is a property of the parser rather than of
+          # any keyword the static check greps for - so a construct 3.2 refuses
+          # rode through every job green. Two of these have now reached CI: a
+          # `case` inside $( ), and an apostrophe inside a heredoc inside $( ),
+          # which 3.2 reads as an unterminated quote and follows to end of file.
+          #
+          # This is deliberately its own filter and not a widening of
+          # native_macos: git/ and linux/ do not need the macOS suites, which
+          # cost seven minutes, and they do need a parse check that costs
+          # seconds on the only runner that has the right interpreter.
+          emit bash32        '^(git/|macos-initial-setup/|linux/|dotfiles/)'
+
+          # Suites come from the aggregator's own table, not a copy of it
+          # here. `run-tests.sh --list` prints name, package directory and
+          # blurb per suite; a suite runs when a changed file sits under its
+          # package. The same loop builds the Test / <suite> matrix, so the
+          # workflow has no per-suite lines to forget when one is added -
+          # the dotfiles suite arrived with four hand edits to this file and
+          # its summary row was the one that got missed.
+          #
+          # Four suites are not matrix entries: python and static have jobs
+          # of their own (static runs on every change), mikrotik boots a
+          # router under QEMU in its own workflow, and lint *is* the Lint job
+          # below — it is the aggregator's name for the checks that job runs,
+          # and the job calls it. A matrix entry for it would stand up a second
+          # ubuntu runner, install none of the pinned linters, and report a
+          # duplicate `Test / lint` verdict from whatever happened to be on the
+          # image. Its package prefix would be wrong too: test-env/lint/ is
+          # where the runner lives, not what it lints, so the gate would fire
+          # on edits to the runner and on nothing else.
+          echo
+          echo "suites:"
+          matrix='[]'
+          while IFS=$'\t' read -r suite pkg _blurb; do
+            [ -n "$suite" ] || continue
+            case "$suite" in python|static|mikrotik|lint) continue ;; esac
+            emit "suite_$suite" "^${pkg}/"
+            changed="$(grep "^suite_$suite=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2)"
+            case "$suite" in
+              linux)
+                # Keep the historical `Test / linux` name for the Debian
+                # fixture so an existing required-check rule continues to
+                # report. Fedora and Arch run as separate jobs: failures
+                # identify the affected package manager immediately, and the
+                # three images build in parallel.
+                matrix="$(jq -c --arg c "$changed" '. + [
+                  {check_name: "linux",          suite: "linux", linux_distro: "debian", changed: $c},
+                  {check_name: "linux (fedora)", suite: "linux", linux_distro: "fedora", changed: $c},
+                  {check_name: "linux (arch)",   suite: "linux", linux_distro: "arch",   changed: $c}
+                ]' <<< "$matrix")"
+                ;;
+              *)
+                matrix="$(jq -c --arg s "$suite" --arg c "$changed" \
+                  '. + [{check_name: $s, suite: $s, linux_distro: "", changed: $c}]' <<< "$matrix")"
+                ;;
+            esac
+          done < <(./run-tests.sh --list)
+          # A process substitution's exit status is invisible to `set -e`, so
+          # a run-tests.sh that dies before printing anything - a syntax error
+          # from a bad edit, a lost exec bit, the cd guard firing - leaves
+          # matrix at its '[]' seed and this step still succeeds. `fromJSON`
+          # then expands to zero jobs, every required `Test / <suite>` check
+          # goes missing rather than red, and the pull request is unmergeable
+          # with nothing to point at. Precisely the change most in need of
+          # testing is the one that triggers it, so it has to be loud.
+          if [ "$matrix" = '[]' ]; then
+            echo "::error::run-tests.sh --list produced no suites; refusing to publish an empty test matrix"
+            exit 1
+          fi
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
+          printf '  %-14s %s\n' matrix "$(jq -r 'map(.check_name) | join(", ")' <<< "$matrix")"
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        env:
+          # Step outputs stay in the environment. A value that reaches a
+          # run script through ${{ }} is parsed as code.
+          FILTER_SHELL: ${{ steps.filter.outputs.shell }}
+          FILTER_POWERSHELL: ${{ steps.filter.outputs.powershell }}
+          FILTER_MARKDOWN: ${{ steps.filter.outputs.markdown }}
+          FILTER_YAML: ${{ steps.filter.outputs.yaml }}
+          FILTER_PYTHON: ${{ steps.filter.outputs.python }}
+          FILTER_WORKFLOW: ${{ steps.filter.outputs.workflow }}
+          FILTER_DOCKERFILE: ${{ steps.filter.outputs.dockerfile }}
+          FILTER_MANIFESTS: ${{ steps.filter.outputs.manifests }}
+          FILTER_COMPOSE: ${{ steps.filter.outputs.compose }}
+          FILTER_MATRIX: ${{ steps.filter.outputs.matrix }}
+        run: |
+          {
+            printf '### Change filters\n\n'
+            printf '| filter | runs |\n| --- | --- |\n'
+            printf '| shell | %s |\n'      "$FILTER_SHELL"
+            printf '| powershell | %s |\n' "$FILTER_POWERSHELL"
+            printf '| markdown | %s |\n'   "$FILTER_MARKDOWN"
+            printf '| yaml | %s |\n'       "$FILTER_YAML"
+            printf '| python | %s |\n'     "$FILTER_PYTHON"
+            printf '| workflow | %s |\n'   "$FILTER_WORKFLOW"
+            printf '| Dockerfile | %s |\n' "$FILTER_DOCKERFILE"
+            printf '| manifests | %s |\n'  "$FILTER_MANIFESTS"
+            printf '| Compose | %s |\n'    "$FILTER_COMPOSE"
+            # One row per suite, from the same matrix the test job runs, so a
+            # suite cannot be in the matrix and missing from this table.
+            jq -r 'unique_by(.suite)[] | "| \(.suite) suite | \(.changed) |"' \
+              <<< "$FILTER_MATRIX"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  lint:
+    name: Lint
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Which of the six checks this change needs, in the form the suite takes.
+      #
+      # The verdicts are the same per-filter ones the install steps below are
+      # gated on; this step only joins them, so the job still does nothing
+      # expensive for a change that touches nothing lintable.
+      #
+      # The shell checks are selected by a workflow change as well as a shell
+      # one, because actionlint shells out to ShellCheck to analyse `run:`
+      # blocks: without the binary present that gate quietly analyses nothing.
+      - name: Select checks
+        id: checks
+        shell: bash
+        env:
+          SHELL_CHANGED: ${{ needs.changes.outputs.shell }}
+          WORKFLOW_CHANGED: ${{ needs.changes.outputs.workflow }}
+          DOCKERFILE_CHANGED: ${{ needs.changes.outputs.dockerfile }}
+          POWERSHELL_CHANGED: ${{ needs.changes.outputs.powershell }}
+          YAML_CHANGED: ${{ needs.changes.outputs.yaml }}
+          MARKDOWN_CHANGED: ${{ needs.changes.outputs.markdown }}
+        run: |
+          set -euo pipefail
+          checks=()
+          # Written as `if`, not `[ x ] && checks+=(...)`: under `set -e` a
+          # trailing && list that evaluates false is a failed command and takes
+          # the whole step with it, so the last filter to come back false would
+          # kill this step rather than leave its check unselected.
+          if [ "$SHELL_CHANGED" = true ] || [ "$WORKFLOW_CHANGED" = true ]; then
+            checks+=(shell)
+          fi
+          if [ "$WORKFLOW_CHANGED" = true ];   then checks+=(workflow);   fi
+          if [ "$DOCKERFILE_CHANGED" = true ]; then checks+=(dockerfile); fi
+          if [ "$POWERSHELL_CHANGED" = true ]; then checks+=(powershell); fi
+          if [ "$YAML_CHANGED" = true ];       then checks+=(yaml);       fi
+          if [ "$MARKDOWN_CHANGED" = true ];   then checks+=(markdown);   fi
+          list="$(IFS=,; printf '%s' "${checks[*]-}")"
+          printf 'list=%s\n' "$list" >> "$GITHUB_OUTPUT"
+          if [ -n "$list" ]; then
+            printf 'any=true\n' >> "$GITHUB_OUTPUT"
+          else
+            printf 'any=false\n' >> "$GITHUB_OUTPUT"
+          fi
+          printf 'checks: %s\n' "${list:-<none>}"
+
+      # Fetched from the upstream release rather than apt. apt-get update alone
+      # costs ~20s before a byte of the tool is downloaded, and it leaves the
+      # Ubuntu image deciding the analyser version — the one unpinned tool in a
+      # repository that pins everything else. This is both pinned and faster.
+      # Cached for the same reason PSScriptAnalyzer is: the download is the
+      # only part of this gate that depends on someone else's uptime. Run #75
+      # went red when this step failed in under a second — the existing
+      # `--retry 3` never fired, because curl retries timeouts and 5xx but not
+      # a 4xx, so a rate-limited or briefly-missing asset fails immediately. A
+      # cache hit skips the network altogether; the flags below cover the miss.
+      #
+      # The workflow filter is here as well as the shell one because actionlint
+      # shells out to ShellCheck to analyse `run:` blocks: a workflow-only
+      # change still needs the binary present, and without it that gate quietly
+      # analyses nothing.
+      - name: Cache ShellCheck
+        id: shellcheck-cache
+        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/ops-toolbox-shellcheck
+          key: shellcheck-${{ runner.os }}-${{ env.SHELLCHECK_VERSION }}
+
+      - name: Install ShellCheck
+        if: needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache_dir="$HOME/.cache/ops-toolbox-shellcheck"
+          cached="$cache_dir/shellcheck"
+          if [ ! -x "$cached" ]; then
+            base=https://github.com/koalaman/shellcheck/releases/download
+            url="$base/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+            # --retry-all-errors turns 4xx into a retryable case as well, which
+            # is what the bare --retry was missing; --retry-connrefused covers a
+            # refused connection. Together they make a transient blip cost
+            # seconds instead of a red master.
+            curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
+              --retry-connrefused --connect-timeout 10 \
+              "$url" -o "$RUNNER_TEMP/shellcheck.tar.xz"
+            # Checked before it is unpacked, and the archive is what is checked:
+            # the digests in that file are of the release artefact as served, not
+            # of the binary inside it. See the env: block for why this exists.
+            # Inside the cache-miss branch because this is the only path that
+            # touches the network — a cache hit reinstalls bytes that passed
+            # this check when they were fetched.
+            want="$(awk -F= '$1 == "SHELLCHECK_SHA256_LINUX_AMD64" { print $2 }' \
+              .github/ci-tool-checksums.env)"
+            [ -n "$want" ] || {
+              echo "::error::SHELLCHECK_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+              exit 1
+            }
+            sha256sum -c - <<<"$want  $RUNNER_TEMP/shellcheck.tar.xz" || {
+              echo "::error::ShellCheck v$SHELLCHECK_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+              exit 1
+            }
+            tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+            mkdir -p "$cache_dir"
+            install -m 0755 \
+              "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" "$cached"
+          fi
+          sudo install -m 0755 "$cached" /usr/local/bin/shellcheck
+          # Assert the pin took, so a redirected, stale or cached-wrong binary
+          # cannot quietly downgrade the gate.
+          got="$(shellcheck --version | awk '/^version:/ { print $2 }')"
+          if [ "$got" != "$SHELLCHECK_VERSION" ]; then
+            echo "::error::wanted ShellCheck $SHELLCHECK_VERSION, got '$got'"
+            exit 1
+          fi
+
+      - name: Install actionlint
+        if: needs.changes.outputs.workflow == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/rhysd/actionlint/releases/download
+          archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-connrefused --connect-timeout 10 \
+            "$base/v${ACTIONLINT_VERSION}/$archive" \
+            -o "$RUNNER_TEMP/actionlint.tar.gz"
+          want="$(awk -F= '$1 == "ACTIONLINT_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::ACTIONLINT_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/actionlint.tar.gz" || {
+            echo "::error::actionlint v$ACTIONLINT_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          sudo install -m 0755 "$RUNNER_TEMP/actionlint" /usr/local/bin/actionlint
+          got="$(actionlint -version | head -n 1)"
+          if [ "$got" != "$ACTIONLINT_VERSION" ]; then
+            echo "::error::wanted actionlint $ACTIONLINT_VERSION, got '$got'"
+            exit 1
+          fi
+
+      - name: Install Hadolint
+        if: needs.changes.outputs.dockerfile == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/hadolint/hadolint/releases/download
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-connrefused --connect-timeout 10 \
+            "$base/v${HADOLINT_VERSION}/hadolint-linux-x86_64" \
+            -o "$RUNNER_TEMP/hadolint"
+          # Hadolint ships no checksums file of its own, so the recorded digest
+          # is a first observation rather than an upstream publication — read it
+          # as "these are the bytes this repository has been running", which is
+          # what catches a silently replaced asset. It is still the download
+          # itself being checked: this release is a bare binary, not an archive.
+          want="$(awk -F= '$1 == "HADOLINT_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::HADOLINT_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/hadolint" || {
+            echo "::error::Hadolint v$HADOLINT_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
+          sudo install -m 0755 "$RUNNER_TEMP/hadolint" /usr/local/bin/hadolint
+          got="$(hadolint --version)"
+          case "$got" in
+            *"$HADOLINT_VERSION"*) ;;
+            *)
+              echo "::error::wanted Hadolint $HADOLINT_VERSION, got '$got'"
+              exit 1
+              ;;
+          esac
+
+      # PSGallery installs are the slowest thing in this job by a wide margin,
+      # and the module is pinned, so the cache key is exact and never stale.
+      - name: Cache PSScriptAnalyzer
+        id: pssa-cache
+        if: needs.changes.outputs.powershell == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.local/share/powershell/Modules/PSScriptAnalyzer
+          key: pssa-${{ runner.os }}-${{ env.PSSA_VERSION }}
+
+      - name: Install PSScriptAnalyzer
+        if: needs.changes.outputs.powershell == 'true' && steps.pssa-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION `
+            -Force -Scope CurrentUser -AllowClobber
+
+      - name: Cache pip downloads
+        if: needs.changes.outputs.yaml == 'true'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.cache/pip
+          key: pip-lint-${{ runner.os }}-yamllint-${{ env.YAMLLINT_VERSION }}
+
+      # pipx rather than pip: the runner's system Python is externally managed,
+      # and pipx is preinstalled. This is also how the python job installs ruff.
+      - name: Install yamllint
+        if: needs.changes.outputs.yaml == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          pipx install "yamllint==${YAMLLINT_VERSION}"
+          got="$(yamllint --version)"
+          if [ "$got" != "yamllint ${YAMLLINT_VERSION}" ]; then
+            echo "::error::wanted yamllint $YAMLLINT_VERSION, got '$got'"
+            exit 1
+          fi
+
+      # markdownlint-cli2-action used to do this, and it was the only linter in
+      # the job with no counterpart anyone could run by hand. Installed here
+      # instead, from the version the action itself depends on, so the workflow
+      # and test-env/lint/run.sh invoke one binary at one version.
+      - name: Install markdownlint-cli2
+        if: needs.changes.outputs.markdown == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install -g "markdownlint-cli2@${MARKDOWNLINT_VERSION}"
+          # No --version flag: the banner is the first line of every run,
+          # --help included, and --help exits 2 without reading a file.
+          got="$({ markdownlint-cli2 --help 2>&1 || true; } | head -n 1)"
+          case "$got" in
+            "markdownlint-cli2 v$MARKDOWNLINT_VERSION "*) ;;
+            *)
+              echo "::error::wanted markdownlint-cli2 $MARKDOWNLINT_VERSION, got '$got'"
+              exit 1
+              ;;
+          esac
+
+      # The whole point of the job, in one step. It runs the same entry point a
+      # developer runs, which is what `run-tests.sh` has claimed since its first
+      # line and what the Lint job was the last holdout from: every check above
+      # used to be a second copy of an invocation, and the copies had no way to
+      # be compared. A markdownlint violation reached a pull request because
+      # nothing local ran markdownlint at all.
+      #
+      # LINT_STRICT=1 because every tool was just installed on purpose above. On
+      # a developer's machine a missing Hadolint is a named skip and the rest of
+      # the lint still runs; here a skip means an install step stopped working
+      # and the gate silently shrank, so it fails the job.
+      - name: Run the lint suite
+        if: steps.checks.outputs.any == 'true'
+        shell: bash
+        env:
+          LINT_CHECKS: ${{ steps.checks.outputs.list }}
+          LINT_STRICT: '1'
+        run: ./run-tests.sh lint
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        env:
+          SHELL_CHANGED: ${{ needs.changes.outputs.shell }}
+          WORKFLOW_CHANGED: ${{ needs.changes.outputs.workflow }}
+          DOCKERFILE_CHANGED: ${{ needs.changes.outputs.dockerfile }}
+          POWERSHELL_CHANGED: ${{ needs.changes.outputs.powershell }}
+          YAML_CHANGED: ${{ needs.changes.outputs.yaml }}
+          MARKDOWN_CHANGED: ${{ needs.changes.outputs.markdown }}
+        run: |
+          {
+            printf '### Lint\n\n'
+            printf '| check | ran |\n| --- | --- |\n'
+            shell_ran=false
+            if [ "$SHELL_CHANGED" = true ] || [ "$WORKFLOW_CHANGED" = true ]; then
+              shell_ran=true
+            fi
+            printf '| bash -n + ShellCheck %s | %s |\n' \
+              "$SHELLCHECK_VERSION" "$shell_ran"
+            printf '| actionlint %s | %s |\n' \
+              "$ACTIONLINT_VERSION" "$WORKFLOW_CHANGED"
+            printf '| Hadolint %s | %s |\n' \
+              "$HADOLINT_VERSION" "$DOCKERFILE_CHANGED"
+            printf '| PSScriptAnalyzer %s | %s |\n' \
+              "$PSSA_VERSION" "$POWERSHELL_CHANGED"
+            printf '| yamllint %s | %s |\n' \
+              "$YAMLLINT_VERSION" "$YAML_CHANGED"
+            printf '| markdownlint-cli2 %s | %s |\n' \
+              "$MARKDOWNLINT_VERSION" "$MARKDOWN_CHANGED"
+            printf '\nRun the same checks locally with `./run-tests.sh lint`.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  validate:
+    name: Validate / schemas
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        if: >-
+          needs.changes.outputs.manifests == 'true' ||
+          needs.changes.outputs.compose == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install kubeconform
+        if: needs.changes.outputs.manifests == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=https://github.com/yannh/kubeconform/releases/download
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-connrefused --connect-timeout 10 \
+            "$base/v${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz" \
+            -o "$RUNNER_TEMP/kubeconform.tar.gz"
+          want="$(awk -F= '$1 == "KUBECONFORM_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::KUBECONFORM_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/kubeconform.tar.gz" || {
+            echo "::error::kubeconform v$KUBECONFORM_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
+          tar -xzf "$RUNNER_TEMP/kubeconform.tar.gz" \
+            -C "$RUNNER_TEMP" kubeconform
+          sudo install -m 0755 \
+            "$RUNNER_TEMP/kubeconform" /usr/local/bin/kubeconform
+          got="$(kubeconform -v)"
+          if [ "$got" != "v$KUBECONFORM_VERSION" ]; then
+            echo "::error::wanted kubeconform v$KUBECONFORM_VERSION, got '$got'"
+            exit 1
+          fi
+
+      - name: Validate Kubernetes manifests
+        if: needs.changes.outputs.manifests == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          kubeconform \
+            -strict \
+            -summary \
+            -kubernetes-version 1.36.0 \
+            -skip Kustomization \
+            k8s-toolbox/examples \
+            k8s-toolbox/debug
+
+      - name: Validate cloud-init configuration
+        if: needs.changes.outputs.manifests == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v cloud-init >/dev/null 2>&1; then
+            # cloud-init is part of Ubuntu itself rather than a standalone
+            # release binary. Install it from the package repository belonging
+            # to the pinned ubuntu-24.04 runner image.
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends cloud-init
+          fi
+          cloud-init --version
+          cloud-init schema --config-file linux/cloud-init/kali-vm-init.yaml
+
+      - name: Validate Docker Compose models
+        if: needs.changes.outputs.compose == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' compose_files < <(
+            git ls-files -z | while IFS= read -r -d '' file; do
+              case "${file##*/}" in
+                docker-compose.yml|docker-compose.yaml)
+                  printf '%s\0' "$file"
+                  ;;
+              esac
+            done
+          )
+          if [ "${#compose_files[@]}" -eq 0 ]; then
+            echo "::error::Compose filter ran but no base models were found"
+            exit 1
+          fi
+          for file in "${compose_files[@]}"; do
+            echo "validating $file"
+            if [ "$file" = mikrotik/tests/docker-compose.yml ]; then
+              docker compose \
+                --env-file mikrotik/tests/routeros-version.env \
+                -f "$file" config --quiet
+            else
+              docker compose -f "$file" config --quiet
+            fi
+          done
+
+          # The KVM file is intentionally an overlay and is not a valid model
+          # alone. Validate the exact layered form used by the CHR runner.
+          docker compose \
+            --env-file mikrotik/tests/routeros-version.env \
+            -f mikrotik/tests/docker-compose.yml \
+            -f mikrotik/tests/docker-compose.kvm.yml \
+            config --quiet
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        env:
+          MANIFESTS_CHANGED: ${{ needs.changes.outputs.manifests }}
+          COMPOSE_CHANGED: ${{ needs.changes.outputs.compose }}
+        run: |
+          {
+            printf '### Schema validation\n\n'
+            printf '| check | ran |\n| --- | --- |\n'
+            printf '| kubeconform %s + cloud-init | %s |\n' \
+              "$KUBECONFORM_VERSION" "$MANIFESTS_CHANGED"
+            printf '| Docker Compose config | %s |\n' \
+              "$COMPOSE_CHANGED"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  macos-native:
+    name: Test / macos native
+    needs: changes
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      # Checked out for either gate: the parse check below runs on changes to
+      # git/ and linux/, which the macOS suites deliberately ignore.
+      - name: Check out repository
+        if: >-
+          needs.changes.outputs.native_macos == 'true' ||
+          needs.changes.outputs.bash32 == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # First, because it takes seconds and everything below it takes minutes.
+      #
+      # /bin/bash by absolute path, never `bash`. This runner has Homebrew's
+      # Bash 5 ahead of /bin on PATH, so a bare `bash` is the one interpreter
+      # that cannot answer the question being asked. That is not a hypothetical
+      # either: the suite's own `bash -n` loop resolved through PATH for exactly
+      # this reason and passed a file 3.2 refuses.
+      - name: Parse with Apple Bash 3.2
+        if: needs.changes.outputs.bash32 == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$(/bin/bash -c 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"')"
+          echo "/bin/bash is $ver"
+          # A floor, like every check in this repository carries. If Apple ever
+          # ships a newer /bin/bash, this step keeps passing while checking
+          # nothing anyone cares about, and the first thing to notice would be
+          # a user's Mac. Fail loudly instead and let somebody retire the rule.
+          case "$ver" in
+            3.*) ;;
+            *) echo "::error::/bin/bash is $ver, not 3.x — this check no longer tests what it claims to"; exit 1 ;;
+          esac
+          # The same directories CONTRIBUTING.md names and check_conventions.sh
+          # lists in BASH32_DIRS, and the same */tests/* exclusion that check
+          # applies - so this enforces a rule the repository already states
+          # rather than a wider one invented here. Losing the suites costs
+          # nothing: macos native already runs them under /bin/bash, so a parse
+          # error in one fails this job anyway, and loudly.
+          # Tracked files only, so an untracked scratch copy cannot fail a build.
+          n=0
+          failed=0
+          while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case "$f" in */tests/*) continue ;; esac
+            n=$(( n + 1 ))
+            if ! /bin/bash -n "$f"; then
+              echo "::error file=$f::does not parse under Apple Bash $ver"
+              failed=$(( failed + 1 ))
+            fi
+          done < <(git ls-files 'git/*.sh' 'macos-initial-setup/*.sh' \
+                     'macos-initial-setup/**/*.sh' 'linux/*.sh' 'linux/**/*.sh' \
+                     'dotfiles/*.sh' 'dotfiles/**/*.sh')
+          # The second floor: a glob that stops matching is a check that stops
+          # checking, and it would do so silently.
+          if (( n == 0 )); then
+            echo "::error::the Bash 3.2 parse check inspected no file — its globs have stopped matching"
+            exit 1
+          fi
+          echo "parsed $n file(s) under Apple Bash $ver; $failed refused"
+          (( failed == 0 ))
+          {
+            printf '### Apple Bash %s parse\n\n' "$ver"
+            printf '%s file(s) parsed, %s refused\n' "$n" "$failed"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install ShellCheck
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The digest is selected here alongside the asset, so the two cannot
+          # disagree: a runner architecture that gains an asset without a
+          # recorded digest fails at the lookup below rather than installing
+          # unchecked. Both names appear literally so check_conventions.sh can
+          # see that the recorded Darwin digests are actually used by a step.
+          case "$(uname -m)" in
+            arm64) asset_arch=aarch64; sha_key=SHELLCHECK_SHA256_DARWIN_ARM64 ;;
+            x86_64) asset_arch=x86_64; sha_key=SHELLCHECK_SHA256_DARWIN_AMD64 ;;
+            *)
+              echo "::error::unsupported macOS architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+          base=https://github.com/koalaman/shellcheck/releases/download
+          archive="shellcheck-v${SHELLCHECK_VERSION}.darwin.${asset_arch}.tar.xz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-connrefused --connect-timeout 10 \
+            "$base/v${SHELLCHECK_VERSION}/$archive" \
+            -o "$RUNNER_TEMP/shellcheck.tar.xz"
+          # shasum, not sha256sum: sha256sum is GNU coreutils and is not part of
+          # the macOS base system, while /usr/bin/shasum ships with macOS. The
+          # two agree on both the algorithm and the "DIGEST  PATH" input format.
+          want="$(awk -F= -v k="$sha_key" '$1 == k { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::$sha_key is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          shasum -a 256 -c - <<<"$want  $RUNNER_TEMP/shellcheck.tar.xz" || {
+            echo "::error::ShellCheck v$SHELLCHECK_VERSION for darwin.$asset_arch does not match the SHA-256 recorded in $sha_key. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into .github/ci-tool-checksums.env without confirming the new value upstream first."
+            exit 1
+          }
+          tar -xJf "$RUNNER_TEMP/shellcheck.tar.xz" -C "$RUNNER_TEMP"
+          sudo install -m 0755 \
+            "$RUNNER_TEMP/shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
+            /usr/local/bin/shellcheck
+          got="$(shellcheck --version | awk '/^version:/ { print $2 }')"
+          [ "$got" = "$SHELLCHECK_VERSION" ] || {
+            echo "::error::wanted ShellCheck $SHELLCHECK_VERSION, got '$got'"
+            exit 1
+          }
+
+      - name: Test cleanup helpers on native macOS fixtures
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_user_logs.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_npx_cache.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_system_logs.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_app_cache_inventory.py' -v
+          /usr/bin/python3 -B -m unittest discover -s test-env/python/tests -p 'test_native_stay_fresh.py' -v
+
+      - name: Run contracts with Apple Bash
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/macos-native.log"
+          set +e
+          REPO_ROOT="$GITHUB_WORKSPACE" \
+            /bin/bash macos-initial-setup/tests/test_macos_initial_setup.sh \
+            2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            printf '### Native macOS contracts\n\n'
+            printf 'Runner: `%s`; Bash: `%s`\n\n' \
+              "$(sw_vers -productVersion)" "$(/bin/bash --version | head -n 1)"
+            printf '```text\n%s\n```\n' "$(tail -n 20 "$log")"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      # The no-Docker suites, through the aggregator, on BSD userland. These
+      # run nowhere else on a BSD box: Test / conventions, Test / k8s and
+      # Test / dotfiles are all ubuntu-24.04, where GNU find, sed and stat
+      # hide every portability defect these suites contain.
+      - name: Run the no-Docker suites with Apple Bash
+        if: needs.changes.outputs.native_macos == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/macos-native-suites.log"
+          set +e
+          ./run-tests.sh static k8s dotfiles 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          {
+            printf '### No-Docker suites on BSD userland\n\n'
+            printf '```text\n%s\n```\n' "$(tail -n 25 "$log")"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Report skip
+        if: needs.changes.outputs.native_macos != 'true'
+        run: echo '### Native macOS contracts' >> "$GITHUB_STEP_SUMMARY"
+
+  windows-native:
+    name: Test / windows native
+    needs: changes
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        if: needs.changes.outputs.suite_windows == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Without this the job is four bash -n invocations and a green tick:
+      # windows/tests/run.sh prints "pwsh not installed - skipped" and exits 0,
+      # so an image rollover that drops or renames pwsh would take the native
+      # PowerShell contracts out of CI silently. The ubuntu matrix entry has
+      # carried this guard for the same reason; this job, the only place
+      # contract.ps1's preview paths actually execute on Windows, did not.
+      - name: Require pwsh
+        if: needs.changes.outputs.suite_windows == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "::error::pwsh is missing from this runner — windows/tests/run.sh would skip itself and exit 0, and the gate would pass without checking anything"
+            exit 1
+          fi
+          pwsh --version
+
+      - name: Run contracts on Windows
+        if: needs.changes.outputs.suite_windows == 'true'
+        shell: bash
+        run: ./run-tests.sh windows
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        env:
+          SUITE_WINDOWS: ${{ needs.changes.outputs.suite_windows }}
+        run: |
+          {
+            printf '### Native Windows contracts\n\n'
+            if [ "$SUITE_WINDOWS" = true ]; then
+              printf 'Ran Git Bash and PowerShell contracts on `windows-2025`.\n'
+            else
+              printf 'Skipped — no Windows files changed.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Suites go through run-tests.sh rather than calling each tests/run.sh
+  # directly, so the aggregator is exercised by CI too and "it passed locally"
+  # and "it passed in CI" mean the same thing. Matrix values are run-tests.sh
+  # suite names, not directory names.
+  test:
+    name: Test / ${{ matrix.check_name }}
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Built by the Detect changes job from `run-tests.sh --list`: one
+        # entry per suite (three for linux, one per distribution), each with
+        # its own `changed` verdict. `changed` is read by the step-level `if`
+        # below, which keeps the job reporting success when there is nothing
+        # to do. The windows entry needs pwsh, which the ubuntu image ships
+        # preinstalled; the k8s entry deliberately does not build the image
+        # (K8S_IMAGE_SMOKE=1 does); the dotfiles entry parses every config
+        # because python3 is on the runner.
+        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+    steps:
+      - name: Check out repository
+        if: matrix.changed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Require pwsh
+        if: matrix.changed == 'true' && matrix.suite == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v pwsh >/dev/null 2>&1; then
+            echo "::error::pwsh is missing from this runner — windows/tests/run.sh would skip itself and exit 0, and the gate would pass without checking anything"
+            exit 1
+          fi
+          pwsh --version
+
+      - name: Run suite
+        if: matrix.changed == 'true'
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite }}
+          # Empty for non-Linux entries. linux/tests/run.sh treats an explicit
+          # distro exactly like the equivalent local LINUX_DISTROS invocation.
+          LINUX_DISTROS: ${{ matrix.linux_distro }}
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/$SUITE.log"
+          # `shell: bash` runs with -e, which would abort the step on a failing
+          # suite before the summary is written. Take the exit code by hand.
+          set +e
+          ./run-tests.sh "$SUITE" 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          # run-tests.sh already prints a pass/fail/skip matrix; lift it into
+          # the run summary so the verdict is visible without opening logs.
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh %s`\n\n' "$SUITE"
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Report skip
+        if: matrix.changed != 'true'
+        shell: bash
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: |
+          printf '### `run-tests.sh %s`\n\nSkipped — nothing in this change touches it.\n' \
+            "$SUITE" >> "$GITHUB_STEP_SUMMARY"
+
+  python:
+    name: Test / python helpers
+    needs: changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        if: needs.changes.outputs.python == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 3.9 is what /usr/bin/python3 provides on macOS, and it is the
+      # interpreter stay_fresh.sh invokes lib/workspace_scan.py with. Testing on
+      # anything newer would let 3.10+ syntax through and break on the machines
+      # these scripts target.
+      - name: Set up Python 3.9
+        if: needs.changes.outputs.python == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.9'
+
+      # test-env/python/run.sh reports ruff as "skipped" and still exits 0 when
+      # it is absent, so without this step the lint silently never ran. ruff
+      # ships a static binary, which is both pinned and faster than resolving it
+      # through pipx — and it is a standalone tool, so it does not need to live
+      # in the 3.9 environment under test.
+      - name: Install ruff
+        if: needs.changes.outputs.python == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="https://github.com/astral-sh/ruff/releases/download/${RUFF_VERSION}/ruff-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 2 \
+            --retry-connrefused --connect-timeout 10 \
+            "$url" -o "$RUNNER_TEMP/ruff.tar.gz"
+          want="$(awk -F= '$1 == "RUFF_SHA256_LINUX_AMD64" { print $2 }' \
+            .github/ci-tool-checksums.env)"
+          [ -n "$want" ] || {
+            echo "::error::RUFF_SHA256_LINUX_AMD64 is missing from .github/ci-tool-checksums.env"
+            exit 1
+          }
+          sha256sum -c - <<<"$want  $RUNNER_TEMP/ruff.tar.gz" || {
+            echo "::error::ruff $RUFF_VERSION does not match the SHA-256 recorded in .github/ci-tool-checksums.env. The asset behind the pinned URL is not the one this repository vetted. Do not copy the observed digest into that file without confirming the new value upstream first."
+            exit 1
+          }
+          tar -xzf "$RUNNER_TEMP/ruff.tar.gz" -C "$RUNNER_TEMP"
+          sudo install -m 0755 \
+            "$RUNNER_TEMP/ruff-x86_64-unknown-linux-gnu/ruff" /usr/local/bin/ruff
+          got="$(ruff --version)"
+          if [ "$got" != "ruff ${RUFF_VERSION}" ]; then
+            echo "::error::wanted ruff $RUFF_VERSION, got '$got'"
+            exit 1
+          fi
+
+      - name: Test privileged log helper against temporary fixtures
+        if: needs.changes.outputs.python == 'true'
+        shell: bash
+        run: sudo "$(command -v python)" -B -m unittest discover -s test-env/python/tests -p 'test_system_logs.py' -v
+
+      - name: Run python suite
+        if: needs.changes.outputs.python == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/python.log"
+          set +e
+          ./run-tests.sh python 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh python`\n\n'
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - name: Report skip
+        if: needs.changes.outputs.python != 'true'
+        run: |
+          printf '### `run-tests.sh python`\n\nSkipped — no Python changed.\n' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  # Repository-wide convention checks: the --help and unknown-flag contracts,
+  # shebangs, file modes, .gitattributes coverage, Bash 3.2 constructs and the
+  # deliberately-duplicated blocks. Needs nothing but bash and git, and it
+  # discovers its own subjects so a new script is covered by the commit that
+  # adds it.
+  #
+  # Deliberately has no change filter. Its subjects are the whole repository —
+  # a new file extension, a mode change or a renamed script can break it without
+  # touching anything the filters above would notice — and it costs seconds.
+  static:
+    name: Test / conventions
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run static suite
+        shell: bash
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/static.log"
+          set +e
+          ./run-tests.sh static 2>&1 | tee "$log"
+          rc=${PIPESTATUS[0]}
+          set -e
+          summary="$(awk '/^=== summary ===$/{p=1} p' "$log")"
+          [ -n "$summary" ] || summary="$(tail -n 20 "$log")"
+          {
+            printf '### `run-tests.sh static`\n\n'
+            printf '```text\n%s\n```\n\n' "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
