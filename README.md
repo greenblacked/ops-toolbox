@@ -137,7 +137,10 @@ before relying on it.
 ## Contributing
 
 [Contributing](CONTRIBUTING.md) gives script conventions and the checklist for
-new work. [Templates](templates/README.md) and the [roadmap](ROADMAP.md) help
+new work. Branches are `<type>/<slug>`. The type is `feat`, `fix`, `docs`,
+`ci`, `test`, `perf`, `refactor`, `deps`, or `release`, and `dependabot/` is
+allowed because Dependabot names its own branches. The required check is
+[Branch name](.github/workflows/branch-name.yml). [Templates](templates/README.md) and the [roadmap](ROADMAP.md) help
 scope changes. See the [code of conduct](CODE_OF_CONDUCT.md),
 [security policy](SECURITY.md), [MIT licence](LICENSE) and
 [changelog](CHANGELOG.md). Add changelog entries through
