@@ -2,7 +2,7 @@
 # Build downloads the official VDI from MikroTik and converts it to qcow2 for QEMU.
 # Build through mikrotik/tests/run.sh, which supplies the pinned version.
 # RouterOS is proprietary; use per MikroTik CHR license terms.
-FROM alpine:3.24.2
+FROM alpine:3.24.2@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 ARG ROUTEROS_VERSION
 ARG ROUTEROS_SHA256
