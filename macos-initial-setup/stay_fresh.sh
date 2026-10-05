@@ -255,6 +255,9 @@ HOME_TILDE="~"
 PROGRESS="${STAY_FRESH_PROGRESS:-auto}"
 LIVE_PID=""
 LIVE_DRAWN=0
+LIVE_LABEL=""
+LIVE_INDEX=0
+LIVE_TOTAL=0
 
 live_supported() {
   [[ "$PROGRESS" != "0" ]] || return 1
@@ -277,6 +280,9 @@ live_clear() {
 }
 
 live_start() {
+  LIVE_LABEL="$1"
+  LIVE_INDEX="$2"
+  LIVE_TOTAL="$3"
   live_supported || return 0
   local label="$1" index="$2" total="$3"
   {
@@ -309,6 +315,18 @@ live_stop() {
     LIVE_PID=""
   fi
   live_clear
+}
+
+# Stop rewriting /dev/tty so a password prompt or installer UI is visible.
+# sudo writes Password: there, and the live line's CR+erase would hide it.
+live_pause() {
+  live_stop
+}
+
+live_resume() {
+  [[ -n "$LIVE_LABEL" ]] || return 0
+  [[ -z "$LIVE_PID" ]] || return 0
+  live_start "$LIVE_LABEL" "$LIVE_INDEX" "$LIVE_TOTAL"
 }
 
 # ---------------------------------------------------------------------------
@@ -1652,6 +1670,18 @@ have_tty() {
   { : < /dev/tty; } >/dev/null 2>&1 && { : > /dev/tty; } >/dev/null 2>&1
 }
 
+# Non-interactive refresh of the sudo timestamp. macOS tickets are per-tty
+# (tty_tickets). The keep-alive subshell's stdin is /dev/null so an orphaned
+# sleep cannot hold a captured pipe; sudo -n from that stdin can miss the
+# ticket the preflight prompt created. Feed /dev/tty when it opens.
+sudo_stamp_ok() {
+  if have_tty; then
+    sudo -n true </dev/tty >/dev/null 2>&1
+  else
+    sudo -n true >/dev/null 2>&1
+  fi
+}
+
 # Like run_cmd, but keeps the command attached to the controlling TTY so
 # interactive prompts (e.g. sudo password, cask installer UI) are visible and
 # answerable. Output is still teed to the log file.
@@ -1666,6 +1696,10 @@ run_cmd_tty() {
   printf "  %s->%s %s\n" "$C_CYAN" "$C_RESET" "$label"
   echo "# $(date '+%H:%M:%S') [$label] >> $*" >>"$LOG_FILE"
   local rc=0
+  # The live line and a password prompt share /dev/tty. Pause the rewrite so
+  # an installer that still asks is visible. Do not authenticate here: cask
+  # sudo is requested once in preflight, and a second prompt would undo that.
+  live_pause
   if have_tty; then
     "$@" </dev/tty 2>&1 | tee -a "$LOG_FILE"
     rc="${PIPESTATUS[0]}"
@@ -1673,6 +1707,7 @@ run_cmd_tty() {
     "$@" 2>&1 | tee -a "$LOG_FILE"
     rc="${PIPESTATUS[0]}"
   fi
+  live_resume
   if (( rc != 0 )); then
     STEP_WARN_COUNT=$(( STEP_WARN_COUNT + 1 ))
   fi
@@ -1692,6 +1727,48 @@ count_errors() {
   PROTECTED_N=$(grep -c 'Operation not permitted$' <<<"$text" || true)
   DENIED_N=$(grep -c 'Permission denied$' <<<"$text" || true)
   OTHER_N=$(grep -v -e 'Operation not permitted$' -e 'Permission denied$' <<<"$text" | grep -c . || true)
+}
+
+# The path an rm/find diagnostic names, without the tool prefix or the quotes
+# GNU find puts around it. Empty when the line is not an EPERM refusal.
+refusal_path() {
+  local line="$1" path last
+  case "$line" in
+    *"Operation not permitted") ;;
+    *) return 1 ;;
+  esac
+  path="${line%": Operation not permitted"}"
+  path="${path#find: }"
+  path="${path#rm: }"
+  # GNU find wraps the path in quotes. Strip one leading and one trailing
+  # character when they are not part of an absolute path, without naming the
+  # quote characters: they differ by platform.
+  case "$path" in
+    /*) ;;
+    ?/*) path="${path#?}" ;;
+  esac
+  last="${path#"${path%?}"}"
+  case "$last" in
+    [/A-Za-z0-9._-]) ;;
+    *) path="${path%?}" ;;
+  esac
+  [[ "$path" == /* ]] || return 1
+  printf '%s' "$path"
+}
+
+# True only when every diagnostic is EPERM for a descendant of $dir. A refusal
+# of $dir itself means find never searched the directory, which is not the same
+# as a protected child the sweep already decided to keep.
+protected_child_refusals_only() {
+  local dir="$1" text="$2" line path saw=0
+  [[ -n "$text" ]] || return 1
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    path="$(refusal_path "$line")" || return 1
+    [[ "$path" == "$dir"/* ]] || return 1
+    saw=1
+  done <<< "$text"
+  (( saw == 1 ))
 }
 
 # A scratch file for a NUL-separated list, where a pipe will not do because
@@ -1922,13 +1999,57 @@ clear_dir() {
     fi
   fi
   count_errors "$errs_text"
+  # count_errors cannot tell a protected child from a directory find could not
+  # open. The latter is an unverified sweep, not a kept entry.
+  if [[ -n "$errs_text" ]] && ! protected_child_refusals_only "$dir" "$errs_text" \
+     && grep -q 'Operation not permitted$' <<< "$errs_text"; then
+    OTHER_N=$(( OTHER_N + 1 ))
+    (( PROTECTED_N > 0 )) && PROTECTED_N=$(( PROTECTED_N - 1 ))
+  fi
   [[ -z "$errs_text" ]] || printf '%s\n' "$errs_text" >>"$LOG_FILE"
+  # find exits non-zero when a child cannot be stated. SIP and TCC children are
+  # already named "Operation not permitted"; that exit is not a failed clear.
+  # The same text for $dir itself means the contents were never listed, so it
+  # stays a failure. A missing scratch file keeps the old, stricter reading.
+  local verify_errs="" verify_err_file="" saved_protected saved_denied saved_other
+  verify_err_file="$(scratch_file)" || verify_err_file=""
   if [[ "$use_sudo" == "sudo" ]]; then
-    remaining="$(sudo find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
-      || verify_rc=$?
+    if [[ -n "$verify_err_file" ]]; then
+      remaining="$(sudo find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>"$verify_err_file")" \
+        || verify_rc=$?
+    else
+      remaining="$(sudo find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
+        || verify_rc=$?
+    fi
   else
-    remaining="$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
-      || verify_rc=$?
+    if [[ -n "$verify_err_file" ]]; then
+      remaining="$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>"$verify_err_file")" \
+        || verify_rc=$?
+    else
+      remaining="$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>>"$LOG_FILE")" \
+        || verify_rc=$?
+    fi
+  fi
+  if [[ -n "$verify_err_file" ]]; then
+    verify_errs="$(cat "$verify_err_file" 2>/dev/null || true)"
+    rm -f "$verify_err_file"
+    [[ -z "$verify_errs" ]] || printf '%s\n' "$verify_errs" >>"$LOG_FILE"
+    if (( verify_rc != 0 )); then
+      saved_protected=$PROTECTED_N
+      saved_denied=$DENIED_N
+      saved_other=$OTHER_N
+      if protected_child_refusals_only "$dir" "$verify_errs"; then
+        verify_rc=0
+        count_errors "$verify_errs"
+        PROTECTED_N=$(( saved_protected + PROTECTED_N ))
+        DENIED_N=$saved_denied
+        OTHER_N=$saved_other
+      else
+        PROTECTED_N=$saved_protected
+        DENIED_N=$saved_denied
+        OTHER_N=$saved_other
+      fi
+    fi
   fi
   after_b="$(path_bytes "$dir")"
   delta=$(( before_b - after_b ))
@@ -2642,9 +2763,10 @@ if (( NEEDS_SUDO == 1 )) && (( DRY_RUN == 0 )); then
     # `out="$(stay_fresh ...)"`, a CI step, the LaunchAgent's log redirect —
     # until it finally expires. And the wait is broken into short naps that
     # re-check the parent, so the orphan window is seconds rather than a full
-    # minute.
+    # minute. sudo_stamp_ok talks to /dev/tty itself; this stdin redirect
+    # must stay /dev/null so the loop cannot steal keystrokes from a prompt.
     ( while kill -0 "$$" 2>/dev/null; do
-        sudo -n true 2>/dev/null || exit
+        sudo_stamp_ok || exit
         for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do
           sleep 5
           kill -0 "$$" 2>/dev/null || exit
@@ -4520,14 +4642,46 @@ step_downloads() {
 
 # Parse the complete dictionary: Program takes precedence over argv[0],
 # independent of XML key order, entities or binary encoding. Unknown data is kept.
+# Python's expat rejects some plists Apple's parser accepts (a folded DOCTYPE,
+# a non-ASCII comment). Those are read through plutil when it is available.
+# A parse failure stays quiet: a traceback on the terminal is not an inspection.
 plist_program() {
   [[ -x /usr/bin/python3 ]] || return 1
-  /usr/bin/python3 -I -B - "$1" <<'PYPLIST'
+  local plutil=""
+  if command -v plutil >/dev/null 2>&1; then
+    plutil="$(command -v plutil)"
+  elif [[ -x /usr/bin/plutil ]]; then
+    plutil=/usr/bin/plutil
+  fi
+  /usr/bin/python3 -I -B - "$1" "$plutil" <<'PYPLIST' 2>>"$LOG_SINK"
 import plistlib
+import subprocess
 import sys
+
+def load_plist(path, plutil):
+    try:
+        with open(path, "rb") as stream:
+            return plistlib.load(stream)
+    except Exception:
+        pass
+    if not plutil:
+        return None
+    try:
+        converted = subprocess.run(
+            [plutil, "-convert", "xml1", "-o", "-", path],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if converted.returncode != 0 or not converted.stdout:
+        return None
+    try:
+        return plistlib.loads(converted.stdout)
+    except Exception:
+        return None
+
 try:
-    with open(sys.argv[1], "rb") as stream:
-        data = plistlib.load(stream)
+    data = load_plist(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "")
     if not isinstance(data, dict):
         raise ValueError("plist is not a dictionary")
     args = data.get("ProgramArguments", [])
