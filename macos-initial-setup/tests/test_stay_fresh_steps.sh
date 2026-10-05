@@ -350,6 +350,55 @@ assert_contains "a SIP-protected system cache is not a warning" "$out" "warn ste
 rm -rf /Library/Caches /System/Library/Caches
 rm -rf "$d"
 
+# find exits non-zero when it cannot state a protected child, even after it has
+# named that child "Operation not permitted". That exit used to become
+# warn_step, so /Library/Caches warned on every Mac that still had an AMS or
+# neural-engine cache. The removable neighbour must still go.
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /System/Library/Caches
+mkdir -p /Library/Caches/vendor /Library/Caches/com.apple.aned
+bytes_file /Library/Caches/vendor/blob 64
+: > /Library/Caches/com.apple.aned/state
+mkbin "$d/bin/find" \
+  'echo "find $*" >> "$CALLS"' \
+  'case "$*" in' \
+  '  *-exec*)' \
+  '    echo "find: /Library/Caches/com.apple.aned: Operation not permitted" >&2' \
+  '    /bin/rm -rf /Library/Caches/vendor' \
+  '    exit 1 ;;' \
+  '  *)' \
+  '    echo "find: /Library/Caches/com.apple.aned: Operation not permitted" >&2' \
+  '    printf "%s\n" /Library/Caches/com.apple.aned' \
+  '    exit 1 ;;' \
+  'esac'
+out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
+assert_eq "a protected system-cache entry does not fail the run" "0" "$rc"
+assert_gone "the removable system cache is still cleared" /Library/Caches/vendor
+assert_exists "the protected system cache survives" /Library/Caches/com.apple.aned/state
+assert_contains "the protected entry is counted as kept" "$out" "entries kept: protected by macOS"
+assert_not_contains "a protected find exit is not a failed clear" "$out" "could not fully clear"
+assert_contains "a protected system cache is not a warning" "$out" "warn steps:  0"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+# The other half: a verification error that is not a privacy refusal is still
+# the step's failure, and it must not be cleared because a protected line was
+# also present.
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /System/Library/Caches
+mkdir -p /Library/Caches/vendor
+bytes_file /Library/Caches/vendor/blob 64
+mkbin "$d/bin/find" \
+  'echo "find $*" >> "$CALLS"' \
+  'echo "find: /Library/Caches/com.apple.aned: Operation not permitted" >&2' \
+  'echo "find: /Library/Caches: Input/output error" >&2' \
+  'exit 1'
+out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
+assert_eq "an unexplained find failure does not fail the run" "0" "$rc"
+assert_exists "an unverified system cache is not removed" /Library/Caches/vendor/blob
+assert_contains "an unexplained find failure warns the step" "$out" "could not fully clear /Library/Caches"
+assert_contains "an unexplained find failure is a warning" "$out" "warn steps:  1"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
 # ===========================================================================
 section "protected cache entries (SIP / privacy controls) are kept, not warned"
 # rm answering "Operation not permitted" is EPERM: SIP or the privacy
@@ -2908,6 +2957,68 @@ out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
 assert_contains "no plists anywhere is a clean step" "$out" "no launchd plists under"
 rm -rf "$d"
 
+# Python's expat rejects a folded DOCTYPE and a comment containing "--". Apple's
+# plutil accepts both. Without plutil the plist stays uninspected and the
+# parser must not dump a traceback. With plutil, a missing program is reported
+# and a present one is not; a plutil that fails leaves the plist in place.
+d="$(agents_env)"; : > "$d/calls"
+la="$d/home/Library/LaunchAgents"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+  '<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" \' \
+  '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+  '<plist version="1.0"><dict><key>Label</key><string>com.folded.gone</string>' \
+  '<key>Program</key><string>/Applications/FoldedGone.app/Contents/MacOS/helper</string></dict></plist>' \
+  > "$la/com.folded.gone.plist"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+  '<plist version="1.0"><dict><key>Label</key><string>com.comment.gone</string>' \
+  '<key>Program</key><string>/Applications/CommentGone.app/Contents/MacOS/helper</string>' \
+  '<!-- kept -- deliberately --></dict></plist>' \
+  > "$la/com.comment.gone.plist"
+out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
+assert_eq "unreadable-to-expat plists do not fail the run" "0" "$rc"
+assert_contains "a folded DOCTYPE is left uninspected without plutil" "$out" "3 plist(s) not inspected"
+assert_not_contains "a parse failure does not dump a traceback" "$out" "Traceback"
+assert_not_contains "an unparsed folded plist is not called an orphan" "$out" "com.folded.gone.plist ->"
+assert_exists "an unparsed plist is not removed" "$la/com.folded.gone.plist"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+la="$d/home/Library/LaunchAgents"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+  '<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" \' \
+  '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+  '<plist version="1.0"><dict><key>Label</key><string>com.folded.gone</string>' \
+  '<key>Program</key><string>/Applications/FoldedGone.app/Contents/MacOS/helper</string></dict></plist>' \
+  > "$la/com.folded.gone.plist"
+printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+  '<plist version="1.0"><dict><key>Label</key><string>com.comment.ok</string>' \
+  '<key>Program</key><string>/bin/ls</string>' \
+  '<!-- kept -- deliberately --></dict></plist>' \
+  > "$la/com.comment.ok.plist"
+mkbin "$d/bin/plutil" \
+  'echo "plutil $*" >> "$CALLS"' \
+  'f=""' \
+  'for a in "$@"; do case "$a" in *.plist) f="$a" ;; esac; done' \
+  'case "$f" in' \
+  '  *com.folded.gone.plist)' \
+  '    printf "%s\n" "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" "<plist version=\"1.0\"><dict><key>Label</key><string>com.folded.gone</string><key>Program</key><string>/Applications/FoldedGone.app/Contents/MacOS/helper</string></dict></plist>"' \
+  '    ;;' \
+  '  *com.comment.ok.plist)' \
+  '    printf "%s\n" "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" "<plist version=\"1.0\"><dict><key>Label</key><string>com.comment.ok</string><key>Program</key><string>/bin/ls</string></dict></plist>"' \
+  '    ;;' \
+  '  *) exit 1 ;;' \
+  'esac'
+out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
+assert_eq "plutil recovery succeeds" "0" "$rc"
+assert_contains "a recovered missing program is named" "$out" \
+  "com.folded.gone.plist -> /Applications/FoldedGone.app/Contents/MacOS/helper (missing)"
+assert_not_contains "a recovered present program is not an orphan" "$out" "com.comment.ok.plist ->"
+assert_contains "a plist plutil also rejects stays uninspected" "$out" "1 plist(s) not inspected"
+assert_not_contains "a recovered parse does not dump a traceback" "$out" "Traceback"
+assert_exists "a recovered orphan is not removed without the flag" "$la/com.folded.gone.plist"
+assert_exists "a recovered live agent stays" "$la/com.comment.ok.plist"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
 # ===========================================================================
 section "disk-report (opt-in, read-only, largest first)"
 d="$(new_env)"
@@ -3075,6 +3186,24 @@ if (( live_clear_to_tty > 0 )); then
 else
   err "live_clear does not write to /dev/tty — its erase would land in captured output"
 fi
+
+# The live line and a sudo password prompt share /dev/tty. This suite has no
+# terminal, so the drawing itself cannot be watched; the order in source is
+# what keeps Password: from being erased every 0.2s on a real Mac.
+tty_body="$(awk '/^run_cmd_tty\(\) \{/, /^\}/' "$SF")"
+assert_contains "run_cmd_tty pauses the live line" "$tty_body" "live_pause"
+assert_contains "run_cmd_tty resumes the live line" "$tty_body" "live_resume"
+assert_not_contains "run_cmd_tty does not prompt for sudo again" "$tty_body" "sudo -v"
+tty_order="$(printf '%s\n' "$tty_body" | awk '
+  /live_pause/ { p = NR }
+  index($0, "\"$@\" </dev/tty") { c = NR }
+  /live_resume/ { r = NR }
+  END { if (p && c && r && p < c && c < r) print "ok"; else print "bad" }
+')"
+assert_eq "live_pause and live_resume wrap the tty command in that order" "ok" "$tty_order"
+stamp_body="$(awk '/^sudo_stamp_ok\(\) \{/, /^\}/' "$SF")"
+assert_contains "keep-alive refreshes sudo against /dev/tty" "$stamp_body" "sudo -n true </dev/tty"
+assert_contains "keep-alive still has a no-tty refresh" "$stamp_body" "sudo -n true >/dev/null"
 
 # ===========================================================================
 section "the step counter and the plan cannot drift apart"

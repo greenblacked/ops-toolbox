@@ -125,7 +125,7 @@ code looks the way it does.
 | **Idempotent** | Re-running a script upgrades in place. No duplicate installs, no appended shell-rc blocks, no runaway cache. |
 | **Fail-soft** | One failing step never aborts the rest of the run. Missing tools are skipped with a note, not treated as errors. |
 | **Dry-run first** | `--dry-run` is supported on every script that mutates state (except the explicitly minimal `v1_stay_fresh.sh`). No `sudo` prompt is triggered in dry-run. |
-| **Live line** | While a step runs, `stay_fresh.sh` rewrites one line on the terminal with the step, its position and how long it has been going, so a slow step is distinguishable from a hung one. It is drawn on a terminal only — written to `/dev/tty`, never into the log or a pipe — and appears only once a step passes a second, so the quick ones do not flicker. `--no-progress`, or `STAY_FRESH_PROGRESS=0`, turns it off. |
+| **Live line** | While a step runs, `stay_fresh.sh` rewrites one line on the terminal with the step, its position and how long it has been going, so a slow step is distinguishable from a hung one. It is drawn on a terminal only — written to `/dev/tty`, never into the log or a pipe — and appears only once a step passes a second, so the quick ones do not flicker. It pauses for a command that must read the tty (Homebrew cask `sudo`, a pkg installer) so a password prompt is not erased. `--no-progress`, or `STAY_FRESH_PROGRESS=0`, turns it off. |
 | **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh`, `status.sh` and `v1_stay_fresh.sh` write none. |
 | **No hidden writes** | Shell rc files are modified only when you pass `--setup-shell`. Every such block is bracketed by markers so it can be found and removed. |
 | **Explicit changes** | `stay_fresh.sh` has a skip flag for every step and requires `--brew-casks` for cask upgrades. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
@@ -540,9 +540,10 @@ In the order they run:
    them buys a few megabytes and costs a long, alarming first boot while the
    kernel and dyld caches are rebuilt. A handful of Apple service directories
    under `/Library/Caches` itself (neural engine, AMS) stay unreachable the
-   same way; the sweep keeps them and the step still warns `could not fully
-   clear /Library/Caches`, unlike the user-cache step, which counts that class
-   of refusal without a warning. See [Expected warnings](#expected-warnings).
+   same way. The sweep keeps them and does not warn the step: `find` exits
+   non-zero for `Operation not permitted`, and that exit is the refusal, not a
+   failed clear. Any other verification error still warns. See
+   [Expected warnings](#expected-warnings).
 4. Clear safe user caches (`~/Library/Caches`, Xcode DerivedData, and related
    paths). Saved Application State is preserved. Known application cache roots
    are cleared only when the matching application is confirmed idle; unmapped
@@ -630,7 +631,9 @@ In the order they run:
     program that is gone at every login. Reported only;
     `--prune-orphan-agents` unloads and removes the user-level ones. The
     system-level ones are never touched, and the `sudo` command to remove
-    them is printed. Binary plists are inspected through `plutil` on macOS.
+    them is printed. Binary plists, and XML that Python's parser rejects but
+    Apple's accepts, are inspected through `plutil` on macOS. A plist that
+    neither parser can read is left in place, without a traceback.
 15. Update and upgrade Homebrew formulae, then run `cleanup -s` and
     `autoremove`. Cask upgrades require an explicit interactive `--brew-casks`
     or `--full` run; the default only lists outdated casks. A stale
@@ -993,17 +996,16 @@ clean run's log is discarded only after the notification has gone out.
 
 ### Expected warnings
 
-A `WARN` verdict is not always leftover work. Two steps warn on a machine that
-has nothing left to clean, and `--fail-on-warn` (the LaunchAgent always passes
-it) treats those as exit `1`. The kept log under `~/Library/Logs/stay_fresh/`
-is the place to tell them apart from a real leftover: `grep '\[warn\]'` on
-that file.
+A `WARN` verdict is not always leftover work. `--fail-on-warn` (the
+LaunchAgent always passes it) treats a step warning as exit `1`. The kept log
+under `~/Library/Logs/stay_fresh/` is the place to tell a real leftover from a
+condition the run cannot change: `grep '\[warn\]'` on that file.
 
-**Clear system caches** still warns `could not fully clear /Library/Caches —
-protected or recreated entries remain` when SIP leaves Apple-owned directories
-(neural engine, AMS engagement) in place. `find` prints `Operation not
-permitted` on those paths even as root. The rest of the sweep ran; granting
-nothing will make the next run quieter, because SIP is the point.
+**Clear system caches** used to warn on every Mac because `find` exits
+non-zero when it cannot state a SIP- or TCC-protected entry under
+`/Library/Caches` (neural engine, AMS engagement). Those entries are kept, and
+that refusal is no longer a step warning. An error that is not `Operation not
+permitted` still is.
 
 **krew plugin refresh** used to warn `'kubectl krew upgrade <plugin>' failed`
 for every plugin that was already newest, and printed krew's four-line PATH
