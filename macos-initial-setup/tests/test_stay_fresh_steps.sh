@@ -380,6 +380,78 @@ assert_not_contains "a protected find exit is not a failed clear" "$out" "could 
 assert_contains "a protected system cache is not a warning" "$out" "warn steps:  0"
 rm -rf /Library/Caches /System/Library/Caches "$d"
 
+# A refusal of the directory itself is not a protected child. find never listed
+# the contents, so the step must warn even when the only text is EPERM. GNU
+# find quotes that path; both spellings have to warn, and a quoted child must
+# still be kept.
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /System/Library/Caches
+mkdir -p /Library/Caches/vendor
+bytes_file /Library/Caches/vendor/blob 64
+mkbin "$d/bin/find" \
+  'echo "find $*" >> "$CALLS"' \
+  'case "$*" in' \
+  '  *-exec*) /bin/rm -rf /Library/Caches/vendor; exit 0 ;;' \
+  '  *) echo "find: /Library/Caches: Operation not permitted" >&2; exit 1 ;;' \
+  'esac'
+out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
+assert_eq "an unsearchable cache directory does not fail the run" "0" "$rc"
+assert_gone "the removal pass still ran" /Library/Caches/vendor
+assert_contains "verification that cannot search the directory warns" "$out" "could not fully clear /Library/Caches"
+assert_not_contains "an unsearchable directory is not reported as kept" "$out" "entries kept: protected by macOS"
+assert_contains "an unsearchable directory is a warning" "$out" "warn steps:  1"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /System/Library/Caches
+mkdir -p /Library/Caches/vendor /Library/Caches/com.apple.aned
+bytes_file /Library/Caches/vendor/blob 64
+: > /Library/Caches/com.apple.aned/state
+mkbin "$d/bin/find" \
+  'echo "find $*" >> "$CALLS"' \
+  'case "$*" in' \
+  '  *-exec*)' \
+  '    printf "%s\n" "find: '\''/Library/Caches'\'': Operation not permitted" >&2' \
+  '    exit 1 ;;' \
+  '  *)' \
+  '    printf "%s\n" "find: '\''/Library/Caches/com.apple.aned'\'': Operation not permitted" >&2' \
+  '    printf "%s\n" /Library/Caches/com.apple.aned' \
+  '    exit 1 ;;' \
+  'esac'
+# The exec arm above names the directory, so the sweep must warn before the
+# quoted-child arm is what decides the verdict. Split that case into its own run.
+out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
+assert_eq "a quoted directory refusal does not fail the run" "0" "$rc"
+assert_exists "a quoted directory refusal removes nothing" /Library/Caches/vendor/blob
+assert_contains "a quoted directory refusal warns" "$out" "could not fully clear /Library/Caches"
+assert_contains "a quoted directory refusal is a warning" "$out" "warn steps:  1"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
+d="$(new_env)"; : > "$d/calls"
+rm -rf /Library/Caches /System/Library/Caches
+mkdir -p /Library/Caches/vendor /Library/Caches/com.apple.aned
+bytes_file /Library/Caches/vendor/blob 64
+: > /Library/Caches/com.apple.aned/state
+mkbin "$d/bin/find" \
+  'echo "find $*" >> "$CALLS"' \
+  'case "$*" in' \
+  '  *-exec*)' \
+  '    /bin/rm -rf /Library/Caches/vendor' \
+  '    printf "%s\n" "find: '\''/Library/Caches/com.apple.aned'\'': Operation not permitted" >&2' \
+  '    exit 1 ;;' \
+  '  *)' \
+  '    printf "%s\n" "find: '\''/Library/Caches/com.apple.aned'\'': Operation not permitted" >&2' \
+  '    printf "%s\n" /Library/Caches/com.apple.aned' \
+  '    exit 1 ;;' \
+  'esac'
+out="$(run_sf "$d" --yes --only system-caches)"; rc=$?
+assert_eq "a quoted protected child does not fail the run" "0" "$rc"
+assert_gone "a quoted protected child still allows the neighbour to go" /Library/Caches/vendor
+assert_exists "a quoted protected child survives" /Library/Caches/com.apple.aned/state
+assert_not_contains "a quoted protected child is not a failed clear" "$out" "could not fully clear"
+assert_contains "a quoted protected child is not a warning" "$out" "warn steps:  0"
+rm -rf /Library/Caches /System/Library/Caches "$d"
+
 # The other half: a verification error that is not a privacy refusal is still
 # the step's failure, and it must not be cleared because a protected line was
 # also present.

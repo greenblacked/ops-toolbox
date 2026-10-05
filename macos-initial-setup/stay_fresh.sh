@@ -1729,6 +1729,48 @@ count_errors() {
   OTHER_N=$(grep -v -e 'Operation not permitted$' -e 'Permission denied$' <<<"$text" | grep -c . || true)
 }
 
+# The path an rm/find diagnostic names, without the tool prefix or the quotes
+# GNU find puts around it. Empty when the line is not an EPERM refusal.
+refusal_path() {
+  local line="$1" path last
+  case "$line" in
+    *"Operation not permitted") ;;
+    *) return 1 ;;
+  esac
+  path="${line%": Operation not permitted"}"
+  path="${path#find: }"
+  path="${path#rm: }"
+  # GNU find wraps the path in quotes. Strip one leading and one trailing
+  # character when they are not part of an absolute path, without naming the
+  # quote characters: they differ by platform.
+  case "$path" in
+    /*) ;;
+    ?/*) path="${path#?}" ;;
+  esac
+  last="${path#"${path%?}"}"
+  case "$last" in
+    [/A-Za-z0-9._-]) ;;
+    *) path="${path%?}" ;;
+  esac
+  [[ "$path" == /* ]] || return 1
+  printf '%s' "$path"
+}
+
+# True only when every diagnostic is EPERM for a descendant of $dir. A refusal
+# of $dir itself means find never searched the directory, which is not the same
+# as a protected child the sweep already decided to keep.
+protected_child_refusals_only() {
+  local dir="$1" text="$2" line path saw=0
+  [[ -n "$text" ]] || return 1
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    path="$(refusal_path "$line")" || return 1
+    [[ "$path" == "$dir"/* ]] || return 1
+    saw=1
+  done <<< "$text"
+  (( saw == 1 ))
+}
+
 # A scratch file for a NUL-separated list, where a pipe will not do because
 # the producer's exit status matters. TMPDIR first; the state directory when
 # TMPDIR is full or unwritable, which on the full disk this script is run
@@ -1957,11 +1999,18 @@ clear_dir() {
     fi
   fi
   count_errors "$errs_text"
+  # count_errors cannot tell a protected child from a directory find could not
+  # open. The latter is an unverified sweep, not a kept entry.
+  if [[ -n "$errs_text" ]] && ! protected_child_refusals_only "$dir" "$errs_text" \
+     && grep -q 'Operation not permitted$' <<< "$errs_text"; then
+    OTHER_N=$(( OTHER_N + 1 ))
+    (( PROTECTED_N > 0 )) && PROTECTED_N=$(( PROTECTED_N - 1 ))
+  fi
   [[ -z "$errs_text" ]] || printf '%s\n' "$errs_text" >>"$LOG_FILE"
-  # find exits non-zero when a child cannot be stated. SIP and TCC entries are
+  # find exits non-zero when a child cannot be stated. SIP and TCC children are
   # already named "Operation not permitted"; that exit is not a failed clear.
-  # Only an error the classifier does not recognise means the sweep could not
-  # be verified. A missing scratch file keeps the old, stricter reading.
+  # The same text for $dir itself means the contents were never listed, so it
+  # stays a failure. A missing scratch file keeps the old, stricter reading.
   local verify_errs="" verify_err_file="" saved_protected saved_denied saved_other
   verify_err_file="$(scratch_file)" || verify_err_file=""
   if [[ "$use_sudo" == "sudo" ]]; then
@@ -1989,15 +2038,17 @@ clear_dir() {
       saved_protected=$PROTECTED_N
       saved_denied=$DENIED_N
       saved_other=$OTHER_N
-      count_errors "$verify_errs"
-      if (( OTHER_N == 0 && DENIED_N == 0 && PROTECTED_N > 0 )); then
+      if protected_child_refusals_only "$dir" "$verify_errs"; then
         verify_rc=0
+        count_errors "$verify_errs"
         PROTECTED_N=$(( saved_protected + PROTECTED_N ))
+        DENIED_N=$saved_denied
+        OTHER_N=$saved_other
       else
         PROTECTED_N=$saved_protected
+        DENIED_N=$saved_denied
+        OTHER_N=$saved_other
       fi
-      DENIED_N=$saved_denied
-      OTHER_N=$saved_other
     fi
   fi
   after_b="$(path_bytes "$dir")"

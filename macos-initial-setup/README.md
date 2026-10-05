@@ -540,9 +540,10 @@ In the order they run:
    them buys a few megabytes and costs a long, alarming first boot while the
    kernel and dyld caches are rebuilt. A handful of Apple service directories
    under `/Library/Caches` itself (neural engine, AMS) stay unreachable the
-   same way. The sweep keeps them and does not warn the step: `find` exits
-   non-zero for `Operation not permitted`, and that exit is the refusal, not a
-   failed clear. Any other verification error still warns. See
+   same way. The sweep keeps those children and does not warn the step: `find`
+   exits non-zero for `Operation not permitted` on a child, and that exit is
+   the refusal, not a failed clear. A refusal of `/Library/Caches` itself, or
+   any other verification error, still warns. See
    [Expected warnings](#expected-warnings).
 4. Clear safe user caches (`~/Library/Caches`, Xcode DerivedData, and related
    paths). Saved Application State is preserved. Known application cache roots
@@ -1003,9 +1004,9 @@ condition the run cannot change: `grep '\[warn\]'` on that file.
 
 **Clear system caches** used to warn on every Mac because `find` exits
 non-zero when it cannot state a SIP- or TCC-protected entry under
-`/Library/Caches` (neural engine, AMS engagement). Those entries are kept, and
-that refusal is no longer a step warning. An error that is not `Operation not
-permitted` still is.
+`/Library/Caches` (neural engine, AMS engagement). Those children are kept,
+and that refusal is no longer a step warning. A refusal of the directory
+itself, or any error that is not `Operation not permitted` on a child, still is.
 
 **krew plugin refresh** used to warn `'kubectl krew upgrade <plugin>' failed`
 for every plugin that was already newest, and printed krew's four-line PATH
