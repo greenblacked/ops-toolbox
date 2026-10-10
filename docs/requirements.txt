@@ -1,14 +1,14 @@
 # Build requirements for the documentation site (see mkdocs.yml).
 #
-# These pins are not watched by the repository's pin-age check or by
-# Dependabot; review them by hand when you touch the docs.
+# Dependabot watches these pins (.github/dependabot.yml); the pin-age check
+# does not. The site is built and deployed by .github/workflows/docs.yml; see
+# docs/contributing/deployment.md.
 #
 #   python3 -m venv .venv
 #   .venv/bin/pip install -r docs/requirements.txt
 #
 #   .venv/bin/mkdocs serve                  # preview at http://127.0.0.1:8000
 #   .venv/bin/mkdocs build --strict         # build into site/, fail on warnings
-#   .venv/bin/mkdocs gh-deploy --force      # publish site/ to GitHub Pages
 mkdocs==1.6.1
 mkdocs-material==9.7.7
 mkdocs-git-revision-date-localized-plugin==1.6.0
