@@ -9,11 +9,11 @@ pull. The integration suite boots RouterOS CHR 7.24.5.
 
 ## Requirements
 
-- RouterOS 7.x. The CHR suite pins 7.24.5. `change_WIFI_pw.lua` needs 7.13+,
-  and `pull_router_backups.sh` needs the RouterOS 7+ SFTP server.
+- RouterOS 7.x. The CHR suite pins 7.24.5. `change_WIFI_pw.lua` needs 7.13+
+  only for the WiFiWave2 (`wifi`) path, and `pull_router_backups.sh` needs the RouterOS 7+ SFTP server.
 - Script policy `read,write,policy,test,sensitive,ftp`.
-- A Telegram bot token and chat id, stored in the `TgBotToken` and `TgChatId`
-  globals.
+- A Telegram bot token and chat id, set as the `TgBotToken` / `TgChatId`
+  globals (recommended) or by editing the placeholders in `tg_send.lua`.
 - Host side: Bash 3.2+, Python 3.9+ (standard library), OpenSSH `ssh` and `scp`,
   and `git` for `export_config.py --commit`.
 
@@ -87,9 +87,6 @@ the host tools to inspect.
 
 - Choose one of `update_check`, `backup_update_check` or `stay_fresh`. They do
   one job three ways and must not run together.
-- `tg_send.lua` reads the `TgBotToken` and `TgChatId` globals. The install
-  section of the MikroTik README still mentions editing `BotToken` and `ChatID`
-  placeholders; TODO: confirm which route the README settles on.
 - `pull_router_backups.sh` needs non-interactive SSH keys and exits 2 when
   `ssh` or `scp` is missing.
 - The CHR suite does not verify real Telegram delivery, address-list
