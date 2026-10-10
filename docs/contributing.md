@@ -14,9 +14,10 @@ in the repository, not on this site.
 
 ## The one rule
 
-!!! note "A script must work when copied alone into ~/bin"
+!!! note "A script should work when copied alone into ~/bin"
     That is why helper code is duplicated between scripts on purpose. Do not
-    factor shared code into a sourced library. See
+    factor shared code into a sourced library. The exceptions are scripts that
+    ship with data or helpers they need. See
     [Philosophy](getting-started/philosophy.md#modularity).
 
 ## Workflow in short
