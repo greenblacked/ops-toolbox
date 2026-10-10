@@ -198,7 +198,7 @@ jobs:
     outputs:
       # The tag this run created, for the documentation site's deploy below.
       # Empty when the tag already existed (a later CHANGELOG.md edit, or a
-      # re-run): promote a release by hand with docs.yml's Run workflow from the tag then.
+      # re-run): promote a release by hand with `gh workflow run docs.yml --ref vX.Y.Z` then.
       tag: ${{ steps.plan.outputs.create_tag == 'true' && steps.plan.outputs.tag || '' }}
     steps:
       - name: Check out repository

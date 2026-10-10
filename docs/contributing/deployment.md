@@ -12,7 +12,7 @@ folder). The workflow is
 | Pull request touching the site | `mkdocs build --strict`, then `wrangler deploy --dry-run`. No secrets, nothing deployed. | Nowhere | none |
 | Push to `master` | Build, then a Worker Preview named `stage`. | <https://stage.ops.szolotov.com> | `staging` |
 | Release published | Build the tag, deploy, smoke-test, roll back on failure. | <https://ops.szolotov.com> | `production` |
-| Run workflow, *Use workflow from* a `v*` tag | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
+| `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API) | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
 
 "Touching the site" means `docs/`, `mkdocs.yml`, `worker/`, `ROADMAP.md`,
 `CHANGELOG.md`, `docs.yml` itself or `.github/scripts/stage-stale.sh`.
@@ -55,11 +55,24 @@ checked against the commit the run started on:
 - **Release workflow.** `docs.yml` runs at the commit the publish job tagged.
   The build asserts that `refs/tags/<tag>` resolves to exactly that commit and
   fails otherwise.
-- **Manual promote.** There is no tag input. Start the run from the tag: *Actions,
-  Docs, Run workflow, Use workflow from: tag `vX.Y.Z`*. Starting from a branch
-  fails with a message asking for a `v*` tag. The workflow file that runs is the
-  one on that tag, so an old tag redeploys with its own version of the
-  workflow.
+- **Manual promote.** There is no tag input. Start the run from the tag with
+  the GitHub CLI or the REST API. The web UI's *Run workflow* picker lists
+  branches, so use the CLI or API:
+
+    ```sh
+    gh workflow run docs.yml --ref vX.Y.Z
+    ```
+
+    The equivalent REST call:
+
+    ```sh
+    gh api -X POST repos/greenblacked/ops-toolbox/actions/workflows/docs.yml/dispatches -f ref=vX.Y.Z
+    ```
+
+    Watch the run with `gh run list --workflow docs.yml --limit 1`, then
+    `gh run watch`. Starting from a branch fails with a message that names
+    the `gh` command. The workflow file that runs is the one on that tag, so an
+    old tag redeploys with its own version of the workflow.
 
 Either way the tag must match `v1.2.3` and its commit must be on `master`.
 
@@ -158,8 +171,9 @@ curl -sS https://ops.szolotov.com/version.txt
     npx wrangler rollback <version-id>
     ```
 
-    Or run the workflow again from an older `v*` tag (*Use workflow from*), which
-    rebuilds and redeploys that release.
+    Or run the workflow again from an older `v*` tag with
+    `gh workflow run docs.yml --ref vX.Y.Z`, which rebuilds and redeploys that
+    release.
 - **Stage.** A preview takes no production traffic. Push the fix: a re-run
   of an older push run deploys nothing when stage already serves a newer
   commit, because stage never goes back.
@@ -170,7 +184,7 @@ curl -sS https://ops.szolotov.com/version.txt
 | --- | --- |
 | "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A called workflow gets a secret only if the caller passes it, so `release.yml` passes both by name to `docs.yml`; an environment secret not passed resolves to an empty string. Keep the values on the environments. |
 | Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `docs.yml` by hand from the tag. A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
-| "pick a release tag (v1.2.3) in 'Use workflow from'" | A manual run was started from a branch. Choose the tag `vX.Y.Z` in *Use workflow from*; there is no tag input. |
+| "start a manual run from a release tag" | A manual run was started from a branch. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API call above); there is no tag input. |
 | A manual run is rejected by the environment | The `production` environment does not allow tags. Add the tag pattern `v*` to its deployment rules. |
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |

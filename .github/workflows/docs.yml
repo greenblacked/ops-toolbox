@@ -14,7 +14,7 @@ name: Docs site
 #                                    by release.yml after its publish job,
 #                                    because a tag and a release created with
 #                                    GITHUB_TOKEN start no other workflow.
-#   Run workflow, "Use workflow from" a v* tag
+#   gh workflow run docs.yml --ref vX.Y.Z
 #                                    the same production deploy by hand, to
 #                                    promote or redeploy a release
 #
@@ -77,7 +77,7 @@ on:
       CLOUDFLARE_ACCOUNT_ID:
         description: Cloudflare account ID, used when the variable of that name is unset
         required: false
-  # No inputs: pick the v* tag in "Use workflow from".
+  # No inputs: start the run from the v* tag with gh workflow run docs.yml --ref vX.Y.Z.
   workflow_dispatch:
 
 permissions:
@@ -125,7 +125,7 @@ jobs:
           }
           if [ "$EVENT" = workflow_dispatch ]; then
             if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
-              echo "::error::pick a release tag (v1.2.3) in 'Use workflow from', not ${REF#refs/heads/}: a manual run promotes the tag it starts from"
+              echo "::error::start a manual run from a release tag, not ${REF#refs/heads/}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
               exit 1
             fi
             production "$REF_NAME"

@@ -632,7 +632,7 @@ an issue.
       secret and the `CLOUDFLARE_ACCOUNT_ID` variable on each, as in
       [docs/contributing/deployment.md](docs/contributing/deployment.md#github).
       `production` must allow the branch `master` and the tag pattern `v*`
-      (a manual promote runs from a tag), with required reviewers.
+      (a manual promote runs from a tag, started with `gh workflow run docs.yml --ref vX.Y.Z`), with required reviewers.
 - [ ] **Tag ruleset.** Add a ruleset for `v*` tags (*Settings → Rules →
       Rulesets*) that restricts who may create, update and delete them, so a
       pushed tag cannot run a workflow that reaches the production token.
