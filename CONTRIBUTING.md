@@ -647,7 +647,7 @@ an issue.
       are for a specific bug or a specific script request — the two templates in
       [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do
       you handle X on your machines" has nowhere else to go today.
-- [ ] **Releases.** The sidebar shows a Releases panel only once a tag exists.
+- [x] **Releases.** The sidebar shows a Releases panel only once a tag exists.
       `v0.1.0` is the first; the release workflow publishes each release with
       its [`CHANGELOG.md`](CHANGELOG.md) section as the notes.
 - [ ] **Branch protection on `master`.** Require the CI checks that already run,

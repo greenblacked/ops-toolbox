@@ -29,7 +29,7 @@ crossing it off. Every claim below was re-checked against the current tree on
 - `v1_stay_fresh.sh` is a documented preserved original, with suite exceptions
   by name. It is not leftover clutter.
 - **RouterOS is still the open defect, and it is now a measured one.**
-  Fifteen of the 28 `.lua` files declare a `:global` whose name contains an
+  Fourteen of the 28 `.lua` files declare a `:global` whose name contains an
   underscore, which 7.24 refuses to execute. What changed is that this is no
   longer silent: `mikrotik/README.md` opens with the count and carries a
   per-script compatibility list, `test_lua_conventions.sh` fails when that list
@@ -47,7 +47,7 @@ crossing it off. Every claim below was re-checked against the current tree on
 ## Priority 1 — finish the RouterOS names
 
 Still the only defect that makes scripts fail on the hardware the package
-claims to support, and the twelve scripts that do run are the proof it is
+claims to support, and the fourteen scripts that do run are the proof it is
 worth finishing.
 
 You cannot leave a compatibility `:global TG_BOT_TOKEN` in the script body.
@@ -68,9 +68,9 @@ replacement does the same job before retiring anything.
 
 What remains:
 
-1. **Wave C — watches.** One script per pull request, from the fourteen left:
+1. **Wave C — watches.** One script per pull request, from the thirteen left:
    `wan_failover_notify`, `dhcp_lease_watch`, `traffic_quota`, `ddns_update`,
-   `latency_monitor`, `rogue_dns_check`, `mac_allowlist_dhcp`,
+   `latency_monitor`, `mac_allowlist_dhcp`,
    `bandwidth_spike`, `brute_force_block`, `firewall_drift`,
    `firewall_drift_baseline`, `vpn_health`, `wan_link_flap_notify`,
    `wireless_client_watch`. Each ships its own env-name mapping in the README
@@ -86,8 +86,8 @@ The README count and the test that guards it move with each one.
 ## Priority 2 — cut the first tag (done)
 
 `v0.1.0` is the first release. A tag is a snapshot, not a support contract;
-[`SECURITY.md`](SECURITY.md) says so. Later releases follow the Releases
-checklist in [`CONTRIBUTING.md`](CONTRIBUTING.md#repository-settings).
+[`SECURITY.md`](SECURITY.md) says so. Later releases follow
+[Cutting a release](changelog.d/README.md#cutting-a-release).
 
 ## Priority 3 — hold the stay_fresh freeze
 

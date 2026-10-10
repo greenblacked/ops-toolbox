@@ -9,15 +9,16 @@ release is tagged `v<version>` on the commit that adds its section here; see
 
 The dated sections at the bottom predate versioning. They are reconstructed
 from the merge commits in `git log` and grouped by the day each pull request
-landed on `master`; they are history, not releases. The first version is cut
-from `[Unreleased]`, and from then on every entry here belongs to a version.
+landed on `master`; they are history, not releases. v0.1.0 moved the pre-fragment
+entries and the fragments under its heading; every later entry belongs to a
+version.
 
 New entries are not added to `[Unreleased]` by hand. Each change ships one
 file under [`changelog.d/`](changelog.d/README.md), and
 `changelog.d/changelog.sh preview` prints the section with those fragments
 pasted in ahead of what it already holds; `changelog.d/changelog.sh release`
-moves both under a version heading. The entries below were written before
-that directory existed and stay here until the first release moves them.
+moves both under a version heading. The entries from before that directory
+existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
