@@ -70,7 +70,7 @@ elif [ "$live" = "$SHA" ]; then
 else
   status=""
   for ((i = 1; i <= attempts; i++)); do
-    if status="$(gh api "repos/$REPO/compare/$SHA...$live" --jq .status 2>/dev/null)" && [ -n "$status" ]; then
+    if status="$(timeout 30 gh api "repos/$REPO/compare/$SHA...$live" --jq .status 2>/dev/null)" && [ -n "$status" ]; then
       break
     fi
     status=""
