@@ -171,6 +171,10 @@ jobs:
         working-directory: worker
         run: npm ci --ignore-scripts
 
+      - name: Verify the registry signatures
+        working-directory: worker
+        run: npm audit signatures
+
       - name: Check the Worker without deploying it
         working-directory: worker
         run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker-out"
@@ -240,6 +244,11 @@ jobs:
       - name: Install wrangler
         working-directory: worker
         run: npm ci --ignore-scripts
+
+      # No token in this step's environment.
+      - name: Verify the registry signatures
+        working-directory: worker
+        run: npm audit signatures
 
       - name: Download the site
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
