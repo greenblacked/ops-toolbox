@@ -88,7 +88,7 @@ All paths are under `linux/`.
 
 - The Bash scripts avoid `set -e` on purpose: a long maintenance run reports
   what it could not do and continues.
-- The Kali profile installs more than 1,400 packages on the red/blue profile;
+- The Kali profile installs more than 1,500 packages on the red/blue profile in the tested snapshot;
   use at least 64 GB of disk. It configures key-only SSH and prepares UFW
   without enabling it.
 - On OrbStack, the `kali:current` image did not include cloud-init when
