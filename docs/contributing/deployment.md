@@ -23,7 +23,10 @@ matches, so the new version is told from the old one. The stage preview must
 answer `X-Robots-Tag: noindex`, and production must not. Before it deploys
 stage, a run reads the commit stage serves; if that commit already includes the
 run's own, the run succeeds without deploying, so an older build that finishes
-last never replaces newer content on stage. The check runs twice. In its own
+last never replaces newer content on stage. The check fails closed: only a
+stage with nothing deployed yet (`version.txt` answers 404 or is empty) counts
+as "unknown, so deploy". If it cannot read or compare the live version after a
+few retries, the run fails and deploys nothing. The check runs twice. In its own
 job it catches a stale run before the run enters the `staging` environment, so
 GitHub records no deployment. It runs again as the first step of the deploy
 job, because a run can pass the first and then queue behind a newer deploy in
@@ -172,7 +175,8 @@ curl -sS https://ops.szolotov.com/version.txt
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
 | The stage address does not answer | The first production deploy has not run yet, so the preview wildcard and certificate do not exist. Deploy production once. |
-| Stage shows an older commit, or a run skipped its stage deploy | Stage already served a commit that includes the run's own, so it deployed nothing. If stage still shows an older commit than you expect, re-run the workflow for the commit you want. A run that cannot read or compare stage's version deploys. |
+| Stage shows an older commit, or a run skipped its stage deploy | Stage already served a commit that includes the run's own, so it deployed nothing. If stage still shows an older commit than you expect, re-run the workflow for the commit you want. A run that cannot read or compare stage's version fails instead (next row). |
+| "stage freshness check failed" | The run could not read stage's `version.txt` or compare it with the build's commit after several retries (a network error, a GitHub API error, or a live commit unknown to the repository), so it deployed nothing. Re-run the failed jobs later; if it keeps failing, check what `curl -sS https://stage.ops.szolotov.com/version.txt` returns. |
 | "Last updated" dates on every page are equal | A shallow clone. The workflow fetches full history; a local build needs `git fetch --unshallow`. |
 | "this tag's commit is not on master" | Only tags whose commit is on `master` reach production. |
 
