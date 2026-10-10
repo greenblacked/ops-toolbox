@@ -625,8 +625,12 @@ an issue.
       is reachable only by name. Suggested set: `bash`, `shell-scripts`,
       `powershell`, `macos`, `linux`, `windows`, `routeros`, `mikrotik`,
       `devops`, `dotfiles`, `shellcheck`, `automation`.
-- [ ] **Website field.** Leave it empty rather than pointing it at the
-      repository itself.
+- [ ] **Website field.** Set it to <https://ops.szolotov.com> once production
+      is live, rather than pointing it at the repository itself.
+- [ ] **Deployment environments.** Create `staging` and `production` (*Settings
+      → Environments*), with the protection rules, the `CLOUDFLARE_API_TOKEN`
+      secret and the `CLOUDFLARE_ACCOUNT_ID` variable on each, as in
+      [docs/contributing/deployment.md](docs/contributing/deployment.md#github).
 - [ ] **Discussions.** Enable them (*Settings → General → Features*). Issues here
       are for a specific bug or a specific script request — the two templates in
       [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do
