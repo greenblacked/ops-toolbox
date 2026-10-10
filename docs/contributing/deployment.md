@@ -142,7 +142,8 @@ heredocs work in zsh and bash.
 
 ```sh
 REPO=greenblacked/ops-toolbox
-CF_ACCOUNT_ID=<your Cloudflare account ID>
+CF_ACCOUNT_ID='REPLACE_WITH_ACCOUNT_ID'
+: "${CF_ACCOUNT_ID:?set your Cloudflare account ID}"
 
 # Environments, each limited to the branch master.
 gh api -X PUT "repos/$REPO/environments/staging" --input - <<'JSON'
