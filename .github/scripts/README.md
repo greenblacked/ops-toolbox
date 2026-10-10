@@ -20,12 +20,17 @@ It fails closed. It reads `version.txt` and, if needed, compares commits with
 not resolve (`curl` exit 6) on every attempt, with a DNS lookup confirming
 NXDOMAIN, means stage does not exist yet (observed: the stage hostname has no
 DNS record before the first production deploy, and the Worker may not exist
-either): the script sets `skip=true` and `reason=no-stage-host`, prints a
+either) AND the production host (`PRODUCTION_URL`) is also confirmed NXDOMAIN,
+so production was never deployed: the script sets `skip=true` and `reason=no-stage-host`, prints a
 notice to deploy production first, and exits 0. The deploy job is skipped (or,
 in its second run of the check, wrangler and the smoke test are), so the run
-stays green; after production, the next push to `master` deploys stage. A
-resolver failure that recovers on a later attempt takes the normal path;
-SERVFAIL, a timeout or a missing `dig` fail closed. Any other
+stays green; after production, the next push to `master` deploys stage. If
+production resolves (NOERROR, even without an answer, since NODATA means the
+name exists) while stage is NXDOMAIN, the stage record was lost: the script
+prints an `::error::` ("stage has no DNS record although production exists")
+and exits non-zero. A resolver failure that recovers on a later attempt takes
+the normal path; SERVFAIL, a timeout or a missing `dig` (for stage or for the
+production lookup) fail closed. Any other
 failure after the retries (including a `curl` transfer error after a 200
 header), an empty body, a body that is not a 40-character SHA, or a live commit
 the repository does not know, prints an `::error::` and exits non-zero, so the job

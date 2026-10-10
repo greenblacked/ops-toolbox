@@ -294,6 +294,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_URL: ${{ needs.build.outputs.url }}
+          PRODUCTION_URL: https://ops.szolotov.com
           SHA: ${{ needs.build.outputs.sha }}
         run: bash .github/scripts/stage-stale.sh
 
@@ -356,6 +357,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          PRODUCTION_URL: https://ops.szolotov.com
         run: bash .github/scripts/stage-stale.sh
 
       - name: Set up Node
