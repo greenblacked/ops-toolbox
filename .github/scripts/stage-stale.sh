@@ -13,12 +13,17 @@
 #   yet (the first deploy), the only case where an unknown live version means
 #   deploy. An empty body is not that case.
 # - the stage host does not resolve (curl exit 6) on every attempt AND a DNS
-#   lookup confirms NXDOMAIN (the name does not exist, not a resolver
-#   failure): stage cannot exist yet either. Observed: before the first
+#   lookup confirms the host has no address: NXDOMAIN, or NOERROR with no A
+#   and no AAAA record (NODATA; Cloudflare-hosted DNSSEC zones answer a
+#   nonexistent name that way, RFC 9824 compact denial of existence). That is
+#   not a resolver failure, so stage cannot exist yet either. Observed: before the first
 #   production deploy the stage hostname has no DNS record (the Custom Domain
 #   and its preview wildcard appear with that deploy). A resolver failure that
-#   recovers on a later attempt takes the normal path; SERVFAIL, a timeout or
-#   a missing dig stay fail-closed. This is a clean skip, not a deploy: the
+#   recovers on a later attempt takes the normal path; SERVFAIL, REFUSED, a
+#   timeout, a missing dig, or NOERROR with an A or AAAA answer (inconsistent
+#   with curl exit 6) stay fail-closed. Accepting NODATA is safe because the
+#   bootstrap guard below is the real protection.
+#   This is a clean skip, not a deploy: the
 #   hostname cannot exist before production, the Worker itself may not exist
 #   yet, and a preview with a smoke test that cannot pass only turns master
 #   red. The next push to master after production deploys stage. For a
@@ -31,7 +36,7 @@
 #   rolled back) ends with a failure or error status, never success. A
 #   release tag cannot serve: release.yml pushes the tag BEFORE the production
 #   deploy, so the stage run of the same push would see it while stage is
-#   still NXDOMAIN and fail red on the first release. While no production
+#   still without an address and fail red on the first release. While no production
 #   deployment has succeeded (none, or only queued, in progress, failed), the
 #   skip applies. Once one has, DNS must exist: a later Cloudflare
 #   misconfiguration that drops both the production Custom Domain and the
@@ -75,29 +80,48 @@ fail() {
   exit 1
 }
 
-# True only when a resolver answered and says the host ($1, a URL) does not
-# exist. curl exit 6 alone cannot tell NXDOMAIN from SERVFAIL or a resolver
-# outage. When it is not confirmed, dns_note says why, for the failure message.
+# True only when a resolver answered and the host ($1, a URL) has no address:
+# either NXDOMAIN, or NOERROR with no A and no AAAA record in the answer
+# (NODATA; a CNAME chain that ends without an A or AAAA is still no address).
+# curl exit 6 alone cannot tell this from SERVFAIL or a resolver outage.
+# NODATA matters because Cloudflare-hosted DNSSEC zones answer a nonexistent
+# name with NOERROR and an empty answer instead of NXDOMAIN (compact denial of
+# existence, "black lies", with an NXNAME NSEC record; RFC 9824), and many
+# resolvers pass that through. Accepting it is safe: the persistent bootstrap
+# guard below (no successful production deployment) is the real protection.
+# NOERROR with an A or AAAA answer while curl cannot resolve is inconsistent
+# and stays fail-closed. When the absence is not confirmed, dns_note says why,
+# for the failure message.
 dns_note=""
-nxdomain() {
-  local host="${1#*://}" out rc=0 st
+host_absent() {
+  local host="${1#*://}" out rc=0 st type
   host="${host%%/*}"
   dns_note=""
   if ! command -v dig >/dev/null 2>&1; then
-    dns_note="dig is not installed, so NXDOMAIN could not be confirmed"
+    dns_note="dig is not installed, so the absence of the host could not be confirmed"
     return 1
   fi
-  out="$(timeout 15 dig +noall +comments "$host" A 2>&1)" || rc=$?
-  if [ "$rc" -ne 0 ]; then
-    dns_note="the DNS lookup for $host failed or timed out (dig exit $rc)"
-    return 1
-  fi
-  if grep -q 'status: NXDOMAIN' <<<"$out"; then
-    return 0
-  fi
-  st="$(grep -o 'status: [A-Z]*' <<<"$out" | head -n 1)"
-  dns_note="the DNS lookup for $host answered '${st:-no status}', not NXDOMAIN"
-  return 1
+  for type in A AAAA; do
+    rc=0
+    out="$(timeout 15 dig +noall +comments +answer "$host" "$type" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      dns_note="the DNS lookup for $host failed or timed out (dig exit $rc)"
+      return 1
+    fi
+    if grep -q 'status: NXDOMAIN' <<<"$out"; then
+      return 0
+    fi
+    if ! grep -q 'status: NOERROR' <<<"$out"; then
+      st="$(grep -o 'status: [A-Z]*' <<<"$out" | head -n 1)"
+      dns_note="the DNS lookup for $host answered '${st:-no status}', not NXDOMAIN or NOERROR"
+      return 1
+    fi
+    if awk '!/^;/ && ($4 == "A" || $4 == "AAAA") { found = 1 } END { exit !found }' <<<"$out"; then
+      dns_note="the DNS lookup for $host answered NOERROR with an address record, which contradicts curl exit 6 (inconsistent)"
+      return 1
+    fi
+  done
+  return 0
 }
 
 # Retries with a growing pause between attempts.
@@ -135,7 +159,7 @@ for ((i = 1; i <= attempts; i++)); do
   live=""
   backoff "$i"
 done
-if [ "$unresolved" -eq "$attempts" ] && nxdomain "$BASE_URL"; then
+if [ "$unresolved" -eq "$attempts" ] && host_absent "$BASE_URL"; then
   host="${BASE_URL#*://}"
   host="${host%%/*}"
   # Bootstrap state: the skip is only right while production has never been
