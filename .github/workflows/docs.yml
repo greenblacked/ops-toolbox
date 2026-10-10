@@ -164,13 +164,20 @@ jobs:
         # directory) would publish it. Before any install or build.
         run: |
           set -euo pipefail
-          found="$(find docs -type l -print)"
-          tracked="$(git ls-files -s -- docs | awk '$1 == "120000" { sub(/^[^\t]*\t/, ""); print }')"
-          offenders="$(printf '%s\n%s\n' "$found" "$tracked" | sed '/^$/d' | sort -u)"
-          if [ -n "$offenders" ]; then
-            while IFS= read -r path; do
-              echo "::error file=$path::symlink under docs/: MkDocs follows it and would publish what it points at. Replace it with a regular file"
-            done <<<"$offenders"
+          # NUL-delimited so a newline in a name cannot split a record.
+          offenders=0
+          while IFS= read -r -d '' path; do
+            offenders=1
+            # Escape annotation property characters.
+            p=${path//%/%25}; p=${p//$'\r'/%0D}; p=${p//$'\n'/%0A}; p=${p//:/%3A}; p=${p//,/%2C}
+            echo "::error file=$p::symlink under docs/: MkDocs follows it and would publish what it points at. Replace it with a regular file"
+          done < <(
+            find docs -type l -print0
+            git ls-files -z -s -- docs | while IFS= read -r -d '' rec; do
+              case "$rec" in "120000 "*) printf '%s\0' "${rec#*$'\t'}" ;; esac
+            done
+          )
+          if [ "$offenders" -ne 0 ]; then
             exit 1
           fi
 
