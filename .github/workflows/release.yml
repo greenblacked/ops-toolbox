@@ -333,6 +333,9 @@ jobs:
     if: needs.publish.outputs.tag != ''
     permissions:
       contents: read
+      # docs.yml's jobs ask for deployments: read; a called workflow cannot
+      # hold more than the calling job grants.
+      deployments: read
     uses: ./.github/workflows/docs.yml
     with:
       tag: ${{ needs.publish.outputs.tag }}
