@@ -28,16 +28,15 @@ theme:
   name: material
   language: en
   palette:
-    # Dark first, so it is the default; the toggle switches to light.
-    - media: "(prefers-color-scheme)"
-      scheme: slate
+    # No media queries: Material then uses the first entry (dark) for every
+    # visitor, and the toggle switches to light.
+    - scheme: slate
       primary: indigo
       accent: teal
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
+    - scheme: default
       primary: indigo
       accent: teal
       toggle:
