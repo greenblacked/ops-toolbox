@@ -590,18 +590,20 @@ Both are asserted by the static suite.
 ## Documentation site
 
 The documentation site is MkDocs with the Material theme. Its pages are in
-`docs/` and its configuration is `mkdocs.yml`; `docs/requirements.txt` pins
-the build tools. The Roadmap and Changelog pages are filled from `ROADMAP.md`
-and `CHANGELOG.md` at build time, so edit those files, not the pages. Inside
+`docs/` and its configuration is `mkdocs.yml`; `docs/requirements.in` pins
+the build tools and `docs/requirements.txt` locks them, with hashes. The Roadmap and Changelog pages are filled from
+`ROADMAP.md` and `CHANGELOG.md` at build time, so edit those files, not the pages. Inside
 `docs/`, link to other pages relatively and to anything outside `docs/` with
 an absolute GitHub URL. Preview with:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r docs/requirements.txt
+.venv/bin/pip install --require-hashes -r docs/requirements.txt
 .venv/bin/mkdocs serve
 ```
 
+To bump a version, see
+[docs/contributing/development.md](docs/contributing/development.md).
 Run `.venv/bin/mkdocs build --strict` before opening a pull request that
 touches `docs/`; the Docs site workflow runs it, plus a wrangler dry-run, on
 every pull request that touches the site. A push to `master` updates

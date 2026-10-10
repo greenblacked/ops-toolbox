@@ -74,7 +74,8 @@ updates:
           - '*'
 
   # The documentation site: wrangler, pinned exactly in worker/package.json,
-  # and the MkDocs tools pinned in docs/requirements.txt. A window of 14 days
+  # and the MkDocs tools pinned in docs/requirements.in, with the full
+  # hash-locked graph in docs/requirements.txt. A window of 14 days
   # rather than 7, because both are installed into a job that holds the
   # Cloudflare token (docs.yml) and a poisoned release is found within days.
   - package-ecosystem: npm
@@ -91,6 +92,10 @@ updates:
         patterns:
           - '*'
 
+  # Dependabot recognises the pip-compile pair (requirements.in plus the
+  # generated requirements.txt) in this directory: it bumps the pin in the
+  # .in file and regenerates the hash-locked .txt, so a pull request touches
+  # both.
   - package-ecosystem: pip
     directory: /docs
     schedule:

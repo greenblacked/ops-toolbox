@@ -1,0 +1,12 @@
+# Top-level build requirements for the documentation site (see mkdocs.yml).
+# Pin only what the site uses directly; requirements.txt is generated from
+# this file and locks the full dependency graph with hashes. Do not edit that
+# file by hand. To change a version, edit the pin here and regenerate it with
+# the exact command in its header (pip-tools 7.6.1, Python 3.13).
+#
+# Install: .venv/bin/pip install --require-hashes -r docs/requirements.txt
+# Dependabot (.github/dependabot.yml) bumps these pins and the lock together.
+# See docs/contributing/deployment.md for how the site is built and deployed.
+mkdocs==1.6.1
+mkdocs-material==9.7.7
+mkdocs-git-revision-date-localized-plugin==1.6.0

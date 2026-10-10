@@ -94,9 +94,27 @@ one, in a file or a directory.
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r docs/requirements.txt
+.venv/bin/pip install --require-hashes -r docs/requirements.txt
 .venv/bin/mkdocs serve
 ```
+
+`docs/requirements.txt` is a lock file: every package in the dependency graph is
+pinned with hashes, so the install is the same locally and in CI. It is
+generated from the top-level pins in `docs/requirements.in`; do not edit it by
+hand.
+
+To bump a build tool, edit its pin in `docs/requirements.in`, then regenerate
+the lock with the exact command in the header of `docs/requirements.txt`
+(pip-tools 7.6.1 on Python 3.13, the version CI uses):
+
+```bash
+python3.13 -m venv /tmp/pip-tools
+/tmp/pip-tools/bin/pip install pip-tools==7.6.1
+/tmp/pip-tools/bin/python -m piptools compile --generate-hashes --allow-unsafe \
+  --strip-extras --output-file docs/requirements.txt docs/requirements.in
+```
+
+Commit both files. Dependabot does the same for its version bumps.
 
 Open <http://127.0.0.1:8000>. Check for warnings before opening a pull request;
 CI runs the same strict build on every pull request that touches the site:
