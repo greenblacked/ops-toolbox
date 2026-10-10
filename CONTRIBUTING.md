@@ -631,6 +631,11 @@ an issue.
       → Environments*), with the protection rules, the `CLOUDFLARE_API_TOKEN`
       secret and the `CLOUDFLARE_ACCOUNT_ID` variable on each, as in
       [docs/contributing/deployment.md](docs/contributing/deployment.md#github).
+      `production` must allow the branch `master` and the tag pattern `v*`
+      (a manual promote runs from a tag), with required reviewers.
+- [ ] **Tag ruleset.** Add a ruleset for `v*` tags (*Settings → Rules →
+      Rulesets*) that restricts who may create, update and delete them, so a
+      pushed tag cannot run a workflow that reaches the production token.
 - [ ] **Discussions.** Enable them (*Settings → General → Features*). Issues here
       are for a specific bug or a specific script request — the two templates in
       [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do
