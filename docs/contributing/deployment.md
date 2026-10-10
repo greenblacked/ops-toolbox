@@ -83,9 +83,10 @@ Either way the tag must match `v1.2.3` and its commit must be on `master`.
 
 1. Add the `szolotov.com` zone to the Cloudflare account.
 2. Create the deploy token: an **Account API token** from the "Edit
-   Cloudflare Workers" template, scoped to this one account only. Add
-   **Zone > Workers Routes > Write** on `szolotov.com`, because the deploy
-   manages the Custom Domain. The first deploy creates the Worker, which needs
+   Cloudflare Workers" template, scoped to this one account and, for
+   its zone permissions, to the `szolotov.com` zone only (**Zone > Workers
+   Routes > Write** on `szolotov.com`), because the deploy manages the Custom
+   Domain. The first deploy creates the Worker, which needs
    account-level Workers edit (the template gives it). Custom Domains cannot
    be limited to one Worker, so this token can edit any Worker in the account.
    Make sure no CNAME record already exists at `ops.szolotov.com`; a Custom
