@@ -125,7 +125,7 @@ jobs:
           }
           if [ "$EVENT" = workflow_dispatch ]; then
             if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
-              echo "::error::start a manual run from a release tag, not ${REF#refs/heads/}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
+              echo "::error::start a manual run from a release tag, not ${REF_NAME}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
               exit 1
             fi
             production "$REF_NAME"

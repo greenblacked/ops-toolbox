@@ -185,7 +185,7 @@ curl -sS https://ops.szolotov.com/version.txt
 | --- | --- |
 | "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A called workflow gets a secret only if the caller passes it, so `release.yml` passes both by name to `docs.yml`; an environment secret not passed resolves to an empty string. Keep the values on the environments. |
 | Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST call under Manual promote). A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
-| "start a manual run from a release tag" | A manual run was started from a branch. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API call above); there is no tag input. |
+| "start a manual run from a release tag" | A manual run was started from a branch, or from a tag that does not match `v1.2.3`. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API call above); there is no tag input. |
 | A manual run is rejected by the environment | The `production` environment does not allow tags. Add the tag pattern `v*` to its deployment rules. |
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
