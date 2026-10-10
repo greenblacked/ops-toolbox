@@ -323,8 +323,10 @@ jobs:
 
   # A tag and a release created with GITHUB_TOKEN start no other workflow, so
   # the production deploy of the documentation site is called from here
-  # instead of being triggered by the release. The environment's secrets are
-  # resolved inside docs.yml's deploy job, so none are passed in.
+  # instead of being triggered by the release. A called workflow gets no
+  # secrets unless the caller passes them, environment secrets included (they
+  # resolve to an empty string otherwise), so both are passed by name, not with
+  # "secrets: inherit". docs.yml's deploy job reads the environment's values.
   docs-site:
     name: Deploy documentation site
     needs: publish
@@ -334,3 +336,6 @@ jobs:
     uses: ./.github/workflows/docs.yml
     with:
       tag: ${{ needs.publish.outputs.tag }}
+    secrets:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

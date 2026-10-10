@@ -52,6 +52,17 @@ on:
         description: Release tag to deploy to production (vMAJOR.MINOR.PATCH)
         required: true
         type: string
+    secrets:
+      # Passed by name by release.yml. The deploy job runs in an environment
+      # and reads these there; a caller must still pass them, or they resolve
+      # to an empty string. Optional here so a missing one reaches the
+      # credentials check in the deploy job, which says what to set.
+      CLOUDFLARE_API_TOKEN:
+        description: Cloudflare API token, also an environment secret
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        description: Cloudflare account ID, used when the variable of that name is unset
+        required: false
   workflow_dispatch:
     inputs:
       tag:

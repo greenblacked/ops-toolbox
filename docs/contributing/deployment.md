@@ -132,7 +132,7 @@ curl -sS https://ops.szolotov.com/version.txt
 
 | Symptom | Likely cause |
 | --- | --- |
-| "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A repository-level secret works for stage and manual runs, but not when `release.yml` calls `docs.yml`, which passes no secrets, so keep them on the environments. |
+| "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A called workflow gets a secret only if the caller passes it, so `release.yml` passes both by name to `docs.yml`; an environment secret not passed resolves to an empty string. Keep the values on the environments. |
 | Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `docs.yml` by hand with the tag. A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
 | The stage address does not answer | The first production deploy has not run yet, so the preview wildcard and certificate do not exist. Deploy production once. |
