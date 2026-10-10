@@ -82,12 +82,16 @@ Either way the tag must match `v1.2.3` and its commit must be on `master`.
 ### Cloudflare
 
 1. Add the `szolotov.com` zone to the Cloudflare account.
-2. Create an API token for the deploy. It needs to edit Workers scripts on the
-   account and to manage Workers routes, DNS records and zone settings on the
-   `szolotov.com` zone, because deploying a Custom Domain creates DNS records
-   and certificates. Verify the exact permission names against the Cloudflare
-   documentation for Workers Custom Domains and Worker Previews before you
-   create the token; they have been renamed before.
+2. Create the deploy token: an **Account API token** from the "Edit
+   Cloudflare Workers" template, scoped to this one account only. Add
+   **Zone > Workers Routes > Write** on `szolotov.com`, because the deploy
+   manages the Custom Domain. The first deploy creates the Worker, which needs
+   account-level Workers edit (the template gives it). Custom Domains cannot
+   be limited to one Worker, so this token can edit any Worker in the account.
+   Make sure no CNAME record already exists at `ops.szolotov.com`; a Custom
+   Domain cannot be created on a hostname that has one. Permission names
+   change, so verify them against
+   <https://developers.cloudflare.com/workers/authorization/workers/>.
 3. Note the account ID.
 
 The first production deploy creates the `ops.szolotov.com` Custom Domain and
@@ -115,11 +119,90 @@ runs on a push to `master`), or a `v*` tag, for a manual promote. The
 it asks for the environment.
 
 Allowing tags means a workflow file on any pushed `v*` tag can reach the token,
-so also protect the tags: add a tag ruleset (*Settings, Rules, Rulesets*) for
-`v*` that restricts who may create, update and delete them (and blocks force
-pushes), and keep required reviewers on `production`. Then only a trusted
-person can make a tag that runs, and a reviewer approves each production deploy
-before the token is released.
+so also protect the tags with a tag ruleset (*Settings, Rules, Rulesets*) for
+`v*` that restricts who may create them, blocks update, deletion and force
+push, and keep required reviewers on `production`. The release workflow pushes
+the `v*` tag itself with `GITHUB_TOKEN`, so the ruleset must list **GitHub
+Actions** in its bypass list, or the release fails at
+`git push origin refs/tags/vX.Y.Z`. Keep repository admins in the bypass list
+too. Then only a trusted person or the release workflow can make a tag that
+runs, and a reviewer approves each production deploy before the token is
+released.
+
+### Setup with the GitHub CLI
+
+Run these once with the `gh` CLI, logged in as a repository admin. The
+heredocs work in zsh and bash.
+
+```sh
+REPO=greenblacked/ops-toolbox
+CF_ACCOUNT_ID=<your Cloudflare account ID>
+
+# Environments, each limited to the branch master.
+gh api -X PUT "repos/$REPO/environments/staging" --input - <<'JSON'
+{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+JSON
+
+# Your numeric user ID, for the production required reviewer.
+MY_ID=$(gh api user --jq .id)
+
+gh api -X PUT "repos/$REPO/environments/production" --input - <<JSON
+{"reviewers": [{"type": "User", "id": $MY_ID}],
+ "deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}
+JSON
+
+gh api -X POST "repos/$REPO/environments/staging/deployment-branch-policies" \
+  -f name=master -f type=branch
+gh api -X POST "repos/$REPO/environments/production/deployment-branch-policies" \
+  -f name=master -f type=branch
+gh api -X POST "repos/$REPO/environments/production/deployment-branch-policies" \
+  -f 'name=v*' -f type=tag
+
+# Secret and variable, once per environment.
+for ENV in staging production; do
+  gh secret set CLOUDFLARE_API_TOKEN --env "$ENV" --repo "$REPO"
+  gh variable set CLOUDFLARE_ACCOUNT_ID --env "$ENV" --repo "$REPO" --body "$CF_ACCOUNT_ID"
+done
+
+# Tag ruleset for v*.
+gh api -X POST "repos/$REPO/rulesets" --input - <<'JSON'
+{
+  "name": "Protect release tags",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {"ref_name": {"include": ["refs/tags/v*"], "exclude": []}},
+  "rules": [
+    {"type": "creation"},
+    {"type": "update"},
+    {"type": "deletion"},
+    {"type": "non_fast_forward"}
+  ],
+  "bypass_actors": [
+    {"actor_type": "RepositoryRole", "actor_id": 5, "bypass_mode": "always"},
+    {"actor_type": "Integration", "actor_id": 15368, "bypass_mode": "always"}
+  ]
+}
+JSON
+```
+
+`gh api user --jq .id` prints the numeric ID that the `reviewers` entry needs.
+`gh secret set` asks for the token value on stdin; paste it there rather
+than putting it on the command line.
+
+The two numeric bypass IDs (`5` for the repository admin role, `15368` for
+GitHub Actions) are the values GitHub documents, but verify them with
+`gh api repos/greenblacked/ops-toolbox/rulesets` after creating the ruleset, or
+pick the bypass actors in the UI instead.
+
+### First deploy
+
+1. Merge to `master`. Stage will not answer until production has deployed once,
+   because the preview wildcard and certificate come from that deploy.
+2. Cut the first release: `gh workflow run release.yml -f version=0.1.0`.
+3. Merge the release PR it opens.
+4. Approve the `production` deployment when GitHub asks.
+5. Check <https://ops.szolotov.com/version.txt>, then
+   <https://stage.ops.szolotov.com> after the next push to `master`.
 
 ## Local commands
 
@@ -199,7 +282,7 @@ curl -sS https://ops.szolotov.com/version.txt
 
 - The Cloudflare token can change the zone's DNS. Keep it in the two
   environments only, restrict `production` to `master`, `v*` tags (protected by a tag ruleset) and required reviewers, and give it
-  no more permissions than the list above.
+  no more permissions than the scope in the Cloudflare step.
 - The production deploy runs inside the release run, which holds the `release`
   concurrency group. A production approval left pending keeps that group, and
   GitHub keeps only one pending run per group, so a later `CHANGELOG.md` push
