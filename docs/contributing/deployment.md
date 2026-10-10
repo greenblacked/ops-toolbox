@@ -59,11 +59,17 @@ Create two environments under *Settings, Environments*:
 | Environment | Used by | Recommended protection |
 | --- | --- | --- |
 | `staging` | Push to `master` | Deployment branches: `master` only. |
-| `production` | Release or manual run | Deployment branches and tags: `v*` tags and `master`; required reviewers. |
+| `production` | Release or manual run | Deployment branches: `master` only; required reviewers. |
 
 On each environment add the secret `CLOUDFLARE_API_TOKEN` and the variable
 `CLOUDFLARE_ACCOUNT_ID` (a secret of that name also works). Only the wrangler
 steps read the token. Pull requests, forks included, never get it.
+
+Every production run has `master` as its ref: the release workflow runs on a
+push to `master`, and a manual run must start from `master`. The tag is only
+the commit that gets checked out and built, so the environment needs no tag
+rule. Allowing tags would only let a workflow file on any pushed `v*` tag reach
+the token.
 
 ## Local commands
 
@@ -118,14 +124,15 @@ curl -sS https://ops.szolotov.com/version.txt
 
     Or run the workflow again with an older `v*` tag, which rebuilds and
     redeploys that release.
-- **Stage.** A preview takes no production traffic. Re-run the workflow on the
-  previous commit, or push the fix.
+- **Stage.** A preview takes no production traffic. Re-run the push run of the
+  previous commit (it deploys that commit, not the tip of `master`), or push the
+  fix.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 | --- | --- |
-| "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing on that environment, or sits on the repository instead. |
+| "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A repository-level secret works for stage and manual runs, but not when `release.yml` calls `docs.yml`, which passes no secrets, so keep them on the environments. |
 | Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `docs.yml` by hand with the tag. A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
 | The stage address does not answer | The first production deploy has not run yet, so the preview wildcard and certificate do not exist. Deploy production once. |
@@ -135,8 +142,13 @@ curl -sS https://ops.szolotov.com/version.txt
 ## Risks
 
 - The Cloudflare token can change the zone's DNS. Keep it in the two
-  environments only, restrict `production` to tags and reviewers, and give it
+  environments only, restrict `production` to `master` and required reviewers, and give it
   no more permissions than the list above.
+- The production deploy runs inside the release run, which holds the `release`
+  concurrency group. A production approval left pending keeps that group, and
+  GitHub keeps only one pending run per group, so a later `CHANGELOG.md` push
+  can cancel an earlier pending run, which may be the one that should tag the
+  next release. Approve or reject the deploy promptly.
 - A deploy replaces the Worker's Custom Domains and any DNS record already at
   the name.
 - There is no `Content-Security-Policy` header: Material for MkDocs uses
