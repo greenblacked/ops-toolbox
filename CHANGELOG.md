@@ -182,7 +182,7 @@ that directory existed and stay here until the first release moves them.
 
 - Releases are tagged. `.github/workflows/release.yml` cuts one in two steps:
   run by hand with a version, it runs `changelog.sh release` on a
-  `chore/release-<version>` branch and opens that as a pull request; merging
+  `release/<version>` branch and opens that as a pull request; merging
   it tags the merge commit `v<version>` and publishes a GitHub Release whose
   notes are the version's section of this file. Only the push that adds a
   version's heading is tagged, so a later edit here never moves a release, and
