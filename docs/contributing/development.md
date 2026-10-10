@@ -104,13 +104,16 @@ generated from the top-level pins in `docs/requirements.in`; do not edit it by
 hand.
 
 To bump a build tool, edit its pin in `docs/requirements.in`, then regenerate
-the lock with the exact command in the header of `docs/requirements.txt`
-(pip-tools 7.6.1 on Python 3.13, the version CI uses):
+the lock with the command below (pip-tools 7.6.1 on Python 3.13, the version CI
+uses). `CUSTOM_COMPILE_COMMAND` makes pip-tools write that same command into the
+header of `docs/requirements.txt`, so a regeneration changes only the pins and
+hashes:
 
 ```bash
 python3.13 -m venv /tmp/pip-tools
 /tmp/pip-tools/bin/pip install pip-tools==7.6.1
-/tmp/pip-tools/bin/python -m piptools compile --generate-hashes --allow-unsafe \
+CUSTOM_COMPILE_COMMAND='python3.13 -m piptools compile --generate-hashes --allow-unsafe --strip-extras --output-file docs/requirements.txt docs/requirements.in' \
+  /tmp/pip-tools/bin/python -m piptools compile --generate-hashes --allow-unsafe \
   --strip-extras --output-file docs/requirements.txt docs/requirements.in
 ```
 
