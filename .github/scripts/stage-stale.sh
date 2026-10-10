@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+# shellcheck shell=bash
 # Decides whether a stage deploy is stale: stage already serves a commit that
 # descends from (or is) this build's. Used twice by docs.yml, in the check-stage
 # job and again at the start of the deploy job, because the second run of the
