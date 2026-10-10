@@ -647,11 +647,9 @@ an issue.
       are for a specific bug or a specific script request — the two templates in
       [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do
       you handle X on your machines" has nowhere else to go today.
-- [ ] **Releases.** The sidebar shows a Releases panel only once a tag exists,
-      and a repository with no releases reads as unmaintained regardless of how
-      recent the commits are. [`CHANGELOG.md`](CHANGELOG.md) is the groundwork:
-      cut the first tag from its `[Unreleased]` section and paste that section
-      in as the release notes.
+- [ ] **Releases.** The sidebar shows a Releases panel only once a tag exists.
+      `v0.1.0` is the first; the release workflow publishes each release with
+      its [`CHANGELOG.md`](CHANGELOG.md) section as the notes.
 - [ ] **Branch protection on `master`.** Require the CI checks that already run,
       so the gates in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) are
       binding rather than advisory. Note the constraint recorded there: jobs are

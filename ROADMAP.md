@@ -14,7 +14,7 @@ crossing it off. Every claim below was re-checked against the current tree on
 
 - [What is actually true](#what-is-actually-true)
 - [Priority 1 — finish the RouterOS names](#priority-1--finish-the-routeros-names)
-- [Priority 2 — cut the first tag](#priority-2--cut-the-first-tag)
+- [Priority 2 — cut the first tag (done)](#priority-2--cut-the-first-tag-done)
 - [Priority 3 — hold the stay_fresh freeze](#priority-3--hold-the-stay_fresh-freeze)
 - [What not to do](#what-not-to-do)
 - [Next pull requests](#next-pull-requests)
@@ -41,8 +41,8 @@ crossing it off. Every claim below was re-checked against the current tree on
   `k8s-toolbox/versions.env`, `.github/ci-tool-checksums.env` and
   `mikrotik/tests/routeros-version.env` once they pass a documented threshold.
 - `gke_cluster_doctor.sh` landed, read-only, as this file suggested.
-- **There are still no tags.** `CHANGELOG.md` is ~2000 lines and there are 82
-  fragments waiting under `changelog.d/`.
+- **The first tag is cut.** `v0.1.0` moved `[Unreleased]` and every pending
+  fragment under its version heading in `CHANGELOG.md`.
 
 ## Priority 1 — finish the RouterOS names
 
@@ -83,21 +83,11 @@ Rollback on a router is paste-the-previous-source.
 Do not flip every `xfail` in one commit. Flip the file you just made runnable.
 The README count and the test that guards it move with each one.
 
-## Priority 2 — cut the first tag
+## Priority 2 — cut the first tag (done)
 
-Now unblocked — the reason to defer it was #33, and #33 is five merges back.
-
-1. Cut `v0.1.0`. `changelog.d/changelog.sh release` moves `[Unreleased]` and
-   the 82 fragments under the version heading; keep writing fragments after.
-2. Say in `SECURITY.md` that a tag is a snapshot, not a support contract. That
-   file already says there is no response window; this is the sentence that
-   stops a tag from implying one.
-3. A repository with no releases reads as unmaintained however recent the
-   commits are. The Releases checklist is in
-   [`CONTRIBUTING.md`](CONTRIBUTING.md#repository-settings).
-
-A tag is a repository setting and a release note, not a code change. It is the
-owner's to cut.
+`v0.1.0` is the first release. A tag is a snapshot, not a support contract;
+[`SECURITY.md`](SECURITY.md) says so. Later releases follow the Releases
+checklist in [`CONTRIBUTING.md`](CONTRIBUTING.md#repository-settings).
 
 ## Priority 3 — hold the stay_fresh freeze
 
@@ -134,5 +124,4 @@ with its own tests, invoked as a subprocess by absolute path. Not
 
 ## Next pull requests
 
-1. `release/1.0.0` — the release move plus the `SECURITY.md` sentence.
-2. Wave C, one script at a time, in the order you actually run them.
+1. Wave C, one script at a time, in the order you actually run them.
