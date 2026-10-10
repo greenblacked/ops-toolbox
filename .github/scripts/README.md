@@ -18,7 +18,9 @@ It fails closed. It reads `version.txt` and, if needed, compares commits with
 `gh api`, retrying each a few times with a growing pause. An HTTP 404 from
 `version.txt` means nothing is deployed yet, so deploy. A stage host that does
 not resolve (`curl` exit 6) on every attempt, with a DNS lookup confirming
-NXDOMAIN, means stage does not exist yet (observed: the stage hostname has no
+the host has no address (NXDOMAIN, or NOERROR with no A and no AAAA record, i.e.
+NODATA, which is how Cloudflare-hosted DNSSEC zones answer a nonexistent name:
+compact denial of existence, RFC 9824), means stage does not exist yet (observed: the stage hostname has no
 DNS record before the first production deploy, and the Worker may not exist
 either) AND GitHub has recorded no successful production deployment (the
 `deploy` job enters the `production` environment, so each production deploy is a
@@ -39,8 +41,9 @@ wildcard was lost: the script prints an `::error::` ("production was deployed
 REST docs promise no order for the lists, so deployments are walked until one
 has any `success` status. A failed deployments or statuses lookup fails
 closed. A resolver failure that
-recovers on a later attempt takes the normal path; SERVFAIL, a timeout or a
-missing `dig` fail closed. Any other
+recovers on a later attempt takes the normal path; SERVFAIL, REFUSED, a timeout, a
+missing `dig`, or NOERROR with an A or AAAA answer while `curl` cannot resolve
+(inconsistent) fail closed. Any other
 failure after the retries (including a `curl` transfer error after a 200
 header), an empty body, a body that is not a 40-character SHA, or a live
 commit the repository does not know, prints an `::error::` and exits non-zero,
