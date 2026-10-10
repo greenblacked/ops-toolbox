@@ -85,6 +85,11 @@ The Roadmap and Changelog pages are filled from `ROADMAP.md` and `CHANGELOG.md`
 at build time by a hook in `docs/hooks/`, so edit those root files, not the
 pages.
 
+Symlinks under `docs/` are refused: MkDocs follows them and copies what they
+point at into the site, so a link to a file outside `docs/` would publish it.
+The docs workflow fails the build job before installing anything if it finds
+one, in a file or a directory.
+
 ### Preview locally
 
 ```bash

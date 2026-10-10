@@ -158,6 +158,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Refuse symlinks under docs
+        # MkDocs follows symlinks in docs_dir and copies what they point at
+        # into the site, so a tracked link to a runner file (or a linked
+        # directory) would publish it. Before any install or build.
+        run: |
+          set -euo pipefail
+          found="$(find docs -type l -print)"
+          tracked="$(git ls-files -s -- docs | awk '$1 == "120000" { sub(/^[^\t]*\t/, ""); print }')"
+          offenders="$(printf '%s\n%s\n' "$found" "$tracked" | sed '/^$/d' | sort -u)"
+          if [ -n "$offenders" ]; then
+            while IFS= read -r path; do
+              echo "::error file=$path::symlink under docs/: MkDocs follows it and would publish what it points at. Replace it with a regular file"
+            done <<<"$offenders"
+            exit 1
+          fi
+
       - name: Check the tag is this commit and on master
         if: steps.plan.outputs.environment == 'production'
         env:
