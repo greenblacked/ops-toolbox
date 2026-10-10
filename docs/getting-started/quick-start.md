@@ -1,5 +1,7 @@
 # Quick start
 
+<!-- markdownlint-disable MD046 -->
+
 This page gets you from nothing to a first report on your platform. Nothing
 here installs software or changes settings.
 

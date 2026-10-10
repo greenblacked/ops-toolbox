@@ -1,5 +1,7 @@
 # Development
 
+<!-- markdownlint-disable MD046 -->
+
 A summary of the conventions in
 [CONTRIBUTING.md](https://github.com/greenblacked/ops-toolbox/blob/master/CONTRIBUTING.md).
 If this page and that file disagree, the file wins.
