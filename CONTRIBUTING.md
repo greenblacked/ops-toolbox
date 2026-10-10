@@ -637,9 +637,11 @@ an issue.
       (a manual promote runs from a tag, started with `gh workflow run docs.yml --ref vX.Y.Z`), with required reviewers.
 - [ ] **Tag ruleset.** Add a ruleset for `v*` tags (*Settings → Rules →
       Rulesets*) that restricts who may create them and blocks update, deletion
-      and force push, so a pushed tag cannot run a workflow that reaches the
-      production token. List GitHub Actions and repository admins in its bypass
-      list, or the release workflow cannot push the tag. The `gh` commands are
+      and force push, which narrows who can make a tag. List GitHub Actions
+      and repository admins in its bypass list, or the release workflow cannot
+      push the tag. The Actions bypass covers every workflow with a
+      `contents: write` token, so the required reviewers on `production` are
+      the real gate. The `gh` commands are
       in [docs/contributing/deployment.md](docs/contributing/deployment.md#setup-with-the-github-cli).
 - [ ] **Discussions.** Enable them (*Settings → General → Features*). Issues here
       are for a specific bug or a specific script request — the two templates in

@@ -125,9 +125,14 @@ push, and keep required reviewers on `production`. The release workflow pushes
 the `v*` tag itself with `GITHUB_TOKEN`, so the ruleset must list **GitHub
 Actions** in its bypass list, or the release fails at
 `git push origin refs/tags/vX.Y.Z`. Keep repository admins in the bypass list
-too. Then only a trusted person or the release workflow can make a tag that
-runs, and a reviewer approves each production deploy before the token is
-released.
+too. The GitHub Actions bypass covers every workflow that runs with a
+`contents: write` token, not only `release.yml` (`routeros-version.yml` is one,
+and a collaborator with write access can push a workflow that asks for it), so
+the ruleset narrows who can make a tag but does not stop a workflow from
+making one. The required reviewers on `production` are the real gate: a
+reviewer approves each production deploy before the token is released. As an
+extra guard, set the repository's default workflow permissions to read, and
+review any workflow that asks for `contents: write`.
 
 ### Setup with the GitHub CLI
 
