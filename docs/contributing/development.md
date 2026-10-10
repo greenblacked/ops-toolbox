@@ -93,7 +93,8 @@ python3 -m venv .venv
 .venv/bin/mkdocs serve
 ```
 
-Open <http://127.0.0.1:8000>. Check for warnings the way CI would:
+Open <http://127.0.0.1:8000>. Check for warnings before opening a pull request (CI does not build the
+site):
 
 ```bash
 .venv/bin/mkdocs build --strict

@@ -16,7 +16,7 @@ platforms present on your machine.
 
 | Suite | Needs | What it checks |
 | --- | --- | --- |
-| `git` | Docker | ShellCheck, `bash -n`, `--help`, integration tests for the Git helpers. |
+| `git` | Docker with Compose v2 | ShellCheck, `bash -n`, `--help`, integration tests for the Git helpers. |
 | `macos` | Docker with Compose v2 | Static checks, `--help`, exit codes, and `stay_fresh.sh` with host commands faked. Cannot run Homebrew. |
 | `linux` | Docker | Scripts run for real in Debian; `LINUX_DISTROS=all` adds Fedora and Arch. |
 | `k8s` | Bash only | Script contracts with stubbed `kubectl`; `K8S_IMAGE_SMOKE=1` builds the image. |
@@ -28,9 +28,9 @@ platforms present on your machine.
 | `mikrotik` | Docker, QEMU | Boots RouterOS CHR 7.24.5 and runs every `.lua` over the API. Not in the default selection. |
 
 !!! note "Documentation changes"
-    A docs-only change runs the `static` and `lint` suites. The site itself
-    is checked with `mkdocs build --strict`; see
-    [Development](development.md#documentation-site).
+    A docs-only change runs the `static` and `lint` suites. The site is not
+    built in CI and no workflow runs mkdocs; run `mkdocs build --strict`
+    yourself, see [Development](development.md#documentation-site).
 
 ## What CI covers
 
