@@ -1,0 +1,125 @@
+# Documentation site for Ops Toolbox: MkDocs with the Material theme.
+# Build and preview commands are in docs/requirements.txt and
+# docs/contributing/development.md.
+site_name: Ops Toolbox
+site_description: >-
+  Standalone helper scripts for workstations, servers, Git repositories,
+  MikroTik RouterOS devices and GKE clusters. Report first, preview, then apply.
+# TODO: set site_url to the real address once the site is hosted. The value
+# below is the GitHub Pages default for this repository.
+site_url: https://greenblacked.github.io/ops-toolbox/
+repo_url: https://github.com/greenblacked/ops-toolbox
+repo_name: greenblacked/ops-toolbox
+edit_uri: edit/master/docs/
+copyright: >-
+  <a href="https://github.com/greenblacked/ops-toolbox/blob/master/LICENSE">MIT License</a>
+docs_dir: docs
+
+# Files in docs/ that are not pages. The hook script lives beside the pages
+# only so the repository's README-per-package check can find its README.
+exclude_docs: |
+  hooks/
+  requirements.txt
+
+hooks:
+  - docs/hooks/repo_files.py
+
+theme:
+  name: material
+  language: en
+  palette:
+    # Dark first, so it is the default; the toggle switches to light.
+    - media: "(prefers-color-scheme)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.action.edit
+    - content.action.view
+  icon:
+    repo: fontawesome/brands/github
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/greenblacked/ops-toolbox
+      name: Ops Toolbox on GitHub
+
+plugins:
+  - search
+  - git-revision-date-localized:
+      enable_creation_date: false
+      fallback_to_build_date: true
+      type: date
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quick Start: getting-started/quick-start.md
+      - Philosophy: getting-started/philosophy.md
+      - Installation & Usage: getting-started/usage.md
+  - Platforms:
+      - macOS: platforms/macos.md
+      - Linux: platforms/linux.md
+      - Windows: platforms/windows.md
+      - Git: platforms/git.md
+      - MikroTik: platforms/mikrotik.md
+      - Kubernetes: platforms/kubernetes.md
+      - Dotfiles: platforms/dotfiles.md
+  - Scripts:
+      - Overview: scripts/index.md
+  - Contributing:
+      - Contributing: contributing.md
+      - Development: contributing/development.md
+      - Testing: contributing/testing.md
+  - Roadmap: roadmap.md
+  - Changelog: changelog.md
