@@ -24,9 +24,14 @@ answer `X-Robots-Tag: noindex`, and production must not. Before it deploys
 stage, a run reads the commit stage serves; if that commit already includes the
 run's own, the run succeeds without deploying, so an older build that finishes
 last never replaces newer content on stage. The check fails closed: only a
-stage with nothing deployed yet (`version.txt` answers HTTP 404) counts
-as "unknown, so deploy". If it cannot read or compare the live version after a
-few retries, the run fails and deploys nothing. The check runs twice. In its own
+stage with nothing deployed yet (`version.txt` answers HTTP 404) counts as
+"unknown, so deploy". If the stage hostname does not resolve on every attempt
+and a DNS lookup says NXDOMAIN, as before the first production deploy, stage
+cannot exist yet, so the run prints a notice and skips the stage deploy: the
+`deploy` job does not run, no token is used, and the run stays green. Deploy
+production first; after that, a push to `master` deploys stage normally. If the
+check cannot read or compare the live version after a few retries, the run
+fails and deploys nothing. The check runs twice. In its own
 job it catches a stale run before the run enters the `staging` environment, so
 GitHub records no deployment. It runs again as the first step of the deploy
 job, because a run can pass the first and then queue behind a newer deploy in
@@ -204,7 +209,8 @@ pick the bypass actors in the UI instead.
 ### First deploy
 
 1. Merge to `master`. Stage will not answer until production has deployed once,
-   because the preview wildcard and certificate come from that deploy.
+   because the preview wildcard and certificate come from that deploy. Until
+   then a push to `master` skips the stage deploy with a notice and stays green.
 2. Cut the first release: `gh workflow run release.yml -f version=0.1.0`.
 3. Merge the release PR it opens.
 4. Approve the `production` deployment when GitHub asks.
@@ -279,7 +285,8 @@ curl -sS https://ops.szolotov.com/version.txt
 | A manual run is rejected by the environment | The `production` environment does not allow tags. Add the tag pattern `v*` to its deployment rules. |
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
-| The stage address does not answer | The first production deploy has not run yet, so the preview wildcard and certificate do not exist. Deploy production once. |
+| The stage address does not answer | The first production deploy has not run yet, so the preview wildcard and certificate do not exist; pushes to `master` skip stage until then. Deploy production once. |
+| "stage does not exist yet" notice, or `curl` exit 6 ("Could not resolve host") in the freshness check | Observed: before the first production deploy the stage hostname has no DNS record, and the Worker may not exist yet. The freshness check treats a host that fails to resolve on every attempt, with a DNS lookup confirming NXDOMAIN, as "stage does not exist yet": it skips the stage deploy (no `deploy` job, no token, no preview, no smoke test) and the run stays green. Deploy production first (`release.yml`, or `gh workflow run docs.yml --ref vX.Y.Z`); the next push to `master` then deploys stage. A resolver failure without NXDOMAIN (SERVFAIL, a timeout) fails the check instead. If stage keeps failing after production exists, run `curl -sSI https://stage.ops.szolotov.com/version.txt`: any status other than 200 or 404 (or a connection, TLS or timeout error) stays a failure by design. |
 | Stage shows an older commit, or a run skipped its stage deploy | Stage already served a commit that includes the run's own, so it deployed nothing. If stage still shows an older commit than you expect, re-run the workflow for the commit you want. A run that cannot read or compare stage's version fails instead (next row). |
 | "stage freshness check failed" | The run could not read stage's `version.txt` or compare it with the build's commit after several retries (a network error, a GitHub API error, or a live commit unknown to the repository), so it deployed nothing. Re-run the failed jobs later; if it keeps failing, check what `curl -sS https://stage.ops.szolotov.com/version.txt` returns. |
 | "Last updated" dates on every page are equal | A shallow clone. The workflow fetches full history; a local build needs `git fetch --unshallow`. |
