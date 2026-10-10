@@ -29,6 +29,7 @@ the checks that enforce it; this document stays the published reference.
 - [Branch names](#branch-names)
 - [Adding a script](#adding-a-script)
 - [File modes and line endings](#file-modes-and-line-endings)
+- [Documentation site](#documentation-site)
 - [Repository settings](#repository-settings)
 
 ## The one architectural rule
@@ -585,6 +586,24 @@ thing a reviewer will check by hand.
   `windows/git-bash/default-git-bash/`.
 
 Both are asserted by the static suite.
+
+## Documentation site
+
+The documentation site is MkDocs with the Material theme. Its pages are in
+`docs/` and its configuration is `mkdocs.yml`; `docs/requirements.txt` pins
+the build tools. The Roadmap and Changelog pages are filled from `ROADMAP.md`
+and `CHANGELOG.md` at build time, so edit those files, not the pages. Inside
+`docs/`, link to other pages relatively and to anything outside `docs/` with
+an absolute GitHub URL. Preview with:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r docs/requirements.txt
+.venv/bin/mkdocs serve
+```
+
+Run `.venv/bin/mkdocs build --strict` before opening a pull request that
+touches `docs/`.
 
 ## Repository settings
 

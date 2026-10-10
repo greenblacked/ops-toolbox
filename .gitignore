@@ -9,6 +9,9 @@
 **/.mypy_cache/
 .venv/
 
+# The documentation site, built by mkdocs into site/. Generated, never committed.
+/site/
+
 # Isolated worktrees created by coding tools that support them. Transient,
 # and each one is a full second checkout of this repository - never commit
 # them. Scoped to the worktrees directory rather than the whole config dir,

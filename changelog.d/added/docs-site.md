@@ -1,0 +1,7 @@
+- A documentation site, built with MkDocs and the Material theme from `docs/`
+  and `mkdocs.yml`. It has a quick start, the report, preview and apply
+  philosophy, one page per platform, a table of the main scripts, testing
+  and contributing guides, and the roadmap and changelog rendered from the
+  root files at build time so they cannot drift. The build tools are pinned
+  in `docs/requirements.txt`, and `README.md` and `CONTRIBUTING.md` show how
+  to preview it locally. Nothing publishes it yet.

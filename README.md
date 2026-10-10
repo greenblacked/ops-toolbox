@@ -134,6 +134,17 @@ compatibility with a particular installed router or verify real Telegram
 delivery and firewall enforcement. Check behavior on the target platform
 before relying on it.
 
+## Documentation site
+
+A browsable version of these guides is built with MkDocs from the `docs/`
+folder and `mkdocs.yml`. To preview it locally:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r docs/requirements.txt
+.venv/bin/mkdocs serve
+```
+
 ## Contributing
 
 [Contributing](CONTRIBUTING.md) gives script conventions and the checklist for
