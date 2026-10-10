@@ -1,0 +1,35 @@
+/* Brand colours for the documentation site (see mkdocs.yml).
+   Material sets its primary and accent colours on the <body> element through
+   [data-md-color-primary] and [data-md-color-accent], which beats a plain
+   :root rule, so the overrides are written against those attributes. This
+   file loads after the theme's stylesheet, so equal specificity wins. The
+   attributes are set for the built-in "deep orange" and "orange" palette
+   names in both the dark (slate) and light (default) schemes. */
+:root,
+[data-md-color-primary="deep-orange"] {
+  --md-primary-fg-color: #E65100;
+  --md-primary-fg-color--light: #FF8A50;
+  --md-primary-fg-color--dark: #AC1900;
+}
+
+:root,
+[data-md-color-accent="orange"] {
+  --md-accent-fg-color: #FF6D00;
+}
+
+.md-grid {
+  max-width: 1400px;
+}
+
+.md-typeset code {
+  font-size: 0.85em;
+}
+
+.md-typeset table:not([class]) {
+  border: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-left-color: #FF6D00;
+}
