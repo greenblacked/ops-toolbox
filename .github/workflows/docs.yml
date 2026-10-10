@@ -374,6 +374,7 @@ jobs:
         run: |
           echo "::warning::the deploy did not answer the smoke test; rolling back to $PREVIOUS_VERSION"
           if npx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback: failed smoke test in run $GITHUB_RUN_ID"; then
+            echo "rolled_back=true" >>"$GITHUB_OUTPUT"
             echo "::error::production was rolled back to $PREVIOUS_VERSION after a failed smoke test; this run still fails"
           else
             echo "::error::the rollback to $PREVIOUS_VERSION failed: roll back by hand (docs/contributing/deployment.md)"
@@ -383,3 +384,23 @@ jobs:
       - name: No version to roll back to
         if: failure() && steps.smoke.outcome == 'failure' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id == ''
         run: echo "::error::the production deploy failed its smoke test and no earlier version was recorded, so it was not rolled back. Check the site and roll back by hand (docs/contributing/deployment.md)"
+
+      - name: Confirm the rollback is answering
+        # No token here. The rollback step always fails the job after it ran,
+        # so this runs when it reported a successful rollback.
+        if: failure() && steps.rollback.outputs.rolled_back == 'true'
+        run: |
+          set -uo pipefail
+          deadline=$((SECONDS + 120))
+          while :; do
+            body="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || body=""
+            if [ -n "$body" ] && [ "$body" != "$SHA" ]; then
+              echo "::notice::production answers with version '$body', no longer the failed $SHA"
+              exit 0
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error::after 120s $BASE_URL/version.txt still answers '${body:-nothing}' (the failed $SHA). Check the site and roll back by hand (docs/contributing/deployment.md)"
+              exit 1
+            fi
+            sleep 10
+          done
