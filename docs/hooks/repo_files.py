@@ -5,10 +5,15 @@ import posixpath
 import re
 
 from markdown.extensions.toc import slugify as toc_slugify
+from mkdocs.exceptions import PluginError
 
 REPO_URL = "https://github.com/greenblacked/ops-toolbox"
 BLOB = REPO_URL + "/blob/master/"
 TREE = REPO_URL + "/tree/master/"
+
+# Root files a page may include; anything else is rejected so a marker cannot
+# read or publish arbitrary files.
+ALLOWED = frozenset({"ROADMAP.md", "CHANGELOG.md"})
 
 MARKER = re.compile(r"^<!-- repo-file: (\S+) -->[ \t]*$", re.MULTILINE)
 BREADCRUMB = re.compile(r"^\[Ops Toolbox\]\(README\.md\) / \*\*.*\*\*[ \t]*$")
@@ -106,9 +111,21 @@ def on_page_markdown(markdown, page, config, files):
 
     def fill(match):
         name = match.group(1)
+        marker = match.group(0).strip()
+        if name not in ALLOWED:
+            raise PluginError(
+                "%s in %s: %r is not an allowed root file (allowed: %s)"
+                % (marker, page.file.src_path, name, ", ".join(sorted(ALLOWED)))
+            )
+        path = os.path.realpath(os.path.join(root, name))
+        if os.path.commonpath([os.path.realpath(root), path]) != os.path.realpath(root):
+            raise PluginError(
+                "%s in %s: %r resolves outside the repository root"
+                % (marker, page.file.src_path, name)
+            )
         # Edit the source file, not the stub page that holds the marker.
         page.edit_url = REPO_URL + "/edit/master/" + name
-        with open(os.path.join(root, name), encoding="utf-8") as handle:
+        with open(path, encoding="utf-8") as handle:
             return _convert(root, handle.read())
 
     return MARKER.sub(fill, markdown)
