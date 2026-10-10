@@ -37,6 +37,9 @@ Make sure `~/bin` is on your `PATH`, then run `git_whoami.sh` from anywhere.
     | `linux/systemd/stay_fresh_timer.sh` | `stay_fresh.sh` one directory up. See the [Linux README](https://github.com/greenblacked/ops-toolbox/blob/master/linux/README.md). |
     | `linux/install_aliases.sh` | `bash_aliases.sh`, unless you pass `--source FILE`. |
     | `linux/packages.sh`, `macos-initial-setup/brewfile.sh` | their default list file (`packages.<manager>.txt`, `Brewfile`); pass `--file` to use another. |
+    | `windows/git-bash/install_dotfiles.sh` | `.bashrc`, `.bash_profile` and `.aliases`, unless you pass `--source DIR`; it exits with code 2 without them. |
+    | `windows/setup/winget_bootstrap.ps1`, `choco_bootstrap.ps1`, `winget_configure.ps1` | their default `winget-packages.json`, `choco-packages.config` and `configuration.winget`; pass `-File` to use another. |
+    | `mikrotik/features/router_doctor.py` | the mikrotik package's `core/` and `features/` scripts one directory up; pass `--scripts-dir` to point elsewhere. |
     | `git/git_aliases.sh`, `linux/bash_aliases.sh` | the scripts they alias, next to them or on `PATH`; an alias is defined only if its script is found. |
 
     When unsure, check the script's `--help` or its package README, or run it
