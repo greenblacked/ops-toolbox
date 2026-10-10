@@ -50,6 +50,7 @@ on:
       - ROADMAP.md
       - CHANGELOG.md
       - .github/workflows/docs.yml
+      - .github/scripts/stage-stale.sh
   pull_request:
     paths:
       - 'docs/**'
@@ -58,6 +59,7 @@ on:
       - ROADMAP.md
       - CHANGELOG.md
       - .github/workflows/docs.yml
+      - .github/scripts/stage-stale.sh
   workflow_call:
     inputs:
       tag:

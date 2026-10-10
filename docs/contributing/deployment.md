@@ -15,7 +15,7 @@ folder). The workflow is
 | Run workflow, *Use workflow from* a `v*` tag | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
 
 "Touching the site" means `docs/`, `mkdocs.yml`, `worker/`, `ROADMAP.md`,
-`CHANGELOG.md` or `docs.yml` itself.
+`CHANGELOG.md`, `docs.yml` itself or `.github/scripts/stage-stale.sh`.
 
 Every build writes `site/version.txt` holding the commit SHA. After a deploy
 the workflow fetches `version.txt` from the live address and waits until it
