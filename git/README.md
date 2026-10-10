@@ -49,7 +49,8 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 ## Quick start
 
 There is nothing to install. Every script here is self-contained and runs
-straight out of a clone. From the repository root:
+straight out of a clone, except that `git_aliases.sh` defines an alias only for
+scripts found next to it or on `PATH`. From the repository root:
 
 ```bash
 ./git/git_whoami.sh                      # the name and email this repo would commit as
