@@ -14,18 +14,30 @@ name: Docs site
 #                                    by release.yml after its publish job,
 #                                    because a tag and a release created with
 #                                    GITHUB_TOKEN start no other workflow.
-#   Run workflow with a v* tag       the same production deploy by hand, to
+#   Run workflow, "Use workflow from" a v* tag
+#                                    the same production deploy by hand, to
 #                                    promote or redeploy a release
 #
+# No checkout uses a ref taken from an input or computed in a step: every one
+# checks out the default, github.sha, which cannot move. (CodeQL flags a
+# computed ref followed by pip or npm as cache poisoning.) So the commit that is
+# built is always the one the run started on, and a tag is only checked against
+# it:
+#   called by release.yml  github.sha is the commit the publish job tagged;
+#                          inputs.tag must resolve to exactly that commit.
+#   run by hand            the run must start from a tag (github.ref_type tag,
+#                          v1.2.3), so github.sha is that tag's commit. The
+#                          workflow file is the one on the tag.
+# Both need the commit to be on master.
+#
 # Inside a called workflow github.event_name is the caller's (push), so the
-# target is decided by inputs.tag alone: set means production, unset means
-# stage for a push to master and nothing for a pull request.
+# target is decided by the event and inputs.tag: a manual run from a tag, or a
+# set inputs.tag, means production; otherwise stage for a push to master and
+# nothing for a pull request.
 #
 # The Cloudflare token is an environment secret: GitHub gives it only to the
 # deploy job, only in an environment, and only the wrangler steps read it.
 # Pull requests, forks included, never get it. There is no pull_request_target.
-# Production serves a tag whose commit is on master, and a manual run must be
-# started from master.
 
 on:
   push:
@@ -63,12 +75,8 @@ on:
       CLOUDFLARE_ACCOUNT_ID:
         description: Cloudflare account ID, used when the variable of that name is unset
         required: false
+  # No inputs: pick the v* tag in "Use workflow from".
   workflow_dispatch:
-    inputs:
-      tag:
-        description: Release tag to promote to production (vMAJOR.MINOR.PATCH)
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -88,46 +96,54 @@ jobs:
     outputs:
       environment: ${{ steps.plan.outputs.environment }}
       url: ${{ steps.plan.outputs.url }}
-      # The commit that was checked and built: the deploy job checks out
-      # this commit, never a branch or tag name that could have moved.
+      tag: ${{ steps.plan.outputs.tag }}
+      # The commit that was checked and built: github.sha, which the deploy
+      # job checks out again and asserts it got.
       sha: ${{ steps.version.outputs.sha }}
     steps:
       - name: Decide what this run deploys
         id: plan
-        # First, before any checkout. The tag is typed into a form, so it goes
-        # through the environment and is matched exactly before it is used.
+        # First, before any checkout. Nothing here becomes a checkout ref: the
+        # tag is only compared with the commit the run started on, below.
         env:
           TAG: ${{ inputs.tag }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          SHA: ${{ github.sha }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [ -n "$TAG" ]; then
-            if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::error::tag must look like v1.2.3 (got '$TAG')"
-              exit 1
-            fi
-            if [ "$EVENT" = workflow_dispatch ] && [ "$REF" != refs/heads/master ]; then
-              echo "::error::run this workflow from master, not ${REF#refs/heads/}: the workflow file that holds the production token is the one on master"
-              exit 1
-            fi
+          tag_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          production() {
             {
               echo "environment=production"
               echo "url=https://ops.szolotov.com"
-              echo "ref=refs/tags/$TAG"
+              echo "tag=$1"
             } >>"$GITHUB_OUTPUT"
+          }
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
+              echo "::error::pick a release tag (v1.2.3) in 'Use workflow from', not ${REF#refs/heads/}: a manual run promotes the tag it starts from"
+              exit 1
+            fi
+            production "$REF_NAME"
+          elif [ -n "$TAG" ]; then
+            if ! [[ "$TAG" =~ $tag_re ]]; then
+              echo "::error::tag must look like v1.2.3 (got '$TAG')"
+              exit 1
+            fi
+            production "$TAG"
           elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/master ]; then
             {
               echo "environment=staging"
               echo "url=https://stage.ops.szolotov.com"
-              echo "ref=$SHA"
+              echo "tag="
             } >>"$GITHUB_OUTPUT"
           else
             {
               echo "environment=none"
               echo "url="
-              echo "ref="
+              echo "tag="
             } >>"$GITHUB_OUTPUT"
           fi
 
@@ -135,16 +151,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           # Whole history, so git-revision-date-localized can read each page's
-          # first and last commit dates, and so a tag can be checked against
-          # master below.
+          # first and last commit dates, and so the tag can be checked against
+          # this commit and master below. The default ref, github.sha.
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ steps.plan.outputs.ref }}
 
-      - name: Check the tag is on master
+      - name: Check the tag is this commit and on master
         if: steps.plan.outputs.environment == 'production'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
         run: |
           set -euo pipefail
+          if ! tag_commit="$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}")"; then
+            echo "::error::tag $TAG was not fetched or does not exist"
+            exit 1
+          fi
+          if [ "$tag_commit" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::tag $TAG is $tag_commit, not the commit this run started on ($(git rev-parse HEAD)): it was moved or is not the released commit"
+            exit 1
+          fi
           if ! git merge-base --is-ancestor HEAD origin/master; then
             echo "::error::this tag's commit is not on master, so it is not deployed to production"
             exit 1
@@ -205,7 +230,9 @@ jobs:
     # Its own job, so a run that stage has moved past never enters the
     # environment and GitHub records no deployment for a commit that was
     # never deployed. It runs for production too, as a no-op, so the deploy
-    # job's plain success() still holds when it needs this job.
+    # job's plain success() still holds when it needs this job. The deploy
+    # job repeats the check once it holds the concurrency group, because a
+    # run can pass here and then queue behind a newer deploy.
     if: needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -213,36 +240,22 @@ jobs:
       stale: ${{ steps.tip.outputs.stale }}
     env:
       ENVIRONMENT: ${{ needs.build.outputs.environment }}
-      BASE_URL: ${{ needs.build.outputs.url }}
-      SHA: ${{ needs.build.outputs.sha }}
     steps:
+      - name: Check out repository
+        if: env.ENVIRONMENT == 'staging'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Skip a stage deploy that stage has already moved past
         id: tip
         if: env.ENVIRONMENT == 'staging'
-        # No Cloudflare token here, only the read-only GITHUB_TOKEN. Builds
-        # are per run and GitHub does not promise to start queued deploys in
-        # order, so an older master build can reach this point after a newer
-        # one deployed. Stage must never go back to older content: when stage
-        # already serves a commit that descends from this build's, deploy
-        # nothing. Anything else deploys, including a live version that cannot
-        # be read or compared. The tip of master is not used, because a push
-        # that touches no docs path moves it without starting a docs run.
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          stale=false
-          live="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID" 2>/dev/null || true)"
-          live="${live//[$'\r\n ']/}"
-          if [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
-            status="$(gh api "repos/$REPO/compare/$SHA...$live" --jq .status 2>/dev/null || true)"
-            if [ "$status" = "ahead" ] || [ "$status" = "identical" ]; then
-              echo "::notice::stage already serves ${live:0:7}, which includes ${SHA:0:7}: skipping the stage deploy"
-              stale=true
-            fi
-          fi
-          echo "stale=$stale" >>"$GITHUB_OUTPUT"
+          BASE_URL: ${{ needs.build.outputs.url }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: bash .github/scripts/stage-stale.sh
 
   deploy:
     name: Deploy ${{ needs.build.outputs.environment }}
@@ -282,7 +295,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ needs.build.outputs.sha }}
 
       - name: Check out the commit that was built
         run: |
@@ -291,6 +303,17 @@ jobs:
             echo "::error::checked out $(git rev-parse HEAD), not the built commit $SHA"
             exit 1
           fi
+
+      - name: Check stage is still not newer
+        id: tip
+        if: env.ENVIRONMENT == 'staging'
+        # The same check as the check-stage job, again: this job may have
+        # queued behind a newer deploy, which has since put newer content on
+        # stage. No token but the read-only GITHUB_TOKEN.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/stage-stale.sh
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
@@ -351,7 +374,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
           set -uo pipefail
           deploy_log="$RUNNER_TEMP/wrangler-deploy.log"
@@ -367,7 +390,7 @@ jobs:
 
       - name: Create the stage preview with wrangler
         id: preview
-        if: env.ENVIRONMENT == 'staging'
+        if: env.ENVIRONMENT == 'staging' && steps.tip.outputs.stale != 'true'
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -380,6 +403,7 @@ jobs:
 
       - name: Smoke-test the deployment
         id: smoke
+        if: steps.tip.outputs.stale != 'true'
         # The live site must serve this build's version.txt, so the old version
         # cannot pass in its place. A new version can take a few seconds to
         # reach every location, hence the retries.
