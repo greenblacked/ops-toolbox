@@ -1,7 +1,7 @@
 # Installation and usage
 
 There is no installer for the whole toolbox. You either work from a clone or
-copy the one file you need.
+copy the file you need.
 
 ## Work from a clone
 
@@ -11,9 +11,9 @@ cd ops-toolbox
 ./linux/status.sh --help
 ```
 
-## Copy a single file into ~/bin
+## Copy a script into ~/bin
 
-Each script is self-contained, so one file is enough.
+Most scripts are self-contained and work when copied alone into `~/bin`.
 
 ```bash
 mkdir -p ~/bin
@@ -23,10 +23,23 @@ chmod +x ~/bin/git_whoami.sh
 
 Make sure `~/bin` is on your `PATH`, then run `git_whoami.sh` from anywhere.
 
-!!! warning "Some scripts need their neighbours"
-    macOS `stay_fresh.sh` calls companion Python programs and needs its
-    adjacent `lib/` directory when copied. Copy `macos-initial-setup/lib/`
-    next to it. The [macOS page](../platforms/macos.md) has details.
+!!! warning "Some scripts need their package folder"
+    These read files that sit next to them, so copy them with those files
+    (or work from a clone). The package README on GitHub has the details.
+
+    | Script | Needs, next to it |
+    | --- | --- |
+    | `dotfiles/install_dotfiles.sh` | the `config/` and `home/` directories; it exits with code 2 without them. See the [dotfiles README](https://github.com/greenblacked/ops-toolbox/blob/master/dotfiles/README.md). |
+    | `k8s-toolbox/build.sh` | `versions.env` and the `Dockerfile`. See the [k8s-toolbox README](https://github.com/greenblacked/ops-toolbox/blob/master/k8s-toolbox/README.md). |
+    | `macos-initial-setup/stay_fresh.sh` | the `lib/` directory of Python helpers. See the [macOS README](https://github.com/greenblacked/ops-toolbox/blob/master/macos-initial-setup/README.md) and the [macOS page](../platforms/macos.md). |
+    | `macos-initial-setup/launchd/stay_fresh_agent.sh` | `stay_fresh.sh` one directory up, and so `lib/`. |
+    | `linux/systemd/stay_fresh_timer.sh` | `stay_fresh.sh` one directory up. See the [Linux README](https://github.com/greenblacked/ops-toolbox/blob/master/linux/README.md). |
+    | `linux/install_aliases.sh` | `bash_aliases.sh`, unless you pass `--source FILE`. |
+    | `linux/packages.sh`, `macos-initial-setup/brewfile.sh` | their default list file (`packages.<manager>.txt`, `Brewfile`); pass `--file` to use another. |
+    | `git/git_aliases.sh`, `linux/bash_aliases.sh` | the scripts they alias, next to them or on `PATH`; an alias is defined only if its script is found. |
+
+    When unsure, check the script's `--help` or its package README, or run it
+    from a clone.
 
 RouterOS `.lua` scripts are not copied to `~/bin`. You paste each one into
 `/system script` on the router. See the [MikroTik page](../platforms/mikrotik.md).

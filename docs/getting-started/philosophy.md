@@ -68,10 +68,13 @@ does not by itself guarantee a policy holds between runs.
 
 ## Modularity
 
-A script must still work when copied on its own into `~/bin`. That is why
+A script should still work when copied on its own into `~/bin`. That is why
 helper code is copied between scripts rather than shared through a library.
-The single exception is a substantial, separately tested program invoked as a
-subprocess, such as the helpers under `macos-initial-setup/lib/`.
+The exceptions are scripts that ship with data or helpers they need: a
+substantial, separately tested program invoked as a subprocess, such as the
+helpers under `macos-initial-setup/lib/`, or files the script installs, such as
+the dotfiles `config/` and `home/`. Those need their package folder; the list
+is in [Installation and usage](usage.md).
 
 ## Minimal dependencies
 

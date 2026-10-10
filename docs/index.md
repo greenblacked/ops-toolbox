@@ -2,7 +2,7 @@
 
 Ops Toolbox is a collection of standalone helper scripts for maintaining
 workstations, servers, Git repositories, MikroTik RouterOS devices and GKE
-clusters. Copy the one file you need into `~/bin`, run its report, preview what
+clusters. Work from a clone or copy the script you need into `~/bin`, run its report, preview what
 it would change, and only then apply.
 
 [Quick start](getting-started/quick-start.md){ .md-button .md-button--primary }
@@ -17,8 +17,10 @@ Safety and predictability
     See [Philosophy](getting-started/philosophy.md).
 
 Modularity
-:   Each script is self-contained and still works when copied on its own into
-    `~/bin`. Duplication between scripts is deliberate.
+:   Most scripts are self-contained and still work when copied on their own into
+    `~/bin`; a few need their package folder (see
+    [Installation and usage](getting-started/usage.md)). Duplication between
+    scripts is deliberate.
 
 Minimal dependencies
 :   Bash 3.2+ for the macOS, Linux, Git and dotfiles scripts (Git Bash

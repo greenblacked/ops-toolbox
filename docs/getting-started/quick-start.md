@@ -89,5 +89,5 @@ flag (`--yes` for Bash, `-Yes` for PowerShell) where it asks for one.
 ## Next
 
 - [Philosophy](philosophy.md) explains the report, preview, apply model.
-- [Installation and usage](usage.md) covers copying single files into `~/bin`.
+- [Installation and usage](usage.md) covers working from a clone and copying scripts into `~/bin`, including the few that need their package folder.
 - The [script overview](../scripts/index.md) lists every main script.

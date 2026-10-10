@@ -63,7 +63,9 @@ All paths are under `macos-initial-setup/`.
 
 !!! warning "Copying stay_fresh.sh"
     `stay_fresh.sh` needs its adjacent `lib/` directory. It calls companion
-    Python helpers and some Homebrew steps.
+    Python helpers and some Homebrew steps. Copy `macos-initial-setup/lib/`
+    next to it, or run it from a clone. `launchd/stay_fresh_agent.sh` in turn
+    expects `stay_fresh.sh` one directory above it.
 
 !!! warning "Scheduled runs skip root steps"
     Cask upgrades (`--brew-casks`) need an interactive terminal and may ask
