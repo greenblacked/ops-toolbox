@@ -23,6 +23,7 @@ chmod +x ~/bin/git_whoami.sh
 
 Make sure `~/bin` is on your `PATH`, then run `git_whoami.sh` from anywhere.
 
+<!-- markdownlint-disable MD046 -->
 !!! warning "Some scripts need their package folder"
     These read files that sit next to them, so copy them with those files
     (or work from a clone). The package README on GitHub has the details.
@@ -40,6 +41,7 @@ Make sure `~/bin` is on your `PATH`, then run `git_whoami.sh` from anywhere.
 
     When unsure, check the script's `--help` or its package README, or run it
     from a clone.
+<!-- markdownlint-enable MD046 -->
 
 RouterOS `.lua` scripts are not copied to `~/bin`. You paste each one into
 `/system script` on the router. See the [MikroTik page](../platforms/mikrotik.md).
