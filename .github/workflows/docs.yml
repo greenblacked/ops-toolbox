@@ -77,8 +77,9 @@ jobs:
     outputs:
       environment: ${{ steps.plan.outputs.environment }}
       url: ${{ steps.plan.outputs.url }}
+      # The commit that was checked and built: the deploy job checks out
+      # this commit, never a branch or tag name that could have moved.
       sha: ${{ steps.version.outputs.sha }}
-      ref: ${{ steps.plan.outputs.ref }}
     steps:
       - name: Decide what this run deploys
         id: plan
@@ -88,6 +89,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           if [ -n "$TAG" ]; then
@@ -108,7 +110,7 @@ jobs:
             {
               echo "environment=staging"
               echo "url=https://stage.ops.szolotov.com"
-              echo "ref=$REF"
+              echo "ref=$SHA"
             } >>"$GITHUB_OUTPUT"
           else
             {
@@ -218,7 +220,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
-          ref: ${{ needs.build.outputs.ref }}
+          ref: ${{ needs.build.outputs.sha }}
+
+      - name: Check out the commit that was built
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$SHA" ]; then
+            echo "::error::checked out $(git rev-parse HEAD), not the built commit $SHA"
+            exit 1
+          fi
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
