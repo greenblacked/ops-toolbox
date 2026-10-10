@@ -59,3 +59,7 @@ WS/*
 
 # Local scratch workspace; its directory name begins with a space.
 [ ]WS/
+
+# The documentation site's Worker: npm's install and wrangler's local state.
+worker/node_modules/
+worker/.wrangler/
