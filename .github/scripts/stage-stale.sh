@@ -12,6 +12,18 @@
 # - version.txt answers HTTP 404 (curl itself exited 0): nothing is deployed
 #   yet (the first deploy), the only case where an unknown live version means
 #   deploy. An empty body is not that case.
+# - the stage host does not resolve (curl exit 6) on every attempt AND a DNS
+#   lookup confirms NXDOMAIN (the name does not exist, not a resolver
+#   failure): stage cannot exist yet either. Observed: before the first
+#   production deploy the stage hostname has no DNS record (the Custom Domain
+#   and its preview wildcard appear with that deploy). A resolver failure that
+#   recovers on a later attempt takes the normal path; SERVFAIL, a timeout or
+#   a missing dig stay fail-closed. This is a clean skip, not a deploy: the
+#   hostname cannot exist before production, the Worker itself may not exist
+#   yet, and a preview with a smoke test that cannot pass only turns master
+#   red. The next push to master after production deploys stage. For a
+#   preview that does not exist on a resolving host no response is
+#   documented, so that stays fail-closed too.
 # - version.txt is read and equals SHA, or the compare says the live commit is
 #   ahead of or identical to SHA: stale, skip the deploy.
 # - the compare says the live commit is behind or diverged: deploy.
@@ -24,7 +36,12 @@
 # moves it without starting a docs run.
 #
 # Environment: BASE_URL, SHA, REPO, GH_TOKEN, GITHUB_RUN_ID, GITHUB_OUTPUT.
-# Writes stale=true|false to GITHUB_OUTPUT.
+# Writes to GITHUB_OUTPUT:
+#   stale=true|false  stage already serves this build's commit or a newer one
+#   skip=true|false   the stage deploy must not run: stale, or the stage host
+#                     does not exist yet (then reason=no-stage-host, and a
+#                     notice says to deploy production first). Callers gate on
+#                     skip, a skipped deploy ends green.
 set -euo pipefail
 
 attempts=4
@@ -34,6 +51,30 @@ trap 'rm -f "$body"' EXIT
 fail() {
   echo "::error::stage freshness check failed: $1; nothing was deployed, re-run the workflow later"
   exit 1
+}
+
+# True only when a resolver answered and says the stage host does not exist.
+# curl exit 6 alone cannot tell NXDOMAIN from SERVFAIL or a resolver outage.
+# When it is not confirmed, dns_note says why, for the failure message.
+dns_note=""
+nxdomain() {
+  local host="${BASE_URL#*://}" out rc=0 st
+  host="${host%%/*}"
+  if ! command -v dig >/dev/null 2>&1; then
+    dns_note="dig is not installed, so NXDOMAIN could not be confirmed"
+    return 1
+  fi
+  out="$(timeout 15 dig +noall +comments "$host" A 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    dns_note="the DNS lookup for $host failed or timed out (dig exit $rc)"
+    return 1
+  fi
+  if grep -q 'status: NXDOMAIN' <<<"$out"; then
+    return 0
+  fi
+  st="$(grep -o 'status: [A-Z]*' <<<"$out" | head -n 1)"
+  dns_note="the DNS lookup for $host answered '${st:-no status}', not NXDOMAIN"
+  return 1
 }
 
 # Retries with a growing pause between attempts.
@@ -48,11 +89,13 @@ backoff() {
 # looked at only when curl exited 0, and only 200 and 404 end the retries.
 code=""
 live=""
+unresolved=0
 for ((i = 1; i <= attempts; i++)); do
   rc=0
   code="$(curl --silent --max-time 10 --output "$body" --write-out '%{http_code}' \
     "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$(date +%s)" 2>/dev/null)" || rc=$?
   if [ "$rc" -ne 0 ]; then
+    [ "$rc" -eq 6 ] && unresolved=$((unresolved + 1))
     echo "::warning::reading $BASE_URL/version.txt failed (curl exit $rc), attempt $i of $attempts"
   elif [ "$code" = 404 ]; then
     break
@@ -69,6 +112,20 @@ for ((i = 1; i <= attempts; i++)); do
   live=""
   backoff "$i"
 done
+if [ "$unresolved" -eq "$attempts" ] && nxdomain; then
+  host="${BASE_URL#*://}"
+  host="${host%%/*}"
+  echo "::notice::stage does not exist yet (no DNS record for $host): skipped; deploy production first (release.yml or gh workflow run docs.yml --ref vX.Y.Z), then the next push to master deploys stage"
+  {
+    echo "stale=false"
+    echo "skip=true"
+    echo "reason=no-stage-host"
+  } >>"$GITHUB_OUTPUT"
+  exit 0
+fi
+if [ "$unresolved" -eq "$attempts" ] && [ -n "$dns_note" ]; then
+  echo "::warning::the stage host did not resolve (curl exit 6) on every attempt, but $dns_note; failing closed"
+fi
 [ -n "$code" ] || fail "could not read a commit SHA from $BASE_URL/version.txt after $attempts attempts"
 
 stale=false
@@ -97,4 +154,7 @@ else
     *) fail "unexpected compare status '$status' for ${live:0:7}" ;;
   esac
 fi
-echo "stale=$stale" >>"$GITHUB_OUTPUT"
+{
+  echo "stale=$stale"
+  echo "skip=$stale"
+} >>"$GITHUB_OUTPUT"
