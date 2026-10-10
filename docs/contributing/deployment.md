@@ -26,10 +26,16 @@ run's own, the run succeeds without deploying, so an older build that finishes
 last never replaces newer content on stage. The check fails closed: only a
 stage with nothing deployed yet (`version.txt` answers HTTP 404) counts as
 "unknown, so deploy". If the stage hostname does not resolve on every attempt
-and a DNS lookup says NXDOMAIN, and production does not resolve either
-(NXDOMAIN, so it was never deployed), stage cannot exist yet, so the run
-prints a notice and skips the stage deploy: the
-`deploy` job does not run, no token is used, and the run stays green. Deploy
+and a DNS lookup says NXDOMAIN, and GitHub has recorded no successful
+production deployment yet, stage cannot exist yet, so the run prints a notice
+and skips the stage deploy. The `deploy` job does not run, no token is used,
+and the run stays green. This holds until production has a successful
+deployment, so it covers the stage run of the first release push, which starts
+before the production deploy finishes (a release tag cannot tell, because it
+is pushed first); a failed first production deploy also stays a skip. Once
+production has deployed successfully, a stage host without DNS means the Custom
+Domain or its preview wildcard is missing, and the run fails with an error
+instead. Deploy
 production first; after that, a push to `master` deploys stage normally. If the
 check cannot read or compare the live version after a few retries, the run
 fails and deploys nothing. The check runs twice. In its own
@@ -287,8 +293,8 @@ curl -sS https://ops.szolotov.com/version.txt
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
 | The stage address does not answer | The first production deploy has not run yet, so the preview wildcard and certificate do not exist; pushes to `master` skip stage until then. Deploy production once. |
-| "stage does not exist yet" notice, or `curl` exit 6 ("Could not resolve host") in the freshness check | Observed: before the first production deploy the stage hostname has no DNS record, and the Worker may not exist yet. The freshness check treats a host that fails to resolve on every attempt, with a DNS lookup confirming NXDOMAIN, as "stage does not exist yet": it skips the stage deploy (no `deploy` job, no token, no preview, no smoke test) and the run stays green. Deploy production first (`release.yml`, or `gh workflow run docs.yml --ref vX.Y.Z`); the next push to `master` then deploys stage. The skip only applies before the first production deploy: if production resolves while stage does not, the check fails (see the next row). A resolver failure without NXDOMAIN (SERVFAIL, a timeout), for stage or for production, fails the check instead. If stage keeps failing after production exists, run `curl -sSI https://stage.ops.szolotov.com/version.txt`: any status other than 200 or 404 (or a connection, TLS or timeout error) stays a failure by design. |
-| `stage has no DNS record although production exists` error in the freshness check | The stage host is NXDOMAIN but production resolves, so the stage record was lost after the first deploy (the skip for a missing stage only applies before production exists). Nothing was deployed, and every run fails until fixed. Check the Worker's Custom Domain and `previews_enabled` in Cloudflare (the stage preview wildcard), then re-run the workflow. |
+| "stage does not exist yet" notice, or `curl` exit 6 ("Could not resolve host") in the freshness check | Observed: before the first production deploy the stage hostname has no DNS record, and the Worker may not exist yet. The freshness check treats a host that fails to resolve on every attempt, with a DNS lookup confirming NXDOMAIN, as "stage does not exist yet": it skips the stage deploy (no `deploy` job, no token, no preview, no smoke test) and the run stays green. Deploy production first (`release.yml`, or `gh workflow run docs.yml --ref vX.Y.Z`); the next push to `master` then deploys stage. The skip applies until GitHub records a production deployment with a success status: once one exists, a stage host without DNS fails the check (see the next row). A resolver failure without NXDOMAIN (SERVFAIL, a timeout), or a failed deployments or statuses lookup, fails the check instead. If stage keeps failing after production exists, run `curl -sSI https://stage.ops.szolotov.com/version.txt`: any status other than 200 or 404 (or a connection, TLS or timeout error) stays a failure by design. |
+| `production was deployed (deployment ...) but ... has no DNS record` error in the freshness check | GitHub has a production deployment with a success status, but the stage host is NXDOMAIN, so the Worker's Custom Domain or its preview wildcard was lost. Nothing was deployed, and every run fails until it is fixed. Check the Worker's Custom Domain and `previews_enabled` in Cloudflare, then re-run the workflow. |
 | Stage shows an older commit, or a run skipped its stage deploy | Stage already served a commit that includes the run's own, so it deployed nothing. If stage still shows an older commit than you expect, re-run the workflow for the commit you want. A run that cannot read or compare stage's version fails instead (next row). |
 | "stage freshness check failed" | The run could not read stage's `version.txt` or compare it with the build's commit after several retries (a network error, a GitHub API error, or a live commit unknown to the repository), so it deployed nothing. Re-run the failed jobs later; if it keeps failing, check what `curl -sS https://stage.ops.szolotov.com/version.txt` returns. |
 | "Last updated" dates on every page are equal | A shallow clone. The workflow fetches full history; a local build needs `git fetch --unshallow`. |

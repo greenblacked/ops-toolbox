@@ -20,17 +20,27 @@ It fails closed. It reads `version.txt` and, if needed, compares commits with
 not resolve (`curl` exit 6) on every attempt, with a DNS lookup confirming
 NXDOMAIN, means stage does not exist yet (observed: the stage hostname has no
 DNS record before the first production deploy, and the Worker may not exist
-either) AND the production host (`PRODUCTION_URL`) is also confirmed NXDOMAIN,
-so production was never deployed: the script sets `skip=true` and
-`reason=no-stage-host`, prints a notice to deploy production first, and exits
-0. The deploy job is skipped (or, in its second run of the check, wrangler and
-the smoke test are), so the run stays green; after production, the next push
-to `master` deploys stage. If production resolves (NOERROR, even without an
-answer, since NODATA means the name exists) while stage is NXDOMAIN, the stage
-record was lost: the script prints an `::error::` ("stage has no DNS record
-although production exists") and exits non-zero. A resolver failure that
+either) AND GitHub has recorded no successful production deployment (the
+`deploy` job enters the `production` environment, so each production deploy is a
+deployment there; read with `gh api repos/$REPO/deployments?environment=production`
+and each deployment's `/statuses`, which needs only `deployments: read`; a
+release tag cannot serve, because `release.yml` pushes it before the production
+deploy): the script sets `skip=true` and `reason=no-stage-host`, prints a
+notice to deploy production first, and exits 0. The skip therefore applies
+until production has a successful deployment, which covers the stage run of the
+first release push and a first production deploy that is still running or
+failed (a failed run, including a smoke test that was rolled back, ends with a
+failure status). The deploy job is skipped (or, in its second run of the check,
+wrangler and the smoke test are), so the run stays green; after production, the
+next push to `master` deploys stage. Once a production deployment has
+succeeded, a stage host without DNS means the Custom Domain or its preview
+wildcard was lost: the script prints an `::error::` ("production was deployed
+(deployment ID for SHA) but ... has no DNS record") and exits non-zero. The
+REST docs promise no order for the lists, so deployments are walked until one
+has any `success` status. A failed deployments or statuses lookup fails
+closed. A resolver failure that
 recovers on a later attempt takes the normal path; SERVFAIL, a timeout or a
-missing `dig` (for stage or for the production lookup) fail closed. Any other
+missing `dig` fail closed. Any other
 failure after the retries (including a `curl` transfer error after a 200
 header), an empty body, a body that is not a 40-character SHA, or a live
 commit the repository does not know, prints an `::error::` and exits non-zero,

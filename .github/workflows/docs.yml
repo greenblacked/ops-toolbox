@@ -275,6 +275,10 @@ jobs:
     if: needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # stage-stale.sh reads the production deployments and their statuses.
+      deployments: read
     outputs:
       stale: ${{ steps.tip.outputs.stale }}
       skip: ${{ steps.tip.outputs.skip }}
@@ -294,7 +298,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           BASE_URL: ${{ needs.build.outputs.url }}
-          PRODUCTION_URL: https://ops.szolotov.com
           SHA: ${{ needs.build.outputs.sha }}
         run: bash .github/scripts/stage-stale.sh
 
@@ -314,6 +317,10 @@ jobs:
       # One deploy per environment at a time, never cancelled half way.
       group: docs-deploy-${{ needs.build.outputs.environment }}
       cancel-in-progress: false
+    permissions:
+      contents: read
+      # The stage-stale.sh check reads the production deployments.
+      deployments: read
     environment:
       name: ${{ needs.build.outputs.environment }}
       url: ${{ needs.build.outputs.url }}
@@ -357,7 +364,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          PRODUCTION_URL: https://ops.szolotov.com
         run: bash .github/scripts/stage-stale.sh
 
       - name: Set up Node

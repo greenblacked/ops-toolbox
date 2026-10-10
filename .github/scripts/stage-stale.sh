@@ -24,15 +24,26 @@
 #   red. The next push to master after production deploys stage. For a
 #   preview that does not exist on a resolving host no response is
 #   documented, so that stays fail-closed too.
-#   The skip also needs a bootstrap-state check: PRODUCTION_URL's host must be
-#   NXDOMAIN as well, i.e. production was never deployed either. NXDOMAIN for
-#   stage alone only says the name does not resolve now; a lost stage record
-#   after production exists would otherwise green-skip every master run and
-#   hide a broken stage. If production resolves (NOERROR, with or without an
-#   answer: NODATA still means the name exists) the check fails with an
-#   ::error:: about the missing stage wildcard. If the production lookup is
-#   not conclusive (SERVFAIL, timeout, missing dig, no PRODUCTION_URL) it
-#   fails closed too.
+#   The skip also needs a persistent bootstrap-state check: GitHub has
+#   recorded no successful production deployment. The deploy job enters the
+#   "production" environment, so every production deploy leaves a deployment
+#   there, and a run that fails (including a smoke test that failed and was
+#   rolled back) ends with a failure or error status, never success. A
+#   release tag cannot serve: release.yml pushes the tag BEFORE the production
+#   deploy, so the stage run of the same push would see it while stage is
+#   still NXDOMAIN and fail red on the first release. While no production
+#   deployment has succeeded (none, or only queued, in progress, failed), the
+#   skip applies. Once one has, DNS must exist: a later Cloudflare
+#   misconfiguration that drops both the production Custom Domain and the
+#   preview wildcard would otherwise green-skip every master run forever.
+#   The deployments are read with the GitHub API (deployments?environment=
+#   production, then each deployment's statuses; needs only deployments:
+#   read), with a timeout and retries. The REST docs do not promise an order
+#   for either list, so every deployment is walked until one has a status
+#   with state success (a success is followed by inactive when a newer
+#   deployment succeeds, so the newest status alone would miss it). If one
+#   exists the check fails with an ::error:: about the missing Custom Domain /
+#   preview wildcard; if a lookup fails it fails closed too.
 # - version.txt is read and equals SHA, or the compare says the live commit is
 #   ahead of or identical to SHA: stale, skip the deploy.
 # - the compare says the live commit is behind or diverged: deploy.
@@ -44,13 +55,13 @@
 # The tip of master is not used, because a push that touches no docs path
 # moves it without starting a docs run.
 #
-# Environment: BASE_URL, PRODUCTION_URL, SHA, REPO, GH_TOKEN, GITHUB_RUN_ID,
+# Environment: BASE_URL, SHA, REPO, GH_TOKEN, GITHUB_RUN_ID,
 # GITHUB_OUTPUT.
 # Writes to GITHUB_OUTPUT:
 #   stale=true|false  stage already serves this build's commit or a newer one
 #   skip=true|false   the stage deploy must not run: stale, or the stage host
-#                     does not exist yet and production was never deployed
-#                     either (then reason=no-stage-host, and a notice says to
+#                     does not exist yet and production has no
+#                     successful deployment either (then reason=no-stage-host, and a notice says to
 #                     deploy production first). Callers gate on
 #                     skip, a skipped deploy ends green.
 set -euo pipefail
@@ -66,15 +77,12 @@ fail() {
 
 # True only when a resolver answered and says the host ($1, a URL) does not
 # exist. curl exit 6 alone cannot tell NXDOMAIN from SERVFAIL or a resolver
-# outage. When it is not confirmed, dns_note says why, for the failure message,
-# and dns_status holds the DNS status the resolver answered ("" if none).
+# outage. When it is not confirmed, dns_note says why, for the failure message.
 dns_note=""
-dns_status=""
 nxdomain() {
   local host="${1#*://}" out rc=0 st
   host="${host%%/*}"
   dns_note=""
-  dns_status=""
   if ! command -v dig >/dev/null 2>&1; then
     dns_note="dig is not installed, so NXDOMAIN could not be confirmed"
     return 1
@@ -88,7 +96,6 @@ nxdomain() {
     return 0
   fi
   st="$(grep -o 'status: [A-Z]*' <<<"$out" | head -n 1)"
-  dns_status="${st#status: }"
   dns_note="the DNS lookup for $host answered '${st:-no status}', not NXDOMAIN"
   return 1
 }
@@ -131,18 +138,45 @@ done
 if [ "$unresolved" -eq "$attempts" ] && nxdomain "$BASE_URL"; then
   host="${BASE_URL#*://}"
   host="${host%%/*}"
-  # Bootstrap state: the skip is only right before the first production deploy.
-  [ -n "${PRODUCTION_URL:-}" ] || fail "PRODUCTION_URL is not set, so it cannot be confirmed that production was never deployed (stage host $host has no DNS record)"
-  prod="${PRODUCTION_URL#*://}"
-  prod="${prod%%/*}"
-  if ! nxdomain "$PRODUCTION_URL"; then
-    if [ "$dns_status" = NOERROR ]; then
-      echo "::error::stage has no DNS record although production exists: the stage preview wildcard is missing ($host does not resolve, $prod does); check the Worker's Custom Domain / previews_enabled in Cloudflare; nothing was deployed"
-      exit 1
+  # Bootstrap state: the skip is only right while production has never been
+  # deployed successfully.
+  prod_id=""
+  prod_sha=""
+  deployments=""
+  deployments_ok=0
+  for ((i = 1; i <= attempts; i++)); do
+    if deployments="$(timeout 60 gh api "repos/$REPO/deployments?environment=production&per_page=100" --paginate --jq '.[] | "\(.id) \(.sha)"' 2>/dev/null)"; then
+      deployments_ok=1
+      break
     fi
-    fail "$host has no DNS record, but whether production was ever deployed could not be confirmed: $dns_note"
+    echo "::warning::listing the production deployments of $REPO failed, attempt $i of $attempts"
+    backoff "$i"
+  done
+  [ "$deployments_ok" -eq 1 ] || fail "$host has no DNS record, but whether production was ever deployed could not be confirmed (listing the production deployments of $REPO failed after $attempts attempts)"
+  while read -r id dsha; do
+    [[ "$id" =~ ^[0-9]+$ ]] || continue
+    ok=0
+    found=""
+    for ((i = 1; i <= attempts; i++)); do
+      if found="$(timeout 30 gh api "repos/$REPO/deployments/$id/statuses?per_page=100" --jq 'any(.[]; .state == "success")' 2>/dev/null)" && [[ "$found" == true || "$found" == false ]]; then
+        ok=1
+        break
+      fi
+      echo "::warning::reading the statuses of deployment $id failed, attempt $i of $attempts"
+      backoff "$i"
+    done
+    [ "$ok" -eq 1 ] || fail "$host has no DNS record, but whether production was ever deployed could not be confirmed (reading the statuses of deployment $id failed after $attempts attempts)"
+    if [ "$found" = true ]; then
+      prod_id="$id"
+      prod_sha="$dsha"
+      break
+    fi
+  done <<<"$deployments"
+  if [ -n "$prod_id" ]; then
+    echo "::error::production was deployed (deployment $prod_id for ${prod_sha:0:7}) but $host has no DNS record: the Custom Domain or its preview wildcard is missing; check the Worker's Custom Domain / previews_enabled in Cloudflare; nothing was deployed"
+    exit 1
   fi
-  echo "::notice::stage does not exist yet (no DNS record for $host, nor for production $prod): skipped; deploy production first (release.yml or gh workflow run docs.yml --ref vX.Y.Z), then the next push to master deploys stage"
+  echo "::notice::stage does not exist yet (no DNS record for $host and no successful production deployment yet): skipped; deploy production first (release.yml or gh workflow run docs.yml --ref vX.Y.Z), then the next push to master deploys stage"
   {
     echo "stale=false"
     echo "skip=true"
