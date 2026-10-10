@@ -227,12 +227,14 @@ jobs:
   check-stage:
     name: Check stage is not newer
     needs: build
-    # Its own job, so a run that stage has moved past never enters the
-    # environment and GitHub records no deployment for a commit that was
+    # Its own job, so a run that stage has already moved past never enters
+    # the environment and GitHub records no deployment for a commit that was
     # never deployed. It runs for production too, as a no-op, so the deploy
     # job's plain success() still holds when it needs this job. The deploy
     # job repeats the check once it holds the concurrency group, because a
-    # run can pass here and then queue behind a newer deploy.
+    # run can pass here and then queue behind a newer deploy. A run caught
+    # only by that second check is already in the environment: it deploys
+    # nothing, but GitHub records a staging deployment for it.
     if: needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -316,6 +318,7 @@ jobs:
         run: bash .github/scripts/stage-stale.sh
 
       - name: Set up Node
+        if: steps.tip.outputs.stale != 'true'
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '22'
@@ -323,21 +326,25 @@ jobs:
 
       # No install scripts: nothing but wrangler runs while the token exists.
       - name: Install wrangler
+        if: steps.tip.outputs.stale != 'true'
         working-directory: worker
         run: npm ci --ignore-scripts
 
       # No token in this step's environment.
       - name: Verify the registry signatures
+        if: steps.tip.outputs.stale != 'true'
         working-directory: worker
         run: npm audit signatures
 
       - name: Download the site
+        if: steps.tip.outputs.stale != 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: site
           path: site/
 
       - name: Check the site is the one that was built
+        if: steps.tip.outputs.stale != 'true'
         run: |
           set -euo pipefail
           if [ "$(tr -d '\n' <site/version.txt)" != "$SHA" ]; then

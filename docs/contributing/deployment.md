@@ -22,12 +22,17 @@ the workflow fetches `version.txt` from the live address and waits until it
 matches, so the new version is told from the old one. The stage preview must
 answer `X-Robots-Tag: noindex`, and production must not. Before it deploys
 stage, a run reads the commit stage serves; if that commit already includes the
-run's own, the run succeeds without deploying and, as it never enters the
-`staging` environment, records no deployment, so an older build that finishes
-last never replaces newer content on stage. The check runs twice: in its own
-job, and again as the first step of the deploy job, because a run can pass the
-first and then queue behind a newer deploy in the environment's concurrency
-group. Production is not affected.
+run's own, the run succeeds without deploying, so an older build that finishes
+last never replaces newer content on stage. The check runs twice. In its own
+job it catches a stale run before the run enters the `staging` environment, so
+GitHub records no deployment. It runs again as the first step of the deploy
+job, because a run can pass the first and then queue behind a newer deploy in
+the environment's concurrency group. A run caught only by that second check has
+already entered the environment: it deploys nothing and skips the rest of the
+job, but GitHub records a successful `staging` deployment for its commit, so the
+environment can show an older commit as the latest while stage serves newer
+content. Trust the stage address, not that record, for what stage serves.
+Production is not affected.
 
 !!! note "Why the release workflow calls the deploy"
     The release workflow creates the tag and the GitHub Release with the
