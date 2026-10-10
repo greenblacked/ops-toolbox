@@ -28,9 +28,10 @@ platforms present on your machine.
 | `mikrotik` | Docker, QEMU | Boots RouterOS CHR 7.24.5 and runs every `.lua` over the API. Not in the default selection. |
 
 !!! note "Documentation changes"
-    A docs-only change runs the `static` and `lint` suites. The site is not
-    built in CI and no workflow runs mkdocs; run `mkdocs build --strict`
-    yourself, see [Development](development.md#documentation-site).
+    A docs-only change runs the `static` and `lint` suites. On a pull request
+    that touches the site, `docs.yml` also runs `mkdocs build --strict` and
+    `wrangler deploy --dry-run`. Still run `mkdocs build --strict` locally
+    before you push, see [Development](development.md#documentation-site).
 
 ## What CI covers
 
