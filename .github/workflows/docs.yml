@@ -318,30 +318,33 @@ jobs:
             exit 1
           fi
 
-      - name: Skip a stage deploy that master has moved past
+      - name: Skip a stage deploy that stage has already moved past
         id: tip
         if: env.ENVIRONMENT == 'staging'
         # No Cloudflare token here, only the read-only GITHUB_TOKEN. Builds
         # are per run and GitHub does not promise to start queued deploys in
         # order, so an older master build can reach this point after a newer
-        # one deployed. Stage must never go back to older content: when master
-        # has moved on, deploy nothing and let the newer run's deploy stand.
+        # one deployed. Stage must never go back to older content: when stage
+        # already serves a commit that descends from this build's, deploy
+        # nothing. Anything else deploys, including a live version that cannot
+        # be read or compared. The tip of master is not used, because a push
+        # that touches no docs path moves it without starting a docs run.
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          tip="$(gh api "repos/$REPO/git/ref/heads/master" --jq .object.sha)"
-          if ! [[ "$tip" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::could not read the tip of master (got '$tip'), so stage was not deployed; re-run this job"
-            exit 1
+          set -uo pipefail
+          stale=false
+          live="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID" 2>/dev/null || true)"
+          live="${live//[$'\r\n ']/}"
+          if [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
+            status="$(gh api "repos/$REPO/compare/$SHA...$live" --jq .status 2>/dev/null || true)"
+            if [ "$status" = "ahead" ] || [ "$status" = "identical" ]; then
+              echo "::notice::stage already serves ${live:0:7}, which includes ${SHA:0:7}: skipping the stage deploy"
+              stale=true
+            fi
           fi
-          if [ "$tip" != "$SHA" ]; then
-            echo "::notice::master is at ${tip:0:7}, not ${SHA:0:7}: skipping the stage deploy, a newer run deploys it"
-            echo "stale=true" >>"$GITHUB_OUTPUT"
-          else
-            echo "stale=false" >>"$GITHUB_OUTPUT"
-          fi
+          echo "stale=$stale" >>"$GITHUB_OUTPUT"
 
       - name: Create the stage preview with wrangler
         id: preview
