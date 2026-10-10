@@ -106,6 +106,8 @@ def on_page_markdown(markdown, page, config, files):
 
     def fill(match):
         name = match.group(1)
+        # Edit the source file, not the stub page that holds the marker.
+        page.edit_url = REPO_URL + "/edit/master/" + name
         with open(os.path.join(root, name), encoding="utf-8") as handle:
             return _convert(root, handle.read())
 
