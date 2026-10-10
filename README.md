@@ -136,14 +136,19 @@ before relying on it.
 
 ## Documentation site
 
-A browsable version of these guides is built with MkDocs from the `docs/`
-folder and `mkdocs.yml`. To preview it locally:
+A browsable version of these guides is published at
+<https://ops.szolotov.com>. It is built with MkDocs from the `docs/` folder
+and `mkdocs.yml`, and served by a Cloudflare Worker (`worker/`). To preview it
+locally:
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r docs/requirements.txt
 .venv/bin/mkdocs serve
 ```
+
+How it is deployed is in
+[docs/contributing/deployment.md](docs/contributing/deployment.md).
 
 ## Contributing
 

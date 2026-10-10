@@ -603,7 +603,11 @@ python3 -m venv .venv
 ```
 
 Run `.venv/bin/mkdocs build --strict` before opening a pull request that
-touches `docs/`.
+touches `docs/`; the Docs site workflow runs it, plus a wrangler dry-run, on
+every pull request that touches the site. A push to `master` updates
+<https://stage.ops.szolotov.com>, and a release deploys
+<https://ops.szolotov.com>; the setup and runbook are in
+[docs/contributing/deployment.md](docs/contributing/deployment.md).
 
 ## Repository settings
 

@@ -46,7 +46,10 @@ The workflows in `.github/workflows/`:
 - `k8s-image-smoke.yml` builds and probes the toolbox image weekly.
 - `security.yml` reports repository and workflow security findings.
 - `branch-name.yml` enforces branch naming on pull requests.
-- `release.yml` is the release workflow.
+- `release.yml` is the release workflow; after it tags a release it calls
+  `docs.yml`.
+- `docs.yml` builds the documentation site on pull requests that touch it and
+  deploys it with wrangler (see [Deployment](deployment.md)).
 
 In short, CI covers shell syntax and lint, `--help` and exit-code contracts,
 dry-run behavior, Linux package tests in Debian, Fedora and Arch containers,

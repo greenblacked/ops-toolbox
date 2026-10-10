@@ -93,8 +93,8 @@ python3 -m venv .venv
 .venv/bin/mkdocs serve
 ```
 
-Open <http://127.0.0.1:8000>. Check for warnings before opening a pull request (CI does not build the
-site):
+Open <http://127.0.0.1:8000>. Check for warnings before opening a pull request;
+CI runs the same strict build on every pull request that touches the site:
 
 ```bash
 .venv/bin/mkdocs build --strict
@@ -104,38 +104,13 @@ The build writes `site/`, which is ignored by Git.
 
 ### Deploy
 
-!!! note "Deployment is the maintainer's step"
-    No workflow publishes the site yet. These are the single-command options.
-
-=== "GitHub Pages"
-
-    ```bash
-    .venv/bin/mkdocs gh-deploy --force
-    ```
-
-    This builds the site and pushes it to the `gh-pages` branch. The default
-    address is `https://greenblacked.github.io/ops-toolbox/`. TODO: add a CI
-    workflow for this later.
-
-=== "Cloudflare Pages"
-
-    Connect the repository in the Cloudflare dashboard with these settings:
-
-    ```text
-    Build command:    pip install -r docs/requirements.txt && mkdocs build
-    Output directory: site
-    ```
-
-    Or build locally and upload directly:
-
-    ```bash
-    .venv/bin/mkdocs build
-    npx wrangler pages deploy site --project-name ops-toolbox
-    ```
-
-    Set `site_url` in `mkdocs.yml` to the final address.
+The site is hosted at <https://ops.szolotov.com>. A push to `master` updates
+the stage preview and a release deploys production; both are done by CI, not
+by hand. [Deployment](deployment.md) has the flow, the setup, the commands and
+the rollback steps. (`mkdocs gh-deploy` still works for a fork that wants
+GitHub Pages.)
 
 !!! tip "Last updated dates"
     The "last updated" date on each page comes from Git history. A shallow
-    clone has none, so the build falls back to the build date. CI or
-    Cloudflare builds should fetch full history for accurate dates.
+    clone has none, so the build falls back to the build date. The
+    CI workflow fetches full history for accurate dates.

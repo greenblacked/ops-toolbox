@@ -110,5 +110,6 @@ nothing. Pick your platform below for its own first report.
     in containers and on CI runners, not on your system. Read the report and
     the preview, then apply.
 
-The source of this site is the `docs/` folder and `mkdocs.yml` in the
+This site is published at <https://ops.szolotov.com>. Its source is the `docs/`
+folder and `mkdocs.yml` in the
 [repository](https://github.com/greenblacked/ops-toolbox).
