@@ -164,6 +164,13 @@ jobs:
         # directory) would publish it. Before any install or build.
         run: |
           set -euo pipefail
+          # The scan below hard-codes docs; fail if docs_dir ever changes so
+          # the guard cannot silently watch the wrong directory.
+          docs_dir="$(sed -n 's/^docs_dir:[[:space:]]*//p' mkdocs.yml | tr -d "\"' ")"
+          if [ "${docs_dir:-docs}" != "docs" ]; then
+            echo "::error file=mkdocs.yml::docs_dir is '$docs_dir' but the symlink guard scans docs; update this step"
+            exit 1
+          fi
           # NUL-delimited so a newline in a name cannot split a record.
           offenders=0
           while IFS= read -r -d '' path; do
