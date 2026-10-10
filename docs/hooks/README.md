@@ -18,3 +18,6 @@ Only root files listed in the `ALLOWED` set in `repo_files.py` can be
 included; any other name in a marker fails the build with an error naming the
 marker and the page. To include another root file, add its name to `ALLOWED`
 and put the marker in the page.
+
+The `pymdownx.snippets` extension is deliberately not enabled: it can embed
+any file the build runner can read, which would bypass this allowlist.
