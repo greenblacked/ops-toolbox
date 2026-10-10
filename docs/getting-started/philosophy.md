@@ -11,8 +11,8 @@ Report
 
 Preview
 :   Prints what a command would do without doing it. Bash scripts use
-    `--dry-run`, PowerShell scripts use `-DryRun`, and a few Python tools use
-    `--stdout` or `--diff`. Many scripts that delete or install also need
+    `--dry-run`, PowerShell scripts use `-DryRun`, and `mikrotik/features/export_config.py`
+    uses `--stdout` or `--diff`; the other Python tools are read-only. Many scripts that delete or install also need
     `--yes` (`-Yes` in PowerShell) before a real run.
 
 Apply
@@ -40,7 +40,8 @@ There is no global dry-run. The conventions differ by platform:
 | --- | --- |
 | Bash writers | `--dry-run` |
 | PowerShell | `-DryRun` |
-| Python tools | `--stdout` or `--diff` where they write |
+| `export_config.py` | `--stdout` or `--diff` |
+| Other Python tools | Read-only diagnostics, no flag needed |
 | RouterOS `.lua` scripts | None. They take no flags; read the source, or run `print_schedulers.sh` on your computer. |
 | Read-only reports | No flag needed |
 
