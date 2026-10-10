@@ -9,13 +9,14 @@
 # master build can reach this point after a newer one deployed. Stage must
 # never go back to older content, so the check fails closed:
 #
-# - version.txt answers 404, or an empty body: nothing is deployed yet (the
-#   first deploy), the only case where an unknown live version means deploy.
+# - version.txt answers HTTP 404 (curl itself exited 0): nothing is deployed
+#   yet (the first deploy), the only case where an unknown live version means
+#   deploy. An empty body is not that case.
 # - version.txt is read and equals SHA, or the compare says the live commit is
 #   ahead of or identical to SHA: stale, skip the deploy.
 # - the compare says the live commit is behind or diverged: deploy.
-# - anything else (network error, other HTTP status, a body that is not a
-#   40-hex SHA, a compare that fails or does not know the live commit) after
+# - anything else (a curl transfer error even after a 200 header, other HTTP
+#   status, an empty body or one that is not a 40-hex SHA, a compare that fails or does not know the live commit) after
 #   the retries: an ::error:: and a non-zero exit. Nothing is deployed;
 #   re-run the workflow later.
 #
@@ -41,29 +42,38 @@ backoff() {
   return 0
 }
 
+# curl's own exit status is kept apart from the HTTP code: a transfer that
+# dies after a 200 header exits non-zero with http_code still 200 and a short
+# or empty body, which must never read as "nothing deployed yet". The code is
+# looked at only when curl exited 0, and only 200 and 404 end the retries.
 code=""
+live=""
 for ((i = 1; i <= attempts; i++)); do
+  rc=0
   code="$(curl --silent --max-time 10 --output "$body" --write-out '%{http_code}' \
-    "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$(date +%s)" 2>/dev/null || true)"
-  if [ "$code" = 200 ] || [ "$code" = 404 ]; then
+    "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$(date +%s)" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "::warning::reading $BASE_URL/version.txt failed (curl exit $rc), attempt $i of $attempts"
+  elif [ "$code" = 404 ]; then
     break
+  elif [ "$code" = 200 ]; then
+    live="$(tr -d '[:space:]' <"$body")"
+    if [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
+      break
+    fi
+    echo "::warning::$BASE_URL/version.txt answered 200 without a commit SHA, attempt $i of $attempts"
+  else
+    echo "::warning::reading $BASE_URL/version.txt failed (HTTP ${code:-none}), attempt $i of $attempts"
   fi
-  echo "::warning::reading $BASE_URL/version.txt failed (HTTP ${code:-none}), attempt $i of $attempts"
   code=""
+  live=""
   backoff "$i"
 done
-[ -n "$code" ] || fail "could not read $BASE_URL/version.txt after $attempts attempts"
-
-live=""
-if [ "$code" = 200 ]; then
-  live="$(tr -d '[:space:]' <"$body")"
-fi
+[ -n "$code" ] || fail "could not read a commit SHA from $BASE_URL/version.txt after $attempts attempts"
 
 stale=false
-if [ -z "$live" ]; then
+if [ "$code" = 404 ]; then
   echo "::notice::stage serves no version yet: deploying"
-elif ! [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
-  fail "$BASE_URL/version.txt does not hold a commit SHA"
 elif [ "$live" = "$SHA" ]; then
   echo "::notice::stage already serves ${SHA:0:7}: skipping the stage deploy"
   stale=true

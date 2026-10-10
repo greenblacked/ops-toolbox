@@ -24,7 +24,7 @@ answer `X-Robots-Tag: noindex`, and production must not. Before it deploys
 stage, a run reads the commit stage serves; if that commit already includes the
 run's own, the run succeeds without deploying, so an older build that finishes
 last never replaces newer content on stage. The check fails closed: only a
-stage with nothing deployed yet (`version.txt` answers 404 or is empty) counts
+stage with nothing deployed yet (`version.txt` answers HTTP 404) counts
 as "unknown, so deploy". If it cannot read or compare the live version after a
 few retries, the run fails and deploys nothing. The check runs twice. In its own
 job it catches a stale run before the run enters the `staging` environment, so
