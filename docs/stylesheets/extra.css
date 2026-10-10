@@ -4,7 +4,8 @@
    :root rule, so the overrides are written against those attributes. This
    file loads after the theme's stylesheet, so equal specificity wins. The
    attributes are set for the built-in "deep orange" and "orange" palette
-   names in both the dark (slate) and light (default) schemes. */
+   names in both the dark (slate) and light (default) schemes. Material also
+   hard-codes the link colour for slate + deep orange, so that is set below. */
 :root,
 [data-md-color-primary="deep-orange"] {
   --md-primary-fg-color: #E65100;
@@ -15,6 +16,11 @@
 :root,
 [data-md-color-accent="orange"] {
   --md-accent-fg-color: #FF6D00;
+  --md-accent-fg-color--transparent: #FF6D001a;
+}
+
+[data-md-color-scheme="slate"][data-md-color-primary="deep-orange"] {
+  --md-typeset-a-color: #FF8A50;
 }
 
 .md-grid {
