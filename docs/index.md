@@ -21,7 +21,8 @@ Modularity
     `~/bin`. Duplication between scripts is deliberate.
 
 Minimal dependencies
-:   Bash 3.2+ for the shell scripts, PowerShell 5.1 or 7 for the Windows ones,
+:   Bash 3.2+ for the macOS, Linux, Git and dotfiles scripts (Git Bash
+    scripts target Bash 5), PowerShell 5.1 or 7 for the Windows ones,
     and Python standard library only for the helpers. Docker is needed only for
     the test suites and the Kubernetes image.
 

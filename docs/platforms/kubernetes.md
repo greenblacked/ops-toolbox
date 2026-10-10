@@ -9,7 +9,7 @@ only.
 
 ## Requirements
 
-- Bash 3.2+ on the host.
+- Bash on the host.
 - `kubectl` for triage and debug; `gcloud` for `gke_cluster_doctor.sh`.
 - Docker with buildx for `build.sh` and `run.sh`. Both exit 2 without Docker,
   except under `--dry-run`.
