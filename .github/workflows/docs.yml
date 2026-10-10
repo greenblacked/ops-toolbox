@@ -199,12 +199,59 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  check-stage:
+    name: Check stage is not newer
+    needs: build
+    # Its own job, so a run that stage has moved past never enters the
+    # environment and GitHub records no deployment for a commit that was
+    # never deployed. It runs for production too, as a no-op, so the deploy
+    # job's plain success() still holds when it needs this job.
+    if: needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      stale: ${{ steps.tip.outputs.stale }}
+    env:
+      ENVIRONMENT: ${{ needs.build.outputs.environment }}
+      BASE_URL: ${{ needs.build.outputs.url }}
+      SHA: ${{ needs.build.outputs.sha }}
+    steps:
+      - name: Skip a stage deploy that stage has already moved past
+        id: tip
+        if: env.ENVIRONMENT == 'staging'
+        # No Cloudflare token here, only the read-only GITHUB_TOKEN. Builds
+        # are per run and GitHub does not promise to start queued deploys in
+        # order, so an older master build can reach this point after a newer
+        # one deployed. Stage must never go back to older content: when stage
+        # already serves a commit that descends from this build's, deploy
+        # nothing. Anything else deploys, including a live version that cannot
+        # be read or compared. The tip of master is not used, because a push
+        # that touches no docs path moves it without starting a docs run.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          stale=false
+          live="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID" 2>/dev/null || true)"
+          live="${live//[$'\r\n ']/}"
+          if [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
+            status="$(gh api "repos/$REPO/compare/$SHA...$live" --jq .status 2>/dev/null || true)"
+            if [ "$status" = "ahead" ] || [ "$status" = "identical" ]; then
+              echo "::notice::stage already serves ${live:0:7}, which includes ${SHA:0:7}: skipping the stage deploy"
+              stale=true
+            fi
+          fi
+          echo "stale=$stale" >>"$GITHUB_OUTPUT"
+
   deploy:
     name: Deploy ${{ needs.build.outputs.environment }}
-    needs: build
+    needs: [build, check-stage]
     # Explicitly on what the build job picked, so nothing it maps to "none"
     # (a pull request) can deploy.
-    if: needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production'
+    if: >-
+      needs.check-stage.outputs.stale != 'true' &&
+      (needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production')
     runs-on: ubuntu-24.04
     # Install and deploy take a few minutes; the smoke test waits up to 5 and a
     # rollback's confirmation up to 2 more.
@@ -318,37 +365,9 @@ jobs:
             exit 1
           fi
 
-      - name: Skip a stage deploy that stage has already moved past
-        id: tip
-        if: env.ENVIRONMENT == 'staging'
-        # No Cloudflare token here, only the read-only GITHUB_TOKEN. Builds
-        # are per run and GitHub does not promise to start queued deploys in
-        # order, so an older master build can reach this point after a newer
-        # one deployed. Stage must never go back to older content: when stage
-        # already serves a commit that descends from this build's, deploy
-        # nothing. Anything else deploys, including a live version that cannot
-        # be read or compared. The tip of master is not used, because a push
-        # that touches no docs path moves it without starting a docs run.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-          stale=false
-          live="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID" 2>/dev/null || true)"
-          live="${live//[$'\r\n ']/}"
-          if [[ "$live" =~ ^[0-9a-f]{40}$ ]]; then
-            status="$(gh api "repos/$REPO/compare/$SHA...$live" --jq .status 2>/dev/null || true)"
-            if [ "$status" = "ahead" ] || [ "$status" = "identical" ]; then
-              echo "::notice::stage already serves ${live:0:7}, which includes ${SHA:0:7}: skipping the stage deploy"
-              stale=true
-            fi
-          fi
-          echo "stale=$stale" >>"$GITHUB_OUTPUT"
-
       - name: Create the stage preview with wrangler
         id: preview
-        if: env.ENVIRONMENT == 'staging' && steps.tip.outputs.stale != 'true'
+        if: env.ENVIRONMENT == 'staging'
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -361,7 +380,6 @@ jobs:
 
       - name: Smoke-test the deployment
         id: smoke
-        if: steps.tip.outputs.stale != 'true'
         # The live site must serve this build's version.txt, so the old version
         # cannot pass in its place. A new version can take a few seconds to
         # reach every location, hence the retries.
