@@ -87,7 +87,7 @@ Either way the tag must match `v1.2.3` and its commit must be on `master`.
    its zone permissions, to the `szolotov.com` zone only (**Zone > Workers
    Routes > Write** on `szolotov.com`), because the deploy manages the Custom
    Domain. The first deploy creates the Worker, which needs
-   account-level Workers edit (the template gives it). Custom Domains cannot
+   Workers Admin (account-wide Workers edit; the template gives it). Custom Domains cannot
    be limited to one Worker, so this token can edit any Worker in the account.
    Make sure no CNAME record already exists at `ops.szolotov.com`; a Custom
    Domain cannot be created on a hostname that has one. Permission names
@@ -286,7 +286,9 @@ curl -sS https://ops.szolotov.com/version.txt
 
 ## Risks
 
-- The Cloudflare token can change the zone's DNS. Keep it in the two
+- The Cloudflare token can deploy any Worker in the account and attach Custom
+  Domains and routes on `szolotov.com`, which creates DNS records for those
+  hostnames. Keep it in the two
   environments only, restrict `production` to `master`, `v*` tags (protected by a tag ruleset) and required reviewers, and give it
   no more permissions than the scope in the Cloudflare step.
 - The production deploy runs inside the release run, which holds the `release`
