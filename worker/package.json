@@ -1,0 +1,12 @@
+{
+  "name": "ops-toolbox-worker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Cloudflare Worker that serves the Ops Toolbox documentation site",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "devDependencies": {
+    "wrangler": "4.141.0"
+  }
+}

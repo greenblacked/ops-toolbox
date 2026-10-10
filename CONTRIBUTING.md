@@ -29,6 +29,7 @@ the checks that enforce it; this document stays the published reference.
 - [Branch names](#branch-names)
 - [Adding a script](#adding-a-script)
 - [File modes and line endings](#file-modes-and-line-endings)
+- [Documentation site](#documentation-site)
 - [Repository settings](#repository-settings)
 
 ## The one architectural rule
@@ -586,6 +587,30 @@ thing a reviewer will check by hand.
 
 Both are asserted by the static suite.
 
+## Documentation site
+
+The documentation site is MkDocs with the Material theme. Its pages are in
+`docs/` and its configuration is `mkdocs.yml`; `docs/requirements.in` pins
+the build tools and `docs/requirements.txt` locks them, with hashes. The Roadmap and Changelog pages are filled from
+`ROADMAP.md` and `CHANGELOG.md` at build time, so edit those files, not the pages. Inside
+`docs/`, link to other pages relatively and to anything outside `docs/` with
+an absolute GitHub URL. Preview with:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install --require-hashes -r docs/requirements.txt
+.venv/bin/mkdocs serve
+```
+
+To bump a version, see
+[docs/contributing/development.md](docs/contributing/development.md).
+Run `.venv/bin/mkdocs build --strict` before opening a pull request that
+touches `docs/`; the Docs site workflow runs it, plus a wrangler dry-run, on
+every pull request that touches the site. A push to `master` updates
+<https://stage.ops.szolotov.com>, and a release deploys
+<https://ops.szolotov.com>; the setup and runbook are in
+[docs/contributing/deployment.md](docs/contributing/deployment.md).
+
 ## Repository settings
 
 A few things live in GitHub's settings rather than in the tree, so no pull
@@ -602,8 +627,22 @@ an issue.
       is reachable only by name. Suggested set: `bash`, `shell-scripts`,
       `powershell`, `macos`, `linux`, `windows`, `routeros`, `mikrotik`,
       `devops`, `dotfiles`, `shellcheck`, `automation`.
-- [ ] **Website field.** Leave it empty rather than pointing it at the
-      repository itself.
+- [ ] **Website field.** Set it to <https://ops.szolotov.com> once production
+      is live, rather than pointing it at the repository itself.
+- [ ] **Deployment environments.** Create `staging` and `production` (*Settings
+      → Environments*), with the protection rules, the `CLOUDFLARE_API_TOKEN`
+      secret and the `CLOUDFLARE_ACCOUNT_ID` variable on each, as in
+      [docs/contributing/deployment.md](docs/contributing/deployment.md#github).
+      `production` must allow the branch `master` and the tag pattern `v*`
+      (a manual promote runs from a tag, started with `gh workflow run docs.yml --ref vX.Y.Z`), with required reviewers.
+- [ ] **Tag ruleset.** Add a ruleset for `v*` tags (*Settings → Rules →
+      Rulesets*) that restricts who may create them and blocks update, deletion
+      and force push, which narrows who can make a tag. List GitHub Actions
+      and repository admins in its bypass list, or the release workflow cannot
+      push the tag. The Actions bypass covers every workflow with a
+      `contents: write` token, so the required reviewers on `production` are
+      the real gate. The `gh` commands are
+      in [docs/contributing/deployment.md](docs/contributing/deployment.md#setup-with-the-github-cli).
 - [ ] **Discussions.** Enable them (*Settings → General → Features*). Issues here
       are for a specific bug or a specific script request — the two templates in
       [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do

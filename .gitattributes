@@ -31,6 +31,11 @@ windows/git-bash/default-git-bash/.aliases text eol=lf
 *.awk text eol=lf
 *.yaml text eol=lf
 *.yml text eol=lf
+# The documentation site: its Worker, configuration and stylesheet.
+*.js text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.css text eol=lf
 
 # Every pull request adds its entry at the top of the Unreleased section, so
 # any two open at once collide on the same lines and the second to merge

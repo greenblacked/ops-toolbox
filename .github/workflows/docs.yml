@@ -1,0 +1,532 @@
+name: Docs site
+
+# Builds the documentation site (MkDocs) and ships it with wrangler to one
+# Cloudflare Worker, ops-toolbox (worker/). CONTRIBUTING.md#documentation-site
+# and docs/contributing/deployment.md have the setup and the runbook.
+#
+#   pull request touching the site   build with --strict and wrangler deploy
+#                                    --dry-run; no secrets, no deploy
+#   push to master                   a Worker Preview named "stage", served
+#                                    at https://stage.ops.szolotov.com
+#                                    (GitHub environment "staging")
+#   release published                production, https://ops.szolotov.com
+#                                    (GitHub environment "production"). Called
+#                                    by release.yml after its publish job,
+#                                    because a tag and a release created with
+#                                    GITHUB_TOKEN start no other workflow.
+#   gh workflow run docs.yml --ref vX.Y.Z
+#                                    the same production deploy by hand, to
+#                                    promote or redeploy a release
+#
+# No checkout uses a ref taken from an input or computed in a step: every one
+# checks out the default, github.sha, which cannot move. (CodeQL flags a
+# computed ref followed by pip or npm as cache poisoning.) So the commit that is
+# built is always the one the run started on, and a tag is only checked against
+# it:
+#   called by release.yml  github.sha is the commit the publish job tagged;
+#                          inputs.tag must resolve to exactly that commit.
+#   run by hand            the run must start from a tag (github.ref_type tag,
+#                          v1.2.3), so github.sha is that tag's commit. The
+#                          workflow file is the one on the tag.
+# Both need the commit to be on master.
+#
+# Inside a called workflow github.event_name is the caller's (push), so the
+# target is decided by the event and inputs.tag: a manual run from a tag, or a
+# set inputs.tag, means production; otherwise stage for a push to master and
+# nothing for a pull request.
+#
+# The Cloudflare token is an environment secret: GitHub gives it only to the
+# deploy job, only in an environment, and only the wrangler steps read it.
+# Pull requests, forks included, never get it. There is no pull_request_target.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'docs/**'
+      - mkdocs.yml
+      - 'worker/**'
+      - ROADMAP.md
+      - CHANGELOG.md
+      - .github/workflows/docs.yml
+      - .github/scripts/stage-stale.sh
+  pull_request:
+    paths:
+      - 'docs/**'
+      - mkdocs.yml
+      - 'worker/**'
+      - ROADMAP.md
+      - CHANGELOG.md
+      - .github/workflows/docs.yml
+      - .github/scripts/stage-stale.sh
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to deploy to production (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+    secrets:
+      # Passed by name by release.yml. The deploy job runs in an environment
+      # and reads these there; a caller must still pass them, or they resolve
+      # to an empty string. Optional here so a missing one reaches the
+      # credentials check in the deploy job, which says what to set.
+      CLOUDFLARE_API_TOKEN:
+        description: Cloudflare API token, also an environment secret
+        required: false
+      CLOUDFLARE_ACCOUNT_ID:
+        description: Cloudflare account ID, used when the variable of that name is unset
+        required: false
+  # No inputs: start the run from the v* tag with gh workflow run docs.yml --ref vX.Y.Z.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  WRANGLER_SEND_METRICS: 'false'
+
+jobs:
+  build:
+    name: Build site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Superseded pull request runs are worth cancelling; a deploy never is.
+    concurrency:
+      group: docs-build-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    outputs:
+      environment: ${{ steps.plan.outputs.environment }}
+      url: ${{ steps.plan.outputs.url }}
+      tag: ${{ steps.plan.outputs.tag }}
+      # The commit that was checked and built: github.sha, which the deploy
+      # job checks out again and asserts it got.
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Decide what this run deploys
+        id: plan
+        # First, before any checkout. Nothing here becomes a checkout ref: the
+        # tag is only compared with the commit the run started on, below.
+        env:
+          TAG: ${{ inputs.tag }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+          production() {
+            {
+              echo "environment=production"
+              echo "url=https://ops.szolotov.com"
+              echo "tag=$1"
+            } >>"$GITHUB_OUTPUT"
+          }
+          if [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
+              echo "::error::start a manual run from a release tag, not ${REF_NAME}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
+              exit 1
+            fi
+            production "$REF_NAME"
+          elif [ -n "$TAG" ]; then
+            if ! [[ "$TAG" =~ $tag_re ]]; then
+              echo "::error::tag must look like v1.2.3 (got '$TAG')"
+              exit 1
+            fi
+            production "$TAG"
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/master ]; then
+            {
+              echo "environment=staging"
+              echo "url=https://stage.ops.szolotov.com"
+              echo "tag="
+            } >>"$GITHUB_OUTPUT"
+          else
+            {
+              echo "environment=none"
+              echo "url="
+              echo "tag="
+            } >>"$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Whole history, so git-revision-date-localized can read each page's
+          # first and last commit dates, and so the tag can be checked against
+          # this commit and master below. The default ref, github.sha.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Refuse symlinks under docs
+        # MkDocs follows symlinks in docs_dir and copies what they point at
+        # into the site, so a tracked link to a runner file (or a linked
+        # directory) would publish it. Before any install or build.
+        run: |
+          set -euo pipefail
+          # The scan below hard-codes docs; fail if docs_dir ever changes so
+          # the guard cannot silently watch the wrong directory.
+          docs_dir="$(sed -n 's/^docs_dir:[[:space:]]*//p' mkdocs.yml | tr -d "\"' ")"
+          if [ "${docs_dir:-docs}" != "docs" ]; then
+            echo "::error file=mkdocs.yml::docs_dir is '$docs_dir' but the symlink guard scans docs; update this step"
+            exit 1
+          fi
+          # NUL-delimited so a newline in a name cannot split a record.
+          offenders=0
+          while IFS= read -r -d '' path; do
+            offenders=1
+            # Escape annotation property characters.
+            p=${path//%/%25}; p=${p//$'\r'/%0D}; p=${p//$'\n'/%0A}; p=${p//:/%3A}; p=${p//,/%2C}
+            echo "::error file=$p::symlink under docs/: MkDocs follows it and would publish what it points at. Replace it with a regular file"
+          done < <(
+            find docs -type l -print0
+            git ls-files -z -s -- docs | while IFS= read -r -d '' rec; do
+              case "$rec" in "120000 "*) printf '%s\0' "${rec#*$'\t'}" ;; esac
+            done
+          )
+          if [ "$offenders" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Check the tag is this commit and on master
+        if: steps.plan.outputs.environment == 'production'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! tag_commit="$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}")"; then
+            echo "::error::tag $TAG was not fetched or does not exist"
+            exit 1
+          fi
+          if [ "$tag_commit" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::tag $TAG is $tag_commit, not the commit this run started on ($(git rev-parse HEAD)): it was moved or is not the released commit"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD origin/master; then
+            echo "::error::this tag's commit is not on master, so it is not deployed to production"
+            exit 1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.13'
+
+      - name: Install the build tools
+        # The lock lists every package with a hash, so nothing resolves at
+        # build time (--no-deps is safe because the lock is complete, and
+        # `pip check` fails the job if it ever is not).
+        run: |
+          python -m pip install --require-hashes --no-deps -r docs/requirements.txt
+          python -m pip check
+
+      - name: Build the site
+        run: mkdocs build --strict
+
+      - name: Write version.txt
+        id: version
+        # The deploy job's smoke test reads this back from the live site to
+        # tell the new version from the old one.
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          printf '%s\n' "$sha" >site/version.txt
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+          # No package cache: this job builds what the token-holding job ships.
+          package-manager-cache: false
+
+      - name: Install wrangler
+        working-directory: worker
+        run: npm ci --ignore-scripts
+
+      - name: Verify the registry signatures
+        working-directory: worker
+        run: npm audit signatures
+
+      - name: Check the Worker without deploying it
+        working-directory: worker
+        run: npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/worker-out"
+
+      - name: Upload the site
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: steps.plan.outputs.environment != 'none'
+        with:
+          name: site
+          path: site/
+          if-no-files-found: error
+          retention-days: 1
+
+  check-stage:
+    name: Check stage is not newer
+    needs: build
+    # Its own job, so a run that stage has already moved past never enters
+    # the environment and GitHub records no deployment for a commit that was
+    # never deployed. It runs for production too, as a no-op, so the deploy
+    # job's plain success() still holds when it needs this job. The deploy
+    # job repeats the check once it holds the concurrency group, because a
+    # run can pass here and then queue behind a newer deploy. A run caught
+    # only by that second check is already in the environment: it deploys
+    # nothing, but GitHub records a staging deployment for it.
+    if: needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      stale: ${{ steps.tip.outputs.stale }}
+    env:
+      ENVIRONMENT: ${{ needs.build.outputs.environment }}
+    steps:
+      - name: Check out repository
+        if: env.ENVIRONMENT == 'staging'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Skip a stage deploy that stage has already moved past
+        id: tip
+        if: env.ENVIRONMENT == 'staging'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE_URL: ${{ needs.build.outputs.url }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: bash .github/scripts/stage-stale.sh
+
+  deploy:
+    name: Deploy ${{ needs.build.outputs.environment }}
+    needs: [build, check-stage]
+    # Explicitly on what the build job picked, so nothing it maps to "none"
+    # (a pull request) can deploy.
+    if: >-
+      needs.check-stage.outputs.stale != 'true' &&
+      (needs.build.outputs.environment == 'staging' || needs.build.outputs.environment == 'production')
+    runs-on: ubuntu-24.04
+    # Install and deploy take a few minutes; the smoke test waits up to 5 and a
+    # rollback's confirmation up to 2 more.
+    timeout-minutes: 20
+    concurrency:
+      # One deploy per environment at a time, never cancelled half way.
+      group: docs-deploy-${{ needs.build.outputs.environment }}
+      cancel-in-progress: false
+    environment:
+      name: ${{ needs.build.outputs.environment }}
+      url: ${{ needs.build.outputs.url }}
+    env:
+      ENVIRONMENT: ${{ needs.build.outputs.environment }}
+      BASE_URL: ${{ needs.build.outputs.url }}
+      SHA: ${{ needs.build.outputs.sha }}
+      # Presence only, so the check below never needs the secret's value.
+      HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+      HAS_ACCOUNT: ${{ (vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID) != '' }}
+    steps:
+      - name: Check the Cloudflare credentials are set
+        run: |
+          if [ "$HAS_TOKEN" != true ] || [ "$HAS_ACCOUNT" != true ]; then
+            echo "::error::set the CLOUDFLARE_API_TOKEN secret and the CLOUDFLARE_ACCOUNT_ID variable (or secret) on the $ENVIRONMENT environment (docs/contributing/deployment.md)"
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the commit that was built
+        run: |
+          set -euo pipefail
+          if [ "$(git rev-parse HEAD)" != "$SHA" ]; then
+            echo "::error::checked out $(git rev-parse HEAD), not the built commit $SHA"
+            exit 1
+          fi
+
+      - name: Check stage is still not newer
+        id: tip
+        if: env.ENVIRONMENT == 'staging'
+        # The same check as the check-stage job, again: this job may have
+        # queued behind a newer deploy, which has since put newer content on
+        # stage. No token but the read-only GITHUB_TOKEN.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: bash .github/scripts/stage-stale.sh
+
+      - name: Set up Node
+        if: steps.tip.outputs.stale != 'true'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+
+      # No install scripts: nothing but wrangler runs while the token exists.
+      - name: Install wrangler
+        if: steps.tip.outputs.stale != 'true'
+        working-directory: worker
+        run: npm ci --ignore-scripts
+
+      # No token in this step's environment.
+      - name: Verify the registry signatures
+        if: steps.tip.outputs.stale != 'true'
+        working-directory: worker
+        run: npm audit signatures
+
+      - name: Download the site
+        if: steps.tip.outputs.stale != 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: site
+          path: site/
+
+      - name: Check the site is the one that was built
+        if: steps.tip.outputs.stale != 'true'
+        run: |
+          set -euo pipefail
+          if [ "$(tr -d '\n' <site/version.txt)" != "$SHA" ]; then
+            echo "::error::site/version.txt does not hold $SHA"
+            exit 1
+          fi
+
+      - name: Record the version production serves now
+        id: previous
+        if: env.ENVIRONMENT == 'production'
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -uo pipefail
+          # The first deploy has nothing to record; a failed lookup is not a
+          # reason to stop, only to say a rollback will not be possible.
+          version_id=""
+          if status="$(npx wrangler deployments status --json 2>/dev/null)"; then
+            version_id="$(jq -r '[.. | objects | select(has("version_id")) | .version_id] | first // empty' <<<"$status" 2>/dev/null)" || version_id=""
+          fi
+          if [[ "$version_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::notice::production serves version $version_id now; a failed smoke test rolls back to it"
+            echo "version_id=$version_id" >>"$GITHUB_OUTPUT"
+          else
+            echo "::warning::could not read the version production serves now (a first deploy has none), so a failed smoke test cannot be rolled back automatically"
+          fi
+
+      - name: Deploy to production with wrangler
+        id: deploy
+        if: env.ENVIRONMENT == 'production'
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -uo pipefail
+          deploy_log="$RUNNER_TEMP/wrangler-deploy.log"
+          if ! npx wrangler deploy --message "release $TAG (${SHA:0:7})" 2>&1 | tee "$deploy_log"; then
+            # wrangler uploads the Worker first and updates its triggers (the
+            # Custom Domain) after, so a trigger failure leaves the new
+            # version live with no smoke test and no rollback below.
+            if grep -qE '^Uploaded ' "$deploy_log"; then
+              echo "::error::wrangler deploy failed after uploading the Worker: the new version may be live on production, neither smoke-tested nor rolled back. Check it, and roll back by hand with 'npx wrangler rollback' (docs/contributing/deployment.md)"
+            fi
+            exit 1
+          fi
+
+      - name: Create the stage preview with wrangler
+        id: preview
+        if: env.ENVIRONMENT == 'staging' && steps.tip.outputs.stale != 'true'
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+        # A Worker Preview named "stage" of the same Worker, updated in place by
+        # every push and never given production traffic. Its settings are the
+        # config's previews block (ROBOTS=noindex); --ignore-base-config keeps
+        # the dashboard's Previews base config out of it.
+        run: npx wrangler preview --name stage --ignore-base-config --message "stage ${SHA:0:7}"
+
+      - name: Smoke-test the deployment
+        id: smoke
+        if: steps.tip.outputs.stale != 'true'
+        # The live site must serve this build's version.txt, so the old version
+        # cannot pass in its place. A new version can take a few seconds to
+        # reach every location, hence the retries.
+        run: |
+          set -uo pipefail
+          deadline=$((SECONDS + 300))
+          while :; do
+            headers="$RUNNER_TEMP/smoke-headers.txt"
+            body="$(curl --silent --fail --max-time 10 --dump-header "$headers" "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || body=""
+            if [ "$body" = "$SHA" ]; then
+              break
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error::after 300s $BASE_URL/version.txt answers '${body:-nothing}', not $SHA"
+              exit 1
+            fi
+            sleep 10
+          done
+          robots="$(tr -d '\r' <"$headers" | awk -F': *' 'tolower($1) == "x-robots-tag" { print tolower($2); exit }')"
+          if [ "$ENVIRONMENT" = staging ] && [ "$robots" != noindex ]; then
+            echo "::error::the stage preview answers without 'X-Robots-Tag: noindex'"
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" = production ] && [ -n "$robots" ]; then
+            echo "::error::production answers with 'X-Robots-Tag: $robots', which would keep the site out of search"
+            exit 1
+          fi
+          if ! curl --silent --fail --max-time 10 --output /dev/null "$BASE_URL/"; then
+            echo "::error::$BASE_URL/ does not answer 200"
+            exit 1
+          fi
+          echo "::notice::$BASE_URL serves $SHA"
+
+      - name: Preview failed its smoke test
+        # A preview takes no production traffic, so there is nothing to roll
+        # back; the failed check above already fails the job.
+        if: failure() && steps.smoke.outcome == 'failure' && env.ENVIRONMENT == 'staging'
+        run: echo "::error::the stage preview did not answer the smoke test. Production is untouched; the next push to master replaces the preview"
+
+      - name: Roll back the failed deployment
+        id: rollback
+        # Only after a smoke test that ran and failed, with a version to go
+        # back to. Production only: a preview has no traffic to roll back.
+        if: failure() && steps.smoke.outcome == 'failure' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id != ''
+        working-directory: worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIOUS_VERSION: ${{ steps.previous.outputs.version_id }}
+        run: |
+          echo "::warning::the deploy did not answer the smoke test; rolling back to $PREVIOUS_VERSION"
+          if npx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback: failed smoke test in run $GITHUB_RUN_ID"; then
+            echo "rolled_back=true" >>"$GITHUB_OUTPUT"
+            echo "::error::production was rolled back to $PREVIOUS_VERSION after a failed smoke test; this run still fails"
+          else
+            echo "::error::the rollback to $PREVIOUS_VERSION failed: roll back by hand (docs/contributing/deployment.md)"
+          fi
+          exit 1
+
+      - name: No version to roll back to
+        if: failure() && steps.smoke.outcome == 'failure' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id == ''
+        run: echo "::error::the production deploy failed its smoke test and no earlier version was recorded, so it was not rolled back. Check the site and roll back by hand (docs/contributing/deployment.md)"
+
+      - name: Confirm the rollback is answering
+        # No token here. The rollback step always fails the job after it ran,
+        # so this runs when it reported a successful rollback.
+        if: failure() && steps.rollback.outputs.rolled_back == 'true'
+        run: |
+          set -uo pipefail
+          deadline=$((SECONDS + 120))
+          while :; do
+            body="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || body=""
+            if [ -n "$body" ] && [ "$body" != "$SHA" ]; then
+              echo "::notice::production answers with version '$body', no longer the failed $SHA"
+              exit 0
+            fi
+            if ((SECONDS >= deadline)); then
+              echo "::error::after 120s $BASE_URL/version.txt still answers '${body:-nothing}' (the failed $SHA). Check the site and roll back by hand (docs/contributing/deployment.md)"
+              exit 1
+            fi
+            sleep 10
+          done

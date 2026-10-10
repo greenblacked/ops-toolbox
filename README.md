@@ -134,6 +134,22 @@ compatibility with a particular installed router or verify real Telegram
 delivery and firewall enforcement. Check behavior on the target platform
 before relying on it.
 
+## Documentation site
+
+A browsable version of these guides is published at
+<https://ops.szolotov.com>. It is built with MkDocs from the `docs/` folder
+and `mkdocs.yml`, and served by a Cloudflare Worker (`worker/`). To preview it
+locally:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install --require-hashes -r docs/requirements.txt
+.venv/bin/mkdocs serve
+```
+
+How it is deployed is in
+[docs/contributing/deployment.md](docs/contributing/deployment.md).
+
 ## Contributing
 
 [Contributing](CONTRIBUTING.md) gives script conventions and the checklist for

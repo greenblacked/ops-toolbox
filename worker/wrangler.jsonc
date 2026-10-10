@@ -1,0 +1,47 @@
+{
+  // Cloudflare Workers config for the documentation site. The account ID and
+  // API token are supplied to wrangler by the GitHub environment at deploy
+  // time (.github/workflows/docs.yml), never written here.
+  // One Worker serves everything: a release deploys it to production on
+  // ops.szolotov.com, and master becomes a Worker Preview of it named "stage"
+  // at stage.ops.szolotov.com, never production traffic.
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "ops-toolbox",
+  "main": "./index.js",
+  "compatibility_date": "2026-09-20",
+  // The built site (mkdocs build writes ../site). mkdocs emits 404.html, which
+  // not_found_handling "404-page" serves, with status 404, for unknown paths.
+  "assets": {
+    "directory": "../site",
+    "binding": "ASSETS",
+    // Without this, a request for a file that exists is answered by the assets
+    // layer and never reaches index.js, so it would carry none of its headers.
+    "run_worker_first": true,
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  // Governs the workers.dev preview URLs only, so they stay off. Previews are
+  // served on the Custom Domain below (previews_enabled).
+  "preview_urls": false,
+  // Static site: no logs or traces to keep.
+  "observability": { "enabled": false },
+  "version_metadata": { "binding": "CF_VERSION_METADATA" },
+  // Production claims its own hostname as a Custom Domain on a zone in this
+  // account; previews_enabled also serves each Worker Preview one level below
+  // it, so the "stage" preview answers on https://stage.ops.szolotov.com.
+  // A deploy replaces the Worker's whole set of Custom Domains.
+  "routes": [
+    {
+      "pattern": "ops.szolotov.com",
+      "custom_domain": true,
+      "previews_enabled": true
+    }
+  ],
+  // What a Worker Preview (`wrangler preview`) runs with. Previews take their
+  // bindings from this block, not from the top level.
+  "previews": {
+    // Keeps search engines off the stage preview (index.js).
+    "vars": { "ROBOTS": "noindex" },
+    "version_metadata": { "binding": "CF_VERSION_METADATA" }
+  }
+}
