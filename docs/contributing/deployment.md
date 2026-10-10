@@ -44,7 +44,8 @@ Production is not affected.
     `release.yml` calls `docs.yml` as a reusable workflow after its publish
     job succeeds. It does so only for the run that created the tag. A later
     edit to `CHANGELOG.md`, or a re-run once the tag exists, deploys nothing
-    to production; promote the tag by hand then.
+    to production; promote the tag by hand then with
+    `gh workflow run docs.yml --ref vX.Y.Z` (see Manual promote below).
 
 No checkout in the workflow uses a ref taken from an input or computed in a
 step; every one checks out `github.sha`, which cannot move. This is what CodeQL's
@@ -183,7 +184,7 @@ curl -sS https://ops.szolotov.com/version.txt
 | Symptom | Likely cause |
 | --- | --- |
 | "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A called workflow gets a secret only if the caller passes it, so `release.yml` passes both by name to `docs.yml`; an environment secret not passed resolves to an empty string. Keep the values on the environments. |
-| Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `docs.yml` by hand from the tag. A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
+| Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST call under Manual promote). A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
 | "start a manual run from a release tag" | A manual run was started from a branch. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API call above); there is no tag input. |
 | A manual run is rejected by the environment | The `production` environment does not allow tags. Add the tag pattern `v*` to its deployment rules. |
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |

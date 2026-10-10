@@ -14,7 +14,7 @@ name: Release
 #
 # After it tags a release, the docs-site job calls docs.yml to deploy that
 # tag to production (the documentation site); docs.yml is also the way to
-# promote or redeploy a tag by hand.
+# promote or redeploy a tag by hand (gh workflow run docs.yml --ref vX.Y.Z).
 #
 # Nothing here writes to master. The version is chosen by a person and the
 # release commit is reviewed like any other; the only thing automated after the
