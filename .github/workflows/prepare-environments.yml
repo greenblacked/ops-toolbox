@@ -1,0 +1,44 @@
+name: Prepare environments
+
+# TEMPORARY, one-off, never merged. GitHub creates an environment the first
+# time a job references one that does not exist, and the environments API is
+# not reachable from the session that opened this pull request. This runs on
+# that pull request only, so production and staging exist afterwards.
+#
+# deployment: false uses the environment without creating a deployment object:
+# .github/scripts/stage-stale.sh reads any production deployment with a success
+# status as "production exists", so a real one here would be a false positive.
+#
+# The paths filter keeps it from running on any other pull request if it is
+# merged by accident.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/prepare-environments.yml'
+
+permissions: {}
+
+jobs:
+  production:
+    name: Production
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    environment:
+      name: production
+      deployment: false
+    steps:
+      - name: Report
+        run: echo "environment production referenced"
+
+  staging:
+    name: Staging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    environment:
+      name: staging
+      deployment: false
+    steps:
+      - name: Report
+        run: echo "environment staging referenced"
