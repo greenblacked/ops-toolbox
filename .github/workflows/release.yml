@@ -19,6 +19,9 @@ name: Release
 # Re-running it after a failure finishes the job: a tag that already points at
 # HEAD is kept, an existing release is left alone, and the deploy runs again,
 # even if master has moved on since (the tag's commit must still be on master).
+# Tagging itself is stricter: master's head is read from the remote again just
+# before the tag is pushed, and if it is no longer the run's commit nothing is
+# tagged (a window of a moment remains between that read and the push).
 # A tag on any other commit is an error. To redeploy or promote a tag by hand:
 # gh workflow run docs.yml --ref vX.Y.Z.
 #
@@ -172,11 +175,25 @@ jobs:
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git tag -a "$TAG" -m "$VERSION" "$GITHUB_SHA"
-          # The checkout kept no credentials, so the token is given to this
-          # one push only, the way actions/checkout would have configured it.
+          # The checkout kept no credentials, so the token is given to the
+          # remote calls below only, the way actions/checkout would have
+          # configured it.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
+          # Master may have moved since the plan step: a pull request merged
+          # in the meantime would leave this run tagging and deploying an older
+          # commit. Read master's head again from the remote, just before the
+          # push, and refuse if it is not this run's commit. (A re-run that
+          # finds the tag already on this commit never gets here: the plan step
+          # sets create_tag=false and finishes the release without tagging.)
+          master_line="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            ls-remote origin refs/heads/master)"
+          master_now="${master_line%%[[:space:]]*}"
+          if [ "$master_now" != "$GITHUB_SHA" ]; then
+            echo "::error::master moved on to ${master_now:-an unknown commit} since this run started, just before the tag was pushed; nothing was tagged. Run the workflow again"
+            exit 1
+          fi
+          git tag -a "$TAG" -m "$VERSION" "$GITHUB_SHA"
           # A tag pushed with GITHUB_TOKEN starts no other workflow; anything
           # that should build on a release belongs in this workflow.
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \

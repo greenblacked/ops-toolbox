@@ -146,7 +146,9 @@ you cut the release.
 
 Run step 3 from the `master` head that carries the release commit, or a later
 one: the tag goes on whatever HEAD is when you run it, and the run refuses if
-`master` moves while it is running. If tagging succeeded and publishing the
+`master` moves while it is running, including a check of `master` on the remote
+just before the tag is pushed, so a pull request merged mid-run is never
+tagged under an older commit. If tagging succeeded and publishing the
 release or the deploy did not, re-run that same run (or start it again on the
 same commit): a tag already on the run's commit is kept, and the rest is
 finished, even if `master` has moved on meanwhile. If the tag is on an older
