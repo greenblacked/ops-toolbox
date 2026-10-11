@@ -9,8 +9,13 @@ site_url: https://ops.szolotov.com/
 repo_url: https://github.com/greenblacked/ops-toolbox
 repo_name: greenblacked/ops-toolbox
 edit_uri: edit/master/docs/
+# The Credits link is not here: Material prints this string as-is, so a
+# relative href would break below the top level. overrides/partials/
+# copyright.html appends it with the url filter, which resolves per page.
 copyright: >-
   <a href="https://github.com/greenblacked/ops-toolbox/blob/master/LICENSE">MIT License</a>
+  &middot; Built with <a href="https://www.mkdocs.org/">MkDocs</a> and
+  <a href="https://squidfunk.github.io/mkdocs-material/">Material for MkDocs</a>
 docs_dir: docs
 
 # Files in docs/ that are not pages. The hook script lives beside the pages
@@ -145,3 +150,4 @@ nav:
       - Deployment: contributing/deployment.md
   - Roadmap: roadmap.md
   - Changelog: changelog.md
+  - Credits: credits.md

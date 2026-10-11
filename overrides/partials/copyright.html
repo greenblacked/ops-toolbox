@@ -1,0 +1,15 @@
+{#
+  Replaces Material's partials/copyright.html. Same markup, minus the "Made
+  with" line (extra.generator is false and mkdocs.yml credits both tools),
+  plus a link to the credits page. config.copyright is printed as-is, so a
+  relative href cannot live in mkdocs.yml; the url filter resolves
+  'credits/' against the current page, so it works at every depth.
+#}
+<div class="md-copyright">
+  {% if config.copyright %}
+    <div class="md-copyright__highlight">
+      {{ config.copyright }}
+      &middot; <a href="{{ 'credits/' | url }}">Credits</a>
+    </div>
+  {% endif %}
+</div>
