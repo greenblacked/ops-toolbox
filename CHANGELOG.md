@@ -22,6 +22,40 @@ existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-11
+
+### Added
+
+- The documentation site has a Credits page, linked from every page's footer
+  and the navigation, that lists the third-party software and assets the
+  built site ships with their licences: Material for MkDocs, MkDocs, lunr.js
+  and its language files, the libraries bundled into the theme script and
+  stylesheet (found from the source maps of the built site), the IBM Plex
+  fonts, and the Material Design and Font Awesome icons. The footer
+  also names MkDocs and Material for MkDocs next to the licence.
+
+### Changed
+
+- The documentation site has its own mark instead of Material's stock toolbox
+  icon: a terminal prompt on a graphite tile, with the report-blue chevron,
+  preview-amber cursor and apply-red dot. It is the header logo, the favicon
+  (SVG with PNG fallbacks) and the iOS home-screen icon.
+
+- The documentation site is redesigned around the toolkit's own safety model.
+  Colour now carries the stage: blue for reports that only read, amber for
+  previews that print what would change, red for applying. The site is
+  graphite in the dark theme (still the default, with the light toggle), uses
+  self-hosted IBM Plex instead of a font service, and the home page leads with
+  a report, preview and apply strip built on a real script.
+
+- Releasing is now three steps, and merging the release pull request no longer
+  tags or deploys production. `release-prepare.yml` pushes a
+  `release/<version>` branch with the `release: <version>` commit and opens no
+  pull request, so a person opens it and it gets its checks. Merging it deploys
+  stage like any change. `release.yml`, run by hand from `master`, then checks
+  that CI and Security passed on `master`'s HEAD, tags it `v<version>`, creates
+  the GitHub Release and deploys production.
+
 ## [0.1.1] - 2026-10-11
 
 ### Fixed
