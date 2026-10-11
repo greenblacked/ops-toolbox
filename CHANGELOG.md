@@ -31,8 +31,11 @@ existed were moved under the v0.1.0 heading by that release.
   pages on `ops.szolotov.com`, so the v0.1.0 deploy went live but was recorded
   as failed. The blocking checks now go to the Worker's `workers.dev` address
   and then confirm with `wrangler deployments status` that the deployed version
-  serves 100% of traffic; the custom domain is only probed, and the stage
-  preview treats a 403 as a notice.
+  serves 100% of traffic; the custom domain is only probed. A production
+  deploy now also rolls back to the recorded previous version when any check
+  after wrangler starts fails, not only the smoke test. The stage preview
+  stays blocking on `version.txt` (the commit SHA) and `X-Robots-Tag: noindex`,
+  and only a 403 on `/` that carries `cf-mitigated: challenge` is a notice.
 
 ## [0.1.0] - 2026-10-10
 
