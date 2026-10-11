@@ -9,7 +9,7 @@ name: Docs site
 #   push to master                   a Worker Preview named "stage", served
 #                                    at https://stage.ops.szolotov.com
 #                                    (GitHub environment "staging")
-#   release published                production, https://ops.szolotov.com
+#   release cut by hand              production, https://ops.szolotov.com
 #                                    (GitHub environment "production"). Called
 #                                    by release.yml (run by hand) after its
 #                                    publish job,

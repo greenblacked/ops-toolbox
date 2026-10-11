@@ -34,9 +34,10 @@
 #   "production" environment, so every production deploy leaves a deployment
 #   there, and a run that fails (including a smoke test that failed and was
 #   rolled back) ends with a failure or error status, never success. A
-#   release tag cannot serve: release.yml pushes the tag BEFORE the production
-#   deploy, so the stage run of the same push would see it while stage is
-#   still without an address and fail red on the first release. While no production
+#   release tag cannot serve: the hand-run release.yml pushes the tag just
+#   before the production deploy, and a stage run after the tag but before the
+#   first production deploy would see it while stage is still without an
+#   address and fail red on the first release. While no production
 #   deployment has succeeded (none, or only queued, in progress, failed), the
 #   skip applies. Once one has, DNS must exist: a later Cloudflare
 #   misconfiguration that drops both the production Custom Domain and the
