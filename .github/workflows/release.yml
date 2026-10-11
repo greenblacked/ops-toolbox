@@ -92,7 +92,12 @@ jobs:
           git fetch --no-tags origin master
           master_head="$(git rev-parse FETCH_HEAD)"
           tag_here=false
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+          # ls-remote patterns match the tail of a ref name, so a tag such as
+          # x/refs/tags/v1 would match too: keep only the exact ref. A failing
+          # ls-remote fails the step (pipefail).
+          tag_sha="$(git ls-remote --tags origin "refs/tags/$TAG" |
+            ref="refs/tags/$TAG" awk '$2 == ENVIRON["ref"] {print $1}')"
+          if [ -n "$tag_sha" ]; then
             git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
             if [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$GITHUB_SHA" ]; then
               echo "::error::tag $TAG exists on another commit than master's HEAD; delete it or release a newer version"
@@ -186,9 +191,12 @@ jobs:
           # push, and refuse if it is not this run's commit. (A re-run that
           # finds the tag already on this commit never gets here: the plan step
           # sets create_tag=false and finishes the release without tagging.)
-          master_line="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            ls-remote origin refs/heads/master)"
-          master_now="${master_line%%[[:space:]]*}"
+          # ls-remote patterns match the tail of a ref name, so a branch such
+          # as foo/refs/heads/master would match too: keep only the exact ref.
+          # A failing ls-remote fails the step (pipefail).
+          master_now="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            ls-remote origin refs/heads/master |
+            awk '$2 == "refs/heads/master" {print $1}')"
           if [ "$master_now" != "$GITHUB_SHA" ]; then
             echo "::error::master moved on to ${master_now:-an unknown commit} since this run started, just before the tag was pushed; nothing was tagged. Run the workflow again"
             exit 1
