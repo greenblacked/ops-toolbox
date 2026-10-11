@@ -1,1 +1,0 @@
-- Export RouterOS configuration through a private 0600 staging file and atomic replacement, rejecting existing symlinks and preserving old exports on failure. Pull backup/export files independently through staging so missing patterns or a successful sibling cannot hide a failed transfer or overwrite a good generation with partial data.

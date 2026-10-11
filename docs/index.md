@@ -104,8 +104,8 @@ nothing. Pick your platform below for its own first report.
 !!! note "A personal but public toolkit"
     This is one person's toolkit, published so others can read it and reuse
     single files. There is a single maintainer and no support commitment.
-    There is no tagged release yet (as of 2026-10); the code on `master` is
-    what exists. The project is MIT licensed.
+    The first tagged release is v0.1.0 (2026-10-10); `master` is
+    what exists beyond it. The project is MIT licensed.
 
 !!! warning "Test before you trust"
     Scripts that change a machine, repository, router or cluster are tested

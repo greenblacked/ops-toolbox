@@ -39,7 +39,7 @@ the heading.
 ```
 
 The entries that were already under `[Unreleased]` before this directory
-existed stay in `CHANGELOG.md`; the first release moves them along with the
+existed stayed in `CHANGELOG.md`; the v0.1.0 release moved them along with the
 fragments.
 
 ## What `check` reads in your backticks
