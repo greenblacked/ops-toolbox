@@ -15,12 +15,17 @@ name: Branch name
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  # release.yml opens the release pull request with GITHUB_TOKEN, which starts
+  # no pull_request workflow, so it dispatches this one on release/<version>
+  # instead. There is no pull request in that run: the branch is github.ref_name
+  # and there is no title to check (the title is fixed as "release: X.Y.Z").
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: branch-name-${{ github.event.pull_request.number }}
+  group: branch-name-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,7 +43,14 @@ jobs:
         shell: bash
         env:
           # Through the environment, never interpolated into the script: both
-          # are typed by whoever opened the pull request.
-          HEAD_REF: ${{ github.head_ref }}
+          # are typed by whoever opened the pull request. head_ref is empty on
+          # a dispatched run, which has only the branch it was started on.
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: test-env/static/check_branch_name.sh --title "$PR_TITLE" "$HEAD_REF"
+        run: |
+          set -euo pipefail
+          if [ -n "$PR_TITLE" ]; then
+            test-env/static/check_branch_name.sh --title "$PR_TITLE" "$HEAD_REF"
+          else
+            test-env/static/check_branch_name.sh "$HEAD_REF"
+          fi
