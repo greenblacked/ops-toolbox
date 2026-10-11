@@ -1,57 +1,67 @@
-# Ops Toolbox
+---
+hide:
+  - toc
+---
 
-Ops Toolbox is a collection of standalone helper scripts for maintaining
-workstations, servers, Git repositories, MikroTik RouterOS devices and GKE
-clusters. Work from a clone or copy the script you need into `~/bin`, run its report, preview what
-it would change, and only then apply.
+<!-- markdownlint-disable MD033 -->
+<!-- markdownlint-disable-next-line MD026 -->
+# Scripts that show you before they change anything. { .rpt-title }
+
+<div class="rpt-hero" markdown>
+
+<p class="rpt-lede">Standalone helper scripts for maintaining workstations,
+servers, Git repositories, MikroTik RouterOS devices and GKE clusters.</p>
 
 [Quick start](getting-started/quick-start.md){ .md-button .md-button--primary }
 [View on GitHub](https://github.com/greenblacked/ops-toolbox){ .md-button }
 
-## Principles
+</div>
 
-Safety and predictability
-:   Work moves from **report** to **preview** to **apply**. Reports read state.
-    Previews (`--dry-run` or the platform's equivalent) print what a command
-    would do. Applying is always a separate, explicit step.
-    See [Philosophy](getting-started/philosophy.md).
+Work from a clone or copy the script you need into `~/bin`, run its report,
+preview what it would change, and only then apply. Here is that order with one
+real script, `macos_defaults.sh`:
 
-Modularity
-:   Most scripts are self-contained and still work when copied on their own into
-    `~/bin`; a few need their package folder (see
-    [Installation and usage](getting-started/usage.md)). Duplication between
-    scripts is deliberate.
+<div class="rpt-stages" markdown>
 
-Minimal dependencies
-:   Bash 3.2+ for the macOS, Linux, Git and dotfiles scripts (Git Bash
-    scripts target Bash 5), PowerShell 5.1 or 7 for the Windows ones,
-    and Python standard library only for the helpers. Docker is needed only for
-    the test suites and the Kubernetes image.
+<div class="rpt-stage rpt-stage--report" markdown>
+<span class="stage stage-report">1 · Report · read-only</span>
 
-Honest about testing
-:   CI runs lint, contract checks and container tests. It does not run every
-    OS release, real package managers on every platform, or real routers and
-    clusters. Verify behavior on the target system. See
-    [Testing](contributing/testing.md).
-
-## Quick start
-
-Run these from a clone of the repository. The report reads the effective Git
-identity and changes nothing.
+Prints the current value of each setting beside the desired one. With no
+flags it changes nothing.
 
 ```bash
-git clone https://github.com/greenblacked/ops-toolbox.git
-cd ops-toolbox
-./git/git_whoami.sh
-./k8s-toolbox/build.sh --dry-run
+./macos-initial-setup/macos_defaults.sh
 ```
 
-The second command prints the Docker buildx command it would run and builds
-nothing. Pick your platform below for its own first report.
+</div>
+
+<div class="rpt-stage rpt-stage--preview" markdown>
+<span class="stage stage-preview">2 · Preview · dry run</span>
+
+Shows the commands `--apply` would run, without running them.
+
+```bash
+./macos-initial-setup/macos_defaults.sh --apply --dry-run
+```
+
+</div>
+
+<div class="rpt-stage rpt-stage--apply" markdown>
+<span class="stage stage-apply">3 · Apply · changes things</span>
+
+Writes the desired values, after saving the previous ones to a backup file
+that `--revert` can restore.
+
+```bash
+./macos-initial-setup/macos_defaults.sh --apply
+```
+
+</div>
+
+</div>
 
 ## Platforms
 
-<!-- markdownlint-disable MD033 -->
 <div class="grid cards" markdown>
 
 - **[macOS](platforms/macos.md)**
@@ -97,7 +107,63 @@ nothing. Pick your platform below for its own first report.
     Tool configuration with a per-file link or copy installer.
 
 </div>
+## Principles
+
+<div class="grid cards cols-2" markdown>
+
+- **Safety and predictability**
+
+    ---
+
+    Work moves from **report** to **preview** to **apply**. Reports read
+    state. Previews (`--dry-run` or the platform's equivalent) print what a
+    command would do. Applying is always a separate, explicit step.
+    See [Philosophy](getting-started/philosophy.md).
+
+- **Modularity**
+
+    ---
+
+    Most scripts are self-contained and still work when copied on their own
+    into `~/bin`; a few need their package folder (see
+    [Installation and usage](getting-started/usage.md)). Duplication between
+    scripts is deliberate.
+
+- **Minimal dependencies**
+
+    ---
+
+    Bash 3.2+ for the macOS, Linux, Git and dotfiles scripts (Git Bash
+    scripts target Bash 5), PowerShell 5.1 or 7 for the Windows ones,
+    and Python standard library only for the helpers. Docker is needed only
+    for the test suites and the Kubernetes image.
+
+- **Honest about testing**
+
+    ---
+
+    CI runs lint, contract checks and container tests. It does not run every
+    OS release, real package managers on every platform, or real routers and
+    clusters. Verify behavior on the target system. See
+    [Testing](contributing/testing.md).
+
+</div>
 <!-- markdownlint-enable MD033 -->
+
+## Quick start
+
+Run these from a clone of the repository. The report reads the effective Git
+identity and changes nothing.
+
+```bash
+git clone https://github.com/greenblacked/ops-toolbox.git
+cd ops-toolbox
+./git/git_whoami.sh
+./k8s-toolbox/build.sh --dry-run
+```
+
+The second command prints the Docker buildx command it would run and builds
+nothing. Pick your platform above for its own first report.
 
 ## Status
 
