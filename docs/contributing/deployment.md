@@ -14,7 +14,7 @@ folder). The workflow is
 | Release published | Build the tag, deploy, smoke-test, roll back on failure. | <https://ops.szolotov.com> | `production` |
 | `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API) | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
 
-"Touching the site" means `docs/`, `mkdocs.yml`, `worker/`, `ROADMAP.md`,
+"Touching the site" means `docs/`, `mkdocs.yml`, `overrides/`, `worker/`, `ROADMAP.md`,
 `CHANGELOG.md`, `docs.yml` itself or `.github/scripts/stage-stale.sh`.
 
 Every build writes `site/version.txt` holding the commit SHA. After a deploy

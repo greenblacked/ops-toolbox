@@ -69,9 +69,15 @@ theme:
     - content.action.view
     - toc.follow
     - announce.dismiss
+  # Brand mark (docs/assets/images/): the logo is the full graphite tile so it
+  # reads on both the dark and the light header; favicon.svg is the same tile
+  # without the logo's hairline border. overrides/main.html adds the PNG
+  # fallbacks and the apple-touch-icon.
+  logo: assets/images/logo.svg
+  favicon: assets/images/favicon.svg
+  custom_dir: overrides
   icon:
     repo: fontawesome/brands/github
-    logo: material/toolbox
 
 extra_css:
   - stylesheets/extra.css
