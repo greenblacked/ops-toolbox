@@ -102,6 +102,20 @@ default is the dark scheme with a toggle for the light one. Text is IBM Plex San
 and IBM Plex Mono, self-hosted from `docs/assets/fonts/` (versions, checksums
 and update steps are in the README there), so `theme.font` is `false`.
 
+The site mark is a terminal prompt on a graphite tile (`#121417`): a report-blue
+`>` chevron (`#5B8DEF`), a preview-amber cursor bar (`#F2B33D`) and an apply-red
+dot (`#E5484D`), so the three stage colours are in the icon. It is drawn on a
+64-unit grid in multiples of 4, so it stays crisp at 16 and 32 px. The files
+are in `docs/assets/images/`: `logo.svg` (header logo, the tile with a hairline
+border so it shows on the dark header), `favicon.svg`, `favicon-32.png`,
+`favicon-16.png` and `apple-touch-icon.png` (180 px, opaque). Material emits a
+single untyped `<link rel="icon">`, so `overrides/main.html` (`theme.custom_dir`)
+adds the 32 px PNG fallback, a typed SVG link declared last (for browsers that
+pick the last icon) and the apple-touch-icon. `favicon-16.png` is kept for
+manual use and is not linked. To change the mark, edit
+`favicon.svg`, keep `logo.svg` in step, and re-render the PNGs from the SVG with
+a headless browser screenshot at 16, 32 and 180 px.
+
 | Stage | Colour | Meaning |
 | --- | --- | --- |
 | Report | blue | Read-only: reads state and changes nothing. |
