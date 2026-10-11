@@ -1,70 +1,65 @@
 name: Release
 
-# Cutting a release is two steps, so that every release is a reviewed pull
-# request and a tag is only ever created on a commit that is already on master.
+# Step two of cutting a release; release-prepare.yml is step one. The whole
+# process:
 #
-#   1. Run this workflow by hand with a version. The prepare job runs
-#      changelog.d/changelog.sh release on a release/<version> branch
-#      and opens it as a pull request: the release commit, with nothing else in
-#      it, as changelog.d/README.md asks.
-#   2. Merging that pull request pushes CHANGELOG.md to master with the new
-#      "## [<version>]" heading in it. The publish job tags that commit
-#      v<version> and creates a GitHub Release whose notes are the version's
-#      section.
+#   1. Feature pull requests merge to master, and every push to master
+#      deploys the stage site (docs.yml).
+#   2. A release is prepared by release-prepare.yml, which pushes a
+#      release/<version> branch. A person opens the pull request from it, so
+#      it gets its checks, and merges it like any other change. That puts
+#      "## [<version>]" in CHANGELOG.md on master and deploys stage. It does
+#      not tag, release or deploy production.
+#   3. This workflow, run by hand from master with the version, once stage is
+#      good. It checks that master's HEAD carries the version's heading and
+#      that CI, Security and the docs site passed on HEAD, tags HEAD
+#      v<version> (annotated), creates the GitHub Release whose notes are the
+#      version's section, and then deploys production through docs.yml.
 #
-# After it tags a release, the docs-site job calls docs.yml to deploy that
-# tag to production (the documentation site); docs.yml is also the way to
-# promote or redeploy a tag by hand (gh workflow run docs.yml --ref vX.Y.Z).
+# Re-running it after a failure finishes the job: a tag that already points at
+# HEAD is kept, an existing release is left alone, and the deploy runs again,
+# even if master has moved on since (the tag's commit must still be on master).
+# A tag on any other commit is an error. To redeploy or promote a tag by hand:
+# gh workflow run docs.yml --ref vX.Y.Z.
 #
-# Nothing here writes to master. The version is chosen by a person and the
-# release commit is reviewed like any other; the only thing automated after the
-# merge is the tag, and it is placed only on the push that added the heading.
+# Nothing here writes to master.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: Version to release, MAJOR.MINOR.PATCH (e.g. 1.0.0); tagged v<version>
+        description: Version to release, MAJOR.MINOR.PATCH (e.g. 1.0.0); tagged v<version> on master's HEAD
         required: true
         type: string
-  push:
-    branches:
-      - master
-    paths:
-      - CHANGELOG.md
 
 permissions:
   contents: read
 
+# The same group as release-prepare.yml, so a prepare and a publish never overlap.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  prepare:
-    name: Open release pull request
-    if: github.event_name == 'workflow_dispatch'
+  publish:
+    name: Tag and publish release
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: write        # dispatch ci.yml on the release branch
-      contents: write       # push the release branch
-      pull-requests: write  # open the release pull request
+      contents: write  # push the tag and create the release
+      actions: read    # read the workflow runs on HEAD
     env:
       # Through the environment, never interpolated into a script: the input
       # is free text typed into a form.
       VERSION: ${{ inputs.version }}
+      TAG: v${{ inputs.version }}
+    outputs:
+      # The tag this run published, for the documentation site's deploy below.
+      tag: ${{ steps.release.outputs.tag }}
     steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          fetch-depth: 0
-
       - name: Validate the request
         shell: bash
         run: |
           set -euo pipefail
-          # A release is cut from master. Dispatching from another branch would
-          # open a pull request carrying that branch's unmerged work with it.
           if [ "$GITHUB_REF" != "refs/heads/master" ]; then
             echo "::error::run this workflow from master, not ${GITHUB_REF#refs/heads/}"
             exit 1
@@ -73,209 +68,128 @@ jobs:
             echo "::error::version must be MAJOR.MINOR.PATCH, e.g. 1.0.0 (got '$VERSION')"
             exit 1
           fi
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" >/dev/null; then
-            echo "::error::tag v$VERSION already exists"
-            exit 1
-          fi
 
-      - name: Check for an existing release pull request
-        id: existing
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          url="$(gh pr list --state open --head "release/$VERSION" --json url --jq '.[0].url // ""')"
-          if [ -n "$url" ]; then
-            echo "url=$url" >> "$GITHUB_OUTPUT"
-            echo "Existing pull request: $url"
-          fi
-
-      # changelog.sh refuses a version already in CHANGELOG.md, one not newer
-      # than the latest release, a fragment that would not paste, and a
-      # release with nothing in it, so none of that is repeated here.
-      - name: Move the fragments under the version
-        if: steps.existing.outputs.url == ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          changelog.d/changelog.sh release "$VERSION" --dry-run
-          changelog.d/changelog.sh release "$VERSION"
-
-      - name: Commit release branch
-        id: commit
-        if: steps.existing.outputs.url == ''
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch="release/${VERSION}"
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-
-          # Read the remote tip before any local work and pass it to
-          # --force-with-lease explicitly; routeros-version.yml explains why a
-          # bare lease is a plain --force in practice.
-          remote_sha=""
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            git fetch origin "$branch:refs/remotes/origin/$branch"
-            remote_sha="$(git rev-parse "refs/remotes/origin/$branch")"
-          fi
-
-          git switch -C "$branch"
-          # -A on the directory: release deletes the fragment files, and the
-          # deletions belong in the same commit as the section they moved to.
-          git add CHANGELOG.md
-          git add -A changelog.d
-          git commit -m "release: ${VERSION}"
-
-          if [ -n "$remote_sha" ]; then
-            git push --force-with-lease="refs/heads/$branch:$remote_sha" \
-              --set-upstream origin "$branch"
-          else
-            git push --set-upstream origin "$branch"
-          fi
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
-      # Events created by GITHUB_TOKEN do not start other workflows, so the
-      # pull request below would otherwise have no checks at all.
-      - name: Dispatch standard CI for the release branch
-        if: steps.commit.outcome == 'success'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_BRANCH: ${{ steps.commit.outputs.branch }}
-        run: gh workflow run ci.yml --ref "$RELEASE_BRANCH"
-
-      - name: Open release pull request
-        id: pull_request
-        if: steps.commit.outcome == 'success'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_BRANCH: ${{ steps.commit.outputs.branch }}
-        run: |
-          set -euo pipefail
-          body="$(cat <<EOF
-          Moves every fragment under \`changelog.d/\` and the entries still under \`[Unreleased]\` into \`## [${VERSION}]\` in \`CHANGELOG.md\`, and deletes the fragments.
-
-          Merging this tags the merge commit \`v${VERSION}\` and publishes a GitHub Release from that section (the publish job in \`release.yml\`). Squash or merge; either way the tag lands on the commit that reaches master.
-
-          Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          EOF
-          )"
-          url="$(gh pr create \
-            --base master \
-            --head "$RELEASE_BRANCH" \
-            --title "release: ${VERSION}" \
-            --body "$body")"
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-
-      - name: Summarise
-        if: always()
-        shell: bash
-        env:
-          EXISTING_URL: ${{ steps.existing.outputs.url }}
-          CREATED_URL: ${{ steps.pull_request.outputs.url }}
-        run: |
-          {
-            printf '### Release %s\n\n' "$VERSION"
-            if [ -n "$EXISTING_URL" ]; then
-              printf 'A release pull request is already open: %s\n' "$EXISTING_URL"
-            elif [ -n "$CREATED_URL" ]; then
-              printf 'Opened %s. Merging it tags `v%s` and publishes the release.\n' "$CREATED_URL" "$VERSION"
-            else
-              printf 'No pull request was opened; see the failed step above.\n'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  publish:
-    name: Tag and publish release
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write  # push the tag and create the release
-    outputs:
-      # The tag this run created, for the documentation site's deploy below.
-      # Empty when the tag already existed (a later CHANGELOG.md edit, or a
-      # re-run): promote a release by hand with `gh workflow run docs.yml --ref vX.Y.Z` then.
-      tag: ${{ steps.plan.outputs.create_tag == 'true' && steps.plan.outputs.tag || '' }}
-    steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Decide what to tag
+      - name: Check master's HEAD is the release
         id: plan
         shell: bash
-        env:
-          BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          rc=0
-          version="$(changelog.d/changelog.sh latest)" || rc=$?
-          if [ "$rc" -eq 4 ]; then
-            echo "CHANGELOG.md has no released version yet; nothing to tag."
-            exit 0
-          elif [ "$rc" -ne 0 ]; then
-            exit "$rc"
+          # The commit the run started on is the one that is checked, tagged
+          # and deployed. If master has moved since, the checks below would be
+          # about the wrong commit: start the run again. The exception is a
+          # re-run after a partial failure: when the tag is already on this
+          # commit and the commit is still on master, nothing is checked or
+          # tagged again, so a later merge must not block finishing the job.
+          git fetch --no-tags origin master
+          master_head="$(git rev-parse FETCH_HEAD)"
+          tag_here=false
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            git fetch --no-tags origin "refs/tags/$TAG:refs/tags/$TAG"
+            if [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$GITHUB_SHA" ]; then
+              echo "::error::tag $TAG exists on another commit than master's HEAD; delete it or release a newer version"
+              exit 1
+            fi
+            tag_here=true
           fi
-          tag="v$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$master_head" != "$GITHUB_SHA" ]; then
+            if [ "$tag_here" = true ] && git merge-base --is-ancestor "$GITHUB_SHA" "$master_head"; then
+              echo "master moved on, but $TAG is already on this run's commit, which is still on master; finishing the release."
+            else
+              echo "::error::master moved on since this run started; run the workflow again"
+              exit 1
+            fi
+          fi
 
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
-            # Already tagged: an ordinary later edit to CHANGELOG.md, or a
-            # re-run after the release step failed. The release step below
-            # still runs, so a re-run finishes what the first attempt started.
-            echo "$tag already exists; not tagging again."
-            echo "create_tag=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # Tag only the push that introduced the heading. A later push that
-          # edits CHANGELOG.md for any other reason must not move the release
-          # onto whatever commit it happened to land on. The first push to a
-          # branch reports an all-zero "before"; compare with the parent then.
-          base="$BEFORE"
-          if ! git rev-parse --verify -q "${base}^{commit}" >/dev/null; then
-            base="${GITHUB_SHA}^"
-          fi
-          # grep without -q, so it reads all of git show's output. -q exits at
-          # the first match, git show dies of SIGPIPE writing the rest, and
-          # pipefail turns the pipeline into 141 - read here as "not found",
-          # which tagged whatever later commit edited CHANGELOG.md.
-          if git show "$base:CHANGELOG.md" 2>/dev/null | grep -F "## [$version]" >/dev/null; then
-            echo "::error::$tag does not exist, but [$version] was already in CHANGELOG.md before this push; tag the release commit by hand"
+          # grep without -q, so it reads all of its input (SIGPIPE under pipefail).
+          if ! grep -F "## [$VERSION]" CHANGELOG.md >/dev/null; then
+            echo "::error::CHANGELOG.md on master has no '## [$VERSION]' section; merge the release pull request first"
             exit 1
           fi
-          echo "create_tag=true" >> "$GITHUB_OUTPUT"
+          rc=0
+          latest="$(changelog.d/changelog.sh latest)" || rc=$?
+          if [ "$rc" -ne 0 ] || [ "$latest" != "$VERSION" ]; then
+            echo "::error::$VERSION is not the newest release in CHANGELOG.md (newest: ${latest:-none})"
+            exit 1
+          fi
+
+          if [ "$tag_here" = true ]; then
+            echo "$TAG already points at HEAD; not tagging again."
+            echo "create_tag=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "create_tag=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The master ruleset's required checks are not read here; the three
+      # workflows that run on every push to master are. CI and Security must
+      # have run and passed on HEAD. The docs site runs only on pushes that
+      # touch the site, so it may be absent, but a run that is there must have
+      # passed.
+      - name: Check CI, Security and the docs site passed on HEAD
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$GITHUB_SHA&event=push&per_page=100" \
+            --jq '.workflow_runs | map({name, status, conclusion})')"
+          failed=0
+          for spec in "CI:required" "Security:required" "Docs site:optional"; do
+            name="${spec%:*}"
+            need="${spec#*:}"
+            state="$(jq -r --arg n "$name" '
+              [.[] | select(.name == $n)]
+              | if length == 0 then "missing"
+                elif all(.status == "completed" and .conclusion == "success") then "ok"
+                else "not green" end' <<< "$runs")"
+            case "$state" in
+              ok) echo "$name: passed on $GITHUB_SHA" ;;
+              missing)
+                if [ "$need" = optional ]; then
+                  echo "$name: no push run on $GITHUB_SHA (it runs only for site changes)"
+                else
+                  echo "::error::$name has no push run on $GITHUB_SHA"
+                  failed=1
+                fi ;;
+              *)
+                echo "::error::$name is not green on $GITHUB_SHA (still running, failed or cancelled)"
+                failed=1 ;;
+            esac
+          done
+          exit "$failed"
 
       - name: Create tag
         if: steps.plan.outputs.create_tag == 'true'
         shell: bash
         env:
-          VERSION: ${{ steps.plan.outputs.version }}
-          TAG: ${{ steps.plan.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git tag -a "$TAG" -m "$VERSION" "$GITHUB_SHA"
+          # The checkout kept no credentials, so the token is given to this
+          # one push only, the way actions/checkout would have configured it.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
           # A tag pushed with GITHUB_TOKEN starts no other workflow; anything
-          # that should build on a release belongs in this job.
-          git push origin "refs/tags/$TAG"
+          # that should build on a release belongs in this workflow.
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push origin "refs/tags/$TAG"
 
       - name: Create GitHub Release
-        if: steps.plan.outputs.tag != ''
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.plan.outputs.version }}
-          TAG: ${{ steps.plan.outputs.tag }}
         run: |
           set -euo pipefail
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "Release $TAG already exists."
             exit 0
@@ -307,17 +221,17 @@ jobs:
         if: always()
         shell: bash
         env:
-          TAG: ${{ steps.plan.outputs.tag }}
           CREATE_TAG: ${{ steps.plan.outputs.create_tag }}
+          JOB_STATUS: ${{ job.status }}
         run: |
           {
-            printf '### Release publish\n\n'
-            if [ -z "$TAG" ]; then
-              printf 'No released version in CHANGELOG.md; nothing tagged.\n'
+            printf '### Release %s\n\n' "$VERSION"
+            if [ "$JOB_STATUS" != success ]; then
+              printf 'Not published; see the failed step above.\n'
             elif [ "$CREATE_TAG" = 'true' ]; then
-              printf 'Tagged `%s` at `%s`.\n' "$TAG" "$GITHUB_SHA"
+              printf 'Tagged `%s` at `%s` and published the release. Approve the `production` deployment when GitHub asks.\n' "$TAG" "$GITHUB_SHA"
             else
-              printf '`%s` already existed; checked the release only.\n' "$TAG"
+              printf '`%s` already existed at `%s`; checked the release and redeployed.\n' "$TAG" "$GITHUB_SHA"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -330,7 +244,6 @@ jobs:
   docs-site:
     name: Deploy documentation site
     needs: publish
-    if: needs.publish.outputs.tag != ''
     permissions:
       contents: read
       # docs.yml's jobs ask for deployments: read; a called workflow cannot

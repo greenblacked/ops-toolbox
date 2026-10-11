@@ -11,7 +11,8 @@ name: Docs site
 #                                    (GitHub environment "staging")
 #   release published                production, https://ops.szolotov.com
 #                                    (GitHub environment "production"). Called
-#                                    by release.yml after its publish job,
+#                                    by release.yml (run by hand) after its
+#                                    publish job,
 #                                    because a tag and a release created with
 #                                    GITHUB_TOKEN start no other workflow.
 #   gh workflow run docs.yml --ref vX.Y.Z
@@ -30,10 +31,10 @@ name: Docs site
 #                          workflow file is the one on the tag.
 # Both need the commit to be on master.
 #
-# Inside a called workflow github.event_name is the caller's (push), so the
-# target is decided by the event and inputs.tag: a manual run from a tag, or a
-# set inputs.tag, means production; otherwise stage for a push to master and
-# nothing for a pull request.
+# Inside a called workflow github.event_name is the caller's (workflow_dispatch
+# of release.yml), so the target is decided by inputs.tag first, then the
+# event: a set inputs.tag, or a manual run from a tag, means production;
+# otherwise stage for a push to master and nothing for a pull request.
 #
 # The Cloudflare token is an environment secret: GitHub gives it only to the
 # deploy job, only in an environment, and only the wrangler steps read it.
@@ -125,18 +126,20 @@ jobs:
               echo "tag=$1"
             } >>"$GITHUB_OUTPUT"
           }
-          if [ "$EVENT" = workflow_dispatch ]; then
-            if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
-              echo "::error::start a manual run from a release tag, not ${REF_NAME}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
-              exit 1
-            fi
-            production "$REF_NAME"
-          elif [ -n "$TAG" ]; then
+          if [ -n "$TAG" ]; then
+            # Called by release.yml, whose own event (workflow_dispatch) is the
+            # one github.event_name reports here, so inputs.tag is tested first.
             if ! [[ "$TAG" =~ $tag_re ]]; then
               echo "::error::tag must look like v1.2.3 (got '$TAG')"
               exit 1
             fi
             production "$TAG"
+          elif [ "$EVENT" = workflow_dispatch ]; then
+            if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
+              echo "::error::start a manual run from a release tag, not ${REF_NAME}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
+              exit 1
+            fi
+            production "$REF_NAME"
           elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/master ]; then
             {
               echo "environment=staging"

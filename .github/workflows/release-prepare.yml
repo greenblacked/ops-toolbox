@@ -1,0 +1,136 @@
+name: Release prepare
+
+# Step one of cutting a release; release.yml is step two. The whole process:
+#
+#   1. Feature pull requests merge to master, and every push to master
+#      deploys the stage site (docs.yml). Production is never touched.
+#   2. PREPARE (this workflow, run by hand from master with a version). It runs
+#      changelog.d/changelog.sh release on a new release/<version> branch,
+#      commits "release: <version>" and pushes the branch. It opens no pull
+#      request: a pull request opened with GITHUB_TOKEN starts no checks, and
+#      a workflow_dispatch run never satisfies a required status check, so a
+#      person opens the pull request from the pushed branch (the step summary
+#      has the link) and it gets its checks like any other. Merging it puts
+#      "## [<version>]" in CHANGELOG.md on master and deploys stage, and
+#      nothing else.
+#   3. PUBLISH (release.yml, run by hand from master with the same version)
+#      tags master's HEAD v<version>, creates the GitHub Release and deploys
+#      production.
+#
+# This workflow neither tags, nor releases, nor starts another workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to prepare, MAJOR.MINOR.PATCH (e.g. 1.0.0); the branch is release/<version>
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# The same group as release.yml, so a prepare and a publish never overlap.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Push the release branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write  # push the release/<version> branch
+    env:
+      # Through the environment, never interpolated into a script: the input
+      # is free text typed into a form.
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Validate the request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # A release is cut from master. Dispatching from another branch would
+          # put that branch's unmerged work in the release.
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::run this workflow from master, not ${GITHUB_REF#refs/heads/}"
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be MAJOR.MINOR.PATCH, e.g. 1.0.0 (got '$VERSION')"
+            exit 1
+          fi
+          # Before the checkout, so a refusal costs nothing. The repository
+          # is not checked out yet, so name it for gh.
+          if gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v$VERSION" \
+              --jq '.[].ref' | grep -Fx "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::tag v$VERSION already exists"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/heads/release/$VERSION" \
+              --jq '.[].ref' | grep -Fx "refs/heads/release/$VERSION" >/dev/null; then
+            echo "::error::branch release/$VERSION already exists; delete it, or open the pull request from it"
+            exit 1
+          fi
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # changelog.sh refuses a version already in CHANGELOG.md, one not newer
+      # than the latest release, a fragment that would not paste, and a
+      # release with nothing in it, so none of that is repeated here.
+      - name: Move the fragments under the version
+        shell: bash
+        run: |
+          set -euo pipefail
+          changelog.d/changelog.sh release "$VERSION" --dry-run
+          changelog.d/changelog.sh release "$VERSION"
+
+      - name: Commit and push the release branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          branch="release/${VERSION}"
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          git switch -c "$branch"
+          # -A on the directory: release deletes the fragment files, and the
+          # deletions belong in the same commit as the section they moved to.
+          git add CHANGELOG.md
+          git add -A changelog.d
+          git commit -m "release: ${VERSION}"
+
+          # The checkout kept no credentials, so the token is given to this
+          # one push only, the way actions/checkout would have configured it.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          # A plain push: it is rejected if the branch appeared since the check
+          # above, and never overwrites anything.
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --set-upstream origin "$branch"
+
+      - name: Summarise
+        if: always()
+        shell: bash
+        run: |
+          {
+            printf '### Release %s\n\n' "$VERSION"
+            if [ "$JOB_STATUS" = success ]; then
+              printf 'Pushed `release/%s`. Open the pull request from it as yourself (not with the workflow token, so its checks run):\n\n' "$VERSION"
+              printf '%s/%s/compare/master...release/%s?expand=1&title=release%%3A+%s\n\n' \
+                "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$VERSION" "$VERSION"
+              printf 'Merge it once its checks are green, wait for the stage deploy, then run **Release** (`release.yml`) from master with version `%s` to tag and deploy production.\n' "$VERSION"
+            else
+              printf 'No branch was pushed; see the failed step above.\n'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          JOB_STATUS: ${{ job.status }}

@@ -123,7 +123,7 @@ render() { # FILE VAR SAMPLE
     | head -n 1 | sed -E 's/^ *branch="(.*)"$/\1/' \
     | sed -e "s/\${$2}/$3/" -e "s/\$$2/$3/"
 }
-for spec in "routeros-version.yml TARGET_VERSION 7.24.6" "release.yml VERSION 1.0.0"; do
+for spec in "routeros-version.yml TARGET_VERSION 7.24.6" "release-prepare.yml VERSION 1.0.0"; do
   read -r wf_file var sample <<< "$spec"
   set -- "$wf_file" "$var" "$sample"
   name="$(render "$1" "$2" "$3")"
@@ -136,7 +136,7 @@ for spec in "routeros-version.yml TARGET_VERSION 7.24.6" "release.yml VERSION 1.
   fi
 done
 # The titles those workflows give their pull requests and commits.
-for wf in routeros-version.yml release.yml; do
+for wf in routeros-version.yml release-prepare.yml release.yml; do
   if grep -nE -- '(--title|git commit -m) "chore' "$REPO_ROOT/.github/workflows/$wf" >/dev/null; then
     err "$wf still writes a chore title or commit subject"
   else
