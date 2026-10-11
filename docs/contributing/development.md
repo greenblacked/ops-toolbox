@@ -72,7 +72,7 @@ Python
 ## Documentation site
 
 The site you are reading is built with MkDocs and the Material theme. Its
-source is `docs/` and `mkdocs.yml` at the repository root.
+source is `docs/` and `mkdocs.yml` at the repository root, with theme overrides in `overrides/`.
 
 !!! warning "Links"
     Inside `docs/`, link to other pages with relative links. Anything outside
