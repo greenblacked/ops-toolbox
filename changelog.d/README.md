@@ -121,8 +121,10 @@ a commit that is already on `master`.
 1. **Actions → Release → Run workflow**, from `master`, with the version
    (`1.0.0`). The workflow refuses a version that is not `MAJOR.MINOR.PATCH`,
    is not newer than the latest release, or already has a tag. It runs
-   `changelog.sh release` on a `release/<version>` branch, dispatches CI
-   on that branch, and opens the release pull request. The release commit
+   `changelog.sh release` on a `release/<version>` branch, dispatches CI,
+   the security checks and the branch-name check on that branch (a pull
+   request opened with `GITHUB_TOKEN` starts no checks of its own, so the
+   required ones would otherwise never report), and opens the release pull request. The release commit
    removes every fragment file, so it is the one commit that touches many of
    them at once, and nothing else goes in it.
 2. **Merge that pull request.** The push adds `## [<version>]` to

@@ -6,7 +6,9 @@ name: Release
 #   1. Run this workflow by hand with a version. The prepare job runs
 #      changelog.d/changelog.sh release on a release/<version> branch
 #      and opens it as a pull request: the release commit, with nothing else in
-#      it, as changelog.d/README.md asks.
+#      it, as changelog.d/README.md asks. A pull request opened with
+#      GITHUB_TOKEN starts no checks, so the job also dispatches ci.yml,
+#      security.yml and branch-name.yml on the release branch.
 #   2. Merging that pull request pushes CHANGELOG.md to master with the new
 #      "## [<version>]" heading in it. The publish job tags that commit
 #      v<version> and creates a GitHub Release whose notes are the version's
@@ -46,7 +48,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
-      actions: write        # dispatch ci.yml on the release branch
+      actions: write        # dispatch ci.yml, security.yml and branch-name.yml on the release branch
       contents: write       # push the release branch
       pull-requests: write  # open the release pull request
     env:
@@ -137,14 +139,22 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       # Events created by GITHUB_TOKEN do not start other workflows, so the
-      # pull request below would otherwise have no checks at all.
+      # pull request below would otherwise have no checks at all. Every
+      # workflow that supplies a required check is dispatched on the branch:
+      # ci.yml, security.yml (Repository secret scan, CodeQL) and
+      # branch-name.yml (Branch name). Each has a workflow_dispatch trigger
+      # and the same job names, so the check runs match the required checks.
       - name: Dispatch standard CI for the release branch
         if: steps.commit.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_BRANCH: ${{ steps.commit.outputs.branch }}
-        run: gh workflow run ci.yml --ref "$RELEASE_BRANCH"
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --ref "$RELEASE_BRANCH"
+          gh workflow run security.yml --ref "$RELEASE_BRANCH"
+          gh workflow run branch-name.yml --ref "$RELEASE_BRANCH"
 
       - name: Open release pull request
         id: pull_request
