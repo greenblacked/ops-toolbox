@@ -2,9 +2,10 @@
 // ASSETS binding (the mkdocs build in ../site); this adds response headers.
 //
 // No Content-Security-Policy: Material for MkDocs ships inline scripts and
-// styles and loads its fonts from Google Fonts by default, so a policy loose
-// enough to keep the site working would add little. Revisit it if the theme's
-// inline scripts and external fonts are ever removed.
+// styles, so a policy loose enough to keep the site working would add little.
+// The site self-hosts its IBM Plex fonts (theme.font: false), so fonts are not
+// the obstacle. Revisit it if the theme's inline scripts and styles are ever
+// removed.
 
 const SECURITY_HEADERS = {
   "X-Content-Type-Options": "nosniff",
