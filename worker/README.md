@@ -10,7 +10,7 @@ are in [Deployment](../docs/contributing/deployment.md).
 | File | Purpose |
 | --- | --- |
 | `index.js` | The Worker. Serves the built site through the `ASSETS` binding and adds security headers to every response, and `X-Robots-Tag: noindex` when the `ROBOTS` variable is `noindex`. |
-| `wrangler.jsonc` | The Worker's configuration: name `ops-toolbox`, the `../site` assets directory, the `ops.szolotov.com` Custom Domain and the `stage` Worker Preview's settings. |
+| `wrangler.jsonc` | The Worker's configuration: name `ops-toolbox`, the `../site` assets directory, the `ops.szolotov.com` Custom Domain, `workers_dev` on and the `stage` Worker Preview's settings. |
 | `package.json` | Pins wrangler to one exact version. |
 | `package-lock.json` | The locked install, checked by `npm ci`. |
 
@@ -32,6 +32,12 @@ Neither command uploads anything.
 
 - `run_worker_first` is on, so the Worker sees every request. Without it a
   request for a file that exists never reaches `index.js` and gets no headers.
+- `workers_dev` is `true` on purpose. Bot Fight Mode on the `szolotov.com` zone
+  answers GitHub runners with a 403 for pages on `ops.szolotov.com`, so the
+  production smoke test fetches the Worker's `workers.dev` address, which is
+  outside the zone. Turning it off makes the production deploy fail its
+  checks. `preview_urls` stays `false`: previews are served on the Custom
+  Domain.
 - There is no `Content-Security-Policy`: Material for MkDocs uses inline
   scripts and styles and loads fonts from Google Fonts, so a policy that keeps
   the site working would protect little.
