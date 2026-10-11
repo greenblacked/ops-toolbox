@@ -47,8 +47,9 @@ The workflows in `.github/workflows/`:
 - `k8s-image-smoke.yml` builds and probes the toolbox image weekly.
 - `security.yml` reports repository and workflow security findings.
 - `branch-name.yml` enforces branch naming on pull requests.
-- `release.yml` is the release workflow; after it tags a release it calls
-  `docs.yml`.
+- `release-prepare.yml` pushes a `release/<version>` branch for a person to
+  open as a pull request. `release.yml` is run by hand afterwards: it tags
+  master's HEAD, publishes the release and calls `docs.yml` for production.
 - `docs.yml` builds the documentation site on pull requests that touch it and
   deploys it with wrangler (see [Deployment](deployment.md)).
 

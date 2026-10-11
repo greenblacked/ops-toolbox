@@ -493,7 +493,7 @@ says which one, in lowercase letters, digits, `.`, `_` and `-`
 | `perf/` | Faster, same behaviour. |
 | `refactor/` | Same behaviour, different shape. |
 | `deps/` | A version bump: a pinned tool, an image, a RouterOS release. The RouterOS version workflow opens `deps/routeros-<version>`. |
-| `release/` | A release pull request, `release/<MAJOR.MINOR.PATCH>`, opened by the Release workflow. |
+| `release/` | A release pull request, `release/<MAJOR.MINOR.PATCH>`, pushed by the Release prepare workflow; a person opens the pull request. |
 
 `dependabot/` is the one other prefix: Dependabot names its own branches and
 offers no way to change that. Its commit and pull request titles use `deps:`.
@@ -607,8 +607,10 @@ To bump a version, see
 Run `.venv/bin/mkdocs build --strict` before opening a pull request that
 touches `docs/`; the Docs site workflow runs it, plus a wrangler dry-run, on
 every pull request that touches the site. A push to `master` updates
-<https://stage.ops.szolotov.com>, and a release deploys
-<https://ops.szolotov.com>; the setup and runbook are in
+<https://stage.ops.szolotov.com>; production, <https://ops.szolotov.com>,
+deploys only when a release is cut (prepare it with Release prepare, merge its
+pull request, then run Release; see
+[changelog.d/README.md](changelog.d/README.md#cutting-a-release)); the setup and runbook are in
 [docs/contributing/deployment.md](docs/contributing/deployment.md).
 
 ## Repository settings
@@ -634,11 +636,12 @@ an issue.
       secret and the `CLOUDFLARE_ACCOUNT_ID` variable on each, as in
       [docs/contributing/deployment.md](docs/contributing/deployment.md#github).
       `production` must allow the branch `master` and the tag pattern `v*`
-      (a manual promote runs from a tag, started with `gh workflow run docs.yml --ref vX.Y.Z`), with required reviewers.
+      (the Release workflow runs from `master`; a manual promote runs from a tag,
+      started with `gh workflow run docs.yml --ref vX.Y.Z`), with required reviewers.
 - [ ] **Tag ruleset.** Add a ruleset for `v*` tags (*Settings → Rules →
       Rulesets*) that restricts who may create them and blocks update, deletion
       and force push, which narrows who can make a tag. List GitHub Actions
-      and repository admins in its bypass list, or the release workflow cannot
+      and repository admins in its bypass list, or the Release workflow cannot
       push the tag. The Actions bypass covers every workflow with a
       `contents: write` token, so the required reviewers on `production` are
       the real gate. The `gh` commands are
@@ -648,8 +651,9 @@ an issue.
       [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) say so — and "how do
       you handle X on your machines" has nowhere else to go today.
 - [x] **Releases.** The sidebar shows a Releases panel only once a tag exists.
-      `v0.1.0` is the first; the release workflow publishes each release with
-      its [`CHANGELOG.md`](CHANGELOG.md) section as the notes.
+      `v0.1.0` is the first; the Release workflow, run by hand from `master`
+      after the release pull request is merged, tags `master` and publishes
+      each release with its [`CHANGELOG.md`](CHANGELOG.md) section as the notes.
 - [ ] **Branch protection on `master`.** Require the CI checks that already run,
       so the gates in [`.github/workflows/ci.yml`](.github/workflows/ci.yml) are
       binding rather than advisory. Note the constraint recorded there: jobs are

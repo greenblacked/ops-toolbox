@@ -11,7 +11,7 @@ folder). The workflow is
 | --- | --- | --- | --- |
 | Pull request touching the site | `mkdocs build --strict`, then `wrangler deploy --dry-run`. No secrets, nothing deployed. | Nowhere | none |
 | Push to `master` | Build, then a Worker Preview named `stage`. | <https://stage.ops.szolotov.com> | `staging` |
-| Release published | Build the tag, deploy, smoke-test, roll back on failure. | <https://ops.szolotov.com> | `production` |
+| Release cut (the Release workflow, run by hand) | Build the tag, deploy, smoke-test, roll back on failure. | <https://ops.szolotov.com> | `production` |
 | `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API) | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
 
 "Touching the site" means `docs/`, `mkdocs.yml`, `overrides/`, `worker/`, `ROADMAP.md`,
@@ -65,9 +65,10 @@ and a DNS lookup says the host has no address (NXDOMAIN, or NODATA: NOERROR with
 production deployment yet, stage cannot exist yet, so the run prints a notice
 and skips the stage deploy. The `deploy` job does not run, no token is used,
 and the run stays green. This holds until production has a successful
-deployment, so it covers the stage run of the first release push, which starts
-before the production deploy finishes (a release tag cannot tell, because it
-is pushed first); a failed first production deploy also stays a skip. Once
+deployment, so it covers the stage runs before the first release is cut,
+including the merge of the release pull request, and any run while the first
+production deploy is still going (a release tag cannot tell, because it is
+pushed first); a failed first production deploy also stays a skip. Once
 production has deployed successfully, a stage host without DNS means the Custom
 Domain or its preview wildcard is missing, and the run fails with an error
 instead. Deploy
@@ -85,13 +86,14 @@ content. Trust the stage address, not that record, for what stage serves.
 Production is not affected.
 
 !!! note "Why the release workflow calls the deploy"
-    The release workflow creates the tag and the GitHub Release with the
-    built-in `GITHUB_TOKEN`, and events created by that token start no other
-    workflow. A deploy triggered by "release published" would never run, so
-    `release.yml` calls `docs.yml` as a reusable workflow after its publish
-    job succeeds. It does so only for the run that created the tag. A later
-    edit to `CHANGELOG.md`, or a re-run once the tag exists, deploys nothing
-    to production; promote the tag by hand then with
+    Production deploys only when you cut a release. Merging the release pull
+    request (prepared by `release-prepare.yml`) deploys stage like any other
+    change; it does not tag or touch production. Then you run `release.yml`
+    from `master`. It creates the tag and the GitHub Release with the built-in
+    `GITHUB_TOKEN`, and events created by that token start no other workflow,
+    so a deploy triggered by "release published" would never run.
+    `release.yml` therefore calls `docs.yml` as a reusable workflow after its
+    publish job succeeds. To redeploy or promote a tag later, use
     `gh workflow run docs.yml --ref vX.Y.Z` (see Manual promote below).
 
 No checkout in the workflow uses a ref taken from an input or computed in a
@@ -100,7 +102,8 @@ step; every one checks out `github.sha`, which cannot move. This is what CodeQL'
 build installs packages with pip and npm. So a tag is never checked out; it is
 checked against the commit the run started on:
 
-- **Release workflow.** `docs.yml` runs at the commit the publish job tagged.
+- **Release workflow.** `docs.yml` runs at the commit the publish job tagged,
+  which is `master`'s HEAD when you started `release.yml`.
   The build asserts that `refs/tags/<tag>` resolves to exactly that commit and
   fails otherwise.
 - **Manual promote.** There is no tag input. Start the run from the tag with
@@ -160,8 +163,8 @@ On each environment add the secret `CLOUDFLARE_API_TOKEN` and the variable
 `CLOUDFLARE_ACCOUNT_ID` (a secret of that name also works). Only the wrangler
 steps read the token. Pull requests, forks included, never get it.
 
-A production run has one of two refs: `master`, for the release workflow (it
-runs on a push to `master`), or a `v*` tag, for a manual promote. The
+A production run has one of two refs: `master`, for the release workflow (you
+run it by hand from `master`), or a `v*` tag, for a manual promote. The
 `production` environment's deployment rules must therefore allow the branch
 `master` and the tag pattern `v*`. Without the tag rule a manual run fails when
 it asks for the environment.
@@ -170,7 +173,7 @@ Allowing tags means a workflow file on any pushed `v*` tag can reach the token,
 so also protect the tags with a tag ruleset (*Settings, Rules, Rulesets*) for
 `v*` that restricts who may create them, blocks update, deletion and force
 push, and keep required reviewers on `production`. The release workflow pushes
-the `v*` tag itself with `GITHUB_TOKEN`, so the ruleset must list **GitHub
+the `v*` tag itself (its publish job) with `GITHUB_TOKEN`, so the ruleset must list **GitHub
 Actions** in its bypass list, or the release fails at
 `git push origin refs/tags/vX.Y.Z`. Keep repository admins in the bypass list
 too. The GitHub Actions bypass covers every workflow that runs with a
@@ -253,9 +256,10 @@ pick the bypass actors in the UI instead.
 1. Merge to `master`. Stage will not answer until production has deployed once,
    because the preview wildcard and certificate come from that deploy. Until
    then a push to `master` skips the stage deploy with a notice and stays green.
-2. Cut the first release: `gh workflow run release.yml -f version=0.1.0`.
-3. Merge the release PR it opens.
-4. Approve the `production` deployment when GitHub asks.
+2. Prepare the first release: `gh workflow run release-prepare.yml -f version=0.1.0`.
+3. Open the pull request from the pushed `release/0.1.0` branch (the run's
+   summary has the link), and merge it once its checks are green.
+4. Cut it: `gh workflow run release.yml -f version=0.1.0`. Approve the `production` deployment when GitHub asks.
 5. Check <https://ops.szolotov.com/version.txt>, then
    <https://stage.ops.szolotov.com> after the next push to `master`.
 

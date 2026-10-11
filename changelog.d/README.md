@@ -113,29 +113,46 @@ release or nothing released.
 
 ## Cutting a release
 
-Releases are cut by
-[`.github/workflows/release.yml`](../.github/workflows/release.yml), in two
-steps, so every release is a reviewed pull request and a tag only ever lands on
-a commit that is already on `master`.
+A release is prepared and cut in three steps, so every release is a reviewed
+pull request and a tag only ever lands on a commit that is already on `master`.
+Merging to `master` deploys the stage site, and nothing deploys production until
+you cut the release.
 
-1. **Actions → Release → Run workflow**, from `master`, with the version
-   (`1.0.0`). The workflow refuses a version that is not `MAJOR.MINOR.PATCH`,
-   is not newer than the latest release, or already has a tag. It runs
-   `changelog.sh release` on a `release/<version>` branch, dispatches CI
-   on that branch, and opens the release pull request. The release commit
-   removes every fragment file, so it is the one commit that touches many of
-   them at once, and nothing else goes in it.
-2. **Merge that pull request.** The push adds `## [<version>]` to
-   `CHANGELOG.md` on `master`. The workflow's publish job tags that commit
-   `v<version>` (annotated) and creates a GitHub Release whose notes are
-   `changelog.sh notes <version>`. Notes too long for a release description,
-   which the first release's are, are replaced by a link to the section at the
-   tag, and the full notes are attached to the release as a file.
+1. **Prepare.** *Actions → Release prepare → Run workflow*
+   ([`release-prepare.yml`](../.github/workflows/release-prepare.yml)), from
+   `master`, with the version (`1.0.0`). The workflow refuses a version that is
+   not `MAJOR.MINOR.PATCH`, is not newer than the latest release, or already has
+   a tag or a `release/<version>` branch. It runs `changelog.sh release` on a
+   new `release/<version>` branch and pushes it with one commit,
+   `release: <version>`. It does not open a pull request: one opened with the
+   workflow's token starts no checks. The run's summary links to the
+   compare page; **you open the pull request from the pushed branch**, titled
+   `release: <version>`, so it gets its checks like any other. The release
+   commit removes every fragment file, so it is the one commit that touches many
+   of them at once, and nothing else goes in it.
+2. **Merge that pull request**, once its checks are green. `master` gets the
+   `## [<version>]` heading and the stage site deploys, as for any change.
+   Nothing is tagged and production is untouched.
+3. **Cut the release.** When stage looks right, *Actions → Release → Run
+   workflow* ([`release.yml`](../.github/workflows/release.yml)), from `master`,
+   with the same version. It checks that `master`'s HEAD has the version's
+   heading, that it is the newest release, and that CI and Security (and the
+   docs site, when it ran) passed on HEAD. It then tags HEAD `v<version>`
+   (annotated), creates a GitHub Release whose notes are
+   `changelog.sh notes <version>`, and deploys production. Notes too long for a
+   release description, which the first release's are, are replaced by a link to
+   the section at the tag, and the full notes are attached to the release as a
+   file.
 
-Only the push that adds a version's heading is tagged. A later edit to
-`CHANGELOG.md` finds the tag already there and leaves it alone, so a release
-never moves onto an unrelated commit. If tagging succeeded and publishing the
-release did not, re-running the failed job finishes it.
+Run step 3 from the `master` head that carries the release commit, or a later
+one: the tag goes on whatever HEAD is when you run it, and the run refuses if
+`master` moves while it is running. If tagging succeeded and publishing the
+release or the deploy did not, re-run that same run (or start it again on the
+same commit): a tag already on the run's commit is kept, and the rest is
+finished, even if `master` has moved on meanwhile. If the tag is on an older
+commit than `master`'s HEAD, finish by hand: `gh release create vX.Y.Z
+--verify-tag --notes-file <(changelog.d/changelog.sh notes X.Y.Z)`, then
+`gh workflow run docs.yml --ref vX.Y.Z`.
 
 By hand, the same thing is:
 
@@ -144,7 +161,7 @@ changelog.d/changelog.sh release 1.0.0 --dry-run   # read what will move
 changelog.d/changelog.sh release 1.0.0
 git add CHANGELOG.md changelog.d
 git commit -m "release: 1.0.0"
-# open it as its own pull request; once merged, on master:
+# open it as its own pull request; once merged, on master (what step 3 does):
 git tag -a v1.0.0 -m "1.0.0" && git push origin v1.0.0
 ```
 
