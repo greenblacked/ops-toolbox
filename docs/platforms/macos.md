@@ -17,11 +17,13 @@ a LaunchAgent that schedules the maintenance run.
 
 ## Main scripts
 
+<!-- markdownlint-disable MD033 -->
+
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `status.sh` | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | read-only |
-| `workstation_doctor.sh` | Long read-only health report. | read-only |
-| `hardening_audit.sh` | Security audit with the fix for each finding. | read-only |
+| `status.sh` | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | <span class="stage stage-report">read-only</span> |
+| `workstation_doctor.sh` | Long read-only health report. | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `install_apps.sh` | Homebrew casks, CLI formulae and Google Cloud SDK; `--profile core`, `platform` or `full`. | `--dry-run` |
 | `install_devtools.sh` | Python (pyenv), Terraform, Go (goenv), Helm; `--setup-shell` wires `~/.zshrc`. | `--dry-run` |
 | `stay_fresh.sh` | Recurring housekeeping and upgrades; presets `--quick`, `--reports`, `--full`, `--old-only`. | `--dry-run` |
@@ -30,6 +32,8 @@ a LaunchAgent that schedules the maintenance run.
 | `launchd/stay_fresh_agent.sh` | `install`, `uninstall`, `status`, `run-now`, `logs` for a scheduled LaunchAgent. | `--dry-run` on `install` and `uninstall` |
 | `zsh_aliases.zsh` | Optional zsh aliases, sourced rather than run. | n/a |
 | `v1_stay_fresh.sh` | Deprecated; runs only with `--legacy-run`. | none; use `stay_fresh.sh` |
+
+<!-- markdownlint-enable MD033 -->
 
 All paths are under `macos-initial-setup/`.
 
