@@ -20,8 +20,17 @@
     "html_handling": "auto-trailing-slash",
     "not_found_handling": "404-page"
   },
-  // Governs the workers.dev preview URLs only, so they stay off. Previews are
-  // served on the Custom Domain below (previews_enabled).
+  // The Worker's own address, https://ops-toolbox.<account>.workers.dev. Wrangler
+  // defaults this to false as soon as "routes" is set, so it must be explicit.
+  // It is load-bearing: Bot Fight Mode on the szolotov.com zone answers GitHub
+  // runners with a 403 for pages on ops.szolotov.com and no WAF rule can skip
+  // it, so the production smoke test (.github/workflows/docs.yml) fetches this
+  // address, which is outside the zone, and the real host is only probed.
+  "workers_dev": true,
+  // Governs the <version>-<name>.<account>.workers.dev preview URLs only, so
+  // they stay off on purpose. Previews are served on the Custom Domain below
+  // (previews_enabled), inside the zone, where the stage smoke test can read
+  // version.txt but not the pages (see docs/contributing/deployment.md).
   "preview_urls": false,
   // Static site: no logs or traces to keep.
   "observability": { "enabled": false },

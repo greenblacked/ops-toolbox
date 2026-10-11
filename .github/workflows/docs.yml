@@ -431,24 +431,75 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           TAG: ${{ needs.build.outputs.tag }}
+          # Wrangler appends one JSON object per line here; the next step reads
+          # the workers.dev address and the version ID from it.
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
         run: |
           set -uo pipefail
           deploy_log="$RUNNER_TEMP/wrangler-deploy.log"
+          # Set before the deploy: wrangler uploads the new version first and
+          # can still fail after (workers.dev subdomain, triggers), leaving it
+          # live. The rollback below goes by this output, not by success.
+          echo "deployed=true" >>"$GITHUB_OUTPUT"
           if ! npx wrangler deploy --message "release $TAG (${SHA:0:7})" 2>&1 | tee "$deploy_log"; then
             # wrangler uploads the Worker first and updates its triggers (the
             # Custom Domain) after, so a trigger failure leaves the new
             # version live with no smoke test and no rollback below.
             if grep -qE '^Uploaded ' "$deploy_log"; then
-              echo "::error::wrangler deploy failed after uploading the Worker: the new version may be live on production, neither smoke-tested nor rolled back. Check it, and roll back by hand with 'npx wrangler rollback' (docs/contributing/deployment.md)"
+              echo "::error::wrangler deploy failed after uploading the Worker: the new version may be live on production; it is rolled back below when an earlier version was recorded, otherwise check it and roll back by hand (docs/contributing/deployment.md)"
             fi
             exit 1
           fi
+
+      - name: Read the address and version wrangler deployed
+        id: deployed
+        if: env.ENVIRONMENT == 'production'
+        # No token. Bot Fight Mode on the szolotov.com zone answers a GitHub
+        # runner's request for ops.szolotov.com (any non-static path) with a 403,
+        # and no WAF rule can skip it. The Worker's workers.dev address sits
+        # outside the zone, so the blocking smoke test goes there. Wrangler's
+        # output file has a "deploy" entry whose "targets" hold that address
+        # (https://ops-toolbox.<account>.workers.dev) and whose "version_id" is
+        # the version just deployed. workers_dev must stay true in
+        # worker/wrangler.jsonc, or there is no such target.
+        env:
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
+        run: |
+          set -uo pipefail
+          out="$WRANGLER_OUTPUT_FILE_PATH"
+          url=""
+          version_id=""
+          if [ -s "$out" ]; then
+            url="$(jq -rs '[.[] | select(.type == "deploy") | .targets[]? | strings | select(test("^https://[a-z0-9-]+(\\.[a-z0-9-]+)*\\.workers\\.dev$"))] | first // empty' "$out" 2>/dev/null)" || url=""
+            version_id="$(jq -rs '[.[] | select(.type == "deploy") | .version_id | strings] | last // empty' "$out" 2>/dev/null)" || version_id=""
+          fi
+          if [ -z "$url" ]; then
+            echo "::error::wrangler reported no workers.dev address for this deploy, so it cannot be smoke-tested. workers_dev must stay true in worker/wrangler.jsonc (docs/contributing/deployment.md)"
+            exit 1
+          fi
+          # The Custom Domain must be attached by this deploy: wrangler lists it
+          # as "<host> (custom domain)", or "... production: disabled".
+          host="${BASE_URL#*://}"
+          host="${host%%/*}"
+          if [ -s "$out" ] && ! jq -es --arg h "$host" '[.[] | select(.type == "deploy") | .targets[]? | strings | select(startswith($h + " (custom domain") and (contains("production: disabled") | not))] | length > 0' "$out" >/dev/null 2>&1; then
+            echo "::error::wrangler's deploy output does not list $host as an attached custom domain"
+            exit 1
+          fi
+          if ! [[ "$version_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::wrangler reported no version ID for this deploy, so what production serves cannot be confirmed"
+            exit 1
+          fi
+          echo "::notice::deployed version $version_id, smoke-tested at $url"
+          echo "url=$url" >>"$GITHUB_OUTPUT"
+          echo "version_id=$version_id" >>"$GITHUB_OUTPUT"
 
       - name: Create the stage preview with wrangler
         id: preview
         if: env.ENVIRONMENT == 'staging' && steps.tip.outputs.skip != 'true'
         working-directory: worker
         env:
+          # "preview" entries (preview_urls) end up here; the smoke test logs them.
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
         # A Worker Preview named "stage" of the same Worker, updated in place by
@@ -463,9 +514,26 @@ jobs:
         # The live site must serve this build's version.txt, so the old version
         # cannot pass in its place. A new version can take a few seconds to
         # reach every location, hence the retries.
+        #
+        # Where it asks depends on Bot Fight Mode, which is on for the whole
+        # szolotov.com zone, answers a GitHub runner's request for a non-static
+        # path (the pages, "/") with a 403, and cannot be skipped by a WAF rule.
+        # Static files such as version.txt pass.
+        #   production  the Worker's workers.dev address (outside the zone),
+        #               which serves the same deployment as ops.szolotov.com;
+        #               the next steps confirm that and probe the real host.
+        #   stage       a preview has no address outside the zone (workers.dev
+        #               preview URLs are off, preview_urls false in
+        #               worker/wrangler.jsonc), so it asks the stage host.
+        #               version.txt is the blocking check; a Cloudflare
+        #               challenge 403 on "/" is Bot Fight Mode, noted, not failed.
+        env:
+          WORKERS_DEV_URL: ${{ steps.deployed.outputs.url }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.jsonl
         run: |
           set -uo pipefail
           if [ "$ENVIRONMENT" = staging ]; then
+            target="$BASE_URL"
             host="${BASE_URL#*://}"
             host="${host%%/*}"
             # Defence only: the check above skips a host that has no DNS record,
@@ -474,16 +542,26 @@ jobs:
               echo "::error::$host has no DNS record, so the stage preview cannot be reached or tested. Deploy production once (it creates the hostname), then re-run this workflow"
               exit 1
             fi
+          else
+            target="$WORKERS_DEV_URL"
+            if [ -z "$target" ]; then
+              echo "::error::no workers.dev address to smoke-test (workers_dev must stay true in worker/wrangler.jsonc)"
+              exit 1
+            fi
           fi
           deadline=$((SECONDS + 300))
           while :; do
             headers="$RUNNER_TEMP/smoke-headers.txt"
-            body="$(curl --silent --fail --max-time 10 --dump-header "$headers" "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || body=""
+            code="$(curl --silent --max-time 10 --dump-header "$headers" --output "$RUNNER_TEMP/smoke-body.txt" --write-out '%{http_code}' "$target/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || code=000
+            body=""
+            if [ "$code" = 200 ]; then
+              body="$(cat "$RUNNER_TEMP/smoke-body.txt")"
+            fi
             if [ "$body" = "$SHA" ]; then
               break
             fi
             if ((SECONDS >= deadline)); then
-              echo "::error::after 300s $BASE_URL/version.txt answers '${body:-nothing}', not $SHA"
+              echo "::error::after 300s $target/version.txt answers HTTP $code '${body:-nothing}', not $SHA"
               exit 1
             fi
             sleep 10
@@ -497,11 +575,59 @@ jobs:
             echo "::error::production answers with 'X-Robots-Tag: $robots', which would keep the site out of search"
             exit 1
           fi
-          if ! curl --silent --fail --max-time 10 --output /dev/null "$BASE_URL/"; then
-            echo "::error::$BASE_URL/ does not answer 200"
+          code="$(curl --silent --max-time 10 --dump-header "$RUNNER_TEMP/smoke-root-headers.txt" --output /dev/null --write-out '%{http_code}' "$target/" 2>/dev/null)" || code=000
+          # Only Cloudflare's own challenge counts as Bot Fight Mode, not any 403.
+          if [ "$code" = 403 ] && [ "$ENVIRONMENT" = staging ] && tr -d '\r' <"$RUNNER_TEMP/smoke-root-headers.txt" | grep -qi '^cf-mitigated: *challenge'; then
+            echo "::notice::$target/ answered HTTP 403, Bot Fight Mode on the szolotov.com zone; version.txt and X-Robots-Tag were verified, the page itself was not"
+          elif [ "$code" != 200 ]; then
+            echo "::error::$target/ does not answer 200 (HTTP $code)"
             exit 1
           fi
-          echo "::notice::$BASE_URL serves $SHA"
+          echo "::notice::$target serves $SHA"
+
+      - name: Confirm production serves the deployed version
+        id: confirm
+        if: env.ENVIRONMENT == 'production'
+        working-directory: worker
+        # Every address of a Worker serves its active deployment, so the version
+        # that passed the smoke test on workers.dev is what ops.szolotov.com
+        # serves exactly when the active deployment is that version at 100%.
+        # `wrangler deployments status --json` prints the deployment as
+        # {"versions": [{"version_id": ..., "percentage": ...}], ...}. A read of
+        # the API, not a fetch through the zone. A failure here rolls back like a
+        # failed smoke test.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOYED_VERSION: ${{ steps.deployed.outputs.version_id }}
+        run: |
+          set -uo pipefail
+          status="$RUNNER_TEMP/serving-status.json"
+          if ! npx wrangler deployments status --json >"$status" 2>"$RUNNER_TEMP/serving-status.err"; then
+            cat "$RUNNER_TEMP/serving-status.err" >&2
+            echo "::error::could not read the version production is serving"
+            exit 1
+          fi
+          if ! jq -e --arg id "$DEPLOYED_VERSION" '(.versions | length) == 1 and .versions[0].version_id == $id and .versions[0].percentage == 100' "$status" >/dev/null; then
+            echo "::error::production is not serving $DEPLOYED_VERSION at 100%"
+            exit 1
+          fi
+          echo "::notice::production serves $DEPLOYED_VERSION at 100%"
+
+      - name: Probe the custom domain (information only)
+        if: env.ENVIRONMENT == 'production'
+        # Never fails the job: a 403 is Bot Fight Mode, which stays on, and a
+        # failure here after a good deploy would roll production back for nothing.
+        # No token here.
+        run: |
+          set -uo pipefail
+          for path in / /version.txt; do
+            code="$(curl --silent --output /dev/null --max-time 20 --write-out '%{http_code}' "$BASE_URL$path" 2>/dev/null)" || code=000
+            echo "GET $BASE_URL$path answered HTTP $code"
+            if [ "$code" = 403 ]; then
+              echo "::notice::Bot Fight Mode blocks GitHub runners on $BASE_URL$path, so this release was verified through workers.dev and the active deployment"
+            fi
+          done
 
       - name: Preview failed its smoke test
         # A preview takes no production traffic, so there is nothing to roll
@@ -511,43 +637,50 @@ jobs:
 
       - name: Roll back the failed deployment
         id: rollback
-        # Only after a smoke test that ran and failed, with a version to go
-        # back to. Production only: a preview has no traffic to roll back.
-        if: failure() && steps.smoke.outcome == 'failure' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id != ''
+        # Only once the deploy step started wrangler (even if wrangler failed
+        # after uploading) and it or a later blocking check failed, with a
+        # version to go back to. The probe never fails. Production only: a
+        # preview has no traffic to roll back.
+        if: failure() && steps.deploy.outputs.deployed == 'true' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id != ''
         working-directory: worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID || secrets.CLOUDFLARE_ACCOUNT_ID }}
           PREVIOUS_VERSION: ${{ steps.previous.outputs.version_id }}
         run: |
-          echo "::warning::the deploy did not answer the smoke test; rolling back to $PREVIOUS_VERSION"
-          if npx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback: failed smoke test in run $GITHUB_RUN_ID"; then
+          echo "::warning::the deploy did not pass its checks; rolling back to $PREVIOUS_VERSION"
+          if npx wrangler rollback "$PREVIOUS_VERSION" --yes --message "Automatic rollback: failed deploy check in run $GITHUB_RUN_ID"; then
             echo "rolled_back=true" >>"$GITHUB_OUTPUT"
-            echo "::error::production was rolled back to $PREVIOUS_VERSION after a failed smoke test; this run still fails"
+            echo "::error::production was rolled back to $PREVIOUS_VERSION after a failed deploy check; this run still fails"
           else
             echo "::error::the rollback to $PREVIOUS_VERSION failed: roll back by hand (docs/contributing/deployment.md)"
           fi
           exit 1
 
       - name: No version to roll back to
-        if: failure() && steps.smoke.outcome == 'failure' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id == ''
-        run: echo "::error::the production deploy failed its smoke test and no earlier version was recorded, so it was not rolled back. Check the site and roll back by hand (docs/contributing/deployment.md)"
+        if: failure() && steps.deploy.outputs.deployed == 'true' && env.ENVIRONMENT == 'production' && steps.previous.outputs.version_id == ''
+        run: echo "::error::the production deploy failed its checks and no earlier version was recorded, so it was not rolled back. Check the site and roll back by hand (docs/contributing/deployment.md)"
 
       - name: Confirm the rollback is answering
         # No token here. The rollback step always fails the job after it ran,
         # so this runs when it reported a successful rollback.
         if: failure() && steps.rollback.outputs.rolled_back == 'true'
+        env:
+          WORKERS_DEV_URL: ${{ steps.deployed.outputs.url }}
         run: |
           set -uo pipefail
+          # workers.dev is outside the zone Bot Fight Mode guards; fall back to
+          # the custom domain when the deploy never reported that address.
+          check="${WORKERS_DEV_URL:-$BASE_URL}"
           deadline=$((SECONDS + 120))
           while :; do
-            body="$(curl --silent --fail --max-time 10 "$BASE_URL/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || body=""
+            body="$(curl --silent --fail --max-time 10 "$check/version.txt?run=$GITHUB_RUN_ID-$SECONDS" 2>/dev/null)" || body=""
             if [ -n "$body" ] && [ "$body" != "$SHA" ]; then
               echo "::notice::production answers with version '$body', no longer the failed $SHA"
               exit 0
             fi
             if ((SECONDS >= deadline)); then
-              echo "::error::after 120s $BASE_URL/version.txt still answers '${body:-nothing}' (the failed $SHA). Check the site and roll back by hand (docs/contributing/deployment.md)"
+              echo "::error::after 120s $check/version.txt still answers '${body:-nothing}' (the failed $SHA). Check the site and roll back by hand (docs/contributing/deployment.md)"
               exit 1
             fi
             sleep 10

@@ -20,8 +20,43 @@ folder). The workflow is
 Every build writes `site/version.txt` holding the commit SHA. After a deploy
 the workflow fetches `version.txt` from the live address and waits until it
 matches, so the new version is told from the old one. The stage preview must
-answer `X-Robots-Tag: noindex`, and production must not. Before it deploys
-stage, a run reads the commit stage serves; if that commit already includes the
+answer `X-Robots-Tag: noindex`, and production must not.
+
+### The smoke test and Bot Fight Mode
+
+Bot Fight Mode is on for the whole `szolotov.com` zone. It answers a GitHub
+runner's request for a page (any non-static path, such as `/`) with HTTP 403,
+and no WAF rule can skip it, so it stays on and the checks work around it.
+Static files such as `version.txt` pass.
+
+- **Production.** The blocking smoke test goes to the Worker's `workers.dev`
+  address (`https://ops-toolbox.<account>.workers.dev`), which is outside the
+  zone and serves the same deployment as `ops.szolotov.com`. Wrangler reports
+  it, and the version ID it just deployed, in its output file
+  (`WRANGLER_OUTPUT_FILE_PATH`, the `deploy` entry's `targets` and
+  `version_id`). `version.txt` must hold the run's SHA, `/` must answer 200 and
+  there must be no `X-Robots-Tag`. A second blocking step then runs
+  `wrangler deployments status --json` and requires that the deployed version
+  is the only one active, at 100%, which is what makes `ops.szolotov.com`
+  serve what was tested. A failure of any of these rolls back as before. Last,
+  `https://ops.szolotov.com/` and `/version.txt` are probed for information
+  only: a 403 prints a notice and never fails the run. `workers_dev` must stay
+  `true` in `worker/wrangler.jsonc` (Wrangler turns it off by default once
+  `routes` is set); without it the deploy fails for want of an address.
+- **Stage.** Workers.dev preview URLs are off on purpose (`preview_urls` is
+  `false`), so a preview has no address outside the zone. The smoke test asks
+  the stage host: `version.txt` must hold the SHA and carry
+  `X-Robots-Tag: noindex`, and `/` must answer 200, except that a 403 on `/` is
+  noted and not failed, but only when Cloudflare marks it as a challenge
+  (`cf-mitigated: challenge`); any other 403 fails. A 403 on `version.txt`
+  fails the run, as does a missing DNS record or a connection error.
+
+Production also requires wrangler's deploy output to list
+`ops.szolotov.com` as an attached custom domain.
+
+### Stage freshness check
+
+Before it deploys stage, a run reads the commit stage serves; if that commit already includes the
 run's own, the run succeeds without deploying, so an older build that finishes
 last never replaces newer content on stage. The check fails closed: only a
 stage with nothing deployed yet (`version.txt` answers HTTP 404) counts as
@@ -297,6 +332,7 @@ curl -sS https://ops.szolotov.com/version.txt
 | `production was deployed (deployment ...) but ... has no DNS record` error in the freshness check | GitHub has a production deployment with a success status, but the stage host has no address (NXDOMAIN or NODATA), so the Worker's Custom Domain or its preview wildcard was lost. Nothing was deployed, and every run fails until it is fixed. Check the Worker's Custom Domain and `previews_enabled` in Cloudflare, then re-run the workflow. |
 | Stage shows an older commit, or a run skipped its stage deploy | Stage already served a commit that includes the run's own, so it deployed nothing. If stage still shows an older commit than you expect, re-run the workflow for the commit you want. A run that cannot read or compare stage's version fails instead (next row). |
 | "stage freshness check failed" | The run could not read stage's `version.txt` or compare it with the build's commit after several retries (a network error, a GitHub API error, or a live commit unknown to the repository), so it deployed nothing. Re-run the failed jobs later; if it keeps failing, check what `curl -sS https://stage.ops.szolotov.com/version.txt` returns. |
+| "wrangler reported no workers.dev address" | Bot Fight Mode on the `szolotov.com` zone answers GitHub runners with 403 for pages. Production is smoke-tested on its `workers.dev` address, so keep `workers_dev` `true` in `worker/wrangler.jsonc` and the account's workers.dev subdomain registered; do not point the check back at `ops.szolotov.com`. A 403 from the custom-domain probe is only a notice. The failure happens after the upload, so the run rolls back to the recorded previous version. Fix the cause and run `gh workflow run docs.yml --ref vX.Y.Z` again. |
 | "Last updated" dates on every page are equal | A shallow clone. The workflow fetches full history; a local build needs `git fetch --unshallow`. |
 | "this tag's commit is not on master" | Only tags whose commit is on `master` reach production. |
 
