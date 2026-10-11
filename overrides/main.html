@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{#
+  Adds what theme.favicon cannot: Material emits one <link rel="icon"> (the
+  SVG). These add the PNG fallbacks for browsers without SVG favicons and the
+  iOS home-screen icon. Files are in docs/assets/images/.
+#}
+{% block extrahead %}
+  <link rel="icon" type="image/png" sizes="32x32" href="{{ 'assets/images/favicon-32.png' | url }}">
+  <link rel="icon" type="image/png" sizes="16x16" href="{{ 'assets/images/favicon-16.png' | url }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ 'assets/images/apple-touch-icon.png' | url }}">
+{% endblock %}
