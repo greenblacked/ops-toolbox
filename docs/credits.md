@@ -35,12 +35,13 @@ is claimed here.
 
 | Component | Licence | Notice in the file |
 | --- | --- | --- |
-| [lunr.js](https://lunrjs.com/) 2.3.9 | MIT | The search worker header reads "Copyright (C) 2020 Oliver Nightingale". The header names no licence; MIT is the licence of the lunr project. |
+| [lunr.js](https://lunrjs.com/) 2.3.9 | MIT | The search worker header reads "Copyright (C) 2020 Oliver Nightingale" and "@license MIT". |
 | [lunr-languages](https://github.com/MihaiValentin/lunr-languages) | See note | Headers read "Copyright 2014, Mihai Valentin" and link `http://www.mozilla.org/MPL/`. They are built on the Snowball JavaScript library, "Copyright 2010, Oleg Mazko". |
 | TinySegmenter (Japanese tokenizer, `tinyseg.js`) | BSD | "(c) 2008 Taku Kudo", "freely distributable under the terms of a new BSD licence". |
+| wordcut (Thai segmenter, `lunr/wordcut.js`) | MIT (bundled notices) | The file carries no notice for wordcut itself. It carries these bundled notices: Underscore.js 1.8.3, "(c) 2009-2015 Jeremy Ashkenas, DocumentCloud and Investigative Reporters & Editors", "freely distributed under the MIT license"; narwhal.js, "Copyright (c) 2009 Thomas Robinson"; and "Copyright Joyent, Inc. and other Node contributors", each followed by MIT permission text. |
 
-Material copies the lunr language files into the site whether or not a page
-loads them. The site is English only, so they are not used in a normal visit.
+Material copies the lunr language files, `tinyseg.js` and `wordcut.js` into
+the site whether or not a page loads them. The site is English only, so they are not used in a normal visit.
 The `lunr-languages` licence is whatever the project publishes at the link
 above; the file headers alone do not settle it.
 
