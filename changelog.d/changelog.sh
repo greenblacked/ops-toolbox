@@ -39,8 +39,8 @@
 #   notes VERSION     Print the body of VERSION's section, headings below it
 #                     included, for the release notes. Writes nothing.
 #
-# latest and notes exist for .github/workflows/release.yml, which tags the
-# commit that adds a version's heading and publishes its section as the
+# latest and notes exist for .github/workflows/release.yml, which tags
+# master's HEAD when a release is cut and publishes its section as the
 # release notes. Parsing CHANGELOG.md here rather than in the workflow keeps
 # the parser beside its tests.
 #

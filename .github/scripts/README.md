@@ -26,11 +26,11 @@ either) AND GitHub has recorded no successful production deployment (the
 `deploy` job enters the `production` environment, so each production deploy is a
 deployment there; read with `gh api repos/$REPO/deployments?environment=production`
 and each deployment's `/statuses`, which needs only `deployments: read`; a
-release tag cannot serve, because `release.yml` pushes it before the production
-deploy): the script sets `skip=true` and `reason=no-stage-host`, prints a
+release tag cannot serve, because the hand-run `release.yml` pushes it just
+before the production deploy): the script sets `skip=true` and `reason=no-stage-host`, prints a
 notice to deploy production first, and exits 0. The skip therefore applies
-until production has a successful deployment, which covers the stage run of the
-first release push and a first production deploy that is still running or
+until production has a successful deployment, which covers stage runs before the
+first release is cut and a first production deploy that is still running or
 failed (a failed run, including a smoke test that was rolled back, ends with a
 failure status). The deploy job is skipped (or, in its second run of the check,
 wrangler and the smoke test are), so the run stays green; after production, the

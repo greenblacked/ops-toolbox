@@ -419,7 +419,7 @@ expect "release removes the fragment files (left: $left)" same "$left" 0
 expect "CHANGELOG.md still ends with a newline" same "$(tail -c 1 "$f" | od -An -c | tr -d ' ')" '\n'
 
 # --- latest and notes -----------------------------------------------------
-# release.yml reads these to decide what to tag and what the release says, so
+# release.yml reads these to check what to tag and what the release says, so
 # stdout must hold the answer alone.
 run "$(fresh_root)" latest
 expect "latest with only dated history exits 4 (got $rc)" rc_is 4
