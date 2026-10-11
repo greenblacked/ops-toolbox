@@ -90,6 +90,37 @@ point at into the site, so a link to a file outside `docs/` would publish it.
 The docs workflow fails the build job before installing anything if it finds
 one, in a file or a directory.
 
+### Theme
+
+The look is "report, preview, apply": the site gives each stage of the
+toolkit's safety model a colour, so a reader sees what a command does before
+reading it. The colours, fonts and component styles live in
+`docs/stylesheets/extra.css`, which defines every colour once as a `--rpt-*`
+custom property per scheme and maps them onto Material's `--md-*` variables.
+The palette entries in `mkdocs.yml` use `custom` for primary and accent, and the
+default is the dark scheme with a toggle for the light one. Text is IBM Plex Sans
+and IBM Plex Mono, self-hosted from `docs/assets/fonts/` (versions, checksums
+and update steps are in the README there), so `theme.font` is `false`.
+
+| Stage | Colour | Meaning |
+| --- | --- | --- |
+| Report | blue | Read-only: reads state and changes nothing. |
+| Preview | amber | Prints what would change (`--dry-run` or the platform's equivalent). |
+| Apply | red | Changes things. |
+
+Mark a command or a table cell with a stage pill, an inline HTML span:
+
+```html
+<span class="stage stage-report">read-only</span>
+<span class="stage stage-preview">dry run</span>
+<span class="stage stage-apply">changes things</span>
+```
+
+Use a pill only where the page already states the behaviour unambiguously;
+never guess. Admonitions follow the same idea: `note` and `info` are blue,
+`warning` and `danger` are red, and `tip` and `example` are neutral. Amber
+is kept for the preview stage, so it is not used for admonitions.
+
 ### Preview locally
 
 ```bash

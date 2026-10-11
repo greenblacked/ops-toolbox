@@ -17,6 +17,7 @@ docs_dir: docs
 # only so the repository's README-per-package check can find its README.
 exclude_docs: |
   hooks/
+  assets/fonts/README.md
   requirements.txt
 
 hooks:
@@ -25,19 +26,24 @@ hooks:
 theme:
   name: material
   language: en
+  # The fonts are self-hosted (docs/assets/fonts/, @font-face in
+  # docs/stylesheets/extra.css), so Material must not fetch Google Fonts.
+  font: false
   palette:
     # No "(prefers-color-scheme)" entry and no media queries: Material then
     # uses the first entry (dark) for every visitor, and the toggle switches
     # to light. An auto entry first would follow the visitor's system instead.
+    # primary and accent are "custom": the colours come from the --rpt-*
+    # tokens in docs/stylesheets/extra.css (graphite surfaces, report blue).
     - scheme: slate
-      primary: deep orange
-      accent: orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
     - scheme: default
-      primary: deep orange
-      accent: orange
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode

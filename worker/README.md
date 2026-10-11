@@ -39,8 +39,9 @@ Neither command uploads anything.
   checks. `preview_urls` stays `false`: previews are served on the Custom
   Domain.
 - There is no `Content-Security-Policy`: Material for MkDocs uses inline
-  scripts and styles and loads fonts from Google Fonts, so a policy that keeps
-  the site working would protect little.
+  scripts and styles, so a policy that keeps the site working would protect
+  little. The site self-hosts its IBM Plex fonts (`theme.font: false`), so
+  fonts are no longer an external dependency.
 - Install with `--ignore-scripts`, and bump wrangler by editing
   `package.json` and `package-lock.json` together; Dependabot proposes it
   monthly.
