@@ -141,7 +141,7 @@ jobs:
       # Events created by GITHUB_TOKEN do not start other workflows, so the
       # pull request below would otherwise have no checks at all. Every
       # workflow that supplies a required check is dispatched on the branch:
-      # ci.yml, security.yml (Repository secret scan, CodeQL) and
+      # ci.yml, security.yml (Repository secret scan, CodeQL (actions/python)) and
       # branch-name.yml (Branch name). Each has a workflow_dispatch trigger
       # and the same job names, so the check runs match the required checks.
       - name: Dispatch standard CI for the release branch
