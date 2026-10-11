@@ -19,7 +19,8 @@ servers, Git repositories, MikroTik RouterOS devices and GKE clusters.</p>
 
 Work from a clone or copy the script you need into `~/bin`, run its report,
 preview what it would change, and only then apply. Here is that order with one
-real script, `macos_defaults.sh`:
+real script, `macos_defaults.sh`, run from inside the `macos-initial-setup`
+folder:
 
 <div class="rpt-stages" markdown>
 
@@ -30,7 +31,7 @@ Prints the current value of each setting beside the desired one. With no
 flags it changes nothing.
 
 ```bash
-./macos-initial-setup/macos_defaults.sh
+./macos_defaults.sh
 ```
 
 </div>
@@ -41,7 +42,7 @@ flags it changes nothing.
 Shows the commands `--apply` would run, without running them.
 
 ```bash
-./macos-initial-setup/macos_defaults.sh --apply --dry-run
+./macos_defaults.sh --apply --dry-run
 ```
 
 </div>
@@ -53,7 +54,7 @@ Writes the desired values, after saving the previous ones to a backup file
 that `--revert` can restore.
 
 ```bash
-./macos-initial-setup/macos_defaults.sh --apply
+./macos_defaults.sh --apply
 ```
 
 </div>

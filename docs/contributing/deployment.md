@@ -351,7 +351,8 @@ curl -sS https://ops.szolotov.com/version.txt
 - A deploy replaces the Worker's Custom Domains and any DNS record already at
   the name.
 - There is no `Content-Security-Policy` header: Material for MkDocs uses
-  inline scripts and loads fonts from Google Fonts.
+  inline scripts and styles. The fonts are self-hosted, so they no longer
+  stand in the way.
 - The automatic rollback needs a recorded earlier version. The first
   production deploy has none and fails without one to go back to.
 - Live Cloudflare behaviour, such as Worker Previews (an open beta feature at
