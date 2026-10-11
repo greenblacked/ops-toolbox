@@ -18,18 +18,28 @@ The build also uses `mkdocs-git-revision-date-localized-plugin` 1.6.0
 (Tim Vink) and `mkdocs-material-extensions` 1.3.1 (Isaac Muse), both MIT
 licensed. They run at build time and ship no code in the site.
 
-## Scripts in the theme bundle
+## Libraries inside the theme bundles
 
-Material's `bundle.*.min.js` carries the notices of two libraries it
-includes.
+Material's built files carry the code of several libraries. This list was
+made from the source maps of the built site (`bundle.*.min.js.map`,
+`main.*.min.css.map`, `palette.*.min.css.map` and the search worker map): every
+`node_modules` package named in a map's `sources` is listed, and no other.
+The maps ship with the site, so a reader can check the list against them.
+Versions come from the package lock of Material 9.7.7. Licence and copyright
+holder come from the file header where the map carries one, otherwise from the
+package's entry in the npm registry.
 
-| Library | Licence | Notice in the file |
-| --- | --- | --- |
-| [clipboard.js](https://clipboardjs.com/) 2.0.11 | MIT | "Licensed MIT © Zeno Rocha". Powers the copy button on code blocks. |
-| [escape-html](https://github.com/component/escape-html) | MIT | "Copyright(c) 2012-2013 TJ Holowaychuk, Copyright(c) 2015 Andreas Lubbe, Copyright(c) 2015 Tiancheng \"Timothy\" Gu, MIT Licensed". |
+| Library | Version | Licence | Copyright holder and source of the fact |
+| --- | --- | --- | --- |
+| [clipboard.js](https://clipboardjs.com/) | 2.0.11 | MIT | "Licensed MIT © Zeno Rocha", from the file header. Powers the copy button on code blocks. |
+| [escape-html](https://github.com/component/escape-html) | 1.0.3 | MIT | "Copyright(c) 2012-2013 TJ Holowaychuk, Copyright(c) 2015 Andreas Lubbe, Copyright(c) 2015 Tiancheng \"Timothy\" Gu, MIT Licensed", from the file header. |
+| [focus-visible](https://github.com/WICG/focus-visible) | 5.2.1 | W3C Software and Document License | The npm registry gives the licence as "W3C" and the author as WICG. The bundled file has no header. |
+| [RxJS](https://rxjs.dev/) | 7.8.2 | Apache-2.0 | The npm registry gives the licence as Apache-2.0 and the author as Ben Lesh. The maps list its source files without a header. |
+| [tslib](https://github.com/Microsoft/tslib) | 2.7.0 | 0BSD | "Copyright (c) Microsoft Corporation", from the file header. The npm registry also gives 0BSD. |
+| [material-design-color](https://github.com/mrmlnc/material-color) | 2.3.2 | MIT | The npm registry gives the licence as MIT and the author as Denis Malinochkin. It is a build-time Sass source of colour values and appears only in the stylesheet map. |
 
-The other libraries in the bundle carry no notice in the built file, so none
-is claimed here.
+lunr.js, the one library in the search worker map, is listed under Search
+below.
 
 ## Search
 
