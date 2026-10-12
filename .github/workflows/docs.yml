@@ -24,6 +24,13 @@ name: Docs site
 #   gh workflow run docs.yml --ref vX.Y.Z
 #                                    the same production deploy by hand, to
 #                                    promote or redeploy a release
+#   gh workflow run docs.yml --ref dev
+#                                    the same site-preview artifact as a push
+#                                    to dev, by hand. A push only builds when
+#                                    its own commit touches the site paths, so
+#                                    a new dev branch, or a dev push that
+#                                    touches none, gives no preview; run this
+#                                    to build one.
 #
 # No checkout uses a ref taken from an input or computed in a step: every one
 # checks out the default, github.sha, which cannot move. (CodeQL flags a
@@ -32,16 +39,17 @@ name: Docs site
 # it:
 #   called by release.yml  github.sha is the commit the publish job tagged;
 #                          inputs.tag must resolve to exactly that commit.
-#   run by hand            the run must start from a tag (github.ref_type tag,
-#                          v1.2.3), so github.sha is that tag's commit. The
-#                          workflow file is the one on the tag.
+#   run by hand            the run must start from dev (a site preview) or from
+#                          a tag (github.ref_type tag, v1.2.3), so github.sha
+#                          is that tag's commit. The workflow file is the one
+#                          on the tag.
 # Both need the commit to be on master.
 #
 # Inside a called workflow github.event_name is the caller's (workflow_dispatch
 # of release.yml), so the target is decided by inputs.tag first, then the
 # event: a set inputs.tag, or a manual run from a tag, means production;
 # otherwise stage for a push to master, a site-preview artifact and no deploy
-# for a push to dev, and nothing for a pull request.
+# for a push to dev or a manual run on dev, and nothing for a pull request.
 #
 # The Cloudflare token is an environment secret: GitHub gives it only to the
 # deploy job, only in an environment, and only the wrangler steps read it.
@@ -88,7 +96,8 @@ on:
       CLOUDFLARE_ACCOUNT_ID:
         description: Cloudflare account ID, used when the variable of that name is unset
         required: false
-  # No inputs: start the run from the v* tag with gh workflow run docs.yml --ref vX.Y.Z.
+  # No inputs: start the run from the v* tag with gh workflow run docs.yml --ref vX.Y.Z,
+  # or from dev for a site-preview artifact with gh workflow run docs.yml --ref dev.
   workflow_dispatch:
 
 permissions:
@@ -133,6 +142,7 @@ jobs:
               echo "environment=production"
               echo "url=https://ops.szolotov.com"
               echo "tag=$1"
+              echo "preview=false"
             } >>"$GITHUB_OUTPUT"
           }
           if [ -n "$TAG" ]; then
@@ -144,16 +154,26 @@ jobs:
             fi
             production "$TAG"
           elif [ "$EVENT" = workflow_dispatch ]; then
-            if [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
-              echo "::error::start a manual run from a release tag, not ${REF_NAME}: gh workflow run docs.yml --ref vX.Y.Z (a manual run promotes the tag it starts from)"
+            if [ "$REF_TYPE" = branch ] && [ "$REF" = refs/heads/dev ]; then
+              # A manual run on dev builds the preview like a push to dev.
+              {
+                echo "environment=none"
+                echo "url="
+                echo "tag="
+                echo "preview=true"
+              } >>"$GITHUB_OUTPUT"
+            elif [ "$REF_TYPE" != tag ] || ! [[ "$REF_NAME" =~ $tag_re ]]; then
+              echo "::error::start a manual run from dev (a site preview: gh workflow run docs.yml --ref dev) or from a release tag (production: gh workflow run docs.yml --ref vX.Y.Z), not ${REF_NAME}"
               exit 1
+            else
+              production "$REF_NAME"
             fi
-            production "$REF_NAME"
           elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/master ]; then
             {
               echo "environment=staging"
               echo "url=https://stage.ops.szolotov.com"
               echo "tag="
+              echo "preview=false"
             } >>"$GITHUB_OUTPUT"
           elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/dev ]; then
             # No environment, so check-stage and deploy never run: dev only

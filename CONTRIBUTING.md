@@ -488,7 +488,10 @@ Work flows through two long-lived branches, `dev` and `master`:
    touches the site (the paths the docs workflow watches) also runs the docs
    build, which uploads the built site as the `site-preview` Actions artifact
    (kept 7 days). Nothing is deployed and no secret is read; the maintainer
-   publishes that artifact as a private preview for review.
+   publishes that artifact as a private preview for review. A push builds only
+   when its own commit touches those paths, so a new `dev` branch or a push
+   that touches none gives no preview; run `gh workflow run docs.yml --ref dev`
+   to build one.
 3. A pull request `dev` into `master`, merged with a merge commit, deploys the
    stage site.
 4. A release is cut from `master` (Release prepare, its pull request into
