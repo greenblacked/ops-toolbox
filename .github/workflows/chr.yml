@@ -41,6 +41,7 @@ on:
   pull_request:
     branches:
       - master
+      - dev
       - 'feat/**'
       - 'feature/**'
       - 'fix/**'
