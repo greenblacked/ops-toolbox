@@ -935,15 +935,21 @@ input:focus-visible,
 
 /* ---- 15. Touch targets and motion --------------------------------------- */
 
-/* The drawer layout (Material's breakpoint, 76.1875em): links and header
-   buttons reach 44 by 44 px. */
-@media screen and (max-width: 76.1875em) {
+/* The drawer layout (Material's breakpoint, 76.234375em): links and header
+   buttons reach 44 by 44 px. The button rule is limited to visible buttons.
+   Material keeps `hidden` on the palette toggle of the inactive scheme, and
+   an author `display` would override that attribute and show both toggles.
+   The logo button (hidden by Material in this range) is left alone, and
+   the search button stays hidden from 60em, where the search field is
+   shown. The chained :not() outranks Material's own
+   `.md-header__button:not([hidden])`, so `display` and the centring apply. */
+@media screen and (max-width: 76.234375em) {
   .md-nav__link {
     align-items: center;
     min-height: 44px;
   }
 
-  .md-header__button {
+  .md-header__button:not([hidden]):not(.md-logo) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -951,6 +957,12 @@ input:focus-visible,
     min-height: 44px;
     margin: 0;
     padding: 0;
+  }
+}
+
+@media screen and (min-width: 60em) and (max-width: 76.234375em) {
+  .md-header__button[for="__search"]:not([hidden]):not(.md-logo) {
+    display: none;
   }
 }
 
