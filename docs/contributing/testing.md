@@ -37,7 +37,7 @@ platforms present on your machine.
 
 The workflows in `.github/workflows/`:
 
-- `ci.yml` runs on pushes to `dev` and `master` and on pull requests: change detection,
+- `ci.yml` runs on pushes to `dev` that touch the site and `master` and on pull requests: change detection,
   Lint, schema validation, native macOS (`macos-15`) and Windows
   (`windows-2025` with `pwsh`) jobs, the Linux suite matrix, Python helpers
   and the conventions suite.

@@ -202,7 +202,7 @@ The build writes `site/`, which is ignored by Git.
 
 ### Deploy
 
-The site is hosted at <https://ops.szolotov.com>. A push to `dev` uploads the
+The site is hosted at <https://ops.szolotov.com>. A push to `dev` that touches the site uploads the
 built site as the `site-preview` artifact (no deploy), a push to `master` (the
 merged `dev` pull request) updates the stage preview and a release deploys
 production; both are done by CI, not

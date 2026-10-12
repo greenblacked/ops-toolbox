@@ -6,10 +6,13 @@ version: 2
 # Dependabot re-resolves the tags monthly and opens one grouped pull request,
 # with the new version in the trailing comment it maintains for us.
 #
-# Pull requests target dev (target-branch on every entry below), the branch
-# feature work is merged into; CI's `pull_request` trigger covers dev, so they
-# get the full gate like any other change, and reach master with the next
-# dev -> master pull request. Dependabot reads this file from the default
+# Version-update pull requests target dev (target-branch on every entry below),
+# the branch feature work is merged into. target-branch does not apply to
+# security-update pull requests, if enabled in the repository settings: those
+# still open against master, and master is merged back into dev afterwards.
+# CI's `pull_request` trigger covers dev, so version updates get the full gate
+# like any other change, and reach master with the next dev -> master pull
+# request. Dependabot reads this file from the default
 # branch, so it stays on master and dev needs no copy of it.
 #
 # Every entry below also sets the same `cooldown`: do not adopt a release the
