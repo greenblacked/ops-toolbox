@@ -60,13 +60,16 @@
      muted text on page                     7.2      5.7
      accent (links) on page                 5.7      5.4
      accent hover on page                   8.3      7.3
-     stage pill text on its tint, on page   5.2-7.6  4.6-4.9  (lowest first)
+     stage pill text on its tint, on page   5.2-7.6  4.6-4.9  (lowest first;
+                                                     a hovered table row
+                                                     is the page colour)
      stage pill text on its tint, on panel  4.7-6.8  4.9-5.1
      stage edge colours on panel            4.3-9.0  5.6-5.9
      stage edge colours on code background  3.8-8.0  4.9-5.2
      control border on page                 3.9      3.6
      control border on panel                3.5      3.9
      control border on code background      3.1      3.4
+     copy button at rest, on code backgr.   5.8      5.3
      syntax tokens on code background       4.6-6.8  5.0-5.7
      comment/punctuation on code background 5.8      5.3
      primary button label on its fill       6.0      5.7
@@ -257,7 +260,9 @@
   --md-typeset-color: var(--rpt-text);
   --md-typeset-a-color: var(--rpt-accent);
   --md-typeset-table-color: var(--rpt-border);
-  --md-typeset-table-color--light: var(--rpt-code-bg);
+  /* Row hover: the page colour, not the code colour, so the stage pills in a
+     hovered row stay at 4.5:1 or more (on the code colour they fall to 4.1). */
+  --md-typeset-table-color--light: var(--rpt-bg);
 
   --md-primary-fg-color: var(--rpt-accent-fill);
   --md-primary-fg-color--light: var(--rpt-report-tint);
@@ -551,6 +556,15 @@ input:focus-visible,
 .md-typeset .highlight pre > code {
   border: 1px solid var(--rpt-border);
   border-radius: 0.35rem;
+}
+
+/* Copy and select buttons: Material draws them in the lightest foreground
+   colour (the hairline colour here, about 1.1:1 on a code panel) until the
+   block is hovered. At rest they use the muted colour, which reaches 3:1 for
+   a control; hover and focus keep Material's accent. */
+.md-clipboard,
+.md-code__button {
+  color: var(--rpt-muted);
 }
 
 /* Untitled-stage default: a neutral marker and no tint. The stage rules above
