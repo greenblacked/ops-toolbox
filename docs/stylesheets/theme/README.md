@@ -27,7 +27,7 @@ Tested against Material for MkDocs 9.7, MkDocs 1.6 and PyMdown Extensions 12.
 | `docs/stylesheets/theme/rpt-theme.css` | The theme. |
 | `docs/assets/fonts/` | The self-hosted IBM Plex woff2 files and their licence texts. The `@font-face` URLs in the theme are `../../assets/fonts/...`; change those five lines if the folder moves. The fonts folder has its own `README.md` (provenance and checksums). |
 | `overrides/404.html` | The themed 404 page. It extends `main.html`. |
-| `overrides/main.html` | Adds the PNG favicon fallback, a typed SVG icon and the iOS icon. Keep only the `extrahead` block if you have no such files, or drop the file (the 404 page extends Material's own `main.html` then). |
+| `overrides/main.html` | Adds the PNG favicon fallback, a typed SVG icon and the iOS icon. Copy it if you provide those three icon files (and point the hrefs at yours); otherwise drop it, and `404.html` then extends Material's own `main.html`. |
 | `docs/assets/images/` (optional) | A logo and favicons. Material needs `theme.logo` and `theme.favicon` pointing at your own. |
 
 ## mkdocs.yml
@@ -88,7 +88,25 @@ breadcrumb line with your own or delete it.
 All brand values are CSS custom properties in section 2 of the theme, once for
 the light scheme (which is also the `:root` fallback) and once for the dark
 scheme. Components read only these tokens. To re-brand, override them in your
-own stylesheet or edit the block. The smallest set (about ten per scheme):
+own stylesheet or edit the block. Override with the same selectors Material
+and the theme use, or the dark scheme is not affected (a bare `:root` override
+has no effect there): `:root, [data-md-color-scheme="default"]` for light and
+`@media not print { [data-md-color-scheme="slate"] }` for dark.
+
+```css
+:root,
+[data-md-color-scheme="default"] {
+  --rpt-accent: #0b5fff;
+}
+
+@media not print {
+  [data-md-color-scheme="slate"] {
+    --rpt-accent: #7aa7ff;
+  }
+}
+```
+
+The smallest set (about ten per scheme):
 
 | Token | Role |
 | --- | --- |

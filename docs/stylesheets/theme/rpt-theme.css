@@ -1005,6 +1005,12 @@ input:focus-visible,
     margin: 0;
     padding: 0;
   }
+
+  /* With JS off (.no-js) Material hides the search button at every width;
+     the rule above would show it again. */
+  .no-js .md-header__button[for="__search"]:not([hidden]):not(.md-logo) {
+    display: none;
+  }
 }
 
 @media screen and (min-width: 60em) and (max-width: 76.234375em) {
