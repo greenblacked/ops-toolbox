@@ -6,8 +6,11 @@ version: 2
 # Dependabot re-resolves the tags monthly and opens one grouped pull request,
 # with the new version in the trailing comment it maintains for us.
 #
-# Pull requests land on master, which is where CI's `pull_request` trigger
-# points, so they get the full gate like any other change.
+# Pull requests target dev (target-branch on every entry below), the branch
+# feature work is merged into; CI's `pull_request` trigger covers dev, so they
+# get the full gate like any other change, and reach master with the next
+# dev -> master pull request. Dependabot reads this file from the default
+# branch, so it stays on master and dev needs no copy of it.
 #
 # Every entry below also sets the same `cooldown`: do not adopt a release the
 # day it is published. The window between a release going out and a
@@ -30,6 +33,7 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
@@ -61,6 +65,7 @@ updates:
   - package-ecosystem: docker
     directories:
       - '/**/*'
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
@@ -80,6 +85,7 @@ updates:
   # Cloudflare token (docs.yml) and a poisoned release is found within days.
   - package-ecosystem: npm
     directory: /worker
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
@@ -98,6 +104,7 @@ updates:
   # both.
   - package-ecosystem: pip
     directory: /docs
+    target-branch: dev
     schedule:
       interval: monthly
     open-pull-requests-limit: 3
