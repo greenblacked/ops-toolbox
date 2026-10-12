@@ -7,10 +7,15 @@ folder). The workflow is
 
 ## The flow
 
+Feature branches open pull requests into `dev`. `dev` is merged into `master`
+with a merge commit, which deploys stage, and a release is cut from `master`,
+which deploys production. After a release, merge `master` back into `dev`.
+
 | Event | What happens | Where | GitHub environment |
 | --- | --- | --- | --- |
 | Pull request touching the site | `mkdocs build --strict`, then `wrangler deploy --dry-run`. No secrets, nothing deployed. | Nowhere | none |
-| Push to `master` | Build, then a Worker Preview named `stage`. | <https://stage.ops.szolotov.com> | `staging` |
+| Push to `dev` that touches the site (the paths `docs.yml` watches), including a merged pull request | Build, then upload the site as the `site-preview` artifact (7 days). No Cloudflare, no environment, no secrets: the maintainer publishes the artifact as a private preview for review. | The workflow run's artifacts | none |
+| Push to `master` (the merged `dev` pull request) | Build, then a Worker Preview named `stage`. | <https://stage.ops.szolotov.com> | `staging` |
 | Release cut (the Release workflow, run by hand) | Build the tag, deploy, smoke-test, roll back on failure. | <https://ops.szolotov.com> | `production` |
 | `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API) | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
 

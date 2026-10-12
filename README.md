@@ -117,7 +117,7 @@ read the result matrix for skips. See [test environments](test-env/README.md)
 for suite setup and coverage.
 
 The repository's [CI workflow](.github/workflows/ci.yml) runs checks on pull
-requests and `master`; the separate [CHR workflow](.github/workflows/chr.yml)
+requests and pushes to `dev` and `master`; the separate [CHR workflow](.github/workflows/chr.yml)
 exercises RouterOS integration. The [security workflow](.github/workflows/security.yml)
 reports repository and workflow findings. These workflows have different
 triggers and gates; their current definitions are the source of truth.

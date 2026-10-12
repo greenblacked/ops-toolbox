@@ -3,6 +3,10 @@ name: RouterOS version check
 # Check MikroTik's official release feed twice a week and on demand. A release
 # is recorded only after the real CHR image boots and the integration suite
 # passes; automation opens a pull request and never writes to master directly.
+#
+# Scheduled runs test and bump from dev, so dev must exist before the next
+# scheduled run. A manual run tests the ref it was started on; the bump pull
+# request still targets dev.
 on:
   schedule:
     # Monday and Thursday at 04:19 UTC. The odd minute is deliberate, for the
@@ -64,6 +68,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # Scheduled runs branch the bump from dev; a manual run tests (and
+          # branches from) the ref it was started on. The bump pull request
+          # always targets dev (--base dev below), like every other change;
+          # see CONTRIBUTING.md, "Branches and pull requests".
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
           fetch-depth: 0
 
       - name: Resolve candidate release
@@ -253,7 +262,7 @@ jobs:
           EOF
           )"
           url="$(gh pr create \
-            --base master \
+            --base dev \
             --head "$BUMP_BRANCH" \
             --title "deps(mikrotik): test against RouterOS ${TARGET_VERSION}" \
             --body "$body")"

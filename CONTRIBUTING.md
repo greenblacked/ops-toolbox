@@ -26,6 +26,7 @@ the checks that enforce it; this document stays the published reference.
 - [RouterOS scripts](#routeros-scripts)
 - [Python helpers](#python-helpers)
 - [Tests](#tests)
+- [Branches and pull requests](#branches-and-pull-requests)
 - [Branch names](#branch-names)
 - [Adding a script](#adding-a-script)
 - [File modes and line endings](#file-modes-and-line-endings)
@@ -477,6 +478,28 @@ Do not add a new hardcoded list of scripts to a test. The static suite discovers
 command-line scripts by role, so a new script is covered by the commit that
 creates it.
 
+## Branches and pull requests
+
+Work flows through two long-lived branches, `dev` and `master`:
+
+1. Branch from `dev` and open the pull request into `dev`. CI, Security and
+   (for site changes) the docs build check it.
+2. Merging, or pushing, to `dev` runs CI and Security again. A push that
+   touches the site (the paths the docs workflow watches) also runs the docs
+   build, which uploads the built site as the `site-preview` Actions artifact
+   (kept 7 days). Nothing is deployed and no secret is read; the maintainer
+   publishes that artifact as a private preview for review.
+3. A pull request `dev` into `master`, merged with a merge commit, deploys the
+   stage site.
+4. A release is cut from `master` (Release prepare, its pull request into
+   `master`, then Release, which tags and deploys production; see
+   [changelog.d/README.md](changelog.d/README.md#cutting-a-release)). After a
+   release, merge `master` back into `dev` so the two do not diverge.
+
+Dependabot version-update pull requests target `dev` too. Security-update
+pull requests, if enabled in the repository settings, ignore `target-branch`
+and still open against `master`, so merge `master` back into `dev` after one.
+
 ## Branch names
 
 A branch is `<type>/<slug>`: the type says what kind of change it is, the slug
@@ -498,6 +521,12 @@ says which one, in lowercase letters, digits, `.`, `_` and `-`
 `dependabot/` is the one other prefix: Dependabot names its own branches and
 offers no way to change that. Its commit and pull request titles use `deps:`.
 
+The two long-lived branches are the exception: the `dev` into `master` pull
+request and the `master` into `dev` merge-back have bare branch names, and the
+Branch name check skips exactly those two base/head pairs. Every other pull
+request, including one from a bare `dev` or `master` into anything else, is
+held to the convention.
+
 There is no `chore/`, and no `chore:` type in a pull request title. "Chore"
 says only that a change is not a feature, which every type above says better.
 A tool-named prefix (`claude/`, `ai/`, `bot/`, `codex/`, `copilot/`) is
@@ -506,7 +535,7 @@ it stays in `git log` after the branch is deleted. Name it after the change.
 
 Use the branch's type in the pull request title as well (`deps(mikrotik): test
 against RouterOS 7.24.6`, `release: 1.0.0`). A squash merge makes the title
-the commit subject on `master`.
+the commit subject on the branch it lands on.
 
 The rule lives in
 [`test-env/static/check_branch_name.sh`](test-env/static/check_branch_name.sh),
@@ -606,8 +635,9 @@ To bump a version, see
 [docs/contributing/development.md](docs/contributing/development.md).
 Run `.venv/bin/mkdocs build --strict` before opening a pull request that
 touches `docs/`; the Docs site workflow runs it, plus a wrangler dry-run, on
-every pull request that touches the site. A push to `master` updates
-<https://stage.ops.szolotov.com>; production, <https://ops.szolotov.com>,
+every pull request that touches the site. A push to `dev` that touches the site uploads the built site as the
+`site-preview` artifact, a push to `master` (the merged `dev` pull request)
+updates <https://stage.ops.szolotov.com>; production, <https://ops.szolotov.com>,
 deploys only when a release is cut (prepare it with Release prepare, merge its
 pull request, then run Release; see
 [changelog.d/README.md](changelog.d/README.md#cutting-a-release)); the setup and runbook are in
@@ -659,6 +689,10 @@ an issue.
       binding rather than advisory. Note the constraint recorded there: jobs are
       never skipped at the job level, precisely so a required check always
       reports.
+- [ ] **The `dev` branch.** Create it from `master` once the branch flow
+      lands, protect it like `master` (required CI checks, pull requests only),
+      and keep `master` as the default branch. Merge `master` back into `dev`
+      after every release.
 - [ ] **Workflow pull requests.** Enable *Settings → Actions → General →
       Workflow permissions → Allow GitHub Actions to create and approve pull
       requests*. The twice-weekly RouterOS version workflow needs this to open

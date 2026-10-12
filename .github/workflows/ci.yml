@@ -8,7 +8,8 @@ name: CI
 # the whole matrix on the push event and then again on the pull_request event.
 # Each event now owns one path: `pull_request` covers development branches (and
 # tests the *merge result*, which a branch push cannot), and `push` covers only
-# master, where there is no pull request to do it.
+# master and dev, the two long-lived branches, where there is no pull request
+# to do it (a merged pull request is a push to dev).
 #
 # The tradeoff, stated plainly: a typed branch with no pull request open gets no
 # CI. Open the PR as a draft, or use `workflow_dispatch` (Actions -> CI -> Run
@@ -17,12 +18,16 @@ on:
   push:
     branches:
       - master
+      - dev
   pull_request:
-    # These are *target* branches, not source branches. master is the ordinary
-    # case; the typed prefixes are listed so a stacked pull request onto another
-    # feature branch is checked too, instead of silently running nothing.
+    # These are *target* branches, not source branches. dev is the ordinary
+    # case (feature branches open pull requests into it) and master receives
+    # the dev -> master pull request; the typed prefixes are listed so a
+    # stacked pull request onto another feature branch is checked too, instead
+    # of silently running nothing.
     branches:
       - master
+      - dev
       # feat/, not feature/ — the convention changed after this list was
       # written, so a pull request stacked onto a feat/ branch matched nothing
       # and ran no checks at all. A target branch that matches no pattern does
@@ -46,7 +51,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # Superseded pull-request pushes are worth cancelling. Runs on master are not:
+  # Superseded pull-request pushes are worth cancelling. Runs on master and dev are not:
   # every commit that lands on the default branch should get its own verdict.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

@@ -6,9 +6,15 @@ name: Docs site
 #
 #   pull request touching the site   build with --strict and wrangler deploy
 #                                    --dry-run; no secrets, no deploy
+#   push to dev                      build and upload the built site as the
+#                                    Actions artifact "site-preview" (7 days).
+#                                    No Cloudflare, no environment, no secrets:
+#                                    the maintainer publishes that artifact as
+#                                    a private preview for review.
 #   push to master                   a Worker Preview named "stage", served
 #                                    at https://stage.ops.szolotov.com
-#                                    (GitHub environment "staging")
+#                                    (GitHub environment "staging"). Reached by
+#                                    merging the dev -> master pull request.
 #   release cut by hand              production, https://ops.szolotov.com
 #                                    (GitHub environment "production"). Called
 #                                    by release.yml (run by hand) after its
@@ -34,7 +40,8 @@ name: Docs site
 # Inside a called workflow github.event_name is the caller's (workflow_dispatch
 # of release.yml), so the target is decided by inputs.tag first, then the
 # event: a set inputs.tag, or a manual run from a tag, means production;
-# otherwise stage for a push to master and nothing for a pull request.
+# otherwise stage for a push to master, a site-preview artifact and no deploy
+# for a push to dev, and nothing for a pull request.
 #
 # The Cloudflare token is an environment secret: GitHub gives it only to the
 # deploy job, only in an environment, and only the wrangler steps read it.
@@ -44,6 +51,7 @@ on:
   push:
     branches:
       - master
+      - dev
     paths:
       - 'docs/**'
       - mkdocs.yml
@@ -101,6 +109,7 @@ jobs:
     outputs:
       environment: ${{ steps.plan.outputs.environment }}
       url: ${{ steps.plan.outputs.url }}
+      preview: ${{ steps.plan.outputs.preview }}
       tag: ${{ steps.plan.outputs.tag }}
       # The commit that was checked and built: github.sha, which the deploy
       # job checks out again and asserts it got.
@@ -146,11 +155,21 @@ jobs:
               echo "url=https://stage.ops.szolotov.com"
               echo "tag="
             } >>"$GITHUB_OUTPUT"
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/dev ]; then
+            # No environment, so check-stage and deploy never run: dev only
+            # uploads the built site as the site-preview artifact.
+            {
+              echo "environment=none"
+              echo "url="
+              echo "tag="
+              echo "preview=true"
+            } >>"$GITHUB_OUTPUT"
           else
             {
               echo "environment=none"
               echo "url="
               echo "tag="
+              echo "preview=false"
             } >>"$GITHUB_OUTPUT"
           fi
 
@@ -265,6 +284,17 @@ jobs:
           path: site/
           if-no-files-found: error
           retention-days: 1
+
+      - name: Upload the site preview
+        # A push to dev: the maintainer downloads this and publishes it as a
+        # private preview. Nothing here deploys or reads a secret.
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: steps.plan.outputs.preview == 'true'
+        with:
+          name: site-preview
+          path: site/
+          if-no-files-found: error
+          retention-days: 7
 
   check-stage:
     name: Check stage is not newer

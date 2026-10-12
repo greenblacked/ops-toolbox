@@ -18,6 +18,7 @@ on:
   push:
     branches:
       - master
+      - dev
   pull_request:
     # Target branches, the same convention ci.yml and chr.yml use and explain:
     # this list matches theirs so a pull request stacked onto a typed branch
@@ -25,6 +26,7 @@ on:
     # target matched no pattern.
     branches:
       - master
+      - dev
       - 'feat/**'
       - 'feature/**'
       - 'fix/**'
@@ -49,7 +51,7 @@ permissions: {}
 concurrency:
   group: security-${{ github.event.pull_request.number || github.ref }}
   # A superseded pull-request push is worth cancelling, same as ci.yml.
-  # Scheduled and master runs are not: each one is the verdict for that day,
+  # Scheduled, master and dev runs are not: each one is the verdict for that day,
   # and Scorecard's publish step in particular should not be cut off mid-run.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
