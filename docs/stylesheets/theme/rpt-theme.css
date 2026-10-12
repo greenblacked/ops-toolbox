@@ -646,6 +646,17 @@ input:focus-visible,
   box-shadow: none;
 }
 
+/* Material adds a coloured halo while focus is inside an admonition (an amber
+   one for `warning`). The colours would clash with the stage meaning, so the
+   halo is off. The second selector matches the specificity of Material's
+   per-kind rules (`.admonition.warning:focus-within`). */
+.md-typeset :is(.admonition, details):focus-within,
+.md-typeset :is(.admonition, details):is(.note, .abstract, .info, .tip,
+    .success, .question, .warning, .failure, .danger, .bug, .example,
+    .quote):focus-within {
+  box-shadow: none;
+}
+
 .md-typeset :is(.admonition, details):is(.note, .info, .abstract, .seealso) {
   --adm: var(--rpt-report);
   --adm-tint: var(--rpt-report-tint);
@@ -1049,6 +1060,11 @@ input:focus-visible,
   .md-content .md-typeset h1::before,
   .rpt-rule {
     display: none;
+  }
+
+  /* The home page grid texture (a screen rule) is off in print too. */
+  .md-content:has(.rpt-hero) {
+    background-image: none;
   }
 
   .md-typeset .highlight,
