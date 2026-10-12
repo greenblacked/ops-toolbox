@@ -23,6 +23,7 @@ docs_dir: docs
 exclude_docs: |
   hooks/
   assets/fonts/README.md
+  stylesheets/theme/README.md
   requirements.txt
 
 hooks:
@@ -32,14 +33,16 @@ theme:
   name: material
   language: en
   # The fonts are self-hosted (docs/assets/fonts/, @font-face in
-  # docs/stylesheets/extra.css), so Material must not fetch Google Fonts.
+  # docs/stylesheets/theme/rpt-theme.css), so Material must not fetch Google
+  # Fonts.
   font: false
   palette:
     # No "(prefers-color-scheme)" entry and no media queries: Material then
     # uses the first entry (dark) for every visitor, and the toggle switches
     # to light. An auto entry first would follow the visitor's system instead.
     # primary and accent are "custom": the colours come from the --rpt-*
-    # tokens in docs/stylesheets/extra.css (graphite surfaces, report blue).
+    # tokens in docs/stylesheets/theme/rpt-theme.css (graphite surfaces, report
+    # blue).
     - scheme: slate
       primary: custom
       accent: custom
@@ -60,6 +63,7 @@ theme:
     - navigation.tracking
     - navigation.tabs
     - navigation.tabs.sticky
+    - navigation.path
     - navigation.sections
     - navigation.indexes
     - navigation.top
@@ -73,7 +77,6 @@ theme:
     - content.action.edit
     - content.action.view
     - toc.follow
-    - announce.dismiss
   # Brand mark (docs/assets/images/): the logo is the full graphite tile so it
   # reads on both the dark and the light header; favicon.svg is the same tile
   # without the logo's hairline border. overrides/main.html adds the PNG
@@ -84,7 +87,9 @@ theme:
   icon:
     repo: fontawesome/brands/github
 
+# The portable theme loads first; extra.css holds only this site's tweaks.
 extra_css:
+  - stylesheets/theme/rpt-theme.css
   - stylesheets/extra.css
 
 extra:
