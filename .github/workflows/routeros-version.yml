@@ -3,6 +3,10 @@ name: RouterOS version check
 # Check MikroTik's official release feed twice a week and on demand. A release
 # is recorded only after the real CHR image boots and the integration suite
 # passes; automation opens a pull request and never writes to master directly.
+#
+# Scheduled runs test and bump from dev, so dev must exist before the next
+# scheduled run. A manual run tests the ref it was started on; the bump pull
+# request still targets dev.
 on:
   schedule:
     # Monday and Thursday at 04:19 UTC. The odd minute is deliberate, for the
@@ -66,7 +70,7 @@ jobs:
         with:
           # The bump branches from dev and its pull request targets dev, like
           # every other change; see CONTRIBUTING.md, "Branches and pull requests".
-          ref: dev
+          ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
           fetch-depth: 0
 
       - name: Resolve candidate release
