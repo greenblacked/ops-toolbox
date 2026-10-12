@@ -382,14 +382,14 @@ input:focus-visible,
 
 /* Links: underlined with a soft offset, thicker and solid on hover. The
    underline keeps links recognisable without relying on colour alone. */
-.md-typeset a:not(.md-button, .headerlink, .md-annotation__index) {
+.md-typeset a:not(.md-button, .md-annotation__index) {
   text-decoration-line: underline;
   text-decoration-thickness: 1px;
   text-decoration-color: var(--rpt-underline);
   text-underline-offset: 0.2em;
 }
 
-.md-typeset a:not(.md-button, .headerlink, .md-annotation__index):is(:hover, :focus-visible) {
+.md-typeset a:not(.md-button, .md-annotation__index):is(:hover, :focus-visible) {
   text-decoration-thickness: 2px;
   text-decoration-color: currentcolor;
 }
@@ -427,7 +427,7 @@ input:focus-visible,
 
 /* h1: a prompt chevron in the muted colour. It is drawn as a mask, not as
    text, so it is never read aloud, copied, or added to the table of contents
-   or to a heading's permalink. Without mask support it is simply absent. */
+   or to a heading. Without mask support it is simply absent. */
 @supports ((mask-image: url("x")) or (-webkit-mask-image: url("x"))) {
   .md-content .md-typeset h1::before {
     content: "";
@@ -1048,7 +1048,6 @@ input:focus-visible,
   .md-top,
   .md-path,
   .md-content__button,
-  .headerlink,
   .md-source-file {
     display: none !important;
   }
@@ -1074,7 +1073,7 @@ input:focus-visible,
   }
 
   /* External links print their address after the text. */
-  .md-typeset a[href^="http"]:not(.md-button, .headerlink)::after {
+  .md-typeset a[href^="http"]:not(.md-button)::after {
     content: " (" attr(href) ")";
     font-size: 0.8em;
     overflow-wrap: anywhere;
