@@ -37,7 +37,7 @@ platforms present on your machine.
 
 The workflows in `.github/workflows/`:
 
-- `ci.yml` runs on pushes to `master` and on pull requests: change detection,
+- `ci.yml` runs on pushes to `dev` and `master` and on pull requests: change detection,
   Lint, schema validation, native macOS (`macos-15`) and Windows
   (`windows-2025` with `pwsh`) jobs, the Linux suite matrix, Python helpers
   and the conventions suite.
@@ -50,8 +50,8 @@ The workflows in `.github/workflows/`:
 - `release-prepare.yml` pushes a `release/<version>` branch for a person to
   open as a pull request. `release.yml` is run by hand afterwards: it tags
   master's HEAD, publishes the release and calls `docs.yml` for production.
-- `docs.yml` builds the documentation site on pull requests that touch it and
-  deploys it with wrangler (see [Deployment](deployment.md)).
+- `docs.yml` builds the documentation site on pull requests that touch it,
+  uploads it as the `site-preview` artifact on pushes to `dev` and deploys it with wrangler (see [Deployment](deployment.md)).
 
 In short, CI covers shell syntax and lint, `--help` and exit-code contracts,
 dry-run behavior, Linux package tests in Debian, Fedora and Arch containers,

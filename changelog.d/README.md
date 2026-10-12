@@ -115,8 +115,10 @@ release or nothing released.
 
 A release is prepared and cut in three steps, so every release is a reviewed
 pull request and a tag only ever lands on a commit that is already on `master`.
-Merging to `master` deploys the stage site, and nothing deploys production until
-you cut the release.
+Merging `dev` into `master` deploys the stage site, and nothing deploys
+production until you cut the release. The release is cut from `master`, not
+`dev`; once it is done, merge `master` back into `dev` so the release commit
+and tag are on both.
 
 1. **Prepare.** *Actions → Release prepare → Run workflow*
    ([`release-prepare.yml`](../.github/workflows/release-prepare.yml)), from

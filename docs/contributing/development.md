@@ -202,8 +202,10 @@ The build writes `site/`, which is ignored by Git.
 
 ### Deploy
 
-The site is hosted at <https://ops.szolotov.com>. A push to `master` updates
-the stage preview and a release deploys production; both are done by CI, not
+The site is hosted at <https://ops.szolotov.com>. A push to `dev` uploads the
+built site as the `site-preview` artifact (no deploy), a push to `master` (the
+merged `dev` pull request) updates the stage preview and a release deploys
+production; both are done by CI, not
 by hand. [Deployment](deployment.md) has the flow, the setup, the commands and
 the rollback steps. (`mkdocs gh-deploy` still works for a fork that wants
 GitHub Pages.)
