@@ -86,7 +86,7 @@ All paths are under `linux/`.
     `config_backup.sh` copies `/etc` by default, including `shadow`, `sudoers`
     and SSH host keys. Archives are mode 0600. Store them accordingly.
 
-!!! warning "sysctl changes are live"
+!!! apply "sysctl changes are live"
     `sysctl_defaults.sh --apply` writes `/etc/sysctl.d/99-ops-toolbox.conf` and
     applies the values live. Its backups go to `/tmp`.
 

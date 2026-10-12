@@ -63,7 +63,7 @@ All paths are under `k8s-toolbox/`.
     `kubectl_pod_diag.sh` and `debug_pod.sh` use the current kube context unless
     you pass `--context`. Check it before running.
 
-!!! warning "debug_pod.sh changes a live pod"
+!!! apply "debug_pod.sh changes a live pod"
     It adds an ephemeral container to an existing pod; it does not create a
     new pod.
 

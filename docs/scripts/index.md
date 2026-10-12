@@ -5,7 +5,7 @@ the repository root. The Preview column gives the exact flag; "read-only" means
 the script only inspects state, and "n/a" means no preview applies. Check
 `--help` for the flags that actually apply to your version of a script.
 
-!!! note "Some previews have limits"
+!!! preview "Some previews have limits"
     A dry run covers only what that script says it covers. See
     [Philosophy](../getting-started/philosophy.md).
 

@@ -61,7 +61,8 @@ Reports are read-only. Pick the one for your platform.
     ./mikrotik/features/print_schedulers.sh
     ```
 
-    This prints scheduler commands to review. It contacts no router.
+    !!! report "Read-only"
+        This prints scheduler commands to review. It contacts no router.
 
 ## 3. Preview a change
 
@@ -77,7 +78,7 @@ Every script that writes has its own preview. For example:
 .\windows\setup\stay_fresh.ps1 -DryRun
 ```
 
-!!! warning "A preview has its own scope"
+!!! preview "A preview has its own scope"
     Each script's `--dry-run` covers what that script says it covers. Read
     its `--help` output and the platform page before you rely on it.
 
