@@ -88,10 +88,12 @@ breadcrumb line with your own or delete it.
 All brand values are CSS custom properties in section 2 of the theme, once for
 the light scheme (which is also the `:root` fallback) and once for the dark
 scheme. Components read only these tokens. To re-brand, override them in your
-own stylesheet or edit the block. Override with the same selectors Material
-and the theme use, or the dark scheme is not affected (a bare `:root` override
-has no effect there): `:root, [data-md-color-scheme="default"]` for light and
-`@media not print { [data-md-color-scheme="slate"] }` for dark.
+own stylesheet or edit the block. Override with the same selectors the theme
+uses. Material puts the scheme attribute on `<body>`, so a bare `:root`
+override is shadowed in both schemes. Use
+`:root, [data-md-color-scheme="default"]` for light and
+`@media not print { [data-md-color-scheme="slate"] }` for dark, and load your
+stylesheet after the theme.
 
 ```css
 :root,
