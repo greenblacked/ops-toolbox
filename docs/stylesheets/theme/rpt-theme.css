@@ -177,9 +177,12 @@
 
   /* Accent: links, focus ring, active tab and nav bar, primary button.
      Defaults to the report colour; point it elsewhere to separate brand from
-     the report stage. */
+     the report stage. --rpt-accent-tint is the accent behind hovered buttons
+     and Material's transparent accent; link underlines follow --rpt-accent
+     (see the end of section 3). */
   --rpt-accent: #2F5FD0;
   --rpt-accent-hover: #1F4BB0;
+  --rpt-accent-tint: rgba(47, 95, 208, 0.10);
   --rpt-accent-fill: #2F5FD0;
   --rpt-accent-fill-hover: #254DB0;
   --rpt-on-accent: #FFFFFF;
@@ -191,7 +194,8 @@
   --rpt-syn-constant: #5B49C2;
   --rpt-syn-string: #1A7045;
 
-  /* Derived from the values above; retune only if the brand changes a lot */
+  /* Derived from the values above; retune only if the brand changes a lot.
+     --rpt-underline is the fallback for browsers without color-mix(). */
   --rpt-neutral: var(--rpt-muted);
   --rpt-neutral-tint: rgba(90, 99, 112, 0.09);
   --rpt-underline: rgba(47, 95, 208, 0.55);
@@ -226,6 +230,7 @@
 
     --rpt-accent: #5B8DEF;
     --rpt-accent-hover: #8AAEF5;
+    --rpt-accent-tint: rgba(91, 141, 239, 0.08);
     --rpt-accent-fill: #5B8DEF;
     --rpt-accent-fill-hover: #7FA6F4;
     --rpt-on-accent: #0B0D10;
@@ -265,12 +270,12 @@
   --md-typeset-table-color--light: var(--rpt-bg);
 
   --md-primary-fg-color: var(--rpt-accent-fill);
-  --md-primary-fg-color--light: var(--rpt-report-tint);
+  --md-primary-fg-color--light: var(--rpt-accent-tint);
   --md-primary-fg-color--dark: var(--rpt-header-bg);
   --md-primary-bg-color: var(--rpt-text);
   --md-primary-bg-color--light: var(--rpt-muted);
   --md-accent-fg-color: var(--rpt-accent-hover);
-  --md-accent-fg-color--transparent: var(--rpt-report-tint);
+  --md-accent-fg-color--transparent: var(--rpt-accent-tint);
   --md-accent-bg-color: var(--rpt-on-accent);
 
   --md-code-bg-color: var(--rpt-code-bg);
@@ -301,6 +306,16 @@
   --md-admonition-icon--report: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 12S5.5 5 12 5s10.5 7 10.5 7-4 7-10.5 7S1.5 12 1.5 12z"/><circle cx="12" cy="12" r="3"/></svg>');
   --md-admonition-icon--preview: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3" stroke-dasharray="3.5 3"/><path d="M12 7.5v4M10 9.5h4M10 15.5h4"/></svg>');
   --md-admonition-icon--apply: url('data:image/svg+xml;charset=utf-8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4 14h7l-1 8 9-12h-7z"/></svg>');
+}
+
+/* Link underlines follow the accent: 55% of it where color-mix() exists. The
+   rgba value in section 2 stays as the fallback. */
+@supports (color: color-mix(in srgb, red 50%, transparent)) {
+  :root,
+  [data-md-color-scheme="slate"],
+  [data-md-color-scheme="default"] {
+    --rpt-underline: color-mix(in srgb, var(--rpt-accent) 55%, transparent);
+  }
 }
 
 /* Stage variables. Each stage component sets --rpt-s (fill), --rpt-s-text and
@@ -747,7 +762,7 @@ input:focus-visible,
 
 .md-typeset .md-button:is(:hover, :focus-visible) {
   color: var(--rpt-accent-hover);
-  background-color: var(--rpt-report-tint);
+  background-color: var(--rpt-accent-tint);
   border-color: var(--rpt-accent);
 }
 
