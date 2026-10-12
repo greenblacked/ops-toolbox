@@ -394,8 +394,10 @@ input:focus-visible,
   letter-spacing: -0.015em;
 }
 
-/* h2: a hairline rule and tighter tracking */
-.md-typeset h2 {
+/* h2: a hairline rule and tighter tracking. h1::before and h2 are limited to
+   the page content (.md-content): Material's search results are also
+   .md-typeset articles with an h1 or h2 per hit, and they keep their own look. */
+.md-content .md-typeset h2 {
   border-bottom: 1px solid var(--rpt-border);
   padding-bottom: 0.3em;
   letter-spacing: -0.012em;
@@ -405,7 +407,7 @@ input:focus-visible,
    text, so it is never read aloud, copied, or added to the table of contents
    or to a heading's permalink. Without mask support it is simply absent. */
 @supports ((mask-image: url("x")) or (-webkit-mask-image: url("x"))) {
-  .md-typeset h1::before {
+  .md-content .md-typeset h1::before {
     content: "";
     display: inline-block;
     width: 0.42em;
@@ -1030,7 +1032,7 @@ input:focus-visible,
     overflow-wrap: anywhere;
   }
 
-  .md-typeset h1::before,
+  .md-content .md-typeset h1::before,
   .rpt-rule {
     display: none;
   }
@@ -1098,7 +1100,7 @@ input:focus-visible,
   }
 
   .md-typeset :is(.admonition, details) > :is(.admonition-title, summary)::before,
-  .md-typeset h1::before,
+  .md-content .md-typeset h1::before,
   .md-typeset .highlight span.filename::before {
     forced-color-adjust: none;
     background-color: CanvasText;
