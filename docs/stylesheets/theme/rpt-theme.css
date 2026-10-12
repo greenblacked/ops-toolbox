@@ -907,7 +907,10 @@ input:focus-visible,
   margin: 1.5rem 0 2rem;
 }
 
-.md-typeset .rpt-steps {
+/* The selectors outrank Material's list rules (`.md-typeset ol:not([hidden])`
+   sets display, `[dir=ltr] .md-typeset ol li` sets the indent), which would
+   otherwise cancel the grid gap and indent the cards. */
+.md-typeset ol.rpt-steps:not([hidden]) {
   display: grid;
   gap: 0.5rem;
   margin: 1.2rem 0;
@@ -915,7 +918,7 @@ input:focus-visible,
   list-style: none;
 }
 
-.md-typeset .rpt-steps > li {
+[dir] .md-typeset ol.rpt-steps > li {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -1114,7 +1117,7 @@ input:focus-visible,
   }
 
   .rpt-stage,
-  .rpt-steps > li {
+  [dir] .md-typeset ol.rpt-steps > li {
     border: 1px solid CanvasText;
     border-top-width: 3px;
   }
