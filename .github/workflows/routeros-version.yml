@@ -68,8 +68,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # The bump branches from dev and its pull request targets dev, like
-          # every other change; see CONTRIBUTING.md, "Branches and pull requests".
+          # Scheduled runs branch the bump from dev; a manual run tests (and
+          # branches from) the ref it was started on. The bump pull request
+          # always targets dev (--base dev below), like every other change;
+          # see CONTRIBUTING.md, "Branches and pull requests".
           ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
           fetch-depth: 0
 
