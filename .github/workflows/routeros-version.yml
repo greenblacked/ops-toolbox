@@ -64,6 +64,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # The bump branches from dev and its pull request targets dev, like
+          # every other change; see CONTRIBUTING.md, "Branches and pull requests".
+          ref: dev
           fetch-depth: 0
 
       - name: Resolve candidate release
@@ -253,7 +256,7 @@ jobs:
           EOF
           )"
           url="$(gh pr create \
-            --base master \
+            --base dev \
             --head "$BUMP_BRANCH" \
             --title "deps(mikrotik): test against RouterOS ${TARGET_VERSION}" \
             --body "$body")"
