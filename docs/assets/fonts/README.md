@@ -4,8 +4,8 @@
 
 The documentation site is set in IBM Plex, self-hosted so a visit makes no
 request to a third-party font service. `theme.font` is `false` in
-`mkdocs.yml`, and `docs/stylesheets/extra.css` declares the `@font-face` rules
-(`font-display: swap`) and maps `--md-text-font` and `--md-code-font` onto them.
+`mkdocs.yml`, and `docs/stylesheets/theme/rpt-theme.css` declares the
+`@font-face` rules (`font-display: swap`) and maps `--md-text-font` and `--md-code-font` onto them.
 
 The files are the Latin subset woff2 files from the npm packages
 `@fontsource/ibm-plex-sans` and `@fontsource/ibm-plex-mono`, both version

@@ -94,9 +94,13 @@ one, in a file or a directory.
 
 The look is "report, preview, apply": the site gives each stage of the
 toolkit's safety model a colour, so a reader sees what a command does before
-reading it. The colours, fonts and component styles live in
-`docs/stylesheets/extra.css`, which defines every colour once as a `--rpt-*`
-custom property per scheme and maps them onto Material's `--md-*` variables.
+reading it. The colours, fonts and component styles live in the portable theme
+`docs/stylesheets/theme/rpt-theme.css`, which defines every colour once as a
+`--rpt-*` custom property per scheme and maps them onto Material's `--md-*`
+variables. `docs/stylesheets/extra.css` loads after it and holds only this
+site's own tweaks. The README beside the theme lists the files to copy, the
+`mkdocs.yml` settings, the brand tokens and every class, so another
+documentation repository can reuse the look.
 The palette entries in `mkdocs.yml` use `custom` for primary and accent, and the
 default is the dark scheme with a toggle for the light one. Text is IBM Plex Sans
 and IBM Plex Mono, self-hosted from `docs/assets/fonts/` (versions, checksums
@@ -131,9 +135,32 @@ Mark a command or a table cell with a stage pill, an inline HTML span:
 ```
 
 Use a pill only where the page already states the behaviour unambiguously;
-never guess. Admonitions follow the same idea: `note` and `info` are blue,
-`warning` and `danger` are red, and `tip` and `example` are neutral. Amber
-is kept for the preview stage, so it is not used for admonitions.
+never guess.
+
+Give a code block a stage-coloured title with the attribute-list fence: the
+first class is the language, the stage class (`.rpt-report`, `.rpt-preview`
+or `.rpt-apply`) colours the title bar and the left edge, and `title` is the
+bar's text:
+
+````markdown
+```{ .bash .rpt-preview title="Preview" }
+./macos_defaults.sh --apply --dry-run
+```
+````
+
+Admonitions follow the same idea. There are three stage kinds, each with its
+own icon: `!!! report` (blue, read-only), `!!! preview` (amber, prints what
+would change) and `!!! apply` (red, changes things). Use them where a note is
+really about one stage, for example a note about a command that writes to a
+live system:
+
+```markdown
+!!! apply "sysctl changes are live"
+    `sysctl_defaults.sh --apply` applies the values live.
+```
+
+The other kinds keep their meaning: `note` and `info` are blue, `warning` and
+`danger` are red, and `tip` and `example` are neutral.
 
 ### Preview locally
 

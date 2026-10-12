@@ -9,11 +9,17 @@ hide:
 
 <div class="rpt-hero" markdown>
 
+<div class="rpt-rule" aria-hidden="true"></div>
+
 <p class="rpt-lede">Standalone helper scripts for maintaining workstations,
 servers, Git repositories, MikroTik RouterOS devices and GKE clusters.</p>
 
-[Quick start](getting-started/quick-start.md){ .md-button .md-button--primary }
-[View on GitHub](https://github.com/greenblacked/ops-toolbox){ .md-button }
+<div class="rpt-actions" markdown>
+
+[Get started](getting-started/quick-start.md){ .md-button .md-button--primary }
+[Browse scripts](scripts/index.md){ .md-button }
+
+</div>
 
 </div>
 
@@ -30,7 +36,7 @@ folder:
 Prints the current value of each setting beside the desired one. With no
 flags it changes nothing.
 
-```bash
+```{ .bash .rpt-report title="Report" }
 ./macos_defaults.sh
 ```
 
@@ -41,7 +47,7 @@ flags it changes nothing.
 
 Shows the commands `--apply` would run, without running them.
 
-```bash
+```{ .bash .rpt-preview title="Preview" }
 ./macos_defaults.sh --apply --dry-run
 ```
 
@@ -53,7 +59,7 @@ Shows the commands `--apply` would run, without running them.
 Writes the desired values, after saving the previous ones to a backup file
 that `--revert` can restore.
 
-```bash
+```{ .bash .rpt-apply title="Apply" }
 ./macos_defaults.sh --apply
 ```
 
