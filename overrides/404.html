@@ -1,0 +1,30 @@
+{% extends "main.html" %}
+{#
+  Themed 404 page for the report/preview/apply theme. It extends main.html
+  (the site's own override, which extends Material's base.html) so the
+  favicon links of that file apply here too. Nothing here names a site: the
+  name comes from config.site_name, and every link goes through the url
+  filter, which on an error page resolves against the site root. There are no
+  external requests. Styles: .rpt-404 and .rpt-steps in the theme stylesheet.
+#}
+{% block content %}
+  <div class="rpt-404">
+    <h1>Page not found</h1>
+    <div class="rpt-rule" aria-hidden="true"></div>
+    <p class="rpt-lede">There is no page at this address on {{ config.site_name }}. Three steps get you back on track.</p>
+    <ol class="rpt-steps">
+      <li class="rpt-step--report">
+        <span class="stage stage-report">Report</span>
+        <span>Nothing at this path.</span>
+      </li>
+      <li class="rpt-step--preview">
+        <span class="stage stage-preview">Preview</span>
+        <span>Try the search box or the navigation to find what you were after.</span>
+      </li>
+      <li class="rpt-step--apply">
+        <span class="stage stage-apply">Apply</span>
+        <span><a href="{{ (nav.homepage.url if nav.homepage else '.') | url }}">Go to the home page.</a></span>
+      </li>
+    </ol>
+  </div>
+{% endblock %}
