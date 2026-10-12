@@ -39,11 +39,11 @@ name: Docs site
 # it:
 #   called by release.yml  github.sha is the commit the publish job tagged;
 #                          inputs.tag must resolve to exactly that commit.
-#   run by hand            the run must start from dev (a site preview) or from
-#                          a tag (github.ref_type tag, v1.2.3), so github.sha
-#                          is that tag's commit. The workflow file is the one
-#                          on the tag.
-# Both need the commit to be on master.
+#   run by hand            the run must start from a tag (github.ref_type tag,
+#                          v1.2.3), so github.sha is that tag's commit. The
+#                          workflow file is the one on the tag.
+# Both need the commit to be on master. (A manual run on dev builds only the
+# site-preview artifact: no tag, no master check.)
 #
 # Inside a called workflow github.event_name is the caller's (workflow_dispatch
 # of release.yml), so the target is decided by inputs.tag first, then the
