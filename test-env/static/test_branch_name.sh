@@ -115,6 +115,24 @@ for wf in ci.yml chr.yml security.yml; do
   fi
 done
 
+# --- long-lived branch pull requests -----------------------------------------
+# dev -> master and master -> dev carry bare branch names, so branch-name.yml
+# skips the check for exactly those two base/head pairs. check_branch_name.sh
+# must keep refusing the bare names (see "refused" above), so the exemption
+# lives in the workflow; pin it there.
+bn="$REPO_ROOT/.github/workflows/branch-name.yml"
+if grep -qF "github.base_ref == 'master' && github.head_ref == 'dev'" "$bn" \
+   && grep -qF "github.base_ref == 'dev' && github.head_ref == 'master'" "$bn"; then
+  ok "branch-name.yml exempts dev -> master and master -> dev"
+else
+  err "branch-name.yml does not exempt the dev <-> master pull requests"
+fi
+if [[ "$(grep -cF "github.head_ref == " "$bn")" == 2 ]]; then
+  ok "branch-name.yml exempts no other head branch"
+else
+  err "branch-name.yml has more or fewer head_ref exemptions than the two pairs"
+fi
+
 # --- branch names the bots build -------------------------------------------
 # Each assignment is rendered with a sample version and run through the same
 # check the pull request meets in CI.
