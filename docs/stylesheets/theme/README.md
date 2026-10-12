@@ -198,8 +198,8 @@ Markdown linter that wants the file to start with a heading is satisfied):
 
 <div class="rpt-actions" markdown>
 
-[Get started](getting-started.md){ .md-button .md-button--primary }
-[Browse](reference.md){ .md-button }
+[Get started](https://example.com/getting-started/){ .md-button .md-button--primary }
+[Browse](https://example.com/reference/){ .md-button }
 
 </div>
 
