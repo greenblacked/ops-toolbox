@@ -2,8 +2,8 @@
 
 [Ops Toolbox](../../../README.md) / **Site theme**
 
-`rpt-theme.css` is the design of this site as one portable stylesheet:
-"report, preview, apply" for Material for MkDocs. It holds every generic rule
+`rpt-theme.css` is one portable stylesheet: "report, preview, apply" for
+Material for MkDocs. It holds every generic rule
 (tokens, header, headings, navigation, code, stage pills, stage code titles,
 stage admonitions, home hero and cards, 404 page, print, reduced motion and
 forced colours) and nothing that names a site. A site adds its own tweaks in a
@@ -25,7 +25,7 @@ Tested against Material for MkDocs 9.7, MkDocs 1.6 and PyMdown Extensions 12.
 | From | What it is |
 | --- | --- |
 | `docs/stylesheets/theme/rpt-theme.css` | The theme. |
-| `docs/assets/fonts/` | The self-hosted IBM Plex woff2 files and their licence texts. The `@font-face` URLs in the theme are `../../assets/fonts/...`; change those six lines if the folder moves. |
+| `docs/assets/fonts/` | The self-hosted IBM Plex woff2 files and their licence texts. The `@font-face` URLs in the theme are `../../assets/fonts/...`; change those five lines if the folder moves. The fonts folder has its own `README.md` (provenance and checksums). |
 | `overrides/404.html` | The themed 404 page. It extends `main.html`. |
 | `overrides/main.html` | Adds the PNG favicon fallback, a typed SVG icon and the iOS icon. Keep only the `extrahead` block if you have no such files, or drop the file (the 404 page extends Material's own `main.html` then). |
 | `docs/assets/images/` (optional) | A logo and favicons. Material needs `theme.logo` and `theme.favicon` pointing at your own. |
@@ -69,8 +69,19 @@ markdown_extensions:
 ```
 
 `primary: custom` and `accent: custom` stop Material from applying a colour of
-its own. Add `stylesheets/theme/README.md` to `exclude_docs` so this file is
-not built as a page.
+its own. Add this file and the fonts folder's README to `exclude_docs` so they
+are not built as pages:
+
+```yaml
+exclude_docs: |
+  stylesheets/theme/README.md
+  assets/fonts/README.md
+```
+
+Both README files open with a breadcrumb link into this repository's own
+README. Excluded files are not link-checked, so a copy builds under
+`mkdocs build --strict` as it is. If you keep them as notes, replace the
+breadcrumb line with your own or delete it.
 
 ## Brand tokens
 
@@ -88,8 +99,14 @@ own stylesheet or edit the block. The smallest set (about ten per scheme):
 
 Keep these in step with a change: `--rpt-*-text` (text-safe variant of a stage
 colour), `--rpt-*-tint` (background of pills and titles), `--rpt-accent-hover`,
-`--rpt-accent-fill`, `--rpt-on-accent`, `--rpt-border`,
-`--rpt-control-border` and the `--rpt-syn-*` syntax colours. `--rpt-font-sans`
+`--rpt-accent-tint` (the accent behind hovered buttons), `--rpt-accent-fill`,
+`--rpt-on-accent`, `--rpt-border`, `--rpt-control-border` and the
+`--rpt-syn-*` syntax colours. Three derived tokens are plain colours that
+follow the brand, so retune them if it changes a lot: `--rpt-neutral-tint`
+(from the muted colour), `--rpt-grid-line` (the faint home page grid, from the
+text colour) and `--rpt-underline`. The underline follows `--rpt-accent`
+automatically in browsers with `color-mix()`; the value in the tokens block is
+only the fallback. `--rpt-font-sans`
 and `--rpt-font-mono` set the typefaces. The contrast table at the top of the
 theme gives the targets: 4.5:1 for text, 3:1 for control borders and other
 non-text parts.
@@ -103,6 +120,7 @@ non-text parts.
 | `.rpt-hero`, `.rpt-title`, `.rpt-lede`, `.rpt-actions` | Home page hero: block, h1, lede paragraph, button row. |
 | `.rpt-rule` | The decorative three-segment stage rule. Add `aria-hidden="true"`. |
 | `.rpt-stages`, `.rpt-stage`, `.rpt-stage--report`, `.rpt-stage--preview`, `.rpt-stage--apply` | Three-stage strip and its cards. |
+| `.grid.cards.cols-2` | Material's card grid in two columns from 40em (one column below). |
 | `.rpt-404`, `.rpt-steps`, `.rpt-step--report`, `.rpt-step--preview`, `.rpt-step--apply` | The 404 page and its three steps. |
 
 The admonition kinds `report`, `preview` and `apply` need no class. Material's

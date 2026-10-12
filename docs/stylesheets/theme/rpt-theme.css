@@ -43,6 +43,8 @@
      .rpt-rule                      the three-segment stage rule (decorative)
      .rpt-stages .rpt-stage .rpt-stage--report | --preview | --apply
                                     three-stage strip and its cards
+     .grid.cards.cols-2             two-column card grid (one column when
+                                    narrow); used with Material's .grid.cards
      .rpt-404 .rpt-steps .rpt-step--report | --preview | --apply
                                     404 page and its three steps
 
@@ -88,7 +90,7 @@
 /* ---- 1. Fonts (latin subset, self-hosted, OFL) -------------------------- */
 
 /* The URLs are relative to this file: docs/stylesheets/theme/ to
-   docs/assets/fonts/. Move the fonts folder and these six lines follow. */
+   docs/assets/fonts/. Move the fonts folder and these five lines follow. */
 
 @font-face {
   font-family: "IBM Plex Sans";
