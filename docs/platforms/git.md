@@ -14,15 +14,17 @@ ignore rules.
 
 ## Main scripts
 
+<!-- markdownlint-disable MD033 -->
+
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `git_whoami.sh` | Effective Git name and email; `--expect-email` enforces one. | read-only |
-| `git_status_summary.sh` | Branch, upstream, ahead/behind, dirty count. | read-only |
-| `git_repo_root.sh` | Worktree root, or git dir with `--git-dir`. | read-only |
-| `git_diff_branch.sh` | Diff from the merge base to `HEAD`. | read-only |
+| `git_whoami.sh` | Effective Git name and email; `--expect-email` enforces one. | <span class="stage stage-report">read-only</span> |
+| `git_status_summary.sh` | Branch, upstream, ahead/behind, dirty count. | <span class="stage stage-report">read-only</span> |
+| `git_repo_root.sh` | Worktree root, or git dir with `--git-dir`. | <span class="stage stage-report">read-only</span> |
+| `git_diff_branch.sh` | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
 | `git_recent_branches.sh` | Recently used branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
-| `git_stale_branches.sh` | Old branches with last committer and state. | read-only |
-| `git_size_report.sh` | Repository size and largest blobs. | read-only |
+| `git_stale_branches.sh` | Old branches with last committer and state. | <span class="stage stage-report">read-only</span> |
+| `git_size_report.sh` | Repository size and largest blobs. | <span class="stage stage-report">read-only</span> |
 | `gacp.sh` | `git add --all`, commit and push. | `--dry-run` |
 | `set_git_profile.sh` | Set or save Git author identity profiles. | `--dry-run` |
 | `git_sync_default.sh` | Fetch and fast-forward the default branch. | `--dry-run` |
@@ -32,11 +34,13 @@ ignore rules.
 | `git_amend_last.sh` | Amend the last commit. | `--dry-run` |
 | `git_hooks_install.sh` | `install`, `status`, `uninstall` pre-commit guards. | `--dry-run` |
 | `clone-repos.sh` | Clone every URL in a list file into one directory. | `--dry-run` |
-| `git_ssh_doctor.py` | Diagnose git-over-SSH auth. | read-only |
-| `git_signing_doctor.py` | Diagnose commit-signing failures. | read-only |
-| `git_remote_doctor.py` | Diagnose remote URLs and credential helpers. | read-only |
-| `git_ignore_doctor.py` | Explain why a path is or is not ignored. | read-only |
+| `git_ssh_doctor.py` | Diagnose git-over-SSH auth. | <span class="stage stage-report">read-only</span> |
+| `git_signing_doctor.py` | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
+| `git_remote_doctor.py` | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |
+| `git_ignore_doctor.py` | Explain why a path is or is not ignored. | <span class="stage stage-report">read-only</span> |
 | `git_aliases.sh`, `git_aliases.zsh` | Aliases for the helpers; sourced, not executed. | n/a |
+
+<!-- markdownlint-enable MD033 -->
 
 All paths are under `git/`.
 

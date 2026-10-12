@@ -18,10 +18,12 @@ backup, restore and compaction, and a Git Bash dotfiles installer.
 
 ## Main scripts
 
+<!-- markdownlint-disable MD033 -->
+
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `setup/status.ps1` | One-screen verdict; `-Only` selects sections, `-ListSections` lists them. | read-only |
-| `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy. | read-only |
+| `setup/status.ps1` | One-screen verdict; `-Only` selects sections, `-ListSections` lists them. | <span class="stage stage-report">read-only</span> |
+| `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
 | `setup/stay_fresh.ps1` | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `setup/winget_bootstrap.ps1` | `export`, `list`, `check`, `import`, `diff` of the winget package set. | `-DryRun` on `import` |
 | `setup/choco_bootstrap.ps1` | `export`, `list`, `check`, `install`, `diff` of Chocolatey packages. | `-DryRun` on `install` |
@@ -29,6 +31,8 @@ backup, restore and compaction, and a Git Bash dotfiles installer.
 | `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker. | `-DryRun`; `-Yes` to delete |
 | `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`. | `-DryRun` on `restore`, `prune-backups`, `terminate` |
 | `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
+
+<!-- markdownlint-enable MD033 -->
 
 All paths are under `windows/`.
 

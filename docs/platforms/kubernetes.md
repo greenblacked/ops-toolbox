@@ -17,14 +17,18 @@ only.
 
 ## Main scripts
 
+<!-- markdownlint-disable MD033 -->
+
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `kubectl_pod_diag.sh` | Triage unhealthy pods, Warning events and unbound PVCs. | read-only |
-| `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | read-only |
+| `kubectl_pod_diag.sh` | Triage unhealthy pods, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
+| `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
 | `run.sh` | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
 | `debug_pod.sh` | Attach an ephemeral debug container with `kubectl debug`. | `--dry-run` |
 | `debug/`, `examples/` | Sample manifests, applied by hand with `kubectl apply`. | n/a |
+
+<!-- markdownlint-enable MD033 -->
 
 All paths are under `k8s-toolbox/`.
 

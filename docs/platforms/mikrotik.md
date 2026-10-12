@@ -23,17 +23,21 @@ Router scripts are `.lua` files under `mikrotik/core/` and `mikrotik/features/`.
 They take no flags. See the [script overview](../scripts/index.md) for the
 full table.
 
+<!-- markdownlint-disable MD033 -->
+
 | Script | Purpose | Preview |
 | --- | --- | --- |
 | `core/tg_send.lua` | Telegram text helper used by the alerting scripts. | none (no flags) |
 | `core/backup_update_check.lua` | Back up, then notify of a newer RouterOS. | none (no flags) |
 | `features/backup.lua` | Dated backup and export. | none (no flags) |
-| `features/security_check.lua` | Read-only hardening audit sent to Telegram. | read-only |
+| `features/security_check.lua` | Read-only hardening audit sent to Telegram. | <span class="stage stage-report">read-only</span> |
 | `features/health_check.lua` | CPU, RAM, disk, temperature watchdog. | none (no flags) |
 | `features/export_config.py` | Host: export over SSH, diff, optional git commit. | `--stdout` or `--diff` |
-| `features/router_doctor.py` | Host: audit installed, scheduled and configured scripts. | read-only |
+| `features/router_doctor.py` | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `features/print_schedulers.sh` | Host: print scheduler commands. | prints only; contacts no router |
 | `features/pull_router_backups.sh` | Host: pull backups over SFTP/SCP. | `--dry-run` |
+
+<!-- markdownlint-enable MD033 -->
 
 ## Examples
 

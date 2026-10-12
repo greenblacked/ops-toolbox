@@ -19,15 +19,17 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 
 ## Main scripts
 
+<!-- markdownlint-disable MD033 -->
+
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `status.sh` | One-screen verdict; `--only` selects sections. | read-only |
-| `system_doctor.sh` | Long health report. | read-only |
-| `net_doctor.sh` | Interfaces, routes, DNS, listening sockets; `--probe HOST`. | read-only |
-| `hardening_audit.sh` | Security audit with the fix for each finding. | read-only |
-| `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | read-only |
-| `tls_expiry.sh` | Certificate expiry within `--days`. | read-only |
-| `schedule_report.sh` | systemd timers, user crontab, `cron.d`. | read-only |
+| `status.sh` | One-screen verdict; `--only` selects sections. | <span class="stage stage-report">read-only</span> |
+| `system_doctor.sh` | Long health report. | <span class="stage stage-report">read-only</span> |
+| `net_doctor.sh` | Interfaces, routes, DNS, listening sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
+| `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
+| `schedule_report.sh` | systemd timers, user crontab, `cron.d`. | <span class="stage stage-report">read-only</span> |
 | `sysctl_defaults.sh` | Report sysctl values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
@@ -37,6 +39,8 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `install_aliases.sh` | Add a marked block to `~/.bashrc`; `--status`, `--uninstall`. | `--dry-run` |
 | `systemd/stay_fresh_timer.sh` | systemd user timer for `stay_fresh.sh`. | `--dry-run` on `install`; `--print-only` |
 | `cloud-init/kali-vm-init.yaml` | cloud-init user-data for a Kali VM. Not a script. | validate with `cloud-init schema` |
+
+<!-- markdownlint-enable MD033 -->
 
 All paths are under `linux/`.
 
