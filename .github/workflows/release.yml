@@ -3,8 +3,8 @@ name: Release
 # Step two of cutting a release; release-prepare.yml is step one. The whole
 # process:
 #
-#   1. Feature pull requests merge to master, and every push to master
-#      deploys the stage site (docs.yml).
+#   1. Feature pull requests merge to dev; dev is merged into master (merge
+#      commit), and every push to master deploys the stage site (docs.yml).
 #   2. A release is prepared by release-prepare.yml, which pushes a
 #      release/<version> branch. A person opens the pull request from it, so
 #      it gets its checks, and merges it like any other change. That puts
