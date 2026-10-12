@@ -119,13 +119,19 @@ done
 # dev -> master and master -> dev carry bare branch names, so branch-name.yml
 # skips the check for exactly those two base/head pairs. check_branch_name.sh
 # must keep refusing the bare names (see "refused" above), so the exemption
-# lives in the workflow; pin it there.
+# lives in the workflow; pin it there, including the same-repository guard
+# that keeps a fork branch named dev or master checked.
 bn="$REPO_ROOT/.github/workflows/branch-name.yml"
 if grep -qF "github.base_ref == 'master' && github.head_ref == 'dev'" "$bn" \
    && grep -qF "github.base_ref == 'dev' && github.head_ref == 'master'" "$bn"; then
   ok "branch-name.yml exempts dev -> master and master -> dev"
 else
   err "branch-name.yml does not exempt the dev <-> master pull requests"
+fi
+if grep -qF "github.event.pull_request.head.repo.full_name == github.repository" "$bn"; then
+  ok "branch-name.yml exempts only same-repository pull requests"
+else
+  err "branch-name.yml does not restrict the exemption to this repository"
 fi
 if [[ "$(grep -cF "github.head_ref == " "$bn")" == 2 ]]; then
   ok "branch-name.yml exempts no other head branch"
