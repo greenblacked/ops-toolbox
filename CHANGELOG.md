@@ -22,6 +22,31 @@ existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-10-13
+
+### Changed
+
+- Feature branches now open pull requests into a long-lived `dev` branch.
+  A push to `dev` runs CI and Security, and one that touches the site also
+  runs the docs build, which uploads the built site as the `site-preview`
+  artifact for a private preview, with no deploy and no secrets (a manual
+  run on `dev` builds it too). Merging `dev` into `master` still deploys
+  the stage site, and a release is still cut from `master`. Dependency
+  pull requests target `dev`, the RouterOS bump included. The heading
+  anchors (the pilcrow links) are removed from the documentation site.
+
+- The documentation site design is refined and split into a portable theme.
+  The flat header carries a three-segment stage rule (report, preview,
+  apply), and the site name, tabs and breadcrumbs are set in mono. Code
+  blocks can take a stage-coloured title, and there are `report`, `preview`
+  and `apply` admonitions with their own icons. The home page hero gets the
+  stage rule and clearer buttons, and a missing page shows a themed 404.
+  Control borders now reach 3:1 contrast, small screens get 44px touch
+  targets, and print, reduced-motion and forced-colours styles are added. The
+  design lives in a portable theme (`docs/stylesheets/theme/`, with a README)
+  that other documentation repositories can copy, beside a small site
+  stylesheet.
+
 ## [0.1.2] - 2026-10-11
 
 ### Added
