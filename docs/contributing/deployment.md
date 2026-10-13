@@ -14,7 +14,7 @@ which deploys production. After a release, merge `master` back into `dev`.
 | Event | What happens | Where | GitHub environment |
 | --- | --- | --- | --- |
 | Pull request touching the site | `mkdocs build --strict`, then `wrangler deploy --dry-run`. No secrets, nothing deployed. | Nowhere | none |
-| Push to `dev` that touches the site (the paths `docs.yml` watches), including a merged pull request | Build, then upload the site as the `site-preview` artifact (7 days). No Cloudflare, no environment, no secrets: the maintainer publishes the artifact as a private preview for review. | The workflow run's artifacts | none |
+| Push to `dev` that touches the site (the paths `docs.yml` watches), including a merged pull request | Build, then upload the site as the `site-preview` artifact (7 days). No Cloudflare, no environment, no secrets: the maintainer publishes the artifact as a private preview for review. A push builds only when its own commit touches those paths, so a new `dev` branch, or a `dev` push that touches none, gives no preview: run `gh workflow run docs.yml --ref dev` to build one. | The workflow run's artifacts | none |
 | Push to `master` (the merged `dev` pull request) | Build, then a Worker Preview named `stage`. | <https://stage.ops.szolotov.com> | `staging` |
 | Release cut (the Release workflow, run by hand) | Build the tag, deploy, smoke-test, roll back on failure. | <https://ops.szolotov.com> | `production` |
 | `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API) | The same production deploy, to promote or redeploy a release by hand. | <https://ops.szolotov.com> | `production` |
@@ -332,7 +332,7 @@ curl -sS https://ops.szolotov.com/version.txt
 | --- | --- |
 | "set the CLOUDFLARE_API_TOKEN secret" | The secret or variable is missing from the environment. A called workflow gets a secret only if the caller passes it, so `release.yml` passes both by name to `docs.yml`; an environment secret not passed resolves to an empty string. Keep the values on the environments. |
 | Nothing deploys after a release | The tag already existed, so the release workflow skipped the call. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST call under Manual promote). A tag or release created with `GITHUB_TOKEN` starts no workflow of its own. |
-| "start a manual run from a release tag" | A manual run was started from a branch, or from a tag that does not match `v1.2.3`. Run `gh workflow run docs.yml --ref vX.Y.Z` (or the REST API call above); there is no tag input. |
+| "start a manual run from dev ... or from a release tag" | A manual run was started from a branch other than `dev`, or from a tag that does not match `v1.2.3`. Run `gh workflow run docs.yml --ref dev` for a site preview or `gh workflow run docs.yml --ref vX.Y.Z` for production (or the REST API call above); there is no tag input. |
 | A manual run is rejected by the environment | The `production` environment does not allow tags. Add the tag pattern `v*` to its deployment rules. |
 | "tag vX.Y.Z is ..., not the commit this run started on" | The release workflow called the deploy for a tag that points elsewhere: it was moved or deleted and recreated. Restore the tag and run again from it. |
 | The custom domain fails to attach | A DNS record already exists at `ops.szolotov.com`. A CI deploy replaces it; otherwise delete it in the dashboard. |
