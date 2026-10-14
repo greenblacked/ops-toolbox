@@ -92,7 +92,7 @@ What each group does:
 | `--include-dev-caches` | Clears the pip, npm, yarn and Go module caches. Lists files for the `~/.cache` pip, yarn and go-build directories; the `pip3`, `npm`, `yarn` and `go` purges are command only. |
 | `--include-journal` | Runs `journalctl --vacuum-time=<days>d` with `--days` (needs root). Command only in the dry run. |
 | `--include-pkg-cache` | Cleans the apt, dnf or pacman package cache (needs root). Command only in the dry run. |
-| `--include-docker` | Runs `docker system prune -f` and `podman system prune -f`. Each removes all stopped containers (and anything written inside them), unused networks, dangling images and build cache. Podman's prune also removes unused pods. Volumes are left alone. The dry run only prints the commands and does not list what would go; check first with `docker ps -a` and `docker system df`, and for Podman with `podman ps -a`, `podman pod ps` and `podman system df`. |
+| `--include-docker` | Runs `docker system prune -f` and `podman system prune -f`. Both remove all stopped containers (and anything written inside them), unused networks and dangling images. Docker's prune also removes unused build cache and Podman's also removes unused pods. Volumes are left alone. The dry run only prints the commands and does not list what would go; check first with `docker ps -a` and `docker system df`, and for Podman with `podman ps -a`, `podman pod ps` and `podman system df`. |
 | `--include-coredumps` (may need root) | Removes age-filtered core dumps from the systemd-coredump and apport directories. |
 
 The age filter (`--days`, default 7) applies only to temp files and core
