@@ -1,0 +1,150 @@
+# A Linux host is low on disk space
+
+<!-- markdownlint-disable MD033 -->
+
+**When to use:** the root filesystem of a Linux host is nearly full and you
+need space back now, without upgrading anything.
+
+## Symptoms
+
+- `linux/status.sh` warns that less than 20G is free on `/`, or
+  `linux/system_doctor.sh` warns that `/` is nearly full.
+- Writes fail with "No space left on device", or a service stops logging.
+- Creating files fails although `df -h` shows free space. That points at
+  inodes, not bytes; the doctor report checks inode use too.
+
+## Before you start
+
+- A shell on the host. The read-only reports need no `sudo`. The cleanup
+  steps that touch the journal or the package cache need root, and the
+  script uses `sudo` for them unless you pass `--no-sudo`.
+- The scripts. Work from a clone of the repository, or copy
+  `linux/status.sh`, `linux/system_doctor.sh` and `linux/disk_cleanup.sh`
+  onto the host; each works on its own. See
+  [Installation and usage](../getting-started/usage.md).
+- Bash 3.2+ on a Debian/Ubuntu, Fedora/RHEL or Arch host. More on the
+  scripts, their requirements and caveats is on the [Linux page](../platforms/linux.md).
+
+## Report
+
+<span class="stage stage-report">read-only</span>
+
+!!! report "Nothing changes in this step"
+    Both scripts only read state. Run them first and note the numbers.
+
+Get the one-screen verdict for the disk, then the long report with its hint
+for finding what is using the space:
+
+```{ .bash .rpt-report title="Report" }
+./linux/status.sh --only disk
+./linux/system_doctor.sh
+```
+
+When `/` is below the free-space threshold, `system_doctor.sh` prints a
+`du` command that lists the largest directories. Run it to see where the
+weight is. If a different mount (for example `/var`) is the full one, the
+report lists other real filesystems as well.
+
+Decide from what you find. If the space is held by your own data, logs you
+need, or application files, this runbook will not help: `disk_cleanup.sh`
+removes only temp files, caches and other data that is safe to lose, and
+never touches documents or downloads.
+
+## Preview
+
+<span class="stage stage-preview">dry run</span>
+
+!!! preview "Nothing is deleted"
+    `--dry-run` prints every deletion without running it.
+
+Start with the defaults, which are user-owned temp files older than seven
+days and thumbnail caches:
+
+```{ .bash .rpt-preview title="Preview" }
+./linux/disk_cleanup.sh --dry-run
+```
+
+The run ends with a `df -h /` view and a "would free at least" total. If
+that is not enough, add the opt-in groups one at a time and preview again:
+
+```{ .bash .rpt-preview title="Preview more" }
+./linux/disk_cleanup.sh --dry-run --include-trash --include-dev-caches
+./linux/disk_cleanup.sh --dry-run --include-journal --include-pkg-cache
+./linux/disk_cleanup.sh --dry-run --include-docker --include-coredumps
+```
+
+What each group does:
+
+| Flag | Effect |
+| --- | --- |
+| `--include-trash` | Empties `~/.local/share/Trash`. |
+| `--include-dev-caches` | Clears the pip, npm, yarn and Go module caches. |
+| `--include-journal` | Vacuums the systemd journal to `--days` days (needs root). |
+| `--include-pkg-cache` | Cleans the apt, dnf or pacman package cache (needs root). |
+| `--include-docker` | Runs `system prune -f` for Docker and Podman. Volumes are left alone. |
+| `--include-coredumps` | Removes age-filtered core dumps from the systemd-coredump and apport directories. |
+
+By default only files older than `--days` (7) are removed. `--days 0` removes
+without an age filter, and with `--include-journal` it removes the whole
+journal, including the logs that describe what filled the disk. Keep the
+journal until you have found the cause.
+
+## Apply
+
+<span class="stage stage-apply">changes things</span>
+
+!!! apply "Deletions are permanent"
+    A real run requires `--yes` and deletes files. Apply exactly the flags
+    you previewed.
+
+```{ .bash .rpt-apply title="Apply" }
+./linux/disk_cleanup.sh --yes
+```
+
+Or, with the groups you chose in the preview:
+
+```{ .bash .rpt-apply title="Apply with opt-in groups" }
+./linux/disk_cleanup.sh --yes --include-trash --include-dev-caches
+```
+
+Add `--no-sudo` to skip every step that needs root. The script exits `1` if
+one or more deletions failed and `0` otherwise.
+
+## Verify
+
+<span class="stage stage-report">read-only</span>
+
+The cleanup run ends with a `df -h /` view and a "freed at least" total.
+Confirm with the same reports you started with:
+
+```{ .bash .rpt-report title="Verify" }
+./linux/status.sh --only disk
+./linux/system_doctor.sh --quiet
+```
+
+`--quiet` prints only warnings, so no disk warning means the check passed. If `/` is still full, go back to the Report step and look
+at the largest directories again: the space is held by something this script
+does not remove.
+
+## Roll back
+
+Deleting is not reversible. `disk_cleanup.sh` has no backup and no `--revert`.
+What it removes is meant to be regenerable:
+
+- Temp files, thumbnails, package caches and dev caches are rebuilt by the
+  tools that use them.
+- Trash, journal entries, core dumps and unused container data are gone for
+  good once removed. `--include-docker` does not remove volumes.
+
+The only safeguard is the preview. If a deletion looks wrong there, do not
+apply it.
+
+## Related
+
+- [Linux platform page](../platforms/linux.md)
+- [Philosophy](../getting-started/philosophy.md): why every change starts
+  with a report and a preview
+- [`linux/` folder README](https://github.com/greenblacked/ops-toolbox/blob/master/linux/README.md)
+- [Scripts overview](../scripts/index.md)
+
+<!-- markdownlint-enable MD033 -->
