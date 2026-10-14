@@ -72,7 +72,8 @@ command and lists nothing: the journal vacuum, the package cache clean, the
 `pip3`, `npm`, `yarn` and `go` cache purges, and the Docker and Podman
 prune. Their sizes are not in the "would free at least" total.
 
-The run ends with a `df -h /` view and that total. If that is not enough, add the opt-in groups one at a time and preview again:
+The run ends with a `df -h /` view and that total. If that is not enough,
+add the opt-in groups one at a time and preview again:
 
 ```{ .bash .rpt-preview title="Preview more" }
 ./linux/disk_cleanup.sh --dry-run --include-trash --include-dev-caches
