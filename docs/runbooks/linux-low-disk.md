@@ -16,8 +16,8 @@ need space back now, without upgrading anything.
 ## Before you start
 
 - A shell on the host. The read-only reports need no `sudo`. The cleanup
-  steps that touch the journal or the package cache need root, and the
-  script uses `sudo` for them unless you pass `--no-sudo`.
+  steps that touch the journal, the package cache or core dumps may need
+  root, and the script uses `sudo` for them unless you pass `--no-sudo`.
 - The scripts. Work from a clone of the repository, or copy
   `linux/status.sh`, `linux/system_doctor.sh` and `linux/disk_cleanup.sh`
   onto the host; each works on its own. See
@@ -81,13 +81,17 @@ What each group does:
 | `--include-dev-caches` | Clears the pip, npm, yarn and Go module caches. |
 | `--include-journal` | Vacuums the systemd journal to `--days` days (needs root). |
 | `--include-pkg-cache` | Cleans the apt, dnf or pacman package cache (needs root). |
-| `--include-docker` | Runs `system prune -f` for Docker and Podman. Volumes are left alone. |
-| `--include-coredumps` | Removes age-filtered core dumps from the systemd-coredump and apport directories. |
+| `--include-docker` | Runs `system prune -f` for Docker and Podman. It removes all stopped containers (and anything written inside them), unused networks, dangling images and build cache. Volumes are left alone. The dry run only prints the command and does not list what would go; check first with `docker ps -a` and `docker system df`. |
+| `--include-coredumps` (may need root) | Removes age-filtered core dumps from the systemd-coredump and apport directories. |
 
-By default only files older than `--days` (7) are removed. `--days 0` removes
-without an age filter, and with `--include-journal` it removes the whole
-journal, including the logs that describe what filled the disk. Keep the
-journal until you have found the cause.
+The age filter (`--days`, default 7) applies only to temp files and core
+dumps. Thumbnails, trash, dev caches, the package cache and the container
+prune remove everything regardless of age. `--days 0` drops the age filter
+altogether: a real run then deletes every temp file you own in `/tmp` and
+`$TMPDIR`, including files that running programs are using right now, and
+with `--include-journal` it removes the whole journal, including the logs
+that describe what filled the disk. Keep the journal until you have found
+the cause.
 
 ## Apply
 
@@ -107,8 +111,11 @@ Or, with the groups you chose in the preview:
 ./linux/disk_cleanup.sh --yes --include-trash --include-dev-caches
 ```
 
-Add `--no-sudo` to skip every step that needs root. The script exits `1` if
-one or more deletions failed and `0` otherwise.
+Add `--no-sudo` to skip every step that needs root. Exit codes: `0` success,
+`1` one or more deletions failed, `2` preflight failed (not Linux, or
+`$HOME` unset), `3` bad arguments (including a real run without `--yes`).
+A failed pip, npm, yarn or Go cache purge only prints a warning and still
+exits `0`, so check the output as well as the exit code.
 
 ## Verify
 
@@ -131,10 +138,12 @@ does not remove.
 Deleting is not reversible. `disk_cleanup.sh` has no backup and no `--revert`.
 What it removes is meant to be regenerable:
 
-- Temp files, thumbnails, package caches and dev caches are rebuilt by the
-  tools that use them.
-- Trash, journal entries, core dumps and unused container data are gone for
-  good once removed. `--include-docker` does not remove volumes.
+- Thumbnails, package caches and dev caches are rebuilt by the tools that
+  use them. Temp files are disposable, not rebuilt: any that a running
+  program still needed are lost.
+- Trash, journal entries, core dumps and stopped containers (with anything
+  written inside them) are gone for good once removed and cannot be
+  recovered. `--include-docker` does not remove volumes.
 
 The only safeguard is the preview. If a deletion looks wrong there, do not
 apply it.
