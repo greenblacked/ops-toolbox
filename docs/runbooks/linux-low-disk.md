@@ -92,7 +92,7 @@ What each group does:
 | `--include-dev-caches` | Clears the pip, npm, yarn and Go module caches. Lists files for the `~/.cache` pip, yarn and go-build directories; the `pip3`, `npm`, `yarn` and `go` purges are command only. |
 | `--include-journal` | Runs `journalctl --vacuum-time=<days>d` with `--days` (needs root). Command only in the dry run. |
 | `--include-pkg-cache` | Cleans the apt, dnf or pacman package cache (needs root). Command only in the dry run. |
-| `--include-docker` | Runs `system prune -f` for Docker and Podman. It removes all stopped containers (and anything written inside them), unused networks, dangling images and build cache. Volumes are left alone. The dry run only prints the command and does not list what would go; check first with `docker ps -a` and `docker system df`. |
+| `--include-docker` | Runs `docker system prune -f` and `podman system prune -f`. Each removes all stopped containers (and anything written inside them), unused networks, dangling images and build cache. Podman's prune also removes unused pods. Volumes are left alone. The dry run only prints the commands and does not list what would go; check first with `docker ps -a` and `docker system df`, and for Podman with `podman ps -a`, `podman pod ps` and `podman system df`. |
 | `--include-coredumps` (may need root) | Removes age-filtered core dumps from the systemd-coredump and apport directories. |
 
 The age filter (`--days`, default 7) applies only to temp files and core
@@ -135,8 +135,13 @@ Or, with the groups you chose in the preview:
 Add `--no-sudo` to skip every step that needs root. Exit codes: `0` success,
 `1` one or more deletions failed, `2` preflight failed (not Linux, or
 `$HOME` unset), `3` bad arguments (including a real run without `--yes`).
-A failed pip, npm, yarn or Go cache purge only prints a warning and still
-exits `0`, so check the output as well as the exit code.
+
+Exit `0` does not mean every group you asked for ran. A group that is
+skipped with only a warning still exits `0`: no `journalctl`, an unsupported
+package manager, Docker not running, or no root (`sudo` missing or
+`--no-sudo`) for a root step. A failed pip, npm, yarn or Go cache purge also
+only prints a warning and exits `0`. Read every warning and skip notice in
+the output, not just the exit code.
 
 ## Verify
 
