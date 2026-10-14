@@ -55,7 +55,8 @@ never touches documents or downloads.
 <span class="stage stage-preview">dry run</span>
 
 !!! preview "Nothing is deleted"
-    `--dry-run` prints every deletion without running it.
+    `--dry-run` deletes nothing. It lists the individual files it would
+    remove, and for some groups it only prints the command it would run.
 
 Start with the defaults, which are user-owned temp files older than seven
 days and thumbnail caches:
@@ -64,8 +65,14 @@ days and thumbnail caches:
 ./linux/disk_cleanup.sh --dry-run
 ```
 
-The run ends with a `df -h /` view and a "would free at least" total. If
-that is not enough, add the opt-in groups one at a time and preview again:
+For temp files, thumbnails, trash, core dumps and the pip, yarn and Go cache
+directories under `~/.cache`, the dry run lists each candidate path with its
+size. These groups run a command instead, so the dry run prints only the
+command and lists nothing: the journal vacuum, the package cache clean, the
+`pip3`, `npm`, `yarn` and `go` cache purges, and the Docker and Podman
+prune. Their sizes are not in the "would free at least" total.
+
+The run ends with a `df -h /` view and that total. If that is not enough, add the opt-in groups one at a time and preview again:
 
 ```{ .bash .rpt-preview title="Preview more" }
 ./linux/disk_cleanup.sh --dry-run --include-trash --include-dev-caches
@@ -78,20 +85,28 @@ What each group does:
 | Flag | Effect |
 | --- | --- |
 | `--include-trash` | Empties `~/.local/share/Trash`. |
-| `--include-dev-caches` | Clears the pip, npm, yarn and Go module caches. |
-| `--include-journal` | Vacuums the systemd journal to `--days` days (needs root). |
-| `--include-pkg-cache` | Cleans the apt, dnf or pacman package cache (needs root). |
+| `--include-dev-caches` | Clears the pip, npm, yarn and Go module caches. Lists files for the `~/.cache` pip, yarn and go-build directories; the `pip3`, `npm`, `yarn` and `go` purges are command only. |
+| `--include-journal` | Runs `journalctl --vacuum-time=<days>d` with `--days` (needs root). Command only in the dry run. |
+| `--include-pkg-cache` | Cleans the apt, dnf or pacman package cache (needs root). Command only in the dry run. |
 | `--include-docker` | Runs `system prune -f` for Docker and Podman. It removes all stopped containers (and anything written inside them), unused networks, dangling images and build cache. Volumes are left alone. The dry run only prints the command and does not list what would go; check first with `docker ps -a` and `docker system df`. |
 | `--include-coredumps` (may need root) | Removes age-filtered core dumps from the systemd-coredump and apport directories. |
 
 The age filter (`--days`, default 7) applies only to temp files and core
 dumps. Thumbnails, trash, dev caches, the package cache and the container
-prune remove everything regardless of age. `--days 0` drops the age filter
-altogether: a real run then deletes every temp file you own in `/tmp` and
-`$TMPDIR`, including files that running programs are using right now, and
-with `--include-journal` it removes the whole journal, including the logs
-that describe what filled the disk. Keep the journal until you have found
-the cause.
+prune remove everything regardless of age. The journal vacuum uses `--days`
+as its age limit, so it keeps recent entries.
+
+`--days 0` drops the age filter for temp files and core dumps: a real run
+then deletes every temp file you own in `/tmp` and `$TMPDIR`, including
+files that running programs are using right now. With `--include-journal`
+it passes `--vacuum-time=0d` to `journalctl`. The script does not run
+`journalctl --rotate`, and `journalctl` vacuuming acts only on archived
+journal files, never on the active ones. Its documentation treats a value of
+0 as no limit, so this may free little or nothing. Do not count on it to
+free space, and do not rely on it to empty the journal. Look at the size
+first with `journalctl --disk-usage`. Rotating the journal (`journalctl
+--rotate`) archives the active files; that is a separate manual step the
+script does not take. Keep the journal until you have found the cause.
 
 ## Apply
 
