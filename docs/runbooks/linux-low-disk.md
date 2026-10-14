@@ -67,11 +67,13 @@ days and thumbnail caches:
 
 For temp files, thumbnails, trash, core dumps and the pip, yarn and Go cache
 directories under `~/.cache`, the dry run lists each candidate path, with a
-size for each file. These groups run a command instead, so the dry run prints
-only the command, or a skip notice when the tool is missing or root is
-unavailable, and lists nothing: the journal vacuum, the package cache clean,
-the `pip3`, `npm`, `yarn` and `go` cache purges, and the Docker and Podman
-prune. Their sizes are not in the "would free at least" total.
+size for each file. These groups run a command instead, so the dry run
+prints only the command, a skip notice (no root, no `journalctl` or package
+manager, Docker not running), or nothing for a `pip3`, `npm`, `yarn`, `go` or
+Podman that is not installed, and lists nothing: the journal vacuum, the
+package cache clean, the `pip3`, `npm`, `yarn` and `go` cache purges, and the
+Docker and Podman prune. Their sizes are not in the "would free at least"
+total.
 
 The run ends with a `df -h /` view and that total. If that is not enough,
 add the opt-in groups one at a time and preview again:
@@ -106,11 +108,11 @@ that this "removes the entire journal", but that overstates what the command
 does. The script does not run `journalctl --rotate`, and `journalctl`
 vacuuming acts only on archived journal files, never on the active ones. Its
 documentation treats a value of 0 as no limit, so this may free little or
-nothing. Do not count on it to
-free space, and do not rely on it to empty the journal. Look at the size
-first with `journalctl --disk-usage`. Rotating the journal (`journalctl
---rotate`) archives the active files; that is a separate manual step the
-script does not take. Keep the journal until you have found the cause.
+nothing. Do not count on it to free space, and do not rely on it to empty the
+journal. Look at the size first with `journalctl --disk-usage`. Rotating the
+journal (`journalctl --rotate`) archives the active files; that is a separate
+manual step the script does not take. Keep the journal until you have found
+the cause.
 
 ## Apply
 
