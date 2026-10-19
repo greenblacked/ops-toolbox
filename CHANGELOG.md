@@ -22,6 +22,23 @@ existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-19
+
+### Added
+
+- The docs site has a Runbooks section. Each page walks one incident through
+  report, preview and apply with commands the scripts really support. The
+  first covers a Linux host low on disk space, using `linux/status.sh`,
+  `linux/system_doctor.sh` and `linux/disk_cleanup.sh`.
+
+### Fixed
+
+- The low-disk runbook now says that `--include-docker` also prunes Podman,
+  including unused pods and dangling build cache, and lists the Podman
+  checks to run first. It also warns that `disk_cleanup.sh` exits `0` when a
+  requested group is skipped with only a warning, so the output needs
+  reading as well as the exit code.
+
 ## [0.1.3] - 2026-10-13
 
 ### Changed
