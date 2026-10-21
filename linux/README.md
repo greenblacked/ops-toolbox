@@ -39,6 +39,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [`sysctl_defaults.sh`](#sysctl_defaultssh)
 - [`tls_expiry.sh`](#tls_expirysh)
 - [`log_triage.sh`](#log_triagesh)
+- [`container_doctor.sh`](#container_doctorsh)
 - [`config_backup.sh`](#config_backupsh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [Scoped runs and kernel checks](#scoped-runs-and-kernel-checks)
@@ -56,6 +57,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, host keys, updates, kernel controls |
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
+| [`container_doctor.sh`](container_doctor.sh) | Read-only Docker/Podman grading: restart loops, OOM kills, socket mounts, uncapped logs |
 | [`log_triage.sh`](log_triage.sh) | Read-only log summary since `--since`: kernel distress, noisiest identifiers, failed logins, repeats |
 | [`sysctl_defaults.sh`](sysctl_defaults.sh) | Report/apply/revert a short sysctl list (inotify watches, swappiness) |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
@@ -124,6 +126,7 @@ Read the machine without touching it:
 ./ssh_client_doctor.sh      # is ~/.ssh something ssh will actually use?
 ./tls_expiry.sh --file /etc/ssl/private/example.pem
 ./log_triage.sh             # what has been going wrong lately?
+./container_doctor.sh       # which container is misbehaving or filling the disk?
 ./sysctl_defaults.sh        # current vs desired sysctl values
 ./schedule_report.sh        # what is scheduled to run?
 ```
@@ -159,6 +162,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When `Permission denied (publickey)` and the key is on disk | nothing — it only reads |
 | **Diagnose** | `tls_expiry.sh` | Monthly, or from cron | nothing — it only reads |
+| **Diagnose** | `container_doctor.sh` | When a container host pages, or `/var/lib/docker` fills | nothing — it only reads |
 | **Diagnose** | `log_triage.sh` | After an incident, or on a box you have just been handed | nothing — it only reads |
 
 `stay_fresh.sh` assumes a supported package manager but degrades if optional
@@ -577,6 +581,47 @@ Name every PEM or hostname you actually serve:
 clients do. Missing `openssl` is exit `2`; `--help` and a missing `--file`
 still work without it.
 
+## `container_doctor.sh`
+
+`system_doctor.sh` counts containers and prints `system df`. The things that
+page somebody are not in that count: a container in a restart loop, one the
+kernel OOM-killed, an unhealthy healthcheck, a `json-file` log with no size cap
+filling `/var/lib/docker`, a privileged container, or one with the engine
+socket mounted, which is root on the host by another name. This grades them,
+one `inspect` per container, and prints the command to look closer or the
+change to make.
+
+```bash
+./container_doctor.sh                       # docker, or podman if docker does not answer
+./container_doctor.sh --engine podman
+./container_doctor.sh --only state,logs
+./container_doctor.sh --restart-threshold 5 --log-warn-mb 1024
+sudo ./container_doctor.sh                  # log files under /var/lib/docker need root to size
+./container_doctor.sh --fail-on fail        # exit 1 on any FAIL, for cron or CI
+```
+
+| Group | Graded |
+| --- | --- |
+| `state` | restarting, or at least `--restart-threshold` restarts (warn); OOM-killed (FAIL); unhealthy healthcheck (FAIL); exited non-zero with no restart policy (warn) |
+| `security` | privileged (warn); `docker.sock` or `podman.sock` mounted (FAIL); host network and containers with no `USER` (info) |
+| `resources` | running containers with no memory limit (info, up to five named) |
+| `logs` | `json-file` with no `max-size` in the container or the daemon default (warn); a log at or above `--log-warn-mb` MiB (FAIL) |
+| `images` | dangling images and the `system df` image row (info); containers on `latest` or an untagged image (info) |
+
+It changes nothing. The engine verbs it runs are `info`, `version`, `ps`,
+`inspect`, `images` and `system df`, each under `timeout 10` when timeout(1)
+exists, so a wedged daemon cannot hang it. Fixes such as the `daemon.json`
+`log-opts` block are printed, never written; the daemon file is only read
+(`DOCKER_DAEMON_JSON` points the check at another file). Container names and
+image strings have control characters stripped before they are printed.
+Neither engine installed is a `skip`; installed but not answering is a `warn`
+with the two usual causes. Cleaning up is a separate, previewed step:
+`disk_cleanup.sh --dry-run --include-docker`.
+
+`--fail-on` defaults to `never`, so like `system_doctor.sh` it reads rather
+than gates. Exit codes: `0` report printed, `1` findings at or above
+`--fail-on`, `2` not Linux, `3` usage, `4` `--only` selected nothing.
+
 ## `log_triage.sh`
 
 `system_doctor.sh` says whether the machine is well now, and shows at most
@@ -752,7 +797,8 @@ and revert against a fake procfs without touching `/etc`, that
 that `tls_expiry.sh` treats a committed expired PEM as a failure when
 `openssl` is present (and as exit `2` when it is not), and that
 `log_triage.sh` parses a stub journal and auth log without ever passing
-journalctl anything but reads.
+journalctl anything but reads, and that `container_doctor.sh` grades a stub
+engine's containers while running only read-only engine verbs.
 
 Discovery is by `find`, two levels deep, so `systemd/` is covered as well.
 A container has no user manager, so the timer can only be exercised through

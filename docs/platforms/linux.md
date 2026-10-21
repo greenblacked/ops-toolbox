@@ -29,6 +29,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
+| `container_doctor.sh` | Restart loops, OOM kills, socket mounts, uncapped container logs. | <span class="stage stage-report">read-only</span> |
 | `log_triage.sh` | Kernel distress, noisiest units, failed logins and repeats since `--since`. | <span class="stage stage-report">read-only</span> |
 | `schedule_report.sh` | systemd timers, user crontab, `cron.d`. | <span class="stage stage-report">read-only</span> |
 | `sysctl_defaults.sh` | Report sysctl values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |

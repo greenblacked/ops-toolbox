@@ -39,7 +39,7 @@ rmdir "$tmp_probe"
 # bites: disk_cleanup.sh deleted its thumbnails even when --home pointed the run
 # at a scratch profile, so running this suite on a desktop Linux box emptied the
 # developer's real cache. Every test that needs one of these supplies it itself.
-unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG
+unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG DOCKER_DAEMON_JSON
 # SYSTEMD_ANALYZE_CMD names a binary stay_fresh_timer.sh executes to verify the
 # units it writes. Exported, it aims that execution at whatever the host says,
 # which is the worst of this class: not a path the run reads, a command the run
@@ -808,6 +808,114 @@ assert_eq "system_doctor with pending upgrades exits 0" "0" "$rc"
 assert_contains "system_doctor counts the pending upgrades" "$out" "2 pending upgrade(s)"
 assert_contains "system_doctor prints the hint beside the count" "$out" "preview: stay_fresh.sh --dry-run"
 rm -rf "$doctor_stub"
+
+section "container_doctor.sh"
+CDOC="$L/container_doctor.sh"
+scratch_home="$(mktemp -d)"
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$CDOC" 2>&1)"; rc=$?
+assert_eq "container_doctor exits 0 with almost nothing installed" "0" "$rc"
+assert_contains "container_doctor prints a summary" "$out" "== summary =="
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "container_doctor wrote nothing"
+else
+  err "container_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+for bad in "--engine nosuch" "--restart-threshold 0" "--log-warn-mb abc" "--fail-on sometimes" "--only nosuch" "--bogus"; do
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$CDOC" $bad >/dev/null 2>&1
+  rc=$?
+  assert_eq "container_doctor rejects $bad -> 3" "3" "$rc"
+done
+"$CDOC" --only , >/dev/null 2>&1; rc=$?
+assert_eq "container_doctor --only empty selection -> 4" "4" "$rc"
+cdoc_groups="$("$CDOC" --list-groups)"
+for g in state security resources logs images; do
+  assert_contains "container_doctor lists group $g" "$cdoc_groups" "$g"
+done
+
+# No tester image runs a container engine, so a stub docker ahead of PATH
+# answers with fixture rows in the shape the inspect template asks for, and
+# records every argv it is given. c1 is in a restart loop; c2 was OOM-killed,
+# runs privileged with the engine socket mounted and an uncapped json-file log
+# that is already 600 MiB (a sparse file); c3 is healthy, limited and capped.
+cdoc_stub="$(mktemp -d)"
+cat > "$cdoc_stub/docker" <<'STUB'
+#!/usr/bin/env bash
+here="${0%/*}"
+printf '%s\n' "$*" >> "$here/argv.log"
+case "$1" in
+  info)    [[ -e "$here/info-fails" ]] && exit 1; exit 0 ;;
+  version) exit 0 ;;
+  ps)      printf 'c1\nc2\nc3\n' ;;
+  inspect)
+    for last in "$@"; do :; done
+    [[ -f "$here/$last.row" ]] && cat "$here/$last.row"
+    ;;
+  images)  printf 'aaa111\nbbb222\n' ;;
+  system)
+    printf 'TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\n'
+    printf 'Images          4         2         1.2GB     800MB (66%%)\n'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$cdoc_stub/docker"
+cdoc_log="$cdoc_stub/c2-json.log"
+truncate -s 600M "$cdoc_log"
+tab=$'\t'
+printf '%s\n' "/web${tab}running${tab}0${tab}9${tab}false${tab}-${tab}false${tab}bridge${tab}268435456${tab}always${tab}-${tab}json-file${tab}{\"max-size\":\"10m\"}${tab}-${tab}nginx:1.27${tab}-" > "$cdoc_stub/c1.row"
+printf '%s\n' "/worker${tab}exited${tab}137${tab}0${tab}true${tab}-${tab}true${tab}bridge${tab}0${tab}no${tab}-${tab}json-file${tab}{}${tab}$cdoc_log${tab}worker:latest${tab}-,/var/run/docker.sock" > "$cdoc_stub/c2.row"
+printf '%s\n' "/db${tab}running${tab}0${tab}0${tab}false${tab}healthy${tab}false${tab}bridge${tab}536870912${tab}unless-stopped${tab}postgres${tab}json-file${tab}{\"max-file\":\"3\",\"max-size\":\"10m\"}${tab}-${tab}postgres:16${tab}-,/srv/db" > "$cdoc_stub/c3.row"
+printf '{ "log-driver": "json-file" }\n' > "$cdoc_stub/daemon-uncapped.json"
+printf '{ "log-driver": "json-file", "log-opts": { "max-size": "10m" } }\n' > "$cdoc_stub/daemon-capped.json"
+
+out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" 2>&1)"; rc=$?
+assert_eq "container_doctor reads rather than gates by default" "0" "$rc"
+assert_contains "container_doctor flags the restart loop" "$out" "web is restarting"
+assert_contains "container_doctor fails an OOM-killed container" "$out" "worker was OOM-killed"
+assert_contains "container_doctor grades OOM as [FAIL]" "$out" "[FAIL]"
+assert_contains "container_doctor fails an engine socket mount" "$out" "docker.sock"
+assert_contains "container_doctor warns on a privileged container" "$out" "worker runs privileged"
+assert_contains "container_doctor warns on an uncapped json-file log" "$out" "unbounded"
+assert_contains "container_doctor sizes a log past --log-warn-mb" "$out" "worker log is 600M"
+assert_contains "container_doctor counts dangling images" "$out" "2 dangling image(s)"
+assert_contains "container_doctor counts latest-tagged images" "$out" "worker"
+assert_not_contains "container_doctor leaves the healthy container alone" "$out" "db is restarting"
+
+out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-capped.json" "$CDOC" --only logs 2>&1)"
+assert_not_contains "container_doctor honours a daemon-wide max-size" "$out" "unbounded"
+assert_not_contains "container_doctor --only logs leaves state out" "$out" "== state =="
+
+PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --fail-on fail >/dev/null 2>&1; rc=$?
+assert_eq "container_doctor --fail-on fail exits 1 on a FAIL" "1" "$rc"
+PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --fail-on never >/dev/null 2>&1; rc=$?
+assert_eq "container_doctor --fail-on never stays 0" "0" "$rc"
+
+cdoc_argv="$(cat "$cdoc_stub/argv.log" 2>/dev/null || true)"
+assert_contains "container_doctor inspected the containers" "$cdoc_argv" "inspect"
+if grep -qE '^(rm|rmi|stop|kill|prune|exec|run|start|restart|update|create|commit|cp|pause|system prune|image prune|volume|network) ' <<<"$cdoc_argv"; then
+  err "container_doctor ran an engine verb that changes something"
+else
+  ok "container_doctor ran only read-only engine verbs"
+fi
+
+: > "$cdoc_stub/info-fails"
+out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --engine docker 2>&1)"; rc=$?
+assert_eq "container_doctor with an unreachable daemon exits 0" "0" "$rc"
+assert_contains "container_doctor says the daemon is not reachable" "$out" "not reachable"
+
+# No engine at all: PATH holds only the tools the script reads with.
+cdoc_bin="$(mktemp -d)"
+for tool in bash awk sort grep head tr sed stat wc cat uname id; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ "$tool_path" == /* ]] && ln -s "$tool_path" "$cdoc_bin/$tool"
+done
+out="$(PATH="$cdoc_bin" "$CDOC" 2>&1)"; rc=$?
+assert_eq "container_doctor without an engine exits 0" "0" "$rc"
+assert_contains "container_doctor skips when no engine is installed" "$out" "neither docker nor podman is installed"
+rm -rf "$cdoc_stub" "$cdoc_bin"
 
 section "install_aliases.sh"
 # The whole point of this script is that a second run does not append a
