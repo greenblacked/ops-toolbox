@@ -41,6 +41,7 @@ the environment).
 # From a Git Bash window, in a checkout of this repository:
 ./windows/git-bash/install_dotfiles.sh --dry-run
 ./windows/git-bash/install_dotfiles.sh --status
+./windows/git-bash/install_dotfiles.sh --diff
 ./windows/git-bash/install_dotfiles.sh
 ```
 
@@ -53,7 +54,10 @@ cp windows/git-bash/.bashrc windows/git-bash/.bash_profile windows/git-bash/.ali
 If you already have a `~/.bashrc`, `~/.bash_profile`, or `~/.aliases`, diff
 first and merge by hand instead of overwriting — in particular, keep
 anything you have under a "local overrides" section, or move it into
-`~/.bashrc.local` (see below). The script keeps a timestamped backup of
+`~/.bashrc.local` (see below). `install_dotfiles.sh --diff` is that diff: a
+`-` line is something of yours the install would remove, a `+` line what it
+would add. It prints to the terminal only, and your files can hold tokens,
+which is one more reason they belong in `~/.bashrc.local`. The script keeps a timestamped backup of
 anything it replaces, but a backup is not a merge.
 
 Then open a new Git Bash window (or `source ~/.bash_profile` in the current
@@ -71,6 +75,7 @@ those two checks in front of it.
 | --- | --- |
 | `--dry-run` | Print what would be copied and backed up; write nothing |
 | `--status` | Print `MATCH`, `DRIFT`, or `MISSING` per target; exit `4` on drift |
+| `--diff` | The same report plus a unified diff (`installed:` against `repo:`) for each drifted target; writes nothing; exit `4` on drift |
 | `--force` | Install even when a source file has CRLF line endings |
 | `--source DIR` | Copy from `DIR` instead of the folder holding the script |
 | `--home DIR` | Copy into `DIR` instead of `$HOME` |
@@ -124,9 +129,9 @@ files, so they work from a copy of the script with no checkout beside it.
 They are separate modes: combining two, or `--status` with one, exits `3`.
 
 Exit codes: `0` success/current, `1` CRLF line endings in a source file, `2`
-wrong environment (no source files, or no target directory), `3` usage, `4`
-`--status` found at least one missing or different target, or there are no
-backups to list or restore.
+wrong environment (no source files, no target directory, or no `diff` on
+`PATH` for `--diff`), `3` usage, `4` `--status` or `--diff` found at least one
+missing or different target, or there are no backups to list or restore.
 
 ## `gitbash_doctor.sh`
 

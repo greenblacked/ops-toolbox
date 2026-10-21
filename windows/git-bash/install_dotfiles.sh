@@ -9,6 +9,10 @@
 # (README.md, "Troubleshooting", has the full story). This does the same copy
 # with those two checks in front of it.
 #
+# --status says whether each installed file matches; --diff shows how it does
+# not, so local edits worth keeping can be moved to ~/.bashrc.local before an
+# install replaces them.
+#
 # Every install leaves <name>.backup-<stamp> files behind, so it also offers
 # the way back: --list-backups shows the sets, --restore puts one back (saving
 # what it replaces as a new set first, so a rollback is itself undoable), and
@@ -34,6 +38,7 @@ err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
 DRY_RUN=0
 FORCE=0
 STATUS=0
+DIFF=0
 LIST_BACKUPS=0
 RESTORE_STAMP=""
 PRUNE_KEEP=""
@@ -53,7 +58,7 @@ usage() {
 install_dotfiles.sh - install the Git Bash dotfiles into \$HOME
 
 Usage:
-  $(basename "$0") [--dry-run | --status] [--force] [--source DIR] [--home DIR]
+  $(basename "$0") [--dry-run | --status | --diff] [--force] [--source DIR] [--home DIR]
   $(basename "$0") --list-backups [--home DIR]
   $(basename "$0") --restore STAMP|latest [--dry-run] [--home DIR]
   $(basename "$0") --prune-backups N [--yes | --dry-run] [--home DIR]
@@ -61,6 +66,9 @@ Usage:
 Options:
   --dry-run           Show what would be copied without writing anything
   --status            Report MATCH / DRIFT / MISSING for each target; write nothing
+  --diff              As --status, plus a unified diff of each drifted target
+                      against its source ('-' lines an install would remove);
+                      write nothing
   --force             Install even if a source file has CRLF line endings
   --source DIR        Copy from DIR (default: the folder holding this script)
   --home DIR          Copy into DIR (default: \$HOME)
@@ -75,13 +83,14 @@ Options:
 
 Installs: $DOTFILES
 An existing file is copied to <name>.backup-<timestamp> before being replaced;
-a file that already matches the source is left alone. --status, --list-backups,
---restore and --prune-backups are separate modes; pass one at most.
+a file that already matches the source is left alone. --status, --diff,
+--list-backups, --restore and --prune-backups are separate modes; pass one at
+most.
 
 Exit codes: 0 success/current, 1 CRLF line endings in a source file, 2 wrong
-environment (no source files, or no target directory), 3 usage, 4 status found
-one or more missing or different target files, or there are no backups to
-list or restore
+environment (no source files, no target directory, or no diff), 3 usage,
+4 --status or --diff found one or more missing or different target files, or
+there are no backups to list or restore
 EOF
 }
 
@@ -104,6 +113,7 @@ while (( $# > 0 )); do
     -h|--help)  usage; exit 0 ;;
     --dry-run)  DRY_RUN=1 ;;
     --status)   STATUS=1 ;;
+    --diff)     DIFF=1 ;;
     --force)    FORCE=1 ;;
     --source)   require_value "$1" "${2:-}"; SOURCE_DIR="$2"; shift ;;
     --source=*) SOURCE_DIR="${1#*=}"; require_value "--source" "$SOURCE_DIR" ;;
@@ -128,6 +138,10 @@ if (( DRY_RUN == 1 && STATUS == 1 )); then
   err "--dry-run and --status are separate read-only modes; choose one"
   exit 3
 fi
+if (( DRY_RUN == 1 && DIFF == 1 )); then
+  err "--dry-run and --diff are separate read-only modes; choose one"
+  exit 3
+fi
 if (( DRY_RUN == 1 && LIST_BACKUPS == 1 )); then
   err "--dry-run and --list-backups are separate read-only modes; choose one"
   exit 3
@@ -137,6 +151,7 @@ fi
 # a listing turns into a deletion.
 modes=()
 (( STATUS == 1 )) && modes+=("--status")
+(( DIFF == 1 )) && modes+=("--diff")
 (( LIST_BACKUPS == 1 )) && modes+=("--list-backups")
 [[ -n "$RESTORE_STAMP" ]] && modes+=("--restore")
 [[ -n "$PRUNE_KEEP" ]] && modes+=("--prune-backups")
@@ -417,6 +432,40 @@ if (( STATUS == 1 )); then
       drift=$((drift + 1))
     fi
   done
+  (( drift == 0 )) && exit 0
+  exit 4
+fi
+
+# --status says DRIFT; this says what the drift is, so you can tell your own
+# edits worth moving to ~/.bashrc.local from a copy that is simply out of
+# date. Read-only like --status, and after the same CRLF check. The diff runs
+# installed -> repo: '-' lines are what an install would take out of your
+# file, '+' lines what it would put in. No colour: this is piped to pagers.
+if (( DIFF == 1 )); then
+  if ! command -v diff >/dev/null 2>&1; then
+    err "diff not found on PATH"
+    exit 2
+  fi
+  drift=0
+  for name in $DOTFILES; do
+    src="$SOURCE_DIR/$name"
+    dest="$HOME_DIR/$name"
+    if [[ ! -e "$dest" && ! -L "$dest" ]]; then
+      printf 'MISSING %s\n' "$dest"
+      drift=$((drift + 1))
+    elif [[ ! -f "$dest" ]]; then
+      printf 'DRIFT   %s (not a regular file)\n' "$dest"
+      drift=$((drift + 1))
+    elif cmp -s "$src" "$dest"; then
+      printf 'MATCH   %s\n' "$dest"
+    else
+      printf 'DRIFT   %s\n' "$dest"
+      # diff exits 1 when the files differ, which is the expected case here.
+      diff -u --label "installed: $dest" --label "repo: $src" "$dest" "$src" || true
+      drift=$((drift + 1))
+    fi
+  done
+  printf '%s file(s) differ\n' "$drift"
   (( drift == 0 )) && exit 0
   exit 4
 fi

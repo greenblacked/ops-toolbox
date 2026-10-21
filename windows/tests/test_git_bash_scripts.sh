@@ -396,6 +396,75 @@ run_install "$h" --restore latest --source "$(mktemp -d "$SCRATCH/nosource.XXXXX
 assert_eq "--restore works with --source pointing at an empty directory" 0 "$rc"
 
 # --------------------------------------------------------------------------
+section "install_dotfiles --diff"
+
+# A home holding exact copies of the repository's dotfiles. Prints it.
+new_diff_home() {
+  local h
+  h="$(mktemp -d "$SCRATCH/diffhome.XXXXXX")"
+  cp "$GB/.bashrc" "$GB/.bash_profile" "$GB/.aliases" "$h/"
+  printf '%s\n' "$h"
+}
+
+h="$(new_diff_home)"
+run_install "$h" --diff --source "$GB"
+assert_eq "--diff with every target current -> 0" 0 "$rc"
+assert_eq "--diff prints three MATCH lines" 3 "$(grep -c '^MATCH   ' <<<"$out")"
+assert_not_contains "--diff prints no diff when nothing differs" "$out" "---"
+assert_contains "--diff counts what differs" "$out" "0 file(s) differ"
+
+printf '# local alias\n' >> "$h/.aliases"
+before="$(snapshot "$h")"
+run_install "$h" --diff --source "$GB"
+after="$(snapshot "$h")"
+assert_eq "--diff with a local edit -> 4" 4 "$rc"
+assert_contains "--diff names the drifted file" "$out" "DRIFT   $h/.aliases"
+if grep -qx -- '-# local alias' <<<"$out"; then
+  ok "the local line is shown as one an install would remove"
+else
+  err "--diff did not show '-# local alias' as a removed line"
+  printf '%s\n' "$out" | head -20 >&2
+fi
+assert_contains "the old side is labelled as the installed file" "$out" "--- installed: $h/.aliases"
+assert_contains "the new side is labelled as the repository file" "$out" "+++ repo: $GB/.aliases"
+assert_eq "--diff wrote nothing" "$before" "$after"
+
+rm -f "$h/.bashrc"
+run_install "$h" --diff --source "$GB"
+assert_eq "--diff with a missing target -> 4" 4 "$rc"
+assert_contains "--diff reports the missing target" "$out" "MISSING $h/.bashrc"
+
+h="$(new_diff_home)"
+crlf_source="$(mktemp -d "$SCRATCH/crlf.XXXXXX")"
+cp "$GB/.bashrc" "$GB/.bash_profile" "$GB/.aliases" "$crlf_source/"
+printf 'alias crlf=1\r\n' >> "$crlf_source/.aliases"
+run_install "$h" --diff --source "$crlf_source"
+assert_eq "--diff against a CRLF source -> 1, as --status does" 1 "$rc"
+run_install "$h" --diff --source "$crlf_source" --force
+assert_eq "--diff --force against a CRLF source reports the drift -> 4" 4 "$rc"
+
+run_install "$h" --diff --dry-run
+assert_eq "--diff --dry-run -> 3" 3 "$rc"
+run_install "$h" --diff --status
+assert_eq "--diff --status -> 3" 3 "$rc"
+run_install "$h" --diff --restore latest
+assert_eq "--diff --restore -> 3" 3 "$rc"
+
+h="$(new_diff_home)"
+printf '# managed elsewhere\n' > "$h/linked-bashrc"
+rm -f "$h/.bashrc"
+ln -s "$h/linked-bashrc" "$h/.bashrc"
+run_install "$h" --diff --source "$GB"
+assert_eq "--diff through a symlinked target -> 4" 4 "$rc"
+assert_contains "the symlinked target is compared by its content" "$out" "DRIFT   $h/.bashrc"
+assert_contains "and the diff shows the linked file's lines" "$out" "-# managed elsewhere"
+if [[ -L "$h/.bashrc" && "$(readlink "$h/.bashrc")" == "$h/linked-bashrc" ]]; then
+  ok "--diff left the symlink as it was"
+else
+  err "--diff changed the symlinked .bashrc"
+fi
+
+# --------------------------------------------------------------------------
 section "ctx"
 # The developer's own environment must not steer these: every variable ctx
 # reads is cleared here and again for each run below.

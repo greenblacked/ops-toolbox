@@ -162,7 +162,7 @@ for name in $DOTFILES; do
     continue
   fi
   if [[ -n "$SOURCE_DIR" && -f "$SOURCE_DIR/$name" ]] && ! cmp -s "$f" "$SOURCE_DIR/$name"; then
-    warn "$name differs from $SOURCE_DIR/$name" "review with: install_dotfiles.sh --status --source $SOURCE_DIR"
+    warn "$name differs from $SOURCE_DIR/$name" "see what differs: install_dotfiles.sh --diff --source $SOURCE_DIR"
     continue
   fi
   pass "$name present and parses"

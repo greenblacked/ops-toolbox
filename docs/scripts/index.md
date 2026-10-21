@@ -49,7 +49,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `windows/setup/winget_configure.ps1` | Windows | Validate, show, test, apply `configuration.winget`. | `-DryRun` (apply) |
 | `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; deletes only with `-Yes`. | `-DryRun` |
 | `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, backup inventory, restore, clone, prune, compact, distro doctor, `.wslconfig` audit and more. | `-DryRun` (backup, restore, clone, prune-backups, compact, sparse, terminate, shutdown); `backups`, `doctor` and `wslconfig` are read-only |
-| `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups; restore or prune the backups. | `--dry-run` (install, `--restore`, `--prune-backups`); `--status`, `--list-backups` are read-only |
+| `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups; restore or prune the backups. | `--dry-run` (install, `--restore`, `--prune-backups`); `--status`, `--diff`, `--list-backups` are read-only |
 | `windows/git-bash/gitbash_doctor.sh` | Windows | Git Bash health: dotfiles, ssh-agent, OneDrive `HOME`, long paths, Git settings. | <span class="stage stage-report">read-only</span> |
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
 | `git/git_status_summary.sh` | Git | Compact branch and dirty-count summary. | <span class="stage stage-report">read-only</span> |
