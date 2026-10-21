@@ -35,6 +35,7 @@ reached, else 1 if any probe failed, else 0 if any printed findings, else 4.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -95,8 +96,13 @@ PROBE = (
     ':put ("SCX:" . [/system scheduler get $k name]'
     ' . "|" . [:tostr [/system scheduler get $k disabled]]'
     ' . "|" . [:tostr [/system scheduler get $k run-count]]'
-    ' . "|" . [:tostr [/system scheduler get $k start-time]])};'
+    ' . "|" . [:tostr [/system scheduler get $k start-time]]'
+    ' . "|" . [:tostr [/system scheduler get $k start-date]])};'
     ' :put ("UPT:" . [:tostr [/system resource get uptime]]);'
+    # The router's own clock, to read start-date and start-time against: how
+    # long the router has been up says nothing about how old a scheduler is.
+    ' :put ("CLK:" . [:tostr [/system clock get date]]'
+    ' . "|" . [:tostr [/system clock get time]]);'
     # Which scripts mention each required global, one DECL:script|global
     # record per pair. The router does the search and returns only names: a
     # source can hold a pasted token, so no source ever crosses the wire.
@@ -155,6 +161,9 @@ VERSION_TEXT_KEY = "__routeros_version_text"
 # Also reserved, also absent unless the probe returned them: the router's
 # uptime in seconds, and the scripts whose source mentions TgBotToken.
 UPTIME_KEY = "__uptime_seconds"
+# The router's clock as seconds since 1970 read as if it were UTC (only
+# differences against start-date/start-time are used), from the CLK line.
+CLOCK_KEY = "__clock_seconds"
 DECLARES_TG_KEY = "__declares_tg"
 # Same, per required global: {global name: [script names whose source mentions
 # it]}. DECLARES_TG_KEY is its TgBotToken entry, kept for the older reader.
@@ -248,8 +257,8 @@ def parse_report(text):
     The reserved PAUSE_STATE_KEY maps to the computed non-secret boolean pause
     predicate; malformed/non-boolean values are reported as inactive exactly as
     the scripts enforce them. VERSION_KEY holds the RouterOS (major, minor)
-    when the router reported one. A scheduler gains disabled, run_count and
-    start_time when the probe returned them, and the reserved UPTIME_KEY and
+    when the router reported one. A scheduler gains disabled, run_count,
+    start_time and start_date when the probe returned them, and the reserved UPTIME_KEY and
     DECLARES_TG_KEY hold the uptime in seconds and the scripts that mention
     TgBotToken; DECLARES_KEY holds that per required global, from DECL:script|
     global records (a bare DECL:script is read as TgBotToken).
@@ -289,20 +298,27 @@ def parse_report(text):
         elif line.startswith("SCX:"):
             current = None
             # From the right, so a '|' in a scheduler name cannot shift fields.
-            fields = line[4:].rsplit("|", 3)
-            if len(fields) == 4:
-                name, disabled, run_count, start_time = fields
+            fields = line[4:].rsplit("|", 4)
+            if len(fields) == 5:
+                name, disabled, run_count, start_time, start_date = fields
                 for entry in schedulers:
                     if entry["name"] == name.strip():
                         entry["disabled"] = disabled.strip() == "true"
                         entry["run_count"] = _as_int(run_count)
                         entry["start_time"] = start_time.strip()
+                        entry["start_date"] = start_date.strip()
                         break
         elif line.startswith("UPT:"):
             current = None
             seconds = duration_seconds(line[4:])
             if seconds is not None:
                 env[UPTIME_KEY] = seconds
+        elif line.startswith("CLK:"):
+            current = None
+            date, _, clock = line[4:].partition("|")
+            seconds = router_datetime(date, clock)
+            if seconds is not None:
+                env[CLOCK_KEY] = seconds
         elif line.startswith("DECL:"):
             current = None
             name, sep, glob = line[5:].rpartition("|")
@@ -371,6 +387,47 @@ def duration_seconds(text):
         + (parts.get("m", 0) + parts.get("clock_m", 0)) * 60
         + parts.get("s", 0) + parts.get("clock_s", 0)
     )
+
+
+_MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def router_datetime(date, clock):
+    """Seconds since 1970 (as if UTC) for a RouterOS date and time, or None.
+
+    The date is `oct/21/2026` or `2026-10-21` depending on the release; the
+    time is `12:34:56`. Only differences between two of these are used, so
+    the router's zone does not matter. A date that is not one gives None.
+    """
+    date, clock = (date or "").strip().lower(), (clock or "").strip()
+    match = re.match(r"^([a-z]{3})/(\d{1,2})/(\d{4})$", date)
+    if match is not None and match.group(1) in _MONTHS:
+        year, month, day = int(match.group(3)), _MONTHS[match.group(1)], int(match.group(2))
+    else:
+        match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", date)
+        if match is None:
+            return None
+        year, month, day = (int(g) for g in match.groups())
+    seconds = duration_seconds(clock) if re.match(r"^\d{1,2}:\d{2}:\d{2}$", clock) else None
+    if seconds is None:
+        return None
+    try:
+        days = datetime.date(year, month, day).toordinal() - datetime.date(1970, 1, 1).toordinal()
+    except ValueError:
+        return None
+    return days * 86400 + seconds
+
+
+def scheduler_start(entry):
+    """When a scheduler's schedule starts, from start-date and start-time, or
+    None when the probe did not return a usable pair. An older RouterOS
+    prints both in start-time (`oct/21/2026 12:00:00`)."""
+    start_time = entry.get("start_time") or ""
+    date = entry.get("start_date") or ""
+    if " " in start_time.strip():
+        date, _, start_time = start_time.strip().partition(" ")
+    return router_datetime(date, start_time)
 
 
 def format_duration(seconds):
@@ -798,16 +855,38 @@ def build_findings(local, installed, schedulers, env, underscored=None):
         if entry.get("start_time") == "startup":
             continue
         interval = duration_seconds(entry.get("interval", ""))
-        if not interval or uptime is None:
+        start = scheduler_start(entry)
+        now = env.get(CLOCK_KEY)
+        if not interval or start is None or now is None:
             continue
-        # Twice the interval and a minute more, so a router that has just
-        # rebooted, or an entry anchored later in the day, is not accused.
-        if uptime > 2 * interval + 60:
+        # Router uptime is not scheduler age: one created minutes ago on a
+        # router that has been up for weeks has simply not come due. A run is
+        # due at the start when that is still ahead, else by one interval
+        # after it; accuse only when that is past by more than an interval
+        # and a minute, so an entry anchored later in the day is not accused.
+        # And not just after a reboot, when the clock restarts the schedule.
+        first_due = start if start > now else start + interval
+        late = now - first_due
+        name = entry.get("name", "?")
+        if late > interval + 60 and uptime is not None and uptime > 2 * interval + 60:
             findings.append((
                 "warn",
-                "\"%s\" has never fired in %s of uptime; check /log for \"not "
-                "enough permissions\" and that the scheduler policy covers the "
-                "script policy" % (entry.get("name", "?"), format_duration(uptime)),
+                "\"%s\" has never fired, %s after its first run was due; check "
+                "/log for \"not enough permissions\" and that the scheduler "
+                "policy covers the script policy" % (name, format_duration(late)),
+            ))
+        elif late <= 0:
+            findings.append((
+                "info",
+                "\"%s\" has not run yet; its first run is due in %s"
+                % (name, format_duration(-late)),
+            ))
+        else:
+            findings.append((
+                "info",
+                "\"%s\" has not run yet; its first run was due %s ago, but "
+                "too little time has passed (or the router restarted too "
+                "recently) to call that a fault" % (name, format_duration(late)),
             ))
 
     # Globals are runtime state. Set by hand today, they are gone after the
@@ -1090,6 +1169,7 @@ def run_one(user, host, port, args, package=None):
                 "disabled": item.get("disabled"),
                 "run_count": item.get("run_count"),
                 "start_time": item.get("start_time"),
+                "start_date": item.get("start_date"),
             }
             for item in schedulers
             if "disabled" in item

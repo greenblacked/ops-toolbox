@@ -1066,17 +1066,23 @@ script renamed or rewritten on the router is not inspected. A router whose
 probe returned no version gets no verdict at all.
 
 Being named in a scheduler is not the same as being run, so it reads each
-entry's state too (`disabled`, `run-count`, `start-time`) and the router's
-uptime, and adds three findings, all `warn`:
+entry's state too (`disabled`, `run-count`, `start-date`, `start-time`) and the
+router's clock and uptime, and adds three findings, all `warn`:
 
 - **a disabled scheduler** that runs an installed script: the script counts as
   scheduled and never runs. It replaces the "no scheduler runs it" warning
   rather than adding to it.
-- **an enabled entry that has never fired**: `run-count` still `0` after more
-  than twice its interval plus a minute of uptime. That is usually RouterOS
+- **an enabled entry that has never fired**: `run-count` still `0` more than
+  an interval plus a minute after its first run was due. The first run is due
+  at `start-date` and `start-time` when that is still ahead, else one
+  interval after it, read against the router's own clock; the router's uptime
+  is not the scheduler's age, so an entry created minutes ago on a router
+  that has been up for weeks is not accused. A router restarted within twice
+  the interval plus a minute is not judged either. That is usually RouterOS
   refusing to start it ("not enough permissions" in `/log`), because the
-  scheduler's policy does not cover the script's. Startup entries and entries
-  with no interval are not judged.
+  scheduler's policy does not cover the script's. An entry that has simply not
+  come due yet is an `info` ("has not run yet"), not a warning. Startup
+  entries and entries with no interval are not judged.
 - **Telegram globals that will not survive a reboot**: `TgBotToken` or
   `TgChatId` is set now, but no enabled `start-time=startup` scheduler
   declares it again, either inline or by running a script whose source

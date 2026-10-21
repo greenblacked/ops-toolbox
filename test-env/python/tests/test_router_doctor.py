@@ -627,7 +627,7 @@ class SchedulerHealthTestCase(unittest.TestCase):
     HEALTHY_ENV = {"TgBotToken": 46, "TgChatId": 9}
 
     def scheduler(self, name, interval="5m", on_event=None, disabled=False,
-                  run_count=7, start_time="jan/01/1970 00:00:00"):
+                  run_count=7, start_time="00:00:00", start_date="jan/01/2026"):
         return {
             "name": name,
             "interval": interval,
@@ -635,18 +635,21 @@ class SchedulerHealthTestCase(unittest.TestCase):
             "disabled": disabled,
             "run_count": run_count,
             "start_time": start_time,
+            "start_date": start_date,
         }
 
     def restorer(self):
         return self.scheduler("startup", interval="0s", on_event="/system script run startup",
                               start_time="startup", run_count=1)
 
-    def env(self, uptime=None, declares=("startup",), chat_declares=None):
+    def env(self, uptime=None, declares=("startup",), chat_declares=None, clock=None):
         """declares: scripts mentioning TgBotToken; chat_declares: TgChatId
-        (the same scripts unless given)."""
+        (the same scripts unless given); clock: the router's date and time."""
         env = dict(self.HEALTHY_ENV)
         if uptime is not None:
             env[router_doctor.UPTIME_KEY] = uptime
+        if clock is not None:
+            env[router_doctor.CLOCK_KEY] = router_doctor.router_datetime(*clock)
         chat = declares if chat_declares is None else chat_declares
         env[router_doctor.DECLARES_TG_KEY] = list(declares)
         env[router_doctor.DECLARES_KEY] = {
@@ -656,9 +659,10 @@ class SchedulerHealthTestCase(unittest.TestCase):
 
     def test_scx_record_merges_into_its_scheduler_and_keeps_the_three_tuple(self):
         text = REPORT + (
-            "SCX:backup|false|12|04:00:00\n"
-            "SCX:startup|true|0|startup\n"
+            "SCX:backup|false|12|04:00:00|oct/01/2026\n"
+            "SCX:startup|true|0|startup|oct/02/2026\n"
             "UPT:3d04:12:05\n"
+            "CLK:oct/21/2026|12:30:00\n"
             "DECL:startup|TgBotToken\n"
             "DECL:startup|TgChatId\n"
             "DECL:tg_send|TgBotToken\n"
@@ -672,6 +676,9 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertIs(backup["disabled"], False)
         self.assertEqual(backup["run_count"], 12)
         self.assertEqual(backup["start_time"], "04:00:00")
+        self.assertEqual(backup["start_date"], "oct/01/2026")
+        self.assertEqual(env[router_doctor.CLOCK_KEY],
+                         router_doctor.router_datetime("2026-10-21", "12:30:00"))
         self.assertEqual(backup["on_event"], "/system script run backup")
         self.assertIs(schedulers[2]["disabled"], True)
         self.assertNotIn("disabled", schedulers[1])
@@ -682,7 +689,8 @@ class SchedulerHealthTestCase(unittest.TestCase):
         })
 
     def test_scx_for_an_unknown_scheduler_is_ignored(self):
-        _, schedulers, _ = router_doctor.parse_report(REPORT + "SCX:nosuch|true|0|startup\n")
+        _, schedulers, _ = router_doctor.parse_report(
+            REPORT + "SCX:nosuch|true|0|startup|jan/01/2026\n")
         self.assertEqual([s["name"] for s in schedulers],
                          ["backup", "backup_file_cleanup", "startup"])
         for entry in schedulers:
@@ -704,28 +712,81 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertEqual(levels_for(findings, "no scheduler runs it"), [])
         self.assertEqual(len([f for f in findings if "health_check" in f[1]]), 1)
 
-    def test_enabled_zero_run_count_after_long_uptime_warns(self):
-        schedulers = [self.scheduler("health_check", run_count=0), self.restorer()]
-        findings = router_doctor.build_findings(
-            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
-            self.env(uptime=86400),
+    NOW = ("oct/21/2026", "12:00:00")
+
+    def judge(self, scheduler, uptime=10 * 86400, clock=NOW):
+        return router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"],
+            [scheduler, self.restorer()], self.env(uptime=uptime, clock=clock),
         )
+
+    def test_enabled_zero_run_count_long_after_its_first_run_warns(self):
+        findings = self.judge(self.scheduler(
+            "health_check", run_count=0, start_date="oct/01/2026"))
         self.assertEqual(levels_for(findings, '"health_check" has never fired'), ["warn"])
         self.assertEqual(levels_for(findings, "not enough permissions"), ["warn"])
 
+    def test_scheduler_created_minutes_ago_on_a_long_running_router_is_not_accused(self):
+        # Router up for ten days, scheduler added ten minutes ago with the
+        # default start (now): uptime says nothing about its age.
+        findings = self.judge(self.scheduler(
+            "health_check", interval="1h", run_count=0,
+            start_date="oct/21/2026", start_time="11:50:00"))
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+        self.assertEqual(levels_for(findings, '"health_check" has not run yet'), ["info"])
+
+    def test_scheduler_whose_start_is_still_ahead_has_not_run_yet(self):
+        findings = self.judge(self.scheduler(
+            "health_check", interval="5m", run_count=0,
+            start_date="oct/22/2026", start_time="04:00:00"))
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+        self.assertEqual(levels_for(findings, "its first run is due in"), ["info"])
+
+    def test_zero_run_count_inside_the_grace_period_is_quiet(self):
+        # 5m interval, started 10m ago: the first run was due 5m ago, which
+        # is under the interval plus a minute (6m) of grace.
+        findings = self.judge(self.scheduler(
+            "health_check", interval="5m", run_count=0,
+            start_date="oct/21/2026", start_time="11:50:00"))
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+        self.assertEqual(levels_for(findings, "has not run yet"), ["info"])
+
     def test_zero_run_count_just_after_boot_is_quiet(self):
-        # 5m interval: 2 x 300 + 60 = 660 seconds before it can be accused.
-        schedulers = [self.scheduler("health_check", run_count=0), self.restorer()]
-        findings = router_doctor.build_findings(
-            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
-            self.env(uptime=600),
-        )
+        # An old scheduler, but the router restarted 10 minutes ago.
+        findings = self.judge(self.scheduler(
+            "health_check", run_count=0, start_date="oct/01/2026"), uptime=600)
         self.assertEqual(levels_for(findings, "has never fired"), [])
-        findings = router_doctor.build_findings(
-            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
-            self.env(uptime=None),
-        )
+        self.assertEqual(levels_for(findings, "has not run yet"), ["info"])
+        findings = self.judge(self.scheduler(
+            "health_check", run_count=0, start_date="oct/01/2026"), uptime=None)
         self.assertEqual(levels_for(findings, "has never fired"), [])
+
+    def test_zero_run_count_without_a_clock_or_start_is_not_judged(self):
+        old = self.scheduler("health_check", run_count=0, start_date="oct/01/2026")
+        findings = self.judge(old, clock=None)
+        self.assertEqual(levels_for(findings, "health_check\" has"), [])
+        no_date = self.scheduler("health_check", run_count=0, start_date="")
+        self.assertEqual(levels_for(self.judge(no_date), "health_check\" has"), [])
+
+    def test_iso_dates_and_a_combined_start_time_are_read(self):
+        iso = self.scheduler("health_check", run_count=0,
+                             start_date="2026-10-01", start_time="00:00:00")
+        self.assertEqual(
+            levels_for(self.judge(iso, clock=("2026-10-21", "12:00:00")), "has never fired"),
+            ["warn"])
+        combined = self.scheduler("health_check", run_count=0,
+                                  start_date="", start_time="oct/01/2026 00:00:00")
+        self.assertEqual(levels_for(self.judge(combined), "has never fired"), ["warn"])
+
+    def test_router_datetime_reads_both_date_styles_and_rejects_junk(self):
+        self.assertEqual(router_doctor.router_datetime("jan/01/1970", "00:00:01"), 1)
+        self.assertEqual(router_doctor.router_datetime("1970-01-02", "00:00:00"), 86400)
+        self.assertEqual(router_doctor.router_datetime("Oct/21/2026", "12:00:00"),
+                         router_doctor.router_datetime("2026-10-21", "12:00:00"))
+        for date, clock in (("", "00:00:00"), ("xyz/01/2026", "00:00:00"),
+                            ("feb/30/2026", "00:00:00"), ("oct/21/2026", "noon"),
+                            ("oct/21/2026", "")):
+            self.assertIsNone(router_doctor.router_datetime(date, clock))
 
     def test_startup_and_zero_interval_entries_are_not_judged(self):
         schedulers = [
@@ -735,7 +796,8 @@ class SchedulerHealthTestCase(unittest.TestCase):
             self.restorer(),
         ]
         findings = router_doctor.build_findings(
-            ["tg_send"], ["tg_send"], schedulers, self.env(uptime=10 * 86400),
+            ["tg_send"], ["tg_send"], schedulers,
+            self.env(uptime=10 * 86400, clock=self.NOW),
         )
         self.assertEqual(levels_for(findings, "has never fired"), [])
 
@@ -856,6 +918,8 @@ class SchedulerHealthTestCase(unittest.TestCase):
             self.assertIsNone(re.search(r"\bsource\b", record), record)
         self.assertIn('"SCX:"', probe)
         self.assertIn('"UPT:"', probe)
+        self.assertIn('"CLK:"', probe)
+        self.assertIn("start-date]", probe)
         self.assertIn('"DECL:"', probe)
 
     def test_json_scheduler_state_is_separate_from_schedulers(self):
@@ -863,7 +927,7 @@ class SchedulerHealthTestCase(unittest.TestCase):
             "SCR:tg_send\nSCR:backup\n"
             "SCH:backup|1d|/system script run backup\n"
             "ENV:TgBotToken|46\nENV:TgChatId|9\n"
-            "SCX:backup|true|0|04:00:00\n"
+            "SCX:backup|true|0|04:00:00|oct/01/2026\n"
             "UPT:2d00:00:00\n"
         )
         stdout = io.StringIO()
@@ -876,7 +940,8 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(payload["schedulers"], [{"name": "backup", "interval": "1d"}])
         self.assertEqual(payload["scheduler_state"], [
-            {"name": "backup", "disabled": True, "run_count": 0, "start_time": "04:00:00"},
+            {"name": "backup", "disabled": True, "run_count": 0,
+             "start_time": "04:00:00", "start_date": "oct/01/2026"},
         ])
         self.assertEqual(payload["uptime_seconds"], 2 * 86400)
 
