@@ -781,9 +781,12 @@ baseline actual history and turning any change — intended or not — into a di
 ./export_config.py --host router.lan --commit     # commit if it changed
 ./export_config.py --host router.lan --stdout     # print, write nothing
 ./export_config.py --host router.lan --diff       # compare live vs stored; write nothing
+./export_config.py --host router.lan --scan-secrets               # where are secrets? write nothing
+./export_config.py --scan-file config-history/router.lan.rsc     # audit a stored export, no ssh
+./export_config.py --host router.lan --commit --redact-secrets    # commit with values replaced
 ```
 
-The connection flags are `--host` (the only required one), `--user` (default
+The connection flags are `--host` (required, except with `--scan-file`), `--user` (default
 `admin`), `--identity`, `--port` (22) and `--timeout` (60 s). Where the export
 lands is `--out`, the output directory, and `--name`, the basename, which
 defaults to the host.
@@ -814,6 +817,52 @@ accident.
 `--diff` fetches and normalises the live export, then prints a unified diff
 against the configured output file without creating or changing that file.
 `--stdout`, `--diff`, and `--commit` are intentionally mutually exclusive.
+
+**Plain `/export` still carries secrets.** It hides the router's own
+credentials, but not the source of a `/system script` or the `on-event` of a
+scheduler, and [Installation](#installation) step 4 puts
+`:global TgBotToken "..."` (and `RouterBackupPassword`) into a startup
+script. So an export committed as it is can put a live bot token into git
+history. Three flags deal with that:
+
+- `--scan-secrets` fetches the live export and prints one
+  `[warn] line N: <kind>` per finding, then `N finding(s); values are never
+  printed`. It writes nothing. Exit `0` when nothing was found and `1` when
+  something was, like `--diff`, so it can gate a cron job.
+- `--scan-file PATH` does the same for an export already on disk, such as
+  `config-history/router.lan.rsc` or an older copy checked out of history. It
+  needs no `--host` and makes no ssh connection.
+- `--redact-secrets` replaces each value it finds with the literal
+  `<redacted>` before the export is printed, diffed or written. The rest of
+  the line is kept and the same input always gives the same output, so a
+  redacted history diffs cleanly. Redact the stored file and the live side of
+  `--diff` the same way, or every run shows the token as a change.
+
+What counts as a secret: a Telegram bot token by its shape, wherever it
+appears; a `:global`, `:local` or `:set` whose name contains `token`,
+`password`, `secret`, `apikey`, `passphrase` or `psk` and is given a literal
+value in a script or an `on-event`; and the fields RouterOS prints only under
+`show-sensitive` (`password=`, `passphrase=`, `private-key=`, `secret=`,
+`psk=`, the WPA pre-shared keys, `authentication-key=`, `encryption-key=`).
+Empty values, variables (`$Password`), placeholders in angle brackets, the
+helper's own `token` / `ID` placeholders and examples in commented-out script
+lines are skipped. A finding names the line and the kind, never the value.
+This is a guard against the known shapes, not proof that an export is clean:
+it can miss a secret stored under a name it does not recognise.
+
+**One behaviour change.** A plain write, `--stdout` and `--diff` now print
+`[warn] N possible secret(s) in the export (lines ...); re-run with
+--redact-secrets` on stderr when the export holds one, and carry on. `--commit`
+refuses instead: exit `1`, nothing written, nothing staged, until you add
+`--redact-secrets` (or move the secret out of the script). `--show-sensitive`
+with `--commit` stays refused outright with exit `3`. `--scan-secrets` and
+`--scan-file` cannot be combined with `--stdout`, `--diff`, `--commit` or
+`--redact-secrets` (exit `3`).
+
+Exit codes: `0` success (under `--diff`, no drift; under a scan, nothing
+found), `1` an error, drift under `--diff`, a finding under a scan, or a
+refused commit, `2` preflight failed (ssh missing, router unreachable), `3`
+bad arguments.
 
 ### `features/print_schedulers.sh`
 

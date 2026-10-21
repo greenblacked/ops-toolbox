@@ -1,10 +1,12 @@
 """Tests for mikrotik/features/export_config.py.
 
-Only normalisation is covered, and deliberately so: it is the part with a
-judgement call in it. Strip too little and every export is a noisy diff; strip
-too much and a real configuration change disappears into the filter. Everything
-else in that script is ssh and git plumbing that would need a router to mean
-anything.
+Normalisation is covered because it is the part with a judgement call in it.
+Strip too little and every export is a noisy diff; strip too much and a real
+configuration change disappears into the filter. The secret scan is covered for
+the same reason, and for one more: it is the last thing between a pasted bot
+token and git history, and the one thing it must never do is print what it
+found. Everything else in that script is ssh and git plumbing that would need a
+router to mean anything.
 """
 
 from __future__ import annotations
@@ -242,6 +244,205 @@ class PrivateAtomicOutputTestCase(unittest.TestCase):
             with open(dest) as fh:
                 self.assertEqual(fh.read(), "old config\n")
             self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+
+# A fake token in the shape BotFather issues. It never left this file.
+FAKE_TOKEN = "123456789:AAH-fake_fake_fake_fake_fake_fake_fake1"
+
+# Real export shapes: /export does not hide a script's source or a scheduler's
+# on-event, and the install steps put the token in a startup script. Inside an
+# export the script's quotes are escaped and its line breaks are \r\n.
+SECRET_EXPORT = (
+    "/system scheduler\n"
+    'add interval=1d name=boot on-event=":global TgBotToken \\"' + FAKE_TOKEN + '\\"; '
+    '/system script run startup" policy=read,write start-time=startup\n'
+    "/system script\n"
+    "add dont-require-permissions=no name=startup owner=admin policy=ftp,read,write "
+    'source=":global TgBotToken \\"' + FAKE_TOKEN + '\\";\\r\\n:global TgChatId \\"12345678\\";"\n'
+    "/ip firewall filter\n"
+    'add action=accept chain=input comment="#critical" connection-state=established,related\n'
+)
+
+CLEAN_EXPORT = EXPORT_TEMPLATE.format(date="jul/29/2026 18:04:11")
+
+
+class SecretScanTestCase(unittest.TestCase):
+    def run_main(self, argv, export=SECRET_EXPORT):
+        out, errout = io.StringIO(), io.StringIO()
+        with mock.patch.object(export_config, "fetch_export",
+                               return_value=(0, export, "")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            rc = export_config.main(argv)
+        return rc, out.getvalue(), errout.getvalue()
+
+    def test_finds_the_telegram_token_by_shape(self):
+        text = 'url="https://api.telegram.org/bot%s/sendMessage"\n' % FAKE_TOKEN
+        self.assertEqual(export_config.find_secrets(text), [(1, "telegram bot token")])
+
+    def test_finds_a_global_assignment_with_escaped_quotes(self):
+        text = ('add name=s source=":global RouterBackupPassword \\"hunter2hunter\\";"\n')
+        self.assertEqual(export_config.find_secrets(text),
+                         [(1, "secret assigned in a script")])
+
+    def test_ignores_the_shipped_placeholders_and_empty_values(self):
+        text = (
+            'add name=s source=":local BotToken \\"token\\";\\r\\n'
+            ':local Password \\"\\";\\r\\n'
+            ':global RouterBackupPassword \\"<paste backup password>\\";\\r\\n'
+            '# :global RouterBackupPassword \\"s3cret\\"\\r\\n'
+            '/system backup save password=\\$Password"\n'
+            "set wifi1 passphrase=<redacted>\n"
+        )
+        self.assertEqual(export_config.find_secrets(text), [])
+
+    def test_finds_sensitive_fields_and_redacts_inside_their_quotes(self):
+        text = 'set [ find default-name=wlan1 ] comment="#x" passphrase="my pass"\n'
+        self.assertEqual(export_config.find_secrets(text), [(1, "sensitive field")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set [ find default-name=wlan1 ] comment="#x" passphrase="<redacted>"\n',
+        )
+
+    def test_findings_never_contain_the_value(self):
+        findings = export_config.find_secrets(SECRET_EXPORT)
+        self.assertTrue(findings)
+        for finding in findings:
+            self.assertNotIn(FAKE_TOKEN, repr(finding))
+            self.assertNotIn("AAH-fake", repr(finding))
+        with tempfile.TemporaryDirectory() as tmp:
+            for argv in (["--host", "router", "--scan-secrets"],
+                         ["--host", "router", "--out", tmp, "--stdout", "--redact-secrets"],
+                         ["--host", "router", "--out", tmp, "--diff", "--redact-secrets"],
+                         ["--host", "router", "--out", tmp, "--commit"]):
+                _, out, err = self.run_main(argv)
+                self.assertNotIn("AAH-fake", out + err, argv)
+
+    def test_redaction_replaces_only_the_value_and_keeps_the_rest_of_the_line(self):
+        redacted = export_config.redact_secrets(SECRET_EXPORT)
+        lines = redacted.splitlines()
+        self.assertEqual(
+            lines[3],
+            "add dont-require-permissions=no name=startup owner=admin policy=ftp,read,write "
+            'source=":global TgBotToken \\"<redacted>\\";\\r\\n:global TgChatId \\"12345678\\";"',
+        )
+        self.assertNotIn(FAKE_TOKEN, redacted)
+        self.assertEqual(lines[0], "/system scheduler")
+        self.assertEqual(lines[5], SECRET_EXPORT.splitlines()[5])
+        self.assertEqual(len(lines), len(SECRET_EXPORT.splitlines()))
+
+    def test_redaction_is_idempotent(self):
+        once = export_config.redact_secrets(SECRET_EXPORT)
+        self.assertEqual(export_config.redact_secrets(once), once)
+        self.assertEqual(export_config.find_secrets(once), [])
+
+    def test_a_line_continuation_is_joined_before_matching_but_reports_the_first_line(self):
+        # /export wraps long lines anywhere, the middle of a token included.
+        split = (
+            "/system script\n"
+            'add name=startup source=":global TgBotToken \\"123456789:AAH-fake_fake_fake_fa\\\n'
+            '    ke_fake_fake_fake_fake1\\";"\n'
+            "/ip address\n"
+        )
+        findings = export_config.find_secrets(split)
+        self.assertEqual({line for line, _ in findings}, {2})
+        self.assertIn((2, "telegram bot token"), findings)
+        redacted = export_config.redact_secrets(split)
+        self.assertNotIn("fake_fake", redacted)
+        self.assertEqual(
+            redacted,
+            "/system script\n"
+            'add name=startup source=":global TgBotToken \\"<redacted>\\";"\n'
+            "/ip address\n",
+        )
+
+    def test_clean_export_has_no_findings(self):
+        self.assertEqual(export_config.find_secrets(CLEAN_EXPORT), [])
+        self.assertEqual(export_config.redact_secrets(CLEAN_EXPORT), CLEAN_EXPORT)
+
+    def test_scan_file_needs_no_host_and_no_ssh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "router.rsc")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(SECRET_EXPORT)
+            fetch = mock.Mock(side_effect=AssertionError("--scan-file must not use ssh"))
+            out = io.StringIO()
+            with mock.patch.object(export_config, "fetch_export", fetch), \
+                 contextlib.redirect_stdout(out), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = export_config.main(["--scan-file", path])
+            self.assertEqual(rc, 1)
+            fetch.assert_not_called()
+            self.assertIn("line 4: secret assigned in a script", out.getvalue())
+            self.assertIn("values are never printed", out.getvalue())
+
+    def test_scan_secrets_exits_1_on_findings_0_when_clean(self):
+        rc, out, _ = self.run_main(["--host", "router", "--scan-secrets"])
+        self.assertEqual(rc, 1)
+        self.assertIn("4 finding(s)", out)
+        rc, out, _ = self.run_main(["--host", "router", "--scan-secrets"], export=CLEAN_EXPORT)
+        self.assertEqual(rc, 0)
+        self.assertIn("0 finding(s)", out)
+
+    def test_scan_secrets_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            before = sorted(os.listdir(tmp))
+            rc, _, _ = self.run_main(["--host", "router", "--out", tmp, "--scan-secrets"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(sorted(os.listdir(tmp)), before)
+
+    def test_commit_is_refused_when_secrets_are_found_without_redact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(return_value=(0, "", ""))
+            with mock.patch.object(export_config, "git", git):
+                rc, _, err = self.run_main(["--host", "router", "--out", tmp, "--commit"])
+            self.assertEqual(rc, 1)
+            git.assert_not_called()
+            self.assertEqual(os.listdir(tmp), [])
+            self.assertIn("--redact-secrets", err)
+
+    def test_commit_proceeds_with_redact_and_the_stored_file_has_no_token(self):
+        def fake_git(args, cwd):
+            if args[:1] == ["diff"]:
+                return 0, " router.rsc | 7 +++++++\n", ""
+            return 0, "", ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(side_effect=fake_git)
+            with mock.patch.object(export_config, "git", git):
+                rc, _, _ = self.run_main(
+                    ["--host", "router", "--out", tmp, "--commit", "--redact-secrets"]
+                )
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(c.args[0][:1] == ["commit"] for c in git.call_args_list))
+            with open(os.path.join(tmp, "router.rsc"), encoding="utf-8") as fh:
+                stored = fh.read()
+            self.assertNotIn(FAKE_TOKEN, stored)
+            self.assertIn("<redacted>", stored)
+
+    def test_a_plain_write_warns_on_stderr_and_still_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, err = self.run_main(["--host", "router", "--out", tmp])
+            self.assertEqual(rc, 0)
+            self.assertIn("possible secret(s)", err)
+            self.assertNotIn("possible secret(s)", out)
+            self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+    def test_scan_flags_are_mutually_exclusive_with_stdout_diff_commit(self):
+        for extra in (["--stdout"], ["--diff"], ["--commit"], ["--redact-secrets"]):
+            for scan in (["--scan-secrets"], ["--scan-file", "/nonexistent.rsc"]):
+                rc, _, _ = self.run_main(["--host", "router"] + scan + extra)
+                self.assertEqual(rc, 3, scan + extra)
+
+    def test_missing_host_without_scan_file_is_still_usage_3(self):
+        errout = io.StringIO()
+        with contextlib.redirect_stderr(errout), self.assertRaises(SystemExit) as raised:
+            export_config.main(["--stdout"])
+        self.assertEqual(raised.exception.code, 3)
+        self.assertIn("--host", errout.getvalue())
+
+    def test_show_sensitive_with_commit_is_still_refused_with_3(self):
+        rc, _, _ = self.run_main(["--host", "router", "--show-sensitive", "--commit"])
+        self.assertEqual(rc, 3)
 
 
 class DefaultOutputTestCase(unittest.TestCase):

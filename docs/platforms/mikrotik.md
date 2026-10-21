@@ -49,6 +49,8 @@ the host tools to inspect.
     ```bash
     ./mikrotik/features/router_doctor.py --host 192.168.88.1
     ./mikrotik/features/export_config.py --host router.lan --diff
+    ./mikrotik/features/export_config.py --host router.lan --scan-secrets
+    ./mikrotik/features/export_config.py --scan-file mikrotik/config-history/router.lan.rsc
     ```
 
     `router_doctor.py` also reads the RouterOS version and fails each
@@ -90,7 +92,11 @@ the host tools to inspect.
 
 !!! warning "Never commit secrets"
     Do not combine `export_config.py --show-sensitive` with `--commit`.
-    Secrets must not enter git history.
+    Secrets must not enter git history. Plain `/export` still includes
+    script sources and scheduler `on-event` bodies, where a startup script
+    keeps `TgBotToken`. `--commit` now refuses an export that holds a secret
+    unless you add `--redact-secrets`, and `--scan-file` audits an export
+    that is already stored.
 
 - Choose one of `update_check`, `backup_update_check` or `stay_fresh`. They do
   one job three ways and must not run together.

@@ -20,17 +20,32 @@ among it.
     ./export_config.py --host router.lan --user admin --identity ~/.ssh/keys/mikrotik
     ./export_config.py --host router.lan --commit
     ./export_config.py --host router.lan --stdout        # print, write nothing
+    ./export_config.py --host router.lan --scan-secrets  # report secrets, write nothing
+    ./export_config.py --scan-file config-history/router.lan.rsc
+    ./export_config.py --host router.lan --commit --redact-secrets
+
+Plain /export hides the router's own credentials, but not the source of a
+/system script or the on-event of a scheduler, and the package's own install
+steps put `:global TgBotToken "..."` in a startup script. So an export can
+carry a live bot token into git history. --scan-secrets and --scan-file report
+where (line number and kind, never the value); --redact-secrets replaces each
+value with `<redacted>` before anything is printed, diffed or written; and
+--commit refuses an export that still has one. The scan is a heuristic: it is
+a guard against the known shapes, not proof that an export is clean.
 
 Exit codes:
 
-    0   success; under --diff, the live configuration matches the stored file
-    1   an error, or — under --diff — the live configuration has drifted
+    0   success; under --diff, the live configuration matches the stored file;
+        under --scan-secrets/--scan-file, no secret was found
+    1   an error; under --diff, the live configuration has drifted; under
+        --scan-secrets/--scan-file, a secret was found; --commit refused an
+        export that holds one
     2   preflight failed (ssh missing, router unreachable)
     3   bad CLI arguments
 
 --diff follows `git diff --exit-code`: 0 means no drift, so it can be used
-directly in a scheduled check. The other modes exit 0 on success regardless of
-whether anything changed.
+directly in a scheduled check, and the scans follow it. The other modes exit 0
+on success regardless of whether anything changed.
 """
 
 from __future__ import annotations
@@ -60,6 +75,40 @@ _HEADER_DATE = re.compile(
 )
 _BY_ROUTEROS = re.compile(r"^#\s*(?:model|software id|serial number).*$", re.IGNORECASE)
 
+# What a secret looks like in an export. Each pattern marks the value it found
+# as group "value" (or "quoted"), which is the only part redaction replaces.
+# Matching runs on logical lines - an export wraps long lines with a trailing
+# backslash, and a token can be split across the wrap. The flag says whether a
+# match inside a commented-out script line counts: a token is a token wherever
+# it sits, but the package's own comments show `:global RouterBackupPassword
+# "s3cret"` as an example, and reporting that on every router would teach
+# people to ignore the scan.
+_SECRET_PATTERNS = (
+    # A Telegram bot token by its shape, wherever it appears - including inside
+    # a hand-built https://api.telegram.org/bot<token>/ URL.
+    ("telegram bot token", False, re.compile(
+        r"(?<![0-9])(?P<value>\d{6,12}:[A-Za-z0-9_-]{30,})(?![A-Za-z0-9_-])"
+    )),
+    # A secret-named :global, :local or :set given a literal in a script source
+    # or an on-event. Inside an export the quotes arrive escaped as \".
+    ("secret assigned in a script", True, re.compile(
+        r'(?i):(?:global|local|set)\s+[A-Za-z0-9]*'
+        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9]*\s+\\?"'
+        r'(?P<value>[^"\\]+)\\?"'
+    )),
+    # Fields RouterOS only prints under show-sensitive.
+    ("sensitive field", True, re.compile(
+        r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
+        r"|wpa-pre-shared-key|authentication-key|encryption-key)"
+        r'=(?:"(?P<quoted>[^"]+)"|(?P<value>[^\s\\"]+))'
+    )),
+)
+
+REDACTED = "<redacted>"
+# The values the package itself ships as placeholders; reporting them would
+# teach people to ignore the scan.
+_PLACEHOLDERS = ("token", "ID", REDACTED)
+
 C_RESET = C_RED = C_GREEN = C_YELLOW = C_DIM = ""
 if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
     C_RESET, C_DIM = "\033[0m", "\033[2m"
@@ -76,6 +125,12 @@ def warn(msg):
 
 def bad(msg):
     print("%s[fail]%s %s" % (C_RED, C_RESET, msg), file=sys.stderr)
+
+
+def warn_stderr(msg):
+    # --stdout and --diff own stdout, so a warning about their content goes to
+    # stderr, where it cannot end up inside a redirected export.
+    print("%s[warn]%s %s" % (C_YELLOW, C_RESET, msg), file=sys.stderr)
 
 
 def info(msg):
@@ -99,6 +154,148 @@ def normalise(text):
     while out and not out[-1]:
         out.pop()
     return "\n".join(out) + "\n"
+
+
+def _logical_lines(text):
+    """Yield (first line number, logical line, offsets) for an export.
+
+    A physical line ending in an odd number of backslashes continues on the
+    next one, whose leading whitespace is indentation, not content. offsets[i]
+    is where character i of the logical line sits in text, so a match found on
+    the joined line can be replaced in the original.
+    """
+    position = 0
+    chars, offsets, first = [], [], None
+    for number, raw in enumerate(text.split("\n"), 1):
+        start = position
+        position += len(raw) + 1
+        body = raw[:-1] if raw.endswith("\r") else raw
+        if first is None:
+            first, column = number, 0
+        else:
+            column = len(body) - len(body.lstrip(" \t"))
+        trailing = len(body) - len(body.rstrip("\\"))
+        continued = trailing % 2 == 1
+        end = len(body) - 1 if continued else len(body)
+        for index in range(column, end):
+            chars.append(body[index])
+            offsets.append(start + index)
+        if not continued:
+            yield first, "".join(chars), offsets
+            chars, offsets, first = [], [], None
+    if first is not None:
+        yield first, "".join(chars), offsets
+
+
+def _in_script_comment(line, index):
+    """Whether position index of a logical line sits in a commented-out line
+    of script source.
+
+    In an export a script's lines are joined by the two characters \\n, and
+    the first one follows the opening `="` of source= or on-event= (quotes
+    inside the value are escaped, so the last bare `="` is that opening). In
+    any other text, the logical line is the script line.
+    """
+    start = line.rfind("\\n", 0, index)
+    if start >= 0:
+        segment = line[start + 2:index]
+    else:
+        segment = line[:index]
+        opening = segment.rfind('="')
+        if opening >= 0:
+            segment = segment[opening + 2:]
+            # A bare quote after the opening closed that value: this is a
+            # plain field such as comment="#critical", not script source.
+            if re.search(r'(?<!\\)"', segment):
+                return False
+    return segment.lstrip().startswith("#")
+
+
+def _secret_spans(line):
+    """(kind, start, end) of every secret value on one logical line."""
+    for kind, skip_comments, pattern in _SECRET_PATTERNS:
+        for match in pattern.finditer(line):
+            group = "value"
+            if "quoted" in pattern.groupindex and match.group("quoted") is not None:
+                group = "quoted"
+            value = match.group(group)
+            if value is None or value in _PLACEHOLDERS:
+                continue
+            # <paste token here> is a placeholder; $Password is a variable.
+            if value.startswith("<") and value.endswith(">"):
+                continue
+            if value.startswith(("$", "[", "(")):
+                continue
+            if skip_comments and _in_script_comment(line, match.start()):
+                continue
+            yield kind, match.start(group), match.end(group)
+
+
+def find_secrets(text):
+    """[(line number, kind)] for every secret in an export.
+
+    Never returns the value: the findings are printed, logged and asserted on,
+    and none of those should be able to leak what they found.
+    """
+    findings = []
+    for number, line, _ in _logical_lines(text):
+        for kind, _, _ in _secret_spans(line):
+            if (number, kind) not in findings:
+                findings.append((number, kind))
+    return findings
+
+
+def redact_secrets(text):
+    """Replace every secret value with REDACTED, and nothing else.
+
+    Deterministic, so a redacted history diffs cleanly from one export to the
+    next, and idempotent, because REDACTED is skipped as a value. A value that
+    crossed a line wrap loses the wrap with it.
+    """
+    spans = []
+    for _, line, offsets in _logical_lines(text):
+        for _, start, end in _secret_spans(line):
+            spans.append((offsets[start], offsets[end - 1] + 1))
+    if not spans:
+        return text
+    spans.sort()
+    merged = [list(spans[0])]
+    for start, end in spans[1:]:
+        if start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    out, cursor = [], 0
+    for start, end in merged:
+        out.append(text[cursor:start])
+        out.append(REDACTED)
+        cursor = end
+    out.append(text[cursor:])
+    return "".join(out)
+
+
+def describe_lines(findings):
+    numbers = sorted({number for number, _ in findings})
+    shown = ", ".join(str(n) for n in numbers[:10])
+    return shown + (", ..." if len(numbers) > 10 else "")
+
+
+def report_secrets(findings):
+    """Print a scan's findings. Returns the scan's exit code."""
+    for number, kind in findings:
+        warn("line %d: %s" % (number, kind))
+    info("%d finding(s); values are never printed" % len(findings))
+    return 1 if findings else 0
+
+
+def read_stored_export(path):
+    """Read an export from disk the way the stored file is read: no symlinks,
+    no devices. Returns the text; raises OSError or UnicodeError."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "r", encoding="utf-8") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise OSError("not a regular file")
+        return fh.read()
 
 
 def fetch_export(host, user, identity, port, timeout, sensitive):
@@ -178,7 +375,9 @@ def main(argv=None):
     parser = Usage3Parser(
         description="Export a RouterOS config over ssh and version it."
     )
-    parser.add_argument("--host", required=True, help="router hostname or address")
+    parser.add_argument(
+        "--host", help="router hostname or address (required unless --scan-file)"
+    )
     parser.add_argument("--user", default="admin", help="RouterOS user (default: admin)")
     parser.add_argument("--identity", help="ssh private key to use")
     parser.add_argument("--port", type=int, default=22, help="ssh port (default: 22)")
@@ -202,7 +401,26 @@ def main(argv=None):
         action="store_true",
         help="keep the volatile export header (every run will then differ)",
     )
+    parser.add_argument(
+        "--scan-secrets",
+        action="store_true",
+        help="report secrets in the live export by line and kind; write nothing. "
+             "Exit 1 when one is found",
+    )
+    parser.add_argument(
+        "--scan-file",
+        metavar="PATH",
+        help="scan a stored export instead of the router; needs no --host and no ssh",
+    )
+    parser.add_argument(
+        "--redact-secrets",
+        action="store_true",
+        help="replace secret values with <redacted> before printing, diffing or writing",
+    )
     args = parser.parse_args(argv)
+
+    if not args.host and not args.scan_file:
+        parser.error("the following arguments are required: --host")
 
     # 3, not 2. Both of these are bad CLI arguments, which the exit table in
     # this file's own docstring spends 3 on; 2 is preflight — ssh missing, the
@@ -211,6 +429,21 @@ def main(argv=None):
     if sum((args.stdout, args.diff, args.commit)) > 1:
         bad("--stdout, --diff and --commit are mutually exclusive")
         return 3
+
+    scanning = args.scan_secrets or args.scan_file is not None
+    if scanning and (args.stdout or args.diff or args.commit or args.redact_secrets):
+        bad("--scan-secrets and --scan-file cannot be combined with --stdout, "
+            "--diff, --commit or --redact-secrets")
+        return 3
+
+    if args.scan_file is not None:
+        # A stored export, or an older committed copy: no router, no ssh.
+        try:
+            stored = read_stored_export(os.path.expanduser(args.scan_file))
+        except (OSError, UnicodeError) as exc:
+            bad("could not read %s: %s" % (args.scan_file, exc))
+            return 1
+        return report_secrets(find_secrets(stored))
 
     if args.show_sensitive and args.commit:
         bad("--show-sensitive with --commit would write router secrets into git history")
@@ -231,6 +464,21 @@ def main(argv=None):
         return 1
 
     content = text if args.no_normalise else normalise(text)
+
+    if args.scan_secrets:
+        return report_secrets(find_secrets(content))
+
+    if args.redact_secrets:
+        content = redact_secrets(content)
+    secrets = find_secrets(content)
+    if secrets:
+        warn_stderr("%d possible secret(s) in the export (lines %s); re-run with "
+                    "--redact-secrets" % (len(secrets), describe_lines(secrets)))
+        if args.commit:
+            # Fail closed, like --show-sensitive: the way past this is the
+            # option that removes the values, not one that skips the check.
+            bad("refusing to commit an export that holds secrets")
+            return 1
 
     if args.stdout:
         sys.stdout.write(content)
