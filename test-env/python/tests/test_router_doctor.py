@@ -1360,7 +1360,8 @@ class DriftTestCase(unittest.TestCase):
                                ("tg_send", b"tg body\n")):
                 with open(os.path.join(package_dir, "core", name + ".lua"), "wb") as fh:
                     fh.write(body)
-            router = fake_router({"health_check": b"edited\n", "tg_send": b"tg body\n"})
+            router = fake_router({"health_check": b"ROUTER-ONLY-SOURCE-7f3a\n",
+                                  "tg_send": b"tg body\n"})
 
             def fake_probe(host, user, identity, port, timeout, command=router_doctor.PROBE):
                 if command == router_doctor.PROBE:
@@ -1377,7 +1378,8 @@ class DriftTestCase(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(payload["drift"], {"health_check": "changed", "tg_send": "same"})
         self.assertNotIn("secret-looking-body", stdout.getvalue())
-        self.assertNotIn("edited", stdout.getvalue())
+        self.assertNotIn("ROUTER-ONLY-SOURCE-7f3a", stdout.getvalue())
+        self.assertNotIn("tg body", stdout.getvalue())
 
     def test_lone_copy_without_lua_files_gives_one_info_and_no_warn(self):
         verdicts, findings = router_doctor.drift_findings(
