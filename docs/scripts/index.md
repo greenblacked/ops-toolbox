@@ -27,6 +27,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/status.sh` | Linux | One-screen verdict: distro, disk, packages, reboot, timer, git identity. | <span class="stage stage-report">read-only</span> |
 | `linux/system_doctor.sh` | Linux | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `linux/net_doctor.sh` | Linux | Interfaces, routes, DNS, sockets; optional `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `linux/listen_audit.sh` | Linux | Who owns each listening port; baseline drift check. | <span class="stage stage-report">read-only</span> |
 | `linux/hardening_audit.sh` | Linux | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `linux/ssh_client_doctor.sh` | Linux | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |

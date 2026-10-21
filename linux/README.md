@@ -36,6 +36,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [`schedule_report.sh`](#schedule_reportsh)
 - [`disk_cleanup.sh`](#disk_cleanupsh)
 - [`net_doctor.sh`](#net_doctorsh)
+- [`listen_audit.sh`](#listen_auditsh)
 - [`sysctl_defaults.sh`](#sysctl_defaultssh)
 - [`tls_expiry.sh`](#tls_expirysh)
 - [`log_triage.sh`](#log_triagesh)
@@ -54,6 +55,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
 | [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
+| [`listen_audit.sh`](listen_audit.sh) | Read-only listening-port owners and scope; `--print` a baseline, `--baseline` to catch drift |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, host keys, updates, kernel controls |
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
@@ -122,6 +124,7 @@ Read the machine without touching it:
 ./status.sh                 # one-screen verdict
 ./system_doctor.sh          # is this machine well?
 ./net_doctor.sh             # is this machine reachable?
+./listen_audit.sh           # who owns each listening port?
 ./hardening_audit.sh        # is this machine safe?
 ./ssh_client_doctor.sh      # is ~/.ssh something ssh will actually use?
 ./tls_expiry.sh --file /etc/ssl/private/example.pem
@@ -158,6 +161,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Diagnose** | `status.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `system_doctor.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When "the network is wrong" | nothing — it only reads |
+| **Diagnose** | `listen_audit.sh` | From cron against a committed baseline, or after an install | nothing — it only reads |
 | **Diagnose** | `schedule_report.sh` | When something ran at 3am | nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When `Permission denied (publickey)` and the key is on disk | nothing — it only reads |
@@ -526,7 +530,55 @@ connectivity probe.
 It changes nothing, and warnings do not change the exit code — a missing
 default route is something to read, not a gate. `--probe` is off by
 default so a container with no uplink does not hang the report. Use
-`hardening_audit.sh --only network` when you want findings.
+`hardening_audit.sh --only network` when you want findings, and
+`listen_audit.sh` when you want to know which process owns each port.
+
+## `listen_audit.sh`
+
+`net_doctor.sh` prints the raw `ss -tuln` table and `hardening_audit.sh` counts
+the sockets bound to every interface. This answers the questions after that:
+which process owns each port, whether it answers on loopback or to the
+network, and whether the set has changed since you last looked.
+
+```bash
+./listen_audit.sh                              # the table
+./listen_audit.sh --public-only
+sudo ./listen_audit.sh                         # process names of other users' sockets need root
+sudo ./listen_audit.sh --print > /etc/listeners.baseline
+sudo ./listen_audit.sh --baseline /etc/listeners.baseline
+./listen_audit.sh --allow 22,80,443            # no file: these ports, any process
+./listen_audit.sh --baseline FILE --fail-on any
+```
+
+The table has one row per listener: protocol, port, scope (`loopback`,
+`wildcard`, or `other` for a specific address), the owning process and the
+addresses it is bound to. IPv4 and IPv6 twins of the same socket are folded
+into one row. Without root a process ss cannot see is shown as `?`.
+
+`--print` writes the public listeners (all of them with `--all`) as a
+baseline, one `proto/port/process` per line, sorted, with no pids, addresses
+or date, so the same machine prints the same bytes and a diff means a change.
+It goes to stdout; the script never writes the file. A baseline line may use
+a port range (`tcp/8000-8100/*`), `*` as the process to match any, and `#`
+comments.
+
+`--baseline FILE` and `--allow PORTS` compare the live public listeners
+(every listener with `--all`) with what is expected. A listener nothing
+covers is a `NEW listener` FAIL; a single-port baseline entry that nothing
+answers is an `expected listener ... is not listening` warning. When a process
+name is hidden, that row is matched on protocol and port only. Both options
+together apply both.
+
+`--fail-on new` (the default once a baseline or allow-list is given) exits `1`
+on a new listener, `any` also on a gone one, `never` not at all. Without
+either option the script is a report and exits `0`. Exit codes: `0` no drift
+at or above `--fail-on`, `1` drift, `2` not Linux or `ss` missing (usage errors
+are answered first), `3` usage, an unreadable `--baseline`, a bad line in it,
+or a bad `--allow` port.
+
+The only command it runs is `ss -tulnp`. The baseline file is read line by
+line and never evaluated, and process names are stripped of control
+characters before they are printed.
 
 ## `sysctl_defaults.sh`
 
@@ -797,8 +849,10 @@ and revert against a fake procfs without touching `/etc`, that
 that `tls_expiry.sh` treats a committed expired PEM as a failure when
 `openssl` is present (and as exit `2` when it is not), and that
 `log_triage.sh` parses a stub journal and auth log without ever passing
-journalctl anything but reads, and that `container_doctor.sh` grades a stub
-engine's containers while running only read-only engine verbs.
+journalctl anything but reads, that `container_doctor.sh` grades a stub
+engine's containers while running only read-only engine verbs, and that
+`listen_audit.sh` folds a stub `ss` table into owners and reports baseline
+drift with the documented exit codes.
 
 Discovery is by `find`, two levels deep, so `systemd/` is covered as well.
 A container has no user manager, so the timer can only be exercised through

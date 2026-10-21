@@ -1218,6 +1218,98 @@ else
 fi
 assert_contains "net_doctor --quiet still summarises" "$out" "== summary =="
 
+section "listen_audit.sh"
+LISTEN="$L/listen_audit.sh"
+# The tester images have no iproute2, so ss is a stub ahead of PATH printing a
+# real `ss -tulnp` header and rows: sshd on both stacks (one row once folded),
+# nginx on [::], postgres and a resolver stub on loopback, and a python3 that
+# nobody expected.
+listen_stub="$(mktemp -d)"
+cat > "$listen_stub/ss" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process'
+printf '%s\n' 'tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*     users:(("sshd",pid=1,fd=3))'
+printf '%s\n' 'tcp   LISTEN 0      128             [::]:22            [::]:*     users:(("sshd",pid=1,fd=4))'
+printf '%s\n' 'tcp   LISTEN 0      511             [::]:443           [::]:*     users:(("nginx",pid=2,fd=6))'
+printf '%s\n' 'tcp   LISTEN 0      4096       127.0.0.1:5432       0.0.0.0:*     users:(("postgres",pid=3,fd=5))'
+printf '%s\n' 'udp   UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*'
+printf '%s\n' 'tcp   LISTEN 0      5            0.0.0.0:9000       0.0.0.0:*     users:(("python3",pid=4,fd=3))'
+STUB
+chmod +x "$listen_stub/ss"
+scratch_home="$(mktemp -d)"
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" PATH="$listen_stub:$PATH" "$LISTEN" 2>&1)"; rc=$?
+assert_eq "listen_audit without a baseline is a report and exits 0" "0" "$rc"
+assert_contains "listen_audit names the sshd owner" "$out" "sshd"
+assert_contains "listen_audit names the nginx owner" "$out" "nginx"
+assert_contains "listen_audit lists the loopback postgres port" "$out" "5432"
+assert_contains "listen_audit marks loopback scope" "$out" "loopback"
+assert_contains "listen_audit counts public and loopback listeners" "$out" "5 listener(s): 3 public, 2 loopback"
+out="$(PATH="$listen_stub:$PATH" "$LISTEN" --public-only 2>&1)"
+assert_not_contains "listen_audit --public-only hides loopback rows" "$out" "5432"
+
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" PATH="$listen_stub:$PATH" "$LISTEN" --print 2>&1)"; rc=$?
+assert_eq "listen_audit --print exits 0" "0" "$rc"
+assert_contains "listen_audit --print writes sshd as proto/port/process" "$out" "tcp/22/sshd"
+assert_contains "listen_audit --print writes nginx as proto/port/process" "$out" "tcp/443/nginx"
+assert_not_contains "listen_audit --print carries no pids" "$out" "pid="
+assert_not_contains "listen_audit --print leaves loopback out" "$out" "5432"
+assert_not_contains "listen_audit --print carries no date" "$out" "$(date +%Y)"
+assert_eq "listen_audit folds the IPv4/IPv6 sshd twins" "1" "$(grep -c '^tcp/22/sshd$' <<<"$out")"
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "listen_audit wrote nothing, --print included"
+else
+  err "listen_audit wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+listen_base="$(mktemp -d)"
+printf '# expected\ntcp/22/sshd\n\ntcp/443/nginx\ntcp/3000/node  # gone\n' > "$listen_base/drifted"
+out="$(PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/drifted" 2>&1)"; rc=$?
+assert_eq "listen_audit fails on a listener the baseline lacks" "1" "$rc"
+assert_contains "listen_audit names the new listener" "$out" "NEW listener tcp/9000"
+assert_contains "listen_audit warns on an expected listener that is gone" "$out" "expected listener tcp/3000"
+
+# Gone alone is a warning: the default --fail-on new passes it, any does not.
+printf 'tcp/22/sshd\ntcp/443/nginx\ntcp/9000/python3\ntcp/3000/node\n' > "$listen_base/gone-only"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/gone-only" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit passes a gone listener under --fail-on new" "0" "$rc"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/gone-only" --fail-on any >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --fail-on any fails on a gone listener" "1" "$rc"
+
+printf 'tcp/22/sshd\ntcp/443/nginx\ntcp/9000/python3\n' > "$listen_base/matching"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/matching" --fail-on any >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit passes a matching baseline" "0" "$rc"
+printf 'tcp/22/sshd\ntcp/443/*\ntcp/9000-9100/*\n' > "$listen_base/wildcard"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/wildcard" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit matches * processes and port ranges" "0" "$rc"
+
+PATH="$listen_stub:$PATH" "$LISTEN" --allow 22,443,9000 >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --allow covering every public port -> 0" "0" "$rc"
+PATH="$listen_stub:$PATH" "$LISTEN" --allow 22 >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --allow missing ports -> 1" "1" "$rc"
+
+for bad in "--baseline /nonexistent" "--allow 99999" "--allow abc" "--fail-on sometimes" "--bogus"; do
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  PATH="$listen_stub:$PATH" "$LISTEN" $bad >/dev/null 2>&1
+  rc=$?
+  assert_eq "listen_audit rejects $bad -> 3" "3" "$rc"
+done
+printf 'tcp/notaport/sshd\n' > "$listen_base/bad"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/bad" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit rejects a baseline line with a bad port -> 3" "3" "$rc"
+
+# No ss at all: a wrong environment, not a usage error, and --help still works.
+listen_bin="$(mktemp -d)"
+for tool in bash awk sort grep tr sed cat uname; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ "$tool_path" == /* ]] && ln -s "$tool_path" "$listen_bin/$tool"
+done
+PATH="$listen_bin" "$LISTEN" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit without ss -> 2" "2" "$rc"
+PATH="$listen_bin" "$LISTEN" --help >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --help works without ss" "0" "$rc"
+rm -rf "$listen_stub" "$listen_base" "$listen_bin"
+
 section "log_triage.sh"
 TRIAGE="$L/log_triage.sh"
 scratch_home="$(mktemp -d)"
