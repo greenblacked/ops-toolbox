@@ -35,7 +35,8 @@ reports all five:
   stash        stash entries
   uncommitted  changed tracked files and untracked files (ignored files are
                not counted)
-  tag          with --tags: local tags the remote does not have
+  tag          with --tags: local tags the remote does not have, or has at
+               a different object
 
 Usage:
   $(basename "$0") [--remote NAME] [--limit N] [--tags] [--porcelain] [--strict]
@@ -44,7 +45,8 @@ Options:
   --remote NAME   Count a commit as pushed only when it is on this remote
                   (default: any remote-tracking ref). Also the remote --tags asks.
   --limit N       Subjects listed per branch (default: 5)
-  --tags          Also list local tags missing on the remote. The one network
+  --tags          Also list local tags missing on the remote or
+                  pointing at a different object there. The one network
                   call this script makes: 'git ls-remote --tags', read-only.
   --porcelain     Tab-separated rows for scripts: kind name count detail
   --strict        Exit 1 when anything exists only on this machine
@@ -226,20 +228,30 @@ uncommitted_total=$((tracked_changes + untracked_paths))
 missing_tags=()
 if (( TAGS == 1 )); then
   remote_tags=""
-  if listing="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags --refs "$tag_remote" 2>/dev/null)"; then
-    while IFS=$'\t' read -r _sha tag_ref; do
+  # Not --refs: an annotated tag is listed twice, as the tag object and as
+  # NAME^{} (the commit it points at), and both are compared below.
+  if listing="$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags "$tag_remote" 2>/dev/null)"; then
+    while IFS=$'\t' read -r sha tag_ref; do
       [[ -n "$tag_ref" ]] || continue
-      remote_tags="$remote_tags${tag_ref#refs/tags/}"$'\n'
+      remote_tags="$remote_tags${tag_ref#refs/tags/} $sha"$'\n'
     done <<<"$listing"
-    while IFS= read -r tag; do
+    # A tag counts as pushed only when the remote has the same name at the
+    # same object. A tag rewritten locally (moved, or re-annotated) keeps its
+    # name, so a name match alone would hide the only copy of the new target.
+    while read -r tag oid peeled; do
       [[ -n "$tag" ]] || continue
       # A here-string, not a pipe into grep -q: under pipefail an early exit
       # kills the writer and a match reads as a miss.
-      if ! grep -Fxq -- "$tag" <<<"$remote_tags"; then
+      same=1
+      grep -Fxq -- "$tag $oid" <<<"$remote_tags" || same=0
+      if (( same == 1 )) && [[ -n "$peeled" ]]; then
+        grep -Fxq -- "$tag^{} $peeled" <<<"$remote_tags" || same=0
+      fi
+      if (( same == 0 )); then
         missing_tags+=("$tag")
         tag_total=$((tag_total + 1))
       fi
-    done < <(git tag --list)
+    done < <(git for-each-ref --format='%(refname:strip=2) %(objectname) %(*objectname)' refs/tags)
   else
     tags_failed=1
   fi
@@ -331,7 +343,7 @@ else
   fi
 
   if (( tag_total > 0 )); then
-    heading "tags missing on $tag_remote"
+    heading "tags missing or different on $tag_remote"
     for tag in "${missing_tags[@]}"; do
       printf "  %s\n" "$tag"
     done

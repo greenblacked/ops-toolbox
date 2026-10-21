@@ -157,6 +157,22 @@ assert_contains "$out" $'tag\tv1.1\t1\torigin' 'the unpushed annotated tag is li
 assert_not_contains "$out" $'tag\tv1.0\t' 'the pushed tag is not listed'
 out="$(run_in "$repo" --tags --remote origin 2>&1)"
 assert_contains "$out" '1 unpushed tag(s)' 'the summary counts unpushed tags'
+# A tag with the same name but a different object is not pushed: the remote
+# holds the old target, and the local one exists only here.
+moved="$(git -C "$repo" commit-tree -m moved -p main 'main^{tree}')" &&
+  git -C "$repo" tag -f v1.0 "$moved" >/dev/null || err 'move a pushed lightweight tag'
+out="$(run_in "$repo" --tags --remote origin --porcelain 2>&1)"
+assert_contains "$out" $'tag\tv1.0\t1\torigin' 'a lightweight tag moved after the push is listed'
+git -C "$repo" tag -f v1.0 main >/dev/null || err 'restore the lightweight tag'
+git -C "$repo" push -q origin v1.1 &&
+  git -C "$repo" tag -f -a v1.1 -m 'rewritten' main >/dev/null || err 'rewrite a pushed annotated tag'
+out="$(run_in "$repo" --tags --remote origin --porcelain 2>&1)"
+assert_contains "$out" $'tag\tv1.1\t1\torigin' 'an annotated tag re-created after the push is listed'
+assert_not_contains "$out" $'tag\tv1.0\t' 'the restored lightweight tag is pushed again'
+git -C "$repo" tag -d v1.1 >/dev/null &&
+  git -C "$repo" fetch -q origin 'refs/tags/v1.1:refs/tags/v1.1' || err 'restore the annotated tag from the remote'
+out="$(run_in "$repo" --tags --remote origin --porcelain 2>&1)"
+assert_not_contains "$out" $'tag\tv1.1\t' 'an annotated tag equal to the remote one is pushed'
 git -C "$repo" remote add broken "$scratch/does-not-exist.git" || err 'add unreachable remote'
 out="$(run_in "$repo" --tags --remote broken 2>&1)"; rc=$?
 assert_eq "$rc" 1 'an unreachable remote -> 1'

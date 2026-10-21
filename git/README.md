@@ -347,7 +347,7 @@ Each section is printed only when it has something in it:
 | branches with no upstream | Local branches with no upstream configured, listed even when their commits are already on a remote, because the branch itself exists only here. |
 | stashes | The stash count and the newest entry's subject. |
 | uncommitted | Changed tracked files and untracked files. Ignored files are not counted. |
-| tags missing on REMOTE | With `--tags` only: local tags the remote does not have. |
+| tags missing or different on REMOTE | With `--tags` only: local tags the remote does not have, or has under the same name at a different object (a tag moved or re-annotated locally after it was pushed). |
 
 `--remote NAME` counts a commit as pushed only when it is on that remote; the
 default is any remote-tracking ref. An unknown name exits `4` rather than
