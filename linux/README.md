@@ -740,7 +740,7 @@ equal to RAM up to 8G, then 4G). No swap at all is reported, not failed.
 | `--create` | `fallocate` (or `dd` where that fails), `chmod 600`, `mkswap`, `swapon`, then one fstab line |
 | `--remove` | `swapoff`, drop the fstab line this script added, delete the file |
 | `--size SIZE` | `128M` to `64G`, like `512M` or `4G` (default `2G`); `--create` only |
-| `--path FILE` | Absolute swapfile path (default `/swapfile`); never `/`, `/proc`, `/sys` or `/dev` |
+| `--path FILE` | Absolute swapfile path (default `/swapfile`); never `/`, `/proc`, `/sys` or `/dev`, and no whitespace, control characters or backslashes (exit 3), since the path is an fstab field |
 | `--fstab FILE` | The fstab to read and edit (default `/etc/fstab`) |
 | `--force` | `--create` even though swap is already active |
 | `--dry-run` | Print every step; write nothing |
