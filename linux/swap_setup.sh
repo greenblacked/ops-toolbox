@@ -304,6 +304,11 @@ replace_fstab() {
   fi
   case "$filter" in
     append)
+      # An fstab without its final newline would take the entry onto the
+      # last record's line.
+      if [ -s "$tmp" ] && [ "$(tail -c 1 "$tmp" | od -An -c | tr -d ' ')" != '\n' ]; then
+        printf '\n' >> "$tmp"
+      fi
       fstab_line "$SWAP_PATH" >> "$tmp" || { rm -f -- "$tmp"; return 1; }
       ;;
     drop)

@@ -176,6 +176,20 @@ else
   assert_eq '--remove deletes the file' gone "$([[ -e "$swapfile" ]] && printf present || printf gone)"
   assert_eq '--remove drops the line it added' 0 "$(marker_lines)"
   assert_contains '--remove keeps the other fstab lines' "$(cat "$fstab")" 'UUID=0000-fixture / ext4 defaults 0 1'
+
+  # An fstab whose last record has no newline must not swallow the new entry.
+  printf 'UUID=0000-fixture / ext4 defaults 0 1' > "$fstab"
+  : > "$fixture/calls"
+  run_sw --create --size 128M --yes
+  assert_eq '--create on an fstab without a final newline exits 0' 0 "$rc"
+  assert_eq 'the old last record stays on its own line' 1 \
+    "$(grep -cFx 'UUID=0000-fixture / ext4 defaults 0 1' "$fstab")"
+  assert_eq 'the swap entry is a line of its own' 1 \
+    "$(grep -cFx "$swapfile none swap sw 0 0 # ops-toolbox swapfile" "$fstab")"
+  run_sw --remove --yes
+  assert_eq '--remove after that exits 0' 0 "$rc"
+  assert_eq '--remove leaves the old record alone' 1 \
+    "$(grep -cFx 'UUID=0000-fixture / ext4 defaults 0 1' "$fstab")"
 fi
 
 # --dry-run from here on: the answers below are the same for any user, and a
