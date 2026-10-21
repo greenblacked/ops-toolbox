@@ -97,8 +97,10 @@ detect_pkg_mgr() {
   local os_release="${OS_RELEASE:-/etc/os-release}"
   local id="" id_like=""
   if [[ -r "$os_release" ]]; then
-    id="$(sed -n 's/^ID=//p' "$os_release" | tr -d '"' | head -n 1)"
-    id_like="$(sed -n 's/^ID_LIKE=//p' "$os_release" | tr -d '"' | head -n 1)"
+    id="$(sed -n 's/^ID=//p' "$os_release" | tr -d '"')"
+    id="${id%%$'\n'*}"
+    id_like="$(sed -n 's/^ID_LIKE=//p' "$os_release" | tr -d '"')"
+    id_like="${id_like%%$'\n'*}"
   fi
   case " $id $id_like " in
     *" debian "*|*" ubuntu "*)             printf 'apt\n' ;;
