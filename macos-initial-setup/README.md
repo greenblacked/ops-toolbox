@@ -1834,7 +1834,7 @@ cron text is printed with control characters stripped and is never evaluated.
 ## `ssh_client_doctor.sh`
 
 `ssh` refuses a key with `Permission denied (publickey)` and names the reason
-only at `-v`: `~/.ssh` is group-readable, a private key is `644`, an
+only at `-v`: a private key is `644`, an
 `IdentityFile` points at a path that is gone. This is the macOS half of
 [`linux/ssh_client_doctor.sh`](../linux/ssh_client_doctor.sh), with the same
 flags, verdicts and exit codes, plus the checks a Mac adds: key strength, a
@@ -1850,7 +1850,7 @@ private key with no passphrase, and the Keychain options.
 
 | Group | Checks |
 | --- | --- |
-| `dir` | `~/.ssh` has no group or other permission bits (`chmod 700`). |
+| `dir` | `~/.ssh` is not writable by group or other (a failure, `chmod 700`); group or other read or search access (`755`) is a hardening warning, because `ssh` still uses `600` keys there. |
 | `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header, are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
 | `keys` | From each private key alone (its public half from `ssh-keygen -y -P ""`, or, for an encrypted OpenSSH-format key, a symlink to it with no `.pub` beside the link, both in a private scratch directory; no key bytes are copied), not from a `.pub` that can be stale: DSA fails, RSA under 3072 bits warns. A `.pub` whose fingerprint differs from its private key's warns, and the `.pub` is only used for the key type, reported as unverified, when the private key cannot be read. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
 | `config` | `IdentityFile` paths that do not exist; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line or under `Host *`, where they apply to every server (the same lines under one named host are only noted); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |

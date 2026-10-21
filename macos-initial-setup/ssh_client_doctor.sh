@@ -8,7 +8,7 @@
 # from being asked for on every connection.
 #
 # ssh refuses a key with "Permission denied (publickey)" and names the reason
-# only at -v: ~/.ssh is group-readable, a private key is 644, an IdentityFile
+# only at -v: a private key is 644, an IdentityFile
 # points at a path that is gone. workstation_doctor.sh lists which public keys
 # exist; hardening_audit.sh grades Remote Login; git/git_ssh_doctor.py asks
 # ssh -G about one git remote. None of them looks at ~/.ssh itself.
@@ -76,7 +76,7 @@ Options:
   --help, -h       Show this help
 
 Groups:
-  dir      the directory's own mode
+  dir      the directory's own mode (group/other write fails, read warns)
   files    private keys 600, config/known_hosts/authorized_keys not writable
   keys     DSA and short RSA keys, private keys with no passphrase
   config   missing IdentityFile paths, risky options under Host *, Keychain
@@ -182,12 +182,21 @@ file_mode() {
   printf '%s\n' "$m"
 }
 
-# OpenSSH refuses a private key (and ~/.ssh itself) when group or other have
-# any permission bit set. Owner bits can be 7/6/5/4; the last two digits
-# must be 0.
+# OpenSSH refuses a private key when group or other have any permission bit
+# set. Owner bits can be 7/6/5/4; the last two digits must be 0.
 mode_private() {
   local mode="$1"
   [[ "$mode" =~ ^0?[0-7]00$ ]]
+}
+
+# Can group or other write to this mode? A directory they can write to lets
+# them replace or add keys, config and known_hosts, so that is a failure;
+# group/other read or search only is a hardening warning (ssh still works).
+mode_group_other_writable() {
+  local mode="$1"
+  mode="${mode#0}"
+  [[ "$mode" =~ ^[0-7][0-7][0-7]$ ]] || return 1
+  (( ((8#${mode:1:1}) & 2) != 0 || ((8#${mode:2:1}) & 2) != 0 ))
 }
 
 # Config, authorized_keys and known_hosts may be 644; group- or world-writable
@@ -316,8 +325,12 @@ if want dir; then
     skip "could not read mode of $SSH_DIR"
   elif mode_private "$dir_mode"; then
     pass "$SSH_DIR mode $dir_mode"
+  elif mode_group_other_writable "$dir_mode"; then
+    fail "$SSH_DIR mode $dir_mode is writable by group or other" \
+         "others could replace keys, config or known_hosts: chmod 700 $SSH_DIR"
   else
-    fail "$SSH_DIR mode $dir_mode" "OpenSSH ignores keys here unless group/other bits are clear: chmod 700 $SSH_DIR"
+    warn "$SSH_DIR mode $dir_mode is open to group or other (ssh still uses the keys)" \
+         "hardening: chmod 700 $SSH_DIR"
   fi
 fi
 

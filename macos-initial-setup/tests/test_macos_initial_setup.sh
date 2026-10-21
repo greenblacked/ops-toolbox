@@ -2495,8 +2495,17 @@ assert_eq "ssh_client_doctor accepts --ssh-dir=DIR" "0" "$rc"
 
 chmod 755 "$sshd_dir"
 out="$(sshdoc --only dir)"; rc=$?
-assert_eq "a group-readable ~/.ssh fails -> 1" "1" "$rc"
+assert_eq "a 755 ~/.ssh is only a warning -> 0" "0" "$rc"
+assert_contains "a 755 ~/.ssh is a hardening warning" "$out" "[warn] $sshd_dir mode 755"
 assert_contains "the directory fix is printed" "$out" "chmod 700 $sshd_dir"
+out="$(sshdoc --only dir --fail-on warn)"; rc=$?
+assert_eq "a 755 ~/.ssh fails under --fail-on warn -> 1" "1" "$rc"
+for dm in 775 777 770 757; do
+  chmod "$dm" "$sshd_dir"
+  out="$(sshdoc --only dir)"; rc=$?
+  assert_eq "a $dm ~/.ssh fails -> 1" "1" "$rc"
+  assert_contains "a $dm ~/.ssh is called writable" "$out" "[FAIL] $sshd_dir mode $dm is writable by group or other"
+done
 chmod 700 "$sshd_dir"
 
 chmod 644 "$sshd_dir/id_ed25519"
