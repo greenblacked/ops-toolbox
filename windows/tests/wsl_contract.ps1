@@ -295,11 +295,11 @@ foreach ($mode in 'nat', 'mirrored', 'virtioproxy', 'none', 'Mirrored') {
 $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nnetworkingMode=bridged"
 Test-Case 'the deprecated networkingMode=bridged is info, not a warning' (
     @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0 -and
-    @($found | Where-Object { $_.Level -eq 'info' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -match 'deprecated' -and $_.Message -notmatch 'NAT' }).Count -eq 1
+    @($found | Where-Object { $_.Level -eq 'info' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -match 'deprecated' -and $_.Message -notmatch 'falls back' }).Count -eq 1
 ) (Format-Finding $found)
 $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nnetworkingMode=mirroed"
 Test-Case 'a networkingMode WSL does not define is reported, with the NAT fallback' (
-    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -match 'not nat, mirrored, virtioproxy or none.*NAT' }).Count -eq 1
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -cmatch 'not nat, mirrored, virtioproxy or none.*falls back to NAT' }).Count -eq 1
 ) (Format-Finding $found)
 
 foreach ($case in @(
