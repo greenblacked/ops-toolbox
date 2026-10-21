@@ -156,6 +156,7 @@ nav:
       - Git Permission denied (publickey): runbooks/git-permission-denied-publickey.md
       - Linux network unreachable: runbooks/linux-network-unreachable.md
       - Undo the last Git commit: runbooks/git-undo-last-commit.md
+      - Windows low on disk: runbooks/windows-low-disk.md
   - Contributing:
       - Contributing: contributing.md
       - Development: contributing/development.md

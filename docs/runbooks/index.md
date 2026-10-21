@@ -39,6 +39,7 @@ Your machine will print different numbers.
 | [git push fails with Permission denied (publickey)](git-permission-denied-publickey.md) | Git | SSH refuses your key although it exists, or a `Host` block seems ignored. |
 | [A Linux host cannot reach the network or resolve names](linux-network-unreachable.md) | Linux | Nothing is reachable, names do not resolve, or a service cannot be reached from outside. |
 | [Undo the last Git commit](git-undo-last-commit.md) | Git | The last commit is wrong, whether it is only local or already pushed. |
+| [A Windows PC is low on C: drive space](windows-low-disk.md) | Windows | C: is nearly full and you need space now. |
 
 New runbooks are added one at a time. See
 [Development](../contributing/development.md) for the page patterns they use.
