@@ -1785,9 +1785,12 @@ def test_drift_hash_spelling_is_valid_on_the_pinned_routeros(
 # same table count as full. The script is always run straight from the
 # scheduler entry, as on a router: a wrapper that called it with
 # `/system script run` never reported back on the 7.24 CHR (60s, nothing in
-# the log). A quiet run has no effect of its own, so each test waits on the
-# last global the script writes before it returns, or, for a run that writes
-# nothing, on the scheduler entry's run-count.
+# the log). The likely root cause: conntrack_watch returns with a top-level
+# :return, which also ends the caller when the script is run through
+# /system script run from a wrapper, so the wrapper never reached its marker.
+# A quiet run has no effect of its own, so each test waits on the last global
+# the script writes before it returns, or, for a run that writes nothing, on
+# the scheduler entry's run-count.
 CONNTRACK_GLOBALS = (
     "ConntrackWarnPercent",
     "ConntrackLast",
