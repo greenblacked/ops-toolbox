@@ -1084,6 +1084,15 @@ if (-not $netDoctor) {
             @{ Label = 'a proxy with an empty NO_PROXY'
                Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpProxy = 'http://proxy:8080' }
                Expect = @('no-proxy-empty:warn') }
+            @{ Label = 'git http.proxy equals the environment proxy'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpsProxy = 'http://proxy:8080'; GitProxy = 'http://PROXY:8080/'; NoProxy = 'localhost' }
+               Expect = @() }
+            @{ Label = 'git http.proxy differs from the environment proxy'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpsProxy = 'http://proxy:8080'; GitProxy = 'http://git-proxy:3128'; NoProxy = 'localhost' }
+               Expect = @('git-proxy-differs:info') }
+            @{ Label = 'git http.proxy equals HTTP_PROXY when HTTPS_PROXY is unset'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpProxy = 'http://proxy:8080'; GitProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @() }
             @{ Label = 'a PAC script only'
                Observed = @{ WinInetEnabled = $false; AutoConfigUrl = 'http://wpad/proxy.pac' }
                Expect = @('pac:info') }

@@ -233,7 +233,11 @@ function Get-ProxyFinding {
     if (-not $envHttp) { $envHttp = [string]$Observed['AllProxy'] }
     $envHttps = [string]$Observed['HttpsProxy']
     if (-not $envHttps) { $envHttps = [string]$Observed['AllProxy'] }
-    $envProxy = $envHttp -or $envHttps
+    $envProxy = [bool]($envHttp -or $envHttps)
+    # git has one http.proxy for both protocols: compare it with the proxy
+    # the environment names, HTTPS_PROXY first.
+    $envForGit = $envHttps
+    if (-not $envForGit) { $envForGit = $envHttp }
 
     $mismatch = $false
     if ($inetOn) {
@@ -271,7 +275,7 @@ function Get-ProxyFinding {
             Message = 'a PAC script picks the proxy per URL; command-line tools do not read it'
         }
     }
-    if ($Observed['GitProxy'] -and $envProxy -and ((& $normalise $Observed['GitProxy']) -ne (& $normalise $envProxy))) {
+    if ($Observed['GitProxy'] -and $envForGit -and ((& $normalise $Observed['GitProxy']) -ne (& $normalise $envForGit))) {
         $findings += [pscustomobject]@{
             Id = 'git-proxy-differs'; Level = 'info'
             Message = "git's http.proxy differs from HTTP(S)_PROXY; git uses http.proxy"
