@@ -4,7 +4,8 @@
 
 Git identity and repository reports, commit, sync and branch-cleanup helpers,
 repository hooks, and read-only Python diagnostics (the `*_doctor.py` scripts)
-for SSH, signing, remotes, ignore rules and repository health.
+for SSH, signing, remotes, ignore rules, repository health and committed
+secrets.
 
 ## Requirements
 
@@ -39,6 +40,7 @@ for SSH, signing, remotes, ignore rules and repository health.
 | `git_remote_doctor.py` | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |
 | `git_ignore_doctor.py` | Explain why a path is or is not ignored. | <span class="stage stage-report">read-only</span> |
 | `git_health_doctor.py` | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
+| `git_secrets_doctor.py` | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
 | `git_aliases.sh`, `git_aliases.zsh` | Aliases for the helpers; sourced, not executed. | n/a |
 
 <!-- markdownlint-enable MD033 -->

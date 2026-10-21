@@ -31,6 +31,7 @@ SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
 IGNORE_DOCTOR="$G/git_ignore_doctor.py"
 HEALTH_DOCTOR="$G/git_health_doctor.py"
+SECRETS_DOCTOR="$G/git_secrets_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -1106,6 +1107,66 @@ out="$(cd "$leak_repo" && "$REMOTE_DOCTOR" --probe --probe-timeout 5 \
   --url 'https://user:s3cretpw@127.0.0.1:1/r.git' 2>&1)"; rc=$?
 assert_eq "$rc" "1" "remote doctor --probe fails for a refused connection"
 assert_not_contains "$out" "s3cretpw" "remote doctor --probe never prints a URL password"
+
+section "secrets doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$SECRETS_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "0" "secrets doctor is clean on a fresh repository"
+assert_eq "$out" "" "secrets doctor --quiet suppresses its report"
+out="$(cd "$repo" && "$SECRETS_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "secrets doctor --json is one object carrying exit $rc"; else err "secrets doctor --json is not a verdict: $out"; fi
+
+# A placeholder is what a repository should commit instead.
+printf 'KEY=\n' >"$repo/.env.example"
+git -C "$repo" add .env.example && git -C "$repo" commit -qm "env template" >/dev/null
+(cd "$repo" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor passes a committed .env.example"
+
+env_repo="$(new_repo)"
+printf 'K=v\n' >"$env_repo/.env"
+git -C "$env_repo" add -f .env && git -C "$env_repo" commit -qm "a committed env file" >/dev/null
+out="$(cd "$env_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor fails on a committed .env"
+assert_contains "$out" ".env" "secrets doctor names the file"
+assert_contains "$out" "env-file" "secrets doctor names the rule"
+assert_not_contains "$out" "K=v" "secrets doctor never prints the file's content"
+
+# Content is matched with git grep -l, so the report carries the path and the
+# rule and never the key. The header is assembled here so this file is not
+# itself a private key to a scanner.
+key_repo="$(new_repo)"
+printf -- '-----BEGIN %s PRIVATE KEY-----\nxyz\n' OPENSSH >"$key_repo/notes.txt"
+git -C "$key_repo" add notes.txt && git -C "$key_repo" commit -qm "notes" >/dev/null
+out="$(cd "$key_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor fails on a committed private key block"
+assert_contains "$out" "private-key-block" "secrets doctor names the content rule"
+assert_contains "$out" "notes.txt" "secrets doctor names the file holding the key"
+assert_not_contains "$out" "OPENSSH PRIVATE" "secrets doctor never prints the matched text"
+(cd "$key_repo" && "$SECRETS_DOCTOR" --no-content --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor --no-content skips the content passes"
+(cd "$key_repo" && "$SECRETS_DOCTOR" --allow 'notes.txt' --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor --allow leaves a documented fixture out"
+mkdir -p "$key_repo/sub"
+(cd "$key_repo/sub" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "secrets doctor from a subdirectory still searches the whole tree"
+
+# Deleting a committed file does not remove it from any clone. Only --history
+# looks, and that is the case where the credential has to be rotated.
+hist_repo="$(new_repo)"
+printf '{}\n' >"$hist_repo/terraform.tfstate"
+git -C "$hist_repo" add terraform.tfstate && git -C "$hist_repo" commit -qm "state" >/dev/null
+git -C "$hist_repo" rm -q terraform.tfstate && git -C "$hist_repo" commit -qm "remove state" >/dev/null
+(cd "$hist_repo" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor without --history judges the tree only"
+out="$(cd "$hist_repo" && "$SECRETS_DOCTOR" --history 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor --history fails on a state file deleted from the tree"
+assert_contains "$out" "still in history" "secrets doctor --history says the file is still in history"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "secrets doctor outside a repository -> exit 2"
+(cd "$repo" && "$SECRETS_DOCTOR" --history --history-limit 0 >/dev/null 2>&1); rc=$?
+assert_eq "$rc" "3" "secrets doctor --history-limit 0 -> exit 3"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"

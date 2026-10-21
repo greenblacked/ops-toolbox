@@ -34,6 +34,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
 - [`git_ignore_doctor.py`](#git_ignore_doctorpy)
 - [`git_health_doctor.py`](#git_health_doctorpy)
+- [`git_secrets_doctor.py`](#git_secrets_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
 
@@ -96,6 +97,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_remote_doctor.py` | Diagnose remote URLs/rewrites/credentials; `--quiet` supports CI probes. |
 | `git_ignore_doctor.py` | Explain why a path is ignored or is not; with no argument, find tracked files a rule claims. |
 | `git_health_doctor.py` | Stale locks, a gc.log blocking automatic gc, object bloat, maintenance and clone shape; `--fsck` is opt-in. |
+| `git_secrets_doctor.py` | Committed credentials: credential-shaped names, key and token formats in content, and with `--history` files deleted but still in history. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -778,6 +780,57 @@ never change the exit code. `--quiet` prints nothing and keeps the code;
 
 ---
 
+## `git_secrets_doctor.py`
+
+`git_hooks_install.sh --token-scan` guards the next commit and
+`git_ignore_doctor.py` finds tracked files an ignore rule claims. This answers
+the question an inherited repository raises: is anything in here that should
+never have been committed, and was something committed once and then deleted?
+
+```bash
+./git/git_secrets_doctor.py                        # names and content at HEAD
+./git/git_secrets_doctor.py --history              # also every path ever added
+./git/git_secrets_doctor.py --allow 'tests/fixtures/*'
+./git/git_secrets_doctor.py --no-content --quiet   # names only, verdict only
+```
+
+- **Tracked names.** `.env` (and `.env.production`), `id_rsa`/`id_ed25519`,
+  `*.pem`, `*.key`, `*.p12`, `terraform.tfstate`, `.git-credentials`,
+  `.netrc`, `.aws/credentials`, `.docker/config.json`, kubeconfig files and
+  `.htpasswd` fail; `.npmrc`, `.pypirc`, `terraform.tfvars`,
+  `credentials.json`, `service-account*.json` and `secrets.yml` warn, because
+  they often but not always carry a secret. A name ending in `.example`,
+  `.sample`, `.template`, `.dist`, `.tpl` or `.tmpl` is a placeholder and
+  passes, so `.env.example` is fine.
+- **Content at HEAD.** Private key blocks and GitHub, GitLab, Slack and Stripe
+  live tokens fail; an AWS access key id warns, since the id alone is not the
+  secret. The search is `git grep -l`, which returns file names only, so a
+  matched secret never reaches this report, a log, the JSON or an issue
+  someone pastes it into. `--no-content` skips it on a huge monorepo.
+- **History** (`--history`). The name rules over every path added on any ref
+  in the last `--history-limit` commits (default 20000). A file that is gone
+  from the tree but still in history is still in every clone, which is the
+  case where deleting it did not end the exposure.
+
+`--allow GLOB` (repeatable) leaves out a documented fixture; the glob is
+matched against the repository-relative path and `*` crosses directories.
+
+The advice stops at what is safe to print: rotate the credential first, then
+`git rm --cached -- <path>` and an ignore rule (`git_ignore_doctor.py <path>`
+checks it works). Removing a file does not remove it from history, and
+rewriting history is a separate, deliberate decision this tool never makes.
+
+Read-only: it opens no file in the working tree and works through
+`git ls-files`, `git grep`, `git log` and `git ls-tree`, from the repository
+root whatever directory it is started in.
+
+**Exit codes:** `0` nothing at fail level, `1` a fail-level finding or a git
+command that could not answer, `2` not inside a Git repository, `3` bad usage
+(`--history-limit` not a positive whole number). Warnings never change the
+exit code. `--quiet` and `--json` work as in the other doctors.
+
+---
+
 ## Tests
 
 From the **repository root** (so the repo mounts into the container as `/repo`):
@@ -820,5 +873,6 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_remote_doctor.py --probe --probe-timeout 10
 ./git/git_ignore_doctor.py --json
 ./git/git_health_doctor.py --lock-age 30
+./git/git_secrets_doctor.py --history
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```
