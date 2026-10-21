@@ -176,6 +176,33 @@ rc=$?
 assert_eq 'an unknown tar line under exit 2 -> 1' 1 "$rc"
 assert_contains 'an unknown tar line is still a compare failure' "$out" 'could not compare'
 
+# find drops a subtree it cannot enter. Staged with a find stub (running as
+# root cannot produce a real permission error): the real find runs, then it
+# reports a denied directory and exits 1. The miss must be a SKIP and exit 1,
+# never a silent "0 new" with exit 0.
+find_bin="$fixture/find-bin"
+mkdir -p "$find_bin"
+real_find="$(command -v find)"
+cat > "$find_bin/find" <<STUB
+#!/usr/bin/env bash
+"$real_find" "\$@"
+printf "find: '%s': Permission denied\\n" "\$STUB_LOCKED" >&2
+exit 1
+STUB
+chmod +x "$find_bin/find"
+mkdir -p "$fixture/dest2"
+"$BACKUP" --yes --paths "$src" --dest "$fixture/dest2" --keep 0 >/dev/null 2>&1
+archive2=""
+for candidate in "$fixture"/dest2/config-*.tar.gz; do
+  [[ -f "$candidate" ]] && archive2="$candidate"
+done
+out="$(PATH="$find_bin:$PATH" STUB_LOCKED="$src/locked" "$BACKUP" --diff "$archive2" --paths "$src" 2>&1)"
+rc=$?
+assert_eq 'a find traversal error -> 1, not a clean exit' 1 "$rc"
+assert_contains 'the unreadable subtree is a SKIP' "$(grep SKIP <<<"$out")" "$src/locked"
+assert_contains 'the SKIP says new files may be missing' "$out" 'new files here may be missing'
+assert_not_contains 'it does not claim no differences' "$out" 'no differences'
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s config backup diff checks failed\n' "$failures" "$checks" >&2
   exit 1

@@ -318,12 +318,39 @@ archive_files() {
   tar -tzf "$1" 2>/dev/null | grep -v '/$' | sed 's|^|/|' | LC_ALL=C sort -u
 }
 
+# find's stderr goes to $live_err, not away: a subtree it cannot enter is
+# files this listing never sees, and a silent miss would read as "0 new".
+# A file, not a variable, because the caller reads this through a process
+# substitution.
+live_err=""
 live_files() {
   local root
   for root in "${diff_roots[@]}"; do
     [[ -e "$root" ]] || continue
-    find "$root" -xdev \( -type f -o -type l \) -print 2>/dev/null
+    LC_ALL=C find "$root" -xdev \( -type f -o -type l \) -print 2>>"$live_err"
   done | LC_ALL=C sort -u
+}
+
+# One SKIP per find error, so the exit code is nonzero and the user knows the
+# NEW list is incomplete.
+report_live_errors() {
+  local line msg path reason
+  [[ -s "$live_err" ]] || return 0
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    msg="${line#find: }"
+    path="${msg%%: *}"
+    reason="${msg#*: }"
+    path="${path#[\`\']}"
+    path="${path%\'}"
+    if [[ "$reason" == "Permission denied" ]]; then
+      reason="unreadable; new files here may be missing; rerun with sudo"
+    else
+      reason="$reason; new files here may be missing"
+    fi
+    diff_line SKIP "$path" "$reason"
+    diff_skipped=$((diff_skipped + 1))
+  done < "$live_err"
 }
 
 diff_archive() {
@@ -424,12 +451,15 @@ diff_archive() {
   # NEW: on disk under --paths, not in the archive. Both sides are sorted in
   # the C locale, which is the order comm expects.
   local new_list
+  live_err="$(mktemp)" || { err "cannot create a temporary file"; return 1; }
   new_list="$(LC_ALL=C comm -13 <(archive_files "$archive") <(live_files))"
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
     diff_line NEW "$path"
     diff_new=$((diff_new + 1))
   done <<< "$new_list"
+  report_live_errors
+  rm -f -- "$live_err"
 
   printf "%s changed, %s gone, %s new, %s skipped\n" \
     "$diff_changed" "$diff_gone" "$diff_new" "$diff_skipped"
