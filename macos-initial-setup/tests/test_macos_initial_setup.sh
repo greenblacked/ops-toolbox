@@ -3476,6 +3476,9 @@ printf '[default]\naws_secret_access_key = CANARY_AWS\n' > "$cb/home/.aws/creden
 printf '*.swp\n' > "$cb/home/.config/git/ignore"
 printf 'https://user:CANARY_GIT_PASS@example.com\n' > "$cb/home/.config/git/credentials"
 printf 'credentials "app.terraform.io" {\n  token = "CANARY_TF_TOKEN"\n}\n' > "$cb/home/.terraformrc"
+mkdir -p "$cb/home/.terraform.d"
+printf '{"credentials":{"app.terraform.io":{"token":"CANARY_TF_LOGIN"}}}\n' \
+  > "$cb/home/.terraform.d/credentials.tfrc.json"
 mkdir -p "$cb/home/.ssh/keys"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_DEPLOY\n-----END OPENSSH PRIVATE KEY-----\n' \
   > "$cb/home/.ssh/deploy_key"
@@ -3520,6 +3523,12 @@ cbrun --dry-run --paths "$cb/home/.config/git/credentials" >/dev/null; rc=$?
 assert_eq "the git credential store is refused -> 3" "3" "$rc"
 cbrun --dry-run --paths "$cb/home/.terraformrc" >/dev/null; rc=$?
 assert_eq "a .terraformrc with a credentials block is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.terraform.d" >/dev/null; rc=$?
+assert_eq "~/.terraform.d holding terraform login credentials is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.terraform.d/credentials.tfrc.json" >/dev/null; rc=$?
+assert_eq "the terraform login credentials file is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run --paths "$cb/home/.terraform.d")"
+assert_not_contains "a refused terraform.d never prints the login token" "$out" "CANARY_TF_LOGIN"
 out="$(cbrun --dry-run)"
 assert_not_contains "a default preview skips a .terraformrc with credentials" "$out" "would archive ~/.terraformrc"
 assert_not_contains "a default preview never prints the Terraform token" "$out" "CANARY_TF_TOKEN"

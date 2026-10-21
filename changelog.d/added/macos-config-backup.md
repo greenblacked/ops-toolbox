@@ -3,7 +3,8 @@
   `.gitconfig`, `.ssh/config`, `.aws/config`, LaunchAgents and the like) in
   `~/ops-toolbox-backups`, the macOS counterpart of
   `linux/config_backup.sh`. Paths that hold credentials (any non-config,
-  non-public-key file under `~/.ssh`, the git credential store, a
+  non-public-key file under `~/.ssh`, the git credential store,
+  `~/.terraform.d/credentials.tfrc.json`, a
   `~/.terraformrc` with a `credentials` block) are refused unless
   `--include-secrets` and left out of a default run, the archive is private
   to its owner (a `--dest` it creates is `0700`), a dry run
