@@ -54,10 +54,11 @@ Options:
 
 Work at risk means uncommitted or untracked changes, commits ahead of the
 upstream, commits on local branches that no remote-tracking ref contains, a
-stash, a git status or history walk that failed (noted status-failed
-or walk-failed), or (with --fetch) a fetch that failed. Without --fetch nothing is fetched, so remote-tracking refs are only as
-fresh as the last fetch in each repository: "behind" means behind what this
-machine last saw.
+stash, a git status or history walk that failed (noted status-failed or
+walk-failed), or (with --fetch) a fetch that failed. Without --fetch
+nothing is fetched, so remote-tracking refs are only as fresh as the last
+fetch in each repository: "behind" means behind what this machine last
+saw.
 
 Never pulls, merges, checks out, stashes or cleans. A plain run exits 0 even
 when repositories need attention; --strict is the only way it returns 1.
