@@ -645,8 +645,9 @@ ctx() {
     if [ -z "$tf_ws" ] && [ -d .terraform ]; then
         # An initialised directory with no environment file is on "default".
         tf_ws=default
-        tf_from='(.terraform/environment)'
+        tf_from='(default)'
         if [ -f .terraform/environment ]; then
+            tf_from='(.terraform/environment)'
             read -r tf_ws < .terraform/environment
             tf_ws="${tf_ws:-default}"
         fi

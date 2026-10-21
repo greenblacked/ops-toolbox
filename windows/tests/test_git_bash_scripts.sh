@@ -698,7 +698,7 @@ mkdir -p "$ctx_root/tfinit/.terraform"
 # shellcheck disable=SC2016  # the script body expands in the child bash
 out="$(cd "$ctx_root/tfinit" && env -u TF_WORKSPACE HOME="$ctx_root/empty" CTX_STUBS=none \
   "${BASH:-bash}" -c 'kubectl() { return 1; }; git() { return 128; }; . "$0"; ctx' "$GB/.aliases" 2>&1)"
-assert_contains "an initialised directory with no environment file is on default" "$out" "tf      default  (.terraform/environment)"
+assert_contains "an initialised directory with no environment file is on default" "$out" "tf      default  (default)"
 
 printf '[core]\nproject = acme-stg\n' > "$ctx_root/appdata/gcloud/configurations/config_other"
 run_ctx CLOUDSDK_ACTIVE_CONFIG_NAME=other
