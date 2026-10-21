@@ -1735,15 +1735,17 @@ def test_rogue_dns_invalid_connection_get_probe(
 #
 # One case per kind of character the escaper emits, so a failure names the
 # escape: plain ASCII (no escape), \" and \\, \$, a raw ?, \t and \n, and
-# \XX hex for a non-ASCII byte. The "changed" and "shorter" checks alter or
-# cut the last two bytes of the subject.
+# \XX hex for a non-ASCII byte. Each subject holds only its own class (no
+# stray $, quote or trailing newline), and ends in plain ASCII. The "changed"
+# and "shorter" checks alter or cut the last two bytes of the subject.
 DRIFT_SUBJECTS = {
-    "plain": ":local a 1;\n:put $a;\n",
-    "quote-backslash": ':local a "q\\" back\\\\slash";\n:put $a;\n',
-    "dollar": ':local a "dollar\\$b";\n# ${braces}\n:put $a;\n',
-    "question": ':local a "is it ok?";\n:put $a;\n',
-    "tab-newline": "\t# tab above\n:local a 1;\n\t:put $a;\n",
-    "non-ascii": ':log info "caf\u00e9";\n:put 1;\n',
+    "plain": ":put 1;",
+    "quote-backslash": ':put "a\\"b\\\\c";',
+    "dollar": "# cost $5 ok",
+    "question": "# is it ok? yes",
+    "newline": ":put 1;\n:put 2;",
+    "tab": ":put 1;\t:put 2;",
+    "non-ascii": "# caf\u00e9 ok",
 }
 
 
@@ -1792,8 +1794,8 @@ def test_drift_comparison_runs_on_the_pinned_routeros(
     try:
         _add_script(script_resource, subject, text)
         same = _drift_answer(api, script_resource, subject, raw)
-        # same length, one byte different
-        modified = _drift_answer(api, script_resource, subject, raw[:-2] + b"X\n")
+        # same length, last two bytes different
+        modified = _drift_answer(api, script_resource, subject, raw[:-2] + b"XX")
         # a prefix of the source (two bytes short) is a difference too
         shorter = _drift_answer(api, script_resource, subject, raw[:-2])
     finally:
