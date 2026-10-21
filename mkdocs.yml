@@ -159,6 +159,7 @@ nav:
       - Windows low on disk: runbooks/windows-low-disk.md
       - WSL disk keeps growing: runbooks/wsl-disk-growing.md
       - Linux inotify watch limit: runbooks/linux-inotify-watch-limit.md
+      - Git commit signing fails: runbooks/git-commit-signing-fails.md
   - Contributing:
       - Contributing: contributing.md
       - Development: contributing/development.md

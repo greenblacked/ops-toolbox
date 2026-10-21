@@ -42,6 +42,7 @@ Your machine will print different numbers.
 | [A Windows PC is low on C: drive space](windows-low-disk.md) | Windows | C: is nearly full and you need space now. |
 | [A WSL2 distro's virtual disk keeps growing](wsl-disk-growing.md) | Windows | A WSL virtual disk fills C: and deleting files inside the distro did not help. |
 | [An IDE or file watcher hits the inotify limit](linux-inotify-watch-limit.md) | Linux | A watcher reports the inotify limit is reached and you want a change you can undo. |
+| [Commits fail to sign or show Unverified](git-commit-signing-fails.md) | Git | `git commit` cannot sign, or signed commits show as Unverified on the forge. |
 
 New runbooks are added one at a time. See
 [Development](../contributing/development.md) for the page patterns they use.
