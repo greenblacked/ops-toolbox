@@ -10,6 +10,8 @@ integration suite, which does it for real.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -77,6 +79,20 @@ class WalkReposTestCase(unittest.TestCase):
         self.repo("a/nested")  # inside a repository: not searched
         self.repo("archive/old")
         self.assertEqual(doctor.walk_repos(self.root, 3, ["archive/*"]), sorted([a, b, d]))
+
+    def test_bare_and_mirror_repositories_are_found(self):
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+        source = os.path.join(self.root, "src")
+        subprocess.run(["git", "init", "-q", source], check=True)
+        bare = os.path.join(self.root, "srv", "bare.git")
+        mirror = os.path.join(self.root, "srv", "mirror.git")
+        subprocess.run(["git", "clone", "-q", "--bare", source, bare], check=True)
+        subprocess.run(["git", "clone", "-q", "--mirror", source, mirror], check=True)
+        found = doctor.walk_repos(self.root, 3, [])
+        self.assertEqual(found, sorted([source, bare, mirror]))
+        # A bare repository is not searched: nothing inside it is reported.
+        self.assertEqual(doctor.walk_repos(bare, 3, []), [bare])
 
     def test_depth_is_respected(self):
         deep = self.repo("deep/1/2/3")

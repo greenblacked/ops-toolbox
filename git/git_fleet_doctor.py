@@ -107,18 +107,33 @@ def verdict(rc, timed_out):
     return {0: "ok", 1: "FAIL", 4: "n/a"}.get(rc, "ERR")
 
 
+def is_repo(path):
+    """True when `path` is a repository root: a `.git` entry, or a bare layout.
+
+    A bare or mirror repository has no `.git`; it is the git directory
+    itself, recognised by HEAD, objects/ and refs/ side by side. Only those
+    three names are looked at, so its internals are never searched.
+    """
+    if os.path.lexists(os.path.join(path, ".git")):
+        return True
+    return (os.path.isfile(os.path.join(path, "HEAD"))
+            and os.path.isdir(os.path.join(path, "objects"))
+            and os.path.isdir(os.path.join(path, "refs")))
+
+
 def walk_repos(root, depth, excludes):
     """Sorted repository roots at most `depth` levels below `root`.
 
     A directory is a repository when it holds a `.git` entry, directory or
-    file, so linked worktrees and submodule checkouts count. A repository is
+    file, so linked worktrees and submodule checkouts count, or when it is
+    a bare or mirror repository (HEAD, objects/ and refs/). A repository is
     not searched further: a clone nested inside another is the outer one's
     business. Symlinked directories are not followed, so the walk cannot
     leave the root or loop. `excludes` are globs over the path relative to
     `root`; `root` itself is returned when it is a repository.
     """
     root = os.path.abspath(root)
-    if os.path.lexists(os.path.join(root, ".git")):
+    if is_repo(root):
         return [root]
     found = []
     pending = [(root, 0)]
@@ -141,7 +156,7 @@ def walk_repos(root, depth, excludes):
             relative = os.path.relpath(entry.path, root)
             if any(fnmatch.fnmatchcase(relative, glob) for glob in excludes):
                 continue
-            if os.path.lexists(os.path.join(entry.path, ".git")):
+            if is_repo(entry.path):
                 found.append(entry.path)
             else:
                 pending.append((entry.path, level + 1))

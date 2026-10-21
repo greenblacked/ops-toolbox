@@ -5,3 +5,4 @@
   default run attempts authentication, only when named with `--only`),
   bounds the work with `--depth`, `--timeout` and `--jobs`, and with
   `--details` prints the report of each failing doctor under its row.
+  Bare and mirror repositories are found too.
