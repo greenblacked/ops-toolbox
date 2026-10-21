@@ -44,6 +44,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `windows/setup/status.ps1` | Windows | One-screen verdict: OS, disk, winget, WSL, reboot, git identity. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/net_doctor.ps1` | Windows | Adapters, routes, DNS, proxy, hosts file, listening ports; optional `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/ssh_client_doctor.ps1` | Windows | Key access lists, `ssh-agent` service, Git's bundled ssh, `IdentityFile` paths. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/stay_fresh.ps1` | Windows | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `windows/setup/winget_bootstrap.ps1` | Windows | Export, list, check, import, diff the winget package set. | `-DryRun` (import) |
 | `windows/setup/choco_bootstrap.ps1` | Windows | Export, list, check, install, diff Chocolatey packages. | `-DryRun` (install) |

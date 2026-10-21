@@ -25,6 +25,7 @@ backup, restore and compaction, and a Git Bash dotfiles installer.
 | `setup/status.ps1` | One-screen verdict; `-Only` selects sections, `-ListSections` lists them. | <span class="stage stage-report">read-only</span> |
 | `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
 | `setup/net_doctor.ps1` | Adapters, default routes, DNS, proxy (WinINET against `HTTP_PROXY`), hosts file, listening ports; opt-in `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `setup/ssh_client_doctor.ps1` | Private-key access lists, the `ssh-agent` service, Git's bundled ssh against the Windows one, `IdentityFile` paths; prints each fix. | <span class="stage stage-report">read-only</span> |
 | `setup/stay_fresh.ps1` | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `setup/winget_bootstrap.ps1` | `export`, `list`, `check`, `import`, `diff` of the winget package set. | `-DryRun` on `import` |
 | `setup/choco_bootstrap.ps1` | `export`, `list`, `check`, `install`, `diff` of Chocolatey packages. | `-DryRun` on `install` |
@@ -46,6 +47,7 @@ All paths are under `windows/`.
     .\windows\setup\status.ps1 -Only disk,git
     .\windows\setup\workstation_doctor.ps1 -MinFreePercent 20
     .\windows\setup\net_doctor.ps1 -Probe github.com
+    .\windows\setup\ssh_client_doctor.ps1 -FailOn warn
     .\windows\setup\winget_bootstrap.ps1 diff
     ```
 

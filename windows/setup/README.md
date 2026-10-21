@@ -13,6 +13,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
+| [`ssh_client_doctor.ps1`](ssh_client_doctor.ps1) | Read-only OpenSSH client check: key access lists, the ssh-agent service, Git's bundled ssh, IdentityFile paths |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
 | [`configuration.winget`](configuration.winget) | The curated list itself: what a workstation should have, in six commentable groups |
 | [`winget-packages.example.json`](winget-packages.example.json) | A worked example of the export format, for reading before you have one |
@@ -40,6 +41,7 @@ one. Neither replaces the other.
 - [stay_fresh.ps1](#stay_freshps1)
 - [workstation_doctor.ps1](#workstation_doctorps1)
 - [net_doctor.ps1](#net_doctorps1)
+- [ssh_client_doctor.ps1](#ssh_client_doctorps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
@@ -313,6 +315,50 @@ Worth knowing:
   PowerShell 7 and Linux alike; the metric, listening-port and per-server DNS
   probes need the Windows networking cmdlets and degrade to `[info]` or
   `[skip]` without them.
+
+## ssh_client_doctor.ps1
+
+The Windows counterpart of
+[`linux/ssh_client_doctor.sh`](../../linux/ssh_client_doctor.sh), with the same
+verdicts, the same `-FailOn` and the same exit codes, so one piece of
+automation can drive both. It reads; it never fixes. Every `[warn]` and
+`[FAIL]` is followed by the command that would fix it, printed for you to run.
+
+```powershell
+.\ssh_client_doctor.ps1
+.\ssh_client_doctor.ps1 -FailOn warn
+.\ssh_client_doctor.ps1 -SshDir D:\keys\.ssh -Quiet
+```
+
+The failures it looks for are the Windows ones, which are not the Unix ones:
+
+| Group | What it checks |
+| --- | --- |
+| `directory` | The `.ssh` directory exists. Missing is a `[skip]`, not a failure: the account has never used ssh. |
+| `agent` | The `ssh-agent` service. It ships Disabled, which is why `ssh-add` answers "Error connecting to agent"; the hint is the elevated `Set-Service -StartupType Manual` and `Start-Service` pair. When it runs, `ssh-add -l` is asked how many keys it holds - only the count is used. |
+| `clients` | Which `ssh.exe` wins on `PATH`, and whether git will use another one. Git for Windows bundles its own ssh, which cannot see the Windows agent, so `ssh -T` works while `git fetch` asks for a passphrase. A warning when both exist, the agent runs and nothing pins git, with `git config --global core.sshCommand` as the fix. |
+| `keys` | Every private key, found by its first line (`-----BEGIN ... PRIVATE KEY-----`), and the `config` file: Windows OpenSSH refuses either when anyone but you, SYSTEM and Administrators has access ("UNPROTECTED PRIVATE KEY FILE"). The hint is the `icacls` lines that strip inheritance and the extra grants. Accounts are compared by SID first, so a localised Windows is graded correctly. |
+| `config` | `IdentityFile` lines in `config` that point at a file that does not exist. A line with a `%h`-style token or a `${VAR}` is reported as something only ssh can expand. |
+
+| Option | Meaning |
+| --- | --- |
+| `-SshDir DIR` | The directory to inspect. Default: `.ssh` in the user profile. |
+| `-FailOn LEVEL` | Exit `1` on `fail` (default), or on `warn` and above. Any other value exits `3`. |
+| `-Quiet` | Print only warnings and failures, with their hints. |
+
+Exit codes: `0` nothing at or above `-FailOn`, `1` something at or above it,
+`2` not Windows, `3` bad arguments.
+
+What it reads, and what it does not:
+
+- **Only the first line of a key.** That is enough to tell a private key from
+  anything else; the body is never read, and no key material, fingerprint or
+  comment is printed.
+- **No `ssh -G`, no `Include`.** It reads `IdentityFile` lines as written. For
+  the effective configuration of one host, use
+  [`git/git_ssh_doctor.py`](../../git/git_ssh_doctor.py), which asks OpenSSH.
+- **Nothing is changed.** The `icacls`, `Set-Service` and `git config` lines
+  are advice; no access list, service or file is touched.
 
 ## Testing
 

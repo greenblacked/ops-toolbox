@@ -198,6 +198,7 @@ $expectedParameters = @{
     'status.ps1'            = @('ListSections', 'Only')
     'workstation_doctor.ps1'= @('MinFreePercent')
     'net_doctor.ps1'        = @('Probe', 'Port', 'Only', 'ListSections', 'SkipListen', 'Quiet', 'HostsFile')
+    'ssh_client_doctor.ps1' = @('SshDir', 'FailOn', 'Quiet')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -1163,6 +1164,196 @@ if (-not $netDoctor) {
         }
     }
     Remove-Item -Path $netBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'ssh_client_doctor grades key ACLs'
+# Windows OpenSSH refuses a key that anyone but its owner, SYSTEM and
+# Administrators can read. This is the function that has to agree with it,
+# including on a German Windows where Administrators is 'Administratoren' -
+# which is why the SID is compared first.
+$sshDoctor = Find-ContractScript 'ssh_client_doctor.ps1'
+if (-not $sshDoctor) {
+    Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $sshDoctor -Name 'Test-KeyAcl'
+    if (-not $src) {
+        Test-Fail 'ssh_client_doctor.ps1 : Test-KeyAcl not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $owner = [pscustomobject]@{ Identity = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Type = 'Allow'; Rights = 'FullControl' }
+        $system = [pscustomobject]@{ Identity = 'NT AUTHORITY\SYSTEM'; Sid = 'S-1-5-18'; Type = 'Allow'; Rights = 'FullControl' }
+        $admins = [pscustomobject]@{ Identity = 'BUILTIN\Administrators'; Sid = 'S-1-5-32-544'; Type = 'Allow'; Rights = 'FullControl' }
+        $users = [pscustomobject]@{ Identity = 'BUILTIN\Users'; Sid = 'S-1-5-32-545'; Type = 'Allow'; Rights = 'ReadAndExecute, Synchronize' }
+        $everyone = [pscustomobject]@{ Identity = 'Everyone'; Sid = 'S-1-1-0'; Type = 'Allow'; Rights = 'FullControl' }
+        $denyUsers = [pscustomobject]@{ Identity = 'BUILTIN\Users'; Sid = 'S-1-5-32-545'; Type = 'Deny'; Rights = 'Read' }
+        $german = [pscustomobject]@{ Identity = 'VORDEFINIERT\Administratoren'; Sid = 'S-1-5-32-544'; Type = 'Allow'; Rights = 'FullControl' }
+        $aclCases = @(
+            @{ Label = 'owner only'; Entries = @($owner); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; Offender = '' }
+            @{ Label = 'owner, SYSTEM and Administrators'; Entries = @($owner, $system, $admins); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; Offender = '' }
+            @{ Label = 'BUILTIN\Users can read'; Entries = @($owner, $users); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; Offender = 'BUILTIN\Users' }
+            @{ Label = 'Everyone has full control'; Entries = @($owner, $everyone); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; Offender = 'Everyone' }
+            @{ Label = 'a Deny entry is not an offender'; Entries = @($owner, $denyUsers); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; Offender = '' }
+            @{ Label = 'a localised Administrators name matches by SID'; Entries = @($owner, $german); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; Offender = '' }
+            @{ Label = 'DOMAIN\alice against a bare alice'
+               Entries = @([pscustomobject]@{ Identity = 'CORP\alice'; Sid = ''; Type = 'Allow'; Rights = 'FullControl' })
+               User = 'alice'; Sid = ''; Level = 'pass'; Offender = '' }
+            @{ Label = 'the same account in another case'
+               Entries = @([pscustomobject]@{ Identity = 'laptop\ALICE'; Sid = ''; Type = 'Allow'; Rights = 'FullControl' })
+               User = 'LAPTOP\alice'; Sid = ''; Level = 'pass'; Offender = '' }
+            @{ Label = 'the same name in another domain'
+               Entries = @([pscustomobject]@{ Identity = 'CORP\alice'; Sid = ''; Type = 'Allow'; Rights = 'FullControl' })
+               User = 'LAPTOP\alice'; Sid = ''; Level = 'fail'; Offender = 'CORP\alice' }
+            @{ Label = 'no entries at all (nothing readable)'; Entries = @(); User = 'LAPTOP\alice'; Sid = ''; Level = 'skip'; Offender = '' }
+        )
+        $aclRan = 0
+        foreach ($case in $aclCases) {
+            $verdict = Test-KeyAcl -Entries $case.Entries -CurrentUser $case.User -CurrentUserSid $case.Sid
+            $aclRan++
+            $offenderOk = (-not $case.Offender) -or (@($verdict.Offenders) -contains $case.Offender)
+            if ($verdict.Level -eq $case.Level -and $offenderOk) {
+                Test-Ok ("Test-KeyAcl {0} -> {1}" -f $case.Label, $verdict.Level)
+            } else {
+                Test-Fail ("Test-KeyAcl {0}: got {1} [{2}], expected {3} [{4}]" -f $case.Label, $verdict.Level, (@($verdict.Offenders) -join ', '), $case.Level, $case.Offender)
+            }
+        }
+        if ($aclRan -lt 6) {
+            Test-Fail "only $aclRan ACL case(s) ran - this check has stopped checking"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'ssh_client_doctor reads IdentityFile lines'
+if (-not $sshDoctor) {
+    Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $sshDoctor -Name 'Get-IdentityFileReference'
+    if (-not $src) {
+        Test-Fail 'ssh_client_doctor.ps1 : Get-IdentityFileReference not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $configFixture = @'
+# IdentityFile ~/.ssh/commented
+Host github.com
+    identityfile ~/.ssh/id_ed25519
+IdentityFile=%d/.ssh/key
+IdentityFile "C:/Users/a b/.ssh/spaced key"
+IdentityFile none
+IdentityFile ~/.ssh/%h_key
+IdentityFile ${HOME}/.ssh/env_key
+'@ -split "`r?`n"
+        $refs = Get-IdentityFileReference -Lines $configFixture -HomeDir 'C:\Users\alice'
+        $gotResolved = @($refs.Resolvable | ForEach-Object { '{0}={1}' -f $_.Line, $_.Path }) -join ' | '
+        $wantResolved = '3=C:\Users\alice/.ssh/id_ed25519 | 4=C:\Users\alice/.ssh/key | 5=C:/Users/a b/.ssh/spaced key'
+        if ($gotResolved -eq $wantResolved) {
+            Test-Ok 'lower-case keyword, the = form, %d, ~ and a quoted path with spaces resolve, with their line numbers'
+        } else {
+            Test-Fail "resolvable IdentityFile lines: got [$gotResolved], expected [$wantResolved]"
+        }
+        $gotUnresolved = @($refs.Unresolvable | ForEach-Object { $_.Line }) -join ','
+        if ($gotUnresolved -eq '7,8') {
+            Test-Ok 'a %h token and a ${VAR} are reported as unresolvable rather than guessed at'
+        } else {
+            Test-Fail "unresolvable IdentityFile lines: got [$gotUnresolved], expected [7,8]"
+        }
+        $everything = @($refs.Resolvable) + @($refs.Unresolvable)
+        if (@($everything | Where-Object { $_.Raw -match 'commented|none' }).Count -eq 0) {
+            Test-Ok 'a commented line and IdentityFile none are ignored'
+        } else {
+            Test-Fail 'a commented IdentityFile or IdentityFile none was returned'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'ssh_client_doctor classifies ssh clients'
+if (-not $sshDoctor) {
+    Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $sshDoctor -Name 'Get-SshClientFinding'
+    if (-not $src) {
+        Test-Fail 'ssh_client_doctor.ps1 : Get-SshClientFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $gitSsh = 'C:\Program Files\Git\usr\bin\ssh.exe'
+        $winSsh = 'C:\Windows\System32\OpenSSH\ssh.exe'
+        $clientCases = @(
+            @{ Label = 'Git for Windows only'; Clients = @($gitSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client' }
+            @{ Label = 'Windows OpenSSH only'; Clients = @($winSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client' }
+            @{ Label = 'both, agent running, nothing pins git'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client two-clients' }
+            @{ Label = 'both, core.sshCommand set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Windows/System32/OpenSSH/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'both, GIT_SSH_COMMAND set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = 'ssh -i key'; Expect = 'first-client git-ssh-env' }
+            @{ Label = 'both, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = ''; Env = ''; Expect = 'first-client' }
+            @{ Label = 'no client at all'; Clients = @(); Agent = $false; Command = ''; Env = ''; Expect = 'no-client' }
+        )
+        foreach ($case in $clientCases) {
+            $found = @(Get-SshClientFinding -Clients $case.Clients -AgentRunning $case.Agent -GitSshCommand $case.Command -GitSshEnv $case.Env)
+            $ids = ($found | ForEach-Object { $_.Id }) -join ' '
+            $warnFix = @($found | Where-Object { $_.Level -eq 'warn' -and -not $_.Fix }).Count
+            if ($ids -eq $case.Expect -and $warnFix -eq 0) {
+                Test-Ok ("{0} -> [{1}]" -f $case.Label, $ids)
+            } else {
+                Test-Fail ("{0}: got [{1}], expected [{2}] (warnings without a fix: {3})" -f $case.Label, $ids, $case.Expect, $warnFix)
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'ssh_client_doctor usage'
+if (-not $sshDoctor) {
+    Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $run = Invoke-InScratch -Path $sshDoctor.FullName -Arguments @('-FailOn', 'bogus')
+    if ($run.ExitCode -eq 3 -and $run.Output -match 'bogus') {
+        Test-Ok 'ssh_client_doctor.ps1 -FailOn bogus exits 3 and names the value, before the platform guard'
+    } else {
+        Test-Fail "ssh_client_doctor.ps1 -FailOn bogus must exit 3 naming the value; it exited $($run.ExitCode)"
+    }
+    # Accepted means "not a usage error": off Windows it then stops at the
+    # guard (2), on Windows it reports on the scratch profile's missing .ssh.
+    $run = Invoke-InScratch -Path $sshDoctor.FullName -Arguments @('-FailOn', 'warn')
+    if ($run.ExitCode -ne 3) {
+        Test-Ok "ssh_client_doctor.ps1 -FailOn warn is accepted (exit $($run.ExitCode))"
+    } else {
+        Test-Fail 'ssh_client_doctor.ps1 -FailOn warn was rejected as a usage error'
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'ssh_client_doctor runs end to end on a scratch directory'
+# The canary on line 2 is the point: the script decides what a file is from
+# its first line, and nothing after that line may reach the output.
+if (-not $sshDoctor) {
+    Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $sshBox = Join-Path ([IO.Path]::GetTempPath()) ('winssh_' + [Guid]::NewGuid().ToString('N'))
+    $sshDirFixture = Join-Path $sshBox '.ssh'
+    New-Item -ItemType Directory -Path $sshDirFixture -Force | Out-Null
+    $sshCopy = Copy-UnguardedScript -Script $sshDoctor -Directory $sshBox
+    if (-not $sshCopy) {
+        Test-Fail 'ssh_client_doctor.ps1 : platform guard not found verbatim, so the end-to-end check could not run; update the guard text in contract.ps1'
+    } else {
+        $canary = 'CANARY-KEY-BODY-' + [Guid]::NewGuid().ToString('N')
+        Set-Content -Path (Join-Path $sshDirFixture 'id_test') -Value "-----BEGIN OPENSSH PRIVATE KEY-----`n$canary`n-----END OPENSSH PRIVATE KEY-----`n"
+        Set-Content -Path (Join-Path $sshDirFixture 'config') -Value "Host example`n    IdentityFile ~/.ssh/missing_key`n"
+        $run = Invoke-InScratch -Path $sshCopy -Arguments @('-SshDir', $sshDirFixture)
+        $problems = @()
+        if ($run.ExitCode -notin 0, 1) { $problems += "exit $($run.ExitCode)" }
+        if ($run.Output -notmatch 'missing') { $problems += 'no finding for the missing IdentityFile' }
+        if ($run.Output -notmatch 'id_test') { $problems += 'the private key is not named' }
+        if ($run.Output -match [regex]::Escape($canary)) { $problems += 'the key body reached the output' }
+        if ($problems.Count -eq 0) {
+            Test-Ok 'ssh_client_doctor.ps1 found the key by its first line, flagged the missing IdentityFile and printed no key material'
+        } else {
+            Test-Fail ('ssh_client_doctor.ps1 end to end: {0}' -f ($problems -join '; '))
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $sshBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------
