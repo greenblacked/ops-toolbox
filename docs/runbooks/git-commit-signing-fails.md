@@ -108,9 +108,10 @@ so read them.
     seconds.
 
     `--test-sign` covers `ssh` and OpenPGP only. For `gpg.format=x509` it
-    runs `gpg --clearsign`, which does not exercise `gpgsm`, so a pass
-    there proves nothing about X.509 signing. Check X.509 by hand (see
-    Verify).
+    falls through to `gpg --clearsign --local-user <x509 id>`, which does
+    not exercise `gpgsm` and usually fails because `gpg` holds no such
+    secret key. Neither a pass nor a fail there says anything about X.509
+    signing. Check X.509 by hand (see Verify).
 
 ```{ .bash .rpt-preview title="Preview" }
 ./git/git_signing_doctor.py --test-sign
