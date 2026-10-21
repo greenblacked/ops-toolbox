@@ -17,18 +17,19 @@
 #
 # Nothing here is ever deleted. A file that is already in the way is left
 # alone and reported; --force moves it to a timestamped .backup first, the
-# same suffix windows/git-bash/install_dotfiles.sh uses. Uninstall removes
+# same suffix windows/git-bash/install_dotfiles.sh uses. --backups lists
+# those and --restore moves one back, only where nothing new would be lost. Uninstall removes
 # only links that point into this folder, and copies that still match.
 # --prune removes the links a renamed or deleted config left behind, and
 # nothing else: only links whose text points into this folder.
 #
 # Exit codes:
 #   0   success (for --status: everything matches)
-#   1   a link or copy could not be made
+#   1   a link or copy could not be made (or removed, or restored)
 #   2   preflight failed (config/ or home/ missing, HOME unset)
 #   3   bad CLI arguments
 #   4   something was left in place (install: a conflict; status: not current;
-#       diff: a file differs)
+#       diff: a file differs; restore: refused, or nothing to restore)
 set -u
 set -o pipefail
 
@@ -41,6 +42,9 @@ LIST=0
 DIFF=0
 PRUNE=0
 GROUPS_MODE=0
+BACKUPS=0
+RESTORE=0
+STAMP=""
 FORCE=0
 QUIET=0
 HOME_DIR="${HOME:-}"
@@ -75,6 +79,8 @@ Usage:
   $(basename "$0") --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --groups
+  $(basename "$0") --backups   [--only UNIT ...] [--home DIR] [--config-home DIR]
+  $(basename "$0") --restore   [--dry-run] [--stamp STAMP] [--only UNIT ...] [--home DIR] [--config-home DIR]
 
 Options:
   --dry-run          Show what would change; write nothing
@@ -88,6 +94,13 @@ Options:
   --prune            Remove ORPHAN links: links into this folder at a path no
                      tracked file installs to, left by a rename or a delete
   --groups           Print each @GROUP and the units in it, then exit
+  --backups          List the NAME.backup-STAMP files --force made, oldest first
+  --restore          Move the newest backup of each file back into place, where
+                     the file there now is ours (a link or an identical copy) or
+                     missing; a file holding changes is left alone. Exit 4 if
+                     anything was refused or nothing was restored
+  --stamp STAMP      With --restore: use the backup with this stamp
+                     (YYYYmmdd-HHMMSS, as --backups prints it) instead of the newest
   --force            Move a file that is in the way to NAME.backup-TIMESTAMP, then install
   --only UNIT        Limit to one unit (repeatable, or comma-separated): a tool
                      directory under config/ such as k9s, or a dotfile under home/
@@ -123,6 +136,10 @@ while (( $# > 0 )); do
     --diff)           DIFF=1 ;;
     --prune)          PRUNE=1 ;;
     --groups)         GROUPS_MODE=1 ;;
+    --backups)        BACKUPS=1 ;;
+    --restore)        RESTORE=1 ;;
+    --stamp)          require_value "$1" "${2:-}"; STAMP="$2"; shift ;;
+    --stamp=*)        STAMP="${1#*=}"; require_value "--stamp" "$STAMP" ;;
     --force)          FORCE=1 ;;
     --quiet)          QUIET=1 ;;
     --only)           require_value "$1" "${2:-}"; ONLY="${ONLY:+$ONLY,}$2"; shift ;;
@@ -140,14 +157,26 @@ while (( $# > 0 )); do
   shift
 done
 
-modes=$(( STATUS + UNINSTALL + LIST + DIFF + PRUNE + GROUPS_MODE ))
+modes=$(( STATUS + UNINSTALL + LIST + DIFF + PRUNE + GROUPS_MODE + BACKUPS + RESTORE ))
 if (( modes > 1 )); then
   err "the mode flags are separate modes; choose one"
   exit 3
 fi
-if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1 || DIFF == 1 || GROUPS_MODE == 1) )); then
-  err "--dry-run only applies to install, --uninstall and --prune"
+if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1 || DIFF == 1 || GROUPS_MODE == 1 || BACKUPS == 1) )); then
+  err "--dry-run only applies to install, --uninstall, --prune and --restore"
   exit 3
+fi
+# The stamp becomes part of a path, so it is held to the shape --force writes
+# before anything on disk is looked at: no glob or ../ can ride in on it.
+if [[ -n "$STAMP" ]]; then
+  if (( RESTORE == 0 )); then
+    err "--stamp only applies to --restore"
+    exit 3
+  fi
+  if [[ ! "$STAMP" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+    err "--stamp must look like YYYYmmdd-HHMMSS, as --backups prints it: $STAMP"
+    exit 3
+  fi
 fi
 if (( FORCE == 1 && modes > 0 )); then
   err "--force only applies to install"
@@ -425,6 +454,18 @@ orphans() {
   done < <(link_candidates | sort -u)
 }
 
+# The backups --force made of one target, oldest first: the stamp is
+# fixed-width digits, so the sorted order is the chronological one. Anything
+# else with .backup- in its name is not one of ours and is skipped.
+backups_of() {
+  local b
+  for b in "$1".backup-[0-9]*; do
+    [[ -e "$b" || -L "$b" ]] || continue
+    [[ "${b##*.backup-}" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+    printf '%s\n' "$b"
+  done | sort
+}
+
 # --- modes -----------------------------------------------------------------
 do_groups() {
   local g
@@ -632,6 +673,79 @@ do_uninstall() {
   return 0
 }
 
+do_backups() {
+  local f target b n=0
+  for f in "${files[@]}"; do
+    selected "$f" || continue
+    target="$(target_of "$f")"
+    while IFS= read -r b; do
+      [[ -n "$b" ]] || continue
+      printf 'BACKUP  %s  %s\n' "${b##*.backup-}" "$b"
+      n=$((n + 1))
+    done < <(backups_of "$target")
+  done
+  (( n == 0 )) && info "no backups"
+  return 0
+}
+
+# Moves a backup back to its path. Only where nothing would be lost: the path
+# is empty, or holds what this installer put there - a link into this folder
+# (MATCH or FOREIGN) or a copy identical to its source, both of which the
+# repository can recreate. DRIFT and CONFLICT mean a person's edits sit there
+# now, so the file is left alone and the backup kept. A backup is never
+# deleted, only renamed into place; the mode it had travels with it.
+do_restore() {
+  local f target st b pick restored=0 refused=0 failed=0
+  for f in "${files[@]}"; do
+    selected "$f" || continue
+    target="$(target_of "$f")"
+    pick=""
+    while IFS= read -r b; do
+      [[ -n "$b" ]] || continue
+      if [[ -n "$STAMP" ]]; then
+        [[ "$b" == "$target.backup-$STAMP" ]] && pick="$b"
+      else
+        pick="$b"
+      fi
+    done < <(backups_of "$target")
+    if [[ -z "$pick" ]]; then
+      # Named as a warning when the caller asked for this file or this stamp;
+      # a bare --restore over every file would otherwise warn for each one
+      # that was never moved aside.
+      if (( ${#only_units[@]} > 0 )) || [[ -n "$STAMP" ]]; then
+        warn "no backup${STAMP:+ with stamp $STAMP}: $target"
+      else
+        info "no backup: $target"
+      fi
+      continue
+    fi
+    st="$(state_of "$f" "$target")"
+    case "$st" in
+      MISSING) ;;
+      MATCH|FOREIGN)
+        run_cmd "remove $st" rm "$target" || { err "could not remove $target"; failed=$((failed + 1)); continue; }
+        ;;
+      *)
+        warn "$st, left in place: $target holds changes; backup kept: $pick"
+        refused=$((refused + 1))
+        continue
+        ;;
+    esac
+    run_cmd "restore" mv "$pick" "$target" || { err "could not move $pick back to $target"; failed=$((failed + 1)); continue; }
+    (( DRY_RUN )) || ok "restored: $target (backup ${pick##*.backup-})"
+    restored=$((restored + 1))
+  done
+  if (( DRY_RUN )); then
+    printf "dry-run complete; no changes written\n"
+  else
+    info "$restored file(s) restored"
+  fi
+  (( failed > 0 )) && return 1
+  (( refused > 0 )) && return 4
+  (( restored == 0 )) && return 4
+  return 0
+}
+
 # rm of the link itself: never rm -r, never rmdir. A directory the last
 # orphan leaves empty is mentioned and kept; it may be the tool's own.
 do_prune() {
@@ -670,6 +784,10 @@ elif (( UNINSTALL )); then
   do_uninstall
 elif (( PRUNE )); then
   do_prune
+elif (( BACKUPS )); then
+  do_backups
+elif (( RESTORE )); then
+  do_restore
 else
   do_install
 fi

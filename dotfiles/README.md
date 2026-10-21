@@ -104,6 +104,8 @@ install_dotfiles.sh --list
 install_dotfiles.sh --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --groups
+install_dotfiles.sh --backups   [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh --restore   [--dry-run] [--stamp STAMP] [--only UNIT ...] [--home DIR] [--config-home DIR]
 ```
 
 | Flag | Effect |
@@ -114,7 +116,10 @@ install_dotfiles.sh --groups
 | `--prune` | Remove the `ORPHAN` links: links whose text points into this folder, at a path no tracked file installs to. Renaming `config/foo/x` to `config/foo/y` leaves `~/.config/foo/x` pointing into the repository forever, and install, `--status` and `--uninstall` never see it because they start from the files that exist today. Only the link is removed (`rm`, never `rm -r`); a directory it leaves empty is mentioned and kept. Links elsewhere, regular files and `.backup-*` links are never touched. Honours `--dry-run` and `--only` (by the unit the orphan's path would belong to). |
 | `--list` | Every tracked file with its unit name, `link` or `copy`, and its target. Needs no home directory. |
 | `--diff` | For each `DRIFT`, `CONFLICT` or `FOREIGN` file, the `--status` header line and then a unified diff of the tracked source (`-`) against what is on disk (`+`), with credential values replaced by `<redacted>`. A directory or a link out of this folder gets a one-line note instead of a diff. Writes nothing. Exit `4` if any file differs. |
-| `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`. |
+| `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`; `--backups` lists them and `--restore` puts one back. |
+| `--backups` | One `BACKUP  STAMP  PATH` line per backup `--force` made of a selected file, oldest first. Read-only; exit `0` even when there are none. |
+| `--restore` | Move the newest backup of each selected file back into place. It acts only where nothing would be lost: the path is `MISSING`, or holds a link into this folder or a copy identical to its source (`MATCH`, `FOREIGN`), which is removed first. A `DRIFT` or `CONFLICT` file holds somebody's changes and is left in place with its backup kept, and the run exits `4`. A backup is never deleted, only renamed into place. Honours `--dry-run` and `--only`. |
+| `--stamp STAMP` | With `--restore` only: restore the backup with this stamp, as `--backups` prints it (`YYYYmmdd-HHMMSS`), instead of the newest. Anything of another shape exits `3` before the disk is touched. |
 | `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). `@GROUP` selects a named group of units, see [Groups](#groups), and mixes with unit names (`--only @k8s,starship`). An unknown unit or group exits `3`. |
 | `--groups` | Print each group and the units in it, then exit. Read-only and needs no home directory. |
 | `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, because a caller pointing at another home wants everything under it; without `--home`, `XDG_CONFIG_HOME` is honoured. |
@@ -174,6 +179,14 @@ in the repository, before anything is written. The suite fails when a unit
 belongs to no group but `@server`, so a config added later has to be
 placed.
 
+**Rolling back.** "Try the dotfiles, change my mind" is `--uninstall` and
+then `--restore`: the first takes the links out, the second moves what
+`--force` set aside back. The **oldest** backup of a path is usually the file
+that was there before the dotfiles ever were, and later ones are what an
+earlier run of the dotfiles left; `--backups` shows the stamps, and
+`--restore --stamp STAMP` reaches the oldest. Backups otherwise accumulate
+next to their file; delete the ones you no longer want by hand.
+
 **Folding a change back.** k9s rewrites `config.yaml` on every exit, and
 `aws configure`, `docker login` and `gh config set` rewrite theirs, so a copy
 drifts. `--diff --only k9s` shows what changed, source against disk, so the
@@ -195,10 +208,12 @@ links no longer point into this folder's path, and `--status` reports them as
 `CONFLICT` rather than `ORPHAN`; `--force` replaces them.
 
 **Exit codes:** `0` success (for `--status`: everything matches); `1` a link
-or copy could not be made, or `--prune` could not remove one; `2` preflight — `config/` or `home/` missing next to
+or copy could not be made, `--prune` could not remove one, or `--restore`
+could not move one; `2` preflight — `config/` or `home/` missing next to
 the script, or no home directory; `3` usage; `4` something was left in place — a
-conflict under install, a non-`MATCH` under `--status`, or a file that differs
-under `--diff`.
+conflict under install, a non-`MATCH` under `--status`, a file that differs
+under `--diff`, or a `--restore` that refused a changed file or found nothing
+to restore.
 
 **Git and symlinks.** `git config --global` writes through the link into the
 tracked `config/git/config`. That is what you want for a setting you mean to
@@ -793,6 +808,11 @@ its units through `--only @NAME` and every unit placed in a group other than
 previewing ssh and git but no terminal and writing nothing,
 `--prune --dry-run` writing nothing, `--prune` removing exactly the two
 orphans and keeping the emptied directory, a second `--prune` finding none,
+`--backups` listing what `--force` set aside, `--restore --dry-run` writing
+nothing, `--restore` putting the original file back and consuming the
+backup, a changed file refused with exit `4` and its backup kept, the newest
+of two backups restored by default and the older one by `--stamp`, and a
+malformed `--stamp` or one without `--restore` exiting `3`,
 and an uninstall that removes
 every link and matching copy, keeps the edited copy and the `.backup`. The
 file table is read from `--list` rather than re-derived, and the run is

@@ -62,6 +62,13 @@ and each link into the folder that no tracked file installs to as `ORPHAN`;
     `--force` moves an existing file to `NAME.backup-TIMESTAMP` first, then
     replaces it.
 
+!!! note "Restoring a backup"
+    `--backups` lists what `--force` set aside and `--restore` moves the
+    newest back (`--stamp` picks another; the oldest is usually the file
+    from before the dotfiles). It acts only where the path is empty or holds
+    the installer's own link or an identical copy, and leaves a changed file
+    in place with exit 4. Preview it with `--dry-run`.
+
 !!! note "Exit code 4 is not a failure"
     The installer exits 4 when something was left in place.
 

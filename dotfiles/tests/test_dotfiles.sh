@@ -294,6 +294,71 @@ out="$(run_installer --status 2>&1)"; rc=$?
 assert_rc "--status exits 0 again after --prune" 0 "$rc"
 
 # --------------------------------------------------------------------------
+head_ "backups and --restore"
+st="$H/.config/starship.toml"
+rm "$st"
+printf 'original\n' > "$st"
+run_installer --force --only starship >/dev/null 2>&1 || err "--force did not install over the original"
+out="$(run_installer --backups --only starship 2>&1)"; rc=$?
+assert_rc "--backups exits 0" 0 "$rc"
+assert_contains "--backups lists the backup --force made" "$out" "BACKUP  "
+assert_contains "--backups prints the backup path" "$out" "$st.backup-"
+
+before="$(snapshot "$H" "$T")"
+out="$(run_installer --restore --dry-run --only starship 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "--restore --dry-run exits 0" 0 "$rc"
+assert_contains "--restore --dry-run previews the move" "$out" "(dry-run) mv $st.backup-"
+assert_contains "--restore --dry-run closes with the summary line" "$out" "dry-run complete; no changes written"
+if [[ "$before" == "$after" ]]; then ok "--restore --dry-run wrote nothing"; else err "--restore --dry-run changed the home"; fi
+
+out="$(run_installer --restore --only starship 2>&1)"; rc=$?
+assert_rc "--restore exits 0" 0 "$rc"
+assert_true "--restore put a regular file back" test -f "$st" -a ! -L "$st"
+assert_true "--restore put the original content back" grep -qx original "$st"
+if ls "$st".backup-* >/dev/null 2>&1; then err "--restore left the backup behind"; else ok "--restore moved the backup into place"; fi
+out="$(run_installer --restore --only starship 2>&1)"; rc=$?
+assert_rc "a second --restore exits 4" 4 "$rc"
+assert_contains "a second --restore says there is no backup" "$out" "no backup"
+
+# A file holding changes is never overwritten by a restore.
+run_installer --force --only starship >/dev/null 2>&1 || err "--force did not install over the restored file"
+rm "$st"
+printf 'edited\n' > "$st"
+out="$(run_installer --restore --only starship 2>&1)"; rc=$?
+assert_rc "--restore over a changed file exits 4" 4 "$rc"
+assert_contains "--restore reports the file left in place" "$out" "left in place"
+assert_true "the changed file survived" grep -qx edited "$st"
+if ls "$st".backup-* >/dev/null 2>&1; then ok "the backup was kept"; else err "the backup was lost"; fi
+
+# Newest by default, an older one by --stamp.
+rm -f "$st" "$st".backup-*
+printf 'older\n' > "$st.backup-20200101-000000"
+printf 'newer\n' > "$st.backup-20210101-000000"
+out="$(run_installer --restore --only starship 2>&1)"; rc=$?
+assert_rc "--restore with two backups exits 0" 0 "$rc"
+assert_true "the newest backup is the default" grep -qx newer "$st"
+assert_true "the older backup is still there" test -f "$st.backup-20200101-000000"
+rm "$st"
+out="$(run_installer --restore --stamp 20200101-000000 --only starship 2>&1)"; rc=$?
+assert_rc "--restore --stamp exits 0" 0 "$rc"
+assert_true "--stamp restores the backup it names" grep -qx older "$st"
+
+run_installer --restore --stamp bogus >/dev/null 2>&1; rc=$?
+assert_rc "a malformed --stamp exits 3" 3 "$rc"
+run_installer --restore --stamp=../../x >/dev/null 2>&1; rc=$?
+assert_rc "a path in --stamp= exits 3" 3 "$rc"
+run_installer --stamp 20200101-000000 >/dev/null 2>&1; rc=$?
+assert_rc "--stamp without --restore exits 3" 3 "$rc"
+run_installer --restore --force >/dev/null 2>&1; rc=$?
+assert_rc "--restore --force exits 3" 3 "$rc"
+run_installer --backups --dry-run >/dev/null 2>&1; rc=$?
+assert_rc "--backups --dry-run exits 3" 3 "$rc"
+
+rm -f "$st" "$st".backup-*
+run_installer --only starship >/dev/null 2>&1 || err "could not relink starship.toml after the restore checks"
+
+# --------------------------------------------------------------------------
 head_ "conflicts, --force and DRIFT"
 rm "$H/.config/starship.toml"
 printf 'format = "old"\n' > "$H/.config/starship.toml"
