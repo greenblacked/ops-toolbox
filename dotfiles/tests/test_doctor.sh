@@ -199,6 +199,61 @@ assert_rc "a copy alone in a bin directory exits 0" 0 "$rc"
 assert_contains "the link check is skipped with no repository beside it" "$out" "[skip] linked configs: no config/ and home/ beside this script"
 
 # --------------------------------------------------------------------------
+head_ "credential files"
+# Modes are read back with the same stat fallback the suite uses elsewhere, so
+# a fixture is known to carry the mode it claims on GNU and BSD stat alike.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
+# Every fixture holds this line, and no output may: the doctor only stats.
+SENTINEL="doctor-sentinel-$$"
+cred() {
+  mkdir -p "$(dirname "$1")"
+  printf '%s\n' "$SENTINEL" > "$1"
+  chmod "$2" "$1"
+  [[ "$(mode_of "$1")" == "$2" ]] || err "fixture $1 is mode $(mode_of "$1"), wanted $2"
+}
+all_out=""
+rm -rf "$H"; mkdir -p "$H"
+
+out="$(run_doctor 2>&1)"; rc=$?; all_out="$all_out$out"
+assert_rc "no credential files exits 0" 0 "$rc"
+assert_contains "absent credential files are counted, not listed" "$out" "[skip] 11 of 11 credential files not present"
+
+cred "$H/.aws/credentials" 600
+before="$(snapshot "$H" "$T")"
+out="$(run_doctor 2>&1)"; rc=$?; all_out="$all_out$out"
+after="$(snapshot "$H" "$T")"
+assert_rc "a private credential file exits 0" 0 "$rc"
+assert_contains "a mode 600 credential file passes" "$out" "[pass] $H/.aws/credentials mode 600"
+assert_contains "the present file leaves 10 absent" "$out" "[skip] 10 of 11 credential files not present"
+if [[ "$before" == "$after" ]]; then ok "the credential check wrote nothing"; else err "the credential check wrote into the home or tmp"; fi
+
+cred "$H/.kube/config" 644
+out="$(run_doctor 2>&1)"; rc=$?; all_out="$all_out$out"
+assert_rc "a group-readable credential file is a warning, exit 0" 0 "$rc"
+assert_contains "a mode 644 credential file is reported" "$out" "[warn] $H/.kube/config mode 644 is readable by group or other"
+assert_contains "the fix is printed, not run" "$out" "chmod 600 $H/.kube/config"
+assert_true "the doctor did not chmod it" test "$(mode_of "$H/.kube/config")" = 644
+out="$(run_doctor --fail-on warn 2>&1)"; rc=$?; all_out="$all_out$out"
+assert_rc "--fail-on warn exits 1 on a readable credential file" 1 "$rc"
+rm "$H/.kube/config"
+
+cred "$H/.netrc" 666
+out="$(run_doctor 2>&1)"; rc=$?; all_out="$all_out$out"
+assert_rc "a world-writable credential file exits 1" 1 "$rc"
+assert_contains "a mode 666 credential file fails" "$out" "[FAIL] $H/.netrc mode 666 is writable by group or other"
+rm "$H/.netrc"
+
+# A link is followed: the mode that matters is the file the tool reads.
+cred "$scratch/vault/hosts.yml" 600
+mkdir -p "$H/.config/gh"
+ln -s "$scratch/vault/hosts.yml" "$H/.config/gh/hosts.yml"
+out="$(run_doctor 2>&1)"; rc=$?; all_out="$all_out$out"
+assert_rc "a link to a private file exits 0" 0 "$rc"
+assert_contains "a link is judged by the file it leads to" "$out" "[pass] $H/.config/gh/hosts.yml mode 600"
+
+assert_not_contains "no credential file content reached the output" "$all_out" "$SENTINEL"
+
+# --------------------------------------------------------------------------
 head_ "the shipped tree is clean"
 # The false-positive guard: the configs this repository ships, installed the
 # way the installer installs them, must give no finding at all. It mirrors the

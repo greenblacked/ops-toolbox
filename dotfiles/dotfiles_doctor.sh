@@ -10,6 +10,10 @@
 # workstation and names the file and the line, never the value, so its report
 # is safe to paste into a ticket.
 #
+# It also checks that the credential files this package deliberately never
+# tracks - ~/.aws/credentials, ~/.kube/config, gh hosts.yml and the rest - are
+# private on the machine, which nothing else in this repository looks at.
+#
 # It changes nothing: every check is a read, and every fix is a command
 # printed for you to run.
 #
@@ -59,6 +63,9 @@ nothing: every finding comes with the command that fixes it, for you to run.
 Checks:
   linked configs   no file that is a link into the repository holds a
                    credential (reported by file and line, never by value)
+  credential files the files that hold tokens (aws, gh, kube, docker,
+                   terraform, netrc, argocd, jfrog, gcloud, azure) are not
+                   readable or writable by group or other
 
 Usage:
   $(basename "$0") [--repo DIR] [--home DIR] [--config-home DIR] [--fail-on warn|fail] [--quiet]
@@ -168,6 +175,11 @@ target_of() {
   esac
 }
 
+# GNU stat first: on Linux `stat -f` is the filesystem form and succeeds with
+# the wrong answer, while `stat -c` on macOS fails and falls through. -L
+# reports the file a link leads to, which is the file the tool reads.
+mode_of() { stat -L -c '%a' "$1" 2>/dev/null || stat -L -f '%Lp' "$1" 2>/dev/null || true; }
+
 # `readlink` without -f: macOS 12 has no -f, and the unresolved text is what
 # the installer wrote.
 link_target() { readlink "$1" 2>/dev/null || true; }
@@ -252,8 +264,59 @@ check_linked_configs() {
   fi
 }
 
+# The credential files this package never tracks, by where each tool keeps
+# them: a path under the home directory, or CFG/ for one under the config
+# directory. ~/.ssh is left to linux/ssh_client_doctor.sh, which knows which
+# of its files may be 644 and which may not.
+CREDENTIAL_FILES=".aws/credentials CFG/gh/hosts.yml .kube/config .docker/config.json
+.terraform.d/credentials.tfrc.json .netrc CFG/argocd/config .jfrog/jfrog-cli.conf.v6
+CFG/gcloud/credentials.db CFG/gcloud/access_tokens.db .azure/accessTokens.json"
+
+# Only stat: these files are never opened, so their contents cannot reach the
+# report whatever they hold. A missing file is the normal case on a machine
+# without that tool, so absent ones are counted, not listed.
+check_credential_files() {
+  group "credential files"
+  local entry path mode total=0 absent=0 found
+  for entry in $CREDENTIAL_FILES; do
+    total=$((total + 1))
+    case "$entry" in
+      CFG/*) path="$CONFIG_DIR/${entry#CFG/}" ;;
+      *)     path="$HOME_DIR/$entry" ;;
+    esac
+    if [[ ! -e "$path" ]]; then
+      absent=$((absent + 1))
+      continue
+    fi
+    mode="$(mode_of "$path")"
+    if [[ ! "$mode" =~ ^[0-7]{3,4}$ ]]; then
+      skip "$path: could not read its mode"
+      continue
+    fi
+    found=0
+    if (( 8#$mode & 022 )); then
+      fail "$path mode $mode is writable by group or other" "chmod 600 $path"
+      found=1
+    elif (( 8#$mode & 044 )); then
+      warn "$path mode $mode is readable by group or other" "chmod 600 $path"
+      found=1
+    elif (( 8#$mode & 011 )); then
+      warn "$path mode $mode gives group or other access" "chmod 600 $path"
+      found=1
+    fi
+    if [[ ! -O "$path" ]]; then
+      warn "$path is owned by another user" "chown $(id -un) $path"
+      found=1
+    fi
+    (( found )) || pass "$path mode $mode"
+  done
+  (( absent > 0 )) && skip "$absent of $total credential files not present"
+  return 0
+}
+
 # --- main ------------------------------------------------------------------
 check_linked_configs
+check_credential_files
 
 printf "\n%s%s pass%s, %s%s warn%s, %s%s fail%s, %s%s skip%s\n" \
   "$C_GREEN" "$PASS_COUNT" "$C_RESET" \

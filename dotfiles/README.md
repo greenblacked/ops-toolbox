@@ -214,6 +214,35 @@ links and may hold what their tool writes there, so they are not read. A
 link into the repository whose file no longer exists is a `[warn]`: the
 config was renamed or removed and the tool reads nothing.
 
+**Credential files are private.** [What is deliberately not
+here](#what-is-deliberately-not-here) lists the files that hold tokens and
+are never tracked. Nothing else checks that they are private on the machine:
+a `~/.kube/config` or `~/.aws/credentials` at `644` on a shared jump host is
+readable by everyone on it. The doctor stats each of these, never opening
+one, and follows a link to the file it leads to:
+
+| Path | Tool |
+| --- | --- |
+| `~/.aws/credentials` | AWS CLI |
+| `~/.config/gh/hosts.yml` | gh |
+| `~/.kube/config` | kubectl |
+| `~/.docker/config.json` | docker (`auths`) |
+| `~/.terraform.d/credentials.tfrc.json` | `terraform login` |
+| `~/.netrc` | curl, git, ftp |
+| `~/.config/argocd/config` | argocd |
+| `~/.jfrog/jfrog-cli.conf.v6` | jfrog-cli |
+| `~/.config/gcloud/credentials.db`, `access_tokens.db` | gcloud |
+| `~/.azure/accessTokens.json` | Azure CLI |
+
+Writable by group or other is a `[FAIL]`; readable by them is a `[warn]`, as
+is a file owned by another user; the fix printed is `chmod 600 <path>`, and
+the doctor never runs it. Paths under `~/.config` follow `--config-home`.
+Absent files are the normal case on a machine without that tool, so they are
+counted in one `[skip] N of 11 credential files not present` line rather than
+listed. `~/.ssh` is deliberately not here:
+[`linux/ssh_client_doctor.sh`](../linux/ssh_client_doctor.sh) owns it and
+knows which of its files may be `644`.
+
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
 `2` preflight — no home directory, or a `--repo` without `config/` and
 `home/`; `3` usage.
@@ -736,7 +765,11 @@ passes, a token in a linked file reported by file and line with the token
 itself absent from the output, an npm value read from the environment and a
 keyed value in a comment both passing, a copy never read, a dangling link a
 warning that `--fail-on warn` turns into exit `1`, and the script copied
-alone into a bin directory still running. Every run is followed by a
+alone into a bin directory still running. The credential-file section writes
+a sentinel line into every fixture and asserts it never reaches the output:
+a `600` file passes, a `644` one warns with the `chmod 600` fix and is left
+at `644`, a `666` one fails, a link is judged by the file it leads to, and
+an empty home reports all eleven as not present. Every run is followed by a
 snapshot comparison of the scratch home and tmp, because a doctor that
 writes is not read-only. Last, the real configs are installed into a
 scratch home and must give no finding at all, the false-positive guard for

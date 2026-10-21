@@ -67,6 +67,11 @@ reports each file as `MATCH`, `DRIFT`, `MISSING`, `FOREIGN` or `CONFLICT`.
 - Installs into `~/.ssh` and `~/.gnupg` enforce mode 700 on those directories.
 - Some tools are deliberately left out (pnpm, Maven, jfrog, argocd, gcloud
   credentials). The README gives the reasons.
+- `dotfiles_doctor.sh` checks that the credential files the package never
+  tracks (`~/.aws/credentials`, `~/.kube/config`, gh `hosts.yml` and eight
+  more) are not readable or writable by group or other. It only stats them
+  and prints the `chmod 600` for you to run. `~/.ssh` is left to
+  `linux/ssh_client_doctor.sh`.
 
 ## Repository
 
