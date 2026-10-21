@@ -308,5 +308,118 @@ class RenderJsonTestCase(unittest.TestCase):
             self.assertEqual(doctor.EVENTS[-1][0], level)
 
 
+def log_record(sha="a" * 40, status="G", signer="", key="", author="me@example.com",
+               committer="me@example.com", subject="a subject"):
+    """One record as `git log --format=LOG_FORMAT` prints it."""
+    return "\x1f".join([sha, status, signer, key, author, committer, subject]) + "\x1e"
+
+
+class ParseSignatureLogTestCase(unittest.TestCase):
+    TWO = (
+        log_record(sha="1" * 40, status="G", signer="Me <me@example.com>", key="ABCD",
+                   subject="feat: a thing: with a colon")
+        + "\n"
+        + log_record(sha="2" * 40, status="N", subject="fix two words")
+    )
+
+    def test_two_records(self):
+        commits = doctor.parse_signature_log(self.TWO)
+        self.assertEqual([c.sha for c in commits], ["1" * 40, "2" * 40])
+        self.assertEqual(commits[0].status, "G")
+        self.assertEqual(commits[0].key, "ABCD")
+
+    def test_a_subject_with_spaces_and_a_colon_stays_whole(self):
+        self.assertEqual(
+            doctor.parse_signature_log(self.TWO)[0].subject, "feat: a thing: with a colon"
+        )
+
+    def test_an_unsigned_commit_has_an_empty_signer(self):
+        self.assertEqual(doctor.parse_signature_log(self.TWO)[1].signer, "")
+
+    def test_a_truncated_final_record_is_dropped(self):
+        cut = self.TWO + "\n" + "3" * 40 + "\x1fG\x1f"
+        self.assertEqual(len(doctor.parse_signature_log(cut)), 2)
+
+    def test_empty_text(self):
+        self.assertEqual(doctor.parse_signature_log(""), [])
+
+
+class SummariseSignaturesTestCase(unittest.TestCase):
+    def summarise(self, records, signing_expected=False, user_email=""):
+        return doctor.summarise_signatures(
+            doctor.parse_signature_log("".join(records)), signing_expected, user_email
+        )
+
+    def levels(self, findings):
+        return [level for level, _, _ in findings]
+
+    def test_all_good_has_nothing_to_say(self):
+        counts, findings = self.summarise([log_record(status="G")] * 3, True)
+        self.assertEqual(counts, {"G": 3})
+        self.assertEqual(findings, [])
+
+    def test_a_bad_signature_fails_and_names_the_commit(self):
+        _, findings = self.summarise([log_record(sha="b" * 40, status="B")])
+        self.assertEqual(self.levels(findings), ["fail"])
+        self.assertIn("bbbbbbb", findings[0][1])
+
+    def test_expired_and_revoked_fail(self):
+        for status in ("X", "Y", "R"):
+            _, findings = self.summarise([log_record(status=status)])
+            self.assertEqual(self.levels(findings), ["fail"], status)
+
+    def test_unverifiable_fails_with_a_pointer(self):
+        _, findings = self.summarise([log_record(status="E")])
+        self.assertEqual(self.levels(findings), ["fail"])
+        self.assertIn("allowed-signers", findings[0][2])
+
+    def test_unsigned_is_information_when_signing_is_off(self):
+        counts, findings = self.summarise([log_record(status="N")] * 2, False)
+        self.assertEqual(counts, {"N": 2})
+        self.assertEqual(self.levels(findings), ["info"])
+        self.assertIn("2 unsigned commit(s)", findings[0][1])
+
+    def test_unsigned_fails_when_signing_is_on(self):
+        _, findings = self.summarise([log_record(status="N")], True)
+        self.assertEqual(self.levels(findings), ["fail"])
+        self.assertIn("is not signed", findings[0][1])
+
+    def test_unknown_validity_is_information(self):
+        _, findings = self.summarise([log_record(status="U")])
+        self.assertEqual(self.levels(findings), ["info"])
+
+    def test_a_signer_address_that_differs_from_the_committer_warns(self):
+        _, findings = self.summarise(
+            [log_record(status="G", signer="Other <other@example.org>")]
+        )
+        self.assertEqual(self.levels(findings), ["warn"])
+        self.assertIn("other@example.org", findings[0][1])
+
+    def test_the_same_address_in_another_case_is_not_a_mismatch(self):
+        _, findings = self.summarise([log_record(status="G", signer="Me <ME@Example.com>")])
+        self.assertEqual(findings, [])
+
+    def test_an_ssh_principal_without_an_address_is_not_a_mismatch(self):
+        _, findings = self.summarise([log_record(status="G", signer="deploy-key")])
+        self.assertEqual(findings, [])
+
+    def test_only_the_users_own_commits_are_judged(self):
+        counts, findings = self.summarise(
+            [log_record(status="B", author="someone@example.org"), log_record(status="G")],
+            user_email="ME@example.com",
+        )
+        self.assertEqual(counts, {"G": 1})
+        self.assertEqual(findings, [])
+
+    def test_the_summary_line(self):
+        self.assertEqual(
+            doctor.summary_line(50, False, {"G": 47, "N": 2, "Y": 1}),
+            "last 50 commits (yours): 47 good, 2 unsigned, 1 expired key",
+        )
+        self.assertEqual(
+            doctor.summary_line(1, True, {"G": 1}), "last 1 commit (all authors): 1 good"
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

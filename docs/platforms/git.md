@@ -96,6 +96,9 @@ All paths are under `git/`.
 - The repository README calls the doctors read-only, but
   `git_signing_doctor.py --test-sign` creates one real signature and
   `git_ssh_doctor.py --test-auth` attempts SSH authentication.
+- `git_signing_doctor.py --verify-recent N` makes git verify the signatures
+  of the last `N` existing commits, which runs gpg or ssh-keygen once per
+  signed commit; it judges only your own commits unless `--all-authors`.
 - `git_remote_doctor.py --probe` contacts each remote with one
   non-interactive `git ls-remote` and names why a failing one is
   unreachable. It never prompts, stops after `--probe-timeout` seconds, and

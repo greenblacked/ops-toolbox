@@ -639,7 +639,22 @@ backend to produce one real signature in a temporary directory.
 ./git/git_signing_doctor.py
 ./git/git_signing_doctor.py --test-sign
 ./git/git_signing_doctor.py --quiet
+./git/git_signing_doctor.py --verify-recent 50   # git's verdict on your last 50 commits
 ```
+
+**`--verify-recent N`** answers the question people actually ask: why do my
+recent commits show Unverified? It reads git's own verdict (`%G?`) for the
+last `N` commits and prints one line of counts (`last 50 commits (yours): 47
+good, 2 unsigned, 1 expired key`), then names every commit with a bad
+signature, a revoked or expired key or signature, or one git cannot check
+(missing public key, no `gpg.ssh.allowedSignersFile`, no gpg or ssh-keygen).
+Unsigned commits fail only when `commit.gpgsign` is on. A good signature
+whose signer address differs from the committer address is a warning,
+because that mismatch is the usual reason a forge shows Unverified. Only your
+own commits (author email equal to `user.email`) are judged unless you pass
+`--all-authors`. `N` above 5000 is capped. Verification is local: git runs
+gpg or ssh-keygen against public keys, nothing is written, and nothing is
+fetched unless your `gpg.conf` turns on `auto-key-retrieve`.
 
 `--quiet` prints nothing and preserves exit `0`/`1`, making the diagnostic safe
 to use as a preflight check without parsing colored text. It does not turn on

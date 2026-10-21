@@ -1168,6 +1168,40 @@ assert_eq "$rc" "2" "secrets doctor outside a repository -> exit 2"
 (cd "$repo" && "$SECRETS_DOCTOR" --history --history-limit 0 >/dev/null 2>&1); rc=$?
 assert_eq "$rc" "3" "secrets doctor --history-limit 0 -> exit 3"
 
+section "signing doctor --verify-recent"
+# This image has no gpg, so the base checks already fail and the commits are
+# unsigned: git reports N for each. The verdict is 0 or 1 for the same reason
+# the quiet section above allows both.
+repo="$(new_repo)"
+for n in 2 3; do
+  printf '%s\n' "$n" >>"$repo/file.txt"
+  git -C "$repo" commit -qam "change $n" >/dev/null
+done
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent 3 2>&1)"; rc=$?
+if [[ "$rc" -eq 0 || "$rc" -eq 1 ]]; then
+  ok "signing doctor --verify-recent returns a diagnostic verdict"
+else
+  err "signing doctor --verify-recent returned unexpected exit $rc: $out"
+fi
+assert_contains "$out" "== recent commits ==" "signing doctor --verify-recent adds its section"
+assert_contains "$out" "last 3 commits (yours): 3 unsigned" "signing doctor --verify-recent counts the unsigned commits"
+assert_not_contains "$out" "is not signed" "unsigned commits are not a failure while commit.gpgsign is off"
+
+git -C "$repo" config commit.gpgsign true
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent 3 2>&1)"; rc=$?
+assert_eq "$rc" "1" "signing doctor --verify-recent fails unsigned commits once signing is on"
+assert_contains "$out" "is not signed, but commit.gpgsign is on" "signing doctor names each unsigned commit"
+git -C "$repo" config --unset commit.gpgsign
+
+for verify_n in 0 abc; do
+  (cd "$repo" && "$SIGNING_DOCTOR" --verify-recent "$verify_n" >/dev/null 2>&1); rc=$?
+  assert_eq "$rc" "3" "signing doctor --verify-recent $verify_n -> exit 3"
+done
+(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent=2 >/dev/null 2>&1); rc=$?
+if [[ "$rc" -ne 3 ]]; then ok "signing doctor accepts --verify-recent=2"; else err "signing doctor rejected --verify-recent=2"; fi
+out="$(cd "$repo" && "$SIGNING_DOCTOR" 2>&1)"
+assert_not_contains "$out" "recent commits" "signing doctor without --verify-recent looks at no commit"
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"

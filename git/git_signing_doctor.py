@@ -17,14 +17,23 @@ the ssh backend is the one most people are adopting and nobody with
 Read-only. It prints commands to run; it never edits config, touches the agent,
 or creates a key.
 
+The configuration can be right and the history still wrong: "why do my recent
+commits show Unverified?" is answered by --verify-recent N, which reads git's
+own verdict (%G?) on the last N commits, names every bad, revoked, expired,
+unverifiable or (with commit.gpgsign on) unsigned one, and flags a signer
+address that differs from the committer address. Verification is local: git
+runs gpg or ssh-keygen against public keys, and nothing is fetched.
+
     ./git_signing_doctor.py              # diagnose signing in the current repo
     ./git_signing_doctor.py --test-sign  # also attempt one real signature
+    ./git_signing_doctor.py --verify-recent 50   # and audit the last 50 commits
     ./git_signing_doctor.py --json       # the same verdict as one JSON object
 """
 
 from __future__ import annotations
 
 import argparse
+import collections
 import contextlib
 import io
 import json
@@ -340,6 +349,117 @@ def find_program(name, path_env):
     return None
 
 
+Commit = collections.namedtuple(
+    "Commit", "sha status signer key author_email committer_email subject"
+)
+
+# git's %G? letters, as the reader should see them.
+SIG_STATUS = {
+    "G": "good",
+    "B": "bad signature",
+    "U": "good signature, validity unknown",
+    "X": "good signature, expired signature",
+    "Y": "good signature, made by an expired key",
+    "R": "good signature, revoked key",
+    "E": "cannot be checked",
+    "N": "no signature",
+}
+# The short words the one-line summary uses, in the order it lists them.
+_SUMMARY_WORDS = (("G", "good"), ("U", "good, validity unknown"), ("N", "unsigned"),
+                  ("X", "expired signature"), ("Y", "expired key"), ("R", "revoked key"),
+                  ("B", "bad"), ("E", "unverifiable"))
+LOG_FORMAT = "%H%x1f%G?%x1f%GS%x1f%GK%x1f%ae%x1f%ce%x1f%s%x1e"
+_ANY_EMAIL = re.compile(r"[^\s<>@]+@[^\s<>@]+")
+
+
+def parse_signature_log(text):
+    """Parse `git log --format=LOG_FORMAT` into [Commit], newest first.
+
+    Records end in \\x1e and fields are split on \\x1f, so a subject with a
+    colon or a tab cannot shift a column. git puts a newline between records;
+    it is stripped. Whatever follows the last separator is either that
+    newline or a record cut short, and a short record is dropped rather than
+    guessed at.
+    """
+    records = (text or "").split("\x1e")
+    records.pop()
+    commits = []
+    for record in records:
+        fields = record.lstrip("\n").split("\x1f")
+        if len(fields) != len(Commit._fields):
+            continue
+        commits.append(Commit(*fields))
+    return commits
+
+
+def signer_email(signer):
+    """The address in a %GS signer: `Name <a@b>` for openpgp, `a@b` for an
+    ssh principal that is an address, '' for a principal that is not."""
+    match = _ANY_EMAIL.search(signer or "")
+    return match.group(0).lower() if match else ""
+
+
+def summary_line(scanned, all_authors, counts):
+    parts = ["%d %s" % (counts[s], word) for s, word in _SUMMARY_WORDS if counts.get(s)]
+    return "last %d commit%s (%s): %s" % (
+        scanned, "" if scanned == 1 else "s",
+        "all authors" if all_authors else "yours",
+        ", ".join(parts) or "none",
+    )
+
+
+def summarise_signatures(commits, signing_expected, user_email):
+    """(counts, findings) for the commits git has verified.
+
+    Only commits authored as user_email are judged when it is given: other
+    people's signing setup is not this user's to fix. findings are
+    (level, message, fix); fix may be None.
+    """
+    if user_email:
+        commits = [c for c in commits if c.author_email.lower() == user_email.lower()]
+    counts = collections.Counter(c.status for c in commits)
+    findings = []
+    for c in commits:
+        label = "%s %s" % (c.sha[:7], c.subject[:50])
+        if c.status in ("B", "R", "X", "Y"):
+            findings.append(("fail", "%s: %s" % (label, SIG_STATUS[c.status]), None))
+        elif c.status == "E":
+            findings.append((
+                "fail", "%s: signature %s" % (label, SIG_STATUS["E"]),
+                "the keyring and allowed-signers checks above say why: a missing "
+                "public key, no gpg.ssh.allowedSignersFile, or no gpg/ssh-keygen",
+            ))
+        elif c.status == "N" and signing_expected:
+            findings.append((
+                "fail", "%s is not signed, but commit.gpgsign is on" % label,
+                "only for commits not pushed yet: git rebase --exec 'git commit "
+                "--amend --no-edit -S' <base> re-signs them, which rewrites them",
+            ))
+        if c.status in ("G", "U"):
+            signed_as = signer_email(c.signer)
+            if signed_as and signed_as != c.committer_email.lower():
+                findings.append((
+                    "warn",
+                    "%s: signed as %s but committed as %s; the forge matches the "
+                    "signature to an account by the key identity and the committer "
+                    "address, and a mismatch shows Unverified"
+                    % (label, signed_as, c.committer_email),
+                    None,
+                ))
+    if counts.get("N") and not signing_expected:
+        findings.append((
+            "info", "%d unsigned commit(s) (commit.gpgsign is off, so this may be "
+                    "intended)" % counts["N"], None,
+        ))
+    if counts.get("U"):
+        findings.append((
+            "info", "%d commit(s) signed by a key git has no trust path to; a forge "
+                    "checks it against the account, so this is not an error"
+                    % counts["U"], None,
+        ))
+    return counts, findings
+
+
 # --------------------------------------------------------------------------
 # Diagnostics
 # --------------------------------------------------------------------------
@@ -569,6 +689,67 @@ def test_sign(fmt, signingkey):
     return 1
 
 
+# Commits --verify-recent reads at most; a release gate needs tens, and git
+# verifies each signature by running gpg or ssh-keygen once.
+VERIFY_LIMIT = 5000
+
+
+def verify_recent(n, entries, all_authors):
+    """Report git's own signature verdict on the last n commits."""
+    head("recent commits")
+    if n > VERIFY_LIMIT:
+        info("--verify-recent %d is more than %d; checking the last %d"
+             % (n, VERIFY_LIMIT, VERIFY_LIMIT))
+        n = VERIFY_LIMIT
+
+    if run(["git", "rev-parse", "--verify", "-q", "HEAD"])[0] != 0:
+        bad("--verify-recent needs a repository with commits, and there are none here")
+        return 1
+
+    email = (effective(entries, "user.email") or ("", "", ""))[0]
+    signing = (effective(entries, "commit.gpgsign") or ("", "", ""))[0]
+    signing_expected = signing.lower() in ("true", "1", "yes", "on")
+    if not all_authors and not email:
+        warn("user.email is not set, so every author's commits are checked")
+        all_authors = True
+
+    rc, out, err = run(["git", "log", "-n", str(n), "--format=" + LOG_FORMAT, "HEAD"],
+                       timeout=15 + n // 50)
+    if rc != 0:
+        # A timeout or a failing verifier is not "all good".
+        bad("git log could not answer (exit %d)" % rc)
+        for line in err.strip().splitlines()[:3]:
+            info("        %s" % line)
+        return 1
+
+    counts, findings = summarise_signatures(
+        parse_signature_log(out), signing_expected, "" if all_authors else email
+    )
+    scanned = sum(counts.values())
+    line = summary_line(scanned, all_authors, counts)
+    if any(level == "fail" for level, _, _ in findings):
+        info(line)
+    else:
+        ok(line)
+
+    problems = 0
+    for level, message, fix in findings[:20]:
+        if level == "fail":
+            bad(message)
+            problems += 1
+        elif level == "warn":
+            warn(message)
+        else:
+            info(message)
+        if fix:
+            info("fix: %s" % fix)
+    hidden = findings[20:]
+    if hidden:
+        info("... and %d more" % len(hidden))
+        problems += sum(1 for level, _, _ in hidden if level == "fail")
+    return problems
+
+
 def run_report(args):
     now = args.now if args.now is not None else int(time.time())
 
@@ -591,6 +772,9 @@ def run_report(args):
 
     if args.test_sign:
         problems += test_sign(fmt, signingkey)
+
+    if args.verify_recent:
+        problems += verify_recent(args.verify_recent, entries, args.all_authors)
 
     print()
     if problems:
@@ -621,12 +805,27 @@ class Usage3Parser(argparse.ArgumentParser):
         self.exit(3, "%s: error: %s\n" % (self.prog, message))
 
 
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("%r is not a whole number" % value) from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number, not %d" % number)
+    return number
+
+
 def main(argv=None):
     parser = Usage3Parser(
         description="Diagnose commit-signing failures (gpg, ssh and x509 backends)."
     )
     parser.add_argument("--test-sign", action="store_true",
                         help="attempt one real signature and report the raw error")
+    parser.add_argument("--verify-recent", type=positive_int, default=0, metavar="N",
+                        help="also report git's signature verdict on the last N commits "
+                             "(yours, unless --all-authors)")
+    parser.add_argument("--all-authors", action="store_true",
+                        help="with --verify-recent, judge every author's commits")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")
