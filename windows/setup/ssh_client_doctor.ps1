@@ -254,6 +254,20 @@ function Get-SshClientFinding {
             Id = 'git-ssh-command'; Level = 'info'
             Message = "git uses core.sshCommand: $GitSshCommand"; Fix = ''
         }
+        # Name the client core.sshCommand points at: its first word, quotes
+        # and forward slashes allowed. Only Git's bundled ssh and the Windows
+        # OpenSSH client are known; anything else (a wrapper, plink) is left
+        # alone.
+        $pinned = ($GitSshCommand.Trim() -replace '/', '\')
+        if ($pinned -match '^"([^"]*)"') { $pinned = $Matches[1] }
+        elseif ($pinned -match '^(.*?\\ssh(\.exe)?)(\s|$)') { $pinned = $Matches[1] }
+        if ($AgentRunning -and $pinned -match '\\Git\\(usr\\bin|mingw(32|64)\\bin)\\ssh(\.exe)?$') {
+            $findings += [pscustomobject]@{
+                Id = 'git-ssh-pinned-git'; Level = 'warn'
+                Message = "core.sshCommand pins git to Git's own ssh ($pinned), which cannot see the keys in the running Windows ssh-agent"
+                Fix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
+            }
+        }
     } elseif ($GitSshEnv) {
         $findings += [pscustomobject]@{
             Id = 'git-ssh-env'; Level = 'info'

@@ -1343,6 +1343,11 @@ if (-not $sshDoctor) {
             @{ Label = 'Windows OpenSSH only'; Clients = @($winSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client' }
             @{ Label = 'both, agent running, nothing pins git'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client two-clients' }
             @{ Label = 'both, core.sshCommand set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Windows/System32/OpenSSH/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand pinned to Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
+            @{ Label = 'core.sshCommand quoted Git ssh with options, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = '"C:\Program Files\Git\usr\bin\ssh.exe" -o BatchMode=yes'; Env = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
+            @{ Label = 'core.sshCommand pinned to Git ssh, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand pinned to Windows OpenSSH, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:\Windows\System32\OpenSSH\ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand is an unknown wrapper'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/tools/plink.exe -batch'; Env = ''; Expect = 'first-client git-ssh-command' }
             @{ Label = 'both, GIT_SSH_COMMAND set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = 'ssh -i key'; Expect = 'first-client git-ssh-env' }
             @{ Label = 'both, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = ''; Env = ''; Expect = 'first-client' }
             @{ Label = 'no client at all'; Clients = @(); Agent = $false; Command = ''; Env = ''; Expect = 'no-client' }
