@@ -42,7 +42,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/systemd/stay_fresh_timer.sh` | Linux | Install and manage a systemd user timer. | `--dry-run` (install); `--print-only` |
 | `linux/cloud-init/kali-vm-init.yaml` | Linux | cloud-init user-data for a Kali VM (not a script). | n/a; validate with `cloud-init schema` |
 | `windows/setup/status.ps1` | Windows | One-screen verdict: OS, disk, winget, WSL, reboot, git identity. | <span class="stage stage-report">read-only</span> |
-| `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy, disk health, uptime, patch age, memory. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/net_doctor.ps1` | Windows | Adapters, routes, DNS, proxy, hosts file, listening ports; optional `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/tls_expiry.ps1` | Windows | Certificate expiry for files, TLS endpoints and the personal stores. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/hardening_audit.ps1` | Windows | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |

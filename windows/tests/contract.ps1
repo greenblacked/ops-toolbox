@@ -196,7 +196,7 @@ $expectedParameters = @{
     'clean_disk_c.ps1'      = @('Scope', 'IncludeCrashDumps', 'IncludeLogs', 'IncludeComponentStore')
     'stay_fresh.ps1'        = @('Only')
     'status.ps1'            = @('ListSections', 'Only')
-    'workstation_doctor.ps1'= @('MinFreePercent')
+    'workstation_doctor.ps1'= @('MinFreePercent', 'Only', 'ListSections', 'MaxUptimeDays', 'MaxPatchAgeDays')
     'net_doctor.ps1'        = @('Probe', 'Port', 'Only', 'ListSections', 'SkipListen', 'Quiet', 'HostsFile')
     'ssh_client_doctor.ps1' = @('SshDir', 'FailOn', 'Quiet')
     'disk_usage.ps1'        = @('Path', 'Depth', 'Top', 'MinSizeMB', 'IncludeDocker', 'Quiet')
@@ -2504,6 +2504,164 @@ if (-not $onWindows) {
         } else {
             Test-Fail "$memoryDump existed before the preview and is gone after it"
         }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'workstation_doctor section selection'
+$doctor = Find-ContractScript 'workstation_doctor.ps1'
+$doctorSections = @('security', 'reboot', 'disk', 'wsl', 'policy', 'hardware', 'uptime', 'updates', 'memory')
+if (-not $doctor) {
+    Test-Fail 'workstation_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $listed = Invoke-InScratch -Path $doctor.FullName -Arguments @('-ListSections')
+    $ids = @($listed.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($listed.ExitCode -eq 0 -and ($ids -join ',') -eq ($doctorSections -join ',')) {
+        Test-Ok 'workstation_doctor.ps1 -ListSections prints the nine ids in order and exits 0'
+    } else {
+        Test-Fail "workstation_doctor.ps1 -ListSections exited $($listed.ExitCode) and printed [$($ids -join ',')]"
+    }
+    $run = Invoke-InScratch -Path $doctor.FullName -Arguments @('-Only', 'bogus')
+    if ($run.ExitCode -eq 3 -and $run.Output -match 'bogus') {
+        Test-Ok 'workstation_doctor.ps1 -Only bogus exits 3 and names the section, before the platform guard'
+    } else {
+        Test-Fail "workstation_doctor.ps1 -Only bogus must exit 3 naming it; it exited $($run.ExitCode)"
+    }
+    $run = Invoke-InScratch -Path $doctor.FullName -Arguments @('-Only', ',')
+    if ($run.ExitCode -eq 4) {
+        Test-Ok "workstation_doctor.ps1 -Only ',' selects nothing and exits 4"
+    } else {
+        Test-Fail "workstation_doctor.ps1 -Only ',' must exit 4; it exited $($run.ExitCode)"
+    }
+    # A ValidateRange failure, like -MinFreePercent's: under 'pwsh -File' that
+    # is a binding error and exits 1, not this repository's 3. What matters
+    # here is that an out-of-range value is refused rather than run with.
+    $run = Invoke-InScratch -Path $doctor.FullName -Arguments @('-MaxUptimeDays', '5000')
+    if ($run.ExitCode -ne 0) {
+        Test-Ok "workstation_doctor.ps1 -MaxUptimeDays 5000 is refused (exit $($run.ExitCode))"
+    } else {
+        Test-Fail 'workstation_doctor.ps1 -MaxUptimeDays 5000 was accepted'
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'workstation_doctor grades uptime'
+if (-not $doctor) {
+    Test-Fail 'workstation_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $doctor -Name 'Get-UptimeFinding'
+    if (-not $src) {
+        Test-Fail 'workstation_doctor.ps1 : Get-UptimeFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $clock = [datetime]'2026-10-01T09:00:00'
+        foreach ($case in @(
+                @{ Days = 5; Max = 30; Fast = $false; Level = 'ok'; Hint = ''; Label = '5 days, limit 30' }
+                @{ Days = 45; Max = 30; Fast = $false; Level = 'warn'; Hint = 'restart'; Label = '45 days, limit 30' }
+                @{ Days = 45; Max = 0; Fast = $false; Level = 'ok'; Hint = ''; Label = '45 days with the warning turned off' }
+                @{ Days = 45; Max = 30; Fast = $true; Level = 'warn'; Hint = 'Fast Startup'; Label = '45 days with Fast Startup on' }
+                @{ Days = 30; Max = 30; Fast = $false; Level = 'ok'; Hint = ''; Label = 'exactly at the limit' }
+            )) {
+            $finding = Get-UptimeFinding -LastBoot $clock.AddDays(-$case.Days) -Now $clock -MaxDays $case.Max -FastStartup $case.Fast
+            $hintOk = (-not $case.Hint) -or ($finding.Hint -match $case.Hint)
+            if ($finding.Level -eq $case.Level -and $finding.Days -eq $case.Days -and $hintOk) {
+                Test-Ok ("{0} -> {1}" -f $case.Label, $finding.Level)
+            } else {
+                Test-Fail ("{0}: got {1} ({2} days, hint '{3}'), expected {4} with a hint mentioning '{5}'" -f $case.Label, $finding.Level, $finding.Days, $finding.Hint, $case.Level, $case.Hint)
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'workstation_doctor grades patch age'
+if (-not $doctor) {
+    Test-Fail 'workstation_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $doctor -Name 'Get-PatchAgeFinding'
+    if (-not $src) {
+        Test-Fail 'workstation_doctor.ps1 : Get-PatchAgeFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $clock = [datetime]'2026-10-01T09:00:00'
+        foreach ($case in @(
+                @{ InstalledOn = $clock.AddDays(-10); Level = 'ok'; Label = 'patched 10 days ago' }
+                @{ InstalledOn = $clock.AddDays(-60); Level = 'warn'; Label = 'patched 60 days ago, limit 45' }
+                @{ InstalledOn = $null; Level = 'info'; Label = 'no date at all' }
+            )) {
+            $finding = Get-PatchAgeFinding -InstalledOn $case.InstalledOn -Now $clock -MaxDays 45
+            if ($finding.Level -eq $case.Level) {
+                Test-Ok ("{0} -> {1}" -f $case.Label, $finding.Level)
+            } else {
+                Test-Fail ("{0}: got {1}, expected {2}" -f $case.Label, $finding.Level, $case.Level)
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'workstation_doctor runs the selected sections'
+# disk, wsl, memory and hardware only: every probe in them is behind a
+# try/catch or -ErrorAction SilentlyContinue, so they answer off Windows too.
+# The registry sections are left out here, because Test-Path on HKLM: under
+# pwsh on Linux with ErrorActionPreference Stop has not been verified, and the
+# doctor had never run guard-stripped before. On Windows the full default run
+# is checked as well, all nine headings in order.
+if (-not $doctor) {
+    Test-Fail 'workstation_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $doctorBox = Join-Path ([IO.Path]::GetTempPath()) ('windoctor_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $doctorBox -Force | Out-Null
+    $doctorCopy = Copy-UnguardedScript -Script $doctor -Directory $doctorBox
+    if (-not $doctorCopy) {
+        Test-Fail 'workstation_doctor.ps1 : platform guard not found verbatim, so this check could not run; update the guard text in contract.ps1'
+    } else {
+        $run = Invoke-InScratch -Path $doctorCopy -Arguments @('-Only', 'disk,wsl,memory,hardware')
+        $missing = @(@('== disk ==', '== wsl ==', '== memory ==', '== hardware ==') | Where-Object { $run.Output -notlike "*$_*" })
+        $extra = @(@('== security ==', '== reboot ==', '== policy ==', '== uptime ==', '== updates ==') | Where-Object { $run.Output -like "*$_*" })
+        if ($run.ExitCode -eq 0 -and $missing.Count -eq 0 -and $extra.Count -eq 0 -and $run.Output -notmatch 'at <ScriptBlock>') {
+            Test-Ok 'workstation_doctor.ps1 -Only disk,wsl,memory,hardware ran exactly those sections'
+        } else {
+            Test-Fail ("workstation_doctor.ps1 -Only: exited {0}, missing [{1}], unexpected [{2}]" -f $run.ExitCode, ($missing -join ' '), ($extra -join ' '))
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+        if ($onWindows) {
+            $full = Invoke-InScratch -Path $doctorCopy
+            $positions = @($doctorSections | ForEach-Object { $full.Output.IndexOf("== $_ ==") })
+            $inOrder = ($positions -notcontains -1)
+            for ($i = 1; $i -lt $positions.Count; $i++) {
+                if ($positions[$i] -le $positions[$i - 1]) { $inOrder = $false }
+            }
+            if ($full.ExitCode -eq 0 -and $inOrder) {
+                Test-Ok 'workstation_doctor.ps1 with no -Only runs all nine sections, in order'
+            } else {
+                Test-Fail "workstation_doctor.ps1 with no -Only: exited $($full.ExitCode), heading positions $($positions -join ',')"
+            }
+        }
+    }
+    Remove-Item -Path $doctorBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'workstation_doctor default order is unchanged'
+# Static, so it holds on every runner: the five sections people already know
+# keep their order, and the new four come after them. A refactor that
+# reordered the report would pass every other check here.
+if (-not $doctor) {
+    Test-Fail 'workstation_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $doctorText = Get-Content -Raw -Path $doctor.FullName
+    $offsets = @($doctorSections | ForEach-Object { $doctorText.IndexOf("Write-Section '$_'") })
+    $ordered = ($offsets -notcontains -1)
+    for ($i = 1; $i -lt $offsets.Count; $i++) {
+        if ($offsets[$i] -le $offsets[$i - 1]) { $ordered = $false }
+    }
+    if ($ordered) {
+        Test-Ok "workstation_doctor.ps1 sections appear as $($doctorSections -join ', ')"
+    } else {
+        Test-Fail "workstation_doctor.ps1 sections are out of order or missing (offsets $($offsets -join ','))"
     }
 }
 

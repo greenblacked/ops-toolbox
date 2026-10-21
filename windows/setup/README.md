@@ -11,7 +11,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`winget_configure.ps1`](winget_configure.ps1) | `validate` / `show` / `test` / `apply` over [`configuration.winget`](configuration.winget), the curated machine definition |
 | [`status.ps1`](status.ps1) | One-screen verdict (`-Only` / `-ListSections`). |
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
-| [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
+| [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy, disk health, uptime, patch age, memory (`-Only` / `-ListSections`) |
 | [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
 | [`tls_expiry.ps1`](tls_expiry.ps1) | Read-only certificate expiry check with exit codes: PEM/CER files, TLS endpoints, the personal certificate stores |
 | [`hardening_audit.ps1`](hardening_audit.ps1) | Read-only security audit with exit codes: firewall, SMBv1, RDP/NLA, UAC, autologon, Secure Boot/TPM, LSA protection, Defender, logging, patch age; prints each fix |
@@ -62,7 +62,7 @@ one. Neither replaces the other.
 | **Windows PowerShell 5.1 or PowerShell 7** | Either edition; the platform guard tests the edition too, because Windows PowerShell does not define `$IsWindows`. |
 | **winget, from the Microsoft Store "App Installer"** | Needed by the two winget scripts, which exit `2` without it. `winget_configure.ps1` also needs **WinGet 1.6 or newer** — see its own [Requirements](#requirements-1) — and checks both at the point it invokes winget, so previewing a configuration still works on a machine that has neither. |
 | **Chocolatey** | Only for `choco_bootstrap.ps1`, which exits `2` when `choco.exe` is not on `PATH`. It is an alternative to the winget pair, not a companion to them. |
-| **An elevated shell** | Optional. `workstation_doctor.ps1` runs unelevated and says so, but BitLocker and Defender answer more fully with elevation. |
+| **An elevated shell** | Optional. `workstation_doctor.ps1` runs unelevated and says so, but BitLocker, Defender, the TPM and Secure Boot answer more fully with elevation; so do the checks in `hardening_audit.ps1` that say they need it. |
 
 ## Quick start
 
@@ -73,8 +73,8 @@ the safe thing to run on a machine you have just been handed:
 .\workstation_doctor.ps1
 ```
 
-It reports BitLocker, Defender, pending reboot, disk headroom, WSL and
-execution policy in one pass.
+It reports BitLocker, Defender, pending reboot, disk headroom, WSL, execution
+policy, physical disk health, uptime, patch age and memory in one pass.
 
 Then the two halves of package management, both in their non-destructive form.
 The first compares this machine against the curated list in
@@ -252,7 +252,34 @@ policy. It changes nothing, so there is nothing to preview:
 ```powershell
 .\workstation_doctor.ps1
 .\workstation_doctor.ps1 -MinFreePercent 20
+.\workstation_doctor.ps1 -ListSections
+.\workstation_doctor.ps1 -Only hardware,uptime
+.\workstation_doctor.ps1 -MaxUptimeDays 14 -MaxPatchAgeDays 30
 ```
+
+| Section | What it reports |
+| --- | --- |
+| `security` | BitLocker protection on `C:`, Defender antivirus, real-time protection and signature age. |
+| `reboot` | The registry flags Windows sets when a restart is pending, queued file renames, a pending computer rename. |
+| `disk` | Free space on `C:` against `-MinFreePercent`. |
+| `wsl` | Whether WSL is installed and operational, and its distros. |
+| `policy` | The effective execution policy and the scope that set it. |
+| `hardware` | Physical disk health (a disk that is not Healthy/OK is a warning, with the reliability-counter command to look closer), free space on the other fixed volumes against the same threshold, the TPM and Secure Boot. |
+| `uptime` | Days since the last boot against `-MaxUptimeDays`. With Fast Startup on, "Shut down" does not reset uptime - only "Restart" does - and the warning says so. |
+| `updates` | The age of the newest installed update against `-MaxPatchAgeDays`, and a warning when the Windows Update service is disabled. |
+| `memory` | Free physical memory (a warning under 10%) and commit headroom, with a pointer to `.wslconfig` when WSL is running. |
+
+The first five are the sections this report has always had, and they still
+run first and in the same order; the four after them only append. `-Only`
+picks a comma-separated subset, the way it does for `status.ps1`.
+
+| Option | Meaning |
+| --- | --- |
+| `-MinFreePercent N` | Warn below this much free space, `0`-`100`, on `C:` and on the other fixed volumes. Default `10`. |
+| `-Only LIST` | Comma-separated section ids. An unknown id exits `3`; a list that selects nothing exits `4`. |
+| `-ListSections` | Print the section ids and exit `0`. Works on any OS. |
+| `-MaxUptimeDays N` | Warn past this many days of uptime, `0`-`3650`; `0` turns the warning off. Default `30`. |
+| `-MaxPatchAgeDays N` | Warn when the newest installed update is older than this, `1`-`3650`. Default `45`. |
 
 `-Action report` is the only action, and the default. That is not decoration:
 the contract checks in [`../tests/`](../tests/) require every script to offer
@@ -265,10 +292,12 @@ or lowers that threshold without changing the report-only exit contract; this
 is useful on large disks where 10% may still be too little operational headroom.
 
 Every probe is best-effort. `Get-BitLockerVolume` does not exist on Home
-editions, `Get-MpComputerStatus` is absent where Defender has been replaced, and
-both answer more fully from an elevated prompt — anything that cannot answer
-says so and the report carries on. Warnings are printed and counted, but the
-exit code stays `0`; only the wrong platform (`2`) changes it.
+editions, `Get-MpComputerStatus` is absent where Defender has been replaced,
+`Get-Tpm` and `Confirm-SecureBootUEFI` need elevation, and all of them answer
+more fully from an elevated prompt — anything that cannot answer says so and
+the report carries on. Warnings are printed and counted, but the exit code
+stays `0`. Only the wrong platform (`2`), an unknown `-Only` section (`3`) and
+an `-Only` list that selects nothing (`4`) change it.
 
 ## net_doctor.ps1
 

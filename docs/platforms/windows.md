@@ -24,7 +24,7 @@ Git Bash dotfiles installer.
 | Script | Purpose | Preview |
 | --- | --- | --- |
 | `setup/status.ps1` | One-screen verdict; `-Only` selects sections, `-ListSections` lists them. | <span class="stage stage-report">read-only</span> |
-| `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
+| `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy, disk health, uptime, patch age, memory; `-Only` selects sections. | <span class="stage stage-report">read-only</span> |
 | `setup/net_doctor.ps1` | Adapters, default routes, DNS, proxy (WinINET against `HTTP_PROXY`), hosts file, listening ports; opt-in `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
 | `setup/tls_expiry.ps1` | Certificate expiry for PEM/CER files, TLS endpoints and the personal stores; exit-coded for a scheduled task. | <span class="stage stage-report">read-only</span> |
 | `setup/hardening_audit.ps1` | Security audit with the fix for each finding: firewall, SMBv1, RDP/NLA, UAC, autologon, Secure Boot, TPM, LSA, Defender, logging, patch age. | <span class="stage stage-report">read-only</span> |
@@ -52,6 +52,7 @@ All paths are under `windows/`.
     .\windows\setup\status.ps1
     .\windows\setup\status.ps1 -Only disk,git
     .\windows\setup\workstation_doctor.ps1 -MinFreePercent 20
+    .\windows\setup\workstation_doctor.ps1 -Only hardware,uptime
     .\windows\setup\net_doctor.ps1 -Probe github.com
     .\windows\setup\ssh_client_doctor.ps1 -FailOn warn
     .\windows\setup\dev_env_doctor.ps1 -CheckTime
