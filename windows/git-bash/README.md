@@ -229,6 +229,16 @@ under `# ---` section headers. By category:
 - **Docker / Kubernetes / Terraform** — `d*`/`dc*`, `k`/`kg*`/`kd*`, `tf*`;
   `kns` prints the current Kubernetes namespace and `kns NAME` changes it for
   the current context.
+- **Where am I pointed?** — `ctx` prints one line per tool that is
+  configured: the Kubernetes context and namespace, the AWS profile and
+  region, the gcloud project, the Terraform workspace (`TF_WORKSPACE`, else
+  `.terraform/environment` in the current directory), the Docker context, and
+  the Git branch with its origin host. Run it before `tfaa`, `tfda` or
+  `kdelete`, which act on whatever these point at. A value that looks like
+  production (`prod`, `production` or `prd`, any case) ends in `!`, in red on
+  a terminal; the `!` stays when colour is off (`NO_COLOR`, `ctx --plain`, or
+  output piped to a log). It prints names only: exported AWS keys show as the
+  word `static-keys`, never their value.
 - **SSH** — `sshkeys`, `sshadd`/`sshremove` (reuse `$SSH_KEY` from
   `.bashrc`), `sshtestgithub`/`sshtestgitlab`.
 - **Windows networking** — `ipconfig`, `flushdns`, `ports`, `listening`,
@@ -310,6 +320,13 @@ Put host-specific PATH entries, work-only aliases, tokens, or anything else
 you don't want in version control into `~/.bashrc.local` — `.bashrc` sources
 it automatically at the end if it exists, and it's plain `$HOME`, so it never
 gets committed here.
+
+That is also where to tell `ctx` what production looks like on your
+accounts, as an extended regular expression matched in any case:
+
+```bash
+export CTX_DANGER_PATTERN='prod|prd|live|-p[0-9]+$'
+```
 
 ## Requirements
 

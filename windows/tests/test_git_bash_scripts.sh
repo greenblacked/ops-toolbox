@@ -395,6 +395,118 @@ h="$(new_backup_home)"
 run_install "$h" --restore latest --source "$(mktemp -d "$SCRATCH/nosource.XXXXXX")"
 assert_eq "--restore works with --source pointing at an empty directory" 0 "$rc"
 
+# --------------------------------------------------------------------------
+section "ctx"
+# The developer's own environment must not steer these: every variable ctx
+# reads is cleared here and again for each run below.
+unset AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID TF_WORKSPACE \
+  KUBECONFIG CTX_DANGER_PATTERN APPDATA DOCKER_CONTEXT
+
+ctx_root="$(mktemp -d "$SCRATCH/ctx.XXXXXX")"
+mkdir -p "$ctx_root/home/.docker" "$ctx_root/work/.terraform" \
+  "$ctx_root/appdata/gcloud/configurations" "$ctx_root/bin" "$ctx_root/empty"
+printf '{\n  "auths": {},\n  "currentContext": "desktop-linux"\n}\n' > "$ctx_root/home/.docker/config.json"
+# Terraform writes the workspace name with no trailing newline.
+printf 'prod' > "$ctx_root/work/.terraform/environment"
+printf 'default\n' > "$ctx_root/appdata/gcloud/active_config"
+printf '[core]\naccount = me@example.invalid\nproject = acme-prod\n' \
+  > "$ctx_root/appdata/gcloud/configurations/config_default"
+# cygpath -u PATH answers PATH, which is what it does for a path that is
+# already POSIX.
+# shellcheck disable=SC2016  # the $2 belongs to the shim, not to this file
+shim "$ctx_root/bin/cygpath" 'printf "%s\n" "$2"'
+
+# run_ctx [VAR=VALUE...] [-- CTX-ARGS...]: output in $out, status in $rc.
+# Runs ctx from the repository's .aliases in a fresh bash, from the fixture
+# work directory, with kubectl and git stubbed as functions the way the kns
+# check in run.sh stubs kubectl. CTX_STUBS=none makes both answer nothing.
+run_ctx() {
+  local assigns=() args=()
+  while (( $# > 0 )); do
+    if [[ "$1" == "--" ]]; then
+      shift
+      args=("$@")
+      break
+    fi
+    assigns+=("$1")
+    shift
+  done
+  # shellcheck disable=SC2016  # the script body expands in the child bash
+  out="$(cd "$ctx_root/work" && env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
+    -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN \
+    -u DOCKER_CONTEXT -u NO_COLOR -u CTX_STUBS \
+    HOME="$ctx_root/home" APPDATA="$ctx_root/appdata" PATH="$ctx_root/bin:$PATH" \
+    ${assigns[@]+"${assigns[@]}"} "${BASH:-bash}" -c '
+      kubectl() {
+        [ "${CTX_STUBS:-}" = none ] && return 1
+        case "$*" in
+          "config view --minify --output=jsonpath={.current-context}") printf "prod-eu" ;;
+          "config view --minify --output=jsonpath={..namespace}") printf "payments" ;;
+          *) return 1 ;;
+        esac
+      }
+      git() {
+        [ "${CTX_STUBS:-}" = none ] && return 128
+        case "$*" in
+          "rev-parse --abbrev-ref HEAD") printf "feature/x\n" ;;
+          "config --get remote.origin.url") printf "git@github.com:acme/app.git\n" ;;
+          *) return 1 ;;
+        esac
+      }
+      . "$0"
+      ctx "$@"
+      status=$?
+      # ctx keeps its variables local; one escaping would linger in the
+      # interactive shell that sourced .aliases.
+      [ -n "${plain+x}${printed+x}${pattern+x}${aws_profile+x}${tf_ws+x}" ] && echo "LEAKED"
+      exit "$status"
+    ' "$GB/.aliases" ${args[@]+"${args[@]}"} 2>&1)"
+  rc=$?
+}
+
+run_ctx AWS_PROFILE=prod-admin AWS_REGION=eu-west-1
+assert_eq "ctx with targets configured -> 0" 0 "$rc"
+assert_contains "ctx shows the kube context and namespace" "$out" "kube    prod-eu / payments!"
+assert_contains "ctx shows the AWS profile and region" "$out" "aws     prod-admin!  (eu-west-1)"
+assert_contains "ctx shows the gcloud project" "$out" "gcloud  acme-prod!"
+assert_contains "ctx shows the Terraform workspace and where it came from" "$out" "tf      prod!  (.terraform/environment)"
+assert_contains "ctx shows the Docker context" "$out" "docker  desktop-linux"$'\n'
+assert_contains "ctx shows the branch and the origin host" "$out" "git     feature/x  origin=github.com"
+assert_not_contains "ctx leaves its variables local" "$out" "LEAKED"
+assert_not_contains "without a terminal there is no colour" "$out" $'\033'
+
+run_ctx AWS_PROFILE=stg AWS_REGION=eu-west-1
+assert_contains "a staging profile carries no mark" "$out" "aws     stg  (eu-west-1)"$'\n'
+
+run_ctx AWS_PROFILE=stg CTX_DANGER_PATTERN='^stg$'
+assert_contains "CTX_DANGER_PATTERN decides what is marked" "$out" "aws     stg!"
+assert_contains "and what is not" "$out" "kube    prod-eu / payments"$'\n'
+
+run_ctx TF_WORKSPACE=Production-EU
+assert_contains "TF_WORKSPACE wins over .terraform/environment, matched in any case" "$out" "tf      Production-EU!  (TF_WORKSPACE)"
+
+run_ctx AWS_ACCESS_KEY_ID=AKIAFAKE
+assert_contains "exported AWS keys are named as such" "$out" "static-keys"
+assert_not_contains "and never printed" "$out" "AKIAFAKE"
+
+run_ctx NO_COLOR=1 AWS_PROFILE=prod-admin -- --plain
+assert_eq "ctx --plain -> 0" 0 "$rc"
+assert_not_contains "ctx --plain with NO_COLOR has no escape byte" "$out" $'\033'
+assert_contains "and still marks production" "$out" "prod-admin!"
+
+# shellcheck disable=SC2016  # the script body expands in the child bash
+out="$(cd "$ctx_root/empty" && env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
+  -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN -u APPDATA \
+  -u DOCKER_CONTEXT HOME="$ctx_root/empty" CTX_STUBS=none "${BASH:-bash}" -c '
+    kubectl() { return 1; }
+    git() { return 128; }
+    . "$0"
+    ctx
+  ' "$GB/.aliases" 2>&1)"
+rc=$?
+assert_eq "ctx with nothing configured returns 1" 1 "$rc"
+assert_eq "and prints nothing" "" "$out"
+
 echo
 end_section
 if (( sections == 0 || checks == 0 )); then

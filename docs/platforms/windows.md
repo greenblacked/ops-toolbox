@@ -6,7 +6,10 @@ Windows 10/11 with PowerShell 5.1 or 7 for the `.ps1` scripts, and Git Bash for
 the dotfiles installer: winget and Chocolatey capture and restore, workstation
 status and health, winget upgrades with WSL update, `C:` disk cleanup, WSL2
 backup, restore and compaction, and a Git Bash dotfiles installer with a
-read-only doctor for the environment around it.
+read-only doctor for the environment around it. The Git Bash aliases include
+`ctx`, which prints the Kubernetes, AWS, gcloud, Terraform, Docker and Git
+targets the next command will hit and marks anything that looks like
+production.
 
 ## Requirements
 
