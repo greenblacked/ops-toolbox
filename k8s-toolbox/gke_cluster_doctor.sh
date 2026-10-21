@@ -208,11 +208,21 @@ if want channel; then
 fi
 
 if want skew; then
-  pools="$(describe 'value(nodePools.name,nodePools.version)' | tr ';' '\n')"
-  if [[ -z "$pools" ]]; then
+  # value() prints one tab-separated column per key and joins a repeated field
+  # with ';', so two pools arrive as "a;b<TAB>1.30;1.29". Splitting the whole
+  # line on ';' paired a pool with its neighbour's version; pair by position.
+  pools="$(describe 'value(nodePools.name,nodePools.version)')"
+  pool_names=()
+  pool_versions=()
+  IFS=$'\t' read -r names_col versions_col <<< "$pools"
+  IFS=';' read -r -a pool_names <<< "$names_col"
+  IFS=';' read -r -a pool_versions <<< "$versions_col"
+  if (( ${#pool_names[@]} == 0 )); then
     info "skew      no node pools reported"
   else
-    while IFS=$'\t' read -r pname pver; do
+    for i in "${!pool_names[@]}"; do
+      pname="${pool_names[$i]}"
+      pver="${pool_versions[$i]:-}"
       [[ -n "$pname" ]] || continue
       if [[ -n "$pver" && -n "$master" && "$pver" != "$master" ]]; then
         FINDINGS=1
@@ -221,7 +231,7 @@ if want skew; then
       else
         ok "skew      node pool $pname is ${pver:-unknown}"
       fi
-    done <<< "$pools"
+    done
   fi
 fi
 

@@ -217,6 +217,33 @@ else
   ok "gke_cluster_doctor no-gcloud path skipped (gcloud is on PATH)"
 fi
 
+# gcloud's value() joins a repeated field with ';' inside each tab-separated
+# column. The skew check once split the whole line on ';', which paired the
+# second pool with the first pool's version.
+gcloud_bin="$(mktemp -d)"
+cat > "$gcloud_bin/gcloud" <<'MOCK_GCLOUD'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"value(currentMasterVersion)"*) printf '1.30.5-gke.1\n' ;;
+  *"value(nodePools.name,nodePools.version)"*) printf 'pool-a;pool-b\t1.30.5-gke.1;1.29.8-gke.2\n' ;;
+  *) printf '\n' ;;
+esac
+MOCK_GCLOUD
+chmod +x "$gcloud_bin/gcloud"
+out="$(PATH="$gcloud_bin:$PATH" guard "$K/gke_cluster_doctor.sh" --only skew \
+  --project p --cluster c --location europe-west1 2>&1)"
+rc=$?
+if (( rc == 0 )) &&
+   [[ "$out" == *"node pool pool-a is 1.30.5-gke.1"* &&
+      "$out" == *"node pool pool-b is 1.29.8-gke.2 (control plane 1.30.5-gke.1)"* &&
+      "$out" != *"node pool 1.29"* ]]; then
+  ok "gke_cluster_doctor.sh pairs each node pool with its own version"
+else
+  err "gke_cluster_doctor.sh mispaired node pools and versions (exit $rc): $out"
+fi
+rm -rf "$gcloud_bin"
+
 # --------------------------------------------------------------------------
 head_ "kubectl check selection before kubectl"
 # Same contract as the GKE doctor's ids, except that an empty selection is a
