@@ -3,10 +3,29 @@
   Themed 404 page for the report/preview/apply theme. It extends main.html
   (the site's own override, which extends Material's base.html) so the
   favicon links of that file apply here too. Nothing here names a site: the
-  name comes from config.site_name, and every link goes through the url
-  filter, which on an error page resolves against the site root. There are no
-  external requests. Styles: .rpt-404 and .rpt-steps in the theme stylesheet.
+  name comes from config.site_name, and every link is a site-root URL (it
+  starts with "/"), never a relative one and never passed through the url
+  filter. There are no external requests.
+
+  The host serves this one file for a miss at any depth (/runbooks/missing/),
+  so a relative URL would resolve under the missing path. The script, the
+  search index and the home link are therefore built from `root`: the path of
+  config.site_url when set, else "/". Styles: .rpt-404 and .rpt-steps in the
+  theme stylesheet.
+
+  .rpt-404__suggest is filled by assets/javascripts/rpt-404.js with the pages
+  the missing address probably meant, ranked from the site's own search
+  index, and a link that opens the search with the address's words. It is
+  hidden until then, so without JavaScript the page is the three steps only.
 #}
+{% set root = '/' %}
+{% if config.site_url %}
+  {% set root = '/' ~ (config.site_url.split('/')[3:] | join('/')) %}
+{% endif %}
+{% if not root.endswith('/') %}
+  {% set root = root ~ '/' %}
+{% endif %}
+{% set home = root ~ (nav.homepage.url if nav.homepage else '') %}
 {% block content %}
   <div class="rpt-404">
     <h1>Page not found</h1>
@@ -23,8 +42,13 @@
       </li>
       <li class="rpt-step--apply">
         <span class="stage stage-apply">Apply</span>
-        <span><a href="{{ (nav.homepage.url if nav.homepage else '.') | url }}">Go to the home page.</a></span>
+        <span><a href="{{ home }}">Go to the home page.</a></span>
       </li>
     </ol>
+    <div class="rpt-404__suggest" hidden aria-live="polite" data-index="{{ root ~ 'search/search_index.json' }}" data-home="{{ home }}"></div>
   </div>
+{% endblock %}
+{% block scripts %}
+  {{ super() }}
+  <script src="{{ root ~ 'assets/javascripts/rpt-404.js' }}" defer></script>
 {% endblock %}

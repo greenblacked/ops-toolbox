@@ -9,9 +9,9 @@
    Each stage owns a colour, so a reader sees what a command does before
    reading it. Everything generic lives in this file; a site only adds its own
    tweaks in a second stylesheet that loads after it. To reuse the theme in
-   another repository, copy this folder, the fonts folder and the two files
-   in overrides/ (see README.md beside this file) and change the brand tokens
-   below.
+   another repository, copy this folder, the fonts folder and the files in
+   overrides/ you want (see README.md beside this file) and change the brand
+   tokens below.
 
    How the file is organised
      1  Fonts                       self-hosted IBM Plex @font-face rules
@@ -31,6 +31,9 @@
     15  Touch targets, motion       small screens and reduced motion
     16  Print
     17  Forced colours
+    18  Page tools                  table filter, task-list checklists, build
+                                    stamp (with their own print and
+                                    forced-colours rules)
 
    Class index (every class the theme defines or styles by name)
      .stage .stage-report .stage-preview .stage-apply
@@ -47,6 +50,17 @@
                                     narrow); used with Material's .grid.cards
      .rpt-404 .rpt-steps .rpt-step--report | --preview | --apply
                                     404 page and its three steps
+     .rpt-404__suggest              404 "did you mean" links (filled by
+                                    rpt-404.js)
+     .rpt-filter .rpt-filter__count
+                                    filter box above a long table and its
+                                    status line (added by rpt-table-filter.js)
+     .rpt-progress .rpt-progress__status .rpt-progress__reset
+                                    checklist progress line and its button
+                                    (added by rpt-checklist.js); task lists
+                                    themselves are restyled without a class
+     .rpt-build .rpt-build__flag    footer build stamp and its preview
+                                    marker (filled by rpt-build-stamp.js)
 
    Tokens are plain custom properties set per scheme, then mapped onto
    Material's own --md-* variables. Material sets its scheme variables on the
@@ -75,6 +89,11 @@
      syntax tokens on code background       4.6-6.8  5.0-5.7
      comment/punctuation on code background 5.8      5.3
      primary button label on its fill       6.0      5.7
+     checklist box at rest (control border)
+       on page / on panel                   3.9/3.5  3.6/3.9
+     checklist box ticked (accent)
+       on page / on panel                   5.7/5.2  5.4/5.7
+     build stamp (muted) on footer          7.4      6.1
 
    Admonition mapping (colour follows meaning, never decoration):
      report                          report blue   (read-only)
@@ -980,6 +999,25 @@ input:focus-visible,
   text-align: center;
 }
 
+/* "Did you mean": up to three page links and a search link, filled by
+   rpt-404.js. Hidden (the attribute) until it has something to show. */
+.rpt-404__suggest {
+  margin: 1.2rem 0 0;
+}
+
+.md-content .md-typeset .rpt-404__suggest h2 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+}
+
+.md-typeset .rpt-404__suggest ul {
+  margin: 0.4rem 0;
+}
+
+.md-typeset .rpt-404__suggest p {
+  margin: 0.4rem 0 0;
+}
+
 /* ---- 15. Touch targets and motion --------------------------------------- */
 
 /* The drawer layout (Material's breakpoint, 76.234375em): links and header
@@ -1080,7 +1118,8 @@ input:focus-visible,
   }
 
   .md-content .md-typeset h1::before,
-  .rpt-rule {
+  .rpt-rule,
+  .rpt-404__suggest {
     display: none;
   }
 
@@ -1178,5 +1217,220 @@ input:focus-visible,
 
   .md-typeset table:not([class]) {
     border: 1px solid CanvasText;
+  }
+}
+
+/* ---- 18. Page tools ----------------------------------------------------- */
+
+/* Controls the theme's page scripts (overrides/assets/javascripts/) insert.
+   Without JavaScript none of them exist, so apart from the task-list boxes,
+   which are restyled whether or not the checklist script runs, nothing here
+   changes a page that has no script. Their print and forced-colours rules
+   live here too, so the section can be copied or dropped as one. */
+
+/* Table filter: a labelled search box and a status line above a long table
+   (rpt-table-filter.js). The input border is the control border (3:1 or more
+   on the page and on a panel) and the status line is muted text (5.7:1 light,
+   7.2:1 dark). The status line stays rendered while empty: a live region
+   that is display: none when its text arrives is not announced by every
+   screen reader. The focus ring is the shared one from section 4. */
+.rpt-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.8rem;
+  margin: 1em 0 0.4em;
+}
+
+.rpt-filter label {
+  color: var(--rpt-text);
+  font-family: var(--rpt-font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.rpt-filter input {
+  flex: 1 1 12rem;
+  max-width: 24rem;
+  min-height: 2rem;
+  padding: 0.25em 0.6em;
+  color: var(--rpt-text);
+  background-color: var(--rpt-surface);
+  border: 1px solid var(--rpt-control-border);
+  border-radius: 0.25rem;
+  font-family: inherit;
+  font-size: 0.75rem;
+}
+
+.md-typeset .rpt-filter__count {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--rpt-muted);
+  font-size: 0.68rem;
+}
+
+@media (pointer: coarse) {
+  .rpt-filter input {
+    min-height: 44px;
+  }
+}
+
+@media print {
+  .rpt-filter {
+    display: none;
+  }
+
+  /* A filtered table still prints in full. */
+  .md-typeset table tr[hidden] {
+    display: table-row;
+  }
+}
+
+@media (forced-colors: active) {
+  .rpt-filter input {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* Checklists: Markdown task lists (pymdownx.tasklist with custom_checkbox).
+   Material draws the box at rest in its lightest foreground colour (the
+   hairline colour here, well under 3:1) and the ticked box in a fixed green
+   that fails on the light scheme, and its real checkbox is transparent with
+   no focus indicator. Here the box at rest is the control border colour and
+   the ticked box the accent (contrast table at the top); the shape changes
+   too (Material's ticked icon), so colour is never the only signal. The box
+   is drawn as a mask, which would clip an outline, so the focus ring is a
+   second, unmasked pseudo-element in the same place. */
+.md-typeset .task-list-indicator::before {
+  background-color: var(--rpt-control-border);
+}
+
+.md-typeset [type="checkbox"]:checked + .task-list-indicator::before {
+  background-color: var(--rpt-accent);
+}
+
+.md-typeset .task-list-indicator::after {
+  content: "";
+  position: absolute;
+  top: 0.15em;
+  width: 1.25em;
+  height: 1.25em;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+[dir="ltr"] .md-typeset .task-list-indicator::after {
+  left: -1.5em;
+}
+
+[dir="rtl"] .md-typeset .task-list-indicator::after {
+  right: -1.5em;
+}
+
+.md-typeset .task-list-control [type="checkbox"]:focus-visible + .task-list-indicator::after {
+  outline: 2px solid var(--rpt-accent);
+  outline-offset: 2px;
+}
+
+/* The step text toggles its box too (rpt-checklist.js). */
+.md-typeset .task-list-item[data-rpt-checklist] {
+  cursor: pointer;
+}
+
+.md-typeset .task-list-item[data-rpt-checklist] :is(a, button, input, label) {
+  cursor: auto;
+}
+
+/* Progress line above the first task list: "Checklist: 3 of 7 steps done"
+   and a Reset button (the theme's .md-button, 44px high). */
+.rpt-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.8rem;
+  margin: 1em 0;
+}
+
+.md-typeset .rpt-progress__status {
+  margin: 0;
+  color: var(--rpt-text);
+  font-family: var(--rpt-font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.md-typeset .rpt-progress .md-button {
+  margin: 0;
+}
+
+.md-typeset .rpt-progress .md-button:disabled {
+  color: var(--rpt-muted);
+  background-color: transparent;
+  border-color: var(--rpt-border);
+  cursor: default;
+}
+
+@media print {
+  /* Boxes print as they are ticked on screen. */
+  .md-typeset .task-list-indicator::before {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .rpt-progress .md-button {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .md-typeset .task-list-indicator::before {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+
+  .md-typeset [type="checkbox"]:checked + .task-list-indicator::before {
+    background-color: Highlight;
+  }
+
+  .md-typeset .task-list-control [type="checkbox"]:focus-visible + .task-list-indicator::after {
+    outline-color: Highlight;
+  }
+}
+
+/* Build stamp in the footer: "Build 6a88b2e", linked to the commit, with a
+   "Preview build" marker on a noindex deploy (rpt-build-stamp.js). Muted
+   text on the footer colour (contrast table at the top). The marker is
+   neutral, outlined rather than coloured: the stage colours mean report,
+   preview and apply, not which deploy this is. */
+.rpt-build {
+  color: var(--rpt-muted);
+  font-family: var(--rpt-font-mono);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.md-footer .rpt-build a,
+.md-footer .rpt-build code {
+  color: inherit;
+  font-family: inherit;
+}
+
+.md-footer .rpt-build code {
+  padding: 0;
+  background: none;
+}
+
+.rpt-build__flag {
+  display: inline-block;
+  padding: 0 0.4em;
+  border: 1px solid currentcolor;
+  border-radius: 0.2rem;
+  color: var(--rpt-text);
+  line-height: 1.4;
+}
+
+@media print {
+  .rpt-build {
+    display: none;
   }
 }

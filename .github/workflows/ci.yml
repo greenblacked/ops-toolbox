@@ -221,7 +221,11 @@ jobs:
           emit powershell    '(\.ps1|\.psm1|\.psd1)$'
           emit markdown      '(\.md$|markdownlint)'
           emit yaml          '(\.ya?ml|\.winget)$'
-          emit python        '(\.py$|^pyproject\.toml$|^test-env/python/)'
+          # The python suite also drives the docs site's Worker and page
+          # scripts under node (test_docs_worker.py, test_docs_site.py) and
+          # reads mkdocs.yml and two docs files, so a change to any of those
+          # alone has to wake it; the docs workflow only builds the site.
+          emit python        '(\.py$|^pyproject\.toml$|^test-env/python/|^worker/|^overrides/|^mkdocs\.yml$|^docs/stylesheets/theme/rpt-theme\.css$|^docs/getting-started/quick-start\.md$)'
           emit workflow      '^\.github/workflows/.*\.ya?ml$'
           emit dockerfile    '(^|/)Dockerfile$'
           emit manifests     '^(k8s-toolbox/(examples|debug)/|linux/cloud-init/).*\.ya?ml$'
@@ -1111,7 +1115,7 @@ jobs:
       - name: Report skip
         if: needs.changes.outputs.python != 'true'
         run: |
-          printf '### `run-tests.sh python`\n\nSkipped — no Python changed.\n' \
+          printf '### `run-tests.sh python`\n\nSkipped — nothing the python suite tests changed.\n' \
             >> "$GITHUB_STEP_SUMMARY"
 
   # Repository-wide convention checks: the --help and unknown-flag contracts,

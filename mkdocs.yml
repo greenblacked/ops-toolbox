@@ -100,7 +100,12 @@ extra:
       name: Ops Toolbox on GitHub
 
 plugins:
-  - search
+  # The separator splits search terms at underscores, slashes, dots (not
+  # inside version numbers), brackets and camelCase as well as at spaces and
+  # hyphens, so disk_cleanup.sh, linux/status.sh, --dry-run and TgBotToken are
+  # found by any part of their name. The query is split the same way.
+  - search:
+      separator: '[\s\-_,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
   - git-revision-date-localized:
       enable_creation_date: true
       fallback_to_build_date: true
@@ -122,6 +127,12 @@ markdown_extensions:
   - pymdownx.inlinehilite
   - pymdownx.tabbed:
       alternate_style: true
+  # Runbook checklists: "- [ ] Step" renders a checkbox that toggles even
+  # without JavaScript; overrides/assets/javascripts/rpt-checklist.js names
+  # each box, saves its state in the browser and adds the progress line.
+  - pymdownx.tasklist:
+      custom_checkbox: true
+      clickable_checkbox: true
   - pymdownx.emoji:
       emoji_index: !!python/name:material.extensions.emoji.twemoji
       emoji_generator: !!python/name:material.extensions.emoji.to_svg
