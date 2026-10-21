@@ -35,6 +35,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_ignore_doctor.py`](#git_ignore_doctorpy)
 - [`git_health_doctor.py`](#git_health_doctorpy)
 - [`git_secrets_doctor.py`](#git_secrets_doctorpy)
+- [`git_hooks_doctor.py`](#git_hooks_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
 
@@ -98,6 +99,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_ignore_doctor.py` | Explain why a path is ignored or is not; with no argument, find tracked files a rule claims. |
 | `git_health_doctor.py` | Stale locks, a gc.log blocking automatic gc, object bloat, maintenance and clone shape; `--fsck` is opt-in. |
 | `git_secrets_doctor.py` | Committed credentials: credential-shaped names, key and token formats in content, and with `--history` files deleted but still in history. |
+| `git_hooks_doctor.py` | Why a hook does not run: `core.hooksPath`, exec bit, CRLF shebang, misnamed hooks, hook managers committed but not activated. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -861,6 +863,50 @@ exit code. `--quiet` and `--json` work as in the other doctors.
 
 ---
 
+## `git_hooks_doctor.py`
+
+Hooks fail silently. `git_hooks_install.sh` installs one guard and reports on
+it; this diagnoses any repository's hook setup.
+
+```bash
+./git/git_hooks_doctor.py
+./git/git_hooks_doctor.py --quiet
+```
+
+- **`core.hooksPath`.** Which directory hooks actually run from, and where
+  the setting came from. One pointing at a directory that does not exist
+  fails: git then runs no hooks at all and says nothing. A global or system
+  `core.hooksPath` that shadows hooks in this repository's own `.git/hooks`
+  is a warning that names them. A relative path is read against the work
+  tree root, as git does.
+- **Each hook.** One without the exec bit fails (git skips it). The first
+  line is checked: a carriage return at its end (a CRLF checkout, where the
+  kernel looks for an interpreter called `sh` plus a carriage return) fails
+  with a repair that keeps a `.bak`, as does an interpreter that is not
+  there, absolute or through `env`; no shebang at all is a warning.
+- **Names.** `pre-commit.sh`, `precommit` or `pre_commit` never run; the
+  doctor says which hook each was probably meant to be. A `.bak`,
+  `.disabled` or `.orig` copy is noted as deliberately disabled.
+- **Hook managers committed but not activated**, which is every fresh clone
+  and every CI runner: `.pre-commit-config.yaml` without the framework
+  installed (and the note that `pre-commit install` refuses while
+  `core.hooksPath` is set), `.husky/` without `core.hooksPath` pointing at
+  it, `.githooks/` with `core.hooksPath` unset, and a lefthook config without
+  `lefthook install`.
+
+Read-only: it reads at most the first line of each hook (and the start of an
+active one, to recognise the manager that wrote it), so a secret inside a hook
+is never printed, and it never chmods, rewrites line endings, edits
+`core.hooksPath` or runs a hook. Locations are asked of git, so linked
+worktrees, submodules and bare repositories work.
+
+**Exit codes:** `0` no fail-level finding, `1` a fail-level finding, `2` not
+inside a Git repository, `3` bad usage, `4` nothing to diagnose (only sample
+hooks, no hook manager, no `core.hooksPath`). `--quiet` and `--json` work as
+in the other doctors.
+
+---
+
 ## Tests
 
 From the **repository root** (so the repo mounts into the container as `/repo`):
@@ -904,5 +950,6 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_ignore_doctor.py --json
 ./git/git_health_doctor.py --lock-age 30
 ./git/git_secrets_doctor.py --history
+./git/git_hooks_doctor.py
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

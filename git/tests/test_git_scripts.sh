@@ -32,6 +32,7 @@ REMOTE_DOCTOR="$G/git_remote_doctor.py"
 IGNORE_DOCTOR="$G/git_ignore_doctor.py"
 HEALTH_DOCTOR="$G/git_health_doctor.py"
 SECRETS_DOCTOR="$G/git_secrets_doctor.py"
+HOOKS_DOCTOR="$G/git_hooks_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -1212,6 +1213,68 @@ out="$(cd "$repo" && "$SSH_DOCTOR" --quiet --require-known-host --ssh-dir "$empt
   --host example.invalid 2>&1)"; rc=$?
 assert_eq "$rc" "1" "ssh doctor --require-known-host keeps the failed verdict"
 assert_eq "$out" "" "ssh doctor --require-known-host --quiet prints nothing"
+
+section "hooks doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "4" "hooks doctor with only sample hooks -> exit 4"
+assert_contains "$out" "no active hooks" "hooks doctor says there is nothing active"
+
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+chmod -x "$repo/.git/hooks/pre-commit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a hook without the exec bit"
+assert_contains "$out" "chmod +x" "hooks doctor prints the chmod"
+if [[ -x "$repo/.git/hooks/pre-commit" ]]; then
+  err "hooks doctor changed the hook's mode"
+else
+  ok "hooks doctor left the hook's mode alone"
+fi
+chmod +x "$repo/.git/hooks/pre-commit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "hooks doctor passes an executable hook with a good shebang"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "0" "hooks doctor --quiet keeps the exit code"
+assert_eq "$out" "" "hooks doctor --quiet prints nothing"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "hooks doctor --json is one object carrying exit $rc"; else err "hooks doctor --json is not a verdict: $out"; fi
+
+# A CRLF checkout turns the interpreter into "sh\r".
+printf '#!/bin/sh\r\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a CRLF shebang"
+assert_contains "$out" "carriage return" "hooks doctor names the carriage return"
+(cd "$repo" && "$HOOKS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "hooks doctor --quiet keeps the failing exit code"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/precommit"
+chmod +x "$repo/.git/hooks/precommit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"
+assert_contains "$out" "did you mean pre-commit" "hooks doctor names the hook a misnamed file was meant to be"
+
+git -C "$repo" config core.hooksPath /nonexistent-hooks
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a core.hooksPath that does not exist"
+assert_contains "$out" "does not exist" "hooks doctor says the hooks directory is missing"
+git -C "$repo" config --unset core.hooksPath
+
+gh_repo="$(new_repo)"
+mkdir -p "$gh_repo/.githooks"
+out="$(cd "$gh_repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "tracked but inactive hooks are a warning, not a failure"
+assert_contains "$out" "git config core.hooksPath .githooks" "hooks doctor prints the activation"
+
+# A global hooksPath shadows every repository's own .git/hooks.
+home="$(new_home)"
+mkdir -p "$home/hooks"
+run_with_home "$home" git config --global core.hooksPath "$home/hooks"
+out="$(cd "$repo" && run_with_home "$home" "$HOOKS_DOCTOR" 2>&1)"
+assert_contains "$out" "never run" "hooks doctor reports local hooks a global hooksPath shadows"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$HOOKS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "hooks doctor outside a repository -> exit 2"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"

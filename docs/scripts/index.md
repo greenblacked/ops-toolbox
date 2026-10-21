@@ -72,6 +72,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_ignore_doctor.py` | Git | Explain why a path is or is not ignored. | <span class="stage stage-report">read-only</span> |
 | `git/git_health_doctor.py` | Git | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
 | `git/git_secrets_doctor.py` | Git | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
+| `git/git_hooks_doctor.py` | Git | Why a hook does not run. | <span class="stage stage-report">read-only</span> |
 | `git/git_aliases.sh` | Git | Bash aliases for the helpers; sourced. | n/a (sourced) |
 | `git/git_aliases.zsh` | Git | zsh aliases for the helpers; sourced. | n/a (sourced) |
 | `mikrotik/core/tg_send.lua` | MikroTik | Telegram text helper used by alerting scripts. | n/a (RouterOS script, no flags) |
