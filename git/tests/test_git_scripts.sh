@@ -1367,6 +1367,15 @@ outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
 (cd "$outside" && "$SUBMODULE_DOCTOR" --quiet); rc=$?
 assert_eq "$rc" "2" "submodule doctor outside a repository -> exit 2"
 
+# A stale mapping whose name holds a space: the printed repair is pasted into
+# a shell, so the section name has to arrive as one quoted word.
+sm_space="$(new_repo)"
+git -C "$sm_space" config -f .gitmodules "submodule.my lib.path" "vendor/gone"
+git -C "$sm_space" config -f .gitmodules "submodule.my lib.url" "https://example.com/lib.git"
+out="$(cd "$sm_space" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "--remove-section 'submodule.my lib'" \
+  "submodule doctor quotes a stale entry's section name with a space"
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"

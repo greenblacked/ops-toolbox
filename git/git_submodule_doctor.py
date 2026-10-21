@@ -274,7 +274,8 @@ def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, reco
             findings.append((
                 "warn", "stale .gitmodules entry for %s (no submodule at %s)"
                         % (name, path),
-                "git config -f .gitmodules --remove-section submodule.%s" % name,
+                "git config -f .gitmodules --remove-section %s"
+                % shlex.quote("submodule." + name),
             ))
 
     for state, sha, path in statuses:
