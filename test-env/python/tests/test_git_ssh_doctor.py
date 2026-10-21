@@ -504,12 +504,14 @@ class AuthStrictnessThroughMainTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertIn("StrictHostKeyChecking=yes", calls[0])
         self.assertNotIn("accept-new", calls[0])
+        self.assertIn("UpdateHostKeys=no", calls[0])
 
     def test_without_require_the_auth_attempt_uses_accept_new(self):
         self._stub("ssh-keygen", "exit 1\n")
         rc, out, calls = self._main([])
         self.assertEqual(len(calls), 1)
         self.assertIn("StrictHostKeyChecking=accept-new", calls[0])
+        self.assertNotIn("UpdateHostKeys", calls[0])
 
     def test_missing_ssh_keygen_with_require_says_unchecked_and_skips_auth(self):
         rc, out, calls = self._main(["--require-known-host"])

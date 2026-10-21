@@ -643,7 +643,8 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   `host key source: KnownHostsCommand (not checked)` and never run, so an
   absent file entry does not fail the requirement. With the requirement set
   every authentication attempt runs with `StrictHostKeyChecking=yes`, never
-  `accept-new`, so a key a `KnownHostsCommand` does not supply cannot be
+  `accept-new` and with `UpdateHostKeys=no`, so neither a key a
+  `KnownHostsCommand` does not supply nor an extra key for a known host is
   written to known_hosts. A
   *changed* host key can only be seen by connecting;
   `git_remote_doctor.py --probe` names that one.

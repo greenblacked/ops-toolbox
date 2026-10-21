@@ -495,10 +495,14 @@ def try_auth(host, user="git", key=None, timeout=20, strict="accept-new"):
     """Attempt a non-interactive auth. Returns (authenticated, detail).
 
     `strict` is the StrictHostKeyChecking value for the attempt: accept-new
-    records an unknown key on success, yes never writes known_hosts.
+    records an unknown key on success. yes does not record one, and also
+    passes UpdateHostKeys=no, since ssh would otherwise add further keys
+    for an already-known host to known_hosts after a successful login.
     """
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o",
            "StrictHostKeyChecking=%s" % strict]
+    if strict == "yes":
+        cmd += ["-o", "UpdateHostKeys=no"]
     if key:
         cmd += ["-o", "IdentitiesOnly=yes", "-i", key]
     cmd += ["-T", "%s@%s" % (user, host)]
@@ -550,8 +554,9 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False):
     # Before any authentication attempt: try_auth connects with
     # StrictHostKeyChecking=accept-new, which records an unknown key on its
     # first success, so checked afterwards this could never fire twice.
-    # With --require-known-host it uses yes instead, so no attempt can ever
-    # write to known_hosts.
+    # With --require-known-host it uses yes plus UpdateHostKeys=no instead,
+    # so the attempt neither records an unknown key nor adds extra keys for
+    # a known host.
     strict = "yes" if require_known_host else "accept-new"
     trusted, found = check_host_key(host, cfg, require_known_host)
     if not trusted:
