@@ -769,6 +769,7 @@ class SchedulerHealthTestCase(unittest.TestCase):
             start_date="jan/01/1970", start_time="11:50:00"), uptime=10 * 86400)
         self.assertEqual(levels_for(findings, "has never fired"), [])
         self.assertEqual(levels_for(findings, "not judged: start time"), ["info"])
+        self.assertTrue(any('"health_check": not judged' in f[1] for f in findings))
         findings = self.judge(self.scheduler(
             "health_check", run_count=0, start_date="jan/02/1970",
             start_time="00:00:00"), uptime=10 * 86400)

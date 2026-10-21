@@ -874,6 +874,7 @@ def build_findings(local, installed, schedulers, env, underscored=None):
         # given, and an entry older than the last boot says nothing about when
         # it was added either: neither start shows the entry's age, so it is
         # not judged. Only a start after boot (now - uptime) is trusted.
+        name = entry.get("name", "?")
         before_boot = start <= now and (uptime is None or start < now - uptime)
         if start <= SCHEDULER_START_UNSET or before_boot:
             findings.append((
@@ -884,7 +885,6 @@ def build_findings(local, installed, schedulers, env, underscored=None):
             continue
         first_due = start if start > now else start + interval
         late = now - first_due
-        name = entry.get("name", "?")
         if late > interval + 60 and uptime is not None and uptime > 2 * interval + 60:
             findings.append((
                 "warn",
