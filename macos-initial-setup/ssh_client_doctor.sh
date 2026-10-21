@@ -233,9 +233,10 @@ key_unencrypted() {
 # from the private key alone. A bare `ssh-keygen -l -f KEY` loads KEY.pub when
 # one exists, so a stale .pub would answer for the key. An unencrypted key
 # gives its public half through -y, which is graded from a scratch file; an
-# encrypted OpenSSH-format key stores its public half in the clear, so a copy
-# of it with no .pub beside it is graded instead. The scratch directory is
-# private (0700), holds no .pub of the real key, and is removed on return.
+# encrypted OpenSSH-format key stores its public half in the clear, so a
+# symlink to it with no .pub beside the link is graded instead (no key bytes
+# are ever duplicated). The scratch directory is private (0700), holds no
+# .pub of the real key, and is removed on return.
 # Prints nothing when neither works.
 key_fingerprint() {
   local key="$1" scratch pubtext fp=""
@@ -247,7 +248,7 @@ key_fingerprint() {
     printf '%s\n' "$pubtext" > "$scratch/derived.pub"
     fp="$(ssh-keygen -l -f "$scratch/derived.pub" </dev/null 2>/dev/null | head -n 1)"
   fi
-  if [[ -z "$fp" ]] && (umask 077; cat -- "$key" > "$scratch/copy") 2>/dev/null; then
+  if [[ -z "$fp" ]] && ln -s -- "$key" "$scratch/copy" 2>/dev/null; then
     fp="$(ssh-keygen -l -P "" -f "$scratch/copy" </dev/null 2>/dev/null | head -n 1)"
   fi
   rm -rf -- "$scratch"
