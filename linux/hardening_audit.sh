@@ -193,6 +193,22 @@ sshd_values() {
   printf '%s' "$out"
 }
 
+# Every effective line of a key that sshd may print more than once
+# (ChannelTimeout), values only, one line each. Same order of preference as
+# sshd_values.
+sshd_all() {
+  local key="$1" out=""
+  if command -v sshd >/dev/null 2>&1; then
+    out="$(sshd -T 2>/dev/null | awk -v k="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" \
+      'tolower($1) == k { $1 = ""; sub(/^[ \t]+/, ""); print }')"
+  fi
+  if [[ -z "$out" && -r "$ETC_SSH/sshd_config" ]]; then
+    out="$(grep -ivE '^\s*#' "$ETC_SSH/sshd_config" 2>/dev/null \
+      | awk -v k="$key" 'tolower($1) == tolower(k) { $1 = ""; sub(/^[ \t]+/, ""); print }')"
+  fi
+  printf '%s' "$out"
+}
+
 # An sshd time value in seconds: 120, 2m, 1m30s. sshd -T prints plain seconds;
 # sshd_config may use any of s, m, h, d, w. Returns 1 for anything else.
 sshd_seconds() {
@@ -294,17 +310,33 @@ if want ssh; then
       warn "LoginGraceTime=$v (${secs}s)" "set 'LoginGraceTime 30' in /etc/ssh/sshd_config, $reload"
     fi
 
+    # ClientAliveInterval x ClientAliveCountMax drops a client that stops
+    # answering probes (a dead link, a crashed laptop). A user who is merely
+    # idle still answers them, so this is connection liveness, not an idle
+    # limit; ChannelTimeout below is the idle bound.
     v="$(sshd_values ClientAliveInterval)"
     c="$(sshd_value ClientAliveCountMax)"
     [[ -n "$c" ]] || c=3
     if [[ -z "$v" ]] || ! secs="$(sshd_seconds "$v")" || (( secs == 0 )); then
-      warn "ClientAliveInterval ${v:-not set}: idle timeout not enforced, sessions never expire" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+      warn "ClientAliveInterval ${v:-not set}: connection liveness not enforced, dead clients keep their session" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
     elif ! [[ "$c" =~ ^[0-9]{1,9}$ ]] || (( 10#$c == 0 )); then
-      warn "ClientAliveCountMax=$c: idle sessions are probed but never dropped" "set 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+      warn "ClientAliveCountMax=$c: unresponsive clients are probed but never dropped" "set 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
     elif (( secs * 10#$c <= 900 )); then
-      pass "ClientAliveInterval=$v, ClientAliveCountMax=$c: idle sessions drop after $((secs * 10#$c))s"
+      pass "ClientAliveInterval=$v, ClientAliveCountMax=$c: unresponsive clients drop after $((secs * 10#$c))s (liveness, not an idle limit)"
     else
-      warn "ClientAliveInterval=$v (${secs}s) x ClientAliveCountMax=$c: idle sessions live $((secs * 10#$c))s, over the 900s bound" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+      warn "ClientAliveInterval=$v (${secs}s) x ClientAliveCountMax=$c: unresponsive clients live $((secs * 10#$c))s, over the 900s bound" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+    fi
+
+    # An idle user answers the keepalives above, so only ChannelTimeout
+    # (OpenSSH 9.2+) closes an idle session. Every ChannelTimeout line is
+    # read: sshd -T may print one per channel type.
+    v="$(sshd_all ChannelTimeout)"
+    if [[ -z "${v//[[:space:]]/}" ]] || [[ "$(lower "$v")" == "none" ]]; then
+      info "ChannelTimeout not set: an idle but responsive session is never closed (OpenSSH 9.2+ only; add 'ChannelTimeout session=30m' in /etc/ssh/sshd_config, $reload)"
+    elif [[ "$(lower "$v")" =~ (^|[[:space:]])(session|\*)[^[:space:]=]*= ]]; then
+      pass "ChannelTimeout bounds idle sessions: $(printf '%s' "$v" | tr '\n' ' ')"
+    else
+      info "ChannelTimeout is set but has no session entry: idle login sessions are not bounded (add 'ChannelTimeout session=30m', $reload)"
     fi
 
     # ~/.ssh/environment can set LD_PRELOAD for the login shell, which turns a

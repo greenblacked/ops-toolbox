@@ -904,8 +904,12 @@ The `ssh` group grades the settings an sshd audit asks about beyond root
 login and passwords: `MaxAuthTries` (above 4 warns), `X11Forwarding`,
 `AllowAgentForwarding` and `AllowTcpForwarding` (warn when on, which is
 intentional on a bastion), `LoginGraceTime` (`0` fails, above 60 seconds
-warns), `ClientAliveInterval` times `ClientAliveCountMax` (count 3 when unset; a
-window over 900 seconds, an interval of `0` or a count of `0` warns), `PermitUserEnvironment yes`, `HostbasedAuthentication yes` and
+warns), `ClientAliveInterval` times `ClientAliveCountMax` as a connection-liveness
+check (count 3 when unset; it drops a client that stops answering probes, not
+an idle user; a window over 900 seconds, an interval of `0` or a count of `0`
+warns), `ChannelTimeout` for the idle bound (OpenSSH 9.2+; an `info` line when
+none is set or none covers `session`, a pass for e.g. `ChannelTimeout
+session=30m`), `PermitUserEnvironment yes`, `HostbasedAuthentication yes` and
 `IgnoreRhosts no` (each a FAIL), `PubkeyAuthentication no` and a
 `PermitTunnel` other than `no` (warn). A setting that is not set is graded by
 the OpenSSH default, and none of the FAIL-level ones is at its default on
