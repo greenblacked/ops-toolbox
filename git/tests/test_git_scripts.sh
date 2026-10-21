@@ -1573,6 +1573,14 @@ out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
 assert_contains "$out" "held (diverged, +1/-2): $clone_up" "a diverged branch is held, not merged"
 assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a diverged checkout keeps its HEAD"
 
+cp "$clone_up/.git/index" "$clone_dest/index.bak" || err "save the index before corrupting it"
+printf 'not an index\n' >"$clone_up/.git/index" || err "corrupt the index"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a checkout with an unreadable index is held, not failed"
+assert_contains "$out" "held (cannot read git status): $clone_up" "a failing git status holds the checkout"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "an unreadable-index checkout keeps its HEAD"
+cp "$clone_dest/index.bak" "$clone_up/.git/index" || err "restore the index"
+
 git -C "$clone_nested" remote set-url origin "$clone_dest/does-not-exist.git"
 out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
 assert_eq "$rc" "1" "a failed fetch fails the run"

@@ -206,7 +206,7 @@ repo_name_from_url() {
 # through run(). Every refusal is a visible "held" line, never a repair: a
 # checkout with local work is the user's to reconcile, not this script's.
 update_checkout() {
-  local dest="$1" counts ahead behind
+  local dest="$1" counts ahead behind status_out
   if [[ -z "$(git -C "$dest" branch --show-current 2>/dev/null || true)" ]]; then
     warn "held (detached HEAD): $dest"
     held=$((held + 1))
@@ -220,7 +220,14 @@ update_checkout() {
   # Untracked files do not block: a fast-forward that would overwrite one
   # fails on its own and is reported below. --no-optional-locks keeps status
   # from refreshing the index on disk, so a dry run writes nothing here.
-  if [[ -n "$(git --no-optional-locks -C "$dest" status --porcelain=v1 --untracked-files=no 2>/dev/null || true)" ]]; then
+  # The output is captured with its exit code: a failing status (corrupt or
+  # unreadable index) must not read as a clean tree and let a merge run.
+  if ! status_out="$(git --no-optional-locks -C "$dest" status --porcelain=v1 --untracked-files=no 2>/dev/null)"; then
+    warn "held (cannot read git status): $dest"
+    held=$((held + 1))
+    return 0
+  fi
+  if [[ -n "$status_out" ]]; then
     warn "held (uncommitted changes): $dest"
     held=$((held + 1))
     return 0
