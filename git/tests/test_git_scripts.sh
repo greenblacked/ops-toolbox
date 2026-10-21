@@ -1241,6 +1241,16 @@ if [[ -x "$repo/.git/hooks/pre-commit" ]]; then
 else
   ok "hooks doctor left the hook's mode alone"
 fi
+# A hooks directory with a space: the printed chmod must be shell-quoted.
+mkdir -p "$repo/my hooks"
+printf '#!/bin/sh\nexit 0\n' >"$repo/my hooks/pre-commit"
+chmod -x "$repo/my hooks/pre-commit"
+git -C "$repo" config core.hooksPath "$repo/my hooks"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a spaced hooks path without the exec bit"
+assert_contains "$out" "chmod +x '$repo/my hooks/pre-commit'" "hooks doctor shell-quotes the chmod path"
+git -C "$repo" config --unset core.hooksPath
+rm -rf "$repo/my hooks"
 chmod +x "$repo/.git/hooks/pre-commit"
 out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "hooks doctor passes an executable hook with a good shebang"
