@@ -432,7 +432,7 @@ log_candidates() {
     \( -type f \
        ! -name 'wtmp*' ! -name 'btmp*' ! -name 'lastlog*' ! -name 'faillog*' ! -name 'utmp*' \
        \( -name '*.gz' -o -name '*.xz' -o -name '*.bz2' -o -name '*.zst' \
-          -o -name '*.[0-9]' -o -name '*.old' \
+          -o -name '*.[0-9]' -o -name '*.[0-9][0-9]' -o -name '*.old' \
           -o -name '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' -o -name '*.log-[0-9]*' \) \
        -print0 \) 2>/dev/null
 }

@@ -553,7 +553,7 @@ deleted files outside the directory `--home` named.
 `--include-logs` removes rotated logs older than `--days` under `/var/log`, the
 usual space hog on a server that is not journald-only. A file qualifies only when
 its name proves it was rotated: `*.gz`, `*.xz`, `*.bz2`, `*.zst`, a numeric
-suffix (`*.1`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
+suffix (`*.1` to `*.99`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
 `*.log-<digits>`. An active `*.log`, `syslog` or `messages` never matches, and
 neither do numbered active logs such as `Xorg.0.log`. Login records (`wtmp`,
 `btmp`, `lastlog`, `faillog`, `utmp` and their rotations) are never touched,

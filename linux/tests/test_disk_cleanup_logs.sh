@@ -66,7 +66,7 @@ logs="$fixture/log"
 build_logs() {
   rm -rf "$logs"
   mkdir -p "$logs/journal" "$logs/nginx"
-  for name in app.log app.log.1 app.log.2.gz syslog-20200101 wtmp wtmp.1 Xorg.0.log \
+  for name in app.log app.log.1 app.log.12 app.log.2.gz syslog-20200101 wtmp wtmp.1 Xorg.0.log \
               nginx/access.log.4.gz journal/x.journal journal/old.log.1; do
     printf 'log bytes for %s\n' "$name" > "$logs/$name"
     touch -d '10 days ago' "$logs/$name"
@@ -84,6 +84,7 @@ run_clean --dry-run --include-logs --log-dir "$logs" --days 1
 assert_eq 'logs dry run exits 0' 0 "$rc"
 assert_contains 'the logs step runs' "$out" '== logs =='
 assert_contains 'a numbered rotation is named' "$out" '/app.log.1 ('
+assert_contains 'a two-digit numbered rotation is named' "$out" '/app.log.12 ('
 assert_contains 'a compressed rotation is named' "$out" '/app.log.2.gz ('
 assert_contains 'a dateext rotation is named' "$out" '/syslog-20200101 ('
 assert_contains 'a nested rotation is named' "$out" '/nginx/access.log.4.gz ('
@@ -93,13 +94,13 @@ assert_not_contains 'a fresh rotation is age-filtered' "$out" 'app.log.3.gz'
 assert_not_contains 'wtmp is never named' "$out" '/wtmp ('
 assert_not_contains 'a rotated wtmp is never named' "$out" '/wtmp.1 ('
 assert_not_contains 'the journal directory is pruned' "$out" '/journal/'
-assert_contains 'the dry run counts what it found' "$out" '4 file(s) in'
+assert_contains 'the dry run counts what it found' "$out" '5 file(s) in'
 assert_contains 'the dry run closes with the summary' "$out" 'dry-run complete; no changes written'
 assert_eq 'the dry run changed nothing' "$before" "$(snapshot)"
 
 run_clean --yes --include-logs --log-dir "$logs" --days 1
 assert_eq 'logs --yes exits 0' 0 "$rc"
-for name in app.log.1 app.log.2.gz syslog-20200101 nginx/access.log.4.gz; do
+for name in app.log.1 app.log.12 app.log.2.gz syslog-20200101 nginx/access.log.4.gz; do
   assert_eq "--yes removes old rotated $name" gone "$(present "$logs/$name")"
 done
 for name in app.log app.log.3.gz wtmp wtmp.1 Xorg.0.log journal/x.journal journal/old.log.1; do
