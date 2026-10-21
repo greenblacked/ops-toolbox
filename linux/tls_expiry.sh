@@ -79,8 +79,9 @@ Options:
   --deep           Also check the name, the chain (hosts), self-signed issuers,
                    key size and signature algorithm
   --cafile FILE    Trust anchors for the chain check of --host targets (a
-                   private CA's root); replaces the system store for the
-                   handshake, the intermediate probe also uses the system one
+                   private CA's root); the system store and directory are
+                   dropped (-no-CApath, -no-CAstore) when this openssl
+                   supports them, else system trust may still apply
   --min-key-bits N    Smallest RSA/DSA key --deep accepts, 1024-16384 (default: $MIN_KEY_BITS)
   --fail-on LEVEL  Exit 1 on 'expired' (default), on 'warn' and above, or 'never'
   --quiet          Print only warnings and failures
@@ -249,6 +250,37 @@ fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
+# --cafile means "trust this and nothing else". openssl can be told to ignore
+# its default directory and store with -no-CApath and -no-CAstore (the latter
+# is OpenSSL 3.0+), but only newer builds know them, so each command's help is
+# probed once for what it lists (a here-string, so no pipe to a closing grep).
+# CA_SC and CA_VF hold the flags to add to s_client and verify;
+# CA_EXCLUSIVE=0 means system trust sources may still apply, and the run says
+# so.
+CA_SC=()
+CA_VF=()
+CA_EXCLUSIVE=1
+if [[ -n "$CAFILE" ]]; then
+  ca_help_sc="$(openssl s_client -help 2>&1 || true)"
+  ca_help_vf="$(openssl verify -help 2>&1 || true)"
+  ca_version="$(openssl version 2>&1 || true)"
+  for ca_flag in -no-CApath -no-CAstore; do
+    [[ "$ca_help_sc" == *"$ca_flag"* ]] && CA_SC+=("$ca_flag")
+    [[ "$ca_help_vf" == *"$ca_flag"* ]] && CA_VF+=("$ca_flag")
+  done
+  # A build with no -no-CApath cannot be told to drop its directory. One
+  # without -no-CAstore is fine only when it predates stores (before 3.0).
+  case " ${CA_SC[*]:-} " in *" -no-CApath "*) ;; *) CA_EXCLUSIVE=0 ;; esac
+  case " ${CA_VF[*]:-} " in *" -no-CApath "*) ;; *) CA_EXCLUSIVE=0 ;; esac
+  case "$ca_version" in
+    "OpenSSL 0."*|"OpenSSL 1."*|LibreSSL*) ;;
+    *)
+      case " ${CA_SC[*]:-} " in *" -no-CAstore "*) ;; *) CA_EXCLUSIVE=0 ;; esac
+      case " ${CA_VF[*]:-} " in *" -no-CAstore "*) ;; *) CA_EXCLUSIVE=0 ;; esac
+      ;;
+  esac
+fi
+
 # Remaining whole days until notAfter. Negative means already expired.
 # GNU date is assumed: this package already targets Debian, Fedora and Arch.
 days_left_from_enddate() {
@@ -329,7 +361,7 @@ fetch_host() {
   local target="${host}:${port}"
   local out
   local args=(s_client -connect "$target" -servername "$host" -showcerts)
-  [[ -n "$CAFILE" ]] && args+=(-CAfile "$CAFILE")
+  [[ -n "$CAFILE" ]] && args+=(-CAfile "$CAFILE" ${CA_SC[@]+"${CA_SC[@]}"})
   if have timeout; then
     out="$(printf '\n' | timeout 10 openssl "${args[@]}" 2>/dev/null)"
   else
@@ -387,7 +419,7 @@ chain_lacks_intermediate() {
     return 1
   fi
   if [[ -n "$CAFILE" ]]; then
-    vout="$(printf '%s\n' "$pem" | openssl verify -CAfile "$CAFILE" 2>&1 || true)"
+    vout="$(printf '%s\n' "$pem" | openssl verify -CAfile "$CAFILE" ${CA_VF[@]+"${CA_VF[@]}"} 2>&1 || true)"
   else
     vout="$(printf '%s\n' "$pem" | openssl verify 2>&1 || true)"
   fi
@@ -504,6 +536,9 @@ fi
 
 if (( ${#HOSTS[@]} > 0 )); then
   group "hosts"
+  if [[ -n "$CAFILE" ]] && (( ! CA_EXCLUSIVE )); then
+    info "--cafile: this openssl cannot ignore its default trust sources, so system trust sources may still apply"
+  fi
   for spec in "${HOSTS[@]}"; do
     HOST_NAME=""
     HOST_PORT=""

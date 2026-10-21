@@ -2110,6 +2110,60 @@ STUB
     assert_eq "tls_expiry --deep with an untrusted private root exits 0" "0" "$rc"
     PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --fail-on warn >/dev/null 2>&1; rc=$?
     assert_eq "tls_expiry --deep --fail-on warn exits 1 for it" "1" "$rc"
+
+    # --cafile means the private root replaces system trust. A recording stub
+    # lists the -no-CApath/-no-CAstore options in its help (or not), so what
+    # reaches s_client and verify, and what the output admits, is asserted.
+    cat > "$chain_dir/bin/openssl" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$chain_dir/argv.log"
+case "\${1:-} \${2:-}" in
+  "s_client -help"|"verify -help") cat "$chain_dir/help"; exit 1 ;;
+esac
+[[ "\${1:-}" == version ]] && { cat "$chain_dir/version"; exit 0; }
+if [[ "\${1:-}" == s_client ]]; then
+  cat "$chain_dir/handshake"
+  exit 0
+fi
+exec "$chain_real" "\$@"
+STUB
+    chmod +x "$chain_dir/bin/openssl"
+    { cat "$chain_dir/leaf.pem" "$chain_dir/int.pem"; printf 'Verify return code: 20 (unable to get local issuer certificate)\n'; } > "$chain_dir/handshake"
+
+    printf 'OpenSSL 3.0.13 30 Jan 2024\n' > "$chain_dir/version"
+    printf 'usage: -CAfile -no-CApath -no-CAstore -no-CAfile\n' > "$chain_dir/help"
+    : > "$chain_dir/argv.log"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_contains "tls_expiry --cafile drops system dirs for s_client" \
+      "$(grep '^s_client' "$chain_dir/argv.log")" "-CAfile $chain_dir/root.pem -no-CApath -no-CAstore"
+    assert_not_contains "tls_expiry --cafile says nothing of system trust when it can drop it" "$out" "system trust sources may still apply"
+
+    printf 'OpenSSL 3.0.13 30 Jan 2024\n' > "$chain_dir/version"
+    printf 'usage: -CAfile -no-CApath\n' > "$chain_dir/help"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_contains "tls_expiry --cafile admits system trust may apply on 3.x without -no-CAstore" \
+      "$out" "system trust sources may still apply"
+
+    printf 'OpenSSL 1.1.1w  11 Sep 2023\n' > "$chain_dir/version"
+    printf 'usage: -CAfile -no-CApath\n' > "$chain_dir/help"
+    : > "$chain_dir/argv.log"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_not_contains "tls_expiry --cafile needs no -no-CAstore on a build without stores" "$out" "system trust sources may still apply"
+    assert_not_contains "tls_expiry --cafile does not pass an option the build lacks" \
+      "$(grep '^s_client' "$chain_dir/argv.log")" "-no-CAstore"
+
+    printf 'OpenSSL 1.0.2k-fips  26 Jan 2017\n' > "$chain_dir/version"
+    printf 'usage: -CAfile\n' > "$chain_dir/help"
+    : > "$chain_dir/argv.log"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_contains "tls_expiry --cafile admits system trust may apply without -no-CApath" "$out" "system trust sources may still apply"
+    assert_not_contains "tls_expiry --cafile passes no unsupported option" \
+      "$(grep '^s_client' "$chain_dir/argv.log")" "-no-CApath"
+
+    # Without --cafile nothing is probed or added.
+    : > "$chain_dir/argv.log"
+    PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep >/dev/null 2>&1
+    assert_not_contains "tls_expiry without --cafile adds no trust options" "$(cat "$chain_dir/argv.log")" "-no-CA"
   else
     ok "tls_expiry chain checks skipped (this openssl cannot build the fixture chain)"
   fi

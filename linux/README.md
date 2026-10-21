@@ -686,10 +686,11 @@ server sent no CA certificate at all and the issuer of the last certificate it
 sent is not in the trust store. Otherwise, for example when the intermediate
 was sent and the private root is simply not on this machine, it warns "issuer
 not trusted locally: private CA or missing intermediate"; `--cafile FILE`
-supplies that root (for the `--host` handshake it replaces the system
-store, since `openssl s_client -CAfile` loads no default store; the
-missing-intermediate probe, `openssl verify -CAfile`, also consults the
-system store). The checks also cover a self-signed issuer on a
+supplies that root and replaces system trust: both the handshake
+(`openssl s_client`) and the missing-intermediate probe (`openssl verify`)
+are given `-no-CApath` and `-no-CAstore` when the local openssl lists them
+(`-no-CAstore` is OpenSSL 3.0+). When this openssl cannot drop its default
+trust sources, the output says system trust sources may still apply. The checks also cover a self-signed issuer on a
 `--file` target, the key size against `--min-key-bits` (2048), the EC curve,
 and MD5 or SHA-1 signatures.
 The chain comes from the same single handshake the expiry check makes.
