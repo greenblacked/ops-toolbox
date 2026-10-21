@@ -294,7 +294,7 @@ before re-imaging a laptop, after a context switch, or as a morning catch-up.
 | `--only STATE` | Keep only rows that are `dirty`, `ahead`, `behind`, have `unpushed` commits, or have a `stash`. The summary and `--strict` describe the filtered set. |
 | `--fetch` | Run `git fetch --quiet` in each checkout that has a remote first, with terminal prompts off. It writes remote-tracking refs and nothing else; a failed fetch is noted as `fetch-failed` and the sweep goes on. |
 | `--dry-run` | Print the fetch each checkout with a remote would get, report from the refs already on disk, and close with `dry-run complete; no changes written`. With `--porcelain` those lines go to stderr, so stdout carries only the rows. |
-| `--strict` | Exit `1` when any reported checkout has work at risk. |
+| `--strict` | Exit `1` when any reported checkout has work at risk. A checkout whose `git status` fails (for example a corrupt index) is noted `status-failed` and counts as at risk. |
 | `--porcelain` | Tab-separated rows, no header or colour: `path branch upstream ahead behind changed stash unpushed notes`. `path` is the checkout as found under `--dir`; an absent upstream is an empty field. |
 
 The table columns are `REPO` (relative to the `--dir` it was found under),
@@ -370,7 +370,8 @@ Read-only. It never fetches, so remote-tracking refs are as fresh as the last
 fetch; `--tags` is the only network call, and `ls-remote` writes nothing.
 
 Exit codes: `0` success, whether or not anything was found; `1` `--strict`
-found something, or `--tags` could not reach the remote; `2` not a Git
+found something or `git status` failed (reported on stderr), or `--tags`
+could not reach the remote; `2` not a Git
 repository; `3` usage; `4` no commits yet, or `--remote` names no remote.
 
 ---
