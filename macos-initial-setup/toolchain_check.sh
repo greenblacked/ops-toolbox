@@ -167,14 +167,33 @@ plain_version() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; }
 # Is the version a prerelease (rc, beta, alpha, pre)?
 is_prerelease() {
   local v
-  v="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   [[ "$v" =~ [0-9.+-](rc|beta|alpha|pre) ]]
+}
+
+# Prerelease rank and number of a version as "RANK NUMBER" (alpha < beta <
+# pre < rc), so rc1 sorts below rc2; "0 0" when it is not a prerelease.
+prerelease_key() {
+  local v rank
+  v="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$v" =~ [0-9.+-](rc|beta|alpha|pre)[.-]?([0-9]*) ]]; then
+    case "${BASH_REMATCH[1]}" in
+      alpha) rank=1 ;;
+      beta)  rank=2 ;;
+      pre)   rank=3 ;;
+      *)     rank=4 ;;
+    esac
+    printf '%s %s\n' "$rank" "$((10#${BASH_REMATCH[2]:-0}))"
+  else
+    printf '0 0\n'
+  fi
 }
 
 # ver_ge A B: is the dotted version A at least B? Compared numerically per
 # component, so 1.10 is newer than 1.9; a missing component counts as 0. A
 # prerelease (rc, beta, alpha, pre) is older than the same release, so 1.22rc1
-# does not meet a 1.22.0 minimum; any other suffix is ignored.
+# does not meet a 1.22.0 minimum, and rc1 is older than rc2; any other suffix
+# is ignored.
 ver_ge() {
   local i x y
   local IFS=.
@@ -188,7 +207,16 @@ ver_ge() {
     if (( 10#$x > 10#$y )); then return 0; fi
     if (( 10#$x < 10#$y )); then return 1; fi
   done
-  if is_prerelease "$1" && ! is_prerelease "$2"; then return 1; fi
+  if is_prerelease "$1" || is_prerelease "$2"; then
+    local ka kb ra na rb nb
+    ka="$(prerelease_key "$1")"; kb="$(prerelease_key "$2")"
+    ra="${ka% *}"; na="${ka#* }"; rb="${kb% *}"; nb="${kb#* }"
+    # A release (rank 0) outranks every prerelease of it.
+    (( ra == 0 )) && ra=9
+    (( rb == 0 )) && rb=9
+    if (( ra < rb )); then return 1; fi
+    if (( ra == rb && na < nb )); then return 1; fi
+  fi
   return 0
 }
 

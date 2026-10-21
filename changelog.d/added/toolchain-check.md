@@ -7,4 +7,5 @@
   file, and exits 1 on a missing version and 4 when there is no pin, so it
   works as a pre-commit or Makefile guard.
   A prerelease (`rc`, `beta`, `alpha`, `pre`) counts as older than the same
-  release, so Go `1.22rc1` does not meet a `1.22` minimum.
+  release, and `rc1` is older than `rc2`, so Go `1.22rc1` does not meet a
+  `1.22` or `1.22rc2` minimum.

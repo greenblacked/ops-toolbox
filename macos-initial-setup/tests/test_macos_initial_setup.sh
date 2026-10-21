@@ -2829,6 +2829,11 @@ assert_eq "1.22.0 meets a 1.22.0 minimum -> 0" "0" "$rc"
 printf 'module example.test/x\n\ngo 1.21\n' > "$d/go.mod"
 FAKE_GOENV_VERSIONS="1.22rc1" FAKE_GO_ACTIVE=1.22rc1 tcrun "$d" >/dev/null; rc=$?
 assert_eq "1.22rc1 meets a 1.21 minimum -> 0" "0" "$rc"
+printf 'module example.test/x\n\ngo 1.22rc2\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.22rc1" FAKE_GO_ACTIVE=1.22rc1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc1 does not meet a 1.22rc2 minimum (rc1 is older) -> 1" "1" "$rc"
+FAKE_GOENV_VERSIONS="1.22rc2" FAKE_GO_ACTIVE=1.22rc2 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc2 meets a 1.22rc2 minimum -> 0" "0" "$rc"
 
 d="$(pindir tool-versions)"
 printf '# toolchain for this repo\npython 3.12.5 3.10.4  # two interpreters\nterraform 1.7.0\n' \
