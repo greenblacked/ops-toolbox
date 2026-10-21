@@ -21,9 +21,9 @@ a LaunchAgent that schedules the maintenance run.
 
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `status.sh` | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | <span class="stage stage-report">read-only</span> |
+| `status.sh` | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP; `--json` for a parser. | <span class="stage stage-report">read-only</span> |
 | `workstation_doctor.sh` | Long read-only health report. | <span class="stage stage-report">read-only</span> |
-| `hardening_audit.sh` | Security audit with the fix for each finding, including credential files at rest (`--only secrets`). | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding, including credential files at rest (`--only secrets`); `--json` for MDM and CI. | <span class="stage stage-report">read-only</span> |
 | `ops_context.sh` | Which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login this shell is pointed at; `--warn-on prod` exits 1 on a match. | <span class="stage stage-report">read-only</span> |
 | `net_doctor.sh` | Interfaces, default route, split DNS, system proxy against the shell, VPN tunnels, `/etc/hosts` overrides, listeners; opt-in `--probe`. | <span class="stage stage-report">read-only</span> |
 | `tls_expiry.sh` | Certificate expiry for PEM files, hosts and (`--keychain`) Keychain client certificates; exit 1 inside `--days`. | <span class="stage stage-report">read-only</span> |

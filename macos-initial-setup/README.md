@@ -1290,10 +1290,18 @@ the glance before you start.
 ./status.sh                       # every section
 ./status.sh --only disk,brew      # just those two
 ./status.sh --list-sections       # what can be asked for
+./status.sh --json                # the same verdicts, for a parser
 ./status.sh --help
 ```
 
 Sections: `os`, `disk`, `brew`, `git`, `agent`, `security`.
+
+| Flag | Purpose |
+| --- | --- |
+| `--only LIST` | Only the named sections (see `--list-sections`). |
+| `--json` | Print one JSON object instead of the report; the exit code is unchanged. |
+| `--list-sections` | Print the section ids and exit. |
+| `-h`, `--help` | Show the built-in help. |
 
 `--help` and `--list-sections` answer before any preflight, so they work off
 macOS. A warning exits 1 and names the script to run next, which is what makes
@@ -1432,6 +1440,7 @@ from `${NPM_TOKEN}`, holds no secret, so its mode is not graded.
 | `--only GROUPS` | Comma-separated subset (see `--list-groups`). |
 | `--fail-on LEVEL` | Exit `1` on `fail` (default) or on `warn` and above. |
 | `--quiet` | Print only warnings and failures. |
+| `--json` | Print one JSON object instead of the report; the exit code is unchanged. |
 | `--list-groups` | Print the group names and exit. |
 | `-h`, `--help` | Show the built-in help. |
 
@@ -1448,6 +1457,34 @@ print.
 | `1` | One or more findings at or above `--fail-on`. |
 | `2` | Preflight failed — not macOS. |
 | `3` | Invalid arguments. |
+
+### Machine-readable output
+
+`status.sh --json` and `hardening_audit.sh --json` print the verdicts the
+report would have printed as one JSON object on stdout, followed by a newline
+and nothing else: no colour, no headings, no hints. That is what an MDM
+extension attribute (Jamf, Kandji, Intune), a `node_exporter` textfile
+collector, a cron mailer or a CI gate can consume without scraping. Neither
+script needs `jq` or `python`; strings are escaped with `sed` and `tr`, so a
+probe answer containing quotes or control characters still produces valid
+JSON. Errors still go to stderr, and the exit code keeps its meaning: read
+`$?` as well as the document.
+
+```text
+{"schema":1,"script":"status.sh","host":"mbp","generated":"2026-10-21T09:15:02Z","ok":false,
+ "sections":[{"id":"disk","verdict":"warn","message":"14G free on / — under 20G"}]}
+
+{"schema":1,"script":"hardening_audit.sh","host":"mbp","generated":"2026-10-21T09:15:04Z",
+ "fail_on":"fail","summary":{"pass":11,"warn":2,"fail":1,"skip":1},"needs_root_hint":true,
+ "findings":[{"group":"lock","verdict":"fail","check":"screen lock password requirement is off",
+ "fix":"System Settings > Lock Screen > Require password after screen saver begins or display is turned off"}]}
+```
+
+`schema` is bumped only when a field changes meaning or disappears. A status
+`verdict` is `ok`, `warn` or `info`; an audit `verdict` is `pass`, `warn`,
+`fail` or `skip`, and `fix` is `null` for a pass. With `--quiet`, pass and
+skip records are left out of `findings` while `summary` still counts every
+check. `--list-sections` and `--list-groups` stay plain text.
 
 ---
 

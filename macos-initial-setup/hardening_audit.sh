@@ -21,6 +21,19 @@
 # secret is stored as plain text where a Keychain-backed alternative exists.
 # It names the file and the class of finding, never a value.
 #
+# --json prints the same findings as one JSON object on stdout and nothing
+# else, for an MDM extension attribute, a fleet check or a CI gate. The exit
+# code is unchanged and part of the contract: read $? as well as the
+# document. The schema is versioned ("schema": 1):
+#
+#   {"schema":1,"script":"hardening_audit.sh","host":"...","generated":"...Z",
+#    "fail_on":"fail|warn","summary":{"pass":N,"warn":N,"fail":N,"skip":N},
+#    "needs_root_hint":true|false,"findings":[{"group":"lock",
+#    "verdict":"pass|warn|fail|skip","check":"...","fix":"..."|null}]}
+#
+# --quiet drops pass and skip records from findings; the summary still counts
+# every check.
+#
 # Exit codes:
 #   0   no findings at or above the failure threshold
 #   1   one or more findings at or above the threshold
@@ -32,6 +45,9 @@ set -o pipefail
 ONLY=""
 FAIL_ON="fail"
 QUIET=0
+JSON=0
+FINDINGS=""
+CUR_GROUP=""
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -47,12 +63,34 @@ WARN_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
 
+# A JSON string. Backslash and double quote are escaped, newline, tab and CR
+# become spaces, and every other control character (ESC included) is dropped,
+# so whatever a probe printed, the document stays valid. sed and tr only:
+# jq and python are not on a stock Mac.
+json_str() {
+  printf '"%s"' "$(printf '%s' "$1" | tr '\n\t\r' '   ' | tr -d '\000-\037\177' \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')"
+}
+
+# Under --json every finding becomes a record instead of a line. --quiet keeps
+# its meaning: pass and skip records are left out, the counters are not.
+record() {
+  (( JSON )) || return 0
+  local verdict="$1" check="$2" fix="${3:-}" fix_json="null"
+  if (( QUIET )) && [[ "$verdict" == "pass" || "$verdict" == "skip" ]]; then
+    return 0
+  fi
+  [[ -n "$fix" ]] && fix_json="$(json_str "$fix")"
+  FINDINGS="$FINDINGS${FINDINGS:+,}{\"group\":$(json_str "$CUR_GROUP"),\"verdict\":\"$verdict\",\"check\":$(json_str "$check"),\"fix\":$fix_json}"
+  return 0
+}
+
 # A finding is one line: verdict, what was checked, and — when it is not a
 # pass — what to do about it. The fix is printed rather than run.
-pass() { PASS_COUNT=$((PASS_COUNT + 1)); (( QUIET )) || printf "  %s[pass]%s %s\n" "$C_GREEN" "$C_RESET" "$1"; }
-warn() { WARN_COUNT=$((WARN_COUNT + 1)); printf "  %s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$1"; [[ -n "${2:-}" ]] && printf "         %s%s%s\n" "$C_DIM" "$2" "$C_RESET"; }
-fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); printf "  %s[FAIL]%s %s\n" "$C_RED" "$C_RESET" "$1"; [[ -n "${2:-}" ]] && printf "         %s%s%s\n" "$C_DIM" "$2" "$C_RESET"; }
-skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); (( QUIET )) || printf "  %s[skip]%s %s\n" "$C_DIM" "$C_RESET" "$1"; }
+pass() { PASS_COUNT=$((PASS_COUNT + 1)); record pass "$1"; (( QUIET || JSON )) || printf "  %s[pass]%s %s\n" "$C_GREEN" "$C_RESET" "$1"; }
+warn() { WARN_COUNT=$((WARN_COUNT + 1)); record warn "$1" "${2:-}"; (( JSON )) && return 0; printf "  %s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$1"; [[ -n "${2:-}" ]] && printf "         %s%s%s\n" "$C_DIM" "$2" "$C_RESET"; }
+fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); record fail "$1" "${2:-}"; (( JSON )) && return 0; printf "  %s[FAIL]%s %s\n" "$C_RED" "$C_RESET" "$1"; [[ -n "${2:-}" ]] && printf "         %s%s%s\n" "$C_DIM" "$2" "$C_RESET"; }
+skip() { SKIP_COUNT=$((SKIP_COUNT + 1)); record skip "$1"; (( QUIET || JSON )) || printf "  %s[skip]%s %s\n" "$C_DIM" "$C_RESET" "$1"; }
 
 usage() {
   cat <<EOF
@@ -61,12 +99,14 @@ hardening_audit.sh - read-only security audit of a Mac
 Reports findings and the command that would fix each one. Changes nothing.
 
 Usage:
-  $(basename "$0") [--only GROUPS] [--fail-on warn|fail] [--quiet]
+  $(basename "$0") [--only GROUPS] [--fail-on warn|fail] [--quiet] [--json]
 
 Options:
   --only GROUPS    Comma-separated subset (see --list-groups)
   --fail-on LEVEL  Exit 1 on 'fail' (default) or on 'warn' and above
   --quiet          Print only warnings and failures
+  --json           Print one JSON object instead of the report; the exit
+                   code is unchanged
   --list-groups    Print the group names and exit
   --help, -h       Show this help
 
@@ -102,6 +142,7 @@ while (( $# > 0 )); do
     --fail-on)   require_value "$1" "${2:-}"; shift; FAIL_ON="$1" ;;
     --fail-on=*) FAIL_ON="${1#*=}"; require_value "--fail-on" "$FAIL_ON" ;;
     --quiet)     QUIET=1 ;;
+    --json)      JSON=1 ;;
     --list-groups) printf '%s\n' $ALL_GROUPS; exit 0 ;;
     -h|--help)   usage; exit 0 ;;
     *)
@@ -128,6 +169,11 @@ if [[ -n "$ONLY" ]]; then
   done
 fi
 
+# The document is for a parser, whatever stdout is attached to.
+if (( JSON )); then
+  C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE=''
+fi
+
 # --help and --list-groups are handled above so they work anywhere; the checks
 # themselves call macOS-only tools.
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -141,7 +187,7 @@ want() {
   return 1
 }
 
-group() { printf "\n%s== %s ==%s\n" "$C_BOLD" "$1" "$C_RESET"; }
+group() { CUR_GROUP="$1"; (( JSON )) || printf "\n%s== %s ==%s\n" "$C_BOLD" "$1" "$C_RESET"; }
 
 # A managed preference (MDM, configuration profile) or a plain plist value.
 # Prints nothing when the key is unset, which for most of these means "macOS
@@ -535,15 +581,27 @@ if want secrets; then
 fi
 
 # --- summary ---------------------------------------------------------------
-printf "\n%s== summary ==%s\n" "$C_BOLD" "$C_RESET"
-printf "  %s%s pass%s  %s%s warn%s  %s%s fail%s  %s%s skip%s\n" \
-  "$C_GREEN" "$PASS_COUNT" "$C_RESET" \
-  "$C_YELLOW" "$WARN_COUNT" "$C_RESET" \
-  "$C_RED" "$FAIL_COUNT" "$C_RESET" \
-  "$C_DIM" "$SKIP_COUNT" "$C_RESET"
-
+needs_root_hint=false
 if (( SKIP_COUNT > 0 )) && [[ "$(id -u)" != "0" ]]; then
-  info "some checks read more with root; rerun with sudo for the full picture"
+  needs_root_hint=true
+fi
+
+if (( JSON )); then
+  printf '{"schema":1,"script":"hardening_audit.sh","host":%s,"generated":%s,"fail_on":"%s","summary":{"pass":%d,"warn":%d,"fail":%d,"skip":%d},"needs_root_hint":%s,"findings":[%s]}\n' \
+    "$(json_str "$(uname -n 2>/dev/null)")" "$(json_str "$(date -u +%Y-%m-%dT%H:%M:%SZ)")" \
+    "$FAIL_ON" "$PASS_COUNT" "$WARN_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" \
+    "$needs_root_hint" "$FINDINGS"
+else
+  printf "\n%s== summary ==%s\n" "$C_BOLD" "$C_RESET"
+  printf "  %s%s pass%s  %s%s warn%s  %s%s fail%s  %s%s skip%s\n" \
+    "$C_GREEN" "$PASS_COUNT" "$C_RESET" \
+    "$C_YELLOW" "$WARN_COUNT" "$C_RESET" \
+    "$C_RED" "$FAIL_COUNT" "$C_RESET" \
+    "$C_DIM" "$SKIP_COUNT" "$C_RESET"
+
+  if [[ "$needs_root_hint" == "true" ]]; then
+    info "some checks read more with root; rerun with sudo for the full picture"
+  fi
 fi
 
 if [[ "$FAIL_ON" == "warn" ]] && (( WARN_COUNT + FAIL_COUNT > 0 )); then

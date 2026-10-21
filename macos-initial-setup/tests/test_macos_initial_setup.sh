@@ -3156,6 +3156,116 @@ assert_contains "the self-signed root is counted, not graded" "$out" "1 self-sig
 assert_not_contains "the self-signed root is never graded" "$out" "Example Root (login keychain)"
 rm -rf "$tl"
 
+section "status.sh and hardening_audit.sh --json are valid, pure and unchanged in human mode"
+# Stdout purity is the contract a consumer depends on: one JSON object and a
+# newline, nothing before or after it, no colour, whatever the exit code. The
+# human report must keep its exact lines, because people and the assertions
+# above read them. Escaping is the injection boundary, so a probe answer
+# carrying quotes and a backslash has to come out as valid JSON.
+js="$(mktemp -d)"
+mkdir -p "$js/bin" "$js/home" "$js/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$js/bin/uname"
+printf '%s\n' '#!/bin/sh' 'echo "FileVault is On."' > "$js/bin/fdesetup"
+cat > "$js/bin/csrutil" <<'CSRUTIL_EOF'
+#!/bin/sh
+case "${CSRUTIL_MODE:-enabled}" in
+  enabled) echo "System Integrity Protection status: enabled." ;;
+  *)       echo "System Integrity Protection status: unknown (Custom Configuration)." ;;
+esac
+CSRUTIL_EOF
+cat > "$js/bin/sysadminctl" <<'SYSADMINCTL_EOF'
+#!/bin/sh
+printf '%s\n' "${LOCK_STATE:-screenLock delay is immediate}"
+SYSADMINCTL_EOF
+chmod +x "$js/bin/"*
+
+json_first_last() {
+  local s="$1"
+  printf '%s%s' "${s%"${s#?}"}" "${s#"${s%?}"}"
+}
+
+out="$(CSRUTIL_MODE=enabled HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$M/status.sh" --only security 2>&1)"
+assert_contains "status.sh human mode keeps its padded FileVault line" "$out" "[ ok ] security  FileVault on"
+assert_contains "status.sh human mode keeps its padded SIP line" "$out" "[ ok ] security  SIP enabled"
+assert_contains "status.sh human mode keeps its heading" "$out" "=== status ==="
+
+CSRUTIL_MODE=custom HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$M/status.sh" --only security >/dev/null 2>&1
+human_rc=$?
+status_json="$(CSRUTIL_MODE=custom HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$M/status.sh" --only security --json 2>/dev/null)"
+rc=$?
+assert_eq "status.sh --json keeps the human exit code" "$human_rc" "$rc"
+assert_eq "status.sh --json exits 1 on a warning" "1" "$rc"
+assert_eq "status.sh --json stdout is one object and nothing else" "{}" "$(json_first_last "$status_json")"
+assert_eq "status.sh --json prints one line" "1" "$(printf '%s\n' "$status_json" | wc -l | tr -d ' ')"
+assert_contains "status.sh --json carries the schema version" "$status_json" '"schema":1'
+assert_contains "status.sh --json names the section" "$status_json" '"id":"security"'
+assert_contains "status.sh --json grades the custom SIP configuration" "$status_json" '"verdict":"warn"'
+assert_contains "status.sh --json reports ok false" "$status_json" '"ok":false'
+assert_not_contains "status.sh --json has no colour" "$status_json" $'\033'
+assert_not_contains "status.sh --json has no human rows" "$status_json" "[warn]"
+assert_not_contains "status.sh --json has no next hint" "$status_json" "next"
+
+audit_json="$(LOCK_STATE='screenLock is off' HOME="$js/home" TMPDIR="$js/tmp" \
+  PATH="$js/bin:/usr/bin:/bin" "$AUDIT" --only lock --json 2>/dev/null)"
+rc=$?
+assert_eq "hardening_audit --json keeps exit 1 on a failure" "1" "$rc"
+assert_eq "hardening_audit --json stdout is one object and nothing else" "{}" "$(json_first_last "$audit_json")"
+assert_contains "hardening_audit --json grades the finding" "$audit_json" '"verdict":"fail"'
+assert_contains "hardening_audit --json names the group" "$audit_json" '"group":"lock"'
+assert_contains "hardening_audit --json carries the fix" "$audit_json" '"fix":"System Settings > Lock Screen'
+assert_contains "hardening_audit --json counts what it recorded" "$audit_json" \
+  '"summary":{"pass":0,"warn":0,"fail":1,"skip":0}'
+assert_contains "hardening_audit --json names its threshold" "$audit_json" '"fail_on":"fail"'
+assert_not_contains "hardening_audit --json has no group heading" "$audit_json" "== lock =="
+assert_not_contains "hardening_audit --json has no summary heading" "$audit_json" "== summary =="
+
+out="$(LOCK_STATE='screenLock is off' HOME="$js/home" TMPDIR="$js/tmp" \
+  PATH="$js/bin:/usr/bin:/bin" "$AUDIT" --only lock 2>&1)"
+assert_contains "hardening_audit human mode keeps its FAIL row" "$out" "  [FAIL] screen lock password requirement is off"
+
+hostile='screenLock delay is "5" \ min'
+escaped_json="$(LOCK_STATE="$hostile" HOME="$js/home" TMPDIR="$js/tmp" \
+  PATH="$js/bin:/usr/bin:/bin" "$AUDIT" --only lock --json 2>/dev/null)"
+assert_contains "quotes and a backslash in a probe answer are escaped" "$escaped_json" '\"5\" \\ min'
+
+quiet_json="$(HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$AUDIT" --only lock --json --quiet 2>/dev/null)"
+assert_contains "--json --quiet drops pass records" "$quiet_json" '"findings":[]'
+assert_contains "--json --quiet keeps the full count" "$quiet_json" '"pass":1'
+
+if command -v python3 >/dev/null 2>&1; then
+  for doc_name in status_json audit_json escaped_json quiet_json; do
+    case "$doc_name" in
+      status_json)  doc="$status_json" ;;
+      audit_json)   doc="$audit_json" ;;
+      escaped_json) doc="$escaped_json" ;;
+      *)            doc="$quiet_json" ;;
+    esac
+    if python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["schema"] == 1' <<<"$doc" 2>/dev/null; then
+      ok "$doc_name parses as JSON with schema 1"
+    else
+      err "$doc_name is not valid JSON: $doc"
+    fi
+  done
+else
+  ok "python3 absent in this image — JSON parse check skipped"
+fi
+
+out="$("$AUDIT" --json --list-groups 2>/dev/null)"
+assert_not_contains "--list-groups stays plain text under --json" "$out" "{"
+out="$("$M/status.sh" --json --list-sections 2>/dev/null)"
+assert_not_contains "--list-sections stays plain text under --json" "$out" "{"
+out="$("$AUDIT" --only nosuch --json 2>/dev/null)"; rc=$?
+assert_eq "an argument error under --json still exits 3" "3" "$rc"
+assert_eq "an argument error under --json writes nothing to stdout" "" "$out"
+out="$("$M/status.sh" --only nosuch --json 2>/dev/null)"; rc=$?
+assert_eq "status.sh argument error under --json exits 3" "3" "$rc"
+assert_eq "status.sh argument error under --json writes nothing to stdout" "" "$out"
+rm -rf "$js"
+
 end_section
 # The file's own floor: it reached this line having opened sections, each of
 # which asserted something. Reaching it at all is what the removal of `-e` put
