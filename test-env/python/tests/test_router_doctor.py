@@ -1422,6 +1422,38 @@ class DriftTestCase(unittest.TestCase):
         self.assertNotIn("ROUTER-ONLY-SOURCE-7f3a", stdout.getvalue())
         self.assertNotIn("tg body", stdout.getvalue())
 
+    def test_changed_script_gets_its_paste_instruction_and_same_does_not(self):
+        report = (
+            "SCR:tg_send\nSCR:health_check\n"
+            "SCH:health_check|5m|/system script run health_check\n"
+            "ENV:TgBotToken|46\nENV:TgChatId|9\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = os.path.join(tmp, "mikrotik")
+            os.makedirs(os.path.join(package_dir, "core"))
+            for name, body in (("health_check", b"local body\n"), ("tg_send", b"tg body\n")):
+                with open(os.path.join(package_dir, "core", name + ".lua"), "wb") as fh:
+                    fh.write(body)
+            router = fake_router({"health_check": b"ROUTER-ONLY-SOURCE-7f3a\n",
+                                  "tg_send": b"tg body\n"})
+
+            def fake_probe(host, user, identity, port, timeout, command=router_doctor.PROBE):
+                if command == router_doctor.PROBE:
+                    return 0, report, ""
+                rc, out = router(command)
+                return rc, out, ""
+
+            stdout = io.StringIO()
+            with mock.patch.object(router_doctor, "probe", side_effect=fake_probe), \
+                 contextlib.redirect_stdout(stdout):
+                router_doctor.main(["--host", "router.test", "--drift",
+                                    "--scripts-dir", package_dir])
+        text = stdout.getvalue()
+        self.assertIn("paste the file body into System > Scripts > health_check > Source",
+                      text)
+        self.assertNotIn("Scripts > tg_send > Source", text)
+        self.assertNotIn("ROUTER-ONLY-SOURCE-7f3a", text)
+
     def test_lone_copy_without_lua_files_gives_one_info_and_no_warn(self):
         verdicts, findings = router_doctor.drift_findings(
             {"health_check": "changed"}, {}, "/nonexistent/mikrotik"

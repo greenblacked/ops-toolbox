@@ -1138,7 +1138,7 @@ def run_one(user, host, port, args, package=None):
                               "overview in README.md lists what runs); rollback is "
                               "pasting the previous source"))
     for name, verdict in sorted((verdicts or {}).items()):
-        if verdict in ("differs", "length-differs"):
+        if verdict == "changed":
             lines.append(("info", "paste the file body into System > Scripts > %s > Source"
                                   % name))
     return rc, payload, lines
