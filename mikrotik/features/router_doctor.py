@@ -472,7 +472,6 @@ _ROUTEROS_ESCAPES = {
     0x5C: "\\\\",  # backslash
     0x22: '\\"',
     0x24: "\\$",   # would start a variable
-    0x3F: "\\?",   # help in the console
     0x0A: "\\n",
     0x0D: "\\r",
     0x09: "\\t",
@@ -482,8 +481,9 @@ _ROUTEROS_ESCAPES = {
 def escape_routeros_string(value):
     """The inside of a RouterOS double-quoted string literal for value.
 
-    value is bytes, or str (taken as UTF-8). Backslash, double quote, dollar
-    and question mark get a backslash; CR, LF and tab become \\r, \\n, \\t;
+    value is bytes, or str (taken as UTF-8). Backslash, double quote and
+    dollar get a backslash (a question mark is left as it is, as in the
+    package's own scripts); CR, LF and tab become \\r, \\n, \\t;
     any other control character, DEL and every non-ASCII byte becomes \\XX
     (two uppercase hex digits), so the result is printable ASCII on one line.
     The caller adds the surrounding quotes.

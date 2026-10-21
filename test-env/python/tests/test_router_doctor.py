@@ -1189,7 +1189,7 @@ class EscapeRouterosStringTestCase(unittest.TestCase):
     def test_special_characters_are_escaped(self):
         self.assertEqual(router_doctor.escape_routeros_string('a"b'), 'a\\"b')
         self.assertEqual(router_doctor.escape_routeros_string("a\\b"), "a\\\\b")
-        self.assertEqual(router_doctor.escape_routeros_string("$x ?"), "\\$x \\?")
+        self.assertEqual(router_doctor.escape_routeros_string("$x ?"), "\\$x ?")
         self.assertEqual(router_doctor.escape_routeros_string("a\r\nb\tc"), "a\\r\\nb\\tc")
 
     def test_other_control_and_non_ascii_bytes_become_hex(self):
@@ -1205,10 +1205,10 @@ class EscapeRouterosStringTestCase(unittest.TestCase):
         self.assertNotIn("\r", escaped)
         self.assertEqual(unescape_routeros(escaped), nasty.encode("utf-8"))
 
-    def test_no_unescaped_quote_dollar_or_question_mark_survives(self):
+    def test_no_unescaped_quote_or_dollar_survives(self):
         escaped = router_doctor.escape_routeros_string(bytes(range(256)))
         stripped = escaped.replace("\\\\", "")
-        for char in '"$?':
+        for char in '"$':
             for i, c in enumerate(stripped):
                 if c == char:
                     self.assertEqual(stripped[i - 1], "\\", char)
