@@ -2613,6 +2613,15 @@ chmod 644 "$sec/home/.docker/config.json"
 out="$(audit_secrets)"; rc=$?
 assert_contains "a Docker config with credsStore passes" "$out" "Docker config uses a credential store"
 assert_eq "a 644 Docker config holding no secret is not a failure -> 0" "0" "$rc"
+# A credsStore does not clear legacy auth entries left in the same file.
+printf '{"auths": {"registry.example": {"auth": "Q0FOQVJZ"}}, "credsStore": "osxkeychain"}\n' > "$sec/home/.docker/config.json"
+chmod 644 "$sec/home/.docker/config.json"
+out="$(audit_secrets)"; rc=$?
+assert_eq "a 644 Docker config with credsStore and a legacy auth fails -> 1" "1" "$rc"
+assert_contains "the mode of a Docker config with a legacy auth is graded" "$out" "[FAIL] Docker config.json is readable by every local user"
+assert_contains "the leftover legacy auth is called out" "$out" "legacy registry credentials remain in config.json"
+assert_not_contains "a legacy auth next to credsStore is not a pass" "$out" "Docker config uses a credential store"
+assert_not_contains "the legacy registry credential is never printed" "$out" "Q0FOQVJZ"
 
 sec_home
 printf '//registry.npmjs.org/:_authToken=npm_CANARY\n' > "$sec/home/.npmrc"

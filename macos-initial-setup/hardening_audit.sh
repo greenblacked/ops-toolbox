@@ -490,10 +490,10 @@ if want secrets; then
       secret_free=0
       case "$kind" in
         docker)
-          if file_has "$path" '"credsStore"[[:space:]]*:' \
-             || ! file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]'; then
-            secret_free=1
-          fi
+          # A credsStore does not clear legacy "auth" entries left in the
+          # same file: those are still base64 passwords on disk.
+          file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]' \
+            || secret_free=1
           ;;
         npmrc)
           file_has "$path" '(_authToken|_auth|_password)[[:space:]]*=[[:space:]]*[^$[:space:]]' \
@@ -524,11 +524,16 @@ if want secrets; then
           fi
           ;;
         docker)
-          if file_has "$path" '"credsStore"[[:space:]]*:'; then
+          if file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]'; then
+            if file_has "$path" '"credsStore"[[:space:]]*:'; then
+              warn "legacy registry credentials remain in config.json despite its credential store ($shown)" \
+                   'docker logout each registry, then docker login again'
+            else
+              warn "registry credentials are base64 text in config.json ($shown)" \
+                   'set "credsStore": "osxkeychain" in it and docker login again'
+            fi
+          elif file_has "$path" '"credsStore"[[:space:]]*:'; then
             pass "Docker config uses a credential store ($shown)"
-          elif file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]'; then
-            warn "registry credentials are base64 text in config.json ($shown)" \
-                 'set "credsStore": "osxkeychain" in it and docker login again'
           else
             pass "Docker config holds no registry passwords ($shown)"
           fi
