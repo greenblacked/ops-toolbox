@@ -376,20 +376,6 @@ for want in ${only_units[@]+"${only_units[@]}"}; do
   fi
 done
 
-# --only is validated against every unit above, so --only kitty on a server
-# is a valid request that selects nothing. That, and a machine with none of
-# the tools, is a domain no-op rather than a quiet success.
-if (( INSTALLED_ONLY && GROUPS_MODE == 0 )); then
-  any=0
-  for f in "${files[@]}"; do
-    selected "$f" && { any=1; break; }
-  done
-  if (( any == 0 )); then
-    warn "no selected unit has its tool on PATH"
-    exit 4
-  fi
-fi
-
 # The private directories that hold at least one selected file, so --only
 # git never fails on the mode of ~/.ssh.
 selected_private_dirs() {
@@ -907,7 +893,33 @@ do_prune() {
   return 0
 }
 
+# --only is validated against every unit above, so --only kitty on a server
+# is a valid request that selects nothing. That, and a machine with none of
+# the tools, is a domain no-op rather than a quiet success. With --prune the
+# orphan links of a wholly deleted unit count as selected too, found by the
+# same orphans() that --prune removes them with. This sits after the helpers
+# because orphans() needs them.
+installed_only_preflight() {
+  local f any=0
+  for f in "${files[@]}"; do
+    selected "$f" && { any=1; break; }
+  done
+  if (( any == 0 && PRUNE )) && [[ -n "$(orphans)" ]]; then
+    any=1
+  fi
+  if (( any == 0 )); then
+    warn "no selected unit has its tool on PATH"
+    exit 4
+  fi
+}
+
 # --- main ------------------------------------------------------------------
+if (( PRUNE )); then
+  check_prune_units
+fi
+if (( INSTALLED_ONLY && GROUPS_MODE == 0 )); then
+  installed_only_preflight
+fi
 if (( GROUPS_MODE )); then
   do_groups
 elif (( LIST )); then
@@ -919,7 +931,6 @@ elif (( DIFF )); then
 elif (( UNINSTALL )); then
   do_uninstall
 elif (( PRUNE )); then
-  check_prune_units
   do_prune
 elif (( BACKUPS )); then
   do_backups

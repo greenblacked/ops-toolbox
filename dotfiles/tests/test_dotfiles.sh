@@ -606,6 +606,18 @@ assert_true "ssh, not on PATH, was not installed" test ! -e "$IH/.ssh"
 out="$(run_with_path "$scratch/bin-k9s-rg" --status --installed-only 2>&1)"; rc=$?
 assert_rc "--status --installed-only reports no false MISSING" 0 "$rc"
 
+# --prune --only UNIT --installed-only on a wholly deleted unit: the orphan
+# links count as selected, so the tool being on PATH is enough (not exit 4).
+make_bin "$scratch/bin-foo" foo
+mkdir -p "$IH/.foo"
+ln -s "$D/home/.foo/config" "$IH/.foo/config"
+out="$(run_with_path "$scratch/bin-foo" --prune --only foo --installed-only --dry-run 2>&1)"; rc=$?
+assert_rc "--prune --only <deleted unit> --installed-only exits 0" 0 "$rc"
+assert_contains "--prune --only <deleted unit> --installed-only previews the rm" "$out" "(dry-run) rm $IH/.foo/config"
+run_with_path "$scratch/bin-none" --prune --only foo --installed-only --dry-run >/dev/null 2>&1; rc=$?
+assert_rc "--prune --only <deleted unit> --installed-only without its tool exits 4" 4 "$rc"
+rm "$IH/.foo/config"; rmdir "$IH/.foo"
+
 out="$(run_with_path "$scratch/bin-batcat" --list --installed-only 2>&1)"; rc=$?
 assert_rc "--installed-only finds bat as batcat" 0 "$rc"
 assert_contains "batcat selects the bat unit" "$(list_units "$out")" "bat "
