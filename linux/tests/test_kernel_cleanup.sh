@@ -267,6 +267,25 @@ assert_not_contains 'debian common headers of a kept base stay' "$purge_line" 'l
 assert_not_contains 'debian common headers of the running base stay' "$purge_line" 'linux-headers-6.1.0-11-common'
 assert_not_contains 'debian headers metapackage stays' "$purge_line" 'linux-headers-amd64'
 
+# Two-part Debian flavours share the base of the plain flavour: with
+# 6.1.0-9-cloud-amd64 kept (running), removing 6.1.0-9-amd64 must leave the
+# common headers the kept flavour's headers depend on.
+printf '%s\t%s\t%s\n' \
+  linux-image-6.1.0-9-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-9-amd64 'install ok installed' 20000 \
+  linux-headers-6.1.0-9-common 'install ok installed' 80000 \
+  linux-image-6.1.0-9-cloud-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-9-cloud-amd64 'install ok installed' 20000 \
+  linux-image-6.1.0-10-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-10-common 'install ok installed' 80000 \
+  > "$fixture/dpkg.rows"
+run_kc debian --dry-run --release 6.1.0-9-cloud-amd64 --keep 1
+assert_eq 'mixed flavour dry run exits 0' 0 "$rc"
+purge_line="$(grep 'apt-get purge' <<<"$out")"
+assert_contains 'the removed flavour image goes' "$purge_line" 'linux-image-6.1.0-9-amd64'
+assert_not_contains 'common headers stay for a kept sibling flavour' "$purge_line" 'linux-headers-6.1.0-9-common'
+assert_not_contains 'the kept flavour headers stay' "$purge_line" 'linux-headers-6.1.0-9-cloud-amd64'
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s kernel cleanup checks failed\n' "$failures" "$checks" >&2
   exit 1

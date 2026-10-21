@@ -310,9 +310,11 @@ fi
 # linux-image-6.8.0-79-generic, linux-headers-6.1.0-9-common on Debian beside
 # linux-image-6.1.0-9-amd64. It goes with the first release of its
 # base, and only when no kept release still uses the same base.
+# The base is the ABI prefix (6.8.0-79, 6.1.0-9), so one- and two-part flavours
+# (-generic, -amd64, -cloud-amd64, -rt-amd64) of an ABI share one base.
 base_of() {
-  local base="${1%-*}"
-  [[ "$base" != "$1" && "$base" == *-* ]] && printf '%s\n' "$base"
+  local re='^[0-9]+(\.[0-9]+)*-[0-9]+'
+  [[ "$1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[0]}"
 }
 
 common_headers_for() {
