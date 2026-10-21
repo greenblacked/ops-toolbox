@@ -279,8 +279,18 @@ while IFS= read -r selected; do
   is_selected "$selected" || continue
   printf '# --- %s ---\n' "$selected"
   printed=0
-  while read -r script global value what; do
+  while read -r script global rest; do
     [[ "$script" == "$selected" ]] || continue
+    # A quoted value may hold spaces ("<paste backup password>"), so it runs to
+    # its closing quote; any other value is one word. The rest is the note.
+    if [[ "$rest" =~ ^(\"[^\"]*\")[[:space:]]+(.*)$ ]] \
+       || [[ "$rest" =~ ^([^[:space:]]+)[[:space:]]+(.*)$ ]]; then
+      value="${BASH_REMATCH[1]}"
+      what="${BASH_REMATCH[2]}"
+    else
+      value="$rest"
+      what=""
+    fi
     # Shared settings (RouterBackupPassword) are printed once, under the first
     # selected script that reads them.
     [[ "$emitted" == *" $global "* ]] && continue
