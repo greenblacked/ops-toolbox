@@ -359,6 +359,8 @@ check_path_hook() {
     warn "$var is not exported: $tool will not read $want" "export $var=\"$want\""
   elif [[ ! -e "$value" ]]; then
     fail "$var points at $value, which does not exist" "export $var=\"$want\""
+  elif [[ ! -f "$value" || ! -r "$value" ]]; then
+    fail "$var points at $value, which is not a readable file" "export $var=\"$want\""
   else
     pass "$var points at $value"
     [[ "$value" == "$want" ]] || info "$var is not the installed $want; that is allowed"

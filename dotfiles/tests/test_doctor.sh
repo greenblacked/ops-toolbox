@@ -302,6 +302,10 @@ out="$(hooks GITLEAKS_CONFIG="$H/nowhere/gitleaks.toml" -- --platform linux 2>&1
 assert_rc "GITLEAKS_CONFIG at a missing file exits 1" 1 "$rc"
 assert_contains "the missing gitleaks config is named" "$out" "[FAIL] GITLEAKS_CONFIG points at $H/nowhere/gitleaks.toml, which does not exist"
 
+out="$(hooks RIPGREP_CONFIG_PATH="$H/.config/ripgrep" -- --platform linux 2>&1)"; rc=$?
+assert_rc "RIPGREP_CONFIG_PATH at a directory exits 1" 1 "$rc"
+assert_contains "the directory is not accepted as a config file" "$out" "[FAIL] RIPGREP_CONFIG_PATH points at $H/.config/ripgrep, which is not a readable file"
+
 stub k9s
 out="$(hooks -- --platform macos 2>&1)"; rc=$?
 assert_rc "an unexported XDG_CONFIG_HOME on macOS is a warning, exit 0" 0 "$rc"
