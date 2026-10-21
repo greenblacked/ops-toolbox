@@ -110,9 +110,10 @@ Run exactly the form you previewed:
 ```
 
 !!! apply "--hard discards uncommitted work"
-    `--hard --force` resets the working tree as well. Every change you had
-    not committed, staged or not, is gone, together with the undone commit's
-    changes. Without `--force` it refuses with exit `3`:
+    `--hard --force` resets the working tree as well. Every change to a
+    tracked file that you had not committed, staged or not, is gone, together
+    with the undone commit's changes. Untracked files are not touched: the
+    script runs no `git clean`, so they stay in place. Without `--force` it refuses with exit `3`:
     `--hard requires --force (destructive: discards uncommitted work)`.
 
 ```{ .bash .rpt-apply title="Apply, discard everything" }
@@ -156,7 +157,8 @@ git status
 
 After a reset, `git log -1` shows the commit before the one you undid, and
 `git status` shows its changes staged (`--soft`), unstaged (`--mixed`), or
-nothing at all (`--hard`). After `--revert`, `git log -2` shows a new
+no tracked changes at all (`--hard`; untracked files, if any, are still
+listed). After `--revert`, `git log -2` shows a new
 `Revert "..."` commit on top of the old one, which is still in history.
 
 ## Roll back
