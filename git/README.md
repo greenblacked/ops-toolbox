@@ -306,8 +306,9 @@ and `NOTES`: `dirty`, `ahead`, `behind`, `diverged`, `detached`,
 `no-upstream`, `no-remote`, `stash`, `status-failed`, `walk-failed`, `fetch-failed`, `unreadable`.
 
 **Work at risk** is anything that exists only on this machine: changed or
-untracked files, commits ahead of the upstream, unpushed commits, a stash, or a
-`--fetch` that failed.
+untracked files, commits ahead of the upstream, unpushed commits, a stash, a
+`--fetch` that failed, a `git status` that failed (`status-failed`) or a
+history walk that failed (`walk-failed`).
 In a checkout with no remote every commit is unpushed, which is the truth. A
 checkout git cannot read at all is counted as at risk too, because it could not
 be proven otherwise. Being behind is reported but is not at risk.
