@@ -2133,8 +2133,8 @@ if [[ -f "$scanner" ]]; then
     printf '{"folder": "file://%s/project"}' "$scan_tmp" >"$scan_tmp/ws/live/workspace.json"
     printf '{"folder": "vscode-remote://ssh-remote+host/project"}' \
       >"$scan_tmp/ws/remote/workspace.json"
-    if python3 "$scanner" "$scan_tmp/ws" --volumes-dir "$scan_tmp/vol" \
-         | tr '\0' '\n' | grep -qx "stale"; then
+    scan_out="$(python3 "$scanner" "$scan_tmp/ws" --volumes-dir "$scan_tmp/vol" | tr '\0' '\n')"
+    if grep -qx "stale" <<<"$scan_out"; then
       ok "lib/workspace_scan.py emits NUL-delimited fields"
     else
       err "lib/workspace_scan.py output shape changed"

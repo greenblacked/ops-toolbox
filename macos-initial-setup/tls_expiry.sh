@@ -356,7 +356,7 @@ grade_keychain() {
     pem="$pem$line"$'\n'
     [[ "$line" == "-----END CERTIFICATE-----" ]] || continue
     fp="$(sha1_of "$pem")"
-    if [[ -n "$fp" ]] && printf '%s\n' "$hashes" | grep -qx -- "$fp"; then
+    if [[ -n "$fp" ]] && grep -qx -- "$fp" <<<"$hashes"; then
       cn="$(cn_of "$pem")"
       grade_pem "${cn:-unnamed certificate} ($label)" "$pem" \
         "renew it, or delete the stale copy in Keychain Access"
