@@ -419,6 +419,11 @@ def router_datetime(date, clock):
     return days * 86400 + seconds
 
 
+# jan/02/1970 as router_datetime() counts it: a start at or before this is
+# RouterOS's placeholder for "no start-date given".
+SCHEDULER_START_UNSET = 86400
+
+
 def scheduler_start(entry):
     """When a scheduler's schedule starts, from start-date and start-time, or
     None when the probe did not return a usable pair. An older RouterOS
@@ -865,6 +870,18 @@ def build_findings(local, installed, schedulers, env, underscored=None):
         # after it; accuse only when that is past by more than an interval
         # and a minute, so an entry anchored later in the day is not accused.
         # And not just after a reboot, when the clock restarts the schedule.
+        # RouterOS fills start-date with jan/01/1970 when only start-time was
+        # given, and an entry older than the last boot says nothing about when
+        # it was added either: neither start shows the entry's age, so it is
+        # not judged. Only a start after boot (now - uptime) is trusted.
+        before_boot = start <= now and (uptime is None or start < now - uptime)
+        if start <= SCHEDULER_START_UNSET or before_boot:
+            findings.append((
+                "info",
+                "\"%s\": not judged: start time does not show when the entry "
+                "was added" % name,
+            ))
+            continue
         first_due = start if start > now else start + interval
         late = now - first_due
         name = entry.get("name", "?")

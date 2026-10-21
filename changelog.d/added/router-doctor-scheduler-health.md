@@ -4,7 +4,10 @@
   which is what a policy too narrow for the script looks like, went
   unreported. That is judged from its `start-date`, `start-time` and
   interval against the router's clock, not from the router's uptime, so a
-  scheduler created minutes ago is not accused.
+  scheduler created minutes ago is not accused. A start that does not show
+  when the entry was added (`start-date` 1970, which RouterOS fills in when
+  only `start-time` is given, or a start before the last boot) is reported
+  as not judged.
   `TgBotToken` set by hand with nothing to set it again at boot passed as
   healthy until the next reboot cleared it. All three are now warnings. They
   are judged only on what the router returned, and the search for a startup

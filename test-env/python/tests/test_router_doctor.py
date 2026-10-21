@@ -714,7 +714,7 @@ class SchedulerHealthTestCase(unittest.TestCase):
 
     NOW = ("oct/21/2026", "12:00:00")
 
-    def judge(self, scheduler, uptime=10 * 86400, clock=NOW):
+    def judge(self, scheduler, uptime=30 * 86400, clock=NOW):
         return router_doctor.build_findings(
             ["tg_send", "health_check"], ["tg_send", "health_check"],
             [scheduler, self.restorer()], self.env(uptime=uptime, clock=clock),
@@ -756,10 +756,35 @@ class SchedulerHealthTestCase(unittest.TestCase):
         findings = self.judge(self.scheduler(
             "health_check", run_count=0, start_date="oct/01/2026"), uptime=600)
         self.assertEqual(levels_for(findings, "has never fired"), [])
-        self.assertEqual(levels_for(findings, "has not run yet"), ["info"])
+        self.assertEqual(levels_for(findings, "not judged: start time"), ["info"])
         findings = self.judge(self.scheduler(
             "health_check", run_count=0, start_date="oct/01/2026"), uptime=None)
         self.assertEqual(levels_for(findings, "has never fired"), [])
+
+    def test_start_date_the_router_filled_with_1970_is_not_judged(self):
+        # start-time given alone: RouterOS fills start-date=jan/01/1970, so
+        # an entry added minutes ago looks decades overdue.
+        findings = self.judge(self.scheduler(
+            "health_check", interval="1h", run_count=0,
+            start_date="jan/01/1970", start_time="11:50:00"), uptime=10 * 86400)
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+        self.assertEqual(levels_for(findings, "not judged: start time"), ["info"])
+        findings = self.judge(self.scheduler(
+            "health_check", run_count=0, start_date="jan/02/1970",
+            start_time="00:00:00"), uptime=10 * 86400)
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+        self.assertEqual(levels_for(findings, "not judged: start time"), ["info"])
+
+    def test_recent_real_start_is_info_and_old_start_after_boot_warns(self):
+        recent = self.judge(self.scheduler(
+            "health_check", interval="1h", run_count=0,
+            start_date="oct/21/2026", start_time="11:50:00"), uptime=10 * 86400)
+        self.assertEqual(levels_for(recent, "has never fired"), [])
+        self.assertEqual(levels_for(recent, "has not run yet"), ["info"])
+        old = self.judge(self.scheduler(
+            "health_check", run_count=0, start_date="oct/15/2026",
+            start_time="00:00:00"), uptime=10 * 86400)
+        self.assertEqual(levels_for(old, "has never fired"), ["warn"])
 
     def test_zero_run_count_without_a_clock_or_start_is_not_judged(self):
         old = self.scheduler("health_check", run_count=0, start_date="oct/01/2026")

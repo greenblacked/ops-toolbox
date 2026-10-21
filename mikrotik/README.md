@@ -1078,7 +1078,10 @@ router's clock and uptime, and adds three findings, all `warn`:
   interval after it, read against the router's own clock; the router's uptime
   is not the scheduler's age, so an entry created minutes ago on a router
   that has been up for weeks is not accused. A router restarted within twice
-  the interval plus a minute is not judged either. That is usually RouterOS
+  the interval plus a minute is not judged either, nor is an entry whose
+  start does not show when it was added: a `start-date` of `jan/01/1970`
+  (what RouterOS fills in when only `start-time` was given) or a start from
+  before the last boot is an `info` ("not judged"). That is usually RouterOS
   refusing to start it ("not enough permissions" in `/log`), because the
   scheduler's policy does not cover the script's. An entry that has simply not
   come due yet is an `info` ("has not run yet"), not a warning. Startup
