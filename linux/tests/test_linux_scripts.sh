@@ -41,6 +41,9 @@ rmdir "$tmp_probe"
 # developer's real cache. Every test that needs one of these supplies it itself.
 unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG DOCKER_DAEMON_JSON
 unset PROC_DIR FSTAB
+# ssh_client_doctor.sh asks the agent SSH_AUTH_SOCK names; a developer's live
+# agent must not answer for the fixtures.
+unset SSH_AUTH_SOCK
 # SYSTEMD_ANALYZE_CMD names a binary stay_fresh_timer.sh executes to verify the
 # units it writes. Exported, it aims that execution at whatever the host says,
 # which is the worst of this class: not a path the run reads, a command the run
@@ -2068,6 +2071,104 @@ else
   err "ssh_client_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
 fi
 rm -rf "$scratch_home" "$good"
+
+# The keys, known_hosts, authorized_keys, risks and agent groups. The tester
+# images have no openssh-client, so ssh-keygen and ssh-add are stubs: -y
+# succeeds (no passphrase) only for a key whose name says "plain", -l reports
+# a 2048-bit RSA key for *rsa* files and Ed25519 otherwise, and ssh-add says
+# no agent answered.
+sshdoc_stub="$(mktemp -d)"
+cat > "$sshdoc_stub/ssh-keygen" <<'STUB'
+#!/usr/bin/env bash
+for last in "$@"; do :; done
+last="${last##*/}"
+case " $* " in
+  *" -y "*) [[ "$last" == *plain* ]] && exit 0; exit 1 ;;
+  *" -l "*)
+    case "$last" in
+      *rsa*) printf '2048 SHA256:abc comment (RSA)\n' ;;
+      *)     printf '256 SHA256:def comment (ED25519)\n' ;;
+    esac
+    ;;
+esac
+exit 0
+STUB
+cat > "$sshdoc_stub/ssh-add" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$sshdoc_stub/ssh-keygen" "$sshdoc_stub/ssh-add"
+keys_dir="$(mktemp -d)"
+chmod 700 "$keys_dir"
+for k in id_rsa_plain id_ed25519; do
+  printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'not-a-real-key' '-----END OPENSSH PRIVATE KEY-----' > "$keys_dir/$k"
+  chmod 600 "$keys_dir/$k"
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest %s\n' "$k" > "$keys_dir/$k.pub"
+done
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys 2>&1)"; rc=$?
+assert_eq "ssh_client_doctor keys group warns but does not fail" "0" "$rc"
+assert_contains "ssh_client_doctor warns on a key with no passphrase" \
+  "$(grep -F 'id_rsa_plain has no passphrase' <<<"$out" || true)" "[warn]"
+assert_contains "ssh_client_doctor warns on a 2048-bit RSA key" "$out" "id_rsa_plain is a 2048-bit RSA key"
+assert_contains "ssh_client_doctor passes an Ed25519 key" \
+  "$(grep -F 'id_ed25519 is an ED25519 key' <<<"$out" || true)" "[pass]"
+assert_contains "ssh_client_doctor passes a protected key" "$out" "id_ed25519 is passphrase-protected"
+assert_not_contains "ssh_client_doctor --only keys leaves the directory group out" "$out" "== directory =="
+touch -d '3 years ago' "$keys_dir/id_ed25519"
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys --max-key-age 1 2>&1)"
+assert_contains "ssh_client_doctor warns on an old key" "$out" "consider rotating"
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys --max-key-age 0 2>&1)"
+assert_not_contains "ssh_client_doctor --max-key-age 0 turns the age check off" "$out" "consider rotating"
+
+printf '%s\n' 'example.com ssh-ed25519 AAAA1' 'example.com ssh-ed25519 AAAA2' \
+  '|1|c2FsdA==|aGFzaA== ssh-ed25519 AAAA3' > "$keys_dir/known_hosts"
+chmod 644 "$keys_dir/known_hosts"
+out="$("$SSHDOC" --ssh-dir "$keys_dir" --only known_hosts 2>&1)"; rc=$?
+assert_eq "ssh_client_doctor known_hosts conflicts warn, not fail" "0" "$rc"
+assert_contains "ssh_client_doctor warns on conflicting host keys" "$out" "host example.com has conflicting ssh-ed25519 keys"
+assert_contains "ssh_client_doctor counts only the plain entries as unhashed" "$out" "2 of 3 entries are unhashed"
+printf '%s\n' 'old.example.com ssh-dss AAAA4' >> "$keys_dir/known_hosts"
+out="$("$SSHDOC" --ssh-dir "$keys_dir" --only known_hosts 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor fails an ssh-dss host key" "$out" "[FAIL]"
+assert_eq "ssh_client_doctor ssh-dss host key -> 1" "1" "$rc"
+
+printf '%s\n' 'ssh-ed25519 AAAAdup one@example' 'from="10.0.0.1" ssh-ed25519 AAAAdup again@example' \
+  'ssh-ed25519 AAAAother other@example' > "$keys_dir/authorized_keys"
+chmod 600 "$keys_dir/authorized_keys"
+out="$("$SSHDOC" --ssh-dir "$keys_dir" --only authorized_keys 2>&1)"
+assert_contains "ssh_client_doctor warns on a duplicate authorized key" "$out" "1 duplicate key line(s)"
+assert_contains "ssh_client_doctor counts keys with no options" "$out" "2 of 3 key(s) carry no options"
+
+risky_dir="$(mktemp -d)"
+chmod 700 "$risky_dir"
+printf '%s\n' 'Host *' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+chmod 600 "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor fails StrictHostKeyChecking no for every host" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+assert_contains "ssh_client_doctor names the config line" "$out" "line 2, Host *"
+assert_contains "ssh_client_doctor warns on ForwardAgent for every host" \
+  "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+assert_eq "ssh_client_doctor Host * without host key checking -> 1" "1" "$rc"
+printf '%s\n' 'Host build-*' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor leaves a per-host exception ungraded" "$out" "[FAIL]"
+assert_eq "ssh_client_doctor per-host exception -> 0" "0" "$rc"
+
+out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
+assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
+assert_contains "ssh_client_doctor skips the agent when none is set" "$out" "SSH_AUTH_SOCK is not set"
+
+sshdoc_groups="$("$SSHDOC" --list-groups)"
+for g in directory files config keys known_hosts authorized_keys risks agent; do
+  assert_contains "ssh_client_doctor lists group $g" "$sshdoc_groups" "$g"
+done
+"$SSHDOC" --only bogus >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects an unknown group -> 3" "3" "$rc"
+"$SSHDOC" --max-key-age soon >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects --max-key-age soon -> 3" "3" "$rc"
+rm -rf "$sshdoc_stub" "$keys_dir" "$risky_dir"
 
 section "status.sh"
 status_sections="$("$L/status.sh" --list-sections)"

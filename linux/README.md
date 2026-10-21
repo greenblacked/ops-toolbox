@@ -57,7 +57,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
 | [`listen_audit.sh`](listen_audit.sh) | Read-only listening-port owners and scope; `--print` a baseline, `--baseline` to catch drift |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd settings and algorithms, accounts, network, file modes, host keys, updates, kernel controls |
-| [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
+| [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes, IdentityFile paths, key strength, known_hosts, authorized_keys, risky config, agent; not `ssh -G` |
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames; `--deep` name, chain and key checks |
 | [`container_doctor.sh`](container_doctor.sh) | Read-only Docker/Podman grading: restart loops, OOM kills, socket mounts, uncapped logs |
 | [`log_triage.sh`](log_triage.sh) | Read-only log summary since `--since`: kernel distress, noisiest identifiers, failed logins, repeats |
@@ -819,13 +819,32 @@ filename identifying a partial backup.
 remote will not accept a key. Neither looks at `~/.ssh` itself: a directory
 that is group-readable, a private key at `644`, or an `IdentityFile` that
 points at a path that does not exist. Those are the three reasons ssh refuses
-a key with a message that names none of them.
+a key with a message that names none of them. Past whether ssh will use a key
+is whether it should, and the later groups grade that too.
 
 ```bash
 ./ssh_client_doctor.sh
 ./ssh_client_doctor.sh --quiet
 ./ssh_client_doctor.sh --fail-on warn
+./ssh_client_doctor.sh --only keys,risks
+./ssh_client_doctor.sh --max-key-age 365
+./ssh_client_doctor.sh --list-groups
 ```
+
+| Group | Graded |
+| --- | --- |
+| `directory`, `files`, `config` | the modes and missing `IdentityFile` paths above |
+| `keys` | a private key with no passphrase (warn), DSA (FAIL), RSA under 3072 bits (warn) or under 2048 (FAIL), ECDSA (info), keys older than `--max-key-age` days (730; `0` turns it off), the same key in two files (info) |
+| `known_hosts` | unhashed entries (info, with `ssh-keygen -H`), `ssh-dss` host keys (FAIL), one host with two different keys of the same type (warn), `@revoked` lines (info) |
+| `authorized_keys` | duplicate keys (warn), `ssh-dss` keys (FAIL), keys with no `from=`, `command=` or `restrict` (info) |
+| `risks` | `StrictHostKeyChecking no` for every host (FAIL); `UserKnownHostsFile /dev/null`, `ForwardAgent`, `ForwardX11` or `PasswordAuthentication yes` for every host (warn); `Protocol 1` and CBC or arcfour ciphers (warn); several global `IdentityFile` lines without `IdentitiesOnly yes` (info). A setting under a narrower `Host` is noted, not graded, and each finding names its config line |
+| `agent` | whether `SSH_AUTH_SOCK` reaches a live agent (a dead one warns) and how many keys it offers (more than five warns) |
+
+The passphrase check runs `ssh-keygen -y -P ''` with stdin closed, which
+derives the public key to `/dev/null` and fails on an encrypted key, so it
+can never prompt; type and size come from `ssh-keygen -l` on the `.pub`
+beside each key, and `ssh-add -l` only lists the agent. Key material is never
+printed. Without `ssh-keygen` the `keys` group is one `skip`.
 
 `--ssh-dir DIR` is the seam the tests use, and the way to inspect an
 alternate config directory. This script does not reimplement `ssh_config`
