@@ -233,17 +233,18 @@ function Get-CleanedPath {
             continue
         }
         $judgeable = ($entry -notmatch '%') -and ($entry.Trim() -match '^[A-Za-z]:\\')
-        # A REG_SZ value is never expanded by Windows, so an unexpanded %VAR%
-        # entry is not a repeat of the absolute folder it would expand to.
+        # Only an entry clean can judge counts as the first copy. An entry it
+        # cannot judge (quoted, a %VARIABLE%, relative) may not work as
+        # written, e.g. a REG_SZ %VAR% is never expanded by Windows, so it
+        # must not make a later usable copy of the same folder a duplicate.
         $effective = $entry
         if ($Kind -ne 'String') { $effective = [string](& $Expand $entry) }
         $key = & $normalise $effective
-        if ($seen.Contains($key)) {
-            if ($judgeable) {
+        if ($judgeable) {
+            if ($seen.Contains($key)) {
                 $removed += [pscustomobject]@{ Entry = $entry; Reason = 'duplicate' }
                 continue
             }
-        } else {
             $seen[$key] = $true
         }
         if ($judgeable) {

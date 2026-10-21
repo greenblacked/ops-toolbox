@@ -1857,10 +1857,16 @@ if (-not $pathDoctor) {
             Test-Fail "REG_SZ clean returned [$($szProbe.Value)], expected [%TOOLS%;C:\Tools]"
         }
         $expProbe = Get-CleanedPath -Entries @('%TOOLS%', 'C:\Tools') -Exists $fakeExists -Expand { param([string]$Text) $Text -replace '%TOOLS%', 'C:\Tools' } -Kind 'ExpandString'
-        if ($expProbe.Value -ceq '%TOOLS%' -and @($expProbe.Removed).Count -eq 1) {
-            Test-Ok 'REG_EXPAND_SZ: expansion still decides what repeats'
+        if ($expProbe.Value -ceq '%TOOLS%;C:\Tools' -and @($expProbe.Removed).Count -eq 0) {
+            Test-Ok 'REG_EXPAND_SZ: an entry clean cannot judge never makes the later judgeable entry a duplicate'
         } else {
-            Test-Fail "REG_EXPAND_SZ clean returned [$($expProbe.Value)], expected [%TOOLS%]"
+            Test-Fail "REG_EXPAND_SZ clean returned [$($expProbe.Value)], expected [%TOOLS%;C:\Tools]"
+        }
+        $quotedProbe = Get-CleanedPath -Entries @('"C:\Tools"', 'C:\Tools', 'c:\tools\') -Exists $fakeExists -Expand $fakeExpand
+        if ($quotedProbe.Value -ceq '"C:\Tools";C:\Tools' -and @($quotedProbe.Removed).Count -eq 1 -and $quotedProbe.Removed[0].Entry -ceq 'c:\tools\') {
+            Test-Ok 'a quoted entry never makes the later unquoted copy a duplicate; the unquoted copy is kept and repeats of it go'
+        } else {
+            Test-Fail "quoted-entry clean returned [$($quotedProbe.Value)], expected [`"C:\Tools`";C:\Tools]"
         }
         $again = Get-CleanedPath -Entries ($cleaned.Value -split ';') -Exists $fakeExists -Expand $fakeExpand
         if (@($again.Removed).Count -eq 0 -and $again.Value -ceq $cleaned.Value) {
