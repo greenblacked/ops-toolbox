@@ -97,7 +97,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 14 of these 28 scripts do not run at all.** That release
+> **On RouterOS 7.24, 14 of these 29 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
@@ -106,9 +106,9 @@ their values, so no token crosses the wire.
 >
 > **Runs on 7.24:** `backup.lua`, `backup_file_cleanup.lua`,
 > `backup_update_check.lua`, `cert_expiry_watch.lua`, `change_WIFI_pw.lua`,
-> `detect_internet.lua`, `health_check.lua`, `netwatch_notify.lua`,
-> `reboot-and-flush.lua`, `security_check.lua`, `stay_fresh.lua`,
-> `tg_send.lua`, `wireguard_watch.lua`.
+> `conntrack_watch.lua`, `detect_internet.lua`, `health_check.lua`,
+> `netwatch_notify.lua`, `reboot-and-flush.lua`, `security_check.lua`,
+> `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
 >
 > **Migrated source; targeted CHR coverage:** `rogue_dns_check.lua`.
 > Its variable names avoid the 7.24 parser restriction. The pinned 7.24.5 tests
@@ -170,6 +170,7 @@ their values, so no token crosses the wire.
 | `features/vpn_health.lua`                    | Watches IPsec / OVPN / WireGuard sessions and alerts on state changes.  |
 | `features/wireguard_watch.lua`               | Alerts when a WireGuard peer stops handshaking.                         |
 | `features/wireless_client_watch.lua`         | Alerts on wireless clients joining, leaving, or with poor signal.       |
+| `features/conntrack_watch.lua`               | Alerts before the connection-tracking table fills, and on recovery.     |
 | `features/export_config.py`                  | Host-side: exports `/export` over ssh and versions it in git.           |
 | `features/print_schedulers.sh`               | Host-side: prints the `/system scheduler add` lines for these scripts.  |
 | `features/print_startup.sh`                  | Host-side: prints the startup script that sets the globals at boot.     |
@@ -289,7 +290,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 intentionally manual / on-demand — don't schedule them.
 
 [`features/print_schedulers.sh`](#featuresprint_schedulerssh) prints all of this as ready-to-paste
-`/system scheduler add` commands, including the twelve scripts the table above
+`/system scheduler add` commands, including the thirteen scripts the table above
 does not cover:
 
 ```bash
@@ -774,6 +775,42 @@ or `:local` names, so it actually runs on RouterOS 7.24.
 Schedule at `1d` / `05:20:00` — after `cert_expiry_watch`, well clear of the
 nightly backup/update slot.
 
+### `features/conntrack_watch.lua`
+
+Warns before the connection-tracking table fills. A full table is how a
+router goes up-but-nothing-works: a scan, a flood, a torrent client or one
+leaking device fills it, new connections are dropped, and every interface
+still looks fine. `health_check.lua` watches CPU, memory, disk and
+temperature; nothing else here watched this.
+
+Each run reads `total-entries` and `max-entries` from
+`/ip firewall connection tracking`, two numbers the router already keeps, and
+works out how full the table is. At or above `ConntrackWarnPercent` (a
+`:global`, whole number 0-100, default `80`) the state is `high`. It sends a
+plain-text Telegram message only when the state changes: once when the table
+crosses the threshold, with the identity, the percentage, the two counts and
+the threshold, and once when it falls back. The first run after a boot
+records a healthy table silently and reports one that is already high. Every
+change is logged as well.
+
+A failed send is retried: the state Telegram last acknowledged is kept in
+`ConntrackDeliveredState`, and until a send succeeds the next run tries
+again, with the reason in `ConntrackSendError`. It sends through
+`tg_send_new` and falls back to `tg_send`, like `security_check.lua` and
+`stay_fresh.lua`; `ConntrackSendScript` names another helper. With no helper
+at all it logs the alert and carries on.
+
+It is read-only: it writes only its own globals and never flushes, removes or
+changes a connection or a tracking setting (`reboot-and-flush.lua` is the
+script that flushes). With tracking disabled it logs that and stops. When
+`max-entries` cannot be read, or is zero, it logs
+`max-entries unavailable - skipping` and does nothing, rather than divide by
+zero; when `total-entries` cannot be read it counts the table instead, which
+is slower on a busy router. It declares no underscored `:global` or `:local`,
+so it runs on RouterOS 7.24, and honours `OpsToolboxPaused`. Schedule it every
+`5m`; `print_schedulers.sh` prints that entry and `print_startup.sh --only
+conntrack_watch` lists its settings.
+
 ### `features/export_config.py`
 
 **Runs on your machine, not on the router** — it is the only file here that is
@@ -900,7 +937,7 @@ bad arguments.
 
 **Runs on your machine, not on the router**, and contacts nothing at all: it
 prints the `/system scheduler add` command for every script here that is meant
-to run unattended — the eight intervals from the table above, and for the twelve
+to run unattended — the eight intervals from the table above, and for the thirteen
 scripts that table omits, the interval named in each script's own header comment
 — and you paste what you agree with.
 
@@ -959,7 +996,7 @@ The script always declares `TgBotToken` and `TgChatId` (as
 and `OpsToolboxPaused false`. `--only SCRIPT` adds the settings that script
 reads, each commented out at its default with one line on what it does, so
 you uncomment only what you change: `backup`, `backup_update_check`,
-`stay_fresh`, `security_check` and `rogue_dns_check`. A setting two of them
+`stay_fresh`, `security_check`, `rogue_dns_check` and `conntrack_watch`. A setting two of them
 share, such as `RouterBackupPassword`, is listed once. State the scripts keep
 for themselves (`SecLastFp`, `RdnsDeliveredSig` and the like) is never
 printed, because setting it at boot would erase what they remember. No name

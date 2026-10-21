@@ -176,6 +176,8 @@ security_check       SecuritySendScript          "tg_send_new"                  
 rogue_dns_check      DnsExpected                 ";1.1.1.1;1.0.0.1;"                 answers the control name may resolve to
 rogue_dns_check      DnsAllowedResolvers         ";1.1.1.1;1.0.0.1;8.8.8.8;8.8.4.4;" resolvers clients may use
 rogue_dns_check      RdnsSendScript              "tg_send"                           Telegram helper to use
+conntrack_watch      ConntrackWarnPercent        80                                  alert at this share of max-entries, 0 to 100
+conntrack_watch      ConntrackSendScript         "tg_send_new"                       Telegram helper to use
 KNOBS
 }
 

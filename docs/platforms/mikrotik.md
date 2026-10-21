@@ -32,6 +32,7 @@ full table.
 | `features/backup.lua` | Dated backup and export. | none (no flags) |
 | `features/security_check.lua` | Read-only hardening audit sent to Telegram. | <span class="stage stage-report">read-only</span> |
 | `features/health_check.lua` | CPU, RAM, disk, temperature watchdog. | none (no flags) |
+| `features/conntrack_watch.lua` | Warn before the connection-tracking table fills. | none (no flags) |
 | `features/export_config.py` | Host: export over SSH, diff, optional git commit. | `--stdout` or `--diff` |
 | `features/router_doctor.py` | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `features/print_schedulers.sh` | Host: print scheduler commands. | prints only; contacts no router |
@@ -94,7 +95,7 @@ the host tools to inspect.
 ## Limitations and caveats
 
 !!! danger "Half the scripts do not run on RouterOS 7.24"
-    On 7.24, 14 of the 28 `.lua` scripts do not run: their underscored
+    On 7.24, 14 of the 29 `.lua` scripts do not run: their underscored
     `:global` or `:local` names stop the parser, and nothing is logged.
     Check the per-script compatibility table in the
     [MikroTik README](https://github.com/greenblacked/ops-toolbox/blob/master/mikrotik/README.md#scripts-overview)

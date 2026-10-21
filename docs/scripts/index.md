@@ -82,6 +82,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/stay_fresh.lua` | MikroTik | Back up, update RouterOS and firmware; reboots. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/update_check.lua` | MikroTik | Back up, then notify of an update (retired on 7.24). | n/a (RouterOS script, no flags) |
 | `mikrotik/features/health_check.lua` | MikroTik | CPU, RAM, disk, temperature watchdog. | n/a (RouterOS script, no flags) |
+| `mikrotik/features/conntrack_watch.lua` | MikroTik | Warn before the connection-tracking table fills. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/security_check.lua` | MikroTik | Hardening audit; reports findings only. | <span class="stage stage-report">read-only</span> |
 | `mikrotik/features/cert_expiry_watch.lua` | MikroTik | Warn before a certificate expires. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/netwatch_notify.lua` | MikroTik | Telegram alerts from netwatch events. | n/a (RouterOS script, no flags) |

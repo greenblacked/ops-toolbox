@@ -1749,3 +1749,123 @@ def test_drift_hash_expression_is_valid_on_the_pinned_routeros(
     finally:
         _remove_by_name(script_resource, name)
         _unset_global(api, "PuDrift")
+
+
+# --- conntrack_watch.lua ----------------------------------------------------
+#
+# Written without an underscored name, so unlike most of the watchers it runs
+# on the 7.24 CHR. It goes through tg_send_new, the helper the stub below takes
+# the place of. The CHR's connection-tracking table is nearly empty, which is
+# what makes "healthy" the baseline; a threshold of 0 is how the tests make the
+# same table count as full. A quiet run has no effect to wait for, so those
+# runs go through a wrapper that sets a marker once the script returns.
+CONNTRACK_GLOBALS = (
+    "ConntrackWarnPercent",
+    "ConntrackLast",
+    "ConntrackDeliveredState",
+    "ConntrackSendError",
+    "PuTgLastMessage",
+    "PuConntrackDone",
+    "OpsToolboxPaused",
+)
+CONNTRACK_WRAPPER = "pu_ut_conntrack_wrap"
+CONNTRACK_WRAPPER_SOURCE = (
+    ":global PuConntrackDone;\n"
+    "/system script run conntrack_watch;\n"
+    ':set PuConntrackDone "yes";\n'
+)
+
+
+def _set_global_now(api: Any, statement: bytes) -> None:
+    # The same way an operator would set it: a :global, typed once.
+    api.get_binary_resource("/").call("execute", {"script": statement})
+
+
+@contextlib.contextmanager
+def _conntrack_watch_installed(api: Any, script_resource: Any):
+    src = script_path("conntrack_watch.lua").read_text(encoding="utf-8")
+    for name in CONNTRACK_GLOBALS:
+        _unset_global(api, name)
+    try:
+        _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
+        _add_script(script_resource, "conntrack_watch", src)
+        _add_script(script_resource, CONNTRACK_WRAPPER, CONNTRACK_WRAPPER_SOURCE)
+        yield
+    finally:
+        _remove_by_name(script_resource, CONNTRACK_WRAPPER)
+        _remove_by_name(script_resource, "conntrack_watch")
+        _remove_by_name(script_resource, "tg_send_new")
+        for name in CONNTRACK_GLOBALS:
+            _unset_global(api, name)
+
+
+def _run_conntrack_watch_once(api: Any) -> None:
+    _unset_global(api, "PuConntrackDone")
+    _run_via_scheduler(
+        api,
+        CONNTRACK_WRAPPER,
+        lambda: _read_global(api, "PuConntrackDone") == "yes",
+        timeout=60.0,
+        interval="20s",
+    )
+
+
+def test_conntrack_watch_baseline_is_silent_when_healthy(
+    api: Any, script_resource: Any
+) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _run_conntrack_watch_once(api)
+        assert _read_global(api, "PuTgLastMessage") == "", (
+            "a healthy first run must be the silent baseline"
+        )
+        assert _read_global(api, "ConntrackLast") == "ok", (
+            "conntrack_watch did not record a state: max-entries or total-entries "
+            "may not be readable under these names on this release.\n"
+            + "\n".join(_recent_log_lines(api, 40))
+        )
+
+
+def test_conntrack_watch_alerts_when_the_threshold_is_crossed(
+    api: Any, script_resource: Any
+) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _set_global_now(api, b":global ConntrackWarnPercent 0")
+        _run_via_scheduler(
+            api,
+            "conntrack_watch",
+            lambda: _read_global(api, "PuTgLastMessage") != "",
+            timeout=60.0,
+            interval="20s",
+        )
+        message = _read_global(api, "PuTgLastMessage")
+        assert "percent full" in message, f"no percentage in: {message!r}"
+        assert "warning at 0 percent" in message, f"no threshold in: {message!r}"
+        assert " of " in message and " entries" in message, f"no counts in: {message!r}"
+        assert _read_global(api, "ConntrackLast") == "high"
+        assert _read_global(api, "ConntrackDeliveredState") == "high"
+        assert _read_global(api, "ConntrackSendError") == ""
+
+
+def test_conntrack_watch_is_silent_on_a_second_run_in_the_same_state(
+    api: Any, script_resource: Any
+) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _set_global_now(api, b":global ConntrackWarnPercent 0")
+        _run_conntrack_watch_once(api)
+        assert _read_global(api, "PuTgLastMessage") != "", "the first high run must alert"
+        _unset_global(api, "PuTgLastMessage")
+        _unset_global(api, "ConntrackLast")
+        _run_conntrack_watch_once(api)
+        assert _read_global(api, "ConntrackLast") == "high", "the second run did not complete"
+        assert _read_global(api, "PuTgLastMessage") == "", (
+            "an unchanged state must not alert again"
+        )
+
+
+def test_conntrack_watch_honours_the_pause(api: Any, script_resource: Any) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _set_global_now(api, b":global ConntrackWarnPercent 0")
+        _set_global_now(api, b":global OpsToolboxPaused true")
+        _run_conntrack_watch_once(api)
+        assert _read_global(api, "PuTgLastMessage") == "", "a paused run must not alert"
+        assert _read_global(api, "ConntrackLast") == "", "a paused run must not record state"

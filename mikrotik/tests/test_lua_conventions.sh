@@ -519,6 +519,14 @@ if grep -q 'MAC_ALLOWLIST empty' "$(sfile mac_allowlist_dhcp.lua)" \
 else
   err "mac_allowlist_dhcp.lua is missing its empty-allowlist fail-safe"
 fi
+# conntrack_watch.lua divides by max-entries. An unreadable or zero maximum has
+# to stop the run with a log line, not end it in a division nobody sees fail.
+if grep -q 'max-entries unavailable' "$(sfile conntrack_watch.lua)" \
+   && grep -qF '($maxEntries <= 0)' "$(sfile conntrack_watch.lua)"; then
+  ok "conntrack_watch.lua skips when max-entries is unreadable or zero"
+else
+  err "conntrack_watch.lua is missing its max-entries fail-safe"
+fi
 
 # --- HTTPS fetches verify TLS certificates ---------------------------------
 # /tool fetch defaults check-certificate to no. A script that posts a bot or
