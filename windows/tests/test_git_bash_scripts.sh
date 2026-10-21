@@ -209,6 +209,16 @@ run_doctor "$fx" "" --source "$GB"
 assert_eq "clean home matches the repository -> 0" 0 "$rc"
 assert_contains "--source compares the dotfiles" "$out" ".aliases present and parses"
 
+# A source directory that lacks a managed file is a failure for that file,
+# not a quiet pass.
+part_source="$(mktemp -d "$SCRATCH/partsource.XXXXXX")"
+cp "$GB/.bashrc" "$GB/.bash_profile" "$part_source/"
+run_doctor "$fx" "" --source "$part_source"
+assert_eq "--source missing a managed file -> 1" 1 "$rc"
+assert_contains "and names the file and the source" "$out" ".aliases is missing from the source $part_source"
+assert_not_contains "and does not pass that file" "$out" ".aliases present and parses"
+assert_contains "while the files the source holds still pass" "$out" ".bashrc present and parses"
+
 # --------------------------------------------------------------------------
 section "gitbash_doctor findings"
 fx="$(new_doctor_fixture)"

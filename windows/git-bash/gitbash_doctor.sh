@@ -146,6 +146,13 @@ lowercase() {
 group "dotfiles"
 for name in $DOTFILES; do
   f="$HOME_DIR/$name"
+  # A managed file the --source directory does not hold cannot be compared;
+  # an incomplete source must not pass as a clean one.
+  source_missing=0
+  if [[ -n "$SOURCE_DIR" && ! -f "$SOURCE_DIR/$name" ]]; then
+    fail "$name is missing from the source $SOURCE_DIR" "point --source at the repository's windows/git-bash directory"
+    source_missing=1
+  fi
   if [[ ! -f "$f" ]]; then
     fail "$name is missing from $HOME_DIR" "install it with install_dotfiles.sh"
     continue
@@ -165,7 +172,9 @@ for name in $DOTFILES; do
     warn "$name differs from $SOURCE_DIR/$name" "see what differs: install_dotfiles.sh --diff --source $SOURCE_DIR"
     continue
   fi
-  pass "$name present and parses"
+  if (( source_missing == 0 )); then
+    pass "$name present and parses"
+  fi
 done
 
 local_rc="$HOME_DIR/.bashrc.local"
