@@ -96,7 +96,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_size_report.sh` | Report repository size across all history or selected refs. |
 | `git_recent_branches.sh` | List/switch recent branches; `--names-only` is script-friendly. |
 | `git_repo_root.sh` | Print the worktree root or absolute Git metadata directory. |
-| `git_diff_branch.sh` | Diff committed branch work or include the current index/worktree. |
+| `git_diff_branch.sh` | Diff committed branch work or include the current index/worktree; `--name-only`, `--path` and `--require-changes` answer "did anything under X change?" in CI. |
 | `git_merge_check.sh` | Forecast whether branches merge cleanly into a base, with no checkout (Git 2.38+). |
 | `git_undo_last_commit.sh` | Reset local HEAD or create a history-preserving revert commit. |
 | `git_amend_last.sh` | Amend content and optionally replace the last commit message. |
@@ -574,6 +574,9 @@ Shows what changed on your current branch since it diverged from a base branch (
 ./git/git_diff_branch.sh --stat
 ./git/git_diff_branch.sh --patch --base main
 ./git/git_diff_branch.sh --working-tree --stat --base main
+./git/git_diff_branch.sh --base origin/main --name-only
+./git/git_diff_branch.sh --base origin/main --name-status --path k8s/ --path ':(glob)**/*.yaml'
+./git/git_diff_branch.sh --base origin/main --path docs/ --require-changes && echo "docs changed"
 ```
 
 The default remains committed branch work (`merge-base..HEAD`).
@@ -581,7 +584,28 @@ The default remains committed branch work (`merge-base..HEAD`).
 working tree, adding staged and unstaged tracked changes. Git cannot include
 untracked files in a diff until they are staged.
 
-**Exit code `4`** if the base branch cannot be inferred or the local base ref is missing.
+`--name-only` prints the changed paths one per line and `--name-status` the
+status letter (`A`, `M`, `D`, `R`...) and path, tab-separated; both are the
+stable forms for a script, so nothing has to scrape the diffstat. The last mode
+flag given wins, as between `--stat` and `--patch`.
+
+`--path PATHSPEC` limits every mode, `--stat` and `--patch` included, to that
+pathspec, and is repeatable: a directory such as `k8s/`, a file, or git's own
+pathspec forms such as `':(glob)**/*.yaml'`. Pathspecs are passed after `--`,
+so none of them can be read as an option.
+
+`--require-changes` is the CI switch for "build or deploy only if something
+under this path changed": with nothing to show it prints `no changes in RANGE`
+on stderr, nothing on stdout, and exits `4`. Without it an empty diff still
+exits `0`, as it always has.
+
+`--base` takes a local branch first and, failing that, a remote-tracking one,
+so `--base origin/main` works in a fresh CI checkout that has no local `main`.
+The inferred default is still local `main`, else `master`.
+
+**Exit code `4`** if the base branch cannot be inferred, if `--base` is neither
+a local nor a remote-tracking branch, or with `--require-changes` when nothing
+changed.
 
 ---
 
@@ -1025,6 +1049,7 @@ All paths below assume the repo root is your current directory.
 ./git/git_size_report.sh --ref main --threshold 1048576
 cd "$(./git/git_repo_root.sh)"
 ./git/git_diff_branch.sh --working-tree --stat
+./git/git_diff_branch.sh --base origin/main --name-only --path k8s/ --require-changes
 ./git/git_merge_check.sh --all-local --into main
 ./git/git_undo_last_commit.sh --dry-run
 ./git/git_undo_last_commit.sh --revert

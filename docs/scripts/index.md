@@ -53,7 +53,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
 | `git/git_status_summary.sh` | Git | Compact branch and dirty-count summary. | <span class="stage stage-report">read-only</span> |
 | `git/git_repo_root.sh` | Git | Print the worktree root or git dir. | <span class="stage stage-report">read-only</span> |
-| `git/git_diff_branch.sh` | Git | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
+| `git/git_diff_branch.sh` | Git | Diff from the merge base to `HEAD`; changed-file modes for CI. | <span class="stage stage-report">read-only</span> |
 | `git/git_merge_check.sh` | Git | Forecast merge conflicts with no checkout. | <span class="stage stage-report">read-only</span> |
 | `git/git_recent_branches.sh` | Git | List recent branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
 | `git/git_stale_branches.sh` | Git | Report old branches and their state. | <span class="stage stage-report">read-only</span> |

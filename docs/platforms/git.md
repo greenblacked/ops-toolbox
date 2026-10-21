@@ -24,7 +24,7 @@ ignore rules.
 | `git_repos_status.sh` | Status of every checkout under a directory; `--strict` gates a wipe. | <span class="stage stage-report">read-only</span> |
 | `git_unpushed.sh` | Commits, branches, stashes, edits and tags that exist only locally. | <span class="stage stage-report">read-only</span> |
 | `git_repo_root.sh` | Worktree root, or git dir with `--git-dir`. | <span class="stage stage-report">read-only</span> |
-| `git_diff_branch.sh` | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
+| `git_diff_branch.sh` | Diff from the merge base to `HEAD`; `--name-only`, `--path` and `--require-changes` for CI. | <span class="stage stage-report">read-only</span> |
 | `git_merge_check.sh` | Forecast merge conflicts with no checkout (Git 2.38+). | <span class="stage stage-report">read-only</span> |
 | `git_recent_branches.sh` | Recently used branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
 | `git_stale_branches.sh` | Old branches with last committer and state. | <span class="stage stage-report">read-only</span> |
@@ -60,6 +60,7 @@ All paths are under `git/`.
     ./git/git_ssh_doctor.py --host github.com
     ./git/git_hooks_install.sh status
     ./git/git_commitlint.sh --base origin/main
+    ./git/git_diff_branch.sh --base origin/main --name-only --path k8s/ --require-changes
     ```
 
 === "Preview"

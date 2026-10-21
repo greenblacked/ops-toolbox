@@ -672,6 +672,86 @@ git -C "$repo" add local.txt
 out="$(cd "$repo" && "$DIFFBR" --stat --base main --working-tree)"
 assert_contains "$out" "local.txt" "git_diff_branch --working-tree includes staged work"
 
+section "diff branch changed files"
+# A branch that adds k8s/a.yaml, modifies file.txt, and adds docs/b.md only to
+# delete it again, so the doc is absent from the net change.
+repo="$(new_repo)"
+printf "stable\n" >"$repo/extra.txt"
+git -C "$repo" add extra.txt
+git -C "$repo" commit -q -m "a file the branch leaves alone"
+git -C "$repo" switch -q -c feature
+mkdir -p "$repo/k8s" "$repo/docs"
+printf "kind: ConfigMap\n" >"$repo/k8s/a.yaml"
+printf "doc\n" >"$repo/docs/b.md"
+printf "changed\n" >>"$repo/file.txt"
+git -C "$repo" add k8s/a.yaml docs/b.md file.txt
+git -C "$repo" commit -q -m "feature work" ||
+  err "the feature commit exited $? — every changed-file assertion below would read an empty branch"
+git -C "$repo" rm -q docs/b.md
+git -C "$repo" commit -q -m "drop the doc again"
+
+out="$(cd "$repo" && "$DIFFBR" --base main)"
+assert_contains "$out" "file.txt |" "git_diff_branch still defaults to a diffstat"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
+assert_contains "$out" "k8s/a.yaml" "--name-only lists an added file"
+assert_contains "$out" "file.txt" "--name-only lists a modified file"
+assert_not_contains "$out" "docs/b.md" "--name-only leaves out a file added and deleted on the branch"
+assert_not_contains "$out" "|" "--name-only prints no diffstat"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-status)"
+assert_contains "$out" $'A\tk8s/a.yaml' "--name-status marks an added file A"
+assert_contains "$out" $'M\tfile.txt' "--name-status marks a modified file M"
+
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/)"
+assert_contains "$out" "k8s/a.yaml" "--path keeps the matching file"
+assert_not_contains "$out" "file.txt" "--path drops everything outside it"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path=k8s/)"
+assert_eq "$out" "k8s/a.yaml" "--path= equals form is accepted"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/ --path file.txt)"
+assert_contains "$out" "k8s/a.yaml" "two --path values: the first is kept"
+assert_contains "$out" "file.txt" "two --path values: the second is kept too"
+out="$(cd "$repo" && "$DIFFBR" --base main --stat --path k8s/)"
+assert_contains "$out" "k8s/a.yaml" "--stat --path keeps the matching file"
+assert_not_contains "$out" "file.txt" "--stat --path filters the stat too"
+(cd "$repo" && "$DIFFBR" --base main --path) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--path without a value -> 3"
+
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path docs/ --require-changes 2>/dev/null)"; rc=$?
+assert_eq "$rc" "4" "--require-changes with nothing under the path -> 4"
+assert_eq "$out" "" "--require-changes with nothing to show prints nothing on stdout"
+(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/ --require-changes) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "--require-changes with a change under the path -> 0"
+(cd "$repo" && "$DIFFBR" --base main --name-only --path docs/) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "an empty filtered diff without --require-changes still exits 0"
+
+printf "edited\n" >>"$repo/extra.txt"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
+assert_not_contains "$out" "extra.txt" "--name-only leaves out an unstaged edit by default"
+out="$(cd "$repo" && "$DIFFBR" --base main --working-tree --name-only)"
+assert_contains "$out" "extra.txt" "--working-tree --name-only includes an unstaged tracked edit"
+git -C "$repo" checkout -q -- extra.txt
+
+git -C "$repo" switch -q -c removal main
+git -C "$repo" rm -q file.txt
+git -C "$repo" commit -q -m "remove file.txt"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-status)"
+assert_contains "$out" $'D\tfile.txt' "--name-status marks a deleted file D"
+
+# A fresh CI-style clone has origin/main and no local main.
+diff_origin="$(mktemp -d /tmp/git-diffbr-origin.XXXXXX)/origin.git"
+diff_clone="$(mktemp -d /tmp/git-diffbr-clone.XXXXXX)"
+rmdir "$diff_clone"
+git init -q --bare -b main "$diff_origin"
+git -C "$repo" push -q "$diff_origin" main feature ||
+  err "pushing to the bare origin exited $? — the clone below would have nothing to compare"
+git clone -q --branch feature "$diff_origin" "$diff_clone"
+out="$(cd "$diff_clone" && "$DIFFBR" --base origin/main --name-only 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a remote-tracking --base is accepted"
+assert_contains "$out" "k8s/a.yaml" "a remote-tracking --base diffs against the merge base"
+(cd "$diff_clone" && "$DIFFBR" --base nope --name-only) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "a base that is neither local nor remote-tracking -> 4"
+(cd "$diff_clone" && "$DIFFBR" --name-only) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "the default base is still inferred from local branches only"
+
 section "undo last commit"
 repo="$(new_repo)"
 printf "second\n" >>"$repo/file.txt"
