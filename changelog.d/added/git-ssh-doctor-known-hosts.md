@@ -6,3 +6,6 @@
   key. `StrictHostKeyChecking no` is reported as a risk. An unknown key is a
   warning, or a failure with `--require-known-host` for a CI preflight, also
   when `StrictHostKeyChecking accept-new` would record it on first use.
+  `--require-known-host` fails closed when `ssh-keygen` is missing, and an
+  effective `KnownHostsCommand` is reported as not checked (never run)
+  instead of failing the requirement on the file scan alone.

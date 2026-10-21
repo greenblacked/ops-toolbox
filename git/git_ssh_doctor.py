@@ -445,6 +445,10 @@ def check_host_key(host, cfg, require):
     port = cfg.get("port", "22")
     spec = known_hosts_spec(hostname, port, cfg.get("hostkeyalias", ""))
     if shutil.which("ssh-keygen") is None:
+        if require:
+            bad("cannot check: ssh-keygen not found on PATH, so --require-known-host "
+                "cannot confirm the host key for %s" % hostname)
+            return False, False
         info("ssh-keygen is not on PATH, so known_hosts cannot be checked")
         return True, True
 
@@ -458,6 +462,16 @@ def check_host_key(host, cfg, require):
             hashed = hashed or any(line.startswith("|1|") for line in out.splitlines())
         elif rc != 1:
             info("ssh-keygen -F could not read %s (exit %d)" % (shorten(path), rc))
+
+    # A KnownHostsCommand supplies keys ssh asks for at connect time. It is
+    # never run here, so an absent file entry proves nothing.
+    kh_cmd = (cfg.get("knownhostscommand") or "").strip()
+    if kh_cmd and kh_cmd.lower() != "none" and not found_in:
+        info("host key source: KnownHostsCommand (not checked)")
+        if normalise_strict(cfg.get("stricthostkeychecking", "ask")) == "no":
+            warn("StrictHostKeyChecking is off for %s: the host key is never "
+                 "verified, so a man-in-the-middle is not detected" % hostname)
+        return True, False
 
     passed = True
     for level, message, fix in host_key_findings(

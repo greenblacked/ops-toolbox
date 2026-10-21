@@ -638,7 +638,10 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   its own. With `--require-known-host` an unknown key fails the host instead,
   also where `StrictHostKeyChecking accept-new` or `no` would trust it on
   first use, and authentication is not attempted, since it would record the
-  key. A
+  key. Without `ssh-keygen` the requirement fails closed (`cannot check:
+  ssh-keygen not found`). An effective `KnownHostsCommand` is reported as
+  `host key source: KnownHostsCommand (not checked)` and never run, so an
+  absent file entry does not fail the requirement. A
   *changed* host key can only be seen by connecting;
   `git_remote_doctor.py --probe` names that one.
 

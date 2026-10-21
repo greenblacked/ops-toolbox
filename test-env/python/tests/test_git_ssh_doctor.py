@@ -402,5 +402,50 @@ class HostKeyFindingsTestCase(unittest.TestCase):
         self.assertIn("cat /tmp/hostkey >> ~/.ssh/known_hosts", fix)
 
 
+class CheckHostKeyTests(unittest.TestCase):
+    def _check(self, cfg, require, which):
+        saved = (doctor.shutil.which, doctor.run, list(doctor.EVENTS))
+        calls = []
+        doctor.shutil.which = lambda name: which
+        doctor.run = lambda cmd, timeout=15: calls.append(cmd) or (1, "", "")
+        del doctor.EVENTS[:]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                result = doctor.check_host_key("h", cfg, require)
+        finally:
+            doctor.shutil.which, doctor.run = saved[0], saved[1]
+            doctor.EVENTS[:] = saved[2]
+        return result, out.getvalue(), calls
+
+    def test_require_fails_closed_without_ssh_keygen(self):
+        result, out, _ = self._check({"hostname": "h"}, True, None)
+        self.assertEqual(result, (False, False))
+        self.assertIn("cannot check: ssh-keygen not found", out)
+
+    def test_without_require_a_missing_ssh_keygen_only_informs(self):
+        result, out, _ = self._check({"hostname": "h"}, False, None)
+        self.assertEqual(result, (True, True))
+        self.assertNotIn("[fail]", out)
+
+    def test_known_hosts_command_is_reported_and_not_failed(self):
+        with tempfile.TemporaryDirectory() as d:
+            kh = os.path.join(d, "known_hosts")
+            open(kh, "w").close()
+            cfg = doctor.parse_ssh_g(
+                "hostname h\nport 22\nknownhostscommand /bin/true %h\n"
+                "userknownhostsfile " + kh + "\nglobalknownhostsfile none\n")
+            result, out, calls = self._check(cfg, True, "/usr/bin/ssh-keygen")
+        self.assertTrue(result[0])
+        self.assertIn("KnownHostsCommand (not checked)", out)
+        self.assertNotIn("[fail]", out)
+        self.assertEqual([c[0] for c in calls], ["ssh-keygen"])
+
+    def test_known_hosts_command_none_does_not_mask_a_missing_key(self):
+        cfg = doctor.parse_ssh_g("hostname h\nknownhostscommand none\n")
+        result, out, _ = self._check(cfg, True, "/usr/bin/ssh-keygen")
+        self.assertFalse(result[0])
+        self.assertIn("[fail]", out)
+
+
 if __name__ == "__main__":
     unittest.main()
