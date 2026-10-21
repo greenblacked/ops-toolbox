@@ -274,12 +274,18 @@ if pods is not None:
       hits=[b for b in pdbs if (b.get("metadata") or {}).get("namespace") == meta.get("namespace")
             and matches((b.get("spec") or {}).get("selector"),labels)]
       label="pod %s/%s" % (meta.get("namespace",""),meta["name"])
+      unhealthy=not any(c.get("type") == "Ready" and c.get("status") == "True"
+                        for c in (p.get("status") or {}).get("conditions") or [])
       if len(hits) > 1:
         blockers.append("%s matches %d PodDisruptionBudgets: the eviction API refuses a pod with more than one" % (label,len(hits)))
       for b in hits:
         allowed=(b.get("status") or {}).get("disruptionsAllowed") or 0
         if isinstance(allowed,bool) or not isinstance(allowed,int):
           raise ValueError("disruptionsAllowed must be an integer")
+        if allowed < 1 and unhealthy and (b.get("spec") or {}).get("unhealthyPodEvictionPolicy") == "AlwaysAllow":
+          # AlwaysAllow lets the eviction API remove a pod that is not
+          # Ready even when the budget allows no disruption.
+          continue
         if allowed < 1:
           blockers.append("%s: drain will wait forever: PDB %s/%s allows 0 disruptions" % (label,meta.get("namespace",""),b["metadata"]["name"]))
   if nodes is not None and evictable:

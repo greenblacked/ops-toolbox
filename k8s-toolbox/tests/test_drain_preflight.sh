@@ -41,15 +41,21 @@ def node(name='node-a', ready=True, unschedulable=False, taints=None):
     return {'metadata':{'name':name},'spec':spec,
             'status':{'conditions':[{'type':'Ready','status':'True' if ready else 'False',
                                      'reason':'KubeletReady' if ready else 'KubeletNotReady'}]}}
-def pod(name, owner='ReplicaSet', labels=None, volumes=None, phase='Running', ns='demo', annotations=None):
+def pod(name, owner='ReplicaSet', labels=None, volumes=None, phase='Running', ns='demo', annotations=None, ready=None):
     meta={'namespace':ns,'name':name,'labels':labels or {'app':'web'}}
     if owner:
         meta['ownerReferences']=[{'kind':owner,'name':name.rsplit('-',1)[0],'controller':True}]
     if annotations:
         meta['annotations']=annotations
-    return {'metadata':meta,'spec':{'nodeName':'node-a','volumes':volumes or []},'status':{'phase':phase}}
-def pdb(name, allowed, selector, ns='demo'):
-    return {'metadata':{'namespace':ns,'name':name},'spec':{'selector':selector,'minAvailable':1},
+    status={'phase':phase}
+    if ready is not None:
+        status['conditions']=[{'type':'Ready','status':'True' if ready else 'False'}]
+    return {'metadata':meta,'spec':{'nodeName':'node-a','volumes':volumes or []},'status':status}
+def pdb(name, allowed, selector, ns='demo', policy=None):
+    spec={'selector':selector,'minAvailable':1}
+    if policy:
+        spec['unhealthyPodEvictionPolicy']=policy
+    return {'metadata':{'namespace':ns,'name':name},'spec':spec,
             'status':{'disruptionsAllowed':allowed}}
 items=lambda *docs: {'items':list(docs)}
 save('node-ready', node())
@@ -65,6 +71,9 @@ save('pods-statefulset', items(pod('db-0',owner='StatefulSet',labels={'app':'db'
 save('pods-mirror', items(pod('kube-proxy-node-a',owner='Node',labels={'component':'kube-proxy'},
                               annotations={'kubernetes.io/config.mirror':'abc123'})))
 save('pods-terminal', items(pod('report-1',owner=None,phase='Succeeded'),pod('report-2',owner='Job',phase='Failed')))
+save('pods-unready', items(pod('web-7d9f8-abcde',ready=False),pod('web-7d9f8-fghij',ready=True)))
+save('pdb-zero-alwaysallow', items(pdb('web',0,{'matchLabels':{'app':'web'}},policy='AlwaysAllow')))
+save('pdb-zero-ifhealthy', items(pdb('web',0,{'matchLabels':{'app':'web'}},policy='IfHealthyBudget')))
 save('pdb-none', items())
 save('pdb-allows-one', items(pdb('web',1,{'matchLabels':{'app':'web'}})))
 save('pdb-zero', items(pdb('web',0,{'matchLabels':{'app':'web'}})))
@@ -187,6 +196,19 @@ do
   assert_contains "$fixture asks for the blockers to be resolved" 'blocker(s): resolve them before draining'
   assert_absent "$fixture is not called safe" 'safe to drain'
 done
+reset_fixtures
+export DRAIN_PODS=pods-unready DRAIN_PDB=pdb-zero-alwaysallow
+run_drain --node node-a
+assert_contains 'AlwaysAllow still blocks the Ready pod' 'BLOCKER   pod demo/web-7d9f8-fghij: drain will wait forever: PDB demo/web allows 0 disruptions'
+assert_absent 'AlwaysAllow lets the not-Ready pod go' 'BLOCKER   pod demo/web-7d9f8-abcde'
+reset_fixtures
+export DRAIN_PODS=pods-unready DRAIN_PDB=pdb-zero-ifhealthy
+run_drain --node node-a
+assert_contains 'IfHealthyBudget still blocks the not-Ready pod' 'BLOCKER   pod demo/web-7d9f8-abcde: drain will wait forever: PDB demo/web allows 0 disruptions'
+reset_fixtures
+export DRAIN_PODS=pods-unready DRAIN_PDB=pdb-zero
+run_drain --node node-a
+assert_contains 'no policy (default) still blocks the not-Ready pod' 'BLOCKER   pod demo/web-7d9f8-abcde: drain will wait forever: PDB demo/web allows 0 disruptions'
 reset_fixtures
 export DRAIN_PODS=pods-bare
 run_drain --node node-a
