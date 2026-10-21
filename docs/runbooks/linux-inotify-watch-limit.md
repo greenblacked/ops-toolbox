@@ -94,7 +94,8 @@ Pass `--backup-file`. Without it the backup is
 that is unset, which may not survive a reboot. A file you name stays where
 you put it. `--backup-file` refuses to overwrite a file that already exists
 and is not empty: `refusing to overwrite FILE`, exit `3`, before the drop-in
-is written.
+is written. If the backup file cannot be written, the script stops before
+changing anything.
 
 !!! warning "--only rewrites the whole drop-in"
     The drop-in is written from scratch with only the groups `--only`
