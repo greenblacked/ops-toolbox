@@ -236,7 +236,8 @@ changes nothing: every check is a read, and every finding comes with the
 command that fixes it, printed for you to run.
 
 ```text
-dotfiles_doctor.sh [--repo DIR] [--home DIR] [--config-home DIR] [--fail-on warn|fail] [--quiet]
+dotfiles_doctor.sh [--repo DIR] [--home DIR] [--config-home DIR] [--platform macos|linux]
+                   [--fail-on warn|fail] [--quiet]
 ```
 
 | Flag | Effect |
@@ -244,6 +245,7 @@ dotfiles_doctor.sh [--repo DIR] [--home DIR] [--config-home DIR] [--fail-on warn
 | `--repo DIR` | The dotfiles folder the links point into. Default: the folder the script sits in, when `config/` and `home/` are beside it. Copied alone into `~/bin`, or run through a link from there, it has none, and the link check is skipped with a `[skip]` line while everything else still runs. A `DIR` without `config/` and `home/` exits `2`. |
 | `--home DIR` | The home directory to inspect instead of `$HOME`. `config/` targets are then looked for under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, the same rule the installer follows. |
 | `--config-home DIR` | Where `config/` was installed, instead of `$XDG_CONFIG_HOME` or `~/.config`. |
+| `--platform NAME` | `macos` or `linux`, overriding `uname -s`. Only the `XDG_CONFIG_HOME` hook differs between them; the tests use it to check both on one host. Anything else exits `3`. |
 | `--fail-on LEVEL` | `fail` (default) exits `1` only on a `[FAIL]`; `warn` exits `1` on a `[warn]` too. |
 | `--quiet` | Print only warnings, failures and the closing count. |
 
@@ -301,6 +303,27 @@ counted in one `[skip] N of 11 credential files not present` line rather than
 listed. `~/.ssh` is deliberately not here:
 [`linux/ssh_client_doctor.sh`](../linux/ssh_client_doctor.sh) owns it and
 knows which of its files may be `644`.
+
+**Environment hooks.** Four configs are inert unless the shell exports a
+path (see [Environment variables](#environment-variables)), and installing
+the files without the exports is the most common silent failure: `rg` just
+ignores its config, gitleaks falls back to its defaults, and nobody sees an
+error. Each hook is checked only when its tool is on `PATH`, and is a
+`[skip]` otherwise:
+
+| Hook | Unset | Set |
+| --- | --- | --- |
+| `RIPGREP_CONFIG_PATH` (for `rg`) | `[warn]` with the `export` line to add | `[FAIL]` when the path does not exist (a dangling link included), `[pass]` when it does; a path other than the installed one is allowed and noted |
+| `GITLEAKS_CONFIG` (for `gitleaks`) | the same | the same |
+| `XDG_CONFIG_HOME` (for `k9s` or `brew`, macOS only) | `[warn]`: k9s reads `~/Library/Application Support/k9s` and brew no `brew.env` | `[warn]` when it names another directory than the one the configs went into, `[pass]` when it names that one |
+
+On Linux the `XDG_CONFIG_HOME` hook is a `[skip]`: both tools read
+`~/.config` there with no help. `trivy` gets one `[info]` line and never a
+verdict, because its config is reached through a shell alias and no script
+can see an alias. The doctor sees only **exported** variables, which is the
+same visibility `rg` and gitleaks have, so a variable assigned in the shell
+but never exported is reported as missing, correctly. It prints the
+`export` line; it never edits `~/.zshenv`.
 
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
 `2` preflight — no home directory, or a `--repo` without `config/` and
@@ -841,7 +864,15 @@ alone into a bin directory still running. The credential-file section writes
 a sentinel line into every fixture and asserts it never reaches the output:
 a `600` file passes, a `644` one warns with the `chmod 600` fix and is left
 at `644`, a `666` one fails, a link is judged by the file it leads to, and
-an empty home reports all eleven as not present. Every run is followed by a
+an empty home reports all eleven as not present. The environment-hook
+section puts stub `rg`, `gitleaks` and `k9s` commands ahead of `PATH` so the
+verdicts do not depend on the host: unexported variables warn with the
+`export` line, a variable leading to a file passes, one leading nowhere
+fails, `--platform macos` names `Application Support` until
+`XDG_CONFIG_HOME` matches the config directory, `--platform linux` skips that
+hook, and with a `PATH` of only the utilities the doctor calls, every hook is
+skipped as not installed. Every doctor run in the suite unsets the three
+variables first, so a developer's own exports never decide a verdict. Every run is followed by a
 snapshot comparison of the scratch home and tmp, because a doctor that
 writes is not read-only. Last, the real configs are installed into a
 scratch home and must give no finding at all, the false-positive guard for

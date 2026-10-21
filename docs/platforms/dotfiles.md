@@ -74,6 +74,8 @@ and each link into the folder that no tracked file installs to as `ORPHAN`;
 
 - Four configs are found only when your shell exports a path; the README has
   the environment variable block. The rest use default locations.
+  `dotfiles_doctor.sh` reports each export that is missing or leads nowhere,
+  for the tools that are on `PATH`, with the line to add.
 - Installs into `~/.ssh` and `~/.gnupg` enforce mode 700 on those directories.
 - Some tools are deliberately left out (pnpm, Maven, jfrog, argocd, gcloud
   credentials). The README gives the reasons.

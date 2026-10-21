@@ -14,6 +14,11 @@
 # tracks - ~/.aws/credentials, ~/.kube/config, gh hosts.yml and the rest - are
 # private on the machine, which nothing else in this repository looks at.
 #
+# And it checks the exports four configs depend on: ripgrep and gitleaks read
+# their config only through a variable, k9s and Homebrew on macOS only under
+# XDG_CONFIG_HOME, and without them the tool falls back to its defaults with
+# no error at all.
+#
 # It changes nothing: every check is a read, and every fix is a command
 # printed for you to run.
 #
@@ -33,6 +38,7 @@ REPO_ARG=""
 HOME_DIR="${HOME:-}"
 HOME_GIVEN=0
 CONFIG_DIR=""
+PLATFORM=""
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -61,14 +67,18 @@ Checks the configs install_dotfiles.sh linked into a home directory. Changes
 nothing: every finding comes with the command that fixes it, for you to run.
 
 Checks:
-  linked configs   no file that is a link into the repository holds a
-                   credential (reported by file and line, never by value)
-  credential files the files that hold tokens (aws, gh, kube, docker,
-                   terraform, netrc, argocd, jfrog, gcloud, azure) are not
-                   readable or writable by group or other
+  linked configs     no file that is a link into the repository holds a
+                     credential (reported by file and line, never by value)
+  credential files   the files that hold tokens (aws, gh, kube, docker,
+                     terraform, netrc, argocd, jfrog, gcloud, azure) are not
+                     readable or writable by group or other
+  environment hooks  RIPGREP_CONFIG_PATH and GITLEAKS_CONFIG are exported and
+                     lead to a file, and on macOS XDG_CONFIG_HOME names the
+                     config directory, for each tool that is on PATH
 
 Usage:
-  $(basename "$0") [--repo DIR] [--home DIR] [--config-home DIR] [--fail-on warn|fail] [--quiet]
+  $(basename "$0") [--repo DIR] [--home DIR] [--config-home DIR] [--platform macos|linux]
+                     [--fail-on warn|fail] [--quiet]
 
 Options:
   --repo DIR         The dotfiles folder the links point into (default: the
@@ -78,6 +88,7 @@ Options:
                      targets are then looked for under DIR/.config
   --config-home DIR  Where config/ was installed (default: \$XDG_CONFIG_HOME,
                      or ~/.config)
+  --platform NAME    macos or linux: override detection (used by the tests)
   --fail-on LEVEL    Exit 1 on 'fail' (default) or on 'warn' and above
   --quiet            Print only warnings and failures
   -h, --help         Show this help
@@ -107,6 +118,8 @@ while (( $# > 0 )); do
     --home=*)         HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR"; HOME_GIVEN=1 ;;
     --config-home)    require_value "$1" "${2:-}"; CONFIG_DIR="$2"; shift ;;
     --config-home=*)  CONFIG_DIR="${1#*=}"; require_value "--config-home" "$CONFIG_DIR" ;;
+    --platform)       require_value "$1" "${2:-}"; PLATFORM="$2"; shift ;;
+    --platform=*)     PLATFORM="${1#*=}"; require_value "--platform" "$PLATFORM" ;;
     --fail-on)        require_value "$1" "${2:-}"; FAIL_ON="$2"; shift ;;
     --fail-on=*)      FAIL_ON="${1#*=}"; require_value "--fail-on" "$FAIL_ON" ;;
     *)
@@ -121,6 +134,13 @@ done
 case "$FAIL_ON" in
   warn|fail) ;;
   *) err "--fail-on must be warn or fail, got: $FAIL_ON"; exit 3 ;;
+esac
+if [[ -z "$PLATFORM" ]]; then
+  if [[ "$(uname -s)" == "Darwin" ]]; then PLATFORM="macos"; else PLATFORM="linux"; fi
+fi
+case "$PLATFORM" in
+  macos|linux) ;;
+  *) err "--platform must be macos or linux, got: $PLATFORM"; exit 3 ;;
 esac
 
 # --- preflight -------------------------------------------------------------
@@ -314,9 +334,62 @@ check_credential_files() {
   return 0
 }
 
+# One exported path a config depends on, checked only when its tool is on
+# PATH. Only an exported variable is visible here - the same visibility rg and
+# gitleaks have - so an assignment the shell never exported is reported, as
+# it should be. A path other than the installed one is allowed and said so.
+check_path_hook() {
+  local var="$1" value="$2" want="$3" tool="$4"
+  if ! command -v "$tool" >/dev/null 2>&1; then
+    skip "$var: $tool not installed"
+    return 0
+  fi
+  if [[ -z "$value" ]]; then
+    warn "$var is not exported: $tool will not read $want" "export $var=\"$want\""
+  elif [[ ! -e "$value" ]]; then
+    fail "$var points at $value, which does not exist" "export $var=\"$want\""
+  else
+    pass "$var points at $value"
+    [[ "$value" == "$want" ]] || info "$var is not the installed $want; that is allowed"
+  fi
+  return 0
+}
+
+check_environment_hooks() {
+  group "environment hooks"
+  check_path_hook RIPGREP_CONFIG_PATH "${RIPGREP_CONFIG_PATH:-}" "$CONFIG_DIR/ripgrep/config" rg
+  check_path_hook GITLEAKS_CONFIG "${GITLEAKS_CONFIG:-}" "$CONFIG_DIR/gitleaks/gitleaks.toml" gitleaks
+
+  # On Linux both tools read ~/.config on their own. On macOS k9s reads
+  # ~/Library/Application Support/k9s and brew reads brew.env only from
+  # $XDG_CONFIG_HOME/homebrew, so the configs installed here are inert there
+  # unless the variable names the directory they were installed into.
+  local xdg="${XDG_CONFIG_HOME:-}"
+  if [[ "$PLATFORM" != "macos" ]]; then
+    skip "XDG_CONFIG_HOME: only needed on macOS"
+  elif ! command -v k9s >/dev/null 2>&1 && ! command -v brew >/dev/null 2>&1; then
+    skip "XDG_CONFIG_HOME: neither k9s nor brew installed"
+  elif [[ -z "$xdg" ]]; then
+    warn "XDG_CONFIG_HOME is not exported: k9s reads ~/Library/Application Support/k9s and brew reads no brew.env, not $CONFIG_DIR/k9s and $CONFIG_DIR/homebrew" \
+      "export XDG_CONFIG_HOME=\"$CONFIG_DIR\"  (in ~/.zshenv, so a terminal opened from the Dock sees it too)"
+  elif [[ "${xdg%/}" != "${CONFIG_DIR%/}" ]]; then
+    warn "XDG_CONFIG_HOME is $xdg, but the configs were installed under $CONFIG_DIR" \
+      "export XDG_CONFIG_HOME=\"$CONFIG_DIR\"  (or reinstall with --config-home $xdg)"
+  else
+    pass "XDG_CONFIG_HOME is $CONFIG_DIR"
+  fi
+
+  # An alias is a property of the interactive shell; no script can see one.
+  if command -v trivy >/dev/null 2>&1; then
+    info "trivy reads only ./trivy.yaml; its alias must name $CONFIG_DIR/trivy/trivy.yaml (a script cannot see shell aliases)"
+  fi
+  return 0
+}
+
 # --- main ------------------------------------------------------------------
 check_linked_configs
 check_credential_files
+check_environment_hooks
 
 printf "\n%s%s pass%s, %s%s warn%s, %s%s fail%s, %s%s skip%s\n" \
   "$C_GREEN" "$PASS_COUNT" "$C_RESET" \

@@ -67,12 +67,15 @@ T="$scratch/tmp"
 R="$scratch/repo"
 mkdir -p "$H" "$T"
 
-# Every doctor run gets the scratch home and tmp, and no XDG_CONFIG_HOME: with
-# --home the doctor ignores it by design, and a test must never be able to
-# reach the developer's real config directory whatever the shell exports.
+# Every doctor run gets the scratch home and tmp, and none of the variables
+# the doctor reads: with --home it ignores XDG_CONFIG_HOME by design, a test
+# must never be able to reach the developer's real config directory whatever
+# the shell exports, and an exported RIPGREP_CONFIG_PATH or GITLEAKS_CONFIG
+# would turn the environment-hook verdicts into the developer's own.
+NOENV=(-u XDG_CONFIG_HOME -u RIPGREP_CONFIG_PATH -u GITLEAKS_CONFIG)
 run_doctor_in() {
   local home="$1"; shift
-  guard env -u XDG_CONFIG_HOME HOME="$home" TMPDIR="$T" "$DOCTOR" --home "$home" "$@"
+  guard env "${NOENV[@]}" HOME="$home" TMPDIR="$T" "$DOCTOR" --home "$home" "$@"
 }
 run_doctor() { run_doctor_in "$H" "$@"; }
 
@@ -113,7 +116,7 @@ run_doctor --fail-on bogus >/dev/null 2>&1; rc=$?
 assert_rc "--fail-on bogus exits 3" 3 "$rc"
 guard "$DOCTOR" --repo >/dev/null 2>&1; rc=$?
 assert_rc "--repo without a value exits 3" 3 "$rc"
-guard env -u XDG_CONFIG_HOME HOME="$H" TMPDIR="$T" "$DOCTOR" --home "$scratch/does-not-exist" >/dev/null 2>&1; rc=$?
+guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" "$DOCTOR" --home "$scratch/does-not-exist" >/dev/null 2>&1; rc=$?
 assert_rc "a missing home directory exits 2" 2 "$rc"
 make_fixture
 out="$(run_doctor --repo="$R" 2>&1)"; rc=$?
@@ -194,7 +197,7 @@ assert_rc "--fail-on=warn is accepted" 1 "$rc"
 make_fixture
 mkdir -p "$scratch/bin"
 cp "$DOCTOR" "$scratch/bin/dotfiles_doctor.sh"
-out="$(guard env -u XDG_CONFIG_HOME HOME="$H" TMPDIR="$T" "$scratch/bin/dotfiles_doctor.sh" --home "$H" 2>&1)"; rc=$?
+out="$(guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" "$scratch/bin/dotfiles_doctor.sh" --home "$H" 2>&1)"; rc=$?
 assert_rc "a copy alone in a bin directory exits 0" 0 "$rc"
 assert_contains "the link check is skipped with no repository beside it" "$out" "[skip] linked configs: no config/ and home/ beside this script"
 
@@ -252,6 +255,79 @@ assert_rc "a link to a private file exits 0" 0 "$rc"
 assert_contains "a link is judged by the file it leads to" "$out" "[pass] $H/.config/gh/hosts.yml mode 600"
 
 assert_not_contains "no credential file content reached the output" "$all_out" "$SENTINEL"
+
+# --------------------------------------------------------------------------
+head_ "environment hooks"
+# Stub commands decide which tools are "installed", so the verdicts do not
+# depend on what the host has. A stub only has to exist; nothing runs it.
+STUBS="$scratch/stubs"
+mkdir -p "$STUBS"
+stub() { printf '#!/bin/sh\nexit 0\n' > "$STUBS/$1"; chmod +x "$STUBS/$1"; }
+stub rg
+stub gitleaks
+rm -rf "$H"; mkdir -p "$H/.config/ripgrep" "$H/.config/gitleaks"
+: > "$H/.config/ripgrep/config"
+: > "$H/.config/gitleaks/gitleaks.toml"
+
+# hooks [VAR=value ...] -- [doctor flags ...]: the variables for this one run
+# on top of a clean environment, with the stubs ahead of the host PATH.
+hooks() {
+  local vars=()
+  while (( $# > 0 )) && [[ "$1" != "--" ]]; do vars+=("$1"); shift; done
+  [[ "${1:-}" == "--" ]] && shift
+  guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" PATH="$STUBS:$PATH" ${vars[@]+"${vars[@]}"} "$DOCTOR" --home "$H" "$@"
+}
+
+before="$(snapshot "$H" "$T")"
+out="$(hooks -- --platform linux 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "unexported hooks are warnings, exit 0" 0 "$rc"
+assert_contains "an unexported RIPGREP_CONFIG_PATH is reported" "$out" "[warn] RIPGREP_CONFIG_PATH is not exported: rg will not read $H/.config/ripgrep/config"
+assert_contains "the export line is printed" "$out" "export RIPGREP_CONFIG_PATH=\"$H/.config/ripgrep/config\""
+assert_contains "an unexported GITLEAKS_CONFIG is reported" "$out" "[warn] GITLEAKS_CONFIG is not exported"
+if [[ "$before" == "$after" ]]; then ok "the hook check wrote nothing"; else err "the hook check wrote into the home or tmp"; fi
+hooks -- --platform linux --fail-on warn >/dev/null 2>&1; rc=$?
+assert_rc "--fail-on warn exits 1 on an unexported hook" 1 "$rc"
+
+out="$(hooks RIPGREP_CONFIG_PATH="$H/.config/ripgrep/config" GITLEAKS_CONFIG="$H/.config/gitleaks/gitleaks.toml" -- --platform linux 2>&1)"; rc=$?
+assert_rc "exported hooks that lead to a file exit 0" 0 "$rc"
+assert_contains "RIPGREP_CONFIG_PATH passes" "$out" "[pass] RIPGREP_CONFIG_PATH points at $H/.config/ripgrep/config"
+assert_contains "GITLEAKS_CONFIG passes" "$out" "[pass] GITLEAKS_CONFIG points at $H/.config/gitleaks/gitleaks.toml"
+
+out="$(hooks RIPGREP_CONFIG_PATH="$H/nowhere/config" -- --platform linux 2>&1)"; rc=$?
+assert_rc "RIPGREP_CONFIG_PATH at a missing file exits 1" 1 "$rc"
+assert_contains "the missing ripgrep config is named" "$out" "[FAIL] RIPGREP_CONFIG_PATH points at $H/nowhere/config, which does not exist"
+out="$(hooks GITLEAKS_CONFIG="$H/nowhere/gitleaks.toml" -- --platform linux 2>&1)"; rc=$?
+assert_rc "GITLEAKS_CONFIG at a missing file exits 1" 1 "$rc"
+assert_contains "the missing gitleaks config is named" "$out" "[FAIL] GITLEAKS_CONFIG points at $H/nowhere/gitleaks.toml, which does not exist"
+
+stub k9s
+out="$(hooks -- --platform macos 2>&1)"; rc=$?
+assert_rc "an unexported XDG_CONFIG_HOME on macOS is a warning, exit 0" 0 "$rc"
+assert_contains "the macOS fallback path is named" "$out" "Application Support"
+out="$(hooks XDG_CONFIG_HOME="$H/.config" -- --platform=macos 2>&1)"; rc=$?
+assert_rc "--platform=macos is accepted" 0 "$rc"
+assert_contains "XDG_CONFIG_HOME naming the config directory passes" "$out" "[pass] XDG_CONFIG_HOME is $H/.config"
+out="$(hooks XDG_CONFIG_HOME="$scratch/elsewhere" -- --platform macos 2>&1)"
+assert_contains "XDG_CONFIG_HOME naming another directory is reported" "$out" "XDG_CONFIG_HOME is $scratch/elsewhere, but the configs were installed under $H/.config"
+out="$(hooks -- --platform linux 2>&1)"
+assert_contains "XDG_CONFIG_HOME is a macOS-only hook" "$out" "[skip] XDG_CONFIG_HOME: only needed on macOS"
+hooks -- --platform bogus >/dev/null 2>&1; rc=$?
+assert_rc "--platform bogus exits 3" 3 "$rc"
+
+# No stub and no host tool: a PATH of only the utilities the doctor calls,
+# linked one by one, and the doctor started through $BASH so env needs no
+# PATH lookup of its own.
+MINBIN="$scratch/minbin"
+mkdir -p "$MINBIN"
+for u in awk basename cat cut dirname find grep id readlink sed sort stat uname; do
+  p="$(command -v "$u" || true)"
+  [[ -n "$p" && "$p" == /* ]] && ln -s "$p" "$MINBIN/$u"
+done
+out="$(guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" PATH="$MINBIN" "$BASH" "$DOCTOR" --home "$H" --platform linux 2>&1)"; rc=$?
+assert_rc "no tools on PATH exits 0" 0 "$rc"
+assert_contains "a missing rg is skipped" "$out" "[skip] RIPGREP_CONFIG_PATH: rg not installed"
+assert_contains "a missing gitleaks is skipped" "$out" "[skip] GITLEAKS_CONFIG: gitleaks not installed"
 
 # --------------------------------------------------------------------------
 head_ "the shipped tree is clean"
