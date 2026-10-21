@@ -40,6 +40,7 @@ and each link into the folder that no tracked file installs to as `ORPHAN`;
 
     ```bash
     ./dotfiles/install_dotfiles.sh --dry-run
+    ./dotfiles/install_dotfiles.sh --dry-run --only @server   # a jump host: no GUI, no k9s
     ```
 
 === "Check"

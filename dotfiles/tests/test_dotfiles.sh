@@ -128,6 +128,64 @@ xdg_list="$(HOME="$H" XDG_CONFIG_HOME="$scratch/xdg" "$SCRIPT" --list 2>&1)"
 assert_contains "without --home, XDG_CONFIG_HOME is honoured" "$xdg_list" "$scratch/xdg/"
 
 # --------------------------------------------------------------------------
+head_ "groups"
+# The units of a --list run, one per line, header dropped.
+list_units() { awk 'NR > 1 { print $1 }' <<<"$1" | sort -u | tr '\n' ' '; }
+
+groups_out="$(run_installer --groups 2>&1)"; rc=$?
+assert_rc "--groups exits 0" 0 "$rc"
+for g in shell terminal git access k8s cloud scanners packages server; do
+  assert_contains "--groups lists @$g" "$groups_out" $'\n'"$g "
+done
+
+# Every row, read from --groups itself: --only @NAME must select exactly the
+# units the row names, no more and no fewer.
+n_groups=0
+covered=" "
+while read -r g members; do
+  [[ -z "$g" || "$g" == "GROUP" ]] && continue
+  n_groups=$((n_groups + 1))
+  [[ "$g" == "server" ]] || covered="$covered$members "
+  out="$(run_installer --list --only "@$g" 2>&1)"; rc=$?
+  [[ "$rc" == 0 ]] || err "--list --only @$g exited $rc"
+  got="$(list_units "$out")"
+  want="$(tr ' ' '\n' <<<"$members" | sort -u | tr '\n' ' ')"
+  if [[ "$got" == "$want" ]]; then ok "@$g selects exactly its units"; else err "@$g selects '$got', expected '$want'"; fi
+done <<< "$groups_out"
+(( n_groups > 0 )) || err "--groups listed no group"
+
+# Whoever adds a config has to place it: every unit belongs to some group
+# other than server, the way every file needs a README heading.
+bad=0
+for u in "${units[@]}"; do
+  [[ "$covered" == *" $u "* ]] || { err "unit $u is in no group but server; add it to group_units()"; bad=1; }
+done
+(( bad == 0 )) && ok "every unit belongs to a group"
+
+run_installer --list --only @nope >/dev/null 2>&1; rc=$?
+assert_rc "an unknown group exits 3" 3 "$rc"
+out="$(run_installer --list --only @nope 2>&1)"
+assert_contains "an unknown group is named" "$out" "no such group: @nope"
+run_installer --list --only @ >/dev/null 2>&1; rc=$?
+assert_rc "an empty group name exits 3" 3 "$rc"
+out="$(run_installer --list --only @k8s,starship 2>&1)"; rc=$?
+assert_rc "a group and a unit combine" 0 "$rc"
+assert_contains "a group and a unit combine" "$(list_units "$out")" "k9s kube starship "
+
+before="$(snapshot "$H" "$T")"
+out="$(run_installer --dry-run --only @server 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "--dry-run --only @server exits 0" 0 "$rc"
+assert_contains "@server previews the ssh config" "$out" "(dry-run) ln -s $D/home/.ssh/config"
+assert_contains "@server previews the git config" "$out" "(dry-run) ln -s $D/config/git/config"
+if [[ "$out" == *kitty* ]]; then err "@server previewed kitty"; else ok "@server leaves the GUI terminals out"; fi
+if [[ "$before" == "$after" ]]; then ok "--dry-run --only @server wrote nothing"; else err "--dry-run --only @server wrote into the home or tmp"; fi
+run_installer --groups --dry-run >/dev/null 2>&1; rc=$?
+assert_rc "--groups --dry-run exits 3" 3 "$rc"
+run_installer --groups --status >/dev/null 2>&1; rc=$?
+assert_rc "--groups --status exits 3" 3 "$rc"
+
+# --------------------------------------------------------------------------
 head_ "a dry run writes nothing"
 before="$(snapshot "$H" "$T")"
 out="$(run_installer --dry-run 2>&1)"; rc=$?

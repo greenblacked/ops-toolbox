@@ -40,6 +40,7 @@ UNINSTALL=0
 LIST=0
 DIFF=0
 PRUNE=0
+GROUPS_MODE=0
 FORCE=0
 QUIET=0
 HOME_DIR="${HOME:-}"
@@ -73,6 +74,7 @@ Usage:
   $(basename "$0") --list      [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
+  $(basename "$0") --groups
 
 Options:
   --dry-run          Show what would change; write nothing
@@ -85,10 +87,12 @@ Options:
                      CONFLICT or FOREIGN file; write nothing. Exit 4 if any differ
   --prune            Remove ORPHAN links: links into this folder at a path no
                      tracked file installs to, left by a rename or a delete
+  --groups           Print each @GROUP and the units in it, then exit
   --force            Move a file that is in the way to NAME.backup-TIMESTAMP, then install
   --only UNIT        Limit to one unit (repeatable, or comma-separated): a tool
                      directory under config/ such as k9s, or a dotfile under home/
-                     with its leading dot dropped, such as ssh or terraformrc
+                     with its leading dot dropped, such as ssh or terraformrc,
+                     or @GROUP, see --groups
   --home DIR         Install into DIR instead of \$HOME; config/ then goes under DIR/.config
   --config-home DIR  Install config/ into DIR instead of \$XDG_CONFIG_HOME or ~/.config
   --quiet            Suppress informational and success output (errors remain)
@@ -118,6 +122,7 @@ while (( $# > 0 )); do
     --list)           LIST=1 ;;
     --diff)           DIFF=1 ;;
     --prune)          PRUNE=1 ;;
+    --groups)         GROUPS_MODE=1 ;;
     --force)          FORCE=1 ;;
     --quiet)          QUIET=1 ;;
     --only)           require_value "$1" "${2:-}"; ONLY="${ONLY:+$ONLY,}$2"; shift ;;
@@ -135,12 +140,12 @@ while (( $# > 0 )); do
   shift
 done
 
-modes=$(( STATUS + UNINSTALL + LIST + DIFF + PRUNE ))
+modes=$(( STATUS + UNINSTALL + LIST + DIFF + PRUNE + GROUPS_MODE ))
 if (( modes > 1 )); then
   err "the mode flags are separate modes; choose one"
   exit 3
 fi
-if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1 || DIFF == 1) )); then
+if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1 || DIFF == 1 || GROUPS_MODE == 1) )); then
   err "--dry-run only applies to install, --uninstall and --prune"
   exit 3
 fi
@@ -158,7 +163,8 @@ if [[ -z "$HOME_DIR" ]]; then
   err "\$HOME is not set; pass --home DIR"
   exit 2
 fi
-if (( LIST == 0 )) && [[ ! -d "$HOME_DIR" ]]; then
+# --list and --groups only print the tables, so neither needs the home to exist.
+if (( LIST == 0 && GROUPS_MODE == 0 )) && [[ ! -d "$HOME_DIR" ]]; then
   err "home directory does not exist: $HOME_DIR"
   exit 2
 fi
@@ -222,11 +228,41 @@ target_of() {
   esac
 }
 
-# --only, parsed once into an array; empty means everything.
+# Named groups of units for --only @NAME, by the role of the machine rather
+# than by tool, so "what a jump host needs" is one reviewed list here instead
+# of a line in somebody's shell history. The suite fails when a unit belongs
+# to no group but server, so a config added later has to be placed. A member
+# that no longer exists fails the "no such unit" check below with exit 3
+# rather than silently shrinking the group.
+GROUP_NAMES="shell terminal git access k8s cloud scanners packages server"
+group_units() {
+  case "$1" in
+    shell)    printf '%s\n' "starship bat ripgrep ncdu thefuck nvim homebrew" ;;
+    terminal) printf '%s\n' "kitty alacritty" ;;
+    git)      printf '%s\n' "git gh gitleaks" ;;
+    access)   printf '%s\n' "ssh gnupg" ;;
+    k8s)      printf '%s\n' "k9s kube" ;;
+    cloud)    printf '%s\n' "aws terraformrc docker" ;;
+    scanners) printf '%s\n' "trivy grype syft gitleaks" ;;
+    packages) printf '%s\n' "npmrc pip homebrew" ;;
+    # A jump host or a CI box: no GUI terminal, no k9s, no Homebrew.
+    server)   printf '%s\n' "git ssh gnupg bat ripgrep ncdu nvim pip" ;;
+    *)        return 1 ;;
+  esac
+}
+
+# --only, parsed once into an array; empty means everything. An @NAME entry
+# expands to its group's units; duplicates are harmless.
 only_units=()
 if [[ -n "$ONLY" ]]; then
   while IFS= read -r u; do
-    [[ -n "$u" ]] && only_units+=("$u")
+    [[ -n "$u" ]] || continue
+    if [[ "$u" == @* ]]; then
+      members="$(group_units "${u#@}")" || { err "no such group: $u (see --groups)"; exit 3; }
+      for m in $members; do only_units+=("$m"); done
+    else
+      only_units+=("$u")
+    fi
   done < <(printf '%s\n' "$ONLY" | tr ',' '\n')
 fi
 
@@ -390,6 +426,14 @@ orphans() {
 }
 
 # --- modes -----------------------------------------------------------------
+do_groups() {
+  local g
+  printf '%-10s %s\n' "GROUP" "UNITS"
+  for g in $GROUP_NAMES; do
+    printf '%-10s %s\n' "$g" "$(group_units "$g")"
+  done
+}
+
 do_list() {
   local f mode
   printf '%-14s %-6s %-28s %s\n' "UNIT" "MODE" "SOURCE" "TARGET"
@@ -614,7 +658,9 @@ do_prune() {
 }
 
 # --- main ------------------------------------------------------------------
-if (( LIST )); then
+if (( GROUPS_MODE )); then
+  do_groups
+elif (( LIST )); then
   do_list
 elif (( STATUS )); then
   do_status

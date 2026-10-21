@@ -103,6 +103,7 @@ install_dotfiles.sh --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--co
 install_dotfiles.sh --list
 install_dotfiles.sh --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh --groups
 ```
 
 | Flag | Effect |
@@ -114,7 +115,8 @@ install_dotfiles.sh --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--co
 | `--list` | Every tracked file with its unit name, `link` or `copy`, and its target. Needs no home directory. |
 | `--diff` | For each `DRIFT`, `CONFLICT` or `FOREIGN` file, the `--status` header line and then a unified diff of the tracked source (`-`) against what is on disk (`+`), with credential values replaced by `<redacted>`. A directory or a link out of this folder gets a one-line note instead of a diff. Writes nothing. Exit `4` if any file differs. |
 | `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`. |
-| `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). An unknown unit exits `3`. |
+| `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). `@GROUP` selects a named group of units, see [Groups](#groups), and mixes with unit names (`--only @k8s,starship`). An unknown unit or group exits `3`. |
+| `--groups` | Print each group and the units in it, then exit. Read-only and needs no home directory. |
 | `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, because a caller pointing at another home wants everything under it; without `--home`, `XDG_CONFIG_HOME` is honoured. |
 | `--config-home DIR` | Put `config/` under `DIR` instead. |
 | `--quiet` | Suppress `[info]` and `[ ok ]` lines; warnings, errors and dry-run previews remain. |
@@ -140,6 +142,37 @@ and replaces an existing file by default and reserves `--force` for a
 line-ending override. This one refuses to touch an existing file unless
 `--force` says so, because a config already in `~/.config` is more likely to
 be deliberate than a stray `.bashrc` on a fresh Windows machine.
+
+### Groups
+
+Unit names follow the tools, and a machine is chosen by its role, so
+`--only` also takes a group: `--only @server` is everything a jump host
+needs and nothing it does not. The table lives in `group_units()` next to
+the file table, so it travels with the script into `~/bin`.
+
+| Group | Units |
+| --- | --- |
+| `@shell` | `starship` `bat` `ripgrep` `ncdu` `thefuck` `nvim` `homebrew` |
+| `@terminal` | `kitty` `alacritty` |
+| `@git` | `git` `gh` `gitleaks` |
+| `@access` | `ssh` `gnupg` |
+| `@k8s` | `k9s` `kube` |
+| `@cloud` | `aws` `terraformrc` `docker` |
+| `@scanners` | `trivy` `grype` `syft` `gitleaks` |
+| `@packages` | `npmrc` `pip` `homebrew` |
+| `@server` | `git` `ssh` `gnupg` `bat` `ripgrep` `ncdu` `nvim` `pip` — no GUI terminal, no k9s, no Homebrew |
+
+```bash
+./install_dotfiles.sh --groups                      # the table above, from the script
+./install_dotfiles.sh --dry-run --only @server      # preview a jump host
+./install_dotfiles.sh --only @k8s,@cloud,starship   # groups and units mix
+```
+
+A group is pure selection: it only narrows what the other modes touch.
+An unknown group exits `3`, and so does a group that names a unit no longer
+in the repository, before anything is written. The suite fails when a unit
+belongs to no group but `@server`, so a config added later has to be
+placed.
 
 **Folding a change back.** k9s rewrites `config.yaml` on every exit, and
 `aws configure`, `docker login` and `gh config set` rewrite theirs, so a copy
@@ -754,7 +787,10 @@ diff header, nothing for matching files, a note instead of diff noise for a
 directory, a docker `auth` value redacted), a
 drifted `~/.ssh` mode repaired by install, `--status` reporting a dangling
 orphan and an untracked link into this folder as `ORPHAN` but neither a link
-to `/etc/hosts` nor a backup link, `--only` filtering orphans by unit,
+to `/etc/hosts` nor a backup link, `--only` filtering orphans by unit, every `--groups` row selecting exactly
+its units through `--only @NAME` and every unit placed in a group other than
+`@server`, an unknown or empty group exiting `3`, `--dry-run --only @server`
+previewing ssh and git but no terminal and writing nothing,
 `--prune --dry-run` writing nothing, `--prune` removing exactly the two
 orphans and keeping the emptied directory, a second `--prune` finding none,
 and an uninstall that removes
