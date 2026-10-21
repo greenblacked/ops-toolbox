@@ -11,6 +11,10 @@
                 guess. Read-only.
       backup    Export a distro to a dated .tar (wsl --export). Safe to run
                 while the distro is running. Writes a SHA-256 sidecar.
+                -All exports every registered distro under one timestamp,
+                skipping Docker Desktop's internal distros, and carries on
+                past a failed export. -DryRun prints the plan with sizes and
+                writes nothing, not even -DestDir.
       verify-backup
                 Verify a -Tar against the .sha256 sidecar written by backup.
       restore   Import a .tar back as a NEW distro (wsl --import). It never
@@ -22,12 +26,15 @@
       compact   Shrink a distro's VHDX after deleting files inside it (WSL2
                 virtual disks grow but never shrink on their own). Shuts WSL
                 down first, then compacts via diskpart. Needs elevation.
+                -DryRun names the distros the shutdown would stop and the
+                disk it would compact, elevated or not.
       sparse    Newer alternative to compact: mark the VHDX sparse so it
                 returns space to Windows automatically from then on
                 (wsl --manage <distro> --set-sparse true).
       terminate Stop ONE distro (wsl --terminate). The other distros and the
                 utility VM keep running.
       shutdown  Stop all WSL distros and the VM (frees the RAM WSL holds).
+                -DryRun names the distros it would stop.
       wslconfig Audit %USERPROFILE%\.wslconfig: no memory cap, keys WSL
                 silently ignores (wrong section, typo, single backslashes in
                 a path), values that do not parse. Read-only and offline: it
@@ -41,9 +48,11 @@
     .\wsl_manage.ps1 list
     .\wsl_manage.ps1 df
     .\wsl_manage.ps1 backup -Distro Ubuntu -DestDir D:\Backups
+    .\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun
     .\wsl_manage.ps1 verify-backup -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
     .\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
     .\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
+    .\wsl_manage.ps1 compact -Distro Ubuntu -DryRun
     .\wsl_manage.ps1 compact -Distro Ubuntu
     .\wsl_manage.ps1 sparse -Distro Ubuntu
     .\wsl_manage.ps1 terminate -Distro Ubuntu
@@ -56,6 +65,7 @@
     Exit codes:
       0  success (wslconfig: the report ran; warnings alone do not change it)
       1  the underlying wsl/diskpart command failed
+         (backup -All: one or more exports failed; the rest still ran)
          (wslconfig -Strict: one or more WARN findings)
       2  WSL is not installed or not operational
       3  bad arguments (no -Distro, no such distro, missing or unusable -Tar,
@@ -92,7 +102,9 @@ param(
     [int]$KeepLast = 2,                            # prune-backups: keep this many per distro
     [switch]$Force,   # df: start stopped distros to measure them
                       # prune-backups: delete without asking
-    [switch]$DryRun,  # restore, prune-backups, terminate: report, change nothing
+    [switch]$DryRun,  # backup, restore, prune-backups, compact, sparse,
+                      # terminate, shutdown: report, change nothing
+    [switch]$All,     # backup only: export every registered distro
     [switch]$Off,     # sparse only: pass to set sparse=false instead of true
     [switch]$AllowUnverified, # restore only: import a tar with no .sha256 sidecar
     [string]$ConfigFile,      # wslconfig: audit this file instead of %USERPROFILE%\.wslconfig
@@ -220,6 +232,108 @@ function Get-BackupFile {
                 }
             }
         } | Where-Object { -not $Name -or $_.Distro -eq $Name }
+}
+
+# Free bytes on the drive that holds $Path, or $null when that cannot be
+# known: a UNC share, a drive that is not there, or any error at all. $null
+# turns the free-space checks off rather than guessing.
+function Get-FreeSpace {
+    param([string]$Path)
+    try {
+        $full = [IO.Path]::GetFullPath($Path)
+        if ($full.StartsWith('\\')) { return $null }
+        $root = [IO.Path]::GetPathRoot($full)
+        if (-not $root) { return $null }
+        return [long]([IO.DriveInfo]::new($root).AvailableFreeSpace)
+    } catch {
+        return $null
+    }
+}
+
+# What 'backup -All' would do, one row {Name, Out, Bytes, Verb, Reason} per
+# distro. Pure: the distros, the measured sizes and the free space are
+# parameters, so the contract tests can feed it any machine.
+#   SKIP   Docker Desktop's own distros. Docker manages and recreates them,
+#          and exporting its data distro is a multi-gigabyte copy of images.
+#   FAIL   the distro's measured use is more than the free space: the export
+#          cannot fit, so it is refused up front instead of failing half way.
+#   WARN   not measured (stopped), and its VHDX is larger than the free space.
+#          The VHDX is only an upper bound, so this exports anyway.
+#   EXPORT everything else.
+# One $Stamp for every row, so a set taken together is obvious from the names.
+function Get-BackupPlan {
+    param(
+        [object[]]$Distros,
+        [string]$DestDir,
+        [string]$Stamp,
+        [Nullable[long]]$FreeBytes,
+        [hashtable]$UsedByName = @{}
+    )
+    foreach ($d in $Distros) {
+        $out = Join-Path $DestDir ('{0}_{1}.tar' -f $d.Name, $Stamp)
+        $used = $null
+        if ($UsedByName.ContainsKey($d.Name)) { $used = $UsedByName[$d.Name] }
+        $bytes = if ($null -ne $used) { [long]$used } else { [long]$d.VhdxSize }
+        $verb = 'EXPORT'
+        $reason = if ($null -ne $used) { 'measured' } else { 'VHDX size, an upper bound' }
+
+        if ($d.Name -match '^docker-desktop(-data)?$') {
+            $verb = 'SKIP'
+            $reason = 'managed by Docker Desktop'
+        } elseif ($null -ne $FreeBytes -and $null -ne $used -and $used -gt $FreeBytes) {
+            $verb = 'FAIL'
+            $reason = 'needs ~{0}, {1} free' -f (Format-Size $used), (Format-Size $FreeBytes)
+        } elseif ($null -ne $FreeBytes -and $null -eq $used -and $d.VhdxSize -gt $FreeBytes) {
+            $verb = 'WARN'
+            $reason = 'VHDX is {0}, {1} free; the export is usually smaller' -f (Format-Size $d.VhdxSize), (Format-Size $FreeBytes)
+        }
+
+        [PSCustomObject]@{
+            Name   = $d.Name
+            Out    = $out
+            Bytes  = $bytes
+            Verb   = $verb
+            Reason = $reason
+        }
+    }
+}
+
+# What wsl.exe printed, as text for Write-Host. Inside a function its output
+# has to be captured, or it becomes part of the function's return value and
+# a $false reads as true. wsl.exe writes UTF-16, which arrives here with a NUL
+# after every character; dropping them leaves the message readable.
+function Format-WslOutput {
+    param([object[]]$Output)
+    return ((@($Output) -join "`n") -replace "`0", '').Trim()
+}
+
+# One export and its .sha256 sidecar: the body of the single-distro backup,
+# shared with -All. Returns $true or $false so -All can carry on past a
+# failure; the single-distro path turns $false into exit 1 as it always did.
+function Invoke-DistroBackup {
+    param(
+        [string]$Name,
+        [string]$Out
+    )
+    Write-Host "Exporting '$Name' -> $Out (this can take a while)..."
+    $said = Format-WslOutput (wsl.exe --export $Name $Out)
+    if ($said) { Write-Host $said }
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "wsl --export failed (exit $LASTEXITCODE)" -ErrorAction Continue
+        return $false
+    }
+    $hash = (Get-FileHash -LiteralPath $Out -Algorithm SHA256).Hash.ToLowerInvariant()
+    Set-Content -LiteralPath "$Out.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($Out))"
+    return $true
+}
+
+# Distros that are Running now, for the preview lines of the actions that
+# would stop them.
+function Get-RunningDistroText {
+    $states = Get-DistroState
+    $running = @($states.Keys | Where-Object { $states[$_] -eq 'Running' } | Sort-Object)
+    if ($running) { return $running -join ', ' }
+    return 'none'
 }
 
 # Verify the sidecar emitted by `backup`. The filename on the sidecar line is
@@ -543,20 +657,93 @@ switch ($Action) {
     }
 
     'backup' {
+        if ($All -and $Distro) {
+            Write-Error '-All and -Distro are two ways of choosing what to back up; pass one of them.' -ErrorAction Continue
+            exit 3
+        }
+        $stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
+
+        if ($All -or $DryRun) {
+            $targets = if ($All) { @(Get-DistroInfo) } else { @(Resolve-Distro $Distro) }
+            if (-not $targets) {
+                Write-Host 'No registered distros.'
+                break
+            }
+            # Measuring runs df inside the distro, so only distros that are
+            # already running are measured; a stopped one is never started for
+            # it, the rule df follows too.
+            $states = Get-DistroState
+            $usedByName = @{}
+            foreach ($d in $targets) {
+                if ($states[$d.Name] -eq 'Running' -and $d.Name -notmatch '^docker-desktop(-data)?$') {
+                    $used = Get-DistroUsage $d.Name
+                    if ($null -ne $used) { $usedByName[$d.Name] = $used }
+                }
+            }
+            $plan = @(Get-BackupPlan -Distros $targets -DestDir $DestDir -Stamp $stamp `
+                -FreeBytes (Get-FreeSpace $DestDir) -UsedByName $usedByName)
+
+            if ($DryRun) {
+                foreach ($row in $plan) {
+                    $label = '{0} -> {1}' -f $row.Name, $row.Out
+                    switch ($row.Verb) {
+                        'SKIP' { Write-Host ('SKIP  {0,-44} {1}' -f $row.Name, $row.Reason) -ForegroundColor DarkGray }
+                        'FAIL' { Write-Host ('FAIL  {0,-44} {1}' -f $label, $row.Reason) -ForegroundColor Red }
+                        'WARN' {
+                            Write-Host ('WOULD {0,-44} {1,10}' -f $label, (Format-Size $row.Bytes)) -ForegroundColor Cyan
+                            Write-Host ('WARN  {0,-44} {1}' -f $row.Name, $row.Reason) -ForegroundColor Yellow
+                        }
+                        default { Write-Host ('WOULD {0,-44} {1,10}' -f $label, (Format-Size $row.Bytes)) -ForegroundColor Cyan }
+                    }
+                }
+                $would = @($plan | Where-Object { $_.Verb -eq 'EXPORT' -or $_.Verb -eq 'WARN' }).Count
+                Write-Host ("Dry run complete; {0} distro(s) would be exported, nothing was written." -f $would) -ForegroundColor Yellow
+                break
+            }
+
+            if (-not (Test-Path $DestDir)) {
+                New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+            }
+            $exported = 0
+            $skipped = 0
+            $failed = 0
+            foreach ($row in $plan) {
+                if ($row.Verb -eq 'SKIP') {
+                    Write-Host ('SKIP  {0,-44} {1}' -f $row.Name, $row.Reason) -ForegroundColor DarkGray
+                    $skipped++
+                    continue
+                }
+                if ($row.Verb -eq 'FAIL') {
+                    Write-Host ('FAIL  {0,-44} {1}' -f $row.Name, $row.Reason) -ForegroundColor Red
+                    $failed++
+                    continue
+                }
+                if ($row.Verb -eq 'WARN') {
+                    Write-Host ('WARN  {0,-44} {1}' -f $row.Name, $row.Reason) -ForegroundColor Yellow
+                }
+                # One bad distro must not stop the rest.
+                if (Invoke-DistroBackup -Name $row.Name -Out $row.Out) {
+                    Write-Host ('DONE  {0,-44} {1,10}' -f $row.Out, (Format-Size (Get-Item -LiteralPath $row.Out).Length)) -ForegroundColor Green
+                    $exported++
+                } else {
+                    # The half-written tar carries this run's stamp and no
+                    # sidecar; leaving it would look like a backup to prune.
+                    Remove-Item -LiteralPath $row.Out -Force -ErrorAction SilentlyContinue
+                    Write-Host ('FAIL  {0,-44} {1}' -f $row.Name, 'wsl --export failed') -ForegroundColor Red
+                    $failed++
+                }
+            }
+            Write-Host ("Exported {0}, skipped {1}, failed {2}" -f $exported, $skipped, $failed)
+            if ($failed -gt 0) { exit 1 }
+            break
+        }
+
         $info = Resolve-Distro $Distro
         if (-not (Test-Path $DestDir)) {
             New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
         }
-        $stamp = Get-Date -Format 'yyyy-MM-dd_HHmm'
         $out = Join-Path $DestDir "$($info.Name)_$stamp.tar"
-        Write-Host "Exporting '$($info.Name)' -> $out (this can take a while)..."
-        wsl.exe --export $info.Name $out
-        if ($LASTEXITCODE -ne 0) {
-            Write-Error "wsl --export failed (exit $LASTEXITCODE)" -ErrorAction Continue
-            exit 1
-        }
-        $hash = (Get-FileHash -LiteralPath $out -Algorithm SHA256).Hash.ToLowerInvariant()
-        Set-Content -LiteralPath "$out.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($out))"
+        if (-not (Invoke-DistroBackup -Name $info.Name -Out $out)) { exit 1 }
         Write-Host ("Done: {0} ({1})" -f $out, (Format-Size (Get-Item $out).Length)) -ForegroundColor Green
         Write-Host "Checksum: $out.sha256"
         Write-Host "Restore it with: .\wsl_manage.ps1 restore -Distro $($info.Name)-restored -Tar `"$out`""
@@ -724,9 +911,34 @@ switch ($Action) {
     }
 
     'compact' {
-        $isAdmin = ([Security.Principal.WindowsPrincipal] `
-            [Security.Principal.WindowsIdentity]::GetCurrent()
-        ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        try {
+            $isAdmin = ([Security.Principal.WindowsPrincipal] `
+                [Security.Principal.WindowsIdentity]::GetCurrent()
+            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+        } catch {
+            $isAdmin = $false
+        }
+        # The preview comes before the elevation check, so it answers in the
+        # unelevated shell people actually try it from, and says what a real
+        # run there would do.
+        if ($DryRun) {
+            $info = Resolve-Distro $Distro
+            $states = Get-DistroState
+            Write-Host ('WOULD stop WSL        (running: {0})' -f (Get-RunningDistroText)) -ForegroundColor Cyan
+            Write-Host ('WOULD compact          {0} (now {1})' -f $info.Vhdx, (Format-Size $info.VhdxSize)) -ForegroundColor Cyan
+            if ($states[$info.Name] -eq 'Running') {
+                $used = Get-DistroUsage $info.Name
+                if ($null -ne $used -and $info.VhdxSize -gt $used) {
+                    Write-Host ('      about {0} reclaimable (allocated {1}, used {2})' -f
+                        (Format-Size ($info.VhdxSize - $used)), (Format-Size $info.VhdxSize), (Format-Size $used)) -ForegroundColor Cyan
+                }
+            }
+            if (-not $isAdmin) {
+                Write-Host 'NOTE  this shell is not elevated; a real run would exit 4' -ForegroundColor Yellow
+            }
+            Write-Host 'Dry run complete; WSL was not stopped and no disk was touched.' -ForegroundColor Yellow
+            break
+        }
         if (-not $isAdmin) {
             Write-Error 'compact needs an elevated (Administrator) PowerShell - diskpart requirement.' -ErrorAction Continue
             exit 4
@@ -760,6 +972,10 @@ switch ($Action) {
     'sparse' {
         $info = Resolve-Distro $Distro
         $value = if ($Off) { 'false' } else { 'true' }
+        if ($DryRun) {
+            Write-Host ("WOULD set sparse={0} for '{1}'" -f $value, $info.Name) -ForegroundColor Cyan
+            break
+        }
         wsl.exe --manage $info.Name --set-sparse $value
         if ($LASTEXITCODE -ne 0) {
             Write-Error "wsl --manage --set-sparse failed (exit $LASTEXITCODE) - needs a recent WSL (wsl --update)." -ErrorAction Continue
@@ -783,6 +999,10 @@ switch ($Action) {
     }
 
     'shutdown' {
+        if ($DryRun) {
+            Write-Host ('WOULD stop WSL        (running: {0})' -f (Get-RunningDistroText)) -ForegroundColor Cyan
+            break
+        }
         wsl.exe --shutdown
         Write-Host 'WSL stopped (all distros + utility VM). RAM released.' -ForegroundColor Green
     }

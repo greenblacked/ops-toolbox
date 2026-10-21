@@ -13,6 +13,7 @@ throwing away the giant `.tar` exports once they have aged out.
 - [Why "compact" exists](#why-compact-exists)
 - [Usage](#usage)
 - [Actions](#actions)
+- [Backing up everything](#backing-up-everything)
 - [Restoring](#restoring)
 - [Pruning backups](#pruning-backups)
 - [.wslconfig audit](#wslconfig-audit)
@@ -58,6 +59,8 @@ compact would give back.
 
 # Dated .tar export (works while the distro is running):
 .\wsl_manage.ps1 backup -Distro Ubuntu -DestDir D:\Backups
+.\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun   # every distro, previewed
+.\wsl_manage.ps1 backup -All -DestDir D:\Backups
 .\wsl_manage.ps1 verify-backup -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
 
 # Bring one back as a new distro (see "Restoring" below - read it first):
@@ -69,6 +72,7 @@ compact would give back.
 .\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2
 
 # Shrink after deleting files inside the distro (elevated PowerShell):
+.\wsl_manage.ps1 compact -Distro Ubuntu -DryRun   # works unelevated
 .\wsl_manage.ps1 compact -Distro Ubuntu
 
 # Never think about it again (recent WSL): auto-return space from now on
@@ -93,18 +97,24 @@ compact would give back.
 | --- | --- | --- | --- |
 | `list` | no | no | Joins `wsl -l -v` state with VHDX paths/sizes from the registry. |
 | `df` | no | no | Allocated (VHDX file) against used (`df -Pk /` inside the distro), plus the reclaimable difference. Stopped distros show `-` unless `-Force` is passed, because measuring one starts it. |
-| `backup` | no | no | `wsl --export` to `<DestDir>\<distro>_<date>.tar`; prints the matching `restore` command. Default `DestDir`: `%USERPROFILE%\wsl-backups`. |
+| `backup` | no | no | `wsl --export` to `<DestDir>\<distro>_<date>.tar`; prints the matching `restore` command. Default `DestDir`: `%USERPROFILE%\wsl-backups`. `-All` exports every distro (see [Backing up everything](#backing-up-everything)); `-DryRun` prints the plan and writes nothing. |
 | `verify-backup` | no | no | Recomputes SHA-256 for `-Tar` and compares it with the `.sha256` sidecar written by `backup`. Does not require WSL to be running. |
 | `restore` | no | no | `wsl --import` of a `.tar` as a **new** distro. Needs `-Distro` (the new name) and `-Tar` (the file). `-DryRun` prints what it would register. |
 | `prune-backups` | no | no | Deletes aged-out `.tar` exports under `-DestDir`. `-DryRun` previews; a real run asks before deleting unless `-Force`. |
-| `compact` | **yes** | **yes** (all distros) | `wsl --shutdown`, then diskpart `compact vdisk`. Prints before/after/reclaimed. |
-| `sparse` | no | no | `wsl --manage <distro> --set-sparse true` — needs a recent WSL (`wsl --update` if it fails). |
+| `compact` | **yes** (not for `-DryRun`) | **yes** (all distros) | `wsl --shutdown`, then diskpart `compact vdisk`. Prints before/after/reclaimed. `-DryRun` names the running distros the shutdown would stop and the disk it would compact, and says when the shell is not elevated. |
+| `sparse` | no | no | `wsl --manage <distro> --set-sparse true` — needs a recent WSL (`wsl --update` if it fails). `-DryRun` prints the setting it would make. |
 | `terminate` | no | one distro | `wsl --terminate <distro>`. Kills that distro's processes; other distros and the utility VM keep running. |
-| `shutdown` | no | yes | Plain `wsl --shutdown`. |
+| `shutdown` | no | yes | Plain `wsl --shutdown`. `-DryRun` names the distros it would stop. |
 | `wslconfig` | no | no | Audits `%USERPROFILE%\.wslconfig` (or `-ConfigFile`): no memory cap, keys WSL ignores, values that do not parse. Read-only; needs no WSL. `-Template` prints a starter file. See [.wslconfig audit](#wslconfig-audit). |
 
+`-DryRun` previews every action that changes something: `backup`, `restore`,
+`prune-backups`, `compact`, `sparse`, `terminate` and `shutdown`. None of the
+previews calls `wsl --export`, `--import`, `--shutdown`, `--terminate`,
+`--manage` or diskpart.
+
 Exit codes: `0` success, `1` the underlying `wsl`/`diskpart` command failed
-(for `wslconfig -Strict`: at least one `WARN`), `2` WSL is not installed or not
+(for `backup -All`: one or more exports failed, the rest still ran; for
+`wslconfig -Strict`: at least one `WARN`), `2` WSL is not installed or not
 operational, `3` bad arguments (including a `-ConfigFile` that does not exist),
 `4` needs an elevated shell (`compact`).
 
@@ -117,6 +127,44 @@ it automatically and refuses both a mismatch and a missing sidecar, exiting `1`
 either way; an older export without one needs `-AllowUnverified`. Keep the tar
 and sidecar together when copying them. `prune-backups` removes a pruned tar's sidecar too,
 so retention does not leave checksum files behind.
+
+## Backing up everything
+
+Before a Windows reinstall, a WSL upgrade or a distro upgrade, the step is
+"export everything", and that used to be a loop written by hand.
+`backup -All` exports every registered distro into `-DestDir` under one
+timestamp, so the set is obvious from the names, and writes the same `.sha256`
+sidecar for each as a single `backup` does, so `verify-backup` and
+`restore -Tar` work on the results unchanged.
+
+```powershell
+.\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun
+```
+
+```text
+WOULD Ubuntu -> D:\Backups\Ubuntu_2026-10-21_1830.tar    4.20 GB
+WOULD Debian -> D:\Backups\Debian_2026-10-21_1830.tar    1.10 GB
+SKIP  docker-desktop                               managed by Docker Desktop
+SKIP  docker-desktop-data                          managed by Docker Desktop
+Dry run complete; 2 distro(s) would be exported, nothing was written.
+```
+
+- **Docker Desktop's distros are skipped.** `docker-desktop` and
+  `docker-desktop-data` belong to Docker Desktop, which recreates them;
+  exporting the data one is a multi-gigabyte copy of your image cache.
+- **Space is checked before anything is written.** A running distro is measured
+  with `df` inside it, and one whose use is more than the free space on the
+  `-DestDir` drive is refused (`FAIL`) up front instead of failing half way. A
+  stopped distro is never started to measure it, the rule `df` follows too, so
+  only its VHDX size is known; that is an upper bound, so a VHDX larger than
+  the free space is a `WARN` and the export still runs. A `-DestDir` on a UNC
+  share is not checked.
+- **One failed export does not stop the rest.** Its half-written tar is
+  removed, the others carry on, and the run ends with
+  `Exported N, skipped N, failed N` and exit `1` if anything failed.
+- **The preview writes nothing**, not even `-DestDir`. `-All` and `-Distro`
+  together are a usage error (exit `3`); `backup -Distro X -DryRun` previews
+  one distro the same way.
 
 ## Restoring
 

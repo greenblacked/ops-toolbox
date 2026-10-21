@@ -117,7 +117,7 @@ function Get-TreeSnapshot {
         Sort-Object
 }
 
-function New-ScratchDirectory {
+function Initialize-ScratchDirectory {
     param([string]$Prefix)
     $dir = Join-Path ([IO.Path]::GetTempPath()) ($Prefix + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -137,7 +137,7 @@ function Invoke-WslManage {
         [hashtable]$Environment = @{}
     )
 
-    $box = New-ScratchDirectory 'wslcontract_'
+    $box = Initialize-ScratchDirectory 'wslcontract_'
     $boxHome = Join-Path $box 'home'
     $boxTemp = Join-Path $box 'temp'
     New-Item -ItemType Directory -Path $boxHome, $boxTemp -Force | Out-Null
@@ -174,9 +174,9 @@ function Invoke-WslManage {
 # A directory holding a wsl.exe that answers 'wsl --status' with $StatusExit
 # and records every call in calls.log beside it. Off Windows only; see the
 # header.
-function New-WslShim {
+function Initialize-WslShim {
     param([int]$StatusExit = 0)
-    $dir = New-ScratchDirectory 'wslshim_'
+    $dir = Initialize-ScratchDirectory 'wslshim_'
     $log = Join-Path $dir 'calls.log'
     $shim = Join-Path $dir 'wsl.exe'
     $body = "#!/bin/sh`necho `"`$*`" >> '$log'`nif [ `"`$1`" = '--status' ]; then exit $StatusExit; fi`nexit 0`n"
@@ -304,7 +304,7 @@ Test-Case "ConvertTo-WslByteCount reads '1.5GB'" ((ConvertTo-WslByteCount '1.5GB
 Test-Case "ConvertTo-WslByteCount refuses '8 GB'" ($null -eq (ConvertTo-WslByteCount '8 GB'))
 
 # Behavioural: the action needs no WSL, so these run on every runner.
-$fixtures = New-ScratchDirectory 'wslconfig_'
+$fixtures = Initialize-ScratchDirectory 'wslconfig_'
 try {
     $badFile = Join-Path $fixtures 'bad.wslconfig'
     $cleanFile = Join-Path $fixtures 'clean.wslconfig'
@@ -340,6 +340,102 @@ try {
     Test-Case 'wslconfig wrote nothing, -Template included' ($written.Count -eq 0) (($written | ForEach-Object { '{0} {1}' -f $_.SideIndicator, $_.InputObject }) -join "`n")
 } finally {
     Remove-Item -Path $fixtures -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'wsl_manage backup -All and previews'
+Test-Surface -Action @('backup', 'compact', 'sparse', 'shutdown') -Parameter @('All', 'DryRun')
+
+Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'Get-BackupPlan')
+
+function Get-TestDistro {
+    param([string]$Name, [long]$VhdxSize)
+    [pscustomobject]@{ Name = $Name; VhdxSize = $VhdxSize }
+}
+function Format-Plan {
+    param([object[]]$Plan)
+    ($Plan | ForEach-Object { '{0} {1} {2} {3}' -f $_.Verb, $_.Name, $_.Out, $_.Reason }) -join "`n"
+}
+
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'docker-desktop' 2GB), (Get-TestDistro 'docker-desktop-data' 20GB)) `
+    -DestDir 'D:\Backups' -Stamp '2026-10-21_1830' -FreeBytes 100GB)
+Test-Case "Docker Desktop's distros are skipped" (
+    $plan.Count -eq 2 -and @($plan | Where-Object { $_.Verb -ne 'SKIP' }).Count -eq 0 -and
+    @($plan | Where-Object { $_.Reason -match 'Docker Desktop' }).Count -eq 2
+) (Format-Plan $plan)
+
+$stamp = '2026-10-21_1830'
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 10GB), (Get-TestDistro 'Debian' 5GB)) `
+    -DestDir 'D:\Backups' -Stamp $stamp -FreeBytes 100GB)
+Test-Case 'two distros plan two exports under one stamp, to two paths' (
+    $plan.Count -eq 2 -and @($plan | Where-Object { $_.Verb -eq 'EXPORT' }).Count -eq 2 -and
+    @($plan | Where-Object { $_.Out -like "*_$stamp.tar" }).Count -eq 2 -and
+    $plan[0].Out -ne $plan[1].Out
+) (Format-Plan $plan)
+
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 60GB), (Get-TestDistro 'Debian' 5GB)) `
+    -DestDir 'D:\Backups' -Stamp $stamp -FreeBytes 10GB -UsedByName @{ Ubuntu = 50GB })
+Test-Case 'a measured distro bigger than the free space fails, and only that one' (
+    @($plan | Where-Object { $_.Name -eq 'Ubuntu' -and $_.Verb -eq 'FAIL' -and $_.Reason -match 'needs' }).Count -eq 1 -and
+    @($plan | Where-Object { $_.Name -eq 'Debian' -and $_.Verb -eq 'EXPORT' }).Count -eq 1
+) (Format-Plan $plan)
+
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 100GB)) -DestDir 'D:\Backups' -Stamp $stamp -FreeBytes 10GB)
+Test-Case 'an unmeasured VHDX bigger than the free space is a warning, not a refusal' (
+    $plan.Count -eq 1 -and $plan[0].Verb -eq 'WARN'
+) (Format-Plan $plan)
+
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 100GB)) -DestDir '\\server\share' -Stamp $stamp -FreeBytes $null -UsedByName @{ Ubuntu = 90GB })
+Test-Case 'unknown free space (a UNC path) raises no space finding' (
+    $plan.Count -eq 1 -and $plan[0].Verb -eq 'EXPORT'
+) (Format-Plan $plan)
+
+# Each preview must be decided before the branch reaches anything that
+# changes the machine. Read from the syntax tree of the switch, so moving a
+# call above the -DryRun check fails here even though nothing runs it.
+$parsed = [System.Management.Automation.Language.Parser]::ParseFile($wslScript, [ref]$null, [ref]$null)
+$actionSwitch = $parsed.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.SwitchStatementAst] -and $node.Condition.Extent.Text -eq '$Action'
+    }, $true) | Select-Object -First 1
+$clauseText = @{}
+if ($actionSwitch) {
+    foreach ($clause in $actionSwitch.Clauses) {
+        $clauseText[[string]$clause.Item1.Value] = $clause.Item2.Extent.Text
+    }
+}
+Test-Case 'the switch over $Action was found' ($clauseText.Count -gt 0)
+$changing = 'wsl\.exe\s+--(export|shutdown|manage|terminate|import)|diskpart|Invoke-DistroBackup'
+foreach ($a in @('backup', 'compact', 'sparse', 'shutdown')) {
+    $text = [string]$clauseText[$a]
+    $dry = $text.IndexOf('$DryRun')
+    $call = [regex]::Match($text, $changing)
+    Test-Case "the $a branch checks -DryRun before its first call that changes anything" (
+        $dry -ge 0 -and $call.Success -and $dry -lt $call.Index
+    ) "first -DryRun at $dry, first call '$($call.Value)' at $($call.Index)"
+}
+
+if ($onWindows) {
+    Test-Skip 'the wsl.exe shim checks run only off Windows (see the header)'
+} else {
+    $shimDir = Initialize-WslShim -StatusExit 0
+    try {
+        $run = Invoke-WslManage -Arguments @('backup', '-All', '-Distro', 'Ubuntu') -PathPrefix $shimDir
+        Test-Case 'backup -All -Distro exits 3 and names both flags' (
+            $run.ExitCode -eq 3 -and $run.Output -match '-All' -and $run.Output -match '-Distro'
+        ) "exit $($run.ExitCode)`n$($run.Output)"
+
+        $run = Invoke-WslManage -Arguments @('shutdown', '-DryRun') -PathPrefix $shimDir
+        $calls = @(Get-Content -Path (Join-Path $shimDir 'calls.log') -ErrorAction SilentlyContinue)
+        Test-Case 'shutdown -DryRun previews and exits 0' (
+            $run.ExitCode -eq 0 -and $run.Output -match 'WOULD stop WSL'
+        ) "exit $($run.ExitCode)`n$($run.Output)"
+        Test-Case 'and never calls wsl --shutdown' (
+            @($calls | Where-Object { $_ -match '--shutdown' }).Count -eq 0
+        ) ($calls -join "`n")
+    } finally {
+        Remove-Item -Path $shimDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # --------------------------------------------------------------------------
