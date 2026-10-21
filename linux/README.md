@@ -38,6 +38,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [`kernel_cleanup.sh`](#kernel_cleanupsh)
 - [`net_doctor.sh`](#net_doctorsh)
 - [`sysctl_defaults.sh`](#sysctl_defaultssh)
+- [`swap_setup.sh`](#swap_setupsh)
 - [`tls_expiry.sh`](#tls_expirysh)
 - [`config_backup.sh`](#config_backupsh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
@@ -58,6 +59,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
 | [`sysctl_defaults.sh`](sysctl_defaults.sh) | Report/apply/revert a short sysctl list (inotify watches, swappiness) |
+| [`swap_setup.sh`](swap_setup.sh) | Report swap; `--create` or `--remove` a swapfile and its fstab line |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
 | [`config_backup.sh`](config_backup.sh) | Dated tar of selected paths (default `/etc`); never a restore |
 | [`schedule_report.sh`](schedule_report.sh) | Read-only inventory of systemd timers and cron jobs |
@@ -72,7 +74,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | Requirement | Notes |
 | --- | --- |
 | **Linux** | Every script here exits `2` on anything else. |
-| **One of `apt`, `dnf` or `pacman`** | Only the six scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Four of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other nine never ask. |
+| **One of `apt`, `dnf` or `pacman`** | Only the six scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Four of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other ten never ask. |
 | **Bash 3.2 or newer** | These scripts are held to the same Bash 3.2 floor as the macOS package, so they also run on a box with an old `/bin/bash`. |
 | **`sudo`, or root** | Optional. Steps that need root are skipped with a warning when `sudo` is missing, and `--no-sudo` skips them deliberately. Running as root needs neither. |
 | **A systemd user manager** | Only for [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh), which exits `2` without one. `install --print-only` still prints the units anywhere. |
@@ -126,6 +128,7 @@ Read the machine without touching it:
 ./ssh_client_doctor.sh      # is ~/.ssh something ssh will actually use?
 ./tls_expiry.sh --file /etc/ssl/private/example.pem
 ./sysctl_defaults.sh        # current vs desired sysctl values
+./swap_setup.sh             # active swap, fstab entries, a suggested size
 ./schedule_report.sh        # what is scheduled to run?
 ```
 
@@ -154,6 +157,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Copy** | `config_backup.sh` | Before editing `/etc` or upgrading | a dated tar under `--dest`; never writes back |
 | **Copy** | `packages.sh` | After a machine looks the way you want | a package list you can commit and restore |
 | **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
+| **Configure** | `swap_setup.sh` | Once on a box with no swap, before the first OOM kill | a swapfile and one marked `/etc/fstab` line; read-only unless `--create`/`--remove` |
 | **Diagnose** | `status.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `system_doctor.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When "the network is wrong" | nothing — it only reads |
@@ -249,7 +253,7 @@ half lives in `install_devtools.sh` and GUI apps are left to you.
 The six scripts that need a package manager — `disk_cleanup.sh`,
 `install_devtools.sh`, `kernel_cleanup.sh`, `packages.sh`, `stay_fresh.sh`,
 `system_doctor.sh` — read `/etc/os-release` and map `ID`/`ID_LIKE` onto one.
-The other nine never ask. The lookup is duplicated in each script rather than
+The other ten never ask. The lookup is duplicated in each script rather than
 shared, for the reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script
 has to work when copied on its own onto a box.
 
@@ -626,6 +630,57 @@ the backup alongside its own state.
 without writing into `/etc`. `--apply` without root exits `2`; preview
 with `--dry-run` instead.
 
+## `swap_setup.sh`
+
+Cloud droplets and fresh VMs often ship with no swap, and the first OOM kill
+sends someone to a half-remembered `fallocate`, `mkswap`, `swapon` and fstab
+recipe. `system_doctor.sh` says swap is missing and `sysctl_defaults.sh` tunes
+`vm.swappiness`; this is the step between them.
+
+```bash
+./swap_setup.sh                                   # report only
+./swap_setup.sh --create --dry-run                # every step, run nowhere
+sudo ./swap_setup.sh --create --size 4G --yes     # /swapfile, enabled and in fstab
+sudo ./swap_setup.sh --remove --yes
+```
+
+With no mode flag it is a read-only report: active swap, the swap lines in
+fstab, `vm.swappiness`, total RAM and a suggested size (twice RAM up to 2G,
+equal to RAM up to 8G, then 4G). No swap at all is reported, not failed.
+
+| Option | Meaning |
+| --- | --- |
+| `--create` | `fallocate` (or `dd` where that fails), `chmod 600`, `mkswap`, `swapon`, then one fstab line |
+| `--remove` | `swapoff`, drop the fstab line this script added, delete the file |
+| `--size SIZE` | `128M` to `64G`, like `512M` or `4G` (default `2G`); `--create` only |
+| `--path FILE` | Absolute swapfile path (default `/swapfile`); never `/`, `/proc`, `/sys` or `/dev` |
+| `--fstab FILE` | The fstab to read and edit (default `/etc/fstab`) |
+| `--force` | `--create` even though swap is already active |
+| `--dry-run` | Print every step; write nothing |
+| `--yes`, `-y` | Required for `--create` or `--remove` to change anything |
+
+`--create` refuses an existing file (it never reuses or overwrites one), a
+machine that already has active swap unless `--force`, and a directory on
+`tmpfs`, `ramfs`, NFS, CIFS or ZFS; on btrfs it points at
+`btrfs filesystem mkswapfile`. It needs the size plus 10% free. The file is mode
+`600` from the moment it exists, because swap holds memory pages, and if any step
+before `swapon` fails the file it just created is removed. The fstab line is
+`FILE none swap sw 0 0 # ops-toolbox swapfile`; it is written only when no line
+already names the file, after a copy to `FSTAB.ops-toolbox.<timestamp>.bak`
+(an existing backup is never overwritten), into a temporary file beside fstab
+that is renamed over it, so a crash leaves the old fstab or the new one.
+
+`--remove` accepts only a regular file that is active or in fstab, and removes
+only the exact line `--create` wrote; a line somebody else wrote for the same
+file is reported and left alone, with the file. It never enables swap on a device
+or partition and never sets `vm.swappiness`.
+
+Exit codes: `0` done or report printed, `1` a step failed or not enough space,
+`2` not Linux, not root (preview with `--dry-run`), `mkswap`/`swapon` missing or
+an unsupported filesystem, `3` bad usage or a change without `--yes`, `4`
+nothing to do: the file exists, swap is already active, nothing to remove, or
+the fstab line is not this script's.
+
 ## `tls_expiry.sh`
 
 The Linux counterpart of
@@ -777,7 +832,7 @@ permissive development host can validly differ from a server baseline.
 | `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install or removal was requested without `--yes` |
-| `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove |
+| `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove; `swap_setup.sh` had nothing to do |
 
 `system_doctor.sh` never returns `1`: it reports, and what it finds is for you
 to read rather than for a pipeline to act on.
@@ -800,7 +855,9 @@ degrades to a warning instead of a failure, that `install_aliases.sh` is
 idempotent and that its dry run writes nothing, that `disk_cleanup.sh`
 honours `--days` against real files (and `--include-coredumps` against
 `--coredump-dir`), that `kernel_cleanup.sh` never names the running or the
-newest kernel across stubbed apt, dnf and pacman, that `sysctl_defaults.sh` can apply
+newest kernel across stubbed apt, dnf and pacman, that `swap_setup.sh` creates
+and removes a swapfile against a fixture fstab with stubbed swap tools, that
+`sysctl_defaults.sh` can apply
 and revert against a fake procfs without touching `/etc`, that
 `config_backup.sh` writes a tar of `--paths` into `--dest` and honours
 `--keep`, that `ssh_client_doctor.sh` grades modes under `--ssh-dir`, and

@@ -4,8 +4,9 @@
 
 Debian/Ubuntu, Fedora/RHEL and Arch: read-only system, network, TLS,
 SSH-client, schedule and hardening reports; recurring maintenance, disk
-cleanup and old-kernel removal; developer tool installs; config backups; package-set capture; sysctl
-defaults; a systemd user timer; and a Kali cloud-init profile.
+cleanup and old-kernel removal; developer tool installs; config backups;
+package-set capture; sysctl defaults; swapfile setup; a systemd user timer;
+and a Kali cloud-init profile.
 
 ## Requirements
 
@@ -31,6 +32,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
 | `schedule_report.sh` | systemd timers, user crontab, `cron.d`. | <span class="stage stage-report">read-only</span> |
 | `sysctl_defaults.sh` | Report sysctl values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
+| `swap_setup.sh` | Report swap; `--create` or `--remove` a swapfile and its marked fstab line. | `--dry-run` with `--create` or `--remove` |
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
 | `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`. | `--dry-run` |

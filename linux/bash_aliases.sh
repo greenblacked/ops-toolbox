@@ -166,6 +166,7 @@ _pus_linux_alias system-doctor     system_doctor.sh
 _pus_linux_alias net-doctor        net_doctor.sh
 _pus_linux_alias hardening-audit   hardening_audit.sh
 _pus_linux_alias sysctl-defaults   sysctl_defaults.sh
+_pus_linux_alias swap-setup        swap_setup.sh
 _pus_linux_alias pkg-set           packages.sh
 _pus_linux_alias schedule-report   schedule_report.sh
 _pus_linux_alias tls-expiry        tls_expiry.sh
@@ -201,6 +202,8 @@ toolbox-help() {
     printf '  %-20s %s\n' hardening-audit 'audit security posture'
   [ -x "$_pus_linux_aliases_dir/sysctl_defaults.sh" ] && \
     printf '  %-20s %s\n' sysctl-defaults 'report/apply/revert sysctl values'
+  [ -x "$_pus_linux_aliases_dir/swap_setup.sh" ] && \
+    printf '  %-20s %s\n' swap-setup 'report, create or remove a swapfile'
   [ -x "$_pus_linux_aliases_dir/packages.sh" ] && \
     printf '  %-20s %s\n' pkg-set 'capture or restore the package set'
   [ -x "$_pus_linux_aliases_dir/schedule_report.sh" ] && \

@@ -513,6 +513,7 @@ assert_contains "toolbox-help lists tls-expiry" "$out" "tls-expiry"
 assert_contains "toolbox-help lists config-backup" "$out" "config-backup"
 assert_contains "toolbox-help lists ssh-client-doctor" "$out" "ssh-client-doctor"
 assert_contains "toolbox-help lists kernel-cleanup" "$out" "kernel-cleanup"
+assert_contains "toolbox-help lists swap-setup" "$out" "swap-setup"
 
 section "stay_fresh degrades rather than failing when a tool is absent"
 # journald is not present in these containers. That must be a note, not a
@@ -1084,6 +1085,13 @@ section "kernel_cleanup.sh"
 # or removes a real kernel; it drives apt, dnf and pacman from any one image.
 bash "$L/tests/test_kernel_cleanup.sh"
 assert_eq "kernel_cleanup suite exits 0" 0 "$?"
+
+section "swap_setup.sh"
+# A fixture fstab and stubbed swap tools: nothing here formats, enables or
+# disables real swap. The create and remove round trip needs root, which the
+# tester containers have.
+bash "$L/tests/test_swap_setup.sh"
+assert_eq "swap_setup suite exits 0" 0 "$?"
 
 section "net_doctor.sh"
 NET="$L/net_doctor.sh"
