@@ -304,6 +304,12 @@ class SecretScanTestCase(unittest.TestCase):
         self.assertEqual(export_config.find_secrets(text),
                          [(1, "secret assigned in a script")])
 
+    def test_an_escaped_variable_reference_is_not_a_value(self):
+        # The export spells a script's `$other` as `\$other`.
+        text = 'add name=s source=":set ApiPassword \\"\\$other\\";"\n'
+        self.assertEqual(export_config.find_secrets(text), [])
+        self.assertEqual(export_config.redact_secrets(text), text)
+
     def test_ignores_the_shipped_placeholders_and_empty_values(self):
         text = (
             'add name=s source=":local BotToken \\"token\\";\\r\\n'

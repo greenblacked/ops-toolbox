@@ -226,7 +226,10 @@ def _secret_spans(line):
             # <paste token here> is a placeholder; $Password is a variable.
             if value.startswith("<") and value.endswith(">"):
                 continue
-            if value.startswith(("$", "[", "(")):
+            # An export escapes a script's `$` as `\$`; strip that one
+            # backslash so a variable reference is not mistaken for a value.
+            bare = value[1:] if value.startswith("\\") else value
+            if bare.startswith(("$", "[", "(")):
                 continue
             if skip_comments and _in_script_comment(line, match.start()):
                 continue
