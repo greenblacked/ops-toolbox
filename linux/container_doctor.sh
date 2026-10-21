@@ -263,7 +263,7 @@ if [[ -n "$ENGINE" ]]; then
     TEMPLATE="{{.Name}}${T}{{.State.Status}}${T}{{.State.ExitCode}}${T}{{.RestartCount}}${T}{{.State.OOMKilled}}${T}"
     TEMPLATE="${TEMPLATE}{{if .State.Health}}{{.State.Health.Status}}{{else}}-{{end}}${T}{{.HostConfig.Privileged}}${T}"
     TEMPLATE="${TEMPLATE}{{if .HostConfig.NetworkMode}}{{.HostConfig.NetworkMode}}{{else}}-{{end}}${T}{{.HostConfig.Memory}}${T}"
-    TEMPLATE="${TEMPLATE}{{if .HostConfig.RestartPolicy.Name}}{{.HostConfig.RestartPolicy.Name}}{{else}}-{{end}}${T}"
+    TEMPLATE="${TEMPLATE}{{if .HostConfig.RestartPolicy.Name}}{{.HostConfig.RestartPolicy.Name}}{{else}}-{{end}}${T}{{.HostConfig.RestartPolicy.MaximumRetryCount}}${T}"
     TEMPLATE="${TEMPLATE}{{if .Config.User}}{{.Config.User}}{{else}}-{{end}}${T}"
     TEMPLATE="${TEMPLATE}{{if .HostConfig.LogConfig.Type}}{{.HostConfig.LogConfig.Type}}{{else}}-{{end}}${T}"
     TEMPLATE="${TEMPLATE}{{json .HostConfig.LogConfig.Config}}${T}{{if .LogPath}}{{.LogPath}}{{else}}-{{end}}${T}"
@@ -300,7 +300,7 @@ each_row() {
 if want state && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
   group "state"
   state_findings=0
-  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy user logtype logcfg logpath image mounts; do
+  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy maxretry user logtype logcfg logpath image mounts; do
     [[ -n "$name" ]] || continue
     name="${name#/}"
     name="${name:0:64}"
@@ -320,6 +320,13 @@ if want state && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
       warn "$name exited with code $code and has no restart policy" "$ENGINE logs --tail 50 $name"
       state_findings=$((state_findings + 1))
     fi
+    # on-failure:N stops retrying after N restarts, and the container stays
+    # down. A maximum of 0 means unlimited, which never runs out.
+    if [[ "$status" == "exited" && "$code" =~ ^[0-9]+$ ]] && (( code != 0 )) && [[ "$policy" == "on-failure" ]] \
+      && [[ "$maxretry" =~ ^[0-9]+$ && "$restarts" =~ ^[0-9]+$ ]] && (( 10#$maxretry > 0 && 10#$restarts >= 10#$maxretry )); then
+      warn "$name exited with code $code after $restarts of $maxretry allowed restart(s); on-failure gave up" "$ENGINE logs --tail 50 $name"
+      state_findings=$((state_findings + 1))
+    fi
   done <<< "$(each_row)"
   (( state_findings == 0 )) && pass "no restart loops, OOM kills, unhealthy checks or failed exits"
 fi
@@ -330,7 +337,7 @@ if want security && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
   sec_findings=0
   host_net=""
   as_root=""
-  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy user logtype logcfg logpath image mounts; do
+  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy maxretry user logtype logcfg logpath image mounts; do
     [[ -n "$name" ]] || continue
     name="${name#/}"
     name="${name:0:64}"
@@ -368,7 +375,7 @@ if want resources && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
   group "resources"
   unlimited=""
   running=0
-  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy user logtype logcfg logpath image mounts; do
+  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy maxretry user logtype logcfg logpath image mounts; do
     [[ -n "$name" && "$status" == "running" ]] || continue
     running=$((running + 1))
     [[ "$mem" == "0" ]] && unlimited="$unlimited${name#/}"$'\n'
@@ -397,7 +404,7 @@ if want logs && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
   unreadable=0
   big=0
   limit_bytes=$(( LOG_WARN_MB * 1048576 ))
-  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy user logtype logcfg logpath image mounts; do
+  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy maxretry user logtype logcfg logpath image mounts; do
     [[ -n "$name" ]] || continue
     name="${name#/}"
     name="${name:0:64}"
@@ -447,7 +454,7 @@ if want images && [[ -n "$ENGINE" ]]; then
   # A floating tag means the next pull can change what runs without anyone
   # deciding to. A digest pin (@sha256:) is the opposite and is never counted.
   floating=""
-  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy user logtype logcfg logpath image mounts; do
+  while IFS="$T" read -r name status code restarts oom health priv netmode mem policy maxretry user logtype logcfg logpath image mounts; do
     [[ -n "$name" && -n "$image" ]] || continue
     case "$image" in
       *@sha256:*) continue ;;

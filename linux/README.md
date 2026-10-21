@@ -726,7 +726,7 @@ sudo ./container_doctor.sh                  # log files under /var/lib/docker ne
 
 | Group | Graded |
 | --- | --- |
-| `state` | restarting, or at least `--restart-threshold` restarts (warn); OOM-killed (FAIL); unhealthy healthcheck (FAIL); exited non-zero with no restart policy (warn) |
+| `state` | restarting, or at least `--restart-threshold` restarts (warn); OOM-killed (FAIL); unhealthy healthcheck (FAIL); exited non-zero with no restart policy, or under `on-failure:N` with its N restarts used up (warn) |
 | `security` | privileged (warn); `docker.sock` or `podman.sock` mounted (FAIL); host network and containers with no `USER` (info) |
 | `resources` | running containers with no memory limit (info, up to five named) |
 | `logs` | `json-file` with no `max-size` in the container or the daemon default (warn); a log at or above `--log-warn-mb` MiB (FAIL) |

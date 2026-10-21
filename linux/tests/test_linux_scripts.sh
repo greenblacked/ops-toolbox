@@ -1108,7 +1108,7 @@ printf '%s\n' "$*" >> "$here/argv.log"
 case "$1" in
   info)    [[ -e "$here/info-fails" ]] && exit 1; exit 0 ;;
   version) exit 0 ;;
-  ps)      printf 'c1\nc2\nc3\n' ;;
+  ps)      if [[ -f "$here/ps.txt" ]]; then cat "$here/ps.txt"; else printf 'c1\nc2\nc3\n'; fi ;;
   inspect)
     for last in "$@"; do :; done
     [[ -f "$here/$last.row" ]] && cat "$here/$last.row"
@@ -1125,11 +1125,26 @@ chmod +x "$cdoc_stub/docker"
 cdoc_log="$cdoc_stub/c2-json.log"
 truncate -s 600M "$cdoc_log"
 tab=$'\t'
-printf '%s\n' "/web${tab}running${tab}0${tab}9${tab}false${tab}-${tab}false${tab}bridge${tab}268435456${tab}always${tab}-${tab}json-file${tab}{\"max-size\":\"10m\"}${tab}-${tab}nginx:1.27${tab}-" > "$cdoc_stub/c1.row"
-printf '%s\n' "/worker${tab}exited${tab}137${tab}0${tab}true${tab}-${tab}true${tab}bridge${tab}0${tab}no${tab}-${tab}json-file${tab}{}${tab}$cdoc_log${tab}worker:latest${tab}-,/var/run/docker.sock" > "$cdoc_stub/c2.row"
-printf '%s\n' "/db${tab}running${tab}0${tab}0${tab}false${tab}healthy${tab}false${tab}bridge${tab}536870912${tab}unless-stopped${tab}postgres${tab}json-file${tab}{\"max-file\":\"3\",\"max-size\":\"10m\"}${tab}-${tab}postgres:16${tab}-,/srv/db" > "$cdoc_stub/c3.row"
+printf '%s\n' "/web${tab}running${tab}0${tab}9${tab}false${tab}-${tab}false${tab}bridge${tab}268435456${tab}always${tab}0${tab}-${tab}json-file${tab}{\"max-size\":\"10m\"}${tab}-${tab}nginx:1.27${tab}-" > "$cdoc_stub/c1.row"
+printf '%s\n' "/worker${tab}exited${tab}137${tab}0${tab}true${tab}-${tab}true${tab}bridge${tab}0${tab}no${tab}0${tab}-${tab}json-file${tab}{}${tab}$cdoc_log${tab}worker:latest${tab}-,/var/run/docker.sock" > "$cdoc_stub/c2.row"
+printf '%s\n' "/db${tab}running${tab}0${tab}0${tab}false${tab}healthy${tab}false${tab}bridge${tab}536870912${tab}unless-stopped${tab}0${tab}postgres${tab}json-file${tab}{\"max-file\":\"3\",\"max-size\":\"10m\"}${tab}-${tab}postgres:16${tab}-,/srv/db" > "$cdoc_stub/c3.row"
 printf '{ "log-driver": "json-file" }\n' > "$cdoc_stub/daemon-uncapped.json"
 printf '{ "log-driver": "json-file", "log-opts": { "max-size": "10m" } }\n' > "$cdoc_stub/daemon-capped.json"
+
+# on-failure:N that used up its N restarts stays down. c4 gave up (3 of 3),
+# c5 still has retries left, c6 is on-failure with no maximum (unlimited),
+# c7 exited cleanly.
+printf 'c4\nc5\nc6\nc7\n' > "$cdoc_stub/ps.txt"
+for spec in "c4:3:3:1" "c5:1:3:1" "c6:50:0:1" "c7:3:3:0"; do
+  IFS=: read -r cn cr cm ce <<< "$spec"
+  printf '%s\n' "/$cn${tab}exited${tab}$ce${tab}$cr${tab}false${tab}-${tab}false${tab}bridge${tab}268435456${tab}on-failure${tab}$cm${tab}-${tab}json-file${tab}{\"max-size\":\"10m\"}${tab}-${tab}app:1${tab}-" > "$cdoc_stub/$cn.row"
+done
+out="$(PATH="$cdoc_stub:$PATH" "$CDOC" --only state 2>&1)"
+assert_contains "container_doctor flags an on-failure container that used up its retries" "$out" "c4 exited with code 1 after 3 of 3 allowed restart(s)"
+assert_not_contains "container_doctor leaves an on-failure container with retries left" "$out" "c5 exited"
+assert_not_contains "container_doctor treats on-failure with no maximum as unlimited" "$out" "c6 exited"
+assert_not_contains "container_doctor leaves a clean on-failure exit alone" "$out" "c7 exited"
+rm -f "$cdoc_stub/ps.txt" "$cdoc_stub"/c[4-7].row
 
 out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" 2>&1)"; rc=$?
 assert_eq "container_doctor reads rather than gates by default" "0" "$rc"
