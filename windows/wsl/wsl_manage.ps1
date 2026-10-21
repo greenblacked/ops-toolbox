@@ -129,8 +129,8 @@ param(
     [int]$KeepLast = 2,                            # prune-backups: keep this many per distro
     [switch]$Force,   # df, doctor: start stopped distros to measure them
                       # prune-backups: delete without asking
-    [switch]$DryRun,  # backup, restore, prune-backups, compact, sparse,
-                      # terminate, shutdown: report, change nothing
+    [switch]$DryRun,  # backup, restore, prune-backups, clone, compact,
+                      # sparse, terminate, shutdown: report, change nothing
     [switch]$All,     # backup only: export every registered distro
     [switch]$Verify,  # backups: hash every tar against its sidecar
     [ValidateRange(0, 3650)]

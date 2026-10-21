@@ -127,7 +127,7 @@ compact would give back.
 | `wslconfig` | no | no | Audits `%USERPROFILE%\.wslconfig` (or `-ConfigFile`): no memory cap, keys WSL ignores, values that do not parse. Read-only; needs no WSL. `-Template` prints a starter file. See [.wslconfig audit](#wslconfig-audit). |
 
 `-DryRun` previews every action that changes something: `backup`, `restore`,
-`prune-backups`, `compact`, `sparse`, `terminate` and `shutdown`. None of the
+`prune-backups`, `clone`, `compact`, `sparse`, `terminate` and `shutdown`. None of the
 previews calls `wsl --export`, `--import`, `--shutdown`, `--terminate`,
 `--manage` or diskpart.
 
