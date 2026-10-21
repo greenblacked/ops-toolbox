@@ -223,7 +223,7 @@ done
 assert_eq 'three distro fixtures exercised' 3 "$distros_run"
 
 # Ubuntu also installs a flavour-less common headers package per base version.
-# It goes with the last release of its base, and stays while a kept release
+# It goes with the first release of its base, and stays while a kept release
 # (here the lowlatency flavour of 6.8.0-71) still uses it.
 printf '%s\t%s\t%s\n' \
   linux-image-6.8.0-70-generic 'install ok installed' 400000 \
@@ -246,6 +246,26 @@ assert_contains 'a sibling of a kept flavour goes' "$purge_line" 'linux-image-6.
 assert_not_contains 'common headers stay while a kept release shares the base' "$purge_line" 'linux-headers-6.8.0-71 '
 assert_not_contains 'common headers of the running base stay' "$purge_line" 'linux-headers-6.8.0-79'
 assert_not_contains 'the headers metapackage stays' "$purge_line" 'linux-headers-generic'
+
+# Debian names it linux-headers-<base>-common and has no flavour in the image.
+printf '%s\t%s\t%s\n' \
+  linux-image-6.1.0-9-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-9-amd64 'install ok installed' 20000 \
+  linux-headers-6.1.0-9-common 'install ok installed' 80000 \
+  linux-image-6.1.0-10-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-10-common 'install ok installed' 80000 \
+  linux-image-6.1.0-11-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-11-common 'install ok installed' 80000 \
+  linux-headers-amd64 'install ok installed' 10 \
+  > "$fixture/dpkg.rows"
+run_kc debian --dry-run --release 6.1.0-11-amd64 --keep 1
+assert_eq 'debian common headers dry run exits 0' 0 "$rc"
+purge_line="$(grep 'apt-get purge' <<<"$out")"
+assert_contains 'debian old image goes' "$purge_line" 'linux-image-6.1.0-9-amd64'
+assert_contains 'debian common headers of a removed base go' "$purge_line" 'linux-headers-6.1.0-9-common'
+assert_not_contains 'debian common headers of a kept base stay' "$purge_line" 'linux-headers-6.1.0-10-common'
+assert_not_contains 'debian common headers of the running base stay' "$purge_line" 'linux-headers-6.1.0-11-common'
+assert_not_contains 'debian headers metapackage stays' "$purge_line" 'linux-headers-amd64'
 
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s kernel cleanup checks failed\n' "$failures" "$checks" >&2
