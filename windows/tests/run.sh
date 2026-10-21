@@ -80,5 +80,12 @@ if ! command -v pwsh >/dev/null 2>&1; then
   exit 0
 fi
 
+# Both files always run, and the suite fails if either does. They are separate
+# so the checks every script shares and the ones wsl_manage.ps1 alone carries
+# can change without editing each other.
+rc=0
 echo "=== Running Windows contract checks ==="
-exec pwsh -NoProfile -File "$HERE/contract.ps1"
+pwsh -NoProfile -File "$HERE/contract.ps1" || rc=1
+echo "=== Running wsl_manage.ps1 contract checks ==="
+pwsh -NoProfile -File "$HERE/wsl_contract.ps1" || rc=1
+exit "$rc"

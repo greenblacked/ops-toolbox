@@ -28,6 +28,14 @@
       terminate Stop ONE distro (wsl --terminate). The other distros and the
                 utility VM keep running.
       shutdown  Stop all WSL distros and the VM (frees the RAM WSL holds).
+      wslconfig Audit %USERPROFILE%\.wslconfig: no memory cap, keys WSL
+                silently ignores (wrong section, typo, single backslashes in
+                a path), values that do not parse. Read-only and offline: it
+                reads one file, never calls wsl.exe, and runs on a machine
+                where WSL is absent. -Template prints a commented starter
+                file to stdout and writes nothing. There is no dry run
+                because there is nothing to preview; -DryRun is accepted and
+                ignored.
 
 .EXAMPLE
     .\wsl_manage.ps1 list
@@ -40,13 +48,18 @@
     .\wsl_manage.ps1 sparse -Distro Ubuntu
     .\wsl_manage.ps1 terminate -Distro Ubuntu
     .\wsl_manage.ps1 shutdown
+    .\wsl_manage.ps1 wslconfig
+    .\wsl_manage.ps1 wslconfig -ConfigFile D:\profiles\.wslconfig -Strict
+    .\wsl_manage.ps1 wslconfig -Template > $env:USERPROFILE\.wslconfig.new
 
 .NOTES
     Exit codes:
-      0  success
+      0  success (wslconfig: the report ran; warnings alone do not change it)
       1  the underlying wsl/diskpart command failed
+         (wslconfig -Strict: one or more WARN findings)
       2  WSL is not installed or not operational
-      3  bad arguments (no -Distro, no such distro, missing or unusable -Tar)
+      3  bad arguments (no -Distro, no such distro, missing or unusable -Tar,
+         a -ConfigFile that does not exist or cannot be read)
       4  needs an elevated shell (compact only)
 
     restore, in detail. 'wsl --import' registers a new distro from a tar; it
@@ -67,7 +80,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown')]
+    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown', 'wslconfig')]
     [string]$Action = 'list',
     [string]$Distro,
     [string]$DestDir = "$env:USERPROFILE\wsl-backups",
@@ -81,7 +94,10 @@ param(
                       # prune-backups: delete without asking
     [switch]$DryRun,  # restore, prune-backups, terminate: report, change nothing
     [switch]$Off,     # sparse only: pass to set sparse=false instead of true
-    [switch]$AllowUnverified  # restore only: import a tar with no .sha256 sidecar
+    [switch]$AllowUnverified, # restore only: import a tar with no .sha256 sidecar
+    [string]$ConfigFile,      # wslconfig: audit this file instead of %USERPROFILE%\.wslconfig
+    [switch]$Template,        # wslconfig: print a commented starter file, write nothing
+    [switch]$Strict           # wslconfig: exit 1 when any finding is a WARN
 )
 
 $ErrorActionPreference = 'Stop'
@@ -93,7 +109,12 @@ $ErrorActionPreference = 'Stop'
 # PowerShell 5.1) simply do not have this variable and ignore the assignment.
 $PSNativeCommandUseErrorActionPreference = $false
 
-if ($Action -ne 'verify-backup' -and -not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
+# Actions that only read files on the Windows side. They need no WSL at all,
+# so they also run on a machine that only holds the backups or the config
+# file, and on the Linux runner that tests them.
+$offlineActions = @('verify-backup', 'wslconfig')
+
+if ($Action -notin $offlineActions -and -not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
     # -ErrorAction Continue, or $ErrorActionPreference = 'Stop' turns this into
     # a terminating error and the exit code below is never reached: the script
     # ends up reporting 1 (something failed) where it means 2 (wrong machine).
@@ -103,7 +124,7 @@ if ($Action -ne 'verify-backup' -and -not (Get-Command wsl.exe -ErrorAction Sile
 # wsl.exe exists as a stub even when WSL itself was never installed - probe
 # for a working install before doing anything (its own error output is
 # UTF-16 and prints as garbage in most consoles, so use our own message).
-if ($Action -ne 'verify-backup') {
+if ($Action -notin $offlineActions) {
     wsl.exe --status *> $null
     if ($LASTEXITCODE -ne 0) {
         Write-Error "WSL is not installed or not operational ('wsl --status' exited $LASTEXITCODE). Install with: wsl --install" -ErrorAction Continue
@@ -233,6 +254,234 @@ function Test-BackupHash {
     }
     Write-Host "SHA-256 verified: $Path" -ForegroundColor Green
     return $true
+}
+
+# .wslconfig as an ordered list of {Section, Key, Value, Line}. Pure: it takes
+# the file's text, so the contract tests feed it fixture strings. INI as WSL
+# reads it: ';' and '#' comment lines, [section] headers, key=value. A key
+# before any header gets Section ''. A line that is neither is kept with a
+# $null Value so the audit can say WSL ignores it, rather than this dropping
+# it silently. The section name is kept exactly as written, spaces included,
+# because '[wsl2 ]' is not '[wsl2]' to WSL either.
+function ConvertFrom-WslConfig {
+    param([string]$Text)
+    $entries = @()
+    if (-not $Text) { return $entries }
+    $Text = $Text.TrimStart([char]0xFEFF)
+    $section = ''
+    $number = 0
+    foreach ($raw in ($Text -split "`n")) {
+        $number++
+        $line = $raw.Trim()
+        if ($line -eq '' -or $line.StartsWith('#') -or $line.StartsWith(';')) { continue }
+        if ($line -match '^\[(?<name>[^\]]*)\]\s*$') {
+            $section = $Matches['name']
+            continue
+        }
+        $eq = $line.IndexOf('=')
+        if ($eq -lt 1) {
+            $entries += [PSCustomObject]@{ Section = $section; Key = $line; Value = $null; Line = $number }
+            continue
+        }
+        $entries += [PSCustomObject]@{
+            Section = $section
+            Key     = $line.Substring(0, $eq).Trim()
+            Value   = $line.Substring($eq + 1).Trim()
+            Line    = $number
+        }
+    }
+    return $entries
+}
+
+# '8GB' -> bytes, or $null when the text is not a size WSL accepts.
+function ConvertTo-WslByteCount {
+    param([string]$Text)
+    if ($Text -notmatch '^(?<n>\d+(\.\d+)?)(?<unit>KB|MB|GB|TB|B)$') { return $null }
+    $scale = switch ($Matches['unit'].ToUpperInvariant()) {
+        'B'  { 1 }
+        'KB' { 1KB }
+        'MB' { 1MB }
+        'GB' { 1GB }
+        'TB' { 1TB }
+    }
+    return [long]([double]$Matches['n'] * $scale)
+}
+
+# The audit itself: entries from ConvertFrom-WslConfig in, findings
+# {Level (ok|info|warn), Check, Message} out. Pure, like the parser. The two
+# machine numbers are parameters, $null when unknown (always, off Windows), so
+# the comparisons against the host are skipped with an info line instead of
+# guessed. Nothing here is ever a failure on its own: WSL starts with a bad
+# .wslconfig and ignores what it does not understand, which is the problem.
+function Test-WslConfig {
+    param(
+        [object[]]$Entries,
+        [Nullable[long]]$PhysicalMemoryBytes,
+        [Nullable[int]]$LogicalProcessors
+    )
+
+    # Best effort, from Microsoft's 'Advanced settings configuration in WSL'
+    # page. A key missing from here is reported as unrecognised, which is a
+    # warning and never a failure: it may simply be newer than this table.
+    $known = @{
+        'wsl2'         = @('kernel', 'kernelModules', 'memory', 'processors', 'swap', 'swapFile',
+                           'localhostForwarding', 'kernelCommandLine', 'safeMode', 'nestedVirtualization',
+                           'vmIdleTimeout', 'guiApplications', 'debugConsole', 'maxCrashDumpCount',
+                           'networkingMode', 'firewall', 'dnsTunneling', 'autoProxy', 'defaultVhdSize',
+                           'dnsProxy', 'pageReporting')
+        'experimental' = @('autoMemoryReclaim', 'sparseVhd', 'bestEffortDnsParsing',
+                           'initialAutoProxyTimeout', 'ignoredPorts', 'hostAddressLoopback',
+                           'useWindowsDnsCache')
+    }
+    # Sections of /etc/wsl.conf inside a distro. Pasting one of them into
+    # .wslconfig is the usual way a [boot] systemd=true goes nowhere.
+    $distroSections = @('interop', 'automount', 'boot', 'user', 'network')
+
+    $findings = @()
+    $values = @{}
+    foreach ($e in $Entries) {
+        $label = if ($e.Section -eq '') { '{0} (line {1})' -f $e.Key, $e.Line } else { '[{0}] {1} (line {2})' -f $e.Section, $e.Key, $e.Line }
+
+        if ($null -eq $e.Value) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = 'not a key=value line; ignored by WSL' }
+            continue
+        }
+        if ($e.Section -eq '') {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = 'before any [section]; ignored by WSL' }
+            continue
+        }
+
+        $section = $e.Section.ToLowerInvariant()
+        if (-not $known.ContainsKey($section)) {
+            $why = if ($distroSections -contains $section) {
+                "ignored by WSL: [$($e.Section)] belongs in /etc/wsl.conf inside the distro"
+            } elseif ($section.Trim() -eq 'wsl2' -or $section -eq 'wsl') {
+                'ignored by WSL: the section is [wsl2]'
+            } else {
+                "ignored by WSL: .wslconfig reads only [wsl2] and [experimental]"
+            }
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = $why }
+            continue
+        }
+
+        $other = if ($section -eq 'wsl2') { 'experimental' } else { 'wsl2' }
+        $canonical = $known[$section] | Where-Object { $_ -eq $e.Key } | Select-Object -First 1
+        if (-not $canonical) {
+            $elsewhere = $known[$other] | Where-Object { $_ -eq $e.Key } | Select-Object -First 1
+            if ($elsewhere) {
+                $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = "belongs in [$other]; ignored here" }
+            } else {
+                $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = 'unrecognised key (typo, or newer than this table)' }
+            }
+            continue
+        }
+        $values[$canonical] = $e
+    }
+
+    # Reported against the real line, so the label carries its line number.
+    function Get-Label { param($Entry) '[{0}] {1} (line {2})' -f $Entry.Section, $Entry.Key, $Entry.Line }
+
+    foreach ($sizeKey in @('memory', 'swap')) {
+        if (-not $values.ContainsKey($sizeKey)) { continue }
+        $e = $values[$sizeKey]
+        $bytes = ConvertTo-WslByteCount $e.Value
+        if ($null -eq $bytes) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not a size (use e.g. 8GB or 512MB)" }
+            continue
+        }
+        if ($sizeKey -eq 'memory' -and $null -ne $PhysicalMemoryBytes -and $bytes -gt $PhysicalMemoryBytes) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = ("{0} is more than this machine's {1:N1} GB of RAM" -f $e.Value, ($PhysicalMemoryBytes / 1GB)) }
+            continue
+        }
+        $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $e); Message = $e.Value }
+    }
+
+    if ($values.ContainsKey('processors')) {
+        $e = $values['processors']
+        $count = 0
+        if (-not [int]::TryParse($e.Value, [ref]$count) -or $count -lt 1) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not a positive whole number" }
+        } elseif ($null -ne $LogicalProcessors -and $count -gt $LogicalProcessors) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "$count is more than this machine's $LogicalProcessors logical processors" }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $e); Message = $e.Value }
+        }
+    }
+
+    # WSL reads these as INI strings, so a single backslash is an escape and
+    # 'C:\Users\me\bzImage' arrives mangled. Doubled, or forward slashes, work.
+    foreach ($pathKey in @('kernel', 'swapFile')) {
+        if (-not $values.ContainsKey($pathKey)) { continue }
+        $e = $values[$pathKey]
+        if ($e.Value -match '(?<!\\)\\(?!\\)') {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = 'backslashes in paths must be doubled (C:\\Users\\me\\...)' }
+        }
+    }
+
+    if ($null -eq $PhysicalMemoryBytes -or $null -eq $LogicalProcessors) {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = 'machine size'; Message = 'unknown here; memory and processors not compared with this machine' }
+    }
+
+    if (-not $values.ContainsKey('memory')) {
+        $findings += [PSCustomObject]@{ Level = 'warn'; Check = '[wsl2] memory'; Message = 'no memory cap: the VM can grow to about half of RAM (set memory=8GB, say)' }
+    }
+    if ($values.ContainsKey('autoMemoryReclaim')) {
+        $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $values['autoMemoryReclaim']); Message = $values['autoMemoryReclaim'].Value }
+    } else {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = '[experimental] autoMemoryReclaim'; Message = 'consider autoMemoryReclaim=gradual: freed memory goes back to Windows' }
+    }
+    if ($values.ContainsKey('sparseVhd')) {
+        $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $values['sparseVhd']); Message = $values['sparseVhd'].Value }
+    } else {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = '[experimental] sparseVhd'; Message = 'consider sparseVhd=true (or wsl_manage.ps1 sparse for an existing distro)' }
+    }
+    if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -eq 'mirrored' -and
+        $values.ContainsKey('localhostForwarding')) {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = (Get-Label $values['localhostForwarding']); Message = 'moot with networkingMode=mirrored, which shares localhost already' }
+    }
+
+    return $findings
+}
+
+# The starter file -Template prints. Printed, never written: the operator
+# redirects it where they want it, so an existing .wslconfig cannot be lost.
+function Get-WslConfigTemplate {
+    @(
+        '# .wslconfig - starter printed by wsl_manage.ps1 wslconfig -Template.'
+        '# It lives in %USERPROFILE%. WSL reads it when the VM starts, so run'
+        "# 'wsl --shutdown' after editing it."
+        ''
+        '[wsl2]'
+        '# Cap the VM. Without a cap WSL2 can take about half of the RAM.'
+        'memory=8GB'
+        'processors=4'
+        'swap=2GB'
+        ''
+        '[experimental]'
+        '# Hand memory the VM no longer uses back to Windows, a little at a time.'
+        'autoMemoryReclaim=gradual'
+        '# New virtual disks give freed space back to Windows on their own.'
+        'sparseVhd=true'
+    )
+}
+
+# Installed RAM and logical processors for the comparisons in Test-WslConfig.
+# Windows only and best effort: anything that does not answer is $null, and
+# the audit says it skipped those two checks.
+function Get-WslHostSize {
+    $size = [PSCustomObject]@{ MemoryBytes = $null; Processors = $null }
+    if (-not ($IsWindows -or $PSVersionTable.PSEdition -eq 'Desktop')) { return $size }
+    try {
+        $size.MemoryBytes = [long](Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
+    } catch {
+        $size.MemoryBytes = $null
+    }
+    try {
+        $size.Processors = [Environment]::ProcessorCount
+    } catch {
+        $size.Processors = $null
+    }
+    return $size
 }
 
 switch ($Action) {
@@ -536,5 +785,62 @@ switch ($Action) {
     'shutdown' {
         wsl.exe --shutdown
         Write-Host 'WSL stopped (all distros + utility VM). RAM released.' -ForegroundColor Green
+    }
+
+    'wslconfig' {
+        # Read-only by construction: one file read, nothing written, wsl.exe
+        # never called. -DryRun is accepted and changes nothing.
+        if ($Template) {
+            # Write-Output, not Write-Host, so '> file' captures it.
+            Get-WslConfigTemplate | Write-Output
+            break
+        }
+
+        # An explicit path that is not there is a mistake worth exit 3. The
+        # default path being absent is a finding, not an error: plenty of
+        # machines have never had a .wslconfig.
+        if ($ConfigFile) {
+            $path = $ConfigFile
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                Write-Error "No such file: $path" -ErrorAction Continue
+                exit 3
+            }
+        } else {
+            $profileDir = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+            $path = Join-Path $profileDir '.wslconfig'
+        }
+
+        Write-Host "Checking $path"
+        Write-Host ''
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Write-Host ('INFO  {0,-44} {1}' -f '.wslconfig', 'no .wslconfig: WSL2 sizes the VM itself and it can grow to about half of RAM') -ForegroundColor DarkGray
+            Write-Host "Start one with: .\wsl_manage.ps1 wslconfig -Template > `"$path`""
+            break
+        }
+
+        try {
+            # ReadAllText honours a UTF-8 or UTF-16 BOM, which Notepad writes.
+            $text = [IO.File]::ReadAllText((Resolve-Path -LiteralPath $path).Path)
+        } catch {
+            Write-Error "Cannot read $path - $($_.Exception.Message)" -ErrorAction Continue
+            exit 3
+        }
+
+        $hostSize = Get-WslHostSize
+        $entries = @(ConvertFrom-WslConfig -Text $text)
+        $findings = @(Test-WslConfig -Entries $entries -PhysicalMemoryBytes $hostSize.MemoryBytes -LogicalProcessors $hostSize.Processors)
+
+        foreach ($f in $findings) {
+            switch ($f.Level) {
+                'ok'   { Write-Host ('OK    {0,-44} {1}' -f $f.Check, $f.Message) -ForegroundColor Green }
+                'info' { Write-Host ('INFO  {0,-44} {1}' -f $f.Check, $f.Message) -ForegroundColor DarkGray }
+                'warn' { Write-Host ('WARN  {0,-44} {1}' -f $f.Check, $f.Message) -ForegroundColor Yellow }
+            }
+        }
+
+        $warnings = @($findings | Where-Object { $_.Level -eq 'warn' }).Count
+        Write-Host ''
+        Write-Host ("{0} warning(s). WSL reads this file when the VM starts: 'wsl --shutdown' after editing it." -f $warnings)
+        if ($Strict -and $warnings -gt 0) { exit 1 }
     }
 }

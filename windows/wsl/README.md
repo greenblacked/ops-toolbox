@@ -15,13 +15,14 @@ throwing away the giant `.tar` exports once they have aged out.
 - [Actions](#actions)
 - [Restoring](#restoring)
 - [Pruning backups](#pruning-backups)
+- [.wslconfig audit](#wslconfig-audit)
 - [Git Bash shortcuts](#git-bash-shortcuts)
 
 ## Requirements
 
 | Requirement | Notes |
 | --- | --- |
-| **Windows with WSL2** | Every action except `verify-backup` probes for `wsl.exe` and then runs `wsl --status`, exiting `2` if either says WSL is absent or not operational. `wsl.exe` exists as a stub on machines that never installed WSL, which is why the second probe is there. |
+| **Windows with WSL2** | Every action except `verify-backup` and `wslconfig` probes for `wsl.exe` and then runs `wsl --status`, exiting `2` if either says WSL is absent or not operational. `wsl.exe` exists as a stub on machines that never installed WSL, which is why the second probe is there. |
 | **Windows PowerShell 5.1 or PowerShell 7** | Run from the folder, or from anywhere by path. |
 | **An elevated shell** | Only for `compact`, which drives `diskpart`. Unelevated it exits `4` and does nothing else. |
 | **A recent WSL build** | Only for `sparse`, which needs `wsl --manage --set-sparse`. An older build fails the call and the script says to run `wsl --update`. |
@@ -29,7 +30,8 @@ throwing away the giant `.tar` exports once they have aged out.
 
 `verify-backup` is the exception to all of it: it recomputes SHA-256 for a
 `.tar` and compares it with the sidecar, so it needs no WSL and no elevation
-and runs on a machine that only holds the backups.
+and runs on a machine that only holds the backups. `wslconfig` is the other
+one: it reads `%USERPROFILE%\.wslconfig` and nothing else.
 
 ## Why "compact" exists
 
@@ -78,6 +80,11 @@ compact would give back.
 
 # Stop all distros + the utility VM (frees the RAM WSL is holding):
 .\wsl_manage.ps1 shutdown
+
+# Audit .wslconfig (read-only, needs no WSL), or print a starter file:
+.\wsl_manage.ps1 wslconfig
+.\wsl_manage.ps1 wslconfig -ConfigFile D:\profiles\.wslconfig -Strict
+.\wsl_manage.ps1 wslconfig -Template > $env:USERPROFILE\.wslconfig.new
 ```
 
 ## Actions
@@ -94,10 +101,12 @@ compact would give back.
 | `sparse` | no | no | `wsl --manage <distro> --set-sparse true` — needs a recent WSL (`wsl --update` if it fails). |
 | `terminate` | no | one distro | `wsl --terminate <distro>`. Kills that distro's processes; other distros and the utility VM keep running. |
 | `shutdown` | no | yes | Plain `wsl --shutdown`. |
+| `wslconfig` | no | no | Audits `%USERPROFILE%\.wslconfig` (or `-ConfigFile`): no memory cap, keys WSL ignores, values that do not parse. Read-only; needs no WSL. `-Template` prints a starter file. See [.wslconfig audit](#wslconfig-audit). |
 
-Exit codes: `0` success, `1` the underlying `wsl`/`diskpart` command failed,
-`2` WSL is not installed or not operational, `3` bad arguments, `4` needs an
-elevated shell (`compact`).
+Exit codes: `0` success, `1` the underlying `wsl`/`diskpart` command failed
+(for `wslconfig -Strict`: at least one `WARN`), `2` WSL is not installed or not
+operational, `3` bad arguments (including a `-ConfigFile` that does not exist),
+`4` needs an elevated shell (`compact`).
 
 Take a `backup` before your first `compact` on a distro you care about —
 compacting is safe and routine, but it is still a disk-level operation on
@@ -161,6 +170,72 @@ distro's exports rather than all of them.
 A real run prints the `KEEP`/`PRUNE` list and then asks for confirmation;
 `-Force` skips the prompt for a scheduled task, and `-DryRun` prints the same
 list with `WOULD` and deletes nothing.
+
+## .wslconfig audit
+
+The usual reason the `vmmem` process holds most of the RAM while Docker, k3s or
+a build runs is `%USERPROFILE%\.wslconfig`: missing, without a memory cap, or
+with keys WSL reads past without a word. WSL starts happily with a key in the
+wrong section or a misspelt name and simply ignores it, so the cap you wrote is
+not the cap you have. `wslconfig` reads the file and says what WSL will make of
+it. It never edits it, never calls `wsl.exe`, and runs where WSL is absent.
+
+```text
+[wsl2]
+processors=4
+# the cap
+memry=8GB
+swap=2GB
+autoMemoryReclaim=gradual
+```
+
+```powershell
+.\wsl_manage.ps1 wslconfig
+```
+
+```text
+Checking C:\Users\me\.wslconfig
+
+WARN  [wsl2] memry (line 4)                        unrecognised key (typo, or newer than this table)
+WARN  [wsl2] autoMemoryReclaim (line 6)            belongs in [experimental]; ignored here
+OK    [wsl2] swap (line 5)                         2GB
+OK    [wsl2] processors (line 2)                   4
+WARN  [wsl2] memory                                no memory cap: the VM can grow to about half of RAM (set memory=8GB, say)
+INFO  [experimental] autoMemoryReclaim             consider autoMemoryReclaim=gradual: freed memory goes back to Windows
+INFO  [experimental] sparseVhd                     consider sparseVhd=true (or wsl_manage.ps1 sparse for an existing distro)
+
+3 warning(s). WSL reads this file when the VM starts: 'wsl --shutdown' after editing it.
+```
+
+| Finding | Level |
+| --- | --- |
+| No `.wslconfig` at the default path; WSL sizes the VM itself | `INFO` |
+| A key before any `[section]`, or a line that is not `key=value` | `WARN` |
+| A section `.wslconfig` does not read: `[wsl]`, `[wsl2 ]`, or a `/etc/wsl.conf` section such as `[boot]` | `WARN` |
+| An `[experimental]` key under `[wsl2]`, or the reverse | `WARN` |
+| A key the table does not know: a typo, or a setting newer than the table | `WARN` |
+| `memory` or `swap` that is not a size (`8GB`, `512MB`), `processors` that is not a positive whole number | `WARN` |
+| `memory` above the installed RAM, `processors` above the logical processors (Windows only; skipped with an `INFO` line elsewhere) | `WARN` |
+| A single backslash in `kernel` or `swapFile`: write `C:\\Users\\me\\...` or use forward slashes | `WARN` |
+| No `memory` cap | `WARN` |
+| No `autoMemoryReclaim` or `sparseVhd` under `[experimental]` | `INFO` |
+| `localhostForwarding` with `networkingMode=mirrored`, where it has no effect | `INFO` |
+
+The known-key table is taken from Microsoft's *Advanced settings configuration
+in WSL* page and is best effort, which is why an unknown key is a warning and
+never a failure. The recommended values are suggestions printed as `INFO`;
+nothing is changed.
+
+`-ConfigFile PATH` audits another file, for example a profile you keep in a
+repository. `-Strict` turns any `WARN` into exit `1`, for a login script or a
+scheduled check; without it the report always exits `0`. `-Template` prints a
+commented starter (`memory=8GB`, `processors=4`, `swap=2GB`,
+`autoMemoryReclaim=gradual`, `sparseVhd=true`) to stdout and writes nothing;
+redirect it yourself, review it, and run `wsl --shutdown` so WSL reads it.
+
+Exit codes: `0` the report ran (warnings alone do not change it), `1` with
+`-Strict`, one or more warnings, `3` a `-ConfigFile` that does not exist or
+cannot be read. A missing file at the default path is not an error.
 
 ## Git Bash shortcuts
 
