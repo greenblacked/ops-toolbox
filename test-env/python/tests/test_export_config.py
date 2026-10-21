@@ -284,6 +284,26 @@ class SecretScanTestCase(unittest.TestCase):
         self.assertEqual(export_config.find_secrets(text),
                          [(1, "secret assigned in a script")])
 
+    def test_finds_a_value_holding_escaped_backslashes(self):
+        # A script's own `\\` is `\\\\` in an export, and the value goes on
+        # past it. The old pattern stopped at the first backslash and found
+        # nothing, so --commit could write the whole value.
+        text = 'add name=s source=":global ApiPassword \\"abc\\\\def\\";"\n'
+        self.assertEqual(export_config.find_secrets(text),
+                         [(1, "secret assigned in a script")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'add name=s source=":global ApiPassword \\"<redacted>\\";"\n',
+        )
+        # A trailing escaped backslash does not swallow the closing quote.
+        text = 'add name=s source=":global ApiPassword \\"abc\\\\\\";"\n'
+        self.assertEqual(export_config.redact_secrets(text),
+                         'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+        # Other escapes inside the value (\$, \n) stay part of it.
+        text = 'add name=s source=":global ApiPassword \\"a\\$b\\";"\n'
+        self.assertEqual(export_config.find_secrets(text),
+                         [(1, "secret assigned in a script")])
+
     def test_ignores_the_shipped_placeholders_and_empty_values(self):
         text = (
             'add name=s source=":local BotToken \\"token\\";\\r\\n'
