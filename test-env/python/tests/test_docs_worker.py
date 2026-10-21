@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -303,6 +304,151 @@ class SecurityHeaderTests(unittest.TestCase):
                     self.assertNotIn("x-robots-tag", headers)
             checked += 1
         self.assertEqual(checked, len(cases))
+
+
+def well_known(calls: list[dict[str, object]]) -> list[object]:
+    """Call wellknown.js for each {fn, url, env, now} and return the results.
+    now is an ISO timestamp, so nothing depends on today's date."""
+    out = worker_eval(
+        "wellknown.js",
+        "const out = [];\n"
+        "for (const c of JSON.parse(process.env.CALLS)) {\n"
+        "  const now = new Date(c.now || '2026-01-01T00:00:00Z');\n"
+        "  if (c.fn === 'robots') out.push(m.robotsTxt(c.url, c.env || {}));\n"
+        "  else if (c.fn === 'security') out.push(m.securityTxt(c.url, now));\n"
+        "  else out.push(m.wellKnown(c.url, c.env || {}, now));\n"
+        "}\n"
+        "process.stdout.write(JSON.stringify(out));",
+        CALLS=json.dumps(calls),
+    )
+    assert isinstance(out, list)
+    return out
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class WellKnownTests(unittest.TestCase):
+    PROD = "https://ops.szolotov.com"
+    STAGE = "https://stage.ops.szolotov.com"
+    WORKERS_DEV = "https://ops-toolbox.example.workers.dev"
+    NOINDEX = {"ROBOTS": "noindex"}
+
+    def robots(self, origin: str, env: dict[str, str] | None = None) -> str:
+        [body] = well_known([{"fn": "robots", "url": origin + "/robots.txt", "env": env or {}}])
+        assert isinstance(body, str)
+        return body
+
+    def security(self, url: str, now: str) -> str:
+        [body] = well_known([{"fn": "security", "url": url, "now": now}])
+        assert isinstance(body, str)
+        return body
+
+    def test_robots_for_production_allows_and_names_the_sitemap(self) -> None:
+        body = self.robots(self.PROD)
+        self.assertEqual(
+            body, "User-agent: *\nAllow: /\n\nSitemap: https://ops.szolotov.com/sitemap.xml\n"
+        )
+
+    def test_robots_for_stage_does_not_disallow(self) -> None:
+        body = self.robots(self.STAGE, self.NOINDEX)
+        self.assertIn("Disallow:\n", body)
+        self.assertNotIn("Disallow: /", body)
+
+    def test_robots_for_stage_has_no_sitemap_line(self) -> None:
+        self.assertNotIn("Sitemap:", self.robots(self.STAGE, self.NOINDEX))
+
+    def test_robots_on_workers_dev_has_no_sitemap_line(self) -> None:
+        body = self.robots(self.WORKERS_DEV)
+        self.assertNotIn("Sitemap:", body)
+        self.assertNotIn("Disallow: /", body)
+
+    def test_security_txt_has_required_fields_and_https_contact(self) -> None:
+        body = self.security(self.PROD + "/.well-known/security.txt", "2026-03-01T12:34:56.789Z")
+        fields = {}
+        for line in body.splitlines():
+            if line:
+                name, _, value = line.partition(": ")
+                fields[name] = value
+        self.assertTrue(fields)
+        self.assertTrue(fields["Contact"].startswith("https://"), fields["Contact"])
+        self.assertTrue(fields["Contact"].endswith("/security/advisories/new"))
+        self.assertTrue(fields["Policy"].endswith("/SECURITY.md"))
+        self.assertEqual(fields["Preferred-Languages"], "en")
+        expires = datetime.strptime(fields["Expires"], "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+        now = datetime(2026, 3, 1, 12, 34, 56, tzinfo=timezone.utc)
+        self.assertEqual(expires - now, timedelta(days=180))
+        self.assertTrue(body.endswith("\n"))
+
+    def test_security_txt_canonical_uses_the_request_origin(self) -> None:
+        for origin in (self.PROD, self.STAGE, "http://localhost:8787"):
+            with self.subTest(origin=origin):
+                body = self.security(origin + "/.well-known/security.txt", "2026-01-01T00:00:00Z")
+                self.assertIn("Canonical: %s/.well-known/security.txt\n" % origin, body)
+
+    def test_unrelated_paths_return_null(self) -> None:
+        paths = ["/", "/robots.txt/", "/ROBOTS.TXT", "/security.txt",
+                 "/.well-known/", "/x/robots.txt", "/sitemap.xml"]
+        results = well_known([{"fn": "wellKnown", "url": self.PROD + p} for p in paths])
+        self.assertEqual(len(results), len(paths))
+        for path, result in zip(paths, results):
+            with self.subTest(path=path):
+                self.assertIsNone(result)
+        found = well_known([{"fn": "wellKnown", "url": self.PROD + "/robots.txt"}])[0]
+        self.assertIsInstance(found, dict)
+        assert isinstance(found, dict)
+        self.assertEqual(found["contentType"], "text/plain; charset=utf-8")
+
+    def test_through_the_worker(self) -> None:
+        cases = [
+            # The site has no robots.txt: the Worker answers it.
+            {"url": self.PROD + "/robots.txt", "status": 404},
+            # The site ships its own: it is passed through untouched.
+            {"url": self.PROD + "/robots.txt", "status": 200},
+            {"url": self.PROD + "/.well-known/security.txt", "status": 404},
+            # Only GET and HEAD are answered.
+            {"url": self.PROD + "/robots.txt", "status": 404, "method": "POST"},
+            {"url": self.PROD + "/robots.txt", "status": 404, "method": "HEAD"},
+            {"url": self.STAGE + "/robots.txt", "status": 404, "env": self.NOINDEX},
+            {"url": self.WORKERS_DEV + "/robots.txt", "status": 404},
+        ]
+        results = fetch_through_worker(cases)
+        self.assertEqual(len(results), len(cases))
+        made, passed, security, post, head, stage, workers_dev = results
+
+        self.assertEqual(made["status"], 200)
+        self.assertIn("Sitemap: https://ops.szolotov.com/sitemap.xml", str(made["body"]))
+        self.assertEqual(passed["status"], 200)
+        self.assertEqual(passed["body"], "upstream 200")
+        self.assertEqual(security["status"], 200)
+        self.assertIn("Contact: https://", str(security["body"]))
+        self.assertEqual(post["status"], 404)
+        self.assertEqual(post["body"], "upstream 404")
+        self.assertEqual(head["status"], 200)
+        self.assertEqual(stage["status"], 200)
+        self.assertNotIn("Sitemap:", str(stage["body"]))
+        self.assertEqual(workers_dev["status"], 200)
+
+        checked = 0
+        for result in (made, security, head, stage, workers_dev):
+            headers = result["headers"]
+            assert isinstance(headers, dict)
+            self.assertEqual(headers.get("content-type"), "text/plain; charset=utf-8")
+            self.assertEqual(headers.get("cache-control"), "public, max-age=3600")
+            self.assertIn("content-security-policy", headers)
+            self.assertIn("x-content-type-options", headers)
+            checked += 1
+        self.assertEqual(checked, 5)
+        # The stage preview keeps its noindex header; production and the
+        # workers.dev address never get one (the production smoke test fails
+        # if workers.dev answers with it).
+        stage_headers = stage["headers"]
+        assert isinstance(stage_headers, dict)
+        self.assertEqual(stage_headers.get("x-robots-tag"), "noindex")
+        for result in (made, security, workers_dev):
+            headers = result["headers"]
+            assert isinstance(headers, dict)
+            self.assertNotIn("x-robots-tag", headers)
 
 
 if __name__ == "__main__":

@@ -300,6 +300,9 @@ curl -sS https://stage.ops.szolotov.com/version.txt
 curl -sSI https://ops.szolotov.com/
 curl -sS https://ops.szolotov.com/version.txt
 curl -sSI https://stage.ops.szolotov.com/version.txt | grep -i 'cache-control'
+curl -sS https://stage.ops.szolotov.com/robots.txt
+curl -sS https://ops.szolotov.com/robots.txt
+curl -sS https://ops.szolotov.com/.well-known/security.txt
 curl -sSI "https://stage.ops.szolotov.com/$(curl -sS https://stage.ops.szolotov.com/ \
   | grep -o 'assets/javascripts/bundle\.[0-9a-f]*\.min\.js' | head -n 1)" | grep -i 'cache-control'
 ```
@@ -316,6 +319,11 @@ curl -sSI "https://stage.ops.szolotov.com/$(curl -sS https://stage.ops.szolotov.
 - The footer of every page ends with "Build" and the first seven characters
   of the deployed SHA, linked to the commit. On stage, "Preview build" comes
   before it (see below).
+- Production's `robots.txt` allows everything and names
+  `https://ops.szolotov.com/sitemap.xml`; stage's has an empty `Disallow:`
+  and no sitemap. `security.txt` names the private advisory form and an
+  `Expires` date 180 days ahead. The Worker writes both only because the
+  site ships neither (see the Worker README).
 - `version.txt` answers `Cache-Control: no-store`, and Material's hashed
   bundle answers `Cache-Control: public, max-age=31536000, immutable`. Pages
   carry no `Cache-Control` from the Worker (the rules are in the

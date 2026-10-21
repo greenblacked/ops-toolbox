@@ -11,29 +11,49 @@
 // Cache-Control comes from cache.js, and only on a successful read (GET or
 // HEAD answered 200 or 304), so a missing file is never cached as
 // long-lived.
+//
+// robots.txt and /.well-known/security.txt come from wellknown.js, and only
+// when the assets layer has no such file (it answered 404), so a file the
+// site ships always wins.
 
 import { cacheControl } from "./cache.js";
 import { securityHeaders } from "./security.js";
+import { wellKnown } from "./wellknown.js";
+
+// Adds the headers every response gets, in place.
+function decorate(response, request, env, status) {
+  for (const [name, value] of Object.entries(securityHeaders(request.url))) {
+    response.headers.set(name, value);
+  }
+  // Set in the config's previews block, so only the stage preview has it.
+  if (env.ROBOTS === "noindex") {
+    response.headers.set("X-Robots-Tag", "noindex");
+  }
+  const read = request.method === "GET" || request.method === "HEAD";
+  if (read && (status === 200 || status === 304)) {
+    const cc = cacheControl(new URL(request.url).pathname);
+    if (cc) {
+      response.headers.set("Cache-Control", cc);
+    }
+  }
+  return response;
+}
 
 export default {
   async fetch(request, env) {
     const upstream = await env.ASSETS.fetch(request);
-    // Assets responses can have immutable headers; copy into a new response.
-    const response = new Response(upstream.body, upstream);
-    for (const [name, value] of Object.entries(securityHeaders(request.url))) {
-      response.headers.set(name, value);
-    }
-    // Set in the config's previews block, so only the stage preview has it.
-    if (env.ROBOTS === "noindex") {
-      response.headers.set("X-Robots-Tag", "noindex");
-    }
     const read = request.method === "GET" || request.method === "HEAD";
-    if (read && (upstream.status === 200 || upstream.status === 304)) {
-      const cc = cacheControl(new URL(request.url).pathname);
-      if (cc) {
-        response.headers.set("Cache-Control", cc);
+    if (read && upstream.status === 404) {
+      const file = wellKnown(request.url, env, new Date());
+      if (file) {
+        const synthesised = new Response(request.method === "HEAD" ? null : file.body, {
+          status: 200,
+          headers: { "Content-Type": file.contentType, "Cache-Control": file.cacheControl },
+        });
+        return decorate(synthesised, request, env, 200);
       }
     }
-    return response;
+    // Assets responses can have immutable headers; copy into a new response.
+    return decorate(new Response(upstream.body, upstream), request, env, upstream.status);
   },
 };
