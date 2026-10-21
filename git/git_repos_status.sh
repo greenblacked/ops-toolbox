@@ -41,8 +41,9 @@ Options:
   --depth N       How many directory levels below DIR to search (default: 2)
   --only STATE    Only show repositories that are dirty, ahead, behind, have
                   unpushed commits, or have a stash
-  --fetch         Run 'git fetch --quiet' in each repository first. Network;
-                  it updates remote-tracking refs and nothing else.
+  --fetch         Run 'git fetch --prune --quiet' in each repository first.
+                  Network; it updates remote-tracking refs and nothing else.
+                  A failed fetch counts as work at risk.
   --dry-run       Print the fetch each repository would get and report from
                   the refs already on disk; changes nothing. With --porcelain
                   the dry-run lines go to stderr, so stdout stays rows only
@@ -52,8 +53,8 @@ Options:
   -h, --help      Show this help
 
 Work at risk means uncommitted or untracked changes, commits ahead of the
-upstream, commits on local branches that no remote-tracking ref contains, or a
-stash. Without --fetch nothing is fetched, so remote-tracking refs are only as
+upstream, commits on local branches that no remote-tracking ref contains, a
+stash, or (with --fetch) a fetch that failed. Without --fetch nothing is fetched, so remote-tracking refs are only as
 fresh as the last fetch in each repository: "behind" means behind what this
 machine last saw.
 
@@ -197,7 +198,7 @@ add_note() {
 inspect_repo() {
   local repo="$1" rel="$2"
   local branch upstream counts ahead=0 behind=0 changed=0 stash=0 unpushed=0
-  local sync risk=0 keep=1 has_remote tips status_out status_failed=0
+  local sync risk=0 keep=1 has_remote tips status_out status_failed=0 fetch_failed=0
   notes=""
 
   # A checkout git cannot read (a broken .git file, an ownership refusal) is
@@ -212,12 +213,18 @@ inspect_repo() {
     [[ -n "$(git -C "$repo" remote 2>/dev/null || true)" ]] && has_remote=1
     if (( has_remote == 1 )); then
       if (( DRY_RUN == 1 )); then
-        dry_say "dry-run: would run: git -C $repo fetch --quiet"
+        dry_say "dry-run: would run: git -C $repo fetch --prune --quiet"
       elif (( FETCH == 1 )); then
         # No terminal prompt: one repository asking for a password would
         # otherwise stall the whole sweep.
-        GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --quiet >/dev/null 2>&1 ||
+        # --prune drops remote-tracking refs for branches deleted on the
+        # remote; otherwise a stale ref makes formerly pushed commits look
+        # pushed. A failed fetch leaves the refs unverified, so it counts as
+        # work at risk below.
+        if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --prune --quiet >/dev/null 2>&1; then
+          fetch_failed=1
           add_note "fetch-failed"
+        fi
       fi
     fi
 
@@ -286,7 +293,7 @@ inspect_repo() {
       sync="="
     fi
 
-    if (( changed > 0 || status_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
+    if (( changed > 0 || status_failed == 1 || fetch_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
       risk=1
     fi
   fi

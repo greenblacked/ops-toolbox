@@ -165,7 +165,7 @@ tree_before="$(find "$parent" | sort)"
 refs_before="$(git --git-dir="$origin" for-each-ref)"
 out="$("$REPOS_STATUS" --dir "$parent" --dry-run 2>&1)"; rc=$?
 assert_eq "$rc" 0 '--dry-run exits 0'
-assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --quiet" '--dry-run names the fetch it would run'
+assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --prune --quiet" '--dry-run names the fetch it would run'
 assert_contains "$out" 'dry-run complete; no changes written' '--dry-run closes with the summary line'
 assert_eq "$(find "$parent" | sort)" "$tree_before" '--dry-run creates and removes no file'
 out="$("$REPOS_STATUS" --dir "$parent" --dry-run --porcelain 2>/dev/null)"
@@ -183,6 +183,35 @@ assert_contains "$out" "$parent/clean"$'\tmain\torigin/main\t0\t1\t0\t0\t0\tbehi
 out="$("$REPOS_STATUS" --dir "$parent/clean" 2>&1)"
 assert_contains "$out" '-1' 'the human table shows the checkout one behind'
 assert_contains "$out" '0 with work at risk, 1 behind' 'behind is not work at risk'
+
+section "--fetch --prune: a branch deleted on the remote"
+clone_into "$parent/pruned" &&
+  git -C "$parent/pruned" switch -q -c topic &&
+  printf 'topic\n' >"$parent/pruned/topic.txt" &&
+  git -C "$parent/pruned" add topic.txt &&
+  git -C "$parent/pruned" commit -q -m topic &&
+  git -C "$parent/pruned" push -q -u origin topic || err 'push topic from the pruned fixture'
+git -C "$updater" fetch -q origin &&
+  git -C "$updater" push -q origin --delete topic || err 'delete topic on the remote from a second clone'
+out="$("$REPOS_STATUS" --dir "$parent/pruned" --porcelain 2>&1)"
+assert_contains "$out" $'\ttopic\torigin/topic\t0\t0\t0\t0\t0\t' 'without --fetch the stale ref still hides the commit'
+out="$("$REPOS_STATUS" --dir "$parent/pruned" --fetch --porcelain 2>&1)"
+assert_contains "$out" $'\ttopic\t\t0\t0\t0\t0\t1\t' '--fetch prunes the deleted branch so its commit is unpushed'
+"$REPOS_STATUS" --dir "$parent/pruned" --fetch --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict --fetch exits 1 for a commit whose remote branch was deleted'
+rm -rf "$parent/pruned"
+
+section "--fetch failure is work at risk"
+clone_into "$parent/unreach" || err 'clone unreachable fixture'
+git -C "$parent/unreach" remote set-url origin "$scratch/does-not-exist.git" || err 'break the remote url'
+out="$("$REPOS_STATUS" --dir "$parent/unreach" --fetch --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 'a failed fetch still exits 0 without --strict'
+assert_contains "$out" 'fetch-failed' 'a failed fetch is noted'
+"$REPOS_STATUS" --dir "$parent/unreach" --fetch --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict --fetch exits 1 when the fetch failed'
+"$REPOS_STATUS" --dir "$parent/unreach" --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 '--strict without --fetch ignores the unreachable remote'
+rm -rf "$parent/unreach"
 
 end_section
 if (( checks == 0 || failures > 0 )); then

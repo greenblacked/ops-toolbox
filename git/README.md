@@ -292,7 +292,7 @@ before re-imaging a laptop, after a context switch, or as a morning catch-up.
 | `--dir DIR` | Where to look; repeatable, default the current directory. A `DIR` that is itself a checkout is reported alone. |
 | `--depth N` | How many directory levels below `DIR` to search (default `2`). A checkout is never descended into, so its own subdirectories and submodules are not reported separately. |
 | `--only STATE` | Keep only rows that are `dirty`, `ahead`, `behind`, have `unpushed` commits, or have a `stash`. The summary and `--strict` describe the filtered set. |
-| `--fetch` | Run `git fetch --quiet` in each checkout that has a remote first, with terminal prompts off. It writes remote-tracking refs and nothing else; a failed fetch is noted as `fetch-failed` and the sweep goes on. |
+| `--fetch` | Run `git fetch --prune --quiet` in each checkout that has a remote first, with terminal prompts off. It writes remote-tracking refs and nothing else; `--prune` drops refs for branches deleted on the remote, so commits that were pushed to a since-deleted branch count as unpushed. A failed fetch is noted as `fetch-failed`, counts as work at risk (so `--strict` exits `1`) and the sweep goes on. |
 | `--dry-run` | Print the fetch each checkout with a remote would get, report from the refs already on disk, and close with `dry-run complete; no changes written`. With `--porcelain` those lines go to stderr, so stdout carries only the rows. |
 | `--strict` | Exit `1` when any reported checkout has work at risk. A checkout whose `git status` fails (for example a corrupt index) is noted `status-failed` and counts as at risk. |
 | `--porcelain` | Tab-separated rows, no header or colour: `path branch upstream ahead behind changed stash unpushed notes`. `path` is the checkout as found under `--dir`; an absent upstream is an empty field. |
@@ -306,7 +306,8 @@ and `NOTES`: `dirty`, `ahead`, `behind`, `diverged`, `detached`,
 `no-upstream`, `no-remote`, `stash`, `fetch-failed`, `unreadable`.
 
 **Work at risk** is anything that exists only on this machine: changed or
-untracked files, commits ahead of the upstream, unpushed commits, or a stash.
+untracked files, commits ahead of the upstream, unpushed commits, a stash, or a
+`--fetch` that failed.
 In a checkout with no remote every commit is unpushed, which is the truth. A
 checkout git cannot read at all is counted as at risk too, because it could not
 be proven otherwise. Being behind is reported but is not at risk.
