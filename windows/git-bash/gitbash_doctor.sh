@@ -209,6 +209,22 @@ else
 fi
 
 # --- ssh -------------------------------------------------------------------
+# Whether a private key file says it is encrypted, for ssh-keygen versions
+# whose error text does not name the passphrase. PEM keys carry a header; an
+# OpenSSH key names its KDF at the start of the decoded body, and "bcrypt"
+# there means a passphrase. Reads the file only, and prints nothing.
+key_looks_encrypted() {
+  local file="$1" decoded
+  if grep -qE '^Proc-Type:.*ENCRYPTED|^-----BEGIN ENCRYPTED PRIVATE KEY-----' "$file" 2>/dev/null; then
+    return 0
+  fi
+  if grep -q '^-----BEGIN OPENSSH PRIVATE KEY-----' "$file" 2>/dev/null; then
+    decoded="$(sed -e '1d' -e '/^-----END/,$d' "$file" 2>/dev/null | tr -d '\r\n' | base64 -d 2>/dev/null | head -c 64 2>/dev/null | tr -d '\0')"
+    [[ "$decoded" == *bcrypt* ]] && return 0
+  fi
+  return 1
+}
+
 group "ssh"
 agent_env="$HOME_DIR/.ssh/agent.env"
 if [[ -f "$agent_env" ]]; then
@@ -246,11 +262,19 @@ else
   [[ -f "$SSH_KEY_FILE.pub" ]] || warn "no public key beside it: $SSH_KEY_FILE.pub" "recreate it: ssh-keygen -y -f $SSH_KEY_FILE > $SSH_KEY_FILE.pub"
   if command -v ssh-keygen >/dev/null 2>&1; then
     # An empty passphrase and stdin from /dev/null, so it cannot prompt. The
-    # derived public key is discarded; only the exit status is kept.
-    if ssh-keygen -y -P '' -f "$SSH_KEY_FILE" >/dev/null 2>&1 </dev/null; then
+    # derived public key is discarded; only the exit status and the error
+    # text are kept. A failure does not prove a passphrase: a malformed or
+    # unreadable key fails the same way, so the cause is told apart below.
+    if keygen_err="$(ssh-keygen -y -P '' -f "$SSH_KEY_FILE" 2>&1 >/dev/null </dev/null)"; then
       warn "private key has no passphrase: $SSH_KEY_FILE" "add one: ssh-keygen -p -f $SSH_KEY_FILE"
-    else
+    elif [[ "$keygen_err" == *"incorrect passphrase"* ]]; then
       pass "private key is passphrase-protected: $SSH_KEY_FILE"
+    elif [[ "$keygen_err" =~ (invalid\ format|libcrypto|bad\ permissions|too\ open|UNPROTECTED|[Nn]o\ such\ file|[Pp]ermission\ denied|unsupported|not\ a) ]]; then
+      fail "private key cannot be read: $SSH_KEY_FILE" "ssh-keygen said: ${keygen_err%%$'\n'*}"
+    elif key_looks_encrypted "$SSH_KEY_FILE"; then
+      pass "private key is passphrase-protected: $SSH_KEY_FILE"
+    else
+      fail "private key is not a usable private key: $SSH_KEY_FILE" "ssh-keygen -y failed and the file shows no sign of a passphrase; regenerate it: ssh-keygen -t ed25519 -f $SSH_KEY_FILE"
     fi
   else
     skip "ssh-keygen not found; passphrase not checked"

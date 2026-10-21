@@ -123,6 +123,17 @@ for _dir in "${_path_entries[@]}"; do
   BASE_PATH="${BASE_PATH:+$BASE_PATH:}$_dir"
 done
 
+# The start of an OpenSSH private key whose body names the bcrypt KDF and
+# aes256-ctr, which is how a key with a passphrase begins. Not a usable key:
+# the ssh-keygen shims decide what the doctor is told about it.
+write_encrypted_key() {
+  {
+    echo '-----BEGIN OPENSSH PRIVATE KEY-----'
+    echo 'b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABBzYWx0c2FsdHNhbHRzYWx0AAAAEAAAAAEAAAAzAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+    echo '-----END OPENSSH PRIVATE KEY-----'
+  } > "$1"
+}
+
 # A home the doctor has nothing to say about: the repository's dotfiles, a
 # protected key with its .pub, a complete .gitconfig, and shims for every
 # Windows-side probe. Prints the fixture directory.
@@ -131,7 +142,7 @@ new_doctor_fixture() {
   fx="$(mktemp -d "$SCRATCH/doctor.XXXXXX")"
   mkdir -p "$fx/home/.ssh" "$fx/bin"
   cp "$GB/.bashrc" "$GB/.bash_profile" "$GB/.aliases" "$fx/home/"
-  printf 'not a real key\n' > "$fx/home/.ssh/id_ed25519"
+  write_encrypted_key "$fx/home/.ssh/id_ed25519"
   printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKE test\n' > "$fx/home/.ssh/id_ed25519.pub"
   cat > "$fx/home/.gitconfig" <<'EOF'
 [user]
@@ -148,8 +159,9 @@ EOF
   shim "$fx/bin/reg.exe" "printf '%s\\r\\n' '' 'HKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\FileSystem' '    LongPathsEnabled    REG_DWORD    0x1' ''"
   shim "$fx/bin/cygpath" "printf '%s\\n' 'C:\\Users\\a'"
   shim "$fx/bin/ssh-add" 'exit 0'
-  # Exit 1 is what ssh-keygen -y -P "" answers for a key that has a passphrase.
-  shim "$fx/bin/ssh-keygen" 'exit 1'
+  # What ssh-keygen -y -P "" answers for a key that has a passphrase: exit 1
+  # and an error that names the passphrase.
+  shim "$fx/bin/ssh-keygen" "echo 'Load key \"key\": incorrect passphrase supplied to decrypt private key' >&2; exit 1"
   shim "$fx/bin/ssh" 'exit 0'
   shim "$fx/bin/python" 'exit 0'
   shim "$fx/bin/python3" 'exit 0'
@@ -264,6 +276,40 @@ shim "$fx/bin/ssh-keygen" 'exit 0'
 run_doctor "$fx" ""
 assert_contains "a key without a passphrase is reported" "$out" "private key has no passphrase"
 assert_not_contains "and no key material is printed" "$out" "AAAAC3NzaC1lZDI1NTE5AAAAIFAKE"
+
+# A failing ssh-keygen -y does not prove a passphrase. Told apart: the error
+# text, then the file's own markers; a key that is neither is a failure.
+fx="$(new_doctor_fixture)"
+run_doctor "$fx" ""
+assert_contains "a key ssh-keygen reports an incorrect passphrase for is protected" "$out" "private key is passphrase-protected"
+
+fx="$(new_doctor_fixture)"
+shim "$fx/bin/ssh-keygen" 'exit 1'
+run_doctor "$fx" ""
+assert_contains "a silent failure on a key with the bcrypt KDF marker is protected" "$out" "private key is passphrase-protected"
+assert_not_contains "and not reported as unusable" "$out" "not a usable private key"
+
+fx="$(new_doctor_fixture)"
+shim "$fx/bin/ssh-keygen" 'exit 1'
+printf -- '-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00\n\nAAAA\n-----END RSA PRIVATE KEY-----\n' > "$fx/home/.ssh/id_ed25519"
+run_doctor "$fx" ""
+assert_contains "a PEM key marked ENCRYPTED is protected" "$out" "private key is passphrase-protected"
+
+fx="$(new_doctor_fixture)"
+shim "$fx/bin/ssh-keygen" 'exit 1'
+printf 'not a real key\n' > "$fx/home/.ssh/id_ed25519"
+run_doctor "$fx" "" --fail-on fail
+assert_contains "a key that fails with no sign of a passphrase is a failure" "$out" "not a usable private key"
+assert_not_contains "and is not called protected" "$out" "private key is passphrase-protected"
+assert_eq "and the run exits 1 under --fail-on fail" 1 "$rc"
+
+fx="$(new_doctor_fixture)"
+shim "$fx/bin/ssh-keygen" "echo 'Load key \"key\": invalid format' >&2; exit 1"
+run_doctor "$fx" ""
+assert_contains "a malformed key is reported as unreadable, even with the KDF marker" "$out" "private key cannot be read"
+assert_contains "with what ssh-keygen said" "$out" "invalid format"
+assert_not_contains "and not called protected" "$out" "private key is passphrase-protected"
+assert_not_contains "no key material is printed for it either" "$out" "AAAAC3NzaC1lZDI1NTE5AAAAIFAKE"
 
 # --------------------------------------------------------------------------
 section "gitbash_doctor is read-only"

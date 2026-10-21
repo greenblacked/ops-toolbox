@@ -4,7 +4,8 @@
   `~/.ssh/agent.env` pointing at an agent that is gone, Windows' OpenSSH
   client ahead of Git's so the agent's keys are invisible, a `HOME` under
   OneDrive or with a space in it, long paths off in Git and in the registry,
-  no credential helper, `safe.directory = *`, and the Microsoft Store
+  no credential helper, a private key with no passphrase or one that is
+  malformed rather than protected, `safe.directory = *`, and the Microsoft Store
   `python` stub on `PATH`. Each finding comes with the command that fixes it;
   nothing is changed and no key material is printed. A probe whose tool is
   absent is skipped, so it also runs on Linux.
