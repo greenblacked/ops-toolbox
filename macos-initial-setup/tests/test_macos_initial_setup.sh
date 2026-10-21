@@ -3387,6 +3387,7 @@ section "schedule_report: decodes plists, flags unsafe jobs"
 # runs on a real Mac. launchctl records every call: without --loaded the
 # report must never run it.
 sr="$(mktemp -d)"
+srp="$(cd -P "$sr" && pwd -P)"
 mkdir -p "$sr/bin" "$sr/home/Library/LaunchAgents" "$sr/tmp" \
   "$sr/root/Library/LaunchAgents" "$sr/root/Library/LaunchDaemons" "$sr/fx"
 printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sr/bin/uname"
@@ -3588,7 +3589,7 @@ assert_not_contains "a symlinked program with a private target directory is not 
 chmod 775 "$sr/wdir"
 out="$(sched --only launchd-user)"
 assert_contains "a symlinked program is checked where it points" "$out" \
-  "com.example.lnk runs $sr/ldir/job-link, which sits under $sr/wdir, which another user can modify"
+  "com.example.lnk runs $sr/ldir/job-link, which sits under $srp/wdir, which another user can modify"
 chmod 755 "$sr/wdir"
 rm -f "$ua/com.example.lnk.plist" "$sr/ldir/job-link"
 
@@ -3697,15 +3698,22 @@ assert_not_contains "a default preview never prints the Terraform token" "$out" 
 out="$(cbrun --dry-run --include-secrets --paths "$cb/home/.aws/credentials")"; rc=$?
 assert_eq "--include-secrets accepts a credentials path -> 0" "0" "$rc"
 assert_contains "--include-secrets warns that the archive holds secrets" "$out" "[warn] --include-secrets"
-out="$(cbrun --dry-run --dest "$cb/home/.config/git/backups" --paths "$cb/home/.config/git")"; rc=$?
+# A source without credentials, so the --dest containment check is what
+# refuses (a credential source would be refused for its secrets first).
+mkdir -p "$cb/home/Documents/notes"
+printf 'plain\n' > "$cb/home/Documents/notes/todo.txt"
+out="$(cbrun --dry-run --dest "$cb/home/Documents/notes/backups" --paths "$cb/home/Documents/notes")"; rc=$?
 assert_eq "a --dest inside an archived source is refused -> 3" "3" "$rc"
-ln -s "$cb/home/.config/git" "$cb/dest-link"
-out="$(cbrun --dry-run --dest "$cb/dest-link/backups" --paths "$cb/home/.config/git")"; rc=$?
+assert_contains "the lexical refusal names the source" "$out" "is inside ~/Documents/notes"
+ln -s "$cb/home/Documents/notes" "$cb/dest-link"
+out="$(cbrun --dry-run --dest "$cb/dest-link/backups" --paths "$cb/home/Documents/notes")"; rc=$?
 assert_eq "a symlinked --dest that lands inside a source is refused -> 3" "3" "$rc"
-assert_contains "the symlinked refusal names the source" "$out" "is inside ~/.config/git"
-out="$(cbrun --dry-run --dest "$cb/dest-link" --paths "$cb/home/.config/git")"; rc=$?
+assert_contains "the symlinked refusal names the source" "$out" "is inside ~/Documents/notes"
+out="$(cbrun --dry-run --dest "$cb/dest-link" --paths "$cb/home/Documents/notes")"; rc=$?
 assert_eq "an existing symlinked --dest inside a source is refused -> 3" "3" "$rc"
+assert_contains "the existing symlink refusal names the source" "$out" "is inside ~/Documents/notes"
 rm -f "$cb/dest-link"
+rm -rf "$cb/home/Documents"
 
 out="$(cbrun --dry-run)"; rc=$?
 assert_eq "config_backup --dry-run -> 0" "0" "$rc"
