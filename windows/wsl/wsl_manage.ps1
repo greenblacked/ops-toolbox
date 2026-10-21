@@ -825,6 +825,7 @@ function Test-WslConfig {
     # page. A key missing from here is reported as unrecognised, which is a
     # warning and never a failure: it may simply be newer than this table.
     $known = @{
+        'general'      = @('instanceIdleTimeout', 'distributionInstallPath')
         'wsl2'         = @('kernel', 'kernelModules', 'memory', 'processors', 'swap', 'swapFile',
                            'localhostForwarding', 'kernelCommandLine', 'safeMode', 'nestedVirtualization',
                            'vmIdleTimeout', 'guiApplications', 'debugConsole', 'maxCrashDumpCount',
@@ -859,17 +860,18 @@ function Test-WslConfig {
             } elseif ($section.Trim() -eq 'wsl2' -or $section -eq 'wsl') {
                 'ignored by WSL: the section is [wsl2]'
             } else {
-                "ignored by WSL: .wslconfig reads only [wsl2] and [experimental]"
+                "ignored by WSL: .wslconfig reads only [general], [wsl2] and [experimental]"
             }
             $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = $why }
             continue
         }
 
-        $other = if ($section -eq 'wsl2') { 'experimental' } else { 'wsl2' }
         $canonical = $known[$section] | Where-Object { $_ -eq $e.Key } | Select-Object -First 1
         if (-not $canonical) {
-            $elsewhere = $known[$other] | Where-Object { $_ -eq $e.Key } | Select-Object -First 1
-            if ($elsewhere) {
+            $other = @('general', 'wsl2', 'experimental') | Where-Object {
+                $_ -ne $section -and ($known[$_] -contains $e.Key)
+            } | Select-Object -First 1
+            if ($other) {
                 $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = "belongs in [$other]; ignored here" }
             } else {
                 $findings += [PSCustomObject]@{ Level = 'warn'; Check = $label; Message = 'unrecognised key (typo, or newer than this table)' }

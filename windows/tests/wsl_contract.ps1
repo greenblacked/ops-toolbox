@@ -259,6 +259,23 @@ Test-Case 'a [wsl2] key under [experimental] is reported as misplaced' (
     @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match 'belongs in \[wsl2\]' }).Count -eq 1
 ) (Format-Finding $found)
 
+$found = Get-WslConfigFinding "[general]`ninstanceIdleTimeout=60000`ndistributionInstallPath=D:/WSL`n[wsl2]`nmemory=8GB"
+Test-Case '[general] and its documented keys are read, not reported as ignored' (
+    @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[general]`ninstanceIdleTimout=60000`n[wsl2]`nmemory=8GB"
+Test-Case 'an unknown key under [general] is unrecognised' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[general] instanceIdleTimout (line 2)' -and $_.Message -match 'unrecognised key' }).Count -eq 1
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`ninstanceIdleTimeout=60000"
+Test-Case 'a [general] key under [wsl2] is reported as misplaced' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match 'belongs in \[general\]' }).Count -eq 1
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[bogus]`nmemory=8GB"
+Test-Case 'the ignored-section message names all three sections WSL reads' (
+    @($found | Where-Object { $_.Message -match '\[general\], \[wsl2\] and \[experimental\]' }).Count -eq 1
+) (Format-Finding $found)
+
 $found = Get-WslConfigFinding "[boot]`nsystemd=true"
 Test-Case 'a /etc/wsl.conf section is pointed at /etc/wsl.conf' (
     @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match '/etc/wsl.conf' }).Count -eq 1

@@ -435,8 +435,8 @@ INFO  [experimental] sparseVhd                     consider sparseVhd=true (or w
 | --- | --- |
 | No `.wslconfig` at the default path; WSL sizes the VM itself | `INFO` |
 | A key before any `[section]`, or a line that is not `key=value` | `WARN` |
-| A section `.wslconfig` does not read: `[wsl]`, `[wsl2 ]`, or a `/etc/wsl.conf` section such as `[boot]` | `WARN` |
-| An `[experimental]` key under `[wsl2]`, or the reverse | `WARN` |
+| A section `.wslconfig` does not read: `[wsl]`, `[wsl2 ]`, or a `/etc/wsl.conf` section such as `[boot]`; only `[general]`, `[wsl2]` and `[experimental]` are read | `WARN` |
+| A key under the wrong one of `[general]`, `[wsl2]` and `[experimental]` (an `[experimental]` key under `[wsl2]`, say) | `WARN` |
 | A key the table does not know: a typo, or a setting newer than the table | `WARN` |
 | `memory` or `swap` that is not a size (`8GB`, `512MB`; a bare number is bytes, so `swap=0` is fine), `processors` that is not a positive whole number | `WARN` |
 | `memory` above the installed RAM, `processors` above the logical processors (Windows only; skipped with an `INFO` line elsewhere) | `WARN` |
