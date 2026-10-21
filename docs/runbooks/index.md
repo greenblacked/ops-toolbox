@@ -37,6 +37,7 @@ Your machine will print different numbers.
 | [Kubernetes pods are unhealthy](kubernetes-unhealthy-pods.md) | Kubernetes | Pods crash, stay Pending, or the cluster looks unhappy. |
 | [A TLS certificate is expired or about to expire](tls-certificate-expiring.md) | Linux | A certificate has expired, a monitor says it is close, or clients report certificate errors. |
 | [git push fails with Permission denied (publickey)](git-permission-denied-publickey.md) | Git | SSH refuses your key although it exists, or a `Host` block seems ignored. |
+| [A Linux host cannot reach the network or resolve names](linux-network-unreachable.md) | Linux | Nothing is reachable, names do not resolve, or a service cannot be reached from outside. |
 
 New runbooks are added one at a time. See
 [Development](../contributing/development.md) for the page patterns they use.

@@ -154,6 +154,7 @@ nav:
       - Kubernetes unhealthy pods: runbooks/kubernetes-unhealthy-pods.md
       - TLS certificate expiring: runbooks/tls-certificate-expiring.md
       - Git Permission denied (publickey): runbooks/git-permission-denied-publickey.md
+      - Linux network unreachable: runbooks/linux-network-unreachable.md
   - Contributing:
       - Contributing: contributing.md
       - Development: contributing/development.md
