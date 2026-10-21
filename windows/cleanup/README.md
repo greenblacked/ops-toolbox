@@ -17,7 +17,7 @@ deliberately leaves alone - with the tool that gives each one back. See
 | --- | --- |
 | **Windows 10 or 11** | The script reads `C:` and the current Windows identity at script scope, so it is a Windows-only file in a way the other scripts here are not. |
 | **Windows PowerShell 5.1 or PowerShell 7** | Either edition. See the repository's [execution policy note](../README.md#execution-policy-note) if PowerShell refuses to run it at all. |
-| **An elevated shell** | Optional. Without it the machine-wide targets (Windows temp, WER, Delivery Optimization, Windows Update cache) are skipped with a warning and the profile-owned ones still run. |
+| **An elevated shell** | Optional. Without it the machine-wide targets (Windows temp, WER, Delivery Optimization, Windows Update cache, system crash dumps, servicing logs, the component store) are skipped with a warning and the profile-owned ones still run. |
 | **Docker** | Optional, and only for the opt-in Docker target. When `docker` is not on `PATH` that target prints a `SKIP` line instead of failing the run. |
 
 ## Usage
@@ -34,6 +34,10 @@ deliberately leaves alone - with the tool that gives each one back. See
 
 # More aggressive:
 .\clean_disk_c.ps1 -Yes -Days 3 -IncludeRecycleBin -IncludeWindowsUpdate -IncludeDevCaches
+
+# Crash dumps, old servicing logs and superseded update payloads (elevated):
+.\clean_disk_c.ps1 -DryRun -IncludeCrashDumps -IncludeLogs -IncludeComponentStore
+.\clean_disk_c.ps1 -Yes -IncludeCrashDumps -IncludeLogs -IncludeComponentStore
 ```
 
 ## Deleting needs -Yes
@@ -85,6 +89,9 @@ scope: an opt-in target still runs because it was named explicitly.
 | `-IncludeWindowsUpdate` | Clears `SoftwareDistribution\Download` (stops/starts the update service around it) | Pending updates re-download. |
 | `-IncludeDevCaches` | pip, NuGet, npm caches | Next builds re-download packages. |
 | `-IncludeDocker` | `docker system prune -f` | Removes dangling images, stopped containers, unused networks. **Volumes are never touched.** |
+| `-IncludeCrashDumps` | `C:\Windows\MEMORY.DMP`, `C:\Windows\Minidump`, `C:\Windows\LiveKernelReports`, the WER report archive (admin), and `%LOCALAPPDATA%\CrashDumps` | **You lose the ability to analyse past crashes.** There is no age filter - copy a dump away first if a crash still needs looking at. Windows recreates the `LiveKernelReports` subfolders when it needs them. |
+| `-IncludeLogs` | CBS, DISM and setup (`Panther`) logs under `C:\Windows` older than `-Days` (admin) | Old servicing history is gone; recent logs stay. The event logs are never touched. |
+| `-IncludeComponentStore` | `Dism.exe /Online /Cleanup-Image /StartComponentCleanup`, Windows' own supported cleanup (admin) | Superseded update payloads are removed; installed updates can still be uninstalled. It can take a while. `-DryRun` prints the command and does not run DISM at all, not even its analysis, which writes logs of its own. |
 
 ## What it deliberately does not touch
 
@@ -94,20 +101,28 @@ scope: an opt-in target still runs because it was named explicitly.
   you know you want that.
 - WSL virtual disks — those shrink via
   [`../wsl/wsl_manage.ps1`](../wsl/wsl_manage.ps1) `compact` instead.
-- `Windows.old`, `$WINDOWS.~BT` and the component store (`WinSxS`) —
-  Windows' own Storage settings and DISM are the supported way to shrink
-  them.
+- `Windows.old` and `$WINDOWS.~BT` — Windows' own Storage settings are the
+  supported way to remove them.
+- `/ResetBase` — `-IncludeComponentStore` never passes it. It makes every
+  installed update permanent, so none can be uninstalled afterwards; that is
+  a decision to make by hand, not a side effect of freeing space.
+- Event logs and `Package Cache` — the first is not a file to delete, the
+  second is needed to repair and uninstall software.
 
-None of these is invisible, though: [`disk_usage.ps1`](#disk_usageps1)
-measures every one of them and names the tool that does give the space back.
+The large ones are not invisible, though: [`disk_usage.ps1`](#disk_usageps1)
+measures them and names the tool that does give the space back.
 
 ## Notes
 
 - Locked/in-use files are skipped silently — normal for temp folders.
 - The dry-run total is a lower bound: Recycle Bin, Delivery Optimization,
-  npm, and Docker sizes are not included in the estimate (their tooling
-  doesn't expose sizes cheaply); the real clean prints before/after free
-  space, which captures everything.
+  npm, Docker and component store sizes are not included in the estimate
+  (their tooling doesn't expose sizes cheaply); the real clean prints
+  before/after free space, which captures everything. The component store
+  runs last for that reason.
+- A `FAIL` line - DISM exiting non-zero, for instance - is reported and the
+  run carries on. It does not change the exit code, which stays `0` or `3`
+  as documented above; making failures change it is a separate decision.
 
 ## disk_usage.ps1
 
@@ -136,8 +151,9 @@ The hot spots, and where each one points:
 | `hiberfil.sys`, `pagefile.sys`, `swapfile.sys` | System managed: `powercfg /h /type reduced` or `/h off` for the first, the Virtual memory dialog for the second. |
 | `Windows.old`, `$WINDOWS.~BT`, `$WinREAgent` | Settings > System > Storage > Temporary files. Not something this folder deletes. |
 | `$Recycle.Bin`, Windows Update downloads, Windows and user temp | This folder's cleanup script, with the flag that reaches each one. |
+| `MEMORY.DMP`, minidumps, live kernel reports, user crash dumps; CBS and DISM logs | The cleanup script's crash-dump and log flags. |
 | `Windows\Installer`, `Package Cache` | Never delete: uninstall and repair need them. |
-| `WinSxS` | `Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore`. The folder size over-counts, because most of it is hard links. |
+| `WinSxS` | `Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore` first; the cleanup itself is the cleanup script's component-store flag. The folder size over-counts, because most of it is hard links, so it is left out of the reachable total. |
 | Docker data | `docker system prune` (the cleanup script's Docker flag), or Docker Desktop's Troubleshoot > Clean / Purge data. |
 | NuGet, pip and npm caches | The cleanup script's dev-caches flag. |
 | Gradle, Maven, Cargo, rustup, Go modules, minikube, kubectl cache, Vagrant, conda, Android SDK and emulators, VirtualBox VMs, Downloads | The owning tool's own clean command, or by hand. |

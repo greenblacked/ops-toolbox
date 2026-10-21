@@ -17,6 +17,19 @@
       - -IncludeDevCaches     npm / pip / NuGet caches (next builds re-download)
       - -IncludeDocker        docker system prune -f (dangling images/stopped
                               containers/unused networks; volumes are NOT touched)
+      - -IncludeCrashDumps    MEMORY.DMP, minidumps, live kernel reports, the WER
+                              report archive and per-user crash dumps (admin for
+                              all but the last; past crashes can no longer be
+                              analysed - copy a dump away first if you need it)
+      - -IncludeLogs          CBS, DISM and setup (Panther) logs older than -Days
+                              (admin; never the event logs)
+      - -IncludeComponentStore
+                              Windows' own 'Dism /Online /Cleanup-Image
+                              /StartComponentCleanup' (admin). Superseded update
+                              payloads go; installed updates stay uninstallable,
+                              because /ResetBase is deliberately never passed.
+                              The preview does not run DISM at all: even its
+                              analysis writes logs and touches servicing state.
 
     Run with -DryRun first: it reports what would be deleted and how much
     space each target would free, without deleting anything. A run that
@@ -27,6 +40,7 @@
     .\clean_disk_c.ps1 -DryRun -Scope User
     .\clean_disk_c.ps1 -Yes
     .\clean_disk_c.ps1 -Yes -Days 3 -IncludeRecycleBin -IncludeDevCaches
+    .\clean_disk_c.ps1 -DryRun -IncludeCrashDumps -IncludeLogs -IncludeComponentStore
 
 .NOTES
     Exit codes, matching linux/disk_cleanup.sh:
@@ -49,7 +63,10 @@ param(
     [switch]$IncludeRecycleBin,
     [switch]$IncludeWindowsUpdate,
     [switch]$IncludeDevCaches,
-    [switch]$IncludeDocker
+    [switch]$IncludeDocker,
+    [switch]$IncludeCrashDumps,
+    [switch]$IncludeLogs,
+    [switch]$IncludeComponentStore
 )
 
 $ErrorActionPreference = 'Continue'
@@ -139,7 +156,8 @@ $freeBefore = Get-FreeSpace
 Write-Host ''
 Write-Host ("Free space on C: before: {0}" -f (Format-Size $freeBefore))
 if ($DryRun) { Write-Host '--- DRY RUN: nothing will be deleted ---' -ForegroundColor Cyan }
-$needsElevation = $Scope -in @('All', 'System') -or $IncludeWindowsUpdate
+$needsElevation = $Scope -in @('All', 'System') -or $IncludeWindowsUpdate -or
+    $IncludeCrashDumps -or $IncludeLogs -or $IncludeComponentStore
 if (-not $IsAdmin -and $needsElevation) {
     Write-Host 'Not elevated: selected system-wide targets will be skipped.' -ForegroundColor Yellow
 }
@@ -219,11 +237,53 @@ if ($IncludeDocker) {
     }
 }
 
+# Crash dumps have no age filter: a dump is stale the moment it is written,
+# and one you still want to analyse has to be copied away first. Windows
+# recreates the LiveKernelReports subfolders Clear-Target sweeps when it needs
+# them.
+if ($IncludeCrashDumps) {
+    Clear-Target -Label 'Memory dump (MEMORY.DMP)' -Path 'C:\Windows\MEMORY.DMP' -NeedsAdmin
+    Clear-Target -Label 'Minidumps' -Path 'C:\Windows\Minidump' -NeedsAdmin
+    Clear-Target -Label 'Live kernel reports' -Path 'C:\Windows\LiveKernelReports' -NeedsAdmin
+    Clear-Target -Label 'WER report archive' -Path "$env:ProgramData\Microsoft\Windows\WER\ReportArchive" -NeedsAdmin
+    Clear-Target -Label 'User crash dumps' -Path "$env:LOCALAPPDATA\CrashDumps"
+}
+
+# Servicing and setup logs, aged by -Days like the temp folders. The event
+# logs are not files to delete and are never touched.
+if ($IncludeLogs) {
+    Clear-Target -Label "CBS logs (>$Days days)" -Path 'C:\Windows\Logs\CBS' -OlderThanDays $Days -NeedsAdmin
+    Clear-Target -Label "DISM logs (>$Days days)" -Path 'C:\Windows\Logs\DISM' -OlderThanDays $Days -NeedsAdmin
+    Clear-Target -Label "Setup logs (>$Days days)" -Path 'C:\Windows\Panther' -OlderThanDays $Days -NeedsAdmin
+}
+
+# Last, so the measured before/after free space covers everything above.
+# Windows' own supported cleanup of superseded component-store payloads. The
+# flag that also makes installed updates permanent is left out on purpose -
+# see the README. The preview prints the command and does not run DISM, not
+# even its analysis, which writes logs of its own.
+if ($IncludeComponentStore) {
+    if ($IsAdmin) {
+        if ($DryRun) {
+            Write-Host ('WOULD {0} {1}' -f 'Component store cleanup (Dism /Online /Cleanup-Image /StartComponentCleanup)', ' (size n/a)')
+        } else {
+            Dism.exe /Online /Cleanup-Image /StartComponentCleanup
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host ('CLEAN {0,-38}' -f 'Component store cleanup') -ForegroundColor Green
+            } else {
+                Write-Host ('FAIL  {0,-38} (Dism exited {1})' -f 'Component store cleanup', $LASTEXITCODE) -ForegroundColor Red
+            }
+        }
+    } else {
+        Write-Host ('SKIP  {0,-38} (needs elevation)' -f 'Component store cleanup') -ForegroundColor Yellow
+    }
+}
+
 # --- Summary ---------------------------------------------------------------
 Write-Host ''
 if ($DryRun) {
     Write-Host ("Would free at least: {0}" -f (Format-Size $script:TotalFreed)) -ForegroundColor Cyan
-    Write-Host '(Recycle Bin / Delivery Optimization / npm / docker sizes not included in the estimate.)'
+    Write-Host '(Recycle Bin / Delivery Optimization / npm / docker / component store sizes not included in the estimate.)'
 } else {
     $freeAfter = Get-FreeSpace
     Write-Host ("Freed (measured per target): {0}" -f (Format-Size $script:TotalFreed)) -ForegroundColor Green

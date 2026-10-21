@@ -165,8 +165,13 @@ function Get-HotspotTarget {
         @('dir', 'Windows temp', ($windowsDir + '\Temp'), 'clean_disk_c.ps1 (a default target)'),
         @('dir', 'User temp', ($LocalAppData + '\Temp'), 'clean_disk_c.ps1 (a default target)'),
         @('dir', 'Installer cache (Windows\Installer)', ($windowsDir + '\Installer'), 'never delete: uninstall and repair need it'),
-        @('dir', 'Component store (WinSxS)', ($windowsDir + '\WinSxS'), 'Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore; the folder size over-counts, most of it is hard links'),
-        @('dir', 'Servicing logs (Logs\CBS)', ($windowsDir + '\Logs\CBS'), 'old CbsPersist logs are safe to delete by hand'),
+        @('dir', 'Component store (WinSxS)', ($windowsDir + '\WinSxS'), 'Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore says what a cleanup would free (the folder size over-counts: most of it is hard links); the cleanup is the -IncludeComponentStore opt-in of clean_disk_c.ps1'),
+        @('dir', 'Servicing logs (Logs\CBS)', ($windowsDir + '\Logs\CBS'), 'clean_disk_c.ps1 -IncludeLogs (logs older than -Days)'),
+        @('dir', 'DISM logs (Logs\DISM)', ($windowsDir + '\Logs\DISM'), 'clean_disk_c.ps1 -IncludeLogs (logs older than -Days)'),
+        @('file', 'Memory dump (MEMORY.DMP)', ($windowsDir + '\MEMORY.DMP'), 'clean_disk_c.ps1 -IncludeCrashDumps; copy it away first if the crash still needs analysing'),
+        @('dir', 'Minidumps', ($windowsDir + '\Minidump'), 'clean_disk_c.ps1 -IncludeCrashDumps'),
+        @('dir', 'Live kernel reports', ($windowsDir + '\LiveKernelReports'), 'clean_disk_c.ps1 -IncludeCrashDumps'),
+        @('dir', 'User crash dumps', ($LocalAppData + '\CrashDumps'), 'clean_disk_c.ps1 -IncludeCrashDumps'),
         @('dir', 'Installer packages (Package Cache)', ($ProgramData + '\Package Cache'), 'leave it: installers need it to repair and uninstall'),
         @('dir', 'Docker (ProgramData\Docker)', ($ProgramData + '\Docker'), 'clean_disk_c.ps1 -IncludeDocker, or Docker Desktop > Troubleshoot > Clean / Purge data'),
         @('dir', 'Docker Desktop (ProgramData)', ($ProgramData + '\DockerDesktop'), 'Docker Desktop > Troubleshoot > Clean / Purge data'),
@@ -406,7 +411,10 @@ if ($Action -eq 'tree') {
 
     # The rows clean_disk_c.ps1 can reach, totalled, and the command line that
     # reaches them - preview first, the order this repository uses everywhere.
-    $reachable = @($found | Where-Object { $_.Hint -match 'clean_disk_c\.ps1' })
+    # Only a hint that STARTS with the script counts: the component store
+    # names it too, but its folder size is mostly hard links and would turn
+    # the total into fiction.
+    $reachable = @($found | Where-Object { $_.Hint -match '^clean_disk_c\.ps1' })
     if ($reachable.Count -gt 0) {
         $reachableBytes = ($reachable | Measure-Object -Property Bytes -Sum).Sum
         $flags = @($reachable |

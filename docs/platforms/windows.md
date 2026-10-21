@@ -36,7 +36,7 @@ Git Bash dotfiles installer.
 | `setup/choco_bootstrap.ps1` | `export`, `list`, `check`, `install`, `diff` of Chocolatey packages. | `-DryRun` on `install` |
 | `setup/winget_configure.ps1` | `validate`, `show`, `test`, `apply` of `configuration.winget`. | `-DryRun` on `apply` |
 | `cleanup/disk_usage.ps1` | What fills `C:` (hibernation and page files, `Windows.old`, `WinSxS`, Docker, WSL disks, dev caches) and the tool that gives each back; `tree` for one folder. | <span class="stage stage-report">read-only</span> |
-| `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker. | `-DryRun`; `-Yes` to delete |
+| `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker, crash dumps, servicing logs, component store. | `-DryRun`; `-Yes` to delete |
 | `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`. | `-DryRun` on `restore`, `prune-backups`, `terminate` |
 | `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
 
@@ -68,6 +68,7 @@ All paths are under `windows/`.
     .\windows\setup\stay_fresh.ps1 -DryRun
     .\windows\setup\path_doctor.ps1 clean -DryRun
     .\windows\cleanup\clean_disk_c.ps1 -DryRun -Scope User
+    .\windows\cleanup\clean_disk_c.ps1 -DryRun -IncludeCrashDumps -IncludeLogs -IncludeComponentStore
     .\windows\setup\winget_configure.ps1 apply -DryRun
     .\windows\wsl\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
     ```

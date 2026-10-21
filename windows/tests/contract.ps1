@@ -193,7 +193,7 @@ Test-Ok "checked $checkedFlags documented flag(s) against their parameter blocks
 # --------------------------------------------------------------------------
 Write-Section 'feature surfaces'
 $expectedParameters = @{
-    'clean_disk_c.ps1'      = @('Scope')
+    'clean_disk_c.ps1'      = @('Scope', 'IncludeCrashDumps', 'IncludeLogs', 'IncludeComponentStore')
     'stay_fresh.ps1'        = @('Only')
     'status.ps1'            = @('ListSections', 'Only')
     'workstation_doctor.ps1'= @('MinFreePercent')
@@ -316,6 +316,12 @@ function Get-DryRunArgument {
         # exist or the script exits 1 before reaching the preview path.
         return @('apply', '-DryRun', '-File',
             (Join-Path $repoRoot (Join-Path 'windows' (Join-Path 'setup' 'configuration.winget'))))
+    }
+    if ($Script.Name -eq 'clean_disk_c.ps1') {
+        # The three opt-ins whose previews must not start DISM or delete a
+        # dump. Skipped off Windows by Get-SkipReason, so this only matters on
+        # windows-2025, where it runs the whole preview against the real disk.
+        return @('-DryRun', '-IncludeCrashDumps', '-IncludeLogs', '-IncludeComponentStore')
     }
     if ($Script.Name -eq 'path_doctor.ps1') {
         # The default action is the read-only report; clean is the verb that
@@ -2375,6 +2381,130 @@ if (-not $tlsExpiry) {
 }
 if (Test-Path -LiteralPath $tlsBox) {
     Remove-Item -Path $tlsBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'clean_disk_c opt-ins are gated'
+# clean_disk_c.ps1 cannot run off Windows and its deleting path must never be
+# run by this suite, so its opt-in contract is read off the AST instead: every
+# -Include* switch is tested by some if, and every deletion of a crash dump,
+# a servicing log or the component store sits inside the if for its own flag.
+# A target that slipped out of its block would run on every plain -Yes.
+$cleanDisk = Find-ContractScript 'clean_disk_c.ps1'
+if (-not $cleanDisk) {
+    Test-Fail 'clean_disk_c.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $cleanTokens = $null
+    $cleanAst = [System.Management.Automation.Language.Parser]::ParseFile($cleanDisk.FullName, [ref]$cleanTokens, [ref]$null)
+    $includeNames = @($cleanAst.ParamBlock.Parameters |
+        ForEach-Object { $_.Name.VariablePath.UserPath } |
+        Where-Object { $_ -like 'Include*' })
+    $ifStatements = @($cleanAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.IfStatementAst]
+            }, $true))
+    foreach ($includeName in $includeNames) {
+        $pattern = '\$' + $includeName + '\b'
+        $testing = @($ifStatements | Where-Object { @($_.Clauses | Where-Object { $_.Item1.Extent.Text -match $pattern }).Count -gt 0 })
+        if ($testing.Count -gt 0) {
+            Test-Ok "clean_disk_c.ps1 -$includeName is tested by an if"
+        } else {
+            Test-Fail "clean_disk_c.ps1 declares -$includeName but no if tests it: a flag that does nothing"
+        }
+    }
+    if ($includeNames.Count -lt 7) {
+        Test-Fail "clean_disk_c.ps1 declares only $($includeNames.Count) -Include* switch(es); expected at least 7"
+    }
+
+    $markers = [ordered]@{
+        'MEMORY.DMP'            = 'IncludeCrashDumps'
+        'Minidump'              = 'IncludeCrashDumps'
+        'LiveKernelReports'     = 'IncludeCrashDumps'
+        'ReportArchive'         = 'IncludeCrashDumps'
+        'CrashDumps'            = 'IncludeCrashDumps'
+        'Logs\CBS'              = 'IncludeLogs'
+        'Logs\DISM'             = 'IncludeLogs'
+        'Panther'               = 'IncludeLogs'
+        'StartComponentCleanup' = 'IncludeComponentStore'
+    }
+    $gatedCommands = 0
+    $cleanCommands = $cleanAst.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]
+        }, $true)
+    foreach ($command in $cleanCommands) {
+        if (@('Clear-Target', 'Dism.exe') -notcontains $command.GetCommandName()) { continue }
+        foreach ($marker in $markers.Keys) {
+            if (-not $command.Extent.Text.Contains($marker)) { continue }
+            $flag = $markers[$marker]
+            $gatedCommands++
+            $gated = $false
+            $node = $command.Parent
+            while ($node) {
+                if ($node -is [System.Management.Automation.Language.IfStatementAst]) {
+                    foreach ($clause in $node.Clauses) {
+                        if ($clause.Item1.Extent.Text -match ('\$' + $flag + '\b')) { $gated = $true }
+                    }
+                }
+                $node = $node.Parent
+            }
+            if ($gated) {
+                Test-Ok ("line {0}: the {1} target runs only under -{2}" -f $command.Extent.StartLineNumber, $marker, $flag)
+            } else {
+                Test-Fail ("line {0}: the {1} target is not inside an if testing -{2}" -f $command.Extent.StartLineNumber, $marker, $flag)
+            }
+        }
+    }
+    if ($gatedCommands -lt 9) {
+        Test-Fail "found only $gatedCommands crash-dump, log and component-store command(s); expected 9 - this check has stopped checking"
+    }
+
+    # /ResetBase makes every installed update permanent. It may be named in a
+    # comment explaining why it is not used, and nowhere else.
+    $resetBase = @($cleanTokens | Where-Object {
+            $_.Kind -ne [System.Management.Automation.Language.TokenKind]::Comment -and $_.Text -match 'ResetBase'
+        })
+    if ($resetBase.Count -eq 0) {
+        Test-Ok 'clean_disk_c.ps1 never passes /ResetBase (it appears only in comments)'
+    } else {
+        Test-Fail "clean_disk_c.ps1 has ResetBase outside a comment on line $($resetBase[0].Extent.StartLineNumber)"
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'clean_disk_c previews the new targets'
+# Windows only: clean_disk_c.ps1 throws at script scope anywhere else. The
+# generic dry-run section above already proves this preview writes nothing
+# under the scratch profile; this one proves it names every new target and
+# does not start DISM, whose banner would show in the output.
+if (-not $onWindows) {
+    Test-Skip 'clean_disk_c.ps1 reads WindowsIdentity and Get-PSDrive C at script scope, which throw on this OS before -DryRun is looked at'
+} elseif (-not $cleanDisk) {
+    Test-Fail 'clean_disk_c.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $memoryDump = 'C:\Windows\MEMORY.DMP'
+    $hadDump = Test-Path -LiteralPath $memoryDump
+    $run = Invoke-InScratch -Path $cleanDisk.FullName -Arguments @('-DryRun', '-IncludeCrashDumps', '-IncludeLogs', '-IncludeComponentStore')
+    $labels = @('Memory dump (MEMORY.DMP)', 'Minidumps', 'Live kernel reports', 'WER report archive', 'User crash dumps',
+        'CBS logs', 'DISM logs', 'Setup logs', 'Component store cleanup')
+    $unnamed = @($labels | Where-Object { $run.Output -notmatch ('(?m)^(WOULD|SKIP ) ' + [regex]::Escape($_)) })
+    if ($run.ExitCode -eq 0 -and $unnamed.Count -eq 0) {
+        Test-Ok 'clean_disk_c.ps1 -DryRun with the three new flags previews (or skips, with the reason) every new target'
+    } else {
+        Test-Fail "clean_disk_c.ps1 -DryRun with the new flags: exited $($run.ExitCode), no WOULD or SKIP line for [$($unnamed -join '; ')]"
+    }
+    if ($run.Output -notmatch 'Deployment Image Servicing') {
+        Test-Ok 'the preview did not start DISM'
+    } else {
+        Test-Fail 'the preview started DISM: its banner is in the output'
+    }
+    if ($hadDump) {
+        if (Test-Path -LiteralPath $memoryDump) {
+            Test-Ok "$memoryDump is still there after the preview"
+        } else {
+            Test-Fail "$memoryDump existed before the preview and is gone after it"
+        }
+    }
 }
 
 # --------------------------------------------------------------------------
