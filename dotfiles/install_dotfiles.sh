@@ -468,7 +468,8 @@ state_of() {
 # installer or a copy of it.
 #
 # What is scanned, so that a large home is never walked:
-#   - this repository's own config/ tree, three levels deep;
+#   - the config home it installs into (~/.config or XDG_CONFIG_HOME, or
+#     --config-home), three levels deep;
 #   - the top level of the home;
 #   - each directory under home/ in this repository, as it exists in the
 #     home (.ssh, .aws ...), two levels deep;
