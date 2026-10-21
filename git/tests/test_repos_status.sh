@@ -135,6 +135,18 @@ assert_eq "$rc" 1 '--strict exits 1 when work is at risk'
 "$REPOS_STATUS" --dir "$parent/clean" --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 0 '--strict exits 0 for a clean checkout'
 
+section "unreadable index fails closed"
+clone_into "$parent/corrupt" || err 'clone corrupt fixture'
+printf 'not an index\n' >"$parent/corrupt/.git/index" || err 'corrupt the index'
+out="$("$REPOS_STATUS" --dir "$parent/corrupt" --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 'a plain run still exits 0 with an unreadable index'
+assert_contains "$out" 'status-failed' 'a failing git status is reported as status-failed'
+"$REPOS_STATUS" --dir "$parent/corrupt" --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict exits 1 when git status cannot be read'
+out="$("$REPOS_STATUS" --dir "$parent/corrupt" --only dirty --porcelain 2>&1)"
+assert_contains "$out" 'status-failed' '--only dirty keeps a checkout whose status failed'
+rm -rf "$parent/corrupt"
+
 section "environment and empty results"
 mkdir -p "$scratch/empty" || err 'create empty directory'
 out="$("$REPOS_STATUS" --dir "$scratch/empty" 2>&1)"; rc=$?

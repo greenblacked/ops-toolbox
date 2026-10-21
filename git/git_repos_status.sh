@@ -197,7 +197,7 @@ add_note() {
 inspect_repo() {
   local repo="$1" rel="$2"
   local branch upstream counts ahead=0 behind=0 changed=0 stash=0 unpushed=0
-  local sync risk=0 keep=1 has_remote tips
+  local sync risk=0 keep=1 has_remote tips status_out status_failed=0
   notes=""
 
   # A checkout git cannot read (a broken .git file, an ownership refusal) is
@@ -235,7 +235,17 @@ inspect_repo() {
     fi
     # --no-optional-locks keeps status from refreshing the index on disk, so
     # a report over checkouts an editor has open writes nothing to any of them.
-    changed="$(git --no-optional-locks -C "$repo" status --porcelain=v1 2>/dev/null | wc -l | tr -d ' ')" || true
+    # The output is captured before it is counted: a pipe into wc would hide a
+    # failing status (corrupt or unreadable index) as "0 changed", and a
+    # --strict gate would then pass a checkout it could not read.
+    status_failed=0
+    if status_out="$(git --no-optional-locks -C "$repo" status --porcelain=v1 2>/dev/null)"; then
+      if [[ -n "$status_out" ]]; then
+        changed="$(printf '%s\n' "$status_out" | wc -l | tr -d ' ')"
+      fi
+    else
+      status_failed=1
+    fi
     stash="$(git -C "$repo" stash list 2>/dev/null | wc -l | tr -d ' ')" || true
     # Commits on any local branch that no remote-tracking ref contains. In a
     # repository with no remotes that is every commit, which is the truth.
@@ -248,6 +258,7 @@ inspect_repo() {
     unpushed="$(git -C "$repo" rev-list "${tips[@]}" --not --remotes --count 2>/dev/null || printf '0')"
 
     (( changed > 0 )) && add_note "dirty"
+    (( status_failed == 1 )) && add_note "status-failed"
     if (( ahead > 0 && behind > 0 )); then
       add_note "diverged"
     elif (( ahead > 0 )); then
@@ -275,13 +286,13 @@ inspect_repo() {
       sync="="
     fi
 
-    if (( changed > 0 || ahead > 0 || unpushed > 0 || stash > 0 )); then
+    if (( changed > 0 || status_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
       risk=1
     fi
   fi
 
   case "$ONLY" in
-    dirty)    [[ -n "$changed"  ]] && (( changed > 0 ))  || keep=0 ;;
+    dirty)    [[ -n "$changed"  ]] && (( changed > 0 || status_failed == 1 )) || keep=0 ;;
     ahead)    [[ -n "$ahead"    ]] && (( ahead > 0 ))    || keep=0 ;;
     behind)   [[ -n "$behind"   ]] && (( behind > 0 ))   || keep=0 ;;
     unpushed) [[ -n "$unpushed" ]] && (( unpushed > 0 )) || keep=0 ;;
