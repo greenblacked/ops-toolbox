@@ -452,6 +452,25 @@ assert_contains "--diff marks the value redacted" "$out" "<redacted>"
 rm "$H/.docker/config.json"
 run_installer --only docker >/dev/null 2>&1 || err "could not restore the docker copy after the --diff check"
 
+# A link whose text starts with this folder's path but climbs out with `..`
+# is not ours: --diff names it and never reads the file it leads to.
+printf 'outside-marker-line\n' > "$T/outside.txt"
+rm "$H/.config/starship.toml"
+ln -s "$D/config/../../../..$T/outside.txt" "$H/.config/starship.toml"
+out="$(run_installer --diff --only starship 2>&1)"; rc=$?
+assert_rc "--diff exits 4 on a traversing link" 4 "$rc"
+assert_contains "--diff reports a traversing link as CONFLICT" "$out" "CONFLICT $H/.config/starship.toml"
+assert_contains "--diff names where a traversing link leads" "$out" "  links to $D/config/../../../..$T/outside.txt"
+if [[ "$out" == *outside-marker-line* ]]; then err "--diff read the file a traversing link leads to"; else ok "--diff never reads the file a traversing link leads to"; fi
+# Even one that would land back on a tracked file is refused: a `..` segment
+# is never ours.
+rm "$H/.config/starship.toml"
+ln -s "$D/config/../config/starship.toml" "$H/.config/starship.toml"
+out="$(run_installer --diff --only starship 2>&1)"
+assert_contains "a link with a .. segment is not ours" "$out" "  links to $D/config/../config/starship.toml"
+rm "$H/.config/starship.toml"
+run_installer --only starship >/dev/null 2>&1 || err "could not relink starship.toml after the traversal check"
+
 run_installer --diff --dry-run >/dev/null 2>&1; rc=$?
 assert_rc "--diff --dry-run exits 3" 3 "$rc"
 run_installer --diff --force >/dev/null 2>&1; rc=$?

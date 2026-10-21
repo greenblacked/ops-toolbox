@@ -412,10 +412,27 @@ run_cmd() {
 # it resolves to.
 link_target() { readlink "$1" 2>/dev/null || true; }
 
+# A link is ours when its text starts with this folder's path AND it really
+# resolves under it: "$SCRIPT_DIR/../../etc/passwd" starts with the prefix but
+# leads out, and --diff would print the file it names. A `..` segment is
+# refused outright; the rest is resolved physically (cd -P and pwd -P, since
+# macOS has no readlink -f) on the deepest directory that exists, so a link
+# into a deleted source directory still counts and a link through a symlinked
+# directory that leaves this folder does not.
 points_here() {
-  local t
+  local t d leaf phys
   t="$(link_target "$1")"
-  [[ -n "$t" && "$t" == "$SCRIPT_DIR"/* ]]
+  [[ -n "$t" && "$t" == "$SCRIPT_DIR"/* ]] || return 1
+  case "$t/" in */../*) return 1 ;; esac
+  d="${t%/*}"
+  leaf="${t##*/}"
+  while [[ -n "$d" && ! -d "$d" ]]; do
+    leaf="${d##*/}/$leaf"
+    d="${d%/*}"
+  done
+  [[ -n "$d" ]] || return 1
+  phys="$(cd -P "$d" 2>/dev/null && pwd -P)" || return 1
+  [[ "$phys/$leaf" == "$SCRIPT_DIR"/* ]]
 }
 
 # GNU stat first: on Linux `stat -f` is the filesystem form and succeeds with
