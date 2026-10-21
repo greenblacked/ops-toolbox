@@ -35,7 +35,7 @@ and a Kali cloud-init profile.
 | `swap_setup.sh` | Report swap; `--create` or `--remove` a swapfile and its marked fstab line. | `--dry-run` with `--create` or `--remove` |
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
-| `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`. | `--dry-run` |
+| `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`, unused container images, disabled snap revisions. | `--dry-run` |
 | `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
 | `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--exclude`, `--exclude-secrets`; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
 | `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |

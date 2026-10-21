@@ -35,7 +35,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/swap_setup.sh` | Linux | Report swap; create or remove a swapfile and its fstab line. | `--dry-run` with `--create` or `--remove` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |
 | `linux/install_devtools.sh` | Linux | Install CLIs, Python, Go, Terraform, Helm. | `--dry-run` |
-| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs and a journal size cap. | `--dry-run` |
+| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs, a journal size cap, unused images and old snap revisions. | `--dry-run` |
 | `linux/kernel_cleanup.sh` | Linux | Remove old kernel packages, keeping the running one plus N. | `--dry-run`; `--list` is read-only |
 | `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation and exclusions; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
 | `linux/packages.sh` | Linux | List, dump, check, diff, install the package set. | `--dry-run` (install) |

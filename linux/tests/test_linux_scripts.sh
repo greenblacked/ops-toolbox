@@ -1080,6 +1080,11 @@ rm -rf "$trash_home" "$trash_tmp" "$other_disk"
 bash "$L/tests/test_disk_cleanup_logs.sh"
 assert_eq "disk_cleanup logs suite exits 0" 0 "$?"
 
+# Unused images and disabled snap revisions, against stubbed docker, podman
+# and snap: no container engine or snapd is reached.
+bash "$L/tests/test_disk_cleanup_images.sh"
+assert_eq "disk_cleanup images suite exits 0" 0 "$?"
+
 section "kernel_cleanup.sh"
 # The package tools are stubbed in the suite below, so no container ever lists
 # or removes a real kernel; it drives apt, dnf and pacman from any one image.

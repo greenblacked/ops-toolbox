@@ -50,7 +50,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | --- | --- |
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
-| [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps/rotated logs; never volumes |
+| [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps/rotated logs/unused images/old snaps; never volumes |
 | [`kernel_cleanup.sh`](kernel_cleanup.sh) | Remove old kernel packages; keeps the running kernel plus the newest `--keep` |
 | [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
@@ -489,6 +489,8 @@ behind an `--include-*` flag:
 ./disk_cleanup.sh --yes --include-journal --include-pkg-cache --no-sudo
 ./disk_cleanup.sh --dry-run --include-coredumps
 ./disk_cleanup.sh --dry-run --include-logs --days 14
+./disk_cleanup.sh --dry-run --include-docker-images --days 30
+sudo ./disk_cleanup.sh --yes --include-snap-revisions
 sudo ./disk_cleanup.sh --yes --include-journal --journal-max-size 500M
 ```
 
@@ -529,6 +531,25 @@ of `--include-journal`, for when you think in "cap it at 500M" rather than in
 days. `SZ` is a number with an optional `K`, `M`, `G` or `T`; anything else, or
 the flag without `--include-journal`, is exit `3`. journald's own vacuum is the
 only thing that deletes journal files.
+
+`--include-docker-images` is for CI runners and build hosts, where the space
+goes to tagged images nothing has used since last quarter. `--include-docker`
+removes only dangling images, stopped containers and build cache; this runs
+`docker image prune -a -f --filter until=<days*24>h` when `docker info` answers,
+and the same through `podman` when it is installed, so only images older than
+`--days` with no container referencing them go (the engine refuses the rest).
+`--days 0` drops the `until` filter, with a warning. The dry run prints the
+command and the read-only `docker system df` beneath it. Volumes are never
+passed to any prune; re-pulling an image is a cost, not a loss, which is why
+this is its own flag. Podman keeps separate rootless and rootful image stores,
+and the run cleans only the store of the user running it, the same caveat the
+low-disk runbook carries for `--include-docker`.
+
+`--include-snap-revisions` removes the revisions snapd keeps marked `disabled`
+in `snap list --all`, one `snap remove NAME --revision=REV` each through the same
+root handling as the journal (skipped under `--no-sudo`, previewed by
+`--dry-run`). The active revision is never named. Without `snap` it says so and
+carries on; afterwards it suggests `snap set system refresh.retain=2` as text.
 
 ## `kernel_cleanup.sh`
 

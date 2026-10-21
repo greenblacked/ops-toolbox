@@ -16,6 +16,13 @@
 # btmp, lastlog, faillog, utmp) never are, and the journal is left to
 # journalctl, which --journal-max-size can also cap by size.
 #
+# --include-docker-images goes further than --include-docker: it removes
+# tagged images no container uses, but only those older than --days, so a
+# fresh pull survives. The engine refuses to remove an image a container
+# references, and volumes are never passed to any prune. Re-pulling is a cost,
+# not a loss, which is why it is its own flag. --include-snap-revisions removes
+# the revisions snapd keeps marked disabled, never the active one.
+#
 # A dry run writes nothing. A real run requires --yes, the same gate
 # install_devtools.sh uses for anything that changes the machine.
 #
@@ -40,6 +47,8 @@ INCLUDE_JOURNAL=0
 INCLUDE_PKG_CACHE=0
 INCLUDE_DEV_CACHES=0
 INCLUDE_DOCKER=0
+INCLUDE_DOCKER_IMAGES=0
+INCLUDE_SNAP_REVISIONS=0
 INCLUDE_COREDUMPS=0
 COREDUMP_DIR=""
 COREDUMP_OVERRIDE=0
@@ -92,6 +101,11 @@ Options:
   --include-pkg-cache    apt-get clean / dnf clean / pacman -Sc (needs root)
   --include-dev-caches   pip, npm, yarn, go module caches
   --include-docker       docker/podman system prune -f (volumes untouched)
+  --include-docker-images
+                         docker/podman image prune -a for unused images older
+                         than --days; never prunes volumes
+  --include-snap-revisions
+                         snap remove each disabled revision (needs root)
   --include-coredumps    Age-filtered files in systemd-coredump and apport dirs
   --coredump-dir DIR     Replace the default coredump list (needs --include-coredumps)
   --include-logs         Rotated logs older than --days under /var/log: *.gz, *.xz,
@@ -147,6 +161,8 @@ while (( $# > 0 )); do
     --include-pkg-cache)   INCLUDE_PKG_CACHE=1 ;;
     --include-dev-caches)  INCLUDE_DEV_CACHES=1 ;;
     --include-docker)      INCLUDE_DOCKER=1 ;;
+    --include-docker-images) INCLUDE_DOCKER_IMAGES=1 ;;
+    --include-snap-revisions) INCLUDE_SNAP_REVISIONS=1 ;;
     --include-coredumps)   INCLUDE_COREDUMPS=1 ;;
     --coredump-dir)        require_value "$1" "${2:-}"; COREDUMP_DIR="$2"; COREDUMP_OVERRIDE=1; shift ;;
     --coredump-dir=*)      COREDUMP_DIR="${1#*=}"; require_value "--coredump-dir" "$COREDUMP_DIR"; COREDUMP_OVERRIDE=1 ;;
@@ -768,6 +784,82 @@ if (( INCLUDE_DOCKER == 1 )); then
   fi
 else
   info "skipped: containers (pass --include-docker)"
+fi
+
+# --- container images ------------------------------------------------------
+# Tagged images no container uses, older than --days. image prune never takes
+# volumes and the engine will not remove an image a container references, so
+# the worst case is a re-pull. The dry run shows `system df`, which only reads,
+# so the sizes are on screen before anything is removed.
+prune_images() {
+  local engine="$1"
+  local args=(image prune -a -f)
+  local label="every unused image; volumes untouched"
+  if (( DAYS > 0 )); then
+    args+=(--filter "until=$((DAYS * 24))h")
+    label="unused images older than ${DAYS}d; volumes untouched"
+  fi
+  if (( DRY_RUN == 1 )); then
+    printf "  %s(dry-run)%s %s %s %s[%s]%s\n" "$C_DIM" "$C_RESET" "$engine" "${args[*]}" "$C_DIM" "$label" "$C_RESET"
+    "$engine" system df 2>/dev/null | sed 's/^/    /'
+    return 0
+  fi
+  if "$engine" "${args[@]}" >/dev/null 2>&1; then
+    ok "$engine: removed $label"
+  else
+    err "$engine image prune failed"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+if (( INCLUDE_DOCKER_IMAGES == 1 )); then
+  step "container images"
+  if (( DAYS == 0 )); then
+    warn "--days 0 with --include-docker-images removes every unused image,"
+    warn "  however recently it was pulled"
+  fi
+  if have docker && docker info >/dev/null 2>&1; then
+    prune_images docker
+  else
+    warn "docker not running — skipping"
+  fi
+  # The invoking user's store only: rootless and rootful podman keep separate
+  # image stores, and this run cleans the one it can see.
+  if have podman; then
+    prune_images podman
+  fi
+else
+  info "skipped: container images (pass --include-docker-images)"
+fi
+
+# --- snap revisions --------------------------------------------------------
+# snapd keeps the previous revision of every snap, marked disabled, for
+# rollback. Only rows whose Notes column says disabled are candidates, so the
+# active revision is never named; each removal goes through run_root, which
+# --no-sudo skips and --dry-run previews.
+if (( INCLUDE_SNAP_REVISIONS == 1 )); then
+  step "snap revisions"
+  if have snap; then
+    snap_revs="$(LC_ALL=C snap list --all 2>/dev/null | awk 'NR > 1 && $NF ~ /disabled/ { print $1, $3 }')"
+    snap_count=0
+    while read -r snap_name snap_rev; do
+      [[ -n "$snap_name" ]] || continue
+      # Snap names and revisions have a fixed alphabet; anything else is a
+      # parse surprise, not a command argument.
+      [[ "$snap_name" =~ ^[a-z0-9][a-z0-9-]*$ && "$snap_rev" =~ ^x?[0-9]+$ ]] || continue
+      snap_count=$((snap_count + 1))
+      # stdin is the list being read; nothing run here may consume it.
+      run_root "remove snap $snap_name revision $snap_rev" snap remove "$snap_name" --revision="$snap_rev" < /dev/null
+    done <<< "$snap_revs"
+    if (( snap_count == 0 )); then
+      info "no disabled snap revisions"
+    fi
+    info "to keep fewer from now on: sudo snap set system refresh.retain=2"
+  else
+    info "snap not installed - skipping"
+  fi
+else
+  info "skipped: snap revisions (pass --include-snap-revisions)"
 fi
 
 # --- coredumps -------------------------------------------------------------
