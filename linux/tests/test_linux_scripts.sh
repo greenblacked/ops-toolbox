@@ -1275,6 +1275,100 @@ assert_contains "sysctl_defaults refuses sysctl(8) under a PROC_SYS override" \
 
 rm -rf "$sysctl_root"
 
+# --check is the report as a gate. It reads the same fake procfs and sysctl.d,
+# needs no root, and writes nothing, so every state below is built by hand
+# between runs and the digest proves the runs themselves changed nothing.
+check_root="$(mktemp -d)"
+mkdir -p "$check_root/proc/fs/inotify" "$check_root/proc/vm" "$check_root/sysctl.d" "$check_root/tmp"
+printf '8192\n' > "$check_root/proc/fs/inotify/max_user_watches"
+printf '128\n' > "$check_root/proc/fs/inotify/max_user_instances"
+printf '16384\n' > "$check_root/proc/fs/inotify/max_queued_events"
+printf '60\n' > "$check_root/proc/vm/swappiness"
+check_dropin="$check_root/sysctl.d/99-ops-toolbox.conf"
+run_check() {
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      "$SYSCTL" --check "$@" 2>&1
+  )"
+  rc=$?
+}
+check_digest() {
+  find "$check_root" -type f -exec sha256sum {} + | LC_ALL=C sort
+}
+
+SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+  "$SYSCTL" --apply --backup-file "$check_root/tmp/backup.txt" >/dev/null 2>&1 \
+  || err "sysctl_defaults --apply against the check fixture exited $? - every --check below starts from the wrong state"
+
+before="$(check_digest)"
+run_check
+assert_eq "sysctl_defaults --check after --apply exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check marks a key OK" "$out" "OK          vm.swappiness = 10"
+assert_contains "sysctl_defaults --check summarises" "$out" "4 ok, 0 drift, 0 unpersisted, 0 stale, 0 shadowed, 0 skipped"
+assert_eq "sysctl_defaults --check writes nothing" "$before" "$(check_digest)"
+
+printf '60\n' > "$check_root/proc/vm/swappiness"
+before="$(check_digest)"
+run_check
+assert_eq "sysctl_defaults --check with a drifted value -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check names the drift" "$out" "DRIFT"
+assert_contains "sysctl_defaults --check names the drifted key" "$(grep DRIFT <<<"$out")" "vm.swappiness = 60 (want 10)"
+assert_eq "sysctl_defaults --check on drift writes nothing" "$before" "$(check_digest)"
+printf '10\n' > "$check_root/proc/vm/swappiness"
+
+mv "$check_dropin" "$check_root/tmp/dropin.saved"
+run_check
+assert_eq "sysctl_defaults --check without the drop-in -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls a live-only value UNPERSISTED" "$out" "UNPERSISTED"
+assert_contains "sysctl_defaults --check prints the fix" "$out" "--apply"
+mv "$check_root/tmp/dropin.saved" "$check_dropin"
+
+sed -i 's/^vm.swappiness = 10$/vm.swappiness = 30/' "$check_dropin"
+run_check
+assert_eq "sysctl_defaults --check with a stale drop-in -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls the drop-in STALE" "$(grep STALE <<<"$out")" "vm.swappiness"
+sed -i 's/^vm.swappiness = 30$/vm.swappiness = 10/' "$check_dropin"
+
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+printf 'vm.swappiness = 5\n' > "$check_root/sysctl.d/10-early.conf"
+run_check
+assert_eq "sysctl_defaults --check with a later override -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls it SHADOWED" "$out" "SHADOWED"
+assert_contains "sysctl_defaults --check names the shadowing file" "$(grep SHADOWED <<<"$out")" "99-zz.conf"
+assert_not_contains "sysctl_defaults --check ignores a file read before ours" "$out" "10-early.conf"
+rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/sysctl.d/10-early.conf"
+
+run_check --only vm
+assert_eq "sysctl_defaults --check --only vm exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check --only vm checks swappiness" "$out" "vm.swappiness"
+assert_not_contains "sysctl_defaults --check --only vm leaves inotify alone" "$out" "fs.inotify"
+
+run_check --apply
+assert_eq "sysctl_defaults --check with --apply -> 3" "3" "$rc"
+run_check --revert
+assert_eq "sysctl_defaults --check with --revert -> 3" "3" "$rc"
+run_check --backup-file "$check_root/tmp/other.txt"
+assert_eq "sysctl_defaults --check with --backup-file -> 3" "3" "$rc"
+
+# An unreadable key is a SKIP, never a false OK or a false failure; the rest
+# still decide the exit code.
+rm -f "$check_root/proc/fs/inotify/max_queued_events"
+run_check
+assert_eq "sysctl_defaults --check with one unreadable key exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check skips the unreadable key" "$(grep SKIP <<<"$out")" "fs.inotify.max_queued_events"
+printf '60\n' > "$check_root/proc/vm/swappiness"
+run_check
+assert_eq "sysctl_defaults --check still fails on drift beside a SKIP" "1" "$rc"
+
+mkdir -p "$check_root/empty-proc"
+out="$(
+  SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/empty-proc" TMPDIR="$check_root/tmp" \
+    "$SYSCTL" --check 2>&1
+)"; rc=$?
+assert_eq "sysctl_defaults --check with nothing readable exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check says nothing was readable" "$out" "nothing to check"
+rm -rf "$check_root"
+
 section "tls_expiry.sh"
 TLS="$L/tls_expiry.sh"
 "$TLS" >/dev/null 2>&1; rc=$?

@@ -31,7 +31,7 @@ and a Kali cloud-init profile.
 | `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
 | `schedule_report.sh` | systemd timers, user crontab, `cron.d`. | <span class="stage stage-report">read-only</span> |
-| `sysctl_defaults.sh` | Report sysctl values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
+| `sysctl_defaults.sh` | Report sysctl values; `--check` exits 1 on drift, unpersisted, stale or shadowed values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
 | `swap_setup.sh` | Report swap; `--create` or `--remove` a swapfile and its marked fstab line. | `--dry-run` with `--create` or `--remove` |
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
@@ -56,6 +56,7 @@ All paths are under `linux/`.
     ./linux/status.sh --only disk,git
     ./linux/system_doctor.sh --quiet
     sudo ./linux/system_doctor.sh
+    ./linux/sysctl_defaults.sh --check --only inotify
     ```
 
 === "Preview"

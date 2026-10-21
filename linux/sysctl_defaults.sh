@@ -8,6 +8,11 @@
 # /etc/sysctl.d/ and applies it live; --revert restores the values captured by
 # the last apply and removes the drop-in.
 #
+# --check is the report as a gate: read-only, no root, and exit 1 when a value
+# drifted, was set live but never persisted, is stale in the drop-in, or is
+# overridden by a drop-in that sorts after ours. That is the cron, CI-image or
+# post-provision form; the report itself always exits 0.
+#
 # The list is deliberately short. These are the knobs a workstation hits when
 # an IDE's file watcher runs out of inotify watches, or when a laptop spends
 # its afternoon swapping. Kernel networking tweaks, production hardening and
@@ -16,8 +21,9 @@
 # the security-relevant ones.
 #
 # Exit codes:
-#   0   success (nothing to change, or changes applied)
-#   1   one or more settings failed to apply
+#   0   success (nothing to change, or changes applied; --check: all in place)
+#   1   one or more settings failed to apply, or --check found a key not in
+#       place (drift, unpersisted, stale or shadowed)
 #   2   preflight failed (not Linux, or --apply without root)
 #   3   bad CLI arguments
 set -u
@@ -28,6 +34,7 @@ DRY_RUN=0
 ONLY=""
 APPLY_REQUESTED=0
 REVERT_REQUESTED=0
+CHECK_REQUESTED=0
 BACKUP_DIR="${TMPDIR:-/tmp}"
 BACKUP_FILE=""
 REVERT_FROM=""
@@ -59,6 +66,7 @@ current value of each setting beside the desired one, so you can see what
 
 Usage:
   $(basename "$0")                         # report current vs desired
+  $(basename "$0") --check                 # exit 1 unless live and persisted match
   $(basename "$0") --apply                 # write the drop-in and apply live
   $(basename "$0") --apply --dry-run       # show the file without writing it
   $(basename "$0") --revert                # restore values from the last --apply
@@ -67,10 +75,12 @@ Usage:
 Options:
   --apply            Write /etc/sysctl.d/$DROP_IN_NAME and apply live
   --revert           Restore from the most recent backup written by --apply
+  --check            Read-only gate: OK, DRIFT, UNPERSISTED, STALE, SHADOWED or
+                     SKIP per key; exit 1 on anything but OK and SKIP
   --backup-file P    Write an --apply backup to this new file
   --revert-from P    Revert from this backup instead of guessing the newest
   --dry-run          With --apply or --revert, print instead of writing
-  --only GROUPS      Scope report/apply to a subset (see --list-groups)
+  --only GROUPS      Scope report/check/apply to a subset (see --list-groups)
   --list-groups      Print the group names and exit
   --help, -h         Show this help
 
@@ -78,7 +88,8 @@ SYSCTL_D and PROC_SYS are honoured so the apply path is testable without
 writing into /etc. Every --apply writes the previous values to:
   ${BACKUP_DIR}/sysctl_defaults-backup-<timestamp>.txt
 
-Exit codes: 0 success, 1 one or more settings failed, 2 not Linux / not root, 3 usage
+Exit codes: 0 success, 1 one or more settings failed (--check: a key is not in
+place), 2 not Linux / not root, 3 usage
 EOF
 }
 
@@ -116,6 +127,7 @@ while (( $# > 0 )); do
   case "$1" in
     --apply)        MODE="apply"; APPLY_REQUESTED=1 ;;
     --revert)       MODE="revert"; REVERT_REQUESTED=1 ;;
+    --check)        MODE="check"; CHECK_REQUESTED=1 ;;
     --backup-file)  require_value "$1" "${2:-}"; BACKUP_FILE="$2"; shift ;;
     --backup-file=*) BACKUP_FILE="${1#*=}"; require_value "--backup-file" "$BACKUP_FILE" ;;
     --revert-from)  require_value "$1" "${2:-}"; REVERT_FROM="$2"; shift ;;
@@ -137,6 +149,16 @@ done
 if (( APPLY_REQUESTED == 1 && REVERT_REQUESTED == 1 )); then
   err "--apply and --revert are separate modes; choose one"
   exit 3
+fi
+if (( CHECK_REQUESTED == 1 )); then
+  if (( APPLY_REQUESTED == 1 || REVERT_REQUESTED == 1 )); then
+    err "--check is a separate mode from --apply and --revert; choose one"
+    exit 3
+  fi
+  if [[ -n "$BACKUP_FILE" || -n "$REVERT_FROM" ]]; then
+    err "--check reads only; --backup-file and --revert-from do not apply"
+    exit 3
+  fi
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -280,6 +302,139 @@ report() {
   done <<EOF
 ${SETTINGS}
 EOF
+}
+
+# --- check -----------------------------------------------------------------
+# The value a sysctl.d-style file assigns to KEY, last assignment winning, or
+# nothing. Comments (# and ;) are skipped, a leading '-' (ignore errors) and
+# slash-separated keys are understood, and whitespace is dropped from the value
+# the same way read_current drops it from the live one.
+conf_value() {
+  local file="$1" want="$2"
+  [[ -r "$file" ]] || return 0
+  awk -v want="$want" '
+    /^[ \t]*[#;]/ { next }
+    index($0, "=") == 0 { next }
+    {
+      k = substr($0, 1, index($0, "=") - 1)
+      v = substr($0, index($0, "=") + 1)
+      gsub(/^[ \t]+|[ \t\r]+$/, "", k)
+      sub(/^-/, "", k)
+      gsub(/\//, ".", k)
+      gsub(/[ \t\r]+/, "", v)
+      if (k == want) { val = v; found = 1 }
+    }
+    END { if (found) print val }' "$file"
+}
+
+# Every *.conf read after our drop-in, in the order it is read: names that
+# sort after 99-ops-toolbox.conf in byte order. Against the real
+# /etc/sysctl.d the other systemd-sysctl directories count too, unless
+# /etc/sysctl.d masks the name; against a SYSCTL_D override only that
+# directory does, so the test seam stays hermetic.
+later_conf_files() {
+  local dir f name tab
+  local dirs=("$SYSCTL_D")
+  tab="$(printf '\t')"
+  if [[ "$SYSCTL_D" == "/etc/sysctl.d" ]]; then
+    dirs+=("/run/sysctl.d" "/usr/local/lib/sysctl.d" "/usr/lib/sysctl.d" "/lib/sysctl.d")
+  fi
+  for dir in "${dirs[@]}"; do
+    for f in "$dir"/*.conf; do
+      [[ -f "$f" ]] || continue
+      name="${f##*/}"
+      if [[ "$dir" != "$SYSCTL_D" && -e "$SYSCTL_D/$name" ]]; then
+        continue
+      fi
+      printf '%s\t%s\n' "$name" "$f"
+    done
+  done | LC_ALL=C sort -t "$tab" -k1,1 -u \
+    | LC_ALL=C awk -F'\t' -v ours="$DROP_IN_NAME" '$1 > ours { print $2 }'
+}
+
+# The file with the last word on KEY after our drop-in, when its value is not
+# the one we want: "path<TAB>value". /etc/sysctl.conf is read after every
+# drop-in directory and is only consulted against the real /etc/sysctl.d.
+shadowing_file() {
+  local key="$1" want="$2" f v last_file="" last_value=""
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    v="$(conf_value "$f" "$key")"
+    if [[ -n "$v" ]]; then
+      last_file="$f"
+      last_value="$v"
+    fi
+  done < <(later_conf_files)
+  if [[ "$SYSCTL_D" == "/etc/sysctl.d" ]]; then
+    v="$(conf_value /etc/sysctl.conf "$key")"
+    if [[ -n "$v" ]]; then
+      last_file="/etc/sysctl.conf"
+      last_value="$v"
+    fi
+  fi
+  if [[ -n "$last_file" && "$last_value" != "$want" ]]; then
+    printf '%s\t%s\n' "$last_file" "$last_value"
+    return 0
+  fi
+  return 1
+}
+
+check_line() {
+  local word="$1" detail="$2" colour="$C_YELLOW"
+  case "$word" in
+    OK)   colour="$C_GREEN" ;;
+    SKIP) colour="$C_DIM" ;;
+  esac
+  printf "  %s%-11s%s %s\n" "$colour" "$word" "$C_RESET" "$detail"
+}
+
+# First match wins, in this order: SKIP, DRIFT, UNPERSISTED, STALE, SHADOWED,
+# OK. It reads only the proc files and *.conf files it is pointed at; the fix
+# is printed, never run.
+check() {
+  local group key value blurb live persisted shadow
+  local n_ok=0 n_drift=0 n_unpersisted=0 n_stale=0 n_shadowed=0 n_skipped=0
+  local fix tab
+  fix="fix: sudo ./$(basename "$0") --apply"
+  tab="$(printf '\t')"
+  [[ -f "$DROP_IN" ]] || info "no drop-in at $DROP_IN"
+  while IFS='|' read -r group key value blurb; do
+    [[ -n "$group" ]] || continue
+    group_wanted "$group" || continue
+    if ! live="$(read_current "$key")"; then
+      check_line SKIP "$key unreadable"
+      n_skipped=$((n_skipped + 1))
+      continue
+    fi
+    persisted="$(conf_value "$DROP_IN" "$key")"
+    if [[ "$live" != "$value" ]]; then
+      check_line DRIFT "$key = $live (want $value)"
+      n_drift=$((n_drift + 1))
+    elif [[ -z "$persisted" ]]; then
+      check_line UNPERSISTED "$key = $live live, but $DROP_IN does not set it, so a reboot loses it. $fix"
+      n_unpersisted=$((n_unpersisted + 1))
+    elif [[ "$persisted" != "$value" ]]; then
+      check_line STALE "$key: $DROP_IN sets $persisted, want $value. $fix"
+      n_stale=$((n_stale + 1))
+    elif shadow="$(shadowing_file "$key" "$value")"; then
+      check_line SHADOWED "$key: ${shadow%%"$tab"*} sets ${shadow#*"$tab"}, and is read after $DROP_IN_NAME"
+      n_shadowed=$((n_shadowed + 1))
+    else
+      check_line OK "$key = $live"
+      n_ok=$((n_ok + 1))
+    fi
+  done <<EOF
+${SETTINGS}
+EOF
+  printf "%s ok, %s drift, %s unpersisted, %s stale, %s shadowed, %s skipped\n" \
+    "$n_ok" "$n_drift" "$n_unpersisted" "$n_stale" "$n_shadowed" "$n_skipped"
+  if (( n_ok + n_drift + n_unpersisted + n_stale + n_shadowed == 0 )); then
+    info "no managed key was readable; nothing to check"
+    return 0
+  fi
+  if (( n_drift + n_unpersisted + n_stale + n_shadowed > 0 )); then
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
 }
 
 drop_in_body() {
@@ -450,6 +605,7 @@ revert() {
 
 case "$MODE" in
   report) report ;;
+  check)  check ;;
   apply)  apply ;;
   revert) revert ;;
 esac

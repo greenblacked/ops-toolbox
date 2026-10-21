@@ -156,7 +156,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Space** | `kernel_cleanup.sh` | When `/boot` is full or an upgrade fails for space | old kernel packages; keeps the running one plus `--keep`; never autoremoves |
 | **Copy** | `config_backup.sh` | Before editing `/etc` or upgrading | a dated tar under `--dest`; never writes back |
 | **Copy** | `packages.sh` | After a machine looks the way you want | a package list you can commit and restore |
-| **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
+| **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify; `--check` from cron | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
 | **Configure** | `swap_setup.sh` | Once on a box with no swap, before the first OOM kill | a swapfile and one marked `/etc/fstab` line; read-only unless `--create`/`--remove` |
 | **Diagnose** | `status.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `system_doctor.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
@@ -614,6 +614,8 @@ RAM. Kernel networking tweaks and container-host `max_map_count` stay out.
 ```bash
 ./sysctl_defaults.sh
 ./sysctl_defaults.sh --only inotify
+./sysctl_defaults.sh --check                       # exit 1 unless live and persisted match
+./sysctl_defaults.sh --check --only inotify || echo drift
 ./sysctl_defaults.sh --apply --dry-run
 sudo ./sysctl_defaults.sh --apply
 sudo ./sysctl_defaults.sh --revert
@@ -629,6 +631,30 @@ the backup alongside its own state.
 `SYSCTL_D` and `PROC_SYS` are honoured so the apply path is testable
 without writing into `/etc`. `--apply` without root exits `2`; preview
 with `--dry-run` instead.
+
+The report always exits `0`, so it cannot gate anything. `--check` can: it is
+read-only, needs no root, honours `--only`, and gives each managed key one word,
+the first that applies:
+
+| Word | Meaning |
+| --- | --- |
+| `SKIP` | The live value is unreadable. Never a pass or a failure. |
+| `DRIFT` | The live value is not the desired one. |
+| `UNPERSISTED` | Live is right, but `99-ops-toolbox.conf` is missing or does not set the key, so the next reboot loses it (a `sysctl -w` by hand). |
+| `STALE` | The drop-in sets a different value than this script wants. |
+| `SHADOWED` | A `*.conf` read after ours (a name that sorts later, such as `99-zz.conf`, or `/etc/sysctl.conf`) sets the key to something else; the file is named. |
+| `OK` | Live, persisted and effective all match. |
+
+`UNPERSISTED` and `STALE` print `sudo ./sysctl_defaults.sh --apply` as the fix,
+as text. A summary line counts each word. `--check` exits `1` on any `DRIFT`,
+`UNPERSISTED`, `STALE` or `SHADOWED`, and `0` otherwise, including when every
+key was unreadable (it says so). It is a separate mode: with `--apply`,
+`--revert`, `--backup-file` or `--revert-from` it is exit `3`, and `--dry-run`
+is accepted and ignored as for the report. Against the real `/etc/sysctl.d` it
+also reads the other systemd-sysctl directories (`/run`, `/usr/local/lib`,
+`/usr/lib`, `/lib`) and `/etc/sysctl.conf`; under a `SYSCTL_D` override it reads
+only that directory, so the tests stay hermetic. Use it from cron or a CI image
+build: `./sysctl_defaults.sh --check --only inotify || echo drift`.
 
 ## `swap_setup.sh`
 
@@ -859,7 +885,7 @@ permissive development host can validly differ from a server baseline.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference |
+| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference, or `sysctl_defaults.sh --check` found a key not in place |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install or removal was requested without `--yes` |
 | `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove; `swap_setup.sh` had nothing to do |
