@@ -38,7 +38,9 @@ help. Nothing on this page needs its contents.
 !!! report "Nothing is edited in this step"
     Neither script edits a config file, loads anything into the agent or
     writes a key. `git_ssh_doctor.py` does make one real, non-interactive
-    connection per host (see below).
+    connection per host (see below). One exception: it connects with
+    `StrictHostKeyChecking=accept-new`, so a host that is not yet in
+    `~/.ssh/known_hosts` has its key added there.
 
 Start with the doctor that asks OpenSSH what it will really do:
 
