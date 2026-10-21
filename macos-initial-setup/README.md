@@ -1286,9 +1286,13 @@ Either way the archive is created `0600`; a `--dest` the script creates is
 `0700`, while an existing one keeps its mode and is reported when group- or
 world-accessible.
 
-How a run writes: the archive is built as a hidden temporary file in `--dest`
-under `umask 077` (with `COPYFILE_DISABLE=1`, so macOS `tar` adds no `._`
-AppleDouble members, and `.DS_Store` excluded), checked with `tar -tzf` for at
+How a run writes: a `--dest` that group or other users can write to is
+refused (exit `3`; a sticky one owned by you, like `/tmp`, is accepted). The
+archive is built as a hidden temporary file in `--dest`, created exclusively
+with `mktemp` under an unpredictable name, so a symlink planted in `--dest`
+is never followed. `tar` runs under `umask 077` (with `COPYFILE_DISABLE=1`,
+so macOS `tar` adds no `._` AppleDouble members, and `.DS_Store` excluded),
+and the result is checked with `tar -tzf` for at
 least one member, then published with `mv -n`, which never replaces a file.
 A failed run removes its temporary file and keeps every earlier archive.
 Rotation then removes the oldest `PREFIX-YYYYmmdd-HHMMSS.tar.gz` files beyond
@@ -1312,7 +1316,7 @@ and previews on any machine.
 **Exit codes:** `0` archive written, listed or previewed · `1` tar,
 verification, publication or rotation failed · `2` preflight failed (not
 macOS, `HOME` unset, or no `tar`) for a real run · `3` bad arguments, a
-refused path, or a real run without `--yes` · `4` nothing to archive, or no
+refused path or `--dest`, or a real run without `--yes` · `4` nothing to archive, or no
 archive to list.
 
 ---

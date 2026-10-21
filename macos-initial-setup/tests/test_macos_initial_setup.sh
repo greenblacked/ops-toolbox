@@ -3641,7 +3641,7 @@ assert_contains "the archive still holds the rest of ~/.config/git" "$listing" "
 assert_not_contains "the archive leaves a .terraformrc with credentials out" "$listing" ".terraformrc"
 assert_not_contains "the archive never holds a free-form private key" "$listing" "deploy_key"
 assert_not_contains "the archive leaves .DS_Store out" "$listing" ".DS_Store"
-tmp_left="$(find "$dest" -name '*.tmp.*' | wc -l | tr -d ' ')"
+tmp_left="$(find "$dest" -name '.config_backup.*' | wc -l | tr -d ' ')"
 assert_eq "no temporary file is left behind" "0" "$tmp_left"
 
 out="$(cbrun --list)"; rc=$?
@@ -3689,6 +3689,58 @@ assert_eq "a failing tar -> 1" "1" "$rc"
 left="$(find "$dest" -type f 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "a failed run leaves no temporary or published archive" "0" "$left"
 rm -f "$cb/bin/tar"
+
+# The temporary archive is created exclusively with an unpredictable name, so
+# a symlink planted at the old timestamp-and-PID name is never followed and
+# the file it points at is never truncated. date is fixed so the old name's
+# stamp is known; the PID is guessed over a range above this shell's.
+mkdir -p "$dest"
+chmod 700 "$dest"
+printf '%s\n' '#!/bin/sh' 'echo 20300101-000000' > "$cb/bin/date"
+chmod +x "$cb/bin/date"
+printf 'precious\n' > "$cb/victim"
+pid=$$
+while (( pid < $$ + 600 )); do
+  ln -s "$cb/victim" "$dest/.config-20300101-000000.tmp.$pid"
+  pid=$((pid + 1))
+done
+# tar is wrapped to record where it was told to write.
+cat > "$cb/bin/tar" <<TAR_EOF
+#!/bin/sh
+case "\$1" in -czf) printf '%s\n' "\$2" > "$cb/tar.target" ;; esac
+exec /usr/bin/tar "\$@"
+TAR_EOF
+chmod +x "$cb/bin/tar"
+out="$(cbrun --yes)"; rc=$?
+assert_eq "a run with planted symlinks at the old temp names -> 0" "0" "$rc"
+assert_eq "a planted symlink's target is never truncated" "precious" "$(cat "$cb/victim" 2>/dev/null)"
+tar_target="$(cat "$cb/tar.target" 2>/dev/null)"
+case "${tar_target##*/}" in
+  .config_backup.??????) ok "tar writes to an mktemp-style temporary name" ;;
+  *) err "tar wrote to an unexpected temporary name: $tar_target" ;;
+esac
+assert_eq "the new archive exists" "1" "$(find "$dest" -name 'config-*.tar.gz' -type f | wc -l | tr -d ' ')"
+find "$dest" -maxdepth 1 -type l -name '.config-20300101-000000.tmp.*' -exec rm -f {} +
+rm -f "$cb/bin/tar" "$cb/bin/date" "$cb/tar.target" "$dest"/config-*.tar.gz
+
+# A --dest that other users can write to is refused before anything is written.
+wdest="$cb/world-writable"
+mkdir -p "$wdest"
+chmod 777 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a world-writable --dest is refused -> 3" "3" "$rc"
+assert_contains "the refusal names the directory" "$out" "refusing --dest $wdest"
+assert_eq "nothing is written into a refused --dest" "0" "$(find "$wdest" -mindepth 1 | wc -l | tr -d ' ')"
+chmod 770 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a group-writable --dest is refused -> 3" "3" "$rc"
+chmod 755 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a 755 --dest is accepted -> 0" "0" "$rc"
+rm -f "$wdest"/config-*.tar.gz
+chmod 1777 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a sticky world-writable --dest owned by the user is accepted -> 0" "0" "$rc"
 rm -rf "$cb"
 
 end_section

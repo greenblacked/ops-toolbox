@@ -31,7 +31,8 @@
 #   0   archive written, listed, or previewed
 #   1   tar, verification, publication or rotation failed
 #   2   preflight failed (not macOS, HOME unset, or tar missing) for a real run
-#   3   bad CLI arguments, a refused path, or a real run without --yes
+#   3   bad CLI arguments, a refused path or --dest (one other users can
+#       write to), or a real run without --yes
 #   4   nothing to archive, or nothing to list
 set -u
 set -o pipefail
@@ -429,13 +430,42 @@ if [[ ! -d "$DEST" ]]; then
 fi
 
 # An existing --dest keeps the mode it has; say so when others can read it.
-dest_mode="$(stat -f %Lp "$DEST" 2>/dev/null || stat -c %a "$DEST" 2>/dev/null)" || dest_mode=""
-if [[ "$dest_mode" =~ ^[0-7]*[0-7][0-7]$ && "${dest_mode: -2}" != "00" ]]; then
-  warn "$DEST is mode $dest_mode, readable by others; the archive itself is 0600"
+dest_mode="$(stat -f %Lp "$DEST" 2>/dev/null)"
+[[ "$dest_mode" =~ ^[0-7]{3,4}$ ]] || dest_mode="$(stat -c %a "$DEST" 2>/dev/null)"
+dest_owner="$(stat -f %u "$DEST" 2>/dev/null)"
+[[ "$dest_owner" =~ ^[0-9]+$ ]] || dest_owner="$(stat -c %u "$DEST" 2>/dev/null)"
+if [[ ! "$dest_mode" =~ ^[0-7]{3,4}$ ]]; then
+  dest_mode=""
 fi
 
-TMP_ARCHIVE="$DEST/.$PREFIX-$stamp.tmp.$$"
-# umask 077 makes the archive 0600 from its first byte. COPYFILE_DISABLE stops
+# Another user who can write to --dest can plant or swap files in it. Refuse a
+# group- or other-writable --dest, except a sticky one (like /tmp) that this
+# user owns, where others cannot remove or rename what we create.
+if [[ -n "$dest_mode" ]]; then
+  dest_bits=$((8#$dest_mode))
+  if (( (dest_bits & 18) != 0 )); then      # 022: group or other write
+    if (( (dest_bits & 512) != 0 )) && [[ "$dest_owner" == "$(id -u)" ]]; then   # 01000: sticky
+      :
+    else
+      err "refusing --dest $DEST: mode $dest_mode lets other users write to it (chmod go-w, or pick another directory)"
+      exit 3
+    fi
+  fi
+  if [[ "${dest_mode: -2}" != "00" ]]; then
+    warn "$DEST is mode $dest_mode, readable by others; the archive itself is 0600"
+  fi
+fi
+
+# mktemp creates the file exclusively (O_EXCL) with an unpredictable name and
+# mode 0600, and never follows a symlink planted at that name, so tar cannot
+# be made to truncate some other file. tar then rewrites our own empty file.
+TMP_ARCHIVE="$(mktemp "$DEST/.config_backup.XXXXXX" 2>/dev/null)" || TMP_ARCHIVE=""
+if [[ -z "$TMP_ARCHIVE" || ! -f "$TMP_ARCHIVE" || -L "$TMP_ARCHIVE" ]]; then
+  TMP_ARCHIVE=""
+  err "could not create a temporary archive in $DEST"
+  exit 1
+fi
+# umask 077 keeps the archive 0600 throughout. COPYFILE_DISABLE stops
 # macOS tar from adding ._ AppleDouble members for extended attributes. The
 # relative names follow --, so none can be read as an option.
 if ! (umask 077 && COPYFILE_DISABLE=1 tar -czf "$TMP_ARCHIVE" --exclude=.DS_Store \
