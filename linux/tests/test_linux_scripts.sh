@@ -807,6 +807,9 @@ assert_contains "system_doctor reports memory pressure" "$out" "== memory =="
 assert_contains "system_doctor reports clock sync" "$out" "== time =="
 assert_contains "system_doctor reports journal" "$out" "== journal =="
 assert_contains "system_doctor reports sessions" "$out" "== sessions =="
+# The pressure probes against the container's real /proc: whatever this kernel
+# exposes, a missing or unreadable file has to degrade to a skip.
+assert_contains "system_doctor reports pressure against the real /proc" "$out" "== pressure =="
 if grep -qE 'OOM kill' <<<"$out"; then
   ok "system_doctor reports OOM kills this boot"
 else
@@ -849,7 +852,8 @@ else
 fi
 assert_contains "system_doctor --quiet still summarises" "$out" "== summary =="
 
-for bad in "--min-free 101" "--min-free notanumber" "--min-memory 101" "--min-memory notanumber"; do
+for bad in "--min-free 101" "--min-free notanumber" "--min-memory 101" "--min-memory notanumber" \
+           "--max-psi abc" "--max-psi 150" "--max-psi 100.5"; do
   # shellcheck disable=SC2086  # the pair is meant to split into two arguments
   "$L/system_doctor.sh" $bad >/dev/null 2>&1
   rc=$?
@@ -945,6 +949,81 @@ assert_contains "system_doctor says when nothing is read-only" "$out" "no real f
 assert_contains "system_doctor says when every fstab entry is mounted" "$out" "every fstab entry is mounted (3 checked)"
 assert_contains "system_doctor reports a healthy md array" "$out" "md array md0 is healthy ([2/2] [UU])"
 rm -rf "$storage_fx" "$storage_stub"
+
+# Pressure and limits. A fixture procfs holds quiet PSI files, file handles,
+# conntrack counters, thread limits and a loadavg; each case below rewrites
+# one file into the state that should warn.
+press_fx="$(mktemp -d)"
+mkdir -p "$press_fx/pressure" "$press_fx/sys/fs" "$press_fx/sys/net/netfilter" "$press_fx/sys/kernel"
+write_quiet_pressure() {
+  mkdir -p "$press_fx/pressure"
+  printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$press_fx/pressure/cpu"
+  for r in memory io; do
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$press_fx/pressure/$r"
+  done
+  printf '1000\t0\t100000\n' > "$press_fx/sys/fs/file-nr"
+  printf '10\n' > "$press_fx/sys/net/netfilter/nf_conntrack_count"
+  printf '100000\n' > "$press_fx/sys/net/netfilter/nf_conntrack_max"
+  printf '100000\n' > "$press_fx/sys/kernel/threads-max"
+  printf '4194304\n' > "$press_fx/sys/kernel/pid_max"
+  printf '0.10 0.10 0.10 1/200 123\n' > "$press_fx/loadavg"
+}
+run_pressure() {
+  PROC_DIR="$press_fx" "$L/system_doctor.sh" --skip-containers --skip-units --skip-smart "$@" 2>&1
+}
+write_quiet_pressure
+out="$(run_pressure)"; rc=$?
+assert_eq "system_doctor with quiet pressure exits 0" "0" "$rc"
+assert_contains "system_doctor has a pressure section" "$out" "== pressure =="
+assert_not_contains "system_doctor raises no stall on quiet PSI" "$out" "pressure: tasks stalled"
+assert_contains "system_doctor reports file handles" "$out" "file handles 1% used"
+
+printf 'some avg10=0.00 avg60=35.50 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$press_fx/pressure/memory"
+out="$(run_pressure)"; rc=$?
+assert_eq "system_doctor with memory stalls still exits 0" "0" "$rc"
+assert_contains "system_doctor warns on memory pressure" "$(grep -F 'memory pressure' <<<"$out" || true)" "[warn]"
+assert_contains "system_doctor prints the stall percentage" "$out" "35.5"
+out="$(run_pressure --max-psi 50)"
+assert_not_contains "system_doctor honours --max-psi" "$out" "memory pressure: tasks stalled"
+
+write_quiet_pressure
+printf '90000\t0\t100000\n' > "$press_fx/sys/fs/file-nr"
+printf '95000\n' > "$press_fx/sys/net/netfilter/nf_conntrack_count"
+printf '0.10 0.10 0.10 1/90000 123\n' > "$press_fx/loadavg"
+out="$(run_pressure)"
+assert_contains "system_doctor warns on file handles" "$out" "file handles 90% used"
+assert_contains "system_doctor warns on a filling conntrack table" "$out" "connection tracking table 95% full"
+assert_contains "system_doctor warns on thread headroom" "$out" "kernel.threads-max"
+
+rm -rf "$press_fx/pressure"
+out="$(run_pressure)"; rc=$?
+assert_eq "system_doctor without PSI exits 0" "0" "$rc"
+assert_contains "system_doctor says the kernel has no PSI" "$out" "kernel has no PSI"
+
+# Process states come from one ps call. A stub ps answers that call with a
+# dozen zombies and six tasks in D state; any other ps call gets nothing.
+ps_stub="$(mktemp -d)"
+cat > "$ps_stub/ps" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" stat=,pid=,comm= "*)
+    i=0
+    while (( i < 12 )); do printf 'Z    %s defunct\n' "$((100 + i))"; i=$((i + 1)); done
+    i=0
+    while (( i < 6 )); do printf 'D    %s jbd2\n' "$((200 + i))"; i=$((i + 1)); done
+    printf 'Ss   1 init\n'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$ps_stub/ps"
+write_quiet_pressure
+out="$(PATH="$ps_stub:$PATH" run_pressure)"; rc=$?
+assert_eq "system_doctor with stuck processes exits 0" "0" "$rc"
+assert_contains "system_doctor warns on zombies" "$out" "12 zombie process(es)"
+assert_contains "system_doctor warns on uninterruptible sleep" "$out" "6 process(es) in uninterruptible sleep"
+assert_contains "system_doctor names a stuck process" "$out" "200 jbd2"
+rm -rf "$press_fx" "$ps_stub"
 
 section "container_doctor.sh"
 CDOC="$L/container_doctor.sh"

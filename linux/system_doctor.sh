@@ -30,12 +30,13 @@ SKIP_REMOTE_MOUNTS=0
 SKIP_SMART=0
 MIN_FREE_PCT=10
 MIN_MEMORY_PCT=10
+MAX_PSI=10
 
-# The storage section reads the mount table and md status from procfs and the
-# expected mounts from fstab. Both are environment variables rather than flags,
-# like OS_RELEASE below: they exist so the suite can hand the parsers a
-# read-only remount, a missing fstab mount and a degraded array, which no
-# container can produce for real.
+# The storage and pressure sections read procfs (mounts, md status, PSI,
+# file handles, conntrack, thread limits) and the expected mounts from fstab.
+# Both are environment variables rather than flags, like OS_RELEASE below: they
+# exist so the suite can hand the parsers a read-only remount, a degraded
+# array or a stalled memory controller, which no container can produce.
 PROC_DIR="${PROC_DIR:-/proc}"
 FSTAB="${FSTAB:-/etc/fstab}"
 
@@ -83,13 +84,14 @@ Describes the state of the machine and changes nothing. For security findings
 and the command that fixes each one, use hardening_audit.sh instead.
 
 Usage:
-  $(basename "$0") [--min-free PCT] [--min-memory PCT]
+  $(basename "$0") [--min-free PCT] [--min-memory PCT] [--max-psi PCT]
                   [--skip-containers] [--skip-units]
                   [--skip-remote-mounts] [--skip-smart] [--quiet]
 
 Options:
   --min-free PCT     Warn below this much free space on / (default: $MIN_FREE_PCT)
   --min-memory PCT   Warn below this much available memory (default: $MIN_MEMORY_PCT)
+  --max-psi PCT      Warn when 60-second stall time exceeds this percent (default: $MAX_PSI)
   --skip-containers  Don't probe docker/podman (slow when a daemon is wedged)
   --skip-units       Don't run 'systemctl --failed'
   --skip-remote-mounts  Don't probe NFS/CIFS/sshfs mounts (each probe waits up to 5s)
@@ -97,7 +99,7 @@ Options:
   --quiet            Print only warnings
   --help, -h         Show this help
 
-Sections: system, sessions, time, packages, disk, storage, memory, updates, services, journal, network, containers, load
+Sections: system, sessions, time, packages, disk, storage, memory, updates, services, journal, network, containers, load, pressure
 
 Exit codes: 0 report printed, 2 not Linux, 3 usage
 EOF
@@ -118,6 +120,8 @@ while (( $# > 0 )); do
     --min-free=*)      MIN_FREE_PCT="${1#*=}"; require_value "--min-free" "$MIN_FREE_PCT" ;;
     --min-memory)      require_value "$1" "${2:-}"; shift; MIN_MEMORY_PCT="$1" ;;
     --min-memory=*)    MIN_MEMORY_PCT="${1#*=}"; require_value "--min-memory" "$MIN_MEMORY_PCT" ;;
+    --max-psi)         require_value "$1" "${2:-}"; shift; MAX_PSI="$1" ;;
+    --max-psi=*)       MAX_PSI="${1#*=}"; require_value "--max-psi" "$MAX_PSI" ;;
     --skip-containers) SKIP_CONTAINERS=1 ;;
     --skip-units)      SKIP_UNITS=1 ;;
     --skip-remote-mounts) SKIP_REMOTE_MOUNTS=1 ;;
@@ -139,6 +143,13 @@ if ! [[ "$MIN_FREE_PCT" =~ ^[0-9]+$ ]] || (( MIN_FREE_PCT > 100 )); then
 fi
 if ! [[ "$MIN_MEMORY_PCT" =~ ^[0-9]+$ ]] || (( MIN_MEMORY_PCT > 100 )); then
   err "--min-memory must be a percentage between 0 and 100, got: $MIN_MEMORY_PCT"
+  exit 3
+fi
+# One decimal allowed, because PSI percentages are fractional; the integer part
+# is what is range-checked, and 100.5 is refused with it.
+if ! [[ "$MAX_PSI" =~ ^[0-9]+(\.[0-9])?$ ]] || (( ${#MAX_PSI} > 5 )) || (( 10#${MAX_PSI%%.*} > 100 )) ||
+   [[ "${MAX_PSI%%.*}" == "100" && "$MAX_PSI" == *.[1-9] ]]; then
+  err "--max-psi must be a percentage between 0 and 100 (one decimal allowed), got: $MAX_PSI"
   exit 3
 fi
 
@@ -870,6 +881,192 @@ if [[ -r /proc/loadavg ]]; then
   fi
 else
   skip "/proc/loadavg unreadable"
+fi
+
+# --- pressure --------------------------------------------------------------
+# Load average counts tasks waiting on I/O as busy and never sees memory
+# stalls, so it is the wrong number for "everything is slow". The kernel's own
+# answer is pressure stall information: the share of the last minute in which
+# tasks were stalled on CPU, memory or I/O. Next to it are the limits that
+# produce random errors when they run out: file handles, the connection
+# tracking table (full means silent packet drops), threads and PIDs, and
+# processes stuck in uninterruptible sleep. Every probe reads procfs and skips
+# when its file is missing, so old kernels and containers stay quiet. Nothing
+# is tuned; sysctl names appear only in hints (sysctl_defaults.sh applies).
+group "pressure"
+
+# Integer percentage of used/limit, or nothing when either is not a number.
+pct_of() {
+  [[ "$1" =~ ^[0-9]+$ && "$2" =~ ^[0-9]+$ ]] || return 1
+  (( ${#1} <= 15 && ${#2} <= 15 && 10#$2 > 0 )) || return 1
+  printf '%s\n' $(( 10#$1 * 100 / 10#$2 ))
+}
+
+psi_warned=0
+psi_seen=0
+for res in cpu memory io; do
+  psi_file="$PROC_DIR/pressure/$res"
+  [[ -e "$psi_file" ]] || continue
+  psi_seen=1
+  # "some" is the share of time at least one task stalled; "full" (memory and
+  # io, and cpu on newer kernels) is the share in which every runnable task did.
+  psi="$(awk '
+    $1 == "some" || $1 == "full" {
+      for (i = 2; i <= NF; i++) { n = split($i, kv, "="); if (n == 2) v[$1 "_" kv[1]] = kv[2] }
+    }
+    END {
+      printf "%s %s %s\n", ("some_avg10" in v) ? v["some_avg10"] : "-", ("some_avg60" in v) ? v["some_avg60"] : "-", ("full_avg60" in v) ? v["full_avg60"] : "-"
+    }' "$psi_file" 2>/dev/null)"
+  read -r s10 s60 f60 <<< "$psi"
+  if ! [[ "${s60:-}" =~ ^[0-9]+(\.[0-9]+)?$ && "${s10:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    skip "$res pressure unreadable ($psi_file)"
+    continue
+  fi
+  [[ "${f60:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || f60="-"
+  verdict="$(awk -v s="$s60" -v f="$f60" -v m="$MAX_PSI" -v r="$res" 'BEGIN {
+    if (s + 0 >= m + 0) print "some"
+    else if (r != "cpu" && f != "-" && f + 0 >= (m + 0) / 2) print "full"
+    else print "ok" }')"
+  s60_1="$(awk -v x="$s60" 'BEGIN { printf "%.1f", x }')"
+  s10_1="$(awk -v x="$s10" 'BEGIN { printf "%.1f", x }')"
+  case "$res" in
+    cpu)    psi_hint="top -o %CPU" ;;
+    memory) psi_hint="ps aux --sort=-%mem | head" ;;
+    io)     psi_hint="iostat -x 1 · iotop" ;;
+  esac
+  case "$verdict" in
+    some)
+      psi_warned=1
+      warn "$res pressure: tasks stalled ${s60_1}% of the last 60s (avg10 ${s10_1})" "$psi_hint"
+      ;;
+    full)
+      psi_warned=1
+      warn "$res pressure: every task stalled $(awk -v x="$f60" 'BEGIN { printf "%.1f", x }')% of the last 60s (some ${s60_1}%)" "$psi_hint"
+      ;;
+    *)
+      ok "$res pressure: ${s60_1}% stalled over the last 60s"
+      ;;
+  esac
+done
+(( psi_seen )) || skip "kernel has no PSI (needs Linux 4.20+, CONFIG_PSI)"
+
+# allocated, unused, max. On kernels that report unused as 0 the first field
+# is already the used count.
+if [[ -r "$PROC_DIR/sys/fs/file-nr" ]]; then
+  read -r fh_alloc fh_unused fh_max _ < "$PROC_DIR/sys/fs/file-nr"
+  if [[ "${fh_alloc:-}" =~ ^[0-9]+$ && "${fh_unused:-}" =~ ^[0-9]+$ ]] && fh_pct="$(pct_of "$(( 10#$fh_alloc - 10#$fh_unused ))" "${fh_max:-}")"; then
+    fh_used=$(( 10#$fh_alloc - 10#$fh_unused ))
+    if (( fh_pct >= 80 )); then
+      warn "file handles ${fh_pct}% used ($fh_used of $fh_max)" "lsof | awk '{print \$1}' | sort | uniq -c | sort -rn | head"
+    else
+      ok "file handles ${fh_pct}% used ($fh_used of $fh_max)"
+    fi
+  else
+    skip "file-nr unreadable ($PROC_DIR/sys/fs/file-nr)"
+  fi
+else
+  skip "no $PROC_DIR/sys/fs/file-nr"
+fi
+
+# Only present when the conntrack module is loaded; absent is normal and says
+# nothing, so it prints nothing.
+ct_dir="$PROC_DIR/sys/net/netfilter"
+if [[ -r "$ct_dir/nf_conntrack_count" && -r "$ct_dir/nf_conntrack_max" ]]; then
+  ct_count="$(tr -d '[:space:]' < "$ct_dir/nf_conntrack_count")"
+  ct_max="$(tr -d '[:space:]' < "$ct_dir/nf_conntrack_max")"
+  if ct_pct="$(pct_of "$ct_count" "$ct_max")"; then
+    if (( ct_pct >= 80 )); then
+      warn "connection tracking table ${ct_pct}% full ($ct_count of $ct_max)" "sysctl net.netfilter.nf_conntrack_max; dmesg | grep 'table full'"
+    else
+      ok "connection tracking table ${ct_pct}% full ($ct_count of $ct_max)"
+    fi
+  else
+    skip "conntrack counters unreadable"
+  fi
+fi
+
+# Every thread takes a PID, so threads are measured against both limits. The
+# fourth loadavg field is running/total scheduling entities.
+if [[ -r "$PROC_DIR/loadavg" ]]; then
+  read -r _ _ _ la_tasks _ < "$PROC_DIR/loadavg"
+  threads="${la_tasks#*/}"
+  if [[ "$threads" =~ ^[0-9]+$ ]]; then
+    procs=0
+    for d in "$PROC_DIR"/[0-9]*; do
+      [[ -d "$d" ]] && procs=$((procs + 1))
+    done
+    pid_used=$(( 10#$threads > procs ? 10#$threads : procs ))
+    limits_checked=0
+    if [[ -r "$PROC_DIR/sys/kernel/threads-max" ]]; then
+      tmax="$(tr -d '[:space:]' < "$PROC_DIR/sys/kernel/threads-max")"
+      if t_pct="$(pct_of "$threads" "$tmax")"; then
+        limits_checked=1
+        if (( t_pct >= 80 )); then
+          warn "$threads threads: ${t_pct}% of kernel.threads-max ($tmax)" "ps -eLf | awk '{print \$2}' | uniq -c | sort -rn | head"
+        fi
+      fi
+    fi
+    if [[ -r "$PROC_DIR/sys/kernel/pid_max" ]]; then
+      pmax="$(tr -d '[:space:]' < "$PROC_DIR/sys/kernel/pid_max")"
+      if p_pct="$(pct_of "$pid_used" "$pmax")"; then
+        limits_checked=1
+        if (( p_pct >= 80 )); then
+          warn "$pid_used PIDs in use: ${p_pct}% of kernel.pid_max ($pmax)" "sysctl kernel.pid_max; ps -eo nlwp,pid,comm --sort=-nlwp | head"
+        fi
+      fi
+    fi
+    if (( limits_checked )) && (( ${t_pct:-0} < 80 && ${p_pct:-0} < 80 )); then
+      ok "$threads threads and $procs processes, well inside the PID and thread limits"
+    elif (( limits_checked == 0 )); then
+      skip "threads-max and pid_max unreadable"
+    fi
+  else
+    skip "loadavg task count unreadable"
+  fi
+else
+  skip "no $PROC_DIR/loadavg"
+fi
+
+# One ps call, read twice. A zombie holds only a PID until its parent reaps it;
+# a process in D state is waiting on I/O it cannot be interrupted from, and a
+# handful of them is the usual sign of a dying disk or a dead network mount.
+# It is a snapshot: a busy disk shows a few in passing.
+ps_out="$(ps -eo stat=,pid=,comm= 2>/dev/null | clean)"; ps_rc=$?
+if (( ps_rc != 0 )) || [[ -z "$ps_out" ]]; then
+  skip "ps -eo stat,pid,comm did not answer; process states not checked"
+else
+  z_n="$(awk '$1 ~ /^Z/ { c++ } END { print c + 0 }' <<<"$ps_out")"
+  d_rows="$(awk '$1 ~ /^D/ { print $2, $3 }' <<<"$ps_out")"
+  d_n="$(grep -c . <<<"$d_rows" || true)"
+  [[ "$d_n" =~ ^[0-9]+$ ]] || d_n=0
+  if (( z_n >= 10 )); then
+    warn "$z_n zombie process(es)" "their parent has not reaped them: ps -o ppid= -p <pid>, then restart that parent"
+  elif (( z_n > 0 )); then
+    info "$z_n zombie process(es)"
+  fi
+  if (( d_n >= 5 )); then
+    warn "$d_n process(es) in uninterruptible sleep (stuck on I/O?)" \
+      "a snapshot, rerun to confirm; as root: cat /proc/<pid>/stack, and see the storage section"
+    (( QUIET )) || head -n 5 <<<"$d_rows" | sed 's/^/           /'
+  elif (( d_n > 0 )); then
+    info "$d_n process(es) in uninterruptible sleep right now"
+  fi
+  (( z_n < 10 && d_n < 5 )) && ok "no pile-up of zombie or uninterruptible processes"
+fi
+
+# Who is holding the stalled resource, when a stall was reported. --sort is a
+# procps option; a ps without it is a note, not a failure.
+if (( psi_warned )); then
+  top_mem="$(ps -eo pid=,comm=,%mem=,%cpu= --sort=-%mem 2>/dev/null | clean | head -n 3)"
+  top_cpu="$(ps -eo pid=,comm=,%mem=,%cpu= --sort=-%cpu 2>/dev/null | clean | head -n 3)"
+  if [[ -n "$top_mem" && -n "$top_cpu" ]]; then
+    info "top by memory (pid comm %mem %cpu):"
+    (( QUIET )) || head -n 3 <<<"$top_mem" | sed 's/^/           /'
+    info "top by CPU (pid comm %mem %cpu):"
+    (( QUIET )) || head -n 3 <<<"$top_cpu" | sed 's/^/           /'
+  else
+    skip "ps --sort is not supported here; no top consumers listed"
+  fi
 fi
 
 # --- summary ---------------------------------------------------------------

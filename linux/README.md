@@ -339,6 +339,7 @@ prints; there is no `--apply`.
 ./system_doctor.sh --quiet               # only the warnings
 ./system_doctor.sh --min-free 25         # warn below 25% free on /
 ./system_doctor.sh --min-memory 20       # warn below 20% available RAM
+./system_doctor.sh --max-psi 25          # warn when tasks stall over 25% of a minute
 ./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
 ./system_doctor.sh --skip-units          # don't run 'systemctl --failed'
 ./system_doctor.sh --skip-remote-mounts  # don't probe NFS/CIFS/sshfs mounts
@@ -361,10 +362,12 @@ seconds), **updates** (reboot pending), **services** (sshd,
 (error-level lines since boot, capped), **network** (which host
 firewall is active, global IPv4 and IPv6 addresses), **containers** (docker/podman counts,
 plus `system df` when the daemon answers — listed, never pruned), **load**
-(one-minute average per core), and **memory** (available RAM, swap
-pressure, and OOM kills this boot).
+(one-minute average per core), **pressure** (CPU, memory and I/O stall time
+from `/proc/pressure`, file handles, the connection tracking table, thread and
+PID headroom, and zombie or uninterruptible processes), and **memory**
+(available RAM, swap pressure, and OOM kills this boot).
 
-Four of those exist because the ordinary tools hide them:
+Five of those exist because the ordinary tools hide them:
 
 - **Inodes.** A filesystem out of inodes looks completely healthy in `df -h`,
   and "no space left on device" with gigabytes free is a confusing hour the
@@ -382,6 +385,15 @@ Four of those exist because the ordinary tools hide them:
   each one is probed with a five-second `stat` that `--skip-remote-mounts`
   turns off. `PROC_DIR` and `FSTAB` point the section at other files; the
   tests use them.
+- **Stalls, not load.** Load average counts tasks waiting on disk as busy and
+  never sees a memory stall, so it is high on an idle box with a slow disk and
+  low on one that is thrashing. Pressure stall information (Linux 4.20+) is the
+  kernel's direct answer: the share of the last minute in which tasks waited
+  for CPU, memory or I/O. It warns at `--max-psi` (10%) of the minute, or half
+  that when every task stalled. Exhausted file handles, a full conntrack table
+  (packets dropped without a word), thread or PID exhaustion and a pile of
+  processes in D state are the other "everything is slow, errors are random"
+  causes, and each is one line here.
 
 Warnings do not change the exit code — it is `0` unless the machine is not
 Linux (`2`) or you mistyped a flag (`3`). Something that fails a pipeline is
