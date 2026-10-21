@@ -21,6 +21,7 @@ unprivileged user by default.
 | [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh) | Read-only workload triage: stuck rollouts, DaemonSets, autoscalers, failed Jobs |
 | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Read-only report of expired and expiring TLS certificates in Secrets and cert-manager |
 | [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh) | Read-only check of what would block or hurt a node drain; prints the drain command |
+| [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh) | Read-only per-node CPU, memory and pod requests against allocatable, plus Unschedulable pods |
 | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
@@ -40,6 +41,7 @@ unprivileged user by default.
 - [Triage workloads](#triage-workloads)
 - [Check certificate expiry](#check-certificate-expiry)
 - [Check a node before draining](#check-a-node-before-draining)
+- [Check node capacity](#check-node-capacity)
 - [Debug a running pod](#debug-a-running-pod)
 - [Use it in a cluster](#use-it-in-a-cluster)
 - [GKE auth](#gke-auth)
@@ -55,8 +57,8 @@ needs, and exits `2` rather than half-working when one is missing.
 | --- | --- | --- |
 | **Bash** | every script | `#!/usr/bin/env bash` with `set -euo pipefail`. |
 | **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
-| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
-| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
+| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
 | **`openssl`** | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Only to read a certificate's end date from stdin (`openssl x509 -noout -enddate`); no network use. OpenSSL and LibreSSL both work. |
 | **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
 
@@ -390,6 +392,43 @@ in which case there is no verdict and no command to paste, `2` no `kubectl` or
 `python3`, or no reachable cluster, `3` usage (`--node` is required), and `4`
 nothing to report: safe to drain.
 
+## Check node capacity
+
+`kubectl_node_capacity.sh` answers "why is this pod Pending?" and "is there
+room for the next rollout?" from requests, not usage, so it needs no
+metrics-server:
+
+```bash
+./kubectl_node_capacity.sh                    # threshold 85%
+./kubectl_node_capacity.sh --threshold 70 --context prod
+```
+
+One `kubectl get nodes` and one `kubectl get pods --all-namespaces` feed a
+table with one row per node: CPU and memory requested against allocatable,
+pods against the node's pod limit, each with a percentage, and flags for
+`NotReady`, `cordoned` and taints (`key:effect`). A pod counts once it has a
+node and until it has finished, with its request worked out the way the
+scheduler does it: the larger of the app containers plus restartable
+(sidecar) init containers, or each ordinary init container plus the sidecars
+started before it, and then pod `overhead` on top. Every quantity form the API
+writes is parsed exactly (`250m`, `0.5`, `1500Mi`, `2Gi`, `1G`, `129e6`,
+`100k` and the rest); an unparsable one makes the run incomplete rather than
+guessing.
+
+A node at or above `--threshold` (1-100, default 85) on CPU, memory or pods,
+or one that is `NotReady`, is a finding. Cordoned and tainted nodes are
+flagged in the table but are not findings on their own. Below the table come
+the totals for schedulable, Ready nodes, a count of scheduled pods that
+declare no CPU or memory request (the scheduler treats them as free, so the
+totals understate them), and a `Pending` section listing every pod marked
+`Unschedulable`, with the scheduler's message. These numbers are what the
+scheduler reserves, not what the containers use; `kubectl top` answers that
+other question.
+
+Exit codes: `0` findings, `1` a query or JSON filter failed, `2` no `kubectl`
+or `python3`, or no reachable cluster, `3` usage, and `4` no node at or above
+the threshold and nothing pending.
+
 ## Doctor a GKE cluster
 
 `gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
@@ -514,7 +553,8 @@ container logs, Warning last-observation timestamps, stuck rollouts,
 StatefulSet and DaemonSet updates, autoscaler conditions, failed Jobs,
 certificate expiry windows and unreadable certificates (with an `openssl` stub,
 plus one real certificate when `openssl` is installed), drain blockers and
-budget selectors, and query/JSON failures across every diagnostic section.
+budget selectors, every Kubernetes quantity form through the capacity
+percentages, and query/JSON failures across every diagnostic section.
 Each of those suites also proves from the stub's call log that nothing but
 `get` and `cluster-info` ever ran. These tests never contact a real cluster.
 
