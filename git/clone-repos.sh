@@ -218,8 +218,9 @@ update_checkout() {
     return 0
   fi
   # Untracked files do not block: a fast-forward that would overwrite one
-  # fails on its own and is reported below.
-  if [[ -n "$(git -C "$dest" status --porcelain=v1 --untracked-files=no 2>/dev/null || true)" ]]; then
+  # fails on its own and is reported below. --no-optional-locks keeps status
+  # from refreshing the index on disk, so a dry run writes nothing here.
+  if [[ -n "$(git --no-optional-locks -C "$dest" status --porcelain=v1 --untracked-files=no 2>/dev/null || true)" ]]; then
     warn "held (uncommitted changes): $dest"
     held=$((held + 1))
     return 0

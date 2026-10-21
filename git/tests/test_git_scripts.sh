@@ -1511,6 +1511,10 @@ push_seed() {
 push_seed two
 
 refs_up="$(git -C "$clone_up" for-each-ref)"
+# An old mtime on an unchanged tracked file leaves the index stale, which a
+# plain `git status` would refresh and write back to disk.
+touch -t 200101010000 "$clone_up/file.txt"
+index_up="$(cksum <"$clone_up/.git/index")"
 out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" --dry-run 2>&1)"; rc=$?
 assert_eq "$rc" "0" "clone --update --dry-run exits 0"
 assert_contains "$out" "dry-run: would run: git -C $clone_up fetch --quiet" "--update --dry-run previews the fetch"
@@ -1518,6 +1522,7 @@ assert_contains "$out" "dry-run: would run: git -C $clone_up merge --ff-only --q
 assert_contains "$out" "dry-run complete; no changes written" "--update --dry-run closes with the summary line"
 assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD~1)" "--update --dry-run leaves HEAD behind"
 assert_eq "$(git -C "$clone_up" for-each-ref)" "$refs_up" "--update --dry-run fetches nothing"
+assert_eq "$(cksum <"$clone_up/.git/index")" "$index_up" "--update --dry-run leaves the index file untouched"
 
 out="$("$CLONE" -u --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "clone -u exits 0"
