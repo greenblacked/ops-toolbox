@@ -266,14 +266,16 @@ for item in items:
     updated=count(status,"updatedReplicas")
     rolling=(spec.get("updateStrategy") or {}).get("rollingUpdate") or {}
     partition=count(rolling,"partition")
+    first=count(spec.get("ordinals"),"start")
     if ready < want:
       found.append("%d/%d ready" % (ready,want))
     target=status.get("updateRevision") or ""
     current=status.get("currentRevision") or ""
     # OnDelete keeps currentRevision behind updateRevision by design, and a
-    # partition only asks for the ordinals at or above it to be updated.
+    # partition only asks for the ordinals at or above it to be updated. It
+    # is an absolute ordinal, and the pods run from spec.ordinals.start.
     strategy=(spec.get("updateStrategy") or {}).get("type") or "RollingUpdate"
-    expected=max(want-partition,0)
+    expected=max(first+want-max(partition,first),0)
     if strategy == "RollingUpdate" and target and current and target != current and updated < expected:
       found.append("update to %s stuck (%d/%d updated)" % (target,updated,expected))
     nexts.append("kubectl rollout status statefulset/%s -n %s" % (name,ns))

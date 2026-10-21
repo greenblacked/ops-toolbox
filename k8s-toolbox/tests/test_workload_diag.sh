@@ -44,10 +44,12 @@ def deploy(name='api', replicas=3, available=3, generation=2, observed=2, paused
            progressing or {'type':'Progressing','status':'True','reason':'NewReplicaSetAvailable'}]
     return {'metadata':meta(name,generation=generation),'spec':spec,
             'status':{'observedGeneration':observed,'replicas':replicas,'availableReplicas':available,'conditions':conds}}
-def sts(name='db', replicas=3, ready=3, updated=3, current='db-1', target='db-1', partition=None, strategy='RollingUpdate'):
+def sts(name='db', replicas=3, ready=3, updated=3, current='db-1', target='db-1', partition=None, strategy='RollingUpdate', start=None):
     spec={'replicas':replicas,'updateStrategy':{'type':strategy} if strategy else {}}
     if partition is not None:
         spec['updateStrategy']['rollingUpdate']={'partition':partition}
+    if start is not None:
+        spec['ordinals']={'start':start}
     return {'metadata':meta(name),'spec':spec,
             'status':{'replicas':replicas,'readyReplicas':ready,'updatedReplicas':updated,
                       'currentRevision':current,'updateRevision':target}}
@@ -80,6 +82,9 @@ save('sts-partitioned', [sts(updated=1,target='db-2',partition=2)])
 save('sts-partition-done', [sts(updated=2,target='db-2',partition=1)])
 save('sts-partition-over', [sts(updated=0,target='db-2',partition=3)])
 save('sts-partition-stuck', [sts(updated=0,target='db-2',partition=1)])
+save('sts-ordinals-done', [sts(updated=2,target='db-2',partition=11,start=10)])
+save('sts-ordinals-stuck', [sts(updated=1,target='db-2',partition=11,start=10)])
+save('sts-ordinals-below', [sts(updated=0,target='db-2',partition=5,start=10)])
 save('sts-ondelete', [sts(updated=0,target='db-2',strategy='OnDelete')])
 save('sts-no-type', [sts(updated=1,target='db-2',strategy=None)])
 save('ds-healthy', [ds()])
@@ -161,6 +166,7 @@ for case_ in \
   "WL_STATEFULSETS|sts-partitioned" \
   "WL_STATEFULSETS|sts-partition-done" \
   "WL_STATEFULSETS|sts-partition-over" \
+  "WL_STATEFULSETS|sts-ordinals-done" \
   "WL_STATEFULSETS|sts-ondelete" \
   "WL_HPA|hpa-scaled-to-zero" \
   "WL_JOBS|job-complete" \
@@ -183,6 +189,8 @@ for case_ in \
   "WL_STATEFULSETS|sts-notready|statefulset demo/db: 1/3 ready|kubectl rollout status statefulset/db -n demo" \
   "WL_STATEFULSETS|sts-stuck-update|statefulset demo/db: update to db-2 stuck (1/3 updated)|kubectl rollout status statefulset/db -n demo" \
   "WL_STATEFULSETS|sts-partition-stuck|statefulset demo/db: update to db-2 stuck (0/2 updated)|kubectl rollout status statefulset/db -n demo" \
+  "WL_STATEFULSETS|sts-ordinals-stuck|statefulset demo/db: update to db-2 stuck (1/2 updated)|kubectl rollout status statefulset/db -n demo" \
+  "WL_STATEFULSETS|sts-ordinals-below|statefulset demo/db: update to db-2 stuck (0/3 updated)|kubectl rollout status statefulset/db -n demo" \
   "WL_STATEFULSETS|sts-no-type|statefulset demo/db: update to db-2 stuck (1/3 updated)|kubectl rollout status statefulset/db -n demo" \
   "WL_DAEMONSETS|ds-unavailable|daemonset demo/agent: 2/3 ready, 1 unavailable|kubectl rollout status daemonset/agent -n demo" \
   "WL_DAEMONSETS|ds-misscheduled|daemonset demo/agent: 1 misscheduled|kubectl describe daemonset agent -n demo" \
