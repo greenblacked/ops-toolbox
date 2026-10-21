@@ -114,8 +114,7 @@ PROBE = (
 # script: same, changed-cr, changed or missing. No script source leaves the
 # router (a source can hold a pasted token) and nothing is written: no
 # :global, no :set, no function, no :parse. Each script gets one self-contained
-# block of plain :local, :if and :put, so the command uses no call syntax
-# beyond what the other scripts in this package already rely on.
+# block of plain :local, :if and :put.
 #
 # changed-cr means "differs, and the router's copy has CR line ends". The
 # first round sends the checkout's text with LF line ends; those scripts are
@@ -504,7 +503,7 @@ def escape_routeros_string(value):
 def expected_source(raw, crlf=False):
     """The text the router is asked to compare a script against.
 
-    One trailing line end is dropped (the router's function adds it back in
+    One trailing line end is dropped (the inline block adds it back in
     each spelling), and the line ends are LF, or CRLF when crlf is set.
     """
     if raw.endswith(b"\r\n"):
