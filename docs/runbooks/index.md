@@ -34,6 +34,7 @@ Your machine will print different numbers.
 | Runbook | Platform | When to use |
 | --- | --- | --- |
 | [A Linux host is low on disk space](linux-low-disk.md) | Linux | The root filesystem is nearly full and you need space now. |
+| [Kubernetes pods are unhealthy](kubernetes-unhealthy-pods.md) | Kubernetes | Pods crash, stay Pending, or the cluster looks unhappy. |
 
 New runbooks are added one at a time. See
 [Development](../contributing/development.md) for the page patterns they use.
