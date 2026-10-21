@@ -163,13 +163,18 @@ have()  { command -v "$1" >/dev/null 2>&1; }
 # printed.
 clean() { printf '%s' "$1" | tr -d '\000-\037\177'; }
 
-# Permission bits as octal, following a symlink to what it points at. BSD stat
-# answers on a Mac, GNU stat in the Linux test container; GNU `stat -f` means
-# --file-system and prints junk while failing, so only a mode is accepted.
+# Permission bits as octal (four digits, sticky/setuid/setgid included),
+# following a symlink to what it points at. BSD stat answers on a Mac with
+# the full st_mode (`%p`, file type digits first), GNU stat in the Linux test
+# container with `%a`. BSD `%Lp` would drop the sticky bit, so it is not
+# used; GNU `stat -f` means --file-system and prints junk while failing, so
+# only a mode is accepted.
 file_mode() {
   local m
-  m="$(stat -L -f '%Lp' "$1" 2>/dev/null)"
-  if [[ ! "$m" =~ ^[0-7]{3,4}$ ]]; then
+  m="$(stat -L -f '%p' "$1" 2>/dev/null)"
+  if [[ "$m" =~ ^[0-7]{5,6}$ ]]; then
+    m="${m: -4}"
+  else
     m="$(stat -L -c '%a' "$1" 2>/dev/null)"
   fi
   [[ "$m" =~ ^[0-7]{3,4}$ ]] || return 1
