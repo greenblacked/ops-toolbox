@@ -352,13 +352,16 @@ function Get-TestDistro {
     param([string]$Name, [long]$VhdxSize)
     [pscustomobject]@{ Name = $Name; VhdxSize = $VhdxSize }
 }
+# A scratch path that exists on any host: a literal D:\ fails on a machine
+# without that drive, and the plan only joins paths, it never writes them.
+$dest = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
 function Format-Plan {
     param([object[]]$Plan)
     ($Plan | ForEach-Object { '{0} {1} {2} {3}' -f $_.Verb, $_.Name, $_.Out, $_.Reason }) -join "`n"
 }
 
 $plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'docker-desktop' 2GB), (Get-TestDistro 'docker-desktop-data' 20GB)) `
-    -DestDir 'D:\Backups' -Stamp '2026-10-21_1830' -FreeBytes 100GB)
+    -DestDir $dest -Stamp '2026-10-21_1830' -FreeBytes 100GB)
 Test-Case "Docker Desktop's distros are skipped" (
     $plan.Count -eq 2 -and @($plan | Where-Object { $_.Verb -ne 'SKIP' }).Count -eq 0 -and
     @($plan | Where-Object { $_.Reason -match 'Docker Desktop' }).Count -eq 2
@@ -366,7 +369,7 @@ Test-Case "Docker Desktop's distros are skipped" (
 
 $stamp = '2026-10-21_1830'
 $plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 10GB), (Get-TestDistro 'Debian' 5GB)) `
-    -DestDir 'D:\Backups' -Stamp $stamp -FreeBytes 100GB)
+    -DestDir $dest -Stamp $stamp -FreeBytes 100GB)
 Test-Case 'two distros plan two exports under one stamp, to two paths' (
     $plan.Count -eq 2 -and @($plan | Where-Object { $_.Verb -eq 'EXPORT' }).Count -eq 2 -and
     @($plan | Where-Object { $_.Out -like "*_$stamp.tar" }).Count -eq 2 -and
@@ -374,13 +377,13 @@ Test-Case 'two distros plan two exports under one stamp, to two paths' (
 ) (Format-Plan $plan)
 
 $plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 60GB), (Get-TestDistro 'Debian' 5GB)) `
-    -DestDir 'D:\Backups' -Stamp $stamp -FreeBytes 10GB -UsedByName @{ Ubuntu = 50GB })
+    -DestDir $dest -Stamp $stamp -FreeBytes 10GB -UsedByName @{ Ubuntu = 50GB })
 Test-Case 'a measured distro bigger than the free space fails, and only that one' (
     @($plan | Where-Object { $_.Name -eq 'Ubuntu' -and $_.Verb -eq 'FAIL' -and $_.Reason -match 'needs' }).Count -eq 1 -and
     @($plan | Where-Object { $_.Name -eq 'Debian' -and $_.Verb -eq 'EXPORT' }).Count -eq 1
 ) (Format-Plan $plan)
 
-$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 100GB)) -DestDir 'D:\Backups' -Stamp $stamp -FreeBytes 10GB)
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 100GB)) -DestDir $dest -Stamp $stamp -FreeBytes 10GB)
 Test-Case 'an unmeasured VHDX bigger than the free space is a warning, not a refusal' (
     $plan.Count -eq 1 -and $plan[0].Verb -eq 'WARN'
 ) (Format-Plan $plan)
