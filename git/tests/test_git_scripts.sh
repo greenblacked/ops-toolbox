@@ -34,6 +34,7 @@ HEALTH_DOCTOR="$G/git_health_doctor.py"
 SECRETS_DOCTOR="$G/git_secrets_doctor.py"
 HOOKS_DOCTOR="$G/git_hooks_doctor.py"
 FLEET_DOCTOR="$G/git_fleet_doctor.py"
+SUBMODULE_DOCTOR="$G/git_submodule_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -1314,6 +1315,48 @@ assert_eq "$rc" "3" "fleet doctor --depth abc -> exit 3"
 fleet_empty="$(mktemp -d /tmp/git-doctor-fleet-empty.XXXXXX)"
 "$FLEET_DOCTOR" --only ignore "$fleet_empty" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "4" "fleet doctor with no repository under the root -> exit 4"
+
+section "submodule doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$SUBMODULE_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "4" "submodule doctor without submodules -> exit 4"
+assert_contains "$out" "no submodules" "submodule doctor says there is nothing to check"
+
+# A real superproject, built offline: the submodule's URL is a path on this
+# machine, which is exactly what a clone anywhere else cannot reach.
+sm_sub="$(new_repo)"
+sm_sup="$(new_repo)"
+git -C "$sm_sup" -c protocol.file.allow=always submodule add -q "$sm_sub" lib >/dev/null 2>&1 ||
+  err "submodule add exited $? — the superproject below has no submodule to diagnose"
+git -C "$sm_sup" commit -qm "add lib" >/dev/null
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "submodule doctor fails a submodule URL that is a local path"
+assert_contains "$out" "one machine" "submodule doctor says why a local path is a problem"
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "1" "submodule doctor --quiet keeps the exit code"
+assert_eq "$out" "" "submodule doctor --quiet prints nothing"
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "submodule doctor --json is one object carrying exit $rc"; else err "submodule doctor --json is not a verdict: $out"; fi
+
+sm_clone="$(mktemp -d /tmp/git-doctor-sm-clone.XXXXXX)/clone"
+git clone -q "$sm_sup" "$sm_clone" 2>/dev/null
+out="$(cd "$sm_clone" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "not initialised" "submodule doctor reports a clone made without --recurse-submodules"
+assert_contains "$out" "git submodule update --init --recursive" "submodule doctor prints the initialisation"
+
+git -C "$sm_sup" config -f .gitmodules submodule.lib.url https://example.com/lib.git
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "git submodule sync" "submodule doctor reports .git/config still dialling the old URL"
+
+git -C "$sm_sup" config -f .gitmodules --remove-section submodule.lib
+git -C "$sm_sup" add .gitmodules && git -C "$sm_sup" commit -qm "drop the mapping" >/dev/null
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "submodule doctor fails a gitlink with no .gitmodules entry"
+assert_contains "$out" "no submodule mapping" "submodule doctor names git's own error"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$SUBMODULE_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "submodule doctor outside a repository -> exit 2"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"

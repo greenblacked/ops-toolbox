@@ -5,7 +5,8 @@
 Git identity and repository reports, commit, sync and branch-cleanup helpers,
 repository hooks, and read-only Python diagnostics (the `*_doctor.py` scripts)
 for SSH, signing, remotes, ignore rules, repository health, committed
-secrets and hooks.
+secrets, hooks and submodules, plus a driver that runs them across many
+repositories.
 
 ## Requirements
 
@@ -42,6 +43,7 @@ secrets and hooks.
 | `git_health_doctor.py` | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
 | `git_secrets_doctor.py` | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
 | `git_hooks_doctor.py` | Why a hook does not run. | <span class="stage stage-report">read-only</span> |
+| `git_submodule_doctor.py` | Submodule mapping, state, URLs and drift. | <span class="stage stage-report">read-only</span> |
 | `git_fleet_doctor.py` | Every doctor across many repositories, one table. | <span class="stage stage-report">read-only</span> |
 | `git_aliases.sh`, `git_aliases.zsh` | Aliases for the helpers; sourced, not executed. | n/a |
 

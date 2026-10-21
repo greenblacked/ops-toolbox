@@ -73,6 +73,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_health_doctor.py` | Git | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
 | `git/git_secrets_doctor.py` | Git | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
 | `git/git_hooks_doctor.py` | Git | Why a hook does not run. | <span class="stage stage-report">read-only</span> |
+| `git/git_submodule_doctor.py` | Git | Submodule mapping, state, URLs and drift. | <span class="stage stage-report">read-only</span> |
 | `git/git_fleet_doctor.py` | Git | Every doctor across many repositories, one table. | <span class="stage stage-report">read-only</span> |
 | `git/git_aliases.sh` | Git | Bash aliases for the helpers; sourced. | n/a (sourced) |
 | `git/git_aliases.zsh` | Git | zsh aliases for the helpers; sourced. | n/a (sourced) |

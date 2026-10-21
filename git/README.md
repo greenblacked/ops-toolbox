@@ -36,6 +36,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_health_doctor.py`](#git_health_doctorpy)
 - [`git_secrets_doctor.py`](#git_secrets_doctorpy)
 - [`git_hooks_doctor.py`](#git_hooks_doctorpy)
+- [`git_submodule_doctor.py`](#git_submodule_doctorpy)
 - [`git_fleet_doctor.py`](#git_fleet_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
@@ -101,6 +102,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_health_doctor.py` | Stale locks, a gc.log blocking automatic gc, object bloat, maintenance and clone shape; `--fsck` is opt-in. |
 | `git_secrets_doctor.py` | Committed credentials: credential-shaped names, key and token formats in content, and with `--history` files deleted but still in history. |
 | `git_hooks_doctor.py` | Why a hook does not run: `core.hooksPath`, exec bit, CRLF shebang, misnamed hooks, hook managers committed but not activated. |
+| `git_submodule_doctor.py` | Submodule mapping, initialisation, URLs that only work on one machine, and `.git/config` drift. |
 | `git_fleet_doctor.py` | Run every doctor across the repositories under one or more roots and print one table of verdicts. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
@@ -913,6 +915,45 @@ in the other doctors.
 
 ---
 
+## `git_submodule_doctor.py`
+
+Submodule breakage is the most opaque checkout failure in CI. This explains
+each kind and prints the repair.
+
+```bash
+./git/git_submodule_doctor.py
+./git/git_submodule_doctor.py --quiet
+```
+
+- **Mapping.** A gitlink in the index with no `.gitmodules` entry fails:
+  `git submodule update` stops with "no submodule mapping found". A
+  `.gitmodules` entry with no gitlink is stale and warns.
+- **State**, from `git submodule status`: a submodule not initialised (a clone
+  made without `--recurse-submodules`), one checked out at a different commit
+  than the superproject records (the everyday `modified: lib (new commits)`
+  after a pull), and a merge conflict in the pointer, which fails.
+- **URLs.** A local path or `file://` URL only works on the machine that
+  wrote it, and `git://` is unauthenticated and read-only; both fail.
+  `http://` warns. An ssh URL is noted, because every machine that clones it
+  needs a key (a CI runner needs a deploy key, or an `insteadOf` to https). A
+  relative URL with no `origin` remote resolves against the repository's own
+  directory, which works on this machine only, and warns.
+- **Drift.** A URL changed in `.gitmodules` while `.git/config` still dials
+  the old one, until `git submodule sync --recursive`.
+
+Read-only: it runs `git ls-files`, `git config` reads and
+`git submodule status`, which neither fetches nor recurses, from the
+repository root whatever directory it is started in, and never runs
+`git submodule update`, `sync` or `init`. URLs are printed with any password
+blanked, because a CI-written `.gitmodules` sometimes carries a token.
+
+**Exit codes:** `0` no fail-level finding, `1` a fail-level finding or a git
+command that could not answer, `2` not inside a Git repository, `3` bad
+usage, `4` no submodules and no `.gitmodules`. `--quiet` and `--json` work as
+in the other doctors.
+
+---
+
 ## `git_fleet_doctor.py`
 
 The doctors answer one repository at a time. With forty clones (from
@@ -1004,6 +1045,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_health_doctor.py --lock-age 30
 ./git/git_secrets_doctor.py --history
 ./git/git_hooks_doctor.py
+./git/git_submodule_doctor.py
 ./git/git_fleet_doctor.py --details ~/src
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```
