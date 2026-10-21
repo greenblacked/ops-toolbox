@@ -10,3 +10,6 @@
   under a directory that its group or every user can write without the
   sticky bit (and, for a daemon, one a non-root user owns), since the file
   could be swapped before launchd runs it.
+  The check follows symlinks both ways: it walks the path as written and
+  the path it resolves to, so a symlinked component or program cannot hide
+  an unsafe directory.

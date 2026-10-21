@@ -3560,6 +3560,38 @@ assert_contains "a plist under a writable ancestor names that directory" "$out" 
 chmod 755 "$sr/home/Library"
 rm -f "$ua/com.example.wdir.plist"
 
+# Symlinks do not hide an unsafe directory: the path as written is walked as
+# well as the one it resolves to.
+mkdir -p "$sr/ldir" "$sr/safe/inner"
+printf '#!/bin/sh\nexit 0\n' > "$sr/safe/inner/job"
+chmod 755 "$sr/ldir" "$sr/safe" "$sr/safe/inner" "$sr/safe/inner/job"
+ln -s "$sr/safe" "$sr/ldir/comp"
+write_plist "$ua/com.example.lnk.plist" "	<key>Label</key>
+	<string>com.example.lnk</string>
+	<key>Program</key>
+	<string>$sr/ldir/comp/inner/job</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "a symlinked component in a private directory is not flagged" "$out" "which sits under"
+chmod 775 "$sr/ldir"
+out="$(sched --only launchd-user)"
+assert_contains "a symlinked component in a writable directory names that directory" "$out" \
+  "com.example.lnk runs $sr/ldir/comp/inner/job, which sits under $sr/ldir, which another user can modify"
+chmod 755 "$sr/ldir"
+rm -f "$sr/ldir/comp"
+ln -s "$sr/wdir/inner/job" "$sr/ldir/job-link"
+write_plist "$ua/com.example.lnk.plist" "	<key>Label</key>
+	<string>com.example.lnk</string>
+	<key>Program</key>
+	<string>$sr/ldir/job-link</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "a symlinked program with a private target directory is not flagged" "$out" "which sits under"
+chmod 775 "$sr/wdir"
+out="$(sched --only launchd-user)"
+assert_contains "a symlinked program is checked where it points" "$out" \
+  "com.example.lnk runs $sr/ldir/job-link, which sits under $sr/wdir, which another user can modify"
+chmod 755 "$sr/wdir"
+rm -f "$ua/com.example.lnk.plist" "$sr/ldir/job-link"
+
 out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?
 assert_eq "no crontab is not a failure -> 0" "0" "$rc"
 assert_contains "no crontab is a skip row" "$out" "no crontab for this user"

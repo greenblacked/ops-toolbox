@@ -199,16 +199,12 @@ file_uid() {
   printf '%s\n' "$u"
 }
 
-# A file is only as safe as every directory above it: whoever can write one
-# of them can swap the file before launchd runs it. Walks from the parent of
-# $1 up to /, resolving symlinks, and prints the first directory that its
+# Walks from directory $1 up to /, printing the first directory that its
 # group or every user can write without the sticky bit, or (with $2 = root,
 # for a daemon, and only on the live system) that a non-root user owns.
 # Returns 0 when it printed one.
-unsafe_ancestor() {
-  local d m u
-  d="$(dirname -- "$1")"
-  d="$(cd -P -- "$d" 2>/dev/null && pwd -P)" || return 1
+unsafe_dir_chain() {
+  local d="$1" m u
   while :; do
     if m="$(file_mode "$d")"; then
       if (( (8#$m & 18) != 0 && (8#$m & 512) == 0 )); then
@@ -224,6 +220,40 @@ unsafe_ancestor() {
     d="$(dirname -- "$d")"
   done
   return 1
+}
+
+# The file a path finally names after following a symlink at its last
+# component (readlink without flags, which the BSD readlink accepts), with
+# the directory part physical. Prints nothing when the path cannot be
+# resolved.
+resolved_path() {
+  local p="$1" n=0 t dir
+  while [[ -L "$p" && n -lt 40 ]]; do
+    t="$(readlink -- "$p")" || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *)  p="$(dirname -- "$p")/$t" ;;
+    esac
+    n=$((n + 1))
+  done
+  dir="$(cd -P -- "$(dirname -- "$p")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${dir%/}" "$(basename -- "$p")"
+}
+
+# A file is only as safe as every directory above it: whoever can write one
+# of them can swap the file before launchd runs it. Checks the ancestors of
+# the path as given (a symlinked component in a writable directory can be
+# repointed, and a symlinked file is swapped from its link's directory) and
+# then the ancestors of the path it resolves to, and prints the first unsafe
+# directory (see unsafe_dir_chain; $2 = root for a daemon). Returns 0 when
+# it printed one.
+unsafe_ancestor() {
+  local p="$1" r
+  case "$p" in /*) ;; *) p="$PWD/$p" ;; esac
+  unsafe_dir_chain "$(dirname -- "$p")" "${2:-}" && return 0
+  r="$(resolved_path "$p")" || return 1
+  [[ "$r" == "$p" ]] && return 1
+  unsafe_dir_chain "$(dirname -- "$r")" "${2:-}"
 }
 
 # Reads the XML that `plutil -convert xml1 -o -` prints and emits one
