@@ -46,6 +46,16 @@ function Test-Fail {
     Write-Host "[fail] $Message" -ForegroundColor Red
     $script:failures++
 }
+
+# An uncaught error in this file would otherwise end it with PowerShell's own
+# message and no [fail] line. Count it, say where, and fail the run.
+trap {
+    Test-Fail ("the contract script stopped on an error at line {0}: {1}" -f $_.InvocationInfo.ScriptLineNumber, $_.Exception.Message)
+    Write-Host ''
+    Write-Host "$failures wsl_manage contract check(s) failed" -ForegroundColor Red
+    exit 1
+}
+
 function Test-Skip { param([string]$Message) Write-Host "[skip] $Message" -ForegroundColor DarkGray }
 function Write-Section { param([string]$Name) Write-Host ''; Write-Host "--- $Name ---" }
 
@@ -494,7 +504,7 @@ try {
     $newHash = (Get-FileHash -LiteralPath $backupOut -Algorithm SHA256).Hash.ToLowerInvariant()
     Test-Case 'a successful export replaces the tar and writes a sidecar that matches it' (
         $backedUp -eq $true -and [IO.File]::ReadAllText($backupOut) -eq 'new export' -and
-        [IO.File]::ReadAllText("$backupOut.sha256") -eq "$newHash  Ubuntu_2026-10-21_1830.tar" -and
+        [IO.File]::ReadAllText("$backupOut.sha256").TrimEnd("`r", "`n") -eq "$newHash  Ubuntu_2026-10-21_1830.tar" -and
         $left.Count -eq 2
     ) ($left -join "`n")
 } finally {
