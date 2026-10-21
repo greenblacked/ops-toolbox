@@ -178,6 +178,10 @@ else
   assert_contains '--remove keeps the other fstab lines' "$(cat "$fstab")" 'UUID=0000-fixture / ext4 defaults 0 1'
 
   # An fstab whose last record has no newline must not swallow the new entry.
+  # This stays in the root-only branch: --fstab redirects the file, but a real
+  # --create --yes is refused for non-root (change_preflight) before it reads
+  # the file, and --dry-run never writes, so there is no
+  # unprivileged way to exercise the write.
   printf 'UUID=0000-fixture / ext4 defaults 0 1' > "$fstab"
   : > "$fixture/calls"
   run_sw --create --size 128M --yes
