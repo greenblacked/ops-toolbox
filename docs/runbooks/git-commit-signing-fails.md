@@ -176,7 +176,8 @@ shows it as verified; that last check is outside the toolbox.
 
 For `gpg.format=x509`, `--test-sign` does not test `gpgsm`. Make a real
 signed commit on a scratch branch instead, then read it back (plain
-`git`):
+`git`). Run it only with nothing staged (`git status` is clean) or in a
+throwaway clone, because the commit would include anything already staged:
 
 ```bash
 git switch -c scratch/sign-check
@@ -184,7 +185,8 @@ git commit --allow-empty -S -m "sign check"
 git log --show-signature -1
 ```
 
-Delete the scratch branch afterwards.
+Then clean up: `git switch -` to go back, and `git branch -D
+scratch/sign-check` to delete the scratch branch.
 
 ## Roll back
 
