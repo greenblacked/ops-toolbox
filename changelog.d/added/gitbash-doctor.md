@@ -8,4 +8,6 @@
   malformed rather than protected, `safe.directory = *`, and the Microsoft Store
   `python` stub on `PATH`. Each finding comes with the command that fixes it;
   nothing is changed and no key material is printed. A probe whose tool is
-  absent is skipped, so it also runs on Linux.
+  absent is skipped, so it also runs on Linux. With `--source`, a managed file
+  missing from the source directory is a failure (exit 1), so an incomplete
+  source cannot pass as a clean one.
