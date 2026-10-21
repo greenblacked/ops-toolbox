@@ -578,5 +578,150 @@ class JsonRedactionTestCase(unittest.TestCase):
         self.assertIn("password=***", out)
 
 
+class ClassifyRemoteErrorTestCase(unittest.TestCase):
+    """--probe: one named cause per failure, from git's and ssh's own words.
+
+    The fixtures are the messages git and OpenSSH print, so a reworded
+    pattern that stops matching them fails here rather than in someone's CI.
+    """
+
+    def cause(self, stderr, host=""):
+        return doctor.classify_remote_error(stderr, host)[0]
+
+    def test_dns_over_ssh(self):
+        self.assertEqual(self.cause(
+            "ssh: Could not resolve hostname github.invalid: Name or service not known\n"
+            "fatal: Could not read from remote repository."), "dns")
+
+    def test_dns_over_https(self):
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h.invalid/r.git/': Could not resolve host: "
+            "h.invalid"), "dns")
+
+    def test_ssh_publickey_names_the_ssh_doctor_for_the_host(self):
+        cause, hint = doctor.classify_remote_error(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository.", "github.com")
+        self.assertEqual(cause, "ssh-auth")
+        self.assertIn("git_ssh_doctor.py --host github.com", hint)
+
+    def test_unknown_host_key(self):
+        cause, hint = doctor.classify_remote_error(
+            "Host key verification failed.\n"
+            "fatal: Could not read from remote repository.", "git.example.com")
+        self.assertEqual(cause, "hostkey-unknown")
+        self.assertIn("ssh-keyscan -t ed25519 git.example.com", hint)
+        self.assertIn("verify the fingerprint", hint)
+
+    def test_changed_host_key_beats_the_verification_failure_it_also_prints(self):
+        cause, hint = doctor.classify_remote_error(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
+            "Host key verification failed.", "h")
+        self.assertEqual(cause, "hostkey-changed")
+        self.assertIn("ssh-keygen -R h", hint)
+
+    def test_tls(self):
+        cause, hint = doctor.classify_remote_error(
+            "fatal: unable to access 'https://x.example/r.git/': SSL certificate problem: "
+            "unable to get local issuer certificate")
+        self.assertEqual(cause, "tls")
+        # sslVerify=false is named only as what not to do.
+        self.assertIn("not a fix", hint)
+
+    def test_http_auth_without_a_prompt(self):
+        self.assertEqual(self.cause(
+            "fatal: could not read Username for 'https://github.com': terminal prompts "
+            "disabled"), "http-auth")
+
+    def test_http_403(self):
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h/r.git/': The requested URL returned error: "
+            "403"), "http-auth")
+
+    def test_repository_not_found(self):
+        self.assertEqual(self.cause(
+            "remote: Repository not found.\nfatal: repository 'https://h/o/r.git/' not found"),
+            "not-found")
+
+    def test_local_path_that_is_not_a_repository(self):
+        self.assertEqual(self.cause(
+            "fatal: '/nonexistent' does not appear to be a git repository\n"
+            "fatal: Could not read from remote repository."), "not-found")
+
+    def test_connection_refused(self):
+        self.assertEqual(self.cause(
+            "ssh: connect to host h port 22: Connection refused"), "network")
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://127.0.0.1:1/r.git/': Failed to connect to "
+            "127.0.0.1 port 1 after 0 ms: Couldn't connect to server"), "network")
+
+    def test_timeout(self):
+        self.assertEqual(self.cause(
+            "ssh: connect to host h port 22: Connection timed out"), "timeout")
+        self.assertEqual(self.cause("timed out after 20s"), "timeout")
+
+    def test_proxy(self):
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h/': CONNECT tunnel failed, response 403"),
+            "proxy")
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h/': Received HTTP code 407 from proxy after "
+            "CONNECT"), "proxy")
+
+    def test_dns_beats_the_generic_could_not_read_suffix(self):
+        # Every ssh failure ends with this line, so on its own it names nothing.
+        self.assertEqual(self.cause(
+            "fatal: Could not read from remote repository.\n\n"
+            "Please make sure you have the correct access rights\n"
+            "and the repository exists."), "other")
+
+    def test_empty_and_unknown_text_is_other(self):
+        self.assertEqual(self.cause(""), "other")
+        self.assertEqual(self.cause("something nobody has seen before"), "other")
+
+    def test_matching_is_case_insensitive(self):
+        self.assertEqual(self.cause("GIT@H: PERMISSION DENIED (PUBLICKEY)."), "ssh-auth")
+
+    def test_a_missing_host_still_gives_a_readable_hint(self):
+        _, hint = doctor.classify_remote_error("Host key verification failed.")
+        self.assertIn("<host>", hint)
+
+
+class RedactTextTestCase(unittest.TestCase):
+    """--probe prints git's stderr, and git repeats the URL it dialled."""
+
+    def test_userinfo_password_is_blanked(self):
+        self.assertEqual(
+            doctor.redact_text("https://user:s3cretpw@host/r.git"),
+            "https://user:***@host/r.git",
+        )
+
+    def test_password_inside_a_quoted_error_line(self):
+        out = doctor.redact_text(
+            "fatal: unable to access 'https://user:s3cretpw@host/r.git/': Failed")
+        self.assertNotIn("s3cretpw", out)
+        self.assertIn("https://user:***@host/r.git/", out)
+
+    def test_url_without_password_is_untouched(self):
+        self.assertEqual(
+            doctor.redact_text("https://user@host/r.git"), "https://user@host/r.git"
+        )
+
+    def test_multiple_urls_on_one_line(self):
+        out = doctor.redact_text("a https://u:pw1@h/x and https://v:pw2@k/y b")
+        self.assertEqual(out, "a https://u:***@h/x and https://v:***@k/y b")
+
+    def test_a_bare_token_as_userinfo_is_blanked(self):
+        out = doctor.redact_text("https://ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/o/r")
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz0123", out)
+
+    def test_text_without_a_url_is_unchanged(self):
+        self.assertEqual(
+            doctor.redact_text("plain text, no url\nsecond line"),
+            "plain text, no url\nsecond line",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

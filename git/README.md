@@ -655,6 +655,7 @@ The third read-only diagnostic, and the layer the other two step over: the URL g
 ./git/git_remote_doctor.py --remote origin
 ./git/git_remote_doctor.py --url https://github.com/owner/repo.git
 ./git/git_remote_doctor.py --quiet --remote origin
+./git/git_remote_doctor.py --probe         # also try one ls-remote per remote
 ```
 
 Three things decide both, and none of them is visible in `git remote -v`:
@@ -665,7 +666,25 @@ Three things decide both, and none of them is visible in `git remote -v`:
 
 Anything it prints is redacted first: `https://x-access-token:TOKEN@github.com/` is a normal thing to find in a rewrite base, and a diagnostic whose output gets pasted into an issue must not be what leaks it.
 
-**Exit codes:** `1` problems found, `2` `git config` unavailable, `4` no remotes here and no `--url` given.
+**`--probe`** answers the question the static report cannot: does a fetch
+actually work from here, with the credentials this machine has? It runs one
+`git ls-remote --heads` per remote (or per `--remote`) and per `--url`, and
+when one fails it names the cause from git's and ssh's own message — `dns`,
+`network`, `timeout`, `ssh-auth`, `hostkey-unknown`, `hostkey-changed`,
+`http-auth`, `not-found`, `tls` or `proxy` — with the next command to run or
+the sibling doctor to ask (`git_ssh_doctor.py --host HOST` for a refused key).
+It is a CI preflight as much as a diagnosis. Nothing can prompt: stdin is
+`/dev/null`, terminal prompts and askpass are off and ssh gets no terminal, so
+a key that needs a typed passphrase is reported as `ssh-auth` unless the agent
+holds it. The remote is dialled exactly as `git fetch` would dial it, with
+`insteadOf` and `core.sshCommand` applied, and git's error lines are redacted
+before they are printed. Each probe stops after `--probe-timeout` seconds
+(default 20). Only the fetch side is tested; `git push --dry-run <remote>`
+exercises the push side. Opt-in because it contacts the remote, which can
+count against rate limits or trip an IP allow-list; `--quiet` does not imply
+it.
+
+**Exit codes:** `1` problems found (with `--probe`, each unreachable remote is one), `2` `git config` unavailable, `3` bad usage (`--probe-timeout` not a positive whole number), `4` no remotes here and no `--url` given (nothing is probed).
 
 `--quiet` suppresses all diagnostic text while keeping those exit codes. URL
 redaction is still applied internally before any report is produced; quiet
@@ -798,6 +817,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet
+./git/git_remote_doctor.py --probe --probe-timeout 10
 ./git/git_ignore_doctor.py --json
 ./git/git_health_doctor.py --lock-age 30
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh

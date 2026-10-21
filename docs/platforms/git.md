@@ -94,6 +94,10 @@ All paths are under `git/`.
 - The repository README calls the doctors read-only, but
   `git_signing_doctor.py --test-sign` creates one real signature and
   `git_ssh_doctor.py --test-auth` attempts SSH authentication.
+- `git_remote_doctor.py --probe` contacts each remote with one
+  non-interactive `git ls-remote` and names why a failing one is
+  unreachable. It never prompts, stops after `--probe-timeout` seconds, and
+  tests the fetch side only.
 - `git_hooks_install.sh --commit-msg` enforces Conventional Commits and is off
   by default.
 - Every `*_doctor.py` takes `--json`: one JSON object with the exit code and

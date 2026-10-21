@@ -20,12 +20,19 @@ Three things rewrite or resolve that, none of them visible in `git remote -v`:
                       list, which is how one line in a repository's config
                       silently disables the keychain helper set globally.
 
-Read-only. It prints commands to run; it never edits config, contacts a remote,
-or reads the contents of a credential file.
+Read-only. It prints commands to run; it never edits config or reads the
+contents of a credential file, and it contacts a remote only when asked to:
+
+  --probe             one non-interactive `git ls-remote --heads` per remote,
+                      to say whether a fetch works with the credentials this
+                      machine has, and if not, which of a dozen causes it is
+                      (DNS, firewall, timeout, ssh key, host key, token,
+                      repository not found, TLS, proxy) and what to run next.
 
     ./git_remote_doctor.py                 # diagnose this repository's remotes
     ./git_remote_doctor.py --remote origin
     ./git_remote_doctor.py --url https://github.com/owner/repo.git
+    ./git_remote_doctor.py --probe         # also try one ls-remote per remote
     ./git_remote_doctor.py --json          # the same verdict as one JSON object
 """
 
@@ -37,6 +44,7 @@ import io
 import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -523,6 +531,88 @@ def needs_credentials(url_kinds):
     return any(kind in ("https", "http") for kind in url_kinds)
 
 
+# The causes a probe can fail with, most specific first. Every ssh failure
+# ends in "Could not read from remote repository", so that line alone names
+# nothing and matches nothing here. A changed host key also prints "Host key
+# verification failed", which is why it is tried before the unknown one.
+_REMOTE_CAUSES = (
+    ("hostkey-changed", (r"remote host identification has changed",),
+     "ssh-keygen -R {host}, only after confirming the change is legitimate (a "
+     "key rotation the provider announced); a changed key is also what a "
+     "man-in-the-middle looks like"),
+    ("hostkey-unknown", (r"host key verification failed",),
+     "ssh-keyscan -t ed25519 {host}, verify the fingerprint against the one the "
+     "provider publishes, then append it to ~/.ssh/known_hosts; a "
+     "non-interactive run cannot answer the yes/no prompt"),
+    ("ssh-auth", (r"permission denied \(publickey",),
+     "run git_ssh_doctor.py --host {host}; this runner offers no key the "
+     "server accepts"),
+    ("tls", (r"ssl certificate problem", r"server certificate verification failed",
+             r"unable to get local issuer certificate", r"certificate verify failed"),
+     "point http.sslCAInfo at the CA bundle that signs this server (often a "
+     "corporate proxy's CA); http.sslVerify=false hides a man-in-the-middle and "
+     "is not a fix"),
+    ("proxy", (r"connect tunnel failed", r"could not resolve proxy",
+               r"from proxy after connect"),
+     "check http.proxy and the https_proxy / HTTPS_PROXY variables this run "
+     "inherits"),
+    ("dns", (r"could not resolve host", r"name or service not known",
+             r"nodename nor servname", r"temporary failure in name resolution"),
+     "{host} does not resolve from here: check the spelling, the VPN, or the "
+     "resolver this runner uses"),
+    ("network", (r"connection refused", r"no route to host", r"network is unreachable",
+                 r"failed to connect to", r"couldn't connect to server"),
+     "{host} refused or could not be reached: a firewall, a VPN, or the port "
+     "(ssh 22, https 443)"),
+    ("timeout", (r"timed out",),
+     "no answer before the timeout: a firewall dropping packets, or a proxy "
+     "this runner must use (http.proxy / https_proxy)"),
+    ("http-auth", (r"terminal prompts disabled", r"could not read username",
+                   r"could not read password", r"authentication failed",
+                   r"returned error: 401", r"returned error: 403"),
+     "see the credential helpers above: no helper answered, or the token has "
+     "expired or lacks the scope this repository needs"),
+    ("not-found", (r"repository not found", r"does not appear to be a git repository",
+                   r"returned error: 404", r"repository '[^']*' not found"),
+     "check the path; a private repository answers 404 to a missing or wrong "
+     "token, so check the credentials as well"),
+    ("proxy", (r"proxy",),
+     "check http.proxy and the https_proxy / HTTPS_PROXY variables this run "
+     "inherits"),
+)
+
+
+def classify_remote_error(stderr, host=""):
+    """Name why `git ls-remote` failed: (cause, hint).
+
+    cause is one of dns, network, timeout, ssh-auth, hostkey-unknown,
+    hostkey-changed, http-auth, not-found, tls, proxy or other, matched on
+    git's and ssh's own wording, case-insensitively.
+    """
+    text = (stderr or "").lower()
+    for cause, patterns, hint in _REMOTE_CAUSES:
+        if any(re.search(pattern, text) for pattern in patterns):
+            return cause, hint.replace("{host}", host or "<host>")
+    return "other", "read git's own message above"
+
+
+_USERINFO_PASSWORD = re.compile(r"(\w+://[^/\s:@]+):[^@/\s]+@")
+
+
+def redact_text(text):
+    """Blank URL passwords and token-like userinfo out of free text.
+
+    git echoes the URL it dialled in its error lines, token included, so a
+    probe's stderr is redacted line by line before any of it is printed.
+    """
+    lines = []
+    for line in (text or "").splitlines():
+        line = _USERINFO_PASSWORD.sub(r"\1:***@", line)
+        lines.append(" ".join(redact_url(word) if "://" in word else word
+                              for word in line.split(" ")))
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # Diagnostics
 # --------------------------------------------------------------------------
@@ -538,6 +628,43 @@ def read_config():
 def git_exec_path():
     rc, out, _ = run(["git", "--exec-path"])
     return out.strip() if rc == 0 else ""
+
+
+def probe_remote(target, timeout):
+    """Run one `git ls-remote --heads` against a remote name or URL.
+
+    Returns (rc, stdout, stderr); a timeout is rc 255. Nothing can prompt:
+    stdin is /dev/null, terminal prompts and every askpass are off, and the
+    new session has no controlling terminal for ssh to open. The remote is
+    passed as given, so insteadOf and core.sshCommand apply exactly as they do
+    for a real fetch; overriding either would make the probe test something
+    else. On a timeout the whole process group goes, ssh included.
+    """
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never",
+               GIT_ASKPASS="", SSH_ASKPASS_REQUIRE="never")
+    try:
+        proc = subprocess.Popen(
+            ["git", "ls-remote", "--heads", target],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return 255, "", str(exc)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        return 255, "", "timed out after %ds" % timeout
+    return (
+        proc.returncode,
+        out.decode("utf-8", "replace"),
+        err.decode("utf-8", "replace"),
+    )
 
 
 def report_url(label, url, rewrites, push):
@@ -747,6 +874,32 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
     return problems
 
 
+def diagnose_reachability(targets, rewrites, timeout):
+    """Probe each (label, target, url) and name the cause of any failure."""
+    head("reachability")
+    problems = 0
+    for label, target, url in targets:
+        rc, out, err = probe_remote(target, timeout)
+        if rc == 0:
+            branches = [line for line in out.splitlines() if line.strip()]
+            if branches:
+                ok("%s reachable: %d branch(es)" % (label, len(branches)))
+            else:
+                warn("%s reachable but has no branches" % label)
+            continue
+        host = parse_url(apply_rewrites(url, rewrites)[0])["host"] if url else ""
+        cause, hint = classify_remote_error(err, host)
+        bad("%s unreachable: %s" % (label, cause))
+        # Redacted before printing: git repeats the URL it dialled, token and
+        # all, in its own error line.
+        for line in [ln for ln in redact_text(err).splitlines() if ln.strip()][:3]:
+            info("    %s" % line.strip())
+        info("fix: %s" % hint)
+        problems += 1
+    info("push side is not tested; git push --dry-run <remote> exercises it")
+    return problems
+
+
 def run_report(args):
     entries = read_config()
     if entries is None:
@@ -783,6 +936,14 @@ def run_report(args):
         entries, dialled_parts, os.environ.get("PATH", ""), git_exec_path()
     )
 
+    if args.probe:
+        names = sorted(remotes)
+        if args.remote:
+            names = [n for n in names if n in args.remote]
+        targets = [(n, n, (remotes[n]["fetch"] or [""])[0]) for n in names]
+        targets += [(redact_url(u), u, u) for u in args.url]
+        problems += diagnose_reachability(targets, rewrites, args.probe_timeout)
+
     print()
     if problems:
         bad("%d problem(s) found" % problems)
@@ -812,6 +973,16 @@ class Usage3Parser(argparse.ArgumentParser):
         self.exit(3, "%s: error: %s\n" % (self.prog, message))
 
 
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("%r is not a whole number" % value) from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number, not %d" % number)
+    return number
+
+
 def main(argv=None):
     parser = Usage3Parser(
         description="Diagnose git remote URLs, insteadOf rewrites and credential helpers."
@@ -820,6 +991,11 @@ def main(argv=None):
                         help="remote to check (repeatable); defaults to all of them")
     parser.add_argument("--url", action="append", default=[],
                         help="diagnose an arbitrary URL (repeatable), no repository needed")
+    parser.add_argument("--probe", action="store_true",
+                        help="also run one non-interactive git ls-remote per remote and "
+                             "URL, and name the cause of a failure (contacts the remote)")
+    parser.add_argument("--probe-timeout", type=positive_int, default=20, metavar="SECONDS",
+                        help="seconds each --probe may take (default: 20)")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")

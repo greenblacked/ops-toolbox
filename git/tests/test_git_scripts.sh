@@ -1066,6 +1066,47 @@ out="$(cd "$wt_path" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
 assert_eq "$rc" "1" "health doctor in a linked worktree fails on its stale lock"
 assert_contains "$out" "$wt_git_dir/index.lock" "health doctor finds the lock in the worktree's git dir"
 
+section "remote doctor --probe"
+# A bare repository on disk is a remote that needs no network, so the probe's
+# reachable path runs here. The default run must stay offline: --probe is the
+# only thing that contacts a remote.
+repo="$(new_repo)"
+probe_bare="$(mktemp -d /tmp/git-doctor-bare.XXXXXX)"
+git init -q --bare -b main "$probe_bare"
+git -C "$repo" remote add origin "$probe_bare"
+git -C "$repo" push -q origin main ||
+  err "pushing to the probe fixture exited $? — an empty remote is reachable with no branches"
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --probe 2>&1)"; rc=$?
+assert_eq "$rc" "0" "remote doctor --probe passes for a reachable remote"
+assert_contains "$out" "origin reachable: 1 branch(es)" "remote doctor --probe counts the remote's branches"
+assert_contains "$out" "push side is not tested" "remote doctor --probe says what it did not test"
+
+out="$(cd "$repo" && "$REMOTE_DOCTOR" 2>&1)"
+assert_not_contains "$out" "reachab" "remote doctor without --probe contacts nothing"
+
+git -C "$repo" remote add dead "file:///nonexistent-$$-remote"
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --probe 2>&1)"; rc=$?
+assert_eq "$rc" "1" "remote doctor --probe fails for an unreachable remote"
+assert_contains "$out" "dead unreachable" "remote doctor --probe names the unreachable remote"
+assert_contains "$out" "fix:" "remote doctor --probe prints the next step"
+
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --probe --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "1" "remote doctor --probe --quiet keeps the failing exit code"
+assert_eq "$out" "" "remote doctor --probe --quiet prints nothing"
+
+for probe_timeout in 0 abc; do
+  (cd "$repo" && "$REMOTE_DOCTOR" --probe --probe-timeout "$probe_timeout" >/dev/null 2>&1); rc=$?
+  assert_eq "$rc" "3" "remote doctor --probe-timeout $probe_timeout -> exit 3"
+done
+
+# git repeats the URL it dialled in its error, password included; the probe
+# prints that line, so it has to be redacted first. Port 1 refuses at once.
+leak_repo="$(new_repo)"
+out="$(cd "$leak_repo" && "$REMOTE_DOCTOR" --probe --probe-timeout 5 \
+  --url 'https://user:s3cretpw@127.0.0.1:1/r.git' 2>&1)"; rc=$?
+assert_eq "$rc" "1" "remote doctor --probe fails for a refused connection"
+assert_not_contains "$out" "s3cretpw" "remote doctor --probe never prints a URL password"
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"
