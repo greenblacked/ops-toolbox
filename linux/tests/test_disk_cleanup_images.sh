@@ -122,7 +122,7 @@ run_clean --include-docker-images --days 2 --yes
 assert_contains 'a real run states the creation-time caveat' "$out" 'creation time, not pull time'
 assert_not_contains 'no claim that a fresh pull survives' "$out" 'fresh pull survives'
 assert_eq 'help does not promise a fresh pull survives' 0 "$(PATH="$fixture/bin:$PATH" "$CLEAN" --help 2>&1 | grep -ci 'fresh pull survives')"
-assert_contains 'help names creation time' "$(PATH="$fixture/bin:$PATH" "$CLEAN" --help 2>&1)" 'build time, not pull time'
+assert_contains 'help names creation time' "$(PATH="$fixture/bin:$PATH" "$CLEAN" --help 2>&1)" 'creation time, not pull time'
 
 run_clean --include-docker-images --days 0 --yes
 assert_eq 'images --days 0 exits 0' 0 "$rc"
