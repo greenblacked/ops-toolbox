@@ -17,10 +17,12 @@
 # journalctl, which --journal-max-size can also cap by size.
 #
 # --include-docker-images goes further than --include-docker: it removes
-# tagged images no container uses, but only those older than --days, so a
-# fresh pull survives. The engine refuses to remove an image a container
-# references, and volumes are never passed to any prune. Re-pulling is a cost,
-# not a loss, which is why it is its own flag. --include-snap-revisions removes
+# tagged images no container uses and that were created more than --days ago.
+# Docker's until filter reads an image's creation time, not when it was pulled
+# or last used, so an old image pulled today can go at once. The engine refuses
+# to remove an image a container references, and volumes are never passed to
+# any prune. Re-pulling is a cost, not a loss, which is why it is its own
+# flag. --include-snap-revisions removes
 # the revisions snapd keeps marked disabled, never the active one.
 #
 # A dry run writes nothing. A real run requires --yes, the same gate
@@ -102,8 +104,9 @@ Options:
   --include-dev-caches   pip, npm, yarn, go module caches
   --include-docker       docker/podman system prune -f (volumes untouched)
   --include-docker-images
-                         docker/podman image prune -a for unused images older
-                         than --days; never prunes volumes
+                         docker/podman image prune -a for unused images created
+                         more than --days ago (build time, not pull time, so a
+                         freshly pulled old image can go); never prunes volumes
   --include-snap-revisions
                          snap remove each disabled revision (needs root)
   --include-coredumps    Age-filtered files in systemd-coredump and apport dirs
@@ -811,7 +814,8 @@ else
 fi
 
 # --- container images ------------------------------------------------------
-# Tagged images no container uses, older than --days. image prune never takes
+# Tagged images no container uses, created more than --days ago (docker's
+# until filter reads creation time, not pull or last-use time). image prune never takes
 # volumes and the engine will not remove an image a container references, so
 # the worst case is a re-pull. The dry run shows `system df`, which only reads,
 # so the sizes are on screen before anything is removed.
@@ -821,7 +825,7 @@ prune_images() {
   local label="every unused image; volumes untouched"
   if (( DAYS > 0 )); then
     args+=(--filter "until=$((DAYS * 24))h")
-    label="unused images older than ${DAYS}d; volumes untouched"
+    label="unused images created over ${DAYS}d ago (creation time, not pull time); volumes untouched"
   fi
   if (( DRY_RUN == 1 )); then
     printf "  %s(dry-run)%s %s %s %s[%s]%s\n" "$C_DIM" "$C_RESET" "$engine" "${args[*]}" "$C_DIM" "$label" "$C_RESET"
@@ -841,6 +845,8 @@ if (( INCLUDE_DOCKER_IMAGES == 1 )); then
   if (( DAYS == 0 )); then
     warn "--days 0 with --include-docker-images removes every unused image,"
     warn "  however recently it was pulled"
+  else
+    info "--days filters on image creation time, not pull time: an old image pulled today can be removed"
   fi
   if have docker && docker info >/dev/null 2>&1; then
     prune_images docker

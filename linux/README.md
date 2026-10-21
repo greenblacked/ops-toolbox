@@ -578,8 +578,11 @@ only thing that deletes journal files.
 goes to tagged images nothing has used since last quarter. `--include-docker`
 removes only dangling images, stopped containers and build cache; this runs
 `docker image prune -a -f --filter until=<days*24>h` when `docker info` answers,
-and the same through `podman` when it is installed, so only images older than
-`--days` with no container referencing them go (the engine refuses the rest).
+and the same through `podman` when it is installed, so only images created
+more than `--days` ago with no container referencing them go (the engine
+refuses the rest). The `until` filter reads an image's creation time, not when
+it was pulled or last used: an old image pulled today is still eligible, and
+nothing here spares a fresh pull.
 `--days 0` drops the `until` filter, with a warning. The dry run prints the
 command and the read-only `docker system df` beneath it. Volumes are never
 passed to any prune; re-pulling an image is a cost, not a loss, which is why
