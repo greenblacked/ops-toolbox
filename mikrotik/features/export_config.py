@@ -93,10 +93,14 @@ _LEAK_PATTERNS = (
     )),
     # A secret-named :global, :local or :set given a literal in a script source
     # or an on-event. Inside an export the quotes arrive escaped as \".
+    # A script's own backslash, quote or dollar is itself escaped by the export,
+    # so a literal $ arrives as \\\$ (backslash pair, then \$): after a pair
+    # the value may continue with another pair, an escaped quote, an escape
+    # or a plain character.
     ("secret assigned in a script", True, re.compile(
         r'(?i):(?:global|local|set)\s+[A-Za-z0-9]*'
         r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9]*\s+\\?"'
-        r'(?P<value>(?:\\\\(?:\\\\|\\"|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
+        r'(?P<value>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
     )),
     # Fields RouterOS only prints under show-sensitive.
     ("sensitive field", True, re.compile(

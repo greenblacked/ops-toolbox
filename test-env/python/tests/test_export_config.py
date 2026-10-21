@@ -315,6 +315,24 @@ class SecretScanTestCase(unittest.TestCase):
         self.assertEqual(
             redacted, 'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
 
+    def test_a_value_holding_a_literal_dollar_is_redacted_whole(self):
+        # Script value a$b: the script writes \$, and the export escapes the
+        # backslash as well, giving a backslash pair followed by \$.
+        text = 'add name=s source=":global ApiPassword \\"a\\\\\\$b\\";"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+        # Script value pa$$"\w: every special character is escaped twice.
+        text = ('add name=s source=":global ApiPassword '
+                '\\"pa\\\\\\$\\\\\\$\\\\\\\"\\\\\\\\w\\";"\n')
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+
     def test_an_escaped_variable_reference_is_not_a_value(self):
         # The export spells a script's `$other` as `\$other`.
         text = 'add name=s source=":set ApiPassword \\"\\$other\\";"\n'
