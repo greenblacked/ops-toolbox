@@ -35,7 +35,7 @@ ago=lambda **kw: (now-datetime.timedelta(**kw)).replace(microsecond=0).isoformat
 def save(name, items):
     (root/(name+'.json')).write_text(json.dumps({'items':items}))
 def pod(name, phase, started=None, finished=None, created=None, reason=None, deleting=False, ns='demo'):
-    meta={'namespace':ns,'name':name,'creationTimestamp':created or started or ago(days=30)}
+    meta={'namespace':ns,'name':name,'uid':'uid-'+name,'creationTimestamp':created or started or ago(days=30)}
     if deleting:
         meta['deletionTimestamp']=ago(minutes=1)
     status={'phase':phase}
@@ -84,6 +84,29 @@ case " $* " in
     cat "$CLEAN_FIXTURE_DIR/$CLEAN_PODS.json"
     exit 0
     ;;
+  *" get pod "*)
+    name=""; prev=""
+    for arg in "$@"; do
+      if [[ "$prev" == "pod" ]]; then name="$arg"; fi
+      prev="$arg"
+    done
+    for gone in $CLEAN_GONE; do
+      if [[ "$name" == "$gone" ]]; then printf 'Error from server (NotFound): pods "%s" not found\n' "$name" >&2; exit 1; fi
+    done
+    for swapped in $CLEAN_SWAP; do
+      if [[ "$name" == "$swapped" ]]; then printf 'uid-new,Running,'; exit 0; fi
+    done
+    for retaken in $CLEAN_NEWUID; do
+      if [[ "$name" == "$retaken" ]]; then printf 'uid-new,Failed,'; exit 0; fi
+    done
+    python3 - "$CLEAN_FIXTURE_DIR/$CLEAN_PODS.json" "$name" <<'PY2'
+import json, sys
+for p in json.load(open(sys.argv[1]))['items']:
+    if p['metadata']['name'] == sys.argv[2]:
+        print('%s,%s,%s' % (p['metadata']['uid'], p['status']['phase'], p['metadata'].get('deletionTimestamp', '')), end='')
+PY2
+    exit 0
+    ;;
   *" delete pod "*)
     name=""; ns=""; prev=""
     for arg in "$@"; do
@@ -125,7 +148,7 @@ run_with_path() {
 }
 run_clean() { run_with_path "$scratch/bin:$PATH" "$@"; }
 reset_fixtures() {
-  export CLEAN_PODS=mixed CLEAN_FAIL='' CLEAN_GONE='' CLEAN_CLUSTER_DOWN='' CLEAN_LIST_FAIL=''
+  export CLEAN_PODS=mixed CLEAN_FAIL='' CLEAN_GONE='' CLEAN_CLUSTER_DOWN='' CLEAN_LIST_FAIL='' CLEAN_SWAP='' CLEAN_NEWUID=''
 }
 deletes() { grep -cE '(^| )delete ' "$CLEAN_CALLS"; }
 deleted_set() { sort "$CLEAN_DELETED" | tr '\n' ' '; }
@@ -170,7 +193,7 @@ else
   ok 'no --force, no --grace-period, no selector: names only'
 fi
 assert_contains 'the mode is announced before deleting' 'mode      delete (--yes)'
-assert_contains 'the summary counts the deletions' 'deleted 2, already gone 0, failed 0'
+assert_contains 'the summary counts the deletions' 'deleted 2, already gone 0, skipped 0, failed 0'
 
 run_clean --yes --include-succeeded
 if [[ "$(deleted_set)" == 'demo/job-a-1 demo/report-1 demo/web-evicted-1 ' ]]; then
@@ -204,6 +227,16 @@ if [[ "$(cat "$CLEAN_CALLS")" == *'get pods --namespace other -o json'* && "$(de
 else
   err "--namespace not honoured: $(cat "$CLEAN_CALLS")"
 fi
+
+printf '\n--- A pod replaced since the listing is not deleted ---\n'
+reset_fixtures
+export CLEAN_SWAP=job-a-1 CLEAN_NEWUID=web-evicted-1
+run_clean --yes
+assert_rc 'a replaced pod is skipped, not an error' 0 "$rc"
+assert_contains 'the swapped pod is reported' 'skipped demo/job-a-1: it changed since the listing (now Running)'
+assert_contains 'the new-uid pod is reported' 'skipped demo/web-evicted-1: it changed since the listing'
+assert_contains 'the summary counts the skips' 'deleted 0, already gone 0, skipped 2, failed 0'
+if [[ "$(deletes)" == "0" ]]; then ok 'no delete was issued for replaced pods'; else err "replaced pods deleted: $(cat "$CLEAN_CALLS")"; fi
 
 reset_fixtures
 export CLEAN_FAIL=job-a-1

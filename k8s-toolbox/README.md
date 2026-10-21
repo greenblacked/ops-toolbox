@@ -550,7 +550,9 @@ age, then one `dry-run: would run: kubectl delete pod NAME --namespace NS
 --wait=false` per pod and `dry-run complete; no changes written`.
 
 With `--yes`, it deletes those pods and no others, one call per pod by name and
-namespace: never a selector, never `--force`, never `--grace-period=0`. A pod
+namespace: never a selector, never `--force`, never `--grace-period=0`. Each pod
+is re-read just before its delete and skipped (reported, not an error) if it was
+recreated under the same name (new uid) or is no longer in its listed phase. A pod
 already gone by then counts as done; any other failure is reported and the
 rest still run. `--max N` (default 200) caps the blast radius: more matches
 than that is exit `3` before anything is deleted, and the preview stops with

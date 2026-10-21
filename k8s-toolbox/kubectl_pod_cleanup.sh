@@ -2,7 +2,8 @@
 # kubectl_pod_cleanup.sh
 # Remove dead pods: Failed (Evicted and the like) and, on request, Succeeded
 # pods older than a grace period. Previews by default; deletes only with
-# --yes, and then only the pods it listed, one by one, by name.
+# --yes, and then only the pods it listed, one by one, by name, each re-checked
+# (uid and phase) just before its delete.
 #
 # Usage:
 #   ./kubectl_pod_cleanup.sh [--namespace NS] [--context CTX] [--all-namespaces]
@@ -53,7 +54,9 @@ whose last start, finish or creation is older than --older-than, and shows the
 kubectl delete it would run for each. Nothing is deleted without --yes, and
 --dry-run always wins. With --yes it deletes exactly the pods it listed, one
 at a time, by name and namespace: never a selector, never --force, never a
-zero grace period. Running, Pending and already-terminating pods are never
+zero grace period. Each pod is re-read just before its
+delete and skipped if it was recreated (new uid) or left its listed phase.
+Running, Pending and already-terminating pods are never
 candidates. The context is printed before anything is deleted.
 
 Options:
@@ -253,9 +256,10 @@ for p in items:
   if latest > cutoff:
     continue
   reason=status.get("reason") or ""
-  rows.append((ns,name,"%s%s" % (phase," (%s)" % reason if reason else ""),age(now-latest)))
+  uid=meta.get("uid") or "-"
+  rows.append((ns,name,"%s%s" % (phase," (%s)" % reason if reason else ""),age(now-latest),uid,phase))
 rows.sort()
-print("\n".join("%s\t%s\t%s\t%s" % row for row in rows))
+print("\n".join("%s\t%s\t%s\t%s\t%s\t%s" % row for row in rows))
 ' "$OLDER_THAN" "$INCLUDE_SUCCEEDED" 2>/dev/null)"; then
   err "could not parse pods JSON"
   exit 1
@@ -264,7 +268,7 @@ pod_json=""
 
 count=0
 section "Candidates"
-while IFS=$'\t' read -r ns name reason age; do
+while IFS=$'\t' read -r ns name reason age uid phase; do
   [[ -n "$name" ]] || continue
   count=$((count + 1))
   info "pod ${ns}/${name}: ${reason}, last active ${age} ago"
@@ -287,7 +291,7 @@ fi
 
 if (( PREVIEW == 1 )); then
   section "Preview"
-  while IFS=$'\t' read -r ns name reason age; do
+  while IFS=$'\t' read -r ns name reason age uid phase; do
     [[ -n "$name" ]] || continue
     printf "dry-run: would run:"
     printf " %q" "${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false
@@ -301,10 +305,34 @@ fi
 section "Deleting"
 deleted=0
 gone=0
+skipped=0
 failed=0
-while IFS=$'\t' read -r ns name reason age; do
+while IFS=$'\t' read -r ns name reason age uid phase; do
   [[ -n "$name" ]] || continue
   out=""
+  # Re-read the pod right before deleting it: a pod recreated under the same
+  # name since the listing (new uid, or no longer terminal) is left alone.
+  if cur="$("${KUBECTL[@]}" get pod "$name" --namespace "$ns" \
+      -o 'jsonpath={.metadata.uid},{.status.phase},{.metadata.deletionTimestamp}' 2>&1)"; then
+    cur_uid="${cur%%,*}"
+    cur_rest="${cur#*,}"
+    cur_phase="${cur_rest%%,*}"
+    cur_deleting="${cur_rest#*,}"
+    if [[ "$cur_phase" != "$phase" || -n "$cur_deleting" ]] \
+      || [[ "$uid" != "-" && "$cur_uid" != "$uid" ]]; then
+      skipped=$((skipped + 1))
+      warn "skipped ${ns}/${name}: it changed since the listing (now ${cur_phase:-unknown})"
+      continue
+    fi
+  elif [[ "$cur" == *NotFound* || "$cur" == *"not found"* ]]; then
+    gone=$((gone + 1))
+    ok "already gone: ${ns}/${name}"
+    continue
+  else
+    failed=$((failed + 1))
+    warn "could not re-check ${ns}/${name}: ${cur%%$'\n'*}"
+    continue
+  fi
   if out="$("${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false 2>&1 >/dev/null)"; then
     deleted=$((deleted + 1))
     ok "deleted ${ns}/${name}"
@@ -318,7 +346,7 @@ while IFS=$'\t' read -r ns name reason age; do
 done <<<"$plan"
 
 printf "\n"
-info "deleted ${deleted}, already gone ${gone}, failed ${failed}"
+info "deleted ${deleted}, already gone ${gone}, skipped ${skipped}, failed ${failed}"
 if (( failed > 0 )); then
   err "${failed} delete(s) failed"
   exit 1
