@@ -1730,9 +1730,8 @@ in the message uses BSD `date -j`. `--keychain` reads public certificates
 only (`security find-identity` and `security find-certificate -p`): no
 private key is requested, so no Keychain unlock prompt can appear. A host must
 be a host name or an IPv4 address and a port `1`-`65535`; anything else is
-refused before it reaches
-`openssl`. Certificates are held in shell variables and passed on stdin, so
-nothing is written to disk.
+refused before it reaches `openssl`. Certificates are held in shell
+variables and passed on stdin, so nothing is written to disk.
 
 ### Options
 
