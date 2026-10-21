@@ -22,8 +22,8 @@
 # or last used, so an old image pulled today can go at once. The engine refuses
 # to remove an image a container references, and volumes are never passed to
 # any prune. Re-pulling is a cost, not a loss, which is why it is its own
-# flag. --include-snap-revisions removes
-# the revisions snapd keeps marked disabled, never the active one.
+# flag. --include-snap-revisions removes the revisions snapd keeps marked
+# disabled, never the active one.
 #
 # A dry run writes nothing. A real run requires --yes, the same gate
 # install_devtools.sh uses for anything that changes the machine.
