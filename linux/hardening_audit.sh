@@ -71,7 +71,9 @@ Options:
   --help, -h       Show this help
 
 Groups:
-  ssh        sshd_config: root login, password auth, empty passwords
+  ssh        sshd_config: root login, password and empty-password auth, auth tries,
+             forwarding, login grace and idle timeouts, user environment,
+             host-based auth, tunnels, and weak algorithms (those need root)
   accounts   UID 0 accounts, empty password hashes, sudo NOPASSWD
   network    listening sockets bound to all interfaces, firewall present
   files      world-writable files in /etc, permissions on key files and SSH host keys
@@ -174,6 +176,48 @@ sshd_value() {
   printf '%s' "$out"
 }
 
+# The whole value of an effective setting rather than its first word, for the
+# keys whose value is a list (Ciphers) or a duration with a unit (2m). Same
+# order of preference as sshd_value: the merged view from sshd -T first, then
+# the first uncommented line of sshd_config.
+sshd_values() {
+  local key="$1" out=""
+  if command -v sshd >/dev/null 2>&1; then
+    out="$(sshd -T 2>/dev/null | awk -v k="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" \
+      'tolower($1) == k { $1 = ""; sub(/^[ \t]+/, ""); print; exit }')"
+  fi
+  if [[ -z "$out" && -r "$ETC_SSH/sshd_config" ]]; then
+    out="$(grep -ivE '^\s*#' "$ETC_SSH/sshd_config" 2>/dev/null \
+      | awk -v k="$key" 'tolower($1) == tolower(k) { $1 = ""; sub(/^[ \t]+/, ""); print; exit }')"
+  fi
+  printf '%s' "$out"
+}
+
+# An sshd time value in seconds: 120, 2m, 1m30s. sshd -T prints plain seconds;
+# sshd_config may use any of s, m, h, d, w. Returns 1 for anything else.
+sshd_seconds() {
+  local v="$1" total=0 n unit
+  [[ -n "$v" ]] || return 1
+  while [[ -n "$v" ]]; do
+    [[ "$v" =~ ^([0-9]+)([sSmMhHdDwW]?)(.*)$ ]] || return 1
+    n="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    v="${BASH_REMATCH[3]}"
+    (( ${#n} <= 9 )) || return 1
+    n=$((10#$n))
+    case "$unit" in
+      m|M) n=$((n * 60)) ;;
+      h|H) n=$((n * 3600)) ;;
+      d|D) n=$((n * 86400)) ;;
+      w|W) n=$((n * 604800)) ;;
+    esac
+    total=$((total + n))
+  done
+  printf '%s\n' "$total"
+}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
 # --- ssh -------------------------------------------------------------------
 if want ssh; then
   group "ssh"
@@ -200,6 +244,141 @@ if want ssh; then
       no) pass "PermitEmptyPasswords=no" ;;
       *) fail "PermitEmptyPasswords=$v" "set 'PermitEmptyPasswords no' in /etc/ssh/sshd_config" ;;
     esac
+
+    # The rest of the settings an sshd audit (CIS, lynis) asks about. "unset"
+    # means the OpenSSH default applies, and each is graded by that default.
+    # None of the FAIL-level ones below is at its default on OpenSSH 8 or 9,
+    # so a stock host does not start failing the default --fail-on fail.
+    reload="then: sshd -t && systemctl reload sshd"
+
+    v="$(sshd_value MaxAuthTries)"
+    if [[ -z "$v" ]]; then
+      warn "MaxAuthTries not set; the OpenSSH default is 6" "set 'MaxAuthTries 4' in /etc/ssh/sshd_config, $reload"
+    elif ! [[ "$v" =~ ^[0-9]+$ ]]; then
+      warn "MaxAuthTries=$v is not a number" "set 'MaxAuthTries 4' in /etc/ssh/sshd_config, $reload"
+    elif (( ${#v} > 6 || 10#$v > 4 )); then
+      warn "MaxAuthTries=$v" "fewer guesses per connection: set 'MaxAuthTries 4' in /etc/ssh/sshd_config, $reload"
+    else
+      pass "MaxAuthTries=$v"
+    fi
+
+    v="$(lower "$(sshd_value X11Forwarding)")"
+    case "${v:-unset}" in
+      no) pass "X11Forwarding=no" ;;
+      unset) pass "X11Forwarding not set; the OpenSSH default is no" ;;
+      *) warn "X11Forwarding=$v" "a server rarely needs it: set 'X11Forwarding no' in /etc/ssh/sshd_config, $reload" ;;
+    esac
+
+    for key in AllowAgentForwarding AllowTcpForwarding; do
+      v="$(lower "$(sshd_value "$key")")"
+      case "${v:-unset}" in
+        no) pass "$key=no" ;;
+        local|remote) pass "$key=$v" ;;
+        unset) warn "$key not set; the OpenSSH default is yes" \
+                    "intentional on a bastion; set to no (or local/remote) where jump hosts do not need it: '$key no', $reload" ;;
+        *) warn "$key=$v" \
+                "intentional on a bastion; set to no (or local/remote) where jump hosts do not need it: '$key no', $reload" ;;
+      esac
+    done
+
+    v="$(sshd_values LoginGraceTime)"
+    if [[ -z "$v" ]]; then
+      warn "LoginGraceTime not set; the OpenSSH default is 120s" "an unauthenticated connection holds a slot that long: set 'LoginGraceTime 30' in /etc/ssh/sshd_config, $reload"
+    elif ! secs="$(sshd_seconds "$v")"; then
+      warn "LoginGraceTime=$v is not a time sshd reads" "set 'LoginGraceTime 30' in /etc/ssh/sshd_config, $reload"
+    elif (( secs == 0 )); then
+      fail "LoginGraceTime=0: unauthenticated connections never time out" "set 'LoginGraceTime 30' in /etc/ssh/sshd_config, $reload"
+    elif (( secs <= 60 )); then
+      pass "LoginGraceTime=$v"
+    else
+      warn "LoginGraceTime=$v (${secs}s)" "set 'LoginGraceTime 30' in /etc/ssh/sshd_config, $reload"
+    fi
+
+    v="$(sshd_values ClientAliveInterval)"
+    c="$(sshd_value ClientAliveCountMax)"
+    [[ -n "$c" ]] || c=3
+    if [[ -z "$v" ]] || ! secs="$(sshd_seconds "$v")" || (( secs == 0 )); then
+      warn "ClientAliveInterval ${v:-not set}: idle sessions never expire" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+    elif ! [[ "$c" =~ ^[0-9]+$ ]] || (( c == 0 )); then
+      warn "ClientAliveCountMax=$c: idle sessions are probed but never dropped" "set 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+    elif (( secs <= 900 )); then
+      pass "ClientAliveInterval=$v, ClientAliveCountMax=$c"
+    else
+      warn "ClientAliveInterval=$v (${secs}s): idle sessions live a long time" "set 'ClientAliveInterval 300' in /etc/ssh/sshd_config, $reload"
+    fi
+
+    # ~/.ssh/environment can set LD_PRELOAD for the login shell, which turns a
+    # forced command or a restricted shell into whatever the user likes.
+    v="$(sshd_values PermitUserEnvironment)"
+    case "$(lower "${v:-no}")" in
+      no) pass "PermitUserEnvironment=no" ;;
+      yes|'*') fail "PermitUserEnvironment=$v" "users can set LD_PRELOAD and friends for their session: 'PermitUserEnvironment no', $reload" ;;
+      *) warn "PermitUserEnvironment=$v" "only the listed variables can be set; confirm none of them changes what runs: 'PermitUserEnvironment no', $reload" ;;
+    esac
+
+    v="$(lower "$(sshd_value HostbasedAuthentication)")"
+    case "${v:-no}" in
+      no) pass "HostbasedAuthentication=no" ;;
+      *) fail "HostbasedAuthentication=$v" "trust follows the client host, not a key: 'HostbasedAuthentication no', $reload" ;;
+    esac
+
+    v="$(lower "$(sshd_value IgnoreRhosts)")"
+    case "${v:-yes}" in
+      no) fail "IgnoreRhosts=no" ".rhosts and .shosts files are honoured: 'IgnoreRhosts yes', $reload" ;;
+      *) pass "IgnoreRhosts=${v:-yes}" ;;
+    esac
+
+    v="$(lower "$(sshd_value PubkeyAuthentication)")"
+    case "${v:-yes}" in
+      no) warn "PubkeyAuthentication=no" "keys are the safer login: 'PubkeyAuthentication yes', $reload" ;;
+      *) pass "PubkeyAuthentication=${v:-yes}" ;;
+    esac
+
+    v="$(lower "$(sshd_value PermitTunnel)")"
+    case "${v:-no}" in
+      no) pass "PermitTunnel=no" ;;
+      *) warn "PermitTunnel=$v" "tun devices give a client a network interface on this host: 'PermitTunnel no', $reload" ;;
+    esac
+
+    # Algorithm lists only mean something as sshd resolved them: the compiled
+    # defaults change between releases and a raw file rarely lists them. So
+    # these are graded from sshd -T or not at all. sshd -T needs root and the
+    # host keys; without them this is one skip, not one per list.
+    if ! command -v sshd >/dev/null 2>&1; then
+      skip "sshd not on PATH; effective algorithms not checked"
+    elif ! sshd_t="$(sshd -T 2>/dev/null)" || [[ -z "$sshd_t" ]]; then
+      skip "effective sshd algorithms need root: sudo ./hardening_audit.sh --only ssh"
+    else
+      # label;sshd -T key;weak-name regex;grade
+      for row in \
+        "ciphers;ciphers;^(3des-cbc|aes(128|192|256)-cbc|blowfish-cbc|cast128-cbc|arcfour[0-9]*|rijndael-cbc@lysator\.liu\.se)$;warn" \
+        "MACs;macs;^(hmac-md5.*|hmac-sha1|hmac-sha1-96|umac-64@openssh\.com|umac-64-etm@openssh\.com|hmac-ripemd160.*)$;warn" \
+        "key exchange;kexalgorithms;^(diffie-hellman-group1-sha1|diffie-hellman-group14-sha1|diffie-hellman-group-exchange-sha1)$;warn" \
+        "host key algorithms;hostkeyalgorithms;^ssh-dss;fail"; do
+        label="${row%%;*}"; rest="${row#*;}"
+        key="${rest%%;*}"; rest="${rest#*;}"
+        weak_re="${rest%;*}"; grade="${rest##*;}"
+        list="$(awk -v k="$key" '$1 == k { print $2; exit }' <<<"$sshd_t")"
+        if [[ -z "$list" ]]; then
+          skip "sshd -T printed no $key"
+          continue
+        fi
+        weak="$(tr ',' '\n' <<<"$list" | grep -E -- "$weak_re" | tr '\n' ',' | sed 's/,$//')"
+        if [[ -z "$weak" ]]; then
+          pass "no weak $label offered"
+        else
+          case "$key" in
+            ciphers)       directive="Ciphers" ;;
+            macs)          directive="MACs" ;;
+            kexalgorithms) directive="KexAlgorithms" ;;
+            *)             directive="HostKeyAlgorithms" ;;
+          esac
+          # A leading "-" removes the listed names from the default set
+          # (OpenSSH 7.5+); it applies to the whole list, once.
+          "$grade" "weak $label offered: $weak" "check old clients first, then '$directive -$weak' in /etc/ssh/sshd_config, $reload"
+        fi
+      done
+    fi
   fi
 fi
 

@@ -27,7 +27,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `system_doctor.sh` | Long health report. | <span class="stage stage-report">read-only</span> |
 | `net_doctor.sh` | Interfaces, routes, DNS, listening sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
 | `listen_audit.sh` | Listening-port owners and scope; `--baseline` drift for cron. | <span class="stage stage-report">read-only</span> |
-| `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding, sshd algorithms included. | <span class="stage stage-report">read-only</span> |
 | `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
 | `container_doctor.sh` | Restart loops, OOM kills, socket mounts, uncapped container logs. | <span class="stage stage-report">read-only</span> |

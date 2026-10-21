@@ -661,6 +661,76 @@ else
 fi
 rm -rf "$audit_ssh"
 
+# The sshd settings past the first three, graded from a fixture sshd_config
+# through the same ETC_SSH seam. No tester image installs openssh-server, so
+# this is the file-fallback path; an sshd on PATH without host keys fails -T
+# and falls back to the same file.
+sshd_fx="$(mktemp -d)"
+grade_sshd() {  # sshd_config lines -> the ssh group's output
+  printf '%s\n' "$@" > "$sshd_fx/sshd_config"
+  ETC_SSH="$sshd_fx" "$L/hardening_audit.sh" --only ssh 2>&1
+}
+# The verdict line for a setting and its hint, which is half of the assertion.
+line_for() { grep -A1 -F -- "$1" <<<"$2" || true; }
+out="$(grade_sshd 'MaxAuthTries 3')"
+assert_contains "hardening_audit passes MaxAuthTries 3" "$(line_for MaxAuthTries "$out")" "[pass]"
+out="$(grade_sshd 'MaxAuthTries 10')"
+assert_contains "hardening_audit warns on MaxAuthTries 10" "$(line_for MaxAuthTries "$out")" "[warn]"
+assert_contains "hardening_audit prints the MaxAuthTries line to add" "$(line_for MaxAuthTries "$out")" "MaxAuthTries 4"
+out="$(grade_sshd '# nothing set')"
+assert_contains "hardening_audit grades an unset MaxAuthTries by its default" "$(line_for MaxAuthTries "$out")" "default"
+assert_contains "hardening_audit warns on the default MaxAuthTries" "$(line_for MaxAuthTries "$out")" "[warn]"
+out="$(grade_sshd 'X11Forwarding yes')"
+assert_contains "hardening_audit warns on X11Forwarding yes" "$(line_for X11Forwarding "$out")" "[warn]"
+out="$(grade_sshd 'PermitUserEnvironment yes')"; rc=$?
+assert_contains "hardening_audit fails PermitUserEnvironment yes" "$(line_for PermitUserEnvironment "$out")" "[FAIL]"
+assert_eq "hardening_audit --only ssh exits 1 on PermitUserEnvironment yes" "1" "$rc"
+out="$(grade_sshd 'PermitUserEnvironment no')"; rc=$?
+assert_eq "hardening_audit --only ssh exits 0 with nothing at FAIL" "0" "$rc"
+out="$(grade_sshd 'LoginGraceTime 0')"
+assert_contains "hardening_audit fails an unlimited LoginGraceTime" "$(line_for LoginGraceTime "$out")" "[FAIL]"
+out="$(grade_sshd 'LoginGraceTime 1m')"
+assert_contains "hardening_audit reads LoginGraceTime 1m as 60s and passes it" "$(line_for LoginGraceTime "$out")" "[pass]"
+out="$(grade_sshd 'LoginGraceTime 5m')"
+assert_contains "hardening_audit warns on LoginGraceTime 5m" "$(line_for LoginGraceTime "$out")" "[warn]"
+out="$(grade_sshd 'ClientAliveInterval 300' 'ClientAliveCountMax 2')"
+assert_contains "hardening_audit passes a 300s idle timeout" "$(line_for ClientAliveInterval "$out")" "[pass]"
+out="$(grade_sshd 'HostbasedAuthentication yes')"
+assert_contains "hardening_audit fails HostbasedAuthentication yes" "$(line_for HostbasedAuthentication "$out")" "[FAIL]"
+out="$(grade_sshd 'IgnoreRhosts no')"
+assert_contains "hardening_audit fails IgnoreRhosts no" "$(line_for IgnoreRhosts "$out")" "[FAIL]"
+
+# Algorithm lists are graded only from sshd -T. A stub sshd answers -T with a
+# list holding one weak and one strong name of each kind; a failing -T must be
+# exactly one skip, not one per list.
+sshd_stub="$(mktemp -d)"
+cat > "$sshd_stub/sshd" <<'STUB'
+#!/usr/bin/env bash
+[[ -e "${0%/*}/t-fails" ]] && exit 1
+if [[ "${1:-}" == "-T" ]]; then
+  printf '%s\n' 'ciphers aes128-cbc,aes256-gcm@openssh.com' 'macs hmac-sha1,hmac-sha2-256-etm@openssh.com' \
+    'kexalgorithms curve25519-sha256' 'hostkeyalgorithms ssh-ed25519'
+fi
+exit 0
+STUB
+chmod +x "$sshd_stub/sshd"
+printf '# nothing set\n' > "$sshd_fx/sshd_config"
+out="$(PATH="$sshd_stub:$PATH" ETC_SSH="$sshd_fx" "$L/hardening_audit.sh" --only ssh 2>&1)"
+cipher_line="$(line_for 'weak ciphers' "$out")"
+assert_contains "hardening_audit names a weak cipher" "$cipher_line" "aes128-cbc"
+assert_not_contains "hardening_audit leaves a strong cipher out of the weak list" "$cipher_line" "aes256-gcm"
+assert_contains "hardening_audit prints the removal syntax" "$cipher_line" "Ciphers -aes128-cbc"
+assert_contains "hardening_audit names a weak MAC" "$(line_for 'weak MACs' "$out")" "hmac-sha1"
+assert_contains "hardening_audit passes a strong key exchange list" "$out" "no weak key exchange offered"
+: > "$sshd_stub/t-fails"
+out="$(PATH="$sshd_stub:$PATH" ETC_SSH="$sshd_fx" "$L/hardening_audit.sh" --only ssh 2>&1)"
+assert_eq "hardening_audit skips the algorithms once when sshd -T fails" "1" \
+  "$(grep -c 'effective sshd algorithms need root' <<<"$out")"
+assert_contains "hardening_audit still grades the file when sshd -T fails" "$out" "MaxAuthTries not set"
+assert_eq "hardening_audit --list-groups is unchanged" "ssh accounts network files updates kernel" \
+  "$("$L/hardening_audit.sh" --list-groups | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$sshd_fx" "$sshd_stub"
+
 # A container has no firewall and no sshd, so a clean exit here proves absent
 # tooling is reported rather than treated as a crash.
 if [[ "$rc" == "0" || "$rc" == "1" ]]; then

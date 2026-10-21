@@ -56,7 +56,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
 | [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
 | [`listen_audit.sh`](listen_audit.sh) | Read-only listening-port owners and scope; `--print` a baseline, `--baseline` to catch drift |
-| [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, host keys, updates, kernel controls |
+| [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd settings and algorithms, accounts, network, file modes, host keys, updates, kernel controls |
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
 | [`container_doctor.sh`](container_doctor.sh) | Read-only Docker/Podman grading: restart loops, OOM kills, socket mounts, uncapped logs |
@@ -305,7 +305,7 @@ want:
 | Question | Is this machine **well**? | Is this machine **safe**? |
 | Output | A narrative report | Graded findings, each with its fix |
 | Firewall | Says which one is in charge | Grades "none" as a finding |
-| sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords |
+| sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords, auth tries, forwarding, timeouts and weak algorithms |
 | Exit code | Never `1` — findings are to be read. Still `2` off Linux and `3` on bad usage | `1` at or above `--fail-on`, so it can gate a pipeline |
 
 The counterpart on the other side of the repository is
@@ -821,6 +821,23 @@ upgrades are configured but the stamp is missing or older than 14 days:
 ./hardening_audit.sh --only ssh,kernel --fail-on warn
 ./hardening_audit.sh --only files,updates
 ```
+
+The `ssh` group grades the settings an sshd audit asks about beyond root
+login and passwords: `MaxAuthTries` (above 4 warns), `X11Forwarding`,
+`AllowAgentForwarding` and `AllowTcpForwarding` (warn when on, which is
+intentional on a bastion), `LoginGraceTime` (`0` fails, above 60 seconds
+warns), `ClientAliveInterval` with `ClientAliveCountMax` (no idle timeout
+warns), `PermitUserEnvironment yes`, `HostbasedAuthentication yes` and
+`IgnoreRhosts no` (each a FAIL), `PubkeyAuthentication no` and a
+`PermitTunnel` other than `no` (warn). A setting that is not set is graded by
+the OpenSSH default, and none of the FAIL-level ones is at its default on
+OpenSSH 8 or 9. Weak ciphers, MACs and key exchange (CBC and arcfour ciphers,
+MD5 and SHA-1 MACs, SHA-1 Diffie-Hellman) warn and `ssh-dss` host keys fail,
+graded only from `sshd -T`, so they need root; without it they are one
+`skip`. Each hint prints the line to add, with the `-name` removal syntax for
+algorithm lists (OpenSSH 7.5+). `sshd -T` is read without `-C`, so `Match`
+blocks are not evaluated: a setting overridden for one user or address is
+graded by its global value.
 
 These remain findings rather than automatic fixes: a container or deliberately
 permissive development host can validly differ from a server baseline.
