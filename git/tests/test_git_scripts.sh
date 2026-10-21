@@ -10,6 +10,10 @@ set -uo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/repo}"
 G="$REPO_ROOT/git"
+# The pre-push hook git_hooks_install.sh writes skips every check when this is
+# 1. Exported in the shell that runs the suite, it would turn each refusal
+# asserted below into a pass; it is set for exactly one push further down.
+unset GIT_ALLOW_PROTECTED_PUSH
 GACP="$G/gacp.sh"
 SET="$G/set_git_profile.sh"
 WHO="$G/git_whoami.sh"
@@ -1190,6 +1194,157 @@ if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
 else
   ok "the refused install wrote nothing"
 fi
+
+section "the optional pre-push hook"
+# Opt-in like commit-msg: whether a branch takes direct pushes is a team
+# decision. Real pushes to a bare remote run the hook the way git runs it.
+assert_contains "$("$HOOKS" --help)" "--pre-push" "--help documents --pre-push"
+
+push_origin="$(mktemp -d /tmp/git-prepush-origin.XXXXXX)/origin.git"
+repo="$(new_repo)"
+git init -q --bare -b main "$push_origin"
+git -C "$repo" remote add origin "$push_origin"
+git -C "$repo" push -q -u origin main ||
+  err "the initial push exited $? — every ref comparison below starts from an empty remote"
+(cd "$repo" && "$HOOKS" install) >/dev/null ||
+  err "plain install exited $? — an install that wrote nothing also leaves pre-push alone"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "a plain install wrote a pre-push hook"
+else
+  ok "a plain install leaves pre-push alone"
+fi
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push --dry-run 2>&1)"
+assert_contains "$out" "pre-push (protected: main master, wip and fixup guard)" \
+  "install --pre-push --dry-run previews the hook and its protected set"
+assert_contains "$out" "no changes written" "install --pre-push --dry-run says so"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "install --pre-push --dry-run wrote a hook"
+else
+  ok "install --pre-push --dry-run wrote nothing"
+fi
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push 2>&1)"
+assert_contains "$out" "installed pre-push hook" "install --pre-push reports the hook"
+if [[ -x "$repo/.git/hooks/pre-push" ]]; then
+  ok "install --pre-push wrote an executable hook"
+else
+  err "install --pre-push left no executable hook"
+fi
+assert_not_contains "$(cat "$repo/.git/hooks/pre-push")" "$HOOKS" \
+  "the installed pre-push hook does not reference the installer's path"
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "pre-push hook installed and current" "status reports pre-push"
+
+git -C "$repo" switch -q -c feature/x
+git -C "$repo" commit -q --allow-empty -m "feat: normal work"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "a normal push to a feature branch goes through"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x 2>/dev/null)" \
+  "$(git -C "$repo" rev-parse HEAD)" "the feature branch reached the remote"
+feature_tip="$(git -C "$repo" rev-parse HEAD)"
+
+git -C "$repo" commit -q --allow-empty -m "fixup! feat: normal work"
+out="$(git -C "$repo" push origin feature/x 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a fixup! commit is refused"; else err "a fixup! commit was pushed"; fi
+assert_contains "$out" "unfinished commit" "the refusal names the unfinished commit"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$feature_tip" \
+  "a refused fixup! push leaves the remote branch alone"
+git -C "$repo" reset -q --hard HEAD~1
+
+git -C "$repo" commit -q --allow-empty -m "WIP: spike"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+if (( rc != 0 )); then ok "a WIP commit is refused"; else err "a WIP commit was pushed"; fi
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$feature_tip" \
+  "a refused WIP push leaves the remote branch alone"
+git -C "$repo" reset -q --hard HEAD~1
+
+git -C "$repo" switch -q main
+main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
+git -C "$repo" commit -q --allow-empty -m "feat: straight onto main"
+out="$(git -C "$repo" push origin main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a push to main is refused"; else err "a push to main went through"; fi
+assert_contains "$out" "direct pushes to the protected branch main are blocked" \
+  "the refusal says main is protected"
+assert_contains "$out" "git push --no-verify" "the refusal names the bypass"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused push leaves main on the remote alone"
+
+GIT_ALLOW_PROTECTED_PUSH=1 git -C "$repo" push -q origin main >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "GIT_ALLOW_PROTECTED_PUSH=1 lets one push to main through"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" \
+  "$(git -C "$repo" rev-parse main)" "the bypassed push reached the remote"
+main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
+
+out="$(git -C "$repo" push origin :main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "deleting main is refused"; else err "main was deleted"; fi
+assert_contains "$out" "deleting the protected branch main is blocked" "the refusal names the deletion"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused deletion leaves main on the remote"
+
+git -C "$repo" reset -q --hard HEAD~1
+git -C "$repo" commit -q --allow-empty -m "fix: rewritten history"
+out="$(git -C "$repo" push --force origin main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a force push to main is refused"; else err "a force push to main went through"; fi
+assert_contains "$out" "non-fast-forward" "the refusal names the force push"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused force push leaves main on the remote alone"
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push --protect release 2>&1)"
+assert_contains "$out" "protected: release" "--protect replaces the protected set"
+git -C "$repo" reset -q --hard origin/main
+git -C "$repo" commit -q --allow-empty -m "feat: main is open now"
+git -C "$repo" push -q origin main >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "with --protect release a push to main goes through"
+git -C "$repo" push -q origin main:release >/dev/null 2>&1; rc=$?
+if (( rc != 0 )); then ok "with --protect release a push to release is refused"; else err "a push to release went through"; fi
+if git --git-dir="$push_origin" show-ref --verify --quiet refs/heads/release; then
+  err "the refused push created release on the remote"
+else
+  ok "the refused push did not create release on the remote"
+fi
+
+(cd "$repo" && "$HOOKS" install --protect release) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect without --pre-push -> 3"
+(cd "$repo" && "$HOOKS" install --pre-push --protect 'a b') >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect with a space in the name -> 3"
+(cd "$repo" && "$HOOKS" install --pre-push --protect) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect without a value -> 3"
+
+out="$(cd "$repo" && "$HOOKS" uninstall 2>&1)"; rc=$?
+assert_eq "$rc" "0" "uninstall removes our hooks -> 0"
+assert_contains "$out" "removed the pre-push hook" "uninstall removes the pre-push hook"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "uninstall left the pre-push hook behind"
+else
+  ok "uninstall leaves no pre-push hook"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "a second uninstall with nothing left -> 4"
+
+# A pre-push hook somebody else wrote stops the install before anything is
+# written, is backed up only with --force, and comes back on uninstall.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-push"
+chmod +x "$repo/.git/hooks/pre-push"
+out="$(cd "$repo" && "$HOOKS" install --pre-push 2>&1)"; rc=$?
+assert_eq "$rc" "1" "a foreign pre-push hook refuses the install -> 1"
+assert_contains "$(cat "$repo/.git/hooks/pre-push")" "exit 0" "the foreign pre-push hook is left untouched"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "the refused install still wrote the pre-commit hook"
+else
+  ok "the refused install wrote nothing"
+fi
+(cd "$repo" && "$HOOKS" install --pre-push --force) >/dev/null ||
+  err "install --pre-push --force exited $? — the backup asserted next is judged by what is on disk"
+if [[ -f "$repo/.git/hooks/pre-push.hooks-install-backup" ]]; then
+  ok "--force backs the foreign pre-push hook up"
+else
+  err "--force did not back the foreign pre-push hook up"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null ||
+  err "uninstall exited $? — the hook it was meant to restore is judged only by what is on disk afterwards"
+assert_contains "$(cat "$repo/.git/hooks/pre-push")" "exit 0" "uninstall restores the foreign pre-push hook"
 
 section "clone-repos.sh"
 # A bare repository stands in for the remote; the list mixes a default

@@ -87,7 +87,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_unpushed.sh` | Everything in one repository that exists only on this machine: commits, upstream-less branches, stashes, edits, tags. |
 | `git_sync_default.sh` | Fast-forward the default branch and optionally restore the starting branch. |
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
-| `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
+| `git_hooks_install.sh` | Install staged-content guards; token scanning, Conventional Commits and a protected-branch pre-push guard are opt-in. |
 | `git_commitlint.sh` | Lint every commit message a branch adds, in CI, against the commit-msg hook's rules. |
 | `git_release_notes.sh` | Release notes grouped by Conventional Commit type since the last tag, and the next semver version. |
 | `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, or fast-forwards it with `--update`, and `repos.txt.example` shows the format. |
@@ -681,6 +681,8 @@ Writes hooks into `.git/hooks` of the current repository. Each body is embedded 
 ```bash
 ./git/git_hooks_install.sh install                 # pre-commit only
 ./git/git_hooks_install.sh install --commit-msg    # and the message hook
+./git/git_hooks_install.sh install --pre-push      # and the push guard
+./git/git_hooks_install.sh install --pre-push --protect main --protect release
 ./git/git_hooks_install.sh install --token-scan    # opt-in access-token patterns
 ./git/git_hooks_install.sh install --max-size 4096
 ./git/git_hooks_install.sh status
@@ -707,7 +709,14 @@ Types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `re
 
 It is off by default deliberately: a message convention is a team decision, and a hook that imposes one on a repository that has not agreed to it gets bypassed on its first use and then never runs again.
 
-An existing hook this script did not write is backed up rather than clobbered, and only with `--force`; `uninstall` restores it. Hook versions are tracked per hook, so `status` can tell an out-of-date hook from a current one.
+**`pre-push`** (only with `--pre-push`) guards what is pushed rather than what is committed, because the expensive mistakes happen at push time. It refuses:
+
+- **any push to a protected branch** — `main` and `master` by default; repeat `--protect NAME` to replace that set. A deletion (`git push origin :main`) and a non-fast-forward (`git push --force`) are named as such. When the old remote tip is not in this clone, the push cannot be proven to be a fast-forward and is refused as one that may not be.
+- **unfinished commits** on any branch: a subject starting `fixup!`, `squash!` or `amend!`, or a subject that is `WIP` or `wip` alone or followed by a colon or a space (`WIP: spike`, `wip tidy`). Only the commits the push adds are read: those after the remote's old tip, or for a new branch those no remote-tracking ref of that remote already has.
+
+Bypass one push deliberately with `git push --no-verify`, or with `GIT_ALLOW_PROTECTED_PUSH=1 git push ...` where a tool runs the push for you. It is opt-in for the same reason as `commit-msg`: whether a branch takes direct pushes is a team decision, and a repository that merges through pull requests is the one that wants it. `--protect` without `--pre-push` exits `3`, and so does a name with anything but letters, digits, `.`, `_`, `/` and `-`, because the names are written into the hook as plain words.
+
+An existing hook this script did not write — any of the three — is backed up rather than clobbered, and only with `--force`; `uninstall` restores it. Hook versions are tracked per hook, so `status` can tell an out-of-date hook from a current one.
 
 **Exit codes:** `1` refused to act (a foreign hook is in the way), `4` nothing to uninstall.
 
@@ -1021,6 +1030,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_undo_last_commit.sh --revert
 ./git/git_amend_last.sh --add-all --message "fix: update the last commit"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
+./git/git_hooks_install.sh install --pre-push --protect main
 ./git/git_commitlint.sh --base origin/main
 ./git/git_release_notes.sh --format markdown
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt

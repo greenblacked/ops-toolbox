@@ -38,7 +38,7 @@ ignore rules.
 | `git_prune_gone.sh` | Delete local branches whose upstream is gone. | `--dry-run` |
 | `git_undo_last_commit.sh` | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git_amend_last.sh` | Amend the last commit. | `--dry-run` |
-| `git_hooks_install.sh` | `install`, `status`, `uninstall` pre-commit guards. | `--dry-run` |
+| `git_hooks_install.sh` | `install`, `status`, `uninstall` pre-commit guards; opt-in commit-msg and pre-push hooks. | `--dry-run` |
 | `clone-repos.sh` | Clone every URL in a list file into one directory; `--update` fast-forwards existing checkouts. | `--dry-run` |
 | `git_ssh_doctor.py` | Diagnose git-over-SSH auth. | <span class="stage stage-report">read-only</span> |
 | `git_signing_doctor.py` | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
@@ -106,6 +106,10 @@ All paths are under `git/`.
   `git_ssh_doctor.py --test-auth` attempts SSH authentication.
 - `git_hooks_install.sh --commit-msg` enforces Conventional Commits and is off
   by default.
+- `git_hooks_install.sh --pre-push` is off by default too. Once installed it
+  refuses every push to `main` and `master` (or the `--protect` names), and
+  pushes carrying `fixup!` or `WIP` commits; bypass one push with
+  `git push --no-verify`.
 - `clone-repos.sh --update` writes to checkouts that already exist: it fetches
   and fast-forwards the checked-out branch, and holds any checkout with a
   detached `HEAD`, no upstream, modified tracked files or a diverged branch.

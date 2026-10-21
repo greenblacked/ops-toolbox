@@ -7,6 +7,8 @@ DRY_RUN=0
 FORCE=0
 COMMIT_MSG=0
 TOKEN_SCAN=0
+PRE_PUSH=0
+PROTECT=()
 CMD=""
 
 usage() {
@@ -41,12 +43,24 @@ rebasing rather than improve a changelog. It is off by default: a message
 convention is a team decision, and a hook that imposes one on a repository
 that has not agreed to it is a hook that gets bypassed on its first use.
 
-Both hooks are deliberately small. A hook that takes a second to run gets
+pre-push (only with --pre-push) refuses the pushes that are expensive to undo:
+
+  protected branches  any push to main or master (or the --protect names),
+                      named as a deletion or a non-fast-forward when it is one
+  unfinished commits  pushing a fixup!, squash! or amend! commit, or one whose
+                      subject starts with WIP, to any branch
+
+Bypass one push deliberately with 'git push --no-verify' or by setting
+GIT_ALLOW_PROTECTED_PUSH=1 for it. Off by default for the same reason as
+commit-msg: whether a branch takes direct pushes is a team decision.
+
+The hooks are deliberately small. A hook that takes a second to run gets
 bypassed with --no-verify and then never runs again, so they check only things
 that are cheap and genuinely hard to undo.
 
 Usage:
-  $(basename "$0") install [--commit-msg] [--token-scan] [--force] [--dry-run] [--max-size KB]
+  $(basename "$0") install [--commit-msg] [--pre-push [--protect NAME]...] [--token-scan]
+                          [--force] [--dry-run] [--max-size KB]
   $(basename "$0") status
   $(basename "$0") uninstall [--dry-run]
 
@@ -59,6 +73,10 @@ Commands:
 
 Options:
   --commit-msg   Also install the Conventional Commits commit-msg hook
+  --pre-push     Also install the protected-branch and unfinished-commit
+                 pre-push hook
+  --protect NAME Branch the pre-push hook protects (repeatable; replaces the
+                 default main and master; needs --pre-push)
   --token-scan   Also reject high-confidence GitHub and GitLab tokens
   --max-size KB  Largest staged file the pre-commit hook allows (default: 1024)
   --force        Overwrite an existing unrelated hook, backing it up first
@@ -95,6 +113,11 @@ while (( $# > 0 )); do
     --max-size=*)
       MAX_SIZE_KB="${1#*=}"; require_value "--max-size" "$MAX_SIZE_KB" ;;
     --commit-msg) COMMIT_MSG=1 ;;
+    --pre-push)   PRE_PUSH=1 ;;
+    --protect)
+      require_value "$1" "${2:-}"; shift; PROTECT+=("$1") ;;
+    --protect=*)
+      value="${1#*=}"; require_value "--protect" "$value"; PROTECT+=("$value") ;;
     --token-scan) TOKEN_SCAN=1 ;;
     --force)   FORCE=1 ;;
     --dry-run) DRY_RUN=1 ;;
@@ -114,6 +137,25 @@ case "$MAX_SIZE_KB" in
     exit 3
     ;;
 esac
+
+# The names are written into the hook body as plain words, so anything that
+# is not an ordinary branch-name character is refused here rather than
+# escaped there.
+for name in "${PROTECT[@]+"${PROTECT[@]}"}"; do
+  if [[ ! "$name" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    printf -- "--protect takes a branch name, got: %s\n" "$name" >&2
+    exit 3
+  fi
+done
+if (( ${#PROTECT[@]} > 0 && PRE_PUSH == 0 )); then
+  printf -- "--protect only applies with --pre-push\n" >&2
+  exit 3
+fi
+if (( ${#PROTECT[@]} > 0 )); then
+  PROTECTED_LIST="${PROTECT[*]}"
+else
+  PROTECTED_LIST="main master"
+fi
 
 if [[ -z "$CMD" ]]; then
   usage >&2
@@ -135,6 +177,8 @@ MSG_HOOK="$HOOK_DIR/commit-msg"
 # is the one thing about a copied script that will not travel with it.
 BACKUP="$HOOK.hooks-install-backup"
 MSG_BACKUP="$MSG_HOOK.hooks-install-backup"
+PUSH_HOOK="$HOOK_DIR/pre-push"
+PUSH_BACKUP="$PUSH_HOOK.hooks-install-backup"
 
 # Bumped whenever a hook body below changes, so `status` can tell an
 # out-of-date hook from a current one instead of just reporting "present".
@@ -142,6 +186,7 @@ MSG_BACKUP="$MSG_HOOK.hooks-install-backup"
 # one, and reporting every existing installation as stale would be a lie.
 HOOK_VERSION=3
 MSG_HOOK_VERSION=1
+PUSH_HOOK_VERSION=1
 MARKER="# managed by git_hooks_install.sh v"
 
 hook_body() {
@@ -272,6 +317,107 @@ exit 1
 EOF
 }
 
+push_hook_body() {
+  cat <<EOF
+#!/usr/bin/env bash
+$MARKER$PUSH_HOOK_VERSION
+# Reinstall or update with: git_hooks_install.sh install --pre-push --force
+#
+# Refuses the pushes that are expensive to undo: anything to a protected
+# branch, and commits that were meant to be squashed before anyone saw them.
+# git passes the remote name and URL as arguments and one line per ref on
+# stdin: <local ref> <local sha> <remote ref> <remote sha>.
+set -uo pipefail
+
+# The documented per-push bypass, alongside git push --no-verify.
+if [ "\${GIT_ALLOW_PROTECTED_PUSH-}" = "1" ]; then
+  exit 0
+fi
+
+remote="\${1:-}"
+protected="$PROTECTED_LIST"
+failed=0
+
+# An all-zero object name means "no object": a deletion when it is the local
+# side, a new branch when it is the remote side. Tested by content rather than
+# length so SHA-256 repositories work too.
+is_zero() {
+  case "\$1" in
+    ''|*[!0]*) return 1 ;;
+  esac
+  return 0
+}
+
+is_protected() {
+  local name
+  for name in \$protected; do
+    [ "\$name" = "\$1" ] && return 0
+  done
+  return 1
+}
+
+# Commits already on the remote are not this push's business. With a named
+# remote that means its remote-tracking refs; pushing to a bare URL there is
+# no name to match, so every remote-tracking ref counts.
+not_remote="--remotes"
+if [ -n "\$remote" ] && git remote get-url "\$remote" >/dev/null 2>&1; then
+  not_remote="--remotes=\$remote"
+fi
+
+while read -r _local_ref local_sha remote_ref remote_sha; do
+  [ -n "\${remote_ref:-}" ] || continue
+  branch=""
+  case "\$remote_ref" in
+    refs/heads/*) branch="\${remote_ref#refs/heads/}" ;;
+  esac
+
+  # Protected first, so a push to one is a single clear refusal.
+  if [ -n "\$branch" ] && is_protected "\$branch"; then
+    if is_zero "\$local_sha"; then
+      printf 'pre-push: deleting the protected branch %s is blocked\n' "\$branch" >&2
+    elif ! is_zero "\$remote_sha" &&
+      { ! git cat-file -e "\$remote_sha^{commit}" 2>/dev/null ||
+        ! git merge-base --is-ancestor "\$remote_sha" "\$local_sha" 2>/dev/null; }; then
+      # An old tip this clone does not have cannot be proven to be an
+      # ancestor, so it is treated as the rewrite it may be.
+      printf 'pre-push: %s would be rewritten by a non-fast-forward (force) push; blocked\n' "\$branch" >&2
+    else
+      printf 'pre-push: direct pushes to the protected branch %s are blocked\n' "\$branch" >&2
+    fi
+    failed=1
+    continue
+  fi
+
+  # Deleting an unprotected branch pushes no commits.
+  is_zero "\$local_sha" && continue
+
+  if ! is_zero "\$remote_sha" && git cat-file -e "\$remote_sha^{commit}" 2>/dev/null; then
+    subjects="\$(git log --format='%h %s' "\$remote_sha..\$local_sha" 2>/dev/null)" || subjects=""
+  else
+    subjects="\$(git log --format='%h %s' "\$local_sha" --not "\$not_remote" 2>/dev/null)" || subjects=""
+  fi
+  while IFS= read -r line; do
+    [ -n "\$line" ] || continue
+    subject="\${line#* }"
+    case "\$subject" in
+      fixup!*|squash!*|amend!*|WIP|wip|WIP:*|wip:*|'WIP '*|'wip '*)
+        printf 'pre-push: unfinished commit on %s: %s\n' "\${branch:-\$remote_ref}" "\$line" >&2
+        failed=1
+        ;;
+    esac
+  done <<< "\$subjects"
+done
+
+if [ "\$failed" -ne 0 ]; then
+  printf '\npush refused. Fix the above, or bypass deliberately with:\n' >&2
+  printf '  git push --no-verify\n' >&2
+  printf '  GIT_ALLOW_PROTECTED_PUSH=1 git push ...\n' >&2
+  exit 1
+fi
+exit 0
+EOF
+}
+
 installed_version() {
   local hook="$1"
   [[ -f "$hook" ]] || return 1
@@ -341,12 +487,22 @@ case "$CMD" in
       report_status "$MSG_HOOK" "commit-msg" "$MSG_HOOK_VERSION" "$MSG_BACKUP" \
         "install --commit-msg --force"
     fi
+    if [[ ! -f "$PUSH_HOOK" ]]; then
+      printf "no pre-push hook installed; add one with: %s install --pre-push\n" \
+        "$(basename "$0")"
+    else
+      report_status "$PUSH_HOOK" "pre-push" "$PUSH_HOOK_VERSION" "$PUSH_BACKUP" \
+        "install --pre-push --force"
+    fi
     ;;
 
   install)
     refuse_foreign "$HOOK" "pre-commit"
     if (( COMMIT_MSG == 1 )); then
       refuse_foreign "$MSG_HOOK" "commit-msg"
+    fi
+    if (( PRE_PUSH == 1 )); then
+      refuse_foreign "$PUSH_HOOK" "pre-push"
     fi
 
     if (( DRY_RUN == 1 )); then
@@ -355,6 +511,10 @@ case "$CMD" in
       preview_install "$HOOK" "$BACKUP" "max-size $MAX_SIZE_KB KB, token-scan $token_note"
       if (( COMMIT_MSG == 1 )); then
         preview_install "$MSG_HOOK" "$MSG_BACKUP" "conventional commit subjects"
+      fi
+      if (( PRE_PUSH == 1 )); then
+        preview_install "$PUSH_HOOK" "$PUSH_BACKUP" \
+          "protected: $PROTECTED_LIST, wip and fixup guard"
       fi
       printf "dry-run complete; no changes written\n"
       exit 0
@@ -371,16 +531,22 @@ case "$CMD" in
       printf "installed commit-msg hook (v%s, conventional commit subjects)\n" \
         "$MSG_HOOK_VERSION"
     fi
+    if (( PRE_PUSH == 1 )); then
+      write_hook "$PUSH_HOOK" "$PUSH_BACKUP" push_hook_body
+      printf "installed pre-push hook (v%s, protected: %s, wip and fixup guard)\n" \
+        "$PUSH_HOOK_VERSION" "$PROTECTED_LIST"
+    fi
     printf "verify with: %s status\n" "$(basename "$0")"
     ;;
 
   uninstall)
     present=0
     removed=0
-    for name in pre-commit commit-msg; do
+    for name in pre-commit commit-msg pre-push; do
       case "$name" in
-        pre-commit) hook="$HOOK";     backup="$BACKUP" ;;
-        commit-msg) hook="$MSG_HOOK"; backup="$MSG_BACKUP" ;;
+        pre-commit) hook="$HOOK";      backup="$BACKUP" ;;
+        commit-msg) hook="$MSG_HOOK";  backup="$MSG_BACKUP" ;;
+        pre-push)   hook="$PUSH_HOOK"; backup="$PUSH_BACKUP" ;;
       esac
       [[ -f "$hook" ]] || continue
       present=$((present + 1))
