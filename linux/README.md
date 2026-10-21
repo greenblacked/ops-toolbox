@@ -713,8 +713,11 @@ key was unreadable (it says so). It is a separate mode: with `--apply`,
 `--revert`, `--backup-file` or `--revert-from` it is exit `3`, and `--dry-run`
 is accepted and ignored as for the report. Against the real `/etc/sysctl.d` it
 also reads the other systemd-sysctl directories (`/run`, `/usr/local/lib`,
-`/usr/lib`, `/lib`) and `/etc/sysctl.conf`; under a `SYSCTL_D` override it reads
-only that directory, so the tests stay hermetic. Use it from cron or a CI image
+`/usr/lib`, `/lib`) and `/etc/sysctl.conf`, with systemd's precedence: the
+first directory holding a file name wins, and a symlink to `/dev/null` masks
+that name below it. Under a `SYSCTL_D` override it reads only that directory,
+so the tests stay hermetic, unless `SYSCTL_EXTRA_DIRS` (colon-separated, highest
+precedence first) names more. Use it from cron or a CI image
 build: `./sysctl_defaults.sh --check --only inotify || echo drift`.
 
 ## `swap_setup.sh`

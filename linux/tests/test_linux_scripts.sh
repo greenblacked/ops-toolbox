@@ -1368,6 +1368,34 @@ assert_contains "sysctl_defaults --check names the shadowing file" "$(grep SHADO
 assert_not_contains "sysctl_defaults --check ignores a file read before ours" "$out" "10-early.conf"
 rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/sysctl.d/10-early.conf"
 
+# systemd-sysctl precedence across directories: the first directory holding a
+# basename wins, and a symlink to /dev/null masks the name below it.
+mkdir -p "$check_root/run.d" "$check_root/lib.d"
+extra_dirs="$check_root/run.d:$check_root/lib.d"
+printf 'vm.swappiness = 60\n' > "$check_root/lib.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check sees a later override in a lower directory -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check names the lower-directory file" "$(grep SHADOWED <<<"$out")" "lib.d/99-zz.conf"
+run_check
+assert_eq "sysctl_defaults --check ignores the extra directories by default" "0" "$rc"
+printf 'vm.swappiness = 10\n' > "$check_root/run.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check lets a higher directory replace a same-name file" "0" "$rc"
+rm -f "$check_root/run.d/99-zz.conf"
+ln -s /dev/null "$check_root/run.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check honours a /dev/null mask in a higher directory" "0" "$rc"
+rm -f "$check_root/run.d/99-zz.conf"
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check sees the same-name file in sysctl.d" "1" "$rc"
+rm -f "$check_root/sysctl.d/99-zz.conf"
+ln -s /dev/null "$check_root/sysctl.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check honours a /dev/null mask in sysctl.d" "0" "$rc"
+rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/lib.d/99-zz.conf"
+rmdir "$check_root/run.d" "$check_root/lib.d"
+
 run_check --only vm
 assert_eq "sysctl_defaults --check --only vm exits 0" "0" "$rc"
 assert_contains "sysctl_defaults --check --only vm checks swappiness" "$out" "vm.swappiness"

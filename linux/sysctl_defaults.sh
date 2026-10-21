@@ -327,29 +327,50 @@ conf_value() {
     END { if (found) print val }' "$file"
 }
 
+# The directories systemd-sysctl reads, highest precedence first: SYSCTL_D,
+# then SYSCTL_EXTRA_DIRS (colon-separated). Against the real /etc/sysctl.d the
+# extras default to the other systemd-sysctl directories; under any other
+# SYSCTL_D they default to none, so the test seam stays hermetic. Setting
+# SYSCTL_EXTRA_DIRS (even to the empty string) overrides either default.
+sysctl_extra_dirs() {
+  if [[ -n "${SYSCTL_EXTRA_DIRS+set}" ]]; then
+    printf '%s' "$SYSCTL_EXTRA_DIRS"
+  elif [[ "$SYSCTL_D" == "/etc/sysctl.d" ]]; then
+    printf '%s' "/run/sysctl.d:/usr/local/lib/sysctl.d:/usr/lib/sysctl.d:/lib/sysctl.d"
+  fi
+}
+
 # Every *.conf read after our drop-in, in the order it is read: names that
 # sort after 99-ops-toolbox.conf in byte order (every name, ours included,
-# when called with "all"). Against the real
-# /etc/sysctl.d the other systemd-sysctl directories count too, unless
-# /etc/sysctl.d masks the name; against a SYSCTL_D override only that
-# directory does, so the test seam stays hermetic.
+# when called with "all"). systemd's precedence applies: the first directory
+# holding a basename wins outright, and a symlink to /dev/null there masks the
+# name in every later directory.
 later_conf_files() {
-  local scope="${1:-later}" dir f name tab
+  local scope="${1:-later}" dir f name tab extra p
+  local seen=$'\n'
   local dirs=("$SYSCTL_D")
+  local parts=()
   tab="$(printf '\t')"
-  if [[ "$SYSCTL_D" == "/etc/sysctl.d" ]]; then
-    dirs+=("/run/sysctl.d" "/usr/local/lib/sysctl.d" "/usr/lib/sysctl.d" "/lib/sysctl.d")
+  extra="$(sysctl_extra_dirs)"
+  if [[ -n "$extra" ]]; then
+    IFS=':' read -r -a parts <<<"$extra"
+    for p in "${parts[@]}"; do
+      [[ -n "$p" ]] && dirs+=("$p")
+    done
   fi
   for dir in "${dirs[@]}"; do
     for f in "$dir"/*.conf; do
-      [[ -f "$f" ]] || continue
+      [[ -e "$f" || -L "$f" ]] || continue
       name="${f##*/}"
-      if [[ "$dir" != "$SYSCTL_D" && -e "$SYSCTL_D/$name" ]]; then
-        continue
-      fi
+      case "$seen" in
+        *$'\n'"$name"$'\n'*) continue ;;
+      esac
+      seen="$seen$name"$'\n'
+      [[ "$f" -ef /dev/null ]] && continue
+      [[ -f "$f" ]] || continue
       printf '%s\t%s\n' "$name" "$f"
     done
-  done | LC_ALL=C sort -t "$tab" -k1,1 -u \
+  done | LC_ALL=C sort -t "$tab" -k1,1 \
     | LC_ALL=C awk -F'\t' -v ours="$DROP_IN_NAME" -v scope="$scope" 'scope == "all" || $1 > ours { print $2 }'
 }
 
