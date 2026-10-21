@@ -58,6 +58,10 @@ unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
 unset KUBECONFIG AWS_PROFILE AWS_DEFAULT_PROFILE AWS_CONFIG_FILE AWS_ACCESS_KEY_ID \
   CLOUDSDK_ACTIVE_CONFIG_NAME DOCKER_CONTEXT DOCKER_HOST TF_WORKSPACE \
   GH_CONFIG_DIR XDG_CONFIG_HOME GH_TOKEN GITHUB_TOKEN
+# net_doctor.sh compares the system proxy with these and names the ones that
+# are set. A proxy exported in a developer's shell, or in CI, would turn the
+# fixtures' "no proxy anywhere" case into a different report.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY NO_PROXY no_proxy
 
 failures=0
 # Counted so the run can prove it asserted something. Without `-e` a suite that
@@ -2802,6 +2806,205 @@ d="$(pindir empty)"
 tcrun "$d" >/dev/null; rc=$?
 assert_eq "a directory with no pin file -> 4" "4" "$rc"
 rm -rf "$tc"
+
+section "net_doctor: argument validation answers before preflight"
+NETDOC="$M/net_doctor.sh"
+"$NETDOC" --probe >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects --probe without a value -> 3" "3" "$rc"
+"$NETDOC" --probe=host.example:99999 >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects a port above 65535 -> 3" "3" "$rc"
+"$NETDOC" --probe 'a;b' >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects a probe host that is not a name -> 3" "3" "$rc"
+"$NETDOC" --hosts-file >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects --hosts-file without a value -> 3" "3" "$rc"
+
+section "net_doctor: parses scutil, route, ifconfig and hosts fixtures"
+# Every system tool is a fake that prints a captured fixture, uname included,
+# because this file also runs on a real Mac where /sbin and /usr/sbin hold the
+# real ones. lsof records that it was called, so --skip-listen can be shown
+# not to run it.
+nd="$(mktemp -d)"
+mkdir -p "$nd/bin" "$nd/home" "$nd/tmp" "$nd/fx"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$nd/bin/uname"
+printf '%s\n' '#!/bin/sh' 'echo fake-mac.local' > "$nd/bin/hostname"
+cat > "$nd/fx/dns.txt" <<'DNS_EOF'
+DNS configuration
+
+resolver #1
+  search domain[0] : home.example
+  nameserver[0] : 192.168.1.1
+  if_index : 6 (en0)
+  flags    : Request A records
+  reach    : 0x00020002 (Reachable,Directly Reachable Address)
+
+resolver #2
+  domain   : corp.example
+  nameserver[0] : 10.0.0.53
+  flags    : Request A records
+  reach    : 0x00000002 (Reachable)
+
+resolver #3
+  domain   : local
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+
+DNS configuration (for scoped queries)
+
+resolver #1
+  nameserver[0] : 192.168.1.1
+  if_index : 6 (en0)
+  flags    : Scoped, Request A records
+DNS_EOF
+cat > "$nd/fx/proxy_on.txt" <<'PROXY_EOF'
+<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.local
+  }
+  HTTPEnable : 1
+  HTTPPort : 3128
+  HTTPProxy : proxy.corp.example
+  HTTPSEnable : 1
+  HTTPSPort : 3128
+  HTTPSProxy : proxy.corp.example
+}
+PROXY_EOF
+cat > "$nd/fx/proxy_off.txt" <<'PROXY_EOF'
+<dictionary> {
+  HTTPEnable : 0
+  HTTPSEnable : 0
+}
+PROXY_EOF
+cat > "$nd/fx/route.txt" <<'ROUTE_EOF'
+   route to: default
+destination: default
+       mask: default
+    gateway: 192.168.1.1
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+ROUTE_EOF
+cat > "$nd/fx/ifconfig.txt" <<'IFCONFIG_EOF'
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	ether aa:bb:cc:dd:ee:ff
+	inet 192.168.1.23 netmask 0xffffff00 broadcast 192.168.1.255
+	status: active
+utun3: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+	inet 100.101.102.103 --> 100.101.102.103 netmask 0xffffffff
+IFCONFIG_EOF
+cat > "$nd/fx/lsof.txt" <<'LSOF_EOF'
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+postgres  501 me      7u  IPv4 0x0000000000000001      0t0  TCP 127.0.0.1:5432 (LISTEN)
+rapportd  512 me      4u  IPv4 0x0000000000000002      0t0  TCP *:49152 (LISTEN)
+LSOF_EOF
+cat > "$nd/bin/scutil" <<'SCUTIL_EOF'
+#!/bin/sh
+case "$*" in
+  "--dns")     cat "$FAKE_NET/dns.txt" ;;
+  "--proxy")   cat "$FAKE_NET/proxy_${FAKE_PROXY:-off}.txt" ;;
+  "--nc list") echo 'Available network connection services in the current set (*=enabled):'
+               echo '* (Connected)      0000-1111 PPP --> L2TP       "Corp VPN"   [PPP/L2TP]' ;;
+  *)           exit 1 ;;
+esac
+SCUTIL_EOF
+cat > "$nd/bin/route" <<'ROUTE_EOF'
+#!/bin/sh
+case "$*" in
+  "-n get default")
+    if [ "${FAKE_NO_ROUTE:-0}" = 1 ]; then
+      echo "route: writing to routing socket: not in table" >&2
+      exit 1
+    fi
+    cat "$FAKE_NET/route.txt" ;;
+  *) exit 1 ;;
+esac
+ROUTE_EOF
+cat > "$nd/bin/ifconfig" <<'IFCONFIG_EOF'
+#!/bin/sh
+cat "$FAKE_NET/ifconfig.txt"
+IFCONFIG_EOF
+cat > "$nd/bin/lsof" <<'LSOF_EOF'
+#!/bin/sh
+echo called >> "$FAKE_NET/lsof.calls"
+cat "$FAKE_NET/lsof.txt"
+LSOF_EOF
+cat > "$nd/bin/dscacheutil" <<'DSCACHE_EOF'
+#!/bin/sh
+case "$5" in
+  fake-mac.local|example.test) printf 'name: %s\nip_address: 192.0.2.10\n\n' "$5" ;;
+esac
+exit 0
+DSCACHE_EOF
+cat > "$nd/bin/nc" <<'NC_EOF'
+#!/bin/sh
+exit "${FAKE_NC_RC:-0}"
+NC_EOF
+chmod +x "$nd/bin/"*
+printf '##\n# Host Database\n##\n127.0.0.1\tlocalhost\n255.255.255.255\tbroadcasthost\n::1             localhost\n10.1.2.3 grafana.corp.example\n' \
+  > "$nd/fx/hosts"
+
+netdoc() {
+  FAKE_NET="$nd/fx" HOME="$nd/home" TMPDIR="$nd/tmp" PATH="$nd/bin:/usr/bin:/bin" \
+    "$NETDOC" --hosts-file "$nd/fx/hosts" "$@" 2>&1
+}
+
+out="$(netdoc)"; rc=$?
+assert_eq "net_doctor default run -> 0" "0" "$rc"
+for heading in "== interfaces ==" "== routes ==" "== dns ==" "== proxy ==" "== vpn ==" "== hosts ==" "== listen =="; do
+  assert_contains "net_doctor prints $heading" "$out" "$heading"
+done
+assert_contains "net_doctor reads the default gateway" "$out" "default via 192.168.1.1 dev en0"
+assert_contains "net_doctor reads the primary resolver" "$out" "primary resolver: 192.168.1.1"
+assert_contains "net_doctor reports split DNS" "$out" "split DNS: corp.example goes to 10.0.0.53"
+assert_not_contains "net_doctor leaves the mDNS resolver out" "$out" "split DNS: local"
+assert_contains "net_doctor reports a connected VPN service" "$out" "VPN service connected: Corp VPN"
+assert_contains "net_doctor reports a tunnel" "$out" "tunnel utun3 100.101.102.103"
+assert_contains "net_doctor counts the custom hosts entry" "$out" "1 custom entry"
+assert_contains "net_doctor lists the custom hosts entry" "$out" "10.1.2.3 grafana.corp.example"
+assert_not_contains "net_doctor does not list stock hosts lines" "$out" "broadcasthost"
+assert_contains "net_doctor marks a listener reachable from the network" "$out" "rapportd:49152"
+assert_contains "net_doctor resolves its own hostname" "$out" "hostname fake-mac.local resolves"
+assert_contains "net_doctor points at the firewall audit" "$out" "hardening_audit.sh"
+
+out="$(FAKE_NO_ROUTE=1 netdoc)"; rc=$?
+assert_contains "a missing default route is a warning" "$out" "no default IPv4 route"
+assert_eq "a missing default route does not change the exit code -> 0" "0" "$rc"
+FAKE_NO_ROUTE=1 netdoc --strict >/dev/null; rc=$?
+assert_eq "a missing default route fails under --strict -> 1" "1" "$rc"
+
+out="$(FAKE_PROXY=on netdoc --skip-listen)"
+assert_contains "a system proxy unknown to the shell is a warning naming curl" "$out" "curl/git/brew/kubectl do not"
+assert_contains "the proxy export line is printed" "$out" "export https_proxy=http://proxy.corp.example:3128"
+out="$(export https_proxy=http://user:CANARY_PROXY_PASS@proxy.corp.example:3128; FAKE_PROXY=on netdoc --skip-listen)"
+assert_not_contains "a proxy the shell already sets is not a warning" "$out" "curl/git/brew/kubectl do not"
+assert_not_contains "a proxy variable's value is never printed" "$out" "CANARY_PROXY_PASS"
+assert_contains "the proxy variable is named" "$out" "https_proxy"
+
+rm -f "$nd/fx/lsof.calls"
+out="$(netdoc --skip-listen)"
+if [[ -e "$nd/fx/lsof.calls" ]]; then
+  err "--skip-listen still ran lsof"
+else
+  ok "--skip-listen does not run lsof"
+fi
+assert_contains "--skip-listen says so" "$out" "--skip-listen"
+
+out="$(FAKE_NC_RC=1 netdoc --skip-listen --probe example.test)"; rc=$?
+assert_contains "a probe with no TCP path is a warning naming nc" "$out" "nc -vz -G 5 192.0.2.10 443"
+assert_eq "a failed probe does not change the exit code -> 0" "0" "$rc"
+out="$(netdoc --skip-listen --probe=example.test:8443)"; rc=$?
+assert_eq "net_doctor accepts --probe=HOST:PORT" "0" "$rc"
+assert_contains "the probe uses the given port" "$out" "192.0.2.10:8443 accepted a TCP connection"
+
+out="$(netdoc --quiet)"
+assert_not_contains "--quiet drops ok rows" "$out" "[ ok ]"
+assert_contains "--quiet keeps the summary" "$out" "== summary =="
+
+scratch_files="$(find "$nd/home" "$nd/tmp" -type f | wc -l | tr -d ' ')"
+assert_eq "net_doctor writes nothing under HOME or TMPDIR" "0" "$scratch_files"
+rm -rf "$nd"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of

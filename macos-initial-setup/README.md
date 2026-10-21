@@ -40,6 +40,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`workstation_doctor.sh`](#workstation_doctorsh)
 - [`hardening_audit.sh`](#hardening_auditsh)
 - [`ops_context.sh`](#ops_contextsh)
+- [`net_doctor.sh`](#net_doctorsh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
@@ -90,6 +91,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper, credential files at rest — each finding with its fix. |
 | `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
+| `net_doctor.sh` | Read-only "the network is wrong" report: interfaces, default route, split DNS, the system proxy against the shell's, VPN tunnels, `/etc/hosts` overrides, listeners, and an opt-in `--probe`. |
 | `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
@@ -117,6 +119,7 @@ than memorizing flags.
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything, credentials included | Nothing — it only reads |
 | **Diagnose** | `toolchain_check.sh` | After cloning a repository, or when a shim says a version is missing | Nothing — it only reads |
 | **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
+| **Diagnose** | `net_doctor.sh` | When git, brew or kubectl cannot reach something, especially after joining a VPN | Nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
@@ -1521,6 +1524,62 @@ under `--strict`, so a lapsed login never blocks an unrelated command.
 
 ---
 
+## `net_doctor.sh`
+
+When `git`, `brew` or `kubectl` cannot reach something on a laptop that moves
+between office, home, VPN, Tailscale and WARP, the cause is usually DNS
+scoping, a system proxy the terminal does not use, a stale `/etc/hosts` line
+or a missing default route. This is the macOS half of
+[`linux/net_doctor.sh`](../linux/net_doctor.sh), read from `scutil`,
+`route`, `ifconfig`, `lsof` and `dscacheutil`.
+
+```bash
+./net_doctor.sh                              # the whole report
+./net_doctor.sh --probe github.com           # plus DNS and TCP/443 to one host
+./net_doctor.sh --probe registry.corp.example:5000
+./net_doctor.sh --skip-listen --quiet        # warnings and the summary only
+./net_doctor.sh --strict                     # exit 1 on any warning
+```
+
+| Section | What it reports |
+| --- | --- |
+| `interfaces` | Interfaces with an IPv4 address or an active link, from `ifconfig -a`; none active is a warning. |
+| `routes` | The default IPv4 gateway and interface (`route -n get default`); none is a warning. IPv6 is reported, not graded. |
+| `dns` | The primary resolver and search domains from `scutil --dns`; every resolver that takes only one domain (split DNS, which is how a VPN routes its names); the scoped count; and whether this Mac's own hostname resolves, because `sudo` and `git` stall for seconds when it does not. |
+| `proxy` | The system HTTP, HTTPS and automatic (PAC) proxy from `scutil --proxy` against `https_proxy`, `http_proxy` and `all_proxy` in the shell. A system proxy the shell does not set is a warning: browsers use it, `curl`, `git`, `brew` and `kubectl` do not. The export line is printed. |
+| `vpn` | Connected VPN services (`scutil --nc list`) and `utun` tunnels holding an IPv4 address, which is how Tailscale, WARP and IKEv2 clients show up. |
+| `hosts` | Every `/etc/hosts` line beyond the stock `localhost` and `broadcasthost` entries, listed (up to ten) but not judged. |
+| `listen` | This user's listening TCP sockets (`lsof -nP -iTCP -sTCP:LISTEN`), up to fifteen, each marked loopback or reachable from the network. |
+| `probe` | Only with `--probe`: one `dscacheutil` lookup and one `nc -z` connection, five seconds at most, with the command to repeat it by hand. |
+
+Read-only and local by default: `--probe` is the only network traffic. No
+`sudo`, no log file, and no change to a resolver or a proxy; every fix is
+printed. The shell's proxy variables are named, never printed, because a proxy
+URL can carry a password. A missing tool is a `skip`, not a failure. For
+firewall posture, see [`hardening_audit.sh`](#hardening_auditsh).
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--probe HOST[:PORT]` | Resolve `HOST` and try one TCP connection to `PORT` (default `443`). |
+| `--skip-listen` | Do not list listening sockets (and do not run `lsof`). |
+| `--hosts-file PATH` | Hosts file to read (default: `/etc/hosts`). |
+| `--strict` | Exit `1` when the report has any warning. |
+| `--quiet` | Print only warnings and the summary. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report ran; warnings do not change this. |
+| `1` | `--strict` was given and the report has a warning. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments, including a probe host that is not a name or an IPv4 address, or a port outside 1-65535. |
+
+---
+
 ## `ssh_client_doctor.sh`
 
 `ssh` refuses a key with `Permission denied (publickey)` and names the reason
@@ -2008,6 +2067,8 @@ Homebrew / `pyenv` / `goenv` commands.
 - `toolchain_check.sh` reads pin files and asks version managers and
   binaries for their versions. It never installs anything and never
   evaluates a pin file.
+- `net_doctor.sh` reads interface, route, DNS, proxy and socket state. Its
+  only network traffic is an explicit `--probe`.
 - `ssh_client_doctor.sh` reads `~/.ssh` and asks `ssh-keygen` about each key
   without printing it. It never changes a mode; every fix is printed.
 
