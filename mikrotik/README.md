@@ -942,12 +942,36 @@ judgement is by name only: the router's copy of a script is never read, so a
 script renamed or rewritten on the router is not inspected. A router whose
 probe returned no version gets no verdict at all.
 
+Being named in a scheduler is not the same as being run, so it reads each
+entry's state too (`disabled`, `run-count`, `start-time`) and the router's
+uptime, and adds three findings, all `warn`:
+
+- **a disabled scheduler** that runs an installed script: the script counts as
+  scheduled and never runs. It replaces the "no scheduler runs it" warning
+  rather than adding to it.
+- **an enabled entry that has never fired**: `run-count` still `0` after more
+  than twice its interval plus a minute of uptime. That is usually RouterOS
+  refusing to start it ("not enough permissions" in `/log`), because the
+  scheduler's policy does not cover the script's. Startup entries and entries
+  with no interval are not judged.
+- **Telegram globals that will not survive a reboot**: `TgBotToken` or
+  `TgChatId` is set now, but no enabled `start-time=startup` scheduler
+  declares them again, either inline or by running a script whose source
+  mentions `TgBotToken`. The router does that search itself and returns only
+  the script's name, so no script source crosses the wire. `tg_send` and
+  `tg_send_new` read the globals and do not count.
+
+Each of these runs only on fields the router returned, so an older or partial
+answer produces no finding rather than a false one.
+
 Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
 `--port`). `--format json` returns installed script names, scheduler
 names/intervals, controls, `routeros_version` (the string the router
 reported, or `null`), `incompatible_scripts` (installed scripts the router's
-release refuses to run), and structured findings. Free-form scheduler source
-is deliberately omitted because an inline `on-event` can contain credentials.
+release refuses to run), `scheduler_state` (each entry's name, `disabled`,
+`run_count` and `start_time`, kept apart from `schedulers`), `uptime_seconds`,
+and structured findings. Free-form scheduler source is deliberately omitted
+because an inline `on-event` can contain credentials.
 It preserves the same exit semantics: `0` findings printed, `1` connected but
 the probe failed, `2` could not connect, `4` nothing wrong.
 

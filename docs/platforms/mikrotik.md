@@ -54,7 +54,9 @@ the host tools to inspect.
     ```
 
     `router_doctor.py` also reads the RouterOS version and fails each
-    installed, scheduled script that 7.24 refuses to run.
+    installed, scheduled script that 7.24 refuses to run. It warns about
+    disabled schedulers, enabled ones that have never fired, and Telegram
+    globals that no startup scheduler sets again after a reboot.
 
 === "Preview"
 

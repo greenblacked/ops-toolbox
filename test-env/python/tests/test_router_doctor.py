@@ -18,6 +18,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -584,6 +585,258 @@ class CompatibilityTestCase(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertIsNone(payload["routeros_version"])
         self.assertEqual(payload["incompatible_scripts"], [])
+
+
+class DurationTestCase(unittest.TestCase):
+    def test_parses_week_day_clock_form(self):
+        self.assertEqual(router_doctor.duration_seconds("1w2d03:04:05"),
+                         604800 + 2 * 86400 + 3 * 3600 + 4 * 60 + 5)
+        self.assertEqual(router_doctor.duration_seconds("3d04:12:05"),
+                         3 * 86400 + 4 * 3600 + 12 * 60 + 5)
+
+    def test_parses_letter_form(self):
+        self.assertEqual(router_doctor.duration_seconds("5m"), 300)
+        self.assertEqual(router_doctor.duration_seconds("1d"), 86400)
+        self.assertEqual(router_doctor.duration_seconds("1h30m"), 5400)
+        self.assertEqual(router_doctor.duration_seconds("30s"), 30)
+        self.assertEqual(router_doctor.duration_seconds("1w2d3h4m5s"),
+                         604800 + 2 * 86400 + 3 * 3600 + 4 * 60 + 5)
+
+    def test_clock_only_form(self):
+        self.assertEqual(router_doctor.duration_seconds("00:05:00"), 300)
+        self.assertEqual(router_doctor.duration_seconds("01:00:00"), 3600)
+
+    def test_zero_and_garbage(self):
+        self.assertEqual(router_doctor.duration_seconds("0"), 0)
+        self.assertEqual(router_doctor.duration_seconds("00:00:00"), 0)
+        self.assertIsNone(router_doctor.duration_seconds(""))
+        self.assertIsNone(router_doctor.duration_seconds("garbage"))
+        self.assertIsNone(router_doctor.duration_seconds("5x"))
+
+
+class SchedulerHealthTestCase(unittest.TestCase):
+    """The other half of 'installed but unscheduled'.
+
+    A disabled entry still counted as scheduled, an enabled entry whose policy
+    is too narrow never fires (RouterOS logs "not enough permissions" and
+    nothing else says so), and a token set by hand today is gone after the
+    next reboot. Each check runs only on fields the probe returned, so an
+    older probe, or the existing healthy-router fixtures, stay quiet.
+    """
+
+    HEALTHY_ENV = {"TgBotToken": 46, "TgChatId": 9}
+
+    def scheduler(self, name, interval="5m", on_event=None, disabled=False,
+                  run_count=7, start_time="jan/01/1970 00:00:00"):
+        return {
+            "name": name,
+            "interval": interval,
+            "on_event": on_event if on_event is not None else "/system script run %s" % name,
+            "disabled": disabled,
+            "run_count": run_count,
+            "start_time": start_time,
+        }
+
+    def restorer(self):
+        return self.scheduler("startup", interval="0s", on_event="/system script run startup",
+                              start_time="startup", run_count=1)
+
+    def env(self, uptime=None, declares=("startup",)):
+        env = dict(self.HEALTHY_ENV)
+        if uptime is not None:
+            env[router_doctor.UPTIME_KEY] = uptime
+        env[router_doctor.DECLARES_TG_KEY] = list(declares)
+        return env
+
+    def test_scx_record_merges_into_its_scheduler_and_keeps_the_three_tuple(self):
+        text = REPORT + (
+            "SCX:backup|false|12|04:00:00\n"
+            "SCX:startup|true|0|startup\n"
+            "UPT:3d04:12:05\n"
+            "DECL:startup\n"
+            "DECL:tg_send\n"
+        )
+        result = router_doctor.parse_report(text)
+        self.assertEqual(len(result), 3)
+        _, schedulers, env = result
+        backup = schedulers[0]
+        self.assertIs(backup["disabled"], False)
+        self.assertEqual(backup["run_count"], 12)
+        self.assertEqual(backup["start_time"], "04:00:00")
+        self.assertEqual(backup["on_event"], "/system script run backup")
+        self.assertIs(schedulers[2]["disabled"], True)
+        self.assertNotIn("disabled", schedulers[1])
+        self.assertEqual(env[router_doctor.UPTIME_KEY], 3 * 86400 + 4 * 3600 + 12 * 60 + 5)
+        self.assertEqual(env[router_doctor.DECLARES_TG_KEY], ["startup", "tg_send"])
+
+    def test_scx_for_an_unknown_scheduler_is_ignored(self):
+        _, schedulers, _ = router_doctor.parse_report(REPORT + "SCX:nosuch|true|0|startup\n")
+        self.assertEqual([s["name"] for s in schedulers],
+                         ["backup", "backup_file_cleanup", "startup"])
+        for entry in schedulers:
+            self.assertNotIn("disabled", entry)
+
+    def test_disabled_scheduler_is_a_warning_not_a_silent_pass(self):
+        schedulers = [self.scheduler("health_check", disabled=True), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers, self.env(),
+        )
+        self.assertEqual(levels_for(findings, "that scheduler is disabled"), ["warn"])
+        self.assertTrue(router_doctor.has_problems(findings))
+
+    def test_disabled_entry_does_not_double_report_unscheduled(self):
+        schedulers = [self.scheduler("health_check", disabled=True), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers, self.env(),
+        )
+        self.assertEqual(levels_for(findings, "no scheduler runs it"), [])
+        self.assertEqual(len([f for f in findings if "health_check" in f[1]]), 1)
+
+    def test_enabled_zero_run_count_after_long_uptime_warns(self):
+        schedulers = [self.scheduler("health_check", run_count=0), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=86400),
+        )
+        self.assertEqual(levels_for(findings, '"health_check" has never fired'), ["warn"])
+        self.assertEqual(levels_for(findings, "not enough permissions"), ["warn"])
+
+    def test_zero_run_count_just_after_boot_is_quiet(self):
+        # 5m interval: 2 x 300 + 60 = 660 seconds before it can be accused.
+        schedulers = [self.scheduler("health_check", run_count=0), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=600),
+        )
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=None),
+        )
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+
+    def test_startup_and_zero_interval_entries_are_not_judged(self):
+        schedulers = [
+            self.scheduler("notify-boot", interval="0s", run_count=0, start_time="startup",
+                           on_event=":local S [:parse [/system script get tg_send source]];"),
+            self.scheduler("oneshot", interval="00:00:00", run_count=0),
+            self.restorer(),
+        ]
+        findings = router_doctor.build_findings(
+            ["tg_send"], ["tg_send"], schedulers, self.env(uptime=10 * 86400),
+        )
+        self.assertEqual(levels_for(findings, "has never fired"), [])
+
+    def test_tg_global_set_with_no_startup_restore_warns(self):
+        schedulers = [self.scheduler("health_check")]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=3600, declares=()),
+        )
+        self.assertEqual(
+            levels_for(findings, "TgBotToken and TgChatId are set now but nothing re-declares"),
+            ["warn"],
+        )
+
+    def test_inline_startup_on_event_declaring_tgbottoken_satisfies_it(self):
+        schedulers = [
+            self.scheduler("health_check"),
+            self.scheduler("set-globals", interval="0s", start_time="startup",
+                           on_event=':global TgBotToken "x"; :global TgChatId "y";'),
+        ]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=3600, declares=()),
+        )
+        self.assertEqual(levels_for(findings, "re-declares"), [])
+
+    def test_startup_script_listed_in_decl_satisfies_it(self):
+        schedulers = [self.scheduler("health_check"), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check", "startup"], schedulers,
+            self.env(uptime=3600, declares=("startup", "tg_send")),
+        )
+        self.assertEqual(levels_for(findings, "re-declares"), [])
+
+    def test_tg_send_in_decl_does_not_count_as_a_restorer(self):
+        # notify-boot runs tg_send at startup, and tg_send's source mentions
+        # TgBotToken - because it reads it, not because it sets it.
+        schedulers = [
+            self.scheduler("health_check"),
+            self.scheduler("notify-boot", interval="0s", start_time="startup",
+                           on_event=":local S [:parse [/system script get tg_send source]];"),
+        ]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=3600, declares=("tg_send", "tg_send_new")),
+        )
+        self.assertEqual(levels_for(findings, "re-declares"), ["warn"])
+
+    def test_a_disabled_startup_scheduler_does_not_restore(self):
+        restorer = self.restorer()
+        restorer["disabled"] = True
+        findings = router_doctor.build_findings(
+            ["tg_send"], ["tg_send", "startup"], [restorer], self.env(uptime=3600),
+        )
+        self.assertEqual(levels_for(findings, "re-declares"), ["warn"])
+
+    def test_check_is_silent_when_probe_gave_no_start_time(self):
+        schedulers = [{"name": "health_check", "interval": "5m",
+                       "on_event": "/system script run health_check"}]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            dict(self.HEALTHY_ENV),
+        )
+        self.assertEqual(findings, [])
+
+    def test_existing_healthy_router_still_has_no_findings(self):
+        installed = ["tg_send", "backup", "health_check"]
+        schedulers = [
+            self.scheduler("backup", interval="1d", start_time="04:00:00"),
+            self.scheduler("health_check"),
+            self.restorer(),
+        ]
+        findings = router_doctor.build_findings(
+            installed, installed + ["startup"], schedulers, self.env(uptime=10 * 86400),
+        )
+        self.assertEqual(levels_for(findings, ""), ["info"])
+        self.assertFalse(router_doctor.has_problems(findings))
+
+    def test_probe_adds_no_write_verbs_and_never_returns_script_source(self):
+        probe = router_doctor.PROBE
+        for verb in (" set ", " add ", " remove ", " enable ", " disable "):
+            self.assertNotIn(verb, probe)
+        # The only place a script source is touched is inside the :find the
+        # router evaluates; what is :put is the script's name.
+        self.assertEqual(probe.count(" source]"), 1)
+        self.assertIn('[:find [/system script get $s source] "TgBotToken"]', probe)
+        for record in re.findall(r":put \(([^;]*)\)", probe):
+            self.assertNotIn("source", record)
+        self.assertIn('"SCX:"', probe)
+        self.assertIn('"UPT:"', probe)
+        self.assertIn('"DECL:"', probe)
+
+    def test_json_scheduler_state_is_separate_from_schedulers(self):
+        report = (
+            "SCR:tg_send\nSCR:backup\n"
+            "SCH:backup|1d|/system script run backup\n"
+            "ENV:TgBotToken|46\nENV:TgChatId|9\n"
+            "SCX:backup|true|0|04:00:00\n"
+            "UPT:2d00:00:00\n"
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(router_doctor, "probe", return_value=(0, report, "")), \
+             mock.patch.object(router_doctor, "local_script_names",
+                               return_value=["tg_send", "backup"]), \
+             contextlib.redirect_stdout(stdout):
+            rc = router_doctor.main(["--host", "router.test", "--format", "json"])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["schedulers"], [{"name": "backup", "interval": "1d"}])
+        self.assertEqual(payload["scheduler_state"], [
+            {"name": "backup", "disabled": True, "run_count": 0, "start_time": "04:00:00"},
+        ])
+        self.assertEqual(payload["uptime_seconds"], 2 * 86400)
 
 
 class JsonOutputTestCase(unittest.TestCase):

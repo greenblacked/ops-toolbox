@@ -84,6 +84,21 @@ PROBE = (
     # The release decides whether half the package can run at all, so it is
     # asked for once. A version string is not a secret.
     ' :put ("VER:" . [/system resource get version]);'
+    # Scheduler state on single-line records of their own, so the free-form
+    # on-event of the SCH record above is untouched: a boolean, a counter and
+    # a time, nothing an operator wrote.
+    ' :foreach k in=[/system scheduler find] do={'
+    ':put ("SCX:" . [/system scheduler get $k name]'
+    ' . "|" . [:tostr [/system scheduler get $k disabled]]'
+    ' . "|" . [:tostr [/system scheduler get $k run-count]]'
+    ' . "|" . [:tostr [/system scheduler get $k start-time]])};'
+    ' :put ("UPT:" . [:tostr [/system resource get uptime]]);'
+    # Which scripts mention TgBotToken. The router does the search and returns
+    # only the script's name: a source can hold a pasted token, so no source
+    # ever crosses the wire.
+    ' :foreach s in=[/system script find] do={'
+    ':if ([:typeof [:find [/system script get $s source] "TgBotToken"]] = "num") do={'
+    ':put ("DECL:" . [/system script get $s name])}};'
 )
 
 PAUSE_STATE_KEY = "__control_ops_toolbox_paused"
@@ -92,6 +107,14 @@ PAUSE_STATE_KEY = "__control_ops_toolbox_paused"
 # line, which keeps every check that depends on them quiet.
 VERSION_KEY = "__routeros_version"
 VERSION_TEXT_KEY = "__routeros_version_text"
+# Also reserved, also absent unless the probe returned them: the router's
+# uptime in seconds, and the scripts whose source mentions TgBotToken.
+UPTIME_KEY = "__uptime_seconds"
+DECLARES_TG_KEY = "__declares_tg"
+
+# Scripts that read the Telegram globals rather than set them. Mentioning
+# TgBotToken does not make them a startup script.
+TG_READERS = ("tg_send", "tg_send_new")
 
 # RouterOS 7.24 refuses to execute a script that declares a :global or :local
 # whose name contains an underscore. It stops in the parser, so the script logs
@@ -128,6 +151,13 @@ UNDERSCORED_FALLBACK = (
 # Comment lines start with '#', so a comment naming an old global never matches.
 _UNDERSCORED_DECLARATION = re.compile(r"^\s*:(?:global|local)\s+[A-Za-z0-9]*_", re.M)
 _VERSION = re.compile(r"^\s*(\d+)\.(\d+)")
+# Both spellings RouterOS uses for a duration: '1w2d03:04:05' in the console
+# and '1w2d3h4m5s' from some properties, plus the bare forms '5m' and '1d'.
+_DURATION = re.compile(
+    r"^(?:(?P<w>\d+)w)?(?:(?P<d>\d+)d)?"
+    r"(?:(?P<clock_h>\d+):(?P<clock_m>\d{1,2}):(?P<clock_s>\d{1,2})(?:\.\d+)?"
+    r"|(?:(?P<h>\d+)h)?(?:(?P<m>\d+)m)?(?:(?P<s>\d+)s)?)$"
+)
 
 C_RESET = C_RED = C_GREEN = C_YELLOW = C_DIM = C_BOLD = ""
 if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
@@ -170,7 +200,10 @@ def parse_report(text):
     The reserved PAUSE_STATE_KEY maps to the computed non-secret boolean pause
     predicate; malformed/non-boolean values are reported as inactive exactly as
     the scripts enforce them. VERSION_KEY holds the RouterOS (major, minor)
-    when the router reported one.
+    when the router reported one. A scheduler gains disabled, run_count and
+    start_time when the probe returned them, and the reserved UPTIME_KEY and
+    DECLARES_TG_KEY hold the uptime in seconds and the scripts that mention
+    TgBotToken.
     """
     scripts = []
     schedulers = []
@@ -204,6 +237,28 @@ def parse_report(text):
             current = None
             value = line.partition("|")[2].strip()
             env[PAUSE_STATE_KEY] = value == "true"
+        elif line.startswith("SCX:"):
+            current = None
+            # From the right, so a '|' in a scheduler name cannot shift fields.
+            fields = line[4:].rsplit("|", 3)
+            if len(fields) == 4:
+                name, disabled, run_count, start_time = fields
+                for entry in schedulers:
+                    if entry["name"] == name.strip():
+                        entry["disabled"] = disabled.strip() == "true"
+                        entry["run_count"] = _as_int(run_count)
+                        entry["start_time"] = start_time.strip()
+                        break
+        elif line.startswith("UPT:"):
+            current = None
+            seconds = duration_seconds(line[4:])
+            if seconds is not None:
+                env[UPTIME_KEY] = seconds
+        elif line.startswith("DECL:"):
+            current = None
+            name = line[5:].strip()
+            if name:
+                env[DECLARES_TG_KEY] = sorted(set(env.get(DECLARES_TG_KEY, [])) | {name})
         elif line.startswith("VER:"):
             current = None
             text_value = line[4:].strip()
@@ -243,6 +298,32 @@ def format_version(version):
     return "%d.%d" % version
 
 
+def duration_seconds(text):
+    """Seconds in a RouterOS duration, or None when it is not one."""
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.isdigit():
+        return int(text)
+    match = _DURATION.match(text)
+    if match is None or not any(v is not None for v in match.groupdict().values()):
+        return None
+    parts = {k: int(v) for k, v in match.groupdict().items() if v is not None}
+    return (
+        parts.get("w", 0) * 604800
+        + parts.get("d", 0) * 86400
+        + (parts.get("h", 0) + parts.get("clock_h", 0)) * 3600
+        + (parts.get("m", 0) + parts.get("clock_m", 0)) * 60
+        + parts.get("s", 0) + parts.get("clock_s", 0)
+    )
+
+
+def format_duration(seconds):
+    days, rest = divmod(int(seconds), 86400)
+    clock = "%02d:%02d:%02d" % (rest // 3600, rest % 3600 // 60, rest % 60)
+    return "%dd%s" % (days, clock) if days else clock
+
+
 def runs_script(on_event, name):
     """Whether an on-event body runs the named script.
 
@@ -265,6 +346,11 @@ def schedulers_for(name, schedulers):
         s for s in schedulers
         if s.get("name") == name or runs_script(s.get("on_event", ""), name)
     ]
+
+
+def active_schedulers_for(name, schedulers):
+    """schedulers_for(), minus the entries the router reports as disabled."""
+    return [s for s in schedulers_for(name, schedulers) if s.get("disabled") is not True]
 
 
 def global_state(name, env):
@@ -449,6 +535,63 @@ def build_findings(local, installed, schedulers, env, underscored=None):
                 "list, so it currently does nothing" % (script, name),
             ))
 
+    # --- scheduled, but does the scheduler run ---
+    # Everything here is judged only on what the probe returned: a scheduler
+    # dict without these keys, from an older probe, is never accused.
+    judged = [n for n in candidates if n not in MANUAL_ONLY]
+    for name in judged:
+        for entry in schedulers_for(name, schedulers):
+            if entry.get("disabled") is True:
+                findings.append((
+                    "warn",
+                    "%s is scheduled by \"%s\", but that scheduler is disabled "
+                    "— it never runs" % (name, entry.get("name", "?")),
+                ))
+
+    uptime = env.get(UPTIME_KEY)
+    for entry in schedulers:
+        if entry.get("disabled") is not False or entry.get("run_count") != 0:
+            continue
+        if entry.get("start_time") == "startup":
+            continue
+        interval = duration_seconds(entry.get("interval", ""))
+        if not interval or uptime is None:
+            continue
+        # Twice the interval and a minute more, so a router that has just
+        # rebooted, or an entry anchored later in the day, is not accused.
+        if uptime > 2 * interval + 60:
+            findings.append((
+                "warn",
+                "\"%s\" has never fired in %s of uptime; check /log for \"not "
+                "enough permissions\" and that the scheduler policy covers the "
+                "script policy" % (entry.get("name", "?"), format_duration(uptime)),
+            ))
+
+    # Globals are runtime state. Set by hand today, they are gone after the
+    # next reboot unless a startup scheduler declares them again - the trap the
+    # 7.24 migration in README.md walks into.
+    probe_saw_start_times = UPTIME_KEY in env or any("start_time" in s for s in schedulers)
+    set_now = [n for n in REQUIRED_GLOBALS if global_state(n, env) == "set"]
+    if set_now and probe_saw_start_times:
+        declarers = set(env.get(DECLARES_TG_KEY, [])) - set(local) - set(TG_READERS)
+        restored = False
+        for entry in schedulers:
+            if entry.get("start_time") != "startup" or entry.get("disabled") is True:
+                continue
+            on_event = entry.get("on_event", "")
+            if ("TgBotToken" in on_event or entry.get("name") in declarers
+                    or any(runs_script(on_event, d) for d in declarers)):
+                restored = True
+                break
+        if not restored:
+            findings.append((
+                "warn",
+                "%s %s set now but nothing re-declares %s after a reboot: globals "
+                "do not survive one (see Installation step 4 in README.md)"
+                % (" and ".join(set_now), "is" if len(set_now) == 1 else "are",
+                   "it" if len(set_now) == 1 else "them"),
+            ))
+
     # --- will it run on this release ---
     # Only when the router said which release it runs: an older probe, or one
     # whose version line did not parse, stays silent rather than guessing.
@@ -465,7 +608,7 @@ def build_findings(local, installed, schedulers, env, underscored=None):
                     instead = "no replacement yet, see Scripts overview in README.md"
                 # fail only for the case that is silent for certain: it is
                 # scheduled, so it is being run, and every run dies unlogged.
-                level = "fail" if schedulers_for(name, schedulers) else "warn"
+                level = "fail" if active_schedulers_for(name, schedulers) else "warn"
                 findings.append((
                     level,
                     "%s is installed but RouterOS %s refuses to execute scripts "
@@ -657,6 +800,17 @@ def main(argv=None):
                 "ops_toolbox_paused": env.get(PAUSE_STATE_KEY),
             },
             "routeros_version": env.get(VERSION_TEXT_KEY),
+            "scheduler_state": [
+                {
+                    "name": item.get("name", ""),
+                    "disabled": item.get("disabled"),
+                    "run_count": item.get("run_count"),
+                    "start_time": item.get("start_time"),
+                }
+                for item in schedulers
+                if "disabled" in item
+            ],
+            "uptime_seconds": env.get(UPTIME_KEY),
             "incompatible_scripts": incompatible_scripts(installed, env, underscored),
             "findings": [
                 {"level": level, "message": message}
@@ -689,7 +843,8 @@ def main(argv=None):
     info("scheduler lines for every script here: ./print_schedulers.sh")
     info("to install a missing script, paste the .lua body into System > Scripts "
          "with policy read,write,policy,test,sensitive,ftp")
-    info("to set a global once at boot, see the startup snippet in README.md")
+    info("to set a global once at boot, see the startup snippet in README.md "
+         "and give it a start-time=startup scheduler")
     if incompatible_scripts(installed, env, underscored):
         info("on 7.24, remove or replace what cannot run (Scripts overview in "
              "README.md lists what runs); rollback is pasting the previous source")
