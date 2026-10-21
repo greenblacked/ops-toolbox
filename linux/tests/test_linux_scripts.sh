@@ -1627,6 +1627,22 @@ printf 'tcp/22/sshd\ntcp/443/*\ntcp/9000-9100/*\n' > "$listen_base/wildcard"
 PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/wildcard" >/dev/null 2>&1; rc=$?
 assert_eq "listen_audit matches * processes and port ranges" "0" "$rc"
 
+# A public entry is not satisfied by the same port rebound to loopback.
+rebind_stub="$(mktemp -d)"
+cat > "$rebind_stub/ss" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process'
+printf '%s\n' 'tcp   LISTEN 0      511        127.0.0.1:80         0.0.0.0:*     users:(("nginx",pid=2,fd=6))'
+STUB
+chmod +x "$rebind_stub/ss"
+printf 'tcp/80/nginx\n' > "$listen_base/public80"
+out="$(PATH="$rebind_stub:$PATH" "$LISTEN" --baseline "$listen_base/public80" --fail-on any 2>&1)"; rc=$?
+assert_eq "listen_audit: a loopback rebind does not satisfy a public entry" "1" "$rc"
+assert_contains "listen_audit reports the rebound entry as gone" "$out" "expected listener tcp/80"
+PATH="$rebind_stub:$PATH" "$LISTEN" --baseline "$listen_base/public80" --all --fail-on any >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --all lets the loopback listener satisfy the entry" "0" "$rc"
+rm -rf "$rebind_stub"
+
 PATH="$listen_stub:$PATH" "$LISTEN" --allow 22,443,9000 >/dev/null 2>&1; rc=$?
 assert_eq "listen_audit --allow covering every public port -> 0" "0" "$rc"
 PATH="$listen_stub:$PATH" "$LISTEN" --allow 22 >/dev/null 2>&1; rc=$?

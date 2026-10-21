@@ -321,8 +321,10 @@ if (( COMPARE )); then
     done <<< "$ROWS"
   fi
   # NEW: a live listener (public, or any with --all) that no entry covers.
-  # GONE: a single-port baseline entry that no live listener of any scope
-  # answers; ranges and --allow ports are permissions, not expectations.
+  # GONE: a single-port baseline entry that no live listener answers (loopback
+  # rows count only with --all, so a service rebound from 0.0.0.0 to
+  # 127.0.0.1 is drift); ranges and --allow ports are permissions, not
+  # expectations.
   # A process shown as "?" matches on protocol and port alone.
   drift="$(awk -v all="$SHOW_ALL" '
     function covers(j, i) {
@@ -344,7 +346,10 @@ if (( COMPARE )); then
       for (j = 1; j <= n; j++) {
         if (es[j] != "base" || elo[j] != ehi[j]) continue
         hit = 0
-        for (i = 1; i <= m; i++) if (covers(j, i)) { hit = 1; break }
+        for (i = 1; i <= m; i++) {
+          if (lscope[i] == "loopback" && all != 1) continue
+          if (covers(j, i)) { hit = 1; break }
+        }
         if (!hit) print "GONE", ep[j], elo[j], eproc[j]
       }
       if (hidden) print "HIDDEN"

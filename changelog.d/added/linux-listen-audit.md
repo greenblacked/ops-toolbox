@@ -5,3 +5,5 @@
   it, so a new listener exits 1 from cron and an expected one that is gone
   is a warning (`--fail-on any` fails on that too). It runs only `ss` and
   never writes the baseline itself.
+  A public entry is not satisfied by the same port rebound to loopback
+  unless `--all` is given.

@@ -604,7 +604,9 @@ comments.
 `--baseline FILE` and `--allow PORTS` compare the live public listeners
 (every listener with `--all`) with what is expected. A listener nothing
 covers is a `NEW listener` FAIL; a single-port baseline entry that nothing
-answers is an `expected listener ... is not listening` warning. When a process
+answers is an `expected listener ... is not listening` warning. Loopback
+listeners satisfy neither side without `--all`, so a service rebound from
+`0.0.0.0` to `127.0.0.1` reads as gone. When a process
 name is hidden, that row is matched on protocol and port only. Both options
 together apply both.
 
