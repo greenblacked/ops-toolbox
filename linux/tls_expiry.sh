@@ -78,8 +78,8 @@ Options:
                    target checks its own name with --deep; this overrides it)
   --deep           Also check the name, the chain (hosts), self-signed issuers,
                    key size and signature algorithm
-  --cafile FILE    Trust anchors for the chain check of --host targets,
-                   instead of the system store (a private CA's root)
+  --cafile FILE    Extra trust anchors for the chain check of --host
+                   targets, added to the system store (a private CA's root)
   --min-key-bits N    Smallest RSA/DSA key --deep accepts, 1024-16384 (default: $MIN_KEY_BITS)
   --fail-on LEVEL  Exit 1 on 'expired' (default), on 'warn' and above, or 'never'
   --quiet          Print only warnings and failures

@@ -686,15 +686,18 @@ server sent no CA certificate at all and the issuer of the last certificate it
 sent is not in the trust store. Otherwise, for example when the intermediate
 was sent and the private root is simply not on this machine, it warns "issuer
 not trusted locally: private CA or missing intermediate"; `--cafile FILE`
-supplies that root (it replaces the system store for the `--host` handshake), a self-signed issuer on a `--file` target, the key size
-against `--min-key-bits` (2048), the EC curve, and MD5 or SHA-1 signatures.
+supplies that root (it adds to the system store for the `--host` handshake,
+it does not replace it). The checks also cover a self-signed issuer on a
+`--file` target, the key size against `--min-key-bits` (2048), the EC curve,
+and MD5 or SHA-1 signatures.
 The chain comes from the same single handshake the expiry check makes.
 `--hosts-file FILE` reads one `HOST[:PORT]` per line, with `#` comments; an
 unreadable file is exit `3` before anything else runs.
 
 With the default `--fail-on expired`, a FAIL from these checks (wrong name,
 provably missing intermediate, short key, weak signature) exits `1` too, and a
-warning (self-signed, issuer not trusted locally, unusual curve) exits `1` only with `--fail-on warn`.
+warning (self-signed, issuer not trusted locally, unusual curve) exits `1`
+only with `--fail-on warn`.
 
 ## `container_doctor.sh`
 
