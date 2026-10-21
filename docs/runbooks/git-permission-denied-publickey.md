@@ -4,7 +4,9 @@
 
 **When to use:** `git push`, `pull` or `clone` over SSH fails with
 `Permission denied (publickey)` although you have a key, or a `Host` block
-you wrote in `~/.ssh/config` seems to be ignored.
+you wrote in `~/.ssh/config` seems to be ignored. The authentication check
+in `git/git_ssh_doctor.py` covers `git@HOST` remotes (GitHub, GitLab and
+similar); see the note after the exit codes for other accounts.
 
 ## Symptoms
 
@@ -73,6 +75,15 @@ ssh would offer and prints `authentication succeeds` or
 | `0` | Every checked host authenticates. |
 | `1` | At least one host does not, or the repository has no SSH remote and you gave no `--host`. |
 | `3` | Bad arguments. |
+
+The doctor always connects as `git@HOST`. It keeps only the host from a
+remote URL and drops any user name, so for `ssh://alice@gerrit.example:29418/p`
+or `deploy@host:repo.git` it tests `git@`, not `alice@` or `deploy@`. Its exit
+`0` therefore says nothing about such an account. For a remote with a user
+name other than `git`, check by hand with that user:
+`ssh -v -T alice@gerrit.example` (add `-p PORT` for a non-default port). In the
+`-v` output, `Offering public key` lines show what was tried and
+`Authenticated to` shows success.
 
 On Linux, check the client directory itself as well:
 
