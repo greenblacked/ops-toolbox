@@ -766,7 +766,7 @@ against the same rules, plus the ones a hook cannot see.
 
 | Problem | When |
 | --- | --- |
-| `not-conventional` | The subject is not `type(optional scope): subject`, with an optional `!`. The pattern and the default types are the hook's: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`; `--types` replaces them with a comma-separated list of lowercase words. Subjects starting `Revert ` are exempt, as in the hook. |
+| `not-conventional` | The subject is not `type(optional scope): subject`, with an optional `!`. The pattern and the default types are the hook's: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`; `--types` replaces them with a comma-separated list of lowercase words. Subjects starting with `Revert` and a space are exempt, as in the hook. |
 | `too-long` | The subject is longer than `--max-subject` characters (default `72`). |
 | `no-blank-line` | The second line of the message is not blank, so git folds the body into the subject. |
 | `fixup` | A `fixup!`, `squash!` or `amend!` commit that was never squashed. The hook lets these through on purpose, mid-rebase; a merge is where they must be gone. `--allow-fixup` turns this off. |
