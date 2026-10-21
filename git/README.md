@@ -370,9 +370,10 @@ Read-only. It never fetches, so remote-tracking refs are as fresh as the last
 fetch; `--tags` is the only network call, and `ls-remote` writes nothing.
 
 Exit codes: `0` success, whether or not anything was found; `1` `--strict`
-found something or `git status` failed (reported on stderr), or `--tags`
-could not reach the remote; `2` not a Git
-repository; `3` usage; `4` no commits yet, or `--remote` names no remote.
+found something or could not read `git status` (reported on stderr), or
+`--tags` could not reach the remote; `2` not a Git repository; `3` usage;
+`4` no commits yet, or `--remote` names no remote. A plain run exits `0`
+even when `git status` cannot be read.
 
 ---
 

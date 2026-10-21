@@ -55,9 +55,10 @@ last fetch, so a commit someone else pushed this morning is not counted as
 pushed until 'git fetch' has run. A report that quietly rewrote refs would not
 be read-only.
 
-Exit codes: 0 success (whether or not anything was found), 1 --strict found
-something or git status failed, or --tags could not reach the remote, 2 not a git repo, 3 usage,
-4 no commits yet or remote not found
+Exit codes: 0 success (whether or not anything was found; a git status that
+could not be read does not change that), 1 --strict found something or could
+not read git status, or --tags could not reach the remote, 2 not a git repo,
+3 usage, 4 no commits yet or remote not found
 EOF
 }
 
