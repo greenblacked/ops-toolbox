@@ -98,7 +98,7 @@ missing `~/.ssh` is a skip and exits `0`.
 
 ## Preview
 
-<span class="stage stage-report">read-only</span>
+<span class="stage stage-report">read-only except known_hosts</span>
 
 !!! preview "This step makes real connection attempts"
     `--test-auth` tries every private key it found under `~/.ssh` against
@@ -154,7 +154,7 @@ which is the macOS form. On Linux, the standard OpenSSH command is
 
 ## Verify
 
-<span class="stage stage-report">read-only</span>
+<span class="stage stage-report">read-only except known_hosts</span>
 
 ```{ .bash .rpt-report title="Verify" }
 ./git/git_ssh_doctor.py --host github.com
