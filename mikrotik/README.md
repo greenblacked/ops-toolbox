@@ -1090,14 +1090,15 @@ answer produces no finding rather than a false one.
 `--drift` answers which routers still run an old copy of a script. Scripts are
 pasted into *Source* by hand, and this package changes them (the 7.24 renames,
 fixes), so there was no answer short of opening each one in Winbox. With the
-flag, the file here is sent to the router as an argument of a small function
-the router compiles with `:parse`, and the router compares it with the
-installed script's *Source* and answers `same`, `changed` or `missing` per
-script. The router's source is never read back, since it may hold a pasted
+flag, the file here is sent to the router as a string literal in a short
+inline block of `:local`, `:if` and `:put`, and the router compares it with
+the installed script's *Source* and answers `same`, `changed` or `missing`
+per script. The router's source is never read back, since it may hold a pasted
 token, and nothing is written to the router: no global, no script, no
 scheduler. (An earlier design had the router hash each script; RouterOS 7.24
-rejects every `:convert` spelling tried for that, so the comparison is a
-plain string comparison, which works on every release.) The scripts go in
+rejects every `:convert` spelling tried for that, and a `:parse`d function
+called with the file as a named argument is a syntax error there too, so the
+comparison is an inline string comparison, which works on every release.) The scripts go in
 batches of about 24 KB of escaped text per ssh command. A paste that kept or
 dropped the trailing newline, or stored CRLF line ends, counts as the same.
 A script that differs is a `warn` naming the file (edited in place or out of

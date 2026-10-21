@@ -107,30 +107,38 @@ PROBE = (
 
 # Asked only under --drift, and not part of PROBE: one ssh command per batch of
 # scripts, built by drift_commands(). The comparison runs on the router. The
-# expected source (the file in this checkout) travels INTO the router as an
-# argument of a function compiled with :parse, and the router answers with one
-# word per script: same, changed-cr, changed or missing. No script source
-# leaves the router (a source can hold a pasted token) and nothing is written:
-# no :global, no :set, the source reaches the function as an argument and not
-# through the script environment.
+# expected source (the file in this checkout) travels INTO the router as a
+# string literal in the command, and the router answers with one word per
+# script: same, changed-cr, changed or missing. No script source leaves the
+# router (a source can hold a pasted token) and nothing is written: no
+# :global, no :set, no function, no :parse. Each script gets one self-contained
+# block of plain :local, :if and :put, so the command uses no call syntax
+# beyond what the other scripts in this package already rely on.
 #
 # changed-cr means "differs, and the router's copy has CR line ends". The
 # first round sends the checkout's text with LF line ends; those scripts are
 # asked again with CRLF line ends, so a copy stored as CRLF is not drift. A
-# trailing newline more or less is not drift either: the function accepts the
+# trailing newline more or less is not drift either: the block accepts the
 # expected text bare, with "\n" and with "\r\n" appended.
 #
-# An earlier version had the router hash each source. RouterOS 7.24 rejects
-# every :convert spelling that was tried, so there is nothing to hash with on
-# the pinned release; a plain string comparison works everywhere.
-DRIFT_FUNCTION = (
-    ':local ids [/system script find where name=$name];'
-    ' :if ([:len $ids] = 0) do={:return "missing"};'
-    ' :local cur [/system script get $ids source];'
-    ' :if (($cur = $expected) || ($cur = ($expected . "\\n"))'
-    ' || ($cur = ($expected . "\\r\\n"))) do={:return "same"};'
-    ' :if ([:typeof [:find $cur "\\r"]] = "num") do={:return "changed-cr"};'
-    ' :return "changed"'
+# Two earlier versions did not run on the pinned release. RouterOS 7.24
+# rejects every :convert spelling that was tried for a hash, and the CI
+# router rejected a call of a :parse'd function that took the script name
+# and the file as two named string arguments (syntax error at the second
+# argument), so the comparison is inline and needs neither.
+#
+# %(n)s is the script name and %(e)s the expected text, both already
+# escaped by escape_routeros_string().
+DRIFT_BLOCK = (
+    ' :do {:local ids [/system script find where name="%(n)s"];'
+    ' :if ([:len $ids] = 0) do={:put ("DRF:%(n)s|missing")} else={'
+    ':local cur [/system script get $ids source];'
+    ' :local exp "%(e)s";'
+    ' :if (($cur = $exp) || ($cur = ($exp . "\\n"))'
+    ' || ($cur = ($exp . "\\r\\n"))) do={:put ("DRF:%(n)s|same")} else={'
+    ':if ([:typeof [:find $cur "\\r"]] = "num") do={:put ("DRF:%(n)s|changed-cr")}'
+    ' else={:put ("DRF:%(n)s|changed")}}}}'
+    ' on-error={:put "DRF:%(n)s|error"};'
 )
 # Per ssh command, in characters of escaped source. The whole package is about
 # 200 KB, and RouterOS's ssh server is not documented to take a command that
@@ -499,31 +507,27 @@ def drift_commands(sources, crlf=False, limit=DRIFT_BATCH_CHARS):
     """[(names, ssh command)] asking the router to compare scripts in place.
 
     sources maps a script name to the bytes of its file. The command compiles
-    DRIFT_FUNCTION once and prints one 'DRF:name|word' line per script; a
-    script whose comparison raises is reported as 'error'. Nothing in a
+    DRIFT_BLOCK once per script and prints one 'DRF:name|word' line for each;
+    a script whose comparison raises is reported as 'error'. Nothing in a
     command is written to the router.
     """
-    prefix = ":local fn [:parse \"%s\"];" % escape_routeros_string(DRIFT_FUNCTION)
     batches = []
     names = []
     parts = []
     size = 0
     for name in sorted(sources):
-        quoted = escape_routeros_string(name)
-        part = (
-            ' :do {:put ("DRF:" . "%s" . "|" . [$fn name="%s" expected="%s"])}'
-            ' on-error={:put "DRF:%s|error"};'
-            % (quoted, quoted, escape_routeros_string(expected_source(sources[name], crlf)),
-               quoted)
-        )
+        part = DRIFT_BLOCK % {
+            "n": escape_routeros_string(name),
+            "e": escape_routeros_string(expected_source(sources[name], crlf)),
+        }
         if parts and size + len(part) > limit:
-            batches.append((names, prefix + "".join(parts)))
+            batches.append((names, "".join(parts)))
             names, parts, size = [], [], 0
         names.append(name)
         parts.append(part)
         size += len(part)
     if parts:
-        batches.append((names, prefix + "".join(parts)))
+        batches.append((names, "".join(parts)))
     return batches
 
 

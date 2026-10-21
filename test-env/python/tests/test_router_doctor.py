@@ -1115,7 +1115,7 @@ def fake_router(stored):
     """A run(command) that answers a drift command the way the router would.
 
     stored maps a script name to the bytes in the router's Source. It applies
-    the same rule as DRIFT_FUNCTION to the arguments it finds in the command,
+    the same rule as DRIFT_BLOCK to the name and text it finds in the command,
     and records every command it was sent.
     """
     sent = []
@@ -1124,7 +1124,8 @@ def fake_router(stored):
         sent.append(command)
         lines = []
         for name, expected in re.findall(
-            r'\$fn name="((?:[^"\\]|\\.)*)" expected="((?:[^"\\]|\\.)*)"', command
+            r'where name="((?:[^"\\]|\\.)*)"\].*?:local exp "((?:[^"\\]|\\.)*)";',
+            command,
         ):
             name = unescape_routeros(name).decode()
             want = unescape_routeros(expected)
@@ -1176,7 +1177,7 @@ class EscapeRouterosStringTestCase(unittest.TestCase):
 class DriftTestCase(unittest.TestCase):
     """--drift: which installed scripts differ from the files in this checkout.
 
-    The expected source goes into the router as an argument and the router
+    The expected source goes into the router in the command and the router
     answers with a word per script, so no source comes back. What the report
     may say is a verdict, never a source.
     """
@@ -1233,7 +1234,7 @@ class DriftTestCase(unittest.TestCase):
         self.assertGreater(len(batches), 1)
         self.assertEqual(sorted(n for names, _ in batches for n in names), sorted(sources))
         for _, command in batches:
-            self.assertLess(len(command), 2500 + len(router_doctor.DRIFT_FUNCTION) * 2)
+            self.assertLess(len(command), 2500 + len(router_doctor.DRIFT_BLOCK) * 2)
         big = router_doctor.drift_commands({"a": b"y" * 5000, "b": b"z"}, limit=100)
         self.assertEqual([names for names, _ in big], [["a"], ["b"]])
 
@@ -1315,17 +1316,21 @@ class DriftTestCase(unittest.TestCase):
 
     def test_drift_command_only_reads_and_writes_nothing(self):
         command = router_doctor.drift_commands({"health_check": b"plain\n"})[0][1]
-        function = router_doctor.DRIFT_FUNCTION
-        for text in (command, function):
+        block = router_doctor.DRIFT_BLOCK
+        for text in (command, block):
             for verb in (" set ", ":set", ":global", " add ", " remove ", " enable ",
-                         " disable ", ":convert"):
+                         " disable ", ":convert", ":parse"):
                 self.assertNotIn(verb, text)
         self.assertEqual(command.count("\n"), 0)
-        self.assertIn("expected=", command)
-        self.assertIn("[:parse", command)
-        # the only thing printed is the name and the router's one-word answer
-        self.assertEqual(command.count(":put ("), 1)
-        self.assertNotIn(":put $", function)
+        # no function call with named arguments: the text is inline
+        self.assertNotIn("[$", command)
+        # the only things printed are the name and the router's one-word answer
+        self.assertEqual(command.count(":put ("), 4)
+        self.assertEqual(
+            re.findall(r':put \("DRF:health_check\|(\w[\w-]*)"\)', command),
+            ["missing", "same", "changed-cr", "changed"],
+        )
+        self.assertNotIn(":put $", block)
 
     def test_default_probe_does_not_contain_the_drift_probe(self):
         self.assertNotIn("DRF:", router_doctor.PROBE)

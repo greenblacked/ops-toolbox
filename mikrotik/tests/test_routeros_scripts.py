@@ -1724,13 +1724,14 @@ def test_rogue_dns_invalid_connection_get_probe(
 # --- router_doctor.py --drift ----------------------------------------------
 #
 # --drift compares on the router: the expected source (the file in this
-# checkout) is an argument of a function compiled with :parse, and the router
-# answers same, changed or missing per script, so no source leaves it. Nothing
-# offline can check that the escaping survives RouterOS's own parser, so this
-# builds the very command router_doctor sends, with a scratch script as the
-# subject, and runs it on the pinned release. The only change is that :put
-# (which a scheduler-run script has nowhere to show) becomes a :set of a
-# scratch global that the test reads back.
+# checkout) is a string literal inside an inline block of :local, :if and
+# :put, and the router answers same, changed or missing per script, so no
+# source leaves it. Nothing offline can check that the command survives
+# RouterOS's own parser, so this builds the very command router_doctor sends,
+# with a scratch script as the subject, and runs it on the pinned release. The
+# only change is that :put (which a scheduler-run script has nowhere to show)
+# becomes a :set of a scratch global that the test reads back; only one
+# branch of the block runs, so the global holds the one answer.
 DRIFT_SUBJECT = (
     ':local a "quote\\" dollar\\$b back\\\\slash question\\?";\n'
     "\t# tab above, ${braces} and [brackets] below\n"
@@ -1750,13 +1751,15 @@ def _router_doctor_module() -> Any:
 def _drift_answer(api: Any, script_resource: Any, name: str, expected: bytes) -> str:
     module = _router_doctor_module()
     command = module.drift_commands({name: expected})[0][1]
-    assert command.count(":put (") == 1, command
+    assert command.count(":put (") == 4 and command.count(':put "DRF:') == 1, command
     runner = "pu_ut_drift_run"
     for g in ("PuDriftOut", "PuDriftDone"):
         _unset_global(api, g)
     source = (
         ":global PuDriftOut;\n:global PuDriftDone;\n"
-        + command.replace(":put (", ":set PuDriftOut (")
+        + command.replace(":put (", ":set PuDriftOut (").replace(
+            ':put "DRF:', ':set PuDriftOut "DRF:'
+        )
         + '\n:set PuDriftDone "yes";\n'
     )
     _add_script(script_resource, runner, source)
