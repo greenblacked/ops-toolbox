@@ -179,6 +179,28 @@ git -C "$repo" -c advice.nestedTag=false tag -a vnest -m 'nested' v1.1 &&
   git -C "$repo" push -q origin vnest || err 'push a nested annotated tag'
 out="$(run_in "$repo" --tags --remote origin --porcelain 2>&1)"
 assert_not_contains "$out" $'tag\tvnest\t' 'a nested annotated tag equal to the remote one is pushed'
+# A remote listing without NAME^{} lines (a server or proxy that hides the
+# peeled entries) is compared on the plain object id alone. A git shim drops
+# the peeled lines from ls-remote output; every other call passes through.
+real_git="$(command -v git)"
+mkdir -p "$scratch/shim" &&
+  cat >"$scratch/shim/git" <<SHIM &&
+#!/usr/bin/env bash
+if [[ "\${1:-}" == ls-remote ]]; then
+  "$real_git" "\$@" | grep -v '\^{}\$'
+  exit "\${PIPESTATUS[0]}"
+fi
+exec "$real_git" "\$@"
+SHIM
+  chmod +x "$scratch/shim/git" || err 'create the ls-remote shim'
+out="$(PATH="$scratch/shim:$PATH" run_in "$repo" --tags --remote origin --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 'a listing without peeled lines still answers'
+assert_not_contains "$out" $'tag\tv1.1\t' 'an annotated tag equal to a remote without a peeled line is pushed'
+assert_not_contains "$out" $'tag\tvnest\t' 'a nested tag equal to a remote without a peeled line is pushed'
+git -C "$repo" -c advice.nestedTag=false tag -a vlocal -m 'local only' main || err 'create a local-only annotated tag'
+out="$(PATH="$scratch/shim:$PATH" run_in "$repo" --tags --remote origin --porcelain 2>&1)"
+assert_contains "$out" $'tag\tvlocal\t1\torigin' 'a local-only annotated tag is still listed without peeled lines'
+git -C "$repo" tag -d vlocal >/dev/null || err 'drop the local-only tag'
 git -C "$repo" remote add broken "$scratch/does-not-exist.git" || err 'add unreachable remote'
 out="$(run_in "$repo" --tags --remote broken 2>&1)"; rc=$?
 assert_eq "$rc" 1 'an unreachable remote -> 1'

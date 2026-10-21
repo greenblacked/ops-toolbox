@@ -250,8 +250,12 @@ if (( TAGS == 1 )); then
       same=1
       grep -Fxq -- "$tag $oid" <<<"$remote_tags" || same=0
       if (( same == 1 )) && [[ -n "$peeled" ]]; then
-        # The remote's NAME^{} line when it lists one, else the plain line.
-        grep -Fxq -- "$tag^{} $peeled" <<<"$remote_tags" || same=0
+        # The remote's NAME^{} line when it lists one, else the plain line
+        # (already matched above). A listing without peeled lines (a server
+        # or proxy that hides them) must not flag a matching tag.
+        if [[ $'\n'"$remote_tags" == *$'\n'"$tag^{} "* ]]; then
+          grep -Fxq -- "$tag^{} $peeled" <<<"$remote_tags" || same=0
+        fi
       fi
       if (( same == 0 )); then
         missing_tags+=("$tag")

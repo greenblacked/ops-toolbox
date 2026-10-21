@@ -4,4 +4,4 @@
   local tags the remote does not have or has at a different object. `--remote` narrows what counts as
   pushed to one remote, and `--strict` exits 1 while anything exists only on
   this machine, so a decommission script can refuse to delete a clone that
-  still holds work.
+  still holds work. A remote that lists no peeled `NAME^{}` line for an annotated tag is compared on the tag object alone, so a matching tag is not reported.
