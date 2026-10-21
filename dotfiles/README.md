@@ -172,8 +172,9 @@ because a drifted `~/.docker/config.json` holds base64 `auths` by then.
 the files tracked today installed; `--prune` is its companion for what a
 rename or a delete left behind. It finds them in a bounded scan — three
 levels under the config directory, the top of the home, and two levels inside
-each directory `home/` installs into (`~/.ssh`, `~/.aws` ...) — so a large
-home is never walked. One limit: if the repository itself was moved, the old
+each directory `home/` installs into (`~/.ssh`, `~/.aws` ...) and inside each
+hidden directory at the top of the home, so a source directory deleted
+outright is still found — and a large home is never walked. One limit: if the repository itself was moved, the old
 links no longer point into this folder's path, and `--status` reports them as
 `CONFLICT` rather than `ORPHAN`; `--force` replaces them.
 
@@ -350,7 +351,7 @@ error. Each hook is checked only when its tool is on `PATH`, and is a
 
 | Hook | Unset | Set |
 | --- | --- | --- |
-| `RIPGREP_CONFIG_PATH` (for `rg`) | `[warn]` with the `export` line to add | `[FAIL]` when the path does not exist (a dangling link included), `[pass]` when it does; a path other than the installed one is allowed and noted |
+| `RIPGREP_CONFIG_PATH` (for `rg`) | `[warn]` with the `export` line to add | `[FAIL]` when the path does not exist (a dangling link included) or is not a readable regular file (a directory, say), `[pass]` when it is one; a path other than the installed one is allowed and noted |
 | `GITLEAKS_CONFIG` (for `gitleaks`) | the same | the same |
 | `XDG_CONFIG_HOME` (for `k9s` or `brew`, macOS only) | `[warn]`: k9s reads `~/Library/Application Support/k9s` and brew no `brew.env` | `[warn]` when it names another directory than the one the configs went into, `[pass]` when it names that one |
 

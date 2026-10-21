@@ -293,6 +293,23 @@ rm "$H/.config/not-ours" "$H/.config/starship.toml.backup-20200101-000000"; rmdi
 out="$(run_installer --status 2>&1)"; rc=$?
 assert_rc "--status exits 0 again after --prune" 0 "$rc"
 
+# A whole source directory deleted from home/ (no .foo there any more) still
+# leaves ~/.foo/config behind; the scan must reach it through the home itself.
+mkdir -p "$H/.foo"
+ln -s "$D/home/.foo/config" "$H/.foo/config"
+out="$(run_installer --status 2>&1)"; rc=$?
+assert_rc "--status exits 4 with an orphan under a deleted source directory" 4 "$rc"
+assert_contains "--status reports the orphan under a deleted source directory" "$out" "ORPHAN  $H/.foo/config"
+out="$(run_installer --prune --dry-run 2>&1)"; rc=$?
+assert_rc "--prune --dry-run exits 0 for a deleted source directory" 0 "$rc"
+assert_contains "--prune --dry-run previews removing it" "$out" "(dry-run) rm $H/.foo/config"
+assert_true "--prune --dry-run kept the link" test -L "$H/.foo/config"
+out="$(run_installer --prune 2>&1)"; rc=$?
+assert_rc "--prune exits 0 for a deleted source directory" 0 "$rc"
+assert_contains "--prune counts the removed link" "$out" "1 orphan link(s) removed"
+assert_true "--prune removed the link under a deleted source directory" test ! -L "$H/.foo/config"
+rmdir "$H/.foo"
+
 # --------------------------------------------------------------------------
 head_ "backups and --restore"
 st="$H/.config/starship.toml"

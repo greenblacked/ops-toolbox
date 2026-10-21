@@ -467,8 +467,9 @@ state_of() {
 # file is never reported, so everything --prune removes was made by this
 # installer or a copy of it. The scan is bounded - three levels under the
 # config directory, the top of the home, two levels inside each home
-# directory this folder installs into (.ssh, .aws ...) - so a large home is
-# never walked. find does not follow links below its starting points; -H
+# directory this folder installs into (.ssh, .aws ...) and in each hidden
+# directory at the top of the home, so one whose source was deleted is still
+# seen - so a large home is never walked. find does not follow links below its starting points; -H
 # follows a starting point that is itself a link, such as a linked ~/.config.
 # A repository that was moved is the documented exception: its old links no
 # longer start with this folder's path, so --status calls them CONFLICT.
@@ -480,6 +481,12 @@ link_candidates() {
     d="${d##*/}"
     if [[ -d "$HOME_DIR/$d" ]]; then find -H "$HOME_DIR/$d" -maxdepth 2 -type l 2>/dev/null; fi
   done < <(find "$SCRIPT_DIR/home" -mindepth 1 -maxdepth 1 -type d)
+  # A whole source directory that was deleted (home/.foo) leaves ~/.foo/...
+  # links the loop above never visits, so also scan the hidden directories
+  # that exist at the top of the home, to the same two levels.
+  while IFS= read -r d; do
+    find -H "$d" -maxdepth 2 -type l 2>/dev/null
+  done < <(find "$HOME_DIR" -mindepth 1 -maxdepth 1 -type d -name '.*' 2>/dev/null)
   return 0
 }
 
