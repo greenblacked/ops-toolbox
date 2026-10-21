@@ -31,8 +31,9 @@
     15  Touch targets, motion       small screens and reduced motion
     16  Print
     17  Forced colours
-    18  Page tools                  table filter, task-list checklists (with
-                                    their own print and forced-colours rules)
+    18  Page tools                  table filter, task-list checklists, build
+                                    stamp (with their own print and
+                                    forced-colours rules)
 
    Class index (every class the theme defines or styles by name)
      .stage .stage-report .stage-preview .stage-apply
@@ -58,6 +59,8 @@
                                     checklist progress line and its button
                                     (added by rpt-checklist.js); task lists
                                     themselves are restyled without a class
+     .rpt-build .rpt-build__flag    footer build stamp and its preview
+                                    marker (filled by rpt-build-stamp.js)
 
    Tokens are plain custom properties set per scheme, then mapped onto
    Material's own --md-* variables. Material sets its scheme variables on the
@@ -90,6 +93,7 @@
        on page / on panel                   3.9/3.5  3.6/3.9
      checklist box ticked (accent)
        on page / on panel                   5.7/5.2  5.4/5.7
+     build stamp (muted) on footer          7.4      6.1
 
    Admonition mapping (colour follows meaning, never decoration):
      report                          report blue   (read-only)
@@ -1390,5 +1394,43 @@ input:focus-visible,
 
   .md-typeset .task-list-control [type="checkbox"]:focus-visible + .task-list-indicator::after {
     outline-color: Highlight;
+  }
+}
+
+/* Build stamp in the footer: "Build 6a88b2e", linked to the commit, with a
+   "Preview build" marker on a noindex deploy (rpt-build-stamp.js). Muted
+   text on the footer colour (contrast table at the top). The marker is
+   neutral, outlined rather than coloured: the stage colours mean report,
+   preview and apply, not which deploy this is. */
+.rpt-build {
+  color: var(--rpt-muted);
+  font-family: var(--rpt-font-mono);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.md-footer .rpt-build a,
+.md-footer .rpt-build code {
+  color: inherit;
+  font-family: inherit;
+}
+
+.md-footer .rpt-build code {
+  padding: 0;
+  background: none;
+}
+
+.rpt-build__flag {
+  display: inline-block;
+  padding: 0 0.4em;
+  border: 1px solid currentcolor;
+  border-radius: 0.2rem;
+  color: var(--rpt-text);
+  line-height: 1.4;
+}
+
+@media print {
+  .rpt-build {
+    display: none;
   }
 }

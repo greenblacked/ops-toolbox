@@ -416,6 +416,84 @@ class NotFoundSuggestionTests(unittest.TestCase):
         self.assertNotIn("//", template)
 
 
+class BuildStampTests(unittest.TestCase):
+    SCRIPT = SCRIPTS_DIR / "rpt-build-stamp.js"
+    SHA = "6a88b2e" + "0123456789abcdef0123456789abcdef0"
+
+    def call(self, expression: str) -> object:
+        return script_json(self.SCRIPT, expression)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_parse_sha_accepts_only_forty_hex(self) -> None:
+        self.assertEqual(len(self.SHA), 40)
+        self.assertEqual(self.call("m.parseSha(%s)" % json.dumps(self.SHA + "\n")), self.SHA)
+        bad = [
+            self.SHA[:39],
+            self.SHA + "a",
+            self.SHA.upper(),
+            "<b>" + self.SHA[:33] + "</b>",
+            "",
+            self.SHA[:20] + "\n" + self.SHA[20:],
+        ]
+        self.assertTrue(bad)
+        for text in bad:
+            with self.subTest(text=text):
+                self.assertIsNone(self.call("m.parseSha(%s)" % json.dumps(text)))
+        self.assertIsNone(self.call("m.parseSha(null)"))
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_commit_url_requires_the_github_repo_pattern(self) -> None:
+        repo = "https://github.com/greenblacked/ops-toolbox"
+        self.assertEqual(
+            self.call("m.commitUrl(%s, %s)" % (json.dumps(repo), json.dumps(self.SHA))),
+            repo + "/commit/" + self.SHA,
+        )
+        self.assertEqual(
+            self.call("m.commitUrl(%s, %s)" % (json.dumps(repo + "/"), json.dumps(self.SHA))),
+            repo + "/commit/" + self.SHA,
+        )
+        bad_repos = [
+            "http://github.com/greenblacked/ops-toolbox",
+            "https://gitlab.com/greenblacked/ops-toolbox",
+            "https://github.com.evil.example/greenblacked/ops-toolbox",
+            "https://github.com/greenblacked/ops-toolbox/tree/master",
+            "javascript:alert(1)//https://github.com/a/b",
+            "",
+        ]
+        self.assertTrue(bad_repos)
+        for bad in bad_repos:
+            with self.subTest(repo=bad):
+                self.assertIsNone(
+                    self.call("m.commitUrl(%s, %s)" % (json.dumps(bad), json.dumps(self.SHA)))
+                )
+        self.assertIsNone(self.call("m.commitUrl(%s, 'not-a-sha')" % json.dumps(repo)))
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_is_preview_reads_noindex_case_insensitively(self) -> None:
+        cases = [("null", False), ("''", False), ("'noindex'", True),
+                 ("'NoIndex, nofollow'", True), ("'nofollow'", False), ("'noindexer'", False)]
+        self.assertTrue(cases)
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertIs(self.call("m.isPreview(%s)" % value), expected)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_short_sha_is_seven_chars(self) -> None:
+        self.assertEqual(self.call("m.shortSha(%s)" % json.dumps(self.SHA)), "6a88b2e")
+
+    def test_copyright_partial_carries_repo_url_and_version_url(self) -> None:
+        partial = (OVERRIDES / "partials" / "copyright.html").read_text(encoding="utf-8")
+        self.assertIn('class="rpt-build" hidden', partial)
+        self.assertIn('data-repo="{{ config.repo_url }}"', partial)
+        self.assertIn("'version.txt' | url", partial)
+        # The reason the override exists in the first place.
+        self.assertIn("'credits/' | url", partial)
+
+    def test_stamp_script_is_loaded_from_main_html(self) -> None:
+        main = (OVERRIDES / "main.html").read_text(encoding="utf-8")
+        self.assertIn("'assets/javascripts/rpt-build-stamp.js' | url", main)
+
+
 class PageScriptContractTests(unittest.TestCase):
     """The page scripts read text an attacker controls: the query string of a
     link (?filter=) and the path of a missing page. So no script may parse

@@ -308,10 +308,22 @@ curl -sSI "https://stage.ops.szolotov.com/$(curl -sS https://stage.ops.szolotov.
 - Both answer with `X-Content-Type-Options`, `Referrer-Policy` and
   `X-Frame-Options`.
 - An unknown path answers 404 with the site's 404 page.
+- The footer of every page ends with "Build" and the first seven characters
+  of the deployed SHA, linked to the commit. On stage, "Preview build" comes
+  before it (see below).
 - `version.txt` answers `Cache-Control: no-store`, and Material's hashed
   bundle answers `Cache-Control: public, max-age=31536000, immutable`. Pages
   carry no `Cache-Control` from the Worker (the rules are in the
   [Worker README](https://github.com/greenblacked/ops-toolbox/blob/master/worker/README.md#caching)).
+
+The footer stamp is read in the browser:
+`overrides/assets/javascripts/rpt-build-stamp.js` fetches the site's own
+`version.txt` and shows the SHA it holds, and marks the page as a preview
+build when that response carries `X-Robots-Tag: noindex`, which only stage
+sends. It stays empty in three cases, all expected: under `mkdocs serve` or
+a local `mkdocs build` (only the workflow writes `version.txt`), when the
+file does not hold exactly one 40-character SHA, and with JavaScript off or
+the request failing.
 
 ## Roll back
 
