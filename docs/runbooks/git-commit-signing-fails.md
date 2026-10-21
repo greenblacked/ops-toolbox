@@ -140,6 +140,12 @@ That is plain `git`. Then run only the fix the report printed for your case:
 
 The allowed-signers command writes the file with `>`, which replaces a file
 that is already there. Check for one first and add your line to it instead.
+It also fails if `~/.config/git` does not exist yet, so create the directory
+before running it:
+
+```{ .bash .rpt-apply title="Apply, only if the directory is missing" }
+mkdir -p ~/.config/git
+```
 
 For the other failures the finding itself says what is wrong: a revoked or
 invalid key needs a new key, a format mismatch needs `gpg.format` and
