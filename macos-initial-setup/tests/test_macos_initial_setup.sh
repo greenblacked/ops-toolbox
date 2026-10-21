@@ -2325,6 +2325,11 @@ printf '[default]\nregion = us-east-1\n\n[profile acme-dev]\nsso_session = acme\
   > "$oc/home/.aws/config"
 printf '{"startUrl": "https://acme.example/start", "accessToken": "CANARY_SSO_TOKEN", "expiresAt": "2000-01-01T00:00:00Z"}\n' \
   > "$oc/home/.aws/sso/cache/token.json"
+printf '[sso-session acme]\nsso_start_url = https://acme.example/start\nsso_region = eu-west-1\n' \
+  >> "$oc/home/.aws/config"
+sleep 1
+printf '{"startUrl": "https://other.example/start", "accessToken": "CANARY_SSO_OTHER", "expiresAt": "2999-01-01T00:00:00Z"}\n' \
+  > "$oc/home/.aws/sso/cache/other.json"
 printf '[acme-dev]\naws_access_key_id = AKIACANARYKEYID\naws_secret_access_key = CANARY_SECRET_KEY\n' \
   > "$oc/home/.aws/credentials"
 printf 'prod-eu\n' > "$oc/tf/.terraform/environment"
@@ -2343,6 +2348,7 @@ assert_contains "ops_context names the aws profile" "$out" "profile=acme-dev"
 assert_contains "ops_context reads the profile's region" "$out" "region=eu-west-1"
 assert_contains "ops_context names the docker context" "$out" "context=orbstack"
 assert_contains "ops_context reports an expired SSO session" "$out" "expired"
+assert_not_contains "ops_context ignores a newer login of another start URL" "$out" "2999"
 assert_contains "ops_context prints the SSO login fix" "$out" "aws sso login --profile acme-dev"
 assert_contains "ops_context reports no Terraform directory" "$out" "no Terraform directory here"
 for canary in CANARY_SECRET_KEY AKIACANARYKEYID CANARY_SSO_TOKEN; do

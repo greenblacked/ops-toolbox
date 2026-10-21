@@ -368,12 +368,24 @@ if want aws; then
   fi
 
   if [[ -n "$asso" || -n "$asso_url" ]]; then
+    # The login that belongs to this profile is the cached token whose
+    # startUrl is the profile's (or its sso-session's). Without a start URL
+    # to match, the newest login is all there is, and the row says so.
+    if [[ -z "$asso_url" && -n "$asso" ]]; then
+      asso_url="$(clean "$(ini_get "$aconfig" "sso-session $asso" sso_start_url)")"
+    fi
     newest=""
+    scope_note=""
+    [[ -z "$asso_url" ]] && scope_note=" (most recent login)"
     for f in "$HOME/.aws/sso/cache/"*.json; do
       [[ -f "$f" ]] || continue
       # The cache also holds client registrations, which carry an expiresAt
       # of their own; only a file with an access token is a login.
       grep -q '"accessToken"' "$f" 2>/dev/null || continue
+      if [[ -n "$asso_url" ]]; then
+        grep -qF "\"startUrl\": \"$asso_url\"" "$f" 2>/dev/null \
+          || grep -qF "\"startUrl\":\"$asso_url\"" "$f" 2>/dev/null || continue
+      fi
       if [[ -z "$newest" || "$f" -nt "$newest" ]]; then
         newest="$f"
       fi
@@ -389,9 +401,9 @@ if want aws; then
       if [[ ! "$expires" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}$ ]]; then
         row info aws "could not read the SSO session expiry"
       elif [[ "$expires" < "$now" ]]; then
-        row warn aws "sso session expired at ${expires}Z  fix: $login_hint"
+        row warn aws "sso session expired at ${expires}Z${scope_note}  fix: $login_hint"
       else
-        row ok aws "sso session valid until ${expires}Z"
+        row ok aws "sso session valid until ${expires}Z${scope_note}"
       fi
     fi
   fi
