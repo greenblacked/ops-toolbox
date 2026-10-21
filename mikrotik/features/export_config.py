@@ -21,6 +21,7 @@ among it.
     ./export_config.py --host router.lan --commit
     ./export_config.py --host router.lan --stdout        # print, write nothing
     ./export_config.py --host router.lan --scan-secrets  # report secrets, write nothing
+    ./export_config.py --host router.lan --diff --summary  # changes per menu, no text
     ./export_config.py --scan-file config-history/router.lan.rsc
     ./export_config.py --host router.lan --commit --redact-secrets
 
@@ -51,6 +52,7 @@ on success regardless of whether anything changed.
 from __future__ import annotations
 
 import argparse
+import collections
 import difflib
 import os
 import re
@@ -274,6 +276,87 @@ def redact_secrets(text):
     return "".join(out)
 
 
+# A verb that makes a /path line a command rather than a menu header: the
+# terse export form, `/ip firewall filter add chain=input ...`.
+_MENU_VERB = re.compile(r"\s(?:add|set|remove)(?:\s|$)")
+TOP_MENU = "(top)"
+
+
+def _menu_lines(text):
+    """[(menu, logical line)] for every configuration line of an export.
+
+    Continuations are joined first, so one rule is one line however /export
+    wrapped it. Blank lines, comments and the menu headers themselves are not
+    configuration and are left out; lines before the first header belong to
+    TOP_MENU.
+    """
+    menu = TOP_MENU
+    out = []
+    for _, line, _ in _logical_lines(text):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("/"):
+            verb = _MENU_VERB.search(line)
+            if verb is None and "=" not in line:
+                menu = line
+                continue
+            if verb is not None:
+                out.append((line[:verb.start()].strip(), line))
+                continue
+        out.append((menu, line))
+    return out
+
+
+def summarise_diff(before_text, after_text):
+    """[(menu, added, removed)] for every menu whose lines changed.
+
+    Pure. A modified rule is one line removed and one added in the same menu,
+    which is the honest signal: the export has no rule identity to say more.
+    A menu whose lines only changed order is listed as +0 -0, because in a
+    firewall the order is the configuration. Menus come in the order they
+    first appear, in the new text and then the old, so the table reads like
+    the export.
+    """
+    before_lines = _menu_lines(before_text)
+    after_lines = _menu_lines(after_text)
+    before = collections.Counter(before_lines)
+    after = collections.Counter(after_lines)
+    order = []
+    for menu, _ in after_lines + before_lines:
+        if menu not in order:
+            order.append(menu)
+    added = collections.Counter()
+    removed = collections.Counter()
+    for (menu, _), count in (after - before).items():
+        added[menu] += count
+    for (menu, _), count in (before - after).items():
+        removed[menu] += count
+    rows = []
+    for menu in order:
+        old_order = [line for m, line in before_lines if m == menu]
+        new_order = [line for m, line in after_lines if m == menu]
+        if added[menu] or removed[menu] or old_order != new_order:
+            rows.append((menu, added[menu], removed[menu]))
+    return rows
+
+
+def render_summary(rows):
+    """The --summary table: counts only, never a rule, comment or value."""
+    if not rows:
+        return "total: +0 -0 in 0 menu(s)\n"
+    width = max(len(menu) for menu, _, _ in rows)
+    lines = [
+        ("%-*s  +%d -%d%s" % (width, menu, added, removed,
+                              "" if added or removed else "  (order changed)"))
+        for menu, added, removed in rows
+    ]
+    lines.append("total: +%d -%d in %d menu(s)" % (
+        sum(r[1] for r in rows), sum(r[2] for r in rows), len(rows),
+    ))
+    return "\n".join(lines) + "\n"
+
+
 def describe_lines(findings):
     numbers = sorted({number for number, _ in findings})
     shown = ", ".join(str(n) for n in numbers[:10])
@@ -395,6 +478,12 @@ def main(argv=None):
         action="store_true",
         help="show the live export diff against the stored file; write nothing",
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help="with --diff: print added and removed line counts per menu instead "
+             "of the diff; no configuration text is printed",
+    )
     parser.add_argument("--commit", action="store_true", help="git commit if changed")
     parser.add_argument(
         "--no-normalise",
@@ -428,6 +517,10 @@ def main(argv=None):
     # not reach it" retried a flag combination that will never work.
     if sum((args.stdout, args.diff, args.commit)) > 1:
         bad("--stdout, --diff and --commit are mutually exclusive")
+        return 3
+
+    if args.summary and not args.diff:
+        bad("--summary needs --diff")
         return 3
 
     scanning = args.scan_secrets or args.scan_file is not None
@@ -511,6 +604,12 @@ def main(argv=None):
     if previous == content and (args.diff or previous_mode == 0o600):
         ok("no change: %s" % dest)
         return 0
+
+    if args.diff and args.summary:
+        # Counts per menu only. Safe to paste into a ticket or an alert, where
+        # the unified diff would carry rule bodies, comments and addresses.
+        sys.stdout.write(render_summary(summarise_diff(previous or "", content)))
+        return 1
 
     if args.diff:
         before = previous.splitlines(keepends=True) if previous is not None else []

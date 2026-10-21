@@ -790,6 +790,7 @@ baseline actual history and turning any change — intended or not — into a di
 ./export_config.py --host router.lan --commit     # commit if it changed
 ./export_config.py --host router.lan --stdout     # print, write nothing
 ./export_config.py --host router.lan --diff       # compare live vs stored; write nothing
+./export_config.py --host router.lan --diff --summary   # counts per menu, no config text
 ./export_config.py --host router.lan --scan-secrets               # where are secrets? write nothing
 ./export_config.py --scan-file config-history/router.lan.rsc     # audit a stored export, no ssh
 ./export_config.py --host router.lan --commit --redact-secrets    # commit with values replaced
@@ -826,6 +827,28 @@ accident.
 `--diff` fetches and normalises the live export, then prints a unified diff
 against the configured output file without creating or changing that file.
 `--stdout`, `--diff`, and `--commit` are intentionally mutually exclusive.
+
+`--summary` changes what `--diff` prints. The unified diff of a real router
+runs to hundreds of lines and carries rule bodies, comments and addresses, so
+it cannot be pasted into a ticket or a chat. With `--summary` the output is
+one line per RouterOS menu with the number of lines added and removed, then a
+total:
+
+```text
+/interface bridge    +1 -0
+/ip firewall filter  +2 -1
+total: +3 -1 in 2 menu(s)
+```
+
+A rule that changed counts as one removed and one added in its menu. A menu
+whose rules only changed order is listed as `+0 -0  (order changed)`, since
+in a firewall the order is the configuration. Lines wrapped by `/export` are
+joined first, so a rewrap is not a change; comments and blank lines are
+ignored, and lines before the first menu header are counted under `(top)`.
+No rule, comment or value is printed, which makes it suitable as the alert
+text of `export_config.py --diff --summary || notify`. Everything else about
+`--diff` is unchanged: it writes nothing and exits `0` with no drift, `1` with
+drift. `--summary` without `--diff` is a usage error (exit `3`).
 
 **Plain `/export` still carries secrets.** It hides the router's own
 credentials, but not the source of a `/system script` or the `on-event` of a

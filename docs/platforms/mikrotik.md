@@ -52,6 +52,7 @@ the host tools to inspect.
     ./mikrotik/features/router_doctor.py --hosts-file ~/routers.txt
     ./mikrotik/features/router_doctor.py --host router.lan --drift
     ./mikrotik/features/export_config.py --host router.lan --diff
+    ./mikrotik/features/export_config.py --host router.lan --diff --summary
     ./mikrotik/features/export_config.py --host router.lan --scan-secrets
     ./mikrotik/features/export_config.py --scan-file mikrotik/config-history/router.lan.rsc
     ```

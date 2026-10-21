@@ -445,6 +445,155 @@ class SecretScanTestCase(unittest.TestCase):
         self.assertEqual(rc, 3)
 
 
+SUMMARY_BEFORE = """\
+/interface bridge
+add name=bridge
+/ip firewall filter
+add action=accept chain=input comment="defconf: accept established" \\
+    connection-state=established,related
+add action=drop chain=input comment="block the scanner" src-address=203.0.113.77
+/ip dns
+set servers=1.1.1.1
+"""
+
+
+class SummaryTestCase(unittest.TestCase):
+    """--diff --summary: what kind of change happened, without the change.
+
+    The unified diff of a real router is hundreds of lines and carries rule
+    bodies, comments and addresses into whatever it is pasted into. The summary
+    is counts per menu, so it is safe in a ticket or an alert text.
+    """
+
+    def run_diff(self, stored, live, extra=("--summary",)):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "router.rsc")
+            if stored is not None:
+                with open(dest, "w", encoding="utf-8") as fh:
+                    fh.write(stored)
+            before = sorted(os.listdir(tmp))
+            stdout = io.StringIO()
+            with mock.patch.object(export_config, "fetch_export",
+                                   return_value=(0, live, "")), \
+                 contextlib.redirect_stdout(stdout), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = export_config.main(["--host", "router", "--name", "router",
+                                         "--out", tmp, "--diff"] + list(extra))
+            after = sorted(os.listdir(tmp))
+            content = None
+            if stored is not None:
+                with open(dest, encoding="utf-8") as fh:
+                    content = fh.read()
+        return rc, stdout.getvalue(), before, after, content
+
+    def test_added_rule_counts_plus_one_in_its_menu(self):
+        after = SUMMARY_BEFORE.replace("add name=bridge\n", "add name=bridge\nadd name=guest\n")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/interface bridge", 1, 0)])
+
+    def test_removed_rule_counts_minus_one(self):
+        after = SUMMARY_BEFORE.replace(
+            'add action=drop chain=input comment="block the scanner" src-address=203.0.113.77\n', ""
+        )
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/ip firewall filter", 0, 1)])
+
+    def test_modified_rule_is_plus_one_minus_one_in_the_same_menu(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.78")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/ip firewall filter", 1, 1)])
+
+    def test_continuation_lines_are_one_rule(self):
+        # The same rule, wrapped differently by /export, is not a change; the
+        # same rule with its continued half edited is one change, not two.
+        unwrapped = SUMMARY_BEFORE.replace(" \\\n    connection-state", " connection-state")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, unwrapped), [])
+        edited = SUMMARY_BEFORE.replace("connection-state=established,related",
+                                        "connection-state=established")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, edited),
+                         [("/ip firewall filter", 1, 1)])
+
+    def test_two_menus_are_reported_separately_and_in_file_order(self):
+        after = (SUMMARY_BEFORE
+                 .replace("set servers=1.1.1.1", "set servers=9.9.9.9")
+                 .replace("add name=bridge\n", "add name=bridge\nadd name=guest\n"))
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/interface bridge", 1, 0), ("/ip dns", 1, 1)])
+
+    def test_lines_before_the_first_header_go_to_top(self):
+        self.assertEqual(
+            export_config.summarise_diff("x=1\n/ip address\nadd address=192.0.2.1/24\n",
+                                         "x=2\n/ip address\nadd address=192.0.2.1/24\n"),
+            [("(top)", 1, 1)],
+        )
+
+    def test_terse_export_uses_the_path_before_add(self):
+        before = "/ip firewall filter add chain=input action=accept\n"
+        after = before + (
+            "/ip firewall filter add chain=input action=drop\n/ip dns set servers=9.9.9.9\n"
+        )
+        self.assertEqual(export_config.summarise_diff(before, after),
+                         [("/ip firewall filter", 1, 0), ("/ip dns", 1, 0)])
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        after = "# aug/03/2026 09:12:47 by RouterOS 7.22\n\n" + SUMMARY_BEFORE.replace(
+            "/ip dns\n", "/ip dns\n# a note\n\n"
+        )
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after), [])
+
+    def test_a_reorder_is_reported_without_counts(self):
+        lines = SUMMARY_BEFORE.splitlines(keepends=True)
+        swapped = "".join(lines[:3] + lines[5:6] + lines[3:5] + lines[6:])
+        rows = export_config.summarise_diff(SUMMARY_BEFORE, swapped)
+        self.assertEqual(rows, [("/ip firewall filter", 0, 0)])
+        self.assertIn("order changed", export_config.render_summary(rows))
+
+    def test_output_never_contains_rule_bodies(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.99")
+        table = export_config.render_summary(export_config.summarise_diff(SUMMARY_BEFORE, after))
+        for secret in ("203.0.113", "block the scanner", "chain=input", "action=drop"):
+            self.assertNotIn(secret, table)
+        self.assertIn("/ip firewall filter", table)
+        self.assertTrue(table.endswith("total: +1 -1 in 1 menu(s)\n"))
+
+    def test_identical_texts_yield_an_empty_list(self):
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, SUMMARY_BEFORE), [])
+        self.assertEqual(export_config.summarise_diff("", ""), [])
+
+    def test_summary_without_diff_is_exit_3(self):
+        fetch = mock.Mock(return_value=(0, SUMMARY_BEFORE, ""))
+        with mock.patch.object(export_config, "fetch_export", fetch), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            for extra in ([], ["--stdout"], ["--commit"]):
+                rc = export_config.main(["--host", "router", "--summary"] + extra)
+                self.assertEqual(rc, 3, extra)
+        fetch.assert_not_called()
+
+    def test_diff_summary_exits_1_on_drift_and_0_when_equal(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.99")
+        rc, out, _, _, _ = self.run_diff(SUMMARY_BEFORE, after)
+        self.assertEqual(rc, 1)
+        self.assertIn("/ip firewall filter", out)
+        self.assertNotIn("203.0.113", out)
+        self.assertNotIn("@@", out)
+        rc, out, _, _, _ = self.run_diff(SUMMARY_BEFORE, SUMMARY_BEFORE)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("total:", out)
+
+    def test_diff_summary_writes_nothing(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.99")
+        rc, _, before, files_after, content = self.run_diff(SUMMARY_BEFORE, after)
+        self.assertEqual(rc, 1)
+        self.assertEqual(files_after, before)
+        self.assertEqual(content, SUMMARY_BEFORE)
+        rc, out, before, files_after, _ = self.run_diff(None, SUMMARY_BEFORE)
+        self.assertEqual(rc, 1)
+        self.assertEqual(files_after, before)
+        self.assertEqual(files_after, [])
+        self.assertIn("total: +4 -0 in 3 menu(s)", out)
+
+
 class DefaultOutputTestCase(unittest.TestCase):
     """Where an export lands when --out is not given.
 
