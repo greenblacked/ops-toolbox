@@ -85,6 +85,15 @@ The Roadmap and Changelog pages are filled from `ROADMAP.md` and `CHANGELOG.md`
 at build time by a hook in `docs/hooks/`, so edit those root files, not the
 pages.
 
+Search uses a custom `separator` on the `search` plugin in `mkdocs.yml`.
+Material's default splits terms only at spaces and hyphens, so a script name
+such as `disk_cleanup.sh` was a single term that `cleanup` never found. The
+separator also splits at underscores, slashes, dots (but not the dots inside a
+version number such as `7.24.6`), brackets and camelCase, and the search box
+splits the query the same way. `test-env/python/tests/test_docs_site.py` pins
+the splits, and checks under node that the pattern is a valid JavaScript
+regular expression, because the search worker compiles it in the browser.
+
 Symlinks under `docs/` are refused: MkDocs follows them and copies what they
 point at into the site, so a link to a file outside `docs/` would publish it.
 The docs workflow fails the build job before installing anything if it finds

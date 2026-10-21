@@ -58,6 +58,12 @@ extra_css:
   - stylesheets/theme/rpt-theme.css
   - stylesheets/extra.css      # optional: your own tweaks, loaded last
 
+plugins:
+  - search:
+      # Split terms at _ / . [ ] ( ) and camelCase too, not only at spaces
+      # and hyphens; dots inside version numbers are kept.
+      separator: '[\s\-_,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -69,8 +75,13 @@ markdown_extensions:
 ```
 
 `primary: custom` and `accent: custom` stop Material from applying a colour of
-its own. Add this file and the fonts folder's README to `exclude_docs` so they
-are not built as pages:
+its own. The search separator is optional but suits documentation about
+tools: Material's default splits only at spaces and hyphens, so a file name
+such as `disk_cleanup.sh` or a flag such as `--dry-run` would be one search
+term that only its full spelling finds.
+
+Add this file and the fonts folder's README to `exclude_docs` so they are not
+built as pages:
 
 ```yaml
 exclude_docs: |

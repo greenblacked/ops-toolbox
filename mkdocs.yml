@@ -100,7 +100,12 @@ extra:
       name: Ops Toolbox on GitHub
 
 plugins:
-  - search
+  # The separator splits search terms at underscores, slashes, dots (not
+  # inside version numbers), brackets and camelCase as well as at spaces and
+  # hyphens, so disk_cleanup.sh, linux/status.sh, --dry-run and TgBotToken are
+  # found by any part of their name. The query is split the same way.
+  - search:
+      separator: '[\s\-_,:!=\[\]()"/]+|(?!\b)(?=[A-Z][a-z])|\.(?!\d)|&[lg]t;'
   - git-revision-date-localized:
       enable_creation_date: true
       fallback_to_build_date: true
