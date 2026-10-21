@@ -1074,6 +1074,11 @@ assert_eq "disk_cleanup empties a relocated Trash" "" \
 assert_not_contains "disk_cleanup counts what a relocated trash freed" "$out" "freed at least 0B"
 rm -rf "$trash_home" "$trash_tmp" "$other_disk"
 
+# Rotated logs and the journal size cap, against scratch log directories and a
+# stubbed journalctl so no run reaches /var/log or a real journal.
+bash "$L/tests/test_disk_cleanup_logs.sh"
+assert_eq "disk_cleanup logs suite exits 0" 0 "$?"
+
 section "kernel_cleanup.sh"
 # The package tools are stubbed in the suite below, so no container ever lists
 # or removes a real kernel; it drives apt, dnf and pacman from any one image.

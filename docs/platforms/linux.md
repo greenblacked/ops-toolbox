@@ -33,7 +33,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `sysctl_defaults.sh` | Report sysctl values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
-| `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal, package cache, docker. | `--dry-run` |
+| `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`. | `--dry-run` |
 | `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
 | `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
 | `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |

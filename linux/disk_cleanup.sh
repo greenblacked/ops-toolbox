@@ -10,6 +10,12 @@
 # temp files the current user owns. Everything else is behind an --include-*
 # flag, because those have side effects you should choose knowingly.
 #
+# --include-logs removes only logs whose name proves they were rotated
+# (compressed, numbered, .old or dated) and that are older than --days, under
+# /var/log or --log-dir. An active log is never matched, login records (wtmp,
+# btmp, lastlog, faillog, utmp) never are, and the journal is left to
+# journalctl, which --journal-max-size can also cap by size.
+#
 # A dry run writes nothing. A real run requires --yes, the same gate
 # install_devtools.sh uses for anything that changes the machine.
 #
@@ -37,6 +43,10 @@ INCLUDE_DOCKER=0
 INCLUDE_COREDUMPS=0
 COREDUMP_DIR=""
 COREDUMP_OVERRIDE=0
+INCLUDE_LOGS=0
+LOG_DIRS=()
+LOG_OVERRIDE=0
+JOURNAL_MAX_SIZE=""
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -77,11 +87,18 @@ Options:
   --no-sudo              Skip every step that needs root
   --include-trash        Empty ~/.local/share/Trash
   --include-journal      journalctl --vacuum-time matching --days (needs root)
+  --journal-max-size SZ  With --include-journal, also journalctl --vacuum-size=SZ
+                         (SZ like 500M or 2G)
   --include-pkg-cache    apt-get clean / dnf clean / pacman -Sc (needs root)
   --include-dev-caches   pip, npm, yarn, go module caches
   --include-docker       docker/podman system prune -f (volumes untouched)
   --include-coredumps    Age-filtered files in systemd-coredump and apport dirs
   --coredump-dir DIR     Replace the default coredump list (needs --include-coredumps)
+  --include-logs         Rotated logs older than --days under /var/log: *.gz, *.xz,
+                         *.bz2, *.zst, *.N, *.old and dated (logrotate dateext)
+                         names; never an active log, wtmp/btmp/lastlog or the journal
+  --log-dir DIR          Replace the default log directory (repeatable; needs
+                         --include-logs)
   --help, -h             Show this help
 
 Exit codes: 0 success, 1 one or more deletions failed, 2 not Linux, 3 usage
@@ -133,6 +150,11 @@ while (( $# > 0 )); do
     --include-coredumps)   INCLUDE_COREDUMPS=1 ;;
     --coredump-dir)        require_value "$1" "${2:-}"; COREDUMP_DIR="$2"; COREDUMP_OVERRIDE=1; shift ;;
     --coredump-dir=*)      COREDUMP_DIR="${1#*=}"; require_value "--coredump-dir" "$COREDUMP_DIR"; COREDUMP_OVERRIDE=1 ;;
+    --include-logs)        INCLUDE_LOGS=1 ;;
+    --log-dir)             require_value "$1" "${2:-}"; LOG_DIRS+=("$2"); LOG_OVERRIDE=1; shift ;;
+    --log-dir=*)           require_value "--log-dir" "${1#*=}"; LOG_DIRS+=("${1#*=}"); LOG_OVERRIDE=1 ;;
+    --journal-max-size)    require_value "$1" "${2:-}"; JOURNAL_MAX_SIZE="$2"; shift ;;
+    --journal-max-size=*)  JOURNAL_MAX_SIZE="${1#*=}"; require_value "--journal-max-size" "$JOURNAL_MAX_SIZE" ;;
     -h|--help)             usage; exit 0 ;;
     *)
       err "unknown argument: $1"
@@ -146,6 +168,23 @@ done
 if ! [[ "$DAYS" =~ ^[0-9]+$ ]] || (( DAYS > 3650 )); then
   err "--days must be an integer between 0 and 3650, got: $DAYS"
   exit 3
+fi
+
+# A modifier without the group it modifies would be a silent no-op, and a
+# caller who typed it believes it ran.
+if (( LOG_OVERRIDE == 1 && INCLUDE_LOGS == 0 )); then
+  err "--log-dir needs --include-logs"
+  exit 3
+fi
+if [[ -n "$JOURNAL_MAX_SIZE" ]]; then
+  if (( INCLUDE_JOURNAL == 0 )); then
+    err "--journal-max-size needs --include-journal"
+    exit 3
+  fi
+  if ! [[ "$JOURNAL_MAX_SIZE" =~ ^[1-9][0-9]*[KMGT]?$ ]]; then
+    err "--journal-max-size must look like 500M or 2G, got: $JOURNAL_MAX_SIZE"
+    exit 3
+  fi
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -175,6 +214,21 @@ if (( COREDUMP_OVERRIDE == 1 )); then
     exit 3
   fi
   COREDUMP_DIR="$coredump_resolved"
+fi
+
+# The same resolved-path guard for --log-dir, which walks and deletes with the
+# same sudo retry. -xdev keeps the walk on that one filesystem as well.
+if (( LOG_OVERRIDE == 1 )); then
+  resolved_logs=()
+  for log_dir in "${LOG_DIRS[@]}"; do
+    log_resolved="$(realpath -m -- "$log_dir" 2>/dev/null || printf '%s' "$log_dir")"
+    if [[ "$log_resolved" == "/" ]]; then
+      err "--log-dir refuses / (resolved from '$log_dir')"
+      exit 3
+    fi
+    resolved_logs+=("$log_resolved")
+  done
+  LOG_DIRS=("${resolved_logs[@]}")
 fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -340,6 +394,76 @@ clean_aged_dir() {
 
   if (( count == 0 )); then
     info "nothing older than ${DAYS}d in $dir"
+  else
+    info "$count file(s) in $dir ($(human_bytes "$bytes"))"
+  fi
+}
+
+# Rotated logs only: a name has to prove the file was rotated (compressed,
+# numbered, .old, or logrotate's dateext) before its age is even looked at, so
+# an active syslog, messages or app.log is never a candidate. Login records are
+# kept whatever they are called, and anything under a directory named journal
+# or private is pruned: journald's files belong to journalctl, and private/ is
+# root-only by design. Symlinks are not followed; only regular files match.
+log_candidates() {
+  local dir="$1"
+  local finder=(find)
+  if [[ ! -r "$dir" && -n "$SUDO" && "$SUDO" != "skip" ]]; then
+    finder=("$SUDO" find)
+  fi
+  "${finder[@]}" "$dir" -xdev \
+    \( -type d \( -name journal -o -name private \) -prune \) -o \
+    \( -type f \
+       ! -name 'wtmp*' ! -name 'btmp*' ! -name 'lastlog*' ! -name 'faillog*' ! -name 'utmp*' \
+       \( -name '*.gz' -o -name '*.xz' -o -name '*.bz2' -o -name '*.zst' \
+          -o -name '*.[0-9]' -o -name '*.old' \
+          -o -name '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' -o -name '*.log-[0-9]*' \) \
+       -print0 \) 2>/dev/null
+}
+
+# clean_aged_dir's stat, sudo retry and size accounting, over log_candidates.
+# Under --no-sudo a file whose directory this run cannot write is counted as
+# skipped rather than failed: it was never this run's to remove.
+clean_log_dir() {
+  local dir="$1"
+  local count=0
+  local bytes=0
+  local skipped=0
+  [[ -d "$dir" ]] || { info "no directory: $dir"; return 0; }
+
+  if [[ ! -r "$dir" && "$SUDO" == "skip" ]]; then
+    warn "skipped (needs root): $dir"
+    return 0
+  fi
+
+  while IFS= read -r -d '' path; do
+    [[ -n "$path" ]] || continue
+    local mtime size
+    mtime="$(stat -c '%Y' "$path" 2>/dev/null || printf '')"
+    size="$(stat -c '%s' "$path" 2>/dev/null || printf '')"
+    if [[ -z "$mtime" || -z "$size" ]] && [[ -n "$SUDO" && "$SUDO" != "skip" ]]; then
+      mtime="$("$SUDO" stat -c '%Y' "$path" 2>/dev/null || printf '')"
+      size="$("$SUDO" stat -c '%s' "$path" 2>/dev/null || printf '')"
+    fi
+    [[ "$mtime" =~ ^[0-9]+$ ]] || continue
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    if (( DAYS > 0 && mtime > CUTOFF )); then
+      continue
+    fi
+    if [[ "$SUDO" == "skip" && ! -w "$(dirname "$path")" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    delete_file_maybe_root "$path" "$size"
+    count=$((count + 1))
+    bytes=$((bytes + size))
+  done < <(log_candidates "$dir")
+
+  if (( skipped > 0 )); then
+    warn "skipped (needs root): $skipped rotated log(s) in $dir"
+  fi
+  if (( count == 0 )); then
+    info "no rotated logs older than ${DAYS}d in $dir"
   else
     info "$count file(s) in $dir ($(human_bytes "$bytes"))"
   fi
@@ -540,6 +664,11 @@ if (( INCLUDE_JOURNAL == 1 )); then
       warn "  including the logs describing what filled the disk"
     fi
     run_root "vacuum journal to ${DAYS}d" journalctl --vacuum-time="${DAYS}d"
+    # journald's own vacuum is the only thing that deletes journal files; the
+    # size was validated before anything ran.
+    if [[ -n "$JOURNAL_MAX_SIZE" ]]; then
+      run_root "cap journal at $JOURNAL_MAX_SIZE" journalctl --vacuum-size="$JOURNAL_MAX_SIZE"
+    fi
   else
     warn "journalctl not present — skipping (normal in a container)"
   fi
@@ -663,6 +792,28 @@ if (( INCLUDE_COREDUMPS == 1 )); then
   done
 else
   info "skipped: coredumps (pass --include-coredumps)"
+fi
+
+# --- logs ------------------------------------------------------------------
+# Rotated logs are the usual space hog on a server that is not journald-only.
+# Same gate as coredumps: opt-in, age-filtered, and previewed by --dry-run.
+if (( INCLUDE_LOGS == 1 )); then
+  step "logs"
+  log_dirs=()
+  if (( LOG_OVERRIDE == 1 )); then
+    log_dirs=("${LOG_DIRS[@]}")
+  else
+    log_dirs+=("/var/log")
+  fi
+  seen_logs=""
+  for dir in "${log_dirs[@]}"; do
+    [[ -n "$dir" ]] || continue
+    case " $seen_logs " in *" $dir "*) continue ;; esac
+    seen_logs="$seen_logs $dir"
+    clean_log_dir "$dir"
+  done
+else
+  info "skipped: logs (pass --include-logs)"
 fi
 
 # --- report ----------------------------------------------------------------

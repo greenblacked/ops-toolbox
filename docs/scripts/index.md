@@ -34,7 +34,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |
 | `linux/install_devtools.sh` | Linux | Install CLIs, Python, Go, Terraform, Helm. | `--dry-run` |
-| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras. | `--dry-run` |
+| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs and a journal size cap. | `--dry-run` |
 | `linux/kernel_cleanup.sh` | Linux | Remove old kernel packages, keeping the running one plus N. | `--dry-run`; `--list` is read-only |
 | `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
 | `linux/packages.sh` | Linux | List, dump, check, diff, install the package set. | `--dry-run` (install) |

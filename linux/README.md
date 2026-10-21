@@ -49,7 +49,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | --- | --- |
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
-| [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps; never volumes |
+| [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps/rotated logs; never volumes |
 | [`kernel_cleanup.sh`](kernel_cleanup.sh) | Remove old kernel packages; keeps the running kernel plus the newest `--keep` |
 | [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
@@ -149,7 +149,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Ambient** | `bash_aliases.sh` | Sourced on every interactive shell | your shell only — no disk writes |
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | packages, journal, caches, containers (never volumes) |
 | **Recurring** | `systemd/stay_fresh_timer.sh` | Install once, then it fires | user systemd units that run `stay_fresh.sh --yes --no-sudo` |
-| **Space** | `disk_cleanup.sh` | When `/` is full | age-filtered temp; opt-in trash/journal/caches/coredumps; never volumes |
+| **Space** | `disk_cleanup.sh` | When `/` is full | age-filtered temp; opt-in trash/journal/caches/coredumps/rotated logs; never volumes |
 | **Space** | `kernel_cleanup.sh` | When `/boot` is full or an upgrade fails for space | old kernel packages; keeps the running one plus `--keep`; never autoremoves |
 | **Copy** | `config_backup.sh` | Before editing `/etc` or upgrading | a dated tar under `--dest`; never writes back |
 | **Copy** | `packages.sh` | After a machine looks the way you want | a package list you can commit and restore |
@@ -484,6 +484,8 @@ behind an `--include-*` flag:
 ./disk_cleanup.sh --dry-run --include-trash --include-dev-caches
 ./disk_cleanup.sh --yes --include-journal --include-pkg-cache --no-sudo
 ./disk_cleanup.sh --dry-run --include-coredumps
+./disk_cleanup.sh --dry-run --include-logs --days 14
+sudo ./disk_cleanup.sh --yes --include-journal --journal-max-size 500M
 ```
 
 A real run requires `--yes`, the same gate `install_devtools.sh` uses.
@@ -502,6 +504,27 @@ user-owned targets at a home directory other than the caller's, and an
 `XDG_CACHE_HOME` inherited from the environment is ignored while it is in
 effect: that variable describes the caller's cache, and honouring both at once
 deleted files outside the directory `--home` named.
+
+`--include-logs` removes rotated logs older than `--days` under `/var/log`, the
+usual space hog on a server that is not journald-only. A file qualifies only when
+its name proves it was rotated: `*.gz`, `*.xz`, `*.bz2`, `*.zst`, a numeric
+suffix (`*.1`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
+`*.log-<digits>`. An active `*.log`, `syslog` or `messages` never matches, and
+neither do numbered active logs such as `Xorg.0.log`. Login records (`wtmp`,
+`btmp`, `lastlog`, `faillog`, `utmp` and their rotations) are never touched,
+anything below a directory named `journal` or `private` is pruned from the
+walk, symlinks are not followed and `-xdev` keeps it on one filesystem. Nothing
+is truncated. `--days 0` drops the age filter but not the name filter.
+`--log-dir DIR` replaces `/var/log` (repeatable, `/` refused in every spelling)
+and needs `--include-logs`. Root-owned logs go through the same `sudo` retry as
+coredumps; under `--no-sudo` a log in a directory this run cannot write is
+counted as skipped, not failed.
+
+`--journal-max-size SZ` adds `journalctl --vacuum-size=SZ` after the age vacuum
+of `--include-journal`, for when you think in "cap it at 500M" rather than in
+days. `SZ` is a number with an optional `K`, `M`, `G` or `T`; anything else, or
+the flag without `--include-journal`, is exit `3`. journald's own vacuum is the
+only thing that deletes journal files.
 
 ## `kernel_cleanup.sh`
 
