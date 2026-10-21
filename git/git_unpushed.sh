@@ -240,11 +240,17 @@ if (( TAGS == 1 )); then
     # name, so a name match alone would hide the only copy of the new target.
     while read -r tag oid peeled; do
       [[ -n "$tag" ]] || continue
+      # %(*objectname) peels one level, but ls-remote's NAME^{} peels fully
+      # (a tag of a tag lists the commit), so peel fully on this side too.
+      if [[ -n "$peeled" ]]; then
+        peeled="$(git rev-parse -q --verify "refs/tags/$tag^{}" 2>/dev/null)" || peeled="?"
+      fi
       # A here-string, not a pipe into grep -q: under pipefail an early exit
       # kills the writer and a match reads as a miss.
       same=1
       grep -Fxq -- "$tag $oid" <<<"$remote_tags" || same=0
       if (( same == 1 )) && [[ -n "$peeled" ]]; then
+        # The remote's NAME^{} line when it lists one, else the plain line.
         grep -Fxq -- "$tag^{} $peeled" <<<"$remote_tags" || same=0
       fi
       if (( same == 0 )); then

@@ -173,6 +173,12 @@ git -C "$repo" tag -d v1.1 >/dev/null &&
   git -C "$repo" fetch -q origin 'refs/tags/v1.1:refs/tags/v1.1' || err 'restore the annotated tag from the remote'
 out="$(run_in "$repo" --tags --remote origin --porcelain 2>&1)"
 assert_not_contains "$out" $'tag\tv1.1\t' 'an annotated tag equal to the remote one is pushed'
+# A tag of an annotated tag peels to the commit through two objects; the
+# remote lists that commit as NAME^{}, so an identical copy is pushed.
+git -C "$repo" -c advice.nestedTag=false tag -a vnest -m 'nested' v1.1 &&
+  git -C "$repo" push -q origin vnest || err 'push a nested annotated tag'
+out="$(run_in "$repo" --tags --remote origin --porcelain 2>&1)"
+assert_not_contains "$out" $'tag\tvnest\t' 'a nested annotated tag equal to the remote one is pushed'
 git -C "$repo" remote add broken "$scratch/does-not-exist.git" || err 'add unreachable remote'
 out="$(run_in "$repo" --tags --remote broken 2>&1)"; rc=$?
 assert_eq "$rc" 1 'an unreachable remote -> 1'
