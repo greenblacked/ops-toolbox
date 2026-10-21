@@ -274,6 +274,9 @@ if pods is not None:
       hits=[b for b in pdbs if (b.get("metadata") or {}).get("namespace") == meta.get("namespace")
             and matches((b.get("spec") or {}).get("selector"),labels)]
       label="pod %s/%s" % (meta.get("namespace",""),meta["name"])
+      if (p.get("status") or {}).get("phase") == "Pending":
+        # The eviction API deletes a Pending pod without asking any budget.
+        continue
       unhealthy=not any(c.get("type") == "Ready" and c.get("status") == "True"
                         for c in (p.get("status") or {}).get("conditions") or [])
       if len(hits) > 1:

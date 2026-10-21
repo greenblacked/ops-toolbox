@@ -374,8 +374,8 @@ other nodes, then reports:
 - **BLOCKER** lines, for what makes `kubectl drain` hang or refuse: a pod
   covered by a PodDisruptionBudget whose `disruptionsAllowed` is `0` (the
   eviction is retried until the timeout; a pod that is not Ready is let go
-  when the budget sets `unhealthyPodEvictionPolicy: AlwaysAllow`), a pod
-  covered by more than one
+  when the budget sets `unhealthyPodEvictionPolicy: AlwaysAllow`; a Pending
+  pod is never held by a budget), a pod covered by more than one
   budget (the eviction API refuses it), a pod with no controller (drain
   refuses it without `--force`, and nothing would recreate it), and no other
   node that is Ready and schedulable when there are pods to move.

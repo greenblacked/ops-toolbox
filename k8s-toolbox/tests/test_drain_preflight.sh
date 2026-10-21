@@ -72,8 +72,11 @@ save('pods-mirror', items(pod('kube-proxy-node-a',owner='Node',labels={'componen
                               annotations={'kubernetes.io/config.mirror':'abc123'})))
 save('pods-terminal', items(pod('report-1',owner=None,phase='Succeeded'),pod('report-2',owner='Job',phase='Failed')))
 save('pods-unready', items(pod('web-7d9f8-abcde',ready=False),pod('web-7d9f8-fghij',ready=True)))
+save('pods-pending', items(pod('web-7d9f8-abcde',phase='Pending'),pod('web-7d9f8-fghij',ready=False)))
+save('pods-pending-multi', items(pod('web-7d9f8-abcde',phase='Pending')))
 save('pdb-zero-alwaysallow', items(pdb('web',0,{'matchLabels':{'app':'web'}},policy='AlwaysAllow')))
 save('pdb-zero-ifhealthy', items(pdb('web',0,{'matchLabels':{'app':'web'}},policy='IfHealthyBudget')))
+save('pdb-two-zero', items(pdb('web',0,{'matchLabels':{'app':'web'}}),pdb('web-2',0,{'matchLabels':{'app':'web'}})))
 save('pdb-none', items())
 save('pdb-allows-one', items(pdb('web',1,{'matchLabels':{'app':'web'}})))
 save('pdb-zero', items(pdb('web',0,{'matchLabels':{'app':'web'}})))
@@ -201,6 +204,15 @@ export DRAIN_PODS=pods-unready DRAIN_PDB=pdb-zero-alwaysallow
 run_drain --node node-a
 assert_contains 'AlwaysAllow still blocks the Ready pod' 'BLOCKER   pod demo/web-7d9f8-fghij: drain will wait forever: PDB demo/web allows 0 disruptions'
 assert_absent 'AlwaysAllow lets the not-Ready pod go' 'BLOCKER   pod demo/web-7d9f8-abcde'
+reset_fixtures
+export DRAIN_PODS=pods-pending DRAIN_PDB=pdb-zero
+run_drain --node node-a
+assert_absent 'a Pending pod never waits on a budget' 'BLOCKER   pod demo/web-7d9f8-abcde'
+assert_contains 'a Running not-Ready pod still waits on a zero budget' 'BLOCKER   pod demo/web-7d9f8-fghij: drain will wait forever: PDB demo/web allows 0 disruptions'
+reset_fixtures
+export DRAIN_PODS=pods-pending-multi DRAIN_PDB=pdb-two-zero
+run_drain --node node-a
+assert_absent 'a Pending pod is not refused for matching two budgets' 'BLOCKER'
 reset_fixtures
 export DRAIN_PODS=pods-unready DRAIN_PDB=pdb-zero-ifhealthy
 run_drain --node node-a
