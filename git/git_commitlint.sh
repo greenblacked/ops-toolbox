@@ -30,8 +30,8 @@ and is skipped by --no-verify. This checks every commit in a range, so a pull
 request can be held to the same rules where nobody can skip them:
 
   not-conventional  the subject is not 'type(optional scope): subject', with an
-                    optional '!'; subjects starting 'Revert ' are exempt, as in
-                    the hook
+                    optional '!'; subjects starting 'Merge ' or 'Revert ' are
+                    exempt, as in the hook
   too-long          the subject is longer than --max-subject characters
   no-blank-line     the second line of the message is not blank
   fixup             a fixup!, squash! or amend! commit that was never squashed
@@ -215,9 +215,11 @@ while IFS= read -r sha; do
     fixup!*|squash!*|amend!*) is_fixup=1 ;;
   esac
 
-  # Exempt exactly as the hook exempts them: a revert git wrote, and the
-  # fixup family, which has its own finding below.
-  if (( is_fixup == 0 )) && [[ "$subject" != "Revert "* ]] && [[ ! "$subject" =~ $subject_re ]]; then
+  # Exempt exactly as the hook exempts them: a merge or revert subject git
+  # wrote (a squash merge keeps it on a plain commit), and the fixup family,
+  # which has its own finding below.
+  if (( is_fixup == 0 )) && [[ "$subject" != "Merge "* && "$subject" != "Revert "* ]] &&
+    [[ ! "$subject" =~ $subject_re ]]; then
     problems+=("not-conventional")
   fi
   if (( ${#subject} > MAX_SUBJECT )); then

@@ -126,6 +126,18 @@ assert_eq "$(grep -c $'\tforbidden\t' <<<"$out")" 2 '--forbid= is repeatable and
 out="$(run_in "$repo" --base main --forbid 'Signed-off-by' 2>&1)"
 assert_contains "$out" 'forbidden /Signed-off-by/' 'the human line names the pattern that matched'
 
+section "merge and revert subjects"
+# A plain commit (not a merge) whose subject git wrote for a merge, as a
+# squash merge leaves it; commit-tree keeps HEAD where the other sections
+# expect it.
+merge_subject_sha="$(git -C "$repo" commit-tree -p "$two_sha" -m 'Merge branch side into feature' "$two_sha^{tree}")" ||
+  err 'create merge-subject fixture'
+revert_subject_sha="$(git -C "$repo" commit-tree -p "$merge_subject_sha" -m 'Revert "fix: fine two"' "$two_sha^{tree}")" ||
+  err 'create revert-subject fixture'
+out="$(run_in "$repo" --range "$two_sha..$revert_subject_sha" --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 'Merge and Revert subjects on plain commits pass, as in the hook'
+assert_not_contains "$out" 'not-conventional' 'a Merge subject is not called unconventional'
+
 section "usage and environment"
 run_in "$repo" --max-subject abc >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 3 '--max-subject abc -> 3'
