@@ -762,7 +762,8 @@ A negation is a match like any other to `check-ignore`, so a path whose deciding
 
 Read-only: it never edits an ignore file, the index, or config. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
-**Exit codes:** `1` problems found, `2` not inside a Git repository, `3` a path outside the repository.
+**Exit codes:** `1` problems found, `2` not inside a Git repository, `3` a path outside the repository, `4` n/a: a bare
+repository has no work tree to check.
 
 A git that cannot answer is a problem, not a clean result. `check-ignore` exits `1` when nothing matched, which is an answer; anything else is reported with git's own message and exits `1`, because an empty result and "no rule matches this path" are the same value and a diagnostic must not confuse them. The no-argument scan raises its timeout with the size of the repository for the same reason — the call most likely to expire is the one whose empty result would read as an all-clear.
 
@@ -871,8 +872,9 @@ root whatever directory it is started in.
 
 **Exit codes:** `0` nothing at fail level, `1` a fail-level finding or a git
 command that could not answer, `2` not inside a Git repository, `3` bad usage
-(`--history-limit` not a positive whole number). Warnings never change the
-exit code. `--quiet` and `--json` work as in the other doctors.
+(`--history-limit` not a positive whole number), `4` n/a: a bare repository
+has no work tree, so nothing is scanned, not even `--history` (run it from a
+clone). Warnings never change the exit code. `--quiet` and `--json` work as in the other doctors.
 
 ---
 
@@ -954,7 +956,8 @@ blanked, because a CI-written `.gitmodules` sometimes carries a token.
 
 **Exit codes:** `0` no fail-level finding, `1` a fail-level finding or a git
 command that could not answer, `2` not inside a Git repository, `3` bad
-usage, `4` no submodules and no `.gitmodules`. `--quiet` and `--json` work as
+usage, `4` no submodules and no `.gitmodules`, or a bare repository (n/a: no work
+tree). `--quiet` and `--json` work as
 in the other doctors.
 
 ---

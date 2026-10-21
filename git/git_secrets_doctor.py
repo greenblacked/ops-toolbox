@@ -390,7 +390,8 @@ def run_report(args):
     rc, out, _ = run(["git", "rev-parse", "--is-bare-repository"])
     if rc == 0 and out.strip() == "true":
         info("n/a: this is a bare repository; there is no work tree for this "
-             "doctor to check")
+             "doctor to check; --history is not scanned in a bare "
+             "repository either (its history exists, but run it from a clone)")
         return 4
     rc, out, _ = run(["git", "rev-parse", "--show-toplevel"])
     if rc != 0 or not out.strip():
@@ -458,7 +459,8 @@ def main(argv=None):
     parser = Usage3Parser(
         description="Audit tracked files and history for committed credentials.",
         epilog="Exit codes: 0 nothing at fail level, 1 a fail-level finding or a git "
-               "command that could not answer, 2 not inside a Git repository, 3 usage.",
+               "command that could not answer, 2 not inside a Git repository, 3 usage, 4 n/a: a bare "
+               "repository has no work tree.",
     )
     parser.add_argument("--history", action="store_true",
                         help="also check every path ever added, on any ref")

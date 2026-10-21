@@ -1385,6 +1385,8 @@ for doctor in "$SECRETS_DOCTOR" "$SUBMODULE_DOCTOR" "$IGNORE_DOCTOR"; do
   assert_eq "$rc" "4" "$(basename "$doctor") in a bare repository -> exit 4"
   assert_contains "$out" "bare repository" "$(basename "$doctor") says why it has nothing to check"
 done
+out="$(cd "$bare_root/mirror.git" && "$SECRETS_DOCTOR" --history 2>&1)"
+assert_contains "$out" "--history is not scanned" "secrets doctor says --history needs a clone"
 out="$(run_with_home "$home" "$FLEET_DOCTOR" --only secrets --only submodule --only ignore "$bare_root" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "fleet doctor over a bare clone exits 0"
 assert_contains "$out" "n/a" "fleet doctor marks work-tree doctors n/a for a bare clone"

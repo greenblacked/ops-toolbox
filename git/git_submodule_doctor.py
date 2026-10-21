@@ -460,7 +460,7 @@ def main(argv=None):
         description="Diagnose submodule mapping, initialisation, URLs and drift.",
         epilog="Exit codes: 0 no fail-level finding, 1 a fail-level finding or a git "
                "command that could not answer, 2 not inside a Git repository, 3 usage, "
-               "4 no submodules here.",
+               "4 no submodules here, or a bare repository (n/a).",
     )
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--quiet", action="store_true",
