@@ -86,7 +86,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `macos_defaults.sh` | Read-only preference drift report by default; explicitly apply selected settings or revert a validated backup. |
 | `status.sh` | One-screen verdict: is this machine well enough to work on, and what should I run next? Read-only, no log, no sudo. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
-| `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
+| `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper, credential files at rest — each finding with its fix. |
 | `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
 | `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
@@ -112,7 +112,7 @@ than memorizing flags.
 | **Configure** | `macos_defaults.sh` | Once, then after major macOS upgrades | Finder, Dock, keyboard and screenshot preferences; read-only unless `--apply`/`--revert` |
 | **Diagnose** | `status.sh` | Whenever you sit down at the machine | Nothing — it only reads |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
-| **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
+| **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything, credentials included | Nothing — it only reads |
 | **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
@@ -1321,6 +1321,7 @@ decide.
 ./hardening_audit.sh --only firewall,disk,lock  # a subset
 ./hardening_audit.sh --quiet                # warnings and failures only
 ./hardening_audit.sh --fail-on warn         # exit 1 on a warning too
+./hardening_audit.sh --only secrets         # credential files only
 sudo ./hardening_audit.sh                   # a few probes read more as root
 ```
 
@@ -1335,11 +1336,19 @@ sudo ./hardening_audit.sh                   # a few probes read more as root
 | `lock` | Whether a password is required immediately after display sleep or the screen saver; an unlocked delay is graded. |
 | `sip` | System Integrity Protection, including a partially-disabled custom configuration. |
 | `gatekeeper` | Whether assessments are enabled. |
+| `secrets` | Credential files at rest: `~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, the GitHub CLI `hosts.yml`, Terraform Cloud and gcloud application-default credentials. Readable by every local user fails, by the group warns. Static AWS keys, base64 registry passwords without `credsStore`, a literal npm token, a `.netrc` password, `~/.git-credentials` and `credential.helper store` warn. |
 
 The `sharing` checks ask `netstat` which ports are listening rather than
 `systemsetup`, which needs root: an audit you have to `sudo` is an audit nobody
 runs. Loopback-only listeners are ignored, so an ssh tunnel endpoint on
 `127.0.0.1` is not reported as File Sharing being switched on.
+
+The `secrets` group names the file and the kind of finding and **never prints
+a value**: its content checks are `grep -q` with the output discarded, so only
+a yes or a no leaves them. A symlinked credential file is checked at its
+target and reported under its name in the home directory. A Docker
+`config.json` that uses a credential store, or an `.npmrc` whose token comes
+from `${NPM_TOKEN}`, holds no secret, so its mode is not graded.
 
 ### Options
 

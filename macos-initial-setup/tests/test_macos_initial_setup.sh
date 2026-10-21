@@ -2066,7 +2066,7 @@ AUDIT="$M/hardening_audit.sh"
 if [[ -x "$AUDIT" ]]; then
   groups_out="$("$AUDIT" --list-groups 2>&1)"; rc=$?
   assert_eq "hardening_audit --list-groups exits 0" "0" "$rc"
-  for g in sharing firewall updates disk lock sip gatekeeper; do
+  for g in sharing firewall updates disk lock sip gatekeeper secrets; do
     assert_contains "hardening_audit lists the $g group" "$groups_out" "$g"
   done
 
@@ -2535,6 +2535,109 @@ assert_contains "an absent --ssh-dir prints a skip row" "$out" "[skip]"
 out="$(sshdoc --ssh-dir "$sshd_dir/config")"; rc=$?
 assert_eq "an --ssh-dir that is a file is refused -> 2" "2" "$rc"
 rm -rf "$sd"
+
+
+section "hardening_audit: the secrets group reads modes and never prints values"
+# Fixtures carry canary secrets; the group names files and classes of finding
+# and must never echo a value. Modes are set with chmod and read through the
+# real stat on both runners. git is faked for credential.helper, uname for the
+# preflight; nothing else in this group shells out.
+sec="$(mktemp -d)"
+mkdir -p "$sec/bin" "$sec/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sec/bin/uname"
+cat > "$sec/bin/git" <<'GIT_EOF'
+#!/bin/sh
+if [ "$1 $2 $3" = "config --global credential.helper" ]; then
+  [ -n "${FAKE_GIT_HELPER:-}" ] || exit 1
+  echo "$FAKE_GIT_HELPER"
+  exit 0
+fi
+exit 1
+GIT_EOF
+chmod +x "$sec/bin/"*
+
+# A fresh HOME per case, so one fixture's finding cannot satisfy another's.
+sec_home() {
+  rm -rf "${sec:?}/home"
+  mkdir -p "$sec/home"
+}
+audit_secrets() {
+  HOME="$sec/home" TMPDIR="$sec/tmp" PATH="$sec/bin:/usr/bin:/bin" \
+    "$AUDIT" --only secrets "$@" 2>&1
+}
+
+sec_home
+mkdir -p "$sec/home/.aws"
+printf '[default]\naws_access_key_id = AKIACANARY\naws_secret_access_key = CANARY_AWS_SECRET\n' \
+  > "$sec/home/.aws/credentials"
+chmod 644 "$sec/home/.aws/credentials"
+out="$(audit_secrets)"; rc=$?
+assert_eq "an other-readable AWS credentials file fails -> 1" "1" "$rc"
+assert_contains "the permission fix is printed" "$out" "chmod 600 $sec/home/.aws/credentials"
+assert_contains "the finding is a FAIL" "$out" "[FAIL] AWS credentials is readable by every local user"
+assert_not_contains "the AWS secret is never printed" "$out" "CANARY_AWS_SECRET"
+assert_not_contains "the AWS key id is never printed" "$out" "AKIACANARY"
+
+chmod 600 "$sec/home/.aws/credentials"
+out="$(audit_secrets)"; rc=$?
+assert_eq "a private AWS credentials file with static keys only warns -> 0" "0" "$rc"
+assert_contains "static AWS keys are a warning" "$out" "long-lived static AWS keys on disk"
+audit_secrets --fail-on warn >/dev/null; rc=$?
+assert_eq "static AWS keys fail under --fail-on warn -> 1" "1" "$rc"
+
+sec_home
+mkdir -p "$sec/home/.docker"
+printf '{"auths": {"registry.example": {"auth": "Q0FOQVJZ"}}}\n' > "$sec/home/.docker/config.json"
+chmod 600 "$sec/home/.docker/config.json"
+out="$(audit_secrets)"
+assert_contains "base64 registry credentials are a warning" "$out" "registry credentials are base64 text"
+assert_contains "the credsStore fix is printed" "$out" '"credsStore": "osxkeychain"'
+assert_not_contains "the registry credential is never printed" "$out" "Q0FOQVJZ"
+printf '{"auths": {"registry.example": {}}, "credsStore": "osxkeychain"}\n' > "$sec/home/.docker/config.json"
+chmod 644 "$sec/home/.docker/config.json"
+out="$(audit_secrets)"; rc=$?
+assert_contains "a Docker config with credsStore passes" "$out" "Docker config uses a credential store"
+assert_eq "a 644 Docker config holding no secret is not a failure -> 0" "0" "$rc"
+
+sec_home
+printf '//registry.npmjs.org/:_authToken=npm_CANARY\n' > "$sec/home/.npmrc"
+chmod 600 "$sec/home/.npmrc"
+out="$(audit_secrets)"
+assert_contains "a literal npm token is a warning" "$out" "literal npm token"
+assert_not_contains "the npm token is never printed" "$out" "npm_CANARY"
+# shellcheck disable=SC2016  # the literal ${...} is the fixture
+printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$sec/home/.npmrc"
+out="$(audit_secrets)"
+assert_contains "an npm token read from the environment passes" "$out" "holds no literal npm token"
+
+sec_home
+printf 'https://user:CANARY_GIT_PASSWORD@git.example\n' > "$sec/home/.git-credentials"
+chmod 600 "$sec/home/.git-credentials"
+out="$(audit_secrets)"
+assert_contains "a ~/.git-credentials file is a warning" "$out" "plaintext git credentials"
+assert_not_contains "the git password is never printed" "$out" "CANARY_GIT_PASSWORD"
+
+sec_home
+out="$(FAKE_GIT_HELPER=store audit_secrets)"
+assert_contains "credential.helper store is a warning" "$out" "credential.helper store"
+out="$(FAKE_GIT_HELPER=osxkeychain audit_secrets)"
+assert_contains "credential.helper osxkeychain passes" "$out" "git keeps credentials in the Keychain"
+
+out="$(audit_secrets)"; rc=$?
+assert_eq "a home with no credential files -> 0" "0" "$rc"
+assert_contains "a home with no credential files says so" "$out" "no credential files found in the usual places"
+
+out="$(env -u HOME TMPDIR="$sec/tmp" PATH="$sec/bin:/usr/bin:/bin" "$AUDIT" --only secrets 2>&1)"; rc=$?
+assert_eq "the secrets group without HOME -> 0" "0" "$rc"
+assert_contains "the secrets group without HOME is a skip" "$out" "HOME is not set"
+
+mkdir -p "$sec/home/.kube"
+printf 'apiVersion: v1\n' > "$sec/home/.kube/config"
+chmod 600 "$sec/home/.kube/config"
+out="$(audit_secrets --quiet)"
+assert_not_contains "--quiet drops pass rows from the secrets group" "$out" "[pass]"
+assert_contains "--quiet still prints the summary" "$out" "== summary =="
+rm -rf "$sec"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of

@@ -16,6 +16,11 @@
 #
 # Checks are grouped; use --only to run a subset and --list-groups to see them.
 #
+# The secrets group looks at where the credentials on a DevOps laptop sit:
+# whether a credential file is readable by other local users, and whether a
+# secret is stored as plain text where a Keychain-backed alternative exists.
+# It names the file and the class of finding, never a value.
+#
 # Exit codes:
 #   0   no findings at or above the failure threshold
 #   1   one or more findings at or above the threshold
@@ -73,6 +78,7 @@ Groups:
   lock       Password requirement after display sleep / screen saver
   sip        System Integrity Protection
   gatekeeper Gatekeeper assessments
+  secrets    Credential files: permissions and plaintext tokens
 
 Exit codes: 0 clean, 1 findings at or above --fail-on, 2 preflight, 3 usage
 EOF
@@ -87,7 +93,7 @@ require_value() {
   fi
 }
 
-ALL_GROUPS="sharing firewall updates disk lock sip gatekeeper"
+ALL_GROUPS="sharing firewall updates disk lock sip gatekeeper secrets"
 
 while (( $# > 0 )); do
   case "$1" in
@@ -380,6 +386,151 @@ if want gatekeeper; then
       *)
         skip "could not read Gatekeeper status" ;;
     esac
+  fi
+fi
+
+# --- secrets ---------------------------------------------------------------
+if want secrets; then
+  group "secrets"
+
+  # Permission bits as octal, following a symlink to its target. BSD stat
+  # answers on a Mac; GNU stat answers in the Linux test container. GNU
+  # `stat -f` means --file-system and prints filesystem details on stdout as
+  # well as failing, so each answer is accepted only when it looks like a mode.
+  file_mode() {
+    local m
+    m="$(stat -L -f '%Lp' "$1" 2>/dev/null)"
+    if [[ ! "$m" =~ ^[0-7]{3,4}$ ]]; then
+      m="$(stat -L -c '%a' "$1" 2>/dev/null)"
+    fi
+    [[ "$m" =~ ^[0-7]{3,4}$ ]] || return 1
+    printf '%s\n' "$m"
+  }
+
+  # Does FILE hold a line matching the extended regex? Yes or no and nothing
+  # else: grep's output is discarded, so no secret leaves this function.
+  file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
+
+  # relative path|label|kind. Newline-separated rather than an associative
+  # array, which Bash 3.2 does not have.
+  SECRET_FILES='.aws/credentials|AWS credentials|aws
+.kube/config|kubeconfig|kube
+.docker/config.json|Docker config.json|docker
+.netrc|.netrc|netrc
+.npmrc|.npmrc|npmrc
+.pypirc|.pypirc|pypirc
+.git-credentials|.git-credentials|gitcred
+.config/gh/hosts.yml|GitHub CLI hosts.yml|gh
+.terraform.d/credentials.tfrc.json|Terraform Cloud credentials|tfc
+.config/gcloud/application_default_credentials.json|gcloud application-default credentials|adc'
+
+  if [[ -z "${HOME:-}" ]]; then
+    skip "HOME is not set; credential files not checked"
+  else
+    found_secret_file=0
+    while IFS='|' read -r rel label kind; do
+      [[ -n "$rel" ]] || continue
+      path="$HOME/$rel"
+      # -f follows a symlink, so a linked file is checked at its target and
+      # reported under the name it has in the home directory.
+      [[ -f "$path" ]] || continue
+      found_secret_file=1
+      # shellcheck disable=SC2088  # a display path, never opened
+      shown="~/$rel"
+
+      # Docker's config.json and .npmrc are often 644 and harmless when they
+      # hold no secret: with a credential store, or a token read from the
+      # environment, there is nothing in them for another user to read.
+      secret_free=0
+      case "$kind" in
+        docker)
+          if file_has "$path" '"credsStore"[[:space:]]*:' \
+             || ! file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]'; then
+            secret_free=1
+          fi
+          ;;
+        npmrc)
+          file_has "$path" '(_authToken|_auth|_password)[[:space:]]*=[[:space:]]*[^$[:space:]]' \
+            || secret_free=1
+          ;;
+      esac
+
+      mode="$(file_mode "$path")" || mode=""
+      if [[ -z "$mode" ]]; then
+        skip "could not read the mode of $shown"
+      elif (( secret_free )); then
+        :
+      elif (( (8#$mode & 4) != 0 )); then
+        fail "$label is readable by every local user ($shown, mode $mode)" "chmod 600 $path"
+      elif (( (8#$mode & 32) != 0 )); then
+        warn "$label is readable by its group ($shown, mode $mode)" "chmod 600 $path"
+      else
+        pass "$label is private to its owner ($shown, mode $mode)"
+      fi
+
+      case "$kind" in
+        aws)
+          if file_has "$path" '^[[:space:]]*aws_secret_access_key[[:space:]]*='; then
+            warn "long-lived static AWS keys on disk ($shown)" \
+                 "prefer short-lived credentials: aws configure sso, then aws sso login"
+          else
+            pass "$shown holds no static AWS keys"
+          fi
+          ;;
+        docker)
+          if file_has "$path" '"credsStore"[[:space:]]*:'; then
+            pass "Docker config uses a credential store ($shown)"
+          elif file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]'; then
+            warn "registry credentials are base64 text in config.json ($shown)" \
+                 'set "credsStore": "osxkeychain" in it and docker login again'
+          else
+            pass "Docker config holds no registry passwords ($shown)"
+          fi
+          ;;
+        npmrc)
+          # A ${VAR} reference is resolved from the environment by npm; any
+          # other value is the token itself.
+          if file_has "$path" '(_authToken|_auth|_password)[[:space:]]*=[[:space:]]*[^$[:space:]]'; then
+            # shellcheck disable=SC2016  # the ${...} is text for the reader
+            warn "literal npm token in $shown" 'reference an environment variable instead: _authToken=${NPM_TOKEN}'
+          else
+            pass "$shown holds no literal npm token"
+          fi
+          ;;
+        netrc)
+          if file_has "$path" '(^|[[:space:]])password[[:space:]]'; then
+            warn "plaintext password in $shown" \
+                 "curl, git and ftp read it as is; move it to the Keychain or a credential helper"
+          fi
+          ;;
+        gitcred)
+          warn "plaintext git credentials in $shown" \
+               "git config --global credential.helper osxkeychain, then delete $path"
+          ;;
+      esac
+    done <<< "$SECRET_FILES"
+
+    if (( found_secret_file == 0 )); then
+      pass "no credential files found in the usual places"
+    fi
+  fi
+
+  # credential.helper store is what writes ~/.git-credentials.
+  if command -v git >/dev/null 2>&1; then
+    helper="$(git config --global credential.helper 2>/dev/null || true)"
+    case "$helper" in
+      store|store\ *)
+        warn "git stores credentials as plain text (credential.helper store)" \
+             "git config --global credential.helper osxkeychain" ;;
+      osxkeychain)
+        pass "git keeps credentials in the Keychain (credential.helper osxkeychain)" ;;
+      "")
+        pass "no plaintext git credential helper configured" ;;
+      *)
+        pass "git uses a credential helper other than store" ;;
+    esac
+  else
+    skip "git not present; credential.helper not checked"
   fi
 fi
 
