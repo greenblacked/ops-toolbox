@@ -13,6 +13,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
+| [`tls_expiry.ps1`](tls_expiry.ps1) | Read-only certificate expiry check with exit codes: PEM/CER files, TLS endpoints, the personal certificate stores |
 | [`hardening_audit.ps1`](hardening_audit.ps1) | Read-only security audit with exit codes: firewall, SMBv1, RDP/NLA, UAC, autologon, Secure Boot/TPM, LSA protection, Defender, logging, patch age; prints each fix |
 | [`path_doctor.ps1`](path_doctor.ps1) | PATH report (duplicates, dead and relative entries, REG_SZ values, length, shadowed commands) and a backed-up `clean` of the user PATH |
 | [`dev_env_doctor.ps1`](dev_env_doctor.ps1) | Read-only toolchain check: long paths, git line endings and symlinks, virtualization, clock skew, HOME, docker context |
@@ -48,6 +49,7 @@ one. Neither replaces the other.
 - [dev_env_doctor.ps1](#dev_env_doctorps1)
 - [path_doctor.ps1](#path_doctorps1)
 - [hardening_audit.ps1](#hardening_auditps1)
+- [tls_expiry.ps1](#tls_expiryps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
@@ -551,6 +553,51 @@ Worth knowing:
   value exists and never reads it. Accounts are only named when a broad
   principal is in the Administrators group, which is found by its SID so a
   localised Windows reads correctly.
+
+## tls_expiry.ps1
+
+The Windows counterpart of [`linux/tls_expiry.sh`](../../linux/tls_expiry.sh):
+"will a certificate expire on me next month", answered with an exit code a
+scheduled task or a CI job can act on. It reads certificates; it never
+renews, imports or changes one.
+
+```powershell
+.\tls_expiry.ps1 -File C:\certs\api.pem
+.\tls_expiry.ps1 -HostName git.internal,registry.internal:5000 -Days 14
+.\tls_expiry.ps1 -Store -FailOn warn
+.\tls_expiry.ps1 -File .\leaf.crt -HostName example.com -Store -Quiet
+```
+
+| Source | What is read |
+| --- | --- |
+| `-File` | A PEM, CRT, CER or DER file. For a bundle, the first certificate - the leaf, in every bundle a server is handed. A file that is not a certificate is a `[FAIL]`. |
+| `-HostName` | The leaf a TLS endpoint presents, from a handshake with SNI. An expired or mismatched certificate is still read, and a name mismatch or an untrusted chain is a separate `[warn]`. An endpoint that cannot be reached is a `[FAIL]`. |
+| `-Store` | Every certificate in the Personal stores of the current user and of the machine (`CurrentUser\My`, `LocalMachine\My`), where Windows keeps client-authentication, code-signing, RDP and WinRM HTTPS certificates, with whether each has a private key. |
+
+The trust-anchor stores (Root, CA, TrustedPublisher) are never scanned: their
+contents are not yours to renew, and paging on a vendor root that expires next
+year is noise - the reason `linux/tls_expiry.sh` gives for leaving
+`/etc/ssl/certs` alone.
+
+| Option | Meaning |
+| --- | --- |
+| `-File PATH` | Files to check; repeat it or give a comma-separated list. A path that does not exist exits `3`. |
+| `-HostName HOST[:PORT]` | Endpoints to check, port 443 by default; an IPv6 address goes in brackets. Not `-Host`, which is PowerShell's own `$Host`. |
+| `-Store` | Also check the two Personal stores. |
+| `-Days N` | Warn within this many days, `1`-`3650`. Default `30`. |
+| `-FailOn LEVEL` | `fail` (default) exits `1` on an expired, unreadable or unreachable certificate; `warn` also on one expiring within `-Days`; `never` always exits `0`. The Bash sibling spells the first one `expired`. |
+| `-Quiet` | Print only warnings and failures. |
+
+Exit codes: `0` nothing at or above `-FailOn`, `1` something at or above it,
+`2` not Windows, `3` bad arguments (nothing to check, a missing file, a
+malformed host, a value out of range).
+
+How the endpoint check stays harmless: the connection gets its own
+certificate-validation callback, which records what was wrong and lets the
+handshake finish so the leaf can be read. The process-wide callback is never
+touched, no application data is sent, and the connection is closed as soon as
+the certificate is in hand. No private key is read or copied anywhere; for a
+store certificate only the "has a private key" flag is shown.
 
 ## Testing
 

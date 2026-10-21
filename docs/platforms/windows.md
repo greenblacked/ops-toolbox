@@ -26,6 +26,7 @@ Git Bash dotfiles installer.
 | `setup/status.ps1` | One-screen verdict; `-Only` selects sections, `-ListSections` lists them. | <span class="stage stage-report">read-only</span> |
 | `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
 | `setup/net_doctor.ps1` | Adapters, default routes, DNS, proxy (WinINET against `HTTP_PROXY`), hosts file, listening ports; opt-in `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `setup/tls_expiry.ps1` | Certificate expiry for PEM/CER files, TLS endpoints and the personal stores; exit-coded for a scheduled task. | <span class="stage stage-report">read-only</span> |
 | `setup/hardening_audit.ps1` | Security audit with the fix for each finding: firewall, SMBv1, RDP/NLA, UAC, autologon, Secure Boot, TPM, LSA, Defender, logging, patch age. | <span class="stage stage-report">read-only</span> |
 | `setup/dev_env_doctor.ps1` | Long paths, git line endings and symlinks, virtualization, clock skew (`-CheckTime`), `HOME` against `USERPROFILE`, docker context. | <span class="stage stage-report">read-only</span> |
 | `setup/ssh_client_doctor.ps1` | Private-key access lists, the `ssh-agent` service, Git's bundled ssh against the Windows one, `IdentityFile` paths; prints each fix. | <span class="stage stage-report">read-only</span> |
@@ -55,6 +56,7 @@ All paths are under `windows/`.
     .\windows\setup\ssh_client_doctor.ps1 -FailOn warn
     .\windows\setup\dev_env_doctor.ps1 -CheckTime
     .\windows\setup\hardening_audit.ps1 -FailOn warn
+    .\windows\setup\tls_expiry.ps1 -HostName example.com -Store -Days 14
     .\windows\setup\winget_bootstrap.ps1 diff
     .\windows\cleanup\disk_usage.ps1
     .\windows\cleanup\disk_usage.ps1 tree -Path $env:USERPROFILE -Depth 2

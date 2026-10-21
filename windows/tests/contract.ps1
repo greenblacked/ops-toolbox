@@ -203,6 +203,7 @@ $expectedParameters = @{
     'dev_env_doctor.ps1'    = @('Only', 'ListSections', 'CheckTime', 'MaxSkewSeconds', 'Quiet')
     'path_doctor.ps1'       = @('DryRun', 'Yes', 'Scope', 'Command', 'BackupDir', 'Quiet')
     'hardening_audit.ps1'   = @('Only', 'ListGroups', 'FailOn', 'Quiet')
+    'tls_expiry.ps1'        = @('File', 'HostName', 'Store', 'Days', 'FailOn', 'Quiet')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -2158,6 +2159,222 @@ if (-not $hardening) {
         }
     }
     Remove-Item -Path $auditBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'tls_expiry grades expiry'
+$tlsExpiry = Find-ContractScript 'tls_expiry.ps1'
+if (-not $tlsExpiry) {
+    Test-Fail 'tls_expiry.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $tlsExpiry -Name 'Get-CertExpiryVerdict'
+    if (-not $src) {
+        Test-Fail 'tls_expiry.ps1 : Get-CertExpiryVerdict not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $fixedNow = [datetime]'2026-10-01T12:00:00'
+        $verdictRan = 0
+        foreach ($case in @(
+                @{ NotAfter = $fixedNow.AddDays(-1); Level = 'expired'; DaysLeft = -1; Label = 'a day ago' }
+                @{ NotAfter = $fixedNow; Level = 'expired'; DaysLeft = 0; Label = 'this very moment' }
+                @{ NotAfter = $fixedNow.AddDays(30); Level = 'warn'; DaysLeft = 30; Label = 'exactly -Days away' }
+                @{ NotAfter = $fixedNow.AddDays(31); Level = 'pass'; DaysLeft = 31; Label = 'one day past -Days' }
+                @{ NotAfter = $fixedNow.AddDays(400); Level = 'pass'; DaysLeft = 400; Label = 'next year' }
+            )) {
+            $verdict = Get-CertExpiryVerdict -NotAfter $case.NotAfter -Now $fixedNow -Days 30
+            $verdictRan++
+            if ($verdict.Level -eq $case.Level -and $verdict.DaysLeft -eq $case.DaysLeft) {
+                Test-Ok ("NotAfter {0} -> {1}, {2} day(s) left" -f $case.Label, $verdict.Level, $verdict.DaysLeft)
+            } else {
+                Test-Fail ("NotAfter {0}: got {1}/{2}, expected {3}/{4}" -f $case.Label, $verdict.Level, $verdict.DaysLeft, $case.Level, $case.DaysLeft)
+            }
+        }
+        if ($verdictRan -lt 5) {
+            Test-Fail "only $verdictRan expiry case(s) ran - this check has stopped checking"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+# Certificates for the sections below, made here and never committed. A
+# checked-in fixture expires, and a test that starts failing on a date is a
+# test somebody deletes. CertificateRequest is PowerShell 7 (.NET Core) only;
+# without it these sections skip and say why.
+$tlsFixtures = $null
+$tlsBox = Join-Path ([IO.Path]::GetTempPath()) ('wintls_' + [Guid]::NewGuid().ToString('N'))
+if ($tlsExpiry -and ('System.Security.Cryptography.X509Certificates.CertificateRequest' -as [type])) {
+    New-Item -ItemType Directory -Path $tlsBox -Force | Out-Null
+    $tlsFixtures = @{}
+    $utcNow = [DateTimeOffset]::UtcNow
+    foreach ($spec in @(
+            @{ Name = 'expired'; From = $utcNow.AddDays(-60); To = $utcNow.AddDays(-1) }
+            @{ Name = 'soon'; From = $utcNow.AddDays(-1); To = $utcNow.AddDays(10) }
+            @{ Name = 'later'; From = $utcNow.AddDays(-1); To = $utcNow.AddDays(400) }
+        )) {
+        $key = [System.Security.Cryptography.ECDsa]::Create([System.Security.Cryptography.ECCurve+NamedCurves]::nistP256)
+        $request = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new(
+            "CN=contract-$($spec.Name)", $key, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+        $certificate = $request.CreateSelfSigned($spec.From, $spec.To)
+        $base64 = [Convert]::ToBase64String($certificate.RawData)
+        $wrapped = @()
+        for ($i = 0; $i -lt $base64.Length; $i += 64) {
+            $wrapped += $base64.Substring($i, [math]::Min(64, $base64.Length - $i))
+        }
+        $pem = "-----BEGIN CERTIFICATE-----`n" + ($wrapped -join "`n") + "`n-----END CERTIFICATE-----`n"
+        $path = Join-Path $tlsBox "$($spec.Name).pem"
+        Set-Content -Path $path -Value $pem -NoNewline
+        $tlsFixtures[$spec.Name] = @{ Path = $path; Pem = $pem; Der = $certificate.RawData }
+        $key.Dispose()
+    }
+    $tlsFixtures['garbage'] = @{ Path = (Join-Path $tlsBox 'garbage.pem') }
+    Set-Content -Path $tlsFixtures['garbage'].Path -Value 'this is not a certificate'
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'tls_expiry decodes PEM'
+if (-not $tlsExpiry) {
+    Test-Fail 'tls_expiry.ps1 was not found among the scripts - this check has stopped checking'
+} elseif (-not $tlsFixtures) {
+    Test-Skip 'CertificateRequest is not available in this PowerShell, so no certificate could be generated'
+} else {
+    $src = Get-ScriptFunctionSource -Script $tlsExpiry -Name 'ConvertFrom-PemText'
+    if (-not $src) {
+        Test-Fail 'tls_expiry.ps1 : ConvertFrom-PemText not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $first = $tlsFixtures['soon']
+        $second = $tlsFixtures['later']
+        $ascii = [Text.Encoding]::ASCII
+        foreach ($case in @(
+                @{ Text = $first.Pem + $second.Pem; Label = 'a bundle of two gives the first' }
+                @{ Text = ($first.Pem -replace "`n", "`r`n"); Label = 'CRLF armour' }
+                @{ Text = "# issued by the contract suite`nsubject=CN=contract-soon`n" + $first.Pem; Label = 'text before the armour' }
+            )) {
+            $got = ConvertFrom-PemText -Bytes $ascii.GetBytes($case.Text)
+            if ($got -is [byte[]] -and [Convert]::ToBase64String($got) -eq [Convert]::ToBase64String($first.Der)) {
+                Test-Ok "ConvertFrom-PemText: $($case.Label)"
+            } else {
+                Test-Fail "ConvertFrom-PemText: $($case.Label) did not return the first certificate's DER bytes"
+            }
+        }
+        $raw = ConvertFrom-PemText -Bytes $first.Der
+        if ($raw -is [byte[]] -and [Convert]::ToBase64String($raw) -eq [Convert]::ToBase64String($first.Der)) {
+            Test-Ok 'ConvertFrom-PemText: bytes with no armour are returned unchanged, as DER'
+        } else {
+            Test-Fail 'ConvertFrom-PemText: DER input was not returned unchanged'
+        }
+        $keyOnly = ConvertFrom-PemText -Bytes $ascii.GetBytes("-----BEGIN PRIVATE KEY-----`nAAAA`n-----END PRIVATE KEY-----`n")
+        if ($null -eq $keyOnly) {
+            Test-Ok 'ConvertFrom-PemText: armour with no CERTIFICATE block is not a certificate'
+        } else {
+            Test-Fail 'ConvertFrom-PemText: a lone private key block was returned as a certificate'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'tls_expiry end to end on files'
+$tlsCopy = $null
+if ($tlsExpiry -and $tlsFixtures) {
+    $tlsCopy = Copy-UnguardedScript -Script $tlsExpiry -Directory $tlsBox
+}
+if (-not $tlsExpiry) {
+    Test-Fail 'tls_expiry.ps1 was not found among the scripts - this check has stopped checking'
+} elseif (-not $tlsFixtures) {
+    Test-Skip 'CertificateRequest is not available in this PowerShell, so no certificate could be generated'
+} elseif (-not $tlsCopy) {
+    Test-Fail 'tls_expiry.ps1 : platform guard not found verbatim, so the end-to-end check could not run; update the guard text in contract.ps1'
+} else {
+    $missingPath = Join-Path $tlsBox 'missing.pem'
+    foreach ($case in @(
+            @{ Arguments = @('-File', $tlsFixtures['expired'].Path); Code = 1; Token = '[FAIL]'; Label = 'an expired certificate fails' }
+            @{ Arguments = @('-File', $tlsFixtures['soon'].Path, '-Days', '30'); Code = 0; Token = '[warn]'; Label = 'one expiring in 10 days warns and exits 0' }
+            @{ Arguments = @('-File', $tlsFixtures['soon'].Path, '-Days', '30', '-FailOn', 'warn'); Code = 1; Token = '[warn]'; Label = 'the same with -FailOn warn exits 1' }
+            @{ Arguments = @('-File', $tlsFixtures['later'].Path); Code = 0; Token = '[pass]'; Label = 'one with 400 days left passes' }
+            @{ Arguments = @('-File', $tlsFixtures['expired'].Path, '-FailOn', 'never'); Code = 0; Token = '[FAIL]'; Label = '-FailOn never reports the failure and exits 0' }
+            @{ Arguments = @('-File', $tlsFixtures['garbage'].Path); Code = 1; Token = '[FAIL]'; Label = 'a file that is not a certificate fails' }
+            @{ Arguments = @('-File', $missingPath); Code = 3; Token = ''; Label = 'a file that does not exist is a usage error' }
+        )) {
+        $run = Invoke-InScratch -Path $tlsCopy -Arguments $case.Arguments
+        if ($run.ExitCode -eq $case.Code -and (-not $case.Token -or $run.Output.Contains($case.Token))) {
+            Test-Ok "tls_expiry.ps1: $($case.Label) (exit $($run.ExitCode))"
+        } else {
+            Test-Fail "tls_expiry.ps1: $($case.Label): exited $($run.ExitCode), expected $($case.Code) and '$($case.Token)'"
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 6)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'tls_expiry usage'
+if (-not $tlsExpiry) {
+    Test-Fail 'tls_expiry.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    foreach ($case in @(
+            @{ Arguments = @(); Label = 'nothing to check' }
+            @{ Arguments = @('-Store', '-FailOn', 'bogus'); Label = '-FailOn bogus' }
+            @{ Arguments = @('-HostName', 'bad host'); Label = "-HostName 'bad host'" }
+            @{ Arguments = @('-Store', '-Days', '0'); Label = '-Days 0' }
+        )) {
+        $run = Invoke-InScratch -Path $tlsExpiry.FullName -Arguments $case.Arguments
+        if ($run.ExitCode -eq 3) {
+            Test-Ok "tls_expiry.ps1 $($case.Label) exits 3, before the platform guard"
+        } else {
+            Test-Fail "tls_expiry.ps1 $($case.Label): exited $($run.ExitCode), expected 3"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'tls_expiry unreachable host is a failure'
+# Port 1 on loopback has nothing listening, so the connection is refused at
+# once on both runners. A refusal that read as "nothing to report" would make
+# an outage look like a healthy certificate.
+if (-not $tlsExpiry) {
+    Test-Fail 'tls_expiry.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $unreachableBox = Join-Path ([IO.Path]::GetTempPath()) ('wintlshost_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $unreachableBox -Force | Out-Null
+    $hostCopy = Copy-UnguardedScript -Script $tlsExpiry -Directory $unreachableBox
+    if (-not $hostCopy) {
+        Test-Fail 'tls_expiry.ps1 : platform guard not found verbatim, so this check could not run; update the guard text in contract.ps1'
+    } else {
+        $run = Invoke-InScratch -Path $hostCopy -Arguments @('-HostName', '127.0.0.1:1')
+        if ($run.ExitCode -eq 1 -and $run.Output.Contains('[FAIL]')) {
+            Test-Ok 'tls_expiry.ps1 -HostName 127.0.0.1:1 is a [FAIL] and exits 1'
+        } else {
+            Test-Fail "tls_expiry.ps1 -HostName 127.0.0.1:1: exited $($run.ExitCode), expected 1 with a [FAIL]"
+        }
+        $run = Invoke-InScratch -Path $hostCopy -Arguments @('-Store')
+        if ($run.ExitCode -in 0, 1 -and $run.Output -match '== stores ==' -and $run.Output -notmatch 'at <ScriptBlock>') {
+            Test-Ok "tls_expiry.ps1 -Store reads or skips both personal stores without an exception (exit $($run.ExitCode))"
+        } else {
+            Test-Fail "tls_expiry.ps1 -Store: exited $($run.ExitCode), or did not report its stores"
+        }
+    }
+    Remove-Item -Path $unreachableBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'tls_expiry keeps its hands off keys and global state'
+# Static, because the failure it guards against would not show in any output:
+# a process-wide "accept every certificate" callback, or a private key read.
+if (-not $tlsExpiry) {
+    Test-Fail 'tls_expiry.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $tlsText = Get-Content -Raw -Path $tlsExpiry.FullName
+    foreach ($forbidden in @('ServerCertificateValidationCallback', '.PrivateKey', 'Export')) {
+        if ($tlsText.Contains($forbidden)) {
+            Test-Fail "tls_expiry.ps1 contains '$forbidden'"
+        } else {
+            Test-Ok "tls_expiry.ps1 never mentions '$forbidden'"
+        }
+    }
+}
+if (Test-Path -LiteralPath $tlsBox) {
+    Remove-Item -Path $tlsBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------
