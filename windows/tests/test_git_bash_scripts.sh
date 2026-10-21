@@ -353,6 +353,25 @@ assert_eq "--restore with no value -> 3" 3 "$rc"
 run_install "$h" --restore=latest
 assert_eq "--restore=latest -> 0" 0 "$rc"
 
+# A destination that is a directory is skipped, the rest of the set still
+# comes back, and the exit status says the restore was only partial.
+h="$(new_backup_home)"
+rm -f "$h/.bash_profile"
+mkdir "$h/.bash_profile"
+run_install "$h" --restore latest
+assert_eq "--restore with a directory in the way -> 1" 1 "$rc"
+assert_contains "--restore names the directory it skipped" "$out" ".bash_profile is a directory"
+assert_contains "--restore calls the result partial" "$out" "partial restore"
+assert_eq "--restore still restores the files before the directory" ".bashrc from 20260301-000000" "$(cat "$h/.bashrc")"
+assert_eq "--restore still restores the files after the directory" ".aliases from 20260301-000000" "$(cat "$h/.aliases")"
+if [[ -d "$h/.bash_profile" && ! -L "$h/.bash_profile" ]]; then
+  ok "--restore left the directory where it was"
+else
+  err "--restore replaced the directory"
+fi
+run_install "$h" --restore latest --dry-run
+assert_eq "--restore --dry-run with a directory in the way -> 1" 1 "$rc"
+
 h="$(new_backup_home)"
 before="$(snapshot "$h")"
 run_install "$h" --restore latest --dry-run

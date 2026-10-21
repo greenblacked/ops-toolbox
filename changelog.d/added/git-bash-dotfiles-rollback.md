@@ -4,6 +4,8 @@
   broken, and the backups piled up forever. `--list-backups` shows the sets
   newest first, `--restore STAMP` (or `latest`) puts one back after saving
   what it replaces as a new set, so a rollback is itself undoable, and keeps a
-  symlinked dotfile a symlink; `--prune-backups N` deletes all but the newest
-  sets, previewing unless `--yes` is given. Only files this script named are
-  touched, and none of the three needs the source files.
+  symlinked dotfile a symlink (a destination that is a directory is skipped
+  and the command exits 1 once the rest of the set is back);
+  `--prune-backups N` deletes all but the newest sets, previewing unless
+  `--yes` is given. Only files this script named are touched, and none of
+  the three needs the source files.

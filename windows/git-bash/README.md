@@ -118,20 +118,24 @@ one command rather than three `cp` lines typed into a broken prompt:
 `20250131-142530  .bashrc .aliases`, naming the files that set holds.
 `--restore` first saves each file it is about to replace as a new backup set,
 so a rollback can itself be rolled back (`--restore latest` again), leaves a
-file that already matches alone, and puts a backed-up symlink back as a
-symlink rather than writing through it. `--prune-backups N` keeps the newest
-`N` sets and deletes the rest, and only with `--yes`; without it, or with
-`--dry-run`, it prints the `rm` it would run. Only files named exactly
+file that already matches alone, skips a destination that is a directory and
+exits `1` after the rest of the set is back, and puts a backed-up symlink
+back as a symlink rather than writing through it. `--prune-backups N`
+keeps the newest `N` sets and deletes the rest, and only with `--yes`;
+without it, or with `--dry-run`, it prints the `rm` it would run. Only
+files named exactly
 `<.bashrc|.bash_profile|.aliases>.backup-<YYYYmmdd-HHMMSS>` directly in the
 target directory are ever listed, restored or deleted; something like
 `.bashrc.backup-notes` is left alone. None of the three needs the source
 files, so they work from a copy of the script with no checkout beside it.
 They are separate modes: combining two, or `--status` with one, exits `3`.
 
-Exit codes: `0` success/current, `1` CRLF line endings in a source file, `2`
-wrong environment (no source files, no target directory, or no `diff` on
-`PATH` for `--diff`), `3` usage, `4` `--status` or `--diff` found at least one
-missing or different target, or there are no backups to list or restore.
+Exit codes: `0` success/current, `1` CRLF line endings in a source file, or
+a `--restore` that skipped a file because its destination is a directory
+(the rest of the set is still restored), `2` wrong environment (no source
+files, no target directory, or no `diff` on `PATH` for `--diff`), `3`
+usage, `4` `--status` or `--diff` found at least one missing or different
+target, or there are no backups to list or restore.
 
 ## `gitbash_doctor.sh`
 

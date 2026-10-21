@@ -297,6 +297,7 @@ if [[ -n "$RESTORE_STAMP" ]]; then
   fi
   info "restoring the $stamp backup set into $HOME_DIR"
   restored=0
+  blocked=0
   for name in $DOTFILES; do
     backup="$HOME_DIR/$name.backup-$stamp"
     dest="$HOME_DIR/$name"
@@ -307,6 +308,7 @@ if [[ -n "$RESTORE_STAMP" ]]; then
     fi
     if [[ -d "$dest" && ! -L "$dest" ]]; then
       err "$dest is a directory; not replacing it"
+      blocked=$((blocked + 1))
       continue
     fi
     # Save what is there now first, the same symlink-aware way an install
@@ -330,12 +332,21 @@ if [[ -n "$RESTORE_STAMP" ]]; then
     fi
     restored=$((restored + 1))
   done
+  # The whole set is processed first, so one blocked file does not keep the
+  # others from coming back; the exit status then says the restore was only
+  # partial, for a script that checks it.
   if (( DRY_RUN == 1 )); then
     printf "dry-run complete; no changes written\n"
+    (( blocked == 0 )) || err "$blocked file(s) in the $stamp set could not be restored"
+    (( blocked == 0 )) || exit 1
     exit 0
   fi
   ok "restored $restored file(s) from the $stamp backup set"
   (( restored == 0 )) || info "open a new Git Bash window, or run: source ~/.bash_profile"
+  if (( blocked > 0 )); then
+    err "partial restore: $blocked file(s) in the $stamp set were not restored because the destination is a directory"
+    exit 1
+  fi
   exit 0
 fi
 
