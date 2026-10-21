@@ -39,6 +39,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`workstation_doctor.sh`](#workstation_doctorsh)
 - [`hardening_audit.sh`](#hardening_auditsh)
 - [`ops_context.sh`](#ops_contextsh)
+- [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
 - [What this changes on your machine](#what-this-changes-on-your-machine)
@@ -87,6 +88,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
 | `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
+| `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
 | `lib/npx_cache.py` | Classifier for old npx cache entries; used by deep cleanup and the age-limited presets. Keeps entries when activity or cache ownership is uncertain. |
@@ -112,6 +114,7 @@ than memorizing flags.
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
 | **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
+| **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
 The two bootstrap scripts are independent — you can run either one
@@ -1440,6 +1443,62 @@ under `--strict`, so a lapsed login never blocks an unrelated command.
 
 ---
 
+## `ssh_client_doctor.sh`
+
+`ssh` refuses a key with `Permission denied (publickey)` and names the reason
+only at `-v`: `~/.ssh` is group-readable, a private key is `644`, an
+`IdentityFile` points at a path that is gone. This is the macOS half of
+[`linux/ssh_client_doctor.sh`](../linux/ssh_client_doctor.sh), with the same
+flags, verdicts and exit codes, plus the checks a Mac adds: key strength, a
+private key with no passphrase, and the Keychain options.
+
+```bash
+./ssh_client_doctor.sh                       # every group, on ~/.ssh
+./ssh_client_doctor.sh --only keys,config    # a subset
+./ssh_client_doctor.sh --fail-on warn        # exit 1 on a warning too
+./ssh_client_doctor.sh --ssh-dir /Volumes/Backup/me/.ssh
+./ssh_client_doctor.sh --list-groups
+```
+
+| Group | Checks |
+| --- | --- |
+| `dir` | `~/.ssh` has no group or other permission bits (`chmod 700`). |
+| `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header, are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
+| `keys` | From each key's `.pub`: DSA fails, RSA under 3072 bits warns. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
+| `config` | `IdentityFile` paths that do not exist; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line or under `Host *`, where they apply to every server (the same lines under one named host are only noted); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |
+
+It never changes a mode: every fix is printed, not run. The passphrase test
+runs `ssh-keygen -y -P "" -f KEY` with stdin from `/dev/null` and all output
+discarded, so it cannot prompt and no key material reaches the terminal; a key
+whose mode is too open is not tested, because `ssh-keygen` refuses to read it.
+`~/.ssh/config` is read line by line: `Include` is not followed and `Match`
+is not evaluated, and
+[`git/git_ssh_doctor.py`](../git/git_ssh_doctor.py) is the tool that asks
+`ssh -G` for the effective configuration. A missing `--ssh-dir` is a single
+`skip`, not a failure.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--ssh-dir DIR` | Directory to inspect (default: `~/.ssh`). |
+| `--only GROUPS` | Comma-separated subset (see `--list-groups`). |
+| `--fail-on LEVEL` | Exit `1` on `fail` (default) or on `warn` and above. |
+| `--quiet` | Print only warnings and failures. |
+| `--list-groups` | Print the group names and exit. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing at or above the failure threshold. |
+| `1` | One or more findings at or above `--fail-on`. |
+| `2` | Preflight failed — not macOS, `HOME` unset without `--ssh-dir`, or `--ssh-dir` is not a directory. |
+| `3` | Invalid arguments. |
+
+---
+
 ## `launchd/stay_fresh_agent.sh`
 
 Maintenance that depends on remembering to run it does not happen. This installs
@@ -1868,6 +1927,8 @@ Homebrew / `pyenv` / `goenv` commands.
 - `ops_context.sh` reads local config files and asks `kubectl` and `docker`
   for their current context. It writes nothing, starts no network
   connection, and never opens `~/.aws/credentials`.
+- `ssh_client_doctor.sh` reads `~/.ssh` and asks `ssh-keygen` about each key
+  without printing it. It never changes a mode; every fix is printed.
 
 ### Privileged operations
 

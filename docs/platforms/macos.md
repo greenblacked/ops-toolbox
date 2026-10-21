@@ -25,6 +25,7 @@ a LaunchAgent that schedules the maintenance run.
 | `workstation_doctor.sh` | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `ops_context.sh` | Which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login this shell is pointed at; `--warn-on prod` exits 1 on a match. | <span class="stage stage-report">read-only</span> |
+| `ssh_client_doctor.sh` | `~/.ssh` modes, weak and unencrypted keys, missing `IdentityFile` paths, risky `Host *` options. | <span class="stage stage-report">read-only</span> |
 | `install_apps.sh` | Homebrew casks, CLI formulae and Google Cloud SDK; `--profile core`, `platform` or `full`. | `--dry-run` |
 | `install_devtools.sh` | Python (pyenv), Terraform, Go (goenv), Helm; `--setup-shell` wires `~/.zshrc`. | `--dry-run` |
 | `stay_fresh.sh` | Recurring housekeeping and upgrades; presets `--quick`, `--reports`, `--full`, `--old-only`. | `--dry-run` |

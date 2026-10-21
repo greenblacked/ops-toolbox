@@ -2393,6 +2393,149 @@ out="$(ops --only kube)"
 assert_not_contains "ops_context strips terminal escapes from config values" "$out" $'\033'
 rm -rf "$oc"
 
+
+section "ssh_client_doctor: groups and flags answer before preflight"
+SSHDOC="$M/ssh_client_doctor.sh"
+out="$("$SSHDOC" --list-groups 2>&1)"; rc=$?
+assert_eq "ssh_client_doctor --list-groups exits 0" "0" "$rc"
+for g in dir files keys config; do
+  if grep -qxF -- "$g" <<<"$out"; then
+    ok "ssh_client_doctor lists the $g group"
+  else
+    err "ssh_client_doctor --list-groups does not list $g"
+  fi
+done
+"$SSHDOC" --only nosuch >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects an unknown group -> 3" "3" "$rc"
+"$SSHDOC" --fail-on sometimes >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects a bad --fail-on -> 3" "3" "$rc"
+"$SSHDOC" --ssh-dir >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects --ssh-dir without a value -> 3" "3" "$rc"
+
+section "ssh_client_doctor: modes, keys and Host * risks"
+# Modes are set with chmod and read back through the real stat, BSD on a Mac
+# and GNU here, so the same fixture means the same thing on both runners.
+# ssh-keygen is faked: -l prints the fingerprint line stored in the .pub
+# fixture, and -y succeeds only for a key carrying the NOPASSPHRASE marker,
+# which is how a real key without a passphrase answers. Every fixture key
+# body carries SECRETBODY, which must never reach the output.
+sd="$(mktemp -d)"
+mkdir -p "$sd/bin" "$sd/home/.ssh" "$sd/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sd/bin/uname"
+cat > "$sd/bin/ssh-keygen" <<'KEYGEN_EOF'
+#!/bin/sh
+mode=""; file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -y) mode=y ;;
+    -l) mode=l ;;
+    -P) shift ;;
+    -f) shift; file="$1" ;;
+  esac
+  shift
+done
+case "$mode" in
+  y) grep -q NOPASSPHRASE "$file" ;;
+  l) cat "$file" ;;
+  *) exit 1 ;;
+esac
+KEYGEN_EOF
+chmod +x "$sd/bin/"*
+ssh_home="$sd/home"
+sshd_dir="$sd/home/.ssh"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/id_ed25519"
+printf '256 SHA256:fixture me@example (ED25519)\n' > "$sshd_dir/id_ed25519.pub"
+printf 'Host bastion\n  HostName bastion.example\n  IdentityFile ~/.ssh/id_ed25519\n' \
+  > "$sshd_dir/config"
+chmod 700 "$sshd_dir"
+chmod 600 "$sshd_dir/id_ed25519" "$sshd_dir/config"
+chmod 644 "$sshd_dir/id_ed25519.pub"
+
+sshdoc() {
+  HOME="$ssh_home" TMPDIR="$sd/tmp" PATH="$sd/bin:/usr/bin:/bin" "$SSHDOC" "$@" 2>&1
+}
+
+out="$(sshdoc)"; rc=$?
+assert_eq "ssh_client_doctor passes a clean ~/.ssh -> 0" "0" "$rc"
+assert_contains "ssh_client_doctor prints pass rows" "$out" "[pass]"
+assert_contains "ssh_client_doctor grades the key type" "$out" "ED25519 256"
+assert_contains "ssh_client_doctor reports the passphrase" "$out" "passphrase-protected"
+assert_not_contains "ssh_client_doctor never prints key material" "$out" "SECRETBODY"
+out="$(sshdoc --ssh-dir="$sshd_dir")"; rc=$?
+assert_eq "ssh_client_doctor accepts --ssh-dir=DIR" "0" "$rc"
+
+chmod 755 "$sshd_dir"
+out="$(sshdoc --only dir)"; rc=$?
+assert_eq "a group-readable ~/.ssh fails -> 1" "1" "$rc"
+assert_contains "the directory fix is printed" "$out" "chmod 700 $sshd_dir"
+chmod 700 "$sshd_dir"
+
+chmod 644 "$sshd_dir/id_ed25519"
+out="$(sshdoc --only files,keys)"; rc=$?
+assert_eq "a 644 private key fails -> 1" "1" "$rc"
+assert_contains "the key fix is printed" "$out" "chmod 600 $sshd_dir/id_ed25519"
+assert_contains "the passphrase is not judged while the mode is wrong" "$out" "passphrase not checked"
+chmod 600 "$sshd_dir/id_ed25519"
+
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/id_rsa"
+printf '1024 SHA256:fixture me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
+chmod 600 "$sshd_dir/id_rsa"
+out="$(sshdoc --only keys)"; rc=$?
+assert_eq "a 1024-bit RSA key is a warning only -> 0" "0" "$rc"
+assert_contains "the short RSA key is named" "$out" "1024-bit RSA"
+sshdoc --only keys --fail-on warn >/dev/null; rc=$?
+assert_eq "a short RSA key fails under --fail-on warn -> 1" "1" "$rc"
+rm -f "$sshd_dir/id_rsa" "$sshd_dir/id_rsa.pub"
+
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nNOPASSPHRASE SECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/deploy_key"
+chmod 600 "$sshd_dir/deploy_key"
+out="$(sshdoc --only keys)"; rc=$?
+assert_contains "a key found by its header and opening with no passphrase is a warning" \
+  "$out" "unencrypted private key: deploy_key"
+assert_contains "the Keychain-backed fix is printed" "$out" "ssh-add --apple-use-keychain"
+assert_not_contains "the unencrypted key's body is never printed" "$out" "SECRETBODY"
+rm -f "$sshd_dir/deploy_key"
+
+printf 'Host bastion\n  ForwardAgent yes\n  IdentityFile ~/.ssh/gone\n' > "$sshd_dir/config"
+chmod 600 "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_contains "a missing IdentityFile is named" "$out" "IdentityFile ~/.ssh/gone does not exist"
+if grep -q '\[warn\].*ForwardAgent' <<<"$out"; then
+  err "ForwardAgent under one named Host is graded as a warning"
+else
+  ok "ForwardAgent under one named Host is not a warning"
+fi
+assert_contains "ForwardAgent under one named Host is still noted" "$out" "ForwardAgent yes under Host bastion"
+
+printf 'Host *\n  ForwardAgent yes\n  StrictHostKeyChecking no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+if grep -q '\[warn\].*ForwardAgent yes applies to every host' <<<"$out"; then
+  ok "ForwardAgent yes under Host * is a warning"
+else
+  err "ForwardAgent yes under Host * was not graded as a warning: $out"
+fi
+if grep -q '\[warn\].*StrictHostKeyChecking no applies to every host' <<<"$out"; then
+  ok "StrictHostKeyChecking no under Host * is a warning"
+else
+  err "StrictHostKeyChecking no under Host * was not graded as a warning: $out"
+fi
+assert_eq "warnings alone keep the default threshold -> 0" "0" "$rc"
+
+chmod 666 "$sshd_dir/config"
+out="$(sshdoc --only files)"
+assert_contains "a world-writable config is a warning with its fix" "$out" "chmod 600 $sshd_dir/config"
+chmod 600 "$sshd_dir/config"
+
+out="$(sshdoc --ssh-dir "$sd/nosuch")"; rc=$?
+assert_eq "an absent --ssh-dir is a skip, not a failure -> 0" "0" "$rc"
+assert_contains "an absent --ssh-dir prints a skip row" "$out" "[skip]"
+out="$(sshdoc --ssh-dir "$sshd_dir/config")"; rc=$?
+assert_eq "an --ssh-dir that is a file is refused -> 2" "2" "$rc"
+rm -rf "$sd"
+
 end_section
 # The file's own floor: it reached this line having opened sections, each of
 # which asserted something. Reaching it at all is what the removal of `-e` put
