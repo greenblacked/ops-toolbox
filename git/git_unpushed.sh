@@ -107,6 +107,9 @@ while (( $# > 0 )); do
   shift
 done
 
+# Leading zeros must not read as octal inside (( )).
+LIMIT=$((10#$LIMIT))
+
 # --- preflight -------------------------------------------------------------
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   printf "not inside a Git repository\n" >&2

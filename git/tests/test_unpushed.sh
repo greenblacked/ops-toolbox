@@ -95,6 +95,8 @@ out="$(run_in "$repo" --limit 1 2>&1)"
 assert_contains "$out" 'second local change' '--limit 1 lists the newest subject'
 assert_not_contains "$out" 'first local change' '--limit 1 leaves the older subject out'
 assert_contains "$out" '... and 1 more' '--limit 1 says how many it left out'
+out="$(run_in "$repo" --limit 01 2>&1)"
+assert_contains "$out" '... and 1 more' '--limit 01 reads as decimal 1'
 
 section "branches with no upstream"
 git -C "$repo" branch no-up main || err 'create no-up branch'

@@ -159,6 +159,9 @@ for pattern in "${FORBID[@]+"${FORBID[@]}"}"; do
   fi
 done
 
+# Leading zeros must not read as octal inside (( )).
+MAX_SUBJECT=$((10#$MAX_SUBJECT))
+
 # --- preflight -------------------------------------------------------------
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
   printf "not inside a Git repository\n" >&2
@@ -205,8 +208,9 @@ bad=0
 while IFS= read -r sha; do
   [[ -n "$sha" ]] || continue
   total=$((total + 1))
-  subject="$(git log -1 --format=%s "$sha")"
   message="$(git log -1 --format=%B "$sha")"
+  # First line only, as the commit-msg hook reads it (%s folds the paragraph).
+  subject="${message%%$'\n'*}"
   problems=()
   matched=()
 

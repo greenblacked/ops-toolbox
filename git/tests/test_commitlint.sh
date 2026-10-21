@@ -113,6 +113,9 @@ section "rule options"
 out="$(run_in "$repo" --range "$base_sha..$two_sha" --max-subject 10 --porcelain 2>&1)"; rc=$?
 assert_eq "$rc" 1 '--max-subject 10 finds problems in fine commits'
 assert_contains "$out" $'\ttoo-long\tfix: fine two' '--max-subject 10 flags a 13-character subject'
+out="$(run_in "$repo" --range "$base_sha..$two_sha" --max-subject 08 --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 1 '--max-subject 08 reads as decimal 8, not octal'
+assert_contains "$out" $'\ttoo-long\tfix: fine two' '--max-subject 08 still flags a 13-character subject'
 out="$(run_in "$repo" --range "$base_sha..$two_sha" --types feat --porcelain 2>&1)"
 assert_contains "$out" $'\tnot-conventional\tfix: fine two' '--types feat makes a fix: commit unconventional'
 assert_not_contains "$out" 'feat(git): fine one' '--types feat keeps feat commits fine'
