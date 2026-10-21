@@ -1184,12 +1184,13 @@ file is reported and left in place, never deleted or renamed.
   `verify: <file>: <reason>` on stderr, followed by `verify: N file(s)
   checked, M problem(s)`. A run that pulled nothing has nothing to check and
   passes; a run whose transfer already failed is not checked again.
-- `--max-age HOURS` fails unless the destination holds a `backup-*.backup`
-  modified within the last HOURS hours (a whole number from 1). The run can
+- `--max-age HOURS` fails unless a `backup-*.backup` pulled in this run was
+  made by the router within the last HOURS hours (a whole number from 1).
+  Files other routers left in a shared destination do not count. The run can
   succeed every night while the router's own backup scheduler has died and
   `RemovePrevious` left one old pair to be pulled again and again; `scp -p`
   keeps the router's timestamps, so this sees how old the newest backup
-  really is. With `--max-age`, a router with no backups yet is a failure
+  the router made really is. With `--max-age`, a router with no backups yet is a failure
   (exit `1`) rather than success.
 
 Without either flag the behaviour is exactly what it was, so existing cron

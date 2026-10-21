@@ -175,6 +175,36 @@ run_check_case "verify and max-age together"       0 good         --verify --max
 run_check_case "no flags and no backups still"     0 none
 run_check_case "no flags and a stale pair still"   0 stale
 
+# A destination shared by two routers: router B's fresh backup, already in the
+# directory, must not vouch for router A, whose scheduler died and whose pulled
+# pair is stale. And the reverse: A's own fresh pull passes beside B's stale one.
+run_shared_case() {
+  local label="$1" expected="$2" pulled_stale="$3" other_stale="$4"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$STUB_DIR/bin/ssh"
+  cat >"$STUB_DIR/bin/scp" <<EOF
+#!/usr/bin/env bash
+dest="\${@: -1}"
+remote="\${@: -2:1}"
+pattern="\${remote#*:}"
+case "\$pattern" in
+  *.backup) printf 'backup\n' >"\$dest/backup-routerA.backup" ;;
+  *.rsc) printf '# 2026-10-21 04:00:00 by RouterOS 7.24.5\n' >"\$dest/backup-routerA.rsc" ;;
+esac
+if [ "$pulled_stale" = yes ]; then touch -t 202001010000 "\$dest"/backup-routerA.*; fi
+exit 0
+EOF
+  chmod +x "$STUB_DIR/bin/ssh" "$STUB_DIR/bin/scp"
+  rm -rf "${DEST:?}"/*
+  printf 'other\n' >"$DEST/backup-routerB.backup"
+  if [[ "$other_stale" = yes ]]; then touch -t 202001010000 "$DEST/backup-routerB.backup"; fi
+  local rc
+  PATH="$STUB_DIR/bin:$PATH" "$SCRIPT" --max-age 24 admin@routerA "$DEST" >/dev/null 2>&1
+  rc=$?
+  if [[ "$rc" == "$expected" ]]; then ok "$label -> $rc"; else err "$label: expected $expected, got $rc"; fi
+}
+run_shared_case "max-age ignores another router's fresh backup" 1 yes no
+run_shared_case "max-age ignores another router's stale backup" 0 no yes
+
 # Argument contract, checked here too so it cannot drift from the exit codes.
 check_rc() {
   local label="$1" expected="$2"; shift 2

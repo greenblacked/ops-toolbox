@@ -41,8 +41,10 @@ Options:
   --verify           Check what this run pulled: no empty file, each .rsc
                      starts with the RouterOS export header, and every
                      .backup has its .rsc (and the reverse) in dest-dir
-  --max-age HOURS    Fail unless dest-dir holds a backup-*.backup modified
-                     within the last HOURS hours (a whole number, 1 or more)
+  --max-age HOURS    Fail unless a backup-*.backup pulled in this run was made
+                     by the router within the last HOURS hours (a whole
+                     number, 1 or more); other routers' files in dest-dir
+                     do not count
   --dry-run          Preview the probe and transfers; contact nothing, write nothing
   -h, --help         Show this help
 
@@ -161,8 +163,8 @@ if (( DRY_RUN == 1 )); then
     printf 'dry-run: would verify the pulled files (non-empty, export header, backup/rsc pairs)\n'
   fi
   if [[ -n "$MAX_AGE" ]]; then
-    printf 'dry-run: would require a backup-*.backup newer than %s hour(s) in %s\n' \
-      "$((10#$MAX_AGE))" "$D"
+    printf 'dry-run: would require a pulled backup-*.backup newer than %s hour(s)\n' \
+      "$((10#$MAX_AGE))"
   fi
   printf 'dry-run complete; no changes written\n'
   exit 0
@@ -310,14 +312,24 @@ fi
 
 # --max-age: the run can succeed every night while the router's own backup
 # scheduler has died, re-pulling the one stale pair RemovePrevious left. scp
-# -p keeps the router's timestamps, so the newest local mtime is the age of
-# the newest backup the router made. find -mmin works on GNU and BSD alike.
+# -p keeps the router's timestamps, so the mtime of a file this run pulled is
+# the age of a backup this router made. Only this run's files count: a
+# destination shared by several routers also holds their backup-*.backup, and
+# one router's fresh backup must not vouch for another's dead scheduler.
+# find -mmin works on GNU and BSD alike.
 if [[ -n "$MAX_AGE" ]]; then
   minutes=$((10#$MAX_AGE * 60))
-  recent="$(find "$D" -maxdepth 1 -name 'backup-*.backup' -type f -mmin "-$minutes" 2>/dev/null || true)"
+  recent=""
+  for name in ${pulled[@]+"${pulled[@]}"}; do
+    [[ "$name" == *.backup ]] || continue
+    if [[ -n "$(find "$D/$name" -maxdepth 0 -type f -mmin "-$minutes" 2>/dev/null || true)" ]]; then
+      recent="$name"
+      break
+    fi
+  done
   if [[ -z "$recent" ]]; then
-    printf 'newest backup in %s is older than %s hour(s) (or there is none)\n' \
-      "$D" "$((10#$MAX_AGE))" >&2
+    printf 'no backup-*.backup pulled from %s in this run is newer than %s hour(s) (or none was pulled)\n' \
+      "$R" "$((10#$MAX_AGE))" >&2
     failed=1
   fi
 fi

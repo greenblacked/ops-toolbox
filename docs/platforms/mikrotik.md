@@ -84,8 +84,8 @@ the host tools to inspect.
     ```
 
     `--verify` checks the pulled files (non-empty, export header, each
-    `.backup` with its `.rsc`) and `--max-age` fails when the newest backup is
-    older than the hours given, so a cron job notices a router whose own
+    `.backup` with its `.rsc`) and `--max-age` fails when the newest backup
+    pulled in that run is older than the hours given, so a cron job notices a router whose own
     backup scheduler stopped.
 
     Installing a router script means pasting its `.lua` file into
