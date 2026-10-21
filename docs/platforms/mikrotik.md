@@ -62,8 +62,9 @@ the host tools to inspect.
     installed, scheduled script that 7.24 refuses to run. It warns about
     disabled schedulers, enabled ones that have never fired, and Telegram
     globals that no startup scheduler sets again after a reboot. `--drift`
-    compares each installed script with the file in this checkout by a
-    length and digest the router computes, so no script source is fetched.
+    compares each installed script with the file in this checkout on the
+    router itself, which answers same or changed, so no script source is
+    fetched.
 
 === "Preview"
 

@@ -1090,23 +1090,26 @@ answer produces no finding rather than a false one.
 `--drift` answers which routers still run an old copy of a script. Scripts are
 pasted into *Source* by hand, and this package changes them (the 7.24 renames,
 fixes), so there was no answer short of opening each one in Winbox. With the
-flag, the router computes the length and SHA-256 of each installed script and
-returns those, never the source, which may hold a pasted token. The source
-is handed to the hash function as an argument, so the probe sets no global
-and writes nothing to the router. Each installed
-script that this package ships is compared with its file here, allowing for a
-paste that kept or dropped the trailing newline or stored CRLF line ends. A
-script that differs is a `warn` naming the file (edited in place or out of
+flag, the file here is sent to the router as an argument of a small function
+the router compiles with `:parse`, and the router compares it with the
+installed script's *Source* and answers `same`, `changed` or `missing` per
+script. The router's source is never read back, since it may hold a pasted
+token, and nothing is written to the router: no global, no script, no
+scheduler. (An earlier design had the router hash each script; RouterOS 7.24
+rejects every `:convert` spelling tried for that, so the comparison is a
+plain string comparison, which works on every release.) The scripts go in
+batches of about 24 KB of escaped text per ssh command. A paste that kept or
+dropped the trailing newline, or stored CRLF line ends, counts as the same.
+A script that differs is a `warn` naming the file (edited in place or out of
 date) and the fix line says to paste the file body into
 *System > Scripts > NAME > Source*. Thresholds you tuned in the router's copy
 show up here too, which is why this is a flag and not part of the default
-verdict. One `info` line counts how many installed package scripts match.
-Scripts that are not in the package are skipped. If the router's release
-cannot compute the digest, the comparison falls back to length and the
-finding says "compared by length only". JSON gains `drift`, a map from script
-name to `match`, `differs`, `length-match` or `length-differs`: a verdict
-only, never a digest or a length. A lone copy of `router_doctor.py` with no
-`.lua` files beside it has nothing to compare against and says so once.
+verdict. One `info` line counts how many compared package scripts match. A
+script the router gave no answer for is a `warn` and verdict `unknown`, never
+a guess. Scripts that are not in the package are skipped. JSON gains `drift`,
+a map from script name to `same`, `changed` or `unknown`: a verdict only. A
+lone copy of `router_doctor.py` with no `.lua` files beside it has nothing to
+compare against and says so once.
 
 Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
 `--port`). `--format json` returns installed script names, scheduler

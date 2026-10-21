@@ -1723,65 +1723,72 @@ def test_rogue_dns_invalid_connection_get_probe(
 
 # --- router_doctor.py --drift ----------------------------------------------
 #
-# The drift probe asks the router for a SHA-256 of each script's source so the
-# source itself never leaves the router. The :convert spelling is the one part
-# of that which nothing offline can check, so each candidate in router_doctor's
-# DRIFT_HASH_SPELLINGS is compiled here with :parse, exactly as the probe does,
-# on the pinned release, against the digest of "abc" from FIPS 180-2. At least
-# one must give it. A spelling written inline is a parse error on 7.24 ("syntax
-# error" at transform=sha256), which is why the probe compiles them at run time.
-DRIFT_DIGEST_OF_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+# --drift compares on the router: the expected source (the file in this
+# checkout) is an argument of a function compiled with :parse, and the router
+# answers same, changed or missing per script, so no source leaves it. Nothing
+# offline can check that the escaping survives RouterOS's own parser, so this
+# builds the very command router_doctor sends, with a scratch script as the
+# subject, and runs it on the pinned release. The only change is that :put
+# (which a scheduler-run script has nowhere to show) becomes a :set of a
+# scratch global that the test reads back.
+DRIFT_SUBJECT = (
+    ':local a "quote\\" dollar\\$b back\\\\slash question\\?";\n'
+    "\t# tab above, ${braces} and [brackets] below\n"
+    ':put [:len $a]; :log info "caf\u00e9";\n'
+)
 
 
-def _drift_hash_spellings() -> tuple[str, ...]:
+def _router_doctor_module() -> Any:
     path = MIKROTIK_DIR / "features" / "router_doctor.py"
     spec = importlib.util.spec_from_file_location("router_doctor_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return tuple(module.DRIFT_HASH_SPELLINGS)
+    return module
 
 
-def test_drift_hash_spelling_is_valid_on_the_pinned_routeros(
+def _drift_answer(api: Any, script_resource: Any, name: str, expected: bytes) -> str:
+    module = _router_doctor_module()
+    command = module.drift_commands({name: expected})[0][1]
+    assert command.count(":put (") == 1, command
+    runner = "pu_ut_drift_run"
+    for g in ("PuDriftOut", "PuDriftDone"):
+        _unset_global(api, g)
+    source = (
+        ":global PuDriftOut;\n:global PuDriftDone;\n"
+        + command.replace(":put (", ":set PuDriftOut (")
+        + '\n:set PuDriftDone "yes";\n'
+    )
+    _add_script(script_resource, runner, source)
+    try:
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "PuDriftDone") == "yes", timeout=30.0
+        )
+        return _read_global(api, "PuDriftOut")
+    finally:
+        _remove_by_name(script_resource, runner)
+        for g in ("PuDriftOut", "PuDriftDone"):
+            _unset_global(api, g)
+
+
+def test_drift_comparison_runs_on_the_pinned_routeros(
     api: Any, script_resource: Any
 ) -> None:
-    name = "pu_ut_drift"
-    results: dict[str, str] = {}
+    subject = "pu_ut_drift_subject"
+    raw = DRIFT_SUBJECT.encode("utf-8")
     try:
-        for spelling in _drift_hash_spellings():
-            _unset_global(api, "PuDrift")
-            _unset_global(api, "PuDriftDone")
-            # The source is passed as the `src` argument, as the probe does.
-            source = (
-                ':global PuDrift "";\n'
-                ':global PuDriftDone;\n'
-                ':local fn "";\n'
-                ':do {:set fn [:parse (":return " . "'
-                + spelling
-                + '")]; :set PuDrift [$fn src="abc"]} on-error={:set PuDrift "rejected"};\n'
-                ':set PuDriftDone "yes";\n'
-            )
-            _add_script(script_resource, name, source)
-            try:
-                _run_via_scheduler(
-                    api, name, lambda: _read_global(api, "PuDriftDone") == "yes",
-                    timeout=30.0,
-                )
-                results[spelling] = _read_global(api, "PuDrift").lower()
-            except Exception as exc:  # keep going: every candidate is reported
-                results[spelling] = f"did not finish: {exc!r}"
-            _remove_by_name(script_resource, name)
+        _add_script(script_resource, subject, DRIFT_SUBJECT)
+        same = _drift_answer(api, script_resource, subject, raw)
+        modified = _drift_answer(api, script_resource, subject, raw.replace(b"back", b"BACK"))
+        # a prefix of the source (two bytes short) is a difference too
+        shorter = _drift_answer(api, script_resource, subject, raw[:-2])
+        missing = _drift_answer(api, script_resource, "pu_ut_drift_absent", raw)
     finally:
-        _remove_by_name(script_resource, name)
-        for g in ("PuDrift", "PuDriftDone"):
-            _unset_global(api, g)
-    report = "\n".join(f"  {spelling!r} -> {got!r}" for spelling, got in results.items())
-    assert DRIFT_DIGEST_OF_ABC in results.values(), (
-        "no DRIFT_HASH_SPELLINGS entry gives the SHA-256 of 'abc' on this release; "
-        "each candidate's result (\"rejected\" = :parse or the call failed, "
-        "\"\" = ran but gave nothing):\n" + report
-        + "\nUntil one matches, --drift compares script length only."
-    )
+        _remove_by_name(script_resource, subject)
+    assert same == f"DRF:{subject}|same", same
+    assert modified == f"DRF:{subject}|changed", modified
+    assert shorter == f"DRF:{subject}|changed", shorter
+    assert missing == "DRF:pu_ut_drift_absent|missing", missing
 
 
 # --- conntrack_watch.lua ----------------------------------------------------

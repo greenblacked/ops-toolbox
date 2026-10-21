@@ -15,7 +15,6 @@ length, which is what makes "TgBotToken is set" printable at all.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import io
 import json
 import os
@@ -1093,19 +1092,96 @@ class FleetRunTestCase(unittest.TestCase):
         ))
 
 
-def sha256_hex(data):
-    return hashlib.sha256(data).hexdigest()
+def unescape_routeros(text):
+    """The inverse of escape_routeros_string, for the fake router below."""
+    out = bytearray()
+    i = 0
+    simple = {"\\": 0x5C, '"': 0x22, "$": 0x24, "?": 0x3F, "n": 0x0A, "r": 0x0D, "t": 0x09}
+    while i < len(text):
+        ch = text[i]
+        if ch != "\\":
+            out += ch.encode("ascii")
+            i += 1
+        elif text[i + 1] in simple:
+            out.append(simple[text[i + 1]])
+            i += 2
+        else:
+            out.append(int(text[i + 1:i + 3], 16))
+            i += 3
+    return bytes(out)
+
+
+def fake_router(stored):
+    """A run(command) that answers a drift command the way the router would.
+
+    stored maps a script name to the bytes in the router's Source. It applies
+    the same rule as DRIFT_FUNCTION to the arguments it finds in the command,
+    and records every command it was sent.
+    """
+    sent = []
+
+    def run(command):
+        sent.append(command)
+        lines = []
+        for name, expected in re.findall(
+            r'\$fn name="((?:[^"\\]|\\.)*)" expected="((?:[^"\\]|\\.)*)"', command
+        ):
+            name = unescape_routeros(name).decode()
+            want = unescape_routeros(expected)
+            if name not in stored:
+                word = "missing"
+            else:
+                cur = stored[name]
+                if cur in (want, want + b"\n", want + b"\r\n"):
+                    word = "same"
+                else:
+                    word = "changed-cr" if b"\r" in cur else "changed"
+            lines.append("DRF:%s|%s" % (name, word))
+        return 0, "\n".join(lines) + "\n"
+
+    run.sent = sent
+    return run
+
+
+class EscapeRouterosStringTestCase(unittest.TestCase):
+    def test_special_characters_are_escaped(self):
+        self.assertEqual(router_doctor.escape_routeros_string('a"b'), 'a\\"b')
+        self.assertEqual(router_doctor.escape_routeros_string("a\\b"), "a\\\\b")
+        self.assertEqual(router_doctor.escape_routeros_string("$x ?"), "\\$x \\?")
+        self.assertEqual(router_doctor.escape_routeros_string("a\r\nb\tc"), "a\\r\\nb\\tc")
+
+    def test_other_control_and_non_ascii_bytes_become_hex(self):
+        self.assertEqual(router_doctor.escape_routeros_string(b"\x00\x1b\x7f"), "\\00\\1B\\7F")
+        self.assertEqual(router_doctor.escape_routeros_string("\u00e9"), "\\C3\\A9")
+
+    def test_plain_text_is_unchanged_and_result_is_one_ascii_line(self):
+        self.assertEqual(router_doctor.escape_routeros_string(":log info foo;"), ":log info foo;")
+        nasty = ':local a "q\\$b?\r\n\t\x01\u00e9 {} [] ;"\n'
+        escaped = router_doctor.escape_routeros_string(nasty)
+        self.assertTrue(escaped.isascii())
+        self.assertNotIn("\n", escaped)
+        self.assertNotIn("\r", escaped)
+        self.assertEqual(unescape_routeros(escaped), nasty.encode("utf-8"))
+
+    def test_no_unescaped_quote_dollar_or_question_mark_survives(self):
+        escaped = router_doctor.escape_routeros_string(bytes(range(256)))
+        stripped = escaped.replace("\\\\", "")
+        for char in '"$?':
+            for i, c in enumerate(stripped):
+                if c == char:
+                    self.assertEqual(stripped[i - 1], "\\", char)
+        self.assertEqual(unescape_routeros(escaped), bytes(range(256)))
 
 
 class DriftTestCase(unittest.TestCase):
     """--drift: which installed scripts differ from the files in this checkout.
 
-    The router computes a length and a digest of each script and returns those;
-    no source crosses the wire, because a source can hold a pasted token. What
-    the report may say is a verdict, never the digest itself.
+    The expected source goes into the router as an argument and the router
+    answers with a word per script, so no source comes back. What the report
+    may say is a verdict, never a source.
     """
 
-    BODY = b":global OpsToolboxPaused;\n:log info \"x\";\n"
+    BODY = b':global OpsToolboxPaused;\n:log info "x $y \\ ?";\n'
 
     def package(self, tmp, body=BODY):
         features = os.path.join(tmp, "mikrotik", "features")
@@ -1115,73 +1191,101 @@ class DriftTestCase(unittest.TestCase):
             fh.write(body)
         return os.path.join(tmp, "mikrotik"), path
 
-    def test_hsh_records_parse_to_length_and_digest(self):
-        digest = sha256_hex(self.BODY)
-        _, _, env = router_doctor.parse_report(
-            REPORT + "HSH:health_check|%d|%s\nHSH:startup|12|\n" % (len(self.BODY), digest.upper())
+    def verdict(self, stored, body=BODY):
+        return router_doctor.drift_verdicts({"health_check": body},
+                                            fake_router({"health_check": stored}))
+
+    def test_identical_source_is_same_even_with_nasty_characters(self):
+        self.assertEqual(self.verdict(self.BODY), {"health_check": "same"})
+
+    def test_a_trailing_newline_or_crlf_difference_is_still_same(self):
+        bare = self.BODY.rstrip(b"\n")
+        for pasted in (self.BODY, bare, bare + b"\n", self.BODY.replace(b"\n", b"\r\n"),
+                       bare.replace(b"\n", b"\r\n")):
+            self.assertEqual(self.verdict(pasted), {"health_check": "same"}, pasted)
+
+    def test_edited_source_is_changed(self):
+        self.assertEqual(self.verdict(self.BODY.replace(b"x", b"tuned")),
+                         {"health_check": "changed"})
+        self.assertEqual(self.verdict(self.BODY.replace(b"x", b"tuned").replace(b"\n", b"\r\n")),
+                         {"health_check": "changed"})
+
+    def test_crlf_copy_is_asked_again_with_crlf_line_ends(self):
+        run = fake_router({"health_check": self.BODY.replace(b"\n", b"\r\n")})
+        router_doctor.drift_verdicts({"health_check": self.BODY}, run)
+        self.assertEqual(len(run.sent), 2)
+        self.assertIn("\\r\\n", run.sent[1])
+
+    def test_missing_script_and_failed_command_give_missing_and_unknown(self):
+        run = fake_router({})
+        self.assertEqual(router_doctor.drift_verdicts({"health_check": self.BODY}, run),
+                         {"health_check": "missing"})
+        self.assertEqual(router_doctor.drift_verdicts({"health_check": self.BODY},
+                                                      lambda cmd: (1, "")),
+                         {"health_check": "unknown"})
+        self.assertEqual(router_doctor.drift_verdicts({"health_check": self.BODY},
+                                                      lambda cmd: (0, "DRF:health_check|error\n")),
+                         {"health_check": "unknown"})
+
+    def test_commands_are_batched_under_the_limit(self):
+        sources = {"s%d" % i: b"x" * 1000 for i in range(10)}
+        batches = router_doctor.drift_commands(sources, limit=2500)
+        self.assertGreater(len(batches), 1)
+        self.assertEqual(sorted(n for names, _ in batches for n in names), sorted(sources))
+        for _, command in batches:
+            self.assertLess(len(command), 2500 + len(router_doctor.DRIFT_FUNCTION) * 2)
+        big = router_doctor.drift_commands({"a": b"y" * 5000, "b": b"z"}, limit=100)
+        self.assertEqual([names for names, _ in big], [["a"], ["b"]])
+
+    def test_expected_source_drops_one_trailing_line_end(self):
+        self.assertEqual(router_doctor.expected_source(b"a\nb\n"), b"a\nb")
+        self.assertEqual(router_doctor.expected_source(b"a\r\nb\r\n"), b"a\nb")
+        self.assertEqual(router_doctor.expected_source(b"a\nb\n", crlf=True), b"a\r\nb")
+
+    def test_parse_drift_reads_words(self):
+        self.assertEqual(
+            router_doctor.parse_drift("noise\nDRF:a|same\nDRF:b|c|changed\r\nDRF:|x\n"),
+            {"a": "same", "b|c": "changed"},
         )
-        self.assertEqual(env[router_doctor.HASHES_KEY], {
-            "health_check": (len(self.BODY), digest),
-            "startup": (12, ""),
-        })
-        _, _, env = router_doctor.parse_report(REPORT)
-        self.assertNotIn(router_doctor.HASHES_KEY, env)
 
-    def test_missing_digest_degrades_to_length_comparison(self):
-        fingerprints = {(len(self.BODY), sha256_hex(self.BODY))}
-        self.assertEqual(router_doctor.compare("x", (len(self.BODY), ""), fingerprints),
-                         "length-match")
-        self.assertEqual(router_doctor.compare("x", (len(self.BODY) + 1, ""), fingerprints),
-                         "length-differs")
-
-    def test_a_trailing_newline_difference_still_matches(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            _, path = self.package(tmp)
-            fingerprints = router_doctor.source_fingerprints(path)
-            bare = self.BODY.rstrip(b"\n")
-            for pasted in (self.BODY, bare, bare + b"\n", self.BODY.replace(b"\n", b"\r\n")):
-                verdict = router_doctor.compare("health_check",
-                                                (len(pasted), sha256_hex(pasted)),
-                                                fingerprints)
-                self.assertEqual(verdict, "match", pasted)
-
-    def test_edited_script_is_reported_as_differs(self):
+    def test_edited_script_is_reported_as_changed(self):
         with tempfile.TemporaryDirectory() as tmp:
             package_dir, _ = self.package(tmp)
-            edited = self.BODY.replace(b"x", b"tuned")
-            hashes = {"health_check": (len(edited), sha256_hex(edited))}
             paths = router_doctor.local_script_paths(package_dir)
-            verdicts, findings = router_doctor.drift_findings(hashes, paths, package_dir)
-        self.assertEqual(verdicts, {"health_check": "differs"})
+            verdicts, findings = router_doctor.drift_findings(
+                {"health_check": "changed"}, paths, package_dir)
+        self.assertEqual(verdicts, {"health_check": "changed"})
         warns = [m for level, m in findings if level == "warn"]
         self.assertEqual(len(warns), 1)
         self.assertIn("health_check on the router differs from mikrotik/features/"
                       "health_check.lua", warns[0])
-        self.assertNotIn("length only", warns[0])
+
+    def test_unknown_script_warns_and_is_not_counted(self):
         with tempfile.TemporaryDirectory() as tmp:
             package_dir, _ = self.package(tmp)
-            hashes = {"health_check": (len(self.BODY) + 3, "")}
             paths = router_doctor.local_script_paths(package_dir)
-            _, findings = router_doctor.drift_findings(hashes, paths, package_dir)
-        self.assertIn("compared by length only", [m for lv, m in findings if lv == "warn"][0])
+            _, findings = router_doctor.drift_findings(
+                {"health_check": "unknown"}, paths, package_dir)
+        warns = [m for lv, m in findings if lv == "warn"]
+        self.assertIn("could not compare health_check", warns[0])
 
     def test_identical_script_is_silent_and_counted_in_the_info_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             package_dir, _ = self.package(tmp)
-            hashes = {"health_check": (len(self.BODY), sha256_hex(self.BODY))}
             paths = router_doctor.local_script_paths(package_dir)
-            verdicts, findings = router_doctor.drift_findings(hashes, paths, package_dir)
-        self.assertEqual(verdicts, {"health_check": "match"})
+            verdicts, findings = router_doctor.drift_findings(
+                {"health_check": "same"}, paths, package_dir)
+        self.assertEqual(verdicts, {"health_check": "same"})
         self.assertEqual(findings, [
-            ("info", "1 of 1 installed package scripts match the files in this checkout"),
+            ("info", "1 of 1 compared package scripts match the files in this checkout"),
         ])
 
     def test_script_not_in_the_package_is_skipped(self):
         with tempfile.TemporaryDirectory() as tmp:
             package_dir, _ = self.package(tmp)
-            hashes = {"startup": (40, "ab" * 32)}
             paths = router_doctor.local_script_paths(package_dir)
-            verdicts, findings = router_doctor.drift_findings(hashes, paths, package_dir)
+            verdicts, findings = router_doctor.drift_findings(
+                {"startup": "changed"}, paths, package_dir)
         self.assertEqual(verdicts, {})
         self.assertEqual([lv for lv, _ in findings], ["info"])
 
@@ -1209,54 +1313,23 @@ class DriftTestCase(unittest.TestCase):
                 router_doctor.local_script_paths(tmp)
         self.assertEqual(router_doctor.local_script_paths("/nonexistent/mikrotik"), {})
 
-    def test_drift_probe_only_reads_and_never_puts_source(self):
-        probe = router_doctor.DRIFT_PROBE
-        for verb in (" set ", " add ", " remove ", " enable ", " disable "):
-            self.assertNotIn(verb, probe)
-        puts = re.findall(r":put \(([^;]*)\)", probe)
-        self.assertEqual(len(puts), 1)
-        operands = [part.strip() for part in puts[0].split(" . ")]
-        self.assertNotIn("$src", operands)
-        self.assertIn("[:len $src]", operands)
-        self.assertIn("transform=sha256", probe)
-
-    def test_drift_probe_writes_nothing_to_the_router(self):
-        # The source goes to the compiled hash function as an argument. A
-        # global would be a write, and would leave the source readable in the
-        # router's script environment.
-        probe = router_doctor.DRIFT_PROBE
-        self.assertNotIn(":global", probe)
-        self.assertNotIn("PuHashIn", probe)
-        self.assertIn("src=$src", probe)
-        self.assertNotIn("PuHashIn", " ".join(router_doctor.DRIFT_HASH_SPELLINGS))
-
-    def test_drift_probe_falls_back_to_length_when_no_spelling_matches(self):
-        # A digest counts only at 64 characters; anything else is emptied, and
-        # the line is printed either way, so a release that accepts none of
-        # the spellings still reports each script's length.
-        probe = router_doctor.DRIFT_PROBE
-        self.assertIn(':if ([:len $h] != 64) do={:set h ""}', probe)
-        self.assertIn('on-error={:set h ""}', probe)
-        self.assertEqual(probe.count(":put"), 1)
-        self.assertLess(probe.index(':if ([:len $h] != 64) do={:set h ""};'),
-                        probe.index(":put"))
-
-    def test_drift_probe_compiles_its_hash_at_run_time(self):
-        # RouterOS checks :convert's arguments when it parses, so a spelling
-        # the release rejects must be inside a string handed to :parse, where
-        # on-error can catch it, never written inline in the probe itself.
-        probe = router_doctor.DRIFT_PROBE
-        self.assertIn(":parse", probe)
-        self.assertIn("on-error=", probe)
-        outside = re.sub(r'"[^"]*"', '""', probe)
-        self.assertNotIn(":convert", outside)
-        self.assertTrue(router_doctor.DRIFT_HASH_SPELLINGS)
-        for spelling in router_doctor.DRIFT_HASH_SPELLINGS:
-            self.assertIn(spelling, probe)
+    def test_drift_command_only_reads_and_writes_nothing(self):
+        command = router_doctor.drift_commands({"health_check": b"plain\n"})[0][1]
+        function = router_doctor.DRIFT_FUNCTION
+        for text in (command, function):
+            for verb in (" set ", ":set", ":global", " add ", " remove ", " enable ",
+                         " disable ", ":convert"):
+                self.assertNotIn(verb, text)
+        self.assertEqual(command.count("\n"), 0)
+        self.assertIn("expected=", command)
+        self.assertIn("[:parse", command)
+        # the only thing printed is the name and the router's one-word answer
+        self.assertEqual(command.count(":put ("), 1)
+        self.assertNotIn(":put $", function)
 
     def test_default_probe_does_not_contain_the_drift_probe(self):
-        self.assertNotIn("HSH:", router_doctor.PROBE)
-        self.assertNotIn(":convert", router_doctor.PROBE)
+        self.assertNotIn("DRF:", router_doctor.PROBE)
+        self.assertNotIn("expected", router_doctor.PROBE)
         calls = []
 
         def fake_probe(host, user, identity, port, timeout, command=router_doctor.PROBE):
@@ -1267,36 +1340,43 @@ class DriftTestCase(unittest.TestCase):
              mock.patch.object(router_doctor, "local_script_names", return_value=PACKAGE), \
              contextlib.redirect_stdout(io.StringIO()):
             router_doctor.main(["--host", "router.test"])
-            router_doctor.main(["--host", "router.test", "--drift"])
-        self.assertNotIn("HSH:", calls[0])
-        self.assertIn("HSH:", calls[1])
+        self.assertEqual(calls, [router_doctor.PROBE])
 
-    def test_json_drift_contains_verdicts_only_not_digests(self):
-        fake_digest = "f00d" * 16
+    def test_json_drift_contains_verdicts_only_not_sources(self):
         report = (
             "SCR:tg_send\nSCR:health_check\n"
             "SCH:health_check|5m|/system script run health_check\n"
             "ENV:TgBotToken|46\nENV:TgChatId|9\n"
-            "HSH:health_check|31337|%s\n"
-            "HSH:tg_send|4242|\n" % fake_digest
         )
-        stdout = io.StringIO()
-        with mock.patch.object(router_doctor, "probe", return_value=(0, report, "")), \
-             mock.patch.object(router_doctor, "local_script_names",
-                               return_value=["tg_send", "health_check"]), \
-             contextlib.redirect_stdout(stdout):
-            rc = router_doctor.main(["--host", "router.test", "--format", "json", "--drift"])
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir = os.path.join(tmp, "mikrotik")
+            os.makedirs(os.path.join(package_dir, "core"))
+            for name, body in (("health_check", b"secret-looking-body\n"),
+                               ("tg_send", b"tg body\n")):
+                with open(os.path.join(package_dir, "core", name + ".lua"), "wb") as fh:
+                    fh.write(body)
+            router = fake_router({"health_check": b"edited\n", "tg_send": b"tg body\n"})
+
+            def fake_probe(host, user, identity, port, timeout, command=router_doctor.PROBE):
+                if command == router_doctor.PROBE:
+                    return 0, report, ""
+                rc, out = router(command)
+                return rc, out, ""
+
+            stdout = io.StringIO()
+            with mock.patch.object(router_doctor, "probe", side_effect=fake_probe), \
+                 contextlib.redirect_stdout(stdout):
+                rc = router_doctor.main(["--host", "router.test", "--format", "json",
+                                         "--drift", "--scripts-dir", package_dir])
         payload = json.loads(stdout.getvalue())
         self.assertEqual(rc, 0)
-        self.assertEqual(payload["drift"], {"health_check": "differs",
-                                            "tg_send": "length-differs"})
-        self.assertNotIn(fake_digest, stdout.getvalue())
-        self.assertNotIn("31337", stdout.getvalue())
-        self.assertNotIn("4242", stdout.getvalue())
+        self.assertEqual(payload["drift"], {"health_check": "changed", "tg_send": "same"})
+        self.assertNotIn("secret-looking-body", stdout.getvalue())
+        self.assertNotIn("edited", stdout.getvalue())
 
     def test_lone_copy_without_lua_files_gives_one_info_and_no_warn(self):
         verdicts, findings = router_doctor.drift_findings(
-            {"health_check": (10, "ab" * 32)}, {}, "/nonexistent/mikrotik"
+            {"health_check": "changed"}, {}, "/nonexistent/mikrotik"
         )
         self.assertEqual(verdicts, {})
         self.assertEqual(len(findings), 1)

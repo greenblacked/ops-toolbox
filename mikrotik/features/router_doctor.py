@@ -35,7 +35,6 @@ reached, else 1 if any probe failed, else 0 if any printed findings, else 4.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -106,39 +105,37 @@ PROBE = (
     ':put ("DECL:" . [/system script get $s name])}};'
 )
 
-# Asked only under --drift. For each installed script the router returns its
-# name, its length and a SHA-256 of its source, computed on the router: a
-# source can hold a pasted token, so the source itself never crosses the wire.
+# Asked only under --drift, and not part of PROBE: one ssh command per batch of
+# scripts, built by drift_commands(). The comparison runs on the router. The
+# expected source (the file in this checkout) travels INTO the router as an
+# argument of a function compiled with :parse, and the router answers with one
+# word per script: same, changed-cr, changed or missing. No script source
+# leaves the router (a source can hold a pasted token) and nothing is written:
+# no :global, no :set, the source reaches the function as an argument and not
+# through the script environment.
 #
-# The :convert spelling for a hash differs between releases, and RouterOS
-# checks the arguments of :convert when it parses, so a rejected spelling
-# written inline would stop the whole probe before it printed anything (an
-# on-error does not catch a parse error). Each spelling is therefore compiled
-# at run time with :parse, inside :do{}on-error={}: a release that rejects one
-# moves on to the next, and a release that accepts none answers with an empty
-# digest, so the comparison falls back to length alone. A digest counts only
-# when it is 64 characters long. The source reaches the compiled function as
-# its `src` argument, never through a global, so the probe writes nothing to
-# the router and no source is left behind in its environment. The test against
-# the pinned release runs the same spellings
-# (test_drift_hash_spelling_is_valid_on_the_pinned_routeros).
-DRIFT_HASH_SPELLINGS = (
-    r'[:convert from=raw to=hex transform=sha256 \$src]',
-    r'[:convert to=sha256 \$src]',
-    r'[:convert to=hex [:convert to=sha256 \$src]]',
+# changed-cr means "differs, and the router's copy has CR line ends". The
+# first round sends the checkout's text with LF line ends; those scripts are
+# asked again with CRLF line ends, so a copy stored as CRLF is not drift. A
+# trailing newline more or less is not drift either: the function accepts the
+# expected text bare, with "\n" and with "\r\n" appended.
+#
+# An earlier version had the router hash each source. RouterOS 7.24 rejects
+# every :convert spelling that was tried, so there is nothing to hash with on
+# the pinned release; a plain string comparison works everywhere.
+DRIFT_FUNCTION = (
+    ':local ids [/system script find where name=$name];'
+    ' :if ([:len $ids] = 0) do={:return "missing"};'
+    ' :local cur [/system script get $ids source];'
+    ' :if (($cur = $expected) || ($cur = ($expected . "\\n"))'
+    ' || ($cur = ($expected . "\\r\\n"))) do={:return "same"};'
+    ' :if ([:typeof [:find $cur "\\r"]] = "num") do={:return "changed-cr"};'
+    ' :return "changed"'
 )
-DRIFT_PROBE = (
-    ' :foreach s in=[/system script find] do={'
-    ':local n [/system script get $s name];'
-    ':local src [/system script get $s source];'
-    ':local h "";'
-    ':local fn "";'
-    ':foreach f in={' + ";".join('"%s"' % spelling for spelling in DRIFT_HASH_SPELLINGS) + '} do={'
-    ':if ([:len $h] != 64) do={'
-    ':do {:set fn [:parse (":return " . $f)]; :set h [$fn src=$src]} on-error={:set h ""}}};'
-    ':if ([:len $h] != 64) do={:set h ""};'
-    ':put ("HSH:" . $n . "|" . [:len $src] . "|" . $h)};'
-)
+# Per ssh command, in characters of escaped source. The whole package is about
+# 200 KB, and RouterOS's ssh server is not documented to take a command that
+# long, so scripts are sent in batches; one bigger than this goes alone.
+DRIFT_BATCH_CHARS = 24000
 
 PAUSE_STATE_KEY = "__control_ops_toolbox_paused"
 # Reserved like PAUSE_STATE_KEY: the (major, minor) the router reported, and
@@ -150,9 +147,6 @@ VERSION_TEXT_KEY = "__routeros_version_text"
 # uptime in seconds, and the scripts whose source mentions TgBotToken.
 UPTIME_KEY = "__uptime_seconds"
 DECLARES_TG_KEY = "__declares_tg"
-
-# Reserved: {script name: (length, hex digest)} from DRIFT_PROBE.
-HASHES_KEY = "__hashes"
 
 # Scripts that read the Telegram globals rather than set them. Mentioning
 # TgBotToken does not make them a startup script.
@@ -296,12 +290,6 @@ def parse_report(text):
             seconds = duration_seconds(line[4:])
             if seconds is not None:
                 env[UPTIME_KEY] = seconds
-        elif line.startswith("HSH:"):
-            current = None
-            fields = line[4:].rsplit("|", 2)
-            if len(fields) == 3 and fields[0].strip():
-                hashes = env.setdefault(HASHES_KEY, {})
-                hashes[fields[0].strip()] = (_as_int(fields[1]), fields[2].strip().lower())
         elif line.startswith("DECL:"):
             current = None
             name = line[5:].strip()
@@ -460,68 +448,175 @@ def local_script_paths(directory):
     return paths
 
 
-def source_fingerprints(path):
-    """{(length, sha256 hex)} the file could have on the router.
+_ROUTEROS_ESCAPES = {
+    0x5C: "\\\\",  # backslash
+    0x22: '\\"',
+    0x24: "\\$",   # would start a variable
+    0x3F: "\\?",   # help in the console
+    0x0A: "\\n",
+    0x0D: "\\r",
+    0x09: "\\t",
+}
 
-    A paste through Winbox or WebFig keeps or drops the trailing newline, and
-    RouterOS may store line ends as CRLF, so every combination of the two is a
-    match rather than drift.
+
+def escape_routeros_string(value):
+    """The inside of a RouterOS double-quoted string literal for value.
+
+    value is bytes, or str (taken as UTF-8). Backslash, double quote, dollar
+    and question mark get a backslash; CR, LF and tab become \\r, \\n, \\t;
+    any other control character, DEL and every non-ASCII byte becomes \\XX
+    (two uppercase hex digits), so the result is printable ASCII on one line.
+    The caller adds the surrounding quotes.
     """
-    with open(path, "rb") as fh:
-        raw = fh.read()
-    bare = raw.rstrip(b"\n")
-    candidates = {raw, bare, bare + b"\n"}
-    candidates |= {c.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") for c in set(candidates)}
-    return {(len(c), hashlib.sha256(c).hexdigest()) for c in candidates}
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    out = []
+    for byte in value:
+        if byte in _ROUTEROS_ESCAPES:
+            out.append(_ROUTEROS_ESCAPES[byte])
+        elif byte < 0x20 or byte >= 0x7F:
+            out.append("\\%02X" % byte)
+        else:
+            out.append(chr(byte))
+    return "".join(out)
 
 
-def compare(name, router_entry, fingerprints):
-    """'match', 'differs', 'length-match' or 'length-differs'.
+def expected_source(raw, crlf=False):
+    """The text the router is asked to compare a script against.
 
-    With a digest from the router the verdict is by digest; with none (the
-    :convert transform missing on that release) only the length is compared,
-    and the verdict says so.
+    One trailing line end is dropped (the router's function adds it back in
+    each spelling), and the line ends are LF, or CRLF when crlf is set.
     """
-    length, digest = router_entry
-    if digest:
-        return "match" if (length, digest.lower()) in fingerprints else "differs"
-    lengths = {size for size, _ in fingerprints}
-    return "length-match" if length in lengths else "length-differs"
+    if raw.endswith(b"\r\n"):
+        raw = raw[:-2]
+    elif raw.endswith(b"\n"):
+        raw = raw[:-1]
+    text = raw.replace(b"\r\n", b"\n")
+    return text.replace(b"\n", b"\r\n") if crlf else text
 
 
-def drift_findings(hashes, paths, package_dir):
+def drift_commands(sources, crlf=False, limit=DRIFT_BATCH_CHARS):
+    """[(names, ssh command)] asking the router to compare scripts in place.
+
+    sources maps a script name to the bytes of its file. The command compiles
+    DRIFT_FUNCTION once and prints one 'DRF:name|word' line per script; a
+    script whose comparison raises is reported as 'error'. Nothing in a
+    command is written to the router.
+    """
+    prefix = ":local fn [:parse \"%s\"];" % escape_routeros_string(DRIFT_FUNCTION)
+    batches = []
+    names = []
+    parts = []
+    size = 0
+    for name in sorted(sources):
+        quoted = escape_routeros_string(name)
+        part = (
+            ' :do {:put ("DRF:" . "%s" . "|" . [$fn name="%s" expected="%s"])}'
+            ' on-error={:put "DRF:%s|error"};'
+            % (quoted, quoted, escape_routeros_string(expected_source(sources[name], crlf)),
+               quoted)
+        )
+        if parts and size + len(part) > limit:
+            batches.append((names, prefix + "".join(parts)))
+            names, parts, size = [], [], 0
+        names.append(name)
+        parts.append(part)
+        size += len(part)
+    if parts:
+        batches.append((names, prefix + "".join(parts)))
+    return batches
+
+
+def parse_drift(text):
+    """{script name: word} from the 'DRF:name|word' lines of a drift probe."""
+    words = {}
+    for raw in text.splitlines():
+        line = raw.rstrip("\r")
+        if line.startswith("DRF:"):
+            name, sep, word = line[4:].rpartition("|")
+            if sep and name.strip():
+                words[name.strip()] = word.strip()
+    return words
+
+
+def drift_verdicts(sources, run):
+    """{name: 'same' | 'changed' | 'missing' | 'unknown'} by asking the router.
+
+    run(command) returns (exit code, stdout). A script the router did not
+    answer for (a failed command, an error in the comparison, an unknown
+    word) is 'unknown', never guessed.
+    """
+    answers = {}
+
+    def ask(subset, crlf):
+        for names, command in drift_commands(subset, crlf):
+            rc, out = run(command)
+            if rc != 0:
+                continue
+            got = parse_drift(out)
+            for name in names:
+                if name in got:
+                    answers[name] = got[name]
+
+    ask(sources, False)
+    again = {n: sources[n] for n, w in answers.items() if w == "changed-cr"}
+    if again:
+        for name in again:
+            del answers[name]
+        ask(again, True)
+        for name in again:
+            if answers.get(name) == "changed-cr":
+                answers[name] = "changed"
+    verdicts = {}
+    for name in sources:
+        word = answers.get(name)
+        verdicts[name] = word if word in ("same", "changed", "missing") else (
+            "changed" if word == "changed-cr" else "unknown")
+    return verdicts
+
+
+def drift_findings(verdicts, paths, package_dir):
     """(verdicts, findings) for the installed scripts this package ships.
 
-    hashes is what the router reported, paths what local_script_paths()
+    verdicts is what drift_verdicts() returned, paths what local_script_paths()
     found. A script on the router that is not in the package is someone
-    else's, and is skipped. Pure apart from reading the package files.
+    else's, and is skipped. A 'missing' one vanished between the two probes
+    and is skipped too. Pure.
     """
     if not paths:
         return {}, [("info", "no .lua files to compare against; --drift needs the "
                               "package beside this file")]
-    verdicts = {}
+    result = {}
     findings = []
-    for name in sorted(hashes):
-        if name not in paths:
+    unknown = []
+    for name in sorted(verdicts):
+        if name not in paths or verdicts[name] == "missing":
             continue
-        verdict = compare(name, hashes[name], source_fingerprints(paths[name]))
-        verdicts[name] = verdict
-        if verdict in ("differs", "length-differs"):
+        result[name] = verdicts[name]
+        if verdicts[name] == "changed":
             relative = os.path.relpath(
                 paths[name], os.path.dirname(os.path.normpath(package_dir))
             )
-            message = ("%s on the router differs from %s: edited in place or out of "
-                       "date (tuned thresholds also show here)" % (name, relative))
-            if verdict == "length-differs":
-                message += "; compared by length only"
-            findings.append(("warn", message))
-    matched = sum(1 for v in verdicts.values() if v in ("match", "length-match"))
+            findings.append((
+                "warn",
+                "%s on the router differs from %s: edited in place or out of "
+                "date (tuned thresholds also show here)" % (name, relative),
+            ))
+        elif verdicts[name] == "unknown":
+            unknown.append(name)
+    if unknown:
+        findings.append((
+            "warn",
+            "--drift could not compare %s: the router gave no answer for %s"
+            % (", ".join(unknown), "it" if len(unknown) == 1 else "them"),
+        ))
+    compared = [v for v in result.values() if v != "unknown"]
     findings.append((
         "info",
-        "%d of %d installed package scripts match the files in this checkout"
-        % (matched, len(verdicts)),
+        "%d of %d compared package scripts match the files in this checkout"
+        % (compared.count("same"), len(compared)),
     ))
-    return verdicts, findings
+    return result, findings
 
 
 def declares_underscored_name(source_text):
@@ -865,11 +960,7 @@ def run_one(user, host, port, args, package=None):
     the probe, which is the order a single router has always had.
     """
     lines = []
-    if args.drift:
-        rc, out, err = probe(host, user, args.identity, port, args.timeout,
-                             command=PROBE + DRIFT_PROBE)
-    else:
-        rc, out, err = probe(host, user, args.identity, port, args.timeout)
+    rc, out, err = probe(host, user, args.identity, port, args.timeout)
     errors = err.strip().splitlines()[:5]
 
     if rc == 255:
@@ -926,7 +1017,19 @@ def run_one(user, host, port, args, package=None):
     if args.drift:
         try:
             paths = local_script_paths(args.scripts_dir) if local else {}
-            verdicts, extra = drift_findings(env.get(HASHES_KEY, {}), paths, args.scripts_dir)
+            sources = {}
+            for name in installed:
+                if name in paths:
+                    with open(paths[name], "rb") as fh:
+                        sources[name] = fh.read()
+
+            def ask_router(command):
+                got = probe(host, user, args.identity, port, args.timeout, command=command)
+                return got[0], got[1]
+
+            verdicts, extra = drift_findings(
+                drift_verdicts(sources, ask_router) if sources else {},
+                paths, args.scripts_dir)
         except OSError as exc:
             verdicts, extra = {}, [("warn", "--drift could not read the package files: %s"
                                     % exc)]
@@ -972,8 +1075,8 @@ def run_one(user, host, port, args, package=None):
         "healthy": not has_problems(findings),
     }
     if verdicts is not None:
-        # Verdicts only: never a digest or a length, which say nothing useful
-        # here and would identify a source.
+        # Verdicts only (same, changed, unknown): the router never sends a
+        # source back, and neither does this report.
         payload["drift"] = verdicts
 
     lines.append(("head", "router"))
@@ -1185,8 +1288,9 @@ def main(argv=None):
     parser.add_argument(
         "--drift",
         action="store_true",
-        help="also compare each installed package script with the file here, by a "
-             "length and SHA-256 the router computes; no source is fetched",
+        help="also compare each installed package script with the file here; the "
+             "router does the comparison and answers same or changed, so no "
+             "source is fetched",
     )
     parser.add_argument("--scripts-dir", default=PACKAGE_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
