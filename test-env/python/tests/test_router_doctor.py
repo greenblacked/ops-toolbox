@@ -1220,6 +1220,27 @@ class DriftTestCase(unittest.TestCase):
         self.assertIn("[:len $src]", operands)
         self.assertIn("transform=sha256", probe)
 
+    def test_drift_probe_writes_nothing_to_the_router(self):
+        # The source goes to the compiled hash function as an argument. A
+        # global would be a write, and would leave the source readable in the
+        # router's script environment.
+        probe = router_doctor.DRIFT_PROBE
+        self.assertNotIn(":global", probe)
+        self.assertNotIn("PuHashIn", probe)
+        self.assertIn("src=$src", probe)
+        self.assertNotIn("PuHashIn", " ".join(router_doctor.DRIFT_HASH_SPELLINGS))
+
+    def test_drift_probe_falls_back_to_length_when_no_spelling_matches(self):
+        # A digest counts only at 64 characters; anything else is emptied, and
+        # the line is printed either way, so a release that accepts none of
+        # the spellings still reports each script's length.
+        probe = router_doctor.DRIFT_PROBE
+        self.assertIn(':if ([:len $h] != 64) do={:set h ""}', probe)
+        self.assertIn('on-error={:set h ""}', probe)
+        self.assertEqual(probe.count(":put"), 1)
+        self.assertLess(probe.index(':if ([:len $h] != 64) do={:set h ""};'),
+                        probe.index(":put"))
+
     def test_drift_probe_compiles_its_hash_at_run_time(self):
         # RouterOS checks :convert's arguments when it parses, so a spelling
         # the release rejects must be inside a string handed to :parse, where

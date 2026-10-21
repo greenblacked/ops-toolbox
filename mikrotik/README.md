@@ -1091,7 +1091,9 @@ answer produces no finding rather than a false one.
 pasted into *Source* by hand, and this package changes them (the 7.24 renames,
 fixes), so there was no answer short of opening each one in Winbox. With the
 flag, the router computes the length and SHA-256 of each installed script and
-returns those, never the source, which may hold a pasted token. Each installed
+returns those, never the source, which may hold a pasted token. The source
+is handed to the hash function as an argument, so the probe sets no global
+and writes nothing to the router. Each installed
 script that this package ships is compared with its file here, allowing for a
 paste that kept or dropped the trailing newline or stored CRLF line ends. A
 script that differs is a `warn` naming the file (edited in place or out of

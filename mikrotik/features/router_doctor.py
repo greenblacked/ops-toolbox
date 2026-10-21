@@ -117,26 +117,27 @@ PROBE = (
 # at run time with :parse, inside :do{}on-error={}: a release that rejects one
 # moves on to the next, and a release that accepts none answers with an empty
 # digest, so the comparison falls back to length alone. A digest counts only
-# when it is 64 characters long. The test against the pinned release runs the
-# same spellings (test_drift_hash_spelling_is_valid_on_the_pinned_routeros).
+# when it is 64 characters long. The source reaches the compiled function as
+# its `src` argument, never through a global, so the probe writes nothing to
+# the router and no source is left behind in its environment. The test against
+# the pinned release runs the same spellings
+# (test_drift_hash_spelling_is_valid_on_the_pinned_routeros).
 DRIFT_HASH_SPELLINGS = (
-    r'[:convert from=raw to=hex transform=sha256 \$PuHashIn]',
-    r'[:convert to=sha256 \$PuHashIn]',
-    r'[:convert to=hex [:convert to=sha256 \$PuHashIn]]',
+    r'[:convert from=raw to=hex transform=sha256 \$src]',
+    r'[:convert to=sha256 \$src]',
+    r'[:convert to=hex [:convert to=sha256 \$src]]',
 )
 DRIFT_PROBE = (
-    ' :global PuHashIn;'
     ' :foreach s in=[/system script find] do={'
     ':local n [/system script get $s name];'
     ':local src [/system script get $s source];'
     ':local h "";'
-    ':set PuHashIn $src;'
+    ':local fn "";'
     ':foreach f in={' + ";".join('"%s"' % spelling for spelling in DRIFT_HASH_SPELLINGS) + '} do={'
     ':if ([:len $h] != 64) do={'
-    ':do {:set h [[:parse (":global PuHashIn; :return " . $f)]]} on-error={:set h ""}}};'
+    ':do {:set fn [:parse (":return " . $f)]; :set h [$fn src=$src]} on-error={:set h ""}}};'
     ':if ([:len $h] != 64) do={:set h ""};'
     ':put ("HSH:" . $n . "|" . [:len $src] . "|" . $h)};'
-    ' :set PuHashIn "";'
 )
 
 PAUSE_STATE_KEY = "__control_ops_toolbox_paused"

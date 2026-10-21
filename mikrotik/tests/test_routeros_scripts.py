@@ -1751,28 +1751,36 @@ def test_drift_hash_spelling_is_valid_on_the_pinned_routeros(
         for spelling in _drift_hash_spellings():
             _unset_global(api, "PuDrift")
             _unset_global(api, "PuDriftDone")
+            # The source is passed as the `src` argument, as the probe does.
             source = (
                 ':global PuDrift "";\n'
                 ':global PuDriftDone;\n'
-                ':global PuHashIn "abc";\n'
-                ':do {:set PuDrift [[:parse (":global PuHashIn; :return " . "'
+                ':local fn "";\n'
+                ':do {:set fn [:parse (":return " . "'
                 + spelling
-                + '")]]} on-error={:set PuDrift "rejected"};\n'
+                + '")]; :set PuDrift [$fn src="abc"]} on-error={:set PuDrift "rejected"};\n'
                 ':set PuDriftDone "yes";\n'
             )
             _add_script(script_resource, name, source)
-            _run_via_scheduler(
-                api, name, lambda: _read_global(api, "PuDriftDone") == "yes",
-                timeout=30.0,
-            )
-            results[spelling] = _read_global(api, "PuDrift").lower()
+            try:
+                _run_via_scheduler(
+                    api, name, lambda: _read_global(api, "PuDriftDone") == "yes",
+                    timeout=30.0,
+                )
+                results[spelling] = _read_global(api, "PuDrift").lower()
+            except Exception as exc:  # keep going: every candidate is reported
+                results[spelling] = f"did not finish: {exc!r}"
+            _remove_by_name(script_resource, name)
     finally:
         _remove_by_name(script_resource, name)
-        for g in ("PuDrift", "PuDriftDone", "PuHashIn"):
+        for g in ("PuDrift", "PuDriftDone"):
             _unset_global(api, g)
+    report = "\n".join(f"  {spelling!r} -> {got!r}" for spelling, got in results.items())
     assert DRIFT_DIGEST_OF_ABC in results.values(), (
-        "no DRIFT_HASH_SPELLINGS entry gives the SHA-256 of 'abc' on this release: "
-        f"{results!r}"
+        "no DRIFT_HASH_SPELLINGS entry gives the SHA-256 of 'abc' on this release; "
+        "each candidate's result (\"rejected\" = :parse or the call failed, "
+        "\"\" = ran but gave nothing):\n" + report
+        + "\nUntil one matches, --drift compares script length only."
     )
 
 
