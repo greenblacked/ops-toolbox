@@ -2450,6 +2450,22 @@ assert_not_contains "ssh_client_doctor does not grade Host * with a negation as 
 assert_not_contains "ssh_client_doctor does not warn on Host * with a negation" "$out" "[warn]"
 assert_contains "ssh_client_doctor says all hosts except the negated one" "$out" "for all hosts except !trusted.example"
 assert_eq "ssh_client_doctor Host * with a negation -> 0" "0" "$rc"
+# First value wins: an earlier block that sets the keyword narrows a later
+# Host * value to the hosts that block does not match.
+printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' '  ForwardAgent no' \
+  'Host *' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor does not fail a Host * value an earlier block overrides" "$out" "[FAIL]"
+assert_not_contains "ssh_client_doctor does not warn on an overridden Host * ForwardAgent" "$out" "[warn]"
+assert_contains "ssh_client_doctor says Host * applies to hosts not matched earlier" "$out" "for hosts not matched by an earlier block that sets it"
+assert_eq "ssh_client_doctor Host * after an earlier same keyword -> 0" "0" "$rc"
+printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' \
+  'Host *' '  ForwardAgent yes' '  StrictHostKeyChecking no' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor still warns on a Host * keyword no earlier block sets" \
+  "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+assert_not_contains "ssh_client_doctor still spares the keyword an earlier block set" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
 
 out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
 assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"

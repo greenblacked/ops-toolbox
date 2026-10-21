@@ -522,7 +522,8 @@ fi
 # scope is tracked as the file is read: lines before the first Host or Match,
 # a Host whose patterns include a bare *, and Match all apply everywhere. The
 # same setting under a narrower Host is somebody's deliberate exception and is
-# noted, not graded. First-value-wins and Include are not modelled.
+# noted, not graded. A keyword already set by an earlier block is not
+# universal in a later one (first value wins). Include is not modelled.
 if want risks; then
   group "risks"
   config="$SSH_DIR/config"
@@ -536,6 +537,7 @@ if want risks; then
     ln=0
     global_ids=0
     global_only=0
+    seen_keys=","
     while IFS= read -r line || [[ -n "$line" ]]; do
       ln=$((ln + 1))
       trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -585,30 +587,43 @@ if want risks; then
           ;;
       esac
       where="line $ln, $scope"
+      # OpenSSH keeps the first value it obtains for a keyword, so a value
+      # under a later Host * or Match all only reaches the hosts that no
+      # earlier block set that keyword for.
+      line_all=$scope_all
+      line_only="$scope_only"
+      case "$key_lc" in
+        stricthostkeychecking|userknownhostsfile|forwardagent|forwardx11|forwardx11trusted|passwordauthentication|identitiesonly)
+          if [[ "$seen_keys" == *",$key_lc,"* ]]; then
+            line_all=0
+            line_only="for hosts not matched by an earlier block that sets it"
+          fi
+          ;;
+      esac
       case "$key_lc" in
         stricthostkeychecking)
           case "$val_lc" in
             no|off)
-              if (( scope_all )); then
+              if (( line_all )); then
                 fail "StrictHostKeyChecking $rest for every host ($where)" "host keys are never verified, so any server can claim to be any host: use 'StrictHostKeyChecking accept-new'"
               else
-                info "StrictHostKeyChecking $rest $scope_only (line $ln)"
+                info "StrictHostKeyChecking $rest $line_only (line $ln)"
               fi
               ;;
           esac
           ;;
         userknownhostsfile)
           if [[ "$val_lc" == "/dev/null" ]]; then
-            if (( scope_all )); then
+            if (( line_all )); then
               warn "UserKnownHostsFile /dev/null for every host ($where)" "no host key is ever remembered, so none can be checked: remove the line"
             else
-              info "UserKnownHostsFile /dev/null $scope_only (line $ln)"
+              info "UserKnownHostsFile /dev/null $line_only (line $ln)"
             fi
           fi
           ;;
         forwardagent|forwardx11|forwardx11trusted|passwordauthentication)
           if [[ "$val_lc" == "yes" ]]; then
-            if (( scope_all )); then
+            if (( line_all )); then
               case "$key_lc" in
                 forwardagent) hint="root on any server you reach can use your keys while you are connected: forward only where needed, or use ProxyJump" ;;
                 passwordauthentication) hint="keys only, where the servers allow it: 'PasswordAuthentication no' under Host *" ;;
@@ -616,7 +631,7 @@ if want risks; then
               esac
               warn "$key yes for every host ($where)" "$hint"
             else
-              info "$key yes $scope_only (line $ln)"
+              info "$key yes $line_only (line $ln)"
             fi
           fi
           ;;
@@ -632,12 +647,13 @@ if want risks; then
           [[ "$val_lc" == "no" ]] && info "HashKnownHosts no (line $ln): known_hosts lists every host by name"
           ;;
         identityfile)
-          (( scope_all )) && global_ids=$((global_ids + 1))
+          (( line_all )) && global_ids=$((global_ids + 1))
           ;;
         identitiesonly)
-          (( scope_all )) && [[ "$val_lc" == "yes" ]] && global_only=1
+          (( line_all )) && [[ "$val_lc" == "yes" ]] && global_only=1
           ;;
       esac
+      seen_keys="${seen_keys}${key_lc},"
     done < "$config"
     if (( global_ids >= 2 && global_only == 0 )); then
       info "ssh offers every key to every server: $global_ids IdentityFile lines apply to all hosts and IdentitiesOnly is not yes"
