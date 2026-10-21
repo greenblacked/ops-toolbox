@@ -791,11 +791,14 @@ function ConvertFrom-WslConfig {
     return $entries
 }
 
-# '8GB' -> bytes, or $null when the text is not a size WSL accepts.
+# '8GB' -> bytes, or $null when the text is not a size WSL accepts. The unit
+# is optional and a bare number is bytes (Microsoft's documented default), so
+# 'swap=0', which turns swap off, is a valid size.
 function ConvertTo-WslByteCount {
     param([string]$Text)
-    if ($Text -notmatch '^(?<n>\d+(\.\d+)?)(?<unit>KB|MB|GB|TB|B)$') { return $null }
-    $scale = switch ($Matches['unit'].ToUpperInvariant()) {
+    if ($Text -notmatch '^(?<n>\d+(\.\d+)?)(?<unit>KB|MB|GB|TB|B)?$') { return $null }
+    $unit = if ($Matches['unit']) { $Matches['unit'].ToUpperInvariant() } else { 'B' }
+    $scale = switch ($unit) {
         'B'  { 1 }
         'KB' { 1KB }
         'MB' { 1MB }

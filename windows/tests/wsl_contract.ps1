@@ -314,6 +314,14 @@ Test-Case 'CRLF text with a UTF-8 BOM parses to the same entries as LF text' ($l
 
 Test-Case "ConvertTo-WslByteCount reads '1.5GB'" ((ConvertTo-WslByteCount '1.5GB') -eq [long](1.5 * 1GB))
 Test-Case "ConvertTo-WslByteCount refuses '8 GB'" ($null -eq (ConvertTo-WslByteCount '8 GB'))
+Test-Case "ConvertTo-WslByteCount reads a bare number as bytes ('0', '1024')" (
+    (ConvertTo-WslByteCount '0') -eq 0 -and (ConvertTo-WslByteCount '1024') -eq 1024
+)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nswap=0`n"
+Test-Case 'swap=0 (no unit, swap off) is a valid size, not a warning' (
+    @($found | Where-Object { $_.Message -match 'is not a size' }).Count -eq 0 -and
+    @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -eq '[wsl2] swap (line 3)' }).Count -eq 1
+) (Format-Finding $found)
 
 # Behavioural: the action needs no WSL, so these run on every runner.
 $fixtures = Initialize-ScratchDirectory 'wslconfig_'

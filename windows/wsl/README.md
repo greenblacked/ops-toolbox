@@ -438,7 +438,7 @@ INFO  [experimental] sparseVhd                     consider sparseVhd=true (or w
 | A section `.wslconfig` does not read: `[wsl]`, `[wsl2 ]`, or a `/etc/wsl.conf` section such as `[boot]` | `WARN` |
 | An `[experimental]` key under `[wsl2]`, or the reverse | `WARN` |
 | A key the table does not know: a typo, or a setting newer than the table | `WARN` |
-| `memory` or `swap` that is not a size (`8GB`, `512MB`), `processors` that is not a positive whole number | `WARN` |
+| `memory` or `swap` that is not a size (`8GB`, `512MB`; a bare number is bytes, so `swap=0` is fine), `processors` that is not a positive whole number | `WARN` |
 | `memory` above the installed RAM, `processors` above the logical processors (Windows only; skipped with an `INFO` line elsewhere) | `WARN` |
 | A true/false key (`sparseVhd`, `firewall`, `dnsTunneling`, `localhostForwarding` and the like) set to anything but `true` or `false`, in any case | `WARN` |
 | A single backslash in `kernel` or `swapFile`: write `C:\\Users\\me\\...` or use forward slashes | `WARN` |
