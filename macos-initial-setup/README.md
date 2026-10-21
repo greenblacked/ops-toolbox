@@ -31,6 +31,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [Quick start](#quick-start)
 - [`install_apps.sh`](#install_appssh)
 - [`install_devtools.sh`](#install_devtoolssh)
+- [`toolchain_check.sh`](#toolchain_checksh)
 - [`stay_fresh.sh`](#stay_freshsh)
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`brewfile.sh`](#brewfilesh)
@@ -80,6 +81,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | --- | --- |
 | `install_apps.sh` | Day-one workstation apps, Homebrew casks/formulae, platform CLIs, and Google Cloud SDK. |
 | `install_devtools.sh` | Language and infrastructure toolchains: Python, Terraform, Go, Helm, and version managers. |
+| `toolchain_check.sh` | Read-only: are the Python, Terraform, Go and Node versions this checkout pins installed, and are they the ones that run? |
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. Deprecated: it runs only under `--legacy-run`. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
@@ -113,6 +115,7 @@ than memorizing flags.
 | **Diagnose** | `status.sh` | Whenever you sit down at the machine | Nothing — it only reads |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything, credentials included | Nothing — it only reads |
+| **Diagnose** | `toolchain_check.sh` | After cloning a repository, or when a shim says a version is missing | Nothing — it only reads |
 | **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
@@ -438,6 +441,72 @@ your shell configuration yourself.
 | `1` | One or more installs failed. |
 | `2` | Preflight checks failed, or a non-interactive real run omitted `--yes`. |
 | `3` | Invalid arguments. |
+
+---
+
+## `toolchain_check.sh`
+
+`install_devtools.sh` installs the version managers; this answers whether a
+given checkout's pins resolve to something they have. It reads the pin files
+in one directory, asks the managers what is installed, and prints per tool
+whether the pin is installed, missing (with the command that installs it), or
+installed but not the binary that actually runs.
+
+```bash
+./toolchain_check.sh                     # the current directory
+./toolchain_check.sh ~/src/infra         # or: --dir ~/src/infra
+./toolchain_check.sh --strict            # an inactive pin fails too
+./toolchain_check.sh --list-pins         # which files it reads
+```
+
+```text
+[ ok ] python     3.12.5   (.python-version, pyenv 3.12.5)
+[warn] terraform  1.9.5 not installed   fix: tfenv install 1.9.5   or: ./install_devtools.sh --only terraform --terraform-version 1.9.5
+[ ok ] go         >= 1.22   (go.mod, goenv 1.23.2)
+```
+
+| Tool | Pin files, first match wins | Installed according to |
+| --- | --- | --- |
+| `python` | `.python-version`, `.tool-versions` | `pyenv versions --bare`; `3.12` is met by `3.12.5` |
+| `terraform` | `.terraform-version`, `.tool-versions` | `tfenv list`, else `tenv tf list` |
+| `go` | `.go-version`, `go.mod` (`toolchain` exactly, else the `go` line as a minimum), `.tool-versions` (`golang`) | `goenv versions --bare`; a minimum is compared numerically, so `1.10` is newer than `1.9` |
+| `node` | `.nvmrc`, `.node-version`, `.tool-versions` (`nodejs`) | the major version of `node --version` |
+
+When `mise` is on `PATH`, `mise where TOOL@VERSION` answers first. A
+`.tool-versions` line can list several versions; each one is checked and only
+the missing ones are named. A pin found in a second file is noted, not
+checked. `system`, `latest`, `lts/*` and anything that is not a plain version
+number are notes too.
+
+**Read-only, and a pin file is data.** Nothing is installed, and no pin file
+is sourced or evaluated: a value that is not a plain version number is
+reported as such and never pasted into a printed command, so a hostile pin
+cannot smuggle shell syntax into a fix you copy. The active-version probes
+(`python --version`, `terraform version`, `go version`, `node --version`, run
+from the directory) happen only for a pin that is already installed, with the
+managers' auto-install switches off, Terraform's update check disabled and
+`GOTOOLCHAIN=local`, so no probe downloads anything. The directory is not
+searched recursively and no project code runs.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `DIR`, `--dir DIR` | Directory holding the pin files (default: the current directory). |
+| `--strict` | Exit `1` on any warning, including a pin that is installed but not active. |
+| `--quiet` | Print only warnings. |
+| `--list-pins` | Print the pin file names it reads and exit. Works anywhere. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every pin is satisfied. An installed pin that is not active is a warning only. |
+| `1` | A pinned version is not installed, or its manager is missing; with `--strict`, any warning. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments, or the directory does not exist. |
+| `4` | No pin file in the directory. |
 
 ---
 
@@ -1936,6 +2005,9 @@ Homebrew / `pyenv` / `goenv` commands.
 - `ops_context.sh` reads local config files and asks `kubectl` and `docker`
   for their current context. It writes nothing, starts no network
   connection, and never opens `~/.aws/credentials`.
+- `toolchain_check.sh` reads pin files and asks version managers and
+  binaries for their versions. It never installs anything and never
+  evaluates a pin file.
 - `ssh_client_doctor.sh` reads `~/.ssh` and asks `ssh-keygen` about each key
   without printing it. It never changes a mode; every fix is printed.
 

@@ -2639,6 +2639,170 @@ assert_not_contains "--quiet drops pass rows from the secrets group" "$out" "[pa
 assert_contains "--quiet still prints the summary" "$out" "== summary =="
 rm -rf "$sec"
 
+section "toolchain_check: --list-pins and argument validation answer before preflight"
+TC="$M/toolchain_check.sh"
+out="$("$TC" --list-pins 2>&1)"; rc=$?
+assert_eq "toolchain_check --list-pins exits 0" "0" "$rc"
+for pin in .python-version .terraform-version .go-version go.mod .tool-versions .nvmrc .node-version; do
+  if grep -qxF -- "$pin" <<<"$out"; then
+    ok "toolchain_check lists $pin"
+  else
+    err "toolchain_check --list-pins does not list $pin"
+  fi
+done
+"$TC" /nonexistent/toolchain-dir >/dev/null 2>&1; rc=$?
+assert_eq "toolchain_check rejects a missing DIR -> 3" "3" "$rc"
+"$TC" --dir >/dev/null 2>&1; rc=$?
+assert_eq "toolchain_check rejects --dir without a value -> 3" "3" "$rc"
+"$TC" "$M" "$M/tests" >/dev/null 2>&1; rc=$?
+assert_eq "toolchain_check rejects a second directory -> 3" "3" "$rc"
+
+section "toolchain_check: pins against faked version managers"
+# Every manager and binary is a shell script answering from an environment
+# variable, uname included, so the same fixtures hold on a real Mac where
+# /usr/bin has its own tools. Each case gets its own directory of pin files.
+tc="$(mktemp -d)"
+mkdir -p "$tc/bin" "$tc/home" "$tc/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$tc/bin/uname"
+cat > "$tc/bin/pyenv" <<'PYENV_EOF'
+#!/bin/sh
+[ "$*" = "versions --bare" ] || exit 1
+for v in ${FAKE_PYENV_VERSIONS:-}; do echo "$v"; done
+PYENV_EOF
+cat > "$tc/bin/goenv" <<'GOENV_EOF'
+#!/bin/sh
+[ "$*" = "versions --bare" ] || exit 1
+for v in ${FAKE_GOENV_VERSIONS:-}; do echo "$v"; done
+GOENV_EOF
+cat > "$tc/bin/tfenv" <<'TFENV_EOF'
+#!/bin/sh
+[ "$*" = "list" ] || exit 1
+printf '%s\n' "${FAKE_TFENV_LIST:-}" | tr '|' '\n'
+TFENV_EOF
+cat > "$tc/bin/python" <<'PYTHON_EOF'
+#!/bin/sh
+echo "Python ${FAKE_PYTHON_ACTIVE:-3.12.5}"
+PYTHON_EOF
+cat > "$tc/bin/terraform" <<'TERRAFORM_EOF'
+#!/bin/sh
+echo "Terraform v${FAKE_TF_ACTIVE:-1.9.5}"
+echo "on darwin_arm64"
+TERRAFORM_EOF
+cat > "$tc/bin/go" <<'GO_EOF'
+#!/bin/sh
+echo "go version go${FAKE_GO_ACTIVE:-1.23.2} darwin/arm64"
+GO_EOF
+cat > "$tc/bin/node" <<'NODE_EOF'
+#!/bin/sh
+echo "v${FAKE_NODE_ACTIVE:-20.11.1}"
+NODE_EOF
+chmod +x "$tc/bin/"*
+
+tcrun() {
+  HOME="$tc/home" TMPDIR="$tc/tmp" PATH="$tc/bin:/usr/bin:/bin" "$TC" "$@" 2>&1
+}
+pindir() {
+  mkdir -p "$tc/$1"
+  printf '%s' "$tc/$1"
+}
+
+d="$(pindir py-exact)"
+printf '3.12.5\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.11.9 3.12.5" tcrun "$d")"; rc=$?
+assert_eq "an installed, active Python pin -> 0" "0" "$rc"
+assert_contains "the Python pin is reported with its source" "$out" "(.python-version, pyenv 3.12.5)"
+out="$(FAKE_PYENV_VERSIONS="3.11.9 3.12.5" tcrun --dir="$d")"; rc=$?
+assert_eq "toolchain_check accepts --dir=DIR" "0" "$rc"
+
+d="$(pindir py-prefix)"
+printf '3.12\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a 3.12 pin is met by 3.12.5 -> 0" "0" "$rc"
+
+d="$(pindir py-crlf)"
+printf '3.12.5\r\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a CRLF-terminated pin file is read -> 0" "0" "$rc"
+
+d="$(pindir tf-missing)"
+printf '1.9.5\n' > "$d/.terraform-version"
+out="$(FAKE_TFENV_LIST="* 1.7.0 (set by /x/.terraform-version)" FAKE_TF_ACTIVE=1.7.0 tcrun "$d")"; rc=$?
+assert_eq "a Terraform pin that is not installed -> 1" "1" "$rc"
+assert_contains "the tfenv fix is printed" "$out" "tfenv install 1.9.5"
+assert_contains "the install_devtools.sh fix is printed" "$out" \
+  "install_devtools.sh --only terraform --terraform-version 1.9.5"
+
+out="$(FAKE_TFENV_LIST="  1.9.5|* 1.7.0 (set by /x/.terraform-version)" FAKE_TF_ACTIVE=1.7.0 tcrun "$d")"; rc=$?
+assert_eq "an installed but inactive pin is a warning only -> 0" "0" "$rc"
+assert_contains "the inactive pin names the active version" "$out" "the active binary is 1.7.0"
+FAKE_TFENV_LIST="  1.9.5|* 1.7.0 (set by /x/.terraform-version)" FAKE_TF_ACTIVE=1.7.0 \
+  tcrun "$d" --strict >/dev/null; rc=$?
+assert_eq "an inactive pin fails under --strict -> 1" "1" "$rc"
+
+d="$(pindir go-min)"
+printf 'module example.test/x\n\ngo 1.22\n' > "$d/go.mod"
+out="$(FAKE_GOENV_VERSIONS="1.23.2" FAKE_GO_ACTIVE=1.23.2 tcrun "$d")"; rc=$?
+assert_eq "go.mod's go line is a minimum met by 1.23.2 -> 0" "0" "$rc"
+assert_contains "the go minimum is shown as one" "$out" ">= 1.22"
+out="$(FAKE_GOENV_VERSIONS="1.21.0" FAKE_GO_ACTIVE=1.21.0 tcrun "$d")"; rc=$?
+assert_eq "go.mod's minimum not met by 1.21.0 -> 1" "1" "$rc"
+printf 'module example.test/x\n\ngo 1.10\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.9.7" FAKE_GO_ACTIVE=1.9.7 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.9.7 does not meet a 1.10 minimum (numeric compare) -> 1" "1" "$rc"
+printf 'module example.test/x\n\ngo 1.9\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.10.1" FAKE_GO_ACTIVE=1.10.1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.10.1 meets a 1.9 minimum (numeric compare) -> 0" "0" "$rc"
+
+d="$(pindir tool-versions)"
+printf '# toolchain for this repo\npython 3.12.5 3.10.4  # two interpreters\nterraform 1.7.0\n' \
+  > "$d/.tool-versions"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" FAKE_TFENV_LIST="1.7.0" FAKE_TF_ACTIVE=1.7.0 tcrun "$d")"; rc=$?
+assert_eq "one missing version of two in .tool-versions -> 1" "1" "$rc"
+assert_contains "the missing version is named" "$out" "3.10.4 not installed"
+assert_not_contains "the installed version is not reported missing" "$out" "3.12.5 not installed"
+assert_contains "terraform from .tool-versions is checked too" "$out" "(.tool-versions, tfenv 1.7.0)"
+
+d="$(pindir hostile)"
+# shellcheck disable=SC2016  # the literal $( ) is the fixture
+printf '$(touch PWNED)\n' > "$d/.python-version"
+printf '1.0;rm\n' > "$d/.terraform-version"
+out="$(cd "$d" && FAKE_PYENV_VERSIONS="3.12.5" FAKE_TFENV_LIST="1.7.0" tcrun "$d")"; rc=$?
+assert_eq "pins that are not versions are notes, not failures -> 0" "0" "$rc"
+assert_contains "a hostile pin is reported as not a version" "$out" "not a plain version number"
+assert_not_contains "a hostile pin never reaches a printed command" "$out" "1.0;rm"
+assert_not_contains "a hostile pin never reaches an install hint" "$out" "install 1.0"
+if [[ -e "$d/PWNED" || -e "$tc/PWNED" ]]; then
+  err "a pin file was evaluated: PWNED exists"
+else
+  ok "a pin file is read as data, never evaluated"
+fi
+
+d="$(pindir system)"
+printf 'system\n' > "$d/.python-version"
+out="$(tcrun "$d")"; rc=$?
+assert_eq "a 'system' pin -> 0" "0" "$rc"
+assert_contains "a 'system' pin is a note" "$out" "names no version"
+
+d="$(pindir node)"
+printf 'v20\n' > "$d/.nvmrc"
+out="$(FAKE_NODE_ACTIVE=20.11.1 tcrun "$d")"; rc=$?
+assert_eq "a Node major pin met by the active node -> 0" "0" "$rc"
+FAKE_NODE_ACTIVE=18.19.0 tcrun "$d" >/dev/null; rc=$?
+assert_eq "a Node major pin not met -> 1" "1" "$rc"
+
+d="$(pindir no-pyenv)"
+printf '3.12.5\n' > "$d/.python-version"
+mv "$tc/bin/pyenv" "$tc/pyenv.off"
+out="$(tcrun "$d")"; rc=$?
+assert_eq "a Python pin without pyenv -> 1" "1" "$rc"
+assert_contains "a missing pyenv points at install_devtools.sh" "$out" "./install_devtools.sh --only python"
+mv "$tc/pyenv.off" "$tc/bin/pyenv"
+
+d="$(pindir empty)"
+tcrun "$d" >/dev/null; rc=$?
+assert_eq "a directory with no pin file -> 4" "4" "$rc"
+rm -rf "$tc"
+
 end_section
 # The file's own floor: it reached this line having opened sections, each of
 # which asserted something. Reaching it at all is what the removal of `-e` put

@@ -28,6 +28,7 @@ a LaunchAgent that schedules the maintenance run.
 | `ssh_client_doctor.sh` | `~/.ssh` modes, weak and unencrypted keys, missing `IdentityFile` paths, risky `Host *` options. | <span class="stage stage-report">read-only</span> |
 | `install_apps.sh` | Homebrew casks, CLI formulae and Google Cloud SDK; `--profile core`, `platform` or `full`. | `--dry-run` |
 | `install_devtools.sh` | Python (pyenv), Terraform, Go (goenv), Helm; `--setup-shell` wires `~/.zshrc`. | `--dry-run` |
+| `toolchain_check.sh` | Are the Python, Terraform, Go and Node versions a checkout pins installed and active? | <span class="stage stage-report">read-only</span> |
 | `stay_fresh.sh` | Recurring housekeeping and upgrades; presets `--quick`, `--reports`, `--full`, `--old-only`. | `--dry-run` |
 | `brewfile.sh` | `dump`, `check`, `install`, `diff` and `cleanup` of the Homebrew state. | `--dry-run` on `install`; `cleanup` previews unless `--force` |
 | `macos_defaults.sh` | Report `defaults` values against the desired set; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
