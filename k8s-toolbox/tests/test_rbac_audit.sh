@@ -78,6 +78,9 @@ save('cr-wild-url-glob', BUILTINS+[role('health-all',[{'nonResourceURLs':['/heal
 save('cr-url-exact', BUILTINS+[role('health-one',[{'nonResourceURLs':['/healthz'],'verbs':['get']}])])
 save('cr-escalate', BUILTINS+[role('rbac-manager',[rule(['escalate','bind','get'],['clusterroles'],['rbac.authorization.k8s.io'])])])
 save('rb-default-sa', [binding('app-edit','edit',[sa('default','demo')],ns='demo')])
+save('crb-default-group-all', [binding('everyone','view',[group('system:serviceaccounts')])])
+save('rb-default-group-ns', [binding('demo-sas','edit',[group('system:serviceaccounts:demo')],ns='demo')])
+save('crb-default-group-other', [binding('some-group','view',[group('system:authenticated'),group('system:serviceaccounts-ops')])])
 save('crb-default-sa-other', [binding('metrics-reader','view',[sa('default','other')])])
 save('crb-dangling', [binding('old-ci','ci-deployer-v1',[sa('deployer','ci')])])
 save('rb-dangling-role', [binding('reader-binding','reader',[user('bob')],ns='demo',role_kind='Role')])
@@ -185,6 +188,19 @@ reset_fixtures
 export RBAC_CR=cr-url-exact
 run_rbac
 assert_rc 'an exact non-resource URL is not a wildcard' 4 "$rc"
+
+reset_fixtures
+export RBAC_CRB=crb-default-group-all RBAC_RB=rb-default-group-ns
+run_rbac --only default-sa
+assert_rc 'system: ServiceAccount groups are skipped by default' 4 "$rc"
+run_rbac --only default-sa --include-system
+assert_rc 'ServiceAccount groups reach the default ServiceAccounts with --include-system' 0 "$rc"
+assert_contains 'all-ServiceAccounts group on a clusterrolebinding' '[risk] clusterrolebinding everyone -> view: Group system:serviceaccounts'
+assert_contains 'per-namespace group on a rolebinding' '[advice] rolebinding demo/demo-sas -> edit: Group system:serviceaccounts:demo'
+reset_fixtures
+export RBAC_CRB=crb-default-group-other
+run_rbac --only default-sa --include-system
+assert_rc 'other system: groups do not name the default ServiceAccounts' 4 "$rc"
 
 reset_fixtures
 export RBAC_RB=rb-dangling-role RBAC_ROLES=roles-other-ns

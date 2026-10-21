@@ -319,7 +319,13 @@ if "cluster-admin" in rows or "default-sa" in rows or "dangling" in rows:
         rows["cluster-admin"].append((scope,"%s %s -> cluster-admin: %s" % (kind,label,subject_text(s)),[describe]))
     if "default-sa" in rows:
       for s in subjects:
-        if s.get("kind") == "ServiceAccount" and s.get("name") == "default":
+        sname=str(s.get("name",""))
+        # The groups of all ServiceAccounts (or of one namespace) include
+        # the default ServiceAccounts. They are system: names, so they are
+        # judged only with --include-system, like any system: subject.
+        group_sa=s.get("kind") == "Group" and (sname == "system:serviceaccounts" or
+                                              (sname.startswith("system:serviceaccounts:") and len(sname) > 23))
+        if (s.get("kind") == "ServiceAccount" and sname == "default") or group_sa:
           rows["default-sa"].append((scope,"%s %s -> %s: %s (every pod without its own serviceAccountName inherits it)" % (
             kind,label,ref.get("name",""),subject_text(s)),[describe]))
     if "dangling" in rows:
