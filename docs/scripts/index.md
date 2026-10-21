@@ -104,7 +104,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/router_doctor.py` | MikroTik | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `mikrotik/features/print_schedulers.sh` | MikroTik | Host: print `/system scheduler` commands. | prints only; `--dry-run` accepted |
 | `mikrotik/features/pull_router_backups.sh` | MikroTik | Host: pull backups over SFTP/SCP. | `--dry-run` |
-| `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, events and PVCs. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, OOM kills, events and PVCs. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/kubectl_workload_diag.sh` | Kubernetes | Triage stuck rollouts, autoscalers and failed Jobs. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/build.sh` | Kubernetes | Build the toolbox image with buildx. | `--dry-run` |

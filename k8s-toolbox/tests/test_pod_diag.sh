@@ -59,6 +59,23 @@ save('sidecar-terminated', [pod(init=[container('proxy',False,completed)],sideca
 save('multi-crash', [pod(regular=[container('api',False,crash)],init=[container('setup',False,crash)])])
 save('pending', [pod(phase='Pending',regular=[])])
 save('failed', [pod(phase='Failed',regular=[container('api',False,failed)])])
+minutes_ago=lambda m: (now-datetime.timedelta(minutes=m)).isoformat()
+def restarted(name, count, last=None, limit=None, state=None, ready=True):
+    cs=container(name, ready, state)
+    cs['restartCount']=count
+    if last is not None:
+        cs['lastState']={'terminated':last}
+    doc=pod(regular=[cs])
+    doc['spec']={'containers':[{'name':name,'resources':{'limits':{'memory':limit}} if limit else {}}]}
+    return doc
+oom=lambda finished: {'reason':'OOMKilled','exitCode':137,'finishedAt':finished}
+save('oom-recent', [restarted('api',3,oom(minutes_ago(7)),'256Mi')])
+save('oom-old', [restarted('api',1,oom(minutes_ago(180)),'256Mi')])
+save('oom-bad-time', [restarted('api',1,oom('invalid'),'256Mi')])
+save('restarts-many', [restarted('api',9)])
+save('restarts-few', [restarted('api',2)])
+save('crash-many', [restarted('api',30,oom(minutes_ago(2)),'256Mi',crash,False)])
+save('restart-count-invalid', [restarted('api','many')])
 save('pvc-unbound', [{'metadata':{'namespace':'demo','name':'data'},'status':{'phase':'Pending'}}])
 save('node-pressure', [{'metadata':{'name':'node-demo'},'status':{'conditions':[{'type':'DiskPressure','status':'True','message':'fixture pressure'}]}}])
 def event(name, **fields):
@@ -186,6 +203,73 @@ for fixture in unready regular-crash init-crash init-failed sidecar-crash sideca
   esac
 done
 
+printf '\n--- Restarts and OOM kills in containers that look healthy now ---\n'
+reset_fixtures
+export DIAG_PODS=oom-recent
+run_diag
+assert_rc 'recent OOM kill in a Ready container -> findings exit 0' 0 "$rc"
+assert_contains 'OOM kill is named' 'last OOMKilled'
+assert_contains 'restart count is shown' 'container api restarted 3x'
+assert_contains 'memory limit is shown' '(memory limit 256Mi)'
+assert_contains 'previous logs are suggested, not fetched' 'next      kubectl logs -n demo api -c api --previous'
+assert_absent 'OOM kill is not quiet' 'cluster looks quiet'
+pod_gets="$(grep -c 'get pods' "$DIAG_CALLS")"
+if [[ "$pod_gets" == "1" ]]; then
+  ok 'restart section reuses the pod listing (one get pods)'
+else
+  err "restart section listed pods $pod_gets times: $(cat "$DIAG_CALLS")"
+fi
+if [[ "$(cat "$DIAG_CALLS")" != *'logs '* ]]; then
+  ok 'restart findings fetch no logs'
+else
+  err "restart findings fetched logs: $(cat "$DIAG_CALLS")"
+fi
+
+reset_fixtures
+export DIAG_PODS=oom-old
+run_diag
+assert_rc 'OOM kill older than the default lookback -> quiet exit 4' 4 "$rc"
+run_diag --since 6h
+assert_rc 'wider --since includes the older OOM kill' 0 "$rc"
+assert_contains 'older OOM kill reported under --since 6h' 'container api restarted 1x, last OOMKilled'
+assert_contains 'restart heading names the lookback and threshold' 'Restarts and OOM kills (last 6h, threshold 5)'
+
+reset_fixtures
+export DIAG_PODS=restarts-many
+run_diag
+assert_rc 'restart loop above the default threshold -> findings exit 0' 0 "$rc"
+assert_contains 'restart loop names its count' 'container api restarted 9x (>= 5)'
+assert_contains 'restart loop suggests the previous logs' 'next      kubectl logs -n demo api -c api --previous'
+run_diag --restarts 10
+assert_rc '--restarts 10 lifts the threshold above 9 restarts' 4 "$rc"
+run_diag --restarts=9 --context fixture-context
+assert_rc '--restarts=9 reports exactly at the threshold' 0 "$rc"
+assert_contains 'next step names the context that was read' 'next      kubectl --context fixture-context logs -n demo api -c api --previous'
+
+reset_fixtures
+export DIAG_PODS=restarts-few
+run_diag
+assert_rc 'a few restarts below the threshold -> quiet exit 4' 4 "$rc"
+
+reset_fixtures
+export DIAG_PODS=crash-many
+run_diag
+assert_rc 'crash loop stays a finding' 0 "$rc"
+assert_contains 'crash loop is reported by the unhealthy section' 'container api: CrashLoopBackOff'
+assert_absent 'crash loop is not reported twice' 'restarted 30x'
+
+reset_fixtures
+export DIAG_PODS=oom-bad-time
+run_diag
+assert_rc 'unreadable OOM time below the threshold is not fatal' 4 "$rc"
+
+reset_fixtures
+export DIAG_PODS=restart-count-invalid
+run_diag
+assert_rc 'non-numeric restartCount -> incomplete exit 1' 1 "$rc"
+assert_contains 'restart parse failure is named' 'could not parse restart data'
+assert_absent 'restart parse failure cannot claim quiet health' 'cluster looks quiet'
+
 printf '\n--- Warning event last observation and fallbacks ---\n'
 for fixture in series-recent last-recent deprecated-recent event-recent creation-recent invalid-series-fallback invalid-last-fallback; do
   reset_fixtures
@@ -233,6 +317,24 @@ for resource in pods events pvc nodes; do
     fi
   done
 done
+reset_fixtures
+export DIAG_FAIL_RESOURCE=pods
+run_diag
+listed="$(grep -c 'could not list pods' <<<"$out")"
+if [[ "$listed" == "1" ]]; then
+  ok 'a failed pod listing is reported once, not again by the restart section'
+else
+  err "a failed pod listing was reported $listed times: $out"
+fi
+assert_contains 'restart section says why it was skipped' 'skipped; the pod listing above could not be read'
+reset_fixtures
+export DIAG_BAD_RESOURCE=pods DIAG_BAD_FIXTURE=malformed
+run_diag
+if [[ "$out" != *'could not parse restart data'* ]]; then
+  ok 'malformed pods JSON is counted once'
+else
+  err "malformed pods JSON was counted twice: $out"
+fi
 reset_fixtures
 export DIAG_PODS=unready DIAG_FAIL_RESOURCE=events
 run_diag

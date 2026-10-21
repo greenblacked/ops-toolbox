@@ -21,7 +21,7 @@ only.
 
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `kubectl_pod_diag.sh` | Triage unhealthy pods, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
+| `kubectl_pod_diag.sh` | Triage unhealthy pods, restarts and OOM kills, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
 | `kubectl_workload_diag.sh` | Triage stuck rollouts, DaemonSets, autoscalers and failed Jobs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
@@ -40,6 +40,7 @@ All paths are under `k8s-toolbox/`.
     ```bash
     ./k8s-toolbox/kubectl_pod_diag.sh --namespace prod
     ./k8s-toolbox/kubectl_pod_diag.sh --context staging -n api
+    ./k8s-toolbox/kubectl_pod_diag.sh --since 6h --restarts 10
     ./k8s-toolbox/kubectl_workload_diag.sh --namespace prod --only deployments,hpa
     ./k8s-toolbox/gke_cluster_doctor.sh --list-checks
     ./k8s-toolbox/gke_cluster_doctor.sh --project P --cluster C --location europe-west1

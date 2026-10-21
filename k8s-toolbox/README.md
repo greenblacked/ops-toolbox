@@ -17,7 +17,7 @@ unprivileged user by default.
 | [`versions.env`](versions.env) | The pinned versions, and the only place they are written down |
 | [`build.sh`](build.sh) | Build (and optionally push) the image with those pins |
 | [`run.sh`](run.sh) | Run it locally with the working directory and your kubeconfig mounted |
-| [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh) | Read-only cluster triage: unhealthy pods, warnings, PVCs, node pressure |
+| [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh) | Read-only cluster triage: unhealthy pods, OOM kills and restart loops, warnings, PVCs, node pressure |
 | [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh) | Read-only workload triage: stuck rollouts, DaemonSets, autoscalers, failed Jobs |
 | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
@@ -69,8 +69,8 @@ Find out what is unhappy in a cluster, in one read-only pass:
 ./kubectl_pod_diag.sh
 ```
 
-It reports unhealthy pods and containers, recent `Warning` events, unbound PVCs,
-and nodes under pressure. Running pods with unready containers, failing init
+It reports unhealthy pods and containers, recent OOM kills and restart loops,
+recent `Warning` events, unbound PVCs, and nodes under pressure. Running pods with unready containers, failing init
 containers, and unhealthy restartable sidecars are findings too. For a crashing
 container it fetches that named container's logs. It exits `4` when every check
 completed and found nothing, distinct from `0` for findings and `1` for an
@@ -209,6 +209,7 @@ anything — it answers "what is unhappy here" in one pass:
 ./kubectl_pod_diag.sh --namespace prod
 ./kubectl_pod_diag.sh --context staging -n api
 ./kubectl_pod_diag.sh --since 30m             # event lookback; also accepts h/d
+./kubectl_pod_diag.sh --restarts 10           # restart-loop threshold (default 5)
 ./kubectl_pod_diag.sh -A                      # back to every namespace explicitly
 ```
 
@@ -221,6 +222,12 @@ It reports, in order:
   regular containers, failing init containers, and unhealthy restartable
   sidecars; completed init containers and healthy Running/Succeeded pods stay
   quiet
+- containers that are Running and Ready again but were `OOMKilled` within the
+  `--since` lookback, or have restarted at least `--restarts` times (5 by
+  default), with the container's memory limit and a printed
+  `kubectl logs ... --previous` to run next. This reuses the pod listing, so
+  it costs no extra API call; a container already reported above is never
+  repeated here, and a failed pod listing is counted once
 - `Warning` events from the configured `--since` lookback (one hour by
   default), truncated to something readable
 - PVCs that are not `Bound`

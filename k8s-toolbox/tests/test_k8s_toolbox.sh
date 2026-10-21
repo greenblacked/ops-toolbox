@@ -155,6 +155,7 @@ missing_value_cases=(
   "kubectl_pod_diag.sh --namespace"
   "kubectl_pod_diag.sh --context"
   "kubectl_pod_diag.sh --since"
+  "kubectl_pod_diag.sh --restarts"
   "kubectl_workload_diag.sh --namespace"
   "kubectl_workload_diag.sh --context"
   "kubectl_workload_diag.sh --only"
@@ -329,6 +330,10 @@ fi
 
 guard "$K/kubectl_pod_diag.sh" --since yesterday >/dev/null 2>&1
 assert_rc "kubectl_pod_diag.sh rejects invalid --since" 3 "$?"
+for restarts in 0 abc -3 2.5; do
+  guard "$K/kubectl_pod_diag.sh" --restarts "$restarts" >/dev/null 2>&1
+  assert_rc "kubectl_pod_diag.sh rejects --restarts $restarts" 3 "$?"
+done
 
 # Exercise the valid lookback path with a fake cluster: a 30-minute window
 # must include the recent warning and exclude the two-hour-old warning, while
