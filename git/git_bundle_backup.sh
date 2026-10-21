@@ -59,7 +59,7 @@ included, so keep it as carefully as the repository. Nothing is uploaded.
 
 Exit codes: 0 success, 1 the bundle could not be created or verified, or would
 overwrite a file, 2 not a git repo or DIR unusable, 3 usage, 4 nothing to back
-up or a --ref not found
+up or a --ref that is not a ref
 EOF
 }
 
@@ -159,6 +159,12 @@ fi
 for ref in "${REFS[@]+"${REFS[@]}"}"; do
   if [[ "$ref" == -* ]] || ! git rev-parse --verify --quiet "$ref" >/dev/null 2>&1; then
     printf "ref not found: %s\n" "$ref" >&2
+    exit 4
+  fi
+  # git bundle create takes a ref name, not a SHA or an expression like main~1.
+  full="$(git rev-parse --symbolic-full-name "$ref" 2>/dev/null || true)"
+  if [[ "$full" != refs/* && "$full" != HEAD ]]; then
+    printf "not a ref: %s\n" "$ref" >&2
     exit 4
   fi
 done

@@ -121,6 +121,8 @@ git -C "$scratch/main-only" rev-parse --verify --quiet refs/remotes/origin/featu
 assert_eq "$rc" 1 'a --ref main bundle does not carry feature/a'
 run_in "$repo" --out "$scratch/out4" --ref nope >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 4 'a --ref that does not exist -> 4'
+run_in "$repo" --out "$scratch/out4b" --ref HEAD~1 >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 4 'a --ref that is an expression, not a ref -> 4'
 if [[ -e "$scratch/out4" ]]; then
   err 'a missing --ref still created the output directory'
 else
