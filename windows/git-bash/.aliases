@@ -566,7 +566,7 @@ __ctx_ini() {
 
 ctx() {
     local plain=0 printed=0 pattern red='' reset=''
-    local aws_cfg aws_cred
+    local aws_cfg aws_cred aws_section
     local kube_ctx kube_ns aws_profile aws_region aws_extra gc_dir gc_name gc_project
     local tf_ws tf_from docker_ctx docker_from branch url host
     [ "${1:-}" = "--plain" ] && plain=1
@@ -587,17 +587,25 @@ ctx() {
 
     aws_profile="${AWS_PROFILE:-}"
     aws_region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+    aws_cfg="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+    aws_cred="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
     # No profile and no exported keys: the AWS CLI and SDKs fall back to the
-    # [default] profile of the shared files, so show that one and its region.
+    # [default] profile of the shared files, so show that one.
     if [ -z "$aws_profile" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
-        aws_cfg="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
-        aws_cred="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
         if __ctx_ini "$aws_cfg" default || __ctx_ini "$aws_cred" default; then
             aws_profile=default
-            if [ -z "$aws_region" ]; then
-                aws_region="$(__ctx_ini "$aws_cfg" default region || __ctx_ini "$aws_cred" default region)"
-            fi
         fi
+    fi
+    # No region in the environment: read it for the profile in use. The config
+    # file names a profile [profile NAME] (only default is bare); the
+    # credentials file uses [NAME] and rarely holds a region.
+    if [ -n "$aws_profile" ] && [ -z "$aws_region" ]; then
+        if [ "$aws_profile" = default ]; then
+            aws_section=default
+        else
+            aws_section="profile $aws_profile"
+        fi
+        aws_region="$(__ctx_ini "$aws_cfg" "$aws_section" region || __ctx_ini "$aws_cred" "$aws_profile" region)"
     fi
     aws_extra="${aws_region:+($aws_region)}"
     # Whether keys are exported, never what they are.

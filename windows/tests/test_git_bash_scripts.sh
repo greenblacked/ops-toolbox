@@ -677,6 +677,14 @@ run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_ACCESS_KEY_ID=AKIAFAKE
 assert_contains "exported keys still show as no profile, not default" "$out" "aws     (no profile)"
 run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_PROFILE=stg
 assert_contains "AWS_PROFILE wins over the default profile" "$out" "aws     stg"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_SHARED_CREDENTIALS_FILE="$ctx_root/aws/credentials" AWS_PROFILE=dev
+assert_contains "a named profile's region comes from its [profile NAME] section" "$out" "aws     dev  (eu-north-1)"
+assert_not_contains "and the default profile's region is not used for it" "$out" "ap-south-1"
+assert_not_contains "and no key is printed" "$out" "AKIASECRETKEY"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_PROFILE=dev AWS_REGION=eu-west-1
+assert_contains "AWS_REGION still wins over the named profile's region" "$out" "aws     dev  (eu-west-1)"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_PROFILE=nosuch
+assert_contains "a named profile with no region shows none" "$out" "aws     nosuch"$'\n'
 
 run_ctx TF_WORKSPACE=Production-EU
 assert_contains "TF_WORKSPACE wins over .terraform/environment, matched in any case" "$out" "tf      Production-EU!  (TF_WORKSPACE)"
