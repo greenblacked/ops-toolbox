@@ -362,6 +362,14 @@ Test-Case 'swap=0 (no unit, swap off) is a valid size, not a warning' (
     @($found | Where-Object { $_.Message -match 'is not a size' }).Count -eq 0 -and
     @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -eq '[wsl2] swap (line 3)' }).Count -eq 1
 ) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`ndefaultVhdSize=1TB`n"
+Test-Case 'defaultVhdSize with a size is a pass' (
+    @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -eq '[wsl2] defaultVhdSize (line 3)' }).Count -eq 1
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`ndefaultVhdSize=big`n"
+Test-Case 'defaultVhdSize that is not a size is reported' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] defaultVhdSize (line 3)' -and $_.Message -match 'is not a size' }).Count -eq 1
+) (Format-Finding $found)
 
 # Behavioural: the action needs no WSL, so these run on every runner.
 $fixtures = Initialize-ScratchDirectory 'wslconfig_'

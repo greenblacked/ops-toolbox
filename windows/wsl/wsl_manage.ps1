@@ -884,7 +884,7 @@ function Test-WslConfig {
     # Reported against the real line, so the label carries its line number.
     function Get-Label { param($Entry) '[{0}] {1} (line {2})' -f $Entry.Section, $Entry.Key, $Entry.Line }
 
-    foreach ($sizeKey in @('memory', 'swap')) {
+    foreach ($sizeKey in @('memory', 'swap', 'defaultVhdSize')) {
         if (-not $values.ContainsKey($sizeKey)) { continue }
         $e = $values[$sizeKey]
         $bytes = ConvertTo-WslByteCount $e.Value
