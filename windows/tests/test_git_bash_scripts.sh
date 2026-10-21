@@ -570,7 +570,8 @@ section "ctx"
 # reads is cleared here and again for each run below.
 unset AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID TF_WORKSPACE \
   KUBECONFIG CTX_DANGER_PATTERN APPDATA DOCKER_CONTEXT AWS_CONFIG_FILE \
-  AWS_SHARED_CREDENTIALS_FILE
+  AWS_SHARED_CREDENTIALS_FILE DOCKER_HOST CLOUDSDK_ACTIVE_CONFIG_NAME \
+  CLOUDSDK_CORE_PROJECT
 
 ctx_root="$(mktemp -d "$SCRATCH/ctx.XXXXXX")"
 mkdir -p "$ctx_root/home/.docker" "$ctx_root/work/.terraform" \
@@ -605,6 +606,7 @@ run_ctx() {
   out="$(cd "$ctx_root/work" && env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
     -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN \
     -u DOCKER_CONTEXT -u NO_COLOR -u CTX_STUBS -u AWS_CONFIG_FILE -u AWS_SHARED_CREDENTIALS_FILE \
+    -u DOCKER_HOST -u CLOUDSDK_ACTIVE_CONFIG_NAME -u CLOUDSDK_CORE_PROJECT \
     HOME="$ctx_root/home" APPDATA="$ctx_root/appdata" PATH="$ctx_root/bin:$PATH" \
     ${assigns[@]+"${assigns[@]}"} "${BASH:-bash}" -c '
       kubectl() {
@@ -686,6 +688,25 @@ assert_contains "AWS_REGION still wins over the named profile's region" "$out" "
 run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_PROFILE=nosuch
 assert_contains "a named profile with no region shows none" "$out" "aws     nosuch"$'\n'
 
+run_ctx DOCKER_HOST=tcp://prod-docker:2376
+assert_contains "DOCKER_HOST overrides the saved Docker context" "$out" "docker  tcp://prod-docker:2376  (DOCKER_HOST)"
+run_ctx DOCKER_HOST=tcp://prod-docker:2376 DOCKER_CONTEXT=staging
+assert_contains "DOCKER_CONTEXT stays above DOCKER_HOST" "$out" "docker  staging  (DOCKER_CONTEXT)"
+assert_not_contains "and DOCKER_HOST is then not shown" "$out" "prod-docker"
+
+mkdir -p "$ctx_root/tfinit/.terraform"
+# shellcheck disable=SC2016  # the script body expands in the child bash
+out="$(cd "$ctx_root/tfinit" && env -u TF_WORKSPACE HOME="$ctx_root/empty" CTX_STUBS=none \
+  "${BASH:-bash}" -c 'kubectl() { return 1; }; git() { return 128; }; . "$0"; ctx' "$GB/.aliases" 2>&1)"
+assert_contains "an initialised directory with no environment file is on default" "$out" "tf      default  (.terraform/environment)"
+
+printf '[core]\nproject = acme-stg\n' > "$ctx_root/appdata/gcloud/configurations/config_other"
+run_ctx CLOUDSDK_ACTIVE_CONFIG_NAME=other
+assert_contains "CLOUDSDK_ACTIVE_CONFIG_NAME selects the configuration read" "$out" "gcloud  acme-stg"$'\n'
+run_ctx CLOUDSDK_CORE_PROJECT=override-prod
+assert_contains "CLOUDSDK_CORE_PROJECT overrides the project in the file" "$out" "gcloud  override-prod!"
+assert_not_contains "and the file project is not shown" "$out" "acme-prod"
+
 run_ctx TF_WORKSPACE=Production-EU
 assert_contains "TF_WORKSPACE wins over .terraform/environment, matched in any case" "$out" "tf      Production-EU!  (TF_WORKSPACE)"
 
@@ -702,6 +723,7 @@ assert_contains "and still marks production" "$out" "prod-admin!"
 out="$(cd "$ctx_root/empty" && env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
   -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN -u APPDATA \
   -u DOCKER_CONTEXT -u AWS_CONFIG_FILE -u AWS_SHARED_CREDENTIALS_FILE \
+  -u DOCKER_HOST -u CLOUDSDK_ACTIVE_CONFIG_NAME -u CLOUDSDK_CORE_PROJECT \
   HOME="$ctx_root/empty" CTX_STUBS=none "${BASH:-bash}" -c '
     kubectl() { return 1; }
     git() { return 128; }

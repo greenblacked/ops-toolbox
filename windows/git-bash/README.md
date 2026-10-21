@@ -245,9 +245,12 @@ under `# ---` section headers. By category:
   `AWS_SHARED_CREDENTIALS_FILE`, with the region from its `region` key; with
   `AWS_PROFILE` set and no `AWS_REGION`, the region of its `[profile NAME]`
   section), the
-  gcloud project, the Terraform workspace (`TF_WORKSPACE`, else
-  `.terraform/environment` in the current directory), the Docker context, and
-  the Git branch with its origin host. Run it before `tfaa`, `tfda` or
+  gcloud project (`CLOUDSDK_CORE_PROJECT`, else the project of the
+  configuration `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config` names), the
+  Terraform workspace (`TF_WORKSPACE`, else `.terraform/environment` in the
+  current directory, `default` when `.terraform/` has no such file), the
+  Docker context (`DOCKER_CONTEXT`, else `DOCKER_HOST`, else the saved
+  context), and the Git branch with its origin host. Run it before `tfaa`, `tfda` or
   `kdelete`, which act on whatever these point at. A value that looks like
   production (`prod`, `production` or `prd`, any case) ends in `!`, in red on
   a terminal; the `!` stays when colour is off (`NO_COLOR`, `ctx --plain`, or

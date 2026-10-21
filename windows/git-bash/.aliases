@@ -619,29 +619,37 @@ ctx() {
 
     if [ -n "${APPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
         gc_dir="$(cygpath -u "$APPDATA" 2>/dev/null)/gcloud"
-        if [ -f "$gc_dir/active_config" ]; then
-            gc_name=''
+        # CLOUDSDK_ACTIVE_CONFIG_NAME picks the configuration to read instead
+        # of the one active_config names; CLOUDSDK_CORE_PROJECT overrides the
+        # project whatever the file says.
+        gc_name="${CLOUDSDK_ACTIVE_CONFIG_NAME:-}"
+        if [ -z "$gc_name" ] && [ -f "$gc_dir/active_config" ]; then
             read -r gc_name < "$gc_dir/active_config"
-            gc_project=''
-            if [ -n "$gc_name" ] && [ -f "$gc_dir/configurations/config_$gc_name" ]; then
-                gc_project="$(sed -n 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*//p' "$gc_dir/configurations/config_$gc_name")"
-                gc_project="${gc_project%%$'\n'*}"
-            fi
-            if [ -n "$gc_project" ]; then
-                __ctx_print gcloud "$gc_project" '' "$pattern" "$red" "$reset"
-                printed=$((printed + 1))
-            elif [ -n "$gc_name" ]; then
-                __ctx_print gcloud "$gc_name" '(configuration, no project)' "$pattern" "$red" "$reset"
-                printed=$((printed + 1))
-            fi
+        fi
+        gc_project="${CLOUDSDK_CORE_PROJECT:-}"
+        if [ -z "$gc_project" ] && [ -n "$gc_name" ] && [ -f "$gc_dir/configurations/config_$gc_name" ]; then
+            gc_project="$(sed -n 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*//p' "$gc_dir/configurations/config_$gc_name")"
+            gc_project="${gc_project%%$'\n'*}"
+        fi
+        if [ -n "$gc_project" ]; then
+            __ctx_print gcloud "$gc_project" '' "$pattern" "$red" "$reset"
+            printed=$((printed + 1))
+        elif [ -n "$gc_name" ]; then
+            __ctx_print gcloud "$gc_name" '(configuration, no project)' "$pattern" "$red" "$reset"
+            printed=$((printed + 1))
         fi
     fi
 
     tf_ws="${TF_WORKSPACE:-}"
     tf_from='(TF_WORKSPACE)'
-    if [ -z "$tf_ws" ] && [ -f .terraform/environment ]; then
-        read -r tf_ws < .terraform/environment
+    if [ -z "$tf_ws" ] && [ -d .terraform ]; then
+        # An initialised directory with no environment file is on "default".
+        tf_ws=default
         tf_from='(.terraform/environment)'
+        if [ -f .terraform/environment ]; then
+            read -r tf_ws < .terraform/environment
+            tf_ws="${tf_ws:-default}"
+        fi
     fi
     if [ -n "$tf_ws" ]; then
         __ctx_print tf "$tf_ws" "$tf_from" "$pattern" "$red" "$reset"
@@ -650,7 +658,11 @@ ctx() {
 
     docker_ctx="${DOCKER_CONTEXT:-}"
     docker_from='(DOCKER_CONTEXT)'
-    if [ -z "$docker_ctx" ] && [ -f "$HOME/.docker/config.json" ]; then
+    # DOCKER_HOST overrides the context saved in config.json, so name it.
+    if [ -z "$docker_ctx" ] && [ -n "${DOCKER_HOST:-}" ]; then
+        docker_ctx="$DOCKER_HOST"
+        docker_from='(DOCKER_HOST)'
+    elif [ -z "$docker_ctx" ] && [ -f "$HOME/.docker/config.json" ]; then
         docker_ctx="$(sed -n 's/.*"currentContext"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$HOME/.docker/config.json")"
         docker_ctx="${docker_ctx%%$'\n'*}"
         docker_ctx="${docker_ctx:-default}"
