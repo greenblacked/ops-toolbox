@@ -645,11 +645,11 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   every authentication attempt runs with `StrictHostKeyChecking=yes` (never
   `accept-new`), `UpdateHostKeys=no` and `CheckHostIP=no`, so none of a key
   a `KnownHostsCommand` does not supply, an extra key for a known host or
-  an IP address entry for a known hostname is written to known_hosts. A
-  *changed* host key can only be seen by connecting;
+  an IP address entry for a known hostname is written to known_hosts.
+  A *changed* host key can only be seen by connecting;
   `git_remote_doctor.py --probe` names that one.
 
-With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason.
+With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason. With `--require-known-host` they instead use `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no` and write nothing.
 
 Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
