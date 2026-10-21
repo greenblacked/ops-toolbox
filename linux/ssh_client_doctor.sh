@@ -532,6 +532,7 @@ if want risks; then
     risks_before=$((WARN_COUNT + FAIL_COUNT))
     scope="before any Host"
     scope_all=1
+    scope_only="only for ${scope:0:60}"
     ln=0
     global_ids=0
     global_only=0
@@ -556,16 +557,29 @@ if want risks; then
         host)
           scope="Host $rest"
           scope_all=0
+          has_star=0
+          negated=""
           # read -a, not an unquoted loop: a bare * must not glob.
           read -r -a pats <<< "$rest"
           for pat in "${pats[@]+"${pats[@]}"}"; do
-            [[ "$pat" == "*" ]] && scope_all=1
+            [[ "$pat" == "*" ]] && has_star=1
+            [[ "$pat" == '!'* ]] && negated="${negated:+$negated }$pat"
           done
+          scope_only="only for ${scope:0:60}"
+          if (( has_star )); then
+            if [[ -z "$negated" ]]; then
+              scope_all=1
+            else
+              # A negated pattern carves hosts out, so it is not global.
+              scope_only="for all hosts except ${negated:0:60}"
+            fi
+          fi
           continue
           ;;
         match)
           scope="Match $rest"
           scope_all=0
+          scope_only="only for ${scope:0:60}"
           [[ "$val_lc" == "all" ]] && scope_all=1
           continue
           ;;
@@ -578,7 +592,7 @@ if want risks; then
               if (( scope_all )); then
                 fail "StrictHostKeyChecking $rest for every host ($where)" "host keys are never verified, so any server can claim to be any host: use 'StrictHostKeyChecking accept-new'"
               else
-                info "StrictHostKeyChecking $rest only for ${scope:0:60} (line $ln)"
+                info "StrictHostKeyChecking $rest $scope_only (line $ln)"
               fi
               ;;
           esac
@@ -588,7 +602,7 @@ if want risks; then
             if (( scope_all )); then
               warn "UserKnownHostsFile /dev/null for every host ($where)" "no host key is ever remembered, so none can be checked: remove the line"
             else
-              info "UserKnownHostsFile /dev/null only for ${scope:0:60} (line $ln)"
+              info "UserKnownHostsFile /dev/null $scope_only (line $ln)"
             fi
           fi
           ;;
@@ -602,7 +616,7 @@ if want risks; then
               esac
               warn "$key yes for every host ($where)" "$hint"
             else
-              info "$key yes only for ${scope:0:60} (line $ln)"
+              info "$key yes $scope_only (line $ln)"
             fi
           fi
           ;;

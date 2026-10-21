@@ -2270,6 +2270,13 @@ printf '%s\n' 'Host build-*' '  StrictHostKeyChecking no' '  ForwardAgent yes' >
 out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
 assert_not_contains "ssh_client_doctor leaves a per-host exception ungraded" "$out" "[FAIL]"
 assert_eq "ssh_client_doctor per-host exception -> 0" "0" "$rc"
+# A negated pattern carves hosts out, so Host * !pattern is not global.
+printf '%s\n' 'Host * !trusted.example' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor does not grade Host * with a negation as global" "$out" "[FAIL]"
+assert_not_contains "ssh_client_doctor does not warn on Host * with a negation" "$out" "[warn]"
+assert_contains "ssh_client_doctor says all hosts except the negated one" "$out" "for all hosts except !trusted.example"
+assert_eq "ssh_client_doctor Host * with a negation -> 0" "0" "$rc"
 
 out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
 assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"
