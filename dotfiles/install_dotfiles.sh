@@ -358,12 +358,19 @@ if (( ${#files[@]} == 0 )); then
   exit 2
 fi
 
+prune_extra_units=()
 for want in ${only_units[@]+"${only_units[@]}"}; do
   found=0
   for f in "${files[@]}"; do
     [[ "$(unit_of "$f")" == "$want" ]] && { found=1; break; }
   done
   if (( found == 0 )); then
+    # --prune may name the unit of an orphan whose source was wholly deleted;
+    # that is checked against the orphans once they can be listed.
+    if (( PRUNE )); then
+      prune_extra_units+=("$want")
+      continue
+    fi
     err "no such unit: $want (see --list)"
     exit 3
   fi
@@ -537,6 +544,7 @@ link_candidates() {
   return 0
 }
 
+# With "all", every orphan regardless of --only (used to validate --only).
 orphans() {
   local f l rel tracked=""
   for f in "${files[@]}"; do
@@ -554,7 +562,7 @@ orphans() {
     else
       rel="home/${l#"$HOME_DIR"/}"
     fi
-    selected "$rel" || continue
+    [[ "${1:-}" == all ]] || selected "$rel" || continue
     printf '%s\n' "$l"
   done < <(link_candidates | sort -u)
 }
@@ -853,6 +861,29 @@ do_restore() {
 
 # rm of the link itself: never rm -r, never rmdir. A directory the last
 # orphan leaves empty is mentioned and kept; it may be the tool's own.
+# --prune --only UNIT where UNIT has no tracked file any more: valid when an
+# orphan link belongs to that unit, so a wholly deleted source directory can
+# be pruned by name. Anything else is still "no such unit".
+check_prune_units() {
+  local want o rel found
+  for want in ${prune_extra_units[@]+"${prune_extra_units[@]}"}; do
+    found=0
+    while IFS= read -r o; do
+      [[ -n "$o" ]] || continue
+      if [[ "$o" == "$CONFIG_DIR"/* ]]; then
+        rel="config/${o#"$CONFIG_DIR"/}"
+      else
+        rel="home/${o#"$HOME_DIR"/}"
+      fi
+      [[ "$(unit_of "$rel")" == "$want" ]] && { found=1; break; }
+    done < <(orphans all)
+    if (( found == 0 )); then
+      err "no such unit: $want (see --list)"
+      exit 3
+    fi
+  done
+}
+
 do_prune() {
   local o parent removed=0 failed=0 emptied=""
   while IFS= read -r o; do
@@ -888,6 +919,7 @@ elif (( DIFF )); then
 elif (( UNINSTALL )); then
   do_uninstall
 elif (( PRUNE )); then
+  check_prune_units
   do_prune
 elif (( BACKUPS )); then
   do_backups

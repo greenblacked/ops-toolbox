@@ -304,6 +304,18 @@ out="$(run_installer --prune --dry-run 2>&1)"; rc=$?
 assert_rc "--prune --dry-run exits 0 for a deleted source directory" 0 "$rc"
 assert_contains "--prune --dry-run previews removing it" "$out" "(dry-run) rm $H/.foo/config"
 assert_true "--prune --dry-run kept the link" test -L "$H/.foo/config"
+# The unit of a wholly deleted source directory is a valid --only for
+# --prune, as the bare scan finds it; any other mode and any unit with no
+# orphan still exit 3.
+out="$(run_installer --prune --only foo --dry-run 2>&1)"; rc=$?
+assert_rc "--prune --only <deleted unit> exits 0" 0 "$rc"
+assert_contains "--prune --only <deleted unit> previews the rm" "$out" "(dry-run) rm $H/.foo/config"
+run_installer --prune --only nosuchunit --dry-run >/dev/null 2>&1; rc=$?
+assert_rc "--prune --only <unit with no orphan> exits 3" 3 "$rc"
+run_installer --status --only foo >/dev/null 2>&1; rc=$?
+assert_rc "--status --only <deleted unit> still exits 3" 3 "$rc"
+out="$(run_installer --prune --only git --dry-run 2>&1)"
+if [[ "$out" == *"$H/.foo/config"* ]]; then err "--prune --only git touched another unit's orphan"; else ok "--prune --only <unit> leaves other units' orphans"; fi
 out="$(run_installer --prune 2>&1)"; rc=$?
 assert_rc "--prune exits 0 for a deleted source directory" 0 "$rc"
 assert_contains "--prune counts the removed link" "$out" "1 orphan link(s) removed"
