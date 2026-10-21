@@ -262,7 +262,11 @@ CI runs the same strict build on every pull request that touches the site:
 .venv/bin/mkdocs build --strict
 ```
 
-The build writes `site/`, which is ignored by Git.
+The build writes `site/`, which is ignored by Git. The Worker under `worker/`
+and the page scripts under `overrides/` are tested by the python suite
+(`test_docs_worker.py`, `test_docs_site.py`), and CI runs that suite whenever
+`worker/`, `overrides/`, `mkdocs.yml` or a docs file those tests read changes,
+not only when Python does.
 
 ### Deploy
 
