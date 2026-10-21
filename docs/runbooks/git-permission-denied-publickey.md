@@ -33,7 +33,7 @@ help. Nothing on this page needs its contents.
 
 ## Report
 
-<span class="stage stage-report">read-only</span>
+<span class="stage stage-report">read-only except known_hosts</span>
 
 !!! report "Nothing is edited except known_hosts"
     Neither script edits a config file, loads anything into the agent or
