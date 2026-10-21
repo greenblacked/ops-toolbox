@@ -232,7 +232,12 @@ inspect_repo() {
     if [[ -z "$branch" ]]; then
       branch="detached@$(git -C "$repo" rev-parse --short HEAD 2>/dev/null || printf '?')"
     fi
-    upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+    # rev-parse prints the literal '@{upstream}' before failing when the
+    # tracking ref is gone (for instance just pruned), so the output is kept
+    # only when the command succeeds.
+    if ! upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+      upstream=""
+    fi
     if [[ -n "$upstream" ]]; then
       counts="$(git -C "$repo" rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null || true)"
       if [[ -n "$counts" ]]; then
