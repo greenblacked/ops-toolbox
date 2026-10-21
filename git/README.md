@@ -18,6 +18,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_whoami.sh`](#git_whoamish)
 - [`git_status_summary.sh`](#git_status_summarysh)
 - [`git_repos_status.sh`](#git_repos_statussh)
+- [`git_unpushed.sh`](#git_unpushedsh)
 - [`git_sync_default.sh`](#git_sync_defaultsh)
 - [`git_cleanup_merged.sh`](#git_cleanup_mergedsh)
 - [`git_prune_gone.sh`](#git_prune_gonesh)
@@ -80,6 +81,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_whoami.sh` | Show the effective identity and optionally enforce an expected email. |
 | `git_status_summary.sh` | Compact status with optional stable `--porcelain` output. |
 | `git_repos_status.sh` | One-screen status of every checkout under a directory; `--strict` fails while work exists only locally. |
+| `git_unpushed.sh` | Everything in one repository that exists only on this machine: commits, upstream-less branches, stashes, edits, tags. |
 | `git_sync_default.sh` | Fast-forward the default branch and optionally restore the starting branch. |
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
 | `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
@@ -138,7 +140,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `groot` | `git_repo_root.sh` | `gprofile` | `set_git_profile.sh` |
 | `gwho` | `git_whoami.sh` | `gssh` | `git_ssh_doctor.py` |
 | `grepos` | `git_repos_status.sh` | `gsign` | `git_signing_doctor.py` |
-| | | `gremote` | `git_remote_doctor.py` |
+| `gunpushed` | `git_unpushed.sh` | `gremote` | `git_remote_doctor.py` |
 | | | `gignore` | `git_ignore_doctor.py` |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
@@ -307,6 +309,59 @@ remote-tracking refs are as fresh as the last fetch in each checkout.
 Exit codes: `0` success (a plain run exits `0` even when checkouts need
 attention), `1` `--strict` found work at risk, `2` git missing or a `--dir` is
 not a readable directory, `3` usage, `4` no repository found.
+
+---
+
+## `git_unpushed.sh`
+
+What would you lose if this clone disappeared? Before reinstalling a laptop,
+destroying a CI worker or a dev VM, or deleting a checkout, Git keeps the answer
+in five different places, and this reports all five for the current
+repository. `git_repos_status.sh` is the same question across many checkouts,
+one line each; this is the detailed answer for one.
+
+```bash
+./git/git_unpushed.sh
+./git/git_unpushed.sh --limit 20
+./git/git_unpushed.sh --remote origin --tags   # also tags origin does not have
+./git/git_unpushed.sh --strict                  # gate a decommission script
+./git/git_unpushed.sh --porcelain
+```
+
+Each section is printed only when it has something in it:
+
+| Section | What counts |
+| --- | --- |
+| commits on no remote | Commits on a local branch that no remote-tracking ref contains, with the newest subjects (`--limit`, default 5). On a detached `HEAD`, commits no branch holds either. |
+| branches with no upstream | Local branches with no upstream configured, listed even when their commits are already on a remote, because the branch itself exists only here. |
+| stashes | The stash count and the newest entry's subject. |
+| uncommitted | Changed tracked files and untracked files. Ignored files are not counted. |
+| tags missing on REMOTE | With `--tags` only: local tags the remote does not have. |
+
+`--remote NAME` counts a commit as pushed only when it is on that remote; the
+default is any remote-tracking ref. An unknown name exits `4` rather than
+quietly counting every commit. `--tags` asks `--remote NAME`, or the only remote
+when there is exactly one, with `git ls-remote --tags`; with several remotes and
+no `--remote` it exits `3`. A remote that cannot be reached is reported as
+`cannot reach NAME` and exits `1`, because the question could not be answered.
+
+A repository with no remotes at all prints `no remotes configured` once and
+reports every commit as unpushed, which is the truth. The closing block prints
+the command that deals with each kind of finding (`git push -u`,
+`git stash branch`, `git switch -c`); nothing is ever run.
+
+`--porcelain` prints `kind<TAB>name<TAB>count<TAB>detail` rows and no
+headings, in this order: `commits` (name is the branch, or `HEAD` for a
+detached one; detail is the newest subject), `no-upstream` (count is the
+branch's commits on no remote), `stash` (detail is the newest subject),
+`uncommitted` (name `tracked` or `untracked`) and `tag` (detail is the remote).
+
+Read-only. It never fetches, so remote-tracking refs are as fresh as the last
+fetch; `--tags` is the only network call, and `ls-remote` writes nothing.
+
+Exit codes: `0` success, whether or not anything was found; `1` `--strict`
+found something, or `--tags` could not reach the remote; `2` not a Git
+repository; `3` usage; `4` no commits yet, or `--remote` names no remote.
 
 ---
 
@@ -764,6 +819,7 @@ All paths below assume the repo root is your current directory.
 ./git/git_whoami.sh
 ./git/git_status_summary.sh --porcelain
 ./git/git_repos_status.sh --dir ~/src --strict
+./git/git_unpushed.sh --tags --strict
 ./git/git_sync_default.sh --dry-run --restore
 ./git/git_cleanup_merged.sh --dry-run --base main --include 'feature/*'
 ./git/git_prune_gone.sh --dry-run --exclude '*keep*'

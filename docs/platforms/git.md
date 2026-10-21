@@ -21,6 +21,7 @@ ignore rules.
 | `git_whoami.sh` | Effective Git name and email; `--expect-email` enforces one. | <span class="stage stage-report">read-only</span> |
 | `git_status_summary.sh` | Branch, upstream, ahead/behind, dirty count. | <span class="stage stage-report">read-only</span> |
 | `git_repos_status.sh` | Status of every checkout under a directory; `--strict` gates a wipe. | <span class="stage stage-report">read-only</span> |
+| `git_unpushed.sh` | Commits, branches, stashes, edits and tags that exist only locally. | <span class="stage stage-report">read-only</span> |
 | `git_repo_root.sh` | Worktree root, or git dir with `--git-dir`. | <span class="stage stage-report">read-only</span> |
 | `git_diff_branch.sh` | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
 | `git_recent_branches.sh` | Recently used branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
@@ -92,6 +93,8 @@ All paths are under `git/`.
   `--dry-run`. `git_stale_branches.sh` is report-only and has no `--dry-run`.
 - `git_repos_status.sh --fetch` updates remote-tracking refs in every checkout
   it finds; without it the report reads the refs already on disk.
+- `git_unpushed.sh` never fetches. `--tags` is its only network call, a
+  read-only `git ls-remote --tags`.
 - The repository README calls the doctors read-only, but
   `git_signing_doctor.py --test-sign` creates one real signature and
   `git_ssh_doctor.py --test-auth` attempts SSH authentication.
