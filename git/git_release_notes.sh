@@ -162,7 +162,10 @@ fi
 # --- classify --------------------------------------------------------------
 # Bash 3.2 has no associative arrays, so each section accumulates in its own
 # string and they are printed in a fixed order below.
-subject_re='^([a-z]+)(\(([^)]*)\))?(!)?: (.+)$'
+# The scope rule is the one git_commitlint.sh and the commit-msg hook enforce:
+# one or more of [a-zA-Z0-9._/-]. An empty or odd scope is not a conventional
+# subject, so it lands in Other and never bumps the version.
+subject_re='^([a-z]+)(\(([a-zA-Z0-9._/-]+)\))?(!)?: (.+)$'
 if [[ "$FORMAT" == "markdown" ]]; then
   bullet="- "
 else

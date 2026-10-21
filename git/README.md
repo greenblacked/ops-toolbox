@@ -827,7 +827,9 @@ after the type, or a body line starting `BREAKING CHANGE:`), **Features**
 (`feat`), **Fixes** (`fix`), **Performance** (`perf`), **Documentation**
 (`docs`), **Build and CI** (`build`, `ci`) and **Other** (`chore`, `refactor`,
 `style`, `test`, `revert`, any other type, and every subject that is not a
-Conventional Commit, so nothing is dropped silently). Each entry is
+Conventional Commit, so nothing is dropped silently). A scope is one or more of
+`a-z A-Z 0-9 . _ / -`, the commit-msg hook's rule, so `feat(): x` is Other and
+does not bump the version. Each entry is
 `- scope: description (shortsha)`, or `- description (shortsha)` without a
 scope. Merge commits are left out.
 

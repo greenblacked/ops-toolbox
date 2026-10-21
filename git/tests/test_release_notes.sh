@@ -131,6 +131,21 @@ new_repo "$fix_repo" v1.2.3 &&
   commit "$fix_repo" 'docs: a doc' || err 'create fix fixture'
 assert_eq "$(run_in "$fix_repo" --next-version 2>&1)" '1.2.4' 'fixes and docs bump the patch version'
 
+section "malformed scopes are not conventional"
+bad_repo="$scratch/badscope"
+new_repo "$bad_repo" v1.2.3 &&
+  commit "$bad_repo" 'feat(): malformed' &&
+  commit "$bad_repo" 'feat(a b): spaced scope' &&
+  commit "$bad_repo" 'feat(a(b): nested paren' || err 'create bad scope fixture'
+assert_eq "$(run_in "$bad_repo" --next-version 2>&1)" '1.2.4' 'empty or odd scopes bump only the patch version'
+out="$(run_in "$bad_repo" 2>&1)"
+assert_not_contains "$out" 'Features' 'a malformed scope is not a feature'
+assert_contains "$out" 'feat(): malformed (' 'an empty scope is listed verbatim under Other'
+ok_repo="$scratch/okscope"
+new_repo "$ok_repo" v1.2.3 &&
+  commit "$ok_repo" 'feat(a.b_c/d-e1): valid scope' || err 'create valid scope fixture'
+assert_eq "$(run_in "$ok_repo" --next-version 2>&1)" '1.3.0' 'a scope from the hook character set still counts'
+
 section "a tag on --to describes that release"
 git -C "$feat_repo" tag -a v1.3.0 -m 'v1.3.0' || err 'tag the feat fixture'
 out="$(run_in "$feat_repo" --to v1.3.0 --format markdown 2>&1)"; rc=$?
