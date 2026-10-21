@@ -35,6 +35,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -265,7 +266,7 @@ def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, reco
                 "path %s is a submodule in the index but has no .gitmodules entry: git "
                 "submodule update stops with no submodule mapping found" % path,
                 "add the entry, or git rm --cached -- %s if it was committed by "
-                "accident" % path,
+                "accident" % shlex.quote(path),
             ))
     for name in sorted(modules):
         path = modules[name]["path"]
@@ -287,12 +288,12 @@ def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, reco
                 "without --recurse-submodules)"
                 % (path, sha[:12], recorded.get(path, "another commit")[:12]),
                 "git submodule update   # to match the record, or git add %s to "
-                "record the new commit" % path,
+                "record the new commit" % shlex.quote(path),
             ))
         elif state == "conflict":
             findings.append(("fail", "merge conflict in the submodule pointer %s" % path,
                              "check out the commit you want in %s, then git add %s"
-                             % (path, path)))
+                             % (shlex.quote(path), shlex.quote(path))))
 
     for name in sorted(modules):
         url = modules[name]["url"]

@@ -138,6 +138,20 @@ class SubmoduleFindingsTestCase(unittest.TestCase):
         self.assertIn("no submodule mapping found", message)
         self.assertIn("git rm --cached -- lib", fix)
 
+    def test_repair_commands_quote_paths(self):
+        path = "my lib"
+        [(_, _, fix)] = self.findings({}, gitlinks=(path,))
+        self.assertIn("git rm --cached -- 'my lib'", fix)
+        [(_, _, fix)] = self.findings(
+            {"lib": module(path=path)}, gitlinks=(path,),
+            statuses=[("changed", "aaaa", path)], recorded={path: "bbbb"})
+        self.assertIn("git add 'my lib' to", fix)
+        [(_, _, fix)] = self.findings(
+            {"lib": module(path=path)}, gitlinks=(path,),
+            statuses=[("conflict", "a", path)])
+        self.assertIn("git add 'my lib'", fix)
+        self.assertIn("in 'my lib'", fix)
+
     def test_a_stale_gitmodules_entry_warns(self):
         [(level, _, fix)] = self.findings({"lib": module()}, gitlinks=())
         self.assertEqual(level, "warn")
