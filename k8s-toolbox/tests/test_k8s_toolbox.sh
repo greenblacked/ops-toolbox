@@ -162,6 +162,8 @@ missing_value_cases=(
   "kubectl_cert_expiry.sh --warn-days"
   "kubectl_cert_expiry.sh --namespace"
   "kubectl_cert_expiry.sh --context"
+  "kubectl_drain_preflight.sh --node"
+  "kubectl_drain_preflight.sh --context"
   "gke_cluster_doctor.sh --project"
   "gke_cluster_doctor.sh --cluster"
   "gke_cluster_doctor.sh --location"

@@ -26,6 +26,7 @@ only.
 | `kubectl_pod_diag.sh` | Triage unhealthy pods, restarts and OOM kills, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
 | `kubectl_workload_diag.sh` | Triage stuck rollouts, DaemonSets, autoscalers and failed Jobs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `kubectl_cert_expiry.sh` | Expired and expiring TLS certificates in Secrets; `--warn-days`, `--cert-manager`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_drain_preflight.sh` | What would block or hurt draining a node; prints the drain command, never runs it. | <span class="stage stage-report">read-only</span> |
 | `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
 | `run.sh` | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
@@ -46,6 +47,7 @@ All paths are under `k8s-toolbox/`.
     ./k8s-toolbox/kubectl_pod_diag.sh --since 6h --restarts 10
     ./k8s-toolbox/kubectl_workload_diag.sh --namespace prod --only deployments,hpa
     ./k8s-toolbox/kubectl_cert_expiry.sh --warn-days 14 --cert-manager
+    ./k8s-toolbox/kubectl_drain_preflight.sh --node gke-pool-1-abcd
     ./k8s-toolbox/gke_cluster_doctor.sh --list-checks
     ./k8s-toolbox/gke_cluster_doctor.sh --project P --cluster C --location europe-west1
     ```
@@ -69,6 +71,11 @@ All paths are under `k8s-toolbox/`.
 !!! warning "Check your kube context"
     `kubectl_pod_diag.sh` and `debug_pod.sh` use the current kube context unless
     you pass `--context`. Check it before running.
+
+!!! report "kubectl_drain_preflight.sh never cordons"
+    It prints `kubectl cordon` and `kubectl drain` with the flags the node
+    needs, and runs neither. When a query fails it exits 1 with no verdict
+    and no command, rather than call a node safe on half the data.
 
 !!! apply "debug_pod.sh changes a live pod"
     It adds an ephemeral container to an existing pod; it does not create a
