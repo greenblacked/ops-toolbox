@@ -213,6 +213,35 @@ def parse_shebang(first_line):
     return words[0], words[1:], has_cr
 
 
+def env_program(args):
+    """(split, names) for the words after env in a shebang: whether -S /
+    --split-string is used (also with the program attached, as in -Spython3
+    or --split-string=python3 -u) and the words that can name the program."""
+    split = False
+    names = []
+    for i, a in enumerate(args):
+        if a.startswith("--split-string"):
+            split = True
+            rest = a[len("--split-string"):]
+            if rest.startswith("="):
+                rest = rest[1:]
+            if rest:
+                names.append(rest.split()[0])
+            elif i + 1 < len(args):
+                names.append(args[i + 1])
+            break
+        if a.startswith("-S"):
+            split = True
+            if a[2:]:
+                names.append(a[2:])
+            elif i + 1 < len(args):
+                names.append(args[i + 1])
+            break
+        if not a.startswith("-"):
+            names.append(a)
+    return split, names
+
+
 def shebang_findings(first_line, find_program, path="<file>"):
     """[(level, message, fix)] for one hook's shebang.
 
@@ -239,11 +268,10 @@ def shebang_findings(first_line, find_program, path="<file>"):
     if not interpreter:
         return [("fail", "the shebang line names no interpreter", "complete the #! line")]
     if os.path.basename(interpreter) == "env":
-        names = [a for a in args if not a.startswith("-")]
+        split, names = env_program(args)
         if not names:
             return [("fail", "the shebang runs env with no program to run",
                      "name the interpreter: #!/usr/bin/env bash")]
-        split = any(a.startswith("-S") or a == "--split-string" for a in args)
         if len(args) > 1 and not split:
             return [("fail", "the shebang gives env %d arguments (%s) without -S: Linux "
                              "passes them as ONE word and env cannot find that program"

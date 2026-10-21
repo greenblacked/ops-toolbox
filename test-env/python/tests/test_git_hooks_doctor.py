@@ -123,6 +123,23 @@ class ShebangFindingsTestCase(unittest.TestCase):
     def test_env_options_are_skipped(self):
         self.assertEqual(doctor.shebang_findings(b"#!/usr/bin/env -S node --x\n", found), [])
 
+    def test_env_split_string_with_the_program_attached_is_accepted(self):
+        for line in (
+            b"#!/usr/bin/env --split-string=python3 -u\n",
+            b"#!/usr/bin/env --split-string python3 -u\n",
+            b"#!/usr/bin/env -Spython3 -u\n",
+            b"#!/usr/bin/env -S python3 -u\n",
+        ):
+            with self.subTest(line=line):
+                self.assertEqual(doctor.shebang_findings(line, found), [])
+
+    def test_env_split_string_still_checks_the_program(self):
+        [(level, message, _)] = doctor.shebang_findings(
+            b"#!/usr/bin/env --split-string=node --x\n", missing
+        )
+        self.assertEqual(level, "fail")
+        self.assertIn("node", message)
+
     def test_no_shebang_warns(self):
         [(level, _, _)] = doctor.shebang_findings(b"exit 0\n", found)
         self.assertEqual(level, "warn")
