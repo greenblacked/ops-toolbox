@@ -30,7 +30,9 @@ safe way for one that has already been pushed.
 <span class="stage stage-report">read-only</span>
 
 !!! report "Nothing changes in this step"
-    These commands only read the repository.
+    These commands leave your working tree, index, commits and branches
+    unchanged. `git fetch` does update the remote-tracking refs
+    (`origin/*`) and `.git/FETCH_HEAD`.
 
 Look at what the last commit holds and what is uncommitted, then find out
 whether the commit has left your machine:
