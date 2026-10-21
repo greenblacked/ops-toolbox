@@ -23,9 +23,12 @@ never read.
     ./router_doctor.py --host 192.168.88.1
     ./router_doctor.py --host router.lan --user admin --identity ~/.ssh/keys/mikrotik
     ./router_doctor.py --host router.lan --port 2222
+    ./router_doctor.py --hosts-file ~/routers.txt --format json
 
 Exit codes: 0 findings printed, 1 connected but the probe failed, 2 could not
-connect, 4 nothing wrong.
+connect, 3 usage, 4 nothing wrong. With --hosts-file each router is audited in
+turn and the run exits with the worst of them: 2 if any router could not be
+reached, else 1 if any probe failed, else 0 if any printed findings, else 4.
 """
 
 from __future__ import annotations
@@ -697,18 +700,330 @@ class Usage3Parser(argparse.ArgumentParser):
         self.exit(3, "%s: error: %s\n" % (self.prog, message))
 
 
+def scan_package(directory):
+    """(local script names, underscored names) for the package under directory.
+
+    Raises OSError when a directory there cannot be read; see
+    local_script_names() for why a partial answer is refused.
+    """
+    local = local_script_names(directory)
+    # The underscore verdict comes from the files themselves whenever they are
+    # here; the embedded list is only for a copy with no package.
+    underscored = underscored_script_names(directory) if local else None
+    return local, underscored
+
+
+def emit(lines):
+    """Print what run_one() collected, through the same helpers as ever."""
+    for kind, message in lines:
+        if kind == "head":
+            head(message)
+        elif kind == "ok":
+            ok(message)
+        elif kind == "raw":
+            print(message)
+        else:
+            PRINTER[kind](message)
+
+
+def run_one(user, host, port, args, package=None):
+    """Probe one router. Returns (exit code, JSON payload, text lines).
+
+    Nothing is printed here, so a fleet can put each router under its own
+    heading and still total them up. package is (local, underscored) when the
+    caller has already scanned it once for a whole fleet; None scans it after
+    the probe, which is the order a single router has always had.
+    """
+    lines = []
+    rc, out, err = probe(host, user, args.identity, port, args.timeout)
+    errors = err.strip().splitlines()[:5]
+
+    if rc == 255:
+        lines.append(("fail", "cannot reach %s over ssh" % host))
+        lines.extend(("raw", "        %s" % line) for line in errors)
+        lines.append(("info", "check the host and key, and that SSH is enabled under "
+                              "IP -> Services"))
+        lines.append(("info", "../git/git_ssh_doctor.py --host %s --test-auth will say "
+                              "which key works" % host))
+        return 2, {
+            "host": host,
+            "reachable": False,
+            "probe_ok": False,
+            "errors": errors,
+        }, lines
+
+    if rc != 0 or not out.strip():
+        lines.append(("fail", "reached %s but the read-only probe failed (exit %d)"
+                              % (host, rc)))
+        lines.extend(("raw", "        %s" % line) for line in errors)
+        lines.append(("info", "the user needs read access to /system script, /system "
+                              "scheduler and /system script environment"))
+        return 1, {
+            "host": host,
+            "reachable": True,
+            "probe_ok": False,
+            "probe_exit": rc,
+            "errors": errors,
+        }, lines
+
+    installed, schedulers, env = parse_report(out)
+    if package is None:
+        # Preflight, even though it runs after the ssh probe: the comparison
+        # below is only meaningful against the whole package, and half of it
+        # read is worse than none - every script that could not be read is
+        # reported as one the router has and the package does not.
+        try:
+            package = scan_package(args.scripts_dir)
+        except OSError as exc:
+            lines.append(("fail", "cannot read the scripts under %s: %s"
+                                  % (args.scripts_dir, exc)))
+            lines.append(("info", "pass --scripts-dir to point at the mikrotik package"))
+            return 2, {
+                "host": host,
+                "reachable": True,
+                "probe_ok": True,
+                "scripts_dir": args.scripts_dir,
+                "errors": ["cannot read the scripts: %s" % exc],
+            }, lines
+    local, underscored = package
+
+    findings = build_findings(local, installed, schedulers, env, underscored=underscored)
+    rc = 0 if has_problems(findings) else 4
+
+    # Scheduler on-event bodies are free-form RouterOS source and may embed
+    # credentials. They are inspected in memory to match script names, but
+    # never returned in the report.
+    public_schedulers = [
+        {"name": item.get("name", ""), "interval": item.get("interval", "")}
+        for item in schedulers
+    ]
+    payload = {
+        "host": host,
+        "user": user,
+        "port": port,
+        "reachable": True,
+        "probe_ok": True,
+        "installed_scripts": installed,
+        "schedulers": public_schedulers,
+        "local_scripts": local,
+        "controls": {
+            "ops_toolbox_paused": env.get(PAUSE_STATE_KEY),
+        },
+        "routeros_version": env.get(VERSION_TEXT_KEY),
+        "scheduler_state": [
+            {
+                "name": item.get("name", ""),
+                "disabled": item.get("disabled"),
+                "run_count": item.get("run_count"),
+                "start_time": item.get("start_time"),
+            }
+            for item in schedulers
+            if "disabled" in item
+        ],
+        "uptime_seconds": env.get(UPTIME_KEY),
+        "incompatible_scripts": incompatible_scripts(installed, env, underscored),
+        "findings": [
+            {"level": level, "message": message}
+            for level, message in findings
+        ],
+        "healthy": not has_problems(findings),
+    }
+
+    lines.append(("head", "router"))
+    lines.append(("info", "%s@%s:%d answered" % (user, host, port)))
+    lines.append(("info", "/system script holds %d entries; /system scheduler holds %d"
+                          % (len(installed), len(schedulers))))
+    if env.get(VERSION_TEXT_KEY):
+        lines.append(("info", "RouterOS %s" % env[VERSION_TEXT_KEY]))
+    if not local:
+        lines.append(("warn", "no .lua files under %s — only what the router has can "
+                              "be checked" % args.scripts_dir))
+
+    lines.append(("head", "findings"))
+    lines.extend(findings)
+
+    if rc == 4:
+        lines.append(("ok", "nothing to fix: everything installed is scheduled and has "
+                            "the globals it needs"))
+        return rc, payload, lines
+
+    lines.append(("head", "fix"))
+    lines.append(("info", "scheduler lines for every script here: ./print_schedulers.sh"))
+    lines.append(("info", "to install a missing script, paste the .lua body into System > "
+                          "Scripts with policy read,write,policy,test,sensitive,ftp"))
+    lines.append(("info", "to set a global once at boot, see the startup snippet in "
+                          "README.md and give it a start-time=startup scheduler"))
+    if payload["incompatible_scripts"]:
+        lines.append(("info", "on 7.24, remove or replace what cannot run (Scripts "
+                              "overview in README.md lists what runs); rollback is "
+                              "pasting the previous source"))
+    return rc, payload, lines
+
+
+# --------------------------------------------------------------------------
+# a fleet: one router per line of a hosts file
+# --------------------------------------------------------------------------
+_HOST_TOKEN = re.compile(
+    r"^(?:(?P<user>[^@\s]+)@)?"
+    r"(?:\[(?P<v6>[0-9A-Fa-f:.%]+)\]|(?P<host>[A-Za-z0-9._-]+))"
+    r"(?::(?P<port>\d{1,5}))?$"
+)
+_USER = re.compile(r"^[A-Za-z0-9._+][A-Za-z0-9._+-]*$")
+
+# Worst first. The fleet exits with the first of these that any router got,
+# and 4 only when every router did.
+FLEET_RC_ORDER = (2, 1, 0)
+
+
+def parse_hosts_file(text, default_user="admin", default_port=22):
+    """[(user, host, port)] from a hosts file, in file order, duplicates dropped.
+
+    One router per line: `host`, `user@host`, `host:port`, `user@host:port`,
+    `[v6addr]` or `[v6addr]:port`. Blank lines and everything after '#' are
+    ignored. Raises ValueError(line number, message) on the first line that is
+    none of those. A token that starts with '-' is refused outright: each one
+    becomes an ssh argument, and ssh would read it as an option.
+    """
+    routers = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        tokens = line.split()
+        if len(tokens) != 1:
+            raise ValueError(number, "expected one router per line, got %d words" % len(tokens))
+        token = tokens[0]
+        if token.startswith("-"):
+            raise ValueError(number, "a router may not start with '-'")
+        match = _HOST_TOKEN.match(token)
+        if match is None:
+            if token.count(":") > 1 and "[" not in token:
+                raise ValueError(number, "write an IPv6 address in brackets, [addr]:port")
+            raise ValueError(number, "not a host, user@host or host:port")
+        user = match.group("user") or default_user
+        host = match.group("v6") or match.group("host")
+        if not _USER.match(user):
+            raise ValueError(number, "not a RouterOS user name")
+        if host.startswith("-"):
+            raise ValueError(number, "a host may not start with '-'")
+        port = default_port
+        if match.group("port"):
+            port = int(match.group("port"), 10)
+            if not 1 <= port <= 65535:
+                raise ValueError(number, "the port must be from 1 to 65535")
+        entry = (user, host, port)
+        if entry not in routers:
+            routers.append(entry)
+    return routers
+
+
+def fleet_status(payload):
+    if payload.get("reachable") is False:
+        return "unreachable"
+    if payload.get("probe_ok") is False:
+        return "probe-failed"
+    return "reachable"
+
+
+def fleet_row_summary(payload):
+    """(fails, warns, the first thing worth reading, at most 70 characters)."""
+    findings = payload.get("findings", [])
+    fails = sum(1 for f in findings if f["level"] == "fail")
+    warns = sum(1 for f in findings if f["level"] == "warn")
+    first = next((f["message"] for f in findings if f["level"] in ("fail", "warn")), "")
+    if not first and payload.get("errors"):
+        first = payload["errors"][0]
+    if len(first) > 70:
+        first = first[:67] + "..."
+    return fails, warns, first
+
+
+def fleet_rc(codes):
+    for code in FLEET_RC_ORDER:
+        if code in codes:
+            return code
+    return 4
+
+
+def run_fleet(routers, args):
+    """Audit every router in turn and total the fleet. Returns the exit code."""
+    # Scanned once, before any router is contacted: the package does not
+    # change between routers, and a fleet whose comparison is half-read would
+    # report the same wrong answer once per router.
+    try:
+        package = scan_package(args.scripts_dir)
+    except OSError as exc:
+        if args.format == "json":
+            print(json.dumps({
+                "fleet": True,
+                "scripts_dir": args.scripts_dir,
+                "errors": ["cannot read the scripts: %s" % exc],
+            }, sort_keys=True))
+            return 2
+        bad("cannot read the scripts under %s: %s" % (args.scripts_dir, exc))
+        info("pass --scripts-dir to point at the mikrotik package")
+        return 2
+
+    hosts = [host for _, host, _ in routers]
+    results = []
+    for user, host, port in routers:
+        label = host if hosts.count(host) == 1 else "%s@%s:%d" % (user, host, port)
+        rc, payload, lines = run_one(user, host, port, args, package)
+        results.append((label, rc, payload))
+        if args.format == "text":
+            head(label)
+            emit(lines)
+
+    codes = [rc for _, rc, _ in results]
+    summary = {
+        "total": len(results),
+        "unreachable": sum(1 for _, _, p in results if fleet_status(p) == "unreachable"),
+        "probe_failed": sum(1 for _, _, p in results if fleet_status(p) == "probe-failed"),
+        "with_findings": codes.count(0),
+        "healthy": codes.count(4),
+    }
+    if args.format == "json":
+        print(json.dumps({
+            "fleet": True,
+            "hosts": [payload for _, _, payload in results],
+            "summary": summary,
+        }, sort_keys=True))
+        return fleet_rc(codes)
+
+    head("fleet")
+    width = max(len(label) for label, _, _ in results)
+    for label, _, payload in results:
+        fails, warns, first = fleet_row_summary(payload)
+        print(("%-*s  %-12s  fail=%d warn=%d  %s"
+               % (width, label, fleet_status(payload), fails, warns, first)).rstrip())
+    info("%d router(s): %d healthy, %d with findings, %d unreachable, %d probe failed"
+         % (summary["total"], summary["healthy"], summary["with_findings"],
+            summary["unreachable"], summary["probe_failed"]))
+    return fleet_rc(codes)
+
+
 def main(argv=None):
     parser = Usage3Parser(
         description="Read-only check of which RouterOS scripts are installed, "
                     "scheduled, and configured.",
         epilog="Exit codes: 0 findings printed, 1 connected but the probe failed, "
-               "2 could not connect, 4 nothing wrong.",
+               "2 could not connect, 3 usage, 4 nothing wrong. With --hosts-file the "
+               "fleet exits with its worst router: 2 if any was unreachable, else 1 "
+               "if any probe failed, else 0 if any printed findings, else 4.",
     )
-    parser.add_argument("--host", required=True, help="router hostname or address")
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--host", help="router hostname or address")
+    target.add_argument(
+        "--hosts-file",
+        metavar="FILE",
+        help="audit every router listed in FILE, one per line: host, user@host, "
+             "host:port or [v6addr]:port; '#' starts a comment",
+    )
     parser.add_argument("--user", default="admin", help="RouterOS user (default: admin)")
     parser.add_argument("--identity", help="ssh private key to use")
     parser.add_argument("--port", type=int, default=22, help="ssh port (default: 22)")
-    parser.add_argument("--timeout", type=int, default=30, help="seconds (default: 30)")
+    parser.add_argument("--timeout", type=int, default=30,
+                        help="seconds per router (default: 30)")
     parser.add_argument(
         "--format",
         choices=("text", "json"),
@@ -718,137 +1033,29 @@ def main(argv=None):
     parser.add_argument("--scripts-dir", default=PACKAGE_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
-    rc, out, err = probe(args.host, args.user, args.identity, args.port, args.timeout)
+    if args.hosts_file is not None:
+        # Everything about the file is settled before the first ssh call: a
+        # typo on line 40 must not cost 39 probes first.
+        try:
+            with open(os.path.expanduser(args.hosts_file), encoding="utf-8") as fh:
+                text = fh.read()
+        except (OSError, UnicodeError) as exc:
+            parser.error("cannot read --hosts-file %s: %s" % (args.hosts_file, exc))
+        try:
+            routers = parse_hosts_file(text, args.user, args.port)
+        except ValueError as exc:
+            number, message = exc.args
+            parser.error("%s line %d: %s" % (args.hosts_file, number, message))
+        if not routers:
+            parser.error("%s lists no routers" % args.hosts_file)
+        return run_fleet(routers, args)
 
-    if rc == 255:
-        if args.format == "json":
-            print(json.dumps({
-                "host": args.host,
-                "reachable": False,
-                "probe_ok": False,
-                "errors": err.strip().splitlines()[:5],
-            }, sort_keys=True))
-            return 2
-        bad("cannot reach %s over ssh" % args.host)
-        for line in err.strip().splitlines()[:5]:
-            print("        %s" % line)
-        info("check the host and key, and that SSH is enabled under IP -> Services")
-        info("../git/git_ssh_doctor.py --host %s --test-auth will say which key "
-             "works" % args.host)
-        return 2
-
-    if rc != 0 or not out.strip():
-        if args.format == "json":
-            print(json.dumps({
-                "host": args.host,
-                "reachable": True,
-                "probe_ok": False,
-                "probe_exit": rc,
-                "errors": err.strip().splitlines()[:5],
-            }, sort_keys=True))
-            return 1
-        bad("reached %s but the read-only probe failed (exit %d)" % (args.host, rc))
-        for line in err.strip().splitlines()[:5]:
-            print("        %s" % line)
-        info("the user needs read access to /system script, /system scheduler "
-             "and /system script environment")
-        return 1
-
-    installed, schedulers, env = parse_report(out)
-    # Preflight, even though it runs after the ssh probe: the comparison below
-    # is only meaningful against the whole package, and half of it read is
-    # worse than none - every script that could not be read is reported as one
-    # the router has and the package does not.
-    try:
-        local = local_script_names(args.scripts_dir)
-        # The underscore verdict comes from the files themselves whenever they
-        # are here; the embedded list is only for a copy with no package.
-        underscored = underscored_script_names(args.scripts_dir) if local else None
-    except OSError as exc:
-        if args.format == "json":
-            print(json.dumps({
-                "host": args.host,
-                "reachable": True,
-                "probe_ok": True,
-                "scripts_dir": args.scripts_dir,
-                "errors": ["cannot read the scripts: %s" % exc],
-            }, sort_keys=True))
-            return 2
-        bad("cannot read the scripts under %s: %s" % (args.scripts_dir, exc))
-        info("pass --scripts-dir to point at the mikrotik package")
-        return 2
-
-    findings = build_findings(local, installed, schedulers, env, underscored=underscored)
+    rc, payload, lines = run_one(args.user, args.host, args.port, args)
     if args.format == "json":
-        # Scheduler on-event bodies are free-form RouterOS source and may embed
-        # credentials. They are inspected in memory to match script names, but
-        # never returned in the report.
-        public_schedulers = [
-            {"name": item.get("name", ""), "interval": item.get("interval", "")}
-            for item in schedulers
-        ]
-        print(json.dumps({
-            "host": args.host,
-            "user": args.user,
-            "port": args.port,
-            "reachable": True,
-            "probe_ok": True,
-            "installed_scripts": installed,
-            "schedulers": public_schedulers,
-            "local_scripts": local,
-            "controls": {
-                "ops_toolbox_paused": env.get(PAUSE_STATE_KEY),
-            },
-            "routeros_version": env.get(VERSION_TEXT_KEY),
-            "scheduler_state": [
-                {
-                    "name": item.get("name", ""),
-                    "disabled": item.get("disabled"),
-                    "run_count": item.get("run_count"),
-                    "start_time": item.get("start_time"),
-                }
-                for item in schedulers
-                if "disabled" in item
-            ],
-            "uptime_seconds": env.get(UPTIME_KEY),
-            "incompatible_scripts": incompatible_scripts(installed, env, underscored),
-            "findings": [
-                {"level": level, "message": message}
-                for level, message in findings
-            ],
-            "healthy": not has_problems(findings),
-        }, sort_keys=True))
-        return 0 if has_problems(findings) else 4
-
-    head("router")
-    info("%s@%s:%d answered" % (args.user, args.host, args.port))
-    info("/system script holds %d entries; /system scheduler holds %d"
-         % (len(installed), len(schedulers)))
-    if env.get(VERSION_TEXT_KEY):
-        info("RouterOS %s" % env[VERSION_TEXT_KEY])
-    if not local:
-        warn("no .lua files under %s — only what the router has can be checked"
-             % args.scripts_dir)
-
-    head("findings")
-    for level, message in findings:
-        PRINTER[level](message)
-
-    if not has_problems(findings):
-        ok("nothing to fix: everything installed is scheduled and has the "
-           "globals it needs")
-        return 4
-
-    head("fix")
-    info("scheduler lines for every script here: ./print_schedulers.sh")
-    info("to install a missing script, paste the .lua body into System > Scripts "
-         "with policy read,write,policy,test,sensitive,ftp")
-    info("to set a global once at boot, see the startup snippet in README.md "
-         "and give it a start-time=startup scheduler")
-    if incompatible_scripts(installed, env, underscored):
-        info("on 7.24, remove or replace what cannot run (Scripts overview in "
-             "README.md lists what runs); rollback is pasting the previous source")
-    return 0
+        print(json.dumps(payload, sort_keys=True))
+    else:
+        emit(lines)
+    return rc
 
 
 if __name__ == "__main__":

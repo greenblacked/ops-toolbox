@@ -914,6 +914,7 @@ fixes what it found.
 ./router_doctor.py --host router.lan --identity ~/.ssh/keys/projects/mikrotik/mikrotik_rsa
 ./router_doctor.py --host router.lan --port 2222
 ./router_doctor.py --host router.lan --format json
+./router_doctor.py --hosts-file ~/routers.txt     # every router, one summary
 ```
 
 Secrets stay on the router. The check on `TgBotToken` and `TgChatId` asks
@@ -973,7 +974,37 @@ release refuses to run), `scheduler_state` (each entry's name, `disabled`,
 and structured findings. Free-form scheduler source is deliberately omitted
 because an inline `on-event` can contain credentials.
 It preserves the same exit semantics: `0` findings printed, `1` connected but
-the probe failed, `2` could not connect, `4` nothing wrong.
+the probe failed, `2` could not connect, `3` usage, `4` nothing wrong.
+
+`--hosts-file FILE` audits a fleet in one run instead of one `--host` at a
+time, which is what makes it usable from cron or CI. The file lists one router
+per line as `host`, `user@host`, `host:port`, `user@host:port` or
+`[v6addr]:port`; blank lines and anything after `#` are ignored, `--user` and
+`--port` are the defaults for a line that does not say, and a router listed
+twice is audited once. The whole file is checked before the first router is
+contacted: an empty file, a line that is none of those forms, or a token that
+starts with `-` (ssh would read it as an option) exits `3` and names the line.
+`--host` and `--hosts-file` are mutually exclusive.
+
+```text
+# routers.txt
+192.168.88.1
+ops@hall.lan:2222   # the one in the hall
+[2001:db8::1]
+```
+
+Routers are probed one after another with the same read-only probe, and
+`--timeout` applies to each. One that cannot be reached is reported and the
+run carries on. The package is scanned once for the whole run. Text output
+prints each router's report under its own heading, then a `== fleet ==` table
+with one row per router: its state (`reachable`, `unreachable` or
+`probe-failed`), its `fail` and `warn` counts, and the first finding. With
+`--format json` the output is `{"fleet": true, "hosts": [...], "summary":
+{...}}`, where each host entry is exactly what a single `--host` run prints
+and the summary counts `total`, `unreachable`, `probe_failed`,
+`with_findings` and `healthy`. The fleet exits with its worst router: `2` if
+any could not be reached, else `1` if any probe failed, else `0` if any
+printed findings, and `4` only when every router is clean.
 
 ### `features/pull_router_backups.sh`
 

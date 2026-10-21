@@ -882,5 +882,213 @@ class JsonOutputTestCase(unittest.TestCase):
         self.assertIs(payload["reachable"], False)
 
 
+
+class HostsFileTestCase(unittest.TestCase):
+    def test_parses_comments_blank_lines_and_trailing_comments(self):
+        text = (
+            "# the office routers\n"
+            "\n"
+            "   \n"
+            "192.0.2.1\n"
+            "router.lan   # the one in the hall\n"
+        )
+        self.assertEqual(router_doctor.parse_hosts_file(text),
+                         [("admin", "192.0.2.1", 22), ("admin", "router.lan", 22)])
+
+    def test_user_host_port_forms_and_ipv6_brackets(self):
+        text = (
+            "ops@192.0.2.1\n"
+            "router.lan:2222\n"
+            "ops@router.lan:2200\n"
+            "[2001:db8::1]:2022\n"
+            "ops@[2001:db8::2]\n"
+        )
+        self.assertEqual(router_doctor.parse_hosts_file(text), [
+            ("ops", "192.0.2.1", 22),
+            ("admin", "router.lan", 2222),
+            ("ops", "router.lan", 2200),
+            ("admin", "2001:db8::1", 2022),
+            ("ops", "2001:db8::2", 22),
+        ])
+
+    def test_defaults_come_from_the_flags(self):
+        routers = router_doctor.parse_hosts_file("a.lan\nroot@b.lan:23\n",
+                                                 default_user="ops", default_port=2222)
+        self.assertEqual(routers, [("ops", "a.lan", 2222), ("root", "b.lan", 23)])
+
+    def test_duplicates_collapse_in_order(self):
+        text = "b.lan\na.lan\nb.lan\nadmin@a.lan:22\nops@a.lan\n"
+        self.assertEqual(router_doctor.parse_hosts_file(text), [
+            ("admin", "b.lan", 22), ("admin", "a.lan", 22), ("ops", "a.lan", 22),
+        ])
+
+    def test_empty_file_is_usage(self):
+        self.assertEqual(router_doctor.parse_hosts_file("# nothing yet\n\n"), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "hosts")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("# nothing yet\n")
+            probe = mock.Mock()
+            with mock.patch.object(router_doctor, "probe", probe), \
+                 contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit) as raised:
+                router_doctor.main(["--hosts-file", path])
+            self.assertEqual(raised.exception.code, 3)
+            probe.assert_not_called()
+
+    def test_a_token_starting_with_a_dash_is_rejected(self):
+        for text in ("-oProxyCommand=evil\n", "-oProxyCommand=x@router.lan\n",
+                     "admin@-oProxyCommand=x\n"):
+            with self.assertRaises(ValueError, msg=text):
+                router_doctor.parse_hosts_file(text)
+
+    def test_malformed_line_reports_its_line_number(self):
+        with self.assertRaises(ValueError) as raised:
+            router_doctor.parse_hosts_file("a.lan\n\nb.lan c.lan\n")
+        self.assertEqual(raised.exception.args[0], 3)
+        for bad_line in ("a.lan:99999", "a.lan:0", "a b", "a.lan:port", "2001:db8::1"):
+            with self.assertRaises(ValueError, msg=bad_line):
+                router_doctor.parse_hosts_file("ok.lan\n" + bad_line + "\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "hosts")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("a.lan\nb.lan:0\n")
+            errout = io.StringIO()
+            probe = mock.Mock()
+            with mock.patch.object(router_doctor, "probe", probe), \
+                 contextlib.redirect_stderr(errout), \
+                 self.assertRaises(SystemExit) as raised:
+                router_doctor.main(["--hosts-file", path])
+            self.assertEqual(raised.exception.code, 3)
+            self.assertIn("line 2", errout.getvalue())
+            probe.assert_not_called()
+
+
+# One router per outcome: a healthy one, one with a finding, one that cannot be
+# reached, and one that answered but whose probe failed.
+FLEET_REPORTS = {
+    "healthy.lan": (0, (
+        "SCR:tg_send\nSCR:backup\n"
+        "SCH:backup|1d|/system script run backup\n"
+        "ENV:TgBotToken|46\nENV:TgChatId|9\n"
+    ), ""),
+    "finding.lan": (0, REPORT, ""),
+    "down.lan": (255, "", "ssh: connect to host down.lan port 22: Connection refused"),
+    "broken.lan": (1, "", "bad command name"),
+}
+
+
+class FleetRunTestCase(unittest.TestCase):
+    def run_fleet(self, hosts, extra=()):
+        def fake_probe(host, user, identity, port, timeout, command=router_doctor.PROBE):
+            return FLEET_REPORTS[host]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "hosts")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("".join(h + "\n" for h in hosts))
+            stdout = io.StringIO()
+            local = mock.Mock(return_value=["tg_send", "backup", "health_check"])
+            with mock.patch.object(router_doctor, "probe", side_effect=fake_probe), \
+                 mock.patch.object(router_doctor, "local_script_names", local), \
+                 contextlib.redirect_stdout(stdout):
+                rc = router_doctor.main(["--hosts-file", path] + list(extra))
+        return rc, stdout.getvalue(), local
+
+    def test_host_and_hosts_file_are_mutually_exclusive_exit_3(self):
+        with contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as raised:
+            router_doctor.main(["--host", "a.lan", "--hosts-file", "/nonexistent"])
+        self.assertEqual(raised.exception.code, 3)
+
+    def test_neither_given_is_exit_3(self):
+        with contextlib.redirect_stderr(io.StringIO()), \
+             self.assertRaises(SystemExit) as raised:
+            router_doctor.main([])
+        self.assertEqual(raised.exception.code, 3)
+
+    def test_one_unreachable_host_does_not_stop_the_rest(self):
+        rc, out, _ = self.run_fleet(["down.lan", "healthy.lan", "finding.lan"])
+        self.assertIn("== down.lan ==", out)
+        self.assertIn("== healthy.lan ==", out)
+        self.assertIn("== finding.lan ==", out)
+        self.assertIn("== fleet ==", out)
+        table = out.split("== fleet ==", 1)[1]
+        self.assertRegex(table, r"down\.lan\s+unreachable")
+        self.assertRegex(table, r"healthy\.lan\s+reachable\s+fail=0 warn=0")
+        self.assertRegex(table, r"finding\.lan\s+reachable\s+fail=0 warn=1")
+
+    def test_exit_is_2_when_any_host_is_unreachable(self):
+        rc, _, _ = self.run_fleet(["healthy.lan", "broken.lan", "down.lan", "finding.lan"])
+        self.assertEqual(rc, 2)
+
+    def test_exit_is_1_when_a_probe_failed_and_none_unreachable(self):
+        rc, out, _ = self.run_fleet(["healthy.lan", "broken.lan", "finding.lan"])
+        self.assertEqual(rc, 1)
+        self.assertRegex(out.split("== fleet ==", 1)[1], r"broken\.lan\s+probe-failed")
+
+    def test_exit_is_0_when_any_findings(self):
+        rc, _, _ = self.run_fleet(["healthy.lan", "finding.lan"])
+        self.assertEqual(rc, 0)
+
+    def test_exit_is_4_only_when_every_host_is_clean(self):
+        rc, _, _ = self.run_fleet(["healthy.lan"])
+        self.assertEqual(rc, 4)
+
+    def test_json_has_hosts_and_summary_and_no_scheduler_source(self):
+        rc, out, _ = self.run_fleet(["healthy.lan", "finding.lan", "down.lan", "broken.lan"],
+                                    extra=["--format", "json"])
+        payload = json.loads(out)
+        self.assertEqual(rc, 2)
+        self.assertIs(payload["fleet"], True)
+        self.assertEqual([h["host"] for h in payload["hosts"]],
+                         ["healthy.lan", "finding.lan", "down.lan", "broken.lan"])
+        self.assertEqual(payload["summary"], {
+            "total": 4, "unreachable": 1, "probe_failed": 1,
+            "with_findings": 1, "healthy": 1,
+        })
+        self.assertNotIn("/system script run", out)
+        self.assertNotIn("46", out)
+
+    def test_local_scan_runs_once(self):
+        _, _, local = self.run_fleet(["healthy.lan", "finding.lan", "down.lan"])
+        self.assertEqual(local.call_count, 1)
+
+    def test_single_host_output_is_unchanged(self):
+        # The single-router paths go through the same run_one() the fleet
+        # uses; what they print must not have moved. Colour is decided at
+        # import from the terminal, so it is switched off for the comparison.
+        plain = mock.patch.multiple(router_doctor, C_RESET="", C_RED="", C_GREEN="",
+                                    C_YELLOW="", C_DIM="", C_BOLD="")
+        stdout = io.StringIO()
+        with plain, mock.patch.object(router_doctor, "probe",
+                                      return_value=FLEET_REPORTS["down.lan"]), \
+             contextlib.redirect_stdout(stdout):
+            rc = router_doctor.main(["--host", "down.lan"])
+        self.assertEqual(rc, 2)
+        self.assertEqual(stdout.getvalue(), (
+            "[fail] cannot reach down.lan over ssh\n"
+            "        ssh: connect to host down.lan port 22: Connection refused\n"
+            "[info] check the host and key, and that SSH is enabled under IP -> Services\n"
+            "[info] ../git/git_ssh_doctor.py --host down.lan --test-auth will say which "
+            "key works\n"
+        ))
+        stdout = io.StringIO()
+        with plain, mock.patch.object(router_doctor, "probe",
+                                      return_value=FLEET_REPORTS["healthy.lan"]), \
+             mock.patch.object(router_doctor, "local_script_names",
+                               return_value=["tg_send", "backup"]), \
+             contextlib.redirect_stdout(stdout):
+            rc = router_doctor.main(["--host", "healthy.lan"])
+        self.assertEqual(rc, 4)
+        self.assertEqual(stdout.getvalue(), (
+            "\n== router ==\n"
+            "[info] admin@healthy.lan:22 answered\n"
+            "[info] /system script holds 2 entries; /system scheduler holds 1\n"
+            "\n== findings ==\n"
+            "[ ok ] nothing to fix: everything installed is scheduled and has the "
+            "globals it needs\n"
+        ))
+
 if __name__ == "__main__":
     unittest.main()
