@@ -15,3 +15,6 @@
 - `backup -DestDir D:` (a bare drive) now means the drive root `D:\`, not the
   drive-relative current directory, for both a single distro and `-All`, which
   now build the output path the same way.
+  `backups`, `prune-backups` and `clone` read it the same way: `-DestDir` is
+  normalised once, and the clone staging file and a kept export are built
+  with the same path code as a backup.

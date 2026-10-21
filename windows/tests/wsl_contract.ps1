@@ -414,7 +414,7 @@ try {
 Write-Section 'wsl_manage backup -All and previews'
 Test-Surface -Action @('backup', 'compact', 'sparse', 'shutdown') -Parameter @('All', 'DryRun')
 
-Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'Get-BackupOutPath', 'Get-BackupPlan')
+Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'ConvertTo-DriveRootPath', 'Get-BackupOutPath', 'Get-BackupPlan')
 
 function Get-TestDistro {
     param([string]$Name, [long]$VhdxSize)
@@ -471,6 +471,11 @@ foreach ($bare in @('D:', 'd:')) {
 $single = Get-BackupOutPath -Dir 'D:' -Name 'Ubuntu' -Stamp $stamp
 $multi = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 1GB)) -DestDir 'D:' -Stamp $stamp -FreeBytes $null)[0].Out
 Test-Case 'the single-distro and -All backups build the same output path' ($single -eq $multi) "$single vs $multi"
+
+foreach ($case in @(@('D:', 'D:\'), @('d:', 'd:\'), @('D:\', 'D:\'), @('D:\Backups', 'D:\Backups'), @('D:Backups', 'D:Backups'), @('\\server\share', '\\server\share'))) {
+    $got = ConvertTo-DriveRootPath $case[0]
+    Test-Case "ConvertTo-DriveRootPath '$($case[0])' is '$($case[1])'" ($got -ceq $case[1]) $got
+}
 
 # Free space is shared by the whole set: each measured export that is let
 # through takes its size off what the next distro can use.
@@ -706,6 +711,23 @@ try {
     Remove-Item -Path $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# -DestDir D: is read as D:\ once, before the action switch, and no action
+# builds a path under it with Join-Path (which leaves a bare drive relative).
+$bareRun = Invoke-WslManage -Arguments @('backups', '-DestDir', 'D:')
+Test-Case "backups -DestDir D: reports the drive root D:\, not the drive-relative D:" (
+    $bareRun.ExitCode -eq 0 -and $bareRun.Output -match 'D:\\'
+) "exit $($bareRun.ExitCode)`n$($bareRun.Output)"
+$wslText = [IO.File]::ReadAllText($wslScript)
+$normAt = $wslText.IndexOf('$destRoot = ConvertTo-DriveRootPath $DestDir')
+$switchAt = $wslText.IndexOf('switch ($Action) {')
+Test-Case '-DestDir is normalised once, before the action switch' ($normAt -ge 0 -and $switchAt -gt $normAt)
+foreach ($a in @('backups', 'prune-backups', 'clone')) {
+    Test-Case "the $a branch builds no path under -DestDir with Join-Path" ([string]$clauseText[$a] -notmatch 'Join-Path\s+\$(DestDir|destRoot)') ([string]$clauseText[$a]).Substring(0, [math]::Min(200, ([string]$clauseText[$a]).Length))
+}
+Test-Case 'the clone branch builds its paths under -DestDir with Path.Combine or Get-BackupOutPath' (
+    [string]$clauseText['clone'] -match 'Combine\(\$destRoot' -and [string]$clauseText['clone'] -match 'Get-BackupOutPath\s+-Dir\s+\$destRoot'
+)
+
 # --------------------------------------------------------------------------
 Write-Section 'wsl_manage doctor'
 Test-Surface -Action @('doctor') -Parameter @('ProbeHost')
@@ -884,6 +906,10 @@ if ($onWindows) {
         $run = Invoke-WslManage -Arguments @('restore', '-Distro', 'Ubuntu-restored', '-Tar', $tar, '-DefaultUser', 'bad name') -PathPrefix $shimDir
         Test-Case 'restore -DefaultUser with an invalid name exits 3 before anything else' (
             $run.ExitCode -eq 3 -and $run.Output -match '-DefaultUser' -and $run.Output -notmatch 'SHA-256'
+        ) "exit $($run.ExitCode)`n$($run.Output)"
+        $run = Invoke-WslManage -Arguments @('prune-backups', '-DestDir', 'D:', '-DryRun') -PathPrefix $shimDir
+        Test-Case "prune-backups -DestDir D: reports the drive root D:\, not the drive-relative D:" (
+            $run.ExitCode -eq 0 -and $run.Output -match 'D:\\'
         ) "exit $($run.ExitCode)`n$($run.Output)"
         $calls = @(Get-Content -Path (Join-Path $shimDir 'calls.log') -ErrorAction SilentlyContinue)
         Test-Case 'and nothing but wsl --status was called' (

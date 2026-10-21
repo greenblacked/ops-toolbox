@@ -145,6 +145,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# A bare drive such as 'D:' is the drive-relative "current directory on D" to
+# every .NET and cmdlet path call; for -DestDir it can only mean the drive
+# root. Pure.
+function ConvertTo-DriveRootPath {
+    param([string]$Path)
+    if ($Path -match '^[A-Za-z]:$') { return $Path + '\' }
+    $Path
+}
+
+# Read the bare drive as its root once, so backup, backups, prune-backups and
+# clone all see the same -DestDir (in $destRoot).
+$destRoot = ConvertTo-DriveRootPath $DestDir
+
 # PowerShell 7.3 and later turn a non-zero exit from a native command into a
 # terminating error while $ErrorActionPreference is 'Stop'. Every wsl.exe call
 # here is followed by its own $LASTEXITCODE check with a specific message and
@@ -493,8 +506,7 @@ function Get-BackupOutPath {
         [string]$Name,
         [string]$Stamp
     )
-    if ($Dir -match '^[A-Za-z]:$') { $Dir = $Dir + '\' }
-    [IO.Path]::Combine($Dir, ('{0}_{1}.tar' -f $Name, $Stamp))
+    [IO.Path]::Combine((ConvertTo-DriveRootPath $Dir), ('{0}_{1}.tar' -f $Name, $Stamp))
 }
 
 # What 'backup -All' would do, one row {Name, Out, Bytes, Verb, Reason} per
@@ -1106,8 +1118,8 @@ switch ($Action) {
                     if ($null -ne $used) { $usedByName[$d.Name] = $used }
                 }
             }
-            $plan = @(Get-BackupPlan -Distros $targets -DestDir $DestDir -Stamp $stamp `
-                -FreeBytes (Get-FreeSpace $DestDir) -UsedByName $usedByName)
+            $plan = @(Get-BackupPlan -Distros $targets -DestDir $destRoot -Stamp $stamp `
+                -FreeBytes (Get-FreeSpace $destRoot) -UsedByName $usedByName)
 
             if ($DryRun) {
                 foreach ($row in $plan) {
@@ -1127,8 +1139,8 @@ switch ($Action) {
                 break
             }
 
-            if (-not (Test-Path $DestDir)) {
-                New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+            if (-not (Test-Path $destRoot)) {
+                New-Item -ItemType Directory -Path $destRoot -Force | Out-Null
             }
             $exported = 0
             $skipped = 0
@@ -1164,10 +1176,10 @@ switch ($Action) {
         }
 
         $info = Resolve-Distro $Distro
-        if (-not (Test-Path $DestDir)) {
-            New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+        if (-not (Test-Path $destRoot)) {
+            New-Item -ItemType Directory -Path $destRoot -Force | Out-Null
         }
-        $out = Get-BackupOutPath -Dir $DestDir -Name $info.Name -Stamp $stamp
+        $out = Get-BackupOutPath -Dir $destRoot -Name $info.Name -Stamp $stamp
         if (-not (Invoke-DistroBackup -Name $info.Name -Out $out)) { exit 1 }
         Write-Host ("Done: {0} ({1})" -f $out, (Format-Size (Get-Item $out).Length)) -ForegroundColor Green
         Write-Host "Checksum: $out.sha256"
@@ -1191,11 +1203,11 @@ switch ($Action) {
         # Read-only: lists, hashes and reads sidecars; never deletes, renames
         # or rewrites one. Retention stays prune-backups' job.
         $backupFiles = @()
-        if (Test-Path -LiteralPath $DestDir -PathType Container) {
-            $backupFiles = @(Get-BackupFile -Directory $DestDir -Name $Distro)
+        if (Test-Path -LiteralPath $destRoot -PathType Container) {
+            $backupFiles = @(Get-BackupFile -Directory $destRoot -Name $Distro)
         }
         if (-not $backupFiles) {
-            Write-Host "No dated .tar exports under $DestDir"
+            Write-Host "No dated .tar exports under $destRoot"
             # Asked for a recent backup and there is none at all: that is the
             # stalest answer there is.
             if ($MaxAgeDays -gt 0) {
@@ -1209,7 +1221,7 @@ switch ($Action) {
         # prune-backups.
         $totalBytes = ($backupFiles | ForEach-Object { $_.File.Length } | Measure-Object -Sum).Sum
         if (-not $totalBytes) { $totalBytes = 0L }
-        Write-Host "Directory: $DestDir"
+        Write-Host "Directory: $destRoot"
         if ($Verify) {
             # Said before the work starts: hashing a multi-gigabyte tar takes
             # minutes, and silence reads as a hang.
@@ -1386,7 +1398,7 @@ switch ($Action) {
             Write-Error "Install directory is not empty: $target. Pass -InstallDir <empty or new dir>." -ErrorAction Continue
             exit 3
         }
-        $staging = Join-Path $DestDir (Get-CloneStagingName -NewName $NewName -ProcessId $PID)
+        $staging = [IO.Path]::Combine($destRoot, (Get-CloneStagingName -NewName $NewName -ProcessId $PID))
 
         # Space for the staging tar. Only a running source is measured (df
         # inside it); a stopped one is never started for it, so its VHDX size
@@ -1394,10 +1406,10 @@ switch ($Action) {
         $states = Get-DistroState
         $used = $null
         if ($states[$source.Name] -eq 'Running') { $used = Get-DistroUsage $source.Name }
-        $free = Get-FreeSpace $DestDir
+        $free = Get-FreeSpace $destRoot
         if ($null -ne $used -and $null -ne $free -and $used -gt $free) {
             Write-Error ("The staging export needs ~{0}, and {1} is free on the drive holding {2}. Pass -DestDir on a bigger drive." -f
-                (Format-Size $used), (Format-Size $free), $DestDir) -ErrorAction Continue
+                (Format-Size $used), (Format-Size $free), $destRoot) -ErrorAction Continue
             exit 1
         }
         $estimate = if ($null -ne $used) { '~{0}' -f (Format-Size $used) } else { 'up to {0}, the VHDX size' -f (Format-Size $source.VhdxSize) }
@@ -1418,7 +1430,7 @@ switch ($Action) {
             }
             Write-Host ('WOULD terminate          {0}' -f $NewName) -ForegroundColor Cyan
             if ($KeepTar) {
-                Write-Host ('WOULD keep the export    as {0}_<date>.tar with a .sha256 sidecar in {1}' -f $source.Name, $DestDir) -ForegroundColor Cyan
+                Write-Host ('WOULD keep the export    as {0}_<date>.tar with a .sha256 sidecar in {1}' -f $source.Name, $destRoot) -ForegroundColor Cyan
             } else {
                 Write-Host ('WOULD delete             {0}' -f $staging) -ForegroundColor Cyan
             }
@@ -1426,8 +1438,8 @@ switch ($Action) {
             break
         }
 
-        if (-not (Test-Path $DestDir)) {
-            New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+        if (-not (Test-Path $destRoot)) {
+            New-Item -ItemType Directory -Path $destRoot -Force | Out-Null
         }
         $rc = 0
         $createdTarget = $false
@@ -1477,7 +1489,7 @@ switch ($Action) {
             }
 
             if ($imported -and $KeepTar) {
-                $dated = Join-Path $DestDir ('{0}_{1}.tar' -f $source.Name, (Get-Date -Format 'yyyy-MM-dd_HHmm'))
+                $dated = Get-BackupOutPath -Dir $destRoot -Name $source.Name -Stamp (Get-Date -Format 'yyyy-MM-dd_HHmm')
                 if (Test-Path -LiteralPath $dated) {
                     Write-Host "Not keeping the export: $dated already exists." -ForegroundColor Yellow
                 } else {
@@ -1503,14 +1515,14 @@ switch ($Action) {
     }
 
     'prune-backups' {
-        if (-not (Test-Path $DestDir)) {
-            Write-Host "No backup directory at $DestDir - nothing to prune."
+        if (-not (Test-Path $destRoot)) {
+            Write-Host "No backup directory at $destRoot - nothing to prune."
             break
         }
 
-        $backupFiles = @(Get-BackupFile -Directory $DestDir -Name $Distro)
+        $backupFiles = @(Get-BackupFile -Directory $destRoot -Name $Distro)
         if (-not $backupFiles) {
-            Write-Host "No dated .tar exports under $DestDir - nothing to prune."
+            Write-Host "No dated .tar exports under $destRoot - nothing to prune."
             break
         }
 
@@ -1535,7 +1547,7 @@ switch ($Action) {
 
         Write-Host ''
         Write-Host ("Retention: keep the newest $KeepLast per distro, and anything newer than $KeepDays day(s).")
-        Write-Host ("Directory: $DestDir")
+        Write-Host ("Directory: $destRoot")
         Write-Host ''
         foreach ($entry in ($keep | Sort-Object { $_.File.Name })) {
             Write-Host ('KEEP  {0,-44} {1,10}' -f $entry.File.Name, (Format-Size $entry.File.Length)) -ForegroundColor DarkGray
