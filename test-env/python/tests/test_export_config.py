@@ -358,6 +358,31 @@ class SecretScanTestCase(unittest.TestCase):
             'set [ find default-name=wlan1 ] comment="#x" passphrase="<redacted>"\n',
         )
 
+    def test_quoted_field_with_an_escaped_quote_is_redacted_whole(self):
+        text = 'set wifi1 passphrase="abc\\"def" comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        redacted = export_config.redact_secrets(text)
+        self.assertEqual(redacted, 'set wifi1 passphrase="<redacted>" comment=x\n')
+        self.assertEqual(export_config.find_leaks(redacted), [])
+
+    def test_quoted_field_with_an_escaped_backslash_before_the_closing_quote(self):
+        text = 'set wifi1 passphrase="abc\\\\" comment=x\n'
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set wifi1 passphrase="<redacted>" comment=x\n')
+
+    def test_quoted_field_with_hex_and_dollar_escapes_is_redacted_whole(self):
+        text = 'set u password="a\\41b\\$c\\"d\\\\" comment=x\n'
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set u password="<redacted>" comment=x\n')
+
+    def test_unquoted_field_value_is_unchanged_by_the_escape_handling(self):
+        text = "set u password=hunter2 comment=x\n"
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            "set u password=<redacted> comment=x\n")
+
     def test_findings_never_contain_the_value(self):
         findings = export_config.find_leaks(LEAKY_EXPORT)
         self.assertTrue(findings)

@@ -102,11 +102,14 @@ _LEAK_PATTERNS = (
         r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9]*\s+\\?"'
         r'(?P<value>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
     )),
-    # Fields RouterOS only prints under show-sensitive.
+    # Fields RouterOS only prints under show-sensitive. A quoted value runs to
+    # the first unescaped quote: a backslash escapes the next character (\\,
+    # \", \$, and the first digit of a \XX hex pair), so an escaped quote
+    # does not end it.
     ("sensitive field", True, re.compile(
         r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
         r"|wpa-pre-shared-key|authentication-key|encryption-key)"
-        r'=(?:"(?P<quoted>[^"]+)"|(?P<value>[^\s\\"]+))'
+        r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)"|(?P<value>[^\s\\"]+))'
     )),
 )
 
