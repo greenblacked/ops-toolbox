@@ -54,7 +54,8 @@ Options:
 
 Work at risk means uncommitted or untracked changes, commits ahead of the
 upstream, commits on local branches that no remote-tracking ref contains, a
-stash, or (with --fetch) a fetch that failed. Without --fetch nothing is fetched, so remote-tracking refs are only as
+stash, a git status or history walk that failed (noted status-failed
+or walk-failed), or (with --fetch) a fetch that failed. Without --fetch nothing is fetched, so remote-tracking refs are only as
 fresh as the last fetch in each repository: "behind" means behind what this
 machine last saw.
 
@@ -198,7 +199,7 @@ add_note() {
 inspect_repo() {
   local repo="$1" rel="$2"
   local branch upstream counts ahead=0 behind=0 changed=0 stash=0 unpushed=0
-  local sync risk=0 keep=1 has_remote tips status_out status_failed=0 fetch_failed=0
+  local sync risk=0 keep=1 has_remote tips status_out status_failed=0 fetch_failed=0 walk_failed=0
   notes=""
 
   # A checkout git cannot read (a broken .git file, an ownership refusal) is
@@ -238,11 +239,13 @@ inspect_repo() {
     if ! upstream="$(git -C "$repo" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
       upstream=""
     fi
+    walk_failed=0
     if [[ -n "$upstream" ]]; then
-      counts="$(git -C "$repo" rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null || true)"
-      if [[ -n "$counts" ]]; then
+      if counts="$(git -C "$repo" rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null)" && [[ -n "$counts" ]]; then
         behind="${counts%%	*}"
         ahead="${counts##*	}"
+      else
+        walk_failed=1
       fi
     fi
     # --no-optional-locks keeps status from refreshing the index on disk, so
@@ -267,10 +270,17 @@ inspect_repo() {
     if git -C "$repo" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
       tips=(HEAD --branches)
     fi
-    unpushed="$(git -C "$repo" rev-list "${tips[@]}" --not --remotes --count 2>/dev/null || printf '0')"
+    # A failed walk (a missing or unreadable object) says nothing about what
+    # is unpushed, so it is never read as zero: it is flagged and counts as
+    # work at risk.
+    if ! unpushed="$(git -C "$repo" rev-list "${tips[@]}" --not --remotes --count 2>/dev/null)" || [[ -z "$unpushed" ]]; then
+      unpushed=0
+      walk_failed=1
+    fi
 
     (( changed > 0 )) && add_note "dirty"
     (( status_failed == 1 )) && add_note "status-failed"
+    (( walk_failed == 1 )) && add_note "walk-failed"
     if (( ahead > 0 && behind > 0 )); then
       add_note "diverged"
     elif (( ahead > 0 )); then
@@ -298,7 +308,7 @@ inspect_repo() {
       sync="="
     fi
 
-    if (( changed > 0 || status_failed == 1 || fetch_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
+    if (( changed > 0 || status_failed == 1 || walk_failed == 1 || fetch_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
       risk=1
     fi
   fi
@@ -307,7 +317,7 @@ inspect_repo() {
     dirty)    [[ -n "$changed"  ]] && (( changed > 0 || status_failed == 1 )) || keep=0 ;;
     ahead)    [[ -n "$ahead"    ]] && (( ahead > 0 ))    || keep=0 ;;
     behind)   [[ -n "$behind"   ]] && (( behind > 0 ))   || keep=0 ;;
-    unpushed) [[ -n "$unpushed" ]] && (( unpushed > 0 )) || keep=0 ;;
+    unpushed) [[ -n "$unpushed" ]] && (( unpushed > 0 || walk_failed == 1 )) || keep=0 ;;
     stash)    [[ -n "$stash"    ]] && (( stash > 0 ))    || keep=0 ;;
   esac
   (( keep == 1 )) || return 0

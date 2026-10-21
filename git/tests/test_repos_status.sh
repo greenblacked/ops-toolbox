@@ -201,6 +201,29 @@ assert_contains "$out" $'\ttopic\t\t0\t0\t0\t0\t1\t' '--fetch prunes the deleted
 assert_eq "$rc" 1 '--strict --fetch exits 1 for a commit whose remote branch was deleted'
 rm -rf "$parent/pruned"
 
+section "a failed history walk fails closed"
+clone_into "$parent/damaged" &&
+  git -C "$parent/damaged" switch -q -c lost-work &&
+  printf 'lost\n' >"$parent/damaged/lost.txt" &&
+  git -C "$parent/damaged" add lost.txt &&
+  git -C "$parent/damaged" commit -q -m lost &&
+  git -C "$parent/damaged" switch -q main || err 'build the damaged fixture'
+lost_sha="$(git -C "$parent/damaged" rev-parse lost-work)"
+lost_obj="$parent/damaged/.git/objects/${lost_sha:0:2}/${lost_sha:2}"
+if [[ -f "$lost_obj" ]]; then
+  rm -f "$lost_obj" || err 'remove the loose commit object'
+  out="$("$REPOS_STATUS" --dir "$parent/damaged" --porcelain 2>&1)"; rc=$?
+  assert_eq "$rc" 0 'a plain run still exits 0 when the history walk fails'
+  assert_contains "$out" 'walk-failed' 'a failing rev-list is reported as walk-failed'
+  "$REPOS_STATUS" --dir "$parent/damaged" --strict >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" 1 '--strict exits 1 when the history walk fails'
+  out="$("$REPOS_STATUS" --dir "$parent/damaged" --only unpushed --porcelain 2>&1)"
+  assert_contains "$out" 'walk-failed' '--only unpushed keeps a checkout whose walk failed'
+else
+  err 'the loose commit object was not where expected'
+fi
+rm -rf "$parent/damaged"
+
 section "--fetch failure is work at risk"
 clone_into "$parent/unreach" || err 'clone unreachable fixture'
 git -C "$parent/unreach" remote set-url origin "$scratch/does-not-exist.git" || err 'break the remote url'
