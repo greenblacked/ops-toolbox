@@ -13,6 +13,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
+| [`hardening_audit.ps1`](hardening_audit.ps1) | Read-only security audit with exit codes: firewall, SMBv1, RDP/NLA, UAC, autologon, Secure Boot/TPM, LSA protection, Defender, logging, patch age; prints each fix |
 | [`path_doctor.ps1`](path_doctor.ps1) | PATH report (duplicates, dead and relative entries, REG_SZ values, length, shadowed commands) and a backed-up `clean` of the user PATH |
 | [`dev_env_doctor.ps1`](dev_env_doctor.ps1) | Read-only toolchain check: long paths, git line endings and symlinks, virtualization, clock skew, HOME, docker context |
 | [`ssh_client_doctor.ps1`](ssh_client_doctor.ps1) | Read-only OpenSSH client check: key access lists, the ssh-agent service, Git's bundled ssh, IdentityFile paths |
@@ -46,6 +47,7 @@ one. Neither replaces the other.
 - [ssh_client_doctor.ps1](#ssh_client_doctorps1)
 - [dev_env_doctor.ps1](#dev_env_doctorps1)
 - [path_doctor.ps1](#path_doctorps1)
+- [hardening_audit.ps1](#hardening_auditps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
@@ -495,6 +497,60 @@ $key.Close()
 
 The backup also records the machine PATH as it was, for reference; restoring
 that one is a System Properties job.
+
+## hardening_audit.ps1
+
+The Windows counterpart of
+[`linux/hardening_audit.sh`](../../linux/hardening_audit.sh) and
+[`macos-initial-setup/hardening_audit.sh`](../../macos-initial-setup/hardening_audit.sh):
+the same `[pass]` / `[warn]` / `[FAIL]` / `[skip]` verdicts, the same `-FailOn`
+and the same exit codes, so a scheduled task or a CI job can gate on any of
+the three. It is to `workstation_doctor.ps1` what `hardening_audit.sh` is to
+`linux/system_doctor.sh`: the doctor describes the machine, the audit grades
+it and prints, under every `[warn]` and `[FAIL]`, the elevated PowerShell
+command that would fix it.
+
+```powershell
+.\hardening_audit.ps1
+.\hardening_audit.ps1 -ListGroups
+.\hardening_audit.ps1 -Only network,remote
+.\hardening_audit.ps1 -FailOn warn -Quiet
+```
+
+| Group | Check ids | What fails or warns |
+| --- | --- | --- |
+| `network` | `fw-domain`, `fw-private`, `fw-public`, `smb1`, `llmnr` | A firewall profile that is off or allows inbound by default; the SMBv1 server enabled; LLMNR not turned off by policy. |
+| `remote` | `rdp-enabled`, `rdp-nla`, `winrm-trustedhosts`, `sshd-password`, `sshd-empty-password` | Remote Desktop on (a warning: right on a jump box) and on without Network Level Authentication (a failure); WinRM `TrustedHosts` set to `*`; an OpenSSH server that takes passwords, or empty ones. |
+| `accounts` | `uac-lua`, `uac-prompt`, `autologon`, `autologon-password`, `guest-enabled`, `local-admins-broad` | UAC off or elevating without asking; automatic logon; a `DefaultPassword` value under Winlogon; the Guest account enabled; Everyone, Authenticated Users or Users inside the local Administrators group. |
+| `boot` | `secureboot`, `tpm`, `lsa-ppl`, `vbs` | Secure Boot off; no TPM or one not ready; LSA not running as a protected process; virtualization-based security not running. |
+| `defender` | `defender-rtp`, `defender-tamper`, `defender-sigs`, `defender-pua`, `defender-netprot` | Real-time protection off; tamper protection off; signatures over 7 days old; PUA blocking or network protection off. All five are skips where another antivirus product replaced Defender. |
+| `logging` | `ps-scriptblock` | PowerShell script block logging off. |
+| `updates` | `hotfix-age`, `reboot-pending` | The newest installed update over 60 days old (warn) or over 120 (fail); a restart pending. |
+
+| Option | Meaning |
+| --- | --- |
+| `-Only LIST` | Comma-separated groups. An unknown group exits `3`; a list that selects nothing exits `4`. |
+| `-ListGroups` | Print the group ids and exit `0`. Works on any OS. |
+| `-FailOn LEVEL` | Exit `1` on `fail` (default), or on `warn` and above. Any other value exits `3`. |
+| `-Quiet` | Print only warnings and failures, with their fixes. |
+
+Exit codes: `0` nothing at or above `-FailOn`, `1` something at or above it,
+`2` not Windows, `3` bad arguments, `4` `-Only` selected nothing.
+
+Worth knowing:
+
+- **It never fixes anything.** The "insecure" answer is the correct one on
+  some hosts - RDP on a bastion, autologon on a kiosk or a build agent - and a
+  script that hardened by itself would be wrong often enough to be dangerous.
+  The fix lines are for a person to read and run.
+- **Run it elevated for the full picture.** Secure Boot, the TPM, the SMB
+  server and the local accounts need elevation to read. Unelevated, those
+  checks are `[skip]` with the reason, never a failure, and the banner says
+  which mode it ran in.
+- **No secret is read.** For autologon it checks whether a `DefaultPassword`
+  value exists and never reads it. Accounts are only named when a broad
+  principal is in the Administrators group, which is found by its SID so a
+  localised Windows reads correctly.
 
 ## Testing
 

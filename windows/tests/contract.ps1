@@ -202,6 +202,7 @@ $expectedParameters = @{
     'disk_usage.ps1'        = @('Path', 'Depth', 'Top', 'MinSizeMB', 'IncludeDocker', 'Quiet')
     'dev_env_doctor.ps1'    = @('Only', 'ListSections', 'CheckTime', 'MaxSkewSeconds', 'Quiet')
     'path_doctor.ps1'       = @('DryRun', 'Yes', 'Scope', 'Command', 'BackupDir', 'Quiet')
+    'hardening_audit.ps1'   = @('Only', 'ListGroups', 'FailOn', 'Quiet')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -1900,6 +1901,263 @@ if ($onWindows) {
         }
     }
     Remove-Item -Path $consentBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'hardening_audit grades facts'
+# Every probe lands in one hashtable, so the grading can be driven entirely by
+# fixtures: a good machine must pass everything, each check must fail or warn
+# on its own bad value and say how to fix it, and a machine where nothing could
+# be read must produce skips rather than verdicts. The check list comes from
+# the script itself, so a check added without a bad fixture here fails.
+$hardening = Find-ContractScript 'hardening_audit.ps1'
+
+# A fresh good fact set each call, so one case's change cannot leak into the
+# next through a shared nested hashtable.
+function Get-GoodAuditFact {
+    param([datetime]$Now)
+    return @{
+        Elevated               = $true
+        Now                    = $Now
+        FirewallProfiles       = @{
+            Domain  = @{ Enabled = $true; Inbound = 'Block' }
+            Private = @{ Enabled = $true; Inbound = 'NotConfigured' }
+            Public  = @{ Enabled = $true; Inbound = 'Block' }
+        }
+        Smb1Enabled            = $false
+        LlmnrMulticast         = 0
+        RdpDeny                = 1
+        RdpNla                 = 1
+        TrustedHosts           = ''
+        SshdConfig             = @{ passwordauthentication = 'no'; permitemptypasswords = 'no' }
+        EnableLua              = 1
+        ConsentPromptAdmin     = 5
+        AutoAdminLogon         = '0'
+        DefaultPasswordPresent = $false
+        GuestEnabled           = $false
+        LocalAdmins            = @(@{ Sid = 'S-1-5-21-1-2-3-500'; Name = 'PC\Administrator' })
+        SecureBoot             = $true
+        Tpm                    = @{ Present = $true; Ready = $true }
+        RunAsPpl               = 1
+        VbsStatus              = 2
+        Defender               = @{ Rtp = $true; Tamper = $true; SignatureAge = 1; Pua = 1; NetworkProtection = 1 }
+        ScriptBlockLogging     = 1
+        NewestHotfix           = $Now.AddDays(-10)
+        RebootPending          = $false
+    }
+}
+
+if (-not $hardening) {
+    Test-Fail 'hardening_audit.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $gradeSrc = Get-ScriptFunctionSource -Script $hardening -Name 'Test-AuditFact'
+    $idSrc = Get-ScriptFunctionSource -Script $hardening -Name 'Get-AuditCheckId'
+    if (-not $gradeSrc -or -not $idSrc) {
+        Test-Fail 'hardening_audit.ps1 : Test-AuditFact or Get-AuditCheckId not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($gradeSrc))
+        . ([scriptblock]::Create($idSrc))
+        $auditNow = [datetime]'2026-10-01T12:00:00'
+        $checkIds = @(Get-AuditCheckId | ForEach-Object { $_.Id })
+
+        $goodFindings = @(Test-AuditFact -Facts (Get-GoodAuditFact -Now $auditNow))
+        $goodBad = @($goodFindings | Where-Object { $_.Level -in 'warn', 'fail' })
+        if ($goodBad.Count -eq 0) {
+            Test-Ok "a well-configured machine passes all $($goodFindings.Count) checks"
+        } else {
+            Test-Fail "a well-configured machine got: $(@($goodBad | ForEach-Object { '{0}={1}' -f $_.Id, $_.Level }) -join ', ')"
+        }
+        $gradedIds = @($goodFindings | ForEach-Object { $_.Id })
+        if (($gradedIds -join ' ') -eq ($checkIds -join ' ')) {
+            Test-Ok 'Test-AuditFact grades exactly the ids Get-AuditCheckId lists, once each, in order'
+        } else {
+            Test-Fail "Test-AuditFact graded [$($gradedIds -join ' ')] but Get-AuditCheckId lists [$($checkIds -join ' ')]"
+        }
+
+        # One bad value per check id.
+        $badFacts = @{
+            'fw-domain'           = { param($f) $f.FirewallProfiles.Domain.Enabled = $false }
+            'fw-private'          = { param($f) $f.FirewallProfiles.Private.Inbound = 'Allow' }
+            'fw-public'           = { param($f) $f.FirewallProfiles.Public.Enabled = $false }
+            'smb1'                = { param($f) $f.Smb1Enabled = $true }
+            'llmnr'               = { param($f) $f.LlmnrMulticast = 'absent' }
+            'rdp-enabled'         = { param($f) $f.RdpDeny = 0 }
+            'rdp-nla'             = { param($f) $f.RdpDeny = 0; $f.RdpNla = 0 }
+            'winrm-trustedhosts'  = { param($f) $f.TrustedHosts = '*' }
+            'sshd-password'       = { param($f) $f.SshdConfig = @{} }
+            'sshd-empty-password' = { param($f) $f.SshdConfig = @{ passwordauthentication = 'no'; permitemptypasswords = 'yes' } }
+            'uac-lua'             = { param($f) $f.EnableLua = 0 }
+            'uac-prompt'          = { param($f) $f.ConsentPromptAdmin = 0 }
+            'autologon'           = { param($f) $f.AutoAdminLogon = '1' }
+            'autologon-password'  = { param($f) $f.DefaultPasswordPresent = $true }
+            'guest-enabled'       = { param($f) $f.GuestEnabled = $true }
+            'local-admins-broad'  = { param($f) $f.LocalAdmins = @($f.LocalAdmins) + @(@{ Sid = 'S-1-1-0'; Name = 'Everyone' }) }
+            'secureboot'          = { param($f) $f.SecureBoot = $false }
+            'tpm'                 = { param($f) $f.Tpm = @{ Present = $false; Ready = $false } }
+            'lsa-ppl'             = { param($f) $f.RunAsPpl = 'absent' }
+            'vbs'                 = { param($f) $f.VbsStatus = 0 }
+            'defender-rtp'        = { param($f) $f.Defender.Rtp = $false }
+            'defender-tamper'     = { param($f) $f.Defender.Tamper = $false }
+            'defender-sigs'       = { param($f) $f.Defender.SignatureAge = 30 }
+            'defender-pua'        = { param($f) $f.Defender.Pua = 0 }
+            'defender-netprot'    = { param($f) $f.Defender.NetworkProtection = 2 }
+            'ps-scriptblock'      = { param($f) $f.ScriptBlockLogging = 'absent' }
+            'hotfix-age'          = { param($f) $f.NewestHotfix = $f.Now.AddDays(-200) }
+            'reboot-pending'      = { param($f) $f.RebootPending = $true }
+        }
+        $uncovered = @($checkIds | Where-Object { -not $badFacts.ContainsKey($_) })
+        if ($uncovered.Count -gt 0) {
+            Test-Fail "check id(s) with no bad fixture here: $($uncovered -join ', ') - add one to `$badFacts"
+        }
+        foreach ($id in $checkIds) {
+            if (-not $badFacts.ContainsKey($id)) { continue }
+            $facts = Get-GoodAuditFact -Now $auditNow
+            & $badFacts[$id] $facts
+            $verdict = @(Test-AuditFact -Facts $facts | Where-Object { $_.Id -eq $id })
+            if ($verdict.Count -eq 1 -and $verdict[0].Level -in 'warn', 'fail' -and $verdict[0].Fix) {
+                Test-Ok ("{0}: {1}, with a fix" -f $id, $verdict[0].Level)
+            } else {
+                Test-Fail ("{0}: its bad fixture gave {1} with fix '{2}'; expected warn or fail with a fix" -f $id, (@($verdict | ForEach-Object { $_.Level }) -join ','), (@($verdict | ForEach-Object { $_.Fix }) -join ''))
+            }
+        }
+
+        try {
+            $blind = @(Test-AuditFact -Facts @{ Elevated = $false })
+            $notSkipped = @($blind | Where-Object { $_.Level -ne 'skip' })
+            if ($blind.Count -eq $checkIds.Count -and $notSkipped.Count -eq 0 -and ($blind.Message -match 'needs elevation')) {
+                Test-Ok 'a machine where nothing could be read gets a skip for every check, saying it needs elevation'
+            } else {
+                Test-Fail "with no facts, $($notSkipped.Count) check(s) gave a verdict: $(@($notSkipped | ForEach-Object { $_.Id }) -join ', ')"
+            }
+        } catch {
+            Test-Fail "Test-AuditFact threw on an empty fact set: $($_.Exception.Message)"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'hardening_audit exit code'
+if (-not $hardening) {
+    Test-Fail 'hardening_audit.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $hardening -Name 'Get-AuditExitCode'
+    if (-not $src) {
+        Test-Fail 'hardening_audit.ps1 : Get-AuditExitCode not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $warnOnly = @([pscustomobject]@{ Level = 'pass' }, [pscustomobject]@{ Level = 'warn' })
+        $oneFail = @([pscustomobject]@{ Level = 'fail' }, [pscustomobject]@{ Level = 'pass' })
+        $skipsOnly = @([pscustomobject]@{ Level = 'skip' }, [pscustomobject]@{ Level = 'skip' })
+        foreach ($case in @(
+                @{ Findings = $warnOnly; FailOn = 'fail'; Expect = 0; Label = 'a warning with -FailOn fail' }
+                @{ Findings = $warnOnly; FailOn = 'warn'; Expect = 1; Label = 'a warning with -FailOn warn' }
+                @{ Findings = $oneFail; FailOn = 'fail'; Expect = 1; Label = 'one failure' }
+                @{ Findings = $skipsOnly; FailOn = 'warn'; Expect = 0; Label = 'skips only, even with -FailOn warn' }
+            )) {
+            $got = Get-AuditExitCode -Findings $case.Findings -FailOn $case.FailOn
+            if ($got -eq $case.Expect) {
+                Test-Ok "$($case.Label) -> exit $got"
+            } else {
+                Test-Fail "$($case.Label) -> exit $got, expected $($case.Expect)"
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'hardening_audit reads sshd_config'
+if (-not $hardening) {
+    Test-Fail 'hardening_audit.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $hardening -Name 'Get-SshdSetting'
+    if (-not $src) {
+        Test-Fail 'hardening_audit.ps1 : Get-SshdSetting not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $sshdFixture = @'
+# PasswordAuthentication no
+passwordauthentication YES
+PasswordAuthentication no
+PermitEmptyPasswords=no
+
+Match Group administrators
+    PubkeyAuthentication no
+    AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys
+'@ -split "`r?`n"
+        $settings = Get-SshdSetting -Lines $sshdFixture
+        if ($settings['passwordauthentication'] -eq 'YES') {
+            Test-Ok 'the first occurrence wins, the keyword is case-insensitive, and a comment is not a setting'
+        } else {
+            Test-Fail "passwordauthentication read as '$($settings['passwordauthentication'])', expected the first live line's YES"
+        }
+        if ($settings['permitemptypasswords'] -eq 'no') {
+            Test-Ok 'the Keyword=value form is read'
+        } else {
+            Test-Fail "permitemptypasswords read as '$($settings['permitemptypasswords'])'"
+        }
+        if (-not $settings.ContainsKey('pubkeyauthentication') -and -not $settings.ContainsKey('authorizedkeysfile')) {
+            Test-Ok 'nothing inside a Match block is read as a global setting'
+        } else {
+            Test-Fail 'a setting from inside a Match block was read as global'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'hardening_audit usage'
+if (-not $hardening) {
+    Test-Fail 'hardening_audit.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $listed = Invoke-InScratch -Path $hardening.FullName -Arguments @('-ListGroups')
+    $groups = @($listed.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $wantGroups = @('network', 'remote', 'accounts', 'boot', 'defender', 'logging', 'updates')
+    if ($listed.ExitCode -eq 0 -and ($groups -join ',') -eq ($wantGroups -join ',')) {
+        Test-Ok 'hardening_audit.ps1 -ListGroups prints the seven groups in order and exits 0'
+    } else {
+        Test-Fail "hardening_audit.ps1 -ListGroups exited $($listed.ExitCode) and printed [$($groups -join ',')]"
+    }
+    foreach ($case in @(
+            @{ Arguments = @('-Only', 'bogus'); Mention = 'bogus'; Label = '-Only bogus' }
+            @{ Arguments = @('-FailOn', 'bogus'); Mention = 'bogus'; Label = '-FailOn bogus' }
+        )) {
+        $run = Invoke-InScratch -Path $hardening.FullName -Arguments $case.Arguments
+        if ($run.ExitCode -eq 3 -and $run.Output -match $case.Mention) {
+            Test-Ok "hardening_audit.ps1 $($case.Label) exits 3, before the platform guard"
+        } else {
+            Test-Fail "hardening_audit.ps1 $($case.Label): exited $($run.ExitCode), expected 3"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'hardening_audit runs end to end'
+# logging and updates are the two groups whose probes are a registry read and
+# Get-HotFix. Off Windows neither exists, so every check must come back a
+# skip and the exit code 0: an unreadable machine is not a failing one. On
+# windows-2025 the runner may genuinely fail a check, so 1 is accepted there.
+if (-not $hardening) {
+    Test-Fail 'hardening_audit.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $auditBox = Join-Path ([IO.Path]::GetTempPath()) ('winaudit_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $auditBox -Force | Out-Null
+    $auditCopy = Copy-UnguardedScript -Script $hardening -Directory $auditBox
+    if (-not $auditCopy) {
+        Test-Fail 'hardening_audit.ps1 : platform guard not found verbatim, so the end-to-end check could not run; update the guard text in contract.ps1'
+    } else {
+        $run = Invoke-InScratch -Path $auditCopy -Arguments @('-Only', 'logging,updates', '-FailOn', 'fail')
+        $allowed = @(0, 1)
+        if (-not $onWindows) { $allowed = @(0) }
+        if ($run.ExitCode -in $allowed -and $run.Output -match '\[(skip|pass)\]' -and $run.Output -notmatch 'at <ScriptBlock>' -and
+            $run.Output -match '== logging ==' -and $run.Output -notmatch '== network ==') {
+            Test-Ok "hardening_audit.ps1 -Only logging,updates ran those groups only (exit $($run.ExitCode))"
+        } else {
+            Test-Fail "hardening_audit.ps1 end to end: exited $($run.ExitCode) (allowed: $($allowed -join ', ')), or the verdicts or headings are not what was asked for"
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $auditBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------
