@@ -5,5 +5,6 @@
   pods, containers that may run as root, single-replica Deployments and
   replicated workloads no PodDisruptionBudget covers. Findings are labelled
   `[risk]` or `[advice]`, each check prints a fix and never runs it, and
-  `--list-checks`, `--only`, `--include-system` and `--limit` work the way
-  the GKE doctor's checks do.
+  `--list-checks` and `--only` take the same check ids as the GKE doctor's
+  (an empty selection is a usage error here), and `--include-system` and
+  `--limit` widen or cap the report.
