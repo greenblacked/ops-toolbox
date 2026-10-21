@@ -6,3 +6,5 @@
   binary that actually runs. It installs nothing, never evaluates a pin
   file, and exits 1 on a missing version and 4 when there is no pin, so it
   works as a pre-commit or Makefile guard.
+  A prerelease (`rc`, `beta`, `alpha`, `pre`) counts as older than the same
+  release, so Go `1.22rc1` does not meet a `1.22` minimum.

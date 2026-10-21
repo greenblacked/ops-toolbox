@@ -164,9 +164,17 @@ row() {
 # and the few separators version strings use, never leading with a dash.
 plain_version() { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; }
 
+# Is the version a prerelease (rc, beta, alpha, pre)?
+is_prerelease() {
+  local v
+  v="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+  [[ "$v" =~ [0-9.+-](rc|beta|alpha|pre) ]]
+}
+
 # ver_ge A B: is the dotted version A at least B? Compared numerically per
-# component, so 1.10 is newer than 1.9; a missing component counts as 0 and a
-# suffix such as rc1 is ignored.
+# component, so 1.10 is newer than 1.9; a missing component counts as 0. A
+# prerelease (rc, beta, alpha, pre) is older than the same release, so 1.22rc1
+# does not meet a 1.22.0 minimum; any other suffix is ignored.
 ver_ge() {
   local i x y
   local IFS=.
@@ -180,6 +188,7 @@ ver_ge() {
     if (( 10#$x > 10#$y )); then return 0; fi
     if (( 10#$x < 10#$y )); then return 1; fi
   done
+  if is_prerelease "$1" && ! is_prerelease "$2"; then return 1; fi
   return 0
 }
 
