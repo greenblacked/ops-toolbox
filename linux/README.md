@@ -895,8 +895,9 @@ prints one line per finding:
 
 `CHANGED` carries tar's reasons (size, contents, mode, owner, symlink target or
 mtime), `GONE` is in the archive but not on disk, `NEW` is on disk under
-`--paths` but not in the archive, and `SKIP` could not be read, so the run is
-never reported clean. A directory whose only change is its mtime is left out:
+`--paths` but not in the archive, and `SKIP` could not be read, or is a subtree
+the new-file scan could not enter (so `NEW` may be incomplete). A `SKIP` makes
+the run exit `1` and never counts as clean. A directory whose only change is its mtime is left out:
 adding or deleting a file changes its parent's, which the `NEW` or `GONE` line
 already says. `--paths` narrows the comparison (default `/etc`; `/` is refused),
 and the newest archive is picked within `--prefix`, so an archive written under
