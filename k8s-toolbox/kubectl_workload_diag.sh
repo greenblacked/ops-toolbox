@@ -270,8 +270,12 @@ for item in items:
       found.append("%d/%d ready" % (ready,want))
     target=status.get("updateRevision") or ""
     current=status.get("currentRevision") or ""
-    if target and current and target != current and updated < want and partition == 0:
-      found.append("update to %s stuck (%d/%d updated)" % (target,updated,want))
+    # OnDelete keeps currentRevision behind updateRevision by design, and a
+    # partition only asks for the ordinals at or above it to be updated.
+    strategy=(spec.get("updateStrategy") or {}).get("type") or "RollingUpdate"
+    expected=max(want-partition,0)
+    if strategy == "RollingUpdate" and target and current and target != current and updated < expected:
+      found.append("update to %s stuck (%d/%d updated)" % (target,updated,expected))
     nexts.append("kubectl rollout status statefulset/%s -n %s" % (name,ns))
   elif check == "daemonsets":
     label="daemonset"

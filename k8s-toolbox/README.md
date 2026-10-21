@@ -289,8 +289,10 @@ on one kind costs that section only. What counts as a finding:
   rollout, a spec generation the controller has not observed yet, or fewer
   available replicas than requested. A Deployment scaled to zero is skipped.
 - `statefulsets`: fewer ready replicas than requested, or an update whose new
-  revision has not reached every replica. A rolling update held back by a
-  `partition` is deliberate and stays quiet.
+  revision has not reached every replica it should: with a `partition`, that
+  is `replicas - partition` replicas, so a deliberate hold stays quiet but a
+  partitioned update that has not moved is still reported. An `OnDelete`
+  StatefulSet is never judged on its rollout.
 - `daemonsets`: unavailable or not-ready pods, and pods scheduled where the
   DaemonSet no longer wants them (misscheduled).
 - `hpa`: `ScalingActive=False` (for example `FailedGetResourceMetric`, with the
