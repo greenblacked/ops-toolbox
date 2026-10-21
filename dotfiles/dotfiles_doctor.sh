@@ -222,6 +222,51 @@ under_repo() {
   [[ "$1" == "$REPO"/* || "$1" == "$REPO_GIVEN"/* ]]
 }
 
+# Follows a chain of symlinks by hand, since macOS has no readlink -f: each
+# hop reads the link text (relative text is joined to the link's own
+# directory), with a 40-hop limit so a loop cannot hang. Then the directory
+# part is made physical with cd -P on the deepest directory that exists, so a
+# target in a deleted source directory still resolves. Prints the physical
+# path; fails on a loop or an unreachable directory. The same walk as
+# physical_path() in install_dotfiles.sh, which this script cannot source:
+# it is meant to work copied alone into a bin directory.
+physical_path() {
+  local p="$1" hops=0 t d leaf phys
+  while [[ -L "$p" ]]; do
+    hops=$((hops + 1))
+    (( hops > 40 )) && return 1
+    t="$(readlink "$p" 2>/dev/null)" || return 1
+    [[ -n "$t" ]] || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *)  p="${p%/*}/$t" ;;
+    esac
+  done
+  d="${p%/*}"
+  leaf="${p##*/}"
+  while [[ -n "$d" && ! -d "$d" ]]; do
+    leaf="${d##*/}/$leaf"
+    d="${d%/*}"
+  done
+  [[ -n "$d" ]] || return 1
+  phys="$(cd -P "$d" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s\n' "${phys%/}" "$leaf"
+}
+
+# A link is ours when its text starts with the repository's path AND it really
+# resolves under it: "$REPO/config/../../../tmp/x" has the prefix but leads
+# out, and its file would be read for credentials. A `..` segment in the text
+# is refused outright (the installer never writes one); the rest is resolved
+# physically, the whole chain. A link into a deleted source still counts.
+links_into_repo() {
+  local t phys
+  t="$(link_target "$1")"
+  under_repo "$t" || return 1
+  case "$t/" in */../*) return 1 ;; esac
+  phys="$(physical_path "$t")" || return 1
+  [[ "$phys" == "$REPO"/* ]]
+}
+
 # Lines of a keyed pattern only count when the line is not a comment: the
 # tracked .npmrc explains in a comment why no _authToken line belongs in it.
 # A line whose first non-blank character is # or ; never matches.
@@ -270,8 +315,8 @@ check_linked_configs() {
     [[ -n "$rel" ]] || continue
     target="$(target_of "$rel")"
     [[ -L "$target" ]] || continue
+    links_into_repo "$target" || continue
     t="$(link_target "$target")"
-    under_repo "$t" || continue
     if [[ ! -e "$target" ]]; then
       warn "$target links into $REPO, but $t does not exist" "rm $target  (its config was renamed or removed in the repository)"
       continue

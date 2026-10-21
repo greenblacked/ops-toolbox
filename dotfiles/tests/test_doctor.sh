@@ -194,6 +194,31 @@ assert_rc "--fail-on warn turns the warning into exit 1" 1 "$rc"
 run_doctor --repo "$R" --fail-on=warn >/dev/null 2>&1; rc=$?
 assert_rc "--fail-on=warn is accepted" 1 "$rc"
 
+# A link whose text starts with the repository path but climbs out of it with
+# `..` must not make the doctor read the file it names, and neither must an
+# alias inside the repository that is itself a link to a file outside.
+make_fixture
+printf 'token = %s\n' "$TOKEN" > "$scratch/outside-secret"
+rm "$H/.config/foo/conf"
+ln -s "$R/config/foo/../../../outside-secret" "$H/.config/foo/conf"
+before="$(snapshot "$H" "$T")"
+out="$(run_doctor --repo "$R" 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "a link that climbs out of the repository is not read" 0 "$rc"
+assert_not_contains "the outside file is not scanned" "$out" "[FAIL]"
+assert_not_contains "the outside file is not counted as a linked config" "$out" "GitHub token"
+assert_contains "only the genuine link is counted" "$out" "[pass] 1 linked configs hold no credential"
+if [[ "$before" == "$after" ]]; then ok "the traversing link left the home and tmp untouched"; else err "the traversing link run wrote into the home or tmp"; fi
+
+make_fixture
+rm "$H/.config/foo/conf"
+ln -s "$scratch/outside-secret" "$R/config/foo/alias"
+ln -s "$R/config/foo/alias" "$H/.config/foo/conf"
+out="$(run_doctor --repo "$R" 2>&1)"; rc=$?
+assert_rc "an in-repository alias to an outside file is not read" 0 "$rc"
+assert_not_contains "the alias target is not scanned" "$out" "[FAIL]"
+rm -f "$scratch/outside-secret"
+
 # Copied alone into a bin directory, as CONTRIBUTING's one rule asks.
 make_fixture
 mkdir -p "$scratch/bin"

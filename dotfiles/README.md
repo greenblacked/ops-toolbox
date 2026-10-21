@@ -310,8 +310,11 @@ way to keep it out of the file and passes, and the keyed patterns ignore
 comment lines, because the tracked `.npmrc` explains in one why no token
 belongs in it. Copies (`~/.docker/config.json` and the other three) are not
 links and may hold what their tool writes there, so they are not read. A
-link into the repository whose file no longer exists is a `[warn]`: the
-config was renamed or removed and the tool reads nothing.
+link only counts as a link into the repository when it really resolves
+under it, the whole chain: one whose text climbs out with `..`, or whose
+alias leads to a file outside, is never read. A link into the repository
+whose file no longer exists is a `[warn]`: the config was renamed or removed
+and the tool reads nothing.
 
 **Credential files are private.** [What is deliberately not
 here](#what-is-deliberately-not-here) lists the files that hold tokens and
@@ -935,8 +938,9 @@ it, exit `3` on bad usage and `2` on a missing home, a clean fixture that
 passes, a token in a linked file reported by file and line with the token
 itself absent from the output, an npm value read from the environment and a
 keyed value in a comment both passing, a copy never read, a dangling link a
-warning that `--fail-on warn` turns into exit `1`, and the script copied
-alone into a bin directory still running.
+warning that `--fail-on warn` turns into exit `1`, a link that climbs out
+of the repository or leads out through an alias never read, and the
+script copied alone into a bin directory still running.
 
 The credential-file section writes a sentinel line into every fixture and
 asserts it never reaches the output: a `600` file passes, a `644` one warns
