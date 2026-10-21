@@ -151,9 +151,24 @@ Check what clients see, with the window as a failure:
 ./linux/tls_expiry.sh --host example.com --days 30 --fail-on warn
 ```
 
-Success is a `[pass]` line with the new expiry date and exit `0`. A `[warn]`
-here means either the old certificate is still being served (the service was
-not reloaded) or the host could not be reached.
+Success is a `[pass]` line with the new expiry date and exit `0`. That
+confirms only the expiry and that the service was reloaded. A `[warn]` here
+means either the old certificate is still being served (the service was not
+reloaded) or the host could not be reached. The script does not verify the
+chain or that the certificate matches the host name, so a certificate with
+the wrong name or a missing intermediate still passes.
+
+For that, run a live check with verification on:
+
+```{ .bash .rpt-report title="Verify chain and name" }
+openssl s_client -connect example.com:443 -servername example.com \
+    -verify_hostname example.com -verify_return_error </dev/null
+```
+
+A pass shows `Verify return code: 0 (ok)` near the end of the output. With
+`-verify_return_error` a failure aborts the handshake and prints a `verify
+error:` line (for example a name mismatch or an unable-to-get-local-issuer
+error).
 
 For a cron job or monitor that covers every certificate on the machine,
 quote the glob so the script expands it itself:
