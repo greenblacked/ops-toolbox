@@ -205,5 +205,105 @@ class WorkerFetchTests(unittest.TestCase):
         self.assertEqual([r["body"] for r in results], ["upstream 200", "upstream 404"])
 
 
+def security_headers(url: str) -> dict[str, str]:
+    out = worker_eval(
+        "security.js",
+        "process.stdout.write(JSON.stringify(m.securityHeaders(process.env.URL)));",
+        URL=url,
+    )
+    assert isinstance(out, dict)
+    return out
+
+
+@unittest.skipUnless(NODE, "node not installed")
+class SecurityHeaderTests(unittest.TestCase):
+    HTTPS = "https://ops.szolotov.com/runbooks/"
+
+    def test_csp_contains_only_non_fetch_directives(self) -> None:
+        # The guard against a pasted-in policy that would break Material's
+        # inline scripts, styles and configuration.
+        csp = security_headers(self.HTTPS)["Content-Security-Policy"]
+        directives = [part.strip().split()[0] for part in csp.split(";") if part.strip()]
+        self.assertEqual(
+            set(directives), {"base-uri", "form-action", "frame-ancestors", "object-src"}
+        )
+        self.assertEqual(len(directives), 4)
+        for fetch_directive in ("default-src", "script-src", "style-src", "img-src",
+                                "font-src", "connect-src", "worker-src", "frame-src"):
+            with self.subTest(directive=fetch_directive):
+                self.assertNotIn(fetch_directive, csp)
+        self.assertIn("frame-ancestors 'none'", csp)
+        self.assertIn("object-src 'none'", csp)
+
+    def test_hsts_only_on_https(self) -> None:
+        self.assertEqual(
+            security_headers(self.HTTPS).get("Strict-Transport-Security"), "max-age=31536000"
+        )
+        for url in ("http://localhost:8787/", "http://ops.szolotov.com/", "not a url"):
+            with self.subTest(url=url):
+                self.assertNotIn("Strict-Transport-Security", security_headers(url))
+
+    def test_hsts_has_no_include_subdomains_or_preload(self) -> None:
+        value = security_headers(self.HTTPS)["Strict-Transport-Security"].lower()
+        self.assertNotIn("includesubdomains", value)
+        self.assertNotIn("preload", value)
+
+    def test_values_have_no_line_breaks_or_non_ascii(self) -> None:
+        # Headers.set throws on a value it cannot send.
+        headers = security_headers(self.HTTPS)
+        self.assertTrue(headers)
+        for name, value in headers.items():
+            with self.subTest(name=name):
+                self.assertRegex(name, r"^[A-Za-z0-9-]+$")
+                self.assertRegex(value, r"^[\x20-\x7e]+$")
+
+    def test_permissions_policy_disables_the_listed_features(self) -> None:
+        policy = security_headers(self.HTTPS)["Permissions-Policy"]
+        entries = dict(part.strip().split("=", 1) for part in policy.split(","))
+        features = ["accelerometer", "camera", "geolocation", "gyroscope", "magnetometer",
+                    "microphone", "payment", "usb"]
+        for feature in features:
+            with self.subTest(feature=feature):
+                self.assertEqual(entries.get(feature), "()")
+        # The code copy button needs the clipboard.
+        self.assertNotIn("clipboard-write", entries)
+        self.assertEqual(len(entries), len(features))
+
+    def test_existing_three_headers_are_unchanged(self) -> None:
+        headers = security_headers(self.HTTPS)
+        self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
+        self.assertEqual(headers["Referrer-Policy"], "strict-origin-when-cross-origin")
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+        self.assertEqual(headers["Cross-Origin-Opener-Policy"], "same-origin")
+        self.assertEqual(headers["X-Permitted-Cross-Domain-Policies"], "none")
+
+    def test_headers_on_every_response_and_robots_only_on_stage(self) -> None:
+        stage = {"ROBOTS": "noindex"}
+        cases = [
+            ({"url": self.HTTPS}, False),
+            ({"url": "https://ops.szolotov.com/missing/", "status": 404}, False),
+            ({"url": self.HTTPS, "method": "HEAD"}, False),
+            ({"url": "https://stage.ops.szolotov.com/", "env": stage}, True),
+            ({"url": "https://stage.ops.szolotov.com/x/", "status": 404, "env": stage}, True),
+        ]
+        results = fetch_through_worker([request for request, _ in cases])
+        self.assertEqual(len(results), len(cases))
+        checked = 0
+        for (request, robots), result in zip(cases, results):
+            with self.subTest(request=request):
+                headers = result["headers"]
+                assert isinstance(headers, dict)
+                for name in ("content-security-policy", "permissions-policy",
+                             "cross-origin-opener-policy", "strict-transport-security",
+                             "x-frame-options", "x-content-type-options", "referrer-policy"):
+                    self.assertIn(name, headers)
+                if robots:
+                    self.assertEqual(headers.get("x-robots-tag"), "noindex")
+                else:
+                    self.assertNotIn("x-robots-tag", headers)
+            checked += 1
+        self.assertEqual(checked, len(cases))
+
+
 if __name__ == "__main__":
     unittest.main()

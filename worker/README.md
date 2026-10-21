@@ -9,7 +9,8 @@ are in [Deployment](../docs/contributing/deployment.md).
 
 | File | Purpose |
 | --- | --- |
-| `index.js` | The Worker. Serves the built site through the `ASSETS` binding and adds security headers to every response, `X-Robots-Tag: noindex` when the `ROBOTS` variable is `noindex`, and `Cache-Control` from `cache.js`. |
+| `index.js` | The Worker. Serves the built site through the `ASSETS` binding and adds the security headers from `security.js` to every response, `X-Robots-Tag: noindex` when the `ROBOTS` variable is `noindex`, and `Cache-Control` from `cache.js`. |
+| `security.js` | The security headers: `securityHeaders(requestUrl)` returns them as an object. No I/O. |
 | `cache.js` | The caching rules: `cacheControl(pathname)` returns the `Cache-Control` value for a path, or `null` for the default. No I/O. |
 | `wrangler.jsonc` | The Worker's configuration: name `ops-toolbox`, the `../site` assets directory, the `ops.szolotov.com` Custom Domain, `workers_dev` on and the `stage` Worker Preview's settings. |
 | `package.json` | Pins wrangler to one exact version. |
@@ -59,10 +60,28 @@ Check a deploy with `curl -sSI` (see
   outside the zone. Turning it off makes the production deploy fail its
   checks. `preview_urls` stays `false`: previews are served on the Custom
   Domain.
-- There is no `Content-Security-Policy`: Material for MkDocs uses inline
-  scripts and styles, so a policy that keeps the site working would protect
-  little. The site self-hosts its IBM Plex fonts (`theme.font: false`), so
-  fonts are no longer an external dependency.
+- The `Content-Security-Policy` is deliberately narrow:
+  `base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'`.
+  Material for MkDocs uses inline scripts and styles, and a static site
+  cannot hand out nonces, so a script or style policy that keeps the site
+  working would protect little. This one has no fetch directive at all, so it
+  cannot block a script, style, font, image or connection; it stops an
+  injected `<base>`, a form posting elsewhere, framing and plugins. The tests
+  fail if a fetch directive is added. The site self-hosts its IBM Plex fonts
+  (`theme.font: false`), so fonts are not an external dependency either.
+- Every response, 404s included, carries `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin`, `X-Frame-Options: DENY`
+  (for browsers older than `frame-ancestors`), the policy above,
+  `Permissions-Policy` turning off accelerometer, camera, geolocation,
+  gyroscope, magnetometer, microphone, payment and USB access (the site uses
+  none; the copy button's clipboard is not in the list),
+  `Cross-Origin-Opener-Policy: same-origin` and
+  `X-Permitted-Cross-Domain-Policies: none`. Over https it also sends
+  `Strict-Transport-Security: max-age=31536000`, for this host only (no
+  `includeSubDomains`, no `preload`); if the Cloudflare zone already sets
+  HSTS, remove it from `security.js` so it is not sent twice.
+  `Cross-Origin-Resource-Policy` is left out on purpose: it would break a
+  legitimate hot-link of the logo.
 - Install with `--ignore-scripts`, and bump wrangler by editing
   `package.json` and `package-lock.json` together; Dependabot proposes it
   monthly.
