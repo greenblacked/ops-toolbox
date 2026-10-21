@@ -453,19 +453,33 @@ if [[ -z "$mounts_txt" ]]; then
 else
   # Real filesystems only, and the token "ro" exactly: "errors=remount-ro" is
   # an option, not a state. squashfs, iso9660, erofs and overlay are read-only
-  # by design, and snaps and desktop media mounts are expected to be.
+  # by design, and snaps and desktop media mounts are expected to be. So is
+  # the ostree /sysroot, and any mount fstab declares ro. A mount with no
+  # fstab entry (a bind or volume mounted :ro) is only reported when it
+  # carries errors=remount-ro, which is what a kernel remount leaves behind.
+  fstab_in=/dev/null
+  [[ -r "$FSTAB" ]] && fstab_in="$FSTAB"
   ro_rows="$(awk '
+    NR == FNR {
+      if ($0 !~ /^[[:space:]]*#/ && NF >= 4) {
+        fs[$2] = 1
+        if (("," $4 ",") ~ /,ro,/) fsro[$2] = 1
+      }
+      next
+    }
     $3 ~ /^(ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs)$/ &&
     ("," $4 ",") ~ /,ro,/ &&
+    $2 != "/sysroot" && !($2 in fsro) &&
+    (($2 in fs) || ("," $4 ",") ~ /,errors=remount-ro,/) &&
     $2 !~ /^\/(snap|var\/lib\/snapd|run\/media)(\/|$)/ { print $2, $3 }
-  ' <<<"$mounts_txt")"
+  ' "$fstab_in" - <<<"$mounts_txt")"
   ro_n=0
   while read -r mp fstype; do
     [[ -n "$mp" ]] || continue
     ro_n=$((ro_n + 1))
     (( ro_n <= 5 )) || continue
     warn "$mp is mounted read-only ($fstype)" \
-      "dmesg | grep -iE 'remount|I/O error|EXT4-fs error'; fsck needs the filesystem unmounted"
+      "if unplanned: dmesg | grep -iE 'remount|I/O error|EXT4-fs error'; fsck needs it unmounted"
   done <<< "$ro_rows"
   if (( ro_n == 0 )); then
     ok "no real filesystem is mounted read-only"

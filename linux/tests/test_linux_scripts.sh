@@ -893,8 +893,9 @@ rm -rf "$doctor_stub"
 # line is there to prove --skip-remote-mounts keeps the probe from running.
 storage_fx="$(mktemp -d)"
 printf '%s\n' '/dev/sda1 /data ext4 ro,relatime 0 0' '/dev/sda2 /ok ext4 rw,relatime,errors=remount-ro 0 0' \
-  '/dev/loop0 /snap/core squashfs ro,nodev,relatime 0 0' 'srv:/x /mnt/nfs nfs4 rw,relatime 0 0' > "$storage_fx/mounts"
-printf '%s\n' '# /etc/fstab fixture' '/dev/sda2 /ok ext4 defaults 0 2' '/dev/sdb1 /srv ext4 defaults 0 2' \
+  '/dev/loop0 /snap/core squashfs ro,nodev,relatime 0 0' '/dev/sde1 /sysroot xfs ro,relatime 0 0' \
+  '/dev/sdf1 /vol ext4 ro,relatime 0 0' '/dev/sdg1 /fstab-ro ext4 ro,relatime,errors=remount-ro 0 0' 'srv:/x /mnt/nfs nfs4 rw,relatime 0 0' > "$storage_fx/mounts"
+printf '%s\n' '# /etc/fstab fixture' '/dev/sda1 /data ext4 defaults 0 2' '/dev/sda2 /ok ext4 defaults 0 2' '/dev/sdg1 /fstab-ro ext4 ro 0 2' '/dev/sdb1 /srv ext4 defaults 0 2' \
   '/dev/sdc1 /opt ext4 defaults,nofail 0 2' '/dev/sdd1 /mnt/x ext4 noauto 0 0' '/swapfile none swap sw 0 0' > "$storage_fx/fstab"
 printf '%s\n' 'Personalities : [raid1]' 'md0 : active raid1 sdb1[1] sda1[0]' '      1000 blocks [2/1] [U_]' '' \
   'unused devices: <none>' > "$storage_fx/mdstat"
@@ -920,6 +921,9 @@ assert_eq "system_doctor with storage faults still exits 0" "0" "$rc"
 assert_contains "system_doctor has a storage section" "$out" "== storage =="
 assert_contains "system_doctor reports a read-only remount" "$out" "/data is mounted read-only (ext4)"
 assert_not_contains "system_doctor ignores read-only-by-design squashfs" "$out" "/snap/core is mounted read-only"
+assert_not_contains "system_doctor ignores the ostree /sysroot" "$out" "/sysroot is mounted read-only"
+assert_not_contains "system_doctor ignores a ro mount with no fstab entry" "$out" "/vol is mounted read-only"
+assert_not_contains "system_doctor ignores a mount fstab declares ro" "$out" "/fstab-ro is mounted read-only"
 assert_not_contains "system_doctor reads errors=remount-ro as an option, not a state" "$out" "/ok is mounted read-only"
 assert_contains "system_doctor warns on an fstab mount that is missing" \
   "$(grep -F 'fstab entry /srv ' <<<"$out" || true)" "[warn]"

@@ -381,7 +381,8 @@ Five of those exist because the ordinary tools hide them:
   error the kernel remounts the filesystem read-only and everything keeps
   working until the next write; an fstab mount that failed at boot leaves its
   data on the root filesystem; an md array runs on one disk without a word.
-  None of that shows in `df`. A hung NFS or CIFS mount blocks `df` itself, so
+  None of that shows in `df`. A mount that fstab declares `ro`, a bind mounted
+  `:ro` and the ostree `/sysroot` are read-only on purpose and are not flagged. A hung NFS or CIFS mount blocks `df` itself, so
   each one is probed with a five-second `stat` that `--skip-remote-mounts`
   turns off. `PROC_DIR` and `FSTAB` point the section at other files; the
   tests use them.
