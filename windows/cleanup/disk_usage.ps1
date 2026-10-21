@@ -95,6 +95,48 @@ function Format-Size {
 }
 
 # --- measurement --------------------------------------------------------------
+# The space a file takes on disk. FileInfo.Length is the logical size, which
+# for a sparse or NTFS-compressed file (a WSL VHDX is the usual one) counts
+# ranges that were never allocated. GetCompressedFileSizeW gives the
+# allocated size. It is asked only for those two kinds of file, through a
+# P/Invoke that is compiled on first use and only on Windows; any failure
+# (not Windows, no compiler, a path the call refuses) returns Length, so the
+# worst case is the old, over-counting answer. $File needs Length, Attributes
+# and FullName, which a FileInfo has.
+$script:AllocatedSizeReady = $null
+function Get-FileDiskSize {
+    param([object]$File)
+    $length = [long]$File.Length
+    $kinds = [System.IO.FileAttributes]::SparseFile -bor [System.IO.FileAttributes]::Compressed
+    if (([int]$File.Attributes -band [int]$kinds) -eq 0) { return $length }
+    try {
+        if ($null -eq $script:AllocatedSizeReady) {
+            $script:AllocatedSizeReady = $false
+            if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+                if (-not ('DiskUsageNative.Size' -as [type])) {
+                    Add-Type -Namespace DiskUsageNative -Name Size -MemberDefinition @'
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+public static extern uint GetCompressedFileSizeW(string lpFileName, out uint lpFileSizeHigh);
+'@
+                }
+                $script:AllocatedSizeReady = $true
+            }
+        }
+        if (-not $script:AllocatedSizeReady) { return $length }
+        $path = [string]$File.FullName
+        if ($path.Length -ge 240 -and $path -match '^[A-Za-z]:\\') { $path = '\\?\' + $path }
+        $high = [uint32]0
+        $low = [DiskUsageNative.Size]::GetCompressedFileSizeW($path, [ref]$high)
+        if ($low -eq [uint32]::MaxValue -and [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() -ne 0) {
+            return $length
+        }
+        return ([long]$high * 4294967296L) + [long]$low
+    } catch {
+        Write-Verbose ("allocated size of {0}: {1}" -f $File.FullName, $_.Exception.Message)
+        return $length
+    }
+}
+
 # An explicit stack and a try/catch per directory, rather than
 # Get-ChildItem -Recurse or EnumerateFiles(AllDirectories): those stop at the
 # first folder that refuses access, and .NET Framework has no option to carry
@@ -105,7 +147,8 @@ function Format-Size {
 # folder that is a junction or symbolic link - counting it would count its
 # target twice, and a link to an ancestor would never finish. For a file it is
 # mostly OneDrive placeholders, whose Length is the size in the cloud, not on
-# this disk.
+# this disk. Each file counts at the space it occupies (Get-FileDiskSize), not
+# its logical length.
 function Get-DirectorySize {
     param([string]$Path)
     $bytes = 0L
@@ -117,7 +160,7 @@ function Get-DirectorySize {
         try {
             foreach ($file in $directory.GetFiles()) {
                 if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-                $bytes += $file.Length
+                $bytes += Get-FileDiskSize -File $file
             }
         } catch {
             $inaccessible++
@@ -252,8 +295,9 @@ function Get-TreeNode {
     try {
         foreach ($file in $directory.GetFiles()) {
             if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
-            $bytes += $file.Length
-            $children += [pscustomobject]@{ Name = $file.Name; Bytes = $file.Length; Inaccessible = 0; Children = @() }
+            $fileBytes = Get-FileDiskSize -File $file
+            $bytes += $fileBytes
+            $children += [pscustomobject]@{ Name = $file.Name; Bytes = $fileBytes; Inaccessible = 0; Children = @() }
         }
     } catch {
         $inaccessible++
@@ -384,7 +428,7 @@ if ($Action -eq 'tree') {
             $item = $null
             try { $item = Get-Item -LiteralPath $target.Path -Force -ErrorAction Stop } catch { Write-Verbose $_.Exception.Message }
             if ($null -eq $item) { $missing += $target; continue }
-            $found += [pscustomobject]@{ Label = $target.Label; Bytes = [long]$item.Length; Hint = $target.Hint; Partial = $false }
+            $found += [pscustomobject]@{ Label = $target.Label; Bytes = (Get-FileDiskSize -File $item); Hint = $target.Hint; Partial = $false }
         } else {
             if (-not (Test-Path -LiteralPath $target.Path -PathType Container)) { $missing += $target; continue }
             $size = Get-DirectorySize -Path $target.Path

@@ -5,5 +5,6 @@
   `clean_disk_c.ps1` can reach end in the exact preview and cleanup command
   lines; a WSL disk points at `wsl_manage.ps1`. `tree` shows the largest
   folders under any path. It is read-only, never follows a junction or
-  symbolic link, and says when a size is a lower bound because a folder
-  could not be read.
+  symbolic link, counts a sparse or compressed file at the space it
+  occupies rather than its logical size, and says when a size is a lower
+  bound because a folder could not be read.

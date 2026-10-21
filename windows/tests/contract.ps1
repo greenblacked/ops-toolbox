@@ -1437,6 +1437,12 @@ if (-not $diskUsage) {
         Test-Fail 'disk_usage.ps1 : Get-DirectorySize not found - this check has stopped checking'
     } else {
         . ([scriptblock]::Create($src))
+        $diskSizeSrc = Get-ScriptFunctionSource -Script $diskUsage -Name 'Get-FileDiskSize'
+        if (-not $diskSizeSrc) {
+            Test-Fail 'disk_usage.ps1 : Get-FileDiskSize not found - this check has stopped checking'
+            $diskSizeSrc = 'function Get-FileDiskSize { param([object]$File) return [long]$File.Length }'
+        }
+        . ([scriptblock]::Create($diskSizeSrc))
         $sizeBox = Join-Path ([IO.Path]::GetTempPath()) ('winsize_' + [Guid]::NewGuid().ToString('N'))
         $deep = Join-Path (Join-Path $sizeBox 'sub') 'deep'
         $emptyDir = Join-Path $sizeBox 'empty'
@@ -1470,6 +1476,34 @@ if (-not $diskUsage) {
             Test-Ok 'an empty folder measures 0 bytes with nothing unreadable'
         } else {
             Test-Fail "an empty folder measured $($emptySize.Bytes) bytes, $($emptySize.Inaccessible) unreadable"
+        }
+        # A sparse or compressed file counts at its allocated size, not its
+        # logical length. The allocated-size call is stubbed here (a sparse
+        # file cannot be made portably); what is checked is that the walk
+        # asks for it for every file and adds up what it answers.
+        [IO.File]::WriteAllBytes((Join-Path $sizeBox 'sparse.bin'), (New-Object byte[] 1000))
+        function Get-FileDiskSize {
+            param([object]$File)
+            if ($File.Name -eq 'sparse.bin') { return 100L }
+            return [long]$File.Length
+        }
+        $allocated = Get-DirectorySize -Path $sizeBox
+        if ($allocated.Bytes -eq 7100) {
+            Test-Ok 'Get-DirectorySize adds the allocated size a sparse file reports, not its length'
+        } else {
+            Test-Fail "Get-DirectorySize returned $($allocated.Bytes) bytes with a stubbed 100-byte sparse file, expected 7100"
+        }
+        # The real function: an ordinary file is its Length; a sparse or
+        # compressed file whose allocated size cannot be had (not Windows, or
+        # a path the call refuses) falls back to Length instead of failing.
+        . ([scriptblock]::Create($diskSizeSrc))
+        $plain = [pscustomobject]@{ Name = 'p'; Length = 1234L; Attributes = [IO.FileAttributes]::Archive; FullName = (Join-Path $sizeBox 'does-not-exist-1') }
+        $sparseGone = [pscustomobject]@{ Name = 's'; Length = 5678L; Attributes = ([IO.FileAttributes]::SparseFile -bor [IO.FileAttributes]::Archive); FullName = (Join-Path $sizeBox 'does-not-exist-2') }
+        $packedGone = [pscustomobject]@{ Name = 'c'; Length = 9012L; Attributes = [IO.FileAttributes]::Compressed; FullName = (Join-Path $sizeBox 'does-not-exist-3') }
+        if ((Get-FileDiskSize -File $plain) -eq 1234 -and (Get-FileDiskSize -File $sparseGone) -eq 5678 -and (Get-FileDiskSize -File $packedGone) -eq 9012) {
+            Test-Ok 'Get-FileDiskSize returns Length for a plain file and falls back to it when the allocated size is unavailable'
+        } else {
+            Test-Fail 'Get-FileDiskSize did not return Length for a plain file or for a sparse/compressed file it could not size'
         }
         Remove-Item -Path $sizeBox -Recurse -Force -ErrorAction SilentlyContinue
     }
