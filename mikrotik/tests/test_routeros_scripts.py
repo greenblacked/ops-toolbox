@@ -1732,11 +1732,19 @@ def test_rogue_dns_invalid_connection_get_probe(
 # only change is that :put (which a scheduler-run script has nowhere to show)
 # becomes a :set of a scratch global that the test reads back; only one
 # branch of the block runs, so the global holds the one answer.
-DRIFT_SUBJECT = (
-    ':local a "quote\\" dollar\\$b back\\\\slash question\\?";\n'
-    "\t# tab above, ${braces} and [brackets] below\n"
-    ':put [:len $a]; :log info "caf\u00e9";\n'
-)
+#
+# One case per kind of character the escaper emits, so a failure names the
+# escape: plain ASCII (no escape), \" and \\, \$, a raw ?, \t and \n, and
+# \XX hex for a non-ASCII byte. The "changed" and "shorter" checks alter or
+# cut the last two bytes of the subject.
+DRIFT_SUBJECTS = {
+    "plain": ":local a 1;\n:put $a;\n",
+    "quote-backslash": ':local a "q\\" back\\\\slash";\n:put $a;\n',
+    "dollar": ':local a "dollar\\$b";\n# ${braces}\n:put $a;\n',
+    "question": ':local a "is it ok?";\n:put $a;\n',
+    "tab-newline": "\t# tab above\n:local a 1;\n\t:put $a;\n",
+    "non-ascii": ':log info "caf\u00e9";\n:put 1;\n',
+}
 
 
 def _router_doctor_module() -> Any:
@@ -1774,24 +1782,34 @@ def _drift_answer(api: Any, script_resource: Any, name: str, expected: bytes) ->
             _unset_global(api, g)
 
 
+@pytest.mark.parametrize("kind", sorted(DRIFT_SUBJECTS))
 def test_drift_comparison_runs_on_the_pinned_routeros(
-    api: Any, script_resource: Any
+    api: Any, script_resource: Any, kind: str
 ) -> None:
     subject = "pu_ut_drift_subject"
-    raw = DRIFT_SUBJECT.encode("utf-8")
+    text = DRIFT_SUBJECTS[kind]
+    raw = text.encode("utf-8")
     try:
-        _add_script(script_resource, subject, DRIFT_SUBJECT)
+        _add_script(script_resource, subject, text)
         same = _drift_answer(api, script_resource, subject, raw)
-        modified = _drift_answer(api, script_resource, subject, raw.replace(b"back", b"BACK"))
+        # same length, one byte different
+        modified = _drift_answer(api, script_resource, subject, raw[:-2] + b"X\n")
         # a prefix of the source (two bytes short) is a difference too
         shorter = _drift_answer(api, script_resource, subject, raw[:-2])
-        missing = _drift_answer(api, script_resource, "pu_ut_drift_absent", raw)
     finally:
         _remove_by_name(script_resource, subject)
-    assert same == f"DRF:{subject}|same", same
-    assert modified == f"DRF:{subject}|changed", modified
-    assert shorter == f"DRF:{subject}|changed", shorter
-    assert missing == "DRF:pu_ut_drift_absent|missing", missing
+    assert same == f"DRF:{subject}|same", (kind, same)
+    assert modified == f"DRF:{subject}|changed", (kind, modified)
+    assert shorter == f"DRF:{subject}|changed", (kind, shorter)
+
+
+def test_drift_comparison_reports_a_missing_script(
+    api: Any, script_resource: Any
+) -> None:
+    answer = _drift_answer(
+        api, script_resource, "pu_ut_drift_absent", DRIFT_SUBJECTS["plain"].encode()
+    )
+    assert answer == "DRF:pu_ut_drift_absent|missing", answer
 
 
 # --- conntrack_watch.lua ----------------------------------------------------
