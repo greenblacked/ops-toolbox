@@ -557,10 +557,9 @@ suffix (`*.1` to `*.99`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
 `*.log-<digits>` (digits only, so `service.log-2-current` stays). An active
 `*.log`, `syslog` or `messages` never matches, and neither do numbered active
 logs such as `Xorg.0.log`. Login records (`wtmp`, `btmp`, `lastlog`, `faillog`,
-`utmp` and their rotations) are never touched,
-anything below a directory named `journal` or `private` is pruned from the
-walk, symlinks are not followed and `-xdev` keeps it on one filesystem. Nothing
-is truncated. `--days 0` drops the age filter but not the name filter.
+`utmp` and their rotations) are never touched, anything below a directory
+named `journal` or `private` is pruned from the walk, symlinks are not
+followed and `-xdev` keeps it on one filesystem. Nothing is truncated. `--days 0` drops the age filter but not the name filter.
 `--log-dir DIR` replaces `/var/log` (repeatable, `/` refused in every spelling)
 and needs `--include-logs`. Root-owned logs go through the same `sudo` retry as
 coredumps; under `--no-sudo` a log in a directory this run cannot write is
@@ -897,16 +896,17 @@ prints one line per finding:
 mtime), `GONE` is in the archive but not on disk, `NEW` is on disk under
 `--paths` but not in the archive, and `SKIP` could not be read, or is a subtree
 the new-file scan could not enter (so `NEW` may be incomplete). A `SKIP` makes
-the run exit `1` and never counts as clean. A directory whose only change is its mtime is left out:
-adding or deleting a file changes its parent's, which the `NEW` or `GONE` line
-already says. `--paths` narrows the comparison (default `/etc`; `/` is refused),
-and the newest archive is picked within `--prefix`, so an archive written under
-another prefix needs `--prefix` too. The restore command is printed, never run,
-which keeps this a copy and not a restore. `--diff` needs no `--yes`, never
-creates `--dest`, staging, locks or logs, and refuses `--list`, `--yes` and
-`--dry-run` alongside it (exit `3`). It exits `0` when nothing differs and `1`
-when something does, or when a file could not be compared, so it also works as a
-cron-able drift gate: `./config_backup.sh --diff || mail -s drift root`.
+the run exit `1` and never counts as clean. A directory whose only change is
+its mtime is left out: adding or deleting a file changes its parent's, which
+the `NEW` or `GONE` line already says. `--paths` narrows the comparison
+(default `/etc`; `/` is refused), and the newest archive is picked within
+`--prefix`, so an archive written under another prefix needs `--prefix` too.
+The restore command is printed, never run, which keeps this a copy and not a
+restore. `--diff` needs no `--yes`, never creates `--dest`, staging, locks or
+logs, and refuses `--list`, `--yes` and `--dry-run` alongside it (exit `3`). It
+exits `0` when nothing differs and `1` when something does, or when a file
+could not be compared, so it also works as a cron-able drift gate:
+`./config_backup.sh --diff || mail -s drift root`.
 
 ## `ssh_client_doctor.sh`
 
