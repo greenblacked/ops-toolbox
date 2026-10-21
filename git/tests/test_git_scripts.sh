@@ -1376,6 +1376,20 @@ out="$(cd "$sm_space" && "$SUBMODULE_DOCTOR" 2>&1)"
 assert_contains "$out" "--remove-section 'submodule.my lib'" \
   "submodule doctor quotes a stale entry's section name with a space"
 
+# Work-tree doctors report n/a (exit 4) in a bare repository, which has no
+# work tree and no toplevel, and the fleet shows n/a rather than ERR.
+bare_root="$(mktemp -d /tmp/git-doctor-bare.XXXXXX)"
+git clone -q --bare "$(new_repo)" "$bare_root/mirror.git"
+for doctor in "$SECRETS_DOCTOR" "$SUBMODULE_DOCTOR" "$IGNORE_DOCTOR"; do
+  out="$(cd "$bare_root/mirror.git" && "$doctor" 2>&1)"; rc=$?
+  assert_eq "$rc" "4" "$(basename "$doctor") in a bare repository -> exit 4"
+  assert_contains "$out" "bare repository" "$(basename "$doctor") says why it has nothing to check"
+done
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only secrets --only submodule --only ignore "$bare_root" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "fleet doctor over a bare clone exits 0"
+assert_contains "$out" "n/a" "fleet doctor marks work-tree doctors n/a for a bare clone"
+assert_not_contains "$out" "ERR " "fleet doctor shows no ERR cell for a bare clone"
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"

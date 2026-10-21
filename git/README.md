@@ -987,7 +987,9 @@ relative to the root. It then runs each `git_*_doctor.py` beside it in
 `--quiet` mode in each repository, `--jobs` repositories at a time (default 4,
 at most 16), each doctor bounded by `--timeout` seconds (default 60).
 `--only NAME` (repeatable) picks doctors by short name. A cell reads `ok`,
-`FAIL`, `n/a` (the doctor's exit `4`, nothing to check), `ERR` (the doctor
+`FAIL`, `n/a` (the doctor's exit `4`, nothing to check; the secrets,
+submodule and ignore doctors answer it in a bare repository, which has no
+work tree), `ERR` (the doctor
 itself did not run: exit `2`, `3` or a crash, so a usage bug is never read
 as a finding) or `TIME`. `--details` re-runs each `FAIL` or `ERR` cell
 without `--quiet` and prints its report under the row.

@@ -6,3 +6,6 @@
   bounds the work with `--depth`, `--timeout` and `--jobs`, and with
   `--details` prints the report of each failing doctor under its row.
   Bare and mirror repositories are found too.
+- In a bare or mirror repository the secrets, submodule and ignore
+  doctors exit `4` (nothing to check) instead of `2`, so the fleet
+  doctor shows `n/a` rather than `ERR` for them.

@@ -344,6 +344,11 @@ def could_not_answer(what, rc, err):
 
 def run_report(args):
     global GIT_CWD
+    rc, out, _ = run(["git", "rev-parse", "--is-bare-repository"])
+    if rc == 0 and out.strip() == "true":
+        info("n/a: this is a bare repository; there is no work tree for this "
+             "doctor to check")
+        return 4
     rc, out, _ = run(["git", "rev-parse", "--show-toplevel"])
     if rc != 0 or not out.strip():
         bad("not inside a Git repository")
