@@ -549,6 +549,102 @@ try {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'wsl_manage doctor'
+Test-Surface -Action @('doctor') -Parameter @('ProbeHost')
+# $Host is PowerShell's own automatic variable; a parameter of that name
+# would shadow it inside the script.
+Test-Case 'wsl_manage.ps1 does not declare -Host' ($wslParameters -notcontains 'Host')
+
+Import-ScriptFunction -Path $wslScript -Name @('ConvertFrom-DistroList', 'Test-DistroFact')
+
+function Get-HealthyFact {
+    $windowsPath = (1..3 | ForEach-Object { "/mnt/c/dir$_" }) -join ':'
+    @{
+        Name              = 'Ubuntu'
+        Version           = 2
+        User              = 'alice'
+        Pid1              = 'systemd'
+        DiskPercent       = 40
+        ClockDeltaSeconds = 1
+        DnsOk             = $true
+        ProbeHost         = 'github.com'
+        Path              = "/usr/local/bin:/usr/bin:/bin:$windowsPath"
+    }
+}
+function Get-DoctorFinding {
+    param([hashtable]$Change = @{})
+    $facts = Get-HealthyFact
+    foreach ($key in $Change.Keys) { $facts[$key] = $Change[$key] }
+    return @(Test-DistroFact -Facts $facts)
+}
+function Get-LevelCount {
+    param([object[]]$Finding, [string]$Level, [string]$Check)
+    @($Finding | Where-Object { $_.Level -eq $Level -and (-not $Check -or $_.Check -eq $Check) }).Count
+}
+
+$found = Get-DoctorFinding
+Test-Case 'a healthy distro has only OK findings' (
+    $found.Count -gt 0 -and @($found | Where-Object { $_.Level -ne 'ok' }).Count -eq 0
+) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ User = 'root' }
+Test-Case 'a root default user is exactly one warning, pointing at restore' (
+    (Get-LevelCount $found 'warn') -eq 1 -and @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match 'restore' }).Count -eq 1
+) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ Version = 1 }
+Test-Case 'WSL1 is a failure' ((Get-LevelCount $found 'fail' 'version') -eq 1) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ DiskPercent = 90 }
+Test-Case 'a root filesystem at 90% is a warning' ((Get-LevelCount $found 'warn' 'root filesystem') -eq 1) (Format-Finding $found)
+$found = Get-DoctorFinding @{ DiskPercent = 96 }
+Test-Case 'a root filesystem at 96% is a failure' ((Get-LevelCount $found 'fail' 'root filesystem') -eq 1) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ ClockDeltaSeconds = 7 }
+Test-Case 'a clock 7 s off is a warning' ((Get-LevelCount $found 'warn' 'clock') -eq 1) (Format-Finding $found)
+$found = Get-DoctorFinding @{ ClockDeltaSeconds = 400 }
+Test-Case 'a clock 400 s ahead is a failure' ((Get-LevelCount $found 'fail' 'clock') -eq 1) (Format-Finding $found)
+$found = Get-DoctorFinding @{ ClockDeltaSeconds = -400 }
+Test-Case 'a clock 400 s behind is a failure too' ((Get-LevelCount $found 'fail' 'clock') -eq 1) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ DnsOk = $false }
+Test-Case 'a probe host that does not resolve is a warning' ((Get-LevelCount $found 'warn' 'dns') -eq 1) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ Pid1 = 'init' }
+Test-Case 'no systemd is information, not a warning' (
+    (Get-LevelCount $found 'info' 'init') -eq 1 -and (Get-LevelCount $found 'warn') -eq 0
+) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ Path = ((1..12 | ForEach-Object { "/mnt/c/dir$_" }) -join ':') }
+Test-Case 'twelve /mnt/c PATH entries are information' ((Get-LevelCount $found 'info' 'PATH') -eq 1) (Format-Finding $found)
+
+$found = Get-DoctorFinding @{ DiskPercent = $null }
+Test-Case 'an unmeasured disk is reported as not measured, not as a pass' ((Get-LevelCount $found 'info' 'root filesystem') -eq 1) (Format-Finding $found)
+
+$transcript = "  NAME                   STATE           VERSION`r`n" +
+    "* Ubuntu-22.04           Running         2`r`n" +
+    "  docker-desktop         Stopped         2`r`n" +
+    "  Legacy                 Stopped         1`r`n"
+$rows = @(ConvertFrom-DistroList -Text $transcript)
+$shape = ($rows | ForEach-Object { '{0}/{1}/{2}/{3}' -f $_.Name, $_.State, $_.Version, $_.Default }) -join ' '
+Test-Case "ConvertFrom-DistroList reads names, states, versions and the default marker" (
+    $shape -eq 'Ubuntu-22.04/Running/2/True docker-desktop/Stopped/2/False Legacy/Stopped/1/False'
+) $shape
+Test-Case 'ConvertFrom-DistroList of nothing is nothing' (@(ConvertFrom-DistroList -Text '').Count -eq 0)
+
+if ($onWindows) {
+    Test-Skip 'the wsl.exe shim checks run only off Windows (see the header)'
+} else {
+    $shimDir = Initialize-WslShim -StatusExit 1
+    try {
+        $run = Invoke-WslManage -Arguments @('doctor') -PathPrefix $shimDir
+        Test-Case 'doctor exits 2 where wsl --status fails, like every other action' ($run.ExitCode -eq 2) "exit $($run.ExitCode)`n$($run.Output)"
+    } finally {
+        Remove-Item -Path $shimDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# --------------------------------------------------------------------------
 Write-Host ''
 if ($failures -gt 0) {
     Write-Host "$failures wsl_manage contract check(s) failed" -ForegroundColor Red

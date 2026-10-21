@@ -40,6 +40,13 @@
                 utility VM keep running.
       shutdown  Stop all WSL distros and the VM (frees the RAM WSL holds).
                 -DryRun names the distros it would stop.
+      doctor    Per-distro health: WSL1 where docker cannot run, a default
+                user of root, no systemd, a nearly full root filesystem,
+                clock drift after sleep, DNS that does not resolve, and a
+                PATH full of /mnt/c entries. Checks running distros only;
+                -Force starts a stopped one to measure it. Read-only: it
+                runs id, cat, df, date, getent and echo inside the distro
+                and prints the fix; -DryRun is accepted and ignored.
       wslconfig Audit %USERPROFILE%\.wslconfig: no memory cap, keys WSL
                 silently ignores (wrong section, typo, single backslashes in
                 a path), values that do not parse. Read-only and offline: it
@@ -63,6 +70,8 @@
     .\wsl_manage.ps1 sparse -Distro Ubuntu
     .\wsl_manage.ps1 terminate -Distro Ubuntu
     .\wsl_manage.ps1 shutdown
+    .\wsl_manage.ps1 doctor
+    .\wsl_manage.ps1 doctor -Distro Ubuntu -ProbeHost registry.example.com
     .\wsl_manage.ps1 wslconfig
     .\wsl_manage.ps1 wslconfig -ConfigFile D:\profiles\.wslconfig -Strict
     .\wsl_manage.ps1 wslconfig -Template > $env:USERPROFILE\.wslconfig.new
@@ -73,6 +82,7 @@
       1  the underlying wsl/diskpart command failed
          (backup -All: one or more exports failed; the rest still ran)
          (backups: a BAD or MISS tar under -Verify, or a STALE distro)
+         (doctor: one or more FAIL findings)
          (wslconfig -Strict: one or more WARN findings)
       2  WSL is not installed or not operational
       3  bad arguments (no -Distro, no such distro, missing or unusable -Tar,
@@ -97,7 +107,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'backups', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown', 'wslconfig')]
+    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'backups', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown', 'doctor', 'wslconfig')]
     [string]$Action = 'list',
     [string]$Distro,
     [string]$DestDir = "$env:USERPROFILE\wsl-backups",
@@ -107,7 +117,7 @@ param(
     [int]$KeepDays = 30,                           # prune-backups: keep anything newer
     [ValidateRange(0, 1000)]
     [int]$KeepLast = 2,                            # prune-backups: keep this many per distro
-    [switch]$Force,   # df: start stopped distros to measure them
+    [switch]$Force,   # df, doctor: start stopped distros to measure them
                       # prune-backups: delete without asking
     [switch]$DryRun,  # backup, restore, prune-backups, compact, sparse,
                       # terminate, shutdown: report, change nothing
@@ -117,6 +127,7 @@ param(
     [int]$MaxAgeDays = 0,                          # backups: newest older than this is STALE (0: off)
     [switch]$Off,     # sparse only: pass to set sparse=false instead of true
     [switch]$AllowUnverified, # restore only: import a tar with no .sha256 sidecar
+    [string]$ProbeHost = 'github.com',  # doctor: the name each distro must resolve
     [string]$ConfigFile,      # wslconfig: audit this file instead of %USERPROFILE%\.wslconfig
     [switch]$Template,        # wslconfig: print a commented starter file, write nothing
     [switch]$Strict           # wslconfig: exit 1 when any finding is a WARN
@@ -179,21 +190,49 @@ function Get-DistroInfo {
     }
 }
 
-# Running/Stopped per distro, from 'wsl -l -v'. The registry does not know it.
-# wsl.exe prints UTF-16; force PowerShell to read it correctly.
-function Get-DistroState {
-    $prev = [Console]::OutputEncoding
-    [Console]::OutputEncoding = [Text.Encoding]::Unicode
-    $states = @{}
-    try {
-        (wsl.exe --list --verbose) -split "`n" | Select-Object -Skip 1 | ForEach-Object {
-            $line = $_.Trim() -replace '^\*\s*', ''
-            if ($line -match '^(\S+)\s+(\S+)\s+(\d+)') {
-                $states[$Matches[1]] = $Matches[2]
+# 'wsl -l -v' as rows {Name, State, Version, Default}. Pure, so the contract
+# tests feed it a transcript. The header line, the '*' that marks the default
+# distro, a trailing CR and stray NULs from a UTF-16 misread are all dropped.
+function ConvertFrom-DistroList {
+    param([string]$Text)
+    $rows = @()
+    if (-not $Text) { return $rows }
+    foreach ($raw in ($Text -split "`n")) {
+        $line = ($raw -replace "`0", '').Trim()
+        $isDefault = $line.StartsWith('*')
+        $line = $line -replace '^\*\s*', ''
+        if ($line -match '^NAME\s+STATE\s+VERSION') { continue }
+        if ($line -match '^(?<name>\S+)\s+(?<state>\S+)\s+(?<version>\d+)') {
+            $rows += [PSCustomObject]@{
+                Name    = $Matches['name']
+                State   = $Matches['state']
+                Version = [int]$Matches['version']
+                Default = $isDefault
             }
         }
+    }
+    return $rows
+}
+
+# Running/Stopped and the WSL version per distro, from 'wsl -l -v'. The
+# registry does not know the state. wsl.exe prints UTF-16; force PowerShell
+# to read it correctly.
+function Get-DistroList {
+    $prev = [Console]::OutputEncoding
+    [Console]::OutputEncoding = [Text.Encoding]::Unicode
+    try {
+        $text = (wsl.exe --list --verbose) -join "`n"
     } finally {
         [Console]::OutputEncoding = $prev
+    }
+    ConvertFrom-DistroList -Text $text
+}
+
+# Name -> Running/Stopped.
+function Get-DistroState {
+    $states = @{}
+    foreach ($row in @(Get-DistroList)) {
+        $states[$row.Name] = $row.State
     }
     $states
 }
@@ -220,12 +259,184 @@ function Get-DistroUsage {
     param([string]$Name)
     $out = wsl.exe -d $Name --exec df -Pk / 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
-    foreach ($line in ($out -split "`n")) {
+    $df = ConvertFrom-DfOutput -Text ($out -join "`n")
+    if ($null -eq $df) { return $null }
+    return $df.Used
+}
+
+# The first filesystem line of 'df -Pk' as {Total, Used, Available} in bytes,
+# or $null. Pure.
+function ConvertFrom-DfOutput {
+    param([string]$Text)
+    foreach ($line in ($Text -split "`n")) {
         if ($line -match '^\S+\s+(\d+)\s+(\d+)\s+(\d+)\s+') {
-            return [long]$Matches[2] * 1KB
+            return [PSCustomObject]@{
+                Total     = [long]$Matches[1] * 1KB
+                Used      = [long]$Matches[2] * 1KB
+                Available = [long]$Matches[3] * 1KB
+            }
         }
     }
     return $null
+}
+
+# One command inside a distro, with a time limit: {ExitCode, Output,
+# TimedOut}. A wedged distro is common enough after sleep that a report which
+# waits on it forever is worse than one that says it gave up. The output is
+# read as UTF-8, the way the distro wrote it.
+function Invoke-DistroCommand {
+    param(
+        [string]$Name,
+        [string[]]$Command,
+        [int]$TimeoutSeconds = 15
+    )
+    $argv = @('-d', $Name, '--exec') + $Command
+    $quoted = foreach ($a in $argv) {
+        if ($a -match '[\s"]') { '"' + ($a -replace '"', '\"') + '"' } else { $a }
+    }
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = 'wsl.exe'
+    $psi.Arguments = $quoted -join ' '
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.StandardOutputEncoding = [Text.Encoding]::UTF8
+    try {
+        $process = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+        return [PSCustomObject]@{ ExitCode = $null; Output = $null; TimedOut = $false }
+    }
+    # Both streams are drained asynchronously, so a chatty stderr cannot fill
+    # its pipe and stall the process this is waiting on.
+    $stdout = $process.StandardOutput.ReadToEndAsync()
+    $null = $process.StandardError.ReadToEndAsync()
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $process.Kill() } catch { $null = $_ }
+        return [PSCustomObject]@{ ExitCode = $null; Output = $null; TimedOut = $true }
+    }
+    $process.WaitForExit()
+    return [PSCustomObject]@{ ExitCode = $process.ExitCode; Output = $stdout.Result; TimedOut = $false }
+}
+
+# What doctor measures in one distro, as a hashtable Test-DistroFact reads.
+# A command that fails or times out leaves its key out, and the check that
+# needs it says it was not measured. Nothing here writes anything.
+function Get-DistroFact {
+    param(
+        [string]$Name,
+        $Version,
+        [string]$ProbeHost
+    )
+    $facts = @{ Name = $Name; Version = $Version; ProbeHost = $ProbeHost }
+
+    $r = Invoke-DistroCommand -Name $Name -Command @('id', '-un')
+    if ($r.ExitCode -eq 0) { $facts.User = $r.Output.Trim() }
+
+    $r = Invoke-DistroCommand -Name $Name -Command @('cat', '/proc/1/comm')
+    if ($r.ExitCode -eq 0) { $facts.Pid1 = $r.Output.Trim() }
+
+    $r = Invoke-DistroCommand -Name $Name -Command @('df', '-Pk', '/')
+    if ($r.ExitCode -eq 0) {
+        $df = ConvertFrom-DfOutput -Text $r.Output
+        if ($null -ne $df -and ($df.Used + $df.Available) -gt 0) {
+            $facts.DiskPercent = [int][math]::Ceiling(100 * $df.Used / ($df.Used + $df.Available))
+        }
+    }
+
+    $r = Invoke-DistroCommand -Name $Name -Command @('getent', 'hosts', $ProbeHost)
+    if ($r.TimedOut -or $null -ne $r.ExitCode) { $facts.DnsOk = ($r.ExitCode -eq 0) }
+
+    $r = Invoke-DistroCommand -Name $Name -Command @('sh', '-c', 'echo $PATH')
+    if ($r.ExitCode -eq 0) { $facts.Path = $r.Output.Trim() }
+
+    # Last, once the distro is warm, and against the midpoint of the host's
+    # clock either side of the call, so start-up time is not read as drift.
+    $before = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $r = Invoke-DistroCommand -Name $Name -Command @('date', '+%s')
+    $after = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ($r.ExitCode -eq 0 -and $r.Output.Trim() -match '^\d+$') {
+        $facts.ClockDeltaSeconds = [long]$r.Output.Trim() - [long][math]::Round(($before + $after) / 2)
+    }
+    return $facts
+}
+
+# The verdicts for one distro: facts in, findings {Level (ok|info|warn|fail),
+# Check, Message} out. Pure, so every threshold is tested with a hashtable.
+# A fact that is missing was not measured and gets an info line, not a guess.
+function Test-DistroFact {
+    param([hashtable]$Facts)
+    $findings = @()
+    $name = $Facts['Name']
+
+    if ($null -ne $Facts['Version']) {
+        if ([int]$Facts['Version'] -eq 1) {
+            $findings += [PSCustomObject]@{ Level = 'fail'; Check = 'version'; Message = "WSL1: no real kernel, docker/kind/k3s will not run; wsl --set-version $name 2" }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'version'; Message = "WSL$($Facts['Version'])" }
+        }
+    }
+
+    if ($Facts['User']) {
+        if ($Facts['User'] -eq 'root') {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = 'default user'; Message = 'root (typical after wsl --import or restore; README, Restoring, has the [user] fix)' }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'default user'; Message = $Facts['User'] }
+        }
+    } else {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = 'default user'; Message = 'not measured' }
+    }
+
+    if ($Facts['Pid1']) {
+        if ($Facts['Pid1'] -eq 'systemd') {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'init'; Message = 'systemd' }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'info'; Check = 'init'; Message = "no systemd (PID 1 is $($Facts['Pid1'])): set [boot] systemd=true in /etc/wsl.conf for docker/k3s services" }
+        }
+    }
+
+    if ($null -ne $Facts['DiskPercent']) {
+        $pct = [int]$Facts['DiskPercent']
+        $remedy = "free space inside the distro, then 'compact' gives it back to Windows ('df' shows how much)"
+        if ($pct -ge 95) {
+            $findings += [PSCustomObject]@{ Level = 'fail'; Check = 'root filesystem'; Message = "$pct% used: $remedy" }
+        } elseif ($pct -ge 85) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = 'root filesystem'; Message = "$pct% used: $remedy" }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'root filesystem'; Message = "$pct% used" }
+        }
+    } else {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = 'root filesystem'; Message = 'not measured' }
+    }
+
+    if ($null -ne $Facts['ClockDeltaSeconds']) {
+        $delta = [long]$Facts['ClockDeltaSeconds']
+        $size = [math]::Abs($delta)
+        $text = '{0} s {1} the host' -f $size, $(if ($delta -ge 0) { 'ahead of' } else { 'behind' })
+        if ($size -gt 300) {
+            $findings += [PSCustomObject]@{ Level = 'fail'; Check = 'clock'; Message = "$text (TLS and cloud API signatures fail): fix: wsl --shutdown, or sudo hwclock -s" }
+        } elseif ($size -gt 5) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = 'clock'; Message = "${text}: fix: wsl --shutdown, or sudo hwclock -s" }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'clock'; Message = "$text" }
+        }
+    }
+
+    if ($null -ne $Facts['DnsOk']) {
+        if ($Facts['DnsOk']) {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'dns'; Message = "resolves $($Facts['ProbeHost'])" }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = 'dns'; Message = "cannot resolve $($Facts['ProbeHost']). DNS broken? check the VPN, dnsTunneling in .wslconfig, /etc/resolv.conf" }
+        }
+    }
+
+    if ($Facts['Path']) {
+        $windowsDirs = @(($Facts['Path'] -split ':') | Where-Object { $_ -like '/mnt/c/*' }).Count
+        if ($windowsDirs -gt 10) {
+            $findings += [PSCustomObject]@{ Level = 'info'; Check = 'PATH'; Message = "$windowsDirs entries under /mnt/c: [interop] appendWindowsPath=false in /etc/wsl.conf would speed up completion" }
+        }
+    }
+    return $findings
 }
 
 # The .tar files under $Directory that this script's backup action wrote:
@@ -1134,6 +1345,61 @@ switch ($Action) {
         }
         wsl.exe --shutdown
         Write-Host 'WSL stopped (all distros + utility VM). RAM released.' -ForegroundColor Green
+    }
+
+    'doctor' {
+        # Read-only: the commands it runs inside a distro only read, and the
+        # remedies are printed, never run. -DryRun changes nothing here.
+        if ($ProbeHost -notmatch '^[A-Za-z0-9][A-Za-z0-9.-]*$') {
+            Write-Error "-ProbeHost must be a host name, got: $ProbeHost" -ErrorAction Continue
+            exit 3
+        }
+        $list = @(Get-DistroList)
+        if ($Distro) {
+            $null = Resolve-Distro $Distro
+            $targets = @($list | Where-Object { $_.Name -eq $Distro })
+            if (-not $targets) { $targets = @([PSCustomObject]@{ Name = $Distro; State = 'Unknown'; Version = $null }) }
+        } else {
+            $targets = $list
+        }
+        if (-not $targets) {
+            Write-Host 'No registered distros.'
+            break
+        }
+
+        $warnCount = 0
+        $failCount = 0
+        foreach ($t in $targets) {
+            if ($t.Name -match '^docker-desktop(-data)?$') {
+                Write-Host ('SKIP  {0,-44} {1}' -f $t.Name, 'managed by Docker Desktop') -ForegroundColor DarkGray
+                continue
+            }
+            # Measuring runs commands in the distro, and that starts a stopped
+            # one: opt-in, the same rule df follows.
+            if ($t.State -ne 'Running') {
+                if (-not $Force) {
+                    Write-Host ('SKIP  {0,-44} {1}' -f $t.Name, 'stopped (add -Force to start it and measure)') -ForegroundColor DarkGray
+                    continue
+                }
+                Write-Host "Starting '$($t.Name)' to measure it (-Force)."
+            }
+
+            $facts = Get-DistroFact -Name $t.Name -Version $t.Version -ProbeHost $ProbeHost
+            $version = if ($null -ne $t.Version) { "WSL$($t.Version)" } else { 'WSL?' }
+            Write-Host ''
+            Write-Host ('== {0} ({1}, {2}) ==' -f $t.Name, $t.State, $version)
+            foreach ($f in @(Test-DistroFact -Facts $facts)) {
+                switch ($f.Level) {
+                    'ok'   { Write-Host ('OK    {0,-16} {1}' -f $f.Check, $f.Message) -ForegroundColor Green }
+                    'info' { Write-Host ('INFO  {0,-16} {1}' -f $f.Check, $f.Message) -ForegroundColor DarkGray }
+                    'warn' { Write-Host ('WARN  {0,-16} {1}' -f $f.Check, $f.Message) -ForegroundColor Yellow; $warnCount++ }
+                    'fail' { Write-Host ('FAIL  {0,-16} {1}' -f $f.Check, $f.Message) -ForegroundColor Red; $failCount++ }
+                }
+            }
+        }
+        Write-Host ''
+        Write-Host ('{0} warning(s), {1} failure(s)' -f $warnCount, $failCount)
+        if ($failCount -gt 0) { exit 1 }
     }
 
     'wslconfig' {

@@ -17,6 +17,7 @@ throwing away the giant `.tar` exports once they have aged out.
 - [Restoring](#restoring)
 - [Pruning backups](#pruning-backups)
 - [Auditing backups](#auditing-backups)
+- [Distro doctor](#distro-doctor)
 - [.wslconfig audit](#wslconfig-audit)
 - [Git Bash shortcuts](#git-bash-shortcuts)
 
@@ -91,6 +92,10 @@ compact would give back.
 # Stop all distros + the utility VM (frees the RAM WSL is holding):
 .\wsl_manage.ps1 shutdown
 
+# Health of each running distro: WSL1, root default user, disk, clock, DNS:
+.\wsl_manage.ps1 doctor
+.\wsl_manage.ps1 doctor -Distro Ubuntu -ProbeHost registry.example.com
+
 # Audit .wslconfig (read-only, needs no WSL), or print a starter file:
 .\wsl_manage.ps1 wslconfig
 .\wsl_manage.ps1 wslconfig -ConfigFile D:\profiles\.wslconfig -Strict
@@ -112,6 +117,7 @@ compact would give back.
 | `sparse` | no | no | `wsl --manage <distro> --set-sparse true` — needs a recent WSL (`wsl --update` if it fails). `-DryRun` prints the setting it would make. |
 | `terminate` | no | one distro | `wsl --terminate <distro>`. Kills that distro's processes; other distros and the utility VM keep running. |
 | `shutdown` | no | yes | Plain `wsl --shutdown`. `-DryRun` names the distros it would stop. |
+| `doctor` | no | no | Per-distro health report, read-only. Running distros only unless `-Force`. See [Distro doctor](#distro-doctor). |
 | `wslconfig` | no | no | Audits `%USERPROFILE%\.wslconfig` (or `-ConfigFile`): no memory cap, keys WSL ignores, values that do not parse. Read-only; needs no WSL. `-Template` prints a starter file. See [.wslconfig audit](#wslconfig-audit). |
 
 `-DryRun` previews every action that changes something: `backup`, `restore`,
@@ -122,7 +128,7 @@ previews calls `wsl --export`, `--import`, `--shutdown`, `--terminate`,
 Exit codes: `0` success, `1` the underlying `wsl`/`diskpart` command failed
 (for `backup -All`: one or more exports failed, the rest still ran; for
 `backups`: a `BAD` or `MISS` tar under `-Verify`, or a `STALE` distro; for
-`wslconfig -Strict`: at least one `WARN`), `2` WSL is not installed or not
+`doctor`: at least one `FAIL`; for `wslconfig -Strict`: at least one `WARN`), `2` WSL is not installed or not
 operational, `3` bad arguments (including a `-ConfigFile` that does not exist),
 `4` needs an elevated shell (`compact`).
 
@@ -270,6 +276,55 @@ backups.
 
 Exit codes: `0` nothing wrong, `1` a `BAD` or `MISS` tar under `-Verify`, or a
 `STALE` distro. A `-Distro` with no backups is simply an empty list.
+
+## Distro doctor
+
+A WSL environment that has gone "weird" is usually one of a handful of known
+things, each diagnosed by hand until now: the clock inside the distro drifted
+while Windows slept, so TLS and cloud API signatures fail; a restored distro
+boots as root; the root filesystem is at 98 percent; DNS died behind a VPN; a
+distro was left on WSL1, where docker and kind cannot run. `doctor` checks
+each running distro for all of them and prints the fix.
+
+```powershell
+.\wsl_manage.ps1 doctor
+.\wsl_manage.ps1 doctor -Distro Ubuntu -ProbeHost registry.example.com
+.\wsl_manage.ps1 doctor -Force          # also start stopped distros to check them
+```
+
+```text
+== Ubuntu (Running, WSL2) ==
+OK    version          WSL2
+OK    default user     me
+OK    init             systemd
+WARN  root filesystem  91% used: free space inside the distro, then 'compact' gives it back to Windows ('df' shows how much)
+WARN  clock            42 s behind the host: fix: wsl --shutdown, or sudo hwclock -s
+OK    dns              resolves github.com
+
+2 warning(s), 0 failure(s)
+```
+
+| Check | Finding |
+| --- | --- |
+| WSL version | `1` is a `FAIL`: no real kernel, so docker, kind and k3s will not run (`wsl --set-version <name> 2`) |
+| Default user (`id -un`) | `root` is a `WARN`, typical after `wsl --import` or `restore`; see [Restoring](#restoring) |
+| PID 1 (`/proc/1/comm`) | Not `systemd` is `INFO`: set `[boot] systemd=true` in `/etc/wsl.conf` for docker or k3s services |
+| Root filesystem (`df -Pk /`) | `85`% or more is a `WARN`, `95`% or more a `FAIL` |
+| Clock (`date +%s` against the host) | More than 5 seconds apart is a `WARN`, more than 300 a `FAIL` (`wsl --shutdown`, or `sudo hwclock -s`) |
+| DNS (`getent hosts`) | `-ProbeHost` (default `github.com`) not resolving is a `WARN`: check the VPN, `dnsTunneling` in `.wslconfig`, `/etc/resolv.conf` |
+| `PATH` | More than 10 entries under `/mnt/c` is `INFO`: `[interop] appendWindowsPath=false` speeds up completion |
+
+Only running distros are checked: running a command in a stopped distro
+starts it, the side effect `df` avoids too, so a stopped one is listed as
+`SKIP` until you pass `-Force`. Docker Desktop's distros are skipped. Each
+command has a 15-second limit, so a wedged distro cannot hang the report. It
+only reads (`id`, `cat`, `df`, `date`, `getent`, `echo`), writes nothing
+inside or outside the distro, and prints remedies rather than running them;
+`-DryRun` is accepted and ignored.
+
+Exit codes: `0` the report ran with no `FAIL`, `1` one or more `FAIL`, `2` WSL
+is not installed or not operational, `3` `-Distro` names no registered distro
+or `-ProbeHost` is not a host name.
 
 ## .wslconfig audit
 

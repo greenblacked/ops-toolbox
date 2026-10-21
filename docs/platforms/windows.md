@@ -13,8 +13,8 @@ read-only doctor for the environment around it.
 - Windows 10 or 11; PowerShell 5.1 or 7.
 - winget (WinGet 1.6+ for `winget_configure.ps1` `apply` and `test`).
 - Chocolatey is optional and is not installed by these scripts.
-- WSL2 for `wsl_manage.ps1`, except `verify-backup` and `wslconfig`, which
-  only read files.
+- WSL2 for `wsl_manage.ps1`, except `verify-backup`, `backups` and
+  `wslconfig`, which only read files.
 - Elevation for `compact` and some cleanup targets.
 - Git Bash for `install_dotfiles.sh` and `gitbash_doctor.sh`.
 
@@ -31,7 +31,7 @@ read-only doctor for the environment around it.
 | `setup/choco_bootstrap.ps1` | `export`, `list`, `check`, `install`, `diff` of Chocolatey packages. | `-DryRun` on `install` |
 | `setup/winget_configure.ps1` | `validate`, `show`, `test`, `apply` of `configuration.winget`. | `-DryRun` on `apply` |
 | `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker. | `-DryRun`; `-Yes` to delete |
-| `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `backups` (inventory, `-Verify`, `-MaxAgeDays`), `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`, `wslconfig` (audit `.wslconfig`). | `-DryRun` on `backup` (`-All` for every distro), `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`; `backups` and `wslconfig` are read-only |
+| `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `backups` (inventory, `-Verify`, `-MaxAgeDays`), `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`, `doctor` (per-distro health), `wslconfig` (audit `.wslconfig`). | `-DryRun` on `backup` (`-All` for every distro), `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`; `backups`, `doctor` and `wslconfig` are read-only |
 | `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
 | `git-bash/gitbash_doctor.sh` | Git Bash health: CRLF or broken dotfiles, stale `ssh-agent`, Windows OpenSSH on `PATH`, OneDrive `HOME`, long paths, Git settings, Store `python` stub. | <span class="stage stage-report">read-only</span> |
 
@@ -48,6 +48,7 @@ All paths are under `windows/`.
     .\windows\setup\status.ps1 -Only disk,git
     .\windows\setup\workstation_doctor.ps1 -MinFreePercent 20
     .\windows\setup\winget_bootstrap.ps1 diff
+    .\windows\wsl\wsl_manage.ps1 doctor
     .\windows\wsl\wsl_manage.ps1 wslconfig
     .\windows\wsl\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
     ```
