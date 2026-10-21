@@ -12,6 +12,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`status.ps1`](status.ps1) | One-screen verdict (`-Only` / `-ListSections`). |
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
+| [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
 | [`configuration.winget`](configuration.winget) | The curated list itself: what a workstation should have, in six commentable groups |
 | [`winget-packages.example.json`](winget-packages.example.json) | A worked example of the export format, for reading before you have one |
@@ -38,6 +39,7 @@ one. Neither replaces the other.
 - [winget_bootstrap.ps1](#winget_bootstrapps1)
 - [stay_fresh.ps1](#stay_freshps1)
 - [workstation_doctor.ps1](#workstation_doctorps1)
+- [net_doctor.ps1](#net_doctorps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
@@ -258,6 +260,60 @@ both answer more fully from an elevated prompt — anything that cannot answer
 says so and the report carries on. Warnings are printed and counted, but the
 exit code stays `0`; only the wrong platform (`2`) changes it.
 
+## net_doctor.ps1
+
+The Windows counterpart of [`linux/net_doctor.sh`](../../linux/net_doctor.sh),
+and the first thing to run when "I cannot reach X". It describes; it changes
+nothing, and it sends nothing over the network unless you ask it to:
+
+```powershell
+.\net_doctor.ps1
+.\net_doctor.ps1 -ListSections
+.\net_doctor.ps1 -Only proxy,dns
+.\net_doctor.ps1 -Probe github.com
+.\net_doctor.ps1 -Probe registry.internal -Port 5000 -SkipListen
+.\net_doctor.ps1 -Quiet
+```
+
+| Section | What it reports |
+| --- | --- |
+| `interfaces` | Adapters that are up, link speed, global addresses, and the kind of each: physical, Hyper-V, WSL, Docker, VPN, Bluetooth. A physical adapter holding only a `169.254` address is a warning: DHCP never answered. |
+| `routes` | The default gateway. No gateway is a warning, and so are two or more - Wi-Fi plus a VPN is the usual pair - listed with their `InterfaceMetric`, because the lowest metric wins. |
+| `dns` | DNS servers and suffix per adapter. A physical adapter with no server is a warning. No lookups are made here. |
+| `proxy` | The WinINET proxy (`ProxyEnable`, `ProxyServer`, the PAC `AutoConfigURL`, the bypass list), the `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` variables, and git's `http.proxy`. Warns when the environment sets a proxy WinINET does not, when the two name different proxies, and when a proxy is set with an empty `NO_PROXY`. |
+| `hosts` | The entries in the hosts file, up to twenty of them. An entry there wins over DNS, which is how a stale one sends a name to an old address. |
+| `listen` | Listening TCP ports with the owning process, sorted by port, marking the ones bound to every interface. Needs `Get-NetTCPConnection`; without it the section is a `[skip]`. |
+| `probe` | Only with `-Probe`: resolves the host, asks every configured DNS server for it separately - the way to find the one dead resolver out of two - and makes one TCP connection to `-Port`. |
+
+| Option | Meaning |
+| --- | --- |
+| `-Only LIST` | Comma-separated section ids. An unknown id exits `3`; a list that selects nothing exits `4`. |
+| `-ListSections` | Print the section ids and exit `0`. Works on any OS. |
+| `-Probe HOST` | Resolve and connect to `HOST`: letters, digits, `.`, `_` and `-`, or an IPv6 address in brackets. |
+| `-Port N` | The port `-Probe` connects to, `1`-`65535`. Default `443`. |
+| `-SkipListen` | Leave out the listening-port list. |
+| `-Quiet` | Print only warnings, each with its hint. |
+| `-HostsFile PATH` | Read another hosts file instead of the system one. |
+
+Exit codes: `0` the report ran (warnings do not change it, as with
+`workstation_doctor.ps1`), `2` not Windows, `3` bad arguments (an unknown
+section, a host with characters a host name cannot have, a port out of
+range), `4` `-Only` selected nothing.
+
+Worth knowing:
+
+- **Proxy passwords are masked.** Every proxy URL is printed as
+  `scheme://user:***@host`, including when the password itself holds an `@`
+  or a `:`. No other environment variable is printed at all.
+- **`-Probe` is the only network traffic**, and it is a DNS lookup per
+  configured server plus one TCP connect that sends no data. Without it the
+  report reads local state only.
+- **The adapter sections work everywhere.** They read
+  `System.Net.NetworkInformation`, which answers on Windows PowerShell 5.1,
+  PowerShell 7 and Linux alike; the metric, listening-port and per-server DNS
+  probes need the Windows networking cmdlets and degrade to `[info]` or
+  `[skip]` without them.
+
 ## Testing
 
 `winget.exe`, BitLocker and WSL do not exist on Linux, so the CI suite cannot
@@ -276,6 +332,12 @@ available, and prints a `warn` and skips the check when they are not. That secon
 matters: an unquoted description containing a comma ends its value inside an
 inline map and turns the rest into a stray key, producing a file that is
 perfectly valid YAML and the wrong document. yamllint passes it without a word.
+
+The read-only reports keep their grading logic - proxy agreement, hosts-file
+parsing, credential masking - in small pure functions, which the contract
+suite lifts out through the PowerShell parser and runs against fixtures, on
+Linux as well as Windows. It also checks that a script with neither `-DryRun`
+nor `-Yes` calls no state-changing cmdlet at all.
 
 Behaviour has to be checked on a real Windows machine. `workstation_doctor.ps1`,
 `winget_bootstrap.ps1 diff` / `check`, and `stay_fresh.ps1 -DryRun` are all

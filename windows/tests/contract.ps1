@@ -31,6 +31,12 @@
     works by invoking these scripts WITHOUT -Yes, which on Windows would mean a
     regressed gate upgrading or emptying the machine running the suite.
 
+    The sections after those reach the logic of the read-only reports
+    without running them: Get-ScriptFunctionSource lifts one pure function out
+    of a script through the parser, and the section calls it with fixtures. A
+    script's body never runs that way, so the WindowsIdentity problem above
+    does not arise.
+
     Linting is PSScriptAnalyzer's job and runs separately in CI. What is checked
     here is the contract PSScriptAnalyzer has no opinion about: that the
     comment-based help exists, that the parameter surface is what the docs
@@ -191,6 +197,7 @@ $expectedParameters = @{
     'stay_fresh.ps1'        = @('Only')
     'status.ps1'            = @('ListSections', 'Only')
     'workstation_doctor.ps1'= @('MinFreePercent')
+    'net_doctor.ps1'        = @('Probe', 'Port', 'Only', 'ListSections', 'SkipListen', 'Quiet', 'HostsFile')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -862,6 +869,300 @@ if (-not $onlyScript) {
         }
     }
     Remove-Item -Path $onlyBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+# Shared by the sections below. The header of this file says the functions in
+# these scripts cannot be reached, because dot-sourcing a script runs its body.
+# This is the way round that which leaves the scripts alone: parse the file,
+# find one function definition in the AST, and hand back its source text. A
+# section turns that into a definition with [scriptblock]::Create and
+# dot-sources it at script scope - inside a function the definition would be
+# local to that function and gone by the next line - then calls it with
+# fixtures. Only a pure function can be lifted out like this: one that uses no
+# script-scope variable and calls no helper that is not lifted with it. The
+# newer read-only scripts keep their grading logic in such functions for
+# exactly this reason.
+function Get-ScriptFunctionSource {
+    param(
+        [IO.FileInfo]$Script,
+        [string]$Name
+    )
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Script.FullName, [ref]$null, [ref]$null)
+    $definitions = $ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+        }, $true)
+    foreach ($definition in $definitions) {
+        if ($definition.Name -eq $Name) { return $definition.Extent.Text }
+    }
+    return $null
+}
+
+# The script object for one file name, or $null.
+function Find-ContractScript {
+    param([string]$Name)
+    foreach ($candidate in $scripts) {
+        if ($candidate.Name -eq $Name) { return $candidate }
+    }
+    return $null
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'report-only scripts call no state-changing cmdlet'
+# A script with neither -DryRun nor -Yes has promised to be read-only: the
+# preview contract above accepts it because its -Action has a read-only
+# default, and nothing else would notice the day one of them grew a
+# Set-ItemProperty. So the promise is read off the AST: no command whose verb
+# changes state. Fix hints such as 'icacls ...' or 'Set-Service ...' are
+# strings the script prints, not CommandAst nodes, so advice stays legal.
+#
+# The subjects are found by role, from the parameter blocks, not listed.
+$stateChangingVerb = '^(Set|New|Remove|Clear|Add|Enable|Disable|Start|Stop|Restart|Install|Uninstall|Register|Unregister|Out|Export|Copy|Move|Rename)-'
+$harmlessCommands = @('New-Object', 'New-TimeSpan', 'Start-Sleep', 'Add-Type', 'Set-StrictMode')
+$readOnlySubjects = 0
+foreach ($s in $scripts) {
+    $keys = $paramCache[$s.Name.ToLowerInvariant()]
+    if ($keys -contains 'DryRun' -or $keys -contains 'Yes') { continue }
+    $readOnlySubjects++
+    $rel = Get-RelativePath $s.FullName
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($s.FullName, [ref]$null, [ref]$null)
+    $commands = $ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]
+        }, $true)
+    $offenders = 0
+    foreach ($command in $commands) {
+        $commandName = $command.GetCommandName()
+        if (-not $commandName) { continue }
+        if ($commandName -notmatch $stateChangingVerb) { continue }
+        if ($harmlessCommands -contains $commandName) { continue }
+        Test-Fail ('{0} line {1}: calls {2}, but declares neither -DryRun nor -Yes' -f $rel, $command.Extent.StartLineNumber, $commandName)
+        $offenders++
+    }
+    if ($offenders -eq 0) {
+        Test-Ok "$rel calls no state-changing cmdlet"
+    }
+}
+if ($readOnlySubjects -eq 0) {
+    Test-Fail 'no script without -DryRun and -Yes was found - this check has stopped checking'
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'net_doctor redacts proxy credentials'
+# Every proxy URL the report prints goes through Hide-UrlCredential, so this is
+# the function standing between a corporate proxy password and a pasted log.
+$netDoctor = Find-ContractScript 'net_doctor.ps1'
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $netDoctor -Name 'Hide-UrlCredential'
+    if (-not $src) {
+        Test-Fail 'net_doctor.ps1 : Hide-UrlCredential not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $redactCases = @(
+            @{ In = 'http://u:p@h:8080'; Expect = 'http://u:***@h:8080' }
+            @{ In = 'https://h:3128'; Expect = 'https://h:3128' }
+            @{ In = 'h:3128'; Expect = 'h:3128' }
+            @{ In = 'user@h'; Expect = 'user@h' }
+            @{ In = 'http://alice:p@ss:w0rd@proxy.corp:8080'; Expect = 'http://alice:***@proxy.corp:8080' }
+            @{ In = 'bob:hunter2@proxy:3128'; Expect = 'bob:***@proxy:3128' }
+            @{ In = ''; Expect = '' }
+        )
+        foreach ($case in $redactCases) {
+            $got = Hide-UrlCredential -Url $case.In
+            if ($got -ceq $case.Expect) {
+                Test-Ok ("Hide-UrlCredential '{0}' -> '{1}'" -f $case.In, $got)
+            } else {
+                Test-Fail ("Hide-UrlCredential '{0}' gave '{1}', expected '{2}'" -f $case.In, $got, $case.Expect)
+            }
+        }
+        if ((Hide-UrlCredential -Url 'http://alice:p@ss:w0rd@proxy.corp:8080') -match 'w0rd') {
+            Test-Fail 'Hide-UrlCredential printed part of a password containing @ and :'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'net_doctor reads a hosts file'
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $netDoctor -Name 'Get-HostsEntry'
+    if (-not $src) {
+        Test-Fail 'net_doctor.ps1 : Get-HostsEntry not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $hostsFixture = @"
+# Copyright (c) Microsoft Corp.
+#
+127.0.0.1       localhost
+::1             localhost  # IPv6 loopback
+
+10.0.0.5`tbuild.internal`tbuild  ci-runner
+# 10.0.0.6 commented.out
+192.168.1.10 nas.local # inline comment
+"@ -split "`r?`n"
+        $entries = @(Get-HostsEntry -Lines $hostsFixture)
+        if ($entries.Count -eq 4) {
+            Test-Ok 'Get-HostsEntry found the 4 mappings and skipped comments and blank lines'
+        } else {
+            Test-Fail "Get-HostsEntry found $($entries.Count) mapping(s), expected 4"
+        }
+        $build = @($entries | Where-Object { $_.Address -eq '10.0.0.5' })
+        if ($build.Count -eq 1 -and ($build[0].Names -join ',') -eq 'build.internal,build,ci-runner') {
+            Test-Ok 'one address with three names, split on tabs and runs of spaces'
+        } else {
+            Test-Fail "the 10.0.0.5 line did not yield build.internal,build,ci-runner: $(@($build | ForEach-Object { $_.Names -join ',' }) -join ';')"
+        }
+        $loopback6 = @($entries | Where-Object { $_.Address -eq '::1' })
+        if ($loopback6.Count -eq 1 -and ($loopback6[0].Names -join ',') -eq 'localhost') {
+            Test-Ok 'an IPv6 address with an inline comment keeps only its name'
+        } else {
+            Test-Fail 'the ::1 line was not read as one mapping to localhost'
+        }
+        if (@($entries | Where-Object { $_.Names -contains 'commented.out' }).Count -eq 0) {
+            Test-Ok 'a commented-out mapping is not an entry'
+        } else {
+            Test-Fail 'Get-HostsEntry returned a commented-out mapping'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'net_doctor grades proxy settings'
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $netDoctor -Name 'Get-ProxyFinding'
+    if (-not $src) {
+        Test-Fail 'net_doctor.ps1 : Get-ProxyFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $proxyCases = @(
+            @{ Label = 'an environment proxy with WinINET off'
+               Observed = @{ WinInetEnabled = $false; HttpsProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @('env-without-wininet:warn') }
+            @{ Label = 'the same proxy in both places'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpsProxy = 'http://PROXY:8080/'; NoProxy = 'localhost' }
+               Expect = @() }
+            @{ Label = 'two different proxies'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'http=a:1;https=other:3128'; HttpsProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @('proxy-mismatch:warn') }
+            @{ Label = 'a proxy with an empty NO_PROXY'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpProxy = 'http://proxy:8080' }
+               Expect = @('no-proxy-empty:warn') }
+            @{ Label = 'a PAC script only'
+               Observed = @{ WinInetEnabled = $false; AutoConfigUrl = 'http://wpad/proxy.pac' }
+               Expect = @('pac:info') }
+            @{ Label = 'nothing configured'
+               Observed = @{ WinInetEnabled = $false }
+               Expect = @() }
+        )
+        foreach ($case in $proxyCases) {
+            $got = @(Get-ProxyFinding -Observed $case.Observed | ForEach-Object { '{0}:{1}' -f $_.Id, $_.Level } | Sort-Object)
+            $want = @($case.Expect | Sort-Object)
+            if (($got -join ' ') -eq ($want -join ' ')) {
+                Test-Ok ("{0} -> [{1}]" -f $case.Label, ($got -join ' '))
+            } else {
+                Test-Fail ("{0}: got [{1}], expected [{2}]" -f $case.Label, ($got -join ' '), ($want -join ' '))
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'net_doctor classifies adapters'
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $netDoctor -Name 'Get-AdapterKind'
+    if (-not $src) {
+        Test-Fail 'net_doctor.ps1 : Get-AdapterKind not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $adapterCases = @(
+            @{ Name = 'Ethernet 3'; Description = 'Hyper-V Virtual Ethernet Adapter'; Expect = 'hyper-v' }
+            @{ Name = 'vEthernet (WSL)'; Description = 'Hyper-V Virtual Ethernet Adapter'; Expect = 'wsl' }
+            @{ Name = 'vEthernet (DockerNAT)'; Description = 'Hyper-V Virtual Ethernet Adapter #2'; Expect = 'docker' }
+            @{ Name = 'Local Area Connection'; Description = 'TAP-Windows Adapter V9'; Expect = 'vpn' }
+            @{ Name = 'Ethernet'; Description = 'Intel(R) Ethernet Connection I219-V'; Expect = 'physical' }
+        )
+        foreach ($case in $adapterCases) {
+            $got = Get-AdapterKind -Name $case.Name -Description $case.Description
+            if ($got -eq $case.Expect) {
+                Test-Ok ("'{0}' / '{1}' -> {2}" -f $case.Name, $case.Description, $got)
+            } else {
+                Test-Fail ("'{0}' / '{1}' gave {2}, expected {3}" -f $case.Name, $case.Description, $got, $case.Expect)
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'net_doctor usage errors answer before the platform guard'
+# Run against the real file, not a guard-stripped copy: every one of these has
+# to answer before the guard, which is what makes them true on Linux as well.
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $listed = Invoke-InScratch -Path $netDoctor.FullName -Arguments @('-ListSections')
+    $missingIds = @(@('interfaces', 'routes', 'dns', 'proxy', 'hosts', 'listen', 'probe') |
+        Where-Object { $listed.Output -notmatch "(?m)^$_\s*$" })
+    if ($listed.ExitCode -eq 0 -and $missingIds.Count -eq 0) {
+        Test-Ok 'net_doctor.ps1 -ListSections prints the seven section ids and exits 0'
+    } else {
+        Test-Fail "net_doctor.ps1 -ListSections exited $($listed.ExitCode), missing [$($missingIds -join ' ')]"
+    }
+    foreach ($case in @(
+            @{ Arguments = @('-Only', 'bogus'); Code = 3; Mention = 'bogus'; Label = '-Only bogus is a usage error naming the id' }
+            @{ Arguments = @('-Only', ','); Code = 4; Mention = ''; Label = "-Only ',' selects nothing" }
+            @{ Arguments = @('-Probe', 'bad host!'); Code = 3; Mention = 'Probe'; Label = '-Probe with a space is a usage error' }
+            @{ Arguments = @('-Port', '0'); Code = 3; Mention = 'Port'; Label = '-Port 0 is a usage error' }
+        )) {
+        $run = Invoke-InScratch -Path $netDoctor.FullName -Arguments $case.Arguments
+        if ($run.ExitCode -eq $case.Code -and (-not $case.Mention -or $run.Output -match $case.Mention)) {
+            Test-Ok "net_doctor.ps1 $($case.Label) (exit $($run.ExitCode))"
+        } else {
+            Test-Fail "net_doctor.ps1 $($case.Label): exited $($run.ExitCode), expected $($case.Code)"
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'net_doctor runs end to end'
+# The adapter sections read System.Net.NetworkInformation, which answers on
+# Linux as well as on Windows, and -HostsFile points the hosts section at a
+# fixture, so this is a real run on both runners. It does not assert the
+# absence of warnings: a CI runner may have no DNS server or no gateway.
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $netBox = Join-Path ([IO.Path]::GetTempPath()) ('winnet_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $netBox -Force | Out-Null
+    $netCopy = Copy-UnguardedScript -Script $netDoctor -Directory $netBox
+    if (-not $netCopy) {
+        Test-Fail 'net_doctor.ps1 : platform guard not found verbatim, so the end-to-end check could not run; update the guard text in contract.ps1'
+    } else {
+        $hostsPath = Join-Path $netBox 'hosts'
+        Set-Content -Path $hostsPath -Value "127.0.0.1 localhost`n10.9.8.7`tcontract-fixture.example # planted by contract.ps1`n"
+        $run = Invoke-InScratch -Path $netCopy -Arguments @('-SkipListen', '-HostsFile', $hostsPath, '-Only', 'interfaces,routes,dns,hosts')
+        $missing = @(@('== interfaces ==', '== hosts ==', 'contract-fixture.example') | Where-Object { $run.Output -notlike "*$_*" })
+        $extra = @(@('== proxy ==', '== listen ==') | Where-Object { $run.Output -like "*$_*" })
+        if ($run.ExitCode -eq 0 -and $missing.Count -eq 0 -and $extra.Count -eq 0) {
+            Test-Ok 'net_doctor.ps1 -Only interfaces,routes,dns,hosts ran, read the fixture hosts file and nothing else'
+        } else {
+            Test-Fail ("net_doctor.ps1 end to end: exited {0}, missing [{1}], unexpected [{2}]" -f $run.ExitCode, ($missing -join ' '), ($extra -join ' '))
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $netBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------
