@@ -278,6 +278,58 @@ class AttributeGitProcessesTestCase(unittest.TestCase):
     def test_a_match_wins_over_an_unreadable_process(self):
         self.assertIs(self.attribute([(None, None, None), ("/srv/repo", None, None)]), True)
 
+    def test_git_dir_option_from_the_command_line_counts(self):
+        self.assertIs(
+            self.attribute([("/tmp", None, None,
+                             ["--git-dir=/srv/repo/.git", "fetch"])]), True)
+
+    def test_git_dir_option_with_a_separate_value_counts(self):
+        self.assertIs(
+            self.attribute([("/tmp", None, None,
+                             ["--git-dir", "/srv/repo/.git", "fetch"])]), True)
+
+    def test_relative_git_dir_option_resolves_against_the_cwd(self):
+        self.assertIs(
+            self.attribute([("/srv/repo", None, None,
+                             ["--git-dir", ".git", "gc"])]), True)
+
+    def test_work_tree_option_counts(self):
+        self.assertIs(
+            self.attribute([("/tmp", None, None,
+                             ["--work-tree=/srv/repo", "status"])]), True)
+
+    def test_dash_c_moves_the_directory(self):
+        self.assertIs(
+            self.attribute([("/tmp", None, None, ["-C", "/srv/repo", "gc"])]), True)
+        self.assertIs(
+            self.attribute([("/srv/repo", None, None, ["-C", "/tmp", "gc"])]), False)
+
+    def test_options_stop_at_the_subcommand(self):
+        self.assertIs(
+            self.attribute([("/tmp", None, None,
+                             ["log", "--git-dir=/srv/repo/.git"])]), False)
+
+    def test_value_taking_options_are_skipped(self):
+        self.assertIs(
+            self.attribute([("/tmp", None, None,
+                             ["-c", "a.b=c", "--git-dir", "/srv/repo/.git",
+                              "fetch"])]), True)
+
+    def test_a_process_with_no_repository_evidence_is_unattributed(self):
+        self.assertEqual(
+            self.attribute([(None, None, None, ["fetch"])]), doctor.UNATTRIBUTED)
+        self.assertEqual(
+            self.attribute([(None, None, None, ["--git-dir=.git", "fetch"])]),
+            doctor.UNATTRIBUTED)
+
+    def test_an_absolute_option_places_a_process_without_a_cwd(self):
+        self.assertIs(
+            self.attribute([(None, None, None, ["--git-dir=/home/x/.git", "gc"])]),
+            False)
+        self.assertIs(
+            self.attribute([(None, None, None, ["--git-dir=/srv/repo/.git", "gc"])]),
+            True)
+
     def test_git_running_uses_the_stubbed_process_lookup(self):
         original = doctor._proc_git_processes
         try:

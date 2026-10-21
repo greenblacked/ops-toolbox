@@ -349,33 +349,96 @@ def _inside(path, root):
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
+def parse_git_args(args):
+    """(git_dir, work_tree, chdirs) from the global options of a git command
+    line (args without the leading `git`), in both `--opt=X` and `--opt X`
+    forms. Parsing stops at the subcommand; a missing value gives None."""
+    git_dir = work_tree = None
+    chdirs = []
+    skip_value = ("-c", "--namespace", "--super-prefix", "--config-env",
+                  "--exec-path", "--list-cmds")
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if not arg.startswith("-") or arg == "-":
+            break
+        value = None
+        name = arg
+        if arg.startswith("--") and "=" in arg:
+            name, value = arg.split("=", 1)
+        elif arg.startswith("-C") and len(arg) > 2:
+            name, value = "-C", arg[2:]
+        elif name in ("-C", "--git-dir", "--work-tree") or name in skip_value:
+            if i + 1 < len(args):
+                value = args[i + 1]
+            i += 1
+        i += 1
+        if name == "-C" and value is not None:
+            chdirs.append(value)
+        elif name == "--git-dir" and value is not None:
+            git_dir = value
+        elif name == "--work-tree" and value is not None:
+            work_tree = value
+    return git_dir, work_tree, chdirs
+
+
 def attribute_git_processes(procs, repo_paths):
     """Whether any git process belongs to this repository.
 
-    procs is [(cwd, git_dir, work_tree)] for each process called `git`; cwd is
-    None when it could not be read, git_dir and work_tree are the GIT_DIR and
-    GIT_WORK_TREE of its environment or None. repo_paths are the worktree,
-    git directory and common directory of this repository (and its linked
+    procs is [(cwd, git_dir, work_tree[, args])] for each process called
+    `git`; cwd is None when it could not be read, git_dir and work_tree are
+    the GIT_DIR and GIT_WORK_TREE of its environment or None, args its command
+    line after `git` (or None). The options of the command line count too:
+    `git --git-dir=/repo/.git fetch` run from elsewhere sets GIT_DIR only
+    internally, so /proc/PID/environ never shows it, and -C changes the
+    directory the others are relative to. repo_paths are the worktree, git
+    directory and common directory of this repository (and its linked
     worktrees). A process belongs to it when its working directory, GIT_DIR or
     GIT_WORK_TREE lies inside one of them.
 
     True: one does. False: none do and every process was placed elsewhere (or
-    there are none). UNATTRIBUTED: none do, but one could not be placed.
+    there are none). UNATTRIBUTED: none do, but one has no repository
+    evidence at all (no readable working directory and no absolute path).
     """
     roots = [os.path.realpath(p) for p in repo_paths if p]
     unplaced = False
-    for cwd, git_dir, work_tree in procs:
-        if cwd is None:
-            unplaced = True
-            continue
-        cwd = os.path.realpath(cwd)
-        candidates = [cwd]
+    for proc in procs:
+        cwd, git_dir, work_tree = proc[:3]
+        args = proc[3] if len(proc) > 3 else None
+        arg_dir, arg_tree, chdirs = parse_git_args(args or [])
+        candidates = []
+        base = cwd
         for extra in (git_dir, work_tree):
             if extra:
-                candidates.append(os.path.realpath(os.path.join(cwd, extra)))
+                path = _resolve(base, extra)
+                if path:
+                    candidates.append(path)
+        for chdir in chdirs:
+            base = _resolve(base, chdir)
+            if base is None:
+                break
+        if base is not None:
+            candidates.append(base)
+        for extra in (arg_dir, arg_tree):
+            if extra:
+                path = _resolve(base, extra)
+                if path:
+                    candidates.append(path)
         if any(_inside(c, r) for c in candidates for r in roots):
             return True
+        if not candidates:
+            unplaced = True
     return UNATTRIBUTED if unplaced else False
+
+
+def _resolve(base, path):
+    """path made absolute against base and canonical, or None when it is
+    relative and base is unknown."""
+    if os.path.isabs(path):
+        return os.path.realpath(path)
+    if base is None:
+        return None
+    return os.path.realpath(os.path.join(base, path))
 
 
 # --------------------------------------------------------------------------
@@ -405,7 +468,7 @@ def config_value(key, *flags):
 
 
 def _proc_git_processes():
-    """[(cwd, GIT_DIR, GIT_WORK_TREE)] per `git` process from /proc, or None
+    """[(cwd, GIT_DIR, GIT_WORK_TREE, args)] per `git` process from /proc, or None
     when /proc cannot place processes (macOS, a restricted container)."""
     try:
         entries = os.listdir("/proc")
@@ -441,7 +504,14 @@ def _proc_git_processes():
                         work_tree = os.fsdecode(item[14:])
         except OSError:
             pass
-        procs.append((cwd, git_dir, work_tree))
+        args = None
+        try:
+            with open(os.path.join(base, "cmdline"), "rb") as handle:
+                parts = [os.fsdecode(x) for x in handle.read().split(b"\0")]
+            args = parts[1:-1] if parts and parts[-1] == "" else parts[1:]
+        except OSError:
+            pass
+        procs.append((cwd, git_dir, work_tree, args))
     return procs if seen_any else None
 
 
