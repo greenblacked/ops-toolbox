@@ -1220,6 +1220,19 @@ class DriftTestCase(unittest.TestCase):
         self.assertIn("[:len $src]", operands)
         self.assertIn("transform=sha256", probe)
 
+    def test_drift_probe_compiles_its_hash_at_run_time(self):
+        # RouterOS checks :convert's arguments when it parses, so a spelling
+        # the release rejects must be inside a string handed to :parse, where
+        # on-error can catch it, never written inline in the probe itself.
+        probe = router_doctor.DRIFT_PROBE
+        self.assertIn(":parse", probe)
+        self.assertIn("on-error=", probe)
+        outside = re.sub(r'"[^"]*"', '""', probe)
+        self.assertNotIn(":convert", outside)
+        self.assertTrue(router_doctor.DRIFT_HASH_SPELLINGS)
+        for spelling in router_doctor.DRIFT_HASH_SPELLINGS:
+            self.assertIn(spelling, probe)
+
     def test_default_probe_does_not_contain_the_drift_probe(self):
         self.assertNotIn("HSH:", router_doctor.PROBE)
         self.assertNotIn(":convert", router_doctor.PROBE)

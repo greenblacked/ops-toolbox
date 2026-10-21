@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import os
 import pathlib
 import re
@@ -1724,31 +1725,55 @@ def test_rogue_dns_invalid_connection_get_probe(
 #
 # The drift probe asks the router for a SHA-256 of each script's source so the
 # source itself never leaves the router. The :convert spelling is the one part
-# of that which nothing offline can check, so it is run here, on the pinned
-# release, against the digest of "abc" from FIPS 180-2. If this fails, change
-# DRIFT_PROBE in router_doctor.py (and only that string) to a spelling this
-# release accepts; until then --drift degrades to comparing lengths.
+# of that which nothing offline can check, so each candidate in router_doctor's
+# DRIFT_HASH_SPELLINGS is compiled here with :parse, exactly as the probe does,
+# on the pinned release, against the digest of "abc" from FIPS 180-2. At least
+# one must give it. A spelling written inline is a parse error on 7.24 ("syntax
+# error" at transform=sha256), which is why the probe compiles them at run time.
 DRIFT_DIGEST_OF_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
 
-def test_drift_hash_expression_is_valid_on_the_pinned_routeros(
+def _drift_hash_spellings() -> tuple[str, ...]:
+    path = MIKROTIK_DIR / "features" / "router_doctor.py"
+    spec = importlib.util.spec_from_file_location("router_doctor_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return tuple(module.DRIFT_HASH_SPELLINGS)
+
+
+def test_drift_hash_spelling_is_valid_on_the_pinned_routeros(
     api: Any, script_resource: Any
 ) -> None:
     name = "pu_ut_drift"
+    results: dict[str, str] = {}
     try:
-        _unset_global(api, "PuDrift")
-        _add_script(
-            script_resource,
-            name,
-            ':global PuDrift [:convert from=raw to=hex transform=sha256 "abc"];\n',
-        )
-        _run_via_scheduler(
-            api, name, lambda: _read_global(api, "PuDrift") != "", timeout=30.0
-        )
-        assert _read_global(api, "PuDrift").lower() == DRIFT_DIGEST_OF_ABC
+        for spelling in _drift_hash_spellings():
+            _unset_global(api, "PuDrift")
+            _unset_global(api, "PuDriftDone")
+            source = (
+                ':global PuDrift "";\n'
+                ':global PuDriftDone;\n'
+                ':global PuHashIn "abc";\n'
+                ':do {:set PuDrift [[:parse (":global PuHashIn; :return " . "'
+                + spelling
+                + '")]]} on-error={:set PuDrift "rejected"};\n'
+                ':set PuDriftDone "yes";\n'
+            )
+            _add_script(script_resource, name, source)
+            _run_via_scheduler(
+                api, name, lambda: _read_global(api, "PuDriftDone") == "yes",
+                timeout=30.0,
+            )
+            results[spelling] = _read_global(api, "PuDrift").lower()
     finally:
         _remove_by_name(script_resource, name)
-        _unset_global(api, "PuDrift")
+        for g in ("PuDrift", "PuDriftDone", "PuHashIn"):
+            _unset_global(api, g)
+    assert DRIFT_DIGEST_OF_ABC in results.values(), (
+        "no DRIFT_HASH_SPELLINGS entry gives the SHA-256 of 'abc' on this release: "
+        f"{results!r}"
+    )
 
 
 # --- conntrack_watch.lua ----------------------------------------------------
