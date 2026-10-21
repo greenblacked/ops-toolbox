@@ -12,6 +12,7 @@ config, and secrets/local tweaks stay out of the committed files.
 
 - [What's here](#whats-here)
 - [Install](#install)
+- [`gitbash_doctor.sh`](#gitbash_doctorsh)
 - [Applying changes after editing](#applying-changes-after-editing)
 - [What's in `.aliases`](#whats-in-aliases)
 - [Key differences from a minimal SSH-agent-only `.bashrc`](#key-differences-from-a-minimal-ssh-agent-only-bashrc)
@@ -28,6 +29,7 @@ config, and secrets/local tweaks stay out of the committed files.
 | `.bash_profile` | Sources `.bashrc`. Required because Git Bash opens new windows as **login** shells, which read `.bash_profile`/`.profile`, not `.bashrc`, by default. |
 | `.aliases` | ~190 aliases and functions: Git, GitLab CLI (`glab`), Docker, Kubernetes, Terraform, Windows-style commands, navigation, safer file ops. Kept separate so it can be edited or swapped out without touching shell/environment setup in `.bashrc`. |
 | `install_dotfiles.sh` | Copies the three files above into `$HOME`, backing up what was there and refusing to install anything with CRLF line endings. |
+| `gitbash_doctor.sh` | Read-only check of the Git Bash environment around those files: CRLF or broken dotfiles, a stale `ssh-agent`, the wrong `ssh` on `PATH`, a OneDrive or spaced `HOME`, long paths, missing Git settings, the Store `python` stub. |
 
 ## Install
 
@@ -93,6 +95,48 @@ those two checks in front of it.
 Exit codes: `0` success/current, `1` CRLF line endings in a source file, `2`
 wrong environment (no source files, or no target directory), `3` usage, `4`
 `--status` found at least one missing or different target.
+
+## `gitbash_doctor.sh`
+
+Git Bash goes wrong in a few quiet, repeatable ways, and each one costs an hour
+the first time: a dotfile saved with CRLF, an `agent.env` left pointing at an
+agent that died with the last reboot, Windows' own OpenSSH ahead of Git's so
+`ssh` cannot see the agent's keys, a `HOME` under OneDrive. `--status` above
+only says whether the dotfiles match. This looks at the machine around them,
+prints the command that fixes each finding, and changes nothing.
+
+```bash
+./windows/git-bash/gitbash_doctor.sh
+./windows/git-bash/gitbash_doctor.sh --source ./windows/git-bash --fail-on warn
+```
+
+| Option | Effect |
+| --- | --- |
+| `--home DIR` | Inspect `DIR` instead of `$HOME` |
+| `--source DIR` | Also compare the dotfiles with a checkout of this folder; a difference is a warning. Off by default: the script does not guess where the checkout is |
+| `--ssh-key FILE` | The private key to check (default `~/.ssh/id_ed25519`, the one `.bashrc` loads) |
+| `--fail-on warn\|fail` | Exit `1` on failures only (default) or on warnings too |
+| `--quiet` | Print only warnings and failures |
+| `-h`, `--help` | Show the help |
+
+| Section | Checks |
+| --- | --- |
+| dotfiles | `.bashrc`, `.bash_profile`, `.aliases` present (fail), free of CR (fail, with the `sed` that fixes it) and parsing with `bash -n` (fail); `~/.bashrc.local` parses (fail), since `.bashrc` sources it on every start; with `--source`, drift from the checkout (warn) |
+| home | The Windows form of `HOME` from `cygpath -w`: a space or a non-ASCII character (warn), a OneDrive folder (warn: slow Git and SSH, and `~/.ssh` may be replicated) |
+| ssh | `~/.ssh/agent.env` naming a process that is not running (warn; the next `.bashrc` start replaces it); `ssh-add -l` read the way `.bashrc` reads it, `2` meaning no agent (warn); the key and its `.pub` present (warn); a key that `ssh-keygen -y` opens with an empty passphrase (warn); `ssh` resolving to `System32\OpenSSH` (warn: Windows' client cannot see this agent) |
+| git | From `~/.gitconfig`: `core.longpaths` not `true` (warn), no `credential.helper` (warn), `safe.directory = *` (warn: it disables the ownership check), `user.name` or `user.email` unset (warn), `core.autocrlf = true` (info). The system Git config is consulted only for `core.longpaths` and `credential.helper`, which Git for Windows' installer can put there. Then `LongPathsEnabled` in the registry through `reg.exe query` (warn when it is not `1`) |
+| path | Duplicate `PATH` entries (warn; `.bashrc`'s `dedup_path` should leave none), entries that are not a directory (info), `python` or `python3` resolving to a `WindowsApps` alias stub (warn) |
+| tools | Whether `docker`, `kubectl`, `terraform` and `glab` are installed (info). `.aliases` defines each block only when its tool is there, so this explains a missing alias |
+
+A probe whose tool is missing (`cygpath`, `reg.exe`, `ssh-keygen` off Windows)
+is reported as `skip`, so the script also runs on Linux. It reads files and
+runs `bash -n`, `cmp`, `kill -0`, `ssh-add -l`, `ssh-keygen -y`,
+`git config --get`, `reg.exe query`, `cygpath` and `command -v`; it writes
+nothing, starts or kills no agent, and never prints key material. There is no
+`--dry-run` because there is nothing to preview.
+
+Exit codes: `0` no finding at or above `--fail-on`, `1` one or more, `2` wrong
+environment (`--home` or `--source` is not a directory), `3` usage.
 
 ## Applying changes after editing
 

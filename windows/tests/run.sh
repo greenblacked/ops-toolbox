@@ -18,6 +18,7 @@ echo "=== Running Windows Git Bash contract checks ==="
 # is Git Bash itself. A bare `bash` resolves through PATH and need not be it.
 "${BASH:-bash}" -n \
   "$REPO_ROOT/windows/git-bash/install_dotfiles.sh" \
+  "$REPO_ROOT/windows/git-bash/gitbash_doctor.sh" \
   "$REPO_ROOT/windows/git-bash/.aliases" \
   "$REPO_ROOT/windows/git-bash/.bashrc" \
   "$REPO_ROOT/windows/git-bash/.bash_profile"
@@ -70,6 +71,11 @@ if [[ "$namespace_out" != $'team-a\nconfig set-context --current --namespace=tea
   exit 1
 fi
 echo "[ ok ] Git Bash status and namespace helpers"
+
+# The fixture-driven checks: scratch homes, shims for the Windows tools. Same
+# interpreter as above, for the same reason.
+echo "=== Running Git Bash script checks ==="
+"${BASH:-bash}" "$HERE/test_git_bash_scripts.sh"
 
 if ! command -v pwsh >/dev/null 2>&1; then
   # Degrades the same way test-env/python/run.sh does for a missing ruff: say

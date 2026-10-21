@@ -50,6 +50,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; deletes only with `-Yes`. | `-DryRun` |
 | `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, restore, prune, compact, `.wslconfig` audit and more. | `-DryRun` (restore, prune-backups, terminate); `wslconfig` is read-only |
 | `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
+| `windows/git-bash/gitbash_doctor.sh` | Windows | Git Bash health: dotfiles, ssh-agent, OneDrive `HOME`, long paths, Git settings. | <span class="stage stage-report">read-only</span> |
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
 | `git/git_status_summary.sh` | Git | Compact branch and dirty-count summary. | <span class="stage stage-report">read-only</span> |
 | `git/git_repo_root.sh` | Git | Print the worktree root or git dir. | <span class="stage stage-report">read-only</span> |
