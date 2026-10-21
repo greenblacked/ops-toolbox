@@ -98,7 +98,10 @@ function Format-Size {
 # The space a file takes on disk. FileInfo.Length is the logical size, which
 # for a sparse or NTFS-compressed file (a WSL VHDX is the usual one) counts
 # ranges that were never allocated. GetCompressedFileSizeW gives the
-# allocated size. It is asked only for those two kinds of file, through a
+# allocated size. It is asked only for those two kinds of file, and for any
+# other reparse-point file (a OneDrive or other Cloud Files placeholder:
+# Length is the size in the cloud, the allocation is what this disk holds),
+# through a
 # P/Invoke that is compiled on first use and only on Windows; any failure
 # (not Windows, no compiler, a path the call refuses) returns Length, so the
 # worst case is the old, over-counting answer. $File needs Length, Attributes
@@ -107,7 +110,7 @@ $script:AllocatedSizeReady = $null
 function Get-FileDiskSize {
     param([object]$File)
     $length = [long]$File.Length
-    $kinds = [System.IO.FileAttributes]::SparseFile -bor [System.IO.FileAttributes]::Compressed
+    $kinds = [System.IO.FileAttributes]::SparseFile -bor [System.IO.FileAttributes]::Compressed -bor [System.IO.FileAttributes]::ReparsePoint
     if (([int]$File.Attributes -band [int]$kinds) -eq 0) { return $length }
     try {
         if ($null -eq $script:AllocatedSizeReady) {
@@ -137,18 +140,37 @@ public static extern uint GetCompressedFileSizeW(string lpFileName, out uint lpF
     }
 }
 
+# True for a reparse point that is a link to somewhere else: a symbolic link
+# or junction, which Get-Item reports through LinkType or Target. Any other
+# reparse point (a OneDrive / Cloud Files placeholder, a dedup stub) is data
+# held on this volume. When the item cannot be examined it counts as a link,
+# which is the old, safe answer: skipped.
+function Test-NameSurrogateLink {
+    param([object]$Item)
+    try {
+        $got = Get-Item -LiteralPath ([string]$Item.FullName) -Force -ErrorAction Stop
+    } catch {
+        Write-Verbose ("{0}: {1}" -f $Item.FullName, $_.Exception.Message)
+        return $true
+    }
+    if ($null -eq $got) { return $true }
+    if ($got.LinkType) { return $true }
+    if (@($got.Target) | Where-Object { $_ }) { return $true }
+    return $false
+}
+
 # An explicit stack and a try/catch per directory, rather than
 # Get-ChildItem -Recurse or EnumerateFiles(AllDirectories): those stop at the
 # first folder that refuses access, and .NET Framework has no option to carry
 # on. A refusal here costs that one folder and is counted, so the caller can
 # say the total is a lower bound.
 #
-# Anything with the ReparsePoint attribute is skipped, file or folder. For a
-# folder that is a junction or symbolic link - counting it would count its
-# target twice, and a link to an ancestor would never finish. For a file it is
-# mostly OneDrive placeholders, whose Length is the size in the cloud, not on
-# this disk. Each file counts at the space it occupies (Get-FileDiskSize), not
-# its logical length.
+# A folder with the ReparsePoint attribute is skipped: a junction or symbolic
+# link would count its target twice, and a link to an ancestor would never
+# finish. A file with it is skipped only when it is such a link
+# (Test-NameSurrogateLink); a OneDrive or other Cloud Files placeholder is
+# data on this volume and counts. Each file counts at the space it occupies
+# (Get-FileDiskSize), not its logical length.
 function Get-DirectorySize {
     param([string]$Path)
     $bytes = 0L
@@ -159,7 +181,9 @@ function Get-DirectorySize {
         $directory = $stack.Pop()
         try {
             foreach ($file in $directory.GetFiles()) {
-                if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    if (Test-NameSurrogateLink -Item $file) { continue }
+                }
                 $bytes += Get-FileDiskSize -File $file
             }
         } catch {

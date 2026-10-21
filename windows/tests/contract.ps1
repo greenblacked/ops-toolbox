@@ -1467,6 +1467,12 @@ if (-not $diskUsage) {
             $diskSizeSrc = 'function Get-FileDiskSize { param([object]$File) return [long]$File.Length }'
         }
         . ([scriptblock]::Create($diskSizeSrc))
+        $linkSrc = Get-ScriptFunctionSource -Script $diskUsage -Name 'Test-NameSurrogateLink'
+        if (-not $linkSrc) {
+            Test-Fail 'disk_usage.ps1 : Test-NameSurrogateLink not found - this check has stopped checking'
+            $linkSrc = 'function Test-NameSurrogateLink { param([object]$Item) return $true }'
+        }
+        . ([scriptblock]::Create($linkSrc))
         $sizeBox = Join-Path ([IO.Path]::GetTempPath()) ('winsize_' + [Guid]::NewGuid().ToString('N'))
         $deep = Join-Path (Join-Path $sizeBox 'sub') 'deep'
         $emptyDir = Join-Path $sizeBox 'empty'
@@ -1478,6 +1484,7 @@ if (-not $diskUsage) {
         try {
             New-Item -ItemType SymbolicLink -Path (Join-Path $sizeBox 'link-to-sub') -Target (Join-Path $sizeBox 'sub') -ErrorAction Stop | Out-Null
             $linked = $true
+            New-Item -ItemType SymbolicLink -Path (Join-Path $sizeBox 'link-to-a') -Target (Join-Path $sizeBox 'a.bin') -ErrorAction Stop | Out-Null
         } catch {
             # Normal on Windows without Developer Mode or elevation.
             Test-Skip "could not create a symbolic link here ($($_.Exception.Message)); the link half of this check did not run"
@@ -1529,6 +1536,40 @@ if (-not $diskUsage) {
         } else {
             Test-Fail 'Get-FileDiskSize did not return Length for a plain file or for a sparse/compressed file it could not size'
         }
+        # A reparse-point file is skipped only when it is a link. A Cloud
+        # Files placeholder (OneDrive) has the attribute but no LinkType and
+        # no Target, and counts at its allocated size. Get-Item is shadowed
+        # by a stub that answers from the item's name, since a placeholder
+        # cannot be made here.
+        function Get-Item {
+            param([string]$LiteralPath, [switch]$Force)
+            $leaf = Split-Path -Leaf $LiteralPath
+            if ($leaf -eq 'symlink.bin') { return [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = @('C:\elsewhere\x.bin') } }
+            if ($leaf -eq 'junction-like.bin') { return [pscustomobject]@{ LinkType = $null; Target = @('C:\elsewhere') } }
+            if ($leaf -eq 'unreadable.bin') { throw 'access denied' }
+            return [pscustomobject]@{ LinkType = $null; Target = $null }
+        }
+        $reparse = [IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Archive
+        $mk = { param($n) [pscustomobject]@{ Name = $n; FullName = (Join-Path $sizeBox $n); Length = 4096L; Attributes = $reparse } }
+        $isLink = @{}
+        foreach ($n in 'symlink.bin', 'junction-like.bin', 'unreadable.bin', 'placeholder.bin') {
+            $isLink[$n] = [bool](Test-NameSurrogateLink -Item (& $mk $n))
+        }
+        if ($isLink['symlink.bin'] -and $isLink['junction-like.bin'] -and $isLink['unreadable.bin'] -and -not $isLink['placeholder.bin']) {
+            Test-Ok 'Test-NameSurrogateLink skips links (LinkType or Target, or unreadable) and keeps a Cloud Files placeholder'
+        } else {
+            Test-Fail ("Test-NameSurrogateLink: symlink={0} target-only={1} unreadable={2} placeholder={3}, expected True True True False" -f $isLink['symlink.bin'], $isLink['junction-like.bin'], $isLink['unreadable.bin'], $isLink['placeholder.bin'])
+        }
+        # Get-FileDiskSize asks for the allocated size of a reparse-point
+        # file too; with no way to ask here it falls back to Length.
+        . ([scriptblock]::Create($diskSizeSrc))
+        $cloudFile = [pscustomobject]@{ Name = 'placeholder.bin'; Length = 4096L; Attributes = $reparse; FullName = (Join-Path $sizeBox 'does-not-exist-4') }
+        if ((Get-FileDiskSize -File $cloudFile) -ge 0 -and (Get-FileDiskSize -File $cloudFile) -le 4096) {
+            Test-Ok 'Get-FileDiskSize sizes a reparse-point file without failing'
+        } else {
+            Test-Fail 'Get-FileDiskSize returned an impossible size for a reparse-point file'
+        }
+        Remove-Item Function:\Get-Item -ErrorAction SilentlyContinue
         Remove-Item -Path $sizeBox -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
