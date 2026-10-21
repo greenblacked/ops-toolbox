@@ -2128,7 +2128,9 @@ fi
 exec "$chain_real" "\$@"
 STUB
     chmod +x "$chain_dir/bin/openssl"
-    { cat "$chain_dir/leaf.pem" "$chain_dir/int.pem"; printf 'Verify return code: 20 (unable to get local issuer certificate)\n'; } > "$chain_dir/handshake"
+    # Leaf only: the probe (openssl verify) runs only when the last certificate
+    # sent is not a CA, so the verify arguments can be asserted.
+    { cat "$chain_dir/leaf.pem"; printf 'Verify return code: 21 (unable to verify the first certificate)\n'; } > "$chain_dir/handshake"
 
     printf 'OpenSSL 3.0.13 30 Jan 2024\n' > "$chain_dir/version"
     printf 'usage: -CAfile -no-CApath -no-CAstore -no-CAfile\n' > "$chain_dir/help"
@@ -2136,6 +2138,8 @@ STUB
     out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
     assert_contains "tls_expiry --cafile drops system dirs for s_client" \
       "$(grep '^s_client' "$chain_dir/argv.log")" "-CAfile $chain_dir/root.pem -no-CApath -no-CAstore"
+    assert_contains "tls_expiry --cafile drops system dirs for verify too" \
+      "$(grep '^verify -CAfile' "$chain_dir/argv.log")" "-CAfile $chain_dir/root.pem -no-CApath -no-CAstore"
     assert_not_contains "tls_expiry --cafile says nothing of system trust when it can drop it" "$out" "system trust sources may still apply"
 
     printf 'OpenSSL 3.0.13 30 Jan 2024\n' > "$chain_dir/version"
@@ -2151,6 +2155,10 @@ STUB
     assert_not_contains "tls_expiry --cafile needs no -no-CAstore on a build without stores" "$out" "system trust sources may still apply"
     assert_not_contains "tls_expiry --cafile does not pass an option the build lacks" \
       "$(grep '^s_client' "$chain_dir/argv.log")" "-no-CAstore"
+    assert_contains "tls_expiry --cafile still drops the directory for verify without stores" \
+      "$(grep '^verify -CAfile' "$chain_dir/argv.log")" "-no-CApath"
+    assert_not_contains "tls_expiry --cafile does not pass verify an option the build lacks" \
+      "$(grep '^verify -CAfile' "$chain_dir/argv.log")" "-no-CAstore"
 
     printf 'OpenSSL 1.0.2k-fips  26 Jan 2017\n' > "$chain_dir/version"
     printf 'usage: -CAfile\n' > "$chain_dir/help"

@@ -690,9 +690,10 @@ supplies that root and replaces system trust: both the handshake
 (`openssl s_client`) and the missing-intermediate probe (`openssl verify`)
 are given `-no-CApath` and `-no-CAstore` when the local openssl lists them
 (`-no-CAstore` is OpenSSL 3.0+). When this openssl cannot drop its default
-trust sources, the output says system trust sources may still apply. The checks also cover a self-signed issuer on a
-`--file` target, the key size against `--min-key-bits` (2048), the EC curve,
-and MD5 or SHA-1 signatures.
+trust sources, the output says system trust sources may still apply.
+The checks also cover a self-signed issuer on a `--file` target, the
+key size against `--min-key-bits` (2048), the EC curve, and MD5 or SHA-1
+signatures.
 The chain comes from the same single handshake the expiry check makes.
 `--hosts-file FILE` reads one `HOST[:PORT]` per line, with `#` comments; an
 unreadable file is exit `3` before anything else runs.
