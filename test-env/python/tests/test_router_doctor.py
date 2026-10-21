@@ -1255,7 +1255,7 @@ class EscapeRouterosStringTestCase(unittest.TestCase):
         self.assertEqual(router_doctor.escape_routeros_string('a"b'), 'a\\"b')
         self.assertEqual(router_doctor.escape_routeros_string("a\\b"), "a\\\\b")
         self.assertEqual(router_doctor.escape_routeros_string("$x ?"), "\\$x ?")
-        self.assertEqual(router_doctor.escape_routeros_string("a\r\nb\tc"), "a\\r\\nb\\tc")
+        self.assertEqual(router_doctor.escape_routeros_string("a\r\nb\tc"), "a\\r\\nb\\09c")
 
     def test_other_control_and_non_ascii_bytes_become_hex(self):
         self.assertEqual(router_doctor.escape_routeros_string(b"\x00\x1b\x7f"), "\\00\\1B\\7F")

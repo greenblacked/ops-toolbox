@@ -530,7 +530,6 @@ _ROUTEROS_ESCAPES = {
     0x24: "\\$",   # would start a variable
     0x0A: "\\n",
     0x0D: "\\r",
-    0x09: "\\t",
 }
 
 
@@ -539,8 +538,9 @@ def escape_routeros_string(value):
 
     value is bytes, or str (taken as UTF-8). Backslash, double quote and
     dollar get a backslash (a question mark is left as it is, as in the
-    package's own scripts); CR, LF and tab become \\r, \\n, \\t;
-    any other control character, DEL and every non-ASCII byte becomes \\XX
+    package's own scripts); CR and LF become \\r, \\n;
+    every other control character (a tab included: the CHR did not read
+    \\t back as the tab it stored), DEL and every non-ASCII byte becomes \\XX
     (two uppercase hex digits), so the result is printable ASCII on one line.
     The caller adds the surrounding quotes.
     """

@@ -1784,6 +1784,15 @@ def _drift_answer(api: Any, script_resource: Any, name: str, expected: bytes) ->
             _unset_global(api, g)
 
 
+def _stored_source(script_resource: Any, name: str) -> bytes | None:
+    """The source RouterOS holds for a script, as raw bytes (None if absent)."""
+    for row in script_resource.get():
+        if _row_str(row, "name") == name:
+            value = row.get("source", row.get(b"source", b""))
+            return value if isinstance(value, bytes) else str(value).encode("utf-8")
+    return None
+
+
 @pytest.mark.parametrize("kind", sorted(DRIFT_SUBJECTS))
 def test_drift_comparison_runs_on_the_pinned_routeros(
     api: Any, script_resource: Any, kind: str
@@ -1798,9 +1807,12 @@ def test_drift_comparison_runs_on_the_pinned_routeros(
         modified = _drift_answer(api, script_resource, subject, raw[:-2] + b"XX")
         # a prefix of the source (two bytes short) is a difference too
         shorter = _drift_answer(api, script_resource, subject, raw[:-2])
+        stored = _stored_source(script_resource, subject)
     finally:
         _remove_by_name(script_resource, subject)
-    assert same == f"DRF:{subject}|same", (kind, same)
+    # On a mismatch show the bytes RouterOS kept, so a failure says whether
+    # the router altered the subject or the expected literal is wrong.
+    assert same == f"DRF:{subject}|same", (kind, same, "stored:", stored, "sent:", raw)
     assert modified == f"DRF:{subject}|changed", (kind, modified)
     assert shorter == f"DRF:{subject}|changed", (kind, shorter)
 
