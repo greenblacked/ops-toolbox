@@ -647,7 +647,7 @@ try {
 
     $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify')
     Test-Case 'backups -Verify exits 1 when a tar has no sidecar' (
-        $run.ExitCode -eq 1 -and $run.Output -match 'MISS\s+Debian_2026-10-19_0800\.tar' -and $run.Output -match 'Hashing 3 file'
+        $run.ExitCode -eq 1 -and $run.Output -cmatch 'MISS\s+Debian_2026-10-19_0800\.tar' -and $run.Output -match 'Hashing 3 file'
     ) "exit $($run.ExitCode)`n$($run.Output)"
     Test-Case 'and the Ubuntu exports verify' (
         @([regex]::Matches($run.Output, 'OK\s+Ubuntu_\S+\.tar.*verified')).Count -eq 2
@@ -669,11 +669,11 @@ try {
     (Get-Item -LiteralPath $newest).LastWriteTime = (Get-Date).AddDays(-10)
     $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-MaxAgeDays', '1')
     Test-Case 'a newest backup older than -MaxAgeDays is STALE -> 1' (
-        $run.ExitCode -eq 1 -and $run.Output -match 'STALE Ubuntu newest backup is 10 day'
+        $run.ExitCode -eq 1 -and $run.Output -cmatch 'STALE Ubuntu newest backup is 10 day'
     ) "exit $($run.ExitCode)`n$($run.Output)"
     (Get-Item -LiteralPath $newest).LastWriteTime = $savedTime
     $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-MaxAgeDays', '1')
-    Test-Case 'a recent newest backup is not stale -> 0' ($run.ExitCode -eq 0 -and $run.Output -notmatch 'STALE') "exit $($run.ExitCode)`n$($run.Output)"
+    Test-Case 'a recent newest backup is not stale -> 0' ($run.ExitCode -eq 0 -and $run.Output -cnotmatch 'STALE ') "exit $($run.ExitCode)`n$($run.Output)"
 
     $run = Invoke-WslManage -Arguments @('verify-backup', '-Tar', $newest)
     Test-Case 'verify-backup still verifies a good tar -> 0' ($run.ExitCode -eq 0 -and $run.Output -match 'SHA-256 verified') "exit $($run.ExitCode)`n$($run.Output)"
@@ -687,14 +687,14 @@ try {
     [IO.File]::WriteAllText($newest, 'truncated')
     $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify')
     Test-Case 'a tar changed after hashing is BAD -> 1' (
-        $run.ExitCode -eq 1 -and $run.Output -match 'BAD\s+Ubuntu_2026-10-20_0900\.tar' -and $run.Output -match 'expected'
+        $run.ExitCode -eq 1 -and $run.Output -cmatch 'BAD\s+Ubuntu_2026-10-20_0900\.tar' -and $run.Output -match 'expected'
     ) "exit $($run.ExitCode)`n$($run.Output)"
     $run = Invoke-WslManage -Arguments @('verify-backup', '-Tar', $newest)
     Test-Case 'verify-backup still exits 1 on a mismatch' ($run.ExitCode -eq 1 -and $run.Output -match 'mismatch') "exit $($run.ExitCode)`n$($run.Output)"
 
     Set-Content -LiteralPath "$older.sha256" -Value 'not a hash'
     $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify', '-Distro', 'Ubuntu')
-    Test-Case 'a malformed sidecar is BAD' ($run.Output -match 'BAD\s+Ubuntu_2026-08-01_0900\.tar.*malformed') $run.Output
+    Test-Case 'a malformed sidecar is BAD' ($run.Output -cmatch 'BAD\s+Ubuntu_2026-08-01_0900\.tar.*malformed') $run.Output
 } finally {
     Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
 }
