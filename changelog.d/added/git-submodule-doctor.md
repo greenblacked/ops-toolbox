@@ -6,3 +6,4 @@
   `http://`, an ssh URL that needs a deploy key on every runner, and a
   `.git/config` still dialling an old URL until `git submodule sync`. It
   prints each repair, runs none, and blanks passwords in the URLs it shows.
+  It takes `--quiet` and `--json` like the other doctors.

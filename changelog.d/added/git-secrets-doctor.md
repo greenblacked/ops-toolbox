@@ -6,4 +6,5 @@
   were deleted from the tree but are still in history, where the credential
   has to be rotated. Content is searched with `git grep -l`, so a matched
   secret is never printed; `--allow` leaves out documented fixtures and
-  `--no-content` skips the content search on very large trees.
+  `--no-content` skips the content search on very large trees. It takes
+  `--quiet` and `--json` like the other doctors.
