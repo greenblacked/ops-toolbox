@@ -74,6 +74,8 @@ save('roles-wild-verbs', [role('pod-admin',[rule(['*'],['pods'])],ns='demo')])
 save('cr-wild-resources', BUILTINS+[role('read-all',[rule(['get'],['*'])])])
 save('cr-wild-groups', BUILTINS+[role('read-any-group',[rule(['get'],['pods'],['*'])])])
 save('cr-wild-urls', BUILTINS+[role('url-all',[{'nonResourceURLs':['*'],'verbs':['get']}])])
+save('cr-wild-url-glob', BUILTINS+[role('health-all',[{'nonResourceURLs':['/healthz/*'],'verbs':['get']}])])
+save('cr-url-exact', BUILTINS+[role('health-one',[{'nonResourceURLs':['/healthz'],'verbs':['get']}])])
 save('cr-escalate', BUILTINS+[role('rbac-manager',[rule(['escalate','bind','get'],['clusterroles'],['rbac.authorization.k8s.io'])])])
 save('rb-default-sa', [binding('app-edit','edit',[sa('default','demo')],ns='demo')])
 save('crb-default-sa-other', [binding('metrics-reader','view',[sa('default','other')])])
@@ -162,6 +164,7 @@ for case_ in \
   'RBAC_CR|cr-wild-resources|[advice] clusterrole read-all grants wildcard resources: get on * in apiGroups core|kubectl describe clusterrole read-all' \
   'RBAC_CR|cr-wild-groups|[advice] clusterrole read-any-group grants wildcard apiGroups: get on pods in apiGroups *|kubectl describe clusterrole read-any-group' \
   'RBAC_CR|cr-wild-urls|[advice] clusterrole url-all grants wildcard nonResourceURLs: get on - in apiGroups - (nonResourceURLs *)|kubectl describe clusterrole url-all' \
+  'RBAC_CR|cr-wild-url-glob|[advice] clusterrole health-all grants wildcard nonResourceURLs: get on - in apiGroups - (nonResourceURLs /healthz/*)|kubectl describe clusterrole health-all' \
   'RBAC_CR|cr-escalate|[risk] clusterrole rbac-manager grants bind,escalate on clusterroles|kubectl describe clusterrole rbac-manager' \
   'RBAC_RB|rb-default-sa|[advice] rolebinding demo/app-edit -> edit: ServiceAccount demo/default|kubectl describe rolebinding app-edit -n demo' \
   'RBAC_CRB|crb-default-sa-other|[risk] clusterrolebinding metrics-reader -> view: ServiceAccount other/default|kubectl describe clusterrolebinding metrics-reader' \
@@ -177,6 +180,11 @@ do
   assert_contains "$fixture next step" "next      $next"
   assert_absent "$fixture is not quiet" 'RBAC looks quiet'
 done
+
+reset_fixtures
+export RBAC_CR=cr-url-exact
+run_rbac
+assert_rc 'an exact non-resource URL is not a wildcard' 4 "$rc"
 
 reset_fixtures
 export RBAC_RB=rb-dangling-role RBAC_ROLES=roles-other-ns

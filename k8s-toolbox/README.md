@@ -505,7 +505,7 @@ read-only and without `kubectl auth can-i` (which impersonates):
 | Check | Reports |
 | --- | --- |
 | `cluster-admin` | Every ClusterRoleBinding or RoleBinding to `cluster-admin`, one row per subject: `ServiceAccount ns/name`, `User`, or `Group`. |
-| `wildcard` | A ClusterRole or Role with a `*` in any rule dimension (`verbs`, `resources`, `apiGroups` or `nonResourceURLs`), or the `escalate`, `bind` or `impersonate` verbs. Verb `*` on resource or API group `*`, and the escalation verbs, are `[risk]` in a ClusterRole; a `*` in a single dimension is `[advice]`. |
+| `wildcard` | A ClusterRole or Role with a `*` in any rule dimension (`verbs`, `resources`, `apiGroups` or `nonResourceURLs`, where a trailing `*` such as `/healthz/*` counts), or the `escalate`, `bind` or `impersonate` verbs. Verb `*` on resource or API group `*`, and the escalation verbs, are `[risk]` in a ClusterRole; a `*` in a single dimension is `[advice]`. |
 | `default-sa` | A binding whose subject is a ServiceAccount named `default`, which every pod without its own `serviceAccountName` inherits. |
 | `dangling` | A binding whose ClusterRole does not exist, or whose Role does not exist in the binding's own namespace (a Role of that name elsewhere does not count). |
 | `secrets` | A bound role that can `get`, `list` or `watch` core Secrets (or `*`), with the bindings that grant it. A grant narrowed by `resourceNames` is still listed, with the names. |

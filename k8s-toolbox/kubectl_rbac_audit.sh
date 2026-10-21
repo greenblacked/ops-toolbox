@@ -353,8 +353,10 @@ if "wildcard" in rows or "secrets" in rows:
       else:
         # A wildcard in any one dimension is over-broad: every verb on named
         # resources, named verbs on every resource or API group, or a
-        # non-resource URL pattern of *.
-        dims=[n for n,vals in (("verbs",verbs),("resources",resources),("apiGroups",groups),("nonResourceURLs",urls)) if "*" in vals]
+        # non-resource URL pattern ending in * (a /healthz/* suffix glob).
+        dims=[n for n,vals in (("verbs",verbs),("resources",resources),("apiGroups",groups)) if "*" in vals]
+        if any(isinstance(u,str) and u.endswith("*") for u in urls):
+          dims.append("nonResourceURLs")
         if dims:
           wild.append("wildcard %s: %s on %s%s" % (",".join(dims),",".join(verbs) or "-",where,
                                                    " (nonResourceURLs %s)" % ",".join(urls) if urls else ""))
