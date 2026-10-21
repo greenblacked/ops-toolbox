@@ -38,6 +38,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`status.sh`](#statussh)
 - [`workstation_doctor.sh`](#workstation_doctorsh)
 - [`hardening_audit.sh`](#hardening_auditsh)
+- [`ops_context.sh`](#ops_contextsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
 - [What this changes on your machine](#what-this-changes-on-your-machine)
@@ -66,6 +67,7 @@ For returning users. Every command is idempotent.
 ./status.sh                              # one screen: fit to work on? what next?
 ./workstation_doctor.sh                  # is this Mac well?
 ./hardening_audit.sh                     # is this Mac safe?
+./ops_context.sh --warn-on prod          # which cluster, profile, workspace am I on?
 ```
 
 After linking `zsh_aliases.zsh`, the same three are available as
@@ -84,6 +86,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `status.sh` | One-screen verdict: is this machine well enough to work on, and what should I run next? Read-only, no log, no sudo. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
+| `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
 | `lib/npx_cache.py` | Classifier for old npx cache entries; used by deep cleanup and the age-limited presets. Keeps entries when activity or cache ownership is uncertain. |
@@ -108,6 +111,7 @@ than memorizing flags.
 | **Diagnose** | `status.sh` | Whenever you sit down at the machine | Nothing — it only reads |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
+| **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
 The two bootstrap scripts are independent — you can run either one
@@ -1360,6 +1364,82 @@ print.
 
 ---
 
+## `ops_context.sh`
+
+The classic infrastructure outage is the right command against the wrong
+cluster, project, AWS profile, Terraform workspace or Docker daemon.
+`zsh_aliases.zsh` has switchers for some of these; this prints all of them on
+one screen, and `--warn-on` turns the answer into a guard a runbook can put in
+front of a command:
+
+```bash
+./ops_context.sh                                   # every tool
+./ops_context.sh --only kube,aws                   # a subset
+./ops_context.sh --warn-on prod,live               # exit 1 if any value matches
+./ops_context.sh --warn-on prod --quiet && terraform apply
+./ops_context.sh --dir ~/src/infra/envs/eu         # that directory's workspace
+./ops_context.sh --list-tools
+```
+
+```text
+[ ok ] kube       gke_acme_staging  ns=payments
+[ ok ] gcloud     config=default project=acme-staging account=me@example.com
+[ ok ] aws        profile=acme-dev region=eu-west-1 account=111122223333
+[warn] aws        sso session expired at 2026-10-20T18:02:11Z  fix: aws sso login --profile acme-dev
+[info] terraform  no Terraform directory here (.)
+[ ok ] docker     context=orbstack  unix:///Users/me/.orbstack/run/docker.sock
+[ ok ] gh         github.com as me
+```
+
+| Tool | Where the answer comes from |
+| --- | --- |
+| `kube` | `kubectl config current-context`, and the namespace and cluster of that context. `KUBECONFIG` is honoured because `kubectl` honours it. |
+| `gcloud` | Files only: `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config`, then `configurations/config_NAME` under `CLOUDSDK_CONFIG` (default `~/.config/gcloud`). The CLI is never started. |
+| `aws` | `AWS_PROFILE`, `AWS_DEFAULT_PROFILE` or `default`, and that stanza of `~/.aws/config` (`AWS_CONFIG_FILE`). For an SSO profile, the expiry of the newest cached login. |
+| `terraform` | `TF_WORKSPACE`, else `.terraform/environment` in `--dir`, else `default`; reported only where `--dir` holds `.terraform/` or `*.tf`. |
+| `docker` | `DOCKER_HOST`, `DOCKER_CONTEXT` or `docker context show`, and that context's endpoint. Anything but a local `unix://` socket is a warning. |
+| `gh` | Host names and `user:` lines of `hosts.yml` under `GH_CONFIG_DIR` (default `~/.config/gh`). |
+
+Everything is local: config files, and CLI subcommands that answer from those
+files. **It never opens `~/.aws/credentials` and never prints a secret.**
+When `AWS_ACCESS_KEY_ID`, `GH_TOKEN` or `GITHUB_TOKEN` is set, the warning
+names the variable, because each one silently overrides the profile or login
+printed above it, and the value stays where it is. Values read from config
+files are printed with control characters stripped, so a context name cannot
+write terminal escapes.
+
+`--warn-on` takes comma-separated, case-insensitive substrings and matches
+them against every value printed: context, namespace, cluster, gcloud
+configuration, project and account, AWS profile, role and account id,
+Terraform workspace, Docker context and endpoint, and GitHub host and user.
+A match turns that row into a `[warn]` naming the pattern and exits `1`.
+An expired SSO login is a warning too, but it changes the exit code only
+under `--strict`, so a lapsed login never blocks an unrelated command.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--only TOOLS` | Comma-separated subset (see `--list-tools`). |
+| `--warn-on PATTERNS` | Comma-separated, case-insensitive substrings; a value containing one is a warning and exits `1`. |
+| `--dir DIR` | Where to look up the Terraform workspace (default: the current directory). |
+| `--strict` | Exit `1` on any warning, not only on a `--warn-on` match. |
+| `--quiet` | Print only warnings: silent means safe to continue. |
+| `--list-tools` | Print the tool ids and exit. Works anywhere, without `HOME`. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report printed and no `--warn-on` pattern matched. |
+| `1` | A `--warn-on` pattern matched, or `--strict` and any warning. |
+| `2` | Preflight failed — not macOS, or `HOME` is not set. |
+| `3` | Invalid arguments — an unknown flag or tool, a missing value, a `--dir` that is not a directory. |
+| `4` | `--only` selected nothing. |
+
+---
+
 ## `launchd/stay_fresh_agent.sh`
 
 Maintenance that depends on remembering to run it does not happen. This installs
@@ -1782,6 +1862,12 @@ Homebrew / `pyenv` / `goenv` commands.
 - Affects interactive shells only. Sourcing the file adds aliases and
   functions to the current shell; it does not write anything to disk
   and does not modify system files.
+
+### Read-only reports
+
+- `ops_context.sh` reads local config files and asks `kubectl` and `docker`
+  for their current context. It writes nothing, starts no network
+  connection, and never opens `~/.aws/credentials`.
 
 ### Privileged operations
 

@@ -50,6 +50,14 @@ unset CPPFLAGS LDFLAGS
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+# ops_context.sh reports which cluster, project, profile, workspace and daemon
+# these point at, and names the token variables when they are set. A
+# developer's shell usually has some of them exported; inherited, they would
+# aim a run at the real ~/.kube, ~/.aws or Docker daemon instead of the
+# fixtures, and a set token would add a warning no fixture asked for.
+unset KUBECONFIG AWS_PROFILE AWS_DEFAULT_PROFILE AWS_CONFIG_FILE AWS_ACCESS_KEY_ID \
+  CLOUDSDK_ACTIVE_CONFIG_NAME DOCKER_CONTEXT DOCKER_HOST TF_WORKSPACE \
+  GH_CONFIG_DIR XDG_CONFIG_HOME GH_TOKEN GITHUB_TOKEN
 
 failures=0
 # Counted so the run can prove it asserted something. Without `-e` a suite that
@@ -2248,6 +2256,142 @@ for pkg in gh sops age k6 fzf; do
 done
 out="$(env -u HOME "$M/install_apps.sh" --list-casks 2>&1)"; rc=$?
 assert_eq "install_apps --list-casks works with HOME unset" "0" "$rc"
+
+
+section "ops_context: selection flags answer before preflight"
+# The tool list and every refusal have to answer on a machine that is not the
+# Mac, the same contract --help and status.sh --list-sections keep.
+OPS="$M/ops_context.sh"
+out="$("$OPS" --list-tools 2>&1)"; rc=$?
+assert_eq "ops_context --list-tools exits 0" "0" "$rc"
+for t in kube gcloud aws terraform docker gh; do
+  if grep -qxF -- "$t" <<<"$out"; then
+    ok "ops_context lists the $t tool"
+  else
+    err "ops_context --list-tools does not list $t"
+  fi
+done
+out="$(env -u HOME "$OPS" --list-tools 2>&1)"; rc=$?
+assert_eq "ops_context --list-tools works with HOME unset" "0" "$rc"
+"$OPS" --only nosuch >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects an unknown --only tool -> 3" "3" "$rc"
+"$OPS" --only >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects --only without a value -> 3" "3" "$rc"
+"$OPS" --warn-on >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects --warn-on without a value -> 3" "3" "$rc"
+"$OPS" --dir /nonexistent/ops-context-dir >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects a --dir that is not a directory -> 3" "3" "$rc"
+
+section "ops_context: reads local config, never credentials"
+# Every tool the script asks is faked, uname included, because this file also
+# runs on a real Mac where /usr/bin holds the real ones. The fixture
+# ~/.aws/credentials and the SSO cache carry canary strings that must never
+# reach the output: the script names files and variables, not secrets.
+oc="$(mktemp -d)"
+mkdir -p "$oc/bin" "$oc/home/.config/gcloud/configurations" \
+  "$oc/home/.aws/sso/cache" "$oc/tmp" "$oc/empty" "$oc/tf/.terraform"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$oc/bin/uname"
+cat > "$oc/bin/kubectl" <<'KUBECTL_EOF'
+#!/bin/sh
+case "$*" in
+  "config current-context") echo gke_acme_prod ;;
+  *namespace*)              echo payments ;;
+  *cluster*)                echo gke_acme_prod ;;
+  *)                        exit 1 ;;
+esac
+KUBECTL_EOF
+cat > "$oc/bin/docker" <<'DOCKER_EOF'
+#!/bin/sh
+case "$1 $2" in
+  "context show")    echo orbstack ;;
+  "context inspect") echo "${FAKE_DOCKER_ENDPOINT:-unix:///var/run/docker.sock}" ;;
+  *)                 exit 1 ;;
+esac
+DOCKER_EOF
+chmod +x "$oc/bin/"*
+printf 'default\n' > "$oc/home/.config/gcloud/active_config"
+printf '[core]\naccount = dev@example.com\nproject = acme-sandbox-42\n\n[compute]\nregion = europe-west1\n' \
+  > "$oc/home/.config/gcloud/configurations/config_default"
+printf '[default]\nregion = us-east-1\n\n[profile acme-dev]\nsso_session = acme\nsso_account_id = 111122223333\nregion = eu-west-1\n' \
+  > "$oc/home/.aws/config"
+printf '{"startUrl": "https://acme.example/start", "accessToken": "CANARY_SSO_TOKEN", "expiresAt": "2000-01-01T00:00:00Z"}\n' \
+  > "$oc/home/.aws/sso/cache/token.json"
+printf '[acme-dev]\naws_access_key_id = AKIACANARYKEYID\naws_secret_access_key = CANARY_SECRET_KEY\n' \
+  > "$oc/home/.aws/credentials"
+printf 'prod-eu\n' > "$oc/tf/.terraform/environment"
+
+ops() {
+  AWS_PROFILE=acme-dev HOME="$oc/home" TMPDIR="$oc/tmp" \
+    PATH="$oc/bin:/usr/bin:/bin" "$OPS" "$@" 2>&1
+}
+
+out="$(ops --dir "$oc/empty")"; rc=$?
+assert_eq "ops_context default run exits 0 (an expired SSO login is a warning only)" "0" "$rc"
+assert_contains "ops_context names the kube context" "$out" "gke_acme_prod"
+assert_contains "ops_context names the kube namespace" "$out" "ns=payments"
+assert_contains "ops_context names the gcloud project" "$out" "acme-sandbox-42"
+assert_contains "ops_context names the aws profile" "$out" "profile=acme-dev"
+assert_contains "ops_context reads the profile's region" "$out" "region=eu-west-1"
+assert_contains "ops_context names the docker context" "$out" "context=orbstack"
+assert_contains "ops_context reports an expired SSO session" "$out" "expired"
+assert_contains "ops_context prints the SSO login fix" "$out" "aws sso login --profile acme-dev"
+assert_contains "ops_context reports no Terraform directory" "$out" "no Terraform directory here"
+for canary in CANARY_SECRET_KEY AKIACANARYKEYID CANARY_SSO_TOKEN; do
+  assert_not_contains "ops_context never prints $canary" "$out" "$canary"
+done
+
+ops --dir "$oc/empty" --strict >/dev/null; rc=$?
+assert_eq "ops_context --strict exits 1 on the expired SSO warning" "1" "$rc"
+
+out="$(ops --dir "$oc/empty" --warn-on PROD)"; rc=$?
+assert_eq "ops_context --warn-on matches case-insensitively -> 1" "1" "$rc"
+assert_contains "ops_context names the pattern that matched" "$out" 'matches "prod"'
+assert_contains "ops_context turns the matching row into a warning" "$out" "[warn] kube"
+
+ops --dir "$oc/empty" --warn-on staging >/dev/null; rc=$?
+assert_eq "ops_context --warn-on with no match -> 0" "0" "$rc"
+ops --dir "$oc/empty" --warn-on=prod >/dev/null; rc=$?
+assert_eq "ops_context accepts --warn-on=PATTERN" "1" "$rc"
+
+out="$(ops --dir "$oc/empty" --warn-on prod --quiet)"
+assert_contains "ops_context --quiet keeps the warning" "$out" "[warn] kube"
+assert_not_contains "ops_context --quiet drops ok rows" "$out" "[ ok ]"
+assert_not_contains "ops_context --quiet drops info rows" "$out" "[info]"
+assert_not_contains "ops_context --quiet drops the gcloud row" "$out" "acme-sandbox-42"
+
+out="$(ops --only=aws)"; rc=$?
+assert_eq "ops_context accepts --only=TOOL" "0" "$rc"
+assert_contains "ops_context --only aws reports aws" "$out" "profile=acme-dev"
+assert_not_contains "ops_context --only aws skips kube" "$out" "gke_acme_prod"
+
+out="$(ops --only terraform --dir "$oc/tf")"; rc=$?
+assert_eq "ops_context reports a Terraform workspace -> 0" "0" "$rc"
+assert_contains "ops_context reads .terraform/environment" "$out" "workspace=prod-eu"
+ops --only terraform --dir "$oc/tf" --warn-on prod >/dev/null; rc=$?
+assert_eq "ops_context --warn-on matches the Terraform workspace -> 1" "1" "$rc"
+
+out="$(export AWS_ACCESS_KEY_ID=AKIAFAKE; ops --only aws)"
+assert_contains "ops_context names AWS_ACCESS_KEY_ID when it is set" "$out" "AWS_ACCESS_KEY_ID"
+assert_not_contains "ops_context never prints the key itself" "$out" "AKIAFAKE"
+
+out="$(export GH_TOKEN=ghp_CANARYTOKEN; ops --only gh)"
+assert_contains "ops_context names GH_TOKEN when it is set" "$out" "GH_TOKEN"
+assert_not_contains "ops_context never prints the GitHub token" "$out" "ghp_CANARYTOKEN"
+
+out="$(export FAKE_DOCKER_ENDPOINT=tcp://10.0.0.5:2376; ops --only docker)"; rc=$?
+assert_contains "ops_context warns about a remote Docker daemon" "$out" "remote"
+assert_eq "a remote Docker daemon alone does not change the exit code" "0" "$rc"
+
+mv "$oc/bin/kubectl" "$oc/kubectl.off"
+out="$(ops --only kube)"; rc=$?
+assert_eq "ops_context without kubectl exits 0" "0" "$rc"
+assert_contains "ops_context reports a missing kubectl as info" "$out" "[info] kube"
+mv "$oc/kubectl.off" "$oc/bin/kubectl"
+
+printf '%s\n' '#!/bin/sh' "printf 'gke_\\033[31mred\\n'" > "$oc/bin/kubectl"
+out="$(ops --only kube)"
+assert_not_contains "ops_context strips terminal escapes from config values" "$out" $'\033'
+rm -rf "$oc"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of
