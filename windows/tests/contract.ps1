@@ -1081,6 +1081,15 @@ if (-not $netDoctor) {
             @{ Label = 'a single WinINET value applies to both protocols'
                Observed = @{ WinInetEnabled = $true; WinInetServer = 'a:1'; HttpProxy = 'http://a:1'; HttpsProxy = 'http://z:9'; NoProxy = 'localhost' }
                Expect = @('proxy-mismatch:warn') }
+            @{ Label = 'WinINET names only https while HTTP_PROXY and HTTPS_PROXY are both set'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'https=proxy:8080'; HttpProxy = 'http://proxy:8080'; HttpsProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @('proxy-mismatch:warn') }
+            @{ Label = 'WinINET names only http while only HTTPS_PROXY is set'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'http=proxy:8080'; HttpsProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @('proxy-mismatch:warn') }
+            @{ Label = 'WinINET names only https and only HTTPS_PROXY is set to the same proxy'
+               Observed = @{ WinInetEnabled = $true; WinInetServer = 'https=proxy:8080'; HttpsProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @() }
             @{ Label = 'a proxy with an empty NO_PROXY'
                Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpProxy = 'http://proxy:8080' }
                Expect = @('no-proxy-empty:warn') }

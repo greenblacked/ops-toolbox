@@ -214,7 +214,9 @@ function Get-ProxyFinding {
     $inet = [string]$Observed['WinInetServer']
     $inetHttp = $inet
     $inetHttps = $inet
+    $inetList = $false
     if ($inet -match '=') {
+        $inetList = $true
         $inetHttp = ''
         $inetHttps = ''
         foreach ($part in ($inet -split ';')) {
@@ -245,6 +247,14 @@ function Get-ProxyFinding {
     if ($inetOn) {
         if ($envHttp -and $inetHttp -and ((& $normalise $envHttp) -ne (& $normalise $inetHttp))) { $mismatch = $true }
         if ($envHttps -and $inetHttps -and ((& $normalise $envHttps) -ne (& $normalise $inetHttps))) { $mismatch = $true }
+        # An explicit per-protocol WinINET list that names a protocol the
+        # environment leaves out (or the other way round) routes that
+        # protocol differently. A single WinINET value is not compared this
+        # way: it covers both protocols, and one variable is the usual setup.
+        if ($inetList) {
+            if ([bool]$envHttp -ne [bool]$inetHttp) { $mismatch = $true }
+            if ([bool]$envHttps -ne [bool]$inetHttps) { $mismatch = $true }
+        }
     }
 
     $findings = @()
