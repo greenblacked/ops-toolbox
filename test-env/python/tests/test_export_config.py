@@ -296,13 +296,24 @@ class SecretScanTestCase(unittest.TestCase):
             'add name=s source=":global ApiPassword \\"<redacted>\\";"\n',
         )
         # A trailing escaped backslash does not swallow the closing quote.
-        text = 'add name=s source=":global ApiPassword \\"abc\\\\\\";"\n'
+        # (script `"abc\\"` is five backslashes and a quote in an export).
+        text = 'add name=s source=":global ApiPassword \\"abc\\\\\\\\\\";"\n'
         self.assertEqual(export_config.redact_secrets(text),
                          'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
         # Other escapes inside the value (\$, \n) stay part of it.
         text = 'add name=s source=":global ApiPassword \\"a\\$b\\";"\n'
         self.assertEqual(export_config.find_secrets(text),
                          [(1, "secret assigned in a script")])
+
+    def test_a_value_holding_an_escaped_quote_is_redacted_whole(self):
+        # Script value a"b: the script escapes the quote as \", and the
+        # export escapes both characters, giving three backslashes and a quote.
+        text = 'add name=s source=":global ApiPassword \\"a\\\\\\"b\\";"\n'
+        self.assertEqual(export_config.find_secrets(text),
+                         [(1, "secret assigned in a script")])
+        redacted = export_config.redact_secrets(text)
+        self.assertEqual(
+            redacted, 'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
 
     def test_an_escaped_variable_reference_is_not_a_value(self):
         # The export spells a script's `$other` as `\$other`.

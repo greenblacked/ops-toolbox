@@ -96,7 +96,7 @@ _SECRET_PATTERNS = (
     ("secret assigned in a script", True, re.compile(
         r'(?i):(?:global|local|set)\s+[A-Za-z0-9]*'
         r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9]*\s+\\?"'
-        r'(?P<value>(?:\\\\|\\[^"\\]|[^"\\])+)\\?"'
+        r'(?P<value>(?:\\\\(?:\\\\|\\"|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
     )),
     # Fields RouterOS only prints under show-sensitive.
     ("sensitive field", True, re.compile(
