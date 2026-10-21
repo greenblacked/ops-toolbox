@@ -693,7 +693,12 @@ git -C "$repo" rm -q docs/b.md
 git -C "$repo" commit -q -m "drop the doc again"
 
 out="$(cd "$repo" && "$DIFFBR" --base main)"
-assert_contains "$out" "file.txt |" "git_diff_branch still defaults to a diffstat"
+# The diffstat pads names to the longest one, so match the column loosely.
+if grep -Eq -- 'file\.txt +\|' <<<"$out" && grep -Fq -- "2 files changed" <<<"$out"; then
+  ok "git_diff_branch still defaults to a diffstat"
+else
+  err "git_diff_branch still defaults to a diffstat: got: $out"
+fi
 out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
 assert_contains "$out" "k8s/a.yaml" "--name-only lists an added file"
 assert_contains "$out" "file.txt" "--name-only lists a modified file"

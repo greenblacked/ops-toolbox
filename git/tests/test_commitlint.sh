@@ -78,7 +78,7 @@ out="$(run_in "$repo" --base main --porcelain 2>&1)"; rc=$?
 assert_eq "$rc" 1 'problems in the range -> 1'
 assert_contains "$out" $'\tnot-conventional\tbad subject without type' 'a subject with no type is not conventional'
 assert_contains "$out" $'\ttoo-long\t'"$long_subject" 'an 86-character subject is too long'
-assert_contains "$out" $'\tno-blank-line\tdocs: ok body' 'a body on line 2 is flagged'
+assert_contains "$out" $'\tno-blank-line\tdocs: ok'$'\n' 'a body on line 2 is flagged (subject is the first line)'
 assert_contains "$out" $'\tfixup\tfixup! feat(git): fine one' 'an unsquashed fixup is flagged'
 assert_not_contains "$out" $'\tnot-conventional\tfixup!' 'a fixup is not also called unconventional'
 assert_not_contains "$out" $'\tfeat(git): fine one' 'a fine commit is not listed'
