@@ -42,6 +42,7 @@ secrets and hooks.
 | `git_health_doctor.py` | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
 | `git_secrets_doctor.py` | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
 | `git_hooks_doctor.py` | Why a hook does not run. | <span class="stage stage-report">read-only</span> |
+| `git_fleet_doctor.py` | Every doctor across many repositories, one table. | <span class="stage stage-report">read-only</span> |
 | `git_aliases.sh`, `git_aliases.zsh` | Aliases for the helpers; sourced, not executed. | n/a |
 
 <!-- markdownlint-enable MD033 -->
@@ -109,9 +110,10 @@ All paths are under `git/`.
   tests the fetch side only.
 - `git_hooks_install.sh --commit-msg` enforces Conventional Commits and is off
   by default.
-- Every `*_doctor.py` takes `--json`: one JSON object with the exit code and
-  each finding's level, section and message, redacted like the text report.
-  The shape is versioned (`schema` 1); keys may be added, never renamed.
+- Every `*_doctor.py` except `git_fleet_doctor.py` takes `--json`: one JSON
+  object with the exit code and each finding's level, section and message,
+  redacted like the text report. The shape is versioned (`schema` 1); keys
+  may be added, never renamed.
 
 ## Repository
 

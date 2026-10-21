@@ -36,6 +36,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_health_doctor.py`](#git_health_doctorpy)
 - [`git_secrets_doctor.py`](#git_secrets_doctorpy)
 - [`git_hooks_doctor.py`](#git_hooks_doctorpy)
+- [`git_fleet_doctor.py`](#git_fleet_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
 
@@ -100,6 +101,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_health_doctor.py` | Stale locks, a gc.log blocking automatic gc, object bloat, maintenance and clone shape; `--fsck` is opt-in. |
 | `git_secrets_doctor.py` | Committed credentials: credential-shaped names, key and token formats in content, and with `--history` files deleted but still in history. |
 | `git_hooks_doctor.py` | Why a hook does not run: `core.hooksPath`, exec bit, CRLF shebang, misnamed hooks, hook managers committed but not activated. |
+| `git_fleet_doctor.py` | Run every doctor across the repositories under one or more roots and print one table of verdicts. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -117,8 +119,9 @@ Across these scripts, exit statuses are used consistently where it helps automat
 
 Scripts that do not need the full table may use a smaller subset (for example `git_whoami.sh` only cares about `2` for missing `git`).
 
-**Doctor output for scripts.** Every `*_doctor.py` takes `--json` and prints
-one JSON object instead of the report, with the same exit code as a text run.
+**Doctor output for scripts.** Every `*_doctor.py` except
+`git_fleet_doctor.py` (which drives the others) takes `--json` and prints one
+JSON object instead of the report, with the same exit code as a text run.
 For `git_ignore_doctor.py secrets.txt`, with the other events left out:
 
 ```json
@@ -597,6 +600,9 @@ unreadable, git is missing or `--dir` is unusable; `3` on a bad flag; `4`
 when the list has no entries. A clone that fails part-way is reported with
 its path, and the directory is left for you to inspect rather than removed.
 
+Once they are cloned, `./git/git_fleet_doctor.py ~/src` checks them all at
+once.
+
 ---
 
 ## `git_ssh_doctor.py`
@@ -907,6 +913,53 @@ in the other doctors.
 
 ---
 
+## `git_fleet_doctor.py`
+
+The doctors answer one repository at a time. With forty clones (from
+`clone-repos.sh`, a build agent's workspace, a mirror farm) the question is
+which of them have a problem, on one screen, as a CI step or a weekly sweep.
+
+```bash
+./git/git_fleet_doctor.py ~/src                          # every repository under ~/src
+./git/git_fleet_doctor.py --only ignore --only secrets ~/src
+./git/git_fleet_doctor.py --details --exclude 'archive/*' ~/src /srv/mirrors
+```
+
+```text
+repo        health  hooks  ignore  remote  secrets  signing  submodule
+api         ok      n/a    ok      ok      FAIL     ok       n/a
+web         ok      ok     FAIL    ok      ok       ok       n/a
+3 repo(s): 1 clean, 2 with findings, 0 errors
+```
+
+It finds every directory holding a `.git` entry (a directory, or a file for
+a worktree or submodule) up to `--depth` levels below each root (default 3),
+without descending into a repository it found, into `node_modules`, or
+through a symlinked directory. `--exclude GLOB` (repeatable) skips paths
+relative to the root. It then runs each `git_*_doctor.py` beside it in
+`--quiet` mode in each repository, `--jobs` repositories at a time (default 4,
+at most 16), each doctor bounded by `--timeout` seconds (default 60).
+`--only NAME` (repeatable) picks doctors by short name. A cell reads `ok`,
+`FAIL`, `n/a` (the doctor's exit `4`, nothing to check), `ERR` (the doctor
+itself did not run: exit `2`, `3` or a crash, so a usage bug is never read
+as a finding) or `TIME`. `--details` re-runs each `FAIL` or `ERR` cell
+without `--quiet` and prints its report under the row.
+
+Offline and read-only: every doctor it drives is read-only, it passes them
+nothing but `--quiet` (never `--probe`, `--test-auth`, `--test-sign` or
+`--fsck`), and their stdin is `/dev/null`. `git_ssh_doctor.py` is left out
+unless `--only ssh` names it, because its default run attempts
+authentication. Doctors are found beside the script, so one added later is
+picked up with no change here; copied into `~/bin`, it needs the doctors
+copied beside it (it falls back to finding them on `PATH`).
+
+**Exit codes:** `0` every cell `ok` or `n/a`, `1` at least one `FAIL`, `2`
+a doctor could not run or timed out, or no doctor was found, `3` bad usage
+(no root, an unknown `--only`, `--jobs` outside 1 to 16), `4` no repository
+found. `--quiet` prints nothing and keeps the code.
+
+---
+
 ## Tests
 
 From the **repository root** (so the repo mounts into the container as `/repo`):
@@ -951,5 +1004,6 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_health_doctor.py --lock-age 30
 ./git/git_secrets_doctor.py --history
 ./git/git_hooks_doctor.py
+./git/git_fleet_doctor.py --details ~/src
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

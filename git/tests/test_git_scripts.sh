@@ -33,6 +33,7 @@ IGNORE_DOCTOR="$G/git_ignore_doctor.py"
 HEALTH_DOCTOR="$G/git_health_doctor.py"
 SECRETS_DOCTOR="$G/git_secrets_doctor.py"
 HOOKS_DOCTOR="$G/git_hooks_doctor.py"
+FLEET_DOCTOR="$G/git_fleet_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -1275,6 +1276,44 @@ assert_contains "$out" "never run" "hooks doctor reports local hooks a global ho
 outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
 (cd "$outside" && "$HOOKS_DOCTOR" --quiet); rc=$?
 assert_eq "$rc" "2" "hooks doctor outside a repository -> exit 2"
+
+section "fleet doctor"
+# Two copies under one root: a clean repository and the claimed-file fixture
+# from the quiet section, so one row fails and the other does not.
+fleet_root="$(mktemp -d /tmp/git-doctor-fleet.XXXXXX)"
+fleet_clean="$(new_repo)"
+cp -R "$fleet_clean" "$fleet_root/clean" || err "copying the clean fixture exited $?"
+cp -R "$claimed_repo" "$fleet_root/claimed" || err "copying the claimed fixture exited $?"
+fleet_before="$(find "$fleet_root" -printf '%p %T@ %s\n' | sort)"
+
+home="$(new_home)"
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only ignore "$fleet_root" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "fleet doctor fails when one repository has a finding"
+assert_contains "$out" "FAIL" "fleet doctor marks the failing cell"
+assert_contains "$out" "ok" "fleet doctor marks the clean cell"
+assert_contains "$out" "2 repo(s)" "fleet doctor counts the repositories"
+assert_eq "$(find "$fleet_root" -printf '%p %T@ %s\n' | sort)" "$fleet_before" \
+  "fleet doctor wrote nothing in the repositories it swept"
+
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only ignore --details "$fleet_root" 2>&1)"
+assert_contains "$out" "secrets.txt" "fleet doctor --details shows the failing doctor's report"
+assert_contains "$out" "git rm --cached" "fleet doctor --details carries the repair"
+
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only ignore --quiet "$fleet_root" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "fleet doctor --quiet keeps the exit code"
+assert_eq "$out" "" "fleet doctor --quiet prints nothing"
+
+"$FLEET_DOCTOR" --only nosuch "$fleet_root" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor --only with an unknown doctor -> exit 3"
+"$FLEET_DOCTOR" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor without a root -> exit 3"
+"$FLEET_DOCTOR" --jobs 0 "$fleet_root" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor --jobs 0 -> exit 3"
+"$FLEET_DOCTOR" --depth abc "$fleet_root" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor --depth abc -> exit 3"
+fleet_empty="$(mktemp -d /tmp/git-doctor-fleet-empty.XXXXXX)"
+"$FLEET_DOCTOR" --only ignore "$fleet_empty" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "fleet doctor with no repository under the root -> exit 4"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
