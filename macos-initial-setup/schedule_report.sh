@@ -454,18 +454,18 @@ report_dir() {
     if [[ "$program" == /* && ! -e "$program" ]]; then
       case "$scope" in
         user)
-          warn "$label runs $program, which no longer exists" \
+          warn "$label runs $(clean "$program"), which no longer exists" \
                "remove the orphan with: stay_fresh.sh --prune-orphan-agents (or delete $(clean "$plist"))" ;;
         agents)
           # shellcheck disable=SC2016  # $(id -u) is for the reader to run
-          warn "$label runs $program, which no longer exists" \
+          warn "$label runs $(clean "$program"), which no longer exists" \
                'launchctl bootout gui/$(id -u)/'"$label, then sudo rm $(clean "$plist")" ;;
         *)
-          warn "$label runs $program, which no longer exists" \
+          warn "$label runs $(clean "$program"), which no longer exists" \
                "sudo launchctl bootout system/$label, then sudo rm $(clean "$plist")" ;;
       esac
     elif [[ "$program" == /* ]] && foreign_writable "$program"; then
-      warn "$label runs $program, which its group or every user can write" "chmod go-w $program"
+      warn "$label runs $(clean "$program"), which its group or every user can write" "chmod go-w $(clean "$program")"
     fi
     if foreign_writable "$plist"; then
       warn "$(clean "$plist") can be written by its group or every user" "chmod go-w $(clean "$plist")"
@@ -477,7 +477,7 @@ report_dir() {
            "chmod go-w $(clean "$bad_dir") (or chown it to root), then re-check"
     fi
     if [[ "$program" == /* && -e "$program" ]] && bad_dir="$(unsafe_ancestor "$program" "$owner_check")"; then
-      warn "$label runs $program, which sits under $(clean "$bad_dir"), which another user can modify" \
+      warn "$label runs $(clean "$program"), which sits under $(clean "$bad_dir"), which another user can modify" \
            "chmod go-w $(clean "$bad_dir") (or chown it to root), then re-check"
     fi
     if [[ "$keepalive" == "1" && -z "$throttle" ]]; then
