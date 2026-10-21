@@ -186,6 +186,17 @@ mkdir -p "$scratch/plain" || err 'create plain directory'
 (cd "$scratch/plain" && GIT_CEILING_DIRECTORIES="$scratch" "$UNPUSHED") >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 2 'outside a repository -> 2'
 
+section "unreadable index fails closed"
+git clone -q "$scratch/origin.git" "$scratch/corrupt" || err 'clone corrupt fixture'
+printf 'not an index\n' >"$scratch/corrupt/.git/index" || err 'corrupt the index'
+out="$(run_in "$scratch/corrupt" 2>&1)"; rc=$?
+assert_eq "$rc" 0 'a plain run exits 0 with an unreadable index'
+assert_contains "$out" 'git status failed' 'a failing git status is reported'
+run_in "$scratch/corrupt" --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict exits 1 when git status cannot be read'
+out="$(run_in "$scratch/corrupt" --porcelain 2>&1)"
+assert_contains "$out" 'git status failed' '--porcelain also reports the failure'
+
 end_section
 if (( checks == 0 || failures > 0 )); then
   printf '=== %s of %s unpushed checks failed ===\n' "$failures" "$checks" >&2

@@ -56,7 +56,7 @@ pushed until 'git fetch' has run. A report that quietly rewrote refs would not
 be read-only.
 
 Exit codes: 0 success (whether or not anything was found), 1 --strict found
-something, or --tags could not reach the remote, 2 not a git repo, 3 usage,
+something or git status failed, or --tags could not reach the remote, 2 not a git repo, 3 usage,
 4 no commits yet or remote not found
 EOF
 }
@@ -202,15 +202,24 @@ if (( stash_count > 0 )); then
 fi
 
 # --no-optional-locks: a report has no business refreshing the index.
+# The output and exit code are captured first: status inside a process
+# substitution would hide a failure (corrupt or unreadable index) and report
+# a checkout it could not read as having nothing uncommitted.
 tracked_changes=0
 untracked_paths=0
+status_failed=0
+status_out=""
+if ! status_out="$(git --no-optional-locks status --porcelain=v1 2>/dev/null)"; then
+  status_failed=1
+  status_out=""
+fi
 while IFS= read -r line; do
   [[ -n "$line" ]] || continue
   case "$line" in
     '?? '*) untracked_paths=$((untracked_paths + 1)) ;;
     *)      tracked_changes=$((tracked_changes + 1)) ;;
   esac
-done < <(git --no-optional-locks status --porcelain=v1)
+done <<<"$status_out"
 uncommitted_total=$((tracked_changes + untracked_paths))
 
 missing_tags=()
@@ -332,6 +341,9 @@ fi
 if (( tags_failed == 1 )); then
   err "cannot reach $tag_remote; tags were not compared"
 fi
+if (( status_failed == 1 )); then
+  err "git status failed; uncommitted work could not be checked"
+fi
 
 if (( PORCELAIN == 0 )); then
   if (( found_any == 0 )); then
@@ -372,6 +384,9 @@ if (( PORCELAIN == 0 )); then
 fi
 
 if (( tags_failed == 1 )); then
+  exit 1
+fi
+if (( STRICT == 1 && status_failed == 1 )); then
   exit 1
 fi
 if (( STRICT == 1 && found_any == 1 )); then
