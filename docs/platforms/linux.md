@@ -38,7 +38,7 @@ and a Kali cloud-init profile.
 | `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`, unused container images, disabled snap revisions. | `--dry-run` |
 | `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
 | `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--exclude`, `--exclude-secrets`; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
-| `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |
+| `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set; `holds` and `orphans` list held and autoremovable packages. | `--dry-run` on `install`; `holds`, `orphans` are read-only |
 | `install_aliases.sh` | Add a marked block to `~/.bashrc`; `--status`, `--uninstall`. | `--dry-run` |
 | `systemd/stay_fresh_timer.sh` | systemd user timer for `stay_fresh.sh`. | `--dry-run` on `install`; `--print-only` |
 | `cloud-init/kali-vm-init.yaml` | cloud-init user-data for a Kali VM. Not a script. | validate with `cloud-init schema` |

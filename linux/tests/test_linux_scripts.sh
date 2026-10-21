@@ -458,6 +458,17 @@ fi
 rc=$?
 assert_eq "packages.sh --file rejects the next flag as a path -> 3" "3" "$rc"
 
+# holds and orphans against the real package database answer with names only,
+# whatever this image happens to hold; the stubbed suite below pins the parsing
+# for all three managers.
+out="$("$L/packages.sh" holds 2>/dev/null)"; rc=$?
+assert_eq "packages.sh holds exits 0 on a real $EXPECT_PKG_MGR database" "0" "$rc"
+assert_eq "packages.sh holds prints a sorted, unique list" "$out" "$(printf '%s\n' "$out" | LC_ALL=C sort -u | awk 'NF')"
+out="$("$L/packages.sh" orphans 2>/dev/null)"; rc=$?
+assert_eq "packages.sh orphans exits 0 on a real $EXPECT_PKG_MGR database" "0" "$rc"
+bash "$L/tests/test_packages_holds_orphans.sh"
+assert_eq "packages.sh holds and orphans suite exits 0" "0" "$?"
+
 section "aliases are sourceable, and guarded"
 if bash -c ". $L/bash_aliases.sh" >/dev/null 2>&1; then
   ok "bash_aliases.sh sources cleanly"

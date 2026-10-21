@@ -60,7 +60,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
 | [`sysctl_defaults.sh`](sysctl_defaults.sh) | Report/apply/revert a short sysctl list (inotify watches, swappiness) |
 | [`swap_setup.sh`](swap_setup.sh) | Report swap; `--create` or `--remove` a swapfile and its fstab line |
-| [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
+| [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set; list holds and autoremove orphans |
 | [`config_backup.sh`](config_backup.sh) | Dated tar of selected paths (default `/etc`); never a restore |
 | [`schedule_report.sh`](schedule_report.sh) | Read-only inventory of systemd timers and cron jobs |
 | [`cloud-init/kali-vm-init.yaml`](cloud-init/kali-vm-init.yaml) | First-boot configuration for a Kali red/blue lab VM; see the [runbook](cloud-init/README.md) |
@@ -114,6 +114,8 @@ Capture what a machine has, commit it, rebuild elsewhere:
 ./packages.sh dump          # writes packages.<manager>.txt
 ./packages.sh list          # stable inventory on stdout; writes nothing
 ./packages.sh diff          # what has drifted since
+./packages.sh holds         # held, version-locked or ignored: what upgrades skip
+./packages.sh orphans       # what autoremove would remove, before it does
 ./packages.sh install --dry-run
 ./packages.sh install --yes
 ```
@@ -131,6 +133,17 @@ Read the machine without touching it:
 ./swap_setup.sh             # active swap, fstab entries, a suggested size
 ./schedule_report.sh        # what is scheduled to run?
 ```
+
+`holds` and `orphans` answer the two questions before maintenance: why did the
+upgrade skip nginx, and what will autoremove delete? Both are read-only, need
+no `sudo`, and print bare package names, one per line and sorted, with nothing
+else on stdout (a note, such as dnf's versionlock plugin being absent, goes to
+stderr), so they pipe like `list`. Empty output means none. `holds` reads
+`apt-mark showhold`, dnf's versionlock list plus `exclude=` in
+`/etc/dnf/dnf.conf`, or `IgnorePkg` in `/etc/pacman.conf`. `orphans` reads
+`apt-get -s autoremove` (a simulation), `dnf repoquery --unneeded` or
+`pacman -Qdtq`, whose exit `1` with no output means none. A failing package
+tool is exit `1`.
 
 Aliases:
 

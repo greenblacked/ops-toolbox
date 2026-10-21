@@ -14,12 +14,19 @@
 # and capturing the second kind produces a file that is enormous, unstable
 # across releases, and useless for rebuilding a machine.
 #
+# holds and orphans answer the two questions before maintenance: why did the
+# upgrade skip nginx, and what will autoremove delete? Both are read-only,
+# need no sudo, and print bare names on stdout, like list, so they work in
+# pipes; any note goes to stderr.
+#
 # Usage:
 #   ./packages.sh list
 #   ./packages.sh dump      [--file PATH] [--force]
 #   ./packages.sh check     [--file PATH]
 #   ./packages.sh install   [--file PATH] [--dry-run] [--yes]
 #   ./packages.sh diff      [--file PATH]
+#   ./packages.sh holds
+#   ./packages.sh orphans
 #
 # Commands:
 #   list     Print explicitly-installed package names to stdout (read-only)
@@ -27,6 +34,11 @@
 #   check    Report whether everything in the file is installed (read-only)
 #   install  Install everything the file lists that is missing
 #   diff     Show what dump would change, without writing
+#   holds    Print held, version-locked or ignored package names (read-only):
+#            apt-mark showhold, dnf versionlock plus exclude= in
+#            /etc/dnf/dnf.conf, or IgnorePkg in /etc/pacman.conf
+#   orphans  Print the packages autoremove would remove (read-only):
+#            apt-get -s autoremove, dnf repoquery --unneeded, pacman -Qdtq
 #
 # Exit codes:
 #   0   success (for `check`: everything present)
@@ -93,7 +105,7 @@ ASSUME_YES=0
 
 while (( $# > 0 )); do
   case "$1" in
-    list|dump|check|install|diff)
+    list|dump|check|install|diff|holds|orphans)
       if [[ -n "$CMD" ]]; then err "only one command at a time"; exit 3; fi
       CMD="$1"
       ;;
@@ -152,6 +164,104 @@ install_cmd() {
   esac
 }
 
+# --- holds and orphans ------------------------------------------------------
+# dnf versionlock prints NAME-EPOCH:VERSION-RELEASE.* (dnf 4) or
+# "Package name: NAME" (dnf 5); a leading ! is an excluded version, not a hold.
+versionlock_names() {
+  awk '
+    /^[ \t]*(#|$)/ { next }
+    /^!/ { next }
+    /^Package name:/ { sub(/^Package name:[ \t]*/, ""); print $1; next }
+    /^[A-Za-z0-9_.+-]+-[0-9]+:/ { sub(/-[0-9]+:.*$/, ""); print; next }
+  '
+}
+
+# exclude= (and dnf 5's excludepkgs=) in /etc/dnf/dnf.conf, comma or space
+# separated. Globs such as kernel* are printed as written.
+dnf_conf_excludes() {
+  [[ -r /etc/dnf/dnf.conf ]] || return 0
+  awk '
+    /^[ \t]*(exclude|excludepkgs)[ \t]*=/ {
+      v = substr($0, index($0, "=") + 1)
+      gsub(/,/, " ", v)
+      n = split(v, parts, /[ \t]+/)
+      for (i = 1; i <= n; i++) if (parts[i] != "") print parts[i]
+    }' /etc/dnf/dnf.conf
+}
+
+# IgnorePkg entries in /etc/pacman.conf, comments stripped. IgnoreGroup is out
+# of scope: a group is not a package name.
+pacman_ignored() {
+  [[ -r /etc/pacman.conf ]] || return 0
+  awk '
+    { sub(/#.*/, "") }
+    /^[ \t]*IgnorePkg[ \t]*=/ {
+      v = substr($0, index($0, "=") + 1)
+      n = split(v, parts, /[ \t]+/)
+      for (i = 1; i <= n; i++) if (parts[i] != "") print parts[i]
+    }' /etc/pacman.conf
+}
+
+list_holds() {
+  local out rc locks
+  case "$PKG_MGR" in
+    apt)
+      out="$(apt-mark showhold 2>/dev/null)"; rc=$?
+      if (( rc != 0 )); then
+        err "apt-mark showhold failed (exit $rc)"
+        return 1
+      fi
+      ;;
+    dnf)
+      # The versionlock plugin is optional. Without it there are no locks to
+      # read, which is a note for stderr rather than a failure.
+      if locks="$(dnf versionlock list -q 2>/dev/null)"; then
+        locks="$(versionlock_names <<<"$locks")"
+      else
+        info "dnf versionlock is not available; reading exclude= in /etc/dnf/dnf.conf only" >&2
+        locks=""
+      fi
+      out="$locks"$'\n'"$(dnf_conf_excludes)"
+      ;;
+    pacman)
+      out="$(pacman_ignored)"
+      ;;
+  esac
+  printf '%s\n' "$out" | awk 'NF { print $1 }' | LC_ALL=C sort -u
+}
+
+list_orphans() {
+  local out rc
+  case "$PKG_MGR" in
+    apt)
+      # -s simulates: nothing is removed, and no root is needed.
+      out="$(apt-get -s autoremove 2>/dev/null)"; rc=$?
+      if (( rc != 0 )); then
+        err "apt-get -s autoremove failed (exit $rc)"
+        return 1
+      fi
+      out="$(awk '/^Remv / { print $2 }' <<<"$out")"
+      ;;
+    dnf)
+      out="$(dnf repoquery --unneeded --qf '%{name}\n' 2>/dev/null)"; rc=$?
+      if (( rc != 0 )); then
+        err "dnf repoquery --unneeded failed (exit $rc)"
+        return 1
+      fi
+      ;;
+    pacman)
+      # pacman -Qdtq exits 1 with no output when nothing is orphaned; that is
+      # the empty answer, not an error.
+      out="$(pacman -Qdtq 2>/dev/null)"; rc=$?
+      if (( rc != 0 )) && [[ "$rc" != 1 || -n "$out" ]]; then
+        err "pacman -Qdtq failed (exit $rc)"
+        return 1
+      fi
+      ;;
+  esac
+  printf '%s\n' "$out" | awk 'NF { print $1 }' | LC_ALL=C sort -u
+}
+
 read_file_packages() {
   grep -vE '^\s*(#|$)' "$FILE" 2>/dev/null | LC_ALL=C sort -u
 }
@@ -163,6 +273,16 @@ case "$CMD" in
     # collectors, and unlike parsing a distro-specific command it works across
     # all three supported package managers.
     list_manual
+    ;;
+
+  holds)
+    # Names only on stdout, sorted, so the output pipes; empty means none.
+    list_holds || exit 1
+    ;;
+
+  orphans)
+    # What autoremove would take, as names; empty means none.
+    list_orphans || exit 1
     ;;
 
   dump)
