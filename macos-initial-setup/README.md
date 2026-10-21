@@ -1500,7 +1500,7 @@ sudo ./hardening_audit.sh                   # a few probes read more as root
 | `lock` | Whether a password is required immediately after display sleep or the screen saver; an unlocked delay is graded. |
 | `sip` | System Integrity Protection, including a partially-disabled custom configuration. |
 | `gatekeeper` | Whether assessments are enabled. |
-| `secrets` | Credential files at rest: `~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, the GitHub CLI `hosts.yml`, Terraform Cloud and gcloud application-default credentials. Readable by every local user fails, by the group warns. Static AWS keys, base64 registry passwords (also those left beside a `credsStore`), a literal npm token, a `.netrc` password, `~/.git-credentials` and `credential.helper store` warn. |
+| `secrets` | Credential files at rest: `~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, the GitHub CLI `hosts.yml`, Terraform Cloud and gcloud application-default credentials. Readable by every local user fails, by the group warns, and so does a `600` file whose extended ACL (`ls -le`) has an allow entry granting `read` to anyone but the owner (fix: `chmod -N FILE`). Static AWS keys, base64 registry passwords (also those left beside a `credsStore`), a literal npm token, a `.netrc` password, `~/.git-credentials` and `credential.helper store` warn. |
 
 The `sharing` checks ask `netstat` which ports are listening rather than
 `systemsetup`, which needs root: an audit you have to `sudo` is an audit nobody

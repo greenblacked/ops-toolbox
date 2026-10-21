@@ -2636,6 +2636,31 @@ assert_not_contains "the AWS secret is never printed" "$out" "CANARY_AWS_SECRET"
 assert_not_contains "the AWS key id is never printed" "$out" "AKIACANARY"
 
 chmod 600 "$sec/home/.aws/credentials"
+# Mode 600 is not enough when an extended ACL lets someone else read: `ls -le`
+# is stubbed (GNU ls has no -e, which must be silent).
+cat > "$sec/bin/ls" <<'LS_EOF'
+#!/bin/sh
+if [ "$1" = "-leLd" ] && [ -n "${FAKE_LS_ACL:-}" ]; then
+  printf '%s\n' "-rw-------+ 1 me staff 10 Oct  1 00:00 $3"
+  printf '%b' "$FAKE_LS_ACL"
+  exit 0
+fi
+exec /bin/ls "$@"
+LS_EOF
+chmod +x "$sec/bin/ls"
+out="$(FAKE_LS_ACL=' 0: user:mallory allow read,write\n' audit_secrets)"; rc=$?
+assert_contains "an ACL granting another user read is a warning" "$out" "[warn] AWS credentials has an ACL entry that lets another user read it"
+assert_contains "the ACL fix is printed" "$out" "chmod -N $sec/home/.aws/credentials"
+assert_not_contains "an ACL-readable file is not called private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: group:staff allow read\n' audit_secrets)"
+assert_contains "an ACL granting a group read is a warning" "$out" "ACL entry that lets another user read it"
+out="$(FAKE_LS_ACL=' 0: user:me allow read,write\n' audit_secrets)"
+assert_contains "an ACL entry for the owner is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:mallory deny read\n 1: user:bob allow readattr,write\n' audit_secrets)"
+assert_contains "a deny entry or a non-read right is private" "$out" "AWS credentials is private to its owner"
+out="$(audit_secrets)"
+assert_contains "ls without ACL support stays silent" "$out" "AWS credentials is private to its owner"
+rm -f "$sec/bin/ls"
 out="$(audit_secrets)"; rc=$?
 assert_eq "a private AWS credentials file with static keys only warns -> 0" "0" "$rc"
 assert_contains "static AWS keys are a warning" "$out" "long-lived static AWS keys on disk"

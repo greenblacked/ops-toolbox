@@ -453,6 +453,31 @@ if want secrets; then
     printf '%s\n' "$m"
   }
 
+  # Does an extended ACL on PATH let anyone but the owner read it? macOS
+  # `ls -led` lists the entries under the mode line ("0: user:bob allow
+  # read"). Where ls has no -e (GNU ls in the test container) or the file
+  # has no ACL, the answer is no, silently. Only an allow entry with the
+  # `read` right counts, and an entry naming the owner is the owner's own.
+  acl_grants_other_read() {
+    local listing
+    listing="$(ls -leLd -- "$1" 2>/dev/null)" || return 1
+    awk '
+      NR == 1 { owner = $3; next }
+      /^[[:space:]]*[0-9]+: / {
+        line = $0
+        sub(/^[[:space:]]*[0-9]+: /, "", line)
+        i = index(line, " allow ")
+        if (i == 0) next
+        subject = substr(line, 1, i - 1)
+        n = split(substr(line, i + 7), perm, /[ ,]+/)
+        for (k = 1; k <= n; k++) {
+          if (perm[k] == "read" && subject != ("user:" owner)) found = 1
+        }
+      }
+      END { exit !found }
+    ' <<<"$listing"
+  }
+
   # Does FILE hold a line matching the extended regex? Yes or no and nothing
   # else: grep's output is discarded, so no secret leaves this function.
   file_has() { grep -qE -- "$2" "$1" 2>/dev/null; }
@@ -510,6 +535,9 @@ if want secrets; then
         fail "$label is readable by every local user ($shown, mode $mode)" "chmod 600 $path"
       elif (( (8#$mode & 32) != 0 )); then
         warn "$label is readable by its group ($shown, mode $mode)" "chmod 600 $path"
+      elif acl_grants_other_read "$path"; then
+        warn "$label has an ACL entry that lets another user read it ($shown, mode $mode)" \
+             "chmod -N $path"
       else
         pass "$label is private to its owner ($shown, mode $mode)"
       fi
