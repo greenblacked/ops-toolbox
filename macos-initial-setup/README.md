@@ -35,6 +35,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`stay_fresh.sh`](#stay_freshsh)
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`brewfile.sh`](#brewfilesh)
+- [`config_backup.sh`](#config_backupsh)
 - [`macos_defaults.sh`](#macos_defaultssh)
 - [`status.sh`](#statussh)
 - [`workstation_doctor.sh`](#workstation_doctorsh)
@@ -88,6 +89,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. Deprecated: it runs only under `--legacy-run`. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
+| `config_backup.sh` | Dated, verified, rotated archive of the non-secret dotfiles and tool config (`~/.zshrc`, `~/.gitconfig`, `~/.ssh/config`, `~/.aws/config`, LaunchAgents) before an upgrade or a wipe. |
 | `macos_defaults.sh` | Read-only preference drift report by default; explicitly apply selected settings or revert a validated backup. |
 | `status.sh` | One-screen verdict: is this machine well enough to work on, and what should I run next? Read-only, no log, no sudo. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
@@ -117,6 +119,7 @@ than memorizing flags.
 | **Bootstrap** | `install_devtools.sh` | Once per machine (+ version bumps) | `~/.pyenv`, `~/.goenv`, `$(brew --prefix)/bin`, optionally `~/.zshrc` |
 | **Ambient** | `zsh_aliases.zsh` | Sourced on every interactive shell (after wiring into `~/.zshrc`) | Your shell only — no disk writes |
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | Caches, Homebrew, Docker, Xcode, toolchains |
+| **Configure** | `config_backup.sh` | Before an OS upgrade, a wipe or a risky dotfile edit | Writes one archive to `~/ops-toolbox-backups` (and rotates older ones there) only with `--yes` |
 | **Configure** | `macos_defaults.sh` | Once, then after major macOS upgrades | Finder, Dock, keyboard and screenshot preferences; read-only unless `--apply`/`--revert` |
 | **Diagnose** | `status.sh` | Whenever you sit down at the machine | Nothing — it only reads |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
@@ -1243,6 +1246,69 @@ reconciliation, so review the preview before applying it. If `--dry-run` and
 
 ---
 
+## `config_backup.sh`
+
+`brewfile.sh` records the software and `macos_defaults.sh` the preferences.
+The rest of "rebuild this laptop in an hour" is the dotfiles and tool
+configuration, and this keeps a dated copy of them: the macOS counterpart of
+[`linux/config_backup.sh`](../linux/config_backup.sh), aimed at the home
+directory instead of `/etc`. It is a copy you can keep, not a restore tool,
+and it never writes into the paths it archives.
+
+```bash
+./config_backup.sh --dry-run                 # what would be archived and rotated
+./config_backup.sh --yes                     # write ~/ops-toolbox-backups/config-YYYYmmdd-HHMMSS.tar.gz
+./config_backup.sh --list                    # members of the newest archive
+./config_backup.sh --yes --paths "$HOME/.config/nvim,$HOME/.kube/kubie.yaml" --keep 14
+```
+
+Default sources, each archived only if it exists: `~/.zshrc`, `~/.zprofile`,
+`~/.zshenv`, `~/.bash_profile`, `~/.bashrc`, `~/.gitconfig`,
+`~/.gitignore_global`, `~/.config/git`, `~/.ssh/config`, `~/.aws/config`,
+`~/.terraformrc`, `~/.tool-versions`, `~/.config/starship.toml` and
+`~/Library/LaunchAgents`. `--paths` replaces them with absolute paths under
+`$HOME`; a path outside it, with a `..` component, or `$HOME` itself is
+refused.
+
+**Secrets stay out by default.** A path that is, contains, or lies inside a
+credential store is refused with exit `3`: private keys in `~/.ssh` (and
+`~/.ssh` as a whole), `~/.aws/credentials`, `~/.kube/config`,
+`~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`, the
+GitHub CLI `hosts.yml`, `~/Library/Keychains` and `~/.gnupg`.
+`--include-secrets` lifts that and warns that the archive now holds secrets.
+Either way the archive is created `0600` inside a `0700` directory.
+
+How a run writes: the archive is built as a hidden temporary file in `--dest`
+under `umask 077` (with `COPYFILE_DISABLE=1`, so macOS `tar` adds no `._`
+AppleDouble members, and `.DS_Store` excluded), checked with `tar -tzf` for at
+least one member, then published with `mv -n`, which never replaces a file.
+A failed run removes its temporary file and keeps every earlier archive.
+Rotation then removes the oldest `PREFIX-YYYYmmdd-HHMMSS.tar.gz` files beyond
+`--keep`, printing each one, and touches nothing else in `--dest`; it runs only
+after the new archive is published, and `--dry-run` lists what it would
+remove. A dry run writes nothing at all, not even the destination directory,
+and previews on any machine.
+
+| Flag | Purpose |
+| --- | --- |
+| `--dry-run` | Print the archive, its sources and the rotation victims; write nothing. |
+| `--yes`, `-y` | Required for a run that writes. |
+| `--list [FILE]` | List the members of `FILE`, or of the newest archive in `--dest`. |
+| `--paths LIST` | Comma-separated absolute paths under `$HOME`, instead of the default sources. |
+| `--dest DIR` | Directory for archives (default `~/ops-toolbox-backups`); must not be inside an archived source. |
+| `--keep N` | Archives to keep, newest first (default `7`; `0` keeps all). |
+| `--prefix NAME` | Filename prefix (default `config`): letters, digits, `.`, `_`, `-`. |
+| `--include-secrets` | Allow credential paths, with a warning. |
+| `-h`, `--help` | Show the built-in help. |
+
+**Exit codes:** `0` archive written, listed or previewed · `1` tar,
+verification, publication or rotation failed · `2` preflight failed (not
+macOS, `HOME` unset, or no `tar`) for a real run · `3` bad arguments, a
+refused path, or a real run without `--yes` · `4` nothing to archive, or no
+archive to list.
+
+---
+
 ## `macos_defaults.sh`
 
 Reports macOS preference drift without changing anything. The built-in settings
@@ -2100,6 +2166,14 @@ Homebrew / `pyenv` / `goenv` commands.
 - `install` adds missing declared packages without upgrading existing ones.
 - `cleanup` changes nothing by default; `cleanup --force` uninstalls packages
   outside the selected Brewfile and reconciles Homebrew's Bundle trust state.
+
+### `config_backup.sh`
+
+- `--dry-run` and `--list` write nothing.
+- `--yes` writes one archive, mode `0600`, to
+  `~/ops-toolbox-backups/config-YYYYmmdd-HHMMSS.tar.gz` (or `--dest`),
+  creating that directory `0700` if it is missing, and then removes archives
+  of its own name pattern beyond `--keep`. Nothing it archives is modified.
 
 ### `macos_defaults.sh`
 

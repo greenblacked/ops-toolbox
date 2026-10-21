@@ -34,6 +34,7 @@ a LaunchAgent that schedules the maintenance run.
 | `toolchain_check.sh` | Are the Python, Terraform, Go and Node versions a checkout pins installed and active? | <span class="stage stage-report">read-only</span> |
 | `stay_fresh.sh` | Recurring housekeeping and upgrades; presets `--quick`, `--reports`, `--full`, `--old-only`. | `--dry-run` |
 | `brewfile.sh` | `dump`, `check`, `install`, `diff` and `cleanup` of the Homebrew state. | `--dry-run` on `install`; `cleanup` previews unless `--force` |
+| `config_backup.sh` | Dated, verified, rotated archive of the non-secret dotfiles and tool config; credential paths refused unless `--include-secrets`. | `--dry-run`; a real run needs `--yes` |
 | `macos_defaults.sh` | Report `defaults` values against the desired set; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
 | `launchd/stay_fresh_agent.sh` | `install`, `uninstall`, `status`, `run-now`, `logs` for a scheduled LaunchAgent. | `--dry-run` on `install` and `uninstall` |
 | `zsh_aliases.zsh` | Optional zsh aliases, sourced rather than run. | n/a |
@@ -61,6 +62,7 @@ All paths are under `macos-initial-setup/`.
     ./macos-initial-setup/install_devtools.sh --dry-run --verbose
     ./macos-initial-setup/stay_fresh.sh --dry-run
     ./macos-initial-setup/macos_defaults.sh --apply --dry-run
+    ./macos-initial-setup/config_backup.sh --dry-run
     ```
 
 === "Apply"

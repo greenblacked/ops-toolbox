@@ -1,0 +1,445 @@
+#!/usr/bin/env bash
+# config_backup.sh
+# Dated, verified, rotated archive of this Mac's non-secret dotfiles and tool
+# configuration, kept before an OS upgrade, a wipe or a risky edit.
+#
+# brewfile.sh records the software and macos_defaults.sh the preferences. The
+# third part of "rebuild this laptop in an hour" is ~/.zshrc, ~/.gitconfig,
+# ~/.ssh/config, ~/.aws/config and friends, and nothing snapshotted those.
+# The macOS counterpart of linux/config_backup.sh, aimed at the home directory
+# rather than /etc: a copy you can keep, not a restore tool. It never writes
+# into the paths it archives.
+#
+# Secrets stay out unless you opt in: a path that holds credentials (private
+# keys, ~/.aws/credentials, kubeconfig, Docker and npm auth, the Keychains,
+# ~/.gnupg) is refused without --include-secrets. The archive is created 0600
+# inside a 0700 directory regardless.
+#
+# Preview first, as everywhere in this package: --dry-run writes nothing, not
+# even the destination directory, and a real run needs --yes. Rotation is the
+# only deletion, and it touches only PREFIX-YYYYmmdd-HHMMSS.tar.gz files in
+# --dest, after the new archive has been verified and published.
+#
+# Usage:
+#   ./config_backup.sh --dry-run
+#   ./config_backup.sh --yes
+#   ./config_backup.sh --list
+#   ./config_backup.sh --yes --paths "$HOME/.config/nvim,$HOME/.kube/kubie.yaml" --keep 14
+#
+# Exit codes:
+#   0   archive written, listed, or previewed
+#   1   tar, verification, publication or rotation failed
+#   2   preflight failed (not macOS, HOME unset, or tar missing) for a real run
+#   3   bad CLI arguments, a refused path, or a real run without --yes
+#   4   nothing to archive, or nothing to list
+set -u
+set -o pipefail
+
+DRY_RUN=0
+ASSUME_YES=0
+LIST=0
+LIST_FILE=""
+DEST=""
+KEEP=7
+PREFIX="config"
+INCLUDE_SECRETS=0
+PATHS=()
+TMP_ARCHIVE=""
+
+if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
+  C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
+  C_RED=$'\033[1;31m'; C_GREEN=$'\033[1;32m'; C_YELLOW=$'\033[1;33m'; C_BLUE=$'\033[1;34m'
+else
+  C_RESET='' C_BOLD='' C_DIM='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE=''
+fi
+info() { printf "%s[info]%s %s\n" "$C_BLUE"   "$C_RESET" "$*"; }
+ok()   { printf "%s[ ok ]%s %s\n" "$C_GREEN"  "$C_RESET" "$*"; }
+warn() { printf "%s[warn]%s %s\n" "$C_YELLOW" "$C_RESET" "$*"; }
+err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
+preview() { printf "  %s(dry-run)%s %s\n" "$C_DIM" "$C_RESET" "$*"; }
+
+# Relative to HOME. Each is archived only if it exists.
+DEFAULT_SOURCES=".zshrc .zprofile .zshenv .bash_profile .bashrc .gitconfig
+.gitignore_global .config/git .ssh/config .aws/config .terraformrc
+.tool-versions .config/starship.toml Library/LaunchAgents"
+
+# Relative to HOME. A requested path that is one of these, lies inside one,
+# or contains one is refused without --include-secrets. Private keys under
+# ~/.ssh are matched separately, by name.
+SECRET_PATHS=".aws/credentials .kube/config .docker/config.json .netrc .npmrc
+.git-credentials .config/gh/hosts.yml Library/Keychains .gnupg"
+
+usage() {
+  local defaults
+  # shellcheck disable=SC2086  # the source list is split on purpose
+  defaults="$(printf '%s\n' $DEFAULT_SOURCES | sed 's|^|  ~/|')"
+  cat <<EOF
+${C_BOLD}config_backup.sh${C_RESET} — dated archive of this Mac's dotfiles and tool config
+
+Archives the default sources below (or --paths) from your home directory into
+a gzip tar in --dest, verifies it, then rotates older copies. Paths that hold
+credentials are refused unless --include-secrets. A dry run writes nothing;
+a real run requires --yes. This is a copy, not a restore.
+
+${C_BOLD}Usage:${C_RESET}
+  $(basename "$0") --dry-run [options]
+  $(basename "$0") --yes [options]
+  $(basename "$0") --list [FILE]
+
+${C_BOLD}Options:${C_RESET}
+  --dry-run          Print what would be archived and rotated; write nothing
+  --yes, -y          Required for a run that writes
+  --list [FILE]      List the members of FILE, or of the newest archive in --dest
+  --paths LIST       Comma-separated absolute paths under \$HOME (repeatable;
+                     replaces the default sources)
+  --dest DIR         Directory for archives (default: ~/ops-toolbox-backups)
+  --keep N           Archives to keep, newest first (default: $KEEP; 0 = all)
+  --prefix NAME      Filename prefix (default: $PREFIX)
+  --include-secrets  Allow paths that hold credentials, with a warning
+  -h, --help         Show this help
+
+${C_BOLD}Default sources (each only if it exists):${C_RESET}
+$defaults
+
+${C_BOLD}Exit codes:${C_RESET}
+  0  archive written, listed, or previewed
+  1  tar, verification, publication or rotation failed
+  2  preflight failed (not macOS, HOME unset, or tar missing)
+  3  bad arguments, a refused path, or a real run without --yes
+  4  nothing to archive, or nothing to list
+EOF
+}
+
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    printf "%s requires a value\n" "$option" >&2
+    exit 3
+  fi
+}
+
+add_paths() {
+  local item parts
+  IFS=',' read -r -a parts <<< "$1"
+  for item in ${parts[@]+"${parts[@]}"}; do
+    [[ -n "$item" ]] || continue
+    PATHS+=("$item")
+  done
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+    --dry-run)         DRY_RUN=1 ;;
+    --yes|-y)          ASSUME_YES=1 ;;
+    --list)
+      LIST=1
+      if [[ -n "${2:-}" && "$2" != -* ]]; then
+        LIST_FILE="$2"
+        shift
+      fi
+      ;;
+    --list=*)          LIST=1; LIST_FILE="${1#*=}"; require_value "--list" "$LIST_FILE" ;;
+    --paths)           require_value "$1" "${2:-}"; add_paths "$2"; shift ;;
+    --paths=*)         require_value "--paths" "${1#*=}"; add_paths "${1#*=}" ;;
+    --dest)            require_value "$1" "${2:-}"; DEST="$2"; shift ;;
+    --dest=*)          DEST="${1#*=}"; require_value "--dest" "$DEST" ;;
+    --keep)            require_value "$1" "${2:-}"; KEEP="$2"; shift ;;
+    --keep=*)          KEEP="${1#*=}"; require_value "--keep" "$KEEP" ;;
+    --prefix)          require_value "$1" "${2:-}"; PREFIX="$2"; shift ;;
+    --prefix=*)        PREFIX="${1#*=}"; require_value "--prefix" "$PREFIX" ;;
+    --include-secrets) INCLUDE_SECRETS=1 ;;
+    -h|--help)         usage; exit 0 ;;
+    *)
+      err "unknown argument: $1"
+      usage >&2
+      exit 3
+      ;;
+  esac
+  shift
+done
+
+if ! [[ "$KEEP" =~ ^[0-9]+$ ]] || (( 10#$KEEP > 3650 )); then
+  err "--keep must be an integer between 0 and 3650, got: $KEEP"
+  exit 3
+fi
+KEEP=$((10#$KEEP))
+
+if [[ ! "$PREFIX" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  err "--prefix may contain letters, digits, dot, underscore and hyphen only, got: $PREFIX"
+  exit 3
+fi
+
+if (( LIST == 0 && DRY_RUN == 0 && ASSUME_YES == 0 )); then
+  err "refusing to write an archive without --yes; preview with --dry-run"
+  exit 3
+fi
+
+# Every path below is built from HOME; an empty one would address /.
+if [[ -z "${HOME:-}" || ! -d "$HOME" ]]; then
+  err "HOME is not set or not a directory"
+  exit 2
+fi
+HOME_DIR="${HOME%/}"
+if [[ -z "$HOME_DIR" ]]; then
+  err "HOME is /; refusing to treat the whole disk as a home directory"
+  exit 2
+fi
+
+if [[ -z "$DEST" ]]; then
+  DEST="$HOME_DIR/ops-toolbox-backups"
+fi
+case "$DEST" in
+  /*) ;;
+  *)  DEST="$(pwd)/$DEST" ;;
+esac
+DEST="${DEST%/}"
+
+# Archives this script wrote: PREFIX-YYYYmmdd-HHMMSS.tar.gz, with -N when two
+# runs share a second. Nothing else in --dest is listed or rotated.
+is_ours() {
+  local name="$1" rest
+  [[ "$name" == "$PREFIX"-* ]] || return 1
+  rest="${name#"$PREFIX"-}"
+  [[ "$rest" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?\.tar\.gz$ ]]
+}
+
+# Our archives in --dest, newest first. The timestamp in the name orders them,
+# then the -N a same-second run adds, so no mtime is consulted; symlinks and
+# anything else are left out. Names hold no spaces: the prefix is validated.
+our_archives() {
+  local f name rest stamp_part seq_part
+  [[ -d "$DEST" ]] || return 0
+  for f in "$DEST"/"$PREFIX"-*.tar.gz; do
+    [[ -f "$f" && ! -L "$f" ]] || continue
+    name="${f##*/}"
+    is_ours "$name" || continue
+    rest="${name#"$PREFIX"-}"
+    rest="${rest%.tar.gz}"
+    stamp_part="${rest:0:15}"
+    seq_part="${rest:16}"
+    printf '%s %s %s\n' "$stamp_part" "${seq_part:-1}" "$name"
+  done | sort -k1,1r -k2,2nr | cut -d' ' -f3
+}
+
+# --- list ------------------------------------------------------------------
+if (( LIST )); then
+  if [[ -z "$LIST_FILE" ]]; then
+    newest="$(our_archives | head -n 1)"
+    if [[ -z "$newest" ]]; then
+      info "no $PREFIX-*.tar.gz archives in $DEST"
+      exit 4
+    fi
+    LIST_FILE="$DEST/$newest"
+  elif [[ ! -f "$LIST_FILE" ]]; then
+    err "not an archive: $LIST_FILE"
+    exit 3
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    err "tar is required"
+    exit 2
+  fi
+  info "listing $LIST_FILE"
+  tar -tzf "$LIST_FILE" || exit 1
+  exit 0
+fi
+
+# --- sources ---------------------------------------------------------------
+# Is REL, or anything under it, a place credentials live?
+holds_secret() {
+  local rel="$1" d
+  for d in $SECRET_PATHS; do
+    if [[ "$rel" == "$d" || "$rel" == "$d"/* || "$d" == "$rel"/* ]]; then
+      return 0
+    fi
+  done
+  # ~/.ssh as a whole holds the private keys; a public key does not.
+  case "$rel" in
+    .ssh)          return 0 ;;
+    .ssh/id_*.pub) return 1 ;;
+    .ssh/id_*)     return 0 ;;
+  esac
+  return 1
+}
+
+RELS=()
+MISSING=()
+if (( ${#PATHS[@]} > 0 )); then
+  for p in "${PATHS[@]}"; do
+    p="${p%/}"
+    case "$p" in
+      /*) ;;
+      *) err "--paths takes absolute paths under \$HOME, got: $p"; exit 3 ;;
+    esac
+    case "$p/" in
+      */../*|*/./*|*//*)
+        err "refusing $p: it has a '.', '..' or empty component"
+        exit 3
+        ;;
+    esac
+    if [[ "$p" == "$HOME_DIR" ]]; then
+      err "refusing to archive the whole home directory: $p"
+      exit 3
+    fi
+    if [[ "$p" != "$HOME_DIR"/* ]]; then
+      err "refusing $p: it is not under $HOME_DIR"
+      exit 3
+    fi
+    rel="${p#"$HOME_DIR"/}"
+    if holds_secret "$rel"; then
+      if (( INCLUDE_SECRETS == 0 )); then
+        err "refusing to archive $p: it holds credentials (use --include-secrets to override)"
+        exit 3
+      fi
+      warn "--include-secrets: $p holds credentials, and the archive now does too"
+    fi
+    if [[ -e "$p" || -L "$p" ]]; then
+      RELS+=("$rel")
+    else
+      MISSING+=("$rel")
+    fi
+  done
+else
+  for rel in $DEFAULT_SOURCES; do
+    if [[ -e "$HOME_DIR/$rel" || -L "$HOME_DIR/$rel" ]]; then
+      RELS+=("$rel")
+    else
+      MISSING+=("$rel")
+    fi
+  done
+fi
+
+# The archive must not land inside something it archives, or each run would
+# carry the previous ones.
+for rel in ${RELS[@]+"${RELS[@]}"}; do
+  if [[ "$DEST" == "$HOME_DIR/$rel" || "$DEST" == "$HOME_DIR/$rel"/* ]]; then
+    err "--dest $DEST is inside ~/$rel, which is being archived"
+    exit 3
+  fi
+done
+
+# --- preflight -------------------------------------------------------------
+# A dry run writes nothing, so like --help it answers on a machine that could
+# not do the real work; only a real run needs a Mac with tar on it.
+preflight_fail() {
+  if (( DRY_RUN == 1 )); then
+    warn "$1"
+    warn "  (dry-run) previewing anyway; a real run would stop here"
+    return 0
+  fi
+  err "$1"
+  exit 2
+}
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  preflight_fail "this script targets macOS (detected: $(uname -s))"
+fi
+if ! command -v tar >/dev/null 2>&1; then
+  preflight_fail "tar is required"
+fi
+
+stamp="$(date +%Y%m%d-%H%M%S)"
+name="$PREFIX-$stamp.tar.gz"
+seq=1
+while [[ -e "$DEST/$name" ]]; do
+  seq=$((seq + 1))
+  name="$PREFIX-$stamp-$seq.tar.gz"
+done
+ARCHIVE="$DEST/$name"
+
+# Rotation victims if a new archive is published now: everything ours beyond
+# the newest KEEP, counting the new one.
+rotation_victims() {
+  local n=1 old
+  (( KEEP == 0 )) && return 0
+  while IFS= read -r old; do
+    [[ -n "$old" ]] || continue
+    [[ "$old" == "$name" ]] && continue
+    n=$((n + 1))
+    (( n > KEEP )) && printf '%s\n' "$DEST/$old"
+  done <<< "$(our_archives)"
+  return 0
+}
+
+for m in ${MISSING[@]+"${MISSING[@]}"}; do
+  info "not present, skipped: ~/$m"
+done
+
+if (( DRY_RUN )); then
+  if (( ${#RELS[@]} == 0 )); then
+    preview "nothing to archive: none of the sources exist (a real run exits 4)"
+  else
+    [[ -d "$DEST" ]] || preview "would create $DEST (mode 700)"
+    preview "would create $ARCHIVE"
+    for rel in "${RELS[@]}"; do
+      preview "would archive ~/$rel"
+    done
+    while IFS= read -r victim; do
+      [[ -n "$victim" ]] && preview "would remove $victim"
+    done <<< "$(rotation_victims)"
+  fi
+  printf "dry-run complete; no changes written\n"
+  exit 0
+fi
+
+if (( ${#RELS[@]} == 0 )); then
+  info "nothing to archive: none of the sources exist under $HOME_DIR"
+  exit 4
+fi
+
+# --- write -----------------------------------------------------------------
+# shellcheck disable=SC2329  # run by the EXIT trap below
+cleanup() {
+  if [[ -n "$TMP_ARCHIVE" && -e "$TMP_ARCHIVE" ]]; then
+    rm -f -- "$TMP_ARCHIVE"
+  fi
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [[ ! -d "$DEST" ]]; then
+  if ! (umask 077 && mkdir -p -- "$DEST"); then
+    err "could not create $DEST"
+    exit 1
+  fi
+fi
+
+TMP_ARCHIVE="$DEST/.$PREFIX-$stamp.tmp.$$"
+# umask 077 makes the archive 0600 from its first byte. COPYFILE_DISABLE stops
+# macOS tar from adding ._ AppleDouble members for extended attributes. The
+# relative names follow --, so none can be read as an option.
+if ! (umask 077 && COPYFILE_DISABLE=1 tar -czf "$TMP_ARCHIVE" --exclude=.DS_Store \
+      -C "$HOME_DIR" -- "${RELS[@]}"); then
+  err "tar failed; no archive written, previous archives kept"
+  exit 1
+fi
+
+# A gzip stream tar can read, with at least one member, or it is not a backup.
+members="$(tar -tzf "$TMP_ARCHIVE" 2>/dev/null)" || members=""
+if [[ -z "$members" ]]; then
+  err "the new archive failed verification; previous archives kept"
+  exit 1
+fi
+
+# mv -n never replaces an existing file; the name was free a moment ago, and
+# if it is not now, the temporary file is still there and the run fails.
+mv -n -- "$TMP_ARCHIVE" "$ARCHIVE" 2>/dev/null
+if [[ -e "$TMP_ARCHIVE" || ! -f "$ARCHIVE" ]]; then
+  err "could not publish $ARCHIVE; previous archives kept"
+  exit 1
+fi
+TMP_ARCHIVE=""
+ok "wrote $ARCHIVE ($(printf '%s\n' "$members" | wc -l | tr -d ' ') members)"
+
+failed=0
+while IFS= read -r victim; do
+  [[ -n "$victim" ]] || continue
+  if rm -f -- "$victim"; then
+    ok "rotated $victim"
+  else
+    err "could not remove $victim"
+    failed=1
+  fi
+done <<< "$(rotation_victims)"
+
+exit "$failed"

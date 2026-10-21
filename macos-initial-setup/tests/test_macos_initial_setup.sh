@@ -303,6 +303,9 @@ preflight_args() {
     stay_fresh_agent.sh) printf '%s\n' "status" ;;
     # Exit 3 without a target is correct; one host reaches the macOS guard.
     tls_expiry.sh)       printf '%s\n' "--host example.test" ;;
+    # A bare run is refused for want of --yes (exit 3) before the platform is
+    # looked at; --yes reaches the macOS guard, which stops it before any write.
+    config_backup.sh)    printf '%s\n' "--yes" ;;
     *)                   printf '%s\n' "" ;;
   esac
 }
@@ -3448,6 +3451,142 @@ assert_contains "a missing LaunchDaemons directory is a skip row" "$out" "$empty
 scratch_files="$(find "$sr/home" "$sr/tmp" -type f ! -name '*.plist' | wc -l | tr -d ' ')"
 assert_eq "schedule_report writes nothing under HOME or TMPDIR" "0" "$scratch_files"
 rm -rf "$sr"
+
+section "config_backup: refusals and previews"
+# Every refusal happens before anything is written, and a preview writes
+# nothing at all: not the archive, not the destination directory, not a log.
+# The snapshot compares the whole scratch HOME and TMPDIR before and after.
+CB="$M/config_backup.sh"
+cb="$(mktemp -d)"
+mkdir -p "$cb/bin" "$cb/home/.ssh" "$cb/home/.aws" "$cb/home/.config/git" "$cb/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$cb/bin/uname"
+chmod +x "$cb/bin/uname"
+printf 'export EDITOR=vim\n' > "$cb/home/.zshrc"
+printf '[user]\n  name = Fixture\n' > "$cb/home/.gitconfig"
+printf 'Host *\n  AddKeysToAgent yes\n' > "$cb/home/.ssh/config"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_KEY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$cb/home/.ssh/id_ed25519"
+printf '[default]\naws_secret_access_key = CANARY_AWS\n' > "$cb/home/.aws/credentials"
+printf '*.swp\n' > "$cb/home/.config/git/ignore"
+printf 'finder\n' > "$cb/home/.config/git/.DS_Store"
+
+cbrun() {
+  HOME="$cb/home" TMPDIR="$cb/tmp" PATH="$cb/bin:/usr/bin:/bin" "$CB" "$@" 2>&1
+}
+cb_snapshot() {
+  find "$cb/home" "$cb/tmp" | sort
+}
+
+before="$(cb_snapshot)"
+out="$(cbrun)"; rc=$?
+assert_eq "a real run without --yes is refused -> 3" "3" "$rc"
+assert_contains "the refusal names --yes and --dry-run" "$out" \
+  "refusing to write an archive without --yes; preview with --dry-run"
+cbrun --dry-run --keep abc >/dev/null; rc=$?
+assert_eq "a non-numeric --keep is refused -> 3" "3" "$rc"
+cbrun --dry-run --prefix 'a/b' >/dev/null; rc=$?
+assert_eq "a --prefix with a slash is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run --paths /etc/hosts)"; rc=$?
+assert_eq "a path outside HOME is refused -> 3" "3" "$rc"
+assert_contains "the refused path is named" "$out" "/etc/hosts"
+cbrun --dry-run --paths "$cb/home/../x" >/dev/null; rc=$?
+assert_eq "a path with a .. component is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home" >/dev/null; rc=$?
+assert_eq "the home directory itself is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run --paths "$cb/home/.aws/credentials")"; rc=$?
+assert_eq "a credentials file is refused -> 3" "3" "$rc"
+assert_contains "the refusal says it holds credentials" "$out" "holds credentials (use --include-secrets to override)"
+cbrun --dry-run --paths "$cb/home/.ssh" >/dev/null; rc=$?
+assert_eq "the whole .ssh directory is refused, it holds the private keys -> 3" "3" "$rc"
+out="$(cbrun --dry-run --include-secrets --paths "$cb/home/.aws/credentials")"; rc=$?
+assert_eq "--include-secrets accepts a credentials path -> 0" "0" "$rc"
+assert_contains "--include-secrets warns that the archive holds secrets" "$out" "[warn] --include-secrets"
+out="$(cbrun --dry-run --dest "$cb/home/.config/git/backups" --paths "$cb/home/.config/git")"; rc=$?
+assert_eq "a --dest inside an archived source is refused -> 3" "3" "$rc"
+
+out="$(cbrun --dry-run)"; rc=$?
+assert_eq "config_backup --dry-run -> 0" "0" "$rc"
+assert_contains "the preview names the archive it would create" "$out" "(dry-run) would create"
+if grep -qE "would create .*/ops-toolbox-backups/config-[0-9]{8}-[0-9]{6}\.tar\.gz" <<<"$out"; then
+  ok "the preview names a dated archive in the default destination"
+else
+  err "the preview did not name config-YYYYmmdd-HHMMSS.tar.gz: $out"
+fi
+assert_contains "the preview lists a default source" "$out" "(dry-run) would archive ~/.zshrc"
+assert_not_contains "the preview never lists a private key" "$out" "id_ed25519"
+assert_not_contains "the preview never lists AWS credentials" "$out" ".aws/credentials"
+assert_contains "the preview ends with the package's closing line" "$out" "dry-run complete; no changes written"
+out="$(cbrun --dry-run --keep=2 --dest="$cb/tmp/elsewhere")"; rc=$?
+assert_eq "--keep=N and --dest=DIR are accepted" "0" "$rc"
+after="$(cb_snapshot)"
+assert_eq "refusals and previews wrote nothing, the destination included" "$before" "$after"
+
+section "config_backup: archives, verifies and rotates"
+dest="$cb/home/ops-toolbox-backups"
+out="$(cbrun --yes)"; rc=$?
+assert_eq "config_backup --yes -> 0" "0" "$rc"
+archives="$(find "$dest" -name 'config-*.tar.gz' -type f | wc -l | tr -d ' ')"
+assert_eq "exactly one archive was written" "1" "$archives"
+archive="$(find "$dest" -name 'config-*.tar.gz' -type f | head -n 1)"
+archive_mode="$(stat -f '%Lp' "$archive" 2>/dev/null)"
+[[ "$archive_mode" =~ ^[0-7]{3,4}$ ]] || archive_mode="$(stat -c '%a' "$archive" 2>/dev/null)"
+assert_eq "the archive is private to its owner" "600" "$archive_mode"
+listing="$(tar -tzf "$archive" 2>/dev/null)"
+assert_contains "the archive holds ~/.zshrc" "$listing" ".zshrc"
+assert_contains "the archive holds ~/.gitconfig" "$listing" ".gitconfig"
+assert_contains "the archive holds ~/.ssh/config" "$listing" ".ssh/config"
+assert_not_contains "the archive never holds a private key" "$listing" "id_ed25519"
+assert_not_contains "the archive never holds AWS credentials" "$listing" "credentials"
+assert_not_contains "the archive leaves .DS_Store out" "$listing" ".DS_Store"
+tmp_left="$(find "$dest" -name '*.tmp.*' | wc -l | tr -d ' ')"
+assert_eq "no temporary file is left behind" "0" "$tmp_left"
+
+out="$(cbrun --list)"; rc=$?
+assert_eq "--list of the newest archive -> 0" "0" "$rc"
+assert_contains "--list prints the members" "$out" ".zshrc"
+
+rm -f "$dest"/config-*.tar.gz
+for old in 20200101-000000 20200201-000000 20200301-000000; do
+  printf 'old\n' > "$dest/config-$old.tar.gz"
+done
+printf 'keep me\n' > "$dest/notes.txt"
+out="$(cbrun --dry-run --keep 2)"
+assert_contains "the preview names the rotation victims" "$out" "(dry-run) would remove $dest/config-20200101-000000.tar.gz"
+assert_contains "the preview names every victim" "$out" "(dry-run) would remove $dest/config-20200201-000000.tar.gz"
+if [[ -f "$dest/config-20200101-000000.tar.gz" ]]; then
+  ok "the preview removed nothing"
+else
+  err "--dry-run deleted a rotation victim"
+fi
+out="$(cbrun --yes --keep 2)"; rc=$?
+assert_eq "a run with rotation -> 0" "0" "$rc"
+left="$(find "$dest" -name 'config-*.tar.gz' -type f | wc -l | tr -d ' ')"
+assert_eq "--keep 2 leaves the two newest archives" "2" "$left"
+if [[ -f "$dest/config-20200301-000000.tar.gz" && ! -e "$dest/config-20200101-000000.tar.gz" \
+      && ! -e "$dest/config-20200201-000000.tar.gz" ]]; then
+  ok "rotation removed the oldest archives and kept the newest old one"
+else
+  err "rotation removed the wrong archives: $(find "$dest" -type f)"
+fi
+assert_eq "rotation never touches other files" "keep me" "$(cat "$dest/notes.txt" 2>/dev/null)"
+
+rm -rf "$dest"
+out="$(cbrun --list)"; rc=$?
+assert_eq "--list with no archive -> 4" "4" "$rc"
+
+empty_home="$cb/empty-home"
+mkdir -p "$empty_home"
+HOME="$empty_home" TMPDIR="$cb/tmp" PATH="$cb/bin:/usr/bin:/bin" "$CB" --yes >/dev/null 2>&1; rc=$?
+assert_eq "a home with none of the default sources -> 4" "4" "$rc"
+
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$cb/bin/tar"
+chmod +x "$cb/bin/tar"
+out="$(cbrun --yes)"; rc=$?
+assert_eq "a failing tar -> 1" "1" "$rc"
+left="$(find "$dest" -type f 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "a failed run leaves no temporary or published archive" "0" "$left"
+rm -f "$cb/bin/tar"
+rm -rf "$cb"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of
