@@ -3635,6 +3635,13 @@ assert_eq "--include-secrets accepts a credentials path -> 0" "0" "$rc"
 assert_contains "--include-secrets warns that the archive holds secrets" "$out" "[warn] --include-secrets"
 out="$(cbrun --dry-run --dest "$cb/home/.config/git/backups" --paths "$cb/home/.config/git")"; rc=$?
 assert_eq "a --dest inside an archived source is refused -> 3" "3" "$rc"
+ln -s "$cb/home/.config/git" "$cb/dest-link"
+out="$(cbrun --dry-run --dest "$cb/dest-link/backups" --paths "$cb/home/.config/git")"; rc=$?
+assert_eq "a symlinked --dest that lands inside a source is refused -> 3" "3" "$rc"
+assert_contains "the symlinked refusal names the source" "$out" "is inside ~/.config/git"
+out="$(cbrun --dry-run --dest "$cb/dest-link" --paths "$cb/home/.config/git")"; rc=$?
+assert_eq "an existing symlinked --dest inside a source is refused -> 3" "3" "$rc"
+rm -f "$cb/dest-link"
 
 out="$(cbrun --dry-run)"; rc=$?
 assert_eq "config_backup --dry-run -> 0" "0" "$rc"

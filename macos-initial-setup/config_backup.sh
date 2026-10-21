@@ -334,10 +334,44 @@ if (( INCLUDE_SECRETS == 0 )); then
   EXCLUDES+=(--exclude=.config/git/credentials)
 fi
 
+# Physical path of $1 (symlinks resolved, BSD-safe: cd -P and pwd -P). A path
+# that does not exist yet is resolved through its deepest existing directory
+# and the missing tail is appended as written.
+canon_path() {
+  local p="$1" tail="" base d
+  while [[ "$p" != "/" && "$p" == */ ]]; do p="${p%/}"; done
+  while :; do
+    if [[ -d "$p" ]]; then
+      d="$(cd -P -- "$p" 2>/dev/null && pwd -P)" || d=""
+      if [[ -n "$d" ]]; then
+        if [[ -z "$tail" ]]; then
+          printf '%s\n' "$d"
+        elif [[ "$d" == "/" ]]; then
+          printf '/%s\n' "$tail"
+        else
+          printf '%s/%s\n' "$d" "$tail"
+        fi
+        return 0
+      fi
+    fi
+    [[ "$p" == "/" || "$p" != */* ]] && break
+    base="${p##*/}"
+    tail="${tail:+$base/$tail}"
+    tail="${tail:-$base}"
+    p="${p%/*}"
+    [[ -n "$p" ]] || p="/"
+  done
+  printf '%s\n' "$1"
+}
+
 # The archive must not land inside something it archives, or each run would
-# carry the previous ones.
+# carry the previous ones. Compared lexically and again by physical path, so
+# a --dest reached through a symlink into a source is refused too.
+CANON_DEST="$(canon_path "$DEST")"
 for rel in ${RELS[@]+"${RELS[@]}"}; do
-  if [[ "$DEST" == "$HOME_DIR/$rel" || "$DEST" == "$HOME_DIR/$rel"/* ]]; then
+  canon_src="$(canon_path "$HOME_DIR/$rel")"
+  if [[ "$DEST" == "$HOME_DIR/$rel" || "$DEST" == "$HOME_DIR/$rel"/* \
+        || "$CANON_DEST" == "$canon_src" || "$CANON_DEST" == "$canon_src"/* ]]; then
     err "--dest $DEST is inside ~/$rel, which is being archived"
     exit 3
   fi

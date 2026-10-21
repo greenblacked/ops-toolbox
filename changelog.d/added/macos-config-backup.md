@@ -13,3 +13,4 @@
   `mktemp`), a dry run
   writes nothing, a real run needs `--yes`, and rotation only removes its
   own older archives.
+  A `--dest` that reaches a source through a symlink is refused too.
