@@ -8,3 +8,6 @@
   `<redacted>` before anything is printed, diffed or written. One behaviour
   changes: `--commit` now refuses an export that holds a secret unless
   `--redact-secrets` is given, and the other modes warn on stderr.
+  A quoted field value that never closes is treated as a secret to the end
+  of the line, and a value that starts with an escaped `\$` in a field is a
+  literal dollar in the secret, not a variable reference.

@@ -377,6 +377,30 @@ class SecretScanTestCase(unittest.TestCase):
             export_config.redact_secrets(text),
             'set u password="<redacted>" comment=x\n')
 
+    def test_unterminated_quoted_field_is_a_leak_redacted_to_the_line_end(self):
+        text = 'set u password="abc\\"\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        redacted = export_config.redact_secrets(text)
+        self.assertNotIn("abc", redacted)
+        self.assertEqual(export_config.find_leaks(redacted), [])
+        # Unterminated, with more text after it: all of it goes.
+        text = 'set u password="abc comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        self.assertNotIn("abc", export_config.redact_secrets(text))
+
+    def test_quoted_field_starting_with_an_escaped_dollar_is_a_value(self):
+        # `\$` in a field is a literal dollar in the secret, not a variable.
+        text = 'set u password="\\$ecret" comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set u password="<redacted>" comment=x\n')
+
+    def test_a_field_holding_a_real_variable_reference_is_not_a_value(self):
+        for text in ('set u password=$Password comment=x\n',
+                     'set u password="$Password" comment=x\n'):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+
     def test_unquoted_field_value_is_unchanged_by_the_escape_handling(self):
         text = "set u password=hunter2 comment=x\n"
         self.assertEqual(

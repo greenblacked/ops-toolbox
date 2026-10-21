@@ -105,11 +105,12 @@ _LEAK_PATTERNS = (
     # Fields RouterOS only prints under show-sensitive. A quoted value runs to
     # the first unescaped quote: a backslash escapes the next character (\\,
     # \", \$, and the first digit of a \XX hex pair), so an escaped quote
-    # does not end it.
+    # does not end it. A quote that never closes runs to the end of the line
+    # (an unterminated value is a leak, not something to pass over).
     ("sensitive field", True, re.compile(
         r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
         r"|wpa-pre-shared-key|authentication-key|encryption-key)"
-        r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)"|(?P<value>[^\s\\"]+))'
+        r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)(?:"|\\?$)|(?P<value>[^\s\\"]+))'
     )),
 )
 
@@ -233,11 +234,17 @@ def _leak_spans(line):
             # <paste token here> is a placeholder; $Password is a variable.
             if value.startswith("<") and value.endswith(">"):
                 continue
-            # An export escapes a script's `$` as `\$`; strip that one
-            # backslash so a variable reference is not mistaken for a value.
-            bare = value[1:] if value.startswith("\\") else value
-            if bare.startswith(("$", "[", "(")):
-                continue
+            if kind == "sensitive field":
+                # A field value is plain text: `\$` there is a literal dollar
+                # in the secret, so only an unescaped `$name` is a reference.
+                if re.match(r"\$[A-Za-z_]", value) or value.startswith(("[", "(")):
+                    continue
+            else:
+                # An export escapes a script's `$` as `\$`; strip that one
+                # backslash so a variable reference is not mistaken for a value.
+                bare = value[1:] if value.startswith("\\") else value
+                if bare.startswith(("$", "[", "(")):
+                    continue
             if skip_comments and _in_script_comment(line, match.start()):
                 continue
             yield kind, match.start(group), match.end(group)
