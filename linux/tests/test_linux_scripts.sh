@@ -1775,6 +1775,22 @@ assert_contains "log_triage ranks the auth log's sources" "$out" "198.51.100.7"
 assert_contains "log_triage warns at ten failures from one source" "$out" "[warn]"
 assert_contains "log_triage counts accepted logins" "$out" "1 accepted SSH login(s)"
 assert_contains "log_triage skips the kernel without a journal or dmesg" "$out" "neither journalctl nor dmesg"
+
+# A journalctl that rejects the read (the probe, which has no --since, still
+# answers) must not turn into "no failed logins": the auth section warns that
+# the source is unreadable and does not claim zero.
+printf '#!/usr/bin/env bash\ncase " $* " in *" --since "*) exit 1 ;; esac\nexit 0\n' > "$triage_stub/journalctl"
+out="$(PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --only auth 2>&1)"; rc=$?
+if grep -q 'journal not readable' <<<"$out"; then
+  ok "log_triage failing-journalctl auth test skipped (journal not readable for this user)"
+else
+  assert_contains "log_triage warns when journalctl fails on the auth read" "$out" "journalctl failed reading auth lines"
+  assert_not_contains "log_triage does not claim zero failed logins on a failed read" "$out" "no failed SSH logins"
+  assert_not_contains "log_triage does not claim zero failed sudo on a failed read" "$out" "no failed sudo"
+  assert_eq "log_triage failed journal read exits 0 by default" "0" "$rc"
+  PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --only auth --fail-on warn >/dev/null 2>&1; rc=$?
+  assert_eq "log_triage --fail-on warn exits 1 on a failed journal read" "1" "$rc"
+fi
 rm -rf "$triage_stub" "$triage_bin"
 
 section "schedule_report.sh"

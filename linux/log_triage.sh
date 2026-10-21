@@ -377,13 +377,23 @@ if want auth; then
   ssh_text=""
   sudo_text=""
   auth_src=""
+  auth_unreadable=0
   NL=$'\n'
   if [[ "$JOURNAL" == "ok" ]]; then
     # ssh is the Debian unit name, sshd everyone else's; sudo logs under its
     # own identifier rather than a unit.
-    ssh_text="$(jread -u ssh -u sshd)"
-    sudo_text="$(jread -t sudo)"
-    auth_src="the journal"
+    ssh_text="$(jread -u ssh -u sshd)"; ssh_rc=$?
+    sudo_text="$(jread -t sudo)"; sudo_rc=$?
+    if (( ssh_rc != 0 || sudo_rc != 0 )); then
+      # A failed read leaves empty text, which would grade as "no failed
+      # logins": an unreadable source must not pass as a clean one.
+      warn "journalctl failed reading auth lines (exit $(( ssh_rc != 0 ? ssh_rc : sudo_rc ))); SSH and sudo counts from the journal are unknown" "is --since \"$SINCE\" a time journalctl understands?"
+      ssh_text=""
+      sudo_text=""
+      auth_unreadable=1
+    else
+      auth_src="the journal"
+    fi
   elif [[ "$JOURNAL" == "denied" ]]; then
     skip "$DENIED_MSG"
   fi
@@ -413,7 +423,7 @@ if want auth; then
   fi
 
   if [[ -z "$auth_src" ]]; then
-    [[ "$JOURNAL" == "denied" ]] || skip "no journal and no readable auth log"
+    [[ "$JOURNAL" == "denied" || "$auth_unreadable" == "1" ]] || skip "no journal and no readable auth log"
   else
     fail_re='Failed password|Invalid user|Failed publickey|authentication failure'
     failed="$(grep -cE "$fail_re" <<<"$ssh_text" || true)"
