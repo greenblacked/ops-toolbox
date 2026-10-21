@@ -442,6 +442,7 @@ INFO  [experimental] sparseVhd                     consider sparseVhd=true (or w
 | `memory` above the installed RAM, `processors` above the logical processors (Windows only; skipped with an `INFO` line elsewhere) | `WARN` |
 | A true/false key (`sparseVhd`, `firewall`, `dnsTunneling`, `localhostForwarding` and the like) set to anything but `true` or `false`, in any case | `WARN` |
 | A single backslash in `kernel` or `swapFile`: write `C:\\Users\\me\\...` or use forward slashes | `WARN` |
+| `autoMemoryReclaim` set to anything but `disabled`, `gradual` or `dropCache`, in any case | `WARN` |
 | No `memory` cap | `WARN` |
 | No `autoMemoryReclaim` or `sparseVhd` under `[experimental]` | `INFO` |
 | `localhostForwarding` with `networkingMode=mirrored`, where it has no effect | `INFO` |

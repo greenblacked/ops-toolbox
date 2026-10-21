@@ -945,7 +945,13 @@ function Test-WslConfig {
         $findings += [PSCustomObject]@{ Level = 'warn'; Check = '[wsl2] memory'; Message = 'no memory cap: the VM can grow to about half of RAM (set memory=8GB, say)' }
     }
     if ($values.ContainsKey('autoMemoryReclaim')) {
-        $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $values['autoMemoryReclaim']); Message = $values['autoMemoryReclaim'].Value }
+        $e = $values['autoMemoryReclaim']
+        # -match ignores case, which is how WSL reads the value.
+        if ($e.Value -match '^(disabled|gradual|dropCache)$') {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $e); Message = $e.Value }
+        } else {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not disabled, gradual or dropCache" }
+        }
     } else {
         $findings += [PSCustomObject]@{ Level = 'info'; Check = '[experimental] autoMemoryReclaim'; Message = 'consider autoMemoryReclaim=gradual: freed memory goes back to Windows' }
     }

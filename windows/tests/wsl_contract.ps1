@@ -276,6 +276,19 @@ Test-Case 'the ignored-section message names all three sections WSL reads' (
     @($found | Where-Object { $_.Message -match '\[general\], \[wsl2\] and \[experimental\]' }).Count -eq 1
 ) (Format-Finding $found)
 
+foreach ($mode in 'disabled', 'gradual', 'dropCache', 'DropCache') {
+    $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n[experimental]`nautoMemoryReclaim=$mode"
+    Test-Case "autoMemoryReclaim=$mode is accepted" (
+        @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0 -and
+        @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -like '*autoMemoryReclaim*' }).Count -eq 1
+    ) (Format-Finding $found)
+}
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n[experimental]`nautoMemoryReclaim=aggressive"
+Test-Case 'an autoMemoryReclaim value WSL does not define is reported' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[experimental] autoMemoryReclaim (line 4)' -and $_.Message -match 'not disabled, gradual or dropCache' }).Count -eq 1 -and
+    @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -like '*autoMemoryReclaim*' }).Count -eq 0
+) (Format-Finding $found)
+
 $found = Get-WslConfigFinding "[boot]`nsystemd=true"
 Test-Case 'a /etc/wsl.conf section is pointed at /etc/wsl.conf' (
     @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match '/etc/wsl.conf' }).Count -eq 1
