@@ -235,7 +235,7 @@ It reports, in order:
   regular containers, failing init containers, and unhealthy restartable
   sidecars; completed init containers and healthy Running/Succeeded pods stay
   quiet
-- containers that are Running and Ready again but were `OOMKilled` within the
+- containers (restartable init-container sidecars included) that are Running and Ready again but were `OOMKilled` within the
   `--since` lookback, or have restarted at least `--restarts` times (5 by
   default), with the container's memory limit and a printed
   `kubectl logs ... --previous` to run next. This reuses the pod listing, so

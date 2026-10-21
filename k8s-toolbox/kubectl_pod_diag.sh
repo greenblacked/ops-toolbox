@@ -242,6 +242,17 @@ for p in items:
   for c in (p.get("spec") or {}).get("containers") or []:
     if isinstance(c,dict) and c.get("name"):
       limits[c["name"]]=((c.get("resources") or {}).get("limits") or {}).get("memory") or "-"
+  # Native sidecars (initContainers with restartPolicy Always) keep running
+  # and restart like regular containers; plain init containers do not count.
+  sidecars=set()
+  for c in (p.get("spec") or {}).get("initContainers") or []:
+    if isinstance(c,dict) and c.get("name") and c.get("restartPolicy") == "Always":
+      sidecars.add(c["name"])
+      limits[c["name"]]=((c.get("resources") or {}).get("limits") or {}).get("memory") or "-"
+  init_statuses=status.get("initContainerStatuses") or []
+  if not isinstance(init_statuses,list) or any(not isinstance(cs,dict) for cs in init_statuses):
+    raise ValueError("initContainerStatuses must be a list of objects")
+  statuses=statuses+[cs for cs in init_statuses if cs.get("name") in sidecars]
   for cs in statuses:
     # Only containers that look healthy right now: anything waiting, terminated
     # or unready is already reported by the unhealthy-pods section.

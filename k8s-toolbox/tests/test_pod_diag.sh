@@ -75,6 +75,16 @@ save('oom-bad-time', [restarted('api',1,oom('invalid'),'256Mi')])
 save('restarts-many', [restarted('api',9)])
 save('restarts-few', [restarted('api',2)])
 save('crash-many', [restarted('api',30,oom(minutes_ago(2)),'256Mi',crash,False)])
+def init_restarted(count, last, limit, sidecar):
+    cs=container('proxy')
+    cs['restartCount']=count
+    if last is not None:
+        cs['lastState']={'terminated':last}
+    doc=pod(init=[cs],sidecar=sidecar)
+    doc['spec']['initContainers'][0]['resources']={'limits':{'memory':limit}}
+    return doc
+save('sidecar-oom', [init_restarted(7,oom(minutes_ago(7)),'128Mi',True)])
+save('init-restarts-plain', [init_restarted(9,oom(minutes_ago(7)),'128Mi',False)])
 save('restart-count-invalid', [restarted('api','many')])
 save('pvc-unbound', [{'metadata':{'namespace':'demo','name':'data'},'status':{'phase':'Pending'}}])
 save('node-pressure', [{'metadata':{'name':'node-demo'},'status':{'conditions':[{'type':'DiskPressure','status':'True','message':'fixture pressure'}]}}])
@@ -246,6 +256,18 @@ run_diag --restarts=9 --context fixture-context
 assert_rc '--restarts=9 reports exactly at the threshold' 0 "$rc"
 assert_contains 'next step names the context that was read' 'next      kubectl --context fixture-context logs -n demo api -c api --previous'
 
+reset_fixtures
+export DIAG_PODS=sidecar-oom
+run_diag
+assert_rc 'OOM-killed restartable sidecar -> findings exit 0' 0 "$rc"
+assert_contains 'the sidecar restart is named' 'container proxy restarted 7x'
+assert_contains 'the sidecar OOM kill is named' 'last OOMKilled'
+assert_contains 'the sidecar memory limit is shown' '(memory limit 128Mi)'
+assert_contains 'the sidecar previous logs are suggested' 'next      kubectl logs -n demo api -c proxy --previous'
+reset_fixtures
+export DIAG_PODS=init-restarts-plain
+run_diag
+assert_rc 'a plain init container is not a restart finding' 4 "$rc"
 reset_fixtures
 export DIAG_PODS=restarts-few
 run_diag
