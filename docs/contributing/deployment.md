@@ -298,6 +298,9 @@ curl -sSI https://stage.ops.szolotov.com/ | grep -i 'x-robots-tag\|x-frame-optio
 curl -sS https://stage.ops.szolotov.com/version.txt
 curl -sSI https://ops.szolotov.com/
 curl -sS https://ops.szolotov.com/version.txt
+curl -sSI https://stage.ops.szolotov.com/version.txt | grep -i 'cache-control'
+curl -sSI "https://stage.ops.szolotov.com/$(curl -sS https://stage.ops.szolotov.com/ \
+  | grep -o 'assets/javascripts/bundle\.[0-9a-f]*\.min\.js' | head -n 1)" | grep -i 'cache-control'
 ```
 
 - `version.txt` holds the SHA of the deployed commit.
@@ -305,6 +308,10 @@ curl -sS https://ops.szolotov.com/version.txt
 - Both answer with `X-Content-Type-Options`, `Referrer-Policy` and
   `X-Frame-Options`.
 - An unknown path answers 404 with the site's 404 page.
+- `version.txt` answers `Cache-Control: no-store`, and Material's hashed
+  bundle answers `Cache-Control: public, max-age=31536000, immutable`. Pages
+  carry no `Cache-Control` from the Worker (the rules are in the
+  [Worker README](https://github.com/greenblacked/ops-toolbox/blob/master/worker/README.md#caching)).
 
 ## Roll back
 

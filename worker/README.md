@@ -9,7 +9,8 @@ are in [Deployment](../docs/contributing/deployment.md).
 
 | File | Purpose |
 | --- | --- |
-| `index.js` | The Worker. Serves the built site through the `ASSETS` binding and adds security headers to every response, and `X-Robots-Tag: noindex` when the `ROBOTS` variable is `noindex`. |
+| `index.js` | The Worker. Serves the built site through the `ASSETS` binding and adds security headers to every response, `X-Robots-Tag: noindex` when the `ROBOTS` variable is `noindex`, and `Cache-Control` from `cache.js`. |
+| `cache.js` | The caching rules: `cacheControl(pathname)` returns the `Cache-Control` value for a path, or `null` for the default. No I/O. |
 | `wrangler.jsonc` | The Worker's configuration: name `ops-toolbox`, the `../site` assets directory, the `ops.szolotov.com` Custom Domain, `workers_dev` on and the `stage` Worker Preview's settings. |
 | `package.json` | Pins wrangler to one exact version. |
 | `package-lock.json` | The locked install, checked by `npm ci`. |
@@ -27,6 +28,26 @@ npx wrangler deploy --dry-run        # check the Worker; needs no Cloudflare acc
 ```
 
 Neither command uploads anything.
+
+## Caching
+
+`index.js` sets `Cache-Control` from `cache.js`, and only when a `GET` or
+`HEAD` was answered `200` or `304`: a `404` or an error is never cached as
+long-lived. Everything the table does not name keeps the assets layer's
+default, which revalidates with an ETag on every view.
+
+| Path | `Cache-Control` | Why |
+| --- | --- | --- |
+| Under `/assets/javascripts/` or `/assets/stylesheets/`, named `<name>.<8 hex>.min.js` or `.min.css` | `public, max-age=31536000, immutable` | Material's bundle, stylesheets and search worker carry a content hash, so a new build is a new name. Source maps, the unhashed lunr files and the site's own stylesheets do not match. |
+| `/assets/fonts/*.woff2` | `public, max-age=604800` | Not hashed, but they change only through the font update in `docs/assets/fonts/README.md`. |
+| `/assets/images/*.svg`, `*.png` | `public, max-age=86400` | Not hashed; a changed logo shows within a day. |
+| `/version.txt` | `no-store` | The deploy checks read it to tell a new deploy from the old one; no cache may answer for it. |
+| Pages, `search/search_index.json`, `sitemap.xml`, anything else | (default) | Must show a new deploy at once. |
+
+The rules are tested in `test-env/python/tests/test_docs_worker.py`, both on
+their own and through `index.js` with a stand-in for the `ASSETS` binding.
+Check a deploy with `curl -sSI` (see
+[Deployment](../docs/contributing/deployment.md#check-a-deploy)).
 
 ## Notes
 

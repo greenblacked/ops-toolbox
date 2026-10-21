@@ -6,6 +6,12 @@
 // The site self-hosts its IBM Plex fonts (theme.font: false), so fonts are not
 // the obstacle. Revisit it if the theme's inline scripts and styles are ever
 // removed.
+//
+// Cache-Control comes from cache.js, and only on a successful read (GET or
+// HEAD answered 200 or 304), so a missing file is never cached as
+// long-lived.
+
+import { cacheControl } from "./cache.js";
 
 const SECURITY_HEADERS = {
   "X-Content-Type-Options": "nosniff",
@@ -24,6 +30,13 @@ export default {
     // Set in the config's previews block, so only the stage preview has it.
     if (env.ROBOTS === "noindex") {
       response.headers.set("X-Robots-Tag", "noindex");
+    }
+    const read = request.method === "GET" || request.method === "HEAD";
+    if (read && (upstream.status === 200 || upstream.status === 304)) {
+      const cc = cacheControl(new URL(request.url).pathname);
+      if (cc) {
+        response.headers.set("Cache-Control", cc);
+      }
     }
     return response;
   },
