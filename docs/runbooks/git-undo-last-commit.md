@@ -56,7 +56,7 @@ is pushed.
 | --- | --- |
 | Not pushed; undo the commit and keep its changes staged | `git_undo_last_commit.sh` (the default, `--soft`) |
 | Not pushed; keep the files but unstage them | `git_undo_last_commit.sh --mixed` |
-| Not pushed; throw the commit's changes and every uncommitted change away | `git_undo_last_commit.sh --hard --force` |
+| Not pushed; throw the commit's changes and every uncommitted tracked change away (untracked files stay) | `git_undo_last_commit.sh --hard --force` |
 | Already pushed, or someone else may have it | `git_undo_last_commit.sh --revert` |
 | Not pushed; only add a forgotten file or fix the message | `git_amend_last.sh`, not an undo |
 

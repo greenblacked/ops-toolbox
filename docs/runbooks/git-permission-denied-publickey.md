@@ -35,7 +35,7 @@ help. Nothing on this page needs its contents.
 
 <span class="stage stage-report">read-only</span>
 
-!!! report "Nothing is edited in this step"
+!!! report "Nothing is edited except known_hosts"
     Neither script edits a config file, loads anything into the agent or
     writes a key. `git_ssh_doctor.py` does make one real, non-interactive
     connection per host (see below). One exception: it connects with

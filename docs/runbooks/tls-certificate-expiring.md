@@ -123,10 +123,10 @@ or SAN, the chain or issuer, `notBefore` or the private key. Check those
 separately before you deploy:
 
 ```{ .bash .rpt-preview title="Check the rest of the new file" }
-openssl x509 -in NEW/fullchain.pem -noout -subject -issuer -dates -ext subjectAltName
-openssl verify -untrusted NEW/fullchain.pem NEW/fullchain.pem
-openssl x509 -in NEW/fullchain.pem -noout -pubkey | openssl sha256
-openssl pkey -in NEW/privkey.pem -pubout | openssl sha256
+openssl x509 -in /path/to/NEW/fullchain.pem -noout -subject -issuer -dates -ext subjectAltName
+openssl verify -untrusted /path/to/NEW/fullchain.pem /path/to/NEW/fullchain.pem
+openssl x509 -in /path/to/NEW/fullchain.pem -noout -pubkey | openssl sha256
+openssl pkey -in /path/to/NEW/privkey.pem -pubout | openssl sha256
 ```
 
 The two `sha256` lines must be identical, the SAN list must include your
