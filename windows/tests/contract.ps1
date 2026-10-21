@@ -1356,24 +1356,31 @@ if (-not $sshDoctor) {
         $gitSsh = 'C:\Program Files\Git\usr\bin\ssh.exe'
         $winSsh = 'C:\Windows\System32\OpenSSH\ssh.exe'
         $clientCases = @(
-            @{ Label = 'Git for Windows only'; Clients = @($gitSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client' }
-            @{ Label = 'Windows OpenSSH only'; Clients = @($winSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client' }
-            @{ Label = 'both, agent running, nothing pins git'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = ''; Expect = 'first-client two-clients' }
-            @{ Label = 'both, core.sshCommand set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Windows/System32/OpenSSH/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
-            @{ Label = 'core.sshCommand pinned to Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
-            @{ Label = 'core.sshCommand quoted Git ssh with options, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = '"C:\Program Files\Git\usr\bin\ssh.exe" -o BatchMode=yes'; Env = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
-            @{ Label = 'core.sshCommand pinned to Scoop Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Users/me/scoop/apps/git/current/usr/bin/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
-            @{ Label = 'core.sshCommand pinned to lower-case Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'd:\tools\git\usr\bin\ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
-            @{ Label = 'core.sshCommand pinned to a non-Git usr\bin ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/msys64/usr/bin/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
-            @{ Label = 'core.sshCommand pinned to Git ssh, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
-            @{ Label = 'core.sshCommand pinned to Windows OpenSSH, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:\Windows\System32\OpenSSH\ssh.exe'; Env = ''; Expect = 'first-client git-ssh-command' }
-            @{ Label = 'core.sshCommand is an unknown wrapper'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/tools/plink.exe -batch'; Env = ''; Expect = 'first-client git-ssh-command' }
-            @{ Label = 'both, GIT_SSH_COMMAND set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = 'ssh -i key'; Expect = 'first-client git-ssh-env' }
-            @{ Label = 'both, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = ''; Env = ''; Expect = 'first-client' }
-            @{ Label = 'no client at all'; Clients = @(); Agent = $false; Command = ''; Env = ''; Expect = 'no-client' }
+            @{ Label = 'Git for Windows only'; Clients = @($gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client' }
+            @{ Label = 'Windows OpenSSH only'; Clients = @($winSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client' }
+            @{ Label = 'both, agent running, nothing pins git'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client two-clients' }
+            @{ Label = 'both, core.sshCommand set'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Windows/System32/OpenSSH/ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand pinned to Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
+            @{ Label = 'core.sshCommand quoted Git ssh with options, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = '"C:\Program Files\Git\usr\bin\ssh.exe" -o BatchMode=yes'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
+            @{ Label = 'core.sshCommand pinned to Scoop Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Users/me/scoop/apps/git/current/usr/bin/ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
+            @{ Label = 'core.sshCommand pinned to lower-case Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'd:\tools\git\usr\bin\ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command git-ssh-pinned-git' }
+            @{ Label = 'core.sshCommand pinned to a non-Git usr\bin ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/msys64/usr/bin/ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand pinned to Git ssh, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand pinned to Windows OpenSSH, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:\Windows\System32\OpenSSH\ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'core.sshCommand is an unknown wrapper'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/tools/plink.exe -batch'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command' }
+            @{ Label = 'both, GIT_SSH_COMMAND set to a wrapper'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = 'ssh -i key'; Expect = 'first-client git-ssh-env' }
+            @{ Label = 'GIT_SSH_COMMAND names Git ssh, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = '"C:\Program Files\Git\usr\bin\ssh.exe" -i key'; Expect = 'first-client git-ssh-env git-ssh-pinned-git' }
+            @{ Label = 'GIT_SSH_COMMAND names Git ssh, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = ''; Env = ''; EnvCommand = '"C:\Program Files\Git\usr\bin\ssh.exe" -i key'; Expect = 'first-client git-ssh-env' }
+            @{ Label = 'GIT_SSH names Git ssh (unquoted, spaces), agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = 'C:\Program Files\Git\usr\bin\ssh.exe'; EnvCommand = ''; Expect = 'first-client git-ssh-env git-ssh-pinned-git' }
+            @{ Label = 'GIT_SSH names Windows OpenSSH, agent running'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = ''; Env = 'C:\Windows\System32\OpenSSH\ssh.exe'; EnvCommand = ''; Expect = 'first-client git-ssh-env' }
+            @{ Label = 'GIT_SSH_COMMAND (Windows ssh) outranks GIT_SSH and core.sshCommand (Git ssh)'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = 'C:\Program Files\Git\usr\bin\ssh.exe'; EnvCommand = 'C:\Windows\System32\OpenSSH\ssh.exe'; Expect = 'first-client git-ssh-env' }
+            @{ Label = 'GIT_SSH (Windows ssh) outranks core.sshCommand (Git ssh)'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:/Program Files/Git/usr/bin/ssh.exe'; Env = 'C:\Windows\System32\OpenSSH\ssh.exe'; EnvCommand = ''; Expect = 'first-client git-ssh-env' }
+            @{ Label = 'GIT_SSH_COMMAND (Git ssh) outranks core.sshCommand (Windows ssh)'; Clients = @($winSsh, $gitSsh); Agent = $true; Command = 'C:\Windows\System32\OpenSSH\ssh.exe'; Env = ''; EnvCommand = 'C:\Program Files\Git\usr\bin\ssh.exe'; Expect = 'first-client git-ssh-env git-ssh-pinned-git' }
+            @{ Label = 'both, agent not running'; Clients = @($winSsh, $gitSsh); Agent = $false; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client' }
+            @{ Label = 'no client at all'; Clients = @(); Agent = $false; Command = ''; Env = ''; EnvCommand = ''; Expect = 'no-client' }
         )
         foreach ($case in $clientCases) {
-            $found = @(Get-SshClientFinding -Clients $case.Clients -AgentRunning $case.Agent -GitSshCommand $case.Command -GitSshEnv $case.Env)
+            $found = @(Get-SshClientFinding -Clients $case.Clients -AgentRunning $case.Agent -GitSshCommand $case.Command -GitSshEnv $case.Env -GitSshCommandEnv $case.EnvCommand)
             $ids = ($found | ForEach-Object { $_.Id }) -join ' '
             $warnFix = @($found | Where-Object { $_.Level -eq 'warn' -and -not $_.Fix }).Count
             if ($ids -eq $case.Expect -and $warnFix -eq 0) {

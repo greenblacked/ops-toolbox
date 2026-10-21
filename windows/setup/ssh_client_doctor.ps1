@@ -249,7 +249,8 @@ function Get-SshClientFinding {
         [string[]]$Clients,
         [bool]$AgentRunning,
         [string]$GitSshCommand,
-        [string]$GitSshEnv
+        [string]$GitSshEnv,
+        [string]$GitSshCommandEnv
     )
     $findings = @()
     $kinds = @()
@@ -267,29 +268,44 @@ function Get-SshClientFinding {
         Id = 'first-client'; Level = 'info'
         Message = ('ssh resolves to {0} ({1})' -f $Clients[0], $kinds[0]); Fix = ''
     }
-    if ($GitSshCommand) {
-        $findings += [pscustomobject]@{
-            Id = 'git-ssh-command'; Level = 'info'
-            Message = "git uses core.sshCommand: $GitSshCommand"; Fix = ''
+    # What git runs, by git's own precedence: GIT_SSH_COMMAND, then GIT_SSH,
+    # then core.sshCommand. Only the winning one counts.
+    $source = ''
+    $chosen = ''
+    if ($GitSshCommandEnv) { $source = 'GIT_SSH_COMMAND'; $chosen = $GitSshCommandEnv }
+    elseif ($GitSshEnv) { $source = 'GIT_SSH'; $chosen = $GitSshEnv }
+    elseif ($GitSshCommand) { $source = 'core.sshCommand'; $chosen = $GitSshCommand }
+
+    if ($source) {
+        if ($source -eq 'core.sshCommand') {
+            $findings += [pscustomobject]@{
+                Id = 'git-ssh-command'; Level = 'info'
+                Message = "git uses core.sshCommand: $chosen"; Fix = ''
+            }
+        } else {
+            $findings += [pscustomobject]@{
+                Id = 'git-ssh-env'; Level = 'info'
+                Message = "git uses ${source}: $chosen"; Fix = ''
+            }
         }
-        # Name the client core.sshCommand points at: its first word, quotes
-        # and forward slashes allowed. Only Git's bundled ssh and the Windows
-        # OpenSSH client are known; anything else (a wrapper, plink) is left
-        # alone.
-        $pinned = ($GitSshCommand.Trim() -replace '/', '\')
+        # Name the client it points at: its first word, quotes and forward
+        # slashes allowed. Only Git's bundled ssh and the Windows OpenSSH
+        # client are known; anything else (a wrapper, plink) is left alone.
+        $pinned = ($chosen.Trim() -replace '/', '\')
         if ($pinned -match '^"([^"]*)"') { $pinned = $Matches[1] }
         elseif ($pinned -match '^(.*?\\ssh(\.exe)?)(\s|$)') { $pinned = $Matches[1] }
         if ($AgentRunning -and $pinned -match '\\(portable)?git\\(.+\\)?(usr\\bin|mingw(32|64)\\bin)\\ssh(\.exe)?$') {
+            # The environment variables outrank core.sshCommand, so setting
+            # the config would change nothing while they stay.
+            $pinFix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
+            if ($source -ne 'core.sshCommand') {
+                $pinFix = "point $source at C:/Windows/System32/OpenSSH/ssh.exe, or remove it"
+            }
             $findings += [pscustomobject]@{
                 Id = 'git-ssh-pinned-git'; Level = 'warn'
-                Message = "core.sshCommand pins git to Git's own ssh ($pinned), which cannot see the keys in the running Windows ssh-agent"
-                Fix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
+                Message = "$source pins git to Git's own ssh ($pinned), which cannot see the keys in the running Windows ssh-agent"
+                Fix = $pinFix
             }
-        }
-    } elseif ($GitSshEnv) {
-        $findings += [pscustomobject]@{
-            Id = 'git-ssh-env'; Level = 'info'
-            Message = "git uses GIT_SSH / GIT_SSH_COMMAND: $GitSshEnv"; Fix = ''
         }
     } elseif ($AgentRunning -and $kinds -contains 'git-for-windows' -and $kinds -contains 'windows-openssh') {
         $findings += [pscustomobject]@{
@@ -493,10 +509,11 @@ if ($gitCommand -and $gitCommand.Source -match '\\Git\\') {
     $bundled = Join-Path $gitRoot 'usr\bin\ssh.exe'
     if ((Test-Path -LiteralPath $bundled) -and $clientPaths -notcontains $bundled) { $clientPaths += $bundled }
 }
-$gitSshEnv = [Environment]::GetEnvironmentVariable('GIT_SSH_COMMAND')
-if (-not $gitSshEnv) { $gitSshEnv = [Environment]::GetEnvironmentVariable('GIT_SSH') }
+$gitSshEnv = [Environment]::GetEnvironmentVariable('GIT_SSH')
+$gitSshCommandEnv = [Environment]::GetEnvironmentVariable('GIT_SSH_COMMAND')
 $clientFindings = @(Get-SshClientFinding -Clients $clientPaths -AgentRunning $agentRunning `
-        -GitSshCommand (Get-GitConfigValue -Key 'core.sshCommand') -GitSshEnv ([string]$gitSshEnv))
+        -GitSshCommand (Get-GitConfigValue -Key 'core.sshCommand') -GitSshEnv ([string]$gitSshEnv) `
+        -GitSshCommandEnv ([string]$gitSshCommandEnv))
 foreach ($finding in $clientFindings) {
     switch ($finding.Level) {
         'warn' { Write-Warn -Message $finding.Message -Hint @($finding.Fix) }
