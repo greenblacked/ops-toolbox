@@ -294,7 +294,7 @@ before re-imaging a laptop, after a context switch, or as a morning catch-up.
 | `--only STATE` | Keep only rows that are `dirty`, `ahead`, `behind`, have `unpushed` commits, or have a `stash`. The summary and `--strict` describe the filtered set. |
 | `--fetch` | Run `git fetch --prune --quiet` in each checkout that has a remote first, with terminal prompts off. It writes remote-tracking refs and nothing else; `--prune` drops refs for branches deleted on the remote, so commits that were pushed to a since-deleted branch count as unpushed. A failed fetch is noted as `fetch-failed`, counts as work at risk (so `--strict` exits `1`) and the sweep goes on. |
 | `--dry-run` | Print the fetch each checkout with a remote would get, report from the refs already on disk, and close with `dry-run complete; no changes written`. With `--porcelain` those lines go to stderr, so stdout carries only the rows. |
-| `--strict` | Exit `1` when any reported checkout has work at risk. A checkout whose `git status` fails (for example a corrupt index) is noted `status-failed` and counts as at risk; so does a checkout whose history walk fails (a missing or unreadable object), noted `walk-failed`, because its unpushed count cannot be trusted. |
+| `--strict` | Exit `1` when any reported checkout has work at risk. A checkout whose `git status` fails (for example a corrupt index) is noted `status-failed` and counts as at risk; so does a checkout whose history walk fails (a missing or unreadable object), noted `walk-failed`, because its unpushed count cannot be trusted; and so does one whose `git stash list` fails (a damaged `refs/stash`), noted `stash-failed`, because it cannot be shown to hold no stash. |
 | `--porcelain` | Tab-separated rows, no header or colour: `path branch upstream ahead behind changed stash unpushed notes`. `path` is the checkout as found under `--dir`; an absent upstream is an empty field. |
 
 The table columns are `REPO` (relative to the `--dir` it was found under),
@@ -303,12 +303,13 @@ The table columns are `REPO` (relative to the `--dir` it was found under),
 `git status`; ignored files do not count), `STASH`, `UNPUSHED` (commits on
 local branches, or on a detached `HEAD`, that no remote-tracking ref contains)
 and `NOTES`: `dirty`, `ahead`, `behind`, `diverged`, `detached`,
-`no-upstream`, `no-remote`, `stash`, `status-failed`, `walk-failed`, `fetch-failed`, `unreadable`.
+`no-upstream`, `no-remote`, `stash`, `status-failed`, `walk-failed`, `stash-failed`, `fetch-failed`, `unreadable`.
 
 **Work at risk** is anything that exists only on this machine: changed or
 untracked files, commits ahead of the upstream, unpushed commits, a stash, a
 `--fetch` that failed, a `git status` that failed (`status-failed`) or a
-history walk that failed (`walk-failed`).
+history walk that failed (`walk-failed`) or a `git stash list` that failed
+(`stash-failed`).
 In a checkout with no remote every commit is unpushed, which is the truth. A
 checkout git cannot read at all is counted as at risk too, because it could not
 be proven otherwise. Being behind is reported but is not at risk.

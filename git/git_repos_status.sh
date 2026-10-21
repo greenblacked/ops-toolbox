@@ -54,11 +54,11 @@ Options:
 
 Work at risk means uncommitted or untracked changes, commits ahead of the
 upstream, commits on local branches that no remote-tracking ref contains, a
-stash, a git status or history walk that failed (noted status-failed or
-walk-failed), or (with --fetch) a fetch that failed. Without --fetch
-nothing is fetched, so remote-tracking refs are only as fresh as the last
-fetch in each repository: "behind" means behind what this machine last
-saw.
+stash, a git status, stash list or history walk that failed (noted
+status-failed, stash-failed or walk-failed), or (with --fetch) a fetch that
+failed. Without --fetch nothing is fetched, so remote-tracking refs are only
+as fresh as the last fetch in each repository: "behind" means behind what this
+machine last saw.
 
 Never pulls, merges, checks out, stashes or cleans. A plain run exits 0 even
 when repositories need attention; --strict is the only way it returns 1.
@@ -200,7 +200,8 @@ add_note() {
 inspect_repo() {
   local repo="$1" rel="$2"
   local branch upstream counts ahead=0 behind=0 changed=0 stash=0 unpushed=0
-  local sync risk=0 keep=1 has_remote tips status_out status_failed=0 fetch_failed=0 walk_failed=0
+  local sync risk=0 keep=1 has_remote tips status_out stash_out status_failed=0 fetch_failed=0 walk_failed=0
+  local stash_failed=0
   notes=""
 
   # A checkout git cannot read (a broken .git file, an ownership refusal) is
@@ -262,7 +263,18 @@ inspect_repo() {
     else
       status_failed=1
     fi
-    stash="$(git -C "$repo" stash list 2>/dev/null | wc -l | tr -d ' ')" || true
+    # Captured like status: a pipe into wc would turn a damaged refs/stash
+    # (a missing object) into "0 stashes" and let --strict pass.
+    stash_failed=0
+    if stash_out="$(git -C "$repo" stash list 2>/dev/null)"; then
+      stash=0
+      if [[ -n "$stash_out" ]]; then
+        stash="$(printf '%s\n' "$stash_out" | wc -l | tr -d ' ')"
+      fi
+    else
+      stash=0
+      stash_failed=1
+    fi
     # Commits on any local branch that no remote-tracking ref contains. In a
     # repository with no remotes that is every commit, which is the truth.
     # HEAD is added when it exists, so work committed on a detached HEAD
@@ -282,6 +294,7 @@ inspect_repo() {
     (( changed > 0 )) && add_note "dirty"
     (( status_failed == 1 )) && add_note "status-failed"
     (( walk_failed == 1 )) && add_note "walk-failed"
+    (( stash_failed == 1 )) && add_note "stash-failed"
     if (( ahead > 0 && behind > 0 )); then
       add_note "diverged"
     elif (( ahead > 0 )); then
@@ -309,7 +322,7 @@ inspect_repo() {
       sync="="
     fi
 
-    if (( changed > 0 || status_failed == 1 || walk_failed == 1 || fetch_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
+    if (( changed > 0 || status_failed == 1 || walk_failed == 1 || stash_failed == 1 || fetch_failed == 1 || ahead > 0 || unpushed > 0 || stash > 0 )); then
       risk=1
     fi
   fi

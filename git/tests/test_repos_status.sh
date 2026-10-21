@@ -224,6 +224,18 @@ else
 fi
 rm -rf "$parent/damaged"
 
+section "damaged stash"
+clone_into "$parent/badstash" || err 'build the damaged-stash fixture'
+# A refs/stash that names a missing object: git stash list fails outright.
+printf 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' >"$parent/badstash/.git/refs/stash" ||
+  err 'write the damaged refs/stash'
+out="$("$REPOS_STATUS" --dir "$parent/badstash" --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 'a plain run still exits 0 when git stash list fails'
+assert_contains "$out" 'stash-failed' 'a failing git stash list is reported as stash-failed'
+"$REPOS_STATUS" --dir "$parent/badstash" --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict exits 1 when git stash list fails'
+rm -rf "$parent/badstash"
+
 section "--fetch failure is work at risk"
 clone_into "$parent/unreach" || err 'clone unreachable fixture'
 git -C "$parent/unreach" remote set-url origin "$scratch/does-not-exist.git" || err 'break the remote url'

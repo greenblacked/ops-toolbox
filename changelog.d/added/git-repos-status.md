@@ -5,4 +5,5 @@
   makes the report a safe-to-wipe gate before re-imaging a laptop, and
   `--fetch` refreshes (and prunes) remote-tracking refs first; a failed
   fetch counts as work at risk, and so does a history walk that fails (a
-  missing or unreadable object), noted `walk-failed`.
+  missing or unreadable object), noted `walk-failed`, and a stash list that
+  fails (a damaged `refs/stash`), noted `stash-failed`.
