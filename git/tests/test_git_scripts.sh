@@ -30,6 +30,7 @@ SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
 IGNORE_DOCTOR="$G/git_ignore_doctor.py"
+HEALTH_DOCTOR="$G/git_health_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -994,6 +995,76 @@ for f in "${py_doctors[@]}"; do
   json_doctors=$((json_doctors + 1))
 done
 if (( json_doctors == 0 )); then err "the --json --quiet loop ran over no doctor"; fi
+
+section "health doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "0" "health doctor is healthy on a fresh repository"
+assert_eq "$out" "" "health doctor --quiet suppresses its report"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"
+assert_contains "$out" "== objects ==" "health doctor reports the object counts"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "health doctor --json is one object carrying exit $rc"; else err "health doctor --json is not a verdict: $out"; fi
+
+# The lock a killed command leaves behind. Two hours old with no git process
+# running is the stale case, and the doctor must name the rm without running
+# it: the same lock under a live rebase is the one thing not to delete.
+touch -d '2 hours ago' "$repo/.git/index.lock"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "health doctor fails on a stale index.lock"
+assert_contains "$out" "index.lock" "health doctor names the lock"
+assert_contains "$out" "rm --" "health doctor prints the removal"
+if [[ -e "$repo/.git/index.lock" ]]; then
+  ok "health doctor did not remove the lock"
+else
+  err "health doctor removed the lock it was meant to report"
+fi
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --lock-age 99999 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a lock younger than --lock-age is not stale"
+assert_contains "$out" "mid-flight" "a young lock is reported as a command in progress"
+rm -f "$repo/.git/index.lock"
+
+# gc.log is what stops automatic gc for a day after one failure, silently
+# after the first warning.
+printf 'warning: There are too many unreachable loose objects\n' >"$repo/.git/gc.log"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "health doctor fails while gc.log blocks automatic gc"
+assert_contains "$out" "gc.log" "health doctor names gc.log"
+assert_contains "$out" "too many unreachable loose objects" "health doctor quotes the log"
+rm -f "$repo/.git/gc.log"
+(cd "$repo" && "$HEALTH_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "0" "removing gc.log clears the verdict"
+
+git -C "$repo" config gc.auto 0
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "disabled automatic gc is a warning, not a failure"
+assert_contains "$out" "disabled" "health doctor reports disabled automatic gc"
+git -C "$repo" config --unset gc.auto
+
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --fsck 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--fsck passes on an intact repository"
+assert_contains "$out" "== fsck ==" "--fsck adds the connectivity check"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$HEALTH_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "health doctor outside a repository -> exit 2"
+for lock_age in abc 0; do
+  (cd "$repo" && "$HEALTH_DOCTOR" --lock-age "$lock_age" >/dev/null 2>&1); rc=$?
+  assert_eq "$rc" "3" "health doctor --lock-age $lock_age -> exit 3"
+done
+(cd "$repo" && "$HEALTH_DOCTOR" --lock-age=abc >/dev/null 2>&1); rc=$?
+assert_eq "$rc" "3" "health doctor --lock-age=abc -> exit 3"
+
+# A linked worktree keeps its index.lock in its own git dir, not the common
+# one, and .git there is a file; both paths are asked of git.
+wt_repo="$(new_repo)"
+wt_path="$(mktemp -d /tmp/git-doctor-health-wt.XXXXXX)"; rmdir "$wt_path"
+git -C "$wt_repo" worktree add -q "$wt_path" -b health-wt 2>/dev/null
+wt_git_dir="$(git -C "$wt_path" rev-parse --absolute-git-dir)"
+touch -d '2 hours ago' "$wt_git_dir/index.lock"
+out="$(cd "$wt_path" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "health doctor in a linked worktree fails on its stale lock"
+assert_contains "$out" "$wt_git_dir/index.lock" "health doctor finds the lock in the worktree's git dir"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"

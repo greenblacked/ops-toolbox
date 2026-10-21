@@ -33,6 +33,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
 - [`git_ignore_doctor.py`](#git_ignore_doctorpy)
+- [`git_health_doctor.py`](#git_health_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
 
@@ -43,7 +44,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | **Bash** | 3.2 or newer (`/bin/bash` on macOS is enough). |
 | **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). |
 | **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
-| **Python 3.9+** | Optional; only for the four `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
+| **Python 3.9+** | Optional; only for the `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
 
 ## Quick start
@@ -94,6 +95,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_signing_doctor.py` | Diagnose signing backends; `--quiet` supports CI probes. |
 | `git_remote_doctor.py` | Diagnose remote URLs/rewrites/credentials; `--quiet` supports CI probes. |
 | `git_ignore_doctor.py` | Explain why a path is ignored or is not; with no argument, find tracked files a rule claims. |
+| `git_health_doctor.py` | Stale locks, a gc.log blocking automatic gc, object bloat, maintenance and clone shape; `--fsck` is opt-in. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -706,6 +708,57 @@ prints it as one JSON object instead; the claimed paths are `detail` events.
 
 ---
 
+## `git_health_doctor.py`
+
+For the incidents that arrive as "`index.lock` exists", "git got slow" or
+"the disk keeps filling up", on a laptop clone or a build agent's cache. It
+looks at the repository itself rather than at what it connects to.
+
+```bash
+./git/git_health_doctor.py                  # this repository
+./git/git_health_doctor.py --lock-age 30    # call a lock stale after 30 minutes
+./git/git_health_doctor.py --fsck           # also check object connectivity
+./git/git_health_doctor.py --quiet          # verdict through the exit code only
+```
+
+- **Locks.** `rm .git/index.lock` is the usual advice and the wrong one while
+  a git process still holds the lock. A `*.lock` in the git directory (or
+  under `refs/`) is called stale only when it is older than `--lock-age`
+  minutes (default 10) **and** no `git` process is running; the `rm` is
+  printed, never run. If neither `ps` nor `/proc` can be read, the verdict
+  drops to a warning instead of guessing.
+- **A failed automatic gc.** When `git gc --auto` fails it leaves `gc.log`
+  behind, and while that file is there automatic gc does not run again for a
+  day (`gc.logExpiry`), so loose objects pile up with nothing said after the
+  first warning. The doctor quotes the first lines of the log. `gc.auto=0`
+  (automatic gc disabled) is reported as a warning.
+- **Objects.** Loose objects above `gc.auto` (6700 by default), packs above
+  `gc.autoPackLimit` (50), and garbage an interrupted gc or fetch left in
+  `objects/pack`, from `git count-objects -v`. A repository over 500 MiB
+  packed is pointed at `git_size_report.sh`.
+- **Maintenance.** Above 100 MiB packed, whether the repository is registered
+  for `git maintenance start` and has a commit-graph; `maintenance.auto=false`
+  is reported because it stops git tidying up after commands.
+- **Clone shape.** Shallow and partial (promisor) clones, which change what
+  `git log` and `git blame` can see.
+
+`--fsck` adds `git fsck --connectivity-only`, opt-in because it reads every
+object; it writes nothing and stops after ten minutes. Linked worktrees,
+submodules and bare mirrors work: every path is asked of git rather than
+assumed to be `.git/`.
+
+Read-only: it stats files, reads at most three lines of `gc.log`, and never
+removes a lock or runs gc, prune or repack; it prints those commands with the
+condition that makes each one safe.
+
+**Exit codes:** `0` no fail-level finding, `1` a stale lock, a `gc.log`, an
+fsck failure or a git command that could not answer, `2` not inside a Git
+repository, `3` bad usage (`--lock-age` not a positive whole number). Warnings
+never change the exit code. `--quiet` prints nothing and keeps the code;
+`--json` prints the report as one JSON object.
+
+---
+
 ## Tests
 
 From the **repository root** (so the repo mounts into the container as `/repo`):
@@ -746,5 +799,6 @@ cd "$(./git/git_repo_root.sh)"
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet
 ./git/git_ignore_doctor.py --json
+./git/git_health_doctor.py --lock-age 30
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```
