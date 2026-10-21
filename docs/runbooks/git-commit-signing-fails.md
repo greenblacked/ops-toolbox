@@ -1,6 +1,6 @@
 # Commits fail to sign or show Unverified
 
-<!-- markdownlint-disable MD033 -->
+<!-- markdownlint-disable MD033 MD046 -->
 
 **When to use:** `git commit` fails because the commit cannot be signed, or
 commits sign locally but the forge shows them as Unverified, and you need to
@@ -111,7 +111,8 @@ so read them.
     falls through to `gpg --clearsign --local-user <x509 id>`, which does
     not exercise `gpgsm` and usually fails because `gpg` holds no such
     secret key. Neither a pass nor a fail there says anything about X.509
-    signing. Check X.509 by hand (see Verify).
+    signing. Check X.509 by hand (see
+    Check X.509 signing).
 
 ```{ .bash .rpt-preview title="Preview" }
 ./git/git_signing_doctor.py --test-sign
@@ -174,19 +175,29 @@ commit with signing on and check it with `git log --show-signature -1`
 (plain `git`). For the Unverified case, push it and check that the forge
 shows it as verified; that last check is outside the toolbox.
 
-For `gpg.format=x509`, `--test-sign` does not test `gpgsm`. Make a real
-signed commit on a scratch branch instead, then read it back (plain
-`git`). Run it only with nothing staged (`git status` is clean) or in a
-throwaway clone, because the commit would include anything already staged:
+## Check X.509 signing
 
-```bash
+<span class="stage stage-apply">changes things</span>
+
+!!! apply "Creates a branch and a commit"
+    `--test-sign` does not test `gpgsm`, so for `gpg.format=x509` make a
+    real signed commit on a scratch branch and read it back. The commit
+    would include anything already staged: run this only when `git status`
+    is clean, or in a throwaway clone.
+
+```{ .bash .rpt-apply title="Signed scratch commit" }
 git switch -c scratch/sign-check
 git commit --allow-empty -S -m "sign check"
 git log --show-signature -1
 ```
 
-Then clean up: `git switch -` to go back, and `git branch -D
-scratch/sign-check` to delete the scratch branch.
+That is plain `git`. Then clean up: go back to your branch and delete the
+scratch one.
+
+```{ .bash .rpt-apply title="Clean up" }
+git switch -
+git branch -D scratch/sign-check
+```
 
 ## Roll back
 
@@ -208,4 +219,4 @@ to Git.
 - [`git/` folder README](https://github.com/greenblacked/ops-toolbox/blob/master/git/README.md)
 - [Scripts overview](../scripts/index.md)
 
-<!-- markdownlint-enable MD033 -->
+<!-- markdownlint-enable MD033 MD046 -->
