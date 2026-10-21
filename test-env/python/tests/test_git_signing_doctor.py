@@ -16,6 +16,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -342,6 +343,45 @@ class ParseSignatureLogTestCase(unittest.TestCase):
 
     def test_empty_text(self):
         self.assertEqual(doctor.parse_signature_log(""), [])
+
+
+class AuthorFilterTestCase(unittest.TestCase):
+    def commit(self, repo, email, subject):
+        subprocess.run(
+            ["git", "-C", repo, "-c", "user.name=T", "-c", "user.email=" + email,
+             "commit", "-q", "--allow-empty", "-m", subject],
+            check=True, capture_output=True,
+        )
+
+    def last(self, repo, n, email):
+        out = subprocess.run(
+            ["git", "-C", repo, "log", "-n", str(n), *doctor.author_filter_args(email),
+             "--format=%s"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        return out.split()
+
+    def test_no_email_adds_no_option(self):
+        self.assertEqual(doctor.author_filter_args(""), [])
+
+    def test_n_counts_only_the_users_commits_under_teammate_commits(self):
+        with tempfile.TemporaryDirectory() as repo:
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            self.commit(repo, "me+dev@x.io", "mine-old")
+            self.commit(repo, "me+dev@x.io", "mine-new")
+            for i in range(3):
+                self.commit(repo, "mate@x.io", "mate%d" % i)
+            self.assertEqual(self.last(repo, 2, "me+dev@x.io"), ["mine-new", "mine-old"])
+            self.assertEqual(self.last(repo, 2, "ME+dev@X.io"), ["mine-new", "mine-old"])
+
+    def test_the_address_is_matched_whole_and_literally(self):
+        with tempfile.TemporaryDirectory() as repo:
+            subprocess.run(["git", "init", "-q", repo], check=True)
+            self.commit(repo, "a.b@x.io", "mine")
+            self.commit(repo, "aXb@x.io", "dot")
+            self.commit(repo, "a.b@x.io.uk", "suffix")
+            self.commit(repo, "xa.b@x.io", "prefix")
+            self.assertEqual(self.last(repo, 5, "a.b@x.io"), ["mine"])
 
 
 class SummariseSignaturesTestCase(unittest.TestCase):

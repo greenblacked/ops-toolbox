@@ -1214,6 +1214,14 @@ if [[ "$rc" -ne 3 ]]; then ok "signing doctor accepts --verify-recent=2"; else e
 out="$(cd "$repo" && "$SIGNING_DOCTOR" 2>&1)"
 assert_not_contains "$out" "recent commits" "signing doctor without --verify-recent looks at no commit"
 
+# -n counts the user's own commits: teammates' commits on top must not hide them.
+for n in 1 2 3; do
+  printf '%s\n' "mate $n" >>"$repo/file.txt"
+  git -C "$repo" -c user.name=Mate -c user.email=mate@example.com commit -qam "mate $n" >/dev/null
+done
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent 2 2>&1)"
+assert_contains "$out" "last 2 commits (yours): 2 unsigned" "signing doctor --verify-recent counts your commits under teammates' commits"
+
 section "ssh doctor --require-known-host"
 # This image has no OpenSSH, so the known_hosts lookup itself is covered by the
 # unit tests; here the flag must parse, be documented, and leave the verdict

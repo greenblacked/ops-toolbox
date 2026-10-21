@@ -694,6 +694,22 @@ def test_sign(fmt, signingkey):
 VERIFY_LIMIT = 5000
 
 
+def author_filter_args(email):
+    """git log options that select commits authored as `email`, and only it.
+
+    Applied inside git log, so -n counts the user's own commits: a filter run
+    after -n would see nothing once N teammates' commits sit on top of them.
+    The address is escaped for an extended regex and fenced by the angle
+    brackets around it in the author header, so "a@x.io" does not match
+    "aa@x.io" or "a@x.io.uk".
+    """
+    if not email:
+        return []
+    escaped = re.sub(r"([\\.\[\]{}()*+?^$|])", r"\\\1", email)
+    return ["--extended-regexp", "--regexp-ignore-case",
+            "--author=<%s>" % escaped]
+
+
 def verify_recent(n, entries, all_authors):
     """Report git's own signature verdict on the last n commits."""
     head("recent commits")
@@ -713,7 +729,10 @@ def verify_recent(n, entries, all_authors):
         warn("user.email is not set, so every author's commits are checked")
         all_authors = True
 
-    rc, out, err = run(["git", "log", "-n", str(n), "--format=" + LOG_FORMAT, "HEAD"],
+    # The post-filter in summarise_signatures stays as a safety net.
+    author_args = [] if all_authors else author_filter_args(email)
+    rc, out, err = run(["git", "log", "-n", str(n), *author_args,
+                        "--format=" + LOG_FORMAT, "HEAD"],
                        timeout=15 + n // 50)
     if rc != 0:
         # A timeout or a failing verifier is not "all good".
