@@ -1190,8 +1190,8 @@ file is reported and left in place, never deleted or renamed.
   succeed every night while the router's own backup scheduler has died and
   `RemovePrevious` left one old pair to be pulled again and again; `scp -p`
   keeps the router's timestamps, so this sees how old the newest backup
-  the router made really is. With `--max-age`, a router with no backups yet is a failure
-  (exit `1`) rather than success.
+  the router made really is. With `--max-age`, a router with no backups yet
+  is a failure (exit `1`) rather than success.
 
 Without either flag the behaviour is exactly what it was, so existing cron
 lines are unaffected. Exit codes: `0` files pulled or none exist yet, and
