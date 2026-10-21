@@ -14,6 +14,12 @@ Secrets are never fetched. The check on `TgBotToken` and `TgChatId` asks the
 router for the *length* of each global, so no token value crosses the wire or
 reaches this process, let alone the terminal.
 
+It also asks which RouterOS release the router runs. From 7.24 that release
+refuses to execute any script declaring an underscored :global or :local, and
+the refusal is silent, so an installed script on that list is reported by name.
+The verdict comes from the package's own .lua files; the router's copies are
+never read.
+
     ./router_doctor.py --host 192.168.88.1
     ./router_doctor.py --host router.lan --user admin --identity ~/.ssh/keys/mikrotik
     ./router_doctor.py --host router.lan --port 2222
@@ -75,9 +81,53 @@ PROBE = (
     '} else={'
     ':put ("ENV:" . $n'
     ' . "|" . [:tostr [:len [:tostr [/system script environment get $e value]]]])}};'
+    # The release decides whether half the package can run at all, so it is
+    # asked for once. A version string is not a secret.
+    ' :put ("VER:" . [/system resource get version]);'
 )
 
 PAUSE_STATE_KEY = "__control_ops_toolbox_paused"
+# Reserved like PAUSE_STATE_KEY: the (major, minor) the router reported, and
+# the string it reported it as. Both are absent when the probe returned no VER
+# line, which keeps every check that depends on them quiet.
+VERSION_KEY = "__routeros_version"
+VERSION_TEXT_KEY = "__routeros_version_text"
+
+# RouterOS 7.24 refuses to execute a script that declares a :global or :local
+# whose name contains an underscore. It stops in the parser, so the script logs
+# nothing of its own and a scheduler that fires it looks like one with nothing
+# to report. The README's per-script compatibility list says which scripts
+# that is; this turns the list into a verdict for one router.
+UNDERSCORE_REFUSED_FROM = (7, 24)
+
+# Where a 7.24-safe script does the same job. The others have none yet.
+REPLACED_BY = {"update_check": "backup_update_check"}
+
+# The scripts that declare an underscored name, as the README lists them
+# today. Used only when this file has no package beside it to read (a lone
+# copy in ~/bin); with the package present the set is derived from the .lua
+# files, and a unit test pins this tuple to that derived set so it cannot rot.
+UNDERSCORED_FALLBACK = (
+    "bandwidth_spike",
+    "brute_force_block",
+    "ddns_update",
+    "dhcp_lease_watch",
+    "firewall_drift",
+    "firewall_drift_baseline",
+    "latency_monitor",
+    "mac_allowlist_dhcp",
+    "traffic_quota",
+    "update_check",
+    "vpn_health",
+    "wan_failover_notify",
+    "wan_link_flap_notify",
+    "wireless_client_watch",
+)
+
+# The declaration the convention suite and the CHR suite both test for.
+# Comment lines start with '#', so a comment naming an old global never matches.
+_UNDERSCORED_DECLARATION = re.compile(r"^\s*:(?:global|local)\s+[A-Za-z0-9]*_", re.M)
+_VERSION = re.compile(r"^\s*(\d+)\.(\d+)")
 
 C_RESET = C_RED = C_GREEN = C_YELLOW = C_DIM = C_BOLD = ""
 if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
@@ -119,7 +169,8 @@ def parse_report(text):
     with name/interval/on_event, and globals maps secret names to value lengths.
     The reserved PAUSE_STATE_KEY maps to the computed non-secret boolean pause
     predicate; malformed/non-boolean values are reported as inactive exactly as
-    the scripts enforce them.
+    the scripts enforce them. VERSION_KEY holds the RouterOS (major, minor)
+    when the router reported one.
     """
     scripts = []
     schedulers = []
@@ -153,6 +204,13 @@ def parse_report(text):
             current = None
             value = line.partition("|")[2].strip()
             env[PAUSE_STATE_KEY] = value == "true"
+        elif line.startswith("VER:"):
+            current = None
+            text_value = line[4:].strip()
+            version = parse_version(text_value)
+            if version is not None:
+                env[VERSION_KEY] = version
+                env[VERSION_TEXT_KEY] = text_value
         elif current is not None:
             # A multi-line on-event. Keeping the newlines means the text stays
             # searchable for a script name that sits on a later line.
@@ -166,6 +224,23 @@ def _as_int(text):
         return int(text.strip())
     except ValueError:
         return 0
+
+
+def parse_version(text):
+    """(major, minor) from a RouterOS version string, or None.
+
+    Accepts what /system resource reports - '7.24.5 (stable)', '7.16rc2
+    (testing)', '7.25beta1' - and a bare '7.24'. The patch level is dropped:
+    the parser that refuses underscored names changed between minor releases.
+    """
+    match = _VERSION.match(text or "")
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def format_version(version):
+    return "%d.%d" % version
 
 
 def runs_script(on_event, name):
@@ -230,12 +305,64 @@ def local_script_names(directory):
     return sorted(names)
 
 
-def build_findings(local, installed, schedulers, env):
+def declares_underscored_name(source_text):
+    """Whether a script declares a :global or :local with an underscore.
+
+    The same pattern the convention suite and the CHR suite use, so the three
+    cannot disagree about which scripts 7.24 refuses.
+    """
+    return _UNDERSCORED_DECLARATION.search(source_text) is not None
+
+
+def underscored_script_names(directory):
+    """The package scripts RouterOS 7.24 refuses to run, by router name.
+
+    Walks exactly the way local_script_names() does, and for the same reason
+    raises on a directory it cannot read: a short list here would clear a
+    script that never runs.
+    """
+    def fail(exc):
+        raise exc
+
+    if not os.path.isdir(directory):
+        return []
+
+    names = []
+    for root, dirs, files in os.walk(directory, onerror=fail):
+        dirs[:] = [d for d in dirs if d != "tests"]
+        for name in files:
+            if not name.endswith(".lua"):
+                continue
+            path = os.path.join(root, name)
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if declares_underscored_name(fh.read()):
+                    names.append(name[:-4])
+    return sorted(names)
+
+
+def incompatible_scripts(installed, env, underscored=None):
+    """The installed scripts this router's release refuses to run.
+
+    Judged by name only: the router's copy is never read, so a script an
+    operator renamed or rewrote in place is not inspected. Empty when the
+    probe returned no version, or the version predates the refusal.
+    """
+    version = env.get(VERSION_KEY)
+    if version is None or version < UNDERSCORE_REFUSED_FROM:
+        return []
+    names = UNDERSCORED_FALLBACK if underscored is None else underscored
+    return sorted(set(names) & set(installed))
+
+
+def build_findings(local, installed, schedulers, env, underscored=None):
     """Compare what should be on the router with what is.
 
     Pure: no ssh, no filesystem, no clock. Returns a list of (level, message)
     with level in {'fail', 'warn', 'info'}; 'info' is context rather than a
     finding, and does not count towards the exit code.
+
+    underscored names the scripts that declare an underscored :global/:local;
+    None means UNDERSCORED_FALLBACK, the list for a lone copy with no package.
     """
     findings = []
     local = list(local)
@@ -320,6 +447,37 @@ def build_findings(local, installed, schedulers, env):
                 "warn",
                 "%s needs %s, which is not set — it refuses to act on an empty "
                 "list, so it currently does nothing" % (script, name),
+            ))
+
+    # --- will it run on this release ---
+    # Only when the router said which release it runs: an older probe, or one
+    # whose version line did not parse, stays silent rather than guessing.
+    version = env.get(VERSION_KEY)
+    if version is not None:
+        names = UNDERSCORED_FALLBACK if underscored is None else underscored
+        affected = sorted(set(names) & installed_set)
+        if version >= UNDERSCORE_REFUSED_FROM:
+            for name in affected:
+                replacement = REPLACED_BY.get(name)
+                if replacement:
+                    instead = "replacement: %s" % replacement
+                else:
+                    instead = "no replacement yet, see Scripts overview in README.md"
+                # fail only for the case that is silent for certain: it is
+                # scheduled, so it is being run, and every run dies unlogged.
+                level = "fail" if schedulers_for(name, schedulers) else "warn"
+                findings.append((
+                    level,
+                    "%s is installed but RouterOS %s refuses to execute scripts "
+                    "that declare an underscored :global/:local; it fails "
+                    "silently every time it runs (%s)"
+                    % (name, format_version(version), instead),
+                ))
+        elif affected:
+            findings.append((
+                "info",
+                "these installed scripts will stop running on RouterOS 7.24, "
+                "migrate before upgrading: %s" % ", ".join(affected),
             ))
 
     # --- context ---
@@ -460,6 +618,9 @@ def main(argv=None):
     # the router has and the package does not.
     try:
         local = local_script_names(args.scripts_dir)
+        # The underscore verdict comes from the files themselves whenever they
+        # are here; the embedded list is only for a copy with no package.
+        underscored = underscored_script_names(args.scripts_dir) if local else None
     except OSError as exc:
         if args.format == "json":
             print(json.dumps({
@@ -474,7 +635,7 @@ def main(argv=None):
         info("pass --scripts-dir to point at the mikrotik package")
         return 2
 
-    findings = build_findings(local, installed, schedulers, env)
+    findings = build_findings(local, installed, schedulers, env, underscored=underscored)
     if args.format == "json":
         # Scheduler on-event bodies are free-form RouterOS source and may embed
         # credentials. They are inspected in memory to match script names, but
@@ -495,6 +656,8 @@ def main(argv=None):
             "controls": {
                 "ops_toolbox_paused": env.get(PAUSE_STATE_KEY),
             },
+            "routeros_version": env.get(VERSION_TEXT_KEY),
+            "incompatible_scripts": incompatible_scripts(installed, env, underscored),
             "findings": [
                 {"level": level, "message": message}
                 for level, message in findings
@@ -507,6 +670,8 @@ def main(argv=None):
     info("%s@%s:%d answered" % (args.user, args.host, args.port))
     info("/system script holds %d entries; /system scheduler holds %d"
          % (len(installed), len(schedulers)))
+    if env.get(VERSION_TEXT_KEY):
+        info("RouterOS %s" % env[VERSION_TEXT_KEY])
     if not local:
         warn("no .lua files under %s — only what the router has can be checked"
              % args.scripts_dir)
@@ -525,6 +690,9 @@ def main(argv=None):
     info("to install a missing script, paste the .lua body into System > Scripts "
          "with policy read,write,policy,test,sensitive,ftp")
     info("to set a global once at boot, see the startup snippet in README.md")
+    if incompatible_scripts(installed, env, underscored):
+        info("on 7.24, remove or replace what cannot run (Scripts overview in "
+             "README.md lists what runs); rollback is pasting the previous source")
     return 0
 
 

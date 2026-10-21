@@ -384,6 +384,208 @@ class BuildFindingsTestCase(unittest.TestCase):
         self.assertEqual(levels_for(findings, "OpsToolboxPaused is true"), ["warn"])
 
 
+class CompatibilityTestCase(unittest.TestCase):
+    """Whether an installed script can run on the router's release at all.
+
+    RouterOS 7.24 refuses any script declaring an underscored :global/:local,
+    in the parser, before the script logs a line. A doctor that only compares
+    names calls that router healthy, which is the quietest failure the package
+    has. These pin the verdict, and pin the embedded fallback list to the files
+    so it cannot drift from them.
+    """
+
+    HEALTHY_ENV = {"TgBotToken": 46, "TgChatId": 9}
+
+    def env_on(self, version):
+        env = dict(self.HEALTHY_ENV)
+        env[router_doctor.VERSION_KEY] = version
+        return env
+
+    def test_parse_version_accepts_release_suffixes_and_rejects_garbage(self):
+        self.assertEqual(router_doctor.parse_version("7.24.5 (stable)"), (7, 24))
+        self.assertEqual(router_doctor.parse_version("7.24"), (7, 24))
+        self.assertEqual(router_doctor.parse_version("7.16rc2 (testing)"), (7, 16))
+        self.assertEqual(router_doctor.parse_version("7.25beta1"), (7, 25))
+        self.assertIsNone(router_doctor.parse_version(""))
+        self.assertIsNone(router_doctor.parse_version("stable"))
+        self.assertIsNone(router_doctor.parse_version("v7"))
+
+    def test_declares_underscored_name_matches_global_and_local_only_when_a_declaration(self):
+        self.assertTrue(router_doctor.declares_underscored_name(":global TG_BOT_TOKEN;\n"))
+        self.assertTrue(router_doctor.declares_underscored_name("  :local Max_Wait 3;\n"))
+        self.assertFalse(router_doctor.declares_underscored_name(":global TgBotToken;\n"))
+        # Using an underscored name is not declaring one.
+        self.assertFalse(router_doctor.declares_underscored_name(
+            ':log info "update_check done";\n:put $x_y;\n'
+        ))
+
+    def test_a_comment_mentioning_an_underscored_name_is_not_a_declaration(self):
+        source = "# :global TG_BOT_TOKEN is no longer read\n:global TgBotToken;\n"
+        self.assertFalse(router_doctor.declares_underscored_name(source))
+
+    def test_underscored_script_names_walks_core_and_features_and_skips_tests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for folder in ("core", "features", "tests"):
+                os.mkdir(os.path.join(tmp, folder))
+            files = {
+                os.path.join(tmp, "core", "old_core.lua"): ":global OLD_NAME;\n",
+                os.path.join(tmp, "core", "clean.lua"): ":global CleanName;\n",
+                os.path.join(tmp, "features", "old_feature.lua"): ":local My_Var 1;\n",
+                os.path.join(tmp, "tests", "fixture.lua"): ":global FIX_TURE;\n",
+            }
+            for path, body in files.items():
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(body)
+            self.assertEqual(router_doctor.underscored_script_names(tmp),
+                             ["old_core", "old_feature"])
+        self.assertEqual(router_doctor.underscored_script_names("/nonexistent/mikrotik"), [])
+
+    def test_an_unreadable_subdirectory_raises_rather_than_shortening(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            core = os.path.join(tmp, "core")
+            os.mkdir(core)
+            for path in (os.path.join(core, "update_check.lua"),
+                         os.path.join(tmp, "tg_send.lua")):
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(":global UPDATE_CHECK_BACKUP;\n")
+            real_scandir = os.scandir
+
+            def refuse_core(path=".", *args, **kwargs):
+                if str(path) == core:
+                    raise PermissionError(13, "Permission denied", str(path))
+                return real_scandir(path, *args, **kwargs)
+
+            with mock.patch("os.scandir", refuse_core), self.assertRaises(OSError):
+                router_doctor.underscored_script_names(tmp)
+
+    def test_installed_scheduled_underscored_script_fails_on_724(self):
+        schedulers = [{"name": "vpn_health", "interval": "2m",
+                       "on_event": "/system script run vpn_health"}]
+        findings = router_doctor.build_findings(
+            ["tg_send", "vpn_health"], ["tg_send", "vpn_health"], schedulers,
+            self.env_on((7, 24)),
+        )
+        self.assertEqual(levels_for(findings, "vpn_health is installed but RouterOS 7.24"),
+                         ["fail"])
+        self.assertTrue(router_doctor.has_problems(findings))
+
+    def test_installed_unscheduled_underscored_script_warns_on_724(self):
+        findings = router_doctor.build_findings(
+            ["tg_send", "vpn_health"], ["tg_send", "vpn_health"], [],
+            self.env_on((7, 25)),
+        )
+        self.assertEqual(levels_for(findings, "vpn_health is installed but RouterOS 7.25"),
+                         ["warn"])
+
+    def test_update_check_finding_names_backup_update_check(self):
+        schedulers = [{"name": "update_check", "interval": "1d",
+                       "on_event": "/system script run update_check"}]
+        findings = router_doctor.build_findings(
+            ["tg_send", "update_check"], ["tg_send", "update_check"], schedulers,
+            self.env_on((7, 24)),
+        )
+        messages = [m for _, m in findings if "update_check is installed" in m]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("replacement: backup_update_check", messages[0])
+
+    def test_724_clean_scripts_produce_no_compat_finding(self):
+        installed = ["tg_send", "backup", "health_check"]
+        schedulers = [
+            {"name": "backup", "interval": "1d", "on_event": "/system script run backup"},
+            {"name": "health_check", "interval": "5m",
+             "on_event": "/system script run health_check"},
+        ]
+        findings = router_doctor.build_findings(
+            installed, installed, schedulers, self.env_on((7, 24)),
+        )
+        self.assertEqual(findings, [])
+
+    def test_723_router_gets_one_info_line_and_no_problem(self):
+        schedulers = [{"name": "vpn_health", "interval": "2m",
+                       "on_event": "/system script run vpn_health"},
+                      {"name": "update_check", "interval": "1d",
+                       "on_event": "/system script run update_check"}]
+        installed = ["tg_send", "vpn_health", "update_check"]
+        findings = router_doctor.build_findings(
+            installed, installed, schedulers, self.env_on((7, 23)),
+        )
+        infos = [m for level, m in findings if "7.24" in m]
+        self.assertEqual(len(infos), 1)
+        self.assertEqual(levels_for(findings, "will stop running on RouterOS 7.24"), ["info"])
+        self.assertIn("update_check", infos[0])
+        self.assertIn("vpn_health", infos[0])
+        self.assertFalse(router_doctor.has_problems(findings))
+
+    def test_missing_version_line_is_silent(self):
+        schedulers = [{"name": "vpn_health", "interval": "2m",
+                       "on_event": "/system script run vpn_health"}]
+        findings = router_doctor.build_findings(
+            ["tg_send", "vpn_health"], ["tg_send", "vpn_health"], schedulers,
+            dict(self.HEALTHY_ENV),
+        )
+        self.assertEqual(findings, [])
+        _, _, env = router_doctor.parse_report(REPORT)
+        self.assertNotIn(router_doctor.VERSION_KEY, env)
+
+    def test_a_version_line_is_parsed_into_the_reserved_key(self):
+        _, _, env = router_doctor.parse_report(REPORT + "VER:7.24.5 (stable)\n")
+        self.assertEqual(env[router_doctor.VERSION_KEY], (7, 24))
+        self.assertEqual(env[router_doctor.VERSION_TEXT_KEY], "7.24.5 (stable)")
+        _, _, env = router_doctor.parse_report(REPORT + "VER:garbage\n")
+        self.assertNotIn(router_doctor.VERSION_KEY, env)
+
+    def test_the_derived_set_is_used_when_given(self):
+        # A script renamed clean in the package must stop being reported even
+        # though the embedded fallback still names it.
+        findings = router_doctor.build_findings(
+            ["tg_send", "vpn_health"], ["tg_send", "vpn_health"], [],
+            self.env_on((7, 24)), underscored=[],
+        )
+        self.assertEqual(levels_for(findings, "refuses to execute"), [])
+
+    def test_embedded_fallback_equals_the_set_derived_from_this_repository(self):
+        derived = router_doctor.underscored_script_names(os.path.join(REPO_ROOT, "mikrotik"))
+        self.assertTrue(derived, "derived nothing - the walk is not reading the scripts")
+        self.assertEqual(sorted(router_doctor.UNDERSCORED_FALLBACK), derived)
+
+    def test_the_probe_requests_the_version_and_still_only_reads(self):
+        self.assertIn('"VER:"', router_doctor.PROBE)
+        self.assertIn("/system resource get version", router_doctor.PROBE)
+        for verb in (" set ", " add ", " remove ", " enable ", " disable "):
+            self.assertNotIn(verb, router_doctor.PROBE)
+
+    def test_json_carries_routeros_version_and_leaves_schedulers_untouched(self):
+        report = (
+            "SCR:tg_send\nSCR:update_check\n"
+            "SCH:update_check|1d|/system script run update_check\n"
+            "ENV:TgBotToken|46\nENV:TgChatId|9\n"
+            "VER:7.24.5 (stable)\n"
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(router_doctor, "probe", return_value=(0, report, "")), \
+             mock.patch.object(router_doctor, "local_script_names",
+                               return_value=["tg_send", "update_check"]), \
+             contextlib.redirect_stdout(stdout):
+            rc = router_doctor.main(["--host", "router.test", "--format", "json"])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["routeros_version"], "7.24.5 (stable)")
+        self.assertEqual(payload["incompatible_scripts"], ["update_check"])
+        self.assertEqual(payload["schedulers"], [{"name": "update_check", "interval": "1d"}])
+        self.assertTrue(any(f["level"] == "fail" and "update_check" in f["message"]
+                            for f in payload["findings"]))
+
+    def test_json_without_a_version_reports_null(self):
+        stdout = io.StringIO()
+        with mock.patch.object(router_doctor, "probe", return_value=(0, REPORT, "")), \
+             mock.patch.object(router_doctor, "local_script_names", return_value=PACKAGE), \
+             contextlib.redirect_stdout(stdout):
+            router_doctor.main(["--host", "router.test", "--format", "json"])
+        payload = json.loads(stdout.getvalue())
+        self.assertIsNone(payload["routeros_version"])
+        self.assertEqual(payload["incompatible_scripts"], [])
+
+
 class JsonOutputTestCase(unittest.TestCase):
     def test_json_is_structured_and_keeps_exit_semantics(self):
         report = REPORT + "CTL:OpsToolboxPaused|true\n"

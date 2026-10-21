@@ -879,9 +879,25 @@ Three things are real findings: a scheduler that runs a script which is not
 installed (it fails at every run, and only `/log` says so), a script installed
 but scheduled nowhere, and a manual-only script somebody put on a timer.
 
+It also asks the router which RouterOS release it runs, and turns the
+compatibility list under [Scripts overview](#scripts-overview) into a verdict
+for that router. On 7.24 or later, each installed script that declares an
+underscored `:global` or `:local` is a finding: `fail` when a scheduler runs
+it, because every run dies in the parser without logging a line, `warn` when
+nothing does. The message names the replacement where one exists
+(`update_check` → `backup_update_check`). On 7.23 or earlier the same scripts
+get one `info` line, so you migrate before you upgrade. The list comes from
+the `.lua` files in this checkout; a lone copy of `router_doctor.py` falls
+back to the list it carries, which a unit test keeps equal to the files. The
+judgement is by name only: the router's copy of a script is never read, so a
+script renamed or rewritten on the router is not inspected. A router whose
+probe returned no version gets no verdict at all.
+
 Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
 `--port`). `--format json` returns installed script names, scheduler
-names/intervals, controls, and structured findings. Free-form scheduler source
+names/intervals, controls, `routeros_version` (the string the router
+reported, or `null`), `incompatible_scripts` (installed scripts the router's
+release refuses to run), and structured findings. Free-form scheduler source
 is deliberately omitted because an inline `on-event` can contain credentials.
 It preserves the same exit semantics: `0` findings printed, `1` connected but
 the probe failed, `2` could not connect, `4` nothing wrong.

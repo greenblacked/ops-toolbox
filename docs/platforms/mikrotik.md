@@ -51,6 +51,9 @@ the host tools to inspect.
     ./mikrotik/features/export_config.py --host router.lan --diff
     ```
 
+    `router_doctor.py` also reads the RouterOS version and fails each
+    installed, scheduled script that 7.24 refuses to run.
+
 === "Preview"
 
     ```bash
