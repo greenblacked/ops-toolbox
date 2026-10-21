@@ -298,13 +298,13 @@ if want ssh; then
     c="$(sshd_value ClientAliveCountMax)"
     [[ -n "$c" ]] || c=3
     if [[ -z "$v" ]] || ! secs="$(sshd_seconds "$v")" || (( secs == 0 )); then
-      warn "ClientAliveInterval ${v:-not set}: idle sessions never expire" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
-    elif ! [[ "$c" =~ ^[0-9]+$ ]] || (( c == 0 )); then
+      warn "ClientAliveInterval ${v:-not set}: idle timeout not enforced, sessions never expire" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
+    elif ! [[ "$c" =~ ^[0-9]{1,9}$ ]] || (( 10#$c == 0 )); then
       warn "ClientAliveCountMax=$c: idle sessions are probed but never dropped" "set 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
-    elif (( secs <= 900 )); then
-      pass "ClientAliveInterval=$v, ClientAliveCountMax=$c"
+    elif (( secs * 10#$c <= 900 )); then
+      pass "ClientAliveInterval=$v, ClientAliveCountMax=$c: idle sessions drop after $((secs * 10#$c))s"
     else
-      warn "ClientAliveInterval=$v (${secs}s): idle sessions live a long time" "set 'ClientAliveInterval 300' in /etc/ssh/sshd_config, $reload"
+      warn "ClientAliveInterval=$v (${secs}s) x ClientAliveCountMax=$c: idle sessions live $((secs * 10#$c))s, over the 900s bound" "set 'ClientAliveInterval 300' and 'ClientAliveCountMax 2' in /etc/ssh/sshd_config, $reload"
     fi
 
     # ~/.ssh/environment can set LD_PRELOAD for the login shell, which turns a
