@@ -174,7 +174,10 @@ Dry run complete; 2 distro(s) would be exported, nothing was written.
   exporting the data one is a multi-gigabyte copy of your image cache.
 - **Space is checked before anything is written.** A running distro is measured
   with `df` inside it, and one whose use is more than the free space on the
-  `-DestDir` drive is refused (`FAIL`) up front instead of failing half way. A
+  `-DestDir` drive is refused (`FAIL`) up front instead of failing half way.
+  The exports share that drive, so each measured export let through takes its
+  size off what the next distro is checked against, and a set that cannot fit
+  together is refused for the distros that do not fit. A
   stopped distro is never started to measure it, the rule `df` follows too, so
   only its VHDX size is known; that is an upper bound, so a VHDX larger than
   the free space is a `WARN` and the export still runs. A `-DestDir` on a UNC

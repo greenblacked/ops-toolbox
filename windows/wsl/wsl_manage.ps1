@@ -489,8 +489,12 @@ function Get-FreeSpace {
 # parameters, so the contract tests can feed it any machine.
 #   SKIP   Docker Desktop's own distros. Docker manages and recreates them,
 #          and exporting its data distro is a multi-gigabyte copy of images.
-#   FAIL   the distro's measured use is more than the free space: the export
-#          cannot fit, so it is refused up front instead of failing half way.
+#   FAIL   the distro's measured use is more than the free space left: the
+#          export cannot fit, so it is refused up front instead of failing
+#          half way. Every measured export let through takes its size off
+#          the space the next distro sees, because the tars share a drive.
+#          An unmeasured one takes nothing off: its VHDX is only an upper
+#          bound, and counting it would refuse sets that do fit.
 #   WARN   not measured (stopped), and its VHDX is larger than the free space.
 #          The VHDX is only an upper bound, so this exports anyway.
 #   EXPORT everything else.
@@ -503,6 +507,7 @@ function Get-BackupPlan {
         [Nullable[long]]$FreeBytes,
         [hashtable]$UsedByName = @{}
     )
+    $left = $FreeBytes
     foreach ($d in $Distros) {
         $out = Join-Path $DestDir ('{0}_{1}.tar' -f $d.Name, $Stamp)
         $used = $null
@@ -514,12 +519,19 @@ function Get-BackupPlan {
         if ($d.Name -match '^docker-desktop(-data)?$') {
             $verb = 'SKIP'
             $reason = 'managed by Docker Desktop'
-        } elseif ($null -ne $FreeBytes -and $null -ne $used -and $used -gt $FreeBytes) {
+        } elseif ($null -ne $left -and $null -ne $used -and $used -gt $left) {
             $verb = 'FAIL'
-            $reason = 'needs ~{0}, {1} free' -f (Format-Size $used), (Format-Size $FreeBytes)
-        } elseif ($null -ne $FreeBytes -and $null -eq $used -and $d.VhdxSize -gt $FreeBytes) {
+            $reason = if ($left -lt $FreeBytes) {
+                'needs ~{0}, {1} left after the earlier exports' -f (Format-Size $used), (Format-Size $left)
+            } else {
+                'needs ~{0}, {1} free' -f (Format-Size $used), (Format-Size $left)
+            }
+        } elseif ($null -ne $left -and $null -eq $used -and $d.VhdxSize -gt $left) {
             $verb = 'WARN'
-            $reason = 'VHDX is {0}, {1} free; the export is usually smaller' -f (Format-Size $d.VhdxSize), (Format-Size $FreeBytes)
+            $reason = 'VHDX is {0}, {1} free; the export is usually smaller' -f (Format-Size $d.VhdxSize), (Format-Size $left)
+        }
+        if ($null -ne $left -and $null -ne $used -and $verb -eq 'EXPORT') {
+            $left = [long]($left - $used)
         }
 
         [PSCustomObject]@{

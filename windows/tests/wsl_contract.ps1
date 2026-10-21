@@ -394,6 +394,21 @@ Test-Case 'unknown free space (a UNC path) raises no space finding' (
     $plan.Count -eq 1 -and $plan[0].Verb -eq 'EXPORT'
 ) (Format-Plan $plan)
 
+# Free space is shared by the whole set: each measured export that is let
+# through takes its size off what the next distro can use.
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 80GB), (Get-TestDistro 'Debian' 80GB), (Get-TestDistro 'Alpine' 5GB)) `
+    -DestDir $dest -Stamp $stamp -FreeBytes 100GB -UsedByName @{ Ubuntu = 60GB; Debian = 60GB; Alpine = 30GB })
+Test-Case 'a set that cannot fit together is refused up front, not distro by distro' (
+    @($plan | Where-Object { $_.Name -eq 'Ubuntu' -and $_.Verb -eq 'EXPORT' }).Count -eq 1 -and
+    @($plan | Where-Object { $_.Name -eq 'Debian' -and $_.Verb -eq 'FAIL' -and $_.Reason -match 'needs' }).Count -eq 1 -and
+    @($plan | Where-Object { $_.Name -eq 'Alpine' -and $_.Verb -eq 'EXPORT' }).Count -eq 1
+) (Format-Plan $plan)
+$plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 80GB), (Get-TestDistro 'Debian' 80GB)) `
+    -DestDir $dest -Stamp $stamp -FreeBytes 100GB -UsedByName @{ Ubuntu = 40GB; Debian = 40GB })
+Test-Case 'and a set that fits together is not refused' (
+    @($plan | Where-Object { $_.Verb -eq 'EXPORT' }).Count -eq 2
+) (Format-Plan $plan)
+
 # A failed export must never delete a backup that was already there. Two
 # runs in the same minute share one output path, so the second run's cleanup
 # used to remove the first run's valid tar and leave its sidecar behind. A

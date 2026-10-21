@@ -2,7 +2,8 @@
   under one timestamp, the "export everything" step before a reinstall or an
   upgrade that used to be a loop written by hand. Docker Desktop's own
   distros are skipped, a running distro whose measured use will not fit on
-  the destination drive is refused before anything is written (a stopped one
+  the destination drive (counting the exports already admitted
+  in the same run) is refused before anything is written (a stopped one
   is never started to measure it), one failed export does not stop the rest
   and never deletes a backup of the same name from an earlier run (exports
   are written to a temporary file and moved into place on success),
