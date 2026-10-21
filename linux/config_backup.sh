@@ -409,7 +409,8 @@ diff_archive() {
   local missing_suffix=": Cannot stat: No such file or directory"
   if [[ -z "$archive" ]]; then
     resolve_dest
-    archive="$(ls -1t "$DEST"/"$PREFIX"-*.tar.gz 2>/dev/null | head -n 1 || true)"
+    archive="$(ls -1t "$DEST"/"$PREFIX"-*.tar.gz 2>/dev/null || true)"
+    archive="${archive%%$'\n'*}"
     if [[ -z "$archive" ]]; then
       err "no $PREFIX-*.tar.gz archives in $DEST"
       exit 3
@@ -760,10 +761,15 @@ fi
 
 # A pattern that also matches the manifest member would drop it silently, and
 # the archive would then be diffed as if nothing had been excluded.
-if (( ${#manifest_args[@]} > 0 )) \
-   && ! tar -tzf "$staged_archive" | grep -qx '\.config_backup/excludes'; then
-  err "an --exclude pattern also matches .config_backup/excludes; narrow it"
-  exit 1
+if (( ${#manifest_args[@]} > 0 )); then
+  if ! staged_members="$(tar -tzf "$staged_archive" 2>/dev/null)"; then
+    err "cannot list the staged archive; previous archives preserved"
+    exit 1
+  fi
+  if ! grep -qx -- '\.config_backup/excludes' <<<"$staged_members"; then
+    err "an --exclude pattern also matches .config_backup/excludes; narrow it"
+    exit 1
+  fi
 fi
 
 archive="$DEST/${PREFIX}-${stamp}-${stage_dir##*.}"
