@@ -24,6 +24,7 @@ never read.
     ./router_doctor.py --host router.lan --user admin --identity ~/.ssh/keys/mikrotik
     ./router_doctor.py --host router.lan --port 2222
     ./router_doctor.py --hosts-file ~/routers.txt --format json
+    ./router_doctor.py --host router.lan --drift    # which scripts are stale
 
 Exit codes: 0 findings printed, 1 connected but the probe failed, 2 could not
 connect, 3 usage, 4 nothing wrong. With --hosts-file each router is audited in
@@ -34,6 +35,7 @@ reached, else 1 if any probe failed, else 0 if any printed findings, else 4.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -104,6 +106,21 @@ PROBE = (
     ':put ("DECL:" . [/system script get $s name])}};'
 )
 
+# Asked only under --drift. For each installed script the router returns its
+# name, its length and a SHA-256 of its source, computed on the router: a
+# source can hold a pasted token, so the source itself never crosses the wire.
+# The digest is wrapped in on-error so a release without that :convert
+# transform still answers, with an empty digest, and the comparison falls back
+# to length alone.
+DRIFT_PROBE = (
+    ' :foreach s in=[/system script find] do={'
+    ':local n [/system script get $s name];'
+    ':local src [/system script get $s source];'
+    ':local h "";'
+    ':do {:set h [:convert from=raw to=hex transform=sha256 $src]} on-error={};'
+    ':put ("HSH:" . $n . "|" . [:len $src] . "|" . $h)};'
+)
+
 PAUSE_STATE_KEY = "__control_ops_toolbox_paused"
 # Reserved like PAUSE_STATE_KEY: the (major, minor) the router reported, and
 # the string it reported it as. Both are absent when the probe returned no VER
@@ -114,6 +131,9 @@ VERSION_TEXT_KEY = "__routeros_version_text"
 # uptime in seconds, and the scripts whose source mentions TgBotToken.
 UPTIME_KEY = "__uptime_seconds"
 DECLARES_TG_KEY = "__declares_tg"
+
+# Reserved: {script name: (length, hex digest)} from DRIFT_PROBE.
+HASHES_KEY = "__hashes"
 
 # Scripts that read the Telegram globals rather than set them. Mentioning
 # TgBotToken does not make them a startup script.
@@ -257,6 +277,12 @@ def parse_report(text):
             seconds = duration_seconds(line[4:])
             if seconds is not None:
                 env[UPTIME_KEY] = seconds
+        elif line.startswith("HSH:"):
+            current = None
+            fields = line[4:].rsplit("|", 2)
+            if len(fields) == 3 and fields[0].strip():
+                hashes = env.setdefault(HASHES_KEY, {})
+                hashes[fields[0].strip()] = (_as_int(fields[1]), fields[2].strip().lower())
         elif line.startswith("DECL:"):
             current = None
             name = line[5:].strip()
@@ -392,6 +418,91 @@ def local_script_names(directory):
         dirs[:] = [d for d in dirs if d != "tests"]
         names.extend(name[:-4] for name in files if name.endswith(".lua"))
     return sorted(names)
+
+
+def local_script_paths(directory):
+    """{router name: path} for the package's .lua scripts.
+
+    The same walk as local_script_names(), with the same refusal to return a
+    short answer for a directory it cannot read.
+    """
+    def fail(exc):
+        raise exc
+
+    if not os.path.isdir(directory):
+        return {}
+
+    paths = {}
+    for root, dirs, files in os.walk(directory, onerror=fail):
+        dirs[:] = [d for d in dirs if d != "tests"]
+        for name in files:
+            if name.endswith(".lua"):
+                paths[name[:-4]] = os.path.join(root, name)
+    return paths
+
+
+def source_fingerprints(path):
+    """{(length, sha256 hex)} the file could have on the router.
+
+    A paste through Winbox or WebFig keeps or drops the trailing newline, and
+    RouterOS may store line ends as CRLF, so every combination of the two is a
+    match rather than drift.
+    """
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    bare = raw.rstrip(b"\n")
+    candidates = {raw, bare, bare + b"\n"}
+    candidates |= {c.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") for c in set(candidates)}
+    return {(len(c), hashlib.sha256(c).hexdigest()) for c in candidates}
+
+
+def compare(name, router_entry, fingerprints):
+    """'match', 'differs', 'length-match' or 'length-differs'.
+
+    With a digest from the router the verdict is by digest; with none (the
+    :convert transform missing on that release) only the length is compared,
+    and the verdict says so.
+    """
+    length, digest = router_entry
+    if digest:
+        return "match" if (length, digest.lower()) in fingerprints else "differs"
+    lengths = {size for size, _ in fingerprints}
+    return "length-match" if length in lengths else "length-differs"
+
+
+def drift_findings(hashes, paths, package_dir):
+    """(verdicts, findings) for the installed scripts this package ships.
+
+    hashes is what the router reported, paths what local_script_paths()
+    found. A script on the router that is not in the package is someone
+    else's, and is skipped. Pure apart from reading the package files.
+    """
+    if not paths:
+        return {}, [("info", "no .lua files to compare against; --drift needs the "
+                              "package beside this file")]
+    verdicts = {}
+    findings = []
+    for name in sorted(hashes):
+        if name not in paths:
+            continue
+        verdict = compare(name, hashes[name], source_fingerprints(paths[name]))
+        verdicts[name] = verdict
+        if verdict in ("differs", "length-differs"):
+            relative = os.path.relpath(
+                paths[name], os.path.dirname(os.path.normpath(package_dir))
+            )
+            message = ("%s on the router differs from %s: edited in place or out of "
+                       "date (tuned thresholds also show here)" % (name, relative))
+            if verdict == "length-differs":
+                message += "; compared by length only"
+            findings.append(("warn", message))
+    matched = sum(1 for v in verdicts.values() if v in ("match", "length-match"))
+    findings.append((
+        "info",
+        "%d of %d installed package scripts match the files in this checkout"
+        % (matched, len(verdicts)),
+    ))
+    return verdicts, findings
 
 
 def declares_underscored_name(source_text):
@@ -735,7 +846,11 @@ def run_one(user, host, port, args, package=None):
     the probe, which is the order a single router has always had.
     """
     lines = []
-    rc, out, err = probe(host, user, args.identity, port, args.timeout)
+    if args.drift:
+        rc, out, err = probe(host, user, args.identity, port, args.timeout,
+                             command=PROBE + DRIFT_PROBE)
+    else:
+        rc, out, err = probe(host, user, args.identity, port, args.timeout)
     errors = err.strip().splitlines()[:5]
 
     if rc == 255:
@@ -788,6 +903,15 @@ def run_one(user, host, port, args, package=None):
     local, underscored = package
 
     findings = build_findings(local, installed, schedulers, env, underscored=underscored)
+    verdicts = None
+    if args.drift:
+        try:
+            paths = local_script_paths(args.scripts_dir) if local else {}
+            verdicts, extra = drift_findings(env.get(HASHES_KEY, {}), paths, args.scripts_dir)
+        except OSError as exc:
+            verdicts, extra = {}, [("warn", "--drift could not read the package files: %s"
+                                    % exc)]
+        findings.extend(extra)
     rc = 0 if has_problems(findings) else 4
 
     # Scheduler on-event bodies are free-form RouterOS source and may embed
@@ -828,6 +952,10 @@ def run_one(user, host, port, args, package=None):
         ],
         "healthy": not has_problems(findings),
     }
+    if verdicts is not None:
+        # Verdicts only: never a digest or a length, which say nothing useful
+        # here and would identify a source.
+        payload["drift"] = verdicts
 
     lines.append(("head", "router"))
     lines.append(("info", "%s@%s:%d answered" % (user, host, port)))
@@ -857,6 +985,10 @@ def run_one(user, host, port, args, package=None):
         lines.append(("info", "on 7.24, remove or replace what cannot run (Scripts "
                               "overview in README.md lists what runs); rollback is "
                               "pasting the previous source"))
+    for name, verdict in sorted((verdicts or {}).items()):
+        if verdict in ("differs", "length-differs"):
+            lines.append(("info", "paste the file body into System > Scripts > %s > Source"
+                                  % name))
     return rc, payload, lines
 
 
@@ -1029,6 +1161,12 @@ def main(argv=None):
         choices=("text", "json"),
         default="text",
         help="output format (default: text)",
+    )
+    parser.add_argument(
+        "--drift",
+        action="store_true",
+        help="also compare each installed package script with the file here, by a "
+             "length and SHA-256 the router computes; no source is fetched",
     )
     parser.add_argument("--scripts-dir", default=PACKAGE_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)

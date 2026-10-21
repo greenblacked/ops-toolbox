@@ -915,6 +915,7 @@ fixes what it found.
 ./router_doctor.py --host router.lan --port 2222
 ./router_doctor.py --host router.lan --format json
 ./router_doctor.py --hosts-file ~/routers.txt     # every router, one summary
+./router_doctor.py --host router.lan --drift      # which installed scripts are stale
 ```
 
 Secrets stay on the router. The check on `TgBotToken` and `TgChatId` asks
@@ -964,6 +965,25 @@ uptime, and adds three findings, all `warn`:
 
 Each of these runs only on fields the router returned, so an older or partial
 answer produces no finding rather than a false one.
+
+`--drift` answers which routers still run an old copy of a script. Scripts are
+pasted into *Source* by hand, and this package changes them (the 7.24 renames,
+fixes), so there was no answer short of opening each one in Winbox. With the
+flag, the router computes the length and SHA-256 of each installed script and
+returns those, never the source, which may hold a pasted token. Each installed
+script that this package ships is compared with its file here, allowing for a
+paste that kept or dropped the trailing newline or stored CRLF line ends. A
+script that differs is a `warn` naming the file (edited in place or out of
+date) and the fix line says to paste the file body into
+*System > Scripts > NAME > Source*. Thresholds you tuned in the router's copy
+show up here too, which is why this is a flag and not part of the default
+verdict. One `info` line counts how many installed package scripts match.
+Scripts that are not in the package are skipped. If the router's release
+cannot compute the digest, the comparison falls back to length and the
+finding says "compared by length only". JSON gains `drift`, a map from script
+name to `match`, `differs`, `length-match` or `length-differs`: a verdict
+only, never a digest or a length. A lone copy of `router_doctor.py` with no
+`.lua` files beside it has nothing to compare against and says so once.
 
 Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
 `--port`). `--format json` returns installed script names, scheduler

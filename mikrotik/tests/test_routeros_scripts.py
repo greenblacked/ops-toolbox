@@ -1718,3 +1718,34 @@ def test_rogue_dns_invalid_connection_get_probe(
         _remove_by_name(script_resource, name)
         _unset_global(api, probe)
         _unset_global(api, complete)
+
+
+# --- router_doctor.py --drift ----------------------------------------------
+#
+# The drift probe asks the router for a SHA-256 of each script's source so the
+# source itself never leaves the router. The :convert spelling is the one part
+# of that which nothing offline can check, so it is run here, on the pinned
+# release, against the digest of "abc" from FIPS 180-2. If this fails, change
+# DRIFT_PROBE in router_doctor.py (and only that string) to a spelling this
+# release accepts; until then --drift degrades to comparing lengths.
+DRIFT_DIGEST_OF_ABC = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+
+def test_drift_hash_expression_is_valid_on_the_pinned_routeros(
+    api: Any, script_resource: Any
+) -> None:
+    name = "pu_ut_drift"
+    try:
+        _unset_global(api, "PuDrift")
+        _add_script(
+            script_resource,
+            name,
+            ':global PuDrift [:convert from=raw to=hex transform=sha256 "abc"];\n',
+        )
+        _run_via_scheduler(
+            api, name, lambda: _read_global(api, "PuDrift") != "", timeout=30.0
+        )
+        assert _read_global(api, "PuDrift").lower() == DRIFT_DIGEST_OF_ABC
+    finally:
+        _remove_by_name(script_resource, name)
+        _unset_global(api, "PuDrift")

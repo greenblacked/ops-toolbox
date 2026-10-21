@@ -15,6 +15,7 @@ length, which is what makes "TgBotToken is set" printable at all.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -1089,6 +1090,183 @@ class FleetRunTestCase(unittest.TestCase):
             "[ ok ] nothing to fix: everything installed is scheduled and has the "
             "globals it needs\n"
         ))
+
+
+def sha256_hex(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+class DriftTestCase(unittest.TestCase):
+    """--drift: which installed scripts differ from the files in this checkout.
+
+    The router computes a length and a digest of each script and returns those;
+    no source crosses the wire, because a source can hold a pasted token. What
+    the report may say is a verdict, never the digest itself.
+    """
+
+    BODY = b":global OpsToolboxPaused;\n:log info \"x\";\n"
+
+    def package(self, tmp, body=BODY):
+        features = os.path.join(tmp, "mikrotik", "features")
+        os.makedirs(features)
+        path = os.path.join(features, "health_check.lua")
+        with open(path, "wb") as fh:
+            fh.write(body)
+        return os.path.join(tmp, "mikrotik"), path
+
+    def test_hsh_records_parse_to_length_and_digest(self):
+        digest = sha256_hex(self.BODY)
+        _, _, env = router_doctor.parse_report(
+            REPORT + "HSH:health_check|%d|%s\nHSH:startup|12|\n" % (len(self.BODY), digest.upper())
+        )
+        self.assertEqual(env[router_doctor.HASHES_KEY], {
+            "health_check": (len(self.BODY), digest),
+            "startup": (12, ""),
+        })
+        _, _, env = router_doctor.parse_report(REPORT)
+        self.assertNotIn(router_doctor.HASHES_KEY, env)
+
+    def test_missing_digest_degrades_to_length_comparison(self):
+        fingerprints = {(len(self.BODY), sha256_hex(self.BODY))}
+        self.assertEqual(router_doctor.compare("x", (len(self.BODY), ""), fingerprints),
+                         "length-match")
+        self.assertEqual(router_doctor.compare("x", (len(self.BODY) + 1, ""), fingerprints),
+                         "length-differs")
+
+    def test_a_trailing_newline_difference_still_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, path = self.package(tmp)
+            fingerprints = router_doctor.source_fingerprints(path)
+            bare = self.BODY.rstrip(b"\n")
+            for pasted in (self.BODY, bare, bare + b"\n", self.BODY.replace(b"\n", b"\r\n")):
+                verdict = router_doctor.compare("health_check",
+                                                (len(pasted), sha256_hex(pasted)),
+                                                fingerprints)
+                self.assertEqual(verdict, "match", pasted)
+
+    def test_edited_script_is_reported_as_differs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir, _ = self.package(tmp)
+            edited = self.BODY.replace(b"x", b"tuned")
+            hashes = {"health_check": (len(edited), sha256_hex(edited))}
+            paths = router_doctor.local_script_paths(package_dir)
+            verdicts, findings = router_doctor.drift_findings(hashes, paths, package_dir)
+        self.assertEqual(verdicts, {"health_check": "differs"})
+        warns = [m for level, m in findings if level == "warn"]
+        self.assertEqual(len(warns), 1)
+        self.assertIn("health_check on the router differs from mikrotik/features/"
+                      "health_check.lua", warns[0])
+        self.assertNotIn("length only", warns[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir, _ = self.package(tmp)
+            hashes = {"health_check": (len(self.BODY) + 3, "")}
+            paths = router_doctor.local_script_paths(package_dir)
+            _, findings = router_doctor.drift_findings(hashes, paths, package_dir)
+        self.assertIn("compared by length only", [m for lv, m in findings if lv == "warn"][0])
+
+    def test_identical_script_is_silent_and_counted_in_the_info_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir, _ = self.package(tmp)
+            hashes = {"health_check": (len(self.BODY), sha256_hex(self.BODY))}
+            paths = router_doctor.local_script_paths(package_dir)
+            verdicts, findings = router_doctor.drift_findings(hashes, paths, package_dir)
+        self.assertEqual(verdicts, {"health_check": "match"})
+        self.assertEqual(findings, [
+            ("info", "1 of 1 installed package scripts match the files in this checkout"),
+        ])
+
+    def test_script_not_in_the_package_is_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            package_dir, _ = self.package(tmp)
+            hashes = {"startup": (40, "ab" * 32)}
+            paths = router_doctor.local_script_paths(package_dir)
+            verdicts, findings = router_doctor.drift_findings(hashes, paths, package_dir)
+        self.assertEqual(verdicts, {})
+        self.assertEqual([lv for lv, _ in findings], ["info"])
+
+    def test_local_script_paths_walks_core_and_features_skips_tests_and_raises_on_unreadable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for folder in ("core", "features", "tests"):
+                os.mkdir(os.path.join(tmp, folder))
+            for rel in ("core/tg_send.lua", "features/backup.lua", "tests/fixture.lua",
+                        "features/notes.md"):
+                with open(os.path.join(tmp, rel), "w", encoding="utf-8") as fh:
+                    fh.write("x")
+            paths = router_doctor.local_script_paths(tmp)
+            self.assertEqual(sorted(paths), ["backup", "tg_send"])
+            self.assertEqual(paths["tg_send"], os.path.join(tmp, "core", "tg_send.lua"))
+
+            core = os.path.join(tmp, "core")
+            real_scandir = os.scandir
+
+            def refuse_core(path=".", *args, **kwargs):
+                if str(path) == core:
+                    raise PermissionError(13, "Permission denied", str(path))
+                return real_scandir(path, *args, **kwargs)
+
+            with mock.patch("os.scandir", refuse_core), self.assertRaises(OSError):
+                router_doctor.local_script_paths(tmp)
+        self.assertEqual(router_doctor.local_script_paths("/nonexistent/mikrotik"), {})
+
+    def test_drift_probe_only_reads_and_never_puts_source(self):
+        probe = router_doctor.DRIFT_PROBE
+        for verb in (" set ", " add ", " remove ", " enable ", " disable "):
+            self.assertNotIn(verb, probe)
+        puts = re.findall(r":put \(([^;]*)\)", probe)
+        self.assertEqual(len(puts), 1)
+        operands = [part.strip() for part in puts[0].split(" . ")]
+        self.assertNotIn("$src", operands)
+        self.assertIn("[:len $src]", operands)
+        self.assertIn("transform=sha256", probe)
+
+    def test_default_probe_does_not_contain_the_drift_probe(self):
+        self.assertNotIn("HSH:", router_doctor.PROBE)
+        self.assertNotIn(":convert", router_doctor.PROBE)
+        calls = []
+
+        def fake_probe(host, user, identity, port, timeout, command=router_doctor.PROBE):
+            calls.append(command)
+            return 0, REPORT, ""
+
+        with mock.patch.object(router_doctor, "probe", side_effect=fake_probe), \
+             mock.patch.object(router_doctor, "local_script_names", return_value=PACKAGE), \
+             contextlib.redirect_stdout(io.StringIO()):
+            router_doctor.main(["--host", "router.test"])
+            router_doctor.main(["--host", "router.test", "--drift"])
+        self.assertNotIn("HSH:", calls[0])
+        self.assertIn("HSH:", calls[1])
+
+    def test_json_drift_contains_verdicts_only_not_digests(self):
+        fake_digest = "f00d" * 16
+        report = (
+            "SCR:tg_send\nSCR:health_check\n"
+            "SCH:health_check|5m|/system script run health_check\n"
+            "ENV:TgBotToken|46\nENV:TgChatId|9\n"
+            "HSH:health_check|31337|%s\n"
+            "HSH:tg_send|4242|\n" % fake_digest
+        )
+        stdout = io.StringIO()
+        with mock.patch.object(router_doctor, "probe", return_value=(0, report, "")), \
+             mock.patch.object(router_doctor, "local_script_names",
+                               return_value=["tg_send", "health_check"]), \
+             contextlib.redirect_stdout(stdout):
+            rc = router_doctor.main(["--host", "router.test", "--format", "json", "--drift"])
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(rc, 0)
+        self.assertEqual(payload["drift"], {"health_check": "differs",
+                                            "tg_send": "length-differs"})
+        self.assertNotIn(fake_digest, stdout.getvalue())
+        self.assertNotIn("31337", stdout.getvalue())
+        self.assertNotIn("4242", stdout.getvalue())
+
+    def test_lone_copy_without_lua_files_gives_one_info_and_no_warn(self):
+        verdicts, findings = router_doctor.drift_findings(
+            {"health_check": (10, "ab" * 32)}, {}, "/nonexistent/mikrotik"
+        )
+        self.assertEqual(verdicts, {})
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0][0], "info")
+        self.assertIn("no .lua files to compare against", findings[0][1])
 
 if __name__ == "__main__":
     unittest.main()

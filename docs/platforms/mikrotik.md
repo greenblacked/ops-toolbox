@@ -49,6 +49,7 @@ the host tools to inspect.
     ```bash
     ./mikrotik/features/router_doctor.py --host 192.168.88.1
     ./mikrotik/features/router_doctor.py --hosts-file ~/routers.txt
+    ./mikrotik/features/router_doctor.py --host router.lan --drift
     ./mikrotik/features/export_config.py --host router.lan --diff
     ./mikrotik/features/export_config.py --host router.lan --scan-secrets
     ./mikrotik/features/export_config.py --scan-file mikrotik/config-history/router.lan.rsc
@@ -57,7 +58,9 @@ the host tools to inspect.
     `router_doctor.py` also reads the RouterOS version and fails each
     installed, scheduled script that 7.24 refuses to run. It warns about
     disabled schedulers, enabled ones that have never fired, and Telegram
-    globals that no startup scheduler sets again after a reboot.
+    globals that no startup scheduler sets again after a reboot. `--drift`
+    compares each installed script with the file in this checkout by a
+    length and digest the router computes, so no script source is fetched.
 
 === "Preview"
 
