@@ -16,6 +16,7 @@ throwing away the giant `.tar` exports once they have aged out.
 - [Backing up everything](#backing-up-everything)
 - [Restoring](#restoring)
 - [Pruning backups](#pruning-backups)
+- [Auditing backups](#auditing-backups)
 - [.wslconfig audit](#wslconfig-audit)
 - [Git Bash shortcuts](#git-bash-shortcuts)
 
@@ -23,7 +24,7 @@ throwing away the giant `.tar` exports once they have aged out.
 
 | Requirement | Notes |
 | --- | --- |
-| **Windows with WSL2** | Every action except `verify-backup` and `wslconfig` probes for `wsl.exe` and then runs `wsl --status`, exiting `2` if either says WSL is absent or not operational. `wsl.exe` exists as a stub on machines that never installed WSL, which is why the second probe is there. |
+| **Windows with WSL2** | Every action except `verify-backup`, `backups` and `wslconfig` probes for `wsl.exe` and then runs `wsl --status`, exiting `2` if either says WSL is absent or not operational. `wsl.exe` exists as a stub on machines that never installed WSL, which is why the second probe is there. |
 | **Windows PowerShell 5.1 or PowerShell 7** | Run from the folder, or from anywhere by path. |
 | **An elevated shell** | Only for `compact`, which drives `diskpart`. Unelevated it exits `4` and does nothing else. |
 | **A recent WSL build** | Only for `sparse`, which needs `wsl --manage --set-sparse`. An older build fails the call and the script says to run `wsl --update`. |
@@ -31,8 +32,9 @@ throwing away the giant `.tar` exports once they have aged out.
 
 `verify-backup` is the exception to all of it: it recomputes SHA-256 for a
 `.tar` and compares it with the sidecar, so it needs no WSL and no elevation
-and runs on a machine that only holds the backups. `wslconfig` is the other
-one: it reads `%USERPROFILE%\.wslconfig` and nothing else.
+and runs on a machine that only holds the backups. `backups` is the same: it
+lists and hashes files. `wslconfig` is the other one: it reads
+`%USERPROFILE%\.wslconfig` and nothing else.
 
 ## Why "compact" exists
 
@@ -62,6 +64,10 @@ compact would give back.
 .\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun   # every distro, previewed
 .\wsl_manage.ps1 backup -All -DestDir D:\Backups
 .\wsl_manage.ps1 verify-backup -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
+
+# What is in the backup folder, is all of it intact, and is it recent enough?
+.\wsl_manage.ps1 backups -DestDir D:\Backups
+.\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
 
 # Bring one back as a new distro (see "Restoring" below - read it first):
 .\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar -DryRun
@@ -99,6 +105,7 @@ compact would give back.
 | `df` | no | no | Allocated (VHDX file) against used (`df -Pk /` inside the distro), plus the reclaimable difference. Stopped distros show `-` unless `-Force` is passed, because measuring one starts it. |
 | `backup` | no | no | `wsl --export` to `<DestDir>\<distro>_<date>.tar`; prints the matching `restore` command. Default `DestDir`: `%USERPROFILE%\wsl-backups`. `-All` exports every distro (see [Backing up everything](#backing-up-everything)); `-DryRun` prints the plan and writes nothing. |
 | `verify-backup` | no | no | Recomputes SHA-256 for `-Tar` and compares it with the `.sha256` sidecar written by `backup`. Does not require WSL to be running. |
+| `backups` | no | no | Inventory of the dated exports under `-DestDir`; `-Verify` hashes each against its sidecar, `-MaxAgeDays` flags a distro with no recent backup. Read-only; needs no WSL. See [Auditing backups](#auditing-backups). |
 | `restore` | no | no | `wsl --import` of a `.tar` as a **new** distro. Needs `-Distro` (the new name) and `-Tar` (the file). `-DryRun` prints what it would register. |
 | `prune-backups` | no | no | Deletes aged-out `.tar` exports under `-DestDir`. `-DryRun` previews; a real run asks before deleting unless `-Force`. |
 | `compact` | **yes** (not for `-DryRun`) | **yes** (all distros) | `wsl --shutdown`, then diskpart `compact vdisk`. Prints before/after/reclaimed. `-DryRun` names the running distros the shutdown would stop and the disk it would compact, and says when the shell is not elevated. |
@@ -114,6 +121,7 @@ previews calls `wsl --export`, `--import`, `--shutdown`, `--terminate`,
 
 Exit codes: `0` success, `1` the underlying `wsl`/`diskpart` command failed
 (for `backup -All`: one or more exports failed, the rest still ran; for
+`backups`: a `BAD` or `MISS` tar under `-Verify`, or a `STALE` distro; for
 `wslconfig -Strict`: at least one `WARN`), `2` WSL is not installed or not
 operational, `3` bad arguments (including a `-ConfigFile` that does not exist),
 `4` needs an elevated shell (`compact`).
@@ -218,6 +226,50 @@ distro's exports rather than all of them.
 A real run prints the `KEEP`/`PRUNE` list and then asks for confirmation;
 `-Force` skips the prompt for a scheduled task, and `-DryRun` prints the same
 list with `WOULD` and deletes nothing.
+
+## Auditing backups
+
+`verify-backup` checks one tar. The question a runbook or a scheduled task
+asks before a risky change is wider: what backups are there, are they all
+intact, and is the newest one recent enough? `backups` answers it for the
+dated exports under `-DestDir` (only files named the way `backup` writes them;
+anything else in the folder is ignored, as with `prune-backups`).
+
+```powershell
+.\wsl_manage.ps1 backups -DestDir D:\Backups
+.\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
+.\wsl_manage.ps1 backups -DestDir D:\Backups -Distro Ubuntu -Verify
+```
+
+Without `-Verify` nothing is hashed: one line per tar, newest first within
+each distro, with its size, its age and whether its sidecar is there.
+
+```text
+OK    Ubuntu_2026-10-20_0900.tar                      4.20 GB    1d   sha256:present
+OK    Ubuntu_2026-10-13_0900.tar                      4.10 GB    8d   sha256:missing
+```
+
+`-Verify` hashes every tar against its `.sha256` sidecar, after a line saying
+how much it is about to read, because a multi-gigabyte tar takes minutes. Each
+tar is `OK`, `MISS` (no sidecar) or `BAD` (a malformed sidecar, or a
+checksum that does not match, with the expected and actual hashes printed
+under it). Catching a truncated or bit-rotted export the day it happens beats
+finding it at the restore.
+
+`-MaxAgeDays N` adds `STALE <distro> newest backup is 12 day(s) old (limit 7)`
+for every distro whose newest export is older than `N` days, by the file's
+last-write time, the clock `prune-backups` uses. An empty or missing folder
+prints `No dated .tar exports under <dir>` and exits `0`, unless
+`-MaxAgeDays` is given: then there is by definition no recent backup, and it
+exits `1`. A footer counts backups, total size, verified, bad, missing
+sidecars and stale distros.
+
+It only reads: it never deletes, renames or rewrites a tar or a sidecar,
+needs no WSL and no elevation, and runs on a machine that only holds the
+backups.
+
+Exit codes: `0` nothing wrong, `1` a `BAD` or `MISS` tar under `-Verify`, or a
+`STALE` distro. A `-Distro` with no backups is simply an empty list.
 
 ## .wslconfig audit
 

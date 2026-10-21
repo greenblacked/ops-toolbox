@@ -17,6 +17,11 @@
                 writes nothing, not even -DestDir.
       verify-backup
                 Verify a -Tar against the .sha256 sidecar written by backup.
+      backups   Inventory of the dated exports under -DestDir, newest first
+                per distro, with size, age and whether a sidecar is there.
+                -Verify hashes every tar against its sidecar; -MaxAgeDays N
+                flags a distro whose newest backup is older than N days.
+                Read-only, needs no WSL.
       restore   Import a .tar back as a NEW distro (wsl --import). It never
                 overwrites an existing registration - see the notes below,
                 because restore has two surprises worth knowing in advance.
@@ -50,6 +55,7 @@
     .\wsl_manage.ps1 backup -Distro Ubuntu -DestDir D:\Backups
     .\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun
     .\wsl_manage.ps1 verify-backup -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
+    .\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
     .\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
     .\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
     .\wsl_manage.ps1 compact -Distro Ubuntu -DryRun
@@ -66,6 +72,7 @@
       0  success (wslconfig: the report ran; warnings alone do not change it)
       1  the underlying wsl/diskpart command failed
          (backup -All: one or more exports failed; the rest still ran)
+         (backups: a BAD or MISS tar under -Verify, or a STALE distro)
          (wslconfig -Strict: one or more WARN findings)
       2  WSL is not installed or not operational
       3  bad arguments (no -Distro, no such distro, missing or unusable -Tar,
@@ -90,7 +97,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown', 'wslconfig')]
+    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'backups', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown', 'wslconfig')]
     [string]$Action = 'list',
     [string]$Distro,
     [string]$DestDir = "$env:USERPROFILE\wsl-backups",
@@ -105,6 +112,9 @@ param(
     [switch]$DryRun,  # backup, restore, prune-backups, compact, sparse,
                       # terminate, shutdown: report, change nothing
     [switch]$All,     # backup only: export every registered distro
+    [switch]$Verify,  # backups: hash every tar against its sidecar
+    [ValidateRange(0, 3650)]
+    [int]$MaxAgeDays = 0,                          # backups: newest older than this is STALE (0: off)
     [switch]$Off,     # sparse only: pass to set sparse=false instead of true
     [switch]$AllowUnverified, # restore only: import a tar with no .sha256 sidecar
     [string]$ConfigFile,      # wslconfig: audit this file instead of %USERPROFILE%\.wslconfig
@@ -124,7 +134,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 # Actions that only read files on the Windows side. They need no WSL at all,
 # so they also run on a machine that only holds the backups or the config
 # file, and on the Linux runner that tests them.
-$offlineActions = @('verify-backup', 'wslconfig')
+$offlineActions = @('verify-backup', 'backups', 'wslconfig')
 
 if ($Action -notin $offlineActions -and -not (Get-Command wsl.exe -ErrorAction SilentlyContinue)) {
     # -ErrorAction Continue, or $ErrorActionPreference = 'Stop' turns this into
@@ -336,38 +346,74 @@ function Get-RunningDistroText {
     return 'none'
 }
 
-# Verify the sidecar emitted by `backup`. The filename on the sidecar line is
-# informational; the hash is always calculated over the explicit -Tar path, so
-# moving a tar and its sidecar together remains valid.
+# The state of one tar against the sidecar emitted by `backup`:
+# {State (OK|MISSING|MALFORMED|MISMATCH), Sidecar, Expected, Actual}. Prints
+# nothing, so verify-backup, restore and the backups inventory each say it
+# their own way. The filename on the sidecar line is informational; the hash
+# is always calculated over $Path, so moving a tar and its sidecar together
+# remains valid.
+function Get-BackupHashState {
+    param([string]$Path)
+
+    $result = [PSCustomObject]@{
+        State    = 'OK'
+        Sidecar  = "$Path.sha256"
+        Expected = $null
+        Actual   = $null
+    }
+    if (-not (Test-Path -LiteralPath $result.Sidecar -PathType Leaf)) {
+        $result.State = 'MISSING'
+        return $result
+    }
+
+    $line = [string](Get-Content -LiteralPath $result.Sidecar -TotalCount 1)
+    if ($line.Trim() -notmatch '^(?<hash>[A-Fa-f0-9]{64})(?:\s+.*)?$') {
+        $result.State = 'MALFORMED'
+        return $result
+    }
+    $result.Expected = $Matches['hash'].ToUpperInvariant()
+    $result.Actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($result.Actual -ne $result.Expected) {
+        $result.State = 'MISMATCH'
+    }
+    return $result
+}
+
+# Verify one tar for verify-backup and restore, saying what was found.
 function Test-BackupHash {
     param(
         [string]$Path,
         [switch]$RequireSidecar
     )
 
-    $sidecar = "$Path.sha256"
-    if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) {
-        if ($RequireSidecar) {
-            Write-Error "No checksum sidecar: $sidecar" -ErrorAction Continue
+    $state = Get-BackupHashState -Path $Path
+    switch ($state.State) {
+        'MISSING' {
+            if ($RequireSidecar) {
+                Write-Error "No checksum sidecar: $($state.Sidecar)" -ErrorAction Continue
+                return $false
+            }
+            Write-Host "No checksum sidecar at $($state.Sidecar); restore will continue for this older backup." -ForegroundColor Yellow
+            return $true
+        }
+        'MALFORMED' {
+            Write-Error "Malformed checksum sidecar: $($state.Sidecar)" -ErrorAction Continue
             return $false
         }
-        Write-Host "No checksum sidecar at $sidecar; restore will continue for this older backup." -ForegroundColor Yellow
-        return $true
-    }
-
-    $line = (Get-Content -LiteralPath $sidecar -TotalCount 1).Trim()
-    if ($line -notmatch '^(?<hash>[A-Fa-f0-9]{64})(?:\s+.*)?$') {
-        Write-Error "Malformed checksum sidecar: $sidecar" -ErrorAction Continue
-        return $false
-    }
-    $expected = $Matches['hash'].ToUpperInvariant()
-    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
-    if ($actual -ne $expected) {
-        Write-Error "SHA-256 mismatch for $Path (expected $expected, got $actual)" -ErrorAction Continue
-        return $false
+        'MISMATCH' {
+            Write-Error "SHA-256 mismatch for $Path (expected $($state.Expected), got $($state.Actual))" -ErrorAction Continue
+            return $false
+        }
     }
     Write-Host "SHA-256 verified: $Path" -ForegroundColor Green
     return $true
+}
+
+# '3d' or '5h': the age column of the backups inventory.
+function Format-Age {
+    param([TimeSpan]$Age)
+    if ($Age.TotalDays -ge 1) { return '{0}d' -f [int][math]::Floor($Age.TotalDays) }
+    return '{0}h' -f [int][math]::Floor([math]::Max(0, $Age.TotalHours))
 }
 
 # .wslconfig as an ordered list of {Section, Key, Value, Line}. Pure: it takes
@@ -760,6 +806,89 @@ switch ($Action) {
         }
         $tarPath = (Resolve-Path -LiteralPath $Tar).Path
         if (-not (Test-BackupHash -Path $tarPath -RequireSidecar)) { exit 1 }
+    }
+
+    'backups' {
+        # Read-only: lists, hashes and reads sidecars; never deletes, renames
+        # or rewrites one. Retention stays prune-backups' job.
+        $all = @()
+        if (Test-Path -LiteralPath $DestDir -PathType Container) {
+            $all = @(Get-BackupFile -Directory $DestDir -Name $Distro)
+        }
+        if (-not $all) {
+            Write-Host "No dated .tar exports under $DestDir"
+            # Asked for a recent backup and there is none at all: that is the
+            # stalest answer there is.
+            if ($MaxAgeDays -gt 0) {
+                Write-Host ('STALE no backup at all (limit {0} day(s))' -f $MaxAgeDays) -ForegroundColor Yellow
+                exit 1
+            }
+            break
+        }
+
+        # Summed through ForEach-Object for Windows PowerShell 5.1, as in
+        # prune-backups.
+        $totalBytes = ($all | ForEach-Object { $_.File.Length } | Measure-Object -Sum).Sum
+        if (-not $totalBytes) { $totalBytes = 0L }
+        Write-Host "Directory: $DestDir"
+        if ($Verify) {
+            # Said before the work starts: hashing a multi-gigabyte tar takes
+            # minutes, and silence reads as a hang.
+            Write-Host ("Hashing {0} file(s), {1} total; this can take a while" -f $all.Count, (Format-Size $totalBytes))
+        }
+        Write-Host ''
+
+        # LastWriteTime, the clock prune-backups uses as well.
+        $now = Get-Date
+        $verified = 0
+        $bad = 0
+        $missing = 0
+        $stale = 0
+        foreach ($group in ($all | Group-Object Distro | Sort-Object Name)) {
+            $ordered = @($group.Group | Sort-Object { $_.File.LastWriteTime } -Descending)
+            foreach ($entry in $ordered) {
+                $file = $entry.File
+                $label = '{0,-44} {1,10} {2,5}' -f $file.Name, (Format-Size $file.Length), (Format-Age ($now - $file.LastWriteTime))
+                if (-not $Verify) {
+                    $sidecar = if (Test-Path -LiteralPath "$($file.FullName).sha256" -PathType Leaf) { 'sha256:present' } else { 'sha256:missing' }
+                    Write-Host ('OK    {0}   {1}' -f $label, $sidecar)
+                    continue
+                }
+                $state = Get-BackupHashState -Path $file.FullName
+                switch ($state.State) {
+                    'OK' {
+                        Write-Host ('OK    {0}   verified' -f $label) -ForegroundColor Green
+                        $verified++
+                    }
+                    'MISSING' {
+                        Write-Host ('MISS  {0}   no .sha256 sidecar' -f $label) -ForegroundColor Yellow
+                        $missing++
+                    }
+                    'MALFORMED' {
+                        Write-Host ('BAD   {0}   malformed sidecar' -f $label) -ForegroundColor Red
+                        $bad++
+                    }
+                    'MISMATCH' {
+                        Write-Host ('BAD   {0}   checksum mismatch' -f $label) -ForegroundColor Red
+                        Write-Host ('      expected {0}' -f $state.Expected) -ForegroundColor Red
+                        Write-Host ('      actual   {0}' -f $state.Actual) -ForegroundColor Red
+                        $bad++
+                    }
+                }
+            }
+            if ($MaxAgeDays -gt 0) {
+                $newestDays = ($now - $ordered[0].File.LastWriteTime).TotalDays
+                if ($newestDays -gt $MaxAgeDays) {
+                    Write-Host ('STALE {0} newest backup is {1} day(s) old (limit {2})' -f $group.Name, [int][math]::Floor($newestDays), $MaxAgeDays) -ForegroundColor Yellow
+                    $stale++
+                }
+            }
+        }
+
+        Write-Host ''
+        Write-Host ('{0} backup(s), {1} total, {2} verified, {3} bad, {4} missing sidecar, {5} stale distro(s)' -f
+            $all.Count, (Format-Size $totalBytes), $verified, $bad, $missing, $stale)
+        if ($bad -gt 0 -or $missing -gt 0 -or $stale -gt 0) { exit 1 }
     }
 
     'restore' {

@@ -439,6 +439,116 @@ if ($onWindows) {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'wsl_manage backups'
+Test-Surface -Action @('backups', 'verify-backup') -Parameter @('Verify', 'MaxAgeDays')
+
+# Writes $Name with $Content into $Directory and, unless -NoSidecar, the
+# sidecar exactly as the backup action writes it: lowercase hash, two spaces,
+# the file name.
+function Write-BackupFixture {
+    param(
+        [string]$Directory,
+        [string]$Name,
+        [string]$Content,
+        [switch]$NoSidecar
+    )
+    $path = Join-Path $Directory $Name
+    [IO.File]::WriteAllText($path, $Content)
+    if (-not $NoSidecar) {
+        $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath "$path.sha256" -Encoding ascii -Value "$hash  $Name"
+    }
+    return $path
+}
+
+$backupDir = Initialize-ScratchDirectory 'wslbackups_'
+try {
+    $newest = Write-BackupFixture $backupDir 'Ubuntu_2026-10-20_0900.tar' 'newest ubuntu export'
+    $older = Write-BackupFixture $backupDir 'Ubuntu_2026-08-01_0900.tar' 'older ubuntu export'
+    $debian = Write-BackupFixture $backupDir 'Debian_2026-10-19_0800.tar' 'debian export' -NoSidecar
+    [IO.File]::WriteAllText((Join-Path $backupDir 'notes.tar'), 'not a backup')
+    (Get-Item -LiteralPath $older).LastWriteTime = (Get-Date).AddDays(-80)
+
+    $before = @(Get-TreeSnapshot $backupDir)
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir)
+    Test-Case 'backups lists the dated exports and exits 0' (
+        $run.ExitCode -eq 0 -and $run.Output -match 'Ubuntu_2026-10-20_0900\.tar' -and $run.Output -match 'Ubuntu_2026-08-01_0900\.tar'
+    ) "exit $($run.ExitCode)`n$($run.Output)"
+    Test-Case 'and ignores a tar that backup did not name' ($run.Output -notmatch 'notes\.tar') $run.Output
+    Test-Case 'and says which sidecars are missing without hashing' (
+        $run.Output -match 'sha256:missing' -and $run.Output -notmatch 'Hashing'
+    ) $run.Output
+    $newestAt = $run.Output.IndexOf('Ubuntu_2026-10-20_0900.tar')
+    $olderAt = $run.Output.IndexOf('Ubuntu_2026-08-01_0900.tar')
+    Test-Case 'newest first within a distro' ($newestAt -ge 0 -and $newestAt -lt $olderAt) $run.Output
+
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify')
+    Test-Case 'backups -Verify exits 1 when a tar has no sidecar' (
+        $run.ExitCode -eq 1 -and $run.Output -match 'MISS\s+Debian_2026-10-19_0800\.tar' -and $run.Output -match 'Hashing 3 file'
+    ) "exit $($run.ExitCode)`n$($run.Output)"
+    Test-Case 'and the Ubuntu exports verify' (
+        @([regex]::Matches($run.Output, 'OK\s+Ubuntu_\S+\.tar.*verified')).Count -eq 2
+    ) $run.Output
+
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify', '-Distro', 'Ubuntu')
+    Test-Case 'backups -Distro Ubuntu leaves Debian out, and verifies clean -> 0' (
+        $run.ExitCode -eq 0 -and $run.Output -notmatch 'Debian'
+    ) "exit $($run.ExitCode)`n$($run.Output)"
+    $after = @(Get-TreeSnapshot $backupDir)
+    $written = @(Compare-Object -ReferenceObject $before -DifferenceObject $after)
+    Test-Case 'backups wrote, renamed and deleted nothing' ($written.Count -eq 0) (($written | ForEach-Object { '{0} {1}' -f $_.SideIndicator, $_.InputObject }) -join "`n")
+
+    Remove-Item -LiteralPath $debian -Force
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify')
+    Test-Case 'with every sidecar present and matching, -Verify exits 0' ($run.ExitCode -eq 0) "exit $($run.ExitCode)`n$($run.Output)"
+
+    $savedTime = (Get-Item -LiteralPath $newest).LastWriteTime
+    (Get-Item -LiteralPath $newest).LastWriteTime = (Get-Date).AddDays(-10)
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-MaxAgeDays', '1')
+    Test-Case 'a newest backup older than -MaxAgeDays is STALE -> 1' (
+        $run.ExitCode -eq 1 -and $run.Output -match 'STALE Ubuntu newest backup is 10 day'
+    ) "exit $($run.ExitCode)`n$($run.Output)"
+    (Get-Item -LiteralPath $newest).LastWriteTime = $savedTime
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-MaxAgeDays', '1')
+    Test-Case 'a recent newest backup is not stale -> 0' ($run.ExitCode -eq 0 -and $run.Output -notmatch 'STALE') "exit $($run.ExitCode)`n$($run.Output)"
+
+    $run = Invoke-WslManage -Arguments @('verify-backup', '-Tar', $newest)
+    Test-Case 'verify-backup still verifies a good tar -> 0' ($run.ExitCode -eq 0 -and $run.Output -match 'SHA-256 verified') "exit $($run.ExitCode)`n$($run.Output)"
+    $run = Invoke-WslManage -Arguments @('verify-backup')
+    Test-Case 'verify-backup with no -Tar still exits 3' ($run.ExitCode -eq 3) "exit $($run.ExitCode)`n$($run.Output)"
+    $bare = Write-BackupFixture $backupDir 'Arch_2026-10-01_0700.tar' 'no sidecar here' -NoSidecar
+    $run = Invoke-WslManage -Arguments @('verify-backup', '-Tar', $bare)
+    Test-Case 'verify-backup with no sidecar still exits 1 and says so' ($run.ExitCode -eq 1 -and $run.Output -match 'No checksum sidecar') "exit $($run.ExitCode)`n$($run.Output)"
+    Remove-Item -LiteralPath $bare -Force
+
+    [IO.File]::WriteAllText($newest, 'truncated')
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify')
+    Test-Case 'a tar changed after hashing is BAD -> 1' (
+        $run.ExitCode -eq 1 -and $run.Output -match 'BAD\s+Ubuntu_2026-10-20_0900\.tar' -and $run.Output -match 'expected'
+    ) "exit $($run.ExitCode)`n$($run.Output)"
+    $run = Invoke-WslManage -Arguments @('verify-backup', '-Tar', $newest)
+    Test-Case 'verify-backup still exits 1 on a mismatch' ($run.ExitCode -eq 1 -and $run.Output -match 'mismatch') "exit $($run.ExitCode)`n$($run.Output)"
+
+    Set-Content -LiteralPath "$older.sha256" -Value 'not a hash'
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $backupDir, '-Verify', '-Distro', 'Ubuntu')
+    Test-Case 'a malformed sidecar is BAD' ($run.Output -match 'BAD\s+Ubuntu_2026-08-01_0900\.tar.*malformed') $run.Output
+} finally {
+    Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$emptyDir = Initialize-ScratchDirectory 'wslbackups_empty_'
+try {
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $emptyDir)
+    Test-Case 'an empty backup folder is not an error -> 0' (
+        $run.ExitCode -eq 0 -and $run.Output -match 'No dated \.tar exports'
+    ) "exit $($run.ExitCode)`n$($run.Output)"
+    $run = Invoke-WslManage -Arguments @('backups', '-DestDir', $emptyDir, '-MaxAgeDays', '3')
+    Test-Case 'but with -MaxAgeDays there is no recent backup -> 1' ($run.ExitCode -eq 1) "exit $($run.ExitCode)`n$($run.Output)"
+} finally {
+    Remove-Item -Path $emptyDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
 Write-Host ''
 if ($failures -gt 0) {
     Write-Host "$failures wsl_manage contract check(s) failed" -ForegroundColor Red

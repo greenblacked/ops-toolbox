@@ -48,7 +48,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `windows/setup/choco_bootstrap.ps1` | Windows | Export, list, check, install, diff Chocolatey packages. | `-DryRun` (install) |
 | `windows/setup/winget_configure.ps1` | Windows | Validate, show, test, apply `configuration.winget`. | `-DryRun` (apply) |
 | `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; deletes only with `-Yes`. | `-DryRun` |
-| `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, restore, prune, compact, `.wslconfig` audit and more. | `-DryRun` (backup, restore, prune-backups, compact, sparse, terminate, shutdown); `wslconfig` is read-only |
+| `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, backup inventory, restore, prune, compact, `.wslconfig` audit and more. | `-DryRun` (backup, restore, prune-backups, compact, sparse, terminate, shutdown); `backups` and `wslconfig` are read-only |
 | `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
 | `windows/git-bash/gitbash_doctor.sh` | Windows | Git Bash health: dotfiles, ssh-agent, OneDrive `HOME`, long paths, Git settings. | <span class="stage stage-report">read-only</span> |
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
