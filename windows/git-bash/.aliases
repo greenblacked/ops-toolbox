@@ -516,7 +516,8 @@ alias tfsl='terraform state list'
 # NO_COLOR is set or --plain is given, so the warning survives in a log too.
 # Names only: profile, project and context names, never a key or a token;
 # exported AWS keys show as the word static-keys. Reads variables and small
-# config files; the only commands it runs are kubectl config view and git.
+# config files (with sed and cygpath); the only tools it asks are kubectl
+# config view and git.
 # Usage: ctx [--plain]
 __ctx_print() {
     # __ctx_print LABEL VALUE EXTRA PATTERN RED RESET
