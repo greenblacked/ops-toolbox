@@ -717,6 +717,8 @@ copy, not a restore: it never writes back into the paths it archives.
 ./config_backup.sh --diff                  # what changed under /etc since the newest archive
 ./config_backup.sh --yes --paths /etc/ssh,/etc/nginx --dest ~/ops-toolbox-backups --keep 5
 ./config_backup.sh --yes --prefix nginx-pre-upgrade
+./config_backup.sh --yes --exclude-secrets --prefix shareable
+./config_backup.sh --yes --paths /etc/nginx --exclude '*.key' --exclude 'etc/nginx/ssl'
 ```
 
 `--prefix NAME` replaces `config` in the archive name, which is what `--keep`
@@ -731,6 +733,34 @@ The archive is created mode `0600`, whatever umask the caller had. The default
 source is `/etc`, and a run that can read all of it is a run with `shadow`, the
 sshd host keys and `sudoers` in the tarball. `--dest` keeps the mode it already
 has: the secret is the file, not the directory holding it.
+
+`--exclude PATTERN` (repeatable) and `--exclude-secrets` leave members out, for
+an archive you mean to attach to a ticket, hand to a colleague or keep on a
+shared disk. Patterns are GNU tar exclusion globs matched against the member
+name, which is relative to `/` because the script runs `tar -C /`:
+`etc/ssl/private`, `etc/shadow*`, `*.key`. A `*` also matches `/`, and a
+pattern can match from any `/` in the name, not only the start. Each pattern is
+one `--exclude=` argument to tar, never a string handed to a shell. An empty
+pattern, one with a newline and one with a leading `/` (it would silently match
+nothing) are exit `3`. `--exclude-secrets` adds a fixed list:
+
+| Pattern | Why |
+| --- | --- |
+| `etc/shadow*`, `etc/gshadow*` | password and group password hashes |
+| `etc/security/opasswd` | previous password hashes |
+| `etc/ssh/ssh_host_*_key` | SSH host private keys (the `.pub` files stay) |
+| `etc/ssl/private` | TLS private keys |
+| `etc/*-` | the distribution's `passwd-`, `shadow-`, `group-` backup copies |
+
+It stays that short on purpose, so nobody believes it makes an archive safe to
+publish: application secrets, `*.key` files elsewhere, `sudoers` and anything
+under a name it does not list are still archived. Without it, a default run
+still carries every secret in `/etc`. An excluded path is not a missing one, so
+it never makes a `*.partial.tar.gz`, and an unreadable file that is excluded no
+longer turns a non-root run into a partial one. If the patterns leave nothing
+at all, the staged archive fails validation, nothing is published and the run
+exits `1`. `--dry-run` prints each `would exclude:` line, and both flags are
+refused with `--list` and `--diff`.
 
 Each run creates a private staging directory in `--dest`, validates the gzip
 stream and a nonempty tar member listing, and publishes a unique timestamped

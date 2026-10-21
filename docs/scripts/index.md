@@ -37,7 +37,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/install_devtools.sh` | Linux | Install CLIs, Python, Go, Terraform, Helm. | `--dry-run` |
 | `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs and a journal size cap. | `--dry-run` |
 | `linux/kernel_cleanup.sh` | Linux | Remove old kernel packages, keeping the running one plus N. | `--dry-run`; `--list` is read-only |
-| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
+| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation and exclusions; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
 | `linux/packages.sh` | Linux | List, dump, check, diff, install the package set. | `--dry-run` (install) |
 | `linux/install_aliases.sh` | Linux | Add a marked alias block to `~/.bashrc`. | `--dry-run` |
 | `linux/bash_aliases.sh` | Linux | Bash aliases; sourced. | n/a (sourced) |

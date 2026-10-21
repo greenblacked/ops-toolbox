@@ -19,6 +19,13 @@
 # tree and extracts nothing, so it stays read-only like --list, and the one-file
 # restore it suggests is printed, never run.
 #
+# --exclude and --exclude-secrets make an archive you can hand to somebody:
+# tar exclusion patterns, matched against member names relative to /, passed
+# to tar as separate arguments. The preset is short and fixed on purpose
+# (shadow, gshadow, opasswd, the SSH host private keys, /etc/ssl/private and
+# the distro's NAME- backup copies). It narrows what is in the archive; it
+# does not make an archive safe to publish.
+#
 # Exit codes:
 #   0   complete archive written (or dry-run completed); --diff: no differences
 #   1   partial backup, or staging, validation, publication or rotation failed;
@@ -36,6 +43,17 @@ LIST=0
 LIST_FILE=""
 DIFF=0
 DIFF_FILE=""
+EXCLUDES=()
+EXCLUDE_SECRETS=0
+# --exclude-secrets: the secrets a default /etc run would otherwise carry.
+# Fixed and documented rather than clever, so nobody mistakes it for a
+# guarantee. etc/*- is the distro's passwd-, shadow- and group- backups.
+SECRET_PATTERNS='etc/shadow*
+etc/gshadow*
+etc/security/opasswd
+etc/ssh/ssh_host_*_key
+etc/ssl/private
+etc/*-'
 DEST=""
 KEEP=7
 PREFIX="config"
@@ -82,6 +100,10 @@ Options:
   --dest DIR         Directory for archives (default: ~/ops-toolbox-backups)
   --keep N           Complete and partial archives to retain separately (default: $KEEP; 0 = keep all)
   --prefix NAME      Filename prefix (default: $PREFIX)
+  --exclude PATTERN  Leave out members matching a tar glob, relative to /
+                     (repeatable), e.g. 'etc/ssl/private' or '*.key'
+  --exclude-secrets  Leave out shadow, gshadow, opasswd, SSH host private keys,
+                     /etc/ssl/private and NAME- backups; not a publish-safe filter
   --help, -h         Show this help
 
 Exit codes: 0 complete backup (--diff: identical), 1 partial backup or failure
@@ -96,6 +118,26 @@ require_value() {
     printf "%s requires a value\n" "$option" >&2
     exit 3
   fi
+}
+
+# Patterns are relative to /, because tar runs with -C / and sees member
+# names without the leading slash; one with a slash would silently match
+# nothing, which reads exactly like a working exclusion.
+add_exclude() {
+  local pattern="$1"
+  if [[ -z "$pattern" ]]; then
+    err "--exclude pattern must not be empty"
+    exit 3
+  fi
+  if [[ "$pattern" == *$'\n'* ]]; then
+    err "--exclude pattern must not contain a newline"
+    exit 3
+  fi
+  if [[ "$pattern" == /* ]]; then
+    err "--exclude patterns are relative to /; drop the leading slash: $pattern"
+    exit 3
+  fi
+  EXCLUDES+=("$pattern")
 }
 
 add_paths() {
@@ -137,6 +179,9 @@ while (( $# > 0 )); do
     --keep=*)      KEEP="${1#*=}"; require_value "--keep" "$KEEP" ;;
     --prefix)      require_value "$1" "${2:-}"; PREFIX="$2"; shift ;;
     --prefix=*)    PREFIX="${1#*=}"; require_value "--prefix" "$PREFIX" ;;
+    --exclude)     require_value "$1" "${2:-}"; add_exclude "$2"; shift ;;
+    --exclude=*)   require_value "--exclude" "${1#*=}"; add_exclude "${1#*=}" ;;
+    --exclude-secrets) EXCLUDE_SECRETS=1 ;;
     -h|--help)     usage; exit 0 ;;
     *)
       err "unknown argument: $1"
@@ -159,6 +204,12 @@ case "$PREFIX" in
     ;;
 esac
 [[ -n "$PREFIX" ]] || { err "--prefix must not be empty"; exit 3; }
+
+# Exclusions shape an archive being written; --list and --diff read one.
+if (( (LIST || DIFF) && (${#EXCLUDES[@]} > 0 || EXCLUDE_SECRETS) )); then
+  err "--exclude and --exclude-secrets apply to writing an archive, not to --list or --diff"
+  exit 3
+fi
 
 # --diff reads; every one of these asks for something else, and quietly
 # ignoring one would leave the caller believing it happened.
@@ -447,6 +498,24 @@ for rel in "${rels[@]}"; do
 done
 (( missing )) && info "skipped $missing missing path(s)"
 
+if (( EXCLUDE_SECRETS )); then
+  while IFS= read -r pattern; do
+    [[ -n "$pattern" ]] && EXCLUDES+=("$pattern")
+  done <<< "$SECRET_PATTERNS"
+fi
+# One argv entry per pattern, never a string handed to eval, so a pattern's
+# shell metacharacters stay inert. The ${x[@]+...} form keeps an empty list
+# legal under set -u on Bash 3.2.
+tar_excludes=()
+for pattern in ${EXCLUDES[@]+"${EXCLUDES[@]}"}; do
+  tar_excludes+=("--exclude=$pattern")
+  if (( DRY_RUN )); then
+    info "would exclude: $pattern"
+  else
+    info "exclude: $pattern"
+  fi
+done
+
 rotate_old() {
   local keep="$1"
   local do_it="$2"
@@ -538,7 +607,7 @@ fi
 # -C / keeps member names relative to the filesystem root. A tar warning can
 # produce a useful partial copy, but neither an exit code nor a nonempty file
 # proves the gzip stream and tar members are readable.
-tar -czf "$staged_archive" -C / "${rels[@]}"
+tar -czf "$staged_archive" ${tar_excludes[@]+"${tar_excludes[@]}"} -C / "${rels[@]}"
 tar_rc=$?
 if (( tar_rc > 1 )); then
   err "tar failed (exit $tar_rc); previous archives preserved"

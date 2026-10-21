@@ -37,7 +37,7 @@ and a Kali cloud-init profile.
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
 | `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`. | `--dry-run` |
 | `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
-| `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
+| `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--exclude`, `--exclude-secrets`; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
 | `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |
 | `install_aliases.sh` | Add a marked block to `~/.bashrc`; `--status`, `--uninstall`. | `--dry-run` |
 | `systemd/stay_fresh_timer.sh` | systemd user timer for `stay_fresh.sh`. | `--dry-run` on `install`; `--print-only` |
@@ -90,6 +90,9 @@ All paths are under `linux/`.
 !!! danger "Backups contain secrets"
     `config_backup.sh` copies `/etc` by default, including `shadow`, `sudoers`
     and SSH host keys. Archives are mode 0600. Store them accordingly.
+    `--exclude-secrets` leaves out a short, fixed list (shadow, host private
+    keys, `/etc/ssl/private` and a few more) and `--exclude PATTERN` adds your
+    own; neither makes an archive safe to publish.
 
 !!! apply "sysctl changes are live"
     `sysctl_defaults.sh --apply` writes `/etc/sysctl.d/99-ops-toolbox.conf` and

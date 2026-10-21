@@ -1428,6 +1428,8 @@ bash "$L/tests/test_config_backup.sh"
 assert_eq "config_backup publication regression suite exits 0" "0" "$?"
 bash "$L/tests/test_config_backup_diff.sh"
 assert_eq "config_backup --diff suite exits 0" "0" "$?"
+bash "$L/tests/test_config_backup_exclude.sh"
+assert_eq "config_backup --exclude suite exits 0" "0" "$?"
 
 section "ssh_client_doctor.sh"
 SSHDOC="$L/ssh_client_doctor.sh"
