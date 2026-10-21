@@ -123,20 +123,90 @@ function Get-AuditCheckId {
 # sshd_config keywords, lower-cased, to their value. The first occurrence
 # wins, as it does for sshd, and reading stops at the first Match block,
 # because what follows applies only to some connections.
+#
+# Include lines are followed where they stand, as sshd does: each pattern is
+# relative to -BaseDir (the folder of sshd_config) unless rooted, may hold
+# wildcards (the matches are read in name order), may name several
+# patterns, and recurses up to 16 levels. __PROGRAMDATA__ is -ProgramData. A
+# pattern that matches nothing is skipped, as sshd skips it. One that cannot
+# be read (a file that refuses, a directory in its place, a relative path
+# with no -BaseDir, nesting past 16) ends the reading, because the file
+# could have set any keyword earlier than the lines after it: what was set
+# before it still stands, and the paths are listed under the key
+# '#unreadable-include' (no real keyword has a '#') so the caller can say a
+# missing keyword was not judged instead of passing it.
 function Get-SshdSetting {
-    param([string[]]$Lines)
-    $settings = @{}
+    param(
+        [string[]]$Lines,
+        [string]$BaseDir = '',
+        [string]$ProgramData = '',
+        [int]$Depth = 0,
+        [hashtable]$State = $null
+    )
+    $top = $false
+    if ($null -eq $State) {
+        $State = @{ Settings = @{}; Stop = $false; Unreadable = @() }
+        $top = $true
+    }
+    $settings = $State.Settings
     foreach ($raw in $Lines) {
+        if ($State.Stop) { break }
         if ($null -eq $raw) { continue }
         $text = $raw.Trim()
         if (-not $text -or $text.StartsWith('#')) { continue }
         $m = [regex]::Match($text, '^(?<key>[A-Za-z]+)(\s*=\s*|\s+)(?<value>.*)$')
         if (-not $m.Success) { continue }
         $key = $m.Groups['key'].Value.ToLowerInvariant()
-        if ($key -eq 'match') { break }
+        if ($key -eq 'match') { $State.Stop = $true; break }
+        if ($key -eq 'include') {
+            foreach ($token in [regex]::Matches($m.Groups['value'].Value, '"([^"]*)"|(\S+)')) {
+                if ($State.Stop) { break }
+                $pattern = $token.Groups[1].Value
+                if (-not $token.Groups[1].Success) { $pattern = $token.Groups[2].Value }
+                if ($ProgramData) { $pattern = $pattern.Replace('__PROGRAMDATA__', $ProgramData) }
+                $fail = {
+                    param($What)
+                    $State.Unreadable += $What
+                    $State.Stop = $true
+                }
+                if ($Depth -ge 16) { & $fail "$pattern (nested more than 16 deep)"; break }
+                if (-not [IO.Path]::IsPathRooted($pattern)) {
+                    if (-not $BaseDir) { & $fail "$pattern (relative, no base folder)"; break }
+                    $pattern = Join-Path $BaseDir $pattern
+                }
+                $files = @()
+                if ($pattern -match '[\*\?\[]') {
+                    try {
+                        $files = @(Get-ChildItem -Path $pattern -ErrorAction Stop | Where-Object { -not $_.PSIsContainer } | ForEach-Object { $_.FullName })
+                    } catch {
+                        Write-Verbose $_.Exception.Message
+                        if ($_.CategoryInfo.Category -ne 'ObjectNotFound') { & $fail $pattern; break }
+                    }
+                } elseif (Test-Path -LiteralPath $pattern -PathType Container) {
+                    & $fail "$pattern (a folder)"; break
+                } elseif (Test-Path -LiteralPath $pattern -PathType Leaf) {
+                    $files = @($pattern)
+                }
+                if ($files.Count -gt 1) { [Array]::Sort($files, [StringComparer]::Ordinal) }
+                foreach ($file in $files) {
+                    $included = $null
+                    try { $included = [IO.File]::ReadAllLines($file) } catch {
+                        Write-Verbose $_.Exception.Message
+                        & $fail $file
+                        break
+                    }
+                    $null = Get-SshdSetting -Lines $included -BaseDir $BaseDir -ProgramData $ProgramData -Depth ($Depth + 1) -State $State
+                    if ($State.Stop) { break }
+                }
+            }
+            continue
+        }
         if (-not $settings.ContainsKey($key)) { $settings[$key] = $m.Groups['value'].Value.Trim() }
     }
-    return $settings
+    if ($top) {
+        if ($State.Unreadable.Count -gt 0) { $settings['#unreadable-include'] = @($State.Unreadable) }
+        return $settings
+    }
 }
 
 # The verdict for every check, from the facts. A fact is $null when it could
@@ -234,15 +304,27 @@ function Test-AuditFact {
         $findings.Add((& $new 'remote' 'sshd-password' 'skip' 'OpenSSH server is not installed' ''))
         $findings.Add((& $new 'remote' 'sshd-empty-password' 'skip' 'OpenSSH server is not installed' ''))
     } else {
-        # Windows OpenSSH allows passwords unless told otherwise.
-        $passwords = [string]$sshd['passwordauthentication']
-        if ($passwords -eq 'no') {
-            $findings.Add((& $new 'remote' 'sshd-password' 'pass' 'sshd accepts keys only (PasswordAuthentication no)' ''))
+        # Windows OpenSSH allows passwords unless told otherwise. A keyword
+        # that nothing set, when an Include could not be read, may have been
+        # set there: that is not judged, never a pass.
+        $blind = $sshd.ContainsKey('#unreadable-include')
+        $blindWhy = ''
+        if ($blind) { $blindWhy = 'an Include in sshd_config could not be read: ' + (@($sshd['#unreadable-include']) -join ', ') }
+        if ($sshd.ContainsKey('passwordauthentication')) {
+            if ([string]$sshd['passwordauthentication'] -eq 'no') {
+                $findings.Add((& $new 'remote' 'sshd-password' 'pass' 'sshd accepts keys only (PasswordAuthentication no)' ''))
+            } else {
+                $findings.Add((& $new 'remote' 'sshd-password' 'warn' 'sshd accepts passwords, which invites guessing' 'set PasswordAuthentication no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
+            }
+        } elseif ($blind) {
+            $findings.Add((& $new 'remote' 'sshd-password' 'skip' "PasswordAuthentication not judged: $blindWhy" ''))
         } else {
             $findings.Add((& $new 'remote' 'sshd-password' 'warn' 'sshd accepts passwords, which invites guessing' 'set PasswordAuthentication no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
         }
         if ([string]$sshd['permitemptypasswords'] -eq 'yes') {
             $findings.Add((& $new 'remote' 'sshd-empty-password' 'fail' 'sshd accepts accounts with an empty password' 'set PermitEmptyPasswords no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
+        } elseif ($blind -and -not $sshd.ContainsKey('permitemptypasswords')) {
+            $findings.Add((& $new 'remote' 'sshd-empty-password' 'skip' "PermitEmptyPasswords not judged: $blindWhy" ''))
         } else {
             $findings.Add((& $new 'remote' 'sshd-empty-password' 'pass' 'sshd refuses empty passwords' ''))
         }
@@ -515,7 +597,7 @@ function Get-AuditFact {
         if ($registry -and $env:ProgramData) {
             $sshdConfig = Join-Path $env:ProgramData 'ssh\sshd_config'
             if (Test-Path -LiteralPath $sshdConfig) {
-                try { $facts['SshdConfig'] = Get-SshdSetting -Lines ([IO.File]::ReadAllLines($sshdConfig)) } catch { Write-Verbose $_.Exception.Message }
+                try { $facts['SshdConfig'] = Get-SshdSetting -Lines ([IO.File]::ReadAllLines($sshdConfig)) -BaseDir (Split-Path -Parent $sshdConfig) -ProgramData $env:ProgramData } catch { Write-Verbose $_.Exception.Message }
             } else {
                 $facts['SshdConfig'] = 'absent'
             }

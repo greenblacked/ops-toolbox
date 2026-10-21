@@ -2313,6 +2313,126 @@ Match Group administrators
         } else {
             Test-Fail 'a setting from inside a Match block was read as global'
         }
+
+        # Include: followed in order, relative to the config folder, with
+        # wildcards, nesting and the first value winning across files.
+        $incBox = Join-Path ([IO.Path]::GetTempPath()) ('winsshd_' + [Guid]::NewGuid().ToString('N'))
+        $incDir = Join-Path $incBox 'sshd_config.d'
+        New-Item -ItemType Directory -Path $incDir -Force | Out-Null
+        $writeInc = { param($Path, $Text) [IO.File]::WriteAllText($Path, $Text) }
+        & $writeInc (Join-Path $incDir '10-first.conf') "PasswordAuthentication no`nInclude nested.conf`n"
+        & $writeInc (Join-Path $incDir '20-second.conf') "PasswordAuthentication yes`nPermitEmptyPasswords yes`n"
+        & $writeInc (Join-Path $incBox 'nested.conf') "PermitEmptyPasswords no`nPubkeyAuthentication yes`n"
+        $main = @('Include sshd_config.d/*.conf', 'PasswordAuthentication yes', 'PermitEmptyPasswords yes', 'Port 22')
+        $r = Get-SshdSetting -Lines $main -BaseDir $incBox
+        if ($r['passwordauthentication'] -eq 'no') {
+            Test-Ok 'an Include (relative, wildcard) is read where it stands, and its first value beats a later line'
+        } else {
+            Test-Fail "passwordauthentication read as '$($r['passwordauthentication'])' through an Include, expected no"
+        }
+        if ($r['permitemptypasswords'] -eq 'no' -and $r['pubkeyauthentication'] -eq 'yes' -and $r['port'] -eq '22') {
+            Test-Ok 'a nested Include is followed in order, and settings after the Includes still count'
+        } else {
+            Test-Fail "nested Include read permitemptypasswords='$($r['permitemptypasswords'])' pubkeyauthentication='$($r['pubkeyauthentication'])' port='$($r['port'])'"
+        }
+        $r = Get-SshdSetting -Lines @('PasswordAuthentication no', 'Include sshd_config.d/*.conf') -BaseDir $incBox
+        if ($r['passwordauthentication'] -eq 'no' -and $r['permitemptypasswords'] -eq 'no') {
+            Test-Ok 'a value set before the Include is not overridden by it'
+        } else {
+            Test-Fail "a value before an Include was overridden: '$($r['passwordauthentication'])' / '$($r['permitemptypasswords'])'"
+        }
+        $r = Get-SshdSetting -Lines @('Include "sshd_config.d/10-first.conf" missing.conf nothere/*.conf', 'Port 22') -BaseDir $incBox
+        if (-not $r.ContainsKey('#unreadable-include') -and $r['passwordauthentication'] -eq 'no' -and $r['port'] -eq '22') {
+            Test-Ok 'a quoted pattern is read, and patterns that match nothing are skipped without an error'
+        } else {
+            Test-Fail 'a quoted Include or a pattern matching nothing was mishandled'
+        }
+        $r = Get-SshdSetting -Lines @('Include ' + (Join-Path $incDir '10-first.conf')) -BaseDir (Join-Path $incBox 'elsewhere')
+        if ($r['passwordauthentication'] -eq 'no') {
+            Test-Ok 'an absolute Include path ignores the config folder'
+        } else {
+            Test-Fail 'an absolute Include path was not read'
+        }
+        $r = Get-SshdSetting -Lines @('Include __PROGRAMDATA__/sshd_config.d/10-first.conf') -BaseDir (Join-Path $incBox 'elsewhere') -ProgramData $incBox
+        if ($r['passwordauthentication'] -eq 'no') {
+            Test-Ok '__PROGRAMDATA__ in an Include path is expanded'
+        } else {
+            Test-Fail '__PROGRAMDATA__ in an Include path was not expanded'
+        }
+        $r = Get-SshdSetting -Lines @('Include sshd_config.d')  -BaseDir $incBox
+        if ($r.ContainsKey('#unreadable-include')) {
+            Test-Ok 'an Include naming a folder cannot be read and is reported'
+        } else {
+            Test-Fail 'an Include naming a folder was not reported as unreadable'
+        }
+        $r = Get-SshdSetting -Lines @('Include rel.conf', 'PasswordAuthentication no')
+        if ($r.ContainsKey('#unreadable-include') -and -not $r.ContainsKey('passwordauthentication')) {
+            Test-Ok 'a relative Include with no config folder is unreadable, and reading stops there'
+        } else {
+            Test-Fail 'a relative Include with no base folder was not treated as unreadable'
+        }
+        # Depth: a file that includes itself loops until the limit of 16.
+        & $writeInc (Join-Path $incBox 'loop.conf') "PermitEmptyPasswords no`nInclude loop.conf`n"
+        $r = Get-SshdSetting -Lines @('Include loop.conf', 'PasswordAuthentication no') -BaseDir $incBox
+        if ($r.ContainsKey('#unreadable-include') -and -not $r.ContainsKey('passwordauthentication') -and $r['permitemptypasswords'] -eq 'no') {
+            Test-Ok 'an Include loop stops at the depth limit and is reported'
+        } else {
+            Test-Fail 'an Include loop was not stopped and reported at the depth limit'
+        }
+        $chainOk = $true
+        for ($i = 1; $i -le 16; $i++) {
+            $tail = "Include chain$($i + 1).conf`n"
+            if ($i -eq 16) { $tail = "PermitEmptyPasswords no`n" }
+            & $writeInc (Join-Path $incBox "chain$i.conf") $tail
+        }
+        $r = Get-SshdSetting -Lines @('Include chain1.conf') -BaseDir $incBox
+        if (-not $r.ContainsKey('#unreadable-include') -and $r['permitemptypasswords'] -eq 'no') {
+            Test-Ok 'sixteen nested Includes are still followed'
+        } else {
+            Test-Fail 'a chain of sixteen nested Includes was cut short'
+        }
+        & $writeInc (Join-Path $incBox 'chain16.conf') "Include chain17.conf`n"
+        & $writeInc (Join-Path $incBox 'chain17.conf') "PermitEmptyPasswords no`n"
+        $r = Get-SshdSetting -Lines @('Include chain1.conf') -BaseDir $incBox
+        if ($r.ContainsKey('#unreadable-include')) {
+            Test-Ok 'seventeen nested Includes are past the limit and reported'
+        } else {
+            Test-Fail 'a chain of seventeen nested Includes was followed past the limit'
+        }
+
+        # An unreadable Include must not become a pass.
+        $auditSrc = Get-ScriptFunctionSource -Script $hardening -Name 'Test-AuditFact'
+        if (-not $auditSrc) {
+            Test-Fail 'hardening_audit.ps1 : Test-AuditFact not found - this check has stopped checking'
+        } else {
+            . ([scriptblock]::Create($auditSrc))
+            $levelOf = {
+                param($Config, $Id)
+                $f = Get-GoodAuditFact -Now ([datetime]'2026-01-01')
+                $f.SshdConfig = $Config
+                (@(Test-AuditFact -Facts $f | Where-Object { $_.Id -eq $Id }) | ForEach-Object { $_.Level }) -join ','
+            }
+            $cut = '#unreadable-include'
+            $cases = @(
+                @{ Label = 'nothing set, an Include unreadable: password check'; Config = @{ $cut = @('x.conf') }; Id = 'sshd-password'; Expect = 'skip' }
+                @{ Label = 'nothing set, an Include unreadable: empty-password check'; Config = @{ $cut = @('x.conf') }; Id = 'sshd-empty-password'; Expect = 'skip' }
+                @{ Label = 'PasswordAuthentication no set before the unreadable Include'; Config = @{ passwordauthentication = 'no'; $cut = @('x.conf') }; Id = 'sshd-password'; Expect = 'pass' }
+                @{ Label = 'PasswordAuthentication yes set before the unreadable Include'; Config = @{ passwordauthentication = 'yes'; $cut = @('x.conf') }; Id = 'sshd-password'; Expect = 'warn' }
+                @{ Label = 'PermitEmptyPasswords no set before the unreadable Include'; Config = @{ permitemptypasswords = 'no'; $cut = @('x.conf') }; Id = 'sshd-empty-password'; Expect = 'pass' }
+                @{ Label = 'PermitEmptyPasswords yes set before the unreadable Include'; Config = @{ permitemptypasswords = 'yes'; $cut = @('x.conf') }; Id = 'sshd-empty-password'; Expect = 'fail' }
+                @{ Label = 'nothing set, every Include read: password check'; Config = @{}; Id = 'sshd-password'; Expect = 'warn' }
+                @{ Label = 'nothing set, every Include read: empty-password check'; Config = @{}; Id = 'sshd-empty-password'; Expect = 'pass' }
+            )
+            foreach ($case in $cases) {
+                $got = & $levelOf $case.Config $case.Id
+                if ($got -ceq $case.Expect) {
+                    Test-Ok ("{0} -> {1}" -f $case.Label, $got)
+                } else {
+                    Test-Fail ("{0} -> {1}, expected {2}" -f $case.Label, $got, $case.Expect)
+                }
+            }
+        }
+        Remove-Item -Path $incBox -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 

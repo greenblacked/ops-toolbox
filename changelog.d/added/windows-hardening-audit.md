@@ -7,3 +7,6 @@
   protection, virtualization-based security, Defender, script block logging
   and patch age. It prints the fix under every finding and never applies
   one; checks that need elevation are skipped, not failed, without it.
+  It follows `Include` lines in `sshd_config` as sshd does, first value
+  wins, and reports a setting it could not read as not judged rather than
+  as a pass.
