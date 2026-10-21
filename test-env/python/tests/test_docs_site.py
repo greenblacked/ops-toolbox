@@ -406,9 +406,16 @@ class NotFoundSuggestionTests(unittest.TestCase):
     def test_404_template_has_container_and_script(self) -> None:
         template = self.TEMPLATE.read_text(encoding="utf-8")
         self.assertIn('class="rpt-404__suggest" hidden', template)
-        self.assertIn("'search/search_index.json' | url", template)
+        self.assertIn("root ~ 'search/search_index.json'", template)
         self.assertIn("{{ super() }}", template)
-        self.assertIn("'assets/javascripts/rpt-404.js' | url", template)
+        self.assertIn("root ~ 'assets/javascripts/rpt-404.js'", template)
+
+    def test_404_template_urls_are_site_root_absolute(self) -> None:
+        template = self.TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn("config.site_url.split('/')[3:]", template)
+        self.assertIn("{% set root = '/' %}", template)
+        for relative in ("| url", "else '.'"):
+            self.assertNotIn(relative, template.split("{% block content %}", 1)[1])
 
     def test_404_template_makes_no_external_request(self) -> None:
         template = self.TEMPLATE.read_text(encoding="utf-8")

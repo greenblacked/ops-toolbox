@@ -5,3 +5,5 @@
   to maintain. A link below them opens the site search with the same words.
   It reads only the site's own search index, and without JavaScript the
   page is the same as before.
+  Its script, search index and home link use site-root URLs, so they
+  resolve the same for a miss at any depth such as /runbooks/missing/.
