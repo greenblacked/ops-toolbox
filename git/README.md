@@ -898,7 +898,14 @@ it; this diagnoses any repository's hook setup.
   line is checked: a carriage return at its end (a CRLF checkout, where the
   kernel looks for an interpreter called `sh` plus a carriage return) fails
   with a repair that keeps a `.bak`, as does an interpreter that is not
-  there, absolute or through `env`; no shebang at all is a warning.
+  there, absolute or through `env`; no shebang at all is a warning. An
+  `env` shebang with more than one word after it and no `-S` (or
+  `--split-string`) fails too: Linux hands everything after `env` over as
+  one word, so `#!/usr/bin/env python3 -u` looks for a program called
+  `python3 -u`. The repair is the same line with `-S`. Every repair command
+  the doctor prints (`chmod +x`, the `.bak` rewrite, `mkdir -p`) quotes the
+  path for the shell, so it can be pasted as it is even when the path holds
+  a space.
 - **Names.** `pre-commit.sh`, `precommit` or `pre_commit` never run; the
   doctor says which hook each was probably meant to be. A `.bak`,
   `.disabled` or `.orig` copy is noted as deliberately disabled.
