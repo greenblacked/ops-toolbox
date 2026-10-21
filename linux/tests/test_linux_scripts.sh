@@ -512,6 +512,7 @@ assert_contains "toolbox-help lists schedule-report" "$out" "schedule-report"
 assert_contains "toolbox-help lists tls-expiry" "$out" "tls-expiry"
 assert_contains "toolbox-help lists config-backup" "$out" "config-backup"
 assert_contains "toolbox-help lists ssh-client-doctor" "$out" "ssh-client-doctor"
+assert_contains "toolbox-help lists kernel-cleanup" "$out" "kernel-cleanup"
 
 section "stay_fresh degrades rather than failing when a tool is absent"
 # journald is not present in these containers. That must be a note, not a
@@ -1072,6 +1073,12 @@ assert_eq "disk_cleanup empties a relocated Trash" "" \
   "$(ls -A "$other_disk/files" 2>/dev/null)"
 assert_not_contains "disk_cleanup counts what a relocated trash freed" "$out" "freed at least 0B"
 rm -rf "$trash_home" "$trash_tmp" "$other_disk"
+
+section "kernel_cleanup.sh"
+# The package tools are stubbed in the suite below, so no container ever lists
+# or removes a real kernel; it drives apt, dnf and pacman from any one image.
+bash "$L/tests/test_kernel_cleanup.sh"
+assert_eq "kernel_cleanup suite exits 0" 0 "$?"
 
 section "net_doctor.sh"
 NET="$L/net_doctor.sh"

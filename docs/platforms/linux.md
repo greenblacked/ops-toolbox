@@ -3,8 +3,8 @@
 ## What it covers
 
 Debian/Ubuntu, Fedora/RHEL and Arch: read-only system, network, TLS,
-SSH-client, schedule and hardening reports; recurring maintenance and disk
-cleanup; developer tool installs; config backups; package-set capture; sysctl
+SSH-client, schedule and hardening reports; recurring maintenance, disk
+cleanup and old-kernel removal; developer tool installs; config backups; package-set capture; sysctl
 defaults; a systemd user timer; and a Kali cloud-init profile.
 
 ## Requirements
@@ -34,6 +34,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
 | `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal, package cache, docker. | `--dry-run` |
+| `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
 | `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation. | `--dry-run` |
 | `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |
 | `install_aliases.sh` | Add a marked block to `~/.bashrc`; `--status`, `--uninstall`. | `--dry-run` |
@@ -60,6 +61,7 @@ All paths are under `linux/`.
     ```bash
     ./linux/stay_fresh.sh --dry-run --only caches,containers
     ./linux/disk_cleanup.sh --dry-run
+    ./linux/kernel_cleanup.sh --dry-run --keep 1
     sudo ./linux/sysctl_defaults.sh --apply --dry-run
     ./linux/config_backup.sh --dry-run
     ```

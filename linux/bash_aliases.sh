@@ -160,6 +160,7 @@ _pus_linux_alias stay-fresh        stay_fresh.sh
 _pus_linux_alias install-devtools  install_devtools.sh
 _pus_linux_alias install-aliases   install_aliases.sh
 _pus_linux_alias disk-cleanup      disk_cleanup.sh
+_pus_linux_alias kernel-cleanup    kernel_cleanup.sh
 _pus_linux_alias linux-status      status.sh
 _pus_linux_alias system-doctor     system_doctor.sh
 _pus_linux_alias net-doctor        net_doctor.sh
@@ -190,6 +191,8 @@ toolbox-help() {
     printf '  %-20s %s\n' linux-status 'one-screen Linux verdict'
   [ -x "$_pus_linux_aliases_dir/disk_cleanup.sh" ] && \
     printf '  %-20s %s\n' disk-cleanup 'free space without upgrading packages'
+  [ -x "$_pus_linux_aliases_dir/kernel_cleanup.sh" ] && \
+    printf '  %-20s %s\n' kernel-cleanup 'remove old kernels, keep the running one'
   [ -x "$_pus_linux_aliases_dir/system_doctor.sh" ] && \
     printf '  %-20s %s\n' system-doctor 'report whether this machine is well'
   [ -x "$_pus_linux_aliases_dir/net_doctor.sh" ] && \

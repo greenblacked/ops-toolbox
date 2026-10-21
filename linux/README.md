@@ -7,9 +7,9 @@ Bootstrap and maintenance for a Linux machine — the counterpart of
 rather than a Mac.
 
 **Targets:** Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`) and Arch (`pacman`).
-The three scripts that install packages — `stay_fresh.sh`,
-`install_devtools.sh`, `packages.sh` — exit `2` on anything else and say what
-they detected, the same way the macOS scripts exit `2` off macOS. The two that
+The four scripts that install or remove packages — `stay_fresh.sh`,
+`install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh` — exit `2` on
+anything else and say what they detected, the same way the macOS scripts exit `2` off macOS. The two that
 read rather than install carry on: `disk_cleanup.sh` warns and skips package
 caches, `system_doctor.sh` prints a `skip` line and reports everything else.
 Every script exits `2` off Linux.
@@ -35,6 +35,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [`install_aliases.sh`](#install_aliasessh)
 - [`schedule_report.sh`](#schedule_reportsh)
 - [`disk_cleanup.sh`](#disk_cleanupsh)
+- [`kernel_cleanup.sh`](#kernel_cleanupsh)
 - [`net_doctor.sh`](#net_doctorsh)
 - [`sysctl_defaults.sh`](#sysctl_defaultssh)
 - [`tls_expiry.sh`](#tls_expirysh)
@@ -49,6 +50,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
 | [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps; never volumes |
+| [`kernel_cleanup.sh`](kernel_cleanup.sh) | Remove old kernel packages; keeps the running kernel plus the newest `--keep` |
 | [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
 | [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
@@ -70,7 +72,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | Requirement | Notes |
 | --- | --- |
 | **Linux** | Every script here exits `2` on anything else. |
-| **One of `apt`, `dnf` or `pacman`** | Only the five scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Three of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other nine never ask. |
+| **One of `apt`, `dnf` or `pacman`** | Only the six scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Four of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other nine never ask. |
 | **Bash 3.2 or newer** | These scripts are held to the same Bash 3.2 floor as the macOS package, so they also run on a box with an old `/bin/bash`. |
 | **`sudo`, or root** | Optional. Steps that need root are skipped with a warning when `sudo` is missing, and `--no-sudo` skips them deliberately. Running as root needs neither. |
 | **A systemd user manager** | Only for [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh), which exits `2` without one. `install --print-only` still prints the units anywhere. |
@@ -90,11 +92,13 @@ Everything that changes the machine previews first:
 ./stay_fresh.sh --dry-run
 ./install_devtools.sh --dry-run
 ./disk_cleanup.sh --dry-run
+./kernel_cleanup.sh --dry-run
 ./config_backup.sh --dry-run
 
 ./stay_fresh.sh --yes
 ./install_devtools.sh --yes --setup-shell
 ./disk_cleanup.sh --yes
+./kernel_cleanup.sh --yes
 ./config_backup.sh --yes
 
 # Run just the named groups:
@@ -146,6 +150,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | packages, journal, caches, containers (never volumes) |
 | **Recurring** | `systemd/stay_fresh_timer.sh` | Install once, then it fires | user systemd units that run `stay_fresh.sh --yes --no-sudo` |
 | **Space** | `disk_cleanup.sh` | When `/` is full | age-filtered temp; opt-in trash/journal/caches/coredumps; never volumes |
+| **Space** | `kernel_cleanup.sh` | When `/boot` is full or an upgrade fails for space | old kernel packages; keeps the running one plus `--keep`; never autoremoves |
 | **Copy** | `config_backup.sh` | Before editing `/etc` or upgrading | a dated tar under `--dest`; never writes back |
 | **Copy** | `packages.sh` | After a machine looks the way you want | a package list you can commit and restore |
 | **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
@@ -241,12 +246,12 @@ half lives in `install_devtools.sh` and GUI apps are left to you.
 
 ## Distro detection
 
-The five scripts that need a package manager — `disk_cleanup.sh`,
-`install_devtools.sh`, `packages.sh`, `stay_fresh.sh`, `system_doctor.sh` —
-read `/etc/os-release` and map `ID`/`ID_LIKE` onto one. The other nine never
-ask. The lookup is duplicated in each script rather than shared, for the
-reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script has to work when
-copied on its own onto a box.
+The six scripts that need a package manager — `disk_cleanup.sh`,
+`install_devtools.sh`, `kernel_cleanup.sh`, `packages.sh`, `stay_fresh.sh`,
+`system_doctor.sh` — read `/etc/os-release` and map `ID`/`ID_LIKE` onto one.
+The other nine never ask. The lookup is duplicated in each script rather than
+shared, for the reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script
+has to work when copied on its own onto a box.
 
 It honours an `OS_RELEASE` override, which exists purely so the failure path is
 testable — a container cannot pretend to be Gentoo, so without that seam the
@@ -498,6 +503,53 @@ user-owned targets at a home directory other than the caller's, and an
 effect: that variable describes the caller's cache, and honouring both at once
 deleted files outside the directory `--home` named.
 
+## `kernel_cleanup.sh`
+
+A `/boot` full of old kernels is the classic reason an upgrade fails half-way
+through, and `apt-get autoremove` is not a reliable pruner: a kernel installed
+by hand, or marked manual by an installer, is never auto-removable. This names
+the old kernels and removes them deliberately.
+
+```bash
+./kernel_cleanup.sh --list                 # running / keep / remove, read-only
+./kernel_cleanup.sh --dry-run              # the exact removal, written nowhere
+sudo ./kernel_cleanup.sh --yes
+./kernel_cleanup.sh --dry-run --keep 1     # keep only one besides the running kernel
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--list` | Table of installed kernels marked `running`, `keep` or `remove`, then `df -h /boot` when `/boot` is its own filesystem. Read-only; needs no `--yes`. |
+| `--keep N` | Newest kernels to keep besides the running one, `1` to `20` (default `2`). `0` is refused. |
+| `--dry-run` | Print the removal command and the space it would free; write nothing. |
+| `--yes`, `-y` | Required for a run that removes anything. |
+| `--no-sudo` | Skip the removal with a warning instead of escalating. |
+| `--release VER` | Treat `VER` as the running kernel instead of `uname -r`. For a chroot, and the seam the tests use. |
+
+The keep set is the running kernel, the newest `--keep` kernels and the newest
+installed one, and at least two kernels always stay installed: with the running
+kernel also the newest and `--keep 1`, the next-newest is kept too, with a
+warning. Releases are ordered by version (`sort -V`), so `6.1.0-9` sorts before
+`6.1.0-10`. Only versioned packages are candidates; metapackages such as
+`linux-image-amd64`, `linux-image-generic` or an unversioned `kernel` never
+match. When `uname -r` names a kernel that is not installed — a container or a
+chroot — the script says so and keeps the newest instead. It refuses (exit `2`)
+rather than guesses when it cannot determine the running release at all.
+
+On apt each old release expands to whichever of `linux-image-REL`,
+`linux-image-unsigned-REL`, `linux-modules-REL`, `linux-modules-extra-REL` and
+`linux-headers-REL` are installed, removed in one `apt-get purge --yes`. On dnf
+the versioned `kernel`, `kernel-core`, `kernel-modules`, `kernel-modules-core`,
+`kernel-modules-extra` and `kernel-devel` packages go in one `dnf remove -y`.
+pacman keeps one copy of each kernel package, so the script says there is
+nothing to prune and exits `0`. It never runs autoremove, never reboots and never
+edits the bootloader: the package manager's own removal hooks update GRUB and
+the initramfs. No log file is written.
+
+Exit codes: `0` done or nothing to remove, `1` the removal failed, `2` not Linux,
+an unsupported distribution, the package tool missing or the running kernel
+unknown, `3` bad usage or a real run without `--yes`.
+
 ## `net_doctor.sh`
 
 `system_doctor.sh` already says which host firewall is in charge and lists
@@ -671,7 +723,7 @@ permissive development host can validly differ from a server baseline.
 | `0` | Success |
 | `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on` |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
-| `3` | Invalid usage, or an install was requested without `--yes` |
+| `3` | Invalid usage, or an install or removal was requested without `--yes` |
 | `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove |
 
 `system_doctor.sh` never returns `1`: it reports, and what it finds is for you
@@ -694,7 +746,8 @@ requesting an install without `--yes` refuses, that a missing optional tool
 degrades to a warning instead of a failure, that `install_aliases.sh` is
 idempotent and that its dry run writes nothing, that `disk_cleanup.sh`
 honours `--days` against real files (and `--include-coredumps` against
-`--coredump-dir`), that `sysctl_defaults.sh` can apply
+`--coredump-dir`), that `kernel_cleanup.sh` never names the running or the
+newest kernel across stubbed apt, dnf and pacman, that `sysctl_defaults.sh` can apply
 and revert against a fake procfs without touching `/etc`, that
 `config_backup.sh` writes a tar of `--paths` into `--dest` and honours
 `--keep`, that `ssh_client_doctor.sh` grades modes under `--ssh-dir`, and
