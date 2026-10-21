@@ -30,6 +30,7 @@ only.
 | `kubectl_drain_preflight.sh` | What would block or hurt draining a node; prints the drain command, never runs it. | <span class="stage stage-report">read-only</span> |
 | `kubectl_node_capacity.sh` | Requests against allocatable per node, and Unschedulable pods; `--threshold`. | <span class="stage stage-report">read-only</span> |
 | `kubectl_workload_audit.sh` | Audit pod templates: requests, probes, image tags, security, PDBs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_rbac_audit.sh` | RBAC review: cluster-admin, wildcards, default ServiceAccounts, dangling bindings, Secret readers; `--only`. | <span class="stage stage-report">read-only</span> |
 | `gke_cluster_doctor.sh` | GKE health checks: channel, skew, Workload Identity, node auto-repair, maintenance window, authorized networks, logging, shielded nodes, network policy; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
 | `run.sh` | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
@@ -53,6 +54,7 @@ All paths are under `k8s-toolbox/`.
     ./k8s-toolbox/kubectl_drain_preflight.sh --node gke-pool-1-abcd
     ./k8s-toolbox/kubectl_node_capacity.sh --threshold 70
     ./k8s-toolbox/kubectl_workload_audit.sh --namespace prod --only resources,security
+    ./k8s-toolbox/kubectl_rbac_audit.sh --only cluster-admin,secrets
     ./k8s-toolbox/gke_cluster_doctor.sh --list-checks
     ./k8s-toolbox/gke_cluster_doctor.sh --project P --cluster C --location europe-west1
     ```

@@ -23,6 +23,7 @@ unprivileged user by default.
 | [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh) | Read-only check of what would block or hurt a node drain; prints the drain command |
 | [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh) | Read-only per-node CPU, memory and pod requests against allocatable, plus Unschedulable pods |
 | [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Read-only pod-template audit: requests and limits, probes, image tags, security context, PDBs |
+| [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh) | Read-only RBAC review: cluster-admin, wildcards, default ServiceAccounts, dangling bindings, Secret readers |
 | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster, node management, maintenance window, authorized networks, observability, shielded nodes, network policy |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
@@ -44,6 +45,7 @@ unprivileged user by default.
 - [Check a node before draining](#check-a-node-before-draining)
 - [Check node capacity](#check-node-capacity)
 - [Audit workloads](#audit-workloads)
+- [Audit RBAC](#audit-rbac)
 - [Debug a running pod](#debug-a-running-pod)
 - [Use it in a cluster](#use-it-in-a-cluster)
 - [GKE auth](#gke-auth)
@@ -59,8 +61,8 @@ needs, and exits `2` rather than half-working when one is missing.
 | --- | --- | --- |
 | **Bash** | every script | `#!/usr/bin/env bash` with `set -euo pipefail`. |
 | **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
-| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
-| **`python3`** | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) (six of its ten checks), [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
+| **`python3`** | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) (six of its ten checks), [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
 | **`openssl`** | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Only to read a certificate's end date from stdin (`openssl x509 -noout -enddate`); no network use. OpenSSL and LibreSSL both work. |
 | **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
 
@@ -478,6 +480,47 @@ an empty selection in `--only` and a `--limit` that is not a positive whole
 number, and `4` nothing to report. `--list-checks` and `--help` answer before
 `kubectl` is required.
 
+## Audit RBAC
+
+`kubectl_rbac_audit.sh` answers the four questions every access review asks,
+read-only and without `kubectl auth can-i` (which impersonates):
+
+```bash
+./kubectl_rbac_audit.sh                       # every check
+./kubectl_rbac_audit.sh --only cluster-admin,secrets
+./kubectl_rbac_audit.sh --namespace prod      # Roles and RoleBindings in prod only
+./kubectl_rbac_audit.sh --list-checks
+```
+
+| Check | Reports |
+| --- | --- |
+| `cluster-admin` | Every ClusterRoleBinding or RoleBinding to `cluster-admin`, one row per subject: `ServiceAccount ns/name`, `User`, or `Group`. |
+| `wildcard` | A ClusterRole or Role with a rule granting verb `*` on resource `*` or API group `*`, or the `escalate`, `bind` or `impersonate` verbs. |
+| `default-sa` | A binding whose subject is a ServiceAccount named `default`, which every pod without its own `serviceAccountName` inherits. |
+| `dangling` | A binding whose ClusterRole does not exist, or whose Role does not exist in the binding's own namespace (a Role of that name elsewhere does not count). |
+| `secrets` | A bound role that can `get`, `list` or `watch` core Secrets (or `*`), with the bindings that grant it. A grant narrowed by `resourceNames` is still listed, with the names. |
+
+ClusterRoles and ClusterRoleBindings are always read cluster-wide;
+`--namespace` narrows Roles and RoleBindings only. Only the objects the
+selected checks need are listed. Rows are labelled `[risk]` when the grant is
+cluster-wide and `[advice]` when it is one namespace, for example
+`[risk] clusterrolebinding ci-deployer -> cluster-admin: ServiceAccount ci/deployer`,
+and each is followed by a `next` line such as
+`kubectl describe clusterrolebinding ci-deployer`. For a dangling binding the
+next step includes the `kubectl delete` that removes it: printed, never run.
+Each check prints at most 40 rows and says how many more there were.
+
+Objects and subjects whose names start with `system:` (such as the
+`system:masters` group) and the built-in `cluster-admin`, `admin`, `edit` and
+`view` roles are not judged unless `--include-system` is given, so the report
+shows what someone added. A `Forbidden` on any RBAC listing is itself worth
+knowing and makes the run incomplete (exit `1`). The script reads RBAC objects
+only, never a Secret or a token.
+
+Exit codes: `0` findings, `1` a query or JSON filter failed, `2` no `kubectl`
+or `python3`, or no reachable cluster, `3` usage, including an unknown id or
+an empty selection in `--only`, and `4` nothing to report.
+
 ## Doctor a GKE cluster
 
 `gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
@@ -620,18 +663,22 @@ installed, the `--help` and unknown-flag contracts, flags that require a value,
 the dry-run promise **asserted against the filesystem** rather than against the
 script's own claim to have written nothing, exit `2` when `kubectl` or Docker
 is missing, agreement between `versions.env`, the Dockerfile and `build.sh`,
-and the Pod Security posture of the examples. Secret-free stubbed `kubectl`
-fixtures cover container readiness, init failures, restartable sidecars, named
-container logs, Warning last-observation timestamps, stuck rollouts,
-StatefulSet and DaemonSet updates, autoscaler conditions, failed Jobs,
-certificate expiry windows and unreadable certificates (with an `openssl` stub,
-plus one real certificate when `openssl` is installed), drain blockers and
-budget selectors, every Kubernetes quantity form through the capacity
-percentages, each audit check with its label and fix, and query/JSON failures
-across every diagnostic section. A stubbed `gcloud` runs all ten GKE doctor
-checks against cluster descriptions, with and without `python3`.
-Each of those suites also proves from the stub's call log that nothing but
-`get` and `cluster-info` ever ran. These tests never contact a real cluster.
+and the Pod Security posture of the examples.
+
+Secret-free stubbed `kubectl` fixtures cover container readiness, init
+failures, restartable sidecars, named container logs, restart loops and OOM
+kills, Warning last-observation timestamps, stuck rollouts, StatefulSet and
+DaemonSet updates, autoscaler conditions, failed Jobs, certificate expiry
+windows and unreadable certificates (with an `openssl` stub, plus one real
+certificate when `openssl` is installed), drain blockers and budget selectors,
+every Kubernetes quantity form through the capacity percentages, each workload
+and RBAC audit check with its label and next step, and query/JSON failures
+across every diagnostic section. The workload, certificate, drain, capacity
+and audit suites also prove from the stub's call log that nothing but `get`
+and `cluster-info` ever ran. A stubbed
+`gcloud` runs all ten GKE doctor checks against cluster descriptions, with and
+without `python3`, and proves it only ever ran `container clusters describe`.
+These tests never contact a real cluster.
 
 To build the image and probe it for real:
 

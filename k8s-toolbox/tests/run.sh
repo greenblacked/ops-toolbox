@@ -24,4 +24,5 @@ rc=0
 "$HERE/test_node_capacity.sh" || rc=1
 "$HERE/test_workload_audit.sh" || rc=1
 "$HERE/test_gke_doctor.sh" || rc=1
+"$HERE/test_rbac_audit.sh" || rc=1
 exit "$rc"

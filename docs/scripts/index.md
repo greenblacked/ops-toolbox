@@ -110,6 +110,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `k8s-toolbox/kubectl_drain_preflight.sh` | Kubernetes | Check what would block a node drain. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/kubectl_node_capacity.sh` | Kubernetes | Requests against allocatable per node. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/kubectl_workload_audit.sh` | Kubernetes | Audit workload pod templates for production readiness. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_rbac_audit.sh` | Kubernetes | Review RBAC bindings and roles. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks, from release channel to network policy. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/build.sh` | Kubernetes | Build the toolbox image with buildx. | `--dry-run` |
 | `k8s-toolbox/run.sh` | Kubernetes | Run the image with `~/.kube` mounted read-only. | `--dry-run` |

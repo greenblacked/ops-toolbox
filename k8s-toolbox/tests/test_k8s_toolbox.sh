@@ -170,6 +170,9 @@ missing_value_cases=(
   "kubectl_workload_audit.sh --context"
   "kubectl_workload_audit.sh --only"
   "kubectl_workload_audit.sh --limit"
+  "kubectl_rbac_audit.sh --namespace"
+  "kubectl_rbac_audit.sh --context"
+  "kubectl_rbac_audit.sh --only"
   "gke_cluster_doctor.sh --project"
   "gke_cluster_doctor.sh --cluster"
   "gke_cluster_doctor.sh --location"
@@ -250,7 +253,8 @@ head_ "kubectl check selection before kubectl"
 # usage error: for these scripts exit 4 already means "ran and found nothing".
 for case_ in \
   "kubectl_workload_diag.sh deployments statefulsets daemonsets hpa jobs" \
-  "kubectl_workload_audit.sh resources probes image-tag security availability"
+  "kubectl_workload_audit.sh resources probes image-tag security availability" \
+  "kubectl_rbac_audit.sh cluster-admin wildcard default-sa dangling secrets"
 do
   script="${case_%% *}"
   checks="$(guard "$K/$script" --list-checks 2>/dev/null)"
