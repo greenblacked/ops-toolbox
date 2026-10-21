@@ -1202,6 +1202,17 @@ if [[ "$rc" -ne 3 ]]; then ok "signing doctor accepts --verify-recent=2"; else e
 out="$(cd "$repo" && "$SIGNING_DOCTOR" 2>&1)"
 assert_not_contains "$out" "recent commits" "signing doctor without --verify-recent looks at no commit"
 
+section "ssh doctor --require-known-host"
+# This image has no OpenSSH, so the known_hosts lookup itself is covered by the
+# unit tests; here the flag must parse, be documented, and leave the verdict
+# and the quiet contract exactly as they were.
+out="$("$SSH_DOCTOR" --help 2>&1)"
+assert_contains "$out" "--require-known-host" "ssh doctor --help documents --require-known-host"
+out="$(cd "$repo" && "$SSH_DOCTOR" --quiet --require-known-host --ssh-dir "$empty_ssh" \
+  --host example.invalid 2>&1)"; rc=$?
+assert_eq "$rc" "1" "ssh doctor --require-known-host keeps the failed verdict"
+assert_eq "$out" "" "ssh doctor --require-known-host --quiet prints nothing"
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"

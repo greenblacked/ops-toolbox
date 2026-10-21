@@ -95,7 +95,10 @@ All paths are under `git/`.
   `--dry-run`. `git_stale_branches.sh` is report-only and has no `--dry-run`.
 - The repository README calls the doctors read-only, but
   `git_signing_doctor.py --test-sign` creates one real signature and
-  `git_ssh_doctor.py --test-auth` attempts SSH authentication.
+  `git_ssh_doctor.py --test-auth` attempts SSH authentication. Those
+  attempts use `StrictHostKeyChecking=accept-new` and so record an unknown
+  host key; the doctor checks known_hosts before any of them, and
+  `--require-known-host` turns an unknown key into a failure.
 - `git_signing_doctor.py --verify-recent N` makes git verify the signatures
   of the last `N` existing commits, which runs gpg or ssh-keygen once per
   signed commit; it judges only your own commits unless `--all-authors`.

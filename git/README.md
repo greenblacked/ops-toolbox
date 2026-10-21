@@ -606,6 +606,7 @@ Answers the question `Permission denied (publickey)` refuses to: *which* of the 
 ./git/git_ssh_doctor.py --host github.com
 ./git/git_ssh_doctor.py --test-auth      # try every key, report which one works
 ./git/git_ssh_doctor.py --quiet --host github.com
+./git/git_ssh_doctor.py --require-known-host --host github.com   # CI preflight
 ```
 
 The effective configuration comes from **`ssh -G`** — OpenSSH resolving its own config, rather than a second implementation that can disagree with it. On top of that it reports what `ssh -G` cannot explain:
@@ -614,12 +615,26 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
 - **`Include` globs that match nothing.**
 - **Keys with permissions ssh will refuse** (group- or world-readable).
 - **An empty agent**, and which configured identity files do not exist on disk.
+- **Whether the host key is already trusted.** The number-one "works on my
+  laptop, fails in the pipeline" error is `Host key verification failed`: a
+  headless run cannot answer the yes/no prompt. Before any authentication
+  attempt, the doctor asks `ssh-keygen -F` whether the key for the host and
+  port ssh will dial is in the `UserKnownHostsFile` and `GlobalKnownHostsFile`
+  that `ssh -G` reports, honouring a non-22 port (`[host]:2222`), a
+  `HostKeyAlias` and hashed entries. Only the file name is printed, never the
+  entry. An unknown key is a warning with the `ssh-keyscan` and
+  `ssh-keygen -lf` steps that pin it after checking the fingerprint against
+  the one the provider publishes; `StrictHostKeyChecking no` is a warning of
+  its own. With `--require-known-host` an unknown key fails the host instead,
+  and authentication is not attempted, since it would record the key. A
+  *changed* host key can only be seen by connecting;
+  `git_remote_doctor.py --probe` names that one.
 
-With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure.
+With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason.
 
 Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
-**Exit code `1`** if any checked host fails to authenticate.
+**Exit code `1`** if any checked host fails to authenticate, or with `--require-known-host` has a host key that is not in known_hosts.
 
 `--quiet` suppresses the report but preserves the verdict exit code. It does
 not imply `--test-auth`, so a quiet CI probe remains offline unless that

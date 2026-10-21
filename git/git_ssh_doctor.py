@@ -9,7 +9,8 @@ may simply never be reached because the config file declaring it was never read.
 Effective configuration comes from `ssh -G`, which is OpenSSH resolving its own
 config — reimplementing that parser would only introduce a second opinion. This
 script adds what `ssh -G` cannot tell you: *why* a key you believe you
-configured is absent from the result. The most common cause, and the one that
+configured is absent from the result, and whether the host key a headless run
+will be shown is already trusted. The most common cause, and the one that
 prompted this script, is an Include whose glob matches directories. ssh skips
 those silently, so a config file one level deeper is never read and no error is
 ever printed.
@@ -20,6 +21,7 @@ or writes a key.
     ./git_ssh_doctor.py                 # diagnose remotes of the current repo
     ./git_ssh_doctor.py --host github.com
     ./git_ssh_doctor.py --test-auth     # also try candidate keys against the host
+    ./git_ssh_doctor.py --require-known-host   # CI: an unknown host key fails
     ./git_ssh_doctor.py --json          # the same verdict as one JSON object
 """
 
@@ -32,6 +34,8 @@ import io
 import json
 import os
 import re
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -283,21 +287,180 @@ def agent_identities():
 # --------------------------------------------------------------------------
 # effective config per host
 # --------------------------------------------------------------------------
-def effective_config(host):
-    rc, out, err = run(["ssh", "-G", host])
-    if rc != 0:
-        return None, err
+# `ssh -G` keys whose value is a list. identityfile arrives one line per file;
+# the known-hosts keys arrive as one line of space-separated paths.
+_PATH_LIST_KEYS = ("userknownhostsfile", "globalknownhostsfile")
+
+
+def _split_paths(value):
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def parse_ssh_g(text):
+    """Parse `ssh -G host` output into {key: value}.
+
+    Keys are lower-cased and the first occurrence wins, as ssh's own does.
+    identityfile collects every line in order; the known-hosts keys are split
+    into their paths, a quoted path with a space staying one entry.
+    """
     cfg = {"identityfile": []}
-    for line in out.splitlines():
+    for line in (text or "").splitlines():
         if " " not in line:
             continue
         key, value = line.split(" ", 1)
         key = key.lower()
+        if not key:
+            continue
         if key == "identityfile":
             cfg["identityfile"].append(value)
+        elif key in _PATH_LIST_KEYS:
+            cfg.setdefault(key, _split_paths(value))
         else:
             cfg.setdefault(key, value)
-    return cfg, ""
+    return cfg
+
+
+def known_hosts_spec(hostname, port, hostkeyalias=""):
+    """The name `ssh-keygen -F` has to be asked for, as ssh writes it.
+
+    A HostKeyAlias replaces the host outright. A non-default port is part of
+    the name, `[host]:port`, and forgetting that makes every host on port
+    2222 look unknown.
+    """
+    if hostkeyalias and hostkeyalias.lower() != "none":
+        return hostkeyalias
+    if str(port) in ("", "22"):
+        return hostname
+    return "[%s]:%s" % (hostname, port)
+
+
+def normalise_strict(value):
+    """StrictHostKeyChecking as one of yes, no, ask or accept-new.
+
+    `ssh -G` prints true/false for yes/no, and the config also accepts off.
+    """
+    value = (value or "ask").strip().lower()
+    if value in ("true", "yes"):
+        return "yes"
+    if value in ("false", "no", "off"):
+        return "no"
+    return value
+
+
+def host_key_findings(host, port, strict, found_in, files_checked, hashed, require=False):
+    """[(level, message, fix)] for one host's known_hosts state.
+
+    host is the HostName ssh dials. Without `require` an unknown key is a
+    warning, so nobody's exit code changes; with it (a CI preflight) it is a
+    failure.
+    """
+    strict = normalise_strict(strict)
+    port = str(port or "22")
+    where = host if port == "22" else "%s port %s" % (host, port)
+    findings = []
+    if strict == "no":
+        findings.append((
+            "warn",
+            "StrictHostKeyChecking is off for %s: the host key is never verified, so "
+            "a man-in-the-middle is not detected" % where,
+            "remove StrictHostKeyChecking no from the Host block and pin the key "
+            "instead",
+        ))
+    if found_in:
+        findings.append(("info", "host key present in %s" % ", ".join(found_in), None))
+        if hashed:
+            findings.append(("info", "stored hashed (HashKnownHosts), so the file "
+                                     "does not name the host in clear", None))
+        return findings
+    if strict == "no":
+        return findings
+    if strict == "accept-new":
+        findings.append((
+            "info",
+            "host key for %s is not recorded; accept-new will record it on first "
+            "use, which is acceptable for a workstation, pin it for CI" % where,
+            None,
+        ))
+        return findings
+    findings.append((
+        "fail" if require else "warn",
+        "host key for %s is not in %s: the first connection stops to ask, and a "
+        "non-interactive run (CI, cron, BatchMode) fails with Host key verification "
+        "failed" % (where, ", ".join(files_checked) or "any known_hosts file"),
+        "ssh-keyscan -t ed25519 -p %s %s > /tmp/hostkey; ssh-keygen -lf /tmp/hostkey"
+        "   # compare with the fingerprint the provider publishes, then: "
+        "cat /tmp/hostkey >> ~/.ssh/known_hosts"
+        % (port, host),
+    ))
+    return findings
+
+
+def effective_config(host):
+    rc, out, err = run(["ssh", "-G", host])
+    if rc != 0:
+        return None, err
+    return parse_ssh_g(out), ""
+
+
+_DEFAULT_KNOWN_HOSTS = {
+    "userknownhostsfile": ["~/.ssh/known_hosts", "~/.ssh/known_hosts2"],
+    "globalknownhostsfile": ["/etc/ssh/ssh_known_hosts", "/etc/ssh/ssh_known_hosts2"],
+}
+
+
+def known_hosts_files(cfg):
+    """Every known_hosts file ssh consults for this host, user files first."""
+    files = []
+    for key in ("userknownhostsfile", "globalknownhostsfile"):
+        for path in cfg.get(key) or _DEFAULT_KNOWN_HOSTS[key]:
+            if path.lower() != "none":
+                files.append(os.path.expanduser(path))
+    return files
+
+
+def check_host_key(host, cfg, require):
+    """Report whether this host's key is already trusted.
+
+    Returns (passed, found). Only the file a key was found in is printed:
+    `ssh-keygen -F` prints the matching known_hosts line itself, and that
+    stays captured so no entry lands in a log.
+    """
+    hostname = cfg.get("hostname", host)
+    port = cfg.get("port", "22")
+    spec = known_hosts_spec(hostname, port, cfg.get("hostkeyalias", ""))
+    if shutil.which("ssh-keygen") is None:
+        info("ssh-keygen is not on PATH, so known_hosts cannot be checked")
+        return True, True
+
+    files = known_hosts_files(cfg)
+    found_in = []
+    hashed = False
+    for path in [p for p in files if os.path.isfile(p)]:
+        rc, out, _ = run(["ssh-keygen", "-F", spec, "-f", path])
+        if rc == 0:
+            found_in.append(shorten(path))
+            hashed = hashed or any(line.startswith("|1|") for line in out.splitlines())
+        elif rc != 1:
+            info("ssh-keygen -F could not read %s (exit %d)" % (shorten(path), rc))
+
+    passed = True
+    for level, message, fix in host_key_findings(
+        hostname, port, cfg.get("stricthostkeychecking", "ask"), found_in,
+        [shorten(p) for p in files], hashed, require,
+    ):
+        if level == "fail":
+            bad(message)
+            passed = False
+        elif level == "warn":
+            warn(message)
+        else:
+            info(message)
+        if fix:
+            info("fix: %s" % fix)
+    return passed, bool(found_in)
 
 
 def try_auth(host, user="git", key=None, timeout=20):
@@ -323,7 +486,7 @@ def try_auth(host, user="git", key=None, timeout=20):
 
 
 # --------------------------------------------------------------------------
-def diagnose_host(host, keys, agent, test_auth):
+def diagnose_host(host, keys, agent, test_auth, require_known_host=False):
     head("host: %s" % host)
     cfg, err = effective_config(host)
     if cfg is None:
@@ -352,8 +515,19 @@ def diagnose_host(host, keys, agent, test_auth):
     else:
         warn("ssh-agent holds no identities")
 
+    # Before any authentication attempt: try_auth connects with
+    # StrictHostKeyChecking=accept-new, which records an unknown key on its
+    # first success, so checked afterwards this could never fire twice.
+    trusted, found = check_host_key(host, cfg, require_known_host)
+    if not trusted:
+        info("authentication not attempted: it would record the unknown host key")
+        return False
+
     if existing or agent:
         authed, detail = try_auth(host)
+        if not found:
+            info("note: --test-auth/auth probing records new host keys (accept-new); "
+                 "this check ran first")
         if authed:
             ok("authentication succeeds: %s" % detail)
             return True
@@ -447,7 +621,8 @@ def run_report(args):
         warn("no SSH remotes in this repository and no --host given")
         return 1
 
-    results = [diagnose_host(h, keys, agent, args.test_auth) for h in hosts]
+    results = [diagnose_host(h, keys, agent, args.test_auth, args.require_known_host)
+               for h in hosts]
     return 0 if all(results) else 1
 
 
@@ -480,6 +655,8 @@ def main(argv=None):
                         help="host to check (repeatable); defaults to this repo's remotes")
     parser.add_argument("--test-auth", action="store_true",
                         help="try each discovered key against the host")
+    parser.add_argument("--require-known-host", action="store_true",
+                        help="fail when the host key is not in known_hosts (CI preflight)")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")

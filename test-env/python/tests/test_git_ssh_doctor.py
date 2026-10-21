@@ -257,5 +257,122 @@ class RenderJsonTestCase(unittest.TestCase):
             self.assertEqual(doctor.EVENTS[-1][0], level)
 
 
+SSH_G = """user git
+hostname github.com
+port 22
+identityfile ~/.ssh/id_rsa
+identityfile ~/.ssh/id_ed25519
+userknownhostsfile ~/.ssh/known_hosts ~/.ssh/known_hosts2
+globalknownhostsfile /etc/ssh/ssh_known_hosts /etc/ssh/ssh_known_hosts2
+stricthostkeychecking ask
+Port 2222
+
+malformed
+"""
+
+
+class ParseSshGTestCase(unittest.TestCase):
+    def test_identity_files_stay_a_list_in_order(self):
+        self.assertEqual(
+            doctor.parse_ssh_g(SSH_G)["identityfile"], ["~/.ssh/id_rsa", "~/.ssh/id_ed25519"]
+        )
+
+    def test_known_hosts_files_are_split(self):
+        self.assertEqual(
+            doctor.parse_ssh_g(SSH_G)["userknownhostsfile"],
+            ["~/.ssh/known_hosts", "~/.ssh/known_hosts2"],
+        )
+
+    def test_a_quoted_path_with_a_space_stays_one_entry(self):
+        cfg = doctor.parse_ssh_g('userknownhostsfile "/a b/known" /c\n')
+        self.assertEqual(cfg["userknownhostsfile"], ["/a b/known", "/c"])
+
+    def test_keys_are_lower_cased_and_the_first_wins(self):
+        cfg = doctor.parse_ssh_g(SSH_G)
+        self.assertEqual(cfg["port"], "22")
+        self.assertEqual(cfg["stricthostkeychecking"], "ask")
+
+    def test_blank_and_malformed_lines_are_ignored(self):
+        self.assertNotIn("malformed", doctor.parse_ssh_g(SSH_G))
+
+    def test_empty_text(self):
+        self.assertEqual(doctor.parse_ssh_g(""), {"identityfile": []})
+
+
+class KnownHostsSpecTestCase(unittest.TestCase):
+    def test_default_port_is_the_bare_host(self):
+        self.assertEqual(doctor.known_hosts_spec("github.com", "22"), "github.com")
+        self.assertEqual(doctor.known_hosts_spec("github.com", ""), "github.com")
+
+    def test_other_ports_are_bracketed(self):
+        self.assertEqual(
+            doctor.known_hosts_spec("git.example.com", "2222"), "[git.example.com]:2222"
+        )
+
+    def test_an_alias_replaces_the_host(self):
+        self.assertEqual(doctor.known_hosts_spec("git.example.com", "2222", "gh"), "gh")
+        self.assertEqual(
+            doctor.known_hosts_spec("git.example.com", "2222", "none"),
+            "[git.example.com]:2222",
+        )
+
+    def test_ipv6_literals(self):
+        self.assertEqual(doctor.known_hosts_spec("2001:db8::1", "22"), "2001:db8::1")
+        self.assertEqual(doctor.known_hosts_spec("2001:db8::1", "2222"), "[2001:db8::1]:2222")
+
+
+class HostKeyFindingsTestCase(unittest.TestCase):
+    FILES = ["~/.ssh/known_hosts"]
+
+    def levels(self, findings):
+        return [level for level, _, _ in findings]
+
+    def test_a_known_key_is_information_only(self):
+        findings = doctor.host_key_findings("h", "22", "ask", self.FILES, self.FILES, False)
+        self.assertEqual(self.levels(findings), ["info"])
+
+    def test_an_unknown_key_warns_about_non_interactive_runs(self):
+        [(level, message, fix)] = doctor.host_key_findings("h", "22", "ask", [], self.FILES,
+                                                          False)
+        self.assertEqual(level, "warn")
+        self.assertIn("non-interactive", message)
+        # The verification step is the point of the fix; piping ssh-keyscan
+        # straight into known_hosts would trust whoever answered.
+        self.assertIn("ssh-keygen -lf", fix)
+        self.assertIn("ssh-keyscan -t ed25519 -p 22 h", fix)
+
+    def test_strict_yes_as_ssh_g_prints_it(self):
+        self.assertEqual(
+            self.levels(doctor.host_key_findings("h", "22", "true", [], self.FILES, False)),
+            ["warn"],
+        )
+
+    def test_require_turns_the_warning_into_a_failure(self):
+        findings = doctor.host_key_findings("h", "22", "ask", [], self.FILES, False,
+                                            require=True)
+        self.assertEqual(self.levels(findings), ["fail"])
+
+    def test_strict_off_warns_about_a_man_in_the_middle_even_when_known(self):
+        for value in ("no", "false", "off"):
+            findings = doctor.host_key_findings("h", "22", value, self.FILES, self.FILES,
+                                                False)
+            self.assertEqual(findings[0][0], "warn", value)
+            self.assertIn("man-in-the-middle", findings[0][1])
+
+    def test_accept_new_with_an_unknown_key_is_information(self):
+        findings = doctor.host_key_findings("h", "22", "accept-new", [], self.FILES, False,
+                                            require=True)
+        self.assertEqual(self.levels(findings), ["info"])
+
+    def test_hashed_entries_are_information(self):
+        findings = doctor.host_key_findings("h", "22", "ask", self.FILES, self.FILES, True)
+        self.assertEqual(self.levels(findings), ["info", "info"])
+
+    def test_a_non_default_port_is_named(self):
+        [(_, message, fix)] = doctor.host_key_findings("h", "2222", "ask", [], [], False)
+        self.assertIn("h port 2222", message)
+        self.assertIn("-p 2222 h", fix)
+
+
 if __name__ == "__main__":
     unittest.main()
