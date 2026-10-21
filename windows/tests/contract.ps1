@@ -1829,9 +1829,6 @@ if (-not $pathDoctor) {
         } else {
             Test-Fail 'the duplicate finding does not name the first occurrence'
         }
-        if ($findingRan -lt 7) {
-            Test-Fail "only $findingRan PATH case(s) ran - this check has stopped checking"
-        }
         # The report must follow clean's rule: an entry clean cannot judge never
         # makes a later judgeable equivalent a duplicate.
         $toolsExpand = { param([string]$Text) $Text -replace '%TOOLS%', 'C:\Tools' }
@@ -1849,6 +1846,9 @@ if (-not $pathDoctor) {
             } else {
                 Test-Fail "report differs from clean: $($rule.Label) gave $($ruleDup.Count) duplicate(s), expected $($rule.Want)"
             }
+        }
+        if ($findingRan -lt 7) {
+            Test-Fail "only $findingRan PATH case(s) ran - this check has stopped checking"
         }
     }
 }
