@@ -2533,6 +2533,19 @@ assert_contains "an unreadable private key falls back to the .pub" "$out" "type 
 assert_not_contains "the fallback raises no mismatch" "$out" "does not match"
 rm -f "$sshd_dir/id_rsa" "$sshd_dir/id_rsa.pub"
 
+# A relative --ssh-dir with an encrypted key and no .pub is still graded
+# (the link made for it must not dangle).
+mkdir -p "$sd/rel/keys"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 256 SHA256:relfixture me@example (ED25519)\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sd/rel/keys/enc_key"
+chmod 700 "$sd/rel/keys"
+chmod 600 "$sd/rel/keys/enc_key"
+out="$(cd "$sd/rel" && sshdoc --only keys --ssh-dir keys)"
+assert_contains "a relative --ssh-dir still grades an encrypted key without a .pub" \
+  "$out" "ED25519 256"
+assert_not_contains "the relative-dir key is not left unverified" "$out" "unverified"
+rm -rf "$sd/rel"
+
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nNOPASSPHRASE SECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
   > "$sshd_dir/deploy_key"
 chmod 600 "$sshd_dir/deploy_key"

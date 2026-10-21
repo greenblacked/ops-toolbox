@@ -240,6 +240,9 @@ key_unencrypted() {
 # Prints nothing when neither works.
 key_fingerprint() {
   local key="$1" scratch pubtext fp=""
+  # The link target is resolved relative to the scratch directory, so a
+  # relative --ssh-dir must be made absolute first.
+  case "$key" in /*) ;; *) key="$PWD/$key" ;; esac
   scratch="$(mktemp -d "${TMPDIR:-/tmp}/ssh_doctor.XXXXXX" 2>/dev/null)" || return 0
   [[ -d "$scratch" ]] || return 0
   chmod 700 "$scratch" 2>/dev/null
