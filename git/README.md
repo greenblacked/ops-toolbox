@@ -967,9 +967,10 @@ which of them have a problem, on one screen, as a CI step or a weekly sweep.
 ```
 
 ```text
-repo        health  hooks  ignore  remote  secrets  signing  submodule
-api         ok      n/a    ok      ok      FAIL     ok       n/a
-web         ok      ok     FAIL    ok      ok       ok       n/a
+repo  health  hooks  ignore  remote  secrets  signing  submodule
+api   ok      n/a    ok      ok      FAIL     ok       n/a
+cli   ok      ok     ok      ok      ok       ok       n/a
+web   ok      ok     FAIL    ok      ok       ok       n/a
 3 repo(s): 1 clean, 2 with findings, 0 errors
 ```
 
