@@ -210,6 +210,86 @@ class TableFilterTests(unittest.TestCase):
         )
 
 
+class ChecklistTests(unittest.TestCase):
+    SCRIPT = SCRIPTS_DIR / "rpt-checklist.js"
+
+    def call(self, expression: str) -> object:
+        return script_json(self.SCRIPT, expression)
+
+    def test_mkdocs_yml_enables_tasklist_with_clickable_checkbox(self) -> None:
+        text = MKDOCS_YML.read_text(encoding="utf-8")
+        block = re.search(r"^markdown_extensions:\n((?:[ #].*\n|\n)*)", text, re.MULTILINE)
+        self.assertIsNotNone(block, "mkdocs.yml has no markdown_extensions block")
+        assert block is not None
+        tasklist = re.search(
+            r"^  - pymdownx\.tasklist:\n((?:    .*\n)+)", block.group(1), re.MULTILINE
+        )
+        self.assertIsNotNone(tasklist, "pymdownx.tasklist is not enabled with options")
+        assert tasklist is not None
+        self.assertRegex(tasklist.group(1), r"(?m)^\s+custom_checkbox:\s*true\s*$")
+        self.assertRegex(tasklist.group(1), r"(?m)^\s+clickable_checkbox:\s*true\s*$")
+
+    def test_theme_restyles_task_list(self) -> None:
+        css = THEME_CSS.read_text(encoding="utf-8")
+        rule = re.search(r"\.task-list-indicator::?before\s*\{([^}]*)\}", css)
+        self.assertIsNotNone(rule, "the theme does not restyle the task-list box")
+        assert rule is not None
+        self.assertIn("--rpt-control-border", rule.group(1))
+        self.assertRegex(css, r":focus-visible\s*\+\s*\.task-list-indicator")
+
+    def test_quick_start_has_a_checklist(self) -> None:
+        page = REPO_ROOT / "docs" / "getting-started" / "quick-start.md"
+        steps = [
+            line
+            for line in page.read_text(encoding="utf-8").splitlines()
+            if line.startswith("- [ ] ")
+        ]
+        self.assertGreaterEqual(len(steps), 3, "the quick start lost its live checklist")
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_item_key_includes_index_and_truncated_text(self) -> None:
+        text = "Run   the preview\n and read " + "x" * 100
+        key = self.call("m.itemKey(4, %s)" % json.dumps(text))
+        self.assertIsInstance(key, str)
+        assert isinstance(key, str)
+        self.assertTrue(key.startswith("4:Run the preview and read x"), key)
+        self.assertEqual(len(key), len("4:") + 60)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_item_key_distinguishes_identical_text_at_different_positions(self) -> None:
+        keys = self.call("[m.itemKey(0, 'Apply'), m.itemKey(3, 'Apply')]")
+        self.assertEqual(keys, ["0:Apply", "3:Apply"])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_parse_state_accepts_object_and_rejects_garbage(self) -> None:
+        good = self.call("""m.parseState('{"0:a":1,"1:b":0,"2:c":"1","3:d":true}')""")
+        self.assertEqual(good, {"0:a": 1})
+        garbage = ["null", "'[]'", "'\"x\"'", "'{bad json'", "'5'", "5", "undefined", "'null'"]
+        self.assertTrue(garbage)
+        for raw in garbage:
+            with self.subTest(raw=raw):
+                self.assertEqual(self.call("m.parseState(%s)" % raw), {})
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_serialize_drops_unticked_items(self) -> None:
+        stored = self.call(
+            "m.serialize([{key: '0:a', checked: true}, {key: '1:b', checked: false},"
+            " {key: '2:c', checked: true}])"
+        )
+        self.assertIsInstance(stored, str)
+        assert isinstance(stored, str)
+        self.assertEqual(json.loads(stored), {"0:a": 1, "2:c": 1})
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_progress_label_wording(self) -> None:
+        cases = [((0, 3), "0 of 3 steps done"), ((1, 1), "1 of 1 step done"),
+                 ((3, 7), "3 of 7 steps done")]
+        self.assertTrue(cases)
+        for (done, total), expected in cases:
+            with self.subTest(done=done, total=total):
+                self.assertEqual(self.call("m.progressLabel(%d, %d)" % (done, total)), expected)
+
+
 class PageScriptContractTests(unittest.TestCase):
     """The page scripts read text an attacker controls: the query string of a
     link (?filter=) and the path of a missing page. So no script may parse

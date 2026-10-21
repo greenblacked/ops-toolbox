@@ -185,6 +185,30 @@ in every file of the folder.
 
 - `rpt-table-filter.js` puts a **Filter rows** box above every Markdown
   table with 15 or more body rows, and reads a `?filter=` link.
+- `rpt-checklist.js` turns Markdown task lists into checklists that keep
+  their ticks across a reload. See below.
+
+#### Checklists
+
+A runbook, or any page with steps to work through, can make them a
+checklist with Markdown task-list syntax (`pymdownx.tasklist` is enabled
+with `clickable_checkbox`):
+
+```markdown
+- [ ] Run the report and read the output
+- [ ] Run the preview and read every line
+- [ ] Apply
+```
+
+The boxes toggle without JavaScript. With it, each box is named after its
+step for screen readers, a click on the step text ticks it, and a
+"Checklist: 1 of 3 steps done" line with a **Reset checklist** button
+appears above the first list. What is stored, in the reader's browser only:
+one `localStorage` entry per page, `rpt.checklist.v1:` plus the page path,
+holding the position and the first 60 characters of each ticked step.
+Nothing is sent anywhere, and blocked storage only means the ticks are not
+kept. A step written `- [x]` starts ticked. Reword or insert steps freely:
+a changed step loses its tick, it never moves to another step.
 
 ### Preview locally
 

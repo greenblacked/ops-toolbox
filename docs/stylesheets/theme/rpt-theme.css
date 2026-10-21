@@ -31,8 +31,8 @@
     15  Touch targets, motion       small screens and reduced motion
     16  Print
     17  Forced colours
-    18  Page tools                  table filter (with its own print and
-                                    forced-colours rules)
+    18  Page tools                  table filter, task-list checklists (with
+                                    their own print and forced-colours rules)
 
    Class index (every class the theme defines or styles by name)
      .stage .stage-report .stage-preview .stage-apply
@@ -52,6 +52,10 @@
      .rpt-filter .rpt-filter__count
                                     filter box above a long table and its
                                     status line (added by rpt-table-filter.js)
+     .rpt-progress .rpt-progress__status .rpt-progress__reset
+                                    checklist progress line and its button
+                                    (added by rpt-checklist.js); task lists
+                                    themselves are restyled without a class
 
    Tokens are plain custom properties set per scheme, then mapped onto
    Material's own --md-* variables. Material sets its scheme variables on the
@@ -80,6 +84,10 @@
      syntax tokens on code background       4.6-6.8  5.0-5.7
      comment/punctuation on code background 5.8      5.3
      primary button label on its fill       6.0      5.7
+     checklist box at rest (control border)
+       on page / on panel                   3.9/3.5  3.6/3.9
+     checklist box ticked (accent)
+       on page / on panel                   5.7/5.2  5.4/5.7
 
    Admonition mapping (colour follows meaning, never decoration):
      report                          report blue   (read-only)
@@ -1189,9 +1197,10 @@ input:focus-visible,
 /* ---- 18. Page tools ----------------------------------------------------- */
 
 /* Controls the theme's page scripts (overrides/assets/javascripts/) insert.
-   Without JavaScript none of them exist, so nothing here changes a page that
-   has no script. Their print and forced-colours rules live here too, so the
-   section can be copied or dropped as one. */
+   Without JavaScript none of them exist, so apart from the task-list boxes,
+   which are restyled whether or not the checklist script runs, nothing here
+   changes a page that has no script. Their print and forced-colours rules
+   live here too, so the section can be copied or dropped as one. */
 
 /* Table filter: a labelled search box and a status line above a long table
    (rpt-table-filter.js). The input border is the control border (3:1 or more
@@ -1254,5 +1263,110 @@ input:focus-visible,
 @media (forced-colors: active) {
   .rpt-filter input {
     border: 1px solid CanvasText;
+  }
+}
+
+/* Checklists: Markdown task lists (pymdownx.tasklist with custom_checkbox).
+   Material draws the box at rest in its lightest foreground colour (the
+   hairline colour here, well under 3:1) and the ticked box in a fixed green
+   that fails on the light scheme, and its real checkbox is transparent with
+   no focus indicator. Here the box at rest is the control border colour and
+   the ticked box the accent (contrast table at the top); the shape changes
+   too (Material's ticked icon), so colour is never the only signal. The box
+   is drawn as a mask, which would clip an outline, so the focus ring is a
+   second, unmasked pseudo-element in the same place. */
+.md-typeset .task-list-indicator::before {
+  background-color: var(--rpt-control-border);
+}
+
+.md-typeset [type="checkbox"]:checked + .task-list-indicator::before {
+  background-color: var(--rpt-accent);
+}
+
+.md-typeset .task-list-indicator::after {
+  content: "";
+  position: absolute;
+  top: 0.15em;
+  width: 1.25em;
+  height: 1.25em;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+[dir="ltr"] .md-typeset .task-list-indicator::after {
+  left: -1.5em;
+}
+
+[dir="rtl"] .md-typeset .task-list-indicator::after {
+  right: -1.5em;
+}
+
+.md-typeset .task-list-control [type="checkbox"]:focus-visible + .task-list-indicator::after {
+  outline: 2px solid var(--rpt-accent);
+  outline-offset: 2px;
+}
+
+/* The step text toggles its box too (rpt-checklist.js). */
+.md-typeset .task-list-item[data-rpt-checklist] {
+  cursor: pointer;
+}
+
+.md-typeset .task-list-item[data-rpt-checklist] :is(a, button, input, label) {
+  cursor: auto;
+}
+
+/* Progress line above the first task list: "Checklist: 3 of 7 steps done"
+   and a Reset button (the theme's .md-button, 44px high). */
+.rpt-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.8rem;
+  margin: 1em 0;
+}
+
+.md-typeset .rpt-progress__status {
+  margin: 0;
+  color: var(--rpt-text);
+  font-family: var(--rpt-font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.md-typeset .rpt-progress .md-button {
+  margin: 0;
+}
+
+.md-typeset .rpt-progress .md-button:disabled {
+  color: var(--rpt-muted);
+  background-color: transparent;
+  border-color: var(--rpt-border);
+  cursor: default;
+}
+
+@media print {
+  /* Boxes print as they are ticked on screen. */
+  .md-typeset .task-list-indicator::before {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .rpt-progress .md-button {
+    display: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .md-typeset .task-list-indicator::before {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+
+  .md-typeset [type="checkbox"]:checked + .task-list-indicator::before {
+    background-color: Highlight;
+  }
+
+  .md-typeset .task-list-control [type="checkbox"]:focus-visible + .task-list-indicator::after {
+    outline-color: Highlight;
   }
 }
