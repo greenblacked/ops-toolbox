@@ -1177,11 +1177,11 @@ switch ($Action) {
     'backups' {
         # Read-only: lists, hashes and reads sidecars; never deletes, renames
         # or rewrites one. Retention stays prune-backups' job.
-        $all = @()
+        $backupFiles = @()
         if (Test-Path -LiteralPath $DestDir -PathType Container) {
-            $all = @(Get-BackupFile -Directory $DestDir -Name $Distro)
+            $backupFiles = @(Get-BackupFile -Directory $DestDir -Name $Distro)
         }
-        if (-not $all) {
+        if (-not $backupFiles) {
             Write-Host "No dated .tar exports under $DestDir"
             # Asked for a recent backup and there is none at all: that is the
             # stalest answer there is.
@@ -1194,13 +1194,13 @@ switch ($Action) {
 
         # Summed through ForEach-Object for Windows PowerShell 5.1, as in
         # prune-backups.
-        $totalBytes = ($all | ForEach-Object { $_.File.Length } | Measure-Object -Sum).Sum
+        $totalBytes = ($backupFiles | ForEach-Object { $_.File.Length } | Measure-Object -Sum).Sum
         if (-not $totalBytes) { $totalBytes = 0L }
         Write-Host "Directory: $DestDir"
         if ($Verify) {
             # Said before the work starts: hashing a multi-gigabyte tar takes
             # minutes, and silence reads as a hang.
-            Write-Host ("Hashing {0} file(s), {1} total; this can take a while" -f $all.Count, (Format-Size $totalBytes))
+            Write-Host ("Hashing {0} file(s), {1} total; this can take a while" -f $backupFiles.Count, (Format-Size $totalBytes))
         }
         Write-Host ''
 
@@ -1210,7 +1210,7 @@ switch ($Action) {
         $bad = 0
         $missing = 0
         $stale = 0
-        foreach ($group in ($all | Group-Object Distro | Sort-Object Name)) {
+        foreach ($group in ($backupFiles | Group-Object Distro | Sort-Object Name)) {
             $ordered = @($group.Group | Sort-Object { $_.File.LastWriteTime } -Descending)
             foreach ($entry in $ordered) {
                 $file = $entry.File
@@ -1253,7 +1253,7 @@ switch ($Action) {
 
         Write-Host ''
         Write-Host ('{0} backup(s), {1} total, {2} verified, {3} bad, {4} missing sidecar, {5} stale distro(s)' -f
-            $all.Count, (Format-Size $totalBytes), $verified, $bad, $missing, $stale)
+            $backupFiles.Count, (Format-Size $totalBytes), $verified, $bad, $missing, $stale)
         if ($bad -gt 0 -or $missing -gt 0 -or $stale -gt 0) { exit 1 }
     }
 
@@ -1495,8 +1495,8 @@ switch ($Action) {
             break
         }
 
-        $all = @(Get-BackupFile -Directory $DestDir -Name $Distro)
-        if (-not $all) {
+        $backupFiles = @(Get-BackupFile -Directory $DestDir -Name $Distro)
+        if (-not $backupFiles) {
             Write-Host "No dated .tar exports under $DestDir - nothing to prune."
             break
         }
@@ -1508,7 +1508,7 @@ switch ($Action) {
         $cutoff = (Get-Date).AddDays(-$KeepDays)
         $keep = @()
         $prune = @()
-        foreach ($group in ($all | Group-Object Distro)) {
+        foreach ($group in ($backupFiles | Group-Object Distro)) {
             $ordered = $group.Group | Sort-Object { $_.File.LastWriteTime } -Descending
             for ($i = 0; $i -lt $ordered.Count; $i++) {
                 $entry = $ordered[$i]

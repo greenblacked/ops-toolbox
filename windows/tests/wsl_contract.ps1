@@ -516,6 +516,24 @@ if ($actionSwitch) {
         $clauseText[[string]$clause.Item1.Value] = $clause.Item2.Extent.Text
     }
 }
+# A script-level variable named like a parameter IS that parameter, so
+# $all = @(...) in a branch tried to turn a list into the [switch]$All and
+# stopped the action on Windows. Read from the syntax tree, outside functions.
+$paramNames = @($parsed.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+$clobbered = @($parsed.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+            $node.Left -is [System.Management.Automation.Language.VariableExpressionAst]
+        }, $true) | Where-Object {
+        $inFunction = $false
+        for ($p = $_.Parent; $p; $p = $p.Parent) {
+            if ($p -is [System.Management.Automation.Language.FunctionDefinitionAst]) { $inFunction = $true; break }
+        }
+        -not $inFunction -and ($paramNames -contains $_.Left.VariablePath.UserPath)
+    } | ForEach-Object { '{0} (line {1})' -f $_.Left.Extent.Text, $_.Extent.StartLineNumber })
+Test-Case 'no script-level code assigns to a variable that is also a parameter' (
+    $paramNames.Count -gt 10 -and $clobbered.Count -eq 0
+) ($clobbered -join "`n")
 Test-Case 'the switch over $Action was found' ($clauseText.Count -gt 0)
 $changing = 'wsl\.exe\s+--(export|shutdown|manage|terminate|import)|diskpart|Invoke-DistroBackup'
 foreach ($a in @('backup', 'compact', 'sparse', 'shutdown')) {
