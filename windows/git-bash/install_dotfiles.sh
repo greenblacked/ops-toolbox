@@ -288,7 +288,7 @@ if [[ -n "$RESTORE_STAMP" ]]; then
 
   # The files being replaced are saved under this run's stamp. Restoring a set
   # taken this same second would save over the very files being restored.
-  if [[ "$STAMP" == "$stamp" ]]; then
+  if [[ "$STAMP" == "$stamp" ]] && (( DRY_RUN == 0 )); then
     sleep 1
     STAMP="$(date +%Y%m%d-%H%M%S)"
   fi
@@ -313,10 +313,10 @@ if [[ -n "$RESTORE_STAMP" ]]; then
     # does, so this rollback can itself be rolled back.
     if [[ -L "$dest" ]]; then
       run cp -P "$dest" "$dest.backup-$STAMP"
-      info "saved the current $name symlink as $name.backup-$STAMP"
+      (( DRY_RUN == 1 )) || info "saved the current $name symlink as $name.backup-$STAMP"
     elif [[ -e "$dest" ]]; then
       run cp -p "$dest" "$dest.backup-$STAMP"
-      info "saved the current $name as $name.backup-$STAMP"
+      (( DRY_RUN == 1 )) || info "saved the current $name as $name.backup-$STAMP"
     fi
     # Never write through a link: a managed-dotfiles link is replaced, not
     # followed, and a backed-up link comes back as a link.
