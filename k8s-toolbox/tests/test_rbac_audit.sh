@@ -64,11 +64,16 @@ save('crb-clean', [binding('cluster-admin','cluster-admin',[group('system:master
                    binding('system:kube-controller-manager','system:kube-controller-manager',[user('system:kube-controller-manager')])])
 save('rb-clean', [binding('viewers','view',[group('auditors')],ns='demo')])
 save('cr-clean', BUILTINS)
-save('roles-clean', [role('pod-admin',[rule(['*'],['pods'])],ns='demo')])
+save('roles-clean', [role('pod-reader',[rule(['get','list'],['pods'])],ns='demo')])
 save('crb-admin-sa', [binding('ci-deployer','cluster-admin',[sa('deployer','ci')])])
 save('crb-admin-user', [binding('alice-admin','cluster-admin',[user('alice@example.com')])])
 save('rb-admin-namespaced', [binding('team-admin','cluster-admin',[group('team-a')],ns='team-a')])
 save('cr-wildcard', BUILTINS+[role('ops-all',[rule(['*'],['*'],['*'])])])
+save('cr-wild-verbs', BUILTINS+[role('pod-all',[rule(['*'],['pods'])])])
+save('roles-wild-verbs', [role('pod-admin',[rule(['*'],['pods'])],ns='demo')])
+save('cr-wild-resources', BUILTINS+[role('read-all',[rule(['get'],['*'])])])
+save('cr-wild-groups', BUILTINS+[role('read-any-group',[rule(['get'],['pods'],['*'])])])
+save('cr-wild-urls', BUILTINS+[role('url-all',[{'nonResourceURLs':['*'],'verbs':['get']}])])
 save('cr-escalate', BUILTINS+[role('rbac-manager',[rule(['escalate','bind','get'],['clusterroles'],['rbac.authorization.k8s.io'])])])
 save('rb-default-sa', [binding('app-edit','edit',[sa('default','demo')],ns='demo')])
 save('crb-default-sa-other', [binding('metrics-reader','view',[sa('default','other')])])
@@ -152,6 +157,11 @@ for case_ in \
   'RBAC_CRB|crb-admin-user|[risk] clusterrolebinding alice-admin -> cluster-admin: User alice@example.com|kubectl describe clusterrolebinding alice-admin' \
   'RBAC_RB|rb-admin-namespaced|[advice] rolebinding team-a/team-admin -> cluster-admin: Group team-a|kubectl describe rolebinding team-admin -n team-a' \
   'RBAC_CR|cr-wildcard|[risk] clusterrole ops-all grants * on * in apiGroups *|kubectl describe clusterrole ops-all' \
+  'RBAC_CR|cr-wild-verbs|[advice] clusterrole pod-all grants wildcard verbs: * on pods in apiGroups core|kubectl describe clusterrole pod-all' \
+  'RBAC_ROLES|roles-wild-verbs|[advice] role demo/pod-admin grants wildcard verbs: * on pods in apiGroups core|kubectl describe role pod-admin -n demo' \
+  'RBAC_CR|cr-wild-resources|[advice] clusterrole read-all grants wildcard resources: get on * in apiGroups core|kubectl describe clusterrole read-all' \
+  'RBAC_CR|cr-wild-groups|[advice] clusterrole read-any-group grants wildcard apiGroups: get on pods in apiGroups *|kubectl describe clusterrole read-any-group' \
+  'RBAC_CR|cr-wild-urls|[advice] clusterrole url-all grants wildcard nonResourceURLs: get on - in apiGroups - (nonResourceURLs *)|kubectl describe clusterrole url-all' \
   'RBAC_CR|cr-escalate|[risk] clusterrole rbac-manager grants bind,escalate on clusterroles|kubectl describe clusterrole rbac-manager' \
   'RBAC_RB|rb-default-sa|[advice] rolebinding demo/app-edit -> edit: ServiceAccount demo/default|kubectl describe rolebinding app-edit -n demo' \
   'RBAC_CRB|crb-default-sa-other|[risk] clusterrolebinding metrics-reader -> view: ServiceAccount other/default|kubectl describe clusterrolebinding metrics-reader' \
@@ -240,6 +250,16 @@ fi
 run_rbac --only dangling
 gets="$(grep -cE '(^| )get ' "$RBAC_CALLS")"
 if [[ "$gets" == "4" ]]; then ok '--only dangling reads bindings and roles (four gets)'; else err "--only dangling issued $gets gets"; fi
+reset_fixtures
+export RBAC_CR=cr-wild-verbs
+run_rbac --only wildcard
+assert_rc '--only wildcard catches verbs * on a named resource' 0 "$rc"
+assert_contains '--only wildcard names the role' 'clusterrole pod-all grants wildcard verbs'
+reset_fixtures
+export RBAC_CR=cr-wild-resources
+run_rbac --only wildcard
+assert_rc '--only wildcard catches a named verb on resources *' 0 "$rc"
+assert_contains '--only wildcard names the resources role' 'clusterrole read-all grants wildcard resources'
 reset_fixtures
 export RBAC_CRB=crb-admin-sa
 run_rbac --only wildcard

@@ -41,7 +41,7 @@ require_value() {
 
 CHECKS=(
   "cluster-admin|bindings to cluster-admin"
-  "wildcard|roles granting * on * or escalate, bind, impersonate"
+  "wildcard|roles with a * in verbs, resources, apiGroups or URLs, or escalate, bind, impersonate"
   "default-sa|bindings that give a default ServiceAccount rights"
   "dangling|bindings whose role does not exist"
   "secrets|bound roles that can read Secrets"
@@ -338,17 +338,30 @@ if "wildcard" in rows or "secrets" in rows:
     label=name if kind == "clusterrole" else "%s/%s" % (ns,name)
     describe="kubectl describe %s %s%s" % (kind,name," -n "+ns if kind == "role" else "")
     wild=[]
+    strong=False
     secret_verbs=set()
     limited=[]
     for rule in rules:
       verbs=rule.get("verbs") or []
       resources=rule.get("resources") or []
       groups=rule.get("apiGroups") or []
+      urls=rule.get("nonResourceURLs") or []
+      where="%s in apiGroups %s" % (",".join(resources) or "-",",".join(g or "core" for g in groups) or "-")
       if "*" in verbs and ("*" in resources or "*" in groups):
-        wild.append("* on %s in apiGroups %s" % (",".join(resources) or "-",",".join(g or "core" for g in groups) or "-"))
+        wild.append("* on "+where)
+        strong=True
+      else:
+        # A wildcard in any one dimension is over-broad: every verb on named
+        # resources, named verbs on every resource or API group, or a
+        # non-resource URL pattern of *.
+        dims=[n for n,vals in (("verbs",verbs),("resources",resources),("apiGroups",groups),("nonResourceURLs",urls)) if "*" in vals]
+        if dims:
+          wild.append("wildcard %s: %s on %s%s" % (",".join(dims),",".join(verbs) or "-",where,
+                                                   " (nonResourceURLs %s)" % ",".join(urls) if urls else ""))
       powers=sorted({v for v in verbs if v in ("escalate","bind","impersonate")})
       if powers:
         wild.append("%s on %s" % (",".join(powers),",".join(resources) or "-"))
+        strong=True
       if ("secrets" in resources or "*" in resources) and ("" in groups or "*" in groups):
         read={v for v in verbs if v in ("get","list","watch","*")}
         if read:
@@ -356,7 +369,7 @@ if "wildcard" in rows or "secrets" in rows:
           if rule.get("resourceNames"):
             limited.extend(rule["resourceNames"])
     if "wildcard" in rows and wild:
-      rows["wildcard"].append(("risk" if kind == "clusterrole" else "advice",
+      rows["wildcard"].append(("risk" if kind == "clusterrole" and strong else "advice",
                                "%s %s grants %s" % (kind,label,"; ".join(wild)),[describe]))
     if "secrets" in rows and secret_verbs:
       bound=grants(kind,ns,name)
@@ -366,7 +379,7 @@ if "wildcard" in rows or "secrets" in rows:
         rows["secrets"].append((scope,"%s %s can %s secrets%s; bound to: %s" % (
           kind,label,", ".join(sorted(secret_verbs)),note,"; ".join(b[1] for b in bound)),[describe]))
 HEADINGS={"cluster-admin":("cluster-admin bindings","no binding to cluster-admin outside system: names"),
-          "wildcard":("Wildcard and escalation rules","no role grants * on * or escalate, bind or impersonate"),
+          "wildcard":("Wildcard and escalation rules","no role uses a * wildcard or grants escalate, bind or impersonate"),
           "default-sa":("Default ServiceAccount bindings","no binding grants rights to a default ServiceAccount"),
           "dangling":("Bindings to missing roles","every binding points at a role that exists"),
           "secrets":("Roles that can read Secrets","no bound role outside the built-ins can read Secrets")}

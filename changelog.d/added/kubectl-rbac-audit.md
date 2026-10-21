@@ -1,6 +1,7 @@
 - `k8s-toolbox/kubectl_rbac_audit.sh` answers the access-review questions
   without anyone pasting a `kubectl | jq` pipeline: who is bound to
-  cluster-admin, which roles grant wildcards or escalate, bind or
+  cluster-admin, which roles use a `*` in verbs, resources, API groups or
+  URLs, or escalate, bind or
   impersonate, which bindings hand rights to a default ServiceAccount, which
   point at a role that no longer exists, and which bound roles can read
   Secrets. Rows are labelled `[risk]` or `[advice]`, each comes with a
