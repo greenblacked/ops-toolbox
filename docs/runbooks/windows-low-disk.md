@@ -56,7 +56,8 @@ downloads, installed programs or virtual machines, this runbook will not
 help: `clean_disk_c.ps1` removes temp files, caches and other data that is
 regenerable, never documents. WSL distros keep their virtual disks on C:,
 and those disks only grow; `.\windows\wsl\wsl_manage.ps1 df` shows how much
-of each one is reclaimable.
+of each one is reclaimable, and the
+[WSL disk runbook](wsl-disk-growing.md) shrinks them.
 
 ## Preview
 
@@ -184,6 +185,8 @@ apply it.
 - [Windows platform page](../platforms/windows.md)
 - [A Linux host is low on disk space](linux-low-disk.md): the same incident
   on Linux, with `disk_cleanup.sh`.
+- [A WSL2 distro's virtual disk keeps growing](wsl-disk-growing.md): when
+  the space is inside a WSL virtual disk.
 - [Philosophy](../getting-started/philosophy.md): why every change starts
   with a report and a preview
 - [`windows/` folder README](https://github.com/greenblacked/ops-toolbox/blob/master/windows/README.md)

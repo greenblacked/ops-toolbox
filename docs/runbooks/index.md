@@ -40,6 +40,7 @@ Your machine will print different numbers.
 | [A Linux host cannot reach the network or resolve names](linux-network-unreachable.md) | Linux | Nothing is reachable, names do not resolve, or a service cannot be reached from outside. |
 | [Undo the last Git commit](git-undo-last-commit.md) | Git | The last commit is wrong, whether it is only local or already pushed. |
 | [A Windows PC is low on C: drive space](windows-low-disk.md) | Windows | C: is nearly full and you need space now. |
+| [A WSL2 distro's virtual disk keeps growing](wsl-disk-growing.md) | Windows | A WSL virtual disk fills C: and deleting files inside the distro did not help. |
 
 New runbooks are added one at a time. See
 [Development](../contributing/development.md) for the page patterns they use.
