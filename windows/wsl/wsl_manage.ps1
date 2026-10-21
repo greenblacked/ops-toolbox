@@ -509,7 +509,7 @@ function Get-BackupPlan {
     )
     $left = $FreeBytes
     foreach ($d in $Distros) {
-        $out = Join-Path $DestDir ('{0}_{1}.tar' -f $d.Name, $Stamp)
+        $out = [IO.Path]::Combine($DestDir, ('{0}_{1}.tar' -f $d.Name, $Stamp))
         $used = $null
         if ($UsedByName.ContainsKey($d.Name)) { $used = $UsedByName[$d.Name] }
         $bytes = if ($null -ne $used) { [long]$used } else { [long]$d.VhdxSize }
