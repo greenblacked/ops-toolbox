@@ -46,6 +46,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `windows/setup/net_doctor.ps1` | Windows | Adapters, routes, DNS, proxy, hosts file, listening ports; optional `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/dev_env_doctor.ps1` | Windows | Long paths, git line endings and symlinks, virtualization, clock skew, `HOME`, docker context. | <span class="stage stage-report">read-only</span> |
 | `windows/setup/ssh_client_doctor.ps1` | Windows | Key access lists, `ssh-agent` service, Git's bundled ssh, `IdentityFile` paths. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/path_doctor.ps1` | Windows | PATH report and shadowed commands; `clean` tidies the user PATH with a backup. | `-DryRun` (clean); `-Yes` to write |
 | `windows/setup/stay_fresh.ps1` | Windows | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `windows/setup/winget_bootstrap.ps1` | Windows | Export, list, check, import, diff the winget package set. | `-DryRun` (import) |
 | `windows/setup/choco_bootstrap.ps1` | Windows | Export, list, check, install, diff Chocolatey packages. | `-DryRun` (install) |

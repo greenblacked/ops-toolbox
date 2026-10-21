@@ -13,6 +13,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
+| [`path_doctor.ps1`](path_doctor.ps1) | PATH report (duplicates, dead and relative entries, REG_SZ values, length, shadowed commands) and a backed-up `clean` of the user PATH |
 | [`dev_env_doctor.ps1`](dev_env_doctor.ps1) | Read-only toolchain check: long paths, git line endings and symlinks, virtualization, clock skew, HOME, docker context |
 | [`ssh_client_doctor.ps1`](ssh_client_doctor.ps1) | Read-only OpenSSH client check: key access lists, the ssh-agent service, Git's bundled ssh, IdentityFile paths |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
@@ -44,6 +45,7 @@ one. Neither replaces the other.
 - [net_doctor.ps1](#net_doctorps1)
 - [ssh_client_doctor.ps1](#ssh_client_doctorps1)
 - [dev_env_doctor.ps1](#dev_env_doctorps1)
+- [path_doctor.ps1](#path_doctorps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
@@ -401,6 +403,98 @@ Every `[warn]` is followed by the command that fixes it - the
 `New-ItemProperty` for long paths, the `git config --global` line,
 `w32tm /resync` - printed for you to run from the right prompt. The script
 runs none of them.
+
+## path_doctor.ps1
+
+A PATH report, and a cleanup of the user PATH that is hard to regret. It reads
+both values raw from the registry, with `%VARIABLES%` left unexpanded and the
+registry kind beside them, because that is the only way to see why
+`%USERPROFILE%\bin` "is on PATH" and still does not work.
+
+```powershell
+# Report (the default, read-only):
+.\path_doctor.ps1
+.\path_doctor.ps1 report -Scope User
+.\path_doctor.ps1 report -Command python,node,kubectl
+
+# Clean the user PATH: preview, then do it.
+.\path_doctor.ps1 clean -DryRun
+.\path_doctor.ps1 clean -Yes
+```
+
+`report` lists every entry of both PATH values and then what is wrong with
+them:
+
+| Finding | Meaning |
+| --- | --- |
+| `duplicate` | The same folder twice, ignoring case, quotes and a trailing slash, after expansion. Names the entry it repeats. |
+| `missing-dir` | An absolute folder that does not exist: an uninstalled tool's leftover. |
+| `relative-entry` | Resolved against whatever folder a program starts in. |
+| `quoted-entry` | Quotes in PATH are not honoured everywhere; a folder with spaces needs none. |
+| `unexpanded-var` | A `%VARIABLE%` in a value stored as `REG_SZ`, so Windows uses it literally. This is what `setx` leaves behind. |
+| `too-long` | Over 1024 characters (`setx PATH` would truncate it), over 2048 (older installers truncate it), or over 32767 (Windows cannot hold it at all). |
+| `empty-entry`, `cross-scope-duplicate` | Information only. |
+
+The `shadowing` section asks which copy of each command wins
+(`Get-Command -All`) and flags the two known traps: the Microsoft Store
+`python.exe` alias answering ahead of a real Python, and Git's `usr\bin`
+putting the MSYS `find`, `sort`, `curl`, `ssh` or `tar` ahead of the Windows
+ones. Everything else that resolves more than once is listed, first copy
+first.
+
+`clean` changes the **user** PATH, and only by removing three kinds of entry:
+empty ones, repeats of an earlier entry, and absolute folders that no longer
+exist on a drive that does. It keeps everything it cannot judge - an entry
+with a `%VARIABLE%`, a relative or quoted entry, a folder on a drive that is
+not there right now - and keeps the order and the original text of the rest.
+
+| Option | Meaning |
+| --- | --- |
+| `-DryRun` | With `clean`: print each entry it would remove and why, and the length before and after. Writes nothing, creates nothing. |
+| `-Yes` | With `clean`: actually write. Without `-Yes` or `-DryRun`, `clean` refuses and exits `3`. |
+| `-Scope All\|User\|Machine` | Which values `report` reads. Default `All`. `clean` works on `User` only, and refuses `Machine` or `All`. |
+| `-Command LIST` | Commands to check for shadowing. Default: git, python, python3, pip, node, npm, docker, kubectl, terraform, az, aws, gcloud, ssh, curl, find, sort. |
+| `-BackupDir DIR` | Where `clean` writes its backup. Default: `path-backups` in the user profile. |
+| `-Quiet` | Leave out the entry list and the `[info]` lines. |
+
+Exit codes: `0` report printed or clean finished (also when there was nothing
+to clean), `1` clean could not read, back up, write or verify the user PATH,
+`2` not Windows, `3` bad arguments or clean refused.
+
+What `clean -Yes` does, in order:
+
+1. Writes a backup of both PATH values and their registry kinds to
+   `-BackupDir`, as `path-<date>-<time>.txt`. If that fails, it stops and
+   writes nothing.
+2. Writes the cleaned user PATH back **with the registry kind it already
+   had**. `[Environment]::SetEnvironmentVariable` would quietly turn a
+   `REG_EXPAND_SZ` into `REG_SZ` and break every `%VARIABLE%` entry; this
+   does not use it.
+3. Reads the value back and exits `1` if it is not what was written.
+4. Says so. Shells that are already open keep the old PATH; sign out and in,
+   or restart Explorer, for new ones to see it.
+
+Running it again finds nothing to do and writes nothing, including no new
+backup. The machine PATH is never written: edit it in System Properties >
+Environment Variables.
+
+### Roll back
+
+Every `clean -Yes` names its backup file. To put the user PATH back exactly as
+it was, kind included:
+
+```powershell
+$backup = "$env:USERPROFILE\path-backups\path-20261021-101500.txt"
+$lines = Get-Content -LiteralPath $backup
+$value = ($lines | Where-Object { $_ -like 'User.Path=*' }).Substring(10)
+$kind = ($lines | Where-Object { $_ -like 'User.Kind=*' }).Substring(10)
+$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+$key.SetValue('Path', $value, $kind)
+$key.Close()
+```
+
+The backup also records the machine PATH as it was, for reference; restoring
+that one is a System Properties job.
 
 ## Testing
 

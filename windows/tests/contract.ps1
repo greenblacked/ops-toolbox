@@ -201,6 +201,7 @@ $expectedParameters = @{
     'ssh_client_doctor.ps1' = @('SshDir', 'FailOn', 'Quiet')
     'disk_usage.ps1'        = @('Path', 'Depth', 'Top', 'MinSizeMB', 'IncludeDocker', 'Quiet')
     'dev_env_doctor.ps1'    = @('Only', 'ListSections', 'CheckTime', 'MaxSkewSeconds', 'Quiet')
+    'path_doctor.ps1'       = @('DryRun', 'Yes', 'Scope', 'Command', 'BackupDir', 'Quiet')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -313,6 +314,13 @@ function Get-DryRunArgument {
         # exist or the script exits 1 before reaching the preview path.
         return @('apply', '-DryRun', '-File',
             (Join-Path $repoRoot (Join-Path 'windows' (Join-Path 'setup' 'configuration.winget'))))
+    }
+    if ($Script.Name -eq 'path_doctor.ps1') {
+        # The default action is the read-only report; clean is the verb that
+        # writes, and its preview is the path this check has to reach. On
+        # Windows that reads the real user PATH and must leave no backup
+        # folder behind in the scratch profile.
+        return @('clean', '-DryRun')
     }
     return @('-DryRun')
 }
@@ -705,7 +713,7 @@ Write-Section 'changing the machine needs consent'
 # that habit upgraded or deleted for real, the first time, with no preview.
 # These checks exist so the gate cannot quietly go away again - a parameter
 # nothing asserts is a parameter somebody eventually removes as unused.
-foreach ($name in @('stay_fresh.ps1', 'clean_disk_c.ps1')) {
+foreach ($name in @('stay_fresh.ps1', 'clean_disk_c.ps1', 'path_doctor.ps1')) {
     if ($paramCache[$name] -contains 'Yes') {
         Test-Ok "$name declares -Yes"
     } else {
@@ -1706,6 +1714,192 @@ if (-not $devDoctor) {
         }
     }
     Remove-Item -Path $devBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'path_doctor grades a PATH'
+# The disk and the environment are injected, so these cases mean the same on
+# every runner and touch neither the registry nor the filesystem.
+$pathDoctor = Find-ContractScript 'path_doctor.ps1'
+$fakeExists = { param([string]$Folder) $Folder -notmatch 'gone' -and $Folder -notmatch '^Q:' }
+$fakeExpand = { param([string]$Text) $Text -replace '%USERPROFILE%', 'C:\Users\alice' }
+if (-not $pathDoctor) {
+    Test-Fail 'path_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $pathDoctor -Name 'Get-PathFinding'
+    if (-not $src) {
+        Test-Fail 'path_doctor.ps1 : Get-PathFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $fixtureEntries = @('C:\Tools', 'c:\tools\', '', 'C:\gone', 'bin', '"C:\Program Files\x"', '%USERPROFILE%\bin')
+        $findingCases = @(
+            @{ Label = 'a REG_SZ PATH with one of everything'; Entries = $fixtureEntries; Kind = 'String'; Length = 100; Other = @()
+               Expect = @('duplicate', 'empty-entry', 'missing-dir', 'quoted-entry', 'relative-entry', 'unexpanded-var') }
+            @{ Label = 'the same PATH as REG_EXPAND_SZ'; Entries = $fixtureEntries; Kind = 'ExpandString'; Length = 100; Other = @()
+               Expect = @('duplicate', 'empty-entry', 'missing-dir', 'quoted-entry', 'relative-entry') }
+            @{ Label = 'a clean PATH'; Entries = @('C:\Windows\System32', '%USERPROFILE%\bin'); Kind = 'ExpandString'; Length = 100; Other = @()
+               Expect = @() }
+            @{ Label = '1100 characters'; Entries = @('C:\Tools'); Kind = 'ExpandString'; Length = 1100; Other = @()
+               Expect = @('too-long:warn') }
+            @{ Label = '2100 characters'; Entries = @('C:\Tools'); Kind = 'ExpandString'; Length = 2100; Other = @()
+               Expect = @('too-long:warn') }
+            @{ Label = 'over the 32767 limit'; Entries = @('C:\Tools'); Kind = 'ExpandString'; Length = 40000; Other = @()
+               Expect = @('too-long:fail') }
+            @{ Label = 'one folder in both scopes'; Entries = @('C:\Shared'); Kind = 'ExpandString'; Length = 100; Other = @('c:\shared\')
+               Expect = @('cross-scope-duplicate') }
+        )
+        $findingRan = 0
+        foreach ($case in $findingCases) {
+            $found = @(Get-PathFinding -Entries $case.Entries -Scope 'User' -Kind $case.Kind -Exists $fakeExists `
+                    -Expand $fakeExpand -Length $case.Length -OtherEntries $case.Other)
+            $findingRan++
+            # A level is asserted only where the case names one.
+            $got = @($found | ForEach-Object {
+                    if ($_.Code -eq 'too-long') { '{0}:{1}' -f $_.Code, $_.Level } else { $_.Code }
+                } | Sort-Object -Unique)
+            $want = @($case.Expect | Sort-Object)
+            if (($got -join ' ') -eq ($want -join ' ')) {
+                Test-Ok ("{0} -> [{1}]" -f $case.Label, ($got -join ' '))
+            } else {
+                Test-Fail ("{0}: got [{1}], expected [{2}]" -f $case.Label, ($got -join ' '), ($want -join ' '))
+            }
+        }
+        $dup = @(Get-PathFinding -Entries $fixtureEntries -Scope 'User' -Kind 'ExpandString' -Exists $fakeExists `
+                -Expand $fakeExpand -Length 100 | Where-Object { $_.Code -eq 'duplicate' })
+        if ($dup.Count -eq 1 -and $dup[0].Message -match 'repeats entry 1') {
+            Test-Ok 'a duplicate names the entry it repeats'
+        } else {
+            Test-Fail 'the duplicate finding does not name the first occurrence'
+        }
+        if ($findingRan -lt 7) {
+            Test-Fail "only $findingRan PATH case(s) ran - this check has stopped checking"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'path_doctor computes the cleaned value'
+if (-not $pathDoctor) {
+    Test-Fail 'path_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $pathDoctor -Name 'Get-CleanedPath'
+    if (-not $src) {
+        Test-Fail 'path_doctor.ps1 : Get-CleanedPath not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $dirty = @('C:\Tools', '', 'C:\gone', 'c:\tools\', '%USERPROFILE%\gone', 'relative', 'Q:\unplugged\tools', 'D:\keep', 'relative')
+        $cleaned = Get-CleanedPath -Entries $dirty -Exists $fakeExists -Expand $fakeExpand
+        $wantValue = 'C:\Tools;%USERPROFILE%\gone;relative;Q:\unplugged\tools;D:\keep;relative'
+        if ($cleaned.Value -ceq $wantValue) {
+            Test-Ok 'empty, repeated and missing entries go; order and the original text stay'
+        } else {
+            Test-Fail "cleaned PATH was [$($cleaned.Value)], expected [$wantValue]"
+        }
+        $reasons = @($cleaned.Removed | ForEach-Object { '{0}={1}' -f $_.Entry, $_.Reason }) -join ' | '
+        $wantReasons = '=empty | C:\gone=missing | c:\tools\=duplicate'
+        if ($reasons -eq $wantReasons) {
+            Test-Ok 'each removal carries its reason'
+        } else {
+            Test-Fail "removals were [$reasons], expected [$wantReasons]"
+        }
+        if ($cleaned.Value -match '%USERPROFILE%\\gone' -and $cleaned.Value -match 'Q:\\unplugged') {
+            Test-Ok 'an entry with a %VARIABLE% and a folder on an absent drive are kept: neither can be judged'
+        } else {
+            Test-Fail 'an entry clean cannot judge was removed'
+        }
+        $again = Get-CleanedPath -Entries ($cleaned.Value -split ';') -Exists $fakeExists -Expand $fakeExpand
+        if (@($again.Removed).Count -eq 0 -and $again.Value -ceq $cleaned.Value) {
+            Test-Ok 'cleaning the cleaned value removes nothing (idempotent)'
+        } else {
+            Test-Fail "a second clean removed $(@($again.Removed).Count) more entr(ies)"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'path_doctor spots shadowed commands'
+if (-not $pathDoctor) {
+    Test-Fail 'path_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $pathDoctor -Name 'Get-ShadowFinding'
+    if (-not $src) {
+        Test-Fail 'path_doctor.ps1 : Get-ShadowFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $shadow = @(Get-ShadowFinding -Resolved @{
+                python = @('C:\Users\alice\AppData\Local\Microsoft\WindowsApps\python.exe', 'C:\Python312\python.exe')
+                find   = @('C:\Program Files\Git\usr\bin\find.exe', 'C:\Windows\System32\find.exe')
+                sort   = @('C:\Windows\System32\sort.exe', 'C:\Program Files\Git\usr\bin\sort.exe')
+                git    = @('C:\Program Files\Git\cmd\git.exe')
+                node   = @('C:\a\node.exe', 'C:\b\node.exe')
+            })
+        $byName = @{}
+        foreach ($finding in $shadow) { $byName[$finding.Name] = $finding }
+        $shadowChecks = @(
+            @{ Name = 'python'; Code = 'store-alias'; Label = 'the Store alias ahead of a real Python is a warning' }
+            @{ Name = 'find'; Code = 'msys-shadow'; Label = "Git's MSYS find ahead of System32 is a warning" }
+            @{ Name = 'sort'; Code = 'first-wins'; Label = 'System32 sort ahead of the MSYS one is only information' }
+            @{ Name = 'node'; Code = 'first-wins'; Label = 'two ordinary copies are listed, first wins' }
+        )
+        foreach ($check in $shadowChecks) {
+            $finding = $byName[$check.Name]
+            if ($finding -and $finding.Code -eq $check.Code) {
+                Test-Ok $check.Label
+            } else {
+                Test-Fail ("{0}: got {1}" -f $check.Label, $(if ($finding) { $finding.Code } else { 'nothing' }))
+            }
+        }
+        if (-not $byName.ContainsKey('git')) {
+            Test-Ok 'a command that resolves once produces no finding'
+        } else {
+            Test-Fail 'a command with a single resolution produced a finding'
+        }
+        if ($byName['node'] -and $byName['node'].Message -match [regex]::Escape('C:\a\node.exe > C:\b\node.exe')) {
+            Test-Ok 'the first-wins line keeps PATH order'
+        } else {
+            Test-Fail 'the first-wins line does not list the copies in PATH order'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'path_doctor needs consent'
+if ($onWindows) {
+    Test-Skip 'the behavioural half of this check runs only off Windows: it proves the gate by invoking clean WITHOUT -Yes, and on Windows a gate that had regressed would rewrite the user PATH of the machine running the suite'
+} elseif (-not $pathDoctor) {
+    Test-Fail 'path_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $consentBox = Join-Path ([IO.Path]::GetTempPath()) ('winpath_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $consentBox -Force | Out-Null
+    $pathCopy = Copy-UnguardedScript -Script $pathDoctor -Directory $consentBox
+    if (-not $pathCopy) {
+        Test-Fail 'path_doctor.ps1 : platform guard not found verbatim, so the consent check could not run; update the guard text in contract.ps1'
+    } else {
+        $bare = Invoke-InScratch -Path $pathCopy -Arguments @('clean')
+        if ($bare.ExitCode -eq 3 -and $bare.Output -match '-Yes' -and $bare.Output -match '-DryRun') {
+            Test-Ok 'path_doctor.ps1 clean with neither -Yes nor -DryRun refuses, exits 3 and names both'
+        } else {
+            Test-Fail "path_doctor.ps1 clean with no consent must exit 3 naming -Yes and -DryRun; it exited $($bare.ExitCode)"
+        }
+        $machine = Invoke-InScratch -Path $pathCopy -Arguments @('clean', '-Scope', 'Machine', '-DryRun')
+        if ($machine.ExitCode -eq 3) {
+            Test-Ok 'path_doctor.ps1 clean -Scope Machine is refused (exit 3)'
+        } else {
+            Test-Fail "path_doctor.ps1 clean -Scope Machine must be refused with exit 3; it exited $($machine.ExitCode)"
+        }
+        # Past the gate the first thing clean does is read the registry, which
+        # does not exist here: it has to say so and stop, not throw.
+        $preview = Invoke-InScratch -Path $pathCopy -Arguments @('clean', '-DryRun')
+        if ($preview.ExitCode -in 0, 1 -and $preview.Output -match 'could not read' -and $preview.Output -notmatch 'at <ScriptBlock>') {
+            Test-Ok 'path_doctor.ps1 clean -DryRun reaches the registry read and reports it cleanly when it cannot'
+        } else {
+            Test-Fail "path_doctor.ps1 clean -DryRun off Windows: exited $($preview.ExitCode); expected 0 or 1 with 'could not read' and no stack trace"
+            foreach ($line in ($preview.Output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $consentBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------

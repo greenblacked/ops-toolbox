@@ -28,6 +28,7 @@ Git Bash dotfiles installer.
 | `setup/net_doctor.ps1` | Adapters, default routes, DNS, proxy (WinINET against `HTTP_PROXY`), hosts file, listening ports; opt-in `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
 | `setup/dev_env_doctor.ps1` | Long paths, git line endings and symlinks, virtualization, clock skew (`-CheckTime`), `HOME` against `USERPROFILE`, docker context. | <span class="stage stage-report">read-only</span> |
 | `setup/ssh_client_doctor.ps1` | Private-key access lists, the `ssh-agent` service, Git's bundled ssh against the Windows one, `IdentityFile` paths; prints each fix. | <span class="stage stage-report">read-only</span> |
+| `setup/path_doctor.ps1` | PATH report: duplicates, dead and relative entries, `REG_SZ` values that never expand, length limits, shadowed commands; `clean` tidies the user PATH with a backup. | `-DryRun` on `clean`; `-Yes` to write |
 | `setup/stay_fresh.ps1` | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `setup/winget_bootstrap.ps1` | `export`, `list`, `check`, `import`, `diff` of the winget package set. | `-DryRun` on `import` |
 | `setup/choco_bootstrap.ps1` | `export`, `list`, `check`, `install`, `diff` of Chocolatey packages. | `-DryRun` on `install` |
@@ -61,6 +62,7 @@ All paths are under `windows/`.
 
     ```powershell
     .\windows\setup\stay_fresh.ps1 -DryRun
+    .\windows\setup\path_doctor.ps1 clean -DryRun
     .\windows\cleanup\clean_disk_c.ps1 -DryRun -Scope User
     .\windows\setup\winget_configure.ps1 apply -DryRun
     .\windows\wsl\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
@@ -71,6 +73,7 @@ All paths are under `windows/`.
     ```powershell
     .\windows\setup\stay_fresh.ps1 -Yes
     .\windows\cleanup\clean_disk_c.ps1 -Yes
+    .\windows\setup\path_doctor.ps1 clean -Yes
     ```
 
     ```bash
@@ -83,7 +86,8 @@ All paths are under `windows/`.
     `clean_disk_c.ps1` deletes only with `-Yes` and refuses to run without
     `-DryRun` or `-Yes` (exit 3). `stay_fresh.ps1` skips winget upgrades
     without `-Yes`. It does not reboot and does not free disk space; that is
-    `clean_disk_c.ps1`.
+    `clean_disk_c.ps1`. `path_doctor.ps1 clean` refuses without `-DryRun` or
+    `-Yes` (exit 3), changes only the user PATH, and writes a backup first.
 
 !!! warning "PowerShell 5.1 is not tested in CI"
     CI runs `pwsh` (PowerShell 7) on `windows-2025`. Verify the scripts under
