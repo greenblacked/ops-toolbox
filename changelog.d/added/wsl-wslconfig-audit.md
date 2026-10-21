@@ -10,5 +10,6 @@
   WSL is absent; `-Strict` turns a warning into exit 1, and `-Template` prints
   a commented starter file without writing one.
   It also warns on a `networkingMode` outside nat, mirrored, virtioproxy
-  and none (WSL falls back to NAT), and on a timeout or
-  `maxCrashDumpCount` that is not a whole number.
+  and none (WSL falls back to NAT; the deprecated bridged is only noted),
+  and on a timeout or `maxCrashDumpCount` that is not a whole number
+  (-1 is allowed for the idle timeouts and the dump count).

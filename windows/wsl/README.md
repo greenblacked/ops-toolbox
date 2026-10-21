@@ -441,8 +441,8 @@ INFO  [experimental] sparseVhd                     consider sparseVhd=true (or w
 | `memory`, `swap` or `defaultVhdSize` that is not a size (`8GB`, `512MB`; a bare number is bytes, so `swap=0` is fine), `processors` that is not a positive whole number | `WARN` |
 | `memory` above the installed RAM, `processors` above the logical processors (Windows only; skipped with an `INFO` line elsewhere) | `WARN` |
 | A true/false key (`sparseVhd`, `firewall`, `dnsTunneling`, `localhostForwarding` and the like) set to anything but `true` or `false`, in any case | `WARN` |
-| `vmIdleTimeout`, `instanceIdleTimeout` or `initialAutoProxyTimeout` that is not a whole number of milliseconds (0 or more), or `maxCrashDumpCount` that is not a whole number of -1 or more | `WARN` |
-| `networkingMode` other than `nat`, `mirrored`, `virtioproxy` or `none`, in any case; WSL falls back to NAT | `WARN` |
+| `vmIdleTimeout` or `instanceIdleTimeout` that is not a whole number of milliseconds (-1 or more; -1 turns idle shutdown off), `initialAutoProxyTimeout` that is not a whole number of milliseconds (0 or more), or `maxCrashDumpCount` that is not a whole number of -1 or more | `WARN` |
+| `networkingMode` other than `nat`, `mirrored`, `virtioproxy`, `none` or the deprecated `bridged`, in any case; WSL falls back to NAT | `WARN` (`INFO` for `bridged`) |
 | A single backslash in `kernel` or `swapFile`: write `C:\\Users\\me\\...` or use forward slashes | `WARN` |
 | `autoMemoryReclaim` set to anything but `disabled`, `gradual` or `dropCache`, in any case | `WARN` |
 | No `memory` cap | `WARN` |

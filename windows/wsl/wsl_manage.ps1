@@ -989,10 +989,11 @@ function Test-WslConfig {
     }
     # Whole-number settings other than processors (checked above). Digits are
     # matched as [0-9] so a non-ASCII digit does not pass. maxCrashDumpCount
-    # allows -1 (keep every dump); the millisecond timeouts do not go below 0.
+    # allows -1 (keep every dump); the two idle timeouts allow -1 too (never
+    # shut down); the other millisecond timeout does not go below 0.
     $integerKeys = @{
-        'vmIdleTimeout' = 0; 'maxCrashDumpCount' = -1
-        'instanceIdleTimeout' = 0; 'initialAutoProxyTimeout' = 0
+        'vmIdleTimeout' = -1; 'maxCrashDumpCount' = -1
+        'instanceIdleTimeout' = -1; 'initialAutoProxyTimeout' = 0
     }
     foreach ($intKey in @($integerKeys.Keys | Sort-Object)) {
         if (-not $values.ContainsKey($intKey)) { continue }
@@ -1006,10 +1007,13 @@ function Test-WslConfig {
         }
     }
 
-    # Microsoft documents four networking modes. An unknown value makes WSL
-    # fall back to NAT, so it is reported rather than assumed to work. The
-    # check is -match, which ignores case.
-    if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -notmatch '^(nat|mirrored|virtioproxy|none)$') {
+    # Microsoft documents four current networking modes and the deprecated
+    # bridged. An unknown value makes WSL fall back to NAT, so it is reported
+    # rather than assumed to work. The checks are -match, which ignores case.
+    if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -match '^bridged$') {
+        $e = $values['networkingMode']
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = (Get-Label $e); Message = "'$($e.Value)' is deprecated; use nat, mirrored, virtioproxy or none" }
+    } elseif ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -notmatch '^(nat|mirrored|virtioproxy|none)$') {
         $e = $values['networkingMode']
         $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not nat, mirrored, virtioproxy or none; WSL falls back to NAT" }
     }
