@@ -11,6 +11,8 @@ only.
 
 - Bash on the host.
 - `kubectl` for triage and debug; `gcloud` for `gke_cluster_doctor.sh`.
+- `python3` for the read-only `kubectl_*` reports, and `openssl` for
+  `kubectl_cert_expiry.sh`, which only parses certificates from stdin.
 - Docker with buildx for `build.sh` and `run.sh`. Both exit 2 without Docker,
   except under `--dry-run`.
 - Credentials for any cluster you query.
@@ -23,6 +25,7 @@ only.
 | --- | --- | --- |
 | `kubectl_pod_diag.sh` | Triage unhealthy pods, restarts and OOM kills, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
 | `kubectl_workload_diag.sh` | Triage stuck rollouts, DaemonSets, autoscalers and failed Jobs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_cert_expiry.sh` | Expired and expiring TLS certificates in Secrets; `--warn-days`, `--cert-manager`. | <span class="stage stage-report">read-only</span> |
 | `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
 | `run.sh` | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
@@ -42,6 +45,7 @@ All paths are under `k8s-toolbox/`.
     ./k8s-toolbox/kubectl_pod_diag.sh --context staging -n api
     ./k8s-toolbox/kubectl_pod_diag.sh --since 6h --restarts 10
     ./k8s-toolbox/kubectl_workload_diag.sh --namespace prod --only deployments,hpa
+    ./k8s-toolbox/kubectl_cert_expiry.sh --warn-days 14 --cert-manager
     ./k8s-toolbox/gke_cluster_doctor.sh --list-checks
     ./k8s-toolbox/gke_cluster_doctor.sh --project P --cluster C --location europe-west1
     ```

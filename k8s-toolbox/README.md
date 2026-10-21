@@ -19,6 +19,7 @@ unprivileged user by default.
 | [`run.sh`](run.sh) | Run it locally with the working directory and your kubeconfig mounted |
 | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh) | Read-only cluster triage: unhealthy pods, OOM kills and restart loops, warnings, PVCs, node pressure |
 | [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh) | Read-only workload triage: stuck rollouts, DaemonSets, autoscalers, failed Jobs |
+| [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Read-only report of expired and expiring TLS certificates in Secrets and cert-manager |
 | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
@@ -36,6 +37,7 @@ unprivileged user by default.
 - [Run it locally](#run-it-locally)
 - [Triage a cluster](#triage-a-cluster)
 - [Triage workloads](#triage-workloads)
+- [Check certificate expiry](#check-certificate-expiry)
 - [Debug a running pod](#debug-a-running-pod)
 - [Use it in a cluster](#use-it-in-a-cluster)
 - [GKE auth](#gke-auth)
@@ -51,8 +53,9 @@ needs, and exits `2` rather than half-working when one is missing.
 | --- | --- | --- |
 | **Bash** | every script | `#!/usr/bin/env bash` with `set -euo pipefail`. |
 | **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
-| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
-| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
+| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`openssl`** | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Only to read a certificate's end date from stdin (`openssl x509 -noout -enddate`); no network use. OpenSSL and LibreSSL both work. |
 | **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
 
 The image itself is Debian bookworm-slim, and the CLI versions it installs are
@@ -301,6 +304,45 @@ including an unknown id or an empty selection in `--only`, and `4` every
 selected check ran and found nothing. `--list-checks` and `--help` answer
 before `kubectl` is required.
 
+## Check certificate expiry
+
+`kubectl_cert_expiry.sh` answers "which TLS certificate in this cluster
+expires next" without changing anything:
+
+```bash
+./kubectl_cert_expiry.sh                      # every namespace, 30-day window
+./kubectl_cert_expiry.sh --namespace prod --warn-days 14
+./kubectl_cert_expiry.sh --cert-manager       # also read cert-manager Certificates
+```
+
+It lists Secrets of type `kubernetes.io/tls`, decodes each `tls.crt` and asks
+`openssl x509 -noout -enddate` for the end date of the first certificate in
+it. Expired and expiring certificates are printed soonest first, for example
+`secret prod/web-tls: EXPIRING in 12d (2026-11-02)` or
+`EXPIRED 3d ago`, each with a printed command to inspect the certificate.
+A Secret whose `tls.crt` is missing, not base64 or not a certificate is
+reported as `UNREADABLE`: a broken Secret is a finding, never a silent skip.
+Certificates outside the window are only counted, in a closing
+`checked N certificate(s), M within W days` line.
+
+Only the public certificate is read. The listing is piped from `kubectl`
+straight into the filter, so no Secret lands in a shell variable, a file or
+the output, and `tls.key` is never decoded, printed or passed to `openssl`.
+The suite holds it to that with a canary key.
+
+`--cert-manager` adds one `kubectl get certificates.cert-manager.io` and
+reports each Certificate's `notAfter` (with its `renewalTime`) and any
+Certificate whose `Ready` condition is `False`, with its message. It is opt-in
+because the CRD is not in every cluster; when it is asked for and the listing
+fails, the run is incomplete like any other failed query.
+
+It needs `list` permission on Secrets. A `Forbidden` is reported as
+`could not list TLS secrets` and exit `1`, never as a clean bill of health.
+Exit codes: `0` expired, expiring or unreadable certificates found, `1` a
+query or JSON filter failed, `2` no `kubectl`, `python3` or `openssl`, or no
+reachable cluster, `3` usage (`--warn-days` must be a whole number, 1 or
+more), and `4` nothing ends within the window, so it can run from cron.
+
 ## Doctor a GKE cluster
 
 `gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
@@ -422,8 +464,10 @@ is missing, agreement between `versions.env`, the Dockerfile and `build.sh`,
 and the Pod Security posture of the examples. Secret-free stubbed `kubectl`
 fixtures cover container readiness, init failures, restartable sidecars, named
 container logs, Warning last-observation timestamps, stuck rollouts,
-StatefulSet and DaemonSet updates, autoscaler conditions, failed Jobs, and
-query/JSON failures across every diagnostic section. These tests never contact a real cluster.
+StatefulSet and DaemonSet updates, autoscaler conditions, failed Jobs,
+certificate expiry windows and unreadable certificates (with an `openssl` stub,
+plus one real certificate when `openssl` is installed), and query/JSON failures
+across every diagnostic section. These tests never contact a real cluster.
 
 To build the image and probe it for real:
 
