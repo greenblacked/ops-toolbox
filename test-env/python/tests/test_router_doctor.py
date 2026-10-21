@@ -812,7 +812,8 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertEqual(probe.count(" source]"), 1)
         self.assertIn('[:find [/system script get $s source] "TgBotToken"]', probe)
         for record in re.findall(r":put \(([^;]*)\)", probe):
-            self.assertNotIn("source", record)
+            # Whole word: "/system resource" holds the letters, not a read.
+            self.assertIsNone(re.search(r"\bsource\b", record), record)
         self.assertIn('"SCX:"', probe)
         self.assertIn('"UPT:"', probe)
         self.assertIn('"DECL:"', probe)
