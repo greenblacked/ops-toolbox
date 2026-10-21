@@ -32,6 +32,7 @@ QUIET=0
 DEEP=0
 CHECK_HOST=""
 MIN_KEY_BITS=2048
+CAFILE=""
 FILES=()
 HOSTS=()
 
@@ -77,14 +78,17 @@ Options:
                    target checks its own name with --deep; this overrides it)
   --deep           Also check the name, the chain (hosts), self-signed issuers,
                    key size and signature algorithm
+  --cafile FILE    Trust anchors for the chain check of --host targets,
+                   instead of the system store (a private CA's root)
   --min-key-bits N    Smallest RSA/DSA key --deep accepts, 1024-16384 (default: $MIN_KEY_BITS)
   --fail-on LEVEL  Exit 1 on 'expired' (default), on 'warn' and above, or 'never'
   --quiet          Print only warnings and failures
   --help, -h       Show this help
 
 With the default --fail-on expired, a FAIL from --deep or --check-host (wrong
-name, missing intermediate, weak key or signature) exits 1 as well; a warning
-(self-signed, unusual curve) exits 1 only with --fail-on warn.
+name, provably missing intermediate, weak key or signature) exits 1 as well;
+a warning (self-signed, issuer not trusted locally, unusual curve) exits 1
+only with --fail-on warn.
 
 Exit codes: 0 clean, 1 findings at or above --fail-on, 2 preflight, 3 usage
 EOF
@@ -175,6 +179,8 @@ while (( $# > 0 )); do
     --hosts-file=*) require_value "--hosts-file" "${1#*=}"; add_hosts_file "${1#*=}" ;;
     --check-host)   require_value "$1" "${2:-}"; CHECK_HOST="$2"; shift ;;
     --check-host=*) CHECK_HOST="${1#*=}"; require_value "--check-host" "$CHECK_HOST" ;;
+    --cafile)   require_value "$1" "${2:-}"; CAFILE="$2"; shift ;;
+    --cafile=*) CAFILE="${1#*=}"; require_value "--cafile" "$CAFILE" ;;
     --min-key-bits)   require_value "$1" "${2:-}"; MIN_KEY_BITS="$2"; shift ;;
     --min-key-bits=*) MIN_KEY_BITS="${1#*=}"; require_value "--min-key-bits" "$MIN_KEY_BITS" ;;
     --deep)      DEEP=1 ;;
@@ -208,6 +214,11 @@ if ! [[ "$MIN_KEY_BITS" =~ ^[0-9]+$ ]] || (( ${#MIN_KEY_BITS} > 5 || 10#$MIN_KEY
   exit 3
 fi
 MIN_KEY_BITS=$((10#$MIN_KEY_BITS))
+
+if [[ -n "$CAFILE" && ! -r "$CAFILE" ]]; then
+  err "--cafile must be a readable file, got: $CAFILE"
+  exit 3
+fi
 
 # A name to check is handed to openssl as one argument; it never needs more
 # than a DNS name or an address can hold.
@@ -309,18 +320,27 @@ split_host_port() {
 # and the verify result (for --deep) come from the same connection; stdin is a
 # single newline so s_client never waits for input, and timeout bounds it.
 HOST_PEM=""
+HOST_LAST_PEM=""
 HOST_VERIFY=""
 fetch_host() {
   local host="$1"
   local port="$2"
   local target="${host}:${port}"
   local out
+  local args=(s_client -connect "$target" -servername "$host" -showcerts)
+  [[ -n "$CAFILE" ]] && args+=(-CAfile "$CAFILE")
   if have timeout; then
-    out="$(printf '\n' | timeout 10 openssl s_client -connect "$target" -servername "$host" 2>/dev/null)"
+    out="$(printf '\n' | timeout 10 openssl "${args[@]}" 2>/dev/null)"
   else
-    out="$(printf '\n' | openssl s_client -connect "$target" -servername "$host" 2>/dev/null)"
+    out="$(printf '\n' | openssl "${args[@]}" 2>/dev/null)"
   fi
   HOST_PEM="$(openssl x509 2>/dev/null <<<"$out" || true)"
+  # The last certificate the server sent, to tell a missing intermediate from
+  # a trust anchor this machine simply does not have.
+  HOST_LAST_PEM="$(awk '/-----BEGIN CERTIFICATE-----/ { buf = "" ; on = 1 }
+    on { buf = buf $0 "\n" }
+    /-----END CERTIFICATE-----/ { on = 0; last = buf }
+    END { printf "%s", last }' <<<"$out")"
   HOST_VERIFY="$(awk '/Verify return code:/ { sub(/^.*Verify return code: */, ""); print; exit }' <<<"$out")"
 }
 
@@ -351,10 +371,32 @@ grade_name() {
   esac
 }
 
+# Codes 20 and 21 mean OpenSSL found no issuer for the last certificate it
+# had, which is also what a private root that is merely absent here looks
+# like. Call the intermediate missing only when the last certificate the
+# server sent is not self-signed, is not a CA (the server sent no CA
+# certificate at all), and its issuer is not in the trust store used.
+chain_lacks_intermediate() {
+  local pem="$1" subject issuer vout
+  [[ -n "$pem" ]] || return 1
+  subject="$(printf '%s\n' "$pem" | openssl x509 -noout -subject 2>/dev/null || true)"
+  issuer="$(printf '%s\n' "$pem" | openssl x509 -noout -issuer 2>/dev/null || true)"
+  [[ -n "$subject" && "${subject#subject=}" != "${issuer#issuer=}" ]] || return 1
+  if printf '%s\n' "$pem" | openssl x509 -noout -text 2>/dev/null | grep -q 'CA:TRUE'; then
+    return 1
+  fi
+  if [[ -n "$CAFILE" ]]; then
+    vout="$(printf '%s\n' "$pem" | openssl verify -CAfile "$CAFILE" 2>&1 || true)"
+  else
+    vout="$(printf '%s\n' "$pem" | openssl verify 2>&1 || true)"
+  fi
+  grep -qE 'error (2|20) at' <<<"$vout"
+}
+
 # The verify code from the handshake. 10 (expired) is the expiry check's
 # finding already and is not counted twice.
 grade_chain() {
-  local label="$1" verify="$2" code
+  local label="$1" verify="$2" last_pem="${3:-}" code
   if [[ -z "$verify" ]]; then
     skip "$label: the handshake printed no verify result"
     return
@@ -363,7 +405,13 @@ grade_chain() {
   case "$code" in
     0)     pass "$label chain verifies against the system trust store" ;;
     18|19) warn "$label: self-signed certificate ($verify)" "clients trust it only if they pin it or its CA" ;;
-    20|21) fail "$label: incomplete chain: server did not send the intermediate ($verify)" "serve fullchain.pem rather than cert.pem" ;;
+    20|21)
+      if chain_lacks_intermediate "$last_pem"; then
+        fail "$label: incomplete chain: the server sent no CA certificate and the issuer is not in the trust store ($verify)" "serve fullchain.pem rather than cert.pem, or pass the private CA's root with --cafile"
+      else
+        warn "$label: issuer not trusted locally: private CA or missing intermediate ($verify)" "if it is a private CA, pass its root with --cafile; else: openssl s_client -connect ${HOST_NAME}:${HOST_PORT} -servername ${HOST_NAME} -showcerts"
+      fi
+      ;;
     10)    : ;;
     *)     warn "$label: chain does not verify ($verify)" "openssl s_client -connect ${HOST_NAME}:${HOST_PORT} -servername ${HOST_NAME} -showcerts" ;;
   esac
@@ -474,7 +522,7 @@ if (( ${#HOSTS[@]} > 0 )); then
       grade_name "$spec" "$pem" "${CHECK_HOST:-$HOST_NAME}"
     fi
     if (( DEEP )); then
-      grade_chain "$spec" "$HOST_VERIFY"
+      grade_chain "$spec" "$HOST_VERIFY" "$HOST_LAST_PEM"
       grade_strength "$spec" "$pem"
     fi
   done

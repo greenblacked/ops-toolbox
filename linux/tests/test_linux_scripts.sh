@@ -2037,6 +2037,59 @@ else
   assert_eq "tls_expiry tries exactly one target from the hosts file" "1" "$(grep -c '\[warn\]' <<<"$out")"
   rm -rf "$hosts_dir"
 
+  "$TLS" --cafile /nonexistent --host localhost:1 >/dev/null 2>&1; rc=$?
+  assert_eq "tls_expiry rejects an unreadable --cafile -> 3" "3" "$rc"
+
+  # Verify codes 20 and 21 are ambiguous: a missing intermediate and a private
+  # root this machine does not have look the same to s_client. A stub openssl
+  # answers s_client with a canned handshake (and hands everything else to the
+  # real one); the chain is a private root, an intermediate and a leaf.
+  chain_dir="$(mktemp -d)"
+  chain_real="$(command -v openssl)"
+  if (
+    cd "$chain_dir" || exit 1
+    printf 'basicConstraints=CA:TRUE\n' > ca.ext
+    printf 'subjectAltName=DNS:leaf.test\n' > leaf.ext
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout root.key -out root.pem -days 3650 -subj "/CN=Chain Root" &&
+    openssl req -newkey rsa:2048 -nodes -keyout int.key -out int.csr -subj "/CN=Chain Intermediate" &&
+    openssl x509 -req -in int.csr -CA root.pem -CAkey root.key -CAcreateserial -days 3650 -extfile ca.ext -out int.pem &&
+    openssl req -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr -subj "/CN=leaf.test" &&
+    openssl x509 -req -in leaf.csr -CA int.pem -CAkey int.key -CAcreateserial -days 3650 -extfile leaf.ext -out leaf.pem
+  ) >/dev/null 2>&1 && [[ -s "$chain_dir/leaf.pem" ]]; then
+    mkdir -p "$chain_dir/bin"
+    cat > "$chain_dir/bin/openssl" <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == s_client ]]; then
+  cat "$chain_dir/handshake"
+  exit 0
+fi
+exec "$chain_real" "\$@"
+STUB
+    chmod +x "$chain_dir/bin/openssl"
+
+    # Only the leaf was sent and its issuer is not in the store: provable.
+    { cat "$chain_dir/leaf.pem"; printf 'Verify return code: 21 (unable to verify the first certificate)\n'; } > "$chain_dir/handshake"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep 2>&1)"; rc=$?
+    assert_contains "tls_expiry fails a chain with no CA certificate sent" "$out" "incomplete chain"
+    assert_contains "tls_expiry suggests fullchain.pem for it" "$out" "fullchain.pem"
+    assert_eq "tls_expiry --deep fails a provably incomplete chain -> 1" "1" "$rc"
+
+    # The intermediate was sent; what is absent is the private root. That is a
+    # trust problem on this machine, not a missing intermediate.
+    { cat "$chain_dir/leaf.pem" "$chain_dir/int.pem"; printf 'Verify return code: 20 (unable to get local issuer certificate)\n'; } > "$chain_dir/handshake"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep 2>&1)"; rc=$?
+    assert_contains "tls_expiry reports an untrusted issuer neutrally" "$out" "issuer not trusted locally: private CA or missing intermediate"
+    assert_contains "tls_expiry suggests --cafile for it" "$out" "--cafile"
+    assert_not_contains "tls_expiry does not claim a missing intermediate for it" "$out" "incomplete chain"
+    assert_not_contains "tls_expiry does not suggest fullchain.pem for it" "$out" "fullchain.pem"
+    assert_eq "tls_expiry --deep with an untrusted private root exits 0" "0" "$rc"
+    PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --fail-on warn >/dev/null 2>&1; rc=$?
+    assert_eq "tls_expiry --deep --fail-on warn exits 1 for it" "1" "$rc"
+  else
+    ok "tls_expiry chain checks skipped (this openssl cannot build the fixture chain)"
+  fi
+  rm -rf "$chain_dir"
+
   scratch_home="$(mktemp -d)"
   HOME="$scratch_home" TMPDIR="$scratch_home" "$TLS" --file "$valid" >/dev/null 2>&1
   if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then

@@ -679,17 +679,22 @@ is valid and wrong. `--check-host NAME` fails when the certificate does not
 cover `NAME` (`-checkhost`, or `-checkip` for an address). `--deep` adds the
 rest: the name check for every `--host` target (its own name unless
 `--check-host` overrides it), the chain as the handshake verified it against
-the system trust store (an incomplete chain fails with "serve fullchain.pem",
-a self-signed one warns; an expired one is the expiry check's finding and is
-not counted twice), a self-signed issuer on a `--file` target, the key size
+the system trust store (a self-signed one warns; an expired one is the expiry
+check's finding and is not counted twice). When no issuer is found, the chain
+fails as incomplete ("serve fullchain.pem") only when that is provable: the
+server sent no CA certificate at all and the issuer of the last certificate it
+sent is not in the trust store. Otherwise, for example when the intermediate
+was sent and the private root is simply not on this machine, it warns "issuer
+not trusted locally: private CA or missing intermediate"; `--cafile FILE`
+supplies that root (it replaces the system store for the `--host` handshake), a self-signed issuer on a `--file` target, the key size
 against `--min-key-bits` (2048), the EC curve, and MD5 or SHA-1 signatures.
 The chain comes from the same single handshake the expiry check makes.
 `--hosts-file FILE` reads one `HOST[:PORT]` per line, with `#` comments; an
 unreadable file is exit `3` before anything else runs.
 
 With the default `--fail-on expired`, a FAIL from these checks (wrong name,
-missing intermediate, short key, weak signature) exits `1` too, and a warning
-(self-signed, unusual curve) exits `1` only with `--fail-on warn`.
+provably missing intermediate, short key, weak signature) exits `1` too, and a
+warning (self-signed, issuer not trusted locally, unusual curve) exits `1` only with `--fail-on warn`.
 
 ## `container_doctor.sh`
 
