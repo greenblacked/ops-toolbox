@@ -34,6 +34,7 @@ import io
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 
@@ -227,7 +228,7 @@ def shebang_findings(first_line, find_program, path="<file>"):
             "shebang ends in a carriage return (CRLF checkout): the kernel looks for "
             "an interpreter named %s\\r and the hook fails with No such file" % last,
             "perl -pi.bak -e 's/\\r$//' %s   # keeps a .bak; then pin eol=lf for it in "
-            ".gitattributes" % path,
+            ".gitattributes" % shlex.quote(path),
         )]
     if interpreter is None:
         return [(
@@ -242,6 +243,12 @@ def shebang_findings(first_line, find_program, path="<file>"):
         if not names:
             return [("fail", "the shebang runs env with no program to run",
                      "name the interpreter: #!/usr/bin/env bash")]
+        split = any(a.startswith("-S") or a == "--split-string" for a in args)
+        if len(args) > 1 and not split:
+            return [("fail", "the shebang gives env %d arguments (%s) without -S: Linux "
+                             "passes them as ONE word and env cannot find that program"
+                     % (len(args), " ".join(args)),
+                     "#!%s -S %s" % (interpreter, " ".join(args)))]
         if find_program(names[0]) is None:
             return [("fail", "interpreter %s (through env) is not on PATH" % names[0],
                      "install %s, or change the #! line" % names[0])]
@@ -280,7 +287,8 @@ def hooks_path_findings(value, origin, scope, toplevel, local_hooks_present, exi
             "fail",
             "core.hooksPath=%s (set in %s) does not exist: git runs NO hooks and says "
             "nothing" % (value, where),
-            "mkdir -p %s, or git config %s--unset core.hooksPath" % (resolved, flag),
+            "mkdir -p %s, or git config %s--unset core.hooksPath"
+            % (shlex.quote(resolved), flag),
         )]
     if scope in ("global", "system") and local_hooks_present:
         return [(
@@ -471,11 +479,10 @@ def run_report(args):
     head("hooks")
     hook_texts = {}
     for name, path in hooks:
-        shown = shorten(path)
         if not os.access(path, os.X_OK):
             problems += report_level(
                 "fail", "%s is not executable: git ignores it" % name,
-                "chmod +x %s" % shown)
+                "chmod +x %s" % shlex.quote(path))
             continue
         start = read_start(path, TEXT_LIMIT)
         if start is None:
@@ -486,7 +493,7 @@ def run_report(args):
             info("%s is a binary; nothing to check in its first line" % name)
             continue
         hook_texts[name] = start.decode("utf-8", "replace")
-        shebang = shebang_findings(first, lambda p: find_program(p, path_env), shown)
+        shebang = shebang_findings(first, lambda p: find_program(p, path_env), path)
         for finding in shebang:
             problems += report_level(finding[0], "%s: %s" % (name, finding[1]), finding[2])
         if not shebang:
