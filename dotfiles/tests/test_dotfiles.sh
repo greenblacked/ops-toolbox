@@ -456,11 +456,17 @@ run_installer --only docker >/dev/null 2>&1 || err "could not restore the docker
 # is not ours: --diff names it and never reads the file it leads to.
 printf 'outside-marker-line\n' > "$T/outside.txt"
 rm "$H/.config/starship.toml"
-ln -s "$D/config/../../../..$T/outside.txt" "$H/.config/starship.toml"
+# Enough `..` to reach / from the physical config dir, so the marker really
+# exists at the end of the link (a short climb would dangle and pass anyway).
+up=""; walk="$D/config"
+while [[ "$walk" != "/" && -n "$walk" ]]; do up="$up/.."; walk="${walk%/*}"; done
+trav="$D/config$up$T/outside.txt"
+[[ "$(cat "$trav" 2>/dev/null)" == outside-marker-line ]] || err "traversing link does not reach the marker"
+ln -s "$trav" "$H/.config/starship.toml"
 out="$(run_installer --diff --only starship 2>&1)"; rc=$?
 assert_rc "--diff exits 4 on a traversing link" 4 "$rc"
 assert_contains "--diff reports a traversing link as CONFLICT" "$out" "CONFLICT $H/.config/starship.toml"
-assert_contains "--diff names where a traversing link leads" "$out" "  links to $D/config/../../../..$T/outside.txt"
+assert_contains "--diff names where a traversing link leads" "$out" "  links to $trav"
 if [[ "$out" == *outside-marker-line* ]]; then err "--diff read the file a traversing link leads to"; else ok "--diff never reads the file a traversing link leads to"; fi
 # Even one that would land back on a tracked file is refused: a `..` segment
 # is never ours.
