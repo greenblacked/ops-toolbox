@@ -949,11 +949,12 @@ assert_contains "system_doctor --skip-smart says so" "$out" "SMART health (--ski
 out="$(run_storage --quiet)"
 assert_contains "system_doctor --quiet keeps storage warnings" "$out" "/data is mounted read-only"
 
-printf '%s\n' '/dev/sda2 /ok ext4 rw,relatime 0 0' '/dev/sdb1 /srv ext4 rw 0 0' '/dev/sdc1 /opt ext4 rw 0 0' > "$storage_fx/mounts"
+printf '%s\n' '/dev/sda1 /data ext4 rw,relatime 0 0' '/dev/sda2 /ok ext4 rw,relatime 0 0' '/dev/sdg1 /fstab-ro ext4 ro,relatime 0 0' \
+  '/dev/sdb1 /srv ext4 rw 0 0' '/dev/sdc1 /opt ext4 rw 0 0' > "$storage_fx/mounts"
 printf '%s\n' 'md0 : active raid1 sdb1[1] sda1[0]' '      1000 blocks [2/2] [UU]' > "$storage_fx/mdstat"
 out="$(run_storage --skip-smart)"
 assert_contains "system_doctor says when nothing is read-only" "$out" "no real filesystem is mounted read-only"
-assert_contains "system_doctor says when every fstab entry is mounted" "$out" "every fstab entry is mounted (3 checked)"
+assert_contains "system_doctor says when every fstab entry is mounted" "$out" "every fstab entry is mounted (5 checked)"
 assert_contains "system_doctor reports a healthy md array" "$out" "md array md0 is healthy ([2/2] [UU])"
 # A kernel remount (errors=remount-ro) must still be reported when fstab is
 # absent or empty; the first mount lines must not be read as fstab entries.
@@ -1455,7 +1456,8 @@ assert_contains "net_doctor --quiet still summarises" "$out" "== summary =="
 # fake /sys/class/net holds a physical eth0 (it has a device link) and a
 # veth0 (it does not); each case rewrites one eth0 file into a fault.
 links_fx="$(mktemp -d)"
-mkdir -p "$links_fx/eth0/statistics" "$links_fx/eth0/device" "$links_fx/veth0/statistics" "$links_fx/bonding"
+links_bond="$(mktemp -d)"
+mkdir -p "$links_fx/eth0/statistics" "$links_fx/eth0/device" "$links_fx/veth0/statistics"
 write_clean_link() {
   printf 'up\n' > "$links_fx/eth0/operstate"
   printf '1000\n' > "$links_fx/eth0/speed"
@@ -1470,10 +1472,10 @@ write_clean_link() {
   printf '1000\n' > "$links_fx/eth0/statistics/tx_packets"
   printf 'up\n' > "$links_fx/veth0/operstate"
   printf '9000\n' > "$links_fx/veth0/statistics/rx_errors"
-  rm -f "$links_fx/bonding/bond0"
+  rm -f "$links_bond/bond0"
 }
 run_links() {
-  SYS_CLASS_NET="$links_fx" PROC_NET_BONDING="$links_fx/bonding" "$NET" "$@" 2>&1
+  SYS_CLASS_NET="$links_fx" PROC_NET_BONDING="$links_bond" "$NET" "$@" 2>&1
 }
 write_clean_link
 out="$(run_links)"; rc=$?
@@ -1520,7 +1522,7 @@ assert_contains "net_doctor warns on carrier flaps" "$out" "eth0 carrier changed
 
 write_clean_link
 printf '%s\n' 'Bonding Mode: fault-tolerance (active-backup)' 'Currently Active Slave: eth0' 'MII Status: up' '' \
-  'Slave Interface: eth0' 'MII Status: up' '' 'Slave Interface: eth1' 'MII Status: down' > "$links_fx/bonding/bond0"
+  'Slave Interface: eth0' 'MII Status: up' '' 'Slave Interface: eth1' 'MII Status: down' > "$links_bond/bond0"
 out="$(run_links)"
 assert_contains "net_doctor warns on a bond slave that is down" "$out" "bond0 slave eth1 is down"
 
@@ -1549,7 +1551,7 @@ assert_contains "net_doctor warns when the gateway does not answer ARP" "$out" "
 : > "$links_stub/reachable"
 out="$(PATH="$links_stub:$PATH" run_links)"
 assert_contains "net_doctor passes a reachable gateway" "$out" "gateway 10.0.0.1 neighbour state REACHABLE"
-rm -rf "$links_fx" "$links_stub"
+rm -rf "$links_fx" "$links_bond" "$links_stub"
 
 section "listen_audit.sh"
 LISTEN="$L/listen_audit.sh"
