@@ -18,11 +18,13 @@ copies each tracked file into place and reports drift.
 
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `install_dotfiles.sh` | Link (or copy) each tracked config into `$HOME` or `$XDG_CONFIG_HOME`. Modes: `--list`, `--status`, `--diff`, `--uninstall`, `--only UNIT`, `--force`. | `--dry-run` (also on `--uninstall`); `--list`, `--status` and `--diff` are read-only |
+| `install_dotfiles.sh` | Link (or copy) each tracked config into `$HOME` or `$XDG_CONFIG_HOME`. Modes: `--list`, `--status`, `--diff`, `--uninstall`, `--prune`, `--only UNIT`, `--force`. | `--dry-run` (also on `--uninstall` and `--prune`); `--list`, `--status` and `--diff` are read-only |
 | `dotfiles_doctor.sh` | Read-only health report for the installed configs: a credential written through a link into the tracked repository, reported by file and line, never by value. | read-only |
 
 The installer works per file and never links whole directories. `--status`
-reports each file as `MATCH`, `DRIFT`, `MISSING`, `FOREIGN` or `CONFLICT`.
+reports each file as `MATCH`, `DRIFT`, `MISSING`, `FOREIGN` or `CONFLICT`,
+and each link into the folder that no tracked file installs to as `ORPHAN`;
+`--prune` removes those.
 
 ## Examples
 

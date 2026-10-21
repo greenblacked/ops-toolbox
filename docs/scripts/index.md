@@ -109,7 +109,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `k8s-toolbox/build.sh` | Kubernetes | Build the toolbox image with buildx. | `--dry-run` |
 | `k8s-toolbox/run.sh` | Kubernetes | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
 | `k8s-toolbox/debug_pod.sh` | Kubernetes | Attach an ephemeral debug container to a pod. | `--dry-run` |
-| `dotfiles/install_dotfiles.sh` | Dotfiles | Link or copy tracked configs; report drift. | `--dry-run`; `--list`, `--status`, `--diff` are read-only |
+| `dotfiles/install_dotfiles.sh` | Dotfiles | Link or copy tracked configs; report drift. | `--dry-run` (also `--prune`); `--list`, `--status`, `--diff` are read-only |
 | `dotfiles/dotfiles_doctor.sh` | Dotfiles | Read-only health report for the installed configs. | <span class="stage stage-report">read-only</span> |
 
 <!-- markdownlint-enable MD033 -->

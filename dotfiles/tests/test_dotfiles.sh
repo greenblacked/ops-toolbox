@@ -186,6 +186,56 @@ perm="$(stat -c '%a' "$H/.ssh" 2>/dev/null || stat -f '%Lp' "$H/.ssh" 2>/dev/nul
 if [[ "$perm" == "700" ]]; then ok ".ssh is back to 700"; else err ".ssh is still mode $perm"; fi
 
 # --------------------------------------------------------------------------
+head_ "orphans and --prune"
+# Three links no tracked file installs to: one left by a config renamed away
+# (dangling), one at an untracked path pointing at a live file here, and one
+# that is not ours at all and must never be reported or removed.
+mkdir -p "$H/.config/oldtool"
+ln -s "$D/config/oldtool/config" "$H/.config/oldtool/config"
+ln -s "$D/config/starship.toml" "$H/.config/starship-copy.toml"
+ln -s /etc/hosts "$H/.config/not-ours"
+# A link --force moved aside is a backup, and backups are never removed.
+ln -s "$D/config/starship.toml" "$H/.config/starship.toml.backup-20200101-000000"
+
+out="$(run_installer --status 2>&1)"; rc=$?
+assert_rc "--status exits 4 with orphan links" 4 "$rc"
+assert_contains "--status reports the dangling orphan" "$out" "ORPHAN  $H/.config/oldtool/config"
+assert_contains "--status reports the untracked live link" "$out" "ORPHAN  $H/.config/starship-copy.toml"
+if [[ "$out" == *"not-ours"* ]]; then err "--status reported a link that does not point into this folder"; else ok "--status ignores a link that is not ours"; fi
+if [[ "$out" == *".backup-"* ]]; then err "--status reported a backup link as an orphan"; else ok "--status ignores a backup link"; fi
+out="$(run_installer --status --only git 2>&1)"; rc=$?
+assert_rc "--status --only git exits 0 with orphans outside the unit" 0 "$rc"
+if [[ "$out" == *"ORPHAN"* ]]; then err "--status --only git reported orphans of other units"; else ok "--only filters orphans by unit"; fi
+
+before="$(snapshot "$H" "$T")"
+out="$(run_installer --prune --dry-run 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "--prune --dry-run exits 0" 0 "$rc"
+assert_contains "--prune --dry-run previews the rm" "$out" "(dry-run) rm $H/.config/oldtool/config"
+assert_contains "--prune --dry-run closes with the summary line" "$out" "dry-run complete; no changes written"
+if [[ "$before" == "$after" ]]; then ok "--prune --dry-run wrote nothing"; else err "--prune --dry-run changed the home"; fi
+
+out="$(run_installer --prune 2>&1)"; rc=$?
+assert_rc "--prune exits 0" 0 "$rc"
+assert_contains "--prune counts what it removed" "$out" "2 orphan link(s) removed"
+assert_true "--prune removed the dangling orphan" test ! -L "$H/.config/oldtool/config"
+assert_true "--prune removed the untracked live link" test ! -L "$H/.config/starship-copy.toml"
+assert_true "--prune left a link that is not ours" test -L "$H/.config/not-ours"
+assert_true "--prune left the backup link" test -L "$H/.config/starship.toml.backup-20200101-000000"
+assert_true "--prune left the emptied directory in place" test -d "$H/.config/oldtool"
+assert_true "--prune left the tracked links alone" test -L "$H/.config/starship.toml"
+out="$(run_installer --prune 2>&1)"; rc=$?
+assert_rc "a second --prune exits 0" 0 "$rc"
+assert_contains "a second --prune finds nothing" "$out" "0 orphan link(s) removed"
+run_installer --prune --force >/dev/null 2>&1; rc=$?
+assert_rc "--prune --force exits 3" 3 "$rc"
+run_installer --prune --status >/dev/null 2>&1; rc=$?
+assert_rc "--prune --status exits 3" 3 "$rc"
+rm "$H/.config/not-ours" "$H/.config/starship.toml.backup-20200101-000000"; rmdir "$H/.config/oldtool"
+out="$(run_installer --status 2>&1)"; rc=$?
+assert_rc "--status exits 0 again after --prune" 0 "$rc"
+
+# --------------------------------------------------------------------------
 head_ "conflicts, --force and DRIFT"
 rm "$H/.config/starship.toml"
 printf 'format = "old"\n' > "$H/.config/starship.toml"

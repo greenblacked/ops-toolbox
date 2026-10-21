@@ -102,13 +102,15 @@ install_dotfiles.sh --status    [--only UNIT ...] [--home DIR] [--config-home DI
 install_dotfiles.sh --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --list
 install_dotfiles.sh --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 ```
 
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Print each `mkdir`, `ln -s`, `cp` or `rm` in the indented `(dry-run)` form and the closing `dry-run complete; no changes written`. Nothing is written, not even a directory. |
-| `--status` | One bare `STATE   path` line per file, the shape `windows/git-bash/install_dotfiles.sh` prints: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file, link or directory). Also checks that `~/.ssh` and `~/.gnupg` are mode `700` when a file in them is selected. Exit `4` if anything is not `MATCH`. |
+| `--status` | One bare `STATE   path` line per file, the shape `windows/git-bash/install_dotfiles.sh` prints: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file, link or directory). Then one `ORPHAN` line per link that points into this folder from a path no tracked file installs to (see `--prune`). Also checks that `~/.ssh` and `~/.gnupg` are mode `700` when a file in them is selected. Exit `4` if anything is not `MATCH`. |
 | `--uninstall` | Remove links that point into this folder and copies that still equal their source. A `DRIFT` copy and a `CONFLICT` file are kept and reported. |
+| `--prune` | Remove the `ORPHAN` links: links whose text points into this folder, at a path no tracked file installs to. Renaming `config/foo/x` to `config/foo/y` leaves `~/.config/foo/x` pointing into the repository forever, and install, `--status` and `--uninstall` never see it because they start from the files that exist today. Only the link is removed (`rm`, never `rm -r`); a directory it leaves empty is mentioned and kept. Links elsewhere, regular files and `.backup-*` links are never touched. Honours `--dry-run` and `--only` (by the unit the orphan's path would belong to). |
 | `--list` | Every tracked file with its unit name, `link` or `copy`, and its target. Needs no home directory. |
 | `--diff` | For each `DRIFT`, `CONFLICT` or `FOREIGN` file, the `--status` header line and then a unified diff of the tracked source (`-`) against what is on disk (`+`), with credential values replaced by `<redacted>`. A directory or a link out of this folder gets a one-line note instead of a diff. Writes nothing. Exit `4` if any file differs. |
 | `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`. |
@@ -150,8 +152,17 @@ keys ending in `auth`, `token`, `password` or `secret`, an AWS secret key, a
 password in a URL, token shapes, private key blocks — print as `<redacted>`,
 because a drifted `~/.docker/config.json` holds base64 `auths` by then.
 
+**Renamed configs.** `--uninstall` keeps its contract and removes only what
+the files tracked today installed; `--prune` is its companion for what a
+rename or a delete left behind. It finds them in a bounded scan — three
+levels under the config directory, the top of the home, and two levels inside
+each directory `home/` installs into (`~/.ssh`, `~/.aws` ...) — so a large
+home is never walked. One limit: if the repository itself was moved, the old
+links no longer point into this folder's path, and `--status` reports them as
+`CONFLICT` rather than `ORPHAN`; `--force` replaces them.
+
 **Exit codes:** `0` success (for `--status`: everything matches); `1` a link
-or copy could not be made; `2` preflight — `config/` or `home/` missing next to
+or copy could not be made, or `--prune` could not remove one; `2` preflight — `config/` or `home/` missing next to
 the script, or no home directory; `3` usage; `4` something was left in place — a
 conflict under install, a non-`MATCH` under `--status`, or a file that differs
 under `--diff`.
@@ -741,7 +752,12 @@ from `DRIFT` and reporting a directory at a copy target as `CONFLICT`,
 `--diff` (a drifted copy's edit and a conflicting file's lines with no
 diff header, nothing for matching files, a note instead of diff noise for a
 directory, a docker `auth` value redacted), a
-drifted `~/.ssh` mode repaired by install, and an uninstall that removes
+drifted `~/.ssh` mode repaired by install, `--status` reporting a dangling
+orphan and an untracked link into this folder as `ORPHAN` but neither a link
+to `/etc/hosts` nor a backup link, `--only` filtering orphans by unit,
+`--prune --dry-run` writing nothing, `--prune` removing exactly the two
+orphans and keeping the emptied directory, a second `--prune` finding none,
+and an uninstall that removes
 every link and matching copy, keeps the edited copy and the `.backup`. The
 file table is read from `--list` rather than re-derived, and the run is
 isolated from any `XDG_CONFIG_HOME` the shell exports.

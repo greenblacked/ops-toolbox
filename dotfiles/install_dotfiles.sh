@@ -19,6 +19,8 @@
 # alone and reported; --force moves it to a timestamped .backup first, the
 # same suffix windows/git-bash/install_dotfiles.sh uses. Uninstall removes
 # only links that point into this folder, and copies that still match.
+# --prune removes the links a renamed or deleted config left behind, and
+# nothing else: only links whose text points into this folder.
 #
 # Exit codes:
 #   0   success (for --status: everything matches)
@@ -37,6 +39,7 @@ STATUS=0
 UNINSTALL=0
 LIST=0
 DIFF=0
+PRUNE=0
 FORCE=0
 QUIET=0
 HOME_DIR="${HOME:-}"
@@ -69,15 +72,19 @@ Usage:
   $(basename "$0") --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --list      [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
+  $(basename "$0") --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 
 Options:
   --dry-run          Show what would change; write nothing
-  --status           One STATE line per file: MATCH, DRIFT, MISSING, FOREIGN or
-                     CONFLICT; write nothing. Exit 4 unless everything is MATCH
+  --status           One STATE line per file: MATCH, DRIFT, MISSING, FOREIGN,
+                     CONFLICT or ORPHAN; write nothing. Exit 4 unless everything
+                     is MATCH
   --uninstall        Remove links that point into this folder, and copies that still match
   --list             Print UNIT, MODE (link or copy), SOURCE and TARGET per file, then exit
   --diff             Unified diff, source against what is on disk, for each DRIFT,
                      CONFLICT or FOREIGN file; write nothing. Exit 4 if any differ
+  --prune            Remove ORPHAN links: links into this folder at a path no
+                     tracked file installs to, left by a rename or a delete
   --force            Move a file that is in the way to NAME.backup-TIMESTAMP, then install
   --only UNIT        Limit to one unit (repeatable, or comma-separated): a tool
                      directory under config/ such as k9s, or a dotfile under home/
@@ -110,6 +117,7 @@ while (( $# > 0 )); do
     --uninstall)      UNINSTALL=1 ;;
     --list)           LIST=1 ;;
     --diff)           DIFF=1 ;;
+    --prune)          PRUNE=1 ;;
     --force)          FORCE=1 ;;
     --quiet)          QUIET=1 ;;
     --only)           require_value "$1" "${2:-}"; ONLY="${ONLY:+$ONLY,}$2"; shift ;;
@@ -127,13 +135,13 @@ while (( $# > 0 )); do
   shift
 done
 
-modes=$(( STATUS + UNINSTALL + LIST + DIFF ))
+modes=$(( STATUS + UNINSTALL + LIST + DIFF + PRUNE ))
 if (( modes > 1 )); then
   err "the mode flags are separate modes; choose one"
   exit 3
 fi
 if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1 || DIFF == 1) )); then
-  err "--dry-run only applies to install and --uninstall"
+  err "--dry-run only applies to install, --uninstall and --prune"
   exit 3
 fi
 if (( FORCE == 1 && modes > 0 )); then
@@ -298,7 +306,9 @@ points_here() {
 # the wrong answer, while `stat -c` on macOS fails and falls through.
 mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || true; }
 
-# MATCH, DRIFT, MISSING, CONFLICT or FOREIGN for one file.
+# MATCH, DRIFT, MISSING, CONFLICT or FOREIGN for one file. --status adds a
+# sixth, ORPHAN, for a path that is not a tracked file's target at all: see
+# orphans() below.
 #   MATCH    linked to this source, or an identical copy
 #   DRIFT    a copy whose content differs from the source
 #   MISSING  nothing at the target
@@ -332,6 +342,53 @@ state_of() {
   fi
 }
 
+# Links in the install locations whose text points into this folder at a
+# path no tracked file installs to: what renaming or deleting a config in the
+# repository leaves behind, which install, --status and --uninstall never see
+# because they start from the files that exist today. One path per line.
+#
+# Only these links. A link to /etc, into another repository, or any regular
+# file is never reported, so everything --prune removes was made by this
+# installer or a copy of it. The scan is bounded - three levels under the
+# config directory, the top of the home, two levels inside each home
+# directory this folder installs into (.ssh, .aws ...) - so a large home is
+# never walked. find does not follow links below its starting points; -H
+# follows a starting point that is itself a link, such as a linked ~/.config.
+# A repository that was moved is the documented exception: its old links no
+# longer start with this folder's path, so --status calls them CONFLICT.
+link_candidates() {
+  local d
+  if [[ -d "$CONFIG_DIR" ]]; then find -H "$CONFIG_DIR" -maxdepth 3 -type l 2>/dev/null; fi
+  find -H "$HOME_DIR" -maxdepth 1 -type l 2>/dev/null
+  while IFS= read -r d; do
+    d="${d##*/}"
+    if [[ -d "$HOME_DIR/$d" ]]; then find -H "$HOME_DIR/$d" -maxdepth 2 -type l 2>/dev/null; fi
+  done < <(find "$SCRIPT_DIR/home" -mindepth 1 -maxdepth 1 -type d)
+  return 0
+}
+
+orphans() {
+  local f l rel tracked=""
+  for f in "${files[@]}"; do
+    tracked="$tracked$(target_of "$f")"$'\n'
+  done
+  while IFS= read -r l; do
+    [[ -n "$l" ]] || continue
+    grep -Fxq -- "$l" <<<"$tracked" && continue
+    points_here "$l" || continue
+    # A link that --force moved aside is a backup, and backups are never
+    # removed.
+    case "$l" in *.backup-[0-9]*) continue ;; esac
+    if [[ "$l" == "$CONFIG_DIR"/* ]]; then
+      rel="config/${l#"$CONFIG_DIR"/}"
+    else
+      rel="home/${l#"$HOME_DIR"/}"
+    fi
+    selected "$rel" || continue
+    printf '%s\n' "$l"
+  done < <(link_candidates | sort -u)
+}
+
 # --- modes -----------------------------------------------------------------
 do_list() {
   local f mode
@@ -355,6 +412,11 @@ do_status() {
     printf '%-7s %s\n' "$st" "$target"
     [[ "$st" == "MATCH" ]] || not_current=$((not_current + 1))
   done
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    printf '%-7s %s\n' "ORPHAN" "$target"
+    not_current=$((not_current + 1))
+  done < <(orphans)
   while IFS= read -r d; do
     [[ -n "$d" ]] || continue
     target="$(target_of "$d")"
@@ -526,6 +588,31 @@ do_uninstall() {
   return 0
 }
 
+# rm of the link itself: never rm -r, never rmdir. A directory the last
+# orphan leaves empty is mentioned and kept; it may be the tool's own.
+do_prune() {
+  local o parent removed=0 failed=0 emptied=""
+  while IFS= read -r o; do
+    [[ -n "$o" ]] || continue
+    run_cmd "remove ORPHAN" rm "$o" || { err "could not remove $o"; failed=$((failed + 1)); continue; }
+    (( DRY_RUN )) && continue
+    ok "removed: $o"
+    removed=$((removed + 1))
+    parent="$(dirname "$o")"
+    if [[ -z "$(ls -A "$parent" 2>/dev/null)" ]] && ! grep -Fxq -- "$parent" <<<"$emptied"; then
+      emptied="$emptied$parent"$'\n'
+      info "left in place, now empty: $parent"
+    fi
+  done < <(orphans)
+  if (( DRY_RUN )); then
+    printf "dry-run complete; no changes written\n"
+  else
+    info "$removed orphan link(s) removed"
+  fi
+  (( failed > 0 )) && return 1
+  return 0
+}
+
 # --- main ------------------------------------------------------------------
 if (( LIST )); then
   do_list
@@ -535,6 +622,8 @@ elif (( DIFF )); then
   do_diff
 elif (( UNINSTALL )); then
   do_uninstall
+elif (( PRUNE )); then
+  do_prune
 else
   do_install
 fi
