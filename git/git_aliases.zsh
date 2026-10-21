@@ -40,6 +40,7 @@ _pretty_git_alias gclone   clone-repos.sh
 # --- looking around --------------------------------------------------------
 _pretty_git_alias gsum     git_status_summary.sh
 _pretty_git_alias gdiffb   git_diff_branch.sh
+_pretty_git_alias gmcheck  git_merge_check.sh
 _pretty_git_alias grecent  git_recent_branches.sh
 _pretty_git_alias groot    git_repo_root.sh
 _pretty_git_alias gwho     git_whoami.sh

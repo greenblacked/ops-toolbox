@@ -8,7 +8,8 @@ ignore rules.
 
 ## Requirements
 
-- Bash 3.2+ and a recent Git 2.x.
+- Bash 3.2+ and a recent Git 2.x. `git_merge_check.sh` needs Git 2.38 or
+  newer for `git merge-tree --write-tree`.
 - Python 3.9+ (standard library only) for the `*_doctor.py` tools.
 - Docker with Compose v2 only for `git/tests/run.sh`.
 
@@ -24,6 +25,7 @@ ignore rules.
 | `git_unpushed.sh` | Commits, branches, stashes, edits and tags that exist only locally. | <span class="stage stage-report">read-only</span> |
 | `git_repo_root.sh` | Worktree root, or git dir with `--git-dir`. | <span class="stage stage-report">read-only</span> |
 | `git_diff_branch.sh` | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
+| `git_merge_check.sh` | Forecast merge conflicts with no checkout (Git 2.38+). | <span class="stage stage-report">read-only</span> |
 | `git_recent_branches.sh` | Recently used branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
 | `git_stale_branches.sh` | Old branches with last committer and state. | <span class="stage stage-report">read-only</span> |
 | `git_size_report.sh` | Repository size and largest blobs. | <span class="stage stage-report">read-only</span> |

@@ -53,6 +53,7 @@ _pus_git_alias gundo    git_undo_last_commit.sh
 # --- looking around --------------------------------------------------------
 _pus_git_alias gsum     git_status_summary.sh
 _pus_git_alias gdiffb   git_diff_branch.sh
+_pus_git_alias gmcheck  git_merge_check.sh
 _pus_git_alias grecent  git_recent_branches.sh
 _pus_git_alias groot    git_repo_root.sh
 _pus_git_alias gwho     git_whoami.sh

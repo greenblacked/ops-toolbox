@@ -27,6 +27,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_recent_branches.sh`](#git_recent_branchessh)
 - [`git_repo_root.sh`](#git_repo_rootsh)
 - [`git_diff_branch.sh`](#git_diff_branchsh)
+- [`git_merge_check.sh`](#git_merge_checksh)
 - [`git_undo_last_commit.sh`](#git_undo_last_commitsh)
 - [`git_amend_last.sh`](#git_amend_lastsh)
 - [`git_hooks_install.sh`](#git_hooks_installsh)
@@ -43,7 +44,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | Requirement | Notes |
 | --- | --- |
 | **Bash** | 3.2 or newer (`/bin/bash` on macOS is enough). |
-| **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). |
+| **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). `git_merge_check.sh` needs Git 2.38 or newer for `git merge-tree --write-tree`, and exits `2` on anything older. |
 | **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
 | **Python 3.9+** | Optional; only for the four `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
@@ -92,6 +93,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_recent_branches.sh` | List/switch recent branches; `--names-only` is script-friendly. |
 | `git_repo_root.sh` | Print the worktree root or absolute Git metadata directory. |
 | `git_diff_branch.sh` | Diff committed branch work or include the current index/worktree. |
+| `git_merge_check.sh` | Forecast whether branches merge cleanly into a base, with no checkout (Git 2.38+). |
 | `git_undo_last_commit.sh` | Reset local HEAD or create a history-preserving revert commit. |
 | `git_amend_last.sh` | Amend content and optionally replace the last commit message. |
 | `git_ssh_doctor.py` | Diagnose SSH auth; `--quiet` exposes only the verdict exit code. |
@@ -141,7 +143,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `gwho` | `git_whoami.sh` | `gssh` | `git_ssh_doctor.py` |
 | `grepos` | `git_repos_status.sh` | `gsign` | `git_signing_doctor.py` |
 | `gunpushed` | `git_unpushed.sh` | `gremote` | `git_remote_doctor.py` |
-| | | `gignore` | `git_ignore_doctor.py` |
+| `gmcheck` | `git_merge_check.sh` | `gignore` | `git_ignore_doctor.py` |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
 
@@ -578,6 +580,56 @@ untracked files in a diff until they are staged.
 
 ---
 
+## `git_merge_check.sh`
+
+Will these branches still merge? Release and merge-queue work keeps asking
+whether `hotfix/x` still merges into `release/1.4`, or which open branches have
+rotted against `main`. The usual answer is to check out the target, run
+`git merge`, read the conflict and `git merge --abort`, which needs a clean
+tree and rewrites the worktree twice. This asks `git merge-tree --write-tree`
+instead, which computes the real three-way merge in memory.
+
+```bash
+./git/git_merge_check.sh                              # HEAD into the default branch
+./git/git_merge_check.sh --into release/1.4 hotfix/x
+./git/git_merge_check.sh --all-local                  # every local branch into main
+./git/git_merge_check.sh --into origin/main --porcelain feature/a feature/b
+```
+
+One line per branch:
+
+```text
+clean     feature/a
+conflict  feature/b  2 file(s): src/app.c, README.md
+merged    feature/c  already in main
+ff        feature/d  fast-forward
+error     feature/e  fatal: refusing to merge unrelated histories
+```
+
+`merged` means the branch is already contained in the base, `ff` that the base
+is an ancestor of it, and `error` that git could not merge the two at all. The
+base defaults to the branch `refs/remotes/origin/HEAD` points at, else `main`,
+else `master`, resolved like `git_sync_default.sh`; the local branch is used
+when it exists, and `origin/NAME` otherwise, so a fresh CI checkout still has
+one. `--into` takes any branch or remote-tracking ref. With no branch named and
+no `--all-local`, `HEAD` is checked. `--porcelain` prints
+`status<TAB>branch<TAB>base<TAB>path`, one row per conflicting path, with
+`path` empty for every other status. Paths with unusual bytes appear C-quoted,
+the way git prints them.
+
+It does not touch `HEAD`, the index, the working tree or any ref, so it works
+with a dirty tree, in the middle of a rebase and in a bare repository. It is
+honest rather than write-free: `merge-tree` stores the merge result's trees and
+blobs in the object database, unreachable from any ref, where `git gc` collects
+them. It needs **Git 2.38 or newer** and checks before the first branch: an
+older git exits `2` rather than reporting every branch as an error.
+
+Exit codes: `0` every branch is clean, merged or a fast-forward; `1` at least
+one conflict or error; `2` not a Git repository or Git older than 2.38; `3`
+usage; `4` the base or a branch was not found, or `HEAD` has no commits.
+
+---
+
 ## `git_undo_last_commit.sh`
 
 Undoes the latest commit. Default is **`--soft`**: the commit disappears but its changes stay **staged**. Use **`--mixed`** to keep files in the working tree unstaged, or **`--hard --force`** to discard those changes entirely (destructive).
@@ -828,6 +880,7 @@ All paths below assume the repo root is your current directory.
 ./git/git_size_report.sh --ref main --threshold 1048576
 cd "$(./git/git_repo_root.sh)"
 ./git/git_diff_branch.sh --working-tree --stat
+./git/git_merge_check.sh --all-local --into main
 ./git/git_undo_last_commit.sh --dry-run
 ./git/git_undo_last_commit.sh --revert
 ./git/git_amend_last.sh --add-all --message "fix: update the last commit"
