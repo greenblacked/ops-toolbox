@@ -1350,6 +1350,17 @@ assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$fea
   "a refused WIP push leaves the remote branch alone"
 git -C "$repo" reset -q --hard HEAD~1
 
+for wip_subject in "WIP-spike" "WIP/test" "wip(tidy)"; do
+  git -C "$repo" commit -q --allow-empty -m "$wip_subject"
+  git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+  if (( rc != 0 )); then ok "a '$wip_subject' commit is refused"; else err "a '$wip_subject' commit was pushed"; fi
+  git -C "$repo" reset -q --hard HEAD~1
+done
+git -C "$repo" commit -q --allow-empty -m "WIPE the cache"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+if (( rc == 0 )); then ok "a subject that merely starts with the letters WIP is allowed"; else err "WIPE was refused"; fi
+feature_tip="$(git -C "$repo" rev-parse HEAD)"
+
 git -C "$repo" switch -q main
 main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
 git -C "$repo" commit -q --allow-empty -m "feat: straight onto main"

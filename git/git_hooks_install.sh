@@ -48,7 +48,7 @@ pre-push (only with --pre-push) refuses the pushes that are expensive to undo:
   protected branches  any push to main or master (or the --protect names),
                       named as a deletion or a non-fast-forward when it is one
   unfinished commits  pushing a fixup!, squash! or amend! commit, or one whose
-                      subject starts with WIP, to any branch
+                      subject starts with WIP (as a word), to any branch
 
 Bypass one push deliberately with 'git push --no-verify' or by setting
 GIT_ALLOW_PROTECTED_PUSH=1 for it. Off by default for the same reason as
@@ -400,7 +400,7 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
     [ -n "\$line" ] || continue
     subject="\${line#* }"
     case "\$subject" in
-      fixup!*|squash!*|amend!*|WIP|wip|WIP:*|wip:*|'WIP '*|'wip '*)
+      fixup!*|squash!*|amend!*|WIP|wip|WIP[![:alpha:]]*|wip[![:alpha:]]*)
         printf 'pre-push: unfinished commit on %s: %s\n' "\${branch:-\$remote_ref}" "\$line" >&2
         failed=1
         ;;
