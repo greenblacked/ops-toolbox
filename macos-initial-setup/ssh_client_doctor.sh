@@ -229,6 +229,31 @@ key_unencrypted() {
   ssh-keygen -y -P "" -f "$1" </dev/null >/dev/null 2>&1
 }
 
+# Fingerprint line ("BITS SHA256:... comment (TYPE)") of a private key, read
+# from the private key alone. A bare `ssh-keygen -l -f KEY` loads KEY.pub when
+# one exists, so a stale .pub would answer for the key. An unencrypted key
+# gives its public half through -y, which is graded from a scratch file; an
+# encrypted OpenSSH-format key stores its public half in the clear, so a copy
+# of it with no .pub beside it is graded instead. The scratch directory is
+# private (0700), holds no .pub of the real key, and is removed on return.
+# Prints nothing when neither works.
+key_fingerprint() {
+  local key="$1" scratch pubtext fp=""
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/ssh_doctor.XXXXXX" 2>/dev/null)" || return 0
+  [[ -d "$scratch" ]] || return 0
+  chmod 700 "$scratch" 2>/dev/null
+  pubtext="$(ssh-keygen -y -P "" -f "$key" </dev/null 2>/dev/null)"
+  if [[ -n "$pubtext" ]]; then
+    printf '%s\n' "$pubtext" > "$scratch/derived.pub"
+    fp="$(ssh-keygen -l -f "$scratch/derived.pub" </dev/null 2>/dev/null | head -n 1)"
+  fi
+  if [[ -z "$fp" ]] && (umask 077; cat -- "$key" > "$scratch/copy") 2>/dev/null; then
+    fp="$(ssh-keygen -l -P "" -f "$scratch/copy" </dev/null 2>/dev/null | head -n 1)"
+  fi
+  rm -rf -- "$scratch"
+  printf '%s\n' "$fp"
+}
+
 expand_identity() {
   local raw="$1"
   local home="${HOME:-}"
@@ -326,8 +351,9 @@ if want files; then
 fi
 
 # --- keys --------------------------------------------------------------------
-# Strength comes from the private key (ssh-keygen -l -f KEY); the .pub is
-# only compared against it, and used when the private key cannot be read.
+# Strength comes from the private key alone (key_fingerprint, never through
+# its .pub); the .pub is only compared against it, and used, labelled as
+# unverified, when the private key cannot be read.
 # DSA has been refused by OpenSSH since 7.0; RSA under 3072 bits is below what
 # NIST and OpenSSH's own default have asked for since 2020.
 if want keys; then
@@ -345,7 +371,7 @@ if want keys; then
       # from another key or hand-edited, so strength is read from the private
       # file; -P "" and a closed stdin make an encrypted old-format key fail
       # at once instead of prompting. Only if that fails is the .pub used.
-      fp="$(ssh-keygen -l -P "" -f "$key" </dev/null 2>/dev/null | head -n 1)"
+      fp="$(key_fingerprint "$key")"
       src="$base"
       pub_fp=""
       if [[ -f "$key.pub" ]]; then
@@ -354,7 +380,7 @@ if want keys; then
       if [[ -z "$fp" && -n "$pub_fp" ]]; then
         fp="$pub_fp"
         src="$base.pub"
-        info "$base: could not read the private key, strength taken from $base.pub"
+        info "$base: could not read the private key, type from $base.pub, unverified"
       fi
       if [[ -n "$fp" ]]; then
         bits="${fp%% *}"

@@ -1316,8 +1316,8 @@ and previews on any machine.
 **Exit codes:** `0` archive written, listed or previewed · `1` tar,
 verification, publication or rotation failed · `2` preflight failed (not
 macOS, `HOME` unset, or no `tar`) for a real run · `3` bad arguments, a
-refused path or `--dest`, or a real run without `--yes` · `4` nothing to archive, or no
-archive to list.
+refused path or `--dest`, or a real run without `--yes` · `4` nothing to
+archive, or no archive to list.
 
 ---
 
@@ -1511,8 +1511,9 @@ The `secrets` group names the file and the kind of finding and **never prints
 a value**: its content checks are `grep -q` with the output discarded, so only
 a yes or a no leaves them. A symlinked credential file is checked at its
 target and reported under its name in the home directory. A Docker
-`config.json` that uses a credential store and holds no legacy `auth` entry, or an `.npmrc` whose token comes
-from `${NPM_TOKEN}`, holds no secret, so its mode is not graded.
+`config.json` that uses a credential store and holds no legacy `auth` entry,
+or an `.npmrc` whose token comes from `${NPM_TOKEN}`, holds no secret, so its
+mode is not graded.
 
 ### Options
 
@@ -1726,9 +1727,10 @@ verdicts and exit codes, plus `--keychain`.
 The verdict comes from `openssl x509 -checkend`, so it needs no date parsing:
 expired is `FAIL`, inside `--days` (default `30`) is `warn`. The day count
 in the message uses BSD `date -j`. `--keychain` reads public certificates
-only (`security find-identity` and `security find-certificate -p`): no private key is requested, so no
-Keychain unlock prompt can appear. A host must be a host name or an IPv4
-address and a port `1`-`65535`; anything else is refused before it reaches
+only (`security find-identity` and `security find-certificate -p`): no
+private key is requested, so no Keychain unlock prompt can appear. A host must
+be a host name or an IPv4 address and a port `1`-`65535`; anything else is
+refused before it reaches
 `openssl`. Certificates are held in shell variables and passed on stdin, so
 nothing is written to disk.
 
@@ -1850,7 +1852,7 @@ private key with no passphrase, and the Keychain options.
 | --- | --- |
 | `dir` | `~/.ssh` has no group or other permission bits (`chmod 700`). |
 | `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header, are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
-| `keys` | From each private key (`ssh-keygen -l -f`), not from a `.pub` that can be stale: DSA fails, RSA under 3072 bits warns. A `.pub` whose fingerprint differs from its private key's warns, and the `.pub` is only used for strength when the private key cannot be read. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
+| `keys` | From each private key alone (its public half from `ssh-keygen -y -P ""`, or a copy of an encrypted OpenSSH-format key with no `.pub` beside it, both in a private scratch directory), not from a `.pub` that can be stale: DSA fails, RSA under 3072 bits warns. A `.pub` whose fingerprint differs from its private key's warns, and the `.pub` is only used for the key type, reported as unverified, when the private key cannot be read. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
 | `config` | `IdentityFile` paths that do not exist; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line or under `Host *`, where they apply to every server (the same lines under one named host are only noted); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |
 
 It never changes a mode: every fix is printed, not run. The passphrase test

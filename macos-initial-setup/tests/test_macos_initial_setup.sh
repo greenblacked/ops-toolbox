@@ -2430,11 +2430,14 @@ assert_eq "ssh_client_doctor rejects --ssh-dir without a value -> 3" "3" "$rc"
 section "ssh_client_doctor: modes, keys and Host * risks"
 # Modes are set with chmod and read back through the real stat, BSD on a Mac
 # and GNU here, so the same fixture means the same thing on both runners.
-# ssh-keygen is faked: -l prints the fingerprint line stored in the .pub
-# fixture, or for a private key the "FP: " line in its file (and fails when
-# there is none, as for an unreadable key), and -y succeeds only for a key carrying the NOPASSPHRASE marker,
-# which is how a real key without a passphrase answers. Every fixture key
-# body carries SECRETBODY, which must never reach the output.
+# ssh-keygen is faked after the real one. -l on a private key prefers
+# KEY.pub when it exists (so a stale .pub answers for the key), otherwise it
+# prints the "FP: " line in the private file, and it fails when there is none
+# (an unreadable key); -l on a public file prints it. -y succeeds only for a
+# key carrying the NOPASSPHRASE marker, which is how a real key without a
+# passphrase answers, and prints that key's public half (its "FP: " line).
+# Every fixture key body carries SECRETBODY, which must never reach the
+# output.
 sd="$(mktemp -d)"
 mkdir -p "$sd/bin" "$sd/home/.ssh" "$sd/tmp"
 printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sd/bin/uname"
@@ -2451,11 +2454,17 @@ while [ $# -gt 0 ]; do
   shift
 done
 case "$mode" in
-  y) grep -q NOPASSPHRASE "$file" ;;
-  l) case "$file" in
-       *.pub) cat "$file" ;;
-       *) grep '^FP: ' "$file" | sed 's/^FP: //' | grep . ;;
-     esac ;;
+  y) grep -q NOPASSPHRASE "$file" || exit 1
+     grep '^FP: ' "$file" | sed 's/^FP: //' ;;
+  l) if grep -q 'BEGIN OPENSSH PRIVATE KEY' "$file" 2>/dev/null; then
+       if [ -f "$file.pub" ]; then
+         cat "$file.pub"
+       else
+         grep '^FP: ' "$file" | sed 's/^FP: //' | grep .
+       fi
+     else
+       cat "$file"
+     fi ;;
   *) exit 1 ;;
 esac
 KEYGEN_EOF
@@ -2520,7 +2529,7 @@ printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRI
   > "$sshd_dir/id_rsa"
 chmod 600 "$sshd_dir/id_rsa"
 out="$(sshdoc --only keys)"
-assert_contains "an unreadable private key falls back to the .pub" "$out" "strength taken from id_rsa.pub"
+assert_contains "an unreadable private key falls back to the .pub" "$out" "type from id_rsa.pub, unverified"
 assert_not_contains "the fallback raises no mismatch" "$out" "does not match"
 rm -f "$sshd_dir/id_rsa" "$sshd_dir/id_rsa.pub"
 
