@@ -305,18 +305,51 @@ if [[ -z "$RELEASES" && "$PKG_MGR" == "dnf" ]]; then
   RELEASES="$(releases_with_anchor 2 | sort -Vu)"
 fi
 
+# Debian and Ubuntu also ship a flavour-less common headers package
+# (linux-headers-6.8.0-79 beside linux-image-6.8.0-79-generic) that every
+# flavour of that base version shares. It goes with the first release of its
+# base, and only when no kept release still uses the same base.
+base_of() {
+  local base="${1%-*}"
+  [[ "$base" != "$1" && "$base" == *-* ]] && printf '%s\n' "$base"
+}
+
+common_headers_for() {
+  local want="$1" base rel other pkg _size _anchor first=""
+  [[ "$PKG_MGR" == "apt" ]] || return 0
+  base="$(base_of "$want")" || return 0
+  [[ -n "$base" ]] || return 0
+  while IFS= read -r other; do
+    [[ -n "$other" && "$(base_of "$other")" == "$base" ]] || continue
+    in_keep "$other" && return 0
+    [[ -n "$first" ]] || first="$other"
+  done <<<"$RELEASES"
+  [[ "$first" == "$want" ]] || return 0
+  while IFS=$'\t' read -r rel pkg _size _anchor; do
+    [[ "$rel" == "$base" && "$pkg" == "linux-headers-$base" ]] && printf '%s\n' "$pkg"
+  done <<<"$ROWS"
+  return 0
+}
+
 packages_for() {
   local want="$1" rel pkg _size _anchor
   while IFS=$'\t' read -r rel pkg _size _anchor; do
     [[ "$rel" == "$want" && -n "$pkg" ]] && printf '%s\n' "$pkg"
   done <<<"$ROWS"
+  common_headers_for "$want"
 }
 
 bytes_for() {
-  local want="$1" rel _pkg size _anchor total=0
+  local want="$1" rel _pkg size _anchor total=0 common
   while IFS=$'\t' read -r rel _pkg size _anchor; do
     [[ "$rel" == "$want" && "$size" =~ ^[0-9]+$ ]] && total=$((total + size))
   done <<<"$ROWS"
+  common="$(common_headers_for "$want")"
+  if [[ -n "$common" ]]; then
+    while IFS=$'\t' read -r rel _pkg size _anchor; do
+      [[ "$_pkg" == "$common" && "$size" =~ ^[0-9]+$ ]] && total=$((total + size))
+    done <<<"$ROWS"
+  fi
   printf '%s\n' "$total"
 }
 

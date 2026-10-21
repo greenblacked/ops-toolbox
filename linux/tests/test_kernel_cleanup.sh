@@ -222,6 +222,31 @@ for os in debian fedora arch; do
 done
 assert_eq 'three distro fixtures exercised' 3 "$distros_run"
 
+# Ubuntu also installs a flavour-less common headers package per base version.
+# It goes with the last release of its base, and stays while a kept release
+# (here the lowlatency flavour of 6.8.0-71) still uses it.
+printf '%s\t%s\t%s\n' \
+  linux-image-6.8.0-70-generic 'install ok installed' 400000 \
+  linux-headers-6.8.0-70-generic 'install ok installed' 20000 \
+  linux-headers-6.8.0-70 'install ok installed' 90000 \
+  linux-image-6.8.0-71-generic 'install ok installed' 400000 \
+  linux-image-6.8.0-71-lowlatency 'install ok installed' 400000 \
+  linux-headers-6.8.0-71 'install ok installed' 90000 \
+  linux-image-6.8.0-79-generic 'install ok installed' 400000 \
+  linux-headers-6.8.0-79 'install ok installed' 90000 \
+  linux-headers-generic 'install ok installed' 10 \
+  > "$fixture/dpkg.rows"
+run_kc debian --dry-run --release 6.8.0-79-generic --keep 1
+assert_eq 'ubuntu dry run exits 0' 0 "$rc"
+purge_line="$(grep 'apt-get purge' <<<"$out")"
+assert_contains 'the old release image goes' "$purge_line" 'linux-image-6.8.0-70-generic'
+assert_contains 'the old flavour headers go' "$purge_line" 'linux-headers-6.8.0-70-generic'
+assert_contains 'the common headers of a removed base go' "$purge_line" 'linux-headers-6.8.0-70 '
+assert_contains 'a sibling of a kept flavour goes' "$purge_line" 'linux-image-6.8.0-71-generic'
+assert_not_contains 'common headers stay while a kept release shares the base' "$purge_line" 'linux-headers-6.8.0-71 '
+assert_not_contains 'common headers of the running base stay' "$purge_line" 'linux-headers-6.8.0-79'
+assert_not_contains 'the headers metapackage stays' "$purge_line" 'linux-headers-generic'
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s kernel cleanup checks failed\n' "$failures" "$checks" >&2
   exit 1
