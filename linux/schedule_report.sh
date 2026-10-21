@@ -8,14 +8,24 @@
 # failure — a container has none of these, and that must not turn the report
 # red.
 #
+# --failed adds the 3am question, "which scheduled thing is broken?": timers
+# whose service failed on its last run, and cron jobs whose command path no
+# longer exists. It still only reads (systemctl list-units and show, crontab
+# -l, files), and a systemctl that cannot answer is a skip. --strict is the one
+# way to a non-zero exit, so a default run stays exactly what it was.
+#
 # Exit codes:
-#   0   the report ran (warnings do not change the exit code)
+#   0   the report ran (without --strict, warnings do not change the exit code)
+#   1   --strict, and at least one warning was printed
 #   2   preflight failed (not Linux)
 #   3   bad CLI arguments
 set -u
 set -o pipefail
 
 QUIET=0
+FAILED=0
+STRICT=0
+CRON_DIR="/etc/cron.d"
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -39,6 +49,15 @@ warn() {
 }
 err()  { printf "%s[err ]%s %s\n" "$C_RED" "$C_RESET" "$*" >&2; }
 
+require_value() {
+  local option="$1"
+  local value="${2:-}"
+  if [[ -z "$value" || "$value" == --* ]]; then
+    printf "%s requires a value\n" "$option" >&2
+    exit 3
+  fi
+}
+
 usage() {
   cat <<EOF
 schedule_report.sh - read-only inventory of scheduled jobs on a Linux machine
@@ -47,21 +66,30 @@ Lists systemd timers, the user crontab, and distro cron directories. Changes
 nothing. A missing scheduler is reported, not treated as a failure.
 
 Usage:
-  $(basename "$0") [--quiet]
+  $(basename "$0") [--quiet] [--failed] [--strict] [--cron-dir DIR]
 
 Options:
-  --quiet       Print only warnings
-  --help, -h    Show this help
+  --quiet          Print only warnings
+  --failed         Add a failed group: timers whose service failed on its last
+                   run, and cron jobs whose command path does not exist
+  --strict         Exit 1 when any warning was printed; works without --failed
+                   too, where lingering being off is the warning that counts
+  --cron-dir DIR   Directory read as cron.d (default: /etc/cron.d)
+  --help, -h       Show this help
 
-Sections: systemd-user, systemd-system, crontab, cron.d
+Sections: systemd-user, systemd-system, crontab, cron.d, failed (with --failed)
 
-Exit codes: 0 report printed, 2 not Linux, 3 usage
+Exit codes: 0 report printed, 1 --strict and a warning, 2 not Linux, 3 usage
 EOF
 }
 
 while (( $# > 0 )); do
   case "$1" in
     --quiet)   QUIET=1 ;;
+    --failed)  FAILED=1 ;;
+    --strict)  STRICT=1 ;;
+    --cron-dir)   require_value "$1" "${2:-}"; CRON_DIR="$2"; shift ;;
+    --cron-dir=*) CRON_DIR="${1#*=}"; require_value "--cron-dir" "$CRON_DIR" ;;
     -h|--help) usage; exit 0 ;;
     *)
       err "unknown argument: $1"
@@ -152,7 +180,7 @@ fi
 # --- /etc/cron.d and the run-parts directories -----------------------------
 group "cron.d"
 cron_files=0
-if [[ -d /etc/cron.d ]]; then
+if [[ -d "$CRON_DIR" ]]; then
   while IFS= read -r -d '' f; do
     [[ -n "$f" ]] || continue
     base="$(basename "$f")"
@@ -160,8 +188,8 @@ if [[ -d /etc/cron.d ]]; then
       .placeholder|*.dpkg-*|*.rpmsave|*.rpmnew) continue ;;
     esac
     cron_files=$((cron_files + 1))
-    info "/etc/cron.d/$base"
-  done < <(find /etc/cron.d -maxdepth 1 -type f -print0 2>/dev/null)
+    info "$CRON_DIR/$base"
+  done < <(find "$CRON_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
 fi
 for period in hourly daily weekly monthly; do
   dir="/etc/cron.$period"
@@ -178,6 +206,107 @@ else
   ok "$cron_files distro cron file(s)"
 fi
 
+# --- failed ----------------------------------------------------------------
+# A timer whose service is in the failed state looks perfectly normal in
+# list-timers: it is waiting, and it will fire again. The service is what
+# failed, so each timer is mapped to the unit it activates and compared with
+# the failed services. Read-only: list-units and show, nothing started,
+# stopped or reset.
+failed_timers() {
+  local scope="$1"
+  local sc=(systemctl)
+  local jflag=""
+  local failed timers failed_names timer unit rc found=0
+  if [[ "$scope" == "user" ]]; then
+    sc=(systemctl --user)
+    jflag="--user "
+  fi
+  failed="$("${sc[@]}" list-units --type=service --state=failed --plain --no-legend --no-pager 2>/dev/null)"; rc=$?
+  if (( rc != 0 )); then
+    skip "systemctl ${scope} list-units unavailable (exit $rc)"
+    return 0
+  fi
+  timers="$("${sc[@]}" list-units --type=timer --all --plain --no-legend --no-pager 2>/dev/null)"; rc=$?
+  if (( rc != 0 )); then
+    skip "systemctl ${scope} timer list unavailable (exit $rc)"
+    return 0
+  fi
+  failed_names="$(awk 'NF { print $1 }' <<<"$failed")"
+  while read -r timer _; do
+    [[ "$timer" == *.timer ]] || continue
+    unit="$("${sc[@]}" show -p Unit --value "$timer" 2>/dev/null)"
+    [[ -n "$unit" ]] || continue
+    if grep -qxF -- "$unit" <<<"$failed_names"; then
+      warn "$timer: its service $unit failed on its last run" \
+        "journalctl ${jflag}-u $unit -n 50 --no-pager"
+      found=$((found + 1))
+    fi
+  done <<<"$timers"
+  if (( found == 0 )); then
+    ok "no failed timer-activated services (${scope})"
+  fi
+}
+
+# Cron job lines from stdin. Comments, blank lines and NAME=value environment
+# lines are not jobs. The command is the field after the schedule: five time
+# fields or one @keyword, plus a user field in cron.d. Only an absolute first
+# word is judged; a builtin or a PATH lookup could be anything. Nothing is run
+# or sourced: the check is whether the file is there and executable.
+CRON_OK=0
+CRON_BAD=0
+check_cron_lines() {
+  local src="$1" has_user="$2"
+  local line idx cmd
+  local fields=()
+  while IFS= read -r line; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    [[ -n "$line" && "$line" != \#* ]] || continue
+    [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*= ]] && continue
+    read -r -a fields <<<"$line"
+    if [[ "${fields[0]}" == @* ]]; then
+      idx=1
+    else
+      idx=5
+    fi
+    (( has_user )) && idx=$((idx + 1))
+    cmd="${fields[$idx]:-}"
+    [[ "$cmd" == /* ]] || continue
+    if [[ -f "$cmd" && -x "$cmd" ]]; then
+      CRON_OK=$((CRON_OK + 1))
+    else
+      warn "cron: $cmd does not exist or is not executable ($src)" \
+        "edit the job or restore the file"
+      CRON_BAD=$((CRON_BAD + 1))
+    fi
+  done
+}
+
+if (( FAILED )); then
+  group "failed"
+  if have systemctl; then
+    failed_timers system
+    failed_timers user
+  else
+    skip "systemctl not installed; timer results not checked"
+  fi
+  if have crontab && cron_out="$(crontab -l 2>/dev/null)"; then
+    check_cron_lines "user crontab" 0 <<<"$cron_out"
+  fi
+  if [[ -d "$CRON_DIR" ]]; then
+    while IFS= read -r -d '' f; do
+      [[ -n "$f" ]] || continue
+      case "$(basename "$f")" in
+        .placeholder|*.dpkg-*|*.rpm*) continue ;;
+      esac
+      # shellcheck disable=SC2094  # the path is only a label; the file is only read
+      check_cron_lines "$f" 1 < "$f"
+    done < <(find "$CRON_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+  fi
+  if (( CRON_BAD == 0 )); then
+    ok "$CRON_OK cron command path(s) resolve"
+  fi
+fi
+
 # --- summary ---------------------------------------------------------------
 printf "\n%s== summary ==%s\n" "$C_BOLD" "$C_RESET"
 printf "  %s%s ok%s  %s%s warn%s  %s%s skip%s\n" \
@@ -185,4 +314,7 @@ printf "  %s%s ok%s  %s%s warn%s  %s%s skip%s\n" \
   "$C_YELLOW" "$WARN_COUNT" "$C_RESET" \
   "$C_DIM" "$SKIP_COUNT" "$C_RESET"
 info "the stay_fresh timer is installed with: ./systemd/stay_fresh_timer.sh status"
+if (( STRICT && WARN_COUNT > 0 )); then
+  exit 1
+fi
 exit 0

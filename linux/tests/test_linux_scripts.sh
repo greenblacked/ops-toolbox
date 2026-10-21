@@ -1173,6 +1173,11 @@ else
 fi
 assert_contains "schedule_report --quiet still summarises" "$out" "== summary =="
 
+# --failed, --strict and --cron-dir against a stubbed systemctl and crontab and
+# a fixture cron directory; the host's systemd and cron are never asked.
+bash "$L/tests/test_schedule_report_failed.sh"
+assert_eq "schedule_report --failed suite exits 0" "0" "$?"
+
 section "sysctl_defaults.sh"
 SYSCTL="$L/sysctl_defaults.sh"
 out="$("$SYSCTL" --list-groups 2>&1)"; rc=$?

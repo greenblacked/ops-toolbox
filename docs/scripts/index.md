@@ -30,7 +30,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/hardening_audit.sh` | Linux | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `linux/ssh_client_doctor.sh` | Linux | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
-| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`. | <span class="stage stage-report">read-only</span> |
+| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`; `--failed` finds broken ones. | <span class="stage stage-report">read-only</span> |
 | `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--check` gates on drift; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
 | `linux/swap_setup.sh` | Linux | Report swap; create or remove a swapfile and its fstab line. | `--dry-run` with `--create` or `--remove` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |

@@ -62,7 +62,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`swap_setup.sh`](swap_setup.sh) | Report swap; `--create` or `--remove` a swapfile and its fstab line |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set; list holds and autoremove orphans |
 | [`config_backup.sh`](config_backup.sh) | Dated tar of selected paths (default `/etc`); never a restore |
-| [`schedule_report.sh`](schedule_report.sh) | Read-only inventory of systemd timers and cron jobs |
+| [`schedule_report.sh`](schedule_report.sh) | Read-only inventory of systemd timers and cron jobs; `--failed` finds the broken ones |
 | [`cloud-init/kali-vm-init.yaml`](cloud-init/kali-vm-init.yaml) | First-boot configuration for a Kali red/blue lab VM; see the [runbook](cloud-init/README.md) |
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
 | [`install_aliases.sh`](install_aliases.sh) | Install or remove the `bash_aliases.sh` source block in `~/.bashrc` |
@@ -174,7 +174,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Diagnose** | `status.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `system_doctor.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When "the network is wrong" | nothing — it only reads |
-| **Diagnose** | `schedule_report.sh` | When something ran at 3am | nothing — it only reads |
+| **Diagnose** | `schedule_report.sh` | When something ran at 3am, or `--failed` when something did not | nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When `Permission denied (publickey)` and the key is on disk | nothing — it only reads |
 | **Diagnose** | `tls_expiry.sh` | Monthly, or from cron | nothing — it only reads |
@@ -182,7 +182,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 `stay_fresh.sh` assumes a supported package manager but degrades if optional
 tools (docker, snap, journalctl) are missing. The diagnose scripts never
 change the machine; `hardening_audit.sh` is the one whose exit code can gate
-a pipeline.
+a pipeline by default, and `schedule_report.sh --strict` joins it on request.
 
 ## Kali VM bootstrap
 
@@ -482,10 +482,36 @@ none of these.
 ```bash
 ./schedule_report.sh
 ./schedule_report.sh --quiet
+./schedule_report.sh --failed                 # which scheduled thing is broken?
+./schedule_report.sh --failed --strict        # the same, as a gate: exit 1 on a warning
+./schedule_report.sh --failed --cron-dir /srv/cron.d
 ```
 
-Warnings do not change the exit code. For the stay_fresh timer itself,
+Without `--strict`, warnings do not change the exit code, and with none of the
+new flags the output is exactly what it was. For the stay_fresh timer itself,
 use [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh) `status`.
+
+`--failed` adds a `failed` group after `cron.d`, for the 3am question: which
+scheduled thing is broken? A timer whose service failed on its last run looks
+perfectly normal in `list-timers`, so for the system and the user manager it
+maps each timer to the unit it activates (`systemctl show -p Unit`) and warns
+when that unit is in `systemctl list-units --state=failed`, with
+`journalctl -u SERVICE -n 50 --no-pager` (`--user` for user units) as the fix.
+A `systemctl` that cannot answer, as in a container, is a `skip`, never a
+warning. For cron it reads the user crontab and every file in the cron
+directory (skipping `.placeholder`, `*.dpkg-*` and `*.rpm*`), takes the first
+word of each job's command (after five time fields or an `@keyword`, plus the
+user field in `cron.d`), and warns when that is an absolute path that is not an
+executable file: the job an upgrade quietly orphaned. Comments, blank lines
+and `NAME=value` lines are not jobs, and a word without a slash is not judged,
+since it may be a builtin or a `PATH` lookup. Nothing is run, sourced, started,
+stopped or reset.
+
+`--strict` exits `1` when any warning was printed, with or without `--failed`,
+so lingering being off counts too. `--cron-dir DIR` replaces `/etc/cron.d` for
+both the `cron.d` group and the check, which is also how the tests point it at
+a fixture. Exit codes: `0` report printed, `1` `--strict` and at least one
+warning, `2` not Linux, `3` bad usage.
 
 ## `disk_cleanup.sh`
 
@@ -919,7 +945,7 @@ permissive development host can validly differ from a server baseline.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference, or `sysctl_defaults.sh --check` found a key not in place |
+| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference, or `sysctl_defaults.sh --check` found a key not in place, or `schedule_report.sh --strict` printed a warning |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install or removal was requested without `--yes` |
 | `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove; `swap_setup.sh` had nothing to do |
