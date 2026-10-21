@@ -1821,6 +1821,20 @@ if (-not $pathDoctor) {
         } else {
             Test-Fail 'an entry clean cannot judge was removed'
         }
+        # REG_SZ: Windows never expands %VAR%, so the absolute entry that follows
+        # it is a different, working folder and must survive.
+        $szProbe = Get-CleanedPath -Entries @('%TOOLS%', 'C:\Tools') -Exists $fakeExists -Expand { param([string]$Text) $Text -replace '%TOOLS%', 'C:\Tools' } -Kind 'String'
+        if ($szProbe.Value -ceq '%TOOLS%;C:\Tools' -and @($szProbe.Removed).Count -eq 0) {
+            Test-Ok 'REG_SZ: an unexpanded %VAR% entry never makes the later absolute entry a duplicate'
+        } else {
+            Test-Fail "REG_SZ clean returned [$($szProbe.Value)], expected [%TOOLS%;C:\Tools]"
+        }
+        $expProbe = Get-CleanedPath -Entries @('%TOOLS%', 'C:\Tools') -Exists $fakeExists -Expand { param([string]$Text) $Text -replace '%TOOLS%', 'C:\Tools' } -Kind 'ExpandString'
+        if ($expProbe.Value -ceq '%TOOLS%' -and @($expProbe.Removed).Count -eq 1) {
+            Test-Ok 'REG_EXPAND_SZ: expansion still decides what repeats'
+        } else {
+            Test-Fail "REG_EXPAND_SZ clean returned [$($expProbe.Value)], expected [%TOOLS%]"
+        }
         $again = Get-CleanedPath -Entries ($cleaned.Value -split ';') -Exists $fakeExists -Expand $fakeExpand
         if (@($again.Removed).Count -eq 0 -and $again.Value -ceq $cleaned.Value) {
             Test-Ok 'cleaning the cleaned value removes nothing (idempotent)'

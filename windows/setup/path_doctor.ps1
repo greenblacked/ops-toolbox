@@ -213,12 +213,14 @@ function Get-PathFinding {
 # entry, and absolute folders that do not exist on a drive that does. Keeps
 # everything it cannot judge: an entry with a %VARIABLE%, a relative or
 # quoted entry, a UNC path. Order and the original text are preserved.
+# Kind is the registry kind; for 'String' nothing is expanded.
 # Returns { Value, Removed = { Entry, Reason }[] }.
 function Get-CleanedPath {
     param(
         [string[]]$Entries,
         [scriptblock]$Exists,
-        [scriptblock]$Expand
+        [scriptblock]$Expand,
+        [string]$Kind = 'ExpandString'
     )
     $normalise = { param([string]$Text) $Text.Trim().Trim('"').TrimEnd('\', '/').ToLowerInvariant() }
     $kept = @()
@@ -231,7 +233,11 @@ function Get-CleanedPath {
             continue
         }
         $judgeable = ($entry -notmatch '%') -and ($entry.Trim() -match '^[A-Za-z]:\\')
-        $key = & $normalise ([string](& $Expand $entry))
+        # A REG_SZ value is never expanded by Windows, so an unexpanded %VAR%
+        # entry is not a repeat of the absolute folder it would expand to.
+        $effective = $entry
+        if ($Kind -ne 'String') { $effective = [string](& $Expand $entry) }
+        $key = & $normalise $effective
         if ($seen.Contains($key)) {
             if ($judgeable) {
                 $removed += [pscustomobject]@{ Entry = $entry; Reason = 'duplicate' }
@@ -374,7 +380,7 @@ if ($Action -eq 'clean') {
         exit 0
     }
 
-    $result = Get-CleanedPath -Entries ($userPath.Value -split ';') -Exists $exists -Expand $expand
+    $result = Get-CleanedPath -Entries ($userPath.Value -split ';') -Exists $exists -Expand $expand -Kind $userPath.Kind
     $removals = @($result.Removed)
     if ($removals.Count -eq 0) {
         Write-Ok 'nothing to clean'
