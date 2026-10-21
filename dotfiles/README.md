@@ -23,6 +23,7 @@ tools, not by a shell.
 - [Quick start](#quick-start)
 - [What is deliberately not here](#what-is-deliberately-not-here)
 - [`install_dotfiles.sh`](#install_dotfilessh)
+- [`dotfiles_doctor.sh`](#dotfiles_doctorsh)
 - [Shell and terminal](#shell-and-terminal)
 - [Git and GitHub](#git-and-github)
 - [SSH and GnuPG](#ssh-and-gnupg)
@@ -38,7 +39,7 @@ tools, not by a shell.
 | Requirement | Notes |
 | --- | --- |
 | **macOS 12+ or Linux** | The installer and every config target both. |
-| **Bash 3.2 or newer** | Only [`install_dotfiles.sh`](install_dotfiles.sh) needs a shell at all; it stays Bash 3.2-clean like the macOS package, so the `/bin/bash` on a Mac is enough. |
+| **Bash 3.2 or newer** | Only [`install_dotfiles.sh`](install_dotfiles.sh) and [`dotfiles_doctor.sh`](dotfiles_doctor.sh) need a shell at all; both stay Bash 3.2-clean like the macOS package, so the `/bin/bash` on a Mac is enough. |
 | **The tools themselves** | A config is inert until the tool that reads it is installed — nothing here installs one. `--only UNIT` limits any mode to the tools you actually have, and `--list` shows every unit name. |
 | **`git`** | Only for the suite in [`tests/`](tests/), which needs nothing else — no Docker. |
 
@@ -154,6 +155,54 @@ git config --file ~/.config/git/config.local user.email "you@example.com"
 [`git/set_git_profile.sh`](../git/set_git_profile.sh) uses `--global`, so
 after running it, move the three `user.*` lines it wrote from
 `config/git/config` into `config.local` before committing.
+
+## `dotfiles_doctor.sh`
+
+A read-only health report for what `install_dotfiles.sh` put in place. It
+changes nothing: every check is a read, and every finding comes with the
+command that fixes it, printed for you to run.
+
+```text
+dotfiles_doctor.sh [--repo DIR] [--home DIR] [--config-home DIR] [--fail-on warn|fail] [--quiet]
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--repo DIR` | The dotfiles folder the links point into. Default: the folder the script sits in, when `config/` and `home/` are beside it. Copied alone into `~/bin`, or run through a link from there, it has none, and the link check is skipped with a `[skip]` line while everything else still runs. A `DIR` without `config/` and `home/` exits `2`. |
+| `--home DIR` | The home directory to inspect instead of `$HOME`. `config/` targets are then looked for under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, the same rule the installer follows. |
+| `--config-home DIR` | Where `config/` was installed, instead of `$XDG_CONFIG_HOME` or `~/.config`. |
+| `--fail-on LEVEL` | `fail` (default) exits `1` only on a `[FAIL]`; `warn` exits `1` on a `[warn]` too. |
+| `--quiet` | Print only warnings, failures and the closing count. |
+
+Output is one `== group ==` heading per check, indented `[pass]`, `[warn]`,
+`[FAIL]` and `[skip]` lines with the fix on a dimmed second line, and a
+closing `N pass, N warn, N fail, N skip`.
+
+**Linked configs hold no credential.** Most configs here are links into this
+folder, and this folder is a public repository. A tool that writes a secret
+into its config writes it straight into a tracked file: `npm login` adds a
+`_authToken` line to `~/.npmrc`, `pip config set` with a token in an index URL
+writes it into `pip.conf`, a git `url.<base>.insteadOf` with a password in it
+lands in `config/git/config`. Nothing notices before `git add`. For every
+tracked file whose target is a link into the repository, the doctor reads the
+file through the link and reports each line that carries a token shape (AWS
+key id, private key header, GitHub, GitLab and Slack tokens, an AWS secret key,
+a gh `oauth_token`), a literal npm `_auth`, `_authToken` or `_password` value,
+a URL with a password in it, or a JSON `"auth"` value. A finding names the
+file and the line number, never the value, so the report is safe to paste
+into a ticket; the fix is to remove the line, rotate the credential, and
+check that `git -C <repo> diff` of that file is clean. An npm value written
+as an environment reference (`_authToken=${NPM_TOKEN}`) is the documented
+way to keep it out of the file and passes, and the keyed patterns ignore
+comment lines, because the tracked `.npmrc` explains in one why no token
+belongs in it. Copies (`~/.docker/config.json` and the other three) are not
+links and may hold what their tool writes there, so they are not read. A
+link into the repository whose file no longer exists is a `[warn]`: the
+config was renamed or removed and the tool reads nothing.
+
+**Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
+`2` preflight — no home directory, or a `--repo` without `config/` and
+`home/`; `3` usage.
 
 ## Environment variables
 
@@ -631,7 +680,9 @@ set` — `core/disable_usage_reporting true`,
 ## Tests
 
 `tests/run.sh` needs nothing but bash and git, so it runs everywhere the
-static suite does; CI runs it as `Test / dotfiles`.
+static suite does; CI runs it as `Test / dotfiles`. It runs two files:
+`test_dotfiles.sh` for the installer and the tracked configs, and
+`test_doctor.sh` for the doctor.
 
 ```bash
 ./dotfiles/tests/run.sh      # or: ./run-tests.sh dotfiles
@@ -659,3 +710,18 @@ AWS keys, GitHub and GitLab tokens, Slack tokens, private key headers.
 Parsers that are missing on the host are skipped with a note rather than
 failed, so a verdict on the installer never depends on having Python or gpg
 installed.
+
+`test_doctor.sh` builds a fake dotfiles folder and a scratch home whose
+configs are links into it, so no tracked file is edited to make a finding
+appear, and asserts the doctor's contract: `--help` with no dry-run flag in
+it, exit `3` on bad usage and `2` on a missing home, a clean fixture that
+passes, a token in a linked file reported by file and line with the token
+itself absent from the output, an npm value read from the environment and a
+keyed value in a comment both passing, a copy never read, a dangling link a
+warning that `--fail-on warn` turns into exit `1`, and the script copied
+alone into a bin directory still running. Every run is followed by a
+snapshot comparison of the scratch home and tmp, because a doctor that
+writes is not read-only. Last, the real configs are installed into a
+scratch home and must give no finding at all, the false-positive guard for
+the patterns. Token-shaped values are assembled at run time, so no literal
+one sits in the suite.

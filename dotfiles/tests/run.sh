@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Run the dotfiles suite.
+# Run the dotfiles suites: the installer and the tracked configs in
+# test_dotfiles.sh, the read-only doctor in test_doctor.sh.
 #
 # Needs nothing but bash and git. The configs are static files and the
 # installer only makes symlinks, so there is nothing a container would add:
@@ -11,4 +12,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
-exec "$HERE/test_dotfiles.sh" "$@"
+rc=0
+"$HERE/test_dotfiles.sh" "$@" || rc=1
+"$HERE/test_doctor.sh" || rc=1
+exit "$rc"

@@ -19,6 +19,7 @@ copies each tracked file into place and reports drift.
 | Script | Purpose | Preview |
 | --- | --- | --- |
 | `install_dotfiles.sh` | Link (or copy) each tracked config into `$HOME` or `$XDG_CONFIG_HOME`. Modes: `--list`, `--status`, `--uninstall`, `--only UNIT`, `--force`. | `--dry-run` (also on `--uninstall`); `--list` and `--status` are read-only |
+| `dotfiles_doctor.sh` | Read-only health report for the installed configs: a credential written through a link into the tracked repository, reported by file and line, never by value. | read-only |
 
 The installer works per file and never links whole directories. `--status`
 reports each file as `MATCH`, `DRIFT`, `MISSING`, `FOREIGN` or `CONFLICT`.
@@ -36,6 +37,13 @@ reports each file as `MATCH`, `DRIFT`, `MISSING`, `FOREIGN` or `CONFLICT`.
 
     ```bash
     ./dotfiles/install_dotfiles.sh --dry-run
+    ```
+
+=== "Check"
+
+    ```bash
+    ./dotfiles/dotfiles_doctor.sh
+    ./dotfiles/dotfiles_doctor.sh --fail-on warn --quiet
     ```
 
 === "Apply"
