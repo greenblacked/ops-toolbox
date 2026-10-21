@@ -203,10 +203,10 @@ run() {
 
 # Git Bash reads these files with a real bash, which treats a trailing CR as
 # part of the line: `cmd \<CR><LF>` escapes the CR instead of the newline and
-# the continuation silently breaks. LC_ALL=C keeps grep from deciding a file is
-# binary and answering with a summary line instead of a match.
+# the continuation silently breaks. Counts the CR bytes with tr: on Git Bash
+# (MSYS) grep reads in text mode and drops the CR before matching it.
 has_crlf() {
-  LC_ALL=C grep -q $'\r' "$1"
+  (( $(LC_ALL=C tr -dc '\r' <"$1" | wc -c) > 0 ))
 }
 
 # Every stamp with at least one <name>.backup-<stamp> beside the target, newest

@@ -132,10 +132,10 @@ fi
 
 group() { printf "\n%s== %s ==%s\n" "$C_BOLD" "$1" "$C_RESET"; }
 
-# Same test install_dotfiles.sh uses. LC_ALL=C keeps grep from deciding the
-# file is binary and answering with a summary line instead of a match.
+# Same test install_dotfiles.sh uses. Counts the CR bytes with tr: on Git Bash
+# (MSYS) grep reads in text mode and drops the CR before matching it.
 has_cr() {
-  LC_ALL=C grep -q $'\r' "$1"
+  (( $(LC_ALL=C tr -dc '\r' <"$1" | wc -c) > 0 ))
 }
 
 lowercase() {

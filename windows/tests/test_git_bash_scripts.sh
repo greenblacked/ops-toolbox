@@ -41,6 +41,18 @@ sections=0
 section_name=""
 ok()  { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[ ok ] $*"; }
 err() { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[fail] $*" >&2; failures=$((failures + 1)); }
+skip() { checks=$((checks + 1)); section_checks=$((section_checks + 1)); echo "[skip] $*"; }
+
+# Git Bash on Windows makes ln -s copy the file unless real symlinks are
+# enabled, so the assertions about symlinks only mean something where one is.
+HAVE_SYMLINKS=0
+if [[ -n "$SCRATCH" ]]; then
+  : > "$SCRATCH/.symlink-probe-target"
+  if ln -s "$SCRATCH/.symlink-probe-target" "$SCRATCH/.symlink-probe" 2>/dev/null && [[ -L "$SCRATCH/.symlink-probe" ]]; then
+    HAVE_SYMLINKS=1
+  fi
+  rm -f "$SCRATCH/.symlink-probe" "$SCRATCH/.symlink-probe-target"
+fi
 
 section() {
   end_section
@@ -354,7 +366,9 @@ printf 'managed by a dotfiles repository\n' > "$h/managed-bashrc"
 ln -s "$h/managed-bashrc" "$h/.bashrc.backup-20260401-000000"
 run_install "$h" --restore 20260401-000000
 assert_eq "--restore of a symlink backup -> 0" 0 "$rc"
-if [[ -L "$h/.bashrc" && "$(readlink "$h/.bashrc")" == "$h/managed-bashrc" ]]; then
+if (( HAVE_SYMLINKS == 0 )); then
+  skip "symlink restore: this platform's ln -s makes copies, not symlinks"
+elif [[ -L "$h/.bashrc" && "$(readlink "$h/.bashrc")" == "$h/managed-bashrc" ]]; then
   ok "a symlinked .bashrc backup comes back as the same symlink"
 else
   err "a symlinked .bashrc backup was not restored as a symlink"
@@ -454,15 +468,19 @@ h="$(new_diff_home)"
 printf '# managed elsewhere\n' > "$h/linked-bashrc"
 rm -f "$h/.bashrc"
 ln -s "$h/linked-bashrc" "$h/.bashrc"
+before="$(snapshot "$h")"
 run_install "$h" --diff --source "$GB"
 assert_eq "--diff through a symlinked target -> 4" 4 "$rc"
 assert_contains "the symlinked target is compared by its content" "$out" "DRIFT   $h/.bashrc"
 assert_contains "and the diff shows the linked file's lines" "$out" "-# managed elsewhere"
-if [[ -L "$h/.bashrc" && "$(readlink "$h/.bashrc")" == "$h/linked-bashrc" ]]; then
+if (( HAVE_SYMLINKS == 0 )); then
+  skip "--diff symlink check: this platform's ln -s makes copies, not symlinks"
+elif [[ -L "$h/.bashrc" && "$(readlink "$h/.bashrc")" == "$h/linked-bashrc" ]]; then
   ok "--diff left the symlink as it was"
 else
   err "--diff changed the symlinked .bashrc"
 fi
+assert_eq "--diff through a symlinked target changed no file" "$before" "$(snapshot "$h")"
 
 # --------------------------------------------------------------------------
 section "ctx"
