@@ -32,6 +32,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_amend_last.sh`](#git_amend_lastsh)
 - [`git_hooks_install.sh`](#git_hooks_installsh)
 - [`git_commitlint.sh`](#git_commitlintsh)
+- [`git_release_notes.sh`](#git_release_notessh)
 - [`clone-repos.sh`](#clone-repossh)
 - [`git_ssh_doctor.py`](#git_ssh_doctorpy)
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
@@ -88,6 +89,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
 | `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
 | `git_commitlint.sh` | Lint every commit message a branch adds, in CI, against the commit-msg hook's rules. |
+| `git_release_notes.sh` | Release notes grouped by Conventional Commit type since the last tag, and the next semver version. |
 | `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, or fast-forwards it with `--update`, and `repos.txt.example` shows the format. |
 | `git_prune_gone.sh` | Delete branches with deleted upstreams, with include/exclude filters. |
 | `git_stale_branches.sh` | Report old branches and optionally filter by gone/merged/unmerged state. |
@@ -146,7 +148,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `grepos` | `git_repos_status.sh` | `gsign` | `git_signing_doctor.py` |
 | `gunpushed` | `git_unpushed.sh` | `gremote` | `git_remote_doctor.py` |
 | `gmcheck` | `git_merge_check.sh` | `gignore` | `git_ignore_doctor.py` |
-| `glint` | `git_commitlint.sh` | | |
+| `glint` | `git_commitlint.sh` | `gnotes` | `git_release_notes.sh` |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
 
@@ -764,6 +766,55 @@ branch could be inferred.
 
 ---
 
+## `git_release_notes.sh`
+
+Release notes without scrolling `git log` between two tags. The commits since
+the last tag are grouped by Conventional Commit type, breaking changes first,
+and printed as text or markdown ready to paste into a release, a deploy note
+or a change ticket. It reads the convention `git_hooks_install.sh --commit-msg`
+and `git_commitlint.sh` enforce, in the other direction.
+
+```bash
+./git/git_release_notes.sh                          # since the last v* tag
+./git/git_release_notes.sh --format markdown > notes.md
+./git/git_release_notes.sh --to v1.4.0              # the notes for that release
+./git/git_release_notes.sh --from v1.2.0 --to v1.3.0
+./git/git_release_notes.sh --match 'release-*'
+./git/git_release_notes.sh --next-version           # e.g. 1.5.0
+```
+
+Sections, in order, each only when it has commits: **Breaking changes** (a `!`
+after the type, or a body line starting `BREAKING CHANGE:`), **Features**
+(`feat`), **Fixes** (`fix`), **Performance** (`perf`), **Documentation**
+(`docs`), **Build and CI** (`build`, `ci`) and **Other** (`chore`, `refactor`,
+`style`, `test`, `revert`, any other type, and every subject that is not a
+Conventional Commit, so nothing is dropped silently). Each entry is
+`- scope: description (shortsha)`, or `- description (shortsha)` without a
+scope. Merge commits are left out.
+
+`--from` defaults to the nearest tag matching `--match` (default `v[0-9]*`)
+reachable from `--to` (default `HEAD`). A tag on `--to` itself is the release
+being described, so `--to v1.4.0` runs from the tag before it. With no matching
+tag the whole history is used and a note on stderr says so. `--format markdown`
+opens with `## FROM..TO`, or `## TAG (DATE)` when `--to` is a tag, and uses
+`###` section headings.
+
+`--next-version` prints only the version the commits imply after the `--from`
+tag, which must be `MAJOR.MINOR.PATCH` with or without a leading `v`: major for
+any breaking change, else minor for any feature, else patch. It is the plain
+semver rule; a 0.x project that bumps the minor for breaking changes should
+read it as a suggestion.
+
+Read-only: it creates no tag and writes no file. A shallow clone may lack the
+tag; run `git fetch --tags --unshallow` first, and a missing ref exits `3`
+rather than printing an empty success.
+
+Exit codes: `0` success, `2` not a Git repository, `3` usage, a bad ref, or a
+`--from` tag that is not semver for `--next-version`, `4` no commits between
+`FROM` and `TO`.
+
+---
+
 ## `clone-repos.sh`
 
 Clones every repository listed in a text file, one URL or local path per
@@ -971,6 +1022,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_amend_last.sh --add-all --message "fix: update the last commit"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
 ./git/git_commitlint.sh --base origin/main
+./git/git_release_notes.sh --format markdown
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/clone-repos.sh --update --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet

@@ -30,6 +30,7 @@ ignore rules.
 | `git_stale_branches.sh` | Old branches with last committer and state. | <span class="stage stage-report">read-only</span> |
 | `git_size_report.sh` | Repository size and largest blobs. | <span class="stage stage-report">read-only</span> |
 | `git_commitlint.sh` | Lint every commit message in a range, for CI. | <span class="stage stage-report">read-only</span> |
+| `git_release_notes.sh` | Release notes since the last tag, and the next version. | <span class="stage stage-report">read-only</span> |
 | `gacp.sh` | `git add --all`, commit and push. | `--dry-run` |
 | `set_git_profile.sh` | Set or save Git author identity profiles. | `--dry-run` |
 | `git_sync_default.sh` | Fetch and fast-forward the default branch. | `--dry-run` |

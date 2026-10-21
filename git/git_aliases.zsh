@@ -34,6 +34,7 @@ _pretty_git_alias gacp     gacp.sh
 _pretty_git_alias gamend   git_amend_last.sh
 _pretty_git_alias gundo    git_undo_last_commit.sh
 _pretty_git_alias glint    git_commitlint.sh
+_pretty_git_alias gnotes   git_release_notes.sh
 
 # --- setting up ------------------------------------------------------------
 _pretty_git_alias gclone   clone-repos.sh

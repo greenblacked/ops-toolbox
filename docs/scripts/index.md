@@ -59,6 +59,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_stale_branches.sh` | Git | Report old branches and their state. | <span class="stage stage-report">read-only</span> |
 | `git/git_size_report.sh` | Git | Repository size and largest blobs. | <span class="stage stage-report">read-only</span> |
 | `git/git_commitlint.sh` | Git | Lint every commit message in a range, for CI. | <span class="stage stage-report">read-only</span> |
+| `git/git_release_notes.sh` | Git | Release notes since the last tag, and the next version. | <span class="stage stage-report">read-only</span> |
 | `git/git_repos_status.sh` | Git | Status of every checkout under a directory. | <span class="stage stage-report">read-only</span> |
 | `git/git_unpushed.sh` | Git | Everything in a repository that exists only locally. | <span class="stage stage-report">read-only</span> |
 | `git/gacp.sh` | Git | Add all, commit and push. | `--dry-run` |
