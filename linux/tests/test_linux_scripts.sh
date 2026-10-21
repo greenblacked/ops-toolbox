@@ -1729,6 +1729,19 @@ assert_eq "tls_expiry rejects --fail-on nope -> 3" "3" "$rc"
 "$TLS" --file --days 7 >/dev/null 2>&1; rc=$?
 assert_eq "tls_expiry --file rejects the next flag as a path -> 3" "3" "$rc"
 
+# The --deep family's usage errors, like the ones above, are answered before
+# the openssl preflight, so they hold on an image without openssl.
+"$TLS" --hosts-file /nonexistent >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects an unreadable --hosts-file -> 3" "3" "$rc"
+"$TLS" --hosts-file >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry --hosts-file without a value -> 3" "3" "$rc"
+"$TLS" --min-key-bits 12 --file /dev/null >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects --min-key-bits 12 -> 3" "3" "$rc"
+"$TLS" --check-host --file /dev/null >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry --check-host without a value -> 3" "3" "$rc"
+"$TLS" --deep >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry --deep with no target -> 3" "3" "$rc"
+
 # openssl is not in the tester image on purpose (see tester/Dockerfile): a
 # missing binary must be exit 2, not a crash, and --help already ran above.
 if ! command -v openssl >/dev/null 2>&1; then
@@ -1771,6 +1784,60 @@ else
   assert_contains "tls_expiry glob expands a.pem" "$out" "a.pem"
   assert_contains "tls_expiry glob expands b.pem" "$out" "b.pem"
   rm -rf "$globdir"
+
+  # --check-host against a SAN. -addext needs OpenSSL 1.1.1; an older one
+  # cannot build the fixture, which is said rather than passed silently.
+  san="$(mktemp --suffix=.pem)"
+  san_key="$(mktemp)"
+  if openssl req -x509 -newkey rsa:2048 -keyout "$san_key" -out "$san" -days 3650 -nodes \
+       -subj "/CN=san.test" -addext "subjectAltName=DNS:valid.test" >/dev/null 2>&1; then
+    out="$("$TLS" --file "$san" --check-host valid.test 2>&1)"; rc=$?
+    assert_eq "tls_expiry --check-host on a covered name exits 0" "0" "$rc"
+    assert_contains "tls_expiry says the certificate covers the name" "$out" "covers valid.test"
+    out="$("$TLS" --file "$san" --check-host other.test 2>&1)"; rc=$?
+    assert_eq "tls_expiry --check-host on another name exits 1" "1" "$rc"
+    assert_contains "tls_expiry says the certificate does not cover it" "$out" "does not cover other.test"
+  else
+    ok "tls_expiry --check-host skipped (openssl too old for -addext)"
+  fi
+  rm -f "$san" "$san_key"
+
+  # The fixtures above are self-signed, which --deep reports as a warning:
+  # a default run still passes, --fail-on warn does not.
+  out="$("$TLS" --file "$valid" --deep 2>&1)"; rc=$?
+  assert_eq "tls_expiry --deep on a self-signed leaf exits 0 by default" "0" "$rc"
+  assert_contains "tls_expiry --deep warns on a self-signed leaf" \
+    "$(grep -F 'self-signed' <<<"$out" || true)" "[warn]"
+  assert_contains "tls_expiry --deep grades key strength" "$out" "strength: 2048 bit RSA"
+  "$TLS" --file "$valid" --deep --fail-on warn >/dev/null 2>&1; rc=$?
+  assert_eq "tls_expiry --deep --fail-on warn exits 1 on a self-signed leaf" "1" "$rc"
+
+  # Some crypto policies refuse to make a 1024-bit key at all; that is a
+  # skipped fixture, not a failed check.
+  weak="$(mktemp --suffix=.pem)"
+  weak_key="$(mktemp)"
+  if openssl req -x509 -newkey rsa:1024 -keyout "$weak_key" -out "$weak" -days 3650 -nodes \
+       -subj "/CN=weak.test" >/dev/null 2>&1 && [[ -s "$weak" ]]; then
+    out="$("$TLS" --file "$weak" --deep 2>&1)"; rc=$?
+    assert_eq "tls_expiry --deep fails a 1024-bit key" "1" "$rc"
+    assert_contains "tls_expiry names the key-size minimum" "$out" "minimum 2048"
+    "$TLS" --file "$weak" --deep --min-key-bits 1024 >/dev/null 2>&1; rc=$?
+    assert_eq "tls_expiry --min-key-bits 1024 accepts it" "0" "$rc"
+  else
+    ok "tls_expiry weak-key check skipped (this openssl refuses rsa:1024)"
+  fi
+  rm -f "$weak" "$weak_key"
+
+  # A hosts file: a comment and a blank line are not targets, and the one real
+  # entry is a closed port, so exactly one host is tried and warned about.
+  hosts_dir="$(mktemp -d)"
+  printf '# endpoints\n\nlocalhost:1\n' > "$hosts_dir/hosts"
+  out="$("$TLS" --hosts-file "$hosts_dir/hosts" 2>&1)"; rc=$?
+  assert_eq "tls_expiry --hosts-file with an unreachable host exits 0" "0" "$rc"
+  assert_contains "tls_expiry reads the hosts file entry" "$out" "localhost:1"
+  assert_contains "tls_expiry warns on an unreachable host" "$out" "could not fetch a leaf certificate"
+  assert_eq "tls_expiry tries exactly one target from the hosts file" "1" "$(grep -c '\[warn\]' <<<"$out")"
+  rm -rf "$hosts_dir"
 
   scratch_home="$(mktemp -d)"
   HOME="$scratch_home" TMPDIR="$scratch_home" "$TLS" --file "$valid" >/dev/null 2>&1

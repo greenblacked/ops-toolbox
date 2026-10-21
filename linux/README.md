@@ -58,7 +58,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`listen_audit.sh`](listen_audit.sh) | Read-only listening-port owners and scope; `--print` a baseline, `--baseline` to catch drift |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd settings and algorithms, accounts, network, file modes, host keys, updates, kernel controls |
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
-| [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
+| [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames; `--deep` name, chain and key checks |
 | [`container_doctor.sh`](container_doctor.sh) | Read-only Docker/Podman grading: restart loops, OOM kills, socket mounts, uncapped logs |
 | [`log_triage.sh`](log_triage.sh) | Read-only log summary since `--since`: kernel distress, noisiest identifiers, failed logins, repeats |
 | [`sysctl_defaults.sh`](sysctl_defaults.sh) | Report/apply/revert a short sysctl list (inotify watches, swappiness) |
@@ -639,12 +639,31 @@ Name every PEM or hostname you actually serve:
 ./tls_expiry.sh --file '/etc/letsencrypt/live/*/fullchain.pem'
 ./tls_expiry.sh --host example.com --host example.com:8443
 ./tls_expiry.sh --file ./leaf.pem --days 14 --fail-on warn
+./tls_expiry.sh --hosts-file /etc/tls-endpoints.txt --deep
+./tls_expiry.sh --file ./leaf.pem --check-host www.example.com
 ```
 
 `--fail-on expired` (the default) exits `1` only when a cert is already dead;
 `--fail-on warn` also fails inside the window, so a cron job can page before
 clients do. Missing `openssl` is exit `2`; `--help` and a missing `--file`
 still work without it.
+
+Expiry is half of a certificate outage; the other half is a certificate that
+is valid and wrong. `--check-host NAME` fails when the certificate does not
+cover `NAME` (`-checkhost`, or `-checkip` for an address). `--deep` adds the
+rest: the name check for every `--host` target (its own name unless
+`--check-host` overrides it), the chain as the handshake verified it against
+the system trust store (an incomplete chain fails with "serve fullchain.pem",
+a self-signed one warns; an expired one is the expiry check's finding and is
+not counted twice), a self-signed issuer on a `--file` target, the key size
+against `--min-key-bits` (2048), the EC curve, and MD5 or SHA-1 signatures.
+The chain comes from the same single handshake the expiry check makes.
+`--hosts-file FILE` reads one `HOST[:PORT]` per line, with `#` comments; an
+unreadable file is exit `3` before anything else runs.
+
+With the default `--fail-on expired`, a FAIL from these checks (wrong name,
+missing intermediate, short key, weak signature) exits `1` too, and a warning
+(self-signed, unusual curve) exits `1` only with `--fail-on warn`.
 
 ## `container_doctor.sh`
 
