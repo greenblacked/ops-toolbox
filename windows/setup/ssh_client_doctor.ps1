@@ -53,7 +53,7 @@
     Exit codes, matching linux/ssh_client_doctor.sh:
       0  no findings at or above -FailOn
       1  one or more findings at or above -FailOn
-      2  not Windows
+      2  not Windows, or -SshDir is not a directory
       3  bad arguments
 #>
 [CmdletBinding()]
@@ -121,13 +121,17 @@ function Write-Group { param([string]$Name) Write-Host ''; Write-Host "== $Name 
 # ignored. SIDs are compared when present because the names are localised
 # ('VORDEFINIERT\Administratoren'); names are the fallback.
 #
+# With -WriteOnly (the config file) only an Allow entry carrying write,
+# modify, delete, permission or ownership rights counts: others may read it.
+#
 # An empty list grades as 'skip': there is nothing to read, which on Windows
 # means the ACL could not be read, and a verdict without evidence is not one.
 function Test-KeyAcl {
     param(
         [object[]]$Entries,
         [string]$CurrentUser,
-        [string]$CurrentUserSid = ''
+        [string]$CurrentUserSid = '',
+        [switch]$WriteOnly
     )
     if (-not $Entries -or @($Entries).Count -eq 0) {
         return [pscustomobject]@{ Level = 'skip'; Offenders = @() }
@@ -144,6 +148,15 @@ function Test-KeyAcl {
         $identity = [string]$entry.Identity
         $sid = [string]$entry.Sid
         if ($sid -and $trustedSids -contains $sid) { continue }
+        # -WriteOnly is the config file: Win32-OpenSSH lets others read it and
+        # refuses it only when someone else can change it.
+        if ($WriteOnly) {
+            $writeTokens = @('FullControl', 'Modify', 'Write', 'WriteData', 'AppendData',
+                'CreateFiles', 'CreateDirectories', 'WriteAttributes', 'WriteExtendedAttributes',
+                'Delete', 'DeleteSubdirectoriesAndFiles', 'ChangePermissions', 'TakeOwnership')
+            $rightTokens = @(([string]$entry.Rights) -split '\s*,\s*')
+            if (-not ($rightTokens | Where-Object { $writeTokens -contains $_ })) { continue }
+        }
         if ($trustedNames -contains $identity) { continue }
 
         # The current user, written either way round: 'DOMAIN\alice' against
@@ -352,7 +365,7 @@ if (-not (Test-Path -LiteralPath $SshDir)) {
 }
 if (-not (Test-Path -LiteralPath $SshDir -PathType Container)) {
     Write-Err "$SshDir is not a directory"
-    exit 3
+    exit 2
 }
 Write-Pass "$SshDir exists"
 
@@ -458,7 +471,7 @@ try {
 if (-not $currentUser) { $currentUser = [Environment]::UserName }
 
 # Private keys by their armour, plus the config file, which Windows OpenSSH
-# holds to the same rule ("Bad owner or permissions").
+# checks too ("Bad owner or permissions") but lets others read.
 $aclSubjects = @()
 foreach ($file in @(Get-ChildItem -LiteralPath $SshDir -File -Force -ErrorAction SilentlyContinue)) {
     if ($file.Name -eq 'config') { $aclSubjects += $file; continue }
@@ -479,9 +492,13 @@ foreach ($file in $aclSubjects) {
         Write-Skip ('{0}: access list not readable ({1})' -f $file.Name, $_.Exception.Message)
         continue
     }
-    $verdict = Test-KeyAcl -Entries $entries -CurrentUser $currentUser -CurrentUserSid $currentSid
+    $isConfig = ($file.Name -eq 'config')
+    $verdict = Test-KeyAcl -Entries $entries -CurrentUser $currentUser -CurrentUserSid $currentSid -WriteOnly:$isConfig
     switch ($verdict.Level) {
-        'pass' { Write-Pass ('{0}: only you, SYSTEM and Administrators have access' -f $file.Name) }
+        'pass' {
+            if ($isConfig) { Write-Pass ('{0}: nobody but you, SYSTEM and Administrators can change it' -f $file.Name) }
+            else { Write-Pass ('{0}: only you, SYSTEM and Administrators have access' -f $file.Name) }
+        }
         'skip' { Write-Skip ('{0}: no access entries readable' -f $file.Name) }
         default {
             $hint = @(
@@ -490,7 +507,11 @@ foreach ($file in $aclSubjects) {
             foreach ($offender in $verdict.Offenders) {
                 $hint += ('icacls "{0}" /remove "{1}"' -f $file.FullName, $offender)
             }
-            Write-Fail -Message ('{0}: also readable by {1}; Windows OpenSSH refuses it as UNPROTECTED' -f $file.Name, ($verdict.Offenders -join ', ')) -Hint $hint
+            if ($isConfig) {
+                Write-Fail -Message ('{0}: also writable by {1}; Windows OpenSSH refuses it (bad permissions)' -f $file.Name, ($verdict.Offenders -join ', ')) -Hint $hint
+            } else {
+                Write-Fail -Message ('{0}: also readable by {1}; Windows OpenSSH refuses it as UNPROTECTED' -f $file.Name, ($verdict.Offenders -join ', ')) -Hint $hint
+            }
         }
     }
 }

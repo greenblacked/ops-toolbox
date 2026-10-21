@@ -1224,9 +1224,15 @@ if (-not $sshDoctor) {
                User = 'LAPTOP\alice'; Sid = ''; Level = 'fail'; Offender = 'CORP\alice' }
             @{ Label = 'no entries at all (nothing readable)'; Entries = @(); User = 'LAPTOP\alice'; Sid = ''; Level = 'skip'; Offender = '' }
         )
+        $usersModify = [pscustomobject]@{ Identity = 'BUILTIN\Users'; Sid = 'S-1-5-32-545'; Type = 'Allow'; Rights = 'Modify, Synchronize' }
+        $aclCases += @(
+            @{ Label = 'config: BUILTIN\Users can read'; WriteOnly = $true; Entries = @($owner, $users); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; Offender = '' }
+            @{ Label = 'config: BUILTIN\Users can modify'; WriteOnly = $true; Entries = @($owner, $usersModify); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; Offender = 'BUILTIN\Users' }
+            @{ Label = 'config: Everyone has full control'; WriteOnly = $true; Entries = @($owner, $everyone); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; Offender = 'Everyone' }
+        )
         $aclRan = 0
         foreach ($case in $aclCases) {
-            $verdict = Test-KeyAcl -Entries $case.Entries -CurrentUser $case.User -CurrentUserSid $case.Sid
+            $verdict = Test-KeyAcl -Entries $case.Entries -CurrentUser $case.User -CurrentUserSid $case.Sid -WriteOnly:([bool]$case.WriteOnly)
             $aclRan++
             $offenderOk = (-not $case.Offender) -or (@($verdict.Offenders) -contains $case.Offender)
             if ($verdict.Level -eq $case.Level -and $offenderOk) {
