@@ -142,10 +142,13 @@ running (`terminate` takes `-DryRun`).
 | Exit | Meaning |
 | --- | --- |
 | `0` | Success. |
-| `1` | The underlying `wsl` command failed, or a backup did not verify. |
+| `1` | The underlying `wsl` command failed, or a backup did not verify. Exception: `compact` and `shutdown` do not check `wsl.exe --shutdown`, so a failed shutdown can still exit `0`. |
 | `2` | WSL is not installed or not operational. |
 | `3` | Bad arguments: no `-Distro`, no such distro, a missing or unusable `-Tar`, a `restore` name that is already registered, or a non-empty install directory. |
 | `4` | `compact` without an elevated shell. |
+
+After `compact` or `shutdown`, confirm with `wsl -l -v` that every distro
+shows `Stopped` before you run `diskpart` yourself or trust the result.
 
 ## Verify
 

@@ -87,7 +87,7 @@ failed (not Linux, or no `openssl`), `3` bad arguments.
 | --- | --- |
 | `expired` (default) | Any `[FAIL]`: an expired certificate, a file that is missing, a directory or not a readable PEM, or a `--host` that is not `HOST` or `HOST:PORT`. |
 | `warn` | Any `[FAIL]` or any `[warn]`: inside the window, or a host that could not be fetched. |
-| `never` | Never. Always `0`; read the output. |
+| `never` | Never, for certificate findings. Usage errors (`3`) and a missing `openssl` (`2`) still exit nonzero; read the output. |
 
 !!! warning "An unreachable host is only a warning"
     When `--host` cannot fetch a certificate (DNS, firewall, the service is

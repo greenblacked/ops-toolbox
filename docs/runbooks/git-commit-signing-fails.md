@@ -107,6 +107,11 @@ so read them.
     passphrase, and a hardware key may need a touch. Each command gets 15
     seconds.
 
+    `--test-sign` covers `ssh` and OpenPGP only. For `gpg.format=x509` it
+    runs `gpg --clearsign`, which does not exercise `gpgsm`, so a pass
+    there proves nothing about X.509 signing. Check X.509 by hand (see
+    Verify).
+
 ```{ .bash .rpt-preview title="Preview" }
 ./git/git_signing_doctor.py --test-sign
 ```
@@ -167,6 +172,18 @@ line, and none of the `[warn]` lines that applied to you. Then make your next
 commit with signing on and check it with `git log --show-signature -1`
 (plain `git`). For the Unverified case, push it and check that the forge
 shows it as verified; that last check is outside the toolbox.
+
+For `gpg.format=x509`, `--test-sign` does not test `gpgsm`. Make a real
+signed commit on a scratch branch instead, then read it back (plain
+`git`):
+
+```bash
+git switch -c scratch/sign-check
+git commit --allow-empty -S -m "sign check"
+git log --show-signature -1
+```
+
+Delete the scratch branch afterwards.
 
 ## Roll back
 
