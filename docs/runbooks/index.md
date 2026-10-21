@@ -35,6 +35,7 @@ Your machine will print different numbers.
 | --- | --- | --- |
 | [A Linux host is low on disk space](linux-low-disk.md) | Linux | The root filesystem is nearly full and you need space now. |
 | [Kubernetes pods are unhealthy](kubernetes-unhealthy-pods.md) | Kubernetes | Pods crash, stay Pending, or the cluster looks unhappy. |
+| [A TLS certificate is expired or about to expire](tls-certificate-expiring.md) | Linux | A certificate has expired, a monitor says it is close, or clients report certificate errors. |
 
 New runbooks are added one at a time. See
 [Development](../contributing/development.md) for the page patterns they use.
