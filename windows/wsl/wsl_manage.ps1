@@ -484,6 +484,19 @@ function Get-FreeSpace {
     }
 }
 
+# The path of one dated export inside $Dir. A bare drive such as 'D:' is the
+# drive-relative "current directory on D", which Combine would glue to the
+# name as 'D:Ubuntu_...': treat it as the drive root 'D:\' instead. Pure.
+function Get-BackupOutPath {
+    param(
+        [string]$Dir,
+        [string]$Name,
+        [string]$Stamp
+    )
+    if ($Dir -match '^[A-Za-z]:$') { $Dir = $Dir + '\' }
+    [IO.Path]::Combine($Dir, ('{0}_{1}.tar' -f $Name, $Stamp))
+}
+
 # What 'backup -All' would do, one row {Name, Out, Bytes, Verb, Reason} per
 # distro. Pure: the distros, the measured sizes and the free space are
 # parameters, so the contract tests can feed it any machine.
@@ -509,7 +522,7 @@ function Get-BackupPlan {
     )
     $left = $FreeBytes
     foreach ($d in $Distros) {
-        $out = [IO.Path]::Combine($DestDir, ('{0}_{1}.tar' -f $d.Name, $Stamp))
+        $out = Get-BackupOutPath -Dir $DestDir -Name $d.Name -Stamp $Stamp
         $used = $null
         if ($UsedByName.ContainsKey($d.Name)) { $used = $UsedByName[$d.Name] }
         $bytes = if ($null -ne $used) { [long]$used } else { [long]$d.VhdxSize }
@@ -1154,7 +1167,7 @@ switch ($Action) {
         if (-not (Test-Path $DestDir)) {
             New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
         }
-        $out = Join-Path $DestDir "$($info.Name)_$stamp.tar"
+        $out = Get-BackupOutPath -Dir $DestDir -Name $info.Name -Stamp $stamp
         if (-not (Invoke-DistroBackup -Name $info.Name -Out $out)) { exit 1 }
         Write-Host ("Done: {0} ({1})" -f $out, (Format-Size (Get-Item $out).Length)) -ForegroundColor Green
         Write-Host "Checksum: $out.sha256"

@@ -12,3 +12,6 @@
   the plan with sizes, the running distros a shutdown would stop, and, for
   `compact`, whether the shell is elevated, without calling `wsl --export`,
   `wsl --shutdown`, `wsl --manage` or diskpart.
+- `backup -DestDir D:` (a bare drive) now means the drive root `D:\`, not the
+  drive-relative current directory, for both a single distro and `-All`, which
+  now build the output path the same way.

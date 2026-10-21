@@ -414,7 +414,7 @@ try {
 Write-Section 'wsl_manage backup -All and previews'
 Test-Surface -Action @('backup', 'compact', 'sparse', 'shutdown') -Parameter @('All', 'DryRun')
 
-Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'Get-BackupPlan')
+Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'Get-BackupOutPath', 'Get-BackupPlan')
 
 function Get-TestDistro {
     param([string]$Name, [long]$VhdxSize)
@@ -461,6 +461,16 @@ $plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 100GB)) -DestDir '\
 Test-Case 'unknown free space (a UNC path) raises no space finding' (
     $plan.Count -eq 1 -and $plan[0].Verb -eq 'EXPORT'
 ) (Format-Plan $plan)
+
+foreach ($bare in @('D:', 'd:')) {
+    $plan = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 1GB)) -DestDir $bare -Stamp $stamp -FreeBytes $null)
+    Test-Case "a bare drive -DestDir '$bare' means the drive root, not the drive's current directory" (
+        $plan.Count -eq 1 -and $plan[0].Out.StartsWith($bare + '\') -and $plan[0].Out.EndsWith('Ubuntu_' + $stamp + '.tar')
+    ) (Format-Plan $plan)
+}
+$single = Get-BackupOutPath -Dir 'D:' -Name 'Ubuntu' -Stamp $stamp
+$multi = @(Get-BackupPlan -Distros @((Get-TestDistro 'Ubuntu' 1GB)) -DestDir 'D:' -Stamp $stamp -FreeBytes $null)[0].Out
+Test-Case 'the single-distro and -All backups build the same output path' ($single -eq $multi) "$single vs $multi"
 
 # Free space is shared by the whole set: each measured export that is let
 # through takes its size off what the next distro can use.
