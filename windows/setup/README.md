@@ -518,7 +518,7 @@ it was, kind included:
 
 ```powershell
 $backup = "$env:USERPROFILE\path-backups\path-20261021-101500.txt"
-$lines = Get-Content -LiteralPath $backup
+$lines = Get-Content -LiteralPath $backup -Encoding UTF8
 $value = ($lines | Where-Object { $_ -like 'User.Path=*' }).Substring(10)
 $kind = ($lines | Where-Object { $_ -like 'User.Kind=*' }).Substring(10)
 $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
