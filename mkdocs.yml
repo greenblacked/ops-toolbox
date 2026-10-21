@@ -153,6 +153,7 @@ nav:
       - Linux low on disk: runbooks/linux-low-disk.md
       - Kubernetes unhealthy pods: runbooks/kubernetes-unhealthy-pods.md
       - TLS certificate expiring: runbooks/tls-certificate-expiring.md
+      - Git Permission denied (publickey): runbooks/git-permission-denied-publickey.md
   - Contributing:
       - Contributing: contributing.md
       - Development: contributing/development.md
