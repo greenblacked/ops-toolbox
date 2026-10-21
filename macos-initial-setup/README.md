@@ -96,7 +96,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper, credential files at rest — each finding with its fix. |
 | `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
 | `net_doctor.sh` | Read-only "the network is wrong" report: interfaces, default route, split DNS, the system proxy against the shell's, VPN tunnels, `/etc/hosts` overrides, listeners, and an opt-in `--probe`. |
-| `tls_expiry.sh` | Read-only certificate expiry check for PEM files, hosts, and (`--keychain`) the client and identity certificates in the Keychain; exit `1` inside the `--days` window. |
+| `tls_expiry.sh` | Read-only certificate expiry check for PEM files, hosts, and (`--keychain`) the client and identity certificates in the Keychain; exit `1` on an expired certificate, or inside `--days` with `--fail-on warn`. |
 | `schedule_report.sh` | Read-only inventory of what fires when you are not looking: launchd agents and daemons with schedules decoded, crontab and `at` jobs; flags missing programs and writable plists. |
 | `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
