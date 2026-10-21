@@ -111,8 +111,8 @@ Options:
   --include-logs         Rotated logs older than --days under /var/log: *.gz, *.xz,
                          *.bz2, *.zst, *.N, *.old and dated (logrotate dateext)
                          names; never an active log, wtmp/btmp/lastlog or the journal
-  --log-dir DIR          Replace the default log directory (repeatable; needs
-                         --include-logs)
+  --log-dir DIR          Replace the default log directory (repeatable;
+                         needs --include-logs)
   --help, -h             Show this help
 
 Exit codes: 0 success, 1 one or more deletions failed, 2 not Linux, 3 usage
