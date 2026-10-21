@@ -459,20 +459,25 @@ else
   # carries errors=remount-ro, which is what a kernel remount leaves behind.
   fstab_in=/dev/null
   [[ -r "$FSTAB" ]] && fstab_in="$FSTAB"
-  ro_rows="$(awk '
-    NR == FNR {
-      if ($0 !~ /^[[:space:]]*#/ && NF >= 4) {
-        fs[$2] = 1
-        if (("," $4 ",") ~ /,ro,/) fsro[$2] = 1
+  ro_rows="$(awk -v fstab_file="$fstab_in" '
+    BEGIN {
+      # getline, not NR == FNR: an absent or empty fstab must not make the
+      # first mount lines look like fstab entries.
+      while ((getline line < fstab_file) > 0) {
+        n = split(line, f)
+        if (line !~ /^[[:space:]]*#/ && n >= 4) {
+          fs[f[2]] = 1
+          if (("," f[4] ",") ~ /,ro,/) fsro[f[2]] = 1
+        }
       }
-      next
+      close(fstab_file)
     }
     $3 ~ /^(ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs)$/ &&
     ("," $4 ",") ~ /,ro,/ &&
     $2 != "/sysroot" && !($2 in fsro) &&
     (($2 in fs) || ("," $4 ",") ~ /,errors=remount-ro,/) &&
     $2 !~ /^\/(snap|var\/lib\/snapd|run\/media)(\/|$)/ { print $2, $3 }
-  ' "$fstab_in" - <<<"$mounts_txt")"
+  ' <<<"$mounts_txt")"
   ro_n=0
   while read -r mp fstype; do
     [[ -n "$mp" ]] || continue

@@ -955,6 +955,16 @@ out="$(run_storage --skip-smart)"
 assert_contains "system_doctor says when nothing is read-only" "$out" "no real filesystem is mounted read-only"
 assert_contains "system_doctor says when every fstab entry is mounted" "$out" "every fstab entry is mounted (3 checked)"
 assert_contains "system_doctor reports a healthy md array" "$out" "md array md0 is healthy ([2/2] [UU])"
+# A kernel remount (errors=remount-ro) must still be reported when fstab is
+# absent or empty; the first mount lines must not be read as fstab entries.
+printf '%s\n' '/dev/sda1 /data ext4 ro,relatime,errors=remount-ro 0 0' '/dev/sdf1 /vol ext4 ro,relatime 0 0' > "$storage_fx/mounts"
+: > "$storage_fx/fstab-empty"
+for fstab_case in "$storage_fx/fstab-absent" "$storage_fx/fstab-empty"; do
+  out="$(PROC_DIR="$storage_fx" FSTAB="$fstab_case" PATH="$storage_stub:$PATH" \
+    "$L/system_doctor.sh" --skip-containers --skip-units --skip-remote-mounts --skip-smart 2>&1)"
+  assert_contains "system_doctor reports a ro remount with fstab ${fstab_case##*/}" "$out" "/data is mounted read-only (ext4)"
+  assert_not_contains "system_doctor ignores a bare ro mount with fstab ${fstab_case##*/}" "$out" "/vol is mounted read-only"
+done
 rm -rf "$storage_fx" "$storage_stub"
 
 # Pressure and limits. A fixture procfs holds quiet PSI files, file handles,
