@@ -54,7 +54,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps; never volumes |
 | [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
-| [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
+| [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, link errors and negotiation, DNS, listening sockets |
 | [`listen_audit.sh`](listen_audit.sh) | Read-only listening-port owners and scope; `--print` a baseline, `--baseline` to catch drift |
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd settings and algorithms, accounts, network, file modes, host keys, updates, kernel controls |
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes, IdentityFile paths, key strength, known_hosts, authorized_keys, risky config, agent; not `ssh -G` |
@@ -550,7 +550,20 @@ connectivity probe.
 ./net_doctor.sh --quiet
 ./net_doctor.sh --probe example.com
 ./net_doctor.sh --skip-listen
+./net_doctor.sh --skip-links
 ```
+
+The **links** section is what makes "the network is slow or flaky" concrete,
+read from sysfs with no extra tool or privilege. For each physical NIC (one
+with a device behind it; veth, bridges, tunnels and WireGuard are counted and
+left alone) it warns when errors and drops exceed 0.1% of the packets since
+boot and number at least 100, so a quiet link's handful never fires; on a
+link that is up it warns on half duplex and on a speed of 100 Mb/s or less,
+and it warns on ten or more carrier changes. It also reports a bond with a
+slave down or no active slave, the uplink's MTU when it is below 1500, and the
+default gateway's neighbour entry, warning when ARP or ND to it has failed.
+`ethtool` appears only in the hints. `SYS_CLASS_NET` and `PROC_NET_BONDING`
+point it at other directories; the tests use them.
 
 It changes nothing, and warnings do not change the exit code — a missing
 default route is something to read, not a gate. `--probe` is off by

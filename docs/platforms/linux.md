@@ -25,7 +25,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | --- | --- | --- |
 | `status.sh` | One-screen verdict; `--only` selects sections. | <span class="stage stage-report">read-only</span> |
 | `system_doctor.sh` | Long health report. | <span class="stage stage-report">read-only</span> |
-| `net_doctor.sh` | Interfaces, routes, DNS, listening sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `net_doctor.sh` | Interfaces, routes, link errors, DNS, sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
 | `listen_audit.sh` | Listening-port owners and scope; `--baseline` drift for cron. | <span class="stage stage-report">read-only</span> |
 | `hardening_audit.sh` | Security audit with the fix for each finding, sshd algorithms included. | <span class="stage stage-report">read-only</span> |
 | `ssh_client_doctor.sh` | `~/.ssh` modes, keys, known_hosts, risky config, agent. | <span class="stage stage-report">read-only</span> |

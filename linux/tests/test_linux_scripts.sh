@@ -40,7 +40,7 @@ rmdir "$tmp_probe"
 # at a scratch profile, so running this suite on a desktop Linux box emptied the
 # developer's real cache. Every test that needs one of these supplies it itself.
 unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG DOCKER_DAEMON_JSON
-unset PROC_DIR FSTAB
+unset PROC_DIR FSTAB SYS_CLASS_NET PROC_NET_BONDING
 # ssh_client_doctor.sh asks the agent SSH_AUTH_SOCK names; a developer's live
 # agent must not answer for the fixtures.
 unset SSH_AUTH_SOCK
@@ -1436,6 +1436,106 @@ else
   ok "net_doctor --quiet drops the healthy lines"
 fi
 assert_contains "net_doctor --quiet still summarises" "$out" "== summary =="
+
+# The links section reads sysfs, and a container has no NIC worth grading. A
+# fake /sys/class/net holds a physical eth0 (it has a device link) and a
+# veth0 (it does not); each case rewrites one eth0 file into a fault.
+links_fx="$(mktemp -d)"
+mkdir -p "$links_fx/eth0/statistics" "$links_fx/eth0/device" "$links_fx/veth0/statistics" "$links_fx/bonding"
+write_clean_link() {
+  printf 'up\n' > "$links_fx/eth0/operstate"
+  printf '1000\n' > "$links_fx/eth0/speed"
+  printf 'full\n' > "$links_fx/eth0/duplex"
+  printf '2\n' > "$links_fx/eth0/carrier_changes"
+  printf '1500\n' > "$links_fx/eth0/mtu"
+  printf '02:00:00:00:00:01\n' > "$links_fx/eth0/address"
+  for c in rx_errors tx_errors rx_dropped tx_dropped rx_crc_errors rx_fifo_errors collisions; do
+    printf '0\n' > "$links_fx/eth0/statistics/$c"
+  done
+  printf '1000\n' > "$links_fx/eth0/statistics/rx_packets"
+  printf '1000\n' > "$links_fx/eth0/statistics/tx_packets"
+  printf 'up\n' > "$links_fx/veth0/operstate"
+  printf '9000\n' > "$links_fx/veth0/statistics/rx_errors"
+  rm -f "$links_fx/bonding/bond0"
+}
+run_links() {
+  SYS_CLASS_NET="$links_fx" PROC_NET_BONDING="$links_fx/bonding" "$NET" "$@" 2>&1
+}
+write_clean_link
+out="$(run_links)"; rc=$?
+assert_eq "net_doctor with a clean link exits 0" "0" "$rc"
+assert_contains "net_doctor has a links section" "$out" "== links =="
+assert_contains "net_doctor reports the negotiated speed" "$out" "eth0 1000 Mb/s full duplex"
+assert_contains "net_doctor reports a clean error count" "$out" "eth0: 0 errors or drops"
+assert_not_contains "net_doctor does not grade a virtual interface" "$out" "veth0 has"
+assert_contains "net_doctor counts the virtual interface instead" "$out" "1 virtual interface(s) not graded"
+
+printf '5000\n' > "$links_fx/eth0/statistics/rx_errors"
+printf '1000000\n' > "$links_fx/eth0/statistics/rx_packets"
+out="$(run_links)"; rc=$?
+assert_eq "net_doctor with link errors still exits 0" "0" "$rc"
+assert_contains "net_doctor warns on errors past 0.1%" \
+  "$(grep -F 'errors or drops' <<<"$out" || true)" "[warn]"
+out="$(run_links --quiet)"
+assert_contains "net_doctor --quiet keeps the link warning" "$out" "eth0 has 5000 RX/TX errors or drops"
+if grep -q '\[ ok \]' <<<"$out"; then
+  err "net_doctor --quiet still printed [ ok ] lines with links"
+else
+  ok "net_doctor --quiet drops the healthy link lines"
+fi
+
+write_clean_link
+printf '50\n' > "$links_fx/eth0/statistics/rx_errors"
+printf '100\n' > "$links_fx/eth0/statistics/rx_packets"
+printf '0\n' > "$links_fx/eth0/statistics/tx_packets"
+out="$(run_links)"
+assert_not_contains "net_doctor ignores a handful of errors below the floor" "$out" "eth0 has 50 RX/TX errors"
+
+write_clean_link
+printf 'half\n' > "$links_fx/eth0/duplex"
+out="$(run_links)"
+assert_contains "net_doctor warns on half duplex" "$out" "half duplex on eth0"
+write_clean_link
+printf '100\n' > "$links_fx/eth0/speed"
+out="$(run_links)"
+assert_contains "net_doctor warns on a 100 Mb/s link" "$out" "eth0 negotiated 100 Mb/s"
+write_clean_link
+printf '25\n' > "$links_fx/eth0/carrier_changes"
+out="$(run_links)"
+assert_contains "net_doctor warns on carrier flaps" "$out" "eth0 carrier changed 25 times"
+
+write_clean_link
+printf '%s\n' 'Bonding Mode: fault-tolerance (active-backup)' 'Currently Active Slave: eth0' 'MII Status: up' '' \
+  'Slave Interface: eth0' 'MII Status: up' '' 'Slave Interface: eth1' 'MII Status: down' > "$links_fx/bonding/bond0"
+out="$(run_links)"
+assert_contains "net_doctor warns on a bond slave that is down" "$out" "bond0 slave eth1 is down"
+
+write_clean_link
+out="$(run_links --skip-links)"
+assert_not_contains "net_doctor --skip-links leaves the section out" "$out" "eth0 1000 Mb/s"
+assert_contains "net_doctor --skip-links says so" "$out" "(--skip-links)"
+
+# The gateway's neighbour state needs ip, which the tester images lack: a stub
+# answers the default route and the neighbour lookup, and nothing else.
+links_stub="$(mktemp -d)"
+cat > "$links_stub/ip" <<'STUB'
+#!/usr/bin/env bash
+state="FAILED"
+[[ -e "${0%/*}/reachable" ]] && state="REACHABLE"
+case " $* " in
+  *" -4 route show default "*) printf 'default via 10.0.0.1 dev eth0 proto dhcp metric 100\n' ;;
+  *" neigh show to 10.0.0.1 dev eth0 "*) printf '10.0.0.1 lladdr aa:bb:cc:dd:ee:ff %s\n' "$state" ;;
+esac
+exit 0
+STUB
+chmod +x "$links_stub/ip"
+out="$(PATH="$links_stub:$PATH" run_links)"; rc=$?
+assert_eq "net_doctor with an unanswered gateway exits 0" "0" "$rc"
+assert_contains "net_doctor warns when the gateway does not answer ARP" "$out" "default gateway 10.0.0.1 does not answer ARP"
+: > "$links_stub/reachable"
+out="$(PATH="$links_stub:$PATH" run_links)"
+assert_contains "net_doctor passes a reachable gateway" "$out" "gateway 10.0.0.1 neighbour state REACHABLE"
+rm -rf "$links_fx" "$links_stub"
 
 section "listen_audit.sh"
 LISTEN="$L/listen_audit.sh"
