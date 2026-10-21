@@ -857,7 +857,15 @@ it never makes a `*.partial.tar.gz`, and an unreadable file that is excluded no
 longer turns a non-root run into a partial one. If the patterns leave nothing
 at all, the staged archive fails validation, nothing is published and the run
 exits `1`. `--dry-run` prints each `would exclude:` line, and both flags are
-refused with `--list` and `--diff`.
+refused with `--list`.
+
+The exclusions are recorded in the archive, as a small member
+`.config_backup/excludes` (two `#` header lines, one of them saying whether
+`--exclude-secrets` was on, then one pattern per line, the preset expanded), so
+`--diff` can leave the same files out of its new-file scan. An archive made
+with no exclusions has no such member. A pattern that would also match the
+member itself (for example `*config_backup*`) fails the run, and a pattern
+starting with `# ` is exit `3`.
 
 Each run creates a private staging directory in `--dest`, validates the gzip
 stream and a nonempty tar member listing, and publishes a unique timestamped
@@ -908,6 +916,12 @@ logs, and refuses `--list`, `--yes` and `--dry-run` alongside it (exit `3`). It
 exits `0` when nothing differs and `1` when something does, or when a file
 could not be compared, so it also works as a cron-able drift gate:
 `./config_backup.sh --diff || mail -s drift root`.
+
+An archive made with `--exclude` or `--exclude-secrets` records them (see
+above), and `--diff` applies them to the live scan: a file the backup left out
+is not reported as `NEW`. `--exclude` and `--exclude-secrets` on `--diff` are
+added to the recorded set, for a pattern you want ignored from now on. An
+archive from before the manifest existed is compared as it always was.
 
 ## `ssh_client_doctor.sh`
 

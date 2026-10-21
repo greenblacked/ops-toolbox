@@ -17,7 +17,11 @@
 # --diff answers the question after the edit: what is different now from the
 # newest archive (or a named one)? GNU tar compares the members with the live
 # tree and extracts nothing, so it stays read-only like --list, and the one-file
-# restore it suggests is printed, never run.
+# restore it suggests is printed, never run. The exclusions an archive was made
+# with are stored in it as the member .config_backup/excludes (one pattern per
+# line after two header lines), so --diff can leave the same files out of its
+# new-file scan; --exclude and --exclude-secrets on --diff add to that set. An
+# archive without the member is compared as before.
 #
 # --exclude and --exclude-secrets make an archive you can hand to somebody:
 # tar exclusion patterns, matched against member names relative to /, passed
@@ -104,6 +108,8 @@ Options:
                      (repeatable), e.g. 'etc/ssl/private' or '*.key'
   --exclude-secrets  Leave out shadow, gshadow, opasswd, SSH host private keys,
                      /etc/ssl/private and NAME- backups; not a publish-safe filter
+                     Both are recorded in the archive; --diff applies them (and
+                     accepts more) so excluded files are not reported as NEW
   --help, -h         Show this help
 
 Exit codes: 0 complete backup (--diff: identical), 1 partial backup or failure
@@ -131,6 +137,10 @@ add_exclude() {
   fi
   if [[ "$pattern" == *$'\n'* ]]; then
     err "--exclude pattern must not contain a newline"
+    exit 3
+  fi
+  if [[ "$pattern" == "# "* ]]; then
+    err "--exclude pattern must not start with '# ' (the archive manifest uses that for comments)"
     exit 3
   fi
   if [[ "$pattern" == /* ]]; then
@@ -205,9 +215,10 @@ case "$PREFIX" in
 esac
 [[ -n "$PREFIX" ]] || { err "--prefix must not be empty"; exit 3; }
 
-# Exclusions shape an archive being written; --list and --diff read one.
-if (( (LIST || DIFF) && (${#EXCLUDES[@]} > 0 || EXCLUDE_SECRETS) )); then
-  err "--exclude and --exclude-secrets apply to writing an archive, not to --list or --diff"
+# Exclusions shape an archive being written, and --diff applies them to the
+# live scan; --list only reads, so they mean nothing there.
+if (( LIST && (${#EXCLUDES[@]} > 0 || EXCLUDE_SECRETS) )); then
+  err "--exclude and --exclude-secrets apply to writing or comparing an archive, not to --list"
   exit 3
 fi
 
@@ -278,6 +289,46 @@ diff_line() {
   else
     printf "  %s%-7s%s %s\n" "$colour" "$word" "$C_RESET" "$path"
   fi
+}
+
+# Does PATH (relative to /, no leading slash) match PATTERN the way tar's
+# default --exclude does: a glob whose * also matches /, tried against the
+# whole name and against every suffix that starts after a /, and a match on
+# a leading directory excludes what is below it.
+path_matches() {
+  local s="$1" pat="$2" d
+  while :; do
+    d="$s"
+    while :; do
+      # shellcheck disable=SC2053
+      [[ "$d" == $pat ]] && return 0
+      case "$d" in */*) d="${d%/*}" ;; *) break ;; esac
+    done
+    case "$s" in */*) s="${s#*/}" ;; *) break ;; esac
+  done
+  return 1
+}
+
+# Drop the live paths (absolute, one per line) that an exclusion would have
+# kept out of the archive; with no patterns, the list passes through.
+filter_excluded() {
+  local path
+  if (( ${#diff_excludes[@]} == 0 )); then
+    cat
+    return 0
+  fi
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    excluded_path "${path#/}" || printf '%s\n' "$path"
+  done
+}
+
+excluded_path() {
+  local pat
+  for pat in ${diff_excludes[@]+"${diff_excludes[@]}"}; do
+    path_matches "$1" "$pat" && return 0
+  done
+  return 1
 }
 
 # --paths narrows the comparison: only findings under one of these count.
@@ -388,6 +439,30 @@ diff_archive() {
     diff_roots+=("$resolved")
   done
 
+  # The exclusions the archive was made with, then any given on this command
+  # line. An archive from before the manifest has none, and is compared as it
+  # always was.
+  diff_excludes=()
+  local manifest line recorded=0
+  if manifest="$(tar -xzOf "$archive" .config_backup/excludes 2>/dev/null)"; then
+    while IFS= read -r line; do
+      [[ -n "$line" && "$line" != "# "* ]] || continue
+      diff_excludes+=("$line")
+      recorded=$((recorded + 1))
+    done <<< "$manifest"
+  fi
+  if (( EXCLUDE_SECRETS )); then
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && diff_excludes+=("$line")
+    done <<< "$SECRET_PATTERNS"
+  fi
+  if (( ${#EXCLUDES[@]} > 0 )); then
+    diff_excludes+=("${EXCLUDES[@]}")
+  fi
+  if (( recorded > 0 )); then
+    info "archive was made with $recorded exclusion(s); the same files are left out of the new-file scan"
+  fi
+
   info "comparing $archive with the live tree"
 
   # tar -d compares every member with the file of the same name under -C and
@@ -396,7 +471,11 @@ diff_archive() {
   # whether every line it printed was understood can. GNU tar closes an exit 2
   # with a fixed trailer that only restates the lines before it, so it is
   # recognised and not counted: an unreadable file alone stays a SKIP.
-  out="$(LC_ALL=C tar -dzf "$archive" -C / 2>&1)"
+  local diff_tar_excludes=() pat
+  for pat in ${diff_excludes[@]+"${diff_excludes[@]}"}; do
+    diff_tar_excludes+=("--exclude=$pat")
+  done
+  out="$(LC_ALL=C tar -dzf "$archive" ${diff_tar_excludes[@]+"${diff_tar_excludes[@]}"} -C / 2>&1)"
   tar_rc=$?
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
@@ -452,7 +531,7 @@ diff_archive() {
   # the C locale, which is the order comm expects.
   local new_list
   live_err="$(mktemp)" || { err "cannot create a temporary file"; return 1; }
-  new_list="$(LC_ALL=C comm -13 <(archive_files "$archive") <(live_files))"
+  new_list="$(LC_ALL=C comm -13 <(archive_files "$archive") <(live_files | filter_excluded))"
   while IFS= read -r path; do
     [[ -n "$path" ]] || continue
     diff_line NEW "$path"
@@ -639,10 +718,29 @@ if ! (umask 077; set -C; : > "$staged_archive"); then
   exit 1
 fi
 
+# Record what was left out, inside the archive, so --diff can leave the same
+# files out of its new-file scan instead of reporting each as NEW. Written
+# only when there is something to record, so an archive without exclusions is
+# what it always was. The staging directory is removed on exit.
+manifest_args=()
+if (( ${#EXCLUDES[@]} > 0 )); then
+  manifest_dir="$stage_dir/manifest"
+  if ! (umask 077; mkdir -p -- "$manifest_dir/.config_backup" \
+        && {
+          printf '# config_backup.sh exclusions, one tar pattern per line\n'
+          printf '# exclude-secrets: %s\n' "$EXCLUDE_SECRETS"
+          printf '%s\n' "${EXCLUDES[@]}"
+        } > "$manifest_dir/.config_backup/excludes"); then
+    err "could not write the exclusion manifest"
+    exit 1
+  fi
+  manifest_args=(-C "$manifest_dir" .config_backup)
+fi
+
 # -C / keeps member names relative to the filesystem root. A tar warning can
 # produce a useful partial copy, but neither an exit code nor a nonempty file
 # proves the gzip stream and tar members are readable.
-tar -czf "$staged_archive" ${tar_excludes[@]+"${tar_excludes[@]}"} -C / "${rels[@]}"
+tar -czf "$staged_archive" ${tar_excludes[@]+"${tar_excludes[@]}"} -C / "${rels[@]}" ${manifest_args[@]+"${manifest_args[@]}"}
 tar_rc=$?
 if (( tar_rc > 1 )); then
   err "tar failed (exit $tar_rc); previous archives preserved"
@@ -657,6 +755,14 @@ if ! gzip -t -- "$staged_archive" || ! tar -tzf "$staged_archive" | (
   (( found ))
 ); then
   err "staged archive failed validation; previous archives preserved"
+  exit 1
+fi
+
+# A pattern that also matches the manifest member would drop it silently, and
+# the archive would then be diffed as if nothing had been excluded.
+if (( ${#manifest_args[@]} > 0 )) \
+   && ! tar -tzf "$staged_archive" | grep -qx '\.config_backup/excludes'; then
+  err "an --exclude pattern also matches .config_backup/excludes; narrow it"
   exit 1
 fi
 

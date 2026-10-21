@@ -141,6 +141,70 @@ if [[ -e /etc/passwd- ]]; then
 fi
 assert_eq 'the /etc checks ran' yes "$( (( etc_checks >= 2 )) && printf yes || printf 'no (%s)' "$etc_checks")"
 
+# The exclusions travel with the archive, so an immediate --diff does not
+# report every excluded live file as NEW.
+new_dest
+run_backup --yes --exclude '*.key' --exclude "${src#/}/private"
+assert_eq 'backup with exclusions exits 0' 0 "$rc"
+assert_contains 'the archive carries the exclusion manifest' "$(members)" '.config_backup/excludes'
+manifest="$(for a in "$dest"/*.tar.gz; do tar -xzOf "$a" .config_backup/excludes; done)"
+assert_contains 'the manifest records a pattern' "$manifest" '*.key'
+assert_contains 'the manifest records that --exclude-secrets was off' "$manifest" '# exclude-secrets: 0'
+run_backup --diff
+assert_eq 'diff right after an --exclude backup -> 0' 0 "$rc"
+assert_contains 'diff says nothing differs' "$out" 'no differences'
+assert_not_contains 'the excluded key is not NEW' "$out" 'secret.key'
+assert_not_contains 'the excluded directory is not NEW' "$out" 'private/id_x'
+printf 'later\n' > "$src/later.conf"
+run_backup --diff
+assert_eq 'a genuinely new file is still found -> 1' 1 "$rc"
+assert_contains 'the new file is NEW' "$(grep NEW <<<"$out")" 'later.conf'
+rm -f "$src/later.conf"
+
+# --diff also takes --exclude: added to the recorded set.
+new_dest
+run_backup --yes
+printf 'extra\n' > "$src/extra.tmp"
+run_backup --diff
+assert_eq 'an unrecorded new file is NEW without --exclude -> 1' 1 "$rc"
+run_backup --diff --exclude '*.tmp'
+assert_eq '--diff --exclude hides that file -> 0' 0 "$rc"
+run_backup --diff --exclude ''
+assert_eq '--diff rejects an empty --exclude -> 3' 3 "$rc"
+rm -f "$src/extra.tmp"
+
+# --exclude-secrets is recorded too; use a path under src that the preset names.
+new_dest
+mkdir -p "$src/etc/ssl/private"
+printf 'k\n' > "$src/etc/ssl/private/leaf"
+run_backup --yes --exclude-secrets --exclude "${src#/}/private"
+assert_eq 'backup with --exclude-secrets exits 0 or 1' yes \
+  "$([[ "$rc" == 0 || "$rc" == 1 ]] && printf yes || printf 'no (exit %s)' "$rc")"
+manifest="$(for a in "$dest"/*.tar.gz; do tar -xzOf "$a" .config_backup/excludes; done)"
+assert_contains 'the manifest records --exclude-secrets on' "$manifest" '# exclude-secrets: 1'
+assert_contains 'the manifest records the preset patterns' "$manifest" 'etc/ssl/private'
+run_backup --diff
+assert_eq 'diff right after an --exclude-secrets backup -> 0' 0 "$rc"
+run_backup --diff --exclude-secrets
+assert_eq '--diff --exclude-secrets is accepted -> 0' 0 "$rc"
+rm -rf "${src:?}/etc"
+
+# An archive from before the manifest is compared as it always was.
+new_dest
+run_backup --yes
+assert_not_contains 'no exclusions -> no manifest member' "$(members)" '.config_backup'
+run_backup --diff
+assert_eq 'an archive without a manifest still diffs clean -> 0' 0 "$rc"
+
+# A pattern that would swallow the manifest is an error, not a silent loss.
+new_dest
+run_backup --yes --exclude '*config_backup*'
+assert_eq 'a pattern matching the manifest fails the run' 1 "$rc"
+assert_contains 'the failure names the manifest' "$out" '.config_backup/excludes'
+assert_eq 'and publishes nothing' '' "$(ls -A "$dest")"
+run_backup --yes --exclude '# comment'
+assert_eq 'a pattern starting with "# " -> 3' 3 "$rc"
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s config backup exclude checks failed\n' "$failures" "$checks" >&2
   exit 1

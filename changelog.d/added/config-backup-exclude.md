@@ -5,3 +5,8 @@
   ticket or hand to a colleague, and a non-root run whose only unreadable
   files are excluded is no longer partial. The list is deliberately narrow
   and documented as not making an archive safe to publish.
+  The exclusions are recorded in the archive (`.config_backup/excludes`), so
+  a later `--diff` leaves the same files out of its new-file scan instead of
+  listing each as `NEW`; `--exclude` and `--exclude-secrets` are also
+  accepted on `--diff`, and older archives without the record compare as
+  before.
