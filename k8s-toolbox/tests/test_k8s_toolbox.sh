@@ -173,6 +173,10 @@ missing_value_cases=(
   "kubectl_rbac_audit.sh --namespace"
   "kubectl_rbac_audit.sh --context"
   "kubectl_rbac_audit.sh --only"
+  "kubectl_pod_cleanup.sh --older-than"
+  "kubectl_pod_cleanup.sh --max"
+  "kubectl_pod_cleanup.sh --namespace"
+  "kubectl_pod_cleanup.sh --context"
   "gke_cluster_doctor.sh --project"
   "gke_cluster_doctor.sh --cluster"
   "gke_cluster_doctor.sh --location"
@@ -318,6 +322,10 @@ dry_run_case "build.sh" "$K/build.sh" --dry-run --tag k8s-toolbox:test
 dry_run_case "build.sh --variant debug" "$K/build.sh" --dry-run --variant debug
 dry_run_case "run.sh"   "$K/run.sh"   --dry-run --tag k8s-toolbox:test --no-kubeconfig
 dry_run_case "debug_pod.sh" "$K/debug_pod.sh" --dry-run --pod demo --namespace demo-ns
+# A context that cannot exist, so a developer's own KUBECONFIG is never read:
+# the preview falls back to printing its listing command, offline.
+dry_run_case "kubectl_pod_cleanup.sh" "$K/kubectl_pod_cleanup.sh" --dry-run \
+  --context dry-run-probe-missing-context
 
 gcloud_fixture="$(mktemp -d)"
 dry_run_case "run.sh gcloud auth" "$K/run.sh" --dry-run --no-kubeconfig --gcloud-config "$gcloud_fixture"

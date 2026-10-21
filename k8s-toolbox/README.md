@@ -25,6 +25,7 @@ unprivileged user by default.
 | [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Read-only pod-template audit: requests and limits, probes, image tags, security context, PDBs |
 | [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh) | Read-only RBAC review: cluster-admin, wildcards, default ServiceAccounts, dangling bindings, Secret readers |
 | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster, node management, maintenance window, authorized networks, observability, shielded nodes, network policy |
+| [`kubectl_pod_cleanup.sh`](kubectl_pod_cleanup.sh) | Preview, then with `--yes` delete, Failed (and optionally Succeeded) pods past a grace period |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
 | [`debug/`](debug/) | A pod, a job, and a kustomization for the debug image tag |
@@ -46,6 +47,7 @@ unprivileged user by default.
 - [Check node capacity](#check-node-capacity)
 - [Audit workloads](#audit-workloads)
 - [Audit RBAC](#audit-rbac)
+- [Clean up dead pods](#clean-up-dead-pods)
 - [Debug a running pod](#debug-a-running-pod)
 - [Use it in a cluster](#use-it-in-a-cluster)
 - [GKE auth](#gke-auth)
@@ -61,8 +63,8 @@ needs, and exits `2` rather than half-working when one is missing.
 | --- | --- | --- |
 | **Bash** | every script | `#!/usr/bin/env bash` with `set -euo pipefail`. |
 | **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
-| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
-| **`python3`** | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) (six of its ten checks), [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh), [`kubectl_pod_cleanup.sh`](kubectl_pod_cleanup.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
+| **`python3`** | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) (six of its ten checks), [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`kubectl_rbac_audit.sh`](kubectl_rbac_audit.sh), [`kubectl_pod_cleanup.sh`](kubectl_pod_cleanup.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
 | **`openssl`** | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Only to read a certificate's end date from stdin (`openssl x509 -noout -enddate`); no network use. OpenSSL and LibreSSL both work. |
 | **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
 
@@ -521,6 +523,47 @@ Exit codes: `0` findings, `1` a query or JSON filter failed, `2` no `kubectl`
 or `python3`, or no reachable cluster, `3` usage, including an unknown id or
 an empty selection in `--only`, and `4` nothing to report.
 
+## Clean up dead pods
+
+`kubectl_pod_cleanup.sh` is the one script here that deletes anything, so it
+previews by default. Evicted, `OutOfcpu`, `NodeAffinity` and failed Job pods
+pile up by the thousand, and the usual one-line fix is a delete with a field
+selector that is easy to run against the wrong context. This lists exactly
+what it would remove, names the context first, and deletes only with `--yes`:
+
+```bash
+./kubectl_pod_cleanup.sh                      # preview: Failed pods older than 1d, every namespace
+./kubectl_pod_cleanup.sh --namespace batch --older-than 2h
+./kubectl_pod_cleanup.sh --include-succeeded  # Succeeded pods too
+./kubectl_pod_cleanup.sh --yes                # delete what the preview listed
+./kubectl_pod_cleanup.sh --yes --dry-run      # --dry-run wins: still a preview
+```
+
+Candidates come from one `kubectl get pods`, filtered here rather than by a
+field selector: phase `Failed` (and `Succeeded` with `--include-succeeded`),
+not already being deleted, and last active (the newest of start time, any
+container's finish time, and creation) longer ago than `--older-than` (`1d` by
+default, because a failed pod is post-mortem evidence). Running, Pending and
+terminating pods are never candidates. The preview prints the context, the
+scope, each candidate with its reason (for example `Failed (Evicted)`) and
+age, then one `dry-run: would run: kubectl delete pod NAME --namespace NS
+--wait=false` per pod and `dry-run complete; no changes written`.
+
+With `--yes`, it deletes those pods and no others, one call per pod by name and
+namespace: never a selector, never `--force`, never `--grace-period=0`. A pod
+already gone by then counts as done; any other failure is reported and the
+rest still run. `--max N` (default 200) caps the blast radius: more matches
+than that is exit `3` before anything is deleted, and the preview stops with
+the same message, so it never promises what `--yes` would refuse.
+
+A preview writes nothing and still answers without `kubectl`, `python3` or a
+reachable cluster: it warns and prints the listing command it would have run.
+
+Exit codes: `0` previewed, or every listed pod deleted (or already gone), `1`
+the listing failed or a delete failed, `2` no `kubectl` or `python3`, or no
+reachable cluster, with `--yes`, `3` usage or more than `--max` pods match,
+and `4` no pod matches.
+
 ## Doctor a GKE cluster
 
 `gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
@@ -663,7 +706,9 @@ installed, the `--help` and unknown-flag contracts, flags that require a value,
 the dry-run promise **asserted against the filesystem** rather than against the
 script's own claim to have written nothing, exit `2` when `kubectl` or Docker
 is missing, agreement between `versions.env`, the Dockerfile and `build.sh`,
-and the Pod Security posture of the examples.
+and the Pod Security posture of the examples. The cleanup suite records every
+delete its stub receives, so it proves a preview deletes nothing, `--yes`
+deletes exactly the listed pods by name, and `--max` stops before the first.
 
 Secret-free stubbed `kubectl` fixtures cover container readiness, init
 failures, restartable sidecars, named container logs, restart loops and OOM
