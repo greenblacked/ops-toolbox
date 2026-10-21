@@ -424,10 +424,10 @@ clean_aged_dir() {
 log_candidates() {
   local dir="$1"
   local finder=(find)
-  # Whenever root escalation is on, walk the tree as root: a readable /var/log
-  # can still hold unreadable subdirectories (apache2, say), and an
-  # unprivileged find would drop them silently.
-  if [[ -n "$SUDO" && "$SUDO" != "skip" ]]; then
+  # Walk the tree as root only when probe_log_walk found escalation working:
+  # a readable /var/log can still hold unreadable subdirectories (apache2,
+  # say), and an unprivileged find would drop them silently.
+  if (( LOG_WALK_ROOT == 1 )); then
     finder=("$SUDO" find)
   fi
   "${finder[@]}" "$dir" -xdev \
@@ -438,6 +438,25 @@ log_candidates() {
           -o -name '*.[0-9]' -o -name '*.[0-9][0-9]' -o -name '*.old' \
           -o -name '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' -o -name '*.log-[0-9]*' \) \
        -print0 \) 2>/dev/null
+}
+
+# SUDO="sudo" only says the binary exists, not that it will escalate: with no
+# TTY password, no sudoers entry or under cron, `sudo find` fails silently and
+# the scan would report nothing. Probe once, non-interactively (so --dry-run
+# never prompts), and walk as root only if that works. Called before the walk,
+# not inside it, because log_candidates runs in a process substitution and
+# could neither cache the result nor warn once.
+LOG_WALK_ROOT=0
+LOG_WALK_PROBED=0
+probe_log_walk() {
+  (( LOG_WALK_PROBED == 0 )) || return 0
+  LOG_WALK_PROBED=1
+  [[ -n "$SUDO" && "$SUDO" != "skip" ]] || return 0
+  if "$SUDO" -n true >/dev/null 2>&1; then
+    LOG_WALK_ROOT=1
+  else
+    warn "sudo is not usable without a password; walking logs unprivileged, unreadable subdirectories are skipped"
+  fi
 }
 
 # clean_aged_dir's stat, sudo retry and size accounting, over log_candidates.
@@ -454,6 +473,8 @@ clean_log_dir() {
     warn "skipped (needs root): $dir"
     return 0
   fi
+
+  probe_log_walk
 
   while IFS= read -r -d '' path; do
     [[ -n "$path" ]] || continue

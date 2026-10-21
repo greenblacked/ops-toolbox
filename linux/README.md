@@ -563,7 +563,10 @@ is truncated. `--days 0` drops the age filter but not the name filter.
 `--log-dir DIR` replaces `/var/log` (repeatable, `/` refused in every spelling)
 and needs `--include-logs`. Root-owned logs go through the same `sudo` retry as
 coredumps; under `--no-sudo` a log in a directory this run cannot write is
-counted as skipped, not failed.
+counted as skipped, not failed. As a non-root user the walk runs under `sudo`
+only if `sudo -n true` succeeds (checked once, never prompting, so `--dry-run`
+stays silent); otherwise it walks unprivileged, warns that unreadable
+subdirectories were skipped, and still reports every log it can read.
 
 `--journal-max-size SZ` adds `journalctl --vacuum-size=SZ` after the age vacuum
 of `--include-journal`, for when you think in "cap it at 500M" rather than in

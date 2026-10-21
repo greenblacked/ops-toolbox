@@ -57,6 +57,7 @@ STUB
 # sudo must never reach the real tools, whoever runs the suite.
 cat > "$fixture/bin/sudo" <<'STUB'
 #!/usr/bin/env bash
+[[ "${1:-}" == "-n" ]] && shift
 exec "$@"
 STUB
 chmod +x "$fixture/bin/journalctl" "$fixture/bin/sudo"
@@ -176,6 +177,7 @@ exit 0
 STUB
   cat > "$fixture/hidebin/sudo" <<'STUB'
 #!/usr/bin/env bash
+[[ "${1:-}" == "-n" ]] && shift
 STUB_AS_ROOT=1 exec "$@"
 STUB
   chmod +x "$fixture/hidebin/find" "$fixture/hidebin/sudo"
@@ -189,6 +191,22 @@ STUB
   out="$(PATH="$fixture/hidebin:$fixture/bin:$PATH" "$CLEAN" --home "$fixture/home" --tmp "$fixture/tmp" \
     --dry-run --include-logs --log-dir "$logs" --days 1 --no-sudo 2>&1)"
   assert_not_contains 'under --no-sudo the unreadable children stay out' "$out" '/apache2/error.log.1 ('
+  # A sudo that cannot escalate (no password, not a sudoer, cron): the probe
+  # must fail, the walk must stay unprivileged, and the run must say so.
+  mkdir -p "$fixture/nosudobin"
+  cat > "$fixture/nosudobin/sudo" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$STUB_DIR/nosudo.calls"
+exit 1
+STUB
+  chmod +x "$fixture/nosudobin/sudo"
+  : > "$fixture/nosudo.calls"
+  out="$(PATH="$fixture/nosudobin:$fixture/hidebin:$fixture/bin:$PATH" "$CLEAN" --home "$fixture/home" --tmp "$fixture/tmp" \
+    --dry-run --include-logs --log-dir "$logs" --days 1 2>&1)"
+  assert_contains 'a failing sudo still finds the readable rotated logs' "$out" '/app.log.1 ('
+  assert_not_contains 'a failing sudo walks unprivileged' "$out" '/apache2/error.log.1 ('
+  assert_contains 'a failing sudo is reported' "$out" 'unreadable subdirectories are skipped'
+  assert_eq 'the sudo probe is non-interactive and runs once' '-n true' "$(cat "$fixture/nosudo.calls")"
 else
   printf '[skip] unreadable-subdirectory checks need a non-root user\n'
 fi
