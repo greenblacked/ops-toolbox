@@ -11,14 +11,14 @@ copies each tracked file into place and reports drift.
 - macOS 12+ or Linux, and Bash 3.2+.
 - `git` for the folder's test suite.
 - The tools themselves are not installed by these files. Configs are inert
-  until the tool is installed; `--only UNIT` limits any mode to the tools you
-  have.
+  until the tool is installed; `--installed-only` limits any mode to the
+  tools on `PATH`, and `--only UNIT` to the ones you name.
 
 ## Main scripts
 
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `install_dotfiles.sh` | Link (or copy) each tracked config into `$HOME` or `$XDG_CONFIG_HOME`. Modes: `--list`, `--status`, `--diff`, `--uninstall`, `--prune`, `--only UNIT`, `--force`. | `--dry-run` (also on `--uninstall` and `--prune`); `--list`, `--status` and `--diff` are read-only |
+| `install_dotfiles.sh` | Link (or copy) each tracked config into `$HOME` or `$XDG_CONFIG_HOME`. Modes: `--list`, `--status`, `--diff`, `--uninstall`, `--prune`, `--backups`, `--restore`, `--groups`; selection with `--only UNIT` or `--only @GROUP` and `--installed-only`; `--force`. | `--dry-run` (also on `--uninstall`, `--prune` and `--restore`); `--list`, `--status`, `--diff`, `--backups` and `--groups` are read-only |
 | `dotfiles_doctor.sh` | Read-only health report for the installed configs: a credential written through a link into the tracked repository (reported by file and line, never by value), credential file modes, the environment exports four configs need, and the ssh and git overlays. | read-only |
 
 The installer works per file and never links whole directories. `--status`
@@ -41,6 +41,7 @@ and each link into the folder that no tracked file installs to as `ORPHAN`;
     ```bash
     ./dotfiles/install_dotfiles.sh --dry-run
     ./dotfiles/install_dotfiles.sh --dry-run --only @server   # a jump host: no GUI, no k9s
+    ./dotfiles/install_dotfiles.sh --dry-run --installed-only # only the tools on PATH
     ```
 
 === "Check"

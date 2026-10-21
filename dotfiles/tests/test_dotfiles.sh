@@ -468,6 +468,105 @@ remaining="$(find "$H" -type l | wc -l | tr -d ' ')"
 if [[ "$remaining" == "0" ]]; then ok "no links left behind"; else err "$remaining link(s) left behind"; fi
 
 # --------------------------------------------------------------------------
+head_ "--installed-only"
+# What counts as installed is decided by PATH alone, so this section owns its
+# PATH: a directory of links to the utilities the installer calls plus stub
+# commands for the tools it should see, and the installer started through
+# $BASH so env needs no PATH lookup of its own.
+IH="$scratch/home-installed"
+mkdir -p "$IH"
+make_bin() {
+  local dir="$1" u p
+  shift
+  mkdir -p "$dir"
+  for u in basename cat cmp chmod cp date diff dirname find grep ln ls mkdir mv readlink rm sed sort stat tr; do
+    p="$(command -v "$u" || true)"
+    [[ -n "$p" && "$p" == /* ]] && ln -s "$p" "$dir/$u"
+  done
+  # rm first: a stub must never be written through a link to a real binary.
+  for u in "$@"; do
+    rm -f "$dir/$u"
+    printf '#!/bin/sh\nexit 0\n' > "$dir/$u"
+    chmod +x "$dir/$u"
+  done
+}
+run_with_path() {
+  local path="$1"; shift
+  guard env -u XDG_CONFIG_HOME HOME="$IH" TMPDIR="$T" PATH="$path" "$BASH" "$SCRIPT" --home "$IH" "$@"
+}
+make_bin "$scratch/bin-k9s-rg" k9s rg
+make_bin "$scratch/bin-batcat" batcat
+make_bin "$scratch/bin-none"
+
+out="$(run_with_path "$scratch/bin-k9s-rg" --list --installed-only 2>&1)"; rc=$?
+assert_rc "--list --installed-only exits 0" 0 "$rc"
+got="$(list_units "$out")"
+if [[ "$got" == "k9s ripgrep " ]]; then ok "--installed-only selects exactly the units whose tool is on PATH"; else err "--installed-only selected '$got', expected 'k9s ripgrep '"; fi
+
+before="$(snapshot "$IH" "$T")"
+out="$(run_with_path "$scratch/bin-k9s-rg" --dry-run --installed-only 2>&1)"; rc=$?
+after="$(snapshot "$IH" "$T")"
+assert_rc "--dry-run --installed-only exits 0" 0 "$rc"
+assert_contains "--dry-run --installed-only previews ripgrep" "$out" "(dry-run) ln -s $D/config/ripgrep/config"
+assert_contains "--dry-run --installed-only closes with the summary line" "$out" "dry-run complete; no changes written"
+if [[ "$out" == *starship* ]]; then err "--installed-only previewed a tool that is not on PATH"; else ok "--installed-only previews nothing else"; fi
+if [[ "$before" == "$after" ]]; then ok "--dry-run --installed-only wrote nothing"; else err "--dry-run --installed-only wrote into the home or tmp"; fi
+
+out="$(run_with_path "$scratch/bin-k9s-rg" --installed-only 2>&1)"; rc=$?
+assert_rc "install --installed-only exits 0" 0 "$rc"
+assert_true "the k9s config was installed" test -e "$IH/.config/k9s/config.yaml"
+assert_true "the ripgrep config was installed" test -L "$IH/.config/ripgrep/config"
+assert_true "starship, not on PATH, was not installed" test ! -e "$IH/.config/starship.toml"
+assert_true "ssh, not on PATH, was not installed" test ! -e "$IH/.ssh"
+out="$(run_with_path "$scratch/bin-k9s-rg" --status --installed-only 2>&1)"; rc=$?
+assert_rc "--status --installed-only reports no false MISSING" 0 "$rc"
+
+out="$(run_with_path "$scratch/bin-batcat" --list --installed-only 2>&1)"; rc=$?
+assert_rc "--installed-only finds bat as batcat" 0 "$rc"
+assert_contains "batcat selects the bat unit" "$(list_units "$out")" "bat "
+out="$(run_with_path "$scratch/bin-none" --list --installed-only 2>&1)"; rc=$?
+assert_rc "no tool on PATH exits 4" 4 "$rc"
+assert_contains "no tool on PATH is reported" "$out" "no selected unit has its tool on PATH"
+run_with_path "$scratch/bin-none" --list --only kitty --installed-only >/dev/null 2>&1; rc=$?
+assert_rc "--only kitty --installed-only without kitty exits 4, not 3" 4 "$rc"
+run_with_path "$scratch/bin-none" --list --only nope --installed-only >/dev/null 2>&1; rc=$?
+assert_rc "--only nope --installed-only exits 3" 3 "$rc"
+
+# Every unit must be reachable: with a stub for every command the README
+# table names, --installed-only has to select every file --list knows. A unit
+# whose command is missing from the table, or that tool_of() maps to a name
+# the table does not give, drops out and the count falls short.
+# Every backticked word in the second column of that table, one per line.
+# shellcheck disable=SC2016  # $0 is an awk field
+readme_cmds_awk='
+/^### Commands --installed-only looks for/ { on = 1; next }
+on && /^#/ { on = 0 }
+on && /^[|] `/ {
+  split($0, cell, "|")
+  s = cell[3]
+  while (match(s, /`[^`]+`/)) { print substr(s, RSTART + 1, RLENGTH - 2); s = substr(s, RSTART + RLENGTH) }
+}
+'
+readme_cmds=()
+while IFS= read -r c; do
+  [[ -n "$c" ]] && readme_cmds+=("$c")
+done < <(awk "$readme_cmds_awk" "$D/README.md")
+if (( ${#readme_cmds[@]} > 0 )); then
+  ok "the README names ${#readme_cmds[@]} commands for --installed-only"
+  make_bin "$scratch/bin-all" "${readme_cmds[@]}"
+  out="$(run_with_path "$scratch/bin-all" --list --installed-only 2>&1)"; rc=$?
+  assert_rc "--installed-only with every command on PATH exits 0" 0 "$rc"
+  n_sel=0
+  while read -r u _; do
+    [[ -z "$u" || "$u" == "UNIT" ]] && continue
+    n_sel=$((n_sel + 1))
+  done <<< "$out"
+  if [[ "$n_sel" == "$n_rows" ]]; then ok "every unit is selected through a command the README names"; else err "--installed-only selected $n_sel of $n_rows files with every README command on PATH"; fi
+else
+  err "the README has no 'Commands --installed-only looks for' table"
+fi
+
+# --------------------------------------------------------------------------
 head_ "tracked configs"
 PY="$(command -v python3 || true)"
 gnupg_probe="$scratch/gnupg-probe"; mkdir -p "$gnupg_probe"; chmod 700 "$gnupg_probe"

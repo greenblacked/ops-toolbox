@@ -40,7 +40,7 @@ tools, not by a shell.
 | --- | --- |
 | **macOS 12+ or Linux** | The installer and every config target both. |
 | **Bash 3.2 or newer** | Only [`install_dotfiles.sh`](install_dotfiles.sh) and [`dotfiles_doctor.sh`](dotfiles_doctor.sh) need a shell at all; both stay Bash 3.2-clean like the macOS package, so the `/bin/bash` on a Mac is enough. |
-| **The tools themselves** | A config is inert until the tool that reads it is installed — nothing here installs one. `--only UNIT` limits any mode to the tools you actually have, and `--list` shows every unit name. |
+| **The tools themselves** | A config is inert until the tool that reads it is installed — nothing here installs one. `--installed-only` limits any mode to the tools on `PATH`, `--only UNIT` to the ones you name, and `--list` shows every unit name. |
 | **`git`** | Only for the suite in [`tests/`](tests/), which needs nothing else — no Docker. |
 
 Four of the configs are found only if the shell exports a path to them; see
@@ -97,7 +97,7 @@ Links `config/` under `$XDG_CONFIG_HOME` (default `~/.config`) and `home/`
 under `~`, one file at a time.
 
 ```text
-install_dotfiles.sh [--dry-run] [--force] [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh [--dry-run] [--force] [--only UNIT ...] [--installed-only] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --status    [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --list
@@ -122,6 +122,7 @@ install_dotfiles.sh --restore   [--dry-run] [--stamp STAMP] [--only UNIT ...] [-
 | `--stamp STAMP` | With `--restore` only: restore the backup with this stamp, as `--backups` prints it (`YYYYmmdd-HHMMSS`), instead of the newest. Anything of another shape exits `3` before the disk is touched. |
 | `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). `@GROUP` selects a named group of units, see [Groups](#groups), and mixes with unit names (`--only @k8s,starship`). An unknown unit or group exits `3`. |
 | `--groups` | Print each group and the units in it, then exit. Read-only and needs no home directory. |
+| `--installed-only` | Limit any mode — install, `--status`, `--list`, `--diff`, `--prune`, `--backups`, `--restore` — to the units whose tool is on `PATH`, so a server gets no kitty config and `--status` reports no false `MISSING` for tools that are not there. Composes with `--only` and groups; `--only kitty --installed-only` on a machine without kitty is a valid request that selects nothing. When nothing is left, it says so and exits `4`. The command each unit looks for is in [the table below](#commands---installed-only-looks-for). |
 | `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, because a caller pointing at another home wants everything under it; without `--home`, `XDG_CONFIG_HOME` is honoured. |
 | `--config-home DIR` | Put `config/` under `DIR` instead. |
 | `--quiet` | Suppress `[info]` and `[ ok ]` lines; warnings, errors and dry-run previews remain. |
@@ -147,37 +148,6 @@ and replaces an existing file by default and reserves `--force` for a
 line-ending override. This one refuses to touch an existing file unless
 `--force` says so, because a config already in `~/.config` is more likely to
 be deliberate than a stray `.bashrc` on a fresh Windows machine.
-
-### Groups
-
-Unit names follow the tools, and a machine is chosen by its role, so
-`--only` also takes a group: `--only @server` is everything a jump host
-needs and nothing it does not. The table lives in `group_units()` next to
-the file table, so it travels with the script into `~/bin`.
-
-| Group | Units |
-| --- | --- |
-| `@shell` | `starship` `bat` `ripgrep` `ncdu` `thefuck` `nvim` `homebrew` |
-| `@terminal` | `kitty` `alacritty` |
-| `@git` | `git` `gh` `gitleaks` |
-| `@access` | `ssh` `gnupg` |
-| `@k8s` | `k9s` `kube` |
-| `@cloud` | `aws` `terraformrc` `docker` |
-| `@scanners` | `trivy` `grype` `syft` `gitleaks` |
-| `@packages` | `npmrc` `pip` `homebrew` |
-| `@server` | `git` `ssh` `gnupg` `bat` `ripgrep` `ncdu` `nvim` `pip` — no GUI terminal, no k9s, no Homebrew |
-
-```bash
-./install_dotfiles.sh --groups                      # the table above, from the script
-./install_dotfiles.sh --dry-run --only @server      # preview a jump host
-./install_dotfiles.sh --only @k8s,@cloud,starship   # groups and units mix
-```
-
-A group is pure selection: it only narrows what the other modes touch.
-An unknown group exits `3`, and so does a group that names a unit no longer
-in the repository, before anything is written. The suite fails when a unit
-belongs to no group but `@server`, so a config added later has to be
-placed.
 
 **Rolling back.** "Try the dotfiles, change my mind" is `--uninstall` and
 then `--restore`: the first takes the links out, the second moves what
@@ -228,6 +198,73 @@ git config --file ~/.config/git/config.local user.email "you@example.com"
 [`git/set_git_profile.sh`](../git/set_git_profile.sh) uses `--global`, so
 after running it, move the three `user.*` lines it wrote from
 `config/git/config` into `config.local` before committing.
+
+### Groups
+
+Unit names follow the tools, and a machine is chosen by its role, so
+`--only` also takes a group: `--only @server` is everything a jump host
+needs and nothing it does not. The table lives in `group_units()` next to
+the file table, so it travels with the script into `~/bin`.
+
+| Group | Units |
+| --- | --- |
+| `@shell` | `starship` `bat` `ripgrep` `ncdu` `thefuck` `nvim` `homebrew` |
+| `@terminal` | `kitty` `alacritty` |
+| `@git` | `git` `gh` `gitleaks` |
+| `@access` | `ssh` `gnupg` |
+| `@k8s` | `k9s` `kube` |
+| `@cloud` | `aws` `terraformrc` `docker` |
+| `@scanners` | `trivy` `grype` `syft` `gitleaks` |
+| `@packages` | `npmrc` `pip` `homebrew` |
+| `@server` | `git` `ssh` `gnupg` `bat` `ripgrep` `ncdu` `nvim` `pip` — no GUI terminal, no k9s, no Homebrew |
+
+```bash
+./install_dotfiles.sh --groups                      # the table above, from the script
+./install_dotfiles.sh --dry-run --only @server      # preview a jump host
+./install_dotfiles.sh --only @k8s,@cloud,starship   # groups and units mix
+```
+
+A group is pure selection: it only narrows what the other modes touch.
+An unknown group exits `3`, and so does a group that names a unit no longer
+in the repository, before anything is written. The suite fails when a unit
+belongs to no group but `@server`, so a config added later has to be
+placed.
+
+### Commands --installed-only looks for
+
+`PATH` is the only input: a command is looked up with `command -v`, never
+run. The first one found wins. A GUI app that is not on `PATH` — `kitty.app`
+or `Alacritty.app` dragged into `/Applications` without its command-line
+link — is not seen, so name it with `--only`. A unit added later without
+an entry here looks for a command of its own name, and the suite fails until
+this table names one it finds.
+
+| Unit | Commands |
+| --- | --- |
+| `alacritty` | `alacritty` |
+| `bat` | `bat`, `batcat` |
+| `gh` | `gh` |
+| `git` | `git` |
+| `gitleaks` | `gitleaks` |
+| `grype` | `grype` |
+| `homebrew` | `brew` |
+| `k9s` | `k9s` |
+| `kitty` | `kitty` |
+| `ncdu` | `ncdu` |
+| `nvim` | `nvim` |
+| `pip` | `pip3`, `pip` |
+| `ripgrep` | `rg` |
+| `starship` | `starship` |
+| `syft` | `syft` |
+| `thefuck` | `thefuck` |
+| `trivy` | `trivy` |
+| `aws` | `aws` |
+| `docker` | `docker` |
+| `gnupg` | `gpg`, `gpg2` |
+| `kube` | `kubectl` |
+| `npmrc` | `npm` |
+| `ssh` | `ssh` |
+| `terraformrc` | `terraform`, `tofu` |
 
 ## `dotfiles_doctor.sh`
 
@@ -838,32 +875,46 @@ static suite does; CI runs it as `Test / dotfiles`. It runs two files:
 ```
 
 The first half runs `install_dotfiles.sh` against a scratch home and asserts
-what it promises: `--help` before preflight, exit `3` on a bad flag, a dry
-run that leaves the home byte-identical, every tracked file installed as a
-link into this folder or as a matching copy, `~/.ssh` and `~/.gnupg` mode
-`700`, a second install that changes nothing, a foreign file left in place
-with exit `4`, `--force` keeping a `.backup`, `--status` telling `MATCH`
-from `DRIFT` and reporting a directory at a copy target as `CONFLICT`,
-`--diff` (a drifted copy's edit and a conflicting file's lines with no
-diff header, nothing for matching files, a note instead of diff noise for a
-directory, a docker `auth` value redacted), a
-drifted `~/.ssh` mode repaired by install, `--status` reporting a dangling
-orphan and an untracked link into this folder as `ORPHAN` but neither a link
-to `/etc/hosts` nor a backup link, `--only` filtering orphans by unit, every `--groups` row selecting exactly
-its units through `--only @NAME` and every unit placed in a group other than
-`@server`, an unknown or empty group exiting `3`, `--dry-run --only @server`
-previewing ssh and git but no terminal and writing nothing,
-`--prune --dry-run` writing nothing, `--prune` removing exactly the two
-orphans and keeping the emptied directory, a second `--prune` finding none,
-`--backups` listing what `--force` set aside, `--restore --dry-run` writing
-nothing, `--restore` putting the original file back and consuming the
-backup, a changed file refused with exit `4` and its backup kept, the newest
-of two backups restored by default and the older one by `--stamp`, and a
-malformed `--stamp` or one without `--restore` exiting `3`,
-and an uninstall that removes
-every link and matching copy, keeps the edited copy and the `.backup`. The
-file table is read from `--list` rather than re-derived, and the run is
-isolated from any `XDG_CONFIG_HOME` the shell exports.
+what it promises. The file table is read from `--list` rather than
+re-derived, and the run is isolated from any `XDG_CONFIG_HOME` the shell
+exports.
+
+- **Contract:** `--help` before preflight; exit `3` on a bad flag, an unknown
+  unit or group, and a mode combination that makes no sense.
+- **Install:** a dry run that leaves the home byte-identical, every tracked
+  file installed as a link into this folder or as a matching copy, `~/.ssh`
+  and `~/.gnupg` mode `700` and a drifted mode repaired, a second install
+  that changes nothing, a foreign file left in place with exit `4`, `--force`
+  keeping a `.backup`.
+- **`--status` and `--diff`:** `MATCH` told from `DRIFT`, a directory at a
+  copy target reported as `CONFLICT`; `--diff` showing a drifted copy's edit
+  and a conflicting file's lines with no diff header, nothing for matching
+  files, a note instead of diff noise for a directory, and a docker `auth`
+  value redacted.
+- **Groups:** every `--groups` row selecting exactly its units through
+  `--only @NAME`, every unit placed in a group other than `@server`, and
+  `--dry-run --only @server` previewing ssh and git but no terminal and
+  writing nothing.
+- **Orphans:** a dangling link and an untracked link into this folder
+  reported as `ORPHAN`, a link to `/etc/hosts` and a backup link not;
+  `--only` filtering them by unit; `--prune --dry-run` writing nothing,
+  `--prune` removing exactly the two and keeping the emptied directory, a
+  second `--prune` finding none.
+- **Backups:** `--backups` listing what `--force` set aside,
+  `--restore --dry-run` writing nothing, `--restore` putting the original
+  back and consuming the backup, a changed file refused with exit `4` and its backup
+  kept, the newest of two backups restored by default and the older one by
+  `--stamp`, and a malformed `--stamp` or one without `--restore` exiting
+  `3`.
+- **`--installed-only`:** with a `PATH` of the installer's own utilities plus
+  stub commands, exactly the units whose tool is there, `batcat` standing in
+  for `bat`, a dry run that writes nothing, an install that creates only
+  those configs, a `--status` with no false `MISSING`, exit `4` when no tool
+  is there or `--only` names an absent one, and every unit selected once
+  every command in [the table](#commands---installed-only-looks-for) is on
+  `PATH`.
+- **Uninstall:** every link and matching copy removed, the edited copy and
+  the `.backup` kept.
 
 The second half reads the tracked configs themselves: none is executable or
 starts with a shebang; every TOML, YAML, JSON, Lua and Python file parses,

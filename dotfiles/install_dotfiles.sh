@@ -29,7 +29,8 @@
 #   2   preflight failed (config/ or home/ missing, HOME unset)
 #   3   bad CLI arguments
 #   4   something was left in place (install: a conflict; status: not current;
-#       diff: a file differs; restore: refused, or nothing to restore)
+#       diff: a file differs; restore: refused, or nothing to restore), or
+#       --installed-only found no selected unit with its tool on PATH
 set -u
 set -o pipefail
 
@@ -44,6 +45,7 @@ PRUNE=0
 GROUPS_MODE=0
 BACKUPS=0
 RESTORE=0
+INSTALLED_ONLY=0
 STAMP=""
 FORCE=0
 QUIET=0
@@ -72,7 +74,7 @@ Files are linked one at a time, never whole directories, and nothing that is
 already there is deleted or overwritten without --force.
 
 Usage:
-  $(basename "$0") [--dry-run] [--force] [--only UNIT ...] [--home DIR] [--config-home DIR]
+  $(basename "$0") [--dry-run] [--force] [--only UNIT ...] [--installed-only] [--home DIR] [--config-home DIR]
   $(basename "$0") --status    [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --list      [--only UNIT ...] [--home DIR] [--config-home DIR]
@@ -106,6 +108,8 @@ Options:
                      directory under config/ such as k9s, or a dotfile under home/
                      with its leading dot dropped, such as ssh or terraformrc,
                      or @GROUP, see --groups
+  --installed-only   Limit to units whose tool is on PATH (see README for the
+                     command each unit looks for)
   --home DIR         Install into DIR instead of \$HOME; config/ then goes under DIR/.config
   --config-home DIR  Install config/ into DIR instead of \$XDG_CONFIG_HOME or ~/.config
   --quiet            Suppress informational and success output (errors remain)
@@ -142,6 +146,7 @@ while (( $# > 0 )); do
     --stamp=*)        STAMP="${1#*=}"; require_value "--stamp" "$STAMP" ;;
     --force)          FORCE=1 ;;
     --quiet)          QUIET=1 ;;
+    --installed-only) INSTALLED_ONLY=1 ;;
     --only)           require_value "$1" "${2:-}"; ONLY="${ONLY:+$ONLY,}$2"; shift ;;
     --only=*)         v="${1#*=}"; require_value "--only" "$v"; ONLY="${ONLY:+$ONLY,}$v" ;;
     --home)           require_value "$1" "${2:-}"; HOME_DIR="$2"; HOME_GIVEN=1; shift ;;
@@ -295,14 +300,46 @@ if [[ -n "$ONLY" ]]; then
   done < <(printf '%s\n' "$ONLY" | tr ',' '\n')
 fi
 
-selected() {
-  (( ${#only_units[@]} == 0 )) && return 0
-  local unit want
-  unit="$(unit_of "$1")"
-  for want in "${only_units[@]}"; do
-    [[ "$want" == "$unit" ]] && return 0
+# The command(s) whose presence on PATH means a unit's tool is installed, for
+# --installed-only; the first one found wins. Most are the unit's own name.
+# Debian and Ubuntu install bat as batcat; OpenTofu reads ~/.terraformrc too.
+# PATH is the only input: nothing is run, no version is asked for.
+tool_of() {
+  case "$1" in
+    bat)         printf '%s\n' "bat batcat" ;;
+    gnupg)       printf '%s\n' "gpg gpg2" ;;
+    homebrew)    printf '%s\n' "brew" ;;
+    kube)        printf '%s\n' "kubectl" ;;
+    npmrc)       printf '%s\n' "npm" ;;
+    pip)         printf '%s\n' "pip3 pip" ;;
+    ripgrep)     printf '%s\n' "rg" ;;
+    terraformrc) printf '%s\n' "terraform tofu" ;;
+    *)           printf '%s\n' "$1" ;;
+  esac
+}
+
+tool_present() {
+  local c
+  for c in $(tool_of "$1"); do
+    command -v "$c" >/dev/null 2>&1 && return 0
   done
   return 1
+}
+
+selected() {
+  (( ${#only_units[@]} == 0 && INSTALLED_ONLY == 0 )) && return 0
+  local unit want hit=0
+  unit="$(unit_of "$1")"
+  if (( ${#only_units[@]} > 0 )); then
+    for want in "${only_units[@]}"; do
+      [[ "$want" == "$unit" ]] && { hit=1; break; }
+    done
+    (( hit )) || return 1
+  fi
+  if (( INSTALLED_ONLY )) && ! tool_present "$unit"; then
+    return 1
+  fi
+  return 0
 }
 
 # Every regular file under config/ and home/, as a path relative to this
@@ -331,6 +368,20 @@ for want in ${only_units[@]+"${only_units[@]}"}; do
     exit 3
   fi
 done
+
+# --only is validated against every unit above, so --only kitty on a server
+# is a valid request that selects nothing. That, and a machine with none of
+# the tools, is a domain no-op rather than a quiet success.
+if (( INSTALLED_ONLY && GROUPS_MODE == 0 )); then
+  any=0
+  for f in "${files[@]}"; do
+    selected "$f" && { any=1; break; }
+  done
+  if (( any == 0 )); then
+    warn "no selected unit has its tool on PATH"
+    exit 4
+  fi
+fi
 
 # The private directories that hold at least one selected file, so --only
 # git never fails on the mode of ~/.ssh.
