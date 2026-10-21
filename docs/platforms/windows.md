@@ -26,6 +26,7 @@ Git Bash dotfiles installer.
 | `setup/status.ps1` | One-screen verdict; `-Only` selects sections, `-ListSections` lists them. | <span class="stage stage-report">read-only</span> |
 | `setup/workstation_doctor.ps1` | BitLocker, Defender, reboot flags, `C:` disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
 | `setup/net_doctor.ps1` | Adapters, default routes, DNS, proxy (WinINET against `HTTP_PROXY`), hosts file, listening ports; opt-in `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `setup/dev_env_doctor.ps1` | Long paths, git line endings and symlinks, virtualization, clock skew (`-CheckTime`), `HOME` against `USERPROFILE`, docker context. | <span class="stage stage-report">read-only</span> |
 | `setup/ssh_client_doctor.ps1` | Private-key access lists, the `ssh-agent` service, Git's bundled ssh against the Windows one, `IdentityFile` paths; prints each fix. | <span class="stage stage-report">read-only</span> |
 | `setup/stay_fresh.ps1` | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `setup/winget_bootstrap.ps1` | `export`, `list`, `check`, `import`, `diff` of the winget package set. | `-DryRun` on `import` |
@@ -50,6 +51,7 @@ All paths are under `windows/`.
     .\windows\setup\workstation_doctor.ps1 -MinFreePercent 20
     .\windows\setup\net_doctor.ps1 -Probe github.com
     .\windows\setup\ssh_client_doctor.ps1 -FailOn warn
+    .\windows\setup\dev_env_doctor.ps1 -CheckTime
     .\windows\setup\winget_bootstrap.ps1 diff
     .\windows\cleanup\disk_usage.ps1
     .\windows\cleanup\disk_usage.ps1 tree -Path $env:USERPROFILE -Depth 2

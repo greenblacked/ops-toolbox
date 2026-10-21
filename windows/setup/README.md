@@ -13,6 +13,7 @@ reproduce it elsewhere — and then keep it healthy.
 | [`stay_fresh.ps1`](stay_fresh.ps1) | Recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report |
 | [`workstation_doctor.ps1`](workstation_doctor.ps1) | Read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy |
 | [`net_doctor.ps1`](net_doctor.ps1) | Read-only network report: adapters, default routes, DNS, proxy, hosts file, listening ports, opt-in probe |
+| [`dev_env_doctor.ps1`](dev_env_doctor.ps1) | Read-only toolchain check: long paths, git line endings and symlinks, virtualization, clock skew, HOME, docker context |
 | [`ssh_client_doctor.ps1`](ssh_client_doctor.ps1) | Read-only OpenSSH client check: key access lists, the ssh-agent service, Git's bundled ssh, IdentityFile paths |
 | [`choco_bootstrap.ps1`](choco_bootstrap.ps1) | The same five verbs over a Chocolatey `packages.config` |
 | [`configuration.winget`](configuration.winget) | The curated list itself: what a workstation should have, in six commentable groups |
@@ -42,6 +43,7 @@ one. Neither replaces the other.
 - [workstation_doctor.ps1](#workstation_doctorps1)
 - [net_doctor.ps1](#net_doctorps1)
 - [ssh_client_doctor.ps1](#ssh_client_doctorps1)
+- [dev_env_doctor.ps1](#dev_env_doctorps1)
 - [Testing](#testing)
 - [winget_configure.ps1](#winget_configureps1)
 - [choco_bootstrap.ps1](#choco_bootstrapps1)
@@ -359,6 +361,46 @@ What it reads, and what it does not:
   [`git/git_ssh_doctor.py`](../../git/git_ssh_doctor.py), which asks OpenSSH.
 - **Nothing is changed.** The `icacls`, `Set-Service` and `git config` lines
   are advice; no access list, service or file is touched.
+
+## dev_env_doctor.ps1
+
+`workstation_doctor.ps1` answers "is this machine healthy". This one answers
+"will my toolchain work here": the Windows configuration that breaks git,
+containers and cloud command-line tools while the machine itself looks fine.
+It reads registry values, CIM classes, service states and global git settings,
+and changes none of them.
+
+```powershell
+.\dev_env_doctor.ps1
+.\dev_env_doctor.ps1 -ListSections
+.\dev_env_doctor.ps1 -Only git,paths
+.\dev_env_doctor.ps1 -CheckTime -MaxSkewSeconds 2
+```
+
+| Section | What it checks | Why it matters |
+| --- | --- | --- |
+| `paths` | `LongPathsEnabled`, and git's `core.longpaths` beside it | Paths over 260 characters break git checkouts and deep `node_modules`. Turning on the Windows flag is not enough while git's own setting is off. |
+| `git` | `core.autocrlf`, `core.symlinks` against Developer Mode, `credential.helper`, `core.eol`, `user.name` | `autocrlf=true` puts CRLF into shell scripts and YAML, which then fail inside Linux containers with `\r: command not found`. Global and system values are read; a repository's own settings are not. |
+| `virtualization` | A running hypervisor, firmware virtualization, the WSL and Virtual Machine Platform features, Developer Mode | WSL2 and Docker Desktop do not start without virtualization. Reading optional features needs elevation and is an `[info]` without it. For distro detail it points at `..\wsl\wsl_manage.ps1 list`. |
+| `time` | The Windows Time service; with `-CheckTime`, the clock offset | Kerberos, AWS SigV4 and JWT validation fail on a clock a few seconds off. `-CheckTime` takes one NTP sample from `time.windows.com`; nothing is resynced. |
+| `shell` | The running edition, `pwsh` on `PATH`, `HOME` against `USERPROFILE`, PSReadLine | When `HOME` is set and differs, Git Bash, ssh and git read different home folders, and keys and config seem to vanish. |
+| `containers` | The docker CLI and its current context, `DOCKER_HOST`, the Docker Desktop service | `docker context show` reads the CLI's own config and never contacts the daemon, so the check cannot hang while Docker Desktop is starting. |
+
+| Option | Meaning |
+| --- | --- |
+| `-Only LIST` | Comma-separated section ids. An unknown id exits `3`; a list that selects nothing exits `4`. |
+| `-ListSections` | Print the section ids and exit `0`. Works on any OS. |
+| `-CheckTime` | Measure the clock offset: one `w32tm /stripchart` sample. The only network traffic this script makes. |
+| `-MaxSkewSeconds N` | The offset `-CheckTime` warns above, `1`-`3600`. Default `5`. |
+| `-Quiet` | Print only warnings, each with its hint. |
+
+Exit codes: `0` the report ran (warnings do not change it), `2` not Windows,
+`3` bad arguments, `4` `-Only` selected nothing.
+
+Every `[warn]` is followed by the command that fixes it - the
+`New-ItemProperty` for long paths, the `git config --global` line,
+`w32tm /resync` - printed for you to run from the right prompt. The script
+runs none of them.
 
 ## Testing
 

@@ -200,6 +200,7 @@ $expectedParameters = @{
     'net_doctor.ps1'        = @('Probe', 'Port', 'Only', 'ListSections', 'SkipListen', 'Quiet', 'HostsFile')
     'ssh_client_doctor.ps1' = @('SshDir', 'FailOn', 'Quiet')
     'disk_usage.ps1'        = @('Path', 'Depth', 'Top', 'MinSizeMB', 'IncludeDocker', 'Quiet')
+    'dev_env_doctor.ps1'    = @('Only', 'ListSections', 'CheckTime', 'MaxSkewSeconds', 'Quiet')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -1562,6 +1563,149 @@ if (-not $diskUsage) {
     } else {
         Test-Fail "disk_usage.ps1 contains $($deleters -join ', ')"
     }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'dev_env_doctor parses clock skew'
+$devDoctor = Find-ContractScript 'dev_env_doctor.ps1'
+if (-not $devDoctor) {
+    Test-Fail 'dev_env_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $devDoctor -Name 'ConvertFrom-StripchartOffset'
+    if (-not $src) {
+        Test-Fail 'dev_env_doctor.ps1 : ConvertFrom-StripchartOffset not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $skewCases = @(
+            @{ Line = '14:10:55, +00.0012345s'; Expect = 0.0012345 }
+            @{ Line = '14:10:55, -12.5000000s'; Expect = -12.5 }
+            @{ Line = '14:10:55, +00,2500000s'; Expect = 0.25 }
+            @{ Line = '14:10:55, error: 0x80072746'; Expect = $null }
+            @{ Line = 'Tracking time.windows.com [20.101.57.9:123].'; Expect = $null }
+            @{ Line = ''; Expect = $null }
+        )
+        foreach ($case in $skewCases) {
+            $got = ConvertFrom-StripchartOffset -Line $case.Line
+            if ($null -eq $case.Expect) {
+                $pass = ($null -eq $got)
+            } else {
+                $pass = ($null -ne $got) -and ([math]::Abs($got - $case.Expect) -lt 1e-9)
+            }
+            if ($pass) {
+                Test-Ok ("'{0}' -> {1}" -f $case.Line, $(if ($null -eq $got) { '$null' } else { $got }))
+            } else {
+                Test-Fail ("'{0}' gave {1}, expected {2}" -f $case.Line, $got, $case.Expect)
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'dev_env_doctor grades git config'
+if (-not $devDoctor) {
+    Test-Fail 'dev_env_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $devDoctor -Name 'Get-GitFinding'
+    if (-not $src) {
+        Test-Fail 'dev_env_doctor.ps1 : Get-GitFinding not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $goodGit = @{
+            'core.autocrlf' = 'input'; 'core.symlinks' = 'true'; 'core.longpaths' = 'true'
+            'credential.helper' = 'manager'; 'core.eol' = ''; 'user.name' = 'Alice'
+        }
+        $gitCases = @(
+            @{ Label = 'autocrlf=true'; Change = @{ 'core.autocrlf' = 'true' }; DevMode = $false; Warn = 'autocrlf' }
+            @{ Label = 'autocrlf=input'; Change = @{ 'core.autocrlf' = 'input' }; DevMode = $false; Warn = '' }
+            @{ Label = 'no credential helper'; Change = @{ 'credential.helper' = '' }; DevMode = $false; Warn = 'credential-helper' }
+            @{ Label = 'symlinks off with Developer Mode on'; Change = @{ 'core.symlinks' = 'false' }; DevMode = $true; Warn = 'symlinks' }
+            @{ Label = 'symlinks off with Developer Mode off'; Change = @{ 'core.symlinks' = 'false' }; DevMode = $false; Warn = '' }
+            @{ Label = 'everything as recommended'; Change = @{}; DevMode = $true; Warn = '' }
+        )
+        $gitRan = 0
+        foreach ($case in $gitCases) {
+            $config = $goodGit.Clone()
+            foreach ($key in $case.Change.Keys) { $config[$key] = $case.Change[$key] }
+            $warned = @(Get-GitFinding -Config $config -DeveloperMode $case.DevMode |
+                Where-Object { $_.Level -eq 'warn' } | ForEach-Object { $_.Id })
+            $gitRan++
+            $expected = @($case.Warn | Where-Object { $_ })
+            if (($warned -join ' ') -eq ($expected -join ' ')) {
+                Test-Ok ("{0} -> warnings [{1}]" -f $case.Label, ($warned -join ' '))
+            } else {
+                Test-Fail ("{0}: warnings [{1}], expected [{2}]" -f $case.Label, ($warned -join ' '), ($expected -join ' '))
+            }
+        }
+        $fixless = @(Get-GitFinding -Config @{ 'core.autocrlf' = 'true'; 'credential.helper' = '' } -DeveloperMode $true |
+            Where-Object { $_.Level -eq 'warn' -and -not $_.Fix })
+        if ($fixless.Count -eq 0) {
+            Test-Ok 'every git warning carries the command that fixes it'
+        } else {
+            Test-Fail "git warnings without a fix: $(@($fixless | ForEach-Object { $_.Id }) -join ', ')"
+        }
+        if ($gitRan -lt 5) {
+            Test-Fail "only $gitRan git case(s) ran - this check has stopped checking"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'dev_env_doctor section selection'
+if (-not $devDoctor) {
+    Test-Fail 'dev_env_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $listed = Invoke-InScratch -Path $devDoctor.FullName -Arguments @('-ListSections')
+    $ids = @($listed.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    $wantIds = @('paths', 'git', 'virtualization', 'time', 'shell', 'containers')
+    if ($listed.ExitCode -eq 0 -and ($ids -join ',') -eq ($wantIds -join ',')) {
+        Test-Ok 'dev_env_doctor.ps1 -ListSections prints the six ids in order and exits 0'
+    } else {
+        Test-Fail "dev_env_doctor.ps1 -ListSections exited $($listed.ExitCode) and printed [$($ids -join ',')]"
+    }
+    foreach ($case in @(
+            @{ Arguments = @('-Only', 'bogus'); Code = 3; Mention = 'bogus'; Label = '-Only bogus' }
+            @{ Arguments = @('-Only', ','); Code = 4; Mention = ''; Label = "-Only ','" }
+            @{ Arguments = @('-MaxSkewSeconds', '0'); Code = 3; Mention = 'MaxSkewSeconds'; Label = '-MaxSkewSeconds 0' }
+        )) {
+        $run = Invoke-InScratch -Path $devDoctor.FullName -Arguments $case.Arguments
+        if ($run.ExitCode -eq $case.Code -and (-not $case.Mention -or $run.Output -match $case.Mention)) {
+            Test-Ok "dev_env_doctor.ps1 $($case.Label) exits $($case.Code), before the platform guard"
+        } else {
+            Test-Fail "dev_env_doctor.ps1 $($case.Label): exited $($run.ExitCode), expected $($case.Code)"
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'dev_env_doctor runs end to end'
+# git, shell and containers only: they read git, the environment and
+# Get-Command, all of which answer on Linux. The registry and CIM sections are
+# left out here because how Test-Path on HKLM: behaves under pwsh on Linux
+# with ErrorActionPreference Stop has not been verified, and an unverified
+# assumption is not something to build a passing check on. No assertion about
+# warnings: a runner may lack docker or have autocrlf=true.
+if (-not $devDoctor) {
+    Test-Fail 'dev_env_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $devBox = Join-Path ([IO.Path]::GetTempPath()) ('windev_' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $devBox -Force | Out-Null
+    $devCopy = Copy-UnguardedScript -Script $devDoctor -Directory $devBox
+    if (-not $devCopy) {
+        Test-Fail 'dev_env_doctor.ps1 : platform guard not found verbatim, so the end-to-end check could not run; update the guard text in contract.ps1'
+    } else {
+        $run = Invoke-InScratch -Path $devCopy -Arguments @('-Only', 'git,shell,containers')
+        $missing = @(@('== git ==', '== shell ==', '== containers ==') | Where-Object { $run.Output -notlike "*$_*" })
+        $extra = @(@('== paths ==', '== virtualization ==', '== time ==') | Where-Object { $run.Output -like "*$_*" })
+        if ($run.ExitCode -eq 0 -and $missing.Count -eq 0 -and $extra.Count -eq 0) {
+            Test-Ok 'dev_env_doctor.ps1 -Only git,shell,containers ran exactly those three sections'
+        } else {
+            Test-Fail ("dev_env_doctor.ps1 end to end: exited {0}, missing [{1}], unexpected [{2}]" -f $run.ExitCode, ($missing -join ' '), ($extra -join ' '))
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $devBox -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # --------------------------------------------------------------------------
