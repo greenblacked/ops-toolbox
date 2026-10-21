@@ -191,6 +191,33 @@ class ParseGcLogTestCase(unittest.TestCase):
         self.assertEqual(doctor.parse_gc_log(""), [])
 
 
+class GcLogExpiryTestCase(unittest.TestCase):
+    DAY = 86400
+
+    def test_common_forms(self):
+        parse = doctor.parse_expiry_seconds
+        self.assertEqual(parse("1.day"), self.DAY)
+        self.assertEqual(parse("3.days"), 3 * self.DAY)
+        self.assertEqual(parse("2.weeks.ago"), 14 * self.DAY)
+        self.assertEqual(parse("12 hours"), 12 * 3600)
+        self.assertEqual(parse("now"), 0)
+
+    def test_never_and_unknown_forms_never_expire(self):
+        for text in ("never", "", "yesterday", "soon.ish", "-1.day"):
+            self.assertIsNone(doctor.parse_expiry_seconds(text), text)
+
+    def test_a_fresh_log_blocks(self):
+        self.assertTrue(doctor.gc_log_blocks(3600, self.DAY))
+
+    def test_an_expired_log_does_not_block(self):
+        self.assertFalse(doctor.gc_log_blocks(self.DAY + 1, self.DAY))
+        self.assertFalse(doctor.gc_log_blocks(self.DAY, self.DAY))
+        self.assertFalse(doctor.gc_log_blocks(0, 0))
+
+    def test_never_always_blocks(self):
+        self.assertTrue(doctor.gc_log_blocks(10 * 365 * self.DAY, None))
+
+
 class ProcessNamesTestCase(unittest.TestCase):
     def test_paths_and_names_reduce_to_basenames(self):
         self.assertEqual(

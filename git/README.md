@@ -791,9 +791,12 @@ looks at the repository itself rather than at what it connects to.
   printed, never run. If neither `ps` nor `/proc` can be read, the verdict
   drops to a warning instead of guessing.
 - **A failed automatic gc.** When `git gc --auto` fails it leaves `gc.log`
-  behind, and while that file is there automatic gc does not run again for a
-  day (`gc.logExpiry`), so loose objects pile up with nothing said after the
-  first warning. The doctor quotes the first lines of the log. `gc.auto=0`
+  behind, and while that file is there automatic gc does not run again until
+  it is older than `gc.logExpiry` (a day by default; `N.days`, `N.weeks`,
+  `N.hours`, `now` and `never` are understood, anything else is treated as
+  never), so loose objects pile up with nothing said after the first
+  warning. A log older than that is noted, not failed. The doctor quotes the
+  first lines of the log. `gc.auto=0`
   (automatic gc disabled) is reported as a warning.
 - **Objects.** Loose objects above `gc.auto` (6700 by default), packs above
   `gc.autoPackLimit` (50), and garbage an interrupted gc or fetch left in

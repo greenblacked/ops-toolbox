@@ -1035,6 +1035,15 @@ out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
 assert_eq "$rc" "1" "health doctor fails while gc.log blocks automatic gc"
 assert_contains "$out" "gc.log" "health doctor names gc.log"
 assert_contains "$out" "too many unreachable loose objects" "health doctor quotes the log"
+# A gc.log older than gc.logExpiry no longer blocks automatic gc.
+touch -t 200001010000 "$repo/.git/gc.log"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "an expired gc.log does not fail the health doctor"
+assert_contains "$out" "older than gc.logExpiry" "health doctor says the gc.log expired"
+git -C "$repo" config gc.logExpiry never
+(cd "$repo" && "$HEALTH_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "gc.logExpiry=never keeps an old gc.log blocking"
+git -C "$repo" config --unset gc.logExpiry
 rm -f "$repo/.git/gc.log"
 (cd "$repo" && "$HEALTH_DOCTOR" --quiet); rc=$?
 assert_eq "$rc" "0" "removing gc.log clears the verdict"

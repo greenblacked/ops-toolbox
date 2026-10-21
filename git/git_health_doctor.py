@@ -277,6 +277,35 @@ def object_findings(counts, gc_auto, gc_auto_pack_limit, gc_disabled):
     return findings
 
 
+GC_LOG_EXPIRY_DEFAULT = "1.day"
+_EXPIRY_UNITS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400,
+                 "week": 7 * 86400, "month": 31 * 86400, "year": 366 * 86400}
+_EXPIRY = re.compile(r"^(\d+)[. ]+(second|minute|hour|day|week|month|year)s?"
+                     r"(?:[. ]+ago)?$")
+
+
+def parse_expiry_seconds(text):
+    """Seconds named by a gc.logExpiry value, or None for "never expires".
+
+    Handles N.day(s), N.week(s), N.hour(s) and the other units (with or
+    without a trailing ".ago"), and `now`. Months and years are rounded up,
+    and anything not understood (`never` included) gives None: the gc.log
+    then keeps being reported as blocking, the conservative answer.
+    """
+    value = (text or "").strip().lower()
+    if value == "now":
+        return 0
+    match = _EXPIRY.match(value)
+    if match:
+        return int(match.group(1)) * _EXPIRY_UNITS[match.group(2)]
+    return None
+
+
+def gc_log_blocks(age_seconds, expiry_seconds):
+    """True while a gc.log of this age still stops automatic gc."""
+    return expiry_seconds is None or age_seconds < expiry_seconds
+
+
 def parse_gc_log(text):
     """The first three non-empty lines of gc.log, stripped."""
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
@@ -437,13 +466,24 @@ def report_locks(git_dir, common_dir, now, lock_age):
     return print_findings(classify_locks(locks, now, lock_age, running))
 
 
-def report_auto_gc(common_dir, gc_auto):
+def report_auto_gc(common_dir, gc_auto, now, log_expiry=None):
     head("auto gc")
     problems = 0
     gc_log = os.path.join(common_dir, "gc.log")
+    expiry_text = log_expiry or GC_LOG_EXPIRY_DEFAULT
+    blocks = False
     if os.path.isfile(gc_log):
+        try:
+            age = now - os.stat(gc_log).st_mtime
+        except OSError:
+            age = 0
+        blocks = gc_log_blocks(age, parse_expiry_seconds(expiry_text))
+        if not blocks:
+            info("gc.log is older than gc.logExpiry (%s), so automatic gc "
+                 "runs again and replaces it" % expiry_text)
+    if blocks:
         bad("gc.log exists: automatic gc will not run again until it is removed "
-            "or gc.logExpiry (1 day by default) passes")
+            "or gc.logExpiry (%s) passes" % expiry_text)
         try:
             with open(gc_log, encoding="utf-8", errors="replace") as handle:
                 lines = parse_gc_log(handle.read(64 * 1024))
@@ -581,7 +621,8 @@ def run_report(args):
     pack_limit = config_int("gc.autoPackLimit")
 
     problems = report_locks(git_dir, common_dir, now, args.lock_age)
-    problems += report_auto_gc(common_dir, gc_auto)
+    problems += report_auto_gc(common_dir, gc_auto, now,
+                               config_value("gc.logExpiry"))
     object_problems, counts = report_objects(
         GC_AUTO_DEFAULT if gc_auto is None else gc_auto,
         GC_AUTO_PACK_LIMIT_DEFAULT if pack_limit is None else pack_limit,
