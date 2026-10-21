@@ -1363,7 +1363,7 @@ class DriftTestCase(unittest.TestCase):
                          " disable ", ":convert", ":parse"):
                 self.assertNotIn(verb, text)
         self.assertEqual(command.count("\n"), 0)
-        # no function call with named arguments: the text is inline
+        # no function call: the text is inline
         self.assertNotIn("[$", command)
         # the only things printed are the name and the router's one-word answer
         self.assertEqual(command.count(":put ("), 4)

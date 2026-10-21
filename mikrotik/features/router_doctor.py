@@ -125,9 +125,9 @@ PROBE = (
 #
 # Two earlier versions did not run on the pinned release. RouterOS 7.24
 # rejects every :convert spelling that was tried for a hash, and the CI
-# router rejected a call of a :parse'd function that took the script name
-# and the file as two named string arguments (syntax error at the second
-# argument), so the comparison is inline and needs neither.
+# router reported a syntax error for a call of a :parse'd function with the
+# script name and the file text as arguments. This version is a plain inline
+# block, and the CHR test runs it once per kind of character in the text.
 #
 # %(n)s is the script name and %(e)s the expected text, both already
 # escaped by escape_routeros_string().
