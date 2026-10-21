@@ -1846,7 +1846,7 @@ private key with no passphrase, and the Keychain options.
 | --- | --- |
 | `dir` | `~/.ssh` has no group or other permission bits (`chmod 700`). |
 | `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header, are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
-| `keys` | From each key's `.pub`: DSA fails, RSA under 3072 bits warns. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
+| `keys` | From each private key (`ssh-keygen -l -f`), not from a `.pub` that can be stale: DSA fails, RSA under 3072 bits warns. A `.pub` whose fingerprint differs from its private key's warns, and the `.pub` is only used for strength when the private key cannot be read. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
 | `config` | `IdentityFile` paths that do not exist; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line or under `Host *`, where they apply to every server (the same lines under one named host are only noted); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |
 
 It never changes a mode: every fix is printed, not run. The passphrase test

@@ -2431,7 +2431,8 @@ section "ssh_client_doctor: modes, keys and Host * risks"
 # Modes are set with chmod and read back through the real stat, BSD on a Mac
 # and GNU here, so the same fixture means the same thing on both runners.
 # ssh-keygen is faked: -l prints the fingerprint line stored in the .pub
-# fixture, and -y succeeds only for a key carrying the NOPASSPHRASE marker,
+# fixture, or for a private key the "FP: " line in its file (and fails when
+# there is none, as for an unreadable key), and -y succeeds only for a key carrying the NOPASSPHRASE marker,
 # which is how a real key without a passphrase answers. Every fixture key
 # body carries SECRETBODY, which must never reach the output.
 sd="$(mktemp -d)"
@@ -2451,14 +2452,17 @@ while [ $# -gt 0 ]; do
 done
 case "$mode" in
   y) grep -q NOPASSPHRASE "$file" ;;
-  l) cat "$file" ;;
+  l) case "$file" in
+       *.pub) cat "$file" ;;
+       *) grep '^FP: ' "$file" | sed 's/^FP: //' | grep . ;;
+     esac ;;
   *) exit 1 ;;
 esac
 KEYGEN_EOF
 chmod +x "$sd/bin/"*
 ssh_home="$sd/home"
 sshd_dir="$sd/home/.ssh"
-printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 256 SHA256:fixture me@example (ED25519)\n-----END OPENSSH PRIVATE KEY-----\n' \
   > "$sshd_dir/id_ed25519"
 printf '256 SHA256:fixture me@example (ED25519)\n' > "$sshd_dir/id_ed25519.pub"
 printf 'Host bastion\n  HostName bastion.example\n  IdentityFile ~/.ssh/id_ed25519\n' \
@@ -2493,15 +2497,31 @@ assert_contains "the key fix is printed" "$out" "chmod 600 $sshd_dir/id_ed25519"
 assert_contains "the passphrase is not judged while the mode is wrong" "$out" "passphrase not checked"
 chmod 600 "$sshd_dir/id_ed25519"
 
-printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 1024 SHA256:rsafixture me@example (RSA)\n-----END OPENSSH PRIVATE KEY-----\n' \
   > "$sshd_dir/id_rsa"
-printf '1024 SHA256:fixture me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
+printf '1024 SHA256:rsafixture me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
 chmod 600 "$sshd_dir/id_rsa"
 out="$(sshdoc --only keys)"; rc=$?
 assert_eq "a 1024-bit RSA key is a warning only -> 0" "0" "$rc"
 assert_contains "the short RSA key is named" "$out" "1024-bit RSA"
 sshdoc --only keys --fail-on warn >/dev/null; rc=$?
 assert_eq "a short RSA key fails under --fail-on warn -> 1" "1" "$rc"
+assert_not_contains "a matching .pub raises no mismatch" "$out" "does not match"
+
+# A stale .pub that claims a strong key must not hide a weak private key.
+printf '4096 SHA256:otherkey me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
+out="$(sshdoc --only keys)"; rc=$?
+assert_contains "the weak private key is graded, not the stale .pub" "$out" "1024-bit RSA"
+assert_not_contains "the stale .pub's strength is not trusted" "$out" "RSA 4096"
+assert_contains "a .pub that differs from its private key is a warning" "$out" \
+  "[warn] id_rsa.pub does not match id_rsa"
+# Without a readable private key the .pub is the fallback, and says so.
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/id_rsa"
+chmod 600 "$sshd_dir/id_rsa"
+out="$(sshdoc --only keys)"
+assert_contains "an unreadable private key falls back to the .pub" "$out" "strength taken from id_rsa.pub"
+assert_not_contains "the fallback raises no mismatch" "$out" "does not match"
 rm -f "$sshd_dir/id_rsa" "$sshd_dir/id_rsa.pub"
 
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nNOPASSPHRASE SECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \

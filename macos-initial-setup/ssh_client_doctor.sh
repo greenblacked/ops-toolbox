@@ -326,7 +326,8 @@ if want files; then
 fi
 
 # --- keys --------------------------------------------------------------------
-# Strength comes from the public half (ssh-keygen -l reads only the .pub).
+# Strength comes from the private key (ssh-keygen -l -f KEY); the .pub is
+# only compared against it, and used when the private key cannot be read.
 # DSA has been refused by OpenSSH since 7.0; RSA under 3072 bits is below what
 # NIST and OpenSSH's own default have asked for since 2020.
 if want keys; then
@@ -340,14 +341,28 @@ if want keys; then
       [[ -n "$key" ]] || continue
       base="$(basename "$key")"
       ktype=""
+      # The private key is the truth. A .pub beside it can be stale, copied
+      # from another key or hand-edited, so strength is read from the private
+      # file; -P "" and a closed stdin make an encrypted old-format key fail
+      # at once instead of prompting. Only if that fails is the .pub used.
+      fp="$(ssh-keygen -l -P "" -f "$key" </dev/null 2>/dev/null | head -n 1)"
+      src="$base"
+      pub_fp=""
       if [[ -f "$key.pub" ]]; then
-        fp="$(ssh-keygen -l -f "$key.pub" 2>/dev/null | head -n 1)"
+        pub_fp="$(ssh-keygen -l -f "$key.pub" </dev/null 2>/dev/null | head -n 1)"
+      fi
+      if [[ -z "$fp" && -n "$pub_fp" ]]; then
+        fp="$pub_fp"
+        src="$base.pub"
+        info "$base: could not read the private key, strength taken from $base.pub"
+      fi
+      if [[ -n "$fp" ]]; then
         bits="${fp%% *}"
         ktype="${fp##*(}"
         ktype="${ktype%)*}"
         ktype="$(clean "$ktype")"
-        if [[ -z "$fp" || ! "$bits" =~ ^[0-9]+$ ]]; then
-          skip "$base: could not read the key type from $base.pub"
+        if [[ ! "$bits" =~ ^[0-9]+$ ]]; then
+          skip "$base: could not read the key type from $src"
         elif [[ "$ktype" == "DSA" ]]; then
           fail "$base is a DSA key" "OpenSSH refuses DSA keys; make a new one: ssh-keygen -t ed25519"
         elif [[ "$ktype" == "RSA" ]] && (( bits < 3072 )); then
@@ -355,8 +370,19 @@ if want keys; then
         else
           pass "$base: $ktype $bits"
         fi
+        # Compare the fingerprint field (the second word) of both halves.
+        if [[ "$src" == "$base" && -n "$pub_fp" ]]; then
+          priv_hash="${fp#* }"
+          priv_hash="${priv_hash%% *}"
+          pub_hash="${pub_fp#* }"
+          pub_hash="${pub_hash%% *}"
+          if [[ -n "$priv_hash" && -n "$pub_hash" && "$priv_hash" != "$pub_hash" ]]; then
+            warn "$base.pub does not match $base (fingerprints differ)" \
+                 "the public file is stale or from another key; regenerate it: ssh-keygen -y -f $key > $key.pub"
+          fi
+        fi
       else
-        info "$base has no $base.pub beside it; strength not checked"
+        skip "$base: could not read the key type (no readable private key or $base.pub)"
       fi
       # A security-key (FIDO) private file is a handle, not a secret, and opens
       # without a passphrase by design.
