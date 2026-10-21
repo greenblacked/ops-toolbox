@@ -28,6 +28,7 @@ Tested against Material for MkDocs 9.7, MkDocs 1.6 and PyMdown Extensions 12.
 | `docs/stylesheets/theme/rpt-theme.css` | The theme. |
 | `docs/assets/fonts/` | The self-hosted IBM Plex woff2 files and their licence texts. The `@font-face` URLs in the theme are `../../assets/fonts/...`; change those five lines if the folder moves. The fonts folder has its own `README.md` (provenance and checksums). |
 | `overrides/404.html` | The themed 404 page. It extends `main.html`. |
+| `overrides/assets/javascripts/rpt-404.js` (optional) | Fills the 404 page's "Did you mean" block: the three pages of the site's search index that best match the words of the missing address, and a link that opens the search with those words. `404.html` loads it; without it the block stays hidden. |
 | `overrides/main.html` | Adds the PNG favicon fallback, a typed SVG icon and the iOS icon, and loads the page scripts below. Copy it if you provide those three icon files (and point the hrefs at yours) or want the page scripts; otherwise drop it, and `404.html` then extends Material's own `main.html`. |
 | `overrides/assets/javascripts/rpt-table-filter.js` (optional) | Adds a live filter box above every Markdown table of 15 or more rows. MkDocs publishes the folder at `assets/javascripts/`; `main.html` loads the file. Drop the file and its `<script>` line to go without. |
 | `overrides/assets/javascripts/rpt-checklist.js` (optional) | Turns Markdown task lists into checklists that keep their ticks across a reload (per page, in the browser), with a progress line and a Reset button. Needs `pymdownx.tasklist` (below). |
@@ -159,6 +160,7 @@ non-text parts.
 | `.rpt-stages`, `.rpt-stage`, `.rpt-stage--report`, `.rpt-stage--preview`, `.rpt-stage--apply` | Three-stage strip and its cards. |
 | `.grid.cards.cols-2` | Material's card grid in two columns from 40em (one column below). |
 | `.rpt-404`, `.rpt-steps`, `.rpt-step--report`, `.rpt-step--preview`, `.rpt-step--apply` | The 404 page and its three steps. |
+| `.rpt-404__suggest` | The 404 page's "Did you mean" block, hidden until `rpt-404.js` fills it. Already in `404.html`. |
 | `.rpt-filter`, `.rpt-filter__count` | The filter box above a long table and its status line. Added by `rpt-table-filter.js`; you do not write them. |
 | `.rpt-progress`, `.rpt-progress__status`, `.rpt-progress__reset` | The checklist progress line and its Reset button. Added by `rpt-checklist.js`. Task lists themselves (`.task-list-indicator`) are restyled without a class: the box reaches 3:1 at rest, takes the accent when ticked and shows the focus ring. |
 

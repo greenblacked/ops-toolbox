@@ -49,6 +49,8 @@
                                     narrow); used with Material's .grid.cards
      .rpt-404 .rpt-steps .rpt-step--report | --preview | --apply
                                     404 page and its three steps
+     .rpt-404__suggest              404 "did you mean" links (filled by
+                                    rpt-404.js)
      .rpt-filter .rpt-filter__count
                                     filter box above a long table and its
                                     status line (added by rpt-table-filter.js)
@@ -993,6 +995,25 @@ input:focus-visible,
   text-align: center;
 }
 
+/* "Did you mean": up to three page links and a search link, filled by
+   rpt-404.js. Hidden (the attribute) until it has something to show. */
+.rpt-404__suggest {
+  margin: 1.2rem 0 0;
+}
+
+.md-content .md-typeset .rpt-404__suggest h2 {
+  margin: 0 0 0.4rem;
+  font-size: 0.85rem;
+}
+
+.md-typeset .rpt-404__suggest ul {
+  margin: 0.4rem 0;
+}
+
+.md-typeset .rpt-404__suggest p {
+  margin: 0.4rem 0 0;
+}
+
 /* ---- 15. Touch targets and motion --------------------------------------- */
 
 /* The drawer layout (Material's breakpoint, 76.234375em): links and header
@@ -1093,7 +1114,8 @@ input:focus-visible,
   }
 
   .md-content .md-typeset h1::before,
-  .rpt-rule {
+  .rpt-rule,
+  .rpt-404__suggest {
     display: none;
   }
 

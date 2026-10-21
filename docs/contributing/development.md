@@ -187,6 +187,16 @@ in every file of the folder.
   table with 15 or more body rows, and reads a `?filter=` link.
 - `rpt-checklist.js` turns Markdown task lists into checklists that keep
   their ticks across a reload. See below.
+- `rpt-404.js` runs on the 404 page only (`overrides/404.html` loads it).
+  It splits the missing address into words (`/runbooks/linux-low-disk-old/`
+  gives `runbooks linux low disk old`), reads the site's own
+  `search/search_index.json` (same origin, no credentials), and lists the
+  three pages whose titles and addresses match the most words, a title
+  match counting three times an address match. Below them is a link that
+  opens the search with those words, through Material's `?q=` parameter.
+  Renamed pages need no redirect list for this to work. Without
+  JavaScript, or when the index cannot be read, the page keeps its three
+  steps, plus the search link in the second case.
 
 #### Checklists
 

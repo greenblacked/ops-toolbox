@@ -290,6 +290,132 @@ class ChecklistTests(unittest.TestCase):
                 self.assertEqual(self.call("m.progressLabel(%d, %d)" % (done, total)), expected)
 
 
+class NotFoundSuggestionTests(unittest.TestCase):
+    SCRIPT = SCRIPTS_DIR / "rpt-404.js"
+    TEMPLATE = OVERRIDES / "404.html"
+
+    # Shaped like the docs entries of Material's search/search_index.json: one
+    # entry per page and one per section, the section's location carrying an
+    # anchor.
+    DOCS = [
+        {"location": "", "title": "Ops Toolbox", "text": "home"},
+        {"location": "runbooks/", "title": "Runbooks", "text": ""},
+        {"location": "runbooks/#how-a-runbook-is-laid-out", "title": "Linux disk", "text": ""},
+        {"location": "runbooks/linux-low-disk/", "title": "A Linux host is low on disk space",
+         "text": ""},
+        {"location": "runbooks/linux-low-disk/#report", "title": "Report", "text": ""},
+        {"location": "platforms/linux/", "title": "Linux", "text": ""},
+        {"location": "platforms/disk-tools/", "title": "Storage", "text": ""},
+    ]
+
+    def call(self, expression: str) -> object:
+        return script_json(self.SCRIPT, expression)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_terms_from_path_splits_segments_and_words(self) -> None:
+        self.assertEqual(
+            self.call("m.termsFromPath('/runbooks/linux-low-disk-old/')"),
+            ["runbooks", "linux", "low", "disk", "old"],
+        )
+        self.assertEqual(self.call("m.termsFromPath('/Platforms/Disk_Tools.v2/')"),
+                         ["platforms", "disk", "tools", "v2"])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_terms_from_path_strips_html_and_md_extensions(self) -> None:
+        cases = {
+            "/platforms/linux.html": ["platforms", "linux"],
+            "/platforms/linux.md": ["platforms", "linux"],
+            "/runbooks/index.html": ["runbooks"],
+            "/runbooks/index.md": ["runbooks"],
+        }
+        self.assertTrue(cases)
+        for path, expected in cases.items():
+            with self.subTest(path=path):
+                self.assertEqual(self.call("m.termsFromPath(%s)" % json.dumps(path)), expected)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_terms_from_path_survives_bad_encoding(self) -> None:
+        terms = self.call("m.termsFromPath('/disk%E0%A4%A/cleanup/')")
+        self.assertIsInstance(terms, list)
+        self.assertIn("cleanup", terms)
+        self.assertEqual(self.call("m.termsFromPath('/linux%20disk/')"), ["linux", "disk"])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_terms_are_capped_and_deduplicated(self) -> None:
+        terms = self.call("m.termsFromPath('/a/disk/disk-disk/one-two-three-four-five-six-seven/')")
+        self.assertEqual(terms, ["disk", "one", "two", "three", "four", "five", "six", "seven"])
+        self.assertEqual(self.call("m.termsFromPath('/')"), [])
+
+    def rank(self, terms: list[str], limit: int = 3) -> object:
+        return self.call(
+            "m.rank(%s, %s, %d)" % (json.dumps(self.DOCS), json.dumps(terms), limit)
+        )
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_rank_prefers_title_matches_over_location_matches(self) -> None:
+        # "disk" is in the title of the runbook (3 + 1) but only in the
+        # address of the disk-tools page (1).
+        result = self.rank(["disk"])
+        self.assertIsInstance(result, list)
+        assert isinstance(result, list)
+        self.assertEqual(
+            [page["location"] for page in result],
+            ["runbooks/linux-low-disk/", "platforms/disk-tools/"],
+        )
+        self.assertEqual(result[0]["title"], "A Linux host is low on disk space")
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_rank_ignores_section_anchors_and_returns_each_page_once(self) -> None:
+        docs = self.DOCS + [{"location": "runbooks/", "title": "Runbooks again", "text": ""}]
+        result = self.call("m.rank(%s, ['runbooks', 'linux'], 10)" % json.dumps(docs))
+        self.assertIsInstance(result, list)
+        assert isinstance(result, list)
+        locations = [page["location"] for page in result]
+        self.assertTrue(locations)
+        for location in locations:
+            with self.subTest(location=location):
+                self.assertNotIn("#", location)
+        self.assertEqual(len(locations), len(set(locations)))
+        self.assertEqual(locations[0], "runbooks/linux-low-disk/")
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_rank_returns_nothing_when_no_term_matches(self) -> None:
+        self.assertEqual(self.rank(["kubernetes"]), [])
+        self.assertEqual(self.rank([]), [])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_rank_honours_the_limit(self) -> None:
+        result = self.rank(["linux", "disk", "runbooks", "platforms"], limit=2)
+        self.assertIsInstance(result, list)
+        assert isinstance(result, list)
+        self.assertEqual(len(result), 2)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_safe_location_rejects_scheme_and_protocol_relative(self) -> None:
+        bad = ["javascript:alert(1)", "https://example.com/", "//example.com/",
+               "/absolute/", "\\\\example.com/", "a\nb", None, 5]
+        self.assertTrue(bad)
+        for location in bad:
+            with self.subTest(location=location):
+                self.assertIsNone(self.call("m.safeLocation(%s)" % json.dumps(location)))
+        good = ["", "runbooks/", "platforms/linux/"]
+        for location in good:
+            with self.subTest(location=location):
+                self.assertEqual(self.call("m.safeLocation(%s)" % json.dumps(location)), location)
+
+    def test_404_template_has_container_and_script(self) -> None:
+        template = self.TEMPLATE.read_text(encoding="utf-8")
+        self.assertIn('class="rpt-404__suggest" hidden', template)
+        self.assertIn("'search/search_index.json' | url", template)
+        self.assertIn("{{ super() }}", template)
+        self.assertIn("'assets/javascripts/rpt-404.js' | url", template)
+
+    def test_404_template_makes_no_external_request(self) -> None:
+        template = self.TEMPLATE.read_text(encoding="utf-8")
+        self.assertNotIn("http", template)
+        self.assertNotIn("//", template)
+
+
 class PageScriptContractTests(unittest.TestCase):
     """The page scripts read text an attacker controls: the query string of a
     link (?filter=) and the path of a missing page. So no script may parse

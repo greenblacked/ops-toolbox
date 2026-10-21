@@ -6,6 +6,11 @@
   name comes from config.site_name, and every link goes through the url
   filter, which on an error page resolves against the site root. There are no
   external requests. Styles: .rpt-404 and .rpt-steps in the theme stylesheet.
+
+  .rpt-404__suggest is filled by assets/javascripts/rpt-404.js with the pages
+  the missing address probably meant, ranked from the site's own search
+  index, and a link that opens the search with the address's words. It is
+  hidden until then, so without JavaScript the page is the three steps only.
 #}
 {% block content %}
   <div class="rpt-404">
@@ -26,5 +31,10 @@
         <span><a href="{{ (nav.homepage.url if nav.homepage else '.') | url }}">Go to the home page.</a></span>
       </li>
     </ol>
+    <div class="rpt-404__suggest" hidden aria-live="polite" data-index="{{ 'search/search_index.json' | url }}" data-home="{{ (nav.homepage.url if nav.homepage else '.') | url }}"></div>
   </div>
+{% endblock %}
+{% block scripts %}
+  {{ super() }}
+  <script src="{{ 'assets/javascripts/rpt-404.js' | url }}" defer></script>
 {% endblock %}
