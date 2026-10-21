@@ -460,7 +460,7 @@ them:
 
 | Finding | Meaning |
 | --- | --- |
-| `duplicate` | The same folder twice, ignoring case, quotes and a trailing slash, after expansion. Names the entry it repeats. |
+| `duplicate` | The same folder twice, ignoring case and a trailing slash. Only an absolute drive path with no `%VARIABLE%` and no quotes is judged: a quoted or `%VAR%` entry is never a first copy or a duplicate, so it does not make a later plain copy one. Names the entry it repeats. |
 | `missing-dir` | An absolute folder that does not exist: an uninstalled tool's leftover. |
 | `relative-entry` | Resolved against whatever folder a program starts in. |
 | `quoted-entry` | Quotes in PATH are not honoured everywhere; a folder with spaces needs none. |
