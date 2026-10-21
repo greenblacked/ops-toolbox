@@ -35,7 +35,7 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
 | `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal, package cache, docker. | `--dry-run` |
 | `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
-| `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation. | `--dry-run` |
+| `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
 | `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |
 | `install_aliases.sh` | Add a marked block to `~/.bashrc`; `--status`, `--uninstall`. | `--dry-run` |
 | `systemd/stay_fresh_timer.sh` | systemd user timer for `stay_fresh.sh`. | `--dry-run` on `install`; `--print-only` |
@@ -64,6 +64,7 @@ All paths are under `linux/`.
     ./linux/kernel_cleanup.sh --dry-run --keep 1
     sudo ./linux/sysctl_defaults.sh --apply --dry-run
     ./linux/config_backup.sh --dry-run
+    ./linux/config_backup.sh --diff
     ```
 
 === "Apply"

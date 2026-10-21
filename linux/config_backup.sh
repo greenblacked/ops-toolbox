@@ -14,11 +14,19 @@
 # those are backups with a different blast radius, and this script is the
 # one you run before editing sshd_config.
 #
+# --diff answers the question after the edit: what is different now from the
+# newest archive (or a named one)? GNU tar compares the members with the live
+# tree and extracts nothing, so it stays read-only like --list, and the one-file
+# restore it suggests is printed, never run.
+#
 # Exit codes:
-#   0   complete archive written (or dry-run completed)
-#   1   partial backup, or staging, validation, publication or rotation failed
-#   2   preflight failed (not Linux)
-#   3   bad CLI arguments
+#   0   complete archive written (or dry-run completed); --diff: no differences
+#   1   partial backup, or staging, validation, publication or rotation failed;
+#       --diff: differences found, a file could not be compared, or the
+#       compare itself failed
+#   2   preflight failed (not Linux, or tar missing for --diff)
+#   3   bad CLI arguments (including --diff with --list, --yes or --dry-run, or
+#       no archive to compare)
 set -u
 set -o pipefail
 
@@ -26,6 +34,8 @@ DRY_RUN=0
 ASSUME_YES=0
 LIST=0
 LIST_FILE=""
+DIFF=0
+DIFF_FILE=""
 DEST=""
 KEEP=7
 PREFIX="config"
@@ -59,19 +69,23 @@ Usage:
   $(basename "$0") --dry-run
   $(basename "$0") --yes
   $(basename "$0") --list
+  $(basename "$0") --diff
   $(basename "$0") --yes --paths /etc/ssh,/etc/nginx --dest DIR --keep 5
 
 Options:
   --dry-run          Print the archive path without writing it
   --yes, -y          Required for a run that actually writes
   --list [FILE]      Show contents of FILE, or of the newest archive in --dest
+  --diff [FILE]      Compare FILE (or the newest archive) with the live --paths;
+                     read-only, no --yes; exit 1 when anything differs
   --paths LIST       Comma-separated absolute paths (repeatable; default: /etc)
   --dest DIR         Directory for archives (default: ~/ops-toolbox-backups)
   --keep N           Complete and partial archives to retain separately (default: $KEEP; 0 = keep all)
   --prefix NAME      Filename prefix (default: $PREFIX)
   --help, -h         Show this help
 
-Exit codes: 0 complete backup, 1 partial backup or failure, 2 preflight, 3 usage
+Exit codes: 0 complete backup (--diff: identical), 1 partial backup or failure
+(--diff: differences found), 2 preflight, 3 usage
 EOF
 }
 
@@ -107,6 +121,14 @@ while (( $# > 0 )); do
       fi
       ;;
     --list=*)      LIST=1; LIST_FILE="${1#*=}"; require_value "--list" "$LIST_FILE" ;;
+    --diff)
+      DIFF=1
+      if [[ -n "${2:-}" && "$2" != --* ]]; then
+        DIFF_FILE="$2"
+        shift
+      fi
+      ;;
+    --diff=*)      DIFF=1; DIFF_FILE="${1#*=}"; require_value "--diff" "$DIFF_FILE" ;;
     --paths)       require_value "$1" "${2:-}"; add_paths "$2"; shift ;;
     --paths=*)     add_paths "${1#*=}"; require_value "--paths" "${1#*=}" ;;
     --dest)        require_value "$1" "${2:-}"; DEST="$2"; shift ;;
@@ -137,6 +159,19 @@ case "$PREFIX" in
     ;;
 esac
 [[ -n "$PREFIX" ]] || { err "--prefix must not be empty"; exit 3; }
+
+# --diff reads; every one of these asks for something else, and quietly
+# ignoring one would leave the caller believing it happened.
+if (( DIFF )); then
+  if (( LIST )); then
+    err "--diff and --list are separate modes; choose one"
+    exit 3
+  fi
+  if (( ASSUME_YES || DRY_RUN )); then
+    err "--diff is read-only and writes nothing; drop --yes and --dry-run"
+    exit 3
+  fi
+fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   err "this script targets Linux"
@@ -172,6 +207,189 @@ if (( LIST )); then
   fi
   info "listing $LIST_FILE"
   tar -tzf "$LIST_FILE"
+  exit $?
+fi
+
+# --- diff ------------------------------------------------------------------
+# One finding per line: WORD /path (detail). Directory mtimes are left out on
+# purpose: adding or deleting a file changes its parent's, so they only repeat
+# a NEW or GONE line already printed. A directory whose mode or owner changed
+# is still reported.
+diff_line() {
+  local word="$1" path="$2" detail="${3:-}" colour="$C_YELLOW"
+  case "$word" in
+    GONE) colour="$C_RED" ;;
+    NEW)  colour="$C_BLUE" ;;
+    SKIP) colour="$C_DIM" ;;
+  esac
+  if [[ -n "$detail" ]]; then
+    printf "  %s%-7s%s %s (%s)\n" "$colour" "$word" "$C_RESET" "$path" "$detail"
+  else
+    printf "  %s%-7s%s %s\n" "$colour" "$word" "$C_RESET" "$path"
+  fi
+}
+
+# --paths narrows the comparison: only findings under one of these count.
+under_roots() {
+  local path="$1" root
+  for root in "${diff_roots[@]}"; do
+    [[ "$path" == "$root" || "$path" == "$root"/* ]] && return 0
+  done
+  return 1
+}
+
+diff_changed=0
+diff_gone=0
+diff_new=0
+diff_skipped=0
+diff_unparsed=0
+first_member=""
+pending_path=""
+pending_reasons=""
+
+flush_changed() {
+  [[ -n "$pending_path" ]] || return 0
+  local live="/$pending_path"
+  if [[ "$pending_reasons" == "Mod time differs" && -d "$live" && ! -L "$live" ]]; then
+    :
+  elif under_roots "$live"; then
+    diff_line CHANGED "$live" "$pending_reasons"
+    diff_changed=$((diff_changed + 1))
+    [[ -n "$first_member" ]] || first_member="$pending_path"
+  fi
+  pending_path=""
+  pending_reasons=""
+}
+
+# Directory members end in a slash and are dropped, so a new directory shows
+# up as the files inside it.
+archive_files() {
+  tar -tzf "$1" 2>/dev/null | grep -v '/$' | sed 's|^|/|' | LC_ALL=C sort -u
+}
+
+live_files() {
+  local root
+  for root in "${diff_roots[@]}"; do
+    [[ -e "$root" ]] || continue
+    find "$root" -xdev \( -type f -o -type l \) -print 2>/dev/null
+  done | LC_ALL=C sort -u
+}
+
+diff_archive() {
+  local archive="$DIFF_FILE" out tar_rc line path reason p resolved
+  local missing_suffix=": Cannot stat: No such file or directory"
+  if [[ -z "$archive" ]]; then
+    resolve_dest
+    archive="$(ls -1t "$DEST"/"$PREFIX"-*.tar.gz 2>/dev/null | head -n 1 || true)"
+    if [[ -z "$archive" ]]; then
+      err "no $PREFIX-*.tar.gz archives in $DEST"
+      exit 3
+    fi
+  fi
+  if [[ ! -f "$archive" ]]; then
+    err "not an archive: $archive"
+    exit 3
+  fi
+  if ! command -v tar >/dev/null 2>&1; then
+    err "required tool is missing: tar"
+    exit 2
+  fi
+
+  (( ${#PATHS[@]} > 0 )) || PATHS=("/etc")
+  diff_roots=()
+  for p in "${PATHS[@]}"; do
+    case "$p" in
+      /*) ;;
+      *) err "paths must be absolute, got: $p"; exit 3 ;;
+    esac
+    resolved="$(realpath -m -- "$p" 2>/dev/null || printf '%s' "$p")"
+    if [[ "$resolved" == "/" ]]; then
+      err "refusing to compare / (resolved from '$p')"
+      exit 3
+    fi
+    diff_roots+=("$resolved")
+  done
+
+  info "comparing $archive with the live tree"
+
+  # tar -d compares every member with the file of the same name under -C and
+  # extracts nothing. It exits 1 on a difference and 2 when it could not open
+  # something, so the exit code alone cannot tell a difference from a failure;
+  # whether every line it printed was understood can.
+  out="$(LC_ALL=C tar -dzf "$archive" -C / 2>&1)"
+  tar_rc=$?
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    line="${line#tar: }"
+    case "$line" in
+      *"$missing_suffix")
+        flush_changed
+        path="${line%"$missing_suffix"}"
+        path="${path%: Warning}"
+        if under_roots "/$path"; then
+          diff_line GONE "/$path"
+          diff_gone=$((diff_gone + 1))
+          [[ -n "$first_member" ]] || first_member="$path"
+        fi
+        ;;
+      *": Cannot "*": Permission denied")
+        flush_changed
+        path="${line%: Cannot *}"
+        if under_roots "/$path"; then
+          diff_line SKIP "/$path" "unreadable; rerun with sudo"
+          diff_skipped=$((diff_skipped + 1))
+        fi
+        ;;
+      *": "*" differs"|*": Contents differ")
+        path="${line%: *}"
+        reason="${line##*: }"
+        if [[ "$path" == "$pending_path" ]]; then
+          pending_reasons="$pending_reasons, $reason"
+        else
+          flush_changed
+          pending_path="$path"
+          pending_reasons="$reason"
+        fi
+        ;;
+      *)
+        flush_changed
+        warn "tar: $line"
+        diff_unparsed=$((diff_unparsed + 1))
+        ;;
+    esac
+  done <<< "$out"
+  flush_changed
+
+  if (( tar_rc > 1 && diff_unparsed > 0 )); then
+    err "tar could not compare $archive (exit $tar_rc)"
+    return 1
+  fi
+
+  # NEW: on disk under --paths, not in the archive. Both sides are sorted in
+  # the C locale, which is the order comm expects.
+  local new_list
+  new_list="$(LC_ALL=C comm -13 <(archive_files "$archive") <(live_files))"
+  while IFS= read -r path; do
+    [[ -n "$path" ]] || continue
+    diff_line NEW "$path"
+    diff_new=$((diff_new + 1))
+  done <<< "$new_list"
+
+  printf "%s changed, %s gone, %s new, %s skipped\n" \
+    "$diff_changed" "$diff_gone" "$diff_new" "$diff_skipped"
+  if (( diff_changed + diff_gone + diff_new + diff_skipped + diff_unparsed == 0 )); then
+    ok "no differences from $archive"
+    return 0
+  fi
+  if [[ -n "$first_member" ]]; then
+    # Printed, never run: this script is a copy, not a restore.
+    info "restore one file with: tar -xzf $(printf '%q' "$archive") -C / $(printf '%q' "$first_member")"
+  fi
+  return 1
+}
+
+if (( DIFF )); then
+  diff_archive
   exit $?
 fi
 

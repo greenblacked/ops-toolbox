@@ -636,6 +636,7 @@ copy, not a restore: it never writes back into the paths it archives.
 ./config_backup.sh --dry-run
 ./config_backup.sh --yes
 ./config_backup.sh --list
+./config_backup.sh --diff                  # what changed under /etc since the newest archive
 ./config_backup.sh --yes --paths /etc/ssh,/etc/nginx --dest ~/ops-toolbox-backups --keep 5
 ./config_backup.sh --yes --prefix nginx-pre-upgrade
 ```
@@ -671,6 +672,35 @@ previous generations intact. Rotation starts only after successful publication.
 a partial run rotates only partial archives, preserving every complete copy.
 `--keep 0` retains all generations. `--list` includes both kinds, with the
 filename identifying a partial backup.
+
+`--diff [FILE]` answers "what did I, a package or a configuration tool change
+since the last backup?" It compares FILE, or the newest `PREFIX-*.tar.gz` in
+`--dest`, with the live tree using GNU `tar --diff`, which extracts nothing, and
+prints one line per finding:
+
+```text
+[info] comparing /root/ops-toolbox-backups/config-20261021-101500-AbC123.tar.gz with the live tree
+  CHANGED /etc/ssh/sshd_config (Mod time differs, Size differs)
+  GONE    /etc/foo.conf
+  NEW     /etc/bar.conf
+  SKIP    /etc/shadow (unreadable; rerun with sudo)
+1 changed, 1 gone, 1 new, 1 skipped
+[info] restore one file with: tar -xzf /root/ops-toolbox-backups/config-20261021-101500-AbC123.tar.gz -C / etc/ssh/sshd_config
+```
+
+`CHANGED` carries tar's reasons (size, contents, mode, owner, symlink target or
+mtime), `GONE` is in the archive but not on disk, `NEW` is on disk under
+`--paths` but not in the archive, and `SKIP` could not be read, so the run is
+never reported clean. A directory whose only change is its mtime is left out:
+adding or deleting a file changes its parent's, which the `NEW` or `GONE` line
+already says. `--paths` narrows the comparison (default `/etc`; `/` is refused),
+and the newest archive is picked within `--prefix`, so an archive written under
+another prefix needs `--prefix` too. The restore command is printed, never run,
+which keeps this a copy and not a restore. `--diff` needs no `--yes`, never
+creates `--dest`, staging, locks or logs, and refuses `--list`, `--yes` and
+`--dry-run` alongside it (exit `3`). It exits `0` when nothing differs and `1`
+when something does, or when a file could not be compared, so it also works as a
+cron-able drift gate: `./config_backup.sh --diff || mail -s drift root`.
 
 ## `ssh_client_doctor.sh`
 
@@ -721,7 +751,7 @@ permissive development host can validly differ from a server baseline.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on` |
+| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
 | `3` | Invalid usage, or an install or removal was requested without `--yes` |
 | `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove |
