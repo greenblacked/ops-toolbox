@@ -645,6 +645,98 @@ if ($onWindows) {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'wsl_manage clone and restore -DefaultUser'
+Test-Surface -Action @('clone', 'restore') -Parameter @('NewName', 'DefaultUser', 'KeepTar')
+
+Import-ScriptFunction -Path $wslScript -Name @('Test-WslUserName', 'Get-WslConfUserPlan', 'ConvertFrom-PasswdLine',
+    'Get-CloneStagingName', 'Get-BackupFile')
+
+foreach ($name in @('alice', 'dev_01', 'a-b', '_svc')) {
+    Test-Case "Test-WslUserName accepts '$name'" (Test-WslUserName $name)
+}
+foreach ($name in @('', 'Root;rm', 'a b', "o'brien", 'a$(x)', 'Alice', '1abc', ('a' * 33))) {
+    Test-Case "Test-WslUserName refuses '$name'" (-not (Test-WslUserName $name))
+}
+
+$planCases = @(
+    @{ Text = '';                                      Expect = 'append';  Label = 'no /etc/wsl.conf' }
+    @{ Text = "[boot]`nsystemd=true`n";                Expect = 'append';  Label = 'a [boot] section only' }
+    @{ Text = "[user]`ndefault=bob`n";                 Expect = 'present'; Label = 'a default user already set' }
+    @{ Text = "[user]`n# nothing`n";                   Expect = 'manual';  Label = 'a [user] section with no default=' }
+    @{ Text = "[boot]`r`nsystemd=true`r`n[user]`r`ndefault=bob`r`n"; Expect = 'present'; Label = 'CRLF text with a default user' }
+    @{ Text = "[user]`ndefault=bob`n[boot]`n";         Expect = 'present'; Label = '[user] before another section' }
+    @{ Text = "[boot]`ndefault=bob`n";                 Expect = 'append';  Label = 'default= under the wrong section' }
+)
+foreach ($case in $planCases) {
+    $got = Get-WslConfUserPlan -Existing $case.Text
+    Test-Case "Get-WslConfUserPlan: $($case.Label) -> $($case.Expect)" ($got -eq $case.Expect) "got '$got'"
+}
+
+Test-Case 'ConvertFrom-PasswdLine reads the user name' (
+    (ConvertFrom-PasswdLine 'alice:x:1000:1000:Alice,,,:/home/alice:/bin/bash') -eq 'alice'
+)
+Test-Case 'ConvertFrom-PasswdLine of an empty line is $null' ($null -eq (ConvertFrom-PasswdLine ''))
+Test-Case 'ConvertFrom-PasswdLine of a malformed line is $null' ($null -eq (ConvertFrom-PasswdLine 'not a passwd line'))
+
+# The staging tar must never be taken for a backup by prune-backups or the
+# inventory: run the real Get-BackupFile over a folder holding one.
+$stagingDir = Initialize-ScratchDirectory 'wslclone_'
+try {
+    $stagingName = Get-CloneStagingName -NewName 'Ubuntu-test' -ProcessId 4242
+    [IO.File]::WriteAllText((Join-Path $stagingDir $stagingName), 'staging')
+    [IO.File]::WriteAllText((Join-Path $stagingDir 'Ubuntu_2026-10-21_1830.tar'), 'backup')
+    $seen = @(Get-BackupFile -Directory $stagingDir | ForEach-Object { $_.File.Name })
+    Test-Case "the staging tar '$stagingName' is not a backup to Get-BackupFile" (
+        $seen.Count -eq 1 -and $seen[0] -eq 'Ubuntu_2026-10-21_1830.tar'
+    ) ($seen -join ', ')
+} finally {
+    Remove-Item -Path $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$cloneClause = [string]$clauseText['clone']
+$tries = @()
+if ($actionSwitch) {
+    $cloneAst = @($actionSwitch.Clauses | Where-Object { [string]$_.Item1.Value -eq 'clone' }) | Select-Object -First 1
+    if ($cloneAst) {
+        $tries = @($cloneAst.Item2.FindAll({
+                    param($node) $node -is [System.Management.Automation.Language.TryStatementAst]
+                }, $true))
+    }
+}
+Test-Case 'the clone branch removes the staging tar in a finally block' (
+    @($tries | Where-Object { $_.Finally -and $_.Finally.Extent.Text -match 'Remove-Item\s+-LiteralPath\s+\$staging' }).Count -ge 1
+) $cloneClause.Substring(0, [math]::Min(400, $cloneClause.Length))
+Test-Case 'the clone branch never unregisters anything' ($cloneClause -notmatch 'wsl\.exe\s+--unregister') $cloneClause.Substring(0, [math]::Min(200, $cloneClause.Length))
+
+if ($onWindows) {
+    Test-Skip 'the wsl.exe shim checks run only off Windows (see the header)'
+} else {
+    $shimDir = Initialize-WslShim -StatusExit 0
+    $tarDir = Initialize-ScratchDirectory 'wslrestore_'
+    try {
+        $run = Invoke-WslManage -Arguments @('clone', '-NewName', 'Ubuntu-test') -PathPrefix $shimDir
+        Test-Case 'clone with no -Distro exits 3' ($run.ExitCode -eq 3 -and $run.Output -match '-Distro') "exit $($run.ExitCode)`n$($run.Output)"
+        $run = Invoke-WslManage -Arguments @('clone', '-Distro', 'Ubuntu') -PathPrefix $shimDir
+        Test-Case 'clone with no -NewName exits 3' ($run.ExitCode -eq 3 -and $run.Output -match '-NewName') "exit $($run.ExitCode)`n$($run.Output)"
+
+        # A real tar and sidecar, so the only thing wrong is the user name:
+        # the refusal has to come before the tar is read, the distro list is
+        # consulted or anything is imported.
+        $tar = Write-BackupFixture $tarDir 'Ubuntu_2026-10-21_1830.tar' 'an export'
+        $run = Invoke-WslManage -Arguments @('restore', '-Distro', 'Ubuntu-restored', '-Tar', $tar, '-DefaultUser', 'bad name') -PathPrefix $shimDir
+        Test-Case 'restore -DefaultUser with an invalid name exits 3 before anything else' (
+            $run.ExitCode -eq 3 -and $run.Output -match '-DefaultUser' -and $run.Output -notmatch 'SHA-256'
+        ) "exit $($run.ExitCode)`n$($run.Output)"
+        $calls = @(Get-Content -Path (Join-Path $shimDir 'calls.log') -ErrorAction SilentlyContinue)
+        Test-Case 'and nothing but wsl --status was called' (
+            @($calls | Where-Object { $_ -notmatch '^--status' }).Count -eq 0
+        ) ($calls -join "`n")
+    } finally {
+        Remove-Item -Path $shimDir, $tarDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# --------------------------------------------------------------------------
 Write-Host ''
 if ($failures -gt 0) {
     Write-Host "$failures wsl_manage contract check(s) failed" -ForegroundColor Red

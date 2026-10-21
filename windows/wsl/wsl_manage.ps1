@@ -25,6 +25,10 @@
       restore   Import a .tar back as a NEW distro (wsl --import). It never
                 overwrites an existing registration - see the notes below,
                 because restore has two surprises worth knowing in advance.
+      clone     Copy a distro under a new name (-NewName): export to a
+                staging tar, import it, set its default user, and delete the
+                staging tar (-KeepTar keeps it as a dated, verified backup).
+                The source is never touched. -DryRun prints every step.
       prune-backups
                 Delete old .tar exports under -DestDir by age and count.
                 Preview it with -DryRun; without -DryRun it asks first.
@@ -63,7 +67,8 @@
     .\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun
     .\wsl_manage.ps1 verify-backup -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
     .\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
-    .\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
+    .\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar -DefaultUser me
+    .\wsl_manage.ps1 clone -Distro Ubuntu -NewName Ubuntu-test -DryRun
     .\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
     .\wsl_manage.ps1 compact -Distro Ubuntu -DryRun
     .\wsl_manage.ps1 compact -Distro Ubuntu
@@ -86,7 +91,8 @@
          (wslconfig -Strict: one or more WARN findings)
       2  WSL is not installed or not operational
       3  bad arguments (no -Distro, no such distro, missing or unusable -Tar,
-         a -ConfigFile that does not exist or cannot be read)
+         a -ConfigFile that does not exist or cannot be read, a -DefaultUser
+         that is not a valid Linux user name, a -NewName already taken)
       4  needs an elevated shell (compact only)
 
     restore, in detail. 'wsl --import' registers a new distro from a tar; it
@@ -100,19 +106,23 @@
         %LOCALAPPDATA%\WSL\<Distro> and must be empty or absent; the tar is
         read, not moved, so keep it somewhere with room for a second copy.
       * The restored distro boots as root. WSL records the default user inside
-        the distro and --import does not carry it over, so add a [user]
-        section naming it to /etc/wsl.conf and terminate the distro once. The
-        successful restore prints those steps.
+        the distro and --import does not carry it over. -DefaultUser NAME
+        appends a [user] section naming it to /etc/wsl.conf and terminates the
+        distro once so it is read; without it, the successful restore prints
+        those steps for you to do by hand.
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'backups', 'restore', 'prune-backups', 'compact', 'sparse', 'terminate', 'shutdown', 'doctor', 'wslconfig')]
+    [ValidateSet('list', 'df', 'backup', 'verify-backup', 'backups', 'restore', 'prune-backups', 'clone', 'compact', 'sparse', 'terminate', 'shutdown', 'doctor', 'wslconfig')]
     [string]$Action = 'list',
     [string]$Distro,
     [string]$DestDir = "$env:USERPROFILE\wsl-backups",
     [string]$Tar,                                  # restore: the .tar to import
-    [string]$InstallDir,                           # restore: where the new VHDX goes
+    [string]$InstallDir,                           # restore, clone: where the new VHDX goes
+    [string]$NewName,                              # clone: the name the copy is registered under
+    [string]$DefaultUser,                          # restore, clone: default user to set in /etc/wsl.conf
+    [switch]$KeepTar,                              # clone: keep the export as a dated, verified backup
     [ValidateRange(0, 3650)]
     [int]$KeepDays = 30,                           # prune-backups: keep anything newer
     [ValidateRange(0, 1000)]
@@ -186,6 +196,9 @@ function Get-DistroInfo {
             BasePath = $p.BasePath
             Vhdx     = $vhdx
             VhdxSize = if (Test-Path $vhdx) { (Get-Item $vhdx).Length } else { 0 }
+            # The uid WSL starts the distro as; 0 (root) or absent after an
+            # import that never had a default user set.
+            DefaultUid = $p.DefaultUid
         }
     }
 }
@@ -379,7 +392,7 @@ function Test-DistroFact {
 
     if ($Facts['User']) {
         if ($Facts['User'] -eq 'root') {
-            $findings += [PSCustomObject]@{ Level = 'warn'; Check = 'default user'; Message = 'root (typical after wsl --import or restore; README, Restoring, has the [user] fix)' }
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = 'default user'; Message = 'root (typical after wsl --import; restore -DefaultUser sets one at import time, README Restoring has the fix)' }
         } else {
             $findings += [PSCustomObject]@{ Level = 'ok'; Check = 'default user'; Message = $Facts['User'] }
         }
@@ -555,6 +568,98 @@ function Get-RunningDistroText {
     $running = @($states.Keys | Where-Object { $states[$_] -eq 'Running' } | Sort-Object)
     if ($running) { return $running -join ', ' }
     return 'none'
+}
+
+# A Linux user name this script will write into /etc/wsl.conf: lowercase,
+# starting with a letter or underscore, at most 32 characters. Strict on
+# purpose: the name goes into a command line inside the distro, and passing
+# this test is what makes quoting it unnecessary.
+function Test-WslUserName {
+    param([string]$Name)
+    return ($Name -cmatch '^[a-z_][a-z0-9_-]{0,31}$')
+}
+
+# What to do with /etc/wsl.conf to set a default user, given its current text:
+#   append   no [user] section yet: append one.
+#   present  a [user] section already sets default=: leave it alone.
+#   manual   a [user] section without default=: print the line to add rather
+#            than guess at editing someone's INI file in place.
+function Get-WslConfUserPlan {
+    param([string]$Existing)
+    $inUser = $false
+    $hasUser = $false
+    foreach ($raw in ($Existing -split "`n")) {
+        $line = $raw.Trim()
+        if ($line -match '^\[(?<name>[^\]]*)\]') {
+            $inUser = ($Matches['name'].Trim() -eq 'user')
+            if ($inUser) { $hasUser = $true }
+            continue
+        }
+        if ($inUser -and $line -match '^default\s*=\s*\S') { return 'present' }
+    }
+    if ($hasUser) { return 'manual' }
+    return 'append'
+}
+
+# The user name from one line of 'getent passwd', or $null.
+function ConvertFrom-PasswdLine {
+    param([string]$Line)
+    $fields = $Line.Trim() -split ':'
+    if ($fields.Count -lt 7 -or -not $fields[0]) { return $null }
+    return $fields[0]
+}
+
+# The staging export clone writes. A leading dot and no date stamp, so the
+# name can never match the pattern Get-BackupFile, prune-backups and backups
+# use: a staging tar left behind is never mistaken for a backup.
+function Get-CloneStagingName {
+    param([string]$NewName, [int]$ProcessId)
+    return '.clone-{0}-{1}.tar' -f $NewName, $ProcessId
+}
+
+# Make $User the default user of distro $Name through /etc/wsl.conf, then
+# terminate it so the file is read at the next start, and confirm. Returns
+# $false only when a step failed; a [user] section that needs a hand edit is
+# printed and is not a failure.
+function Invoke-DefaultUserStep {
+    param(
+        [string]$Name,
+        [string]$User
+    )
+    # Absent on a fresh import: that is the append case, not an error. sh
+    # swallows cat's complaint, because Windows PowerShell turns a native
+    # command's stderr into a terminating error under 'Stop'. Every wsl.exe
+    # call here is captured for the reason Format-WslOutput gives.
+    $existing = wsl.exe -d $Name -u root --exec sh -c 'cat /etc/wsl.conf 2>/dev/null; true'
+    $plan = Get-WslConfUserPlan -Existing ($existing -join "`n")
+    if ($plan -eq 'present') {
+        Write-Host "/etc/wsl.conf in '$Name' already names a default user; left as it is." -ForegroundColor Yellow
+        return $true
+    }
+    if ($plan -eq 'manual') {
+        Write-Host "/etc/wsl.conf in '$Name' has a [user] section without default=. Add this line to it:" -ForegroundColor Yellow
+        Write-Host "  default=$User"
+        Write-Host "then: .\wsl_manage.ps1 terminate -Distro $Name"
+        return $true
+    }
+    # $User passed Test-WslUserName, so it needs no quoting inside sh -c.
+    $said = Format-WslOutput (wsl.exe -d $Name -u root --exec sh -c "printf '\n[user]\ndefault=$User\n' >> /etc/wsl.conf")
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Could not append to /etc/wsl.conf in '$Name' (exit $LASTEXITCODE) $said" -ErrorAction Continue
+        return $false
+    }
+    $said = Format-WslOutput (wsl.exe --terminate $Name)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "wsl --terminate failed (exit $LASTEXITCODE) $said" -ErrorAction Continue
+        return $false
+    }
+    $who = Format-WslOutput (wsl.exe -d $Name --exec id -un)
+    if ($who -ne $User) {
+        Write-Error "'$Name' starts as '$who', not $User. Does the user exist inside it? (wsl -d $Name -u root, then useradd)" -ErrorAction Continue
+        return $false
+    }
+    Write-Host "'$Name' now starts as $User." -ForegroundColor Green
+    return $true
 }
 
 # The state of one tar against the sidecar emitted by `backup`:
@@ -1103,6 +1208,12 @@ switch ($Action) {
     }
 
     'restore' {
+        # First, before anything is read or imported: a typo here must not cost
+        # a long import that then cannot set the user.
+        if ($PSBoundParameters.ContainsKey('DefaultUser') -and -not (Test-WslUserName $DefaultUser)) {
+            Write-Error "-DefaultUser '$DefaultUser' is not a valid Linux user name (lowercase letters, digits, _ and -, at most 32)." -ErrorAction Continue
+            exit 3
+        }
         if (-not $Distro) {
             Write-Error 'restore needs -Distro <name> - the name the restored copy will be registered under.' -ErrorAction Continue
             exit 3
@@ -1152,6 +1263,10 @@ switch ($Action) {
         if ($DryRun) {
             Write-Host ('WOULD create install dir   {0}' -f $target) -ForegroundColor Cyan
             Write-Host ('WOULD import as            {0} ({1} from {2})' -f $Distro, (Format-Size $size), $tarPath) -ForegroundColor Cyan
+            if ($DefaultUser) {
+                Write-Host ('WOULD set default user     {0} in /etc/wsl.conf' -f $DefaultUser) -ForegroundColor Cyan
+                Write-Host ('WOULD terminate            {0}' -f $Distro) -ForegroundColor Cyan
+            }
             Write-Host 'Dry run complete; nothing was registered and no disk was written.' -ForegroundColor Yellow
             break
         }
@@ -1164,11 +1279,164 @@ switch ($Action) {
             exit 1
         }
         Write-Host "Imported '$Distro'." -ForegroundColor Green
+        if ($DefaultUser) {
+            if (-not (Invoke-DefaultUserStep -Name $Distro -User $DefaultUser)) {
+                Write-Error "'$Distro' is imported, but its default user is not set; see above." -ErrorAction Continue
+                exit 1
+            }
+            break
+        }
         Write-Host 'It boots as root: --import does not carry the default user over. To set one:'
         Write-Host "  wsl -d $Distro -u root      then append to /etc/wsl.conf:"
         Write-Host '      [user]'
         Write-Host '      default=YOURNAME'
         Write-Host "  .\wsl_manage.ps1 terminate -Distro $Distro   (the file is read at next start)"
+        Write-Host "  or next time: .\wsl_manage.ps1 restore ... -DefaultUser YOURNAME"
+    }
+
+    'clone' {
+        # Every check that can refuse comes before the export, which is the
+        # slow part.
+        if ($PSBoundParameters.ContainsKey('DefaultUser') -and -not (Test-WslUserName $DefaultUser)) {
+            Write-Error "-DefaultUser '$DefaultUser' is not a valid Linux user name (lowercase letters, digits, _ and -, at most 32)." -ErrorAction Continue
+            exit 3
+        }
+        if (-not $NewName) {
+            Write-Error 'clone needs -NewName <name> - the name the copy is registered under.' -ErrorAction Continue
+            exit 3
+        }
+        if ($NewName -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            Write-Error "-NewName '$NewName' is not a usable distro name (letters, digits, '.', '_' and '-')." -ErrorAction Continue
+            exit 3
+        }
+        $source = Resolve-Distro $Distro
+        if ($NewName -eq $source.Name) {
+            Write-Error '-NewName must differ from -Distro: a clone is a second registration.' -ErrorAction Continue
+            exit 3
+        }
+        if (Get-DistroInfo | Where-Object Name -eq $NewName) {
+            Write-Error "'$NewName' is already registered. clone never replaces a distro; choose another -NewName." -ErrorAction Continue
+            exit 3
+        }
+        $target = if ($InstallDir) { $InstallDir } else { Join-Path $env:LOCALAPPDATA "WSL\$NewName" }
+        if ((Test-Path $target) -and (Get-ChildItem -Path $target -Force -ErrorAction SilentlyContinue)) {
+            Write-Error "Install directory is not empty: $target. Pass -InstallDir <empty or new dir>." -ErrorAction Continue
+            exit 3
+        }
+        $staging = Join-Path $DestDir (Get-CloneStagingName -NewName $NewName -ProcessId $PID)
+
+        # Space for the staging tar. Only a running source is measured (df
+        # inside it); a stopped one is never started for it, so its VHDX size
+        # stands in as an upper bound and is not a reason to refuse.
+        $states = Get-DistroState
+        $used = $null
+        if ($states[$source.Name] -eq 'Running') { $used = Get-DistroUsage $source.Name }
+        $free = Get-FreeSpace $DestDir
+        if ($null -ne $used -and $null -ne $free -and $used -gt $free) {
+            Write-Error ("The staging export needs ~{0}, and {1} is free on the drive holding {2}. Pass -DestDir on a bigger drive." -f
+                (Format-Size $used), (Format-Size $free), $DestDir) -ErrorAction Continue
+            exit 1
+        }
+        $estimate = if ($null -ne $used) { '~{0}' -f (Format-Size $used) } else { 'up to {0}, the VHDX size' -f (Format-Size $source.VhdxSize) }
+
+        $userText = $null
+        if ($DefaultUser) {
+            $userText = $DefaultUser
+        } elseif ($source.DefaultUid) {
+            $userText = "uid $($source.DefaultUid), the default user of '$($source.Name)'"
+        }
+
+        if ($DryRun) {
+            Write-Host ('WOULD export             {0} -> {1} ({2})' -f $source.Name, $staging, $estimate) -ForegroundColor Cyan
+            Write-Host ('WOULD create install dir {0}' -f $target) -ForegroundColor Cyan
+            Write-Host ('WOULD import as          {0}' -f $NewName) -ForegroundColor Cyan
+            if ($userText) {
+                Write-Host ('WOULD set default user   {0} in /etc/wsl.conf' -f $userText) -ForegroundColor Cyan
+            }
+            Write-Host ('WOULD terminate          {0}' -f $NewName) -ForegroundColor Cyan
+            if ($KeepTar) {
+                Write-Host ('WOULD keep the export    as {0}_<date>.tar with a .sha256 sidecar in {1}' -f $source.Name, $DestDir) -ForegroundColor Cyan
+            } else {
+                Write-Host ('WOULD delete             {0}' -f $staging) -ForegroundColor Cyan
+            }
+            Write-Host 'Dry run complete; nothing was exported, registered or written.' -ForegroundColor Yellow
+            break
+        }
+
+        if (-not (Test-Path $DestDir)) {
+            New-Item -ItemType Directory -Path $DestDir -Force | Out-Null
+        }
+        $rc = 0
+        $createdTarget = $false
+        $imported = $false
+        $kept = $false
+        try {
+            # Export is safe while the source runs, as backup already relies on.
+            Write-Host "Exporting '$($source.Name)' to $staging ($estimate; this can take a while)..."
+            wsl.exe --export $source.Name $staging
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "wsl --export failed (exit $LASTEXITCODE)" -ErrorAction Continue
+                $rc = 1
+            }
+
+            if ($rc -eq 0) {
+                if (-not (Test-Path $target)) {
+                    New-Item -ItemType Directory -Path $target -Force | Out-Null
+                    $createdTarget = $true
+                }
+                Write-Host "Importing as '$NewName' in $target (this can take a while)..."
+                wsl.exe --import $NewName $target $staging --version 2
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Error "wsl --import failed (exit $LASTEXITCODE)" -ErrorAction Continue
+                    $rc = 1
+                } else {
+                    $imported = $true
+                    Write-Host "Imported '$NewName'." -ForegroundColor Green
+                }
+            }
+
+            if ($imported) {
+                $user = $DefaultUser
+                if (-not $user -and $source.DefaultUid) {
+                    $line = wsl.exe -d $NewName -u root --exec getent passwd ([string]$source.DefaultUid) 2>$null | Select-Object -First 1
+                    $user = ConvertFrom-PasswdLine ([string]$line)
+                    if ($user -and -not (Test-WslUserName $user)) {
+                        Write-Host "The source's default user '$user' is not a name this script writes; set it by hand." -ForegroundColor Yellow
+                        $user = $null
+                    }
+                }
+                if ($user) {
+                    if (-not (Invoke-DefaultUserStep -Name $NewName -User $user)) { $rc = 1 }
+                } else {
+                    Write-Host "No default user to set; '$NewName' boots as root, like '$($source.Name)'."
+                    wsl.exe --terminate $NewName
+                }
+            }
+
+            if ($imported -and $KeepTar) {
+                $dated = Join-Path $DestDir ('{0}_{1}.tar' -f $source.Name, (Get-Date -Format 'yyyy-MM-dd_HHmm'))
+                if (Test-Path -LiteralPath $dated) {
+                    Write-Host "Not keeping the export: $dated already exists." -ForegroundColor Yellow
+                } else {
+                    Move-Item -LiteralPath $staging -Destination $dated
+                    $hash = (Get-FileHash -LiteralPath $dated -Algorithm SHA256).Hash.ToLowerInvariant()
+                    Set-Content -LiteralPath "$dated.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($dated))"
+                    $kept = $true
+                    Write-Host "Kept the export as a backup: $dated (with a .sha256 sidecar)."
+                }
+            }
+        } finally {
+            # Runs on success, failure and Ctrl+C alike: the staging tar is a
+            # full copy of the distro and is never left behind by accident.
+            if (-not $kept) {
+                Remove-Item -LiteralPath $staging -Force -ErrorAction SilentlyContinue
+            }
+            if (-not $imported -and $createdTarget) {
+                Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($rc -ne 0) { exit 1 }
+        Write-Host "Cloned '$($source.Name)' as '$NewName'. Remove it when done with: wsl --unregister $NewName" -ForegroundColor Green
     }
 
     'prune-backups' {

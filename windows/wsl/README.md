@@ -15,6 +15,7 @@ throwing away the giant `.tar` exports once they have aged out.
 - [Actions](#actions)
 - [Backing up everything](#backing-up-everything)
 - [Restoring](#restoring)
+- [Cloning a distro](#cloning-a-distro)
 - [Pruning backups](#pruning-backups)
 - [Auditing backups](#auditing-backups)
 - [Distro doctor](#distro-doctor)
@@ -71,8 +72,12 @@ compact would give back.
 .\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
 
 # Bring one back as a new distro (see "Restoring" below - read it first):
-.\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar -DryRun
-.\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar
+.\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar -DefaultUser me -DryRun
+.\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar -DefaultUser me
+
+# A throwaway copy to try something risky in (see "Cloning a distro"):
+.\wsl_manage.ps1 clone -Distro Ubuntu -NewName Ubuntu-test -DryRun
+.\wsl_manage.ps1 clone -Distro Ubuntu -NewName Ubuntu-test
 
 # Throw away exports that have aged out (preview, then do it):
 .\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
@@ -111,7 +116,8 @@ compact would give back.
 | `backup` | no | no | `wsl --export` to `<DestDir>\<distro>_<date>.tar`; prints the matching `restore` command. Default `DestDir`: `%USERPROFILE%\wsl-backups`. `-All` exports every distro (see [Backing up everything](#backing-up-everything)); `-DryRun` prints the plan and writes nothing. |
 | `verify-backup` | no | no | Recomputes SHA-256 for `-Tar` and compares it with the `.sha256` sidecar written by `backup`. Does not require WSL to be running. |
 | `backups` | no | no | Inventory of the dated exports under `-DestDir`; `-Verify` hashes each against its sidecar, `-MaxAgeDays` flags a distro with no recent backup. Read-only; needs no WSL. See [Auditing backups](#auditing-backups). |
-| `restore` | no | no | `wsl --import` of a `.tar` as a **new** distro. Needs `-Distro` (the new name) and `-Tar` (the file). `-DryRun` prints what it would register. |
+| `restore` | no | no | `wsl --import` of a `.tar` as a **new** distro. Needs `-Distro` (the new name) and `-Tar` (the file). `-DefaultUser` sets the user it boots as. `-DryRun` prints what it would register. |
+| `clone` | no | no | Copy `-Distro` as `-NewName` through a staging export that is deleted afterwards (`-KeepTar` keeps it as a verified backup). Sets the copy's default user. `-DryRun` prints every step. See [Cloning a distro](#cloning-a-distro). |
 | `prune-backups` | no | no | Deletes aged-out `.tar` exports under `-DestDir`. `-DryRun` previews; a real run asks before deleting unless `-Force`. |
 | `compact` | **yes** (not for `-DryRun`) | **yes** (all distros) | `wsl --shutdown`, then diskpart `compact vdisk`. Prints before/after/reclaimed. `-DryRun` names the running distros the shutdown would stop and the disk it would compact, and says when the shell is not elevated. |
 | `sparse` | no | no | `wsl --manage <distro> --set-sparse true` — needs a recent WSL (`wsl --update` if it fails). `-DryRun` prints the setting it would make. |
@@ -198,22 +204,77 @@ at 2am rather than after:
    distro with `wsl --unregister <name>` — which deletes that distro's disk,
    so take a `backup` of it first.
 2. **It boots as root.** The default user is recorded inside the distro and
-   `--import` does not carry it over. After a restore, add
+   `--import` does not carry it over. Pass `-DefaultUser NAME` and restore
+   sets it for you once the import has succeeded:
+
+   ```powershell
+   .\wsl_manage.ps1 restore -Distro Ubuntu-restored -Tar D:\Backups\Ubuntu_2026-08-08_0930.tar -DefaultUser me
+   ```
+
+   It reads `/etc/wsl.conf` inside the new distro and, when there is no
+   `[user]` section, appends
 
    ```text
    [user]
-   default=YOURNAME
+   default=NAME
    ```
 
-   to `/etc/wsl.conf` (`wsl -d <name> -u root`), then
-   `.\wsl_manage.ps1 terminate -Distro <name>` so the file is read at the next
-   start.
+   then terminates the distro so the file is read at the next start, and
+   confirms with `id -un` that it now starts as `NAME` (exit `1` if not, which
+   usually means the user does not exist inside that tar). A `[user]` section
+   that already sets `default=` is left alone; one without it is not edited,
+   and the line to add is printed instead. `NAME` is checked before anything
+   is read or imported (lowercase letters, digits, `_` and `-`, at most 32
+   characters; anything else exits `3`), so a typo does not cost a long import.
+   Without `-DefaultUser`, a successful restore prints the same steps to do by
+   hand: add the section above with `wsl -d <name> -u root`, then
+   `.\wsl_manage.ps1 terminate -Distro <name>`.
 
 `-InstallDir` is where the new `ext4.vhdx` is written; it defaults to
 `%LOCALAPPDATA%\WSL\<Distro>` and must be empty or absent. The tar is read,
 not consumed, so plan for the disk holding both it and the imported disk at
-once. Run it with `-DryRun` first: that prints the directory it would create
-and the size it would import, and registers nothing.
+once. Run it with `-DryRun` first: that prints the directory it would create,
+the size it would import and the default user it would set, and registers
+nothing.
+
+## Cloning a distro
+
+A throwaway copy of a working distro is the safest place to try a distro
+upgrade, a new toolchain or a script you do not trust yet. By hand it is a
+backup, a restore, an edit of `/etc/wsl.conf`, a terminate, and remembering to
+delete the tar. `clone` is all of that in one step:
+
+```powershell
+.\wsl_manage.ps1 clone -Distro Ubuntu -NewName Ubuntu-test -DryRun
+.\wsl_manage.ps1 clone -Distro Ubuntu -NewName Ubuntu-test
+.\wsl_manage.ps1 clone -Distro Ubuntu -NewName Ubuntu-test -InstallDir D:\WSL\Ubuntu-test -DestDir D:\Backups -DefaultUser me -KeepTar
+```
+
+1. Exports `-Distro` to a staging tar in `-DestDir`, named
+   `.clone-<NewName>-<pid>.tar`: a leading dot and no date, so neither
+   `prune-backups` nor `backups` can ever take it for a backup. Exporting is
+   safe while the source runs, and the source is never changed.
+2. Imports it as `-NewName` into `-InstallDir` (default
+   `%LOCALAPPDATA%\WSL\<NewName>`, which must be empty or absent).
+3. Sets the copy's default user: `-DefaultUser` when given, otherwise the
+   source's own default user, looked up by its uid inside the copy. A source
+   that boots as root gives a copy that boots as root.
+4. Terminates the copy so `/etc/wsl.conf` is read at its next start.
+5. Deletes the staging tar, in a `finally` block, so a failure or Ctrl+C does
+   not leave a full copy of the distro behind. `-KeepTar` instead renames it
+   to `<Distro>_<date>.tar` with a `.sha256` sidecar, a normal backup that
+   `verify-backup`, `backups` and `restore` work with.
+
+Everything that can refuse is checked before the export: the source must be
+registered, `-NewName` must be given, free and different from the source,
+`-DefaultUser` must be a valid name, and the install directory must be empty
+(all exit `3`). A running source is measured with `df`, and when its use is
+more than the free space on the `-DestDir` drive, clone refuses (exit `1`)
+rather than fail half way; a stopped source is not started to measure it, so
+its VHDX size is printed as an upper bound. A failed export or import exits
+`1` and removes the staging tar and any install directory clone created
+itself. Nothing is unregistered, ever. Remove the copy when you are done with
+`wsl --unregister <NewName>`.
 
 ## Pruning backups
 
