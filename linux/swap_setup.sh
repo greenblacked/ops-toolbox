@@ -71,7 +71,7 @@ Options:
   --create         Create, enable and persist a swapfile
   --remove         Disable the swapfile, drop the fstab line it added, delete it
   --size SIZE      Swapfile size, 128M to 64G, like 512M or 4G (default: $SIZE)
-  --path FILE      Swapfile path, absolute (default: $SWAP_PATH)
+  --path FILE      Swapfile path, absolute, no whitespace or backslash (default: $SWAP_PATH)
   --fstab FILE     fstab to read and edit (default: $FSTAB)
   --force          With --create, add a swapfile even though swap is already active
   --dry-run        Print every step without running it
@@ -148,6 +148,13 @@ case "$FSTAB" in
   /*) ;;
   *) err "--fstab must be absolute, got: $FSTAB"; exit 3 ;;
 esac
+# The path becomes the first field of an fstab line, where whitespace splits
+# fields and a backslash starts an octal escape; refuse them (and control
+# characters) rather than write a line fstab would read differently.
+if [[ "$SWAP_PATH" =~ [[:space:][:cntrl:]\\] ]]; then
+  err "--path must not contain whitespace, control characters or backslashes"
+  exit 3
+fi
 # Compare the resolved path, not the string: '/proc/../proc/x' and '//' name
 # the same places as their plain spellings.
 swap_resolved="$(realpath -m -- "$SWAP_PATH" 2>/dev/null || printf '%s' "$SWAP_PATH")"

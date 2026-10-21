@@ -117,6 +117,12 @@ for bad in '--size 64K' '--size=abc' '--size 100G' '--path relative' '--path /pr
   run_sw --create --dry-run $bad
   assert_eq "--create $bad -> 3" 3 "$rc"
 done
+# A path with whitespace or a backslash would be split or unescaped by fstab.
+for bad_path in "$fixture/with space" "$fixture/with"$'\t'"tab" "$fixture/with\\slash" "$fixture/with"$'\n'"newline"; do
+  run_sw --create --dry-run --path "$bad_path"
+  assert_eq "--path with whitespace or backslash -> 3 ($(printf '%q' "$bad_path" | tail -c 12))" 3 "$rc"
+  assert_contains '--path rejection says why' "$out" 'must not contain whitespace'
+done
 run_sw --create --remove --dry-run
 assert_eq '--create with --remove -> 3' 3 "$rc"
 run_sw --remove --size 1G --dry-run
