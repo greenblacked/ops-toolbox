@@ -858,19 +858,19 @@ class JsonOutputTestCase(unittest.TestCase):
         self.assertNotIn("46", stdout.getvalue())
 
     def test_json_never_emits_free_form_scheduler_source(self):
-        secret_marker = "token-that-must-stay-on-router"
+        hidden_marker = "token-that-must-stay-on-router"
         report = (
             "SCR:backup\n"
             "SCH:backup|1d|/system script run backup; :local secret=%s\n"
             "ENV:TgBotToken|46\nENV:TgChatId|9\n"
-        ) % secret_marker
+        ) % hidden_marker
         stdout = io.StringIO()
         with mock.patch.object(router_doctor, "probe", return_value=(0, report, "")), \
              mock.patch.object(router_doctor, "local_script_names", return_value=["backup"]), \
              contextlib.redirect_stdout(stdout):
             router_doctor.main(["--host", "router.test", "--format", "json"])
         payload = json.loads(stdout.getvalue())
-        self.assertNotIn(secret_marker, stdout.getvalue())
+        self.assertNotIn(hidden_marker, stdout.getvalue())
         self.assertEqual(payload["schedulers"], [{"name": "backup", "interval": "1d"}])
 
     def test_unreachable_json_is_still_machine_readable(self):

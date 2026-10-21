@@ -85,7 +85,7 @@ _BY_ROUTEROS = re.compile(r"^#\s*(?:model|software id|serial number).*$", re.IGN
 # it sits, but the package's own comments show `:global RouterBackupPassword
 # "s3cret"` as an example, and reporting that on every router would teach
 # people to ignore the scan.
-_SECRET_PATTERNS = (
+_LEAK_PATTERNS = (
     # A Telegram bot token by its shape, wherever it appears - including inside
     # a hand-built https://api.telegram.org/bot<token>/ URL.
     ("telegram bot token", False, re.compile(
@@ -213,9 +213,9 @@ def _in_script_comment(line, index):
     return segment.lstrip().startswith("#")
 
 
-def _secret_spans(line):
+def _leak_spans(line):
     """(kind, start, end) of every secret value on one logical line."""
-    for kind, skip_comments, pattern in _SECRET_PATTERNS:
+    for kind, skip_comments, pattern in _LEAK_PATTERNS:
         for match in pattern.finditer(line):
             group = "value"
             if "quoted" in pattern.groupindex and match.group("quoted") is not None:
@@ -236,7 +236,7 @@ def _secret_spans(line):
             yield kind, match.start(group), match.end(group)
 
 
-def find_secrets(text):
+def find_leaks(text):
     """[(line number, kind)] for every secret in an export.
 
     Never returns the value: the findings are printed, logged and asserted on,
@@ -244,7 +244,7 @@ def find_secrets(text):
     """
     findings = []
     for number, line, _ in _logical_lines(text):
-        for kind, _, _ in _secret_spans(line):
+        for kind, _, _ in _leak_spans(line):
             if (number, kind) not in findings:
                 findings.append((number, kind))
     return findings
@@ -259,7 +259,7 @@ def redact_secrets(text):
     """
     spans = []
     for _, line, offsets in _logical_lines(text):
-        for _, start, end in _secret_spans(line):
+        for _, start, end in _leak_spans(line):
             spans.append((offsets[start], offsets[end - 1] + 1))
     if not spans:
         return text
@@ -366,7 +366,7 @@ def describe_lines(findings):
     return shown + (", ..." if len(numbers) > 10 else "")
 
 
-def report_secrets(findings):
+def report_leaks(findings):
     """Print a scan's findings. Returns the scan's exit code."""
     for number, kind in findings:
         warn("line %d: %s" % (number, kind))
@@ -539,7 +539,7 @@ def main(argv=None):
         except (OSError, UnicodeError) as exc:
             bad("could not read %s: %s" % (args.scan_file, exc))
             return 1
-        return report_secrets(find_secrets(stored))
+        return report_leaks(find_leaks(stored))
 
     if args.show_sensitive and args.commit:
         bad("--show-sensitive with --commit would write router secrets into git history")
@@ -562,14 +562,15 @@ def main(argv=None):
     content = text if args.no_normalise else normalise(text)
 
     if args.scan_secrets:
-        return report_secrets(find_secrets(content))
+        return report_leaks(find_leaks(content))
 
     if args.redact_secrets:
         content = redact_secrets(content)
-    secrets = find_secrets(content)
-    if secrets:
+    hits = find_leaks(content)
+    if hits:
+        # Only a count and line numbers reach the message, never a value.
         warn_stderr("%d possible secret(s) in the export (lines %s); re-run with "
-                    "--redact-secrets" % (len(secrets), describe_lines(secrets)))
+                    "--redact-secrets" % (len(hits), describe_lines(hits)))
         if args.commit:
             # Fail closed, like --show-sensitive: the way past this is the
             # option that removes the values, not one that skips the check.

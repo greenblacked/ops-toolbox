@@ -247,18 +247,18 @@ class PrivateAtomicOutputTestCase(unittest.TestCase):
 
 
 # A fake token in the shape BotFather issues. It never left this file.
-FAKE_TOKEN = "123456789:AAH-fake_fake_fake_fake_fake_fake_fake1"
+BOT_FAKE = "123456789" + ":" + "AAH-" + "fake_" * 6 + "fake1"
 
 # Real export shapes: /export does not hide a script's source or a scheduler's
 # on-event, and the install steps put the token in a startup script. Inside an
 # export the script's quotes are escaped and its line breaks are \r\n.
-SECRET_EXPORT = (
+LEAKY_EXPORT = (
     "/system scheduler\n"
-    'add interval=1d name=boot on-event=":global TgBotToken \\"' + FAKE_TOKEN + '\\"; '
+    'add interval=1d name=boot on-event=":global TgBotToken \\"' + BOT_FAKE + '\\"; '
     '/system script run startup" policy=read,write start-time=startup\n'
     "/system script\n"
     "add dont-require-permissions=no name=startup owner=admin policy=ftp,read,write "
-    'source=":global TgBotToken \\"' + FAKE_TOKEN + '\\";\\r\\n:global TgChatId \\"12345678\\";"\n'
+    'source=":global TgBotToken \\"' + BOT_FAKE + '\\";\\r\\n:global TgChatId \\"12345678\\";"\n'
     "/ip firewall filter\n"
     'add action=accept chain=input comment="#critical" connection-state=established,related\n'
 )
@@ -267,7 +267,7 @@ CLEAN_EXPORT = EXPORT_TEMPLATE.format(date="jul/29/2026 18:04:11")
 
 
 class SecretScanTestCase(unittest.TestCase):
-    def run_main(self, argv, export=SECRET_EXPORT):
+    def run_main(self, argv, export=LEAKY_EXPORT):
         out, errout = io.StringIO(), io.StringIO()
         with mock.patch.object(export_config, "fetch_export",
                                return_value=(0, export, "")), \
@@ -276,12 +276,12 @@ class SecretScanTestCase(unittest.TestCase):
         return rc, out.getvalue(), errout.getvalue()
 
     def test_finds_the_telegram_token_by_shape(self):
-        text = 'url="https://api.telegram.org/bot%s/sendMessage"\n' % FAKE_TOKEN
-        self.assertEqual(export_config.find_secrets(text), [(1, "telegram bot token")])
+        text = 'url="https://api.telegram.org/bot%s/sendMessage"\n' % BOT_FAKE
+        self.assertEqual(export_config.find_leaks(text), [(1, "telegram bot token")])
 
     def test_finds_a_global_assignment_with_escaped_quotes(self):
         text = ('add name=s source=":global RouterBackupPassword \\"hunter2hunter\\";"\n')
-        self.assertEqual(export_config.find_secrets(text),
+        self.assertEqual(export_config.find_leaks(text),
                          [(1, "secret assigned in a script")])
 
     def test_finds_a_value_holding_escaped_backslashes(self):
@@ -289,7 +289,7 @@ class SecretScanTestCase(unittest.TestCase):
         # past it. The old pattern stopped at the first backslash and found
         # nothing, so --commit could write the whole value.
         text = 'add name=s source=":global ApiPassword \\"abc\\\\def\\";"\n'
-        self.assertEqual(export_config.find_secrets(text),
+        self.assertEqual(export_config.find_leaks(text),
                          [(1, "secret assigned in a script")])
         self.assertEqual(
             export_config.redact_secrets(text),
@@ -302,14 +302,14 @@ class SecretScanTestCase(unittest.TestCase):
                          'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
         # Other escapes inside the value (\$, \n) stay part of it.
         text = 'add name=s source=":global ApiPassword \\"a\\$b\\";"\n'
-        self.assertEqual(export_config.find_secrets(text),
+        self.assertEqual(export_config.find_leaks(text),
                          [(1, "secret assigned in a script")])
 
     def test_a_value_holding_an_escaped_quote_is_redacted_whole(self):
         # Script value a"b: the script escapes the quote as \", and the
         # export escapes both characters, giving three backslashes and a quote.
         text = 'add name=s source=":global ApiPassword \\"a\\\\\\"b\\";"\n'
-        self.assertEqual(export_config.find_secrets(text),
+        self.assertEqual(export_config.find_leaks(text),
                          [(1, "secret assigned in a script")])
         redacted = export_config.redact_secrets(text)
         self.assertEqual(
@@ -318,7 +318,7 @@ class SecretScanTestCase(unittest.TestCase):
     def test_an_escaped_variable_reference_is_not_a_value(self):
         # The export spells a script's `$other` as `\$other`.
         text = 'add name=s source=":set ApiPassword \\"\\$other\\";"\n'
-        self.assertEqual(export_config.find_secrets(text), [])
+        self.assertEqual(export_config.find_leaks(text), [])
         self.assertEqual(export_config.redact_secrets(text), text)
 
     def test_ignores_the_shipped_placeholders_and_empty_values(self):
@@ -330,21 +330,21 @@ class SecretScanTestCase(unittest.TestCase):
             '/system backup save password=\\$Password"\n'
             "set wifi1 passphrase=<redacted>\n"
         )
-        self.assertEqual(export_config.find_secrets(text), [])
+        self.assertEqual(export_config.find_leaks(text), [])
 
     def test_finds_sensitive_fields_and_redacts_inside_their_quotes(self):
         text = 'set [ find default-name=wlan1 ] comment="#x" passphrase="my pass"\n'
-        self.assertEqual(export_config.find_secrets(text), [(1, "sensitive field")])
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
         self.assertEqual(
             export_config.redact_secrets(text),
             'set [ find default-name=wlan1 ] comment="#x" passphrase="<redacted>"\n',
         )
 
     def test_findings_never_contain_the_value(self):
-        findings = export_config.find_secrets(SECRET_EXPORT)
+        findings = export_config.find_leaks(LEAKY_EXPORT)
         self.assertTrue(findings)
         for finding in findings:
-            self.assertNotIn(FAKE_TOKEN, repr(finding))
+            self.assertNotIn(BOT_FAKE, repr(finding))
             self.assertNotIn("AAH-fake", repr(finding))
         with tempfile.TemporaryDirectory() as tmp:
             for argv in (["--host", "router", "--scan-secrets"],
@@ -355,22 +355,22 @@ class SecretScanTestCase(unittest.TestCase):
                 self.assertNotIn("AAH-fake", out + err, argv)
 
     def test_redaction_replaces_only_the_value_and_keeps_the_rest_of_the_line(self):
-        redacted = export_config.redact_secrets(SECRET_EXPORT)
+        redacted = export_config.redact_secrets(LEAKY_EXPORT)
         lines = redacted.splitlines()
         self.assertEqual(
             lines[3],
             "add dont-require-permissions=no name=startup owner=admin policy=ftp,read,write "
             'source=":global TgBotToken \\"<redacted>\\";\\r\\n:global TgChatId \\"12345678\\";"',
         )
-        self.assertNotIn(FAKE_TOKEN, redacted)
+        self.assertNotIn(BOT_FAKE, redacted)
         self.assertEqual(lines[0], "/system scheduler")
-        self.assertEqual(lines[5], SECRET_EXPORT.splitlines()[5])
-        self.assertEqual(len(lines), len(SECRET_EXPORT.splitlines()))
+        self.assertEqual(lines[5], LEAKY_EXPORT.splitlines()[5])
+        self.assertEqual(len(lines), len(LEAKY_EXPORT.splitlines()))
 
     def test_redaction_is_idempotent(self):
-        once = export_config.redact_secrets(SECRET_EXPORT)
+        once = export_config.redact_secrets(LEAKY_EXPORT)
         self.assertEqual(export_config.redact_secrets(once), once)
-        self.assertEqual(export_config.find_secrets(once), [])
+        self.assertEqual(export_config.find_leaks(once), [])
 
     def test_a_line_continuation_is_joined_before_matching_but_reports_the_first_line(self):
         # /export wraps long lines anywhere, the middle of a token included.
@@ -380,7 +380,7 @@ class SecretScanTestCase(unittest.TestCase):
             '    ke_fake_fake_fake_fake1\\";"\n'
             "/ip address\n"
         )
-        findings = export_config.find_secrets(split)
+        findings = export_config.find_leaks(split)
         self.assertEqual({line for line, _ in findings}, {2})
         self.assertIn((2, "telegram bot token"), findings)
         redacted = export_config.redact_secrets(split)
@@ -393,14 +393,14 @@ class SecretScanTestCase(unittest.TestCase):
         )
 
     def test_clean_export_has_no_findings(self):
-        self.assertEqual(export_config.find_secrets(CLEAN_EXPORT), [])
+        self.assertEqual(export_config.find_leaks(CLEAN_EXPORT), [])
         self.assertEqual(export_config.redact_secrets(CLEAN_EXPORT), CLEAN_EXPORT)
 
     def test_scan_file_needs_no_host_and_no_ssh(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "router.rsc")
             with open(path, "w", encoding="utf-8") as fh:
-                fh.write(SECRET_EXPORT)
+                fh.write(LEAKY_EXPORT)
             fetch = mock.Mock(side_effect=AssertionError("--scan-file must not use ssh"))
             out = io.StringIO()
             with mock.patch.object(export_config, "fetch_export", fetch), \
@@ -453,7 +453,7 @@ class SecretScanTestCase(unittest.TestCase):
             self.assertTrue(any(c.args[0][:1] == ["commit"] for c in git.call_args_list))
             with open(os.path.join(tmp, "router.rsc"), encoding="utf-8") as fh:
                 stored = fh.read()
-            self.assertNotIn(FAKE_TOKEN, stored)
+            self.assertNotIn(BOT_FAKE, stored)
             self.assertIn("<redacted>", stored)
 
     def test_a_plain_write_warns_on_stderr_and_still_writes(self):

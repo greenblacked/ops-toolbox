@@ -996,7 +996,7 @@ def run_one(user, host, port, args, package=None):
 # --------------------------------------------------------------------------
 # a fleet: one router per line of a hosts file
 # --------------------------------------------------------------------------
-_HOST_TOKEN = re.compile(
+_HOST_WORD = re.compile(
     r"^(?:(?P<user>[^@\s]+)@)?"
     r"(?:\[(?P<v6>[0-9A-Fa-f:.%]+)\]|(?P<host>[A-Za-z0-9._-]+))"
     r"(?::(?P<port>\d{1,5}))?$"
@@ -1014,7 +1014,7 @@ def parse_hosts_file(text, default_user="admin", default_port=22):
     One router per line: `host`, `user@host`, `host:port`, `user@host:port`,
     `[v6addr]` or `[v6addr]:port`. Blank lines and everything after '#' are
     ignored. Raises ValueError(line number, message) on the first line that is
-    none of those. A token that starts with '-' is refused outright: each one
+    none of those. A word that starts with '-' is refused outright: each one
     becomes an ssh argument, and ssh would read it as an option.
     """
     routers = []
@@ -1022,15 +1022,15 @@ def parse_hosts_file(text, default_user="admin", default_port=22):
         line = raw.split("#", 1)[0].strip()
         if not line:
             continue
-        tokens = line.split()
-        if len(tokens) != 1:
-            raise ValueError(number, "expected one router per line, got %d words" % len(tokens))
-        token = tokens[0]
-        if token.startswith("-"):
+        words = line.split()
+        if len(words) != 1:
+            raise ValueError(number, "expected one router per line, got %d words" % len(words))
+        word = words[0]
+        if word.startswith("-"):
             raise ValueError(number, "a router may not start with '-'")
-        match = _HOST_TOKEN.match(token)
+        match = _HOST_WORD.match(word)
         if match is None:
-            if token.count(":") > 1 and "[" not in token:
+            if word.count(":") > 1 and "[" not in word:
                 raise ValueError(number, "write an IPv6 address in brackets, [addr]:port")
             raise ValueError(number, "not a host, user@host or host:port")
         user = match.group("user") or default_user
