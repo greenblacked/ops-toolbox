@@ -88,8 +88,8 @@ Exit codes: 0 success, 3 usage
 EOF
 }
 
-# Byte-identical to git/git_sync_default.sh:25-33 — see CONTRIBUTING.md for why
-# this is copied rather than sourced from a shared library.
+# require_value() is copied from git/git_sync_default.sh; see CONTRIBUTING.md
+# for why it is copied rather than sourced from a shared library.
 require_value() {
   local option="$1"
   local value="${2:-}"
