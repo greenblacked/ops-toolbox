@@ -235,9 +235,11 @@ function Get-ProxyFinding {
     if (-not $envHttps) { $envHttps = [string]$Observed['AllProxy'] }
     $envProxy = [bool]($envHttp -or $envHttps)
     # git has one http.proxy for both protocols: compare it with the proxy
-    # the environment names, HTTPS_PROXY first.
-    $envForGit = $envHttps
-    if (-not $envForGit) { $envForGit = $envHttp }
+    # the environment names, in git's order: HTTPS_PROXY, HTTP_PROXY, then
+    # ALL_PROXY (read straight from the observed values, not the folded ones).
+    $envForGit = [string]$Observed['HttpsProxy']
+    if (-not $envForGit) { $envForGit = [string]$Observed['HttpProxy'] }
+    if (-not $envForGit) { $envForGit = [string]$Observed['AllProxy'] }
 
     $mismatch = $false
     if ($inetOn) {

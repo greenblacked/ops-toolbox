@@ -1093,6 +1093,12 @@ if (-not $netDoctor) {
             @{ Label = 'git http.proxy equals HTTP_PROXY when HTTPS_PROXY is unset'
                Observed = @{ WinInetEnabled = $true; WinInetServer = 'proxy:8080'; HttpProxy = 'http://proxy:8080'; GitProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
                Expect = @() }
+            @{ Label = 'git http.proxy equals HTTP_PROXY when ALL_PROXY is also set'
+               Observed = @{ WinInetEnabled = $false; HttpProxy = 'http://proxy:8080'; AllProxy = 'http://all:3128'; GitProxy = 'http://proxy:8080'; NoProxy = 'localhost' }
+               Expect = @() }
+            @{ Label = 'git http.proxy equals only ALL_PROXY when HTTP_PROXY is also set'
+               Observed = @{ WinInetEnabled = $false; HttpProxy = 'http://proxy:8080'; AllProxy = 'http://all:3128'; GitProxy = 'http://all:3128'; NoProxy = 'localhost' }
+               Expect = @('git-proxy-differs:info') }
             @{ Label = 'a PAC script only'
                Observed = @{ WinInetEnabled = $false; AutoConfigUrl = 'http://wpad/proxy.pac' }
                Expect = @('pac:info') }
