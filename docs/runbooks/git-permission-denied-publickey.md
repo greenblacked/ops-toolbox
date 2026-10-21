@@ -76,13 +76,18 @@ ssh would offer and prints `authentication succeeds` or
 | `1` | At least one host does not, or the repository has no SSH remote and you gave no `--host`. |
 | `3` | Bad arguments. |
 
-The doctor always connects as `git@HOST`. It keeps only the host from a
-remote URL and drops any user name, so for `ssh://alice@gerrit.example:29418/p`
-or `deploy@host:repo.git` it tests `git@`, not `alice@` or `deploy@`. Its exit
-`0` therefore says nothing about such an account. For a remote with a user
-name other than `git`, check by hand with that user:
-`ssh -v -T alice@gerrit.example` (add `-p PORT` for a non-default port). In the
-`-v` output, `Offering public key` lines show what was tried and
+The doctor always connects as `git@HOST` on the port `ssh -G` resolves for
+that host (22 unless your ssh config says otherwise). It keeps only the host
+from a remote URL and drops both any user name and any explicit port, so for
+`ssh://alice@gerrit.example:29418/p` or `deploy@host:repo.git` it tests
+`git@gerrit.example` on the configured port, not `alice@` or `deploy@`, and
+not port 29418. Its exit `0` therefore says nothing about such an account.
+Exit `1` can also be a false failure: the doctor may be knocking on the wrong
+port or as the wrong user while your real remote works. For a remote with a
+user name other than `git` or a non-default port, check by hand with that
+user and port: `ssh -v -T -p PORT user@host`, for example
+`ssh -v -T -p 29418 alice@gerrit.example` (leave out `-p PORT` for port 22).
+In the `-v` output, `Offering public key` lines show what was tried and
 `Authenticated to` shows success.
 
 On Linux, check the client directory itself as well:
