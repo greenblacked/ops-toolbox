@@ -199,6 +199,7 @@ $expectedParameters = @{
     'workstation_doctor.ps1'= @('MinFreePercent')
     'net_doctor.ps1'        = @('Probe', 'Port', 'Only', 'ListSections', 'SkipListen', 'Quiet', 'HostsFile')
     'ssh_client_doctor.ps1' = @('SshDir', 'FailOn', 'Quiet')
+    'disk_usage.ps1'        = @('Path', 'Depth', 'Top', 'MinSizeMB', 'IncludeDocker', 'Quiet')
     'new_script.ps1'        = @('PassThru')
 }
 foreach ($name in $expectedParameters.Keys) {
@@ -1354,6 +1355,213 @@ if (-not $sshDoctor) {
         }
     }
     Remove-Item -Path $sshBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'disk_usage measures a tree without following links'
+# The size walk skips reparse points. A junction counted is a mount counted
+# twice; a link back to an ancestor is a walk that never ends.
+$diskUsage = Find-ContractScript 'disk_usage.ps1'
+if (-not $diskUsage) {
+    Test-Fail 'disk_usage.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $diskUsage -Name 'Get-DirectorySize'
+    if (-not $src) {
+        Test-Fail 'disk_usage.ps1 : Get-DirectorySize not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $sizeBox = Join-Path ([IO.Path]::GetTempPath()) ('winsize_' + [Guid]::NewGuid().ToString('N'))
+        $deep = Join-Path (Join-Path $sizeBox 'sub') 'deep'
+        $emptyDir = Join-Path $sizeBox 'empty'
+        New-Item -ItemType Directory -Path $deep, $emptyDir -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $sizeBox 'a.bin'), (New-Object byte[] 1000))
+        [IO.File]::WriteAllBytes((Join-Path (Join-Path $sizeBox 'sub') 'b.bin'), (New-Object byte[] 2000))
+        [IO.File]::WriteAllBytes((Join-Path $deep 'c.bin'), (New-Object byte[] 4000))
+        $linked = $false
+        try {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $sizeBox 'link-to-sub') -Target (Join-Path $sizeBox 'sub') -ErrorAction Stop | Out-Null
+            $linked = $true
+        } catch {
+            # Normal on Windows without Developer Mode or elevation.
+            Test-Skip "could not create a symbolic link here ($($_.Exception.Message)); the link half of this check did not run"
+        }
+        $measured = Get-DirectorySize -Path $sizeBox
+        if ($measured.Bytes -eq 7000) {
+            Test-Ok 'Get-DirectorySize sums 1000 + 2000 + 4000 bytes across three levels'
+        } else {
+            Test-Fail "Get-DirectorySize returned $($measured.Bytes) bytes, expected 7000"
+        }
+        if ($linked) {
+            if ($measured.Bytes -eq 7000) {
+                Test-Ok 'the symbolic link to sub was not followed (sub was counted once)'
+            } else {
+                Test-Fail 'the symbolic link to sub was followed and its target counted twice'
+            }
+        }
+        $emptySize = Get-DirectorySize -Path $emptyDir
+        if ($emptySize.Bytes -eq 0 -and $emptySize.Inaccessible -eq 0) {
+            Test-Ok 'an empty folder measures 0 bytes with nothing unreadable'
+        } else {
+            Test-Fail "an empty folder measured $($emptySize.Bytes) bytes, $($emptySize.Inaccessible) unreadable"
+        }
+        Remove-Item -Path $sizeBox -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'disk_usage hot-spot table is well formed'
+# Each hint is a pointer to another tool, and two of those tools live in this
+# repository. A pointer to a flag that was renamed is worse than none, so every
+# 'clean_disk_c.ps1 -Flag' and 'wsl_manage.ps1 verb' in a hint is checked
+# against the script it names.
+if (-not $diskUsage) {
+    Test-Fail 'disk_usage.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $diskUsage -Name 'Get-HotspotTarget'
+    if (-not $src) {
+        Test-Fail 'disk_usage.ps1 : Get-HotspotTarget not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $hotspots = @(Get-HotspotTarget -UserProfile 'C:\Users\alice' -LocalAppData 'C:\Users\alice\AppData\Local' `
+                -ProgramData 'C:\ProgramData' -SystemDrive 'C:' `
+                -WslDisk @([pscustomobject]@{ Name = 'Ubuntu'; Path = 'D:\wsl\Ubuntu\ext4.vhdx' }))
+        $malformed = @($hotspots | Where-Object { -not $_.Label -or -not $_.Path -or -not $_.Hint -or $_.Kind -notin 'file', 'dir' })
+        if ($hotspots.Count -ge 10 -and $malformed.Count -eq 0) {
+            Test-Ok "Get-HotspotTarget returned $($hotspots.Count) targets, each with a kind, label, path and hint"
+        } else {
+            Test-Fail "Get-HotspotTarget returned $($hotspots.Count) target(s), $($malformed.Count) malformed; expected at least 10, none malformed"
+        }
+        $duplicateLabels = @($hotspots | Group-Object -Property Label | Where-Object { $_.Count -gt 1 } | ForEach-Object { $_.Name })
+        if ($duplicateLabels.Count -eq 0) {
+            Test-Ok 'every label is unique'
+        } else {
+            Test-Fail "duplicate labels: $($duplicateLabels -join ', ')"
+        }
+        $tooWide = @($hotspots | Where-Object { $_.Label.Length -gt 44 } | ForEach-Object { $_.Label })
+        if ($tooWide.Count -eq 0) {
+            Test-Ok 'every label fits the 44-wide column'
+        } else {
+            Test-Fail "labels wider than the 44-character column: $($tooWide -join '; ')"
+        }
+        $unexpanded = @($hotspots | Where-Object { $_.Path -match '%' } | ForEach-Object { $_.Path })
+        if ($unexpanded.Count -eq 0) {
+            Test-Ok 'no path is left with an unexpanded %VARIABLE%'
+        } else {
+            Test-Fail "paths with an unexpanded variable: $($unexpanded -join '; ')"
+        }
+
+        $cleanReferences = 0
+        $wslReferences = 0
+        foreach ($target in $hotspots) {
+            foreach ($m in [regex]::Matches($target.Hint, 'clean_disk_c\.ps1 -([A-Za-z]+)')) {
+                $cleanReferences++
+                $flag = $m.Groups[1].Value
+                if ($paramCache['clean_disk_c.ps1'] -contains $flag) {
+                    Test-Ok "'$($target.Label)' points at clean_disk_c.ps1 -$flag, which it declares"
+                } else {
+                    Test-Fail "'$($target.Label)' points at clean_disk_c.ps1 -$flag, which clean_disk_c.ps1 does not declare"
+                }
+            }
+            foreach ($m in [regex]::Matches($target.Hint, 'wsl_manage\.ps1 ([a-z][a-z-]*)')) {
+                $wslReferences++
+                $verb = $m.Groups[1].Value
+                if ($wslValues -contains $verb) {
+                    Test-Ok "'$($target.Label)' points at wsl_manage.ps1 $verb, which it accepts"
+                } else {
+                    Test-Fail "'$($target.Label)' points at wsl_manage.ps1 $verb, which is not one of its actions"
+                }
+            }
+        }
+        if ($cleanReferences -eq 0) {
+            Test-Fail 'no hint names a clean_disk_c.ps1 flag - this check has stopped checking'
+        }
+        if ($wslReferences -eq 0) {
+            Test-Fail 'the WSL disk row names no wsl_manage.ps1 action - this check has stopped checking'
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'disk_usage usage errors'
+if (-not $diskUsage) {
+    Test-Fail 'disk_usage.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $nowhere = Join-Path ([IO.Path]::GetTempPath()) ('winnowhere_' + [Guid]::NewGuid().ToString('N'))
+    foreach ($case in @(
+            @{ Arguments = @('tree', '-Path', $nowhere); Mention = 'Path'; Label = 'tree -Path at a folder that does not exist' }
+            @{ Arguments = @('tree', '-Depth', '9'); Mention = 'Depth'; Label = '-Depth 9' }
+            @{ Arguments = @('-Top', '0'); Mention = 'Top'; Label = '-Top 0' }
+            @{ Arguments = @('-MinSizeMB', '2000000'); Mention = 'MinSizeMB'; Label = '-MinSizeMB 2000000' }
+        )) {
+        $run = Invoke-InScratch -Path $diskUsage.FullName -Arguments $case.Arguments
+        if ($run.ExitCode -eq 3 -and $run.Output -match $case.Mention) {
+            Test-Ok "disk_usage.ps1 $($case.Label) is a usage error (exit 3), before the platform guard"
+        } else {
+            Test-Fail "disk_usage.ps1 $($case.Label) must exit 3 naming $($case.Mention); it exited $($run.ExitCode)"
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 5)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'disk_usage runs end to end'
+# On Linux the hot-spot paths are all absent, so this proves the report gets
+# from the first line to the last without a stack trace. On windows-2025 the
+# same call measures the real system drive.
+if (-not $diskUsage) {
+    Test-Fail 'disk_usage.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $usageBox = Join-Path ([IO.Path]::GetTempPath()) ('winusage_' + [Guid]::NewGuid().ToString('N'))
+    $usageData = Join-Path $usageBox 'data'
+    New-Item -ItemType Directory -Path (Join-Path $usageData 'big-child'), (Join-Path $usageData 'small-child') -Force | Out-Null
+    [IO.File]::WriteAllBytes((Join-Path (Join-Path $usageData 'big-child') 'f.bin'), (New-Object byte[] 5000))
+    [IO.File]::WriteAllBytes((Join-Path (Join-Path $usageData 'small-child') 'f.bin'), (New-Object byte[] 100))
+    $usageCopy = Copy-UnguardedScript -Script $diskUsage -Directory $usageBox
+    if (-not $usageCopy) {
+        Test-Fail 'disk_usage.ps1 : platform guard not found verbatim, so the end-to-end check could not run; update the guard text in contract.ps1'
+    } else {
+        $run = Invoke-InScratch -Path $usageCopy -Arguments @('tree', '-Path', $usageData, '-Depth', '1', '-MinSizeMB', '0')
+        $bigAt = $run.Output.IndexOf('big-child')
+        $smallAt = $run.Output.IndexOf('small-child')
+        if ($run.ExitCode -eq 0 -and $bigAt -ge 0 -and $smallAt -ge 0 -and $bigAt -lt $smallAt) {
+            Test-Ok 'disk_usage.ps1 tree lists both children, the larger first'
+        } else {
+            Test-Fail "disk_usage.ps1 tree: exited $($run.ExitCode), big-child at $bigAt, small-child at $smallAt (both expected, big first)"
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+
+        $run = Invoke-InScratch -Path $usageCopy -Arguments @('hotspots', '-MinSizeMB', '0')
+        if ($run.ExitCode -eq 0 -and $run.Output -match '(?m)^(SKIP |FOUND) ') {
+            Test-Ok 'disk_usage.ps1 hotspots ran to the end and printed its FOUND / SKIP rows'
+        } else {
+            Test-Fail "disk_usage.ps1 hotspots: exited $($run.ExitCode), or printed no FOUND / SKIP row"
+            foreach ($line in ($run.Output -split "`n" | Select-Object -First 8)) {
+                Write-Host "       $line" -ForegroundColor Red
+            }
+        }
+    }
+    Remove-Item -Path $usageBox -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# --------------------------------------------------------------------------
+Write-Section 'disk_usage cannot delete'
+# The read-only AST check above already covers it by role; this says it in so
+# many words, because "the report tool deleted something" is the one failure
+# it must never have.
+if (-not $diskUsage) {
+    Test-Fail 'disk_usage.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $usageText = Get-Content -Raw -Path $diskUsage.FullName
+    $deleters = @(@('Remove-Item', 'Clear-RecycleBin', 'Clear-Content', '.Delete(') | Where-Object { $usageText.Contains($_) })
+    if ($deleters.Count -eq 0) {
+        Test-Ok 'disk_usage.ps1 contains no deleting command, not even in a comment'
+    } else {
+        Test-Fail "disk_usage.ps1 contains $($deleters -join ', ')"
+    }
 }
 
 # --------------------------------------------------------------------------

@@ -6,6 +6,11 @@
 safe to lose. It never touches documents, downloads, application settings, or
 anything under your user profile except designated cache/temp locations.
 
+[`disk_usage.ps1`](disk_usage.ps1) is the step before it: a read-only report
+of what is actually filling `C:` - including the things `clean_disk_c.ps1`
+deliberately leaves alone - with the tool that gives each one back. See
+[disk_usage.ps1](#disk_usageps1) below.
+
 ## Requirements
 
 | Requirement | Notes |
@@ -89,6 +94,12 @@ scope: an opt-in target still runs because it was named explicitly.
   you know you want that.
 - WSL virtual disks — those shrink via
   [`../wsl/wsl_manage.ps1`](../wsl/wsl_manage.ps1) `compact` instead.
+- `Windows.old`, `$WINDOWS.~BT` and the component store (`WinSxS`) —
+  Windows' own Storage settings and DISM are the supported way to shrink
+  them.
+
+None of these is invisible, though: [`disk_usage.ps1`](#disk_usageps1)
+measures every one of them and names the tool that does give the space back.
 
 ## Notes
 
@@ -97,3 +108,76 @@ scope: an opt-in target still runs because it was named explicitly.
   npm, and Docker sizes are not included in the estimate (their tooling
   doesn't expose sizes cheaply); the real clean prints before/after free
   space, which captures everything.
+
+## disk_usage.ps1
+
+A read-only report of what is filling `C:`, and the report step that comes
+before the cleanup step. It deletes nothing - the file contains no deleting
+command at all, and the contract tests check that - never follows a junction
+or symbolic link, never reads a file's contents and never contacts the
+network.
+
+```powershell
+.\disk_usage.ps1
+.\disk_usage.ps1 hotspots -MinSizeMB 500 -IncludeDocker
+.\disk_usage.ps1 tree
+.\disk_usage.ps1 tree -Path $env:USERPROFILE -Depth 2 -Top 10
+```
+
+| Action | What it shows |
+| --- | --- |
+| `hotspots` | The default. A fixed list of known space users, each measured and printed as a `FOUND` row with a pointer to what gives it back, largest first; a `SKIP` row for each one that is not there. |
+| `tree` | The largest children of a folder (the system drive by default), to a chosen depth, two spaces of indent per level. |
+
+The hot spots, and where each one points:
+
+| Location | Pointer |
+| --- | --- |
+| `hiberfil.sys`, `pagefile.sys`, `swapfile.sys` | System managed: `powercfg /h /type reduced` or `/h off` for the first, the Virtual memory dialog for the second. |
+| `Windows.old`, `$WINDOWS.~BT`, `$WinREAgent` | Settings > System > Storage > Temporary files. Not something this folder deletes. |
+| `$Recycle.Bin`, Windows Update downloads, Windows and user temp | This folder's cleanup script, with the flag that reaches each one. |
+| `Windows\Installer`, `Package Cache` | Never delete: uninstall and repair need them. |
+| `WinSxS` | `Dism.exe /Online /Cleanup-Image /AnalyzeComponentStore`. The folder size over-counts, because most of it is hard links. |
+| Docker data | `docker system prune` (the cleanup script's Docker flag), or Docker Desktop's Troubleshoot > Clean / Purge data. |
+| NuGet, pip and npm caches | The cleanup script's dev-caches flag. |
+| Gradle, Maven, Cargo, rustup, Go modules, minikube, kubectl cache, Vagrant, conda, Android SDK and emulators, VirtualBox VMs, Downloads | The owning tool's own clean command, or by hand. |
+| Each WSL distro's `ext4.vhdx` | [`../wsl/wsl_manage.ps1`](../wsl/wsl_manage.ps1) `df`, then `compact`. |
+
+The WSL disks are found from the registry (`HKCU\...\Lxss`), not from
+`wsl --list`, so a distro imported to another folder is found too and WSL is
+not started to answer.
+
+| Option | Meaning |
+| --- | --- |
+| `-Path DIR` | The folder `tree` measures. Default: the system drive. Must be a folder, or the script exits `3`. |
+| `-Depth N` | Levels `tree` shows, `1`-`4`. Default `1`. |
+| `-Top N` | Rows per list, `1`-`100`. Default `15`. |
+| `-MinSizeMB N` | Hide rows smaller than this. Default `100`; `0` shows everything. |
+| `-IncludeDocker` | Also print `docker system df` from the local daemon. A `SKIP` line when `docker` is not on `PATH`. |
+| `-Quiet` | Leave out the `SKIP` rows and the `[info]` lines. |
+
+Exit codes: `0` the report ran, `2` not Windows, `3` bad arguments (a `-Path`
+that is not a folder, or a number out of range).
+
+From report to cleanup, in the order this repository always uses:
+
+```powershell
+# 1. What is filling the disk, and what gives each item back?
+.\disk_usage.ps1
+
+# 2. The report ends with the cleanup command for the rows it can reach.
+#    Preview it - nothing is deleted:
+.\clean_disk_c.ps1 -DryRun -IncludeRecycleBin -IncludeDevCaches
+
+# 3. Then run it:
+.\clean_disk_c.ps1 -Yes -IncludeRecycleBin -IncludeDevCaches
+
+# A WSL disk is a different tool:
+..\wsl\wsl_manage.ps1 df
+..\wsl\wsl_manage.ps1 compact
+```
+
+Read the numbers as lower bounds when the shell is not elevated: folders under
+`Windows` and other users' profiles are partly unreadable, and a row that hit
+one says so. Measuring a large profile or `WinSxS` takes a while; the report
+says how many locations it is about to measure before it starts.

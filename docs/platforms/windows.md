@@ -4,8 +4,9 @@
 
 Windows 10/11 with PowerShell 5.1 or 7 for the `.ps1` scripts, and Git Bash for
 the dotfiles installer: winget and Chocolatey capture and restore, workstation
-status and health, network diagnosis, winget upgrades with WSL update, `C:` disk cleanup, WSL2
-backup, restore and compaction, and a Git Bash dotfiles installer.
+status and health, network diagnosis, winget upgrades with WSL update, a `C:`
+disk usage report and disk cleanup, WSL2 backup, restore and compaction, and a
+Git Bash dotfiles installer.
 
 ## Requirements
 
@@ -30,6 +31,7 @@ backup, restore and compaction, and a Git Bash dotfiles installer.
 | `setup/winget_bootstrap.ps1` | `export`, `list`, `check`, `import`, `diff` of the winget package set. | `-DryRun` on `import` |
 | `setup/choco_bootstrap.ps1` | `export`, `list`, `check`, `install`, `diff` of Chocolatey packages. | `-DryRun` on `install` |
 | `setup/winget_configure.ps1` | `validate`, `show`, `test`, `apply` of `configuration.winget`. | `-DryRun` on `apply` |
+| `cleanup/disk_usage.ps1` | What fills `C:` (hibernation and page files, `Windows.old`, `WinSxS`, Docker, WSL disks, dev caches) and the tool that gives each back; `tree` for one folder. | <span class="stage stage-report">read-only</span> |
 | `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker. | `-DryRun`; `-Yes` to delete |
 | `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`. | `-DryRun` on `restore`, `prune-backups`, `terminate` |
 | `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
@@ -49,6 +51,8 @@ All paths are under `windows/`.
     .\windows\setup\net_doctor.ps1 -Probe github.com
     .\windows\setup\ssh_client_doctor.ps1 -FailOn warn
     .\windows\setup\winget_bootstrap.ps1 diff
+    .\windows\cleanup\disk_usage.ps1
+    .\windows\cleanup\disk_usage.ps1 tree -Path $env:USERPROFILE -Depth 2
     ```
 
 === "Preview"

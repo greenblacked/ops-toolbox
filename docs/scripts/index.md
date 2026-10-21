@@ -50,6 +50,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `windows/setup/choco_bootstrap.ps1` | Windows | Export, list, check, install, diff Chocolatey packages. | `-DryRun` (install) |
 | `windows/setup/winget_configure.ps1` | Windows | Validate, show, test, apply `configuration.winget`. | `-DryRun` (apply) |
 | `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; deletes only with `-Yes`. | `-DryRun` |
+| `windows/cleanup/disk_usage.ps1` | Windows | What fills `C:` and which tool gives each item back; `tree` for one folder. | <span class="stage stage-report">read-only</span> |
 | `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, restore, prune, compact and more. | `-DryRun` (restore, prune-backups, terminate) |
 | `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
