@@ -506,7 +506,8 @@ section "ctx"
 # The developer's own environment must not steer these: every variable ctx
 # reads is cleared here and again for each run below.
 unset AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID TF_WORKSPACE \
-  KUBECONFIG CTX_DANGER_PATTERN APPDATA DOCKER_CONTEXT
+  KUBECONFIG CTX_DANGER_PATTERN APPDATA DOCKER_CONTEXT AWS_CONFIG_FILE \
+  AWS_SHARED_CREDENTIALS_FILE
 
 ctx_root="$(mktemp -d "$SCRATCH/ctx.XXXXXX")"
 mkdir -p "$ctx_root/home/.docker" "$ctx_root/work/.terraform" \
@@ -540,7 +541,7 @@ run_ctx() {
   # shellcheck disable=SC2016  # the script body expands in the child bash
   out="$(cd "$ctx_root/work" && env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
     -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN \
-    -u DOCKER_CONTEXT -u NO_COLOR -u CTX_STUBS \
+    -u DOCKER_CONTEXT -u NO_COLOR -u CTX_STUBS -u AWS_CONFIG_FILE -u AWS_SHARED_CREDENTIALS_FILE \
     HOME="$ctx_root/home" APPDATA="$ctx_root/appdata" PATH="$ctx_root/bin:$PATH" \
     ${assigns[@]+"${assigns[@]}"} "${BASH:-bash}" -c '
       kubectl() {
@@ -588,6 +589,32 @@ run_ctx AWS_PROFILE=stg CTX_DANGER_PATTERN='^stg$'
 assert_contains "CTX_DANGER_PATTERN decides what is marked" "$out" "aws     stg!"
 assert_contains "and what is not" "$out" "kube    prod-eu / payments"$'\n'
 
+# No AWS_PROFILE and no exported keys: the CLI uses [default] of the shared
+# files, so ctx shows that profile and its region. Only a region is ever read
+# from them, never a key.
+mkdir -p "$ctx_root/aws" "$ctx_root/awshome/.aws"
+printf '[profile dev]\nregion = eu-north-1\n\n[default]\nregion = ap-south-1\noutput = json\n' > "$ctx_root/aws/config"
+printf '[default]\naws_access_key_id = AKIASECRETKEY\naws_secret_access_key = topsecretvalue\n' > "$ctx_root/aws/credentials"
+printf '[profile dev]\nregion = eu-north-1\n' > "$ctx_root/aws/config-nodefault"
+cp "$ctx_root/aws/config" "$ctx_root/awshome/.aws/config"
+
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_SHARED_CREDENTIALS_FILE="$ctx_root/aws/none"
+assert_contains "ctx shows the default AWS profile and its region from the config file" "$out" "aws     default  (ap-south-1)"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_REGION=eu-west-1
+assert_contains "AWS_REGION still wins over the default profile's region" "$out" "aws     default  (eu-west-1)"
+run_ctx HOME="$ctx_root/awshome"
+assert_contains "the config file is looked for in ~/.aws by default" "$out" "aws     default  (ap-south-1)"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/none" AWS_SHARED_CREDENTIALS_FILE="$ctx_root/aws/credentials"
+assert_contains "a credentials file with a [default] profile is enough" "$out" "aws     default"$'\n'
+assert_not_contains "and no key from it is printed" "$out" "AKIASECRETKEY"
+assert_not_contains "nor its secret" "$out" "topsecretvalue"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config-nodefault" AWS_SHARED_CREDENTIALS_FILE="$ctx_root/aws/none"
+assert_not_contains "files without a [default] profile show no AWS line" "$out" "aws     "
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_ACCESS_KEY_ID=AKIAFAKE
+assert_contains "exported keys still show as no profile, not default" "$out" "aws     (no profile)"
+run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_PROFILE=stg
+assert_contains "AWS_PROFILE wins over the default profile" "$out" "aws     stg"
+
 run_ctx TF_WORKSPACE=Production-EU
 assert_contains "TF_WORKSPACE wins over .terraform/environment, matched in any case" "$out" "tf      Production-EU!  (TF_WORKSPACE)"
 
@@ -603,7 +630,8 @@ assert_contains "and still marks production" "$out" "prod-admin!"
 # shellcheck disable=SC2016  # the script body expands in the child bash
 out="$(cd "$ctx_root/empty" && env -u AWS_PROFILE -u AWS_REGION -u AWS_DEFAULT_REGION \
   -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN -u APPDATA \
-  -u DOCKER_CONTEXT HOME="$ctx_root/empty" CTX_STUBS=none "${BASH:-bash}" -c '
+  -u DOCKER_CONTEXT -u AWS_CONFIG_FILE -u AWS_SHARED_CREDENTIALS_FILE \
+  HOME="$ctx_root/empty" CTX_STUBS=none "${BASH:-bash}" -c '
     kubectl() { return 1; }
     git() { return 128; }
     . "$0"

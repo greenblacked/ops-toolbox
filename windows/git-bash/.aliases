@@ -531,8 +531,42 @@ __ctx_print() {
     printf '%-7s %s%s\n' "$1" "$shown" "${3:+  $3}"
 }
 
+# __ctx_ini FILE SECTION [KEY]: read an INI file the way the AWS files are
+# written. Without KEY, exit 0 when [SECTION] exists. With KEY, print its
+# value and exit 0, or print nothing and exit 1. Never writes, never echoes
+# any other key, so a credentials file is only ever asked about a region.
+__ctx_ini() {
+    [ -r "$1" ] || return 1
+    awk -v want="$2" -v key="${3:-}" '
+        { line = $0; sub(/\r$/, "", line); gsub(/^[ \t]+|[ \t]+$/, "", line) }
+        line ~ /^\[.*\]$/ {
+            sec = substr(line, 2, length(line) - 2)
+            gsub(/^[ \t]+|[ \t]+$/, "", sec)
+            inside = (sec == want)
+            if (inside) found = 1
+            next
+        }
+        inside && key != "" {
+            i = index(line, "=")
+            if (i > 0) {
+                k = substr(line, 1, i - 1)
+                gsub(/[ \t]+$/, "", k)
+                if (k == key) {
+                    v = substr(line, i + 1)
+                    gsub(/^[ \t]+/, "", v)
+                    print v
+                    got = 1
+                    exit
+                }
+            }
+        }
+        END { exit (key == "" ? !found : !got) }
+    ' "$1"
+}
+
 ctx() {
     local plain=0 printed=0 pattern red='' reset=''
+    local aws_cfg aws_cred
     local kube_ctx kube_ns aws_profile aws_region aws_extra gc_dir gc_name gc_project
     local tf_ws tf_from docker_ctx docker_from branch url host
     [ "${1:-}" = "--plain" ] && plain=1
@@ -553,6 +587,18 @@ ctx() {
 
     aws_profile="${AWS_PROFILE:-}"
     aws_region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+    # No profile and no exported keys: the AWS CLI and SDKs fall back to the
+    # [default] profile of the shared files, so show that one and its region.
+    if [ -z "$aws_profile" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+        aws_cfg="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+        aws_cred="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
+        if __ctx_ini "$aws_cfg" default || __ctx_ini "$aws_cred" default; then
+            aws_profile=default
+            if [ -z "$aws_region" ]; then
+                aws_region="$(__ctx_ini "$aws_cfg" default region || __ctx_ini "$aws_cred" default region)"
+            fi
+        fi
+    fi
     aws_extra="${aws_region:+($aws_region)}"
     # Whether keys are exported, never what they are.
     if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then

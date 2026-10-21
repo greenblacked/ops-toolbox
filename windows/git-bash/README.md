@@ -240,7 +240,10 @@ under `# ---` section headers. By category:
   the current context.
 - **Where am I pointed?** — `ctx` prints one line per tool that is
   configured: the Kubernetes context and namespace, the AWS profile and
-  region, the gcloud project, the Terraform workspace (`TF_WORKSPACE`, else
+  region (with no `AWS_PROFILE` or exported keys, the `[default]` profile of
+  `~/.aws/config` or `~/.aws/credentials`, honouring `AWS_CONFIG_FILE` and
+  `AWS_SHARED_CREDENTIALS_FILE`, with the region from its `region` key), the
+  gcloud project, the Terraform workspace (`TF_WORKSPACE`, else
   `.terraform/environment` in the current directory), the Docker context, and
   the Git branch with its origin host. Run it before `tfaa`, `tfda` or
   `kdelete`, which act on whatever these point at. A value that looks like
