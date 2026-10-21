@@ -68,8 +68,9 @@ Options:
   --file PATH         PEM to inspect (repeatable, comma-separable; a quoted
                       glob is expanded; first cert in a bundle)
   --host HOST[:PORT]  Fetch the leaf over TLS (default port 443; repeatable)
-  --keychain          Grade the login and System keychain certificates,
-                      self-signed roots excepted
+  --keychain          Grade the client identities (certificate plus private
+                      key) in the login and System keychains; other
+                      certificates are not graded
   --days N            Warn this many days before expiry (default: $DAYS)
   --fail-on LEVEL     Exit 1 on 'expired' (default), on 'warn' and above,
                       or 'never'
@@ -322,30 +323,53 @@ if (( ${#HOSTS[@]} > 0 )); then
   done
 fi
 
+# SHA-1 fingerprints of the client identities in a keychain, one per line,
+# upper-case hex without colons. `security find-identity -p ssl-client` lists
+# an identity (a certificate with its private key) as `1) <40 hex> "name"`;
+# -v is left off because it hides identities whose certificate has expired,
+# and those are the ones this check exists to find. No key is requested.
+identity_hashes() {
+  security find-identity -p ssl-client "$1" 2>/dev/null \
+    | awk '$1 ~ /^[0-9]+\)$/ && length($2) == 40 && $2 ~ /^[0-9A-Fa-f]+$/ { print toupper($2) }'
+}
+
+# The SHA-1 fingerprint of one PEM in the same form: OpenSSL prints
+# `SHA1 Fingerprint=AA:BB:...` (or `sha1 Fingerprint=` on 3.x).
+sha1_of() {
+  local fp
+  fp="$(printf '%s\n' "$1" | openssl x509 -noout -fingerprint -sha1 2>/dev/null | head -n 1)"
+  fp="${fp#*=}"
+  fp="${fp//:/}"
+  printf '%s\n' "$fp" | tr '[:lower:]' '[:upper:]'
+}
+
 # Split the concatenated PEM stream from `security find-certificate -a -p` and
-# grade each certificate that is not its own issuer.
+# grade only the certificates that are client identities in the same keychain,
+# matched by SHA-1 fingerprint. Trust anchors, intermediates and other people's
+# certificates that merely sit in the keychain are counted, not graded: an
+# expired one of those is not an outage for this Mac's own client identity.
 grade_keychain() {
-  local kc="$1" label="$2" line pem="" subject issuer cn graded=0 roots=0
+  local kc="$1" label="$2" line pem="" cn fp hashes graded=0 others=0
+  hashes="$(identity_hashes "$kc")"
   while IFS= read -r line; do
     line="${line%$'\r'}"
     pem="$pem$line"$'\n'
     [[ "$line" == "-----END CERTIFICATE-----" ]] || continue
-    subject="$(x509_field "$pem" subject)"
-    issuer="$(x509_field "$pem" issuer)"
-    if [[ -n "$subject" && "${subject#subject=}" == "${issuer#issuer=}" ]]; then
-      roots=$((roots + 1))
-    else
+    fp="$(sha1_of "$pem")"
+    if [[ -n "$fp" ]] && printf '%s\n' "$hashes" | grep -qx -- "$fp"; then
       cn="$(cn_of "$pem")"
       grade_pem "${cn:-unnamed certificate} ($label)" "$pem" \
         "renew it, or delete the stale copy in Keychain Access"
       graded=$((graded + 1))
+    else
+      others=$((others + 1))
     fi
     pem=""
   done <<< "$(security find-certificate -a -p "$kc" 2>/dev/null)"
   if (( graded == 0 )); then
-    info "$label: no certificates to grade"
+    info "$label: no client identities to grade"
   fi
-  (( roots > 0 )) && info "$label: $roots self-signed root(s) not graded"
+  (( others > 0 )) && info "$label: $others other certificate(s) not graded (not client identities)"
   return 0
 }
 

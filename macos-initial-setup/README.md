@@ -1717,12 +1717,12 @@ verdicts and exit codes, plus `--keychain`.
 | --- | --- |
 | `--file PATH` | The first certificate in each PEM. A directory is refused rather than walked, so a CA bundle directory is never paged on. |
 | `--host HOST[:PORT]` | The leaf the server presents (`openssl s_client` with SNI), fetched once with a ten-second cap. `https://` and a path are stripped. |
-| `--keychain` | Every certificate in the login keychain and, when readable, `/Library/Keychains/System.keychain`, except self-signed roots. Never `/System/Library/Keychains`. |
+| `--keychain` | The client identities (a certificate with its private key, as `security find-identity -p ssl-client` lists them) in the login keychain and, when readable, `/Library/Keychains/System.keychain`, matched to their certificates by SHA-1 fingerprint. Roots, intermediates and other certificates that merely sit in the keychain are counted, not graded, so an unrelated expired one never fails the run. Never `/System/Library/Keychains`. |
 
 The verdict comes from `openssl x509 -checkend`, so it needs no date parsing:
 expired is `FAIL`, inside `--days` (default `30`) is `warn`. The day count
 in the message uses BSD `date -j`. `--keychain` reads public certificates
-only (`security find-certificate -p`): no private key is requested, so no
+only (`security find-identity` and `security find-certificate -p`): no private key is requested, so no
 Keychain unlock prompt can appear. A host must be a host name or an IPv4
 address and a port `1`-`65535`; anything else is refused before it reaches
 `openssl`. Certificates are held in shell variables and passed on stdin, so
@@ -1734,7 +1734,7 @@ nothing is written to disk.
 | --- | --- |
 | `--file PATH` | PEM to inspect; repeatable and comma-separable. |
 | `--host HOST[:PORT]` | Host to fetch the leaf from (default port `443`); repeatable. |
-| `--keychain` | Grade the Keychain certificates, self-signed roots excepted. |
+| `--keychain` | Grade the Keychain client identities; other certificates are not graded. |
 | `--days N` | Warn this many days before expiry, `0`-`3650` (default `30`). |
 | `--fail-on LEVEL` | Exit `1` on `expired` (default), on `warn` and above, or `never`. |
 | `--quiet` | Print only warnings and failures. |

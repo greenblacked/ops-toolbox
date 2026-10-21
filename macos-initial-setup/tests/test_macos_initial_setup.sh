@@ -3073,7 +3073,7 @@ in=""; mode="pem"; arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -in) shift; in="$1" ;;
-    -enddate|-subject|-issuer) mode="${1#-}" ;;
+    -enddate|-subject|-issuer|-fingerprint) mode="${1#-}" ;;
     -checkend) mode="checkend"; shift; arg="$1" ;;
   esac
   shift
@@ -3088,6 +3088,7 @@ case "$mode" in
   pem)      printf '%s\n' "$first" ;;
   subject)  echo "subject=CN = $cn" ;;
   issuer)   echo "issuer=CN = $issuer" ;;
+  fingerprint) echo "SHA1 Fingerprint=$(printf '%s\n' "$first" | sed -n 's/^FP=//p')" ;;
   enddate)
     if [ "$state" = "EXPIRED" ]; then
       echo "notAfter=Jan  1 00:00:00 2000 GMT"
@@ -3105,6 +3106,7 @@ OPENSSL_EOF
 cat > "$tl/bin/security" <<'SECURITY_EOF'
 #!/bin/sh
 case "$*" in
+  find-identity*login.keychain-db) cat "$FAKE_TLS/identities.txt" 2>/dev/null ;;
   *login.keychain-db) cat "$FAKE_TLS/keychain.pem" ;;
 esac
 exit 0
@@ -3112,7 +3114,7 @@ SECURITY_EOF
 chmod +x "$tl/bin/"*
 
 fake_cert() {
-  printf -- '-----BEGIN CERTIFICATE-----\nSTATE=%s\nCN=%s\nISSUER=%s\n-----END CERTIFICATE-----\n' "$1" "$2" "$3"
+  printf -- '-----BEGIN CERTIFICATE-----\nSTATE=%s\nCN=%s\nISSUER=%s\nFP=%s\n-----END CERTIFICATE-----\n' "$1" "$2" "$3" "${4:-}"
 }
 fake_cert VALID valid.example "Example CA" > "$tl/fx/valid.pem"
 fake_cert EXPIRED expired.example "Example CA" > "$tl/fx/expired.pem"
@@ -3120,8 +3122,15 @@ fake_cert SOON soon.example "Example CA" > "$tl/fx/soon.pem"
 fake_cert VALID host.example.test "Example CA" > "$tl/fx/host.pem"
 fake_cert VALID first.example "Example CA" > "$tl/certs/a.pem"
 fake_cert VALID second.example "Example CA" > "$tl/certs/b.pem"
-{ fake_cert VALID client.example "Example CA"; fake_cert VALID "Example Root" "Example Root"; } \
+fp_client="AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD"
+fp_stale="11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11"
+fp_root="22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22"
+{ fake_cert VALID client.example "Example CA" "$fp_client"
+  fake_cert EXPIRED stale-unrelated.example "Example CA" "$fp_stale"
+  fake_cert VALID "Example Root" "Example Root" "$fp_root"; } \
   > "$tl/fx/keychain.pem"
+printf '  1) %s "client.example"\n     1 valid identities found\n' "$(printf '%s' "$fp_client" | tr -d ':' | tr 'A-F' 'a-f')" \
+  > "$tl/fx/identities.txt"
 printf 'not a certificate\n' > "$tl/fx/notpem.txt"
 
 tlsx() {
@@ -3170,8 +3179,21 @@ assert_eq "an unreachable host alone does not fail -> 0" "0" "$rc"
 out="$(tlsx --keychain)"; rc=$?
 assert_eq "a keychain with a valid client certificate -> 0" "0" "$rc"
 assert_contains "the keychain leaf is graded" "$out" "client.example (login keychain)"
-assert_contains "the self-signed root is counted, not graded" "$out" "1 self-signed root(s) not graded"
+assert_contains "certificates that are not client identities are counted" "$out" "2 other certificate(s) not graded"
 assert_not_contains "the self-signed root is never graded" "$out" "Example Root (login keychain)"
+assert_not_contains "an unrelated expired certificate is never graded" "$out" "stale-unrelated.example"
+assert_eq "an unrelated expired certificate does not fail --keychain -> 0" "0" "$rc"
+# An identity whose own certificate has expired is still graded and fails.
+{ fake_cert EXPIRED client.example "Example CA" "$fp_client"
+  fake_cert VALID "Example Root" "Example Root" "$fp_root"; } > "$tl/fx/keychain.pem"
+out="$(tlsx --keychain)"; rc=$?
+assert_eq "an expired client identity fails --keychain -> 1" "1" "$rc"
+assert_contains "the expired identity is a FAIL" "$out" "[FAIL] client.example (login keychain)"
+# No identities listed: nothing is graded, even though certificates exist.
+rm -f "$tl/fx/identities.txt"
+out="$(tlsx --keychain)"; rc=$?
+assert_eq "a keychain with no client identity -> 0" "0" "$rc"
+assert_contains "no identity says so" "$out" "no client identities to grade"
 rm -rf "$tl"
 
 section "status.sh and hardening_audit.sh --json are valid, pure and unchanged in human mode"
