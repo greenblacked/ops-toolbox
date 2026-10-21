@@ -1342,6 +1342,15 @@ run_check
 assert_eq "sysctl_defaults --check without the drop-in -> 1" "1" "$rc"
 assert_contains "sysctl_defaults --check calls a live-only value UNPERSISTED" "$out" "UNPERSISTED"
 assert_contains "sysctl_defaults --check prints the fix" "$out" "--apply"
+printf 'vm.swappiness = 10\n' > "$check_root/sysctl.d/60-other.conf"
+run_check --only vm
+assert_eq "sysctl_defaults --check accepts a value another file persists" "0" "$rc"
+assert_contains "sysctl_defaults --check names the persisting file" "$out" "persisted by $check_root/sysctl.d/60-other.conf"
+printf 'vm.swappiness = 20\n' > "$check_root/sysctl.d/60-other.conf"
+run_check --only vm
+assert_eq "sysctl_defaults --check with another file setting a different value -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check still calls that UNPERSISTED" "$out" "UNPERSISTED"
+rm -f "$check_root/sysctl.d/60-other.conf"
 mv "$check_root/tmp/dropin.saved" "$check_dropin"
 
 sed -i 's/^vm.swappiness = 10$/vm.swappiness = 30/' "$check_dropin"

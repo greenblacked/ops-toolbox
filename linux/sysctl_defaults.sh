@@ -9,7 +9,7 @@
 # the last apply and removes the drop-in.
 #
 # --check is the report as a gate: read-only, no root, and exit 1 when a value
-# drifted, was set live but never persisted, is stale in the drop-in, or is
+# drifted, was set live but no boot-time config sets it, is stale in the drop-in, or is
 # overridden by a drop-in that sorts after ours. That is the cron, CI-image or
 # post-provision form; the report itself always exits 0.
 #
@@ -328,12 +328,13 @@ conf_value() {
 }
 
 # Every *.conf read after our drop-in, in the order it is read: names that
-# sort after 99-ops-toolbox.conf in byte order. Against the real
+# sort after 99-ops-toolbox.conf in byte order (every name, ours included,
+# when called with "all"). Against the real
 # /etc/sysctl.d the other systemd-sysctl directories count too, unless
 # /etc/sysctl.d masks the name; against a SYSCTL_D override only that
 # directory does, so the test seam stays hermetic.
 later_conf_files() {
-  local dir f name tab
+  local scope="${1:-later}" dir f name tab
   local dirs=("$SYSCTL_D")
   tab="$(printf '\t')"
   if [[ "$SYSCTL_D" == "/etc/sysctl.d" ]]; then
@@ -349,14 +350,15 @@ later_conf_files() {
       printf '%s\t%s\n' "$name" "$f"
     done
   done | LC_ALL=C sort -t "$tab" -k1,1 -u \
-    | LC_ALL=C awk -F'\t' -v ours="$DROP_IN_NAME" '$1 > ours { print $2 }'
+    | LC_ALL=C awk -F'\t' -v ours="$DROP_IN_NAME" -v scope="$scope" 'scope == "all" || $1 > ours { print $2 }'
 }
 
-# The file with the last word on KEY after our drop-in, when its value is not
-# the one we want: "path<TAB>value". /etc/sysctl.conf is read after every
-# drop-in directory and is only consulted against the real /etc/sysctl.d.
-shadowing_file() {
-  local key="$1" want="$2" f v last_file="" last_value=""
+# The file with the last word on KEY, as "path<TAB>value", or status 1 when
+# none sets it. SCOPE "later" (the default) looks only at files read after our
+# drop-in, "all" at every file. /etc/sysctl.conf is read after every drop-in
+# directory and is only consulted against the real /etc/sysctl.d.
+last_setting() {
+  local key="$1" scope="${2:-later}" f v last_file="" last_value=""
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
     v="$(conf_value "$f" "$key")"
@@ -364,7 +366,7 @@ shadowing_file() {
       last_file="$f"
       last_value="$v"
     fi
-  done < <(later_conf_files)
+  done < <(later_conf_files "$scope")
   if [[ "$SYSCTL_D" == "/etc/sysctl.d" ]]; then
     v="$(conf_value /etc/sysctl.conf "$key")"
     if [[ -n "$v" ]]; then
@@ -372,11 +374,18 @@ shadowing_file() {
       last_value="$v"
     fi
   fi
-  if [[ -n "$last_file" && "$last_value" != "$want" ]]; then
-    printf '%s\t%s\n' "$last_file" "$last_value"
-    return 0
-  fi
-  return 1
+  [[ -n "$last_file" ]] || return 1
+  printf '%s\t%s\n' "$last_file" "$last_value"
+}
+
+# The file with the last word on KEY after our drop-in, when its value is not
+# the one we want: "path<TAB>value".
+shadowing_file() {
+  local key="$1" want="$2" found tab
+  tab="$(printf '\t')"
+  found="$(last_setting "$key" later)" || return 1
+  [[ "${found#*"$tab"}" != "$want" ]] || return 1
+  printf '%s\n' "$found"
 }
 
 check_line() {
@@ -392,7 +401,7 @@ check_line() {
 # OK. It reads only the proc files and *.conf files it is pointed at; the fix
 # is printed, never run.
 check() {
-  local group key value blurb live persisted shadow
+  local group key value blurb live persisted shadow elsewhere
   local n_ok=0 n_drift=0 n_unpersisted=0 n_stale=0 n_shadowed=0 n_skipped=0
   local fix tab
   fix="fix: sudo ./$(basename "$0") --apply"
@@ -410,9 +419,17 @@ check() {
     if [[ "$live" != "$value" ]]; then
       check_line DRIFT "$key = $live (want $value)"
       n_drift=$((n_drift + 1))
-    elif [[ -z "$persisted" ]]; then
-      check_line UNPERSISTED "$key = $live live, but $DROP_IN does not set it, so a reboot loses it. $fix"
+    elif [[ -z "$persisted" ]] && ! elsewhere="$(last_setting "$key" all)"; then
+      check_line UNPERSISTED "$key = $live live, but no sysctl.d file or /etc/sysctl.conf sets it, so a reboot returns it to the default. $fix"
       n_unpersisted=$((n_unpersisted + 1))
+    elif [[ -z "$persisted" ]]; then
+      if [[ "${elsewhere#*"$tab"}" == "$value" ]]; then
+        check_line OK "$key = $live (persisted by ${elsewhere%%"$tab"*})"
+        n_ok=$((n_ok + 1))
+      else
+        check_line UNPERSISTED "$key = $live live, but at boot ${elsewhere%%"$tab"*} sets ${elsewhere#*"$tab"}, and $DROP_IN does not set it. $fix"
+        n_unpersisted=$((n_unpersisted + 1))
+      fi
     elif [[ "$persisted" != "$value" ]]; then
       check_line STALE "$key: $DROP_IN sets $persisted, want $value. $fix"
       n_stale=$((n_stale + 1))

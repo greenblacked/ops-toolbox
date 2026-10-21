@@ -701,10 +701,10 @@ the first that applies:
 | --- | --- |
 | `SKIP` | The live value is unreadable. Never a pass or a failure. |
 | `DRIFT` | The live value is not the desired one. |
-| `UNPERSISTED` | Live is right, but `99-ops-toolbox.conf` is missing or does not set the key, so the next reboot loses it (a `sysctl -w` by hand). |
+| `UNPERSISTED` | Live is right, but `99-ops-toolbox.conf` does not set the key and no other `sysctl.d` file or `/etc/sysctl.conf` sets it to the wanted value, so the next reboot returns it to the default (a `sysctl -w` by hand). A value another file persists counts as `OK`. |
 | `STALE` | The drop-in sets a different value than this script wants. |
 | `SHADOWED` | A `*.conf` read after ours (a name that sorts later, such as `99-zz.conf`, or `/etc/sysctl.conf`) sets the key to something else; the file is named. |
-| `OK` | Live, persisted and effective all match. |
+| `OK` | Live, persisted (by the drop-in or another file) and effective all match. |
 
 `UNPERSISTED` and `STALE` print `sudo ./sysctl_defaults.sh --apply` as the fix,
 as text. A summary line counts each word. `--check` exits `1` on any `DRIFT`,
