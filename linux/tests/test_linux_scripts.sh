@@ -40,6 +40,7 @@ rmdir "$tmp_probe"
 # at a scratch profile, so running this suite on a desktop Linux box emptied the
 # developer's real cache. Every test that needs one of these supplies it itself.
 unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG DOCKER_DAEMON_JSON
+unset PROC_DIR FSTAB
 # SYSTEMD_ANALYZE_CMD names a binary stay_fresh_timer.sh executes to verify the
 # units it writes. Exported, it aims that execution at whatever the host says,
 # which is the worst of this class: not a path the run reads, a command the run
@@ -808,6 +809,72 @@ assert_eq "system_doctor with pending upgrades exits 0" "0" "$rc"
 assert_contains "system_doctor counts the pending upgrades" "$out" "2 pending upgrade(s)"
 assert_contains "system_doctor prints the hint beside the count" "$out" "preview: stay_fresh.sh --dry-run"
 rm -rf "$doctor_stub"
+
+# The storage section's faults cannot be produced in a container: nothing here
+# can remount a filesystem read-only, lose an fstab mount or degrade an md
+# array. PROC_DIR and FSTAB hand the parsers fixture files instead. The NFS
+# line is there to prove --skip-remote-mounts keeps the probe from running.
+storage_fx="$(mktemp -d)"
+printf '%s\n' '/dev/sda1 /data ext4 ro,relatime 0 0' '/dev/sda2 /ok ext4 rw,relatime,errors=remount-ro 0 0' \
+  '/dev/loop0 /snap/core squashfs ro,nodev,relatime 0 0' 'srv:/x /mnt/nfs nfs4 rw,relatime 0 0' > "$storage_fx/mounts"
+printf '%s\n' '# /etc/fstab fixture' '/dev/sda2 /ok ext4 defaults 0 2' '/dev/sdb1 /srv ext4 defaults 0 2' \
+  '/dev/sdc1 /opt ext4 defaults,nofail 0 2' '/dev/sdd1 /mnt/x ext4 noauto 0 0' '/swapfile none swap sw 0 0' > "$storage_fx/fstab"
+printf '%s\n' 'Personalities : [raid1]' 'md0 : active raid1 sdb1[1] sda1[0]' '      1000 blocks [2/1] [U_]' '' \
+  'unused devices: <none>' > "$storage_fx/mdstat"
+# smartctl is a stub so the SMART branch is reachable at all; it records argv
+# so the run is proved to have only asked for health.
+storage_stub="$(mktemp -d)"
+cat > "$storage_stub/smartctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${0%/*}/argv.log"
+case " $* " in
+  *" --scan "*) printf '/dev/sda -d scsi # /dev/sda, SCSI device\n' ;;
+  *" -H "*)     printf 'SMART overall-health self-assessment test result: FAILED!\n' ;;
+esac
+exit 0
+STUB
+chmod +x "$storage_stub/smartctl"
+run_storage() {
+  PROC_DIR="$storage_fx" FSTAB="$storage_fx/fstab" PATH="$storage_stub:$PATH" \
+    "$L/system_doctor.sh" --skip-containers --skip-units --skip-remote-mounts "$@" 2>&1
+}
+out="$(run_storage)"; rc=$?
+assert_eq "system_doctor with storage faults still exits 0" "0" "$rc"
+assert_contains "system_doctor has a storage section" "$out" "== storage =="
+assert_contains "system_doctor reports a read-only remount" "$out" "/data is mounted read-only (ext4)"
+assert_not_contains "system_doctor ignores read-only-by-design squashfs" "$out" "/snap/core is mounted read-only"
+assert_not_contains "system_doctor reads errors=remount-ro as an option, not a state" "$out" "/ok is mounted read-only"
+assert_contains "system_doctor warns on an fstab mount that is missing" \
+  "$(grep -F 'fstab entry /srv ' <<<"$out" || true)" "[warn]"
+assert_contains "system_doctor only notes a missing nofail mount" \
+  "$(grep -F 'fstab entry /opt ' <<<"$out" || true)" "[info]"
+assert_not_contains "system_doctor skips noauto fstab entries" "$out" "fstab entry /mnt/x"
+assert_not_contains "system_doctor skips swap fstab entries" "$out" "fstab entry none"
+assert_contains "system_doctor reports a degraded md array" "$out" "md array md0 is degraded ([2/1] [U_])"
+assert_contains "system_doctor leaves remote mounts alone with --skip-remote-mounts" "$out" "/mnt/nfs (nfs4) not probed (--skip-remote-mounts)"
+if [[ "$(id -u)" == "0" ]]; then
+  assert_contains "system_doctor reports a disk failing its own SMART check" "$out" "SMART overall health FAILED on /dev/sda"
+  if grep -qE -- '(^| )(-t|--test|-s|--smart|-X|--abort)( |$)' "$storage_stub/argv.log" 2>/dev/null; then
+    err "system_doctor asked smartctl for more than a health check"
+  else
+    ok "system_doctor only asks smartctl for health"
+  fi
+else
+  assert_contains "system_doctor says SMART needs root" "$out" "SMART needs root"
+fi
+out="$(run_storage --skip-smart)"; rc=$?
+assert_eq "system_doctor accepts --skip-smart" "0" "$rc"
+assert_contains "system_doctor --skip-smart says so" "$out" "SMART health (--skip-smart)"
+out="$(run_storage --quiet)"
+assert_contains "system_doctor --quiet keeps storage warnings" "$out" "/data is mounted read-only"
+
+printf '%s\n' '/dev/sda2 /ok ext4 rw,relatime 0 0' '/dev/sdb1 /srv ext4 rw 0 0' '/dev/sdc1 /opt ext4 rw 0 0' > "$storage_fx/mounts"
+printf '%s\n' 'md0 : active raid1 sdb1[1] sda1[0]' '      1000 blocks [2/2] [UU]' > "$storage_fx/mdstat"
+out="$(run_storage --skip-smart)"
+assert_contains "system_doctor says when nothing is read-only" "$out" "no real filesystem is mounted read-only"
+assert_contains "system_doctor says when every fstab entry is mounted" "$out" "every fstab entry is mounted (3 checked)"
+assert_contains "system_doctor reports a healthy md array" "$out" "md array md0 is healthy ([2/2] [UU])"
+rm -rf "$storage_fx" "$storage_stub"
 
 section "container_doctor.sh"
 CDOC="$L/container_doctor.sh"

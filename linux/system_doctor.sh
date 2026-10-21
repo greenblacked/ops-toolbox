@@ -26,8 +26,18 @@ set -o pipefail
 QUIET=0
 SKIP_CONTAINERS=0
 SKIP_UNITS=0
+SKIP_REMOTE_MOUNTS=0
+SKIP_SMART=0
 MIN_FREE_PCT=10
 MIN_MEMORY_PCT=10
+
+# The storage section reads the mount table and md status from procfs and the
+# expected mounts from fstab. Both are environment variables rather than flags,
+# like OS_RELEASE below: they exist so the suite can hand the parsers a
+# read-only remount, a missing fstab mount and a degraded array, which no
+# container can produce for real.
+PROC_DIR="${PROC_DIR:-/proc}"
+FSTAB="${FSTAB:-/etc/fstab}"
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -74,17 +84,20 @@ and the command that fixes each one, use hardening_audit.sh instead.
 
 Usage:
   $(basename "$0") [--min-free PCT] [--min-memory PCT]
-                  [--skip-containers] [--skip-units] [--quiet]
+                  [--skip-containers] [--skip-units]
+                  [--skip-remote-mounts] [--skip-smart] [--quiet]
 
 Options:
   --min-free PCT     Warn below this much free space on / (default: $MIN_FREE_PCT)
   --min-memory PCT   Warn below this much available memory (default: $MIN_MEMORY_PCT)
   --skip-containers  Don't probe docker/podman (slow when a daemon is wedged)
   --skip-units       Don't run 'systemctl --failed'
+  --skip-remote-mounts  Don't probe NFS/CIFS/sshfs mounts (each probe waits up to 5s)
+  --skip-smart       Don't query disk health with smartctl
   --quiet            Print only warnings
   --help, -h         Show this help
 
-Sections: system, sessions, time, packages, disk, memory, updates, services, journal, network, containers, load
+Sections: system, sessions, time, packages, disk, storage, memory, updates, services, journal, network, containers, load
 
 Exit codes: 0 report printed, 2 not Linux, 3 usage
 EOF
@@ -107,6 +120,8 @@ while (( $# > 0 )); do
     --min-memory=*)    MIN_MEMORY_PCT="${1#*=}"; require_value "--min-memory" "$MIN_MEMORY_PCT" ;;
     --skip-containers) SKIP_CONTAINERS=1 ;;
     --skip-units)      SKIP_UNITS=1 ;;
+    --skip-remote-mounts) SKIP_REMOTE_MOUNTS=1 ;;
+    --skip-smart)      SKIP_SMART=1 ;;
     --quiet)           QUIET=1 ;;
     -h|--help)         usage; exit 0 ;;
     *)
@@ -136,6 +151,10 @@ fi
 
 group() { printf "\n%s== %s ==%s\n" "$C_BOLD" "$1" "$C_RESET"; }
 have()  { command -v "$1" >/dev/null 2>&1; }
+
+# A mount point is whatever someone named a directory or a USB stick's label,
+# so control characters go before it is printed. Tab and newline are kept.
+clean() { tr -d '\000-\010\013-\037'; }
 
 # Duplicated in each linux/ script on purpose (see CONTRIBUTING.md). OS_RELEASE
 # is honoured so the unknown-distro path can actually be tested.
@@ -405,6 +424,170 @@ elif (( coredump_n == 0 )); then
 else
   warn "$coredump_n coredump file(s)" "preview: disk_cleanup.sh --dry-run --include-coredumps"
 fi
+
+# --- storage ---------------------------------------------------------------
+# The failures that take a server down quietly, none of which df shows: a
+# filesystem the kernel remounted read-only after an error (everything works
+# until the next write), an fstab mount that did not come back after a reboot,
+# a degraded md array, a disk that reports its own failure, and a network
+# mount that has stopped answering and now blocks df and every login that
+# touches it. Read-only throughout: mount, fsck and mdadm appear only in hints.
+group "storage"
+mounts_txt=""
+if [[ -r "$PROC_DIR/mounts" ]]; then
+  mounts_txt="$(clean < "$PROC_DIR/mounts")"
+fi
+if [[ -z "$mounts_txt" ]]; then
+  skip "$PROC_DIR/mounts unreadable; mounts not checked"
+else
+  # Real filesystems only, and the token "ro" exactly: "errors=remount-ro" is
+  # an option, not a state. squashfs, iso9660, erofs and overlay are read-only
+  # by design, and snaps and desktop media mounts are expected to be.
+  ro_rows="$(awk '
+    $3 ~ /^(ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs)$/ &&
+    ("," $4 ",") ~ /,ro,/ &&
+    $2 !~ /^\/(snap|var\/lib\/snapd|run\/media)(\/|$)/ { print $2, $3 }
+  ' <<<"$mounts_txt")"
+  ro_n=0
+  while read -r mp fstype; do
+    [[ -n "$mp" ]] || continue
+    ro_n=$((ro_n + 1))
+    (( ro_n <= 5 )) || continue
+    warn "$mp is mounted read-only ($fstype)" \
+      "dmesg | grep -iE 'remount|I/O error|EXT4-fs error'; fsck needs the filesystem unmounted"
+  done <<< "$ro_rows"
+  if (( ro_n == 0 )); then
+    ok "no real filesystem is mounted read-only"
+  elif (( ro_n > 5 )); then
+    info "and $(( ro_n - 5 )) more read-only mount(s): grep -w ro $PROC_DIR/mounts"
+  fi
+
+  # Expected but absent. noauto entries are meant to be mounted by hand, and a
+  # nofail entry was declared optional by whoever wrote it, so that one is a
+  # note rather than a warning.
+  if [[ -r "$FSTAB" ]]; then
+    mounted_points="$(awk '{ print $2 }' <<<"$mounts_txt")"
+    fstab_rows="$(clean < "$FSTAB" | awk '
+      /^[ \t]*#/ || NF < 3 { next }
+      $2 == "none" || $2 == "swap" || $3 == "swap" || $3 == "none" { next }
+      {
+        opts = (NF >= 4) ? $4 : "defaults"
+        if (("," opts ",") ~ /,noauto,/) next
+        mp = $2
+        if (mp != "/") sub(/\/+$/, "", mp)
+        print mp, $3, opts
+      }')"
+    fstab_n=0
+    fstab_missing=0
+    while read -r mp fstype opts; do
+      [[ -n "$mp" ]] || continue
+      fstab_n=$((fstab_n + 1))
+      grep -qxF -- "$mp" <<<"$mounted_points" && continue
+      fstab_missing=$((fstab_missing + 1))
+      (( fstab_missing <= 5 )) || continue
+      case ",$opts," in
+        *,nofail,*) info "fstab entry $mp is not mounted (nofail, $fstype)" "mount $mp  # then journalctl -b -u '*.mount'" ;;
+        *)          warn "fstab entry $mp is not mounted ($fstype)" "mount $mp  # then journalctl -b -u '*.mount'" ;;
+      esac
+    done <<< "$fstab_rows"
+    if (( fstab_n == 0 )); then
+      info "no auto-mounted entries in $FSTAB"
+    elif (( fstab_missing == 0 )); then
+      ok "every fstab entry is mounted ($fstab_n checked)"
+    elif (( fstab_missing > 5 )); then
+      info "and $(( fstab_missing - 5 )) more fstab entr(ies) not mounted"
+    fi
+  else
+    skip "$FSTAB unreadable; fstab mounts not checked"
+  fi
+fi
+
+# md arrays. The member map is the bracket pair on the status line: [2/1] [U_]
+# says two members, one up, the second missing. A recovery or resync line is
+# progress, not a fault.
+if [[ -r "$PROC_DIR/mdstat" ]]; then
+  md_rows="$(clean < "$PROC_DIR/mdstat" | awk '
+    /^md[0-9]+[ \t]*:/ { md = $1; next }
+    md != "" && match($0, /\[[0-9]+\/[0-9]+\] \[[U_]+\]/) {
+      state = substr($0, RSTART, RLENGTH)
+      print ((state ~ /_/) ? "DEG" : "OK"), md, state
+      next
+    }
+    md != "" && match($0, /(recovery|resync|reshape|check)[ \t]*=[ \t]*[0-9.]+%/) {
+      what = substr($0, RSTART, RLENGTH)
+      gsub(/[ \t]*=[ \t]*/, " ", what)
+      print "PROG", md, what
+    }')"
+  md_n=0
+  while read -r kind md state; do
+    [[ -n "$kind" ]] || continue
+    case "$kind" in
+      DEG)  md_n=$((md_n + 1)); warn "md array $md is degraded ($state)" "mdadm --detail /dev/$md" ;;
+      OK)   md_n=$((md_n + 1)); ok "md array $md is healthy ($state)" ;;
+      PROG) info "md array $md: $state" ;;
+    esac
+  done <<< "$md_rows"
+  (( md_n > 0 )) || skip "no md arrays in $PROC_DIR/mdstat"
+else
+  skip "no md arrays ($PROC_DIR/mdstat absent)"
+fi
+
+# A disk's own verdict on itself. -H is the health query only: no self-test is
+# started and no attribute is changed. Needs root to open the devices.
+if (( SKIP_SMART )); then
+  skip "SMART health (--skip-smart)"
+elif ! have smartctl; then
+  skip "smartctl not installed; disk health not checked"
+elif [[ "$(id -u)" != "0" ]]; then
+  skip "SMART needs root; rerun with sudo"
+else
+  smart_n=0
+  while read -r dev dflag dtype _rest; do
+    [[ "$dev" =~ ^/dev/[A-Za-z0-9/_.-]+$ ]] || continue
+    smart_n=$((smart_n + 1))
+    (( smart_n <= 32 )) || break
+    dargs=()
+    [[ "$dflag" == "-d" && "$dtype" =~ ^[A-Za-z0-9_,+-]+$ ]] && dargs=(-d "$dtype")
+    if have timeout; then
+      health="$(timeout 20 smartctl -H "${dargs[@]+"${dargs[@]}"}" "$dev" 2>/dev/null | clean)"
+    else
+      health="$(smartctl -H "${dargs[@]+"${dargs[@]}"}" "$dev" 2>/dev/null | clean)"
+    fi
+    if grep -q 'FAILED' <<<"$health"; then
+      warn "SMART overall health FAILED on $dev" "smartctl -a $dev  # replace the disk"
+    elif grep -qE 'PASSED|Health Status: OK' <<<"$health"; then
+      ok "SMART health PASSED on $dev"
+    else
+      reason="$(grep -m 1 -iE 'unavailable|not supported|unable|error' <<<"$health" || true)"
+      skip "SMART health unknown on $dev${reason:+: ${reason:0:80}}"
+    fi
+  done <<< "$(smartctl --scan 2>/dev/null | clean)"
+  (( smart_n > 0 )) || skip "smartctl --scan found no devices"
+fi
+
+# A network mount whose server is gone does not fail, it hangs, and takes df
+# and any shell that touches it along. Each one is probed with a bounded stat;
+# -k sends KILL after the TERM, which an NFS wait still honours.
+remote_rows="$(awk '$3 ~ /^(nfs|nfs4|cifs|smb3|smbfs|fuse\.sshfs)$/ { print $2, $3 }' <<<"$mounts_txt")"
+while read -r mp fstype; do
+  [[ -n "$mp" ]] || continue
+  if (( SKIP_REMOTE_MOUNTS )); then
+    skip "$mp ($fstype) not probed (--skip-remote-mounts)"
+  elif ! have timeout; then
+    skip "$mp ($fstype) not probed: timeout(1) not installed"
+  else
+    # /proc/mounts writes a space in a path as \040; stat needs the real name.
+    real_mp="$(printf '%b' "$mp")"
+    timeout -k 2 5 stat -f -- "$real_mp" >/dev/null 2>&1
+    st_rc=$?
+    case "$st_rc" in
+      0)       ok "$mp answers ($fstype)" ;;
+      124|137) warn "$mp did not answer within 5s (stale or unreachable $fstype mount)" \
+                 "umount -f -l '$mp' after confirming the server is gone" ;;
+      *)       warn "$mp could not be read (stat exited $st_rc, $fstype)" "grep '$mp' $PROC_DIR/mounts; dmesg | tail" ;;
+    esac
+  fi
+done <<< "$remote_rows"
 
 # --- memory ----------------------------------------------------------------
 group "memory"

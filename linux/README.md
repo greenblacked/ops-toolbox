@@ -341,6 +341,8 @@ prints; there is no `--apply`.
 ./system_doctor.sh --min-memory 20       # warn below 20% available RAM
 ./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
 ./system_doctor.sh --skip-units          # don't run 'systemctl --failed'
+./system_doctor.sh --skip-remote-mounts  # don't probe NFS/CIFS/sshfs mounts
+./system_doctor.sh --skip-smart          # don't ask smartctl for disk health
 sudo ./system_doctor.sh                  # firewall rules need root to read
 ```
 
@@ -351,7 +353,10 @@ whether the kernel is tainted),
 **packages** (which manager owns the box, how old its index is, and how many
 upgrades are pending — from the local index, no network),
 **disk** (free space and *inodes* on `/`, other block-device mounts below the
-threshold, and coredump file counts), **updates** (reboot pending), **services** (sshd,
+threshold, and coredump file counts), **storage** (filesystems the kernel
+remounted read-only, fstab mounts that are not mounted, degraded md arrays,
+SMART health as root, and network mounts that no longer answer within five
+seconds), **updates** (reboot pending), **services** (sshd,
 `systemctl --failed`, and processes still running old libraries), **journal**
 (error-level lines since boot, capped), **network** (which host
 firewall is active, global IPv4 and IPv6 addresses), **containers** (docker/podman counts,
@@ -359,7 +364,7 @@ plus `system df` when the daemon answers — listed, never pruned), **load**
 (one-minute average per core), and **memory** (available RAM, swap
 pressure, and OOM kills this boot).
 
-Three of those exist because the ordinary tools hide them:
+Four of those exist because the ordinary tools hide them:
 
 - **Inodes.** A filesystem out of inodes looks completely healthy in `df -h`,
   and "no space left on device" with gigabytes free is a confusing hour the
@@ -369,6 +374,14 @@ Three of those exist because the ordinary tools hide them:
 - **A container engine that is installed but unreachable.** A stopped daemon
   and a user who is not in the `docker` group both look exactly like "no
   Docker here" until you try to use it.
+- **A read-only remount, a missing mount, a degraded array.** After an I/O
+  error the kernel remounts the filesystem read-only and everything keeps
+  working until the next write; an fstab mount that failed at boot leaves its
+  data on the root filesystem; an md array runs on one disk without a word.
+  None of that shows in `df`. A hung NFS or CIFS mount blocks `df` itself, so
+  each one is probed with a five-second `stat` that `--skip-remote-mounts`
+  turns off. `PROC_DIR` and `FSTAB` point the section at other files; the
+  tests use them.
 
 Warnings do not change the exit code — it is `0` unless the machine is not
 Linux (`2`) or you mistyped a flag (`3`). Something that fails a pipeline is
