@@ -8,6 +8,12 @@
 # backslash line-continuations and throws a syntax error on every prompt redraw
 # (README.md, "Troubleshooting", has the full story). This does the same copy
 # with those two checks in front of it.
+#
+# Every install leaves <name>.backup-<stamp> files behind, so it also offers
+# the way back: --list-backups shows the sets, --restore puts one back (saving
+# what it replaces as a new set first, so a rollback is itself undoable), and
+# --prune-backups deletes all but the newest sets once --yes says so. None of
+# the three needs the source files, so they work from a copy in ~/bin alone.
 
 set -euo pipefail
 
@@ -28,6 +34,10 @@ err()  { printf "%s[err ]%s %s\n" "$C_RED"    "$C_RESET" "$*" >&2; }
 DRY_RUN=0
 FORCE=0
 STATUS=0
+LIST_BACKUPS=0
+RESTORE_STAMP=""
+PRUNE_KEEP=""
+YES=0
 SOURCE_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOME_DIR="${HOME:-}"
 
@@ -44,22 +54,34 @@ install_dotfiles.sh - install the Git Bash dotfiles into \$HOME
 
 Usage:
   $(basename "$0") [--dry-run | --status] [--force] [--source DIR] [--home DIR]
+  $(basename "$0") --list-backups [--home DIR]
+  $(basename "$0") --restore STAMP|latest [--dry-run] [--home DIR]
+  $(basename "$0") --prune-backups N [--yes | --dry-run] [--home DIR]
 
 Options:
-  --dry-run       Show what would be copied without writing anything
-  --status        Report MATCH / DRIFT / MISSING for each target; write nothing
-  --force         Install even if a source file has CRLF line endings
-  --source DIR    Copy from DIR (default: the folder holding this script)
-  --home DIR      Copy into DIR (default: \$HOME)
-  -h, --help      Show this help
+  --dry-run           Show what would be copied without writing anything
+  --status            Report MATCH / DRIFT / MISSING for each target; write nothing
+  --force             Install even if a source file has CRLF line endings
+  --source DIR        Copy from DIR (default: the folder holding this script)
+  --home DIR          Copy into DIR (default: \$HOME)
+  --list-backups      List the backup sets in the target directory, newest
+                      first; write nothing
+  --restore STAMP     Put back one backup set (a stamp from --list-backups, or
+                      'latest'); the files it replaces are saved as a new set
+  --prune-backups N   Delete all backup sets but the newest N; previews unless
+                      --yes is given
+  --yes               Confirm the deletion --prune-backups previews
+  -h, --help          Show this help
 
 Installs: $DOTFILES
 An existing file is copied to <name>.backup-<timestamp> before being replaced;
-a file that already matches the source is left alone.
+a file that already matches the source is left alone. --status, --list-backups,
+--restore and --prune-backups are separate modes; pass one at most.
 
 Exit codes: 0 success/current, 1 CRLF line endings in a source file, 2 wrong
 environment (no source files, or no target directory), 3 usage, 4 status found
-one or more missing or different target files
+one or more missing or different target files, or there are no backups to
+list or restore
 EOF
 }
 
@@ -87,6 +109,12 @@ while (( $# > 0 )); do
     --source=*) SOURCE_DIR="${1#*=}"; require_value "--source" "$SOURCE_DIR" ;;
     --home)     require_value "$1" "${2:-}"; HOME_DIR="$2"; shift ;;
     --home=*)   HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR" ;;
+    --list-backups) LIST_BACKUPS=1 ;;
+    --restore)  require_value "$1" "${2:-}"; RESTORE_STAMP="$2"; shift ;;
+    --restore=*) RESTORE_STAMP="${1#*=}"; require_value "--restore" "$RESTORE_STAMP" ;;
+    --prune-backups) require_value "$1" "${2:-}"; PRUNE_KEEP="$2"; shift ;;
+    --prune-backups=*) PRUNE_KEEP="${1#*=}"; require_value "--prune-backups" "$PRUNE_KEEP" ;;
+    --yes)      YES=1 ;;
     *)
       err "unknown option: $1"
       usage >&2
@@ -100,6 +128,33 @@ if (( DRY_RUN == 1 && STATUS == 1 )); then
   err "--dry-run and --status are separate read-only modes; choose one"
   exit 3
 fi
+if (( DRY_RUN == 1 && LIST_BACKUPS == 1 )); then
+  err "--dry-run and --list-backups are separate read-only modes; choose one"
+  exit 3
+fi
+
+# One mode per run. Two at once has no sensible order, and guessing one is how
+# a listing turns into a deletion.
+modes=()
+(( STATUS == 1 )) && modes+=("--status")
+(( LIST_BACKUPS == 1 )) && modes+=("--list-backups")
+[[ -n "$RESTORE_STAMP" ]] && modes+=("--restore")
+[[ -n "$PRUNE_KEEP" ]] && modes+=("--prune-backups")
+if (( ${#modes[@]} > 1 )); then
+  err "${modes[0]} and ${modes[1]} are separate modes; choose one"
+  exit 3
+fi
+if (( YES == 1 )) && [[ -z "$PRUNE_KEEP" ]]; then
+  err "--yes only confirms --prune-backups"
+  exit 3
+fi
+if [[ -n "$PRUNE_KEEP" && ! "$PRUNE_KEEP" =~ ^[0-9]+$ ]]; then
+  err "--prune-backups takes the number of backup sets to keep, got: $PRUNE_KEEP"
+  exit 3
+fi
+# Base 10 explicitly: 08 is a usage a person types, and bash arithmetic would
+# otherwise read it as a malformed octal number.
+[[ -z "$PRUNE_KEEP" ]] || PRUNE_KEEP=$((10#$PRUNE_KEEP))
 
 # --- preflight -------------------------------------------------------------
 if [[ -z "$HOME_DIR" ]]; then
@@ -108,17 +163,6 @@ if [[ -z "$HOME_DIR" ]]; then
 fi
 if [[ ! -d "$HOME_DIR" ]]; then
   err "target directory does not exist: $HOME_DIR"
-  exit 2
-fi
-
-# Copied on its own into ~/bin, this script has no dotfiles next to it. Say so
-# and name the flag that fixes it, rather than reporting three missing files.
-missing=""
-for name in $DOTFILES; do
-  [[ -f "$SOURCE_DIR/$name" ]] || missing="$missing $name"
-done
-if [[ -n "$missing" ]]; then
-  err "no$missing in $SOURCE_DIR - pass --source pointing at a checkout of windows/git-bash"
   exit 2
 fi
 
@@ -149,6 +193,181 @@ run() {
 has_crlf() {
   LC_ALL=C grep -q $'\r' "$1"
 }
+
+# Every stamp with at least one <name>.backup-<stamp> beside the target, newest
+# first. Only the three names this script owns, only directly in $HOME_DIR,
+# and only the exact stamp shape this script writes: .bashrc.backup-notes, or
+# anything else somebody saved by hand, is never listed, restored or pruned.
+backup_stamps() {
+  local name f stamp
+  for name in $DOTFILES; do
+    for f in "$HOME_DIR/$name".backup-*; do
+      [[ -e "$f" || -L "$f" ]] || continue
+      [[ -d "$f" && ! -L "$f" ]] && continue
+      stamp="${f##*.backup-}"
+      [[ "$stamp" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+      printf '%s\n' "$stamp"
+    done
+  done | sort -ru
+}
+
+# The backup files of one set that exist, one path per line.
+backup_set_files() {
+  local name f
+  for name in $DOTFILES; do
+    f="$HOME_DIR/$name.backup-$1"
+    if [[ -e "$f" || -L "$f" ]]; then
+      printf '%s\n' "$f"
+    fi
+  done
+}
+
+# True when $2 already is what restoring $1 would make it: the same link
+# target for a symlink backup, the same bytes in a regular file otherwise.
+same_as_backup() {
+  local backup="$1" dest="$2"
+  if [[ -L "$backup" ]]; then
+    [[ -L "$dest" && "$(readlink "$backup")" == "$(readlink "$dest")" ]]
+  else
+    [[ -f "$dest" && ! -L "$dest" ]] && cmp -s "$backup" "$dest"
+  fi
+}
+
+# --- backup sets -------------------------------------------------------------
+# Ahead of the source preflight and the CRLF check on purpose: none of these
+# reads the source files, and a rollback is most needed exactly when the copy
+# of this script at hand has no checkout beside it.
+if (( LIST_BACKUPS == 1 )); then
+  stamps="$(backup_stamps)"
+  if [[ -z "$stamps" ]]; then
+    printf 'no backups in %s\n' "$HOME_DIR"
+    exit 4
+  fi
+  while IFS= read -r stamp; do
+    names=""
+    for name in $DOTFILES; do
+      f="$HOME_DIR/$name.backup-$stamp"
+      if [[ -e "$f" || -L "$f" ]]; then
+        names="$names $name"
+      fi
+    done
+    printf '%s %s\n' "$stamp" "$names"
+  done <<<"$stamps"
+  exit 0
+fi
+
+if [[ -n "$RESTORE_STAMP" ]]; then
+  stamps="$(backup_stamps)"
+  if [[ -z "$stamps" ]]; then
+    err "no backups in $HOME_DIR to restore"
+    exit 4
+  fi
+  if [[ "$RESTORE_STAMP" == "latest" ]]; then
+    stamp="${stamps%%$'\n'*}"
+  elif grep -qxF -- "$RESTORE_STAMP" <<<"$stamps"; then
+    stamp="$RESTORE_STAMP"
+  else
+    err "no backup set $RESTORE_STAMP in $HOME_DIR; the sets there are: $(tr '\n' ' ' <<<"$stamps")"
+    exit 3
+  fi
+
+  # The files being replaced are saved under this run's stamp. Restoring a set
+  # taken this same second would save over the very files being restored.
+  if [[ "$STAMP" == "$stamp" ]]; then
+    sleep 1
+    STAMP="$(date +%Y%m%d-%H%M%S)"
+  fi
+  if (( DRY_RUN == 1 )); then
+    info "dry run - nothing will be written"
+  fi
+  info "restoring the $stamp backup set into $HOME_DIR"
+  restored=0
+  for name in $DOTFILES; do
+    backup="$HOME_DIR/$name.backup-$stamp"
+    dest="$HOME_DIR/$name"
+    [[ -e "$backup" || -L "$backup" ]] || continue
+    if same_as_backup "$backup" "$dest"; then
+      ok "$name already matches the $stamp backup"
+      continue
+    fi
+    if [[ -d "$dest" && ! -L "$dest" ]]; then
+      err "$dest is a directory; not replacing it"
+      continue
+    fi
+    # Save what is there now first, the same symlink-aware way an install
+    # does, so this rollback can itself be rolled back.
+    if [[ -L "$dest" ]]; then
+      run cp -P "$dest" "$dest.backup-$STAMP"
+      info "saved the current $name symlink as $name.backup-$STAMP"
+    elif [[ -e "$dest" ]]; then
+      run cp -p "$dest" "$dest.backup-$STAMP"
+      info "saved the current $name as $name.backup-$STAMP"
+    fi
+    # Never write through a link: a managed-dotfiles link is replaced, not
+    # followed, and a backed-up link comes back as a link.
+    if [[ -L "$dest" || -L "$backup" ]]; then
+      run rm -f "$dest"
+    fi
+    if [[ -L "$backup" ]]; then
+      run cp -P "$backup" "$dest"
+    else
+      run cp -p "$backup" "$dest"
+    fi
+    restored=$((restored + 1))
+  done
+  if (( DRY_RUN == 1 )); then
+    printf "dry-run complete; no changes written\n"
+    exit 0
+  fi
+  ok "restored $restored file(s) from the $stamp backup set"
+  (( restored == 0 )) || info "open a new Git Bash window, or run: source ~/.bash_profile"
+  exit 0
+fi
+
+if [[ -n "$PRUNE_KEEP" ]]; then
+  stamps="$(backup_stamps)"
+  if [[ -z "$stamps" ]]; then
+    ok "no backups in $HOME_DIR; nothing to prune"
+    exit 0
+  fi
+  old="$(tail -n +"$((PRUNE_KEEP + 1))" <<<"$stamps")"
+  if [[ -z "$old" ]]; then
+    ok "keeping the newest $PRUNE_KEEP backup set(s); nothing older to prune"
+    exit 0
+  fi
+  # Deleting needs --yes. Without it this is a preview, the same one --dry-run
+  # prints, so a bare --prune-backups can never delete.
+  if (( YES == 0 )); then
+    DRY_RUN=1
+  fi
+  info "keeping the newest $PRUNE_KEEP backup set(s) in $HOME_DIR"
+  removed=0
+  while IFS= read -r stamp; do
+    while IFS= read -r f; do
+      [[ -n "$f" ]] || continue
+      run rm -f "$f"
+      removed=$((removed + 1))
+    done < <(backup_set_files "$stamp")
+  done <<<"$old"
+  if (( DRY_RUN == 1 )); then
+    printf "dry-run complete; no changes written\n"
+    (( YES == 1 )) || info "pass --yes to delete these $removed file(s)"
+    exit 0
+  fi
+  ok "removed $removed file(s) from $(wc -l <<<"$old" | tr -d ' ') old backup set(s)"
+  exit 0
+fi
+
+# Copied on its own into ~/bin, this script has no dotfiles next to it. Say so
+# and name the flag that fixes it, rather than reporting three missing files.
+missing=""
+for name in $DOTFILES; do
+  [[ -f "$SOURCE_DIR/$name" ]] || missing="$missing $name"
+done
+if [[ -n "$missing" ]]; then
+  err "no$missing in $SOURCE_DIR - pass --source pointing at a checkout of windows/git-bash"
+  exit 2
+fi
 
 # --- main ------------------------------------------------------------------
 if (( DRY_RUN == 1 )); then

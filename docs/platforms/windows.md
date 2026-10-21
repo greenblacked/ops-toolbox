@@ -32,7 +32,7 @@ read-only doctor for the environment around it.
 | `setup/winget_configure.ps1` | `validate`, `show`, `test`, `apply` of `configuration.winget`. | `-DryRun` on `apply` |
 | `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker. | `-DryRun`; `-Yes` to delete |
 | `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `backups` (inventory, `-Verify`, `-MaxAgeDays`), `restore`, `prune-backups`, `clone`, `compact`, `sparse`, `terminate`, `shutdown`, `doctor` (per-distro health), `wslconfig` (audit `.wslconfig`). | `-DryRun` on `backup` (`-All` for every distro), `restore`, `clone`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`; `backups`, `doctor` and `wslconfig` are read-only |
-| `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
+| `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups; `--restore` and `--prune-backups` roll back and clean up. | `--dry-run` (install, `--restore`, `--prune-backups`); `--status` and `--list-backups` are read-only |
 | `git-bash/gitbash_doctor.sh` | Git Bash health: CRLF or broken dotfiles, stale `ssh-agent`, Windows OpenSSH on `PATH`, OneDrive `HOME`, long paths, Git settings, Store `python` stub. | <span class="stage stage-report">read-only</span> |
 
 <!-- markdownlint-enable MD033 -->

@@ -17,6 +17,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 GB="$REPO_ROOT/windows/git-bash"
 DOCTOR="$GB/gitbash_doctor.sh"
+INSTALL="$GB/install_dotfiles.sh"
 
 # git reads these, and the doctor runs git. Left alone they would aim its
 # reads at the developer's own configuration instead of the fixtures below.
@@ -267,6 +268,132 @@ else
   err "gitbash_doctor changed the home directory"
   diff <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed 's/^/       /' >&2
 fi
+
+# --------------------------------------------------------------------------
+section "install_dotfiles backups"
+
+# A home with current dotfiles, three backup sets with fixed stamps and
+# distinct content (the oldest holds only .bashrc), and a file that merely
+# looks like a backup. Prints the directory.
+new_backup_home() {
+  local h stamp name
+  h="$(mktemp -d "$SCRATCH/home.XXXXXX")"
+  for name in .bashrc .bash_profile .aliases; do
+    printf 'current %s\n' "$name" > "$h/$name"
+  done
+  printf '.bashrc from 20260101-000000\n' > "$h/.bashrc.backup-20260101-000000"
+  for stamp in 20260201-000000 20260301-000000; do
+    for name in .bashrc .bash_profile .aliases; do
+      printf '%s from %s\n' "$name" "$stamp" > "$h/$name.backup-$stamp"
+    done
+  done
+  printf 'my own notes\n' > "$h/.bashrc.backup-notes"
+  printf '%s\n' "$h"
+}
+
+# run_install HOME [ARGS...]: output in $out, exit in $rc.
+run_install() {
+  local h="$1"
+  shift
+  out="$(HOME="$h" "$INSTALL" --home "$h" "$@" 2>&1)"
+  rc=$?
+}
+
+h="$(new_backup_home)"
+run_install "$h" --list-backups
+assert_eq "--list-backups -> 0" 0 "$rc"
+assert_eq "--list-backups lists the sets newest first, naming what each holds" \
+  $'20260301-000000  .bashrc .bash_profile .aliases\n20260201-000000  .bashrc .bash_profile .aliases\n20260101-000000  .bashrc' \
+  "$out"
+assert_not_contains "--list-backups ignores a file that only looks like a backup" "$out" "notes"
+run_install "$(mktemp -d "$SCRATCH/empty.XXXXXX")" --list-backups
+assert_eq "--list-backups with no backups -> 4" 4 "$rc"
+run_install "$h" --list-backups --dry-run
+assert_eq "--list-backups --dry-run -> 3" 3 "$rc"
+
+h="$(new_backup_home)"
+run_install "$h" --restore latest
+assert_eq "--restore latest -> 0" 0 "$rc"
+assert_eq "--restore latest puts the newest set back" ".bashrc from 20260301-000000" "$(cat "$h/.bashrc")"
+saved=""
+for f in "$h"/.bashrc.backup-*; do
+  case "$f" in *-20260101-000000|*-20260201-000000|*-20260301-000000|*-notes) continue ;; esac
+  saved="$f"
+done
+if [[ -n "$saved" && "$(cat "$saved")" == "current .bashrc" ]]; then
+  ok "--restore saved the file it replaced as a new backup set"
+else
+  err "--restore did not keep the pre-restore .bashrc as a new backup (found '$saved')"
+fi
+
+h="$(new_backup_home)"
+run_install "$h" --restore 20260101-000000
+assert_eq "--restore STAMP -> 0" 0 "$rc"
+assert_eq "--restore STAMP restores that set" ".bashrc from 20260101-000000" "$(cat "$h/.bashrc")"
+assert_eq "--restore STAMP leaves a file the set does not hold alone" "current .aliases" "$(cat "$h/.aliases")"
+
+h="$(new_backup_home)"
+run_install "$h" --restore 19990101-000000
+assert_eq "--restore <unknown stamp> -> 3" 3 "$rc"
+assert_contains "and names the sets that exist" "$out" "20260301-000000"
+run_install "$h" --restore
+assert_eq "--restore with no value -> 3" 3 "$rc"
+run_install "$h" --restore=latest
+assert_eq "--restore=latest -> 0" 0 "$rc"
+
+h="$(new_backup_home)"
+before="$(snapshot "$h")"
+run_install "$h" --restore latest --dry-run
+after="$(snapshot "$h")"
+assert_eq "--restore --dry-run -> 0" 0 "$rc"
+assert_contains "--restore --dry-run prints what it would run" "$out" "would run"
+assert_eq "--restore --dry-run wrote nothing" "$before" "$after"
+
+h="$(new_backup_home)"
+printf 'managed by a dotfiles repository\n' > "$h/managed-bashrc"
+ln -s "$h/managed-bashrc" "$h/.bashrc.backup-20260401-000000"
+run_install "$h" --restore 20260401-000000
+assert_eq "--restore of a symlink backup -> 0" 0 "$rc"
+if [[ -L "$h/.bashrc" && "$(readlink "$h/.bashrc")" == "$h/managed-bashrc" ]]; then
+  ok "a symlinked .bashrc backup comes back as the same symlink"
+else
+  err "a symlinked .bashrc backup was not restored as a symlink"
+fi
+assert_eq "and the file it points at is untouched" "managed by a dotfiles repository" "$(cat "$h/managed-bashrc")"
+
+h="$(new_backup_home)"
+before="$(snapshot "$h")"
+run_install "$h" --prune-backups 1
+after="$(snapshot "$h")"
+assert_eq "--prune-backups without --yes -> 0" 0 "$rc"
+assert_contains "--prune-backups without --yes says how to delete" "$out" "pass --yes"
+assert_eq "--prune-backups without --yes deletes nothing" "$before" "$after"
+run_install "$h" --prune-backups 1 --dry-run --yes
+assert_contains "--prune-backups --dry-run --yes still only previews" "$out" "dry-run: would run: rm -f"
+run_install "$h" --prune-backups 1 --yes
+assert_eq "--prune-backups 1 --yes -> 0" 0 "$rc"
+run_install "$h" --list-backups
+assert_eq "--prune-backups 1 --yes keeps exactly the newest set" \
+  "20260301-000000  .bashrc .bash_profile .aliases" "$out"
+assert_eq "--prune-backups leaves an unrelated look-alike alone" "my own notes" "$(cat "$h/.bashrc.backup-notes")"
+assert_eq "--prune-backups leaves the dotfiles themselves alone" "current .bashrc" "$(cat "$h/.bashrc")"
+
+run_install "$h" --prune-backups x
+assert_eq "--prune-backups x -> 3" 3 "$rc"
+run_install "$h" --prune-backups=-1
+assert_eq "--prune-backups=-1 -> 3" 3 "$rc"
+run_install "$h" --yes
+assert_eq "--yes alone -> 3" 3 "$rc"
+run_install "$h" --restore latest --status
+assert_eq "--restore with --status -> 3" 3 "$rc"
+run_install "$h" --list-backups --prune-backups 1
+assert_eq "--list-backups with --prune-backups -> 3" 3 "$rc"
+
+# The source files are not needed to roll back: a copy of the script in ~/bin
+# with no checkout beside it must still restore.
+h="$(new_backup_home)"
+run_install "$h" --restore latest --source "$(mktemp -d "$SCRATCH/nosource.XXXXXX")"
+assert_eq "--restore works with --source pointing at an empty directory" 0 "$rc"
 
 echo
 end_section

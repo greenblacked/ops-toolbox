@@ -28,7 +28,7 @@ config, and secrets/local tweaks stay out of the committed files.
 | `.bashrc` | Default working directory, history, prompt (with Git branch), PATH dedup, persistent `ssh-agent` with fingerprint-checked key loading, editor/pager defaults. Sources `.aliases` near the end. |
 | `.bash_profile` | Sources `.bashrc`. Required because Git Bash opens new windows as **login** shells, which read `.bash_profile`/`.profile`, not `.bashrc`, by default. |
 | `.aliases` | ~190 aliases and functions: Git, GitLab CLI (`glab`), Docker, Kubernetes, Terraform, Windows-style commands, navigation, safer file ops. Kept separate so it can be edited or swapped out without touching shell/environment setup in `.bashrc`. |
-| `install_dotfiles.sh` | Copies the three files above into `$HOME`, backing up what was there and refusing to install anything with CRLF line endings. |
+| `install_dotfiles.sh` | Copies the three files above into `$HOME`, backing up what was there and refusing to install anything with CRLF line endings. Lists, restores and prunes those backups. |
 | `gitbash_doctor.sh` | Read-only check of the Git Bash environment around those files: CRLF or broken dotfiles, a stale `ssh-agent`, the wrong `ssh` on `PATH`, a OneDrive or spaced `HOME`, long paths, missing Git settings, the Store `python` stub. |
 
 ## Install
@@ -74,6 +74,10 @@ those two checks in front of it.
 | `--force` | Install even when a source file has CRLF line endings |
 | `--source DIR` | Copy from `DIR` instead of the folder holding the script |
 | `--home DIR` | Copy into `DIR` instead of `$HOME` |
+| `--list-backups` | List the backup sets in the target directory, newest first; write nothing; exit `4` when there are none |
+| `--restore STAMP` | Put back one backup set (a stamp from `--list-backups`, or `latest`), saving the files it replaces as a new set first; `--dry-run` previews it |
+| `--prune-backups N` | Delete every backup set but the newest `N`; only previews unless `--yes` is given |
+| `--yes` | Confirm the deletion `--prune-backups` previews |
 | `-h`, `--help` | Show the help |
 
 - **Backups are timestamped and share one stamp per run**, so a set taken
@@ -92,9 +96,37 @@ those two checks in front of it.
 - **`--source` is for the copied-alone case.** Dropped into `~/bin` on its own,
   the script has no dotfiles next to it; point `--source` at a checkout.
 
+#### Rolling back
+
+Every install leaves `<name>.backup-<stamp>` files in `$HOME`, and a bad
+`.bashrc` is easiest to undo from a shell that still works, so the way back is
+one command rather than three `cp` lines typed into a broken prompt:
+
+```bash
+./windows/git-bash/install_dotfiles.sh --list-backups
+./windows/git-bash/install_dotfiles.sh --restore latest --dry-run
+./windows/git-bash/install_dotfiles.sh --restore 20250131-142530
+./windows/git-bash/install_dotfiles.sh --prune-backups 3 --yes
+```
+
+`--list-backups` prints one line per set, such as
+`20250131-142530  .bashrc .aliases`, naming the files that set holds.
+`--restore` first saves each file it is about to replace as a new backup set,
+so a rollback can itself be rolled back (`--restore latest` again), leaves a
+file that already matches alone, and puts a backed-up symlink back as a
+symlink rather than writing through it. `--prune-backups N` keeps the newest
+`N` sets and deletes the rest, and only with `--yes`; without it, or with
+`--dry-run`, it prints the `rm` it would run. Only files named exactly
+`<.bashrc|.bash_profile|.aliases>.backup-<YYYYmmdd-HHMMSS>` directly in the
+target directory are ever listed, restored or deleted; something like
+`.bashrc.backup-notes` is left alone. None of the three needs the source
+files, so they work from a copy of the script with no checkout beside it.
+They are separate modes: combining two, or `--status` with one, exits `3`.
+
 Exit codes: `0` success/current, `1` CRLF line endings in a source file, `2`
 wrong environment (no source files, or no target directory), `3` usage, `4`
-`--status` found at least one missing or different target.
+`--status` found at least one missing or different target, or there are no
+backups to list or restore.
 
 ## `gitbash_doctor.sh`
 
