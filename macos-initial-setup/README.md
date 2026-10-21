@@ -1271,12 +1271,18 @@ Default sources, each archived only if it exists: `~/.zshrc`, `~/.zprofile`,
 refused.
 
 **Secrets stay out by default.** A path that is, contains, or lies inside a
-credential store is refused with exit `3`: private keys in `~/.ssh` (and
-`~/.ssh` as a whole), `~/.aws/credentials`, `~/.kube/config`,
-`~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`, the
-GitHub CLI `hosts.yml`, `~/Library/Keychains` and `~/.gnupg`.
+credential store is refused with exit `3`: anything in `~/.ssh` except
+`config`, `known_hosts*` and `*.pub` (and `~/.ssh` as a whole),
+`~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`,
+`~/.npmrc`, `~/.git-credentials`, `~/.config/git/credentials`, the GitHub CLI
+`hosts.yml`, a `~/.terraformrc` with a `credentials` block,
+`~/Library/Keychains` and `~/.gnupg`. A default run leaves
+`~/.config/git/credentials` out of `~/.config/git` and skips a
+`~/.terraformrc` that has a `credentials` block, saying so.
 `--include-secrets` lifts that and warns that the archive now holds secrets.
-Either way the archive is created `0600` inside a `0700` directory.
+Either way the archive is created `0600`; a `--dest` the script creates is
+`0700`, while an existing one keeps its mode and is reported when group- or
+world-accessible.
 
 How a run writes: the archive is built as a hidden temporary file in `--dest`
 under `umask 077` (with `COPYFILE_DISABLE=1`, so macOS `tar` adds no `._`

@@ -12,8 +12,9 @@
 #
 # Secrets stay out unless you opt in: a path that holds credentials (private
 # keys, ~/.aws/credentials, kubeconfig, Docker and npm auth, the Keychains,
-# ~/.gnupg) is refused without --include-secrets. The archive is created 0600
-# inside a 0700 directory regardless.
+# ~/.gnupg) is refused without --include-secrets. The archive is created 0600,
+# in a 0700 directory when the script creates --dest; an existing --dest keeps
+# its mode, and a group- or world-accessible one is reported.
 #
 # Preview first, as everywhere in this package: --dry-run writes nothing, not
 # even the destination directory, and a real run needs --yes. Rotation is the
@@ -64,10 +65,12 @@ DEFAULT_SOURCES=".zshrc .zprofile .zshenv .bash_profile .bashrc .gitconfig
 .tool-versions .config/starship.toml Library/LaunchAgents"
 
 # Relative to HOME. A requested path that is one of these, lies inside one,
-# or contains one is refused without --include-secrets. Private keys under
-# ~/.ssh are matched separately, by name.
+# or contains one is refused without --include-secrets. Everything under
+# ~/.ssh except config, known_hosts* and public keys, and a ~/.terraformrc
+# with a credentials block, are matched separately in holds_secret.
 SECRET_PATHS=".aws/credentials .kube/config .docker/config.json .netrc .npmrc
-.git-credentials .config/gh/hosts.yml Library/Keychains .gnupg"
+.git-credentials .config/git/credentials .config/gh/hosts.yml Library/Keychains
+.gnupg"
 
 usage() {
   local defaults
@@ -253,17 +256,26 @@ holds_secret() {
       return 0
     fi
   done
-  # ~/.ssh as a whole holds the private keys; a public key does not.
+  # ~/.ssh as a whole holds the private keys, whatever they are named, and a
+  # key may sit in a sub-folder. Only the client config, known hosts and
+  # public keys are safe. The Terraform CLI config holds API tokens only in
+  # a credentials block; the check never prints the file.
   case "$rel" in
-    .ssh)          return 0 ;;
-    .ssh/id_*.pub) return 1 ;;
-    .ssh/id_*)     return 0 ;;
+    .ssh)                                  return 0 ;;
+    .ssh/config|.ssh/known_hosts*|.ssh/*.pub) return 1 ;;
+    .ssh/*)                                return 0 ;;
+    .terraformrc)
+      grep -Eq '^[[:space:]]*credentials[[:space:]]' "$HOME_DIR/.terraformrc" 2>/dev/null \
+        && return 0
+      ;;
   esac
   return 1
 }
 
 RELS=()
 MISSING=()
+# Tar exclusions that keep credentials out of a default run.
+EXCLUDES=()
 if (( ${#PATHS[@]} > 0 )); then
   for p in "${PATHS[@]}"; do
     p="${p%/}"
@@ -302,11 +314,21 @@ if (( ${#PATHS[@]} > 0 )); then
 else
   for rel in $DEFAULT_SOURCES; do
     if [[ -e "$HOME_DIR/$rel" || -L "$HOME_DIR/$rel" ]]; then
+      if (( INCLUDE_SECRETS == 0 )) && [[ "$rel" == ".terraformrc" ]] \
+         && holds_secret "$rel"; then
+        warn "skipped ~/$rel: it has a credentials block (use --include-secrets to keep it)"
+        continue
+      fi
       RELS+=("$rel")
     else
       MISSING+=("$rel")
     fi
   done
+fi
+
+if (( INCLUDE_SECRETS == 0 )); then
+  # git-credential-store keeps passwords here, inside a default source.
+  EXCLUDES+=(--exclude=.config/git/credentials)
 fi
 
 # The archive must not land inside something it archives, or each run would
@@ -404,12 +426,18 @@ if [[ ! -d "$DEST" ]]; then
   fi
 fi
 
+# An existing --dest keeps the mode it has; say so when others can read it.
+dest_mode="$(stat -f %Lp "$DEST" 2>/dev/null || stat -c %a "$DEST" 2>/dev/null)" || dest_mode=""
+if [[ "$dest_mode" =~ ^[0-7]*[0-7][0-7]$ && "${dest_mode: -2}" != "00" ]]; then
+  warn "$DEST is mode $dest_mode, readable by others; the archive itself is 0600"
+fi
+
 TMP_ARCHIVE="$DEST/.$PREFIX-$stamp.tmp.$$"
 # umask 077 makes the archive 0600 from its first byte. COPYFILE_DISABLE stops
 # macOS tar from adding ._ AppleDouble members for extended attributes. The
 # relative names follow --, so none can be read as an option.
 if ! (umask 077 && COPYFILE_DISABLE=1 tar -czf "$TMP_ARCHIVE" --exclude=.DS_Store \
-      -C "$HOME_DIR" -- "${RELS[@]}"); then
+      ${EXCLUDES[@]+"${EXCLUDES[@]}"} -C "$HOME_DIR" -- "${RELS[@]}"); then
   err "tar failed; no archive written, previous archives kept"
   exit 1
 fi

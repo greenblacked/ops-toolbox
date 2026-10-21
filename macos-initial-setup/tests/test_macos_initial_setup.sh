@@ -3474,6 +3474,12 @@ printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_KEY\n-----END OPENSSH PRI
   > "$cb/home/.ssh/id_ed25519"
 printf '[default]\naws_secret_access_key = CANARY_AWS\n' > "$cb/home/.aws/credentials"
 printf '*.swp\n' > "$cb/home/.config/git/ignore"
+printf 'https://user:CANARY_GIT_PASS@example.com\n' > "$cb/home/.config/git/credentials"
+printf 'credentials "app.terraform.io" {\n  token = "CANARY_TF_TOKEN"\n}\n' > "$cb/home/.terraformrc"
+mkdir -p "$cb/home/.ssh/keys"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_DEPLOY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$cb/home/.ssh/deploy_key"
+printf 'ssh-ed25519 AAAA pub\n' > "$cb/home/.ssh/deploy_key.pub"
 printf 'finder\n' > "$cb/home/.config/git/.DS_Store"
 
 cbrun() {
@@ -3504,6 +3510,19 @@ assert_eq "a credentials file is refused -> 3" "3" "$rc"
 assert_contains "the refusal says it holds credentials" "$out" "holds credentials (use --include-secrets to override)"
 cbrun --dry-run --paths "$cb/home/.ssh" >/dev/null; rc=$?
 assert_eq "the whole .ssh directory is refused, it holds the private keys -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.ssh/deploy_key" >/dev/null; rc=$?
+assert_eq "a private key with a free-form name under .ssh is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.ssh/keys" >/dev/null; rc=$?
+assert_eq "a sub-folder of .ssh is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.ssh/deploy_key.pub" >/dev/null; rc=$?
+assert_eq "a public key under .ssh is accepted -> 0" "0" "$rc"
+cbrun --dry-run --paths "$cb/home/.config/git/credentials" >/dev/null; rc=$?
+assert_eq "the git credential store is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.terraformrc" >/dev/null; rc=$?
+assert_eq "a .terraformrc with a credentials block is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run)"
+assert_not_contains "a default preview skips a .terraformrc with credentials" "$out" "would archive ~/.terraformrc"
+assert_not_contains "a default preview never prints the Terraform token" "$out" "CANARY_TF_TOKEN"
 out="$(cbrun --dry-run --include-secrets --paths "$cb/home/.aws/credentials")"; rc=$?
 assert_eq "--include-secrets accepts a credentials path -> 0" "0" "$rc"
 assert_contains "--include-secrets warns that the archive holds secrets" "$out" "[warn] --include-secrets"
@@ -3543,6 +3562,10 @@ assert_contains "the archive holds ~/.gitconfig" "$listing" ".gitconfig"
 assert_contains "the archive holds ~/.ssh/config" "$listing" ".ssh/config"
 assert_not_contains "the archive never holds a private key" "$listing" "id_ed25519"
 assert_not_contains "the archive never holds AWS credentials" "$listing" "credentials"
+assert_not_contains "the archive never holds the git credential store" "$listing" ".config/git/credentials"
+assert_contains "the archive still holds the rest of ~/.config/git" "$listing" ".config/git/ignore"
+assert_not_contains "the archive leaves a .terraformrc with credentials out" "$listing" ".terraformrc"
+assert_not_contains "the archive never holds a free-form private key" "$listing" "deploy_key"
 assert_not_contains "the archive leaves .DS_Store out" "$listing" ".DS_Store"
 tmp_left="$(find "$dest" -name '*.tmp.*' | wc -l | tr -d ' ')"
 assert_eq "no temporary file is left behind" "0" "$tmp_left"
