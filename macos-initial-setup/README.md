@@ -41,6 +41,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`hardening_audit.sh`](#hardening_auditsh)
 - [`ops_context.sh`](#ops_contextsh)
 - [`net_doctor.sh`](#net_doctorsh)
+- [`tls_expiry.sh`](#tls_expirysh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
@@ -92,6 +93,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper, credential files at rest — each finding with its fix. |
 | `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
 | `net_doctor.sh` | Read-only "the network is wrong" report: interfaces, default route, split DNS, the system proxy against the shell's, VPN tunnels, `/etc/hosts` overrides, listeners, and an opt-in `--probe`. |
+| `tls_expiry.sh` | Read-only certificate expiry check for PEM files, hosts, and (`--keychain`) the client and identity certificates in the Keychain; exit `1` inside the `--days` window. |
 | `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
@@ -120,6 +122,7 @@ than memorizing flags.
 | **Diagnose** | `toolchain_check.sh` | After cloning a repository, or when a shim says a version is missing | Nothing — it only reads |
 | **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When git, brew or kubectl cannot reach something, especially after joining a VPN | Nothing — it only reads |
+| **Diagnose** | `tls_expiry.sh` | Weekly from a scheduler, or before a VPN or mTLS client certificate lapses | Nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
@@ -1580,6 +1583,60 @@ firewall posture, see [`hardening_audit.sh`](#hardening_auditsh).
 
 ---
 
+## `tls_expiry.sh`
+
+The certificates that cause outages are the ones nobody pages on: an internal
+CA leaf, an ingress certificate behind a corporate name, and the mTLS or VPN
+client identity sitting in the login Keychain. This is the macOS half of
+[`linux/tls_expiry.sh`](../linux/tls_expiry.sh), with the same flags,
+verdicts and exit codes, plus `--keychain`.
+
+```bash
+./tls_expiry.sh --file ~/certs/ingress.pem
+./tls_expiry.sh --file "$HOME/certs/*.pem"         # a quoted glob is expanded
+./tls_expiry.sh --host grafana.corp.example --host registry.corp.example:5000
+./tls_expiry.sh --keychain --days 21               # client and identity certificates
+./tls_expiry.sh --host example.com --fail-on warn  # exit 1 inside the window too
+```
+
+| Target | What is graded |
+| --- | --- |
+| `--file PATH` | The first certificate in each PEM. A directory is refused rather than walked, so a CA bundle directory is never paged on. |
+| `--host HOST[:PORT]` | The leaf the server presents (`openssl s_client` with SNI), fetched once with a ten-second cap. `https://` and a path are stripped. |
+| `--keychain` | Every certificate in the login keychain and, when readable, `/Library/Keychains/System.keychain`, except self-signed roots. Never `/System/Library/Keychains`. |
+
+The verdict comes from `openssl x509 -checkend`, so it needs no date parsing:
+expired is `FAIL`, inside `--days` (default `30`) is `warn`. The day count
+in the message uses BSD `date -j`. `--keychain` reads public certificates
+only (`security find-certificate -p`): no private key is requested, so no
+Keychain unlock prompt can appear. A host must be a host name or an IPv4
+address and a port `1`-`65535`; anything else is refused before it reaches
+`openssl`. Certificates are held in shell variables and passed on stdin, so
+nothing is written to disk.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--file PATH` | PEM to inspect; repeatable and comma-separable. |
+| `--host HOST[:PORT]` | Host to fetch the leaf from (default port `443`); repeatable. |
+| `--keychain` | Grade the Keychain certificates, self-signed roots excepted. |
+| `--days N` | Warn this many days before expiry, `0`-`3650` (default `30`). |
+| `--fail-on LEVEL` | Exit `1` on `expired` (default), on `warn` and above, or `never`. |
+| `--quiet` | Print only warnings and failures. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing at or above the failure threshold. |
+| `1` | One or more certificates at or above `--fail-on`. |
+| `2` | Preflight failed — not macOS, or no `openssl` on `PATH`. |
+| `3` | Invalid arguments, including no target at all. Checked before the preflight. |
+
+---
+
 ## `ssh_client_doctor.sh`
 
 `ssh` refuses a key with `Permission denied (publickey)` and names the reason
@@ -2069,6 +2126,9 @@ Homebrew / `pyenv` / `goenv` commands.
   evaluates a pin file.
 - `net_doctor.sh` reads interface, route, DNS, proxy and socket state. Its
   only network traffic is an explicit `--probe`.
+- `tls_expiry.sh` reads the PEMs it is given and the public certificates
+  in the Keychain. Its only network traffic is one TLS handshake per
+  `--host`.
 - `ssh_client_doctor.sh` reads `~/.ssh` and asks `ssh-keygen` about each key
   without printing it. It never changes a mode; every fix is printed.
 

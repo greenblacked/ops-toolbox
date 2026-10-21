@@ -301,6 +301,8 @@ preflight_args() {
   case "${1##*/}" in
     brewfile.sh)         printf '%s\n' "check" ;;
     stay_fresh_agent.sh) printf '%s\n' "status" ;;
+    # Exit 3 without a target is correct; one host reaches the macOS guard.
+    tls_expiry.sh)       printf '%s\n' "--host example.test" ;;
     *)                   printf '%s\n' "" ;;
   esac
 }
@@ -3005,6 +3007,154 @@ assert_contains "--quiet keeps the summary" "$out" "== summary =="
 scratch_files="$(find "$nd/home" "$nd/tmp" -type f | wc -l | tr -d ' ')"
 assert_eq "net_doctor writes nothing under HOME or TMPDIR" "0" "$scratch_files"
 rm -rf "$nd"
+
+section "tls_expiry: validation precedes preflight"
+TLSX="$M/tls_expiry.sh"
+"$TLSX" >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry with no target -> 3" "3" "$rc"
+"$TLSX" --host example.test --days abc >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a non-numeric --days -> 3" "3" "$rc"
+"$TLSX" --host example.test --days 99999 >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects --days above 3650 -> 3" "3" "$rc"
+"$TLSX" --host example.test --fail-on sometimes >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a bad --fail-on -> 3" "3" "$rc"
+"$TLSX" --host=example.test:99a >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a non-numeric port -> 3" "3" "$rc"
+"$TLSX" --host 'a;b' >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a host that is not a name -> 3" "3" "$rc"
+"$TLSX" --host=-oProxyCommand >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a host that starts with a dash -> 3" "3" "$rc"
+
+section "tls_expiry: grades certificates from fixtures"
+# openssl and security are faked so the same assertions hold on the Linux
+# image (which has no openssl) and on a Mac (whose /usr/bin/openssl is
+# LibreSSL). A fixture "certificate" is text between the PEM markers with
+# STATE=, CN= and ISSUER= lines; the fake answers -checkend, -enddate,
+# -subject and -issuer from them the way the real tool would for such a
+# certificate. The verdict logic under test is the script's, not openssl's.
+tl="$(mktemp -d)"
+mkdir -p "$tl/bin" "$tl/home/Library/Keychains" "$tl/tmp" "$tl/certs" "$tl/fx"
+: > "$tl/home/Library/Keychains/login.keychain-db"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$tl/bin/uname"
+cat > "$tl/bin/openssl" <<'OPENSSL_EOF'
+#!/bin/sh
+if [ "$1" = "s_client" ]; then
+  echo "$*" >> "$FAKE_TLS/s_client.calls"
+  host=""
+  while [ $# -gt 0 ]; do
+    [ "$1" = "-servername" ] && host="$2"
+    shift
+  done
+  [ "$host" = "example.test" ] || exit 1
+  cat "$FAKE_TLS/host.pem"
+  exit 0
+fi
+[ "$1" = "x509" ] || exit 1
+shift
+in=""; mode="pem"; arg=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -in) shift; in="$1" ;;
+    -enddate|-subject|-issuer) mode="${1#-}" ;;
+    -checkend) mode="checkend"; shift; arg="$1" ;;
+  esac
+  shift
+done
+if [ -n "$in" ]; then body="$(cat "$in" 2>/dev/null)"; else body="$(cat)"; fi
+case "$body" in *"BEGIN CERTIFICATE"*) ;; *) exit 1 ;; esac
+first="$(printf '%s\n' "$body" | awk '/BEGIN CERTIFICATE/ { p = 1 } p { print } /END CERTIFICATE/ { if (p) exit }')"
+state="$(printf '%s\n' "$first" | sed -n 's/^STATE=//p')"
+cn="$(printf '%s\n' "$first" | sed -n 's/^CN=//p')"
+issuer="$(printf '%s\n' "$first" | sed -n 's/^ISSUER=//p')"
+case "$mode" in
+  pem)      printf '%s\n' "$first" ;;
+  subject)  echo "subject=CN = $cn" ;;
+  issuer)   echo "issuer=CN = $issuer" ;;
+  enddate)
+    if [ "$state" = "EXPIRED" ]; then
+      echo "notAfter=Jan  1 00:00:00 2000 GMT"
+    else
+      echo "notAfter=Dec 31 23:59:59 2099 GMT"
+    fi ;;
+  checkend)
+    case "$state" in
+      EXPIRED) exit 1 ;;
+      SOON)    [ "$arg" = "0" ] || exit 1 ;;
+    esac ;;
+esac
+exit 0
+OPENSSL_EOF
+cat > "$tl/bin/security" <<'SECURITY_EOF'
+#!/bin/sh
+case "$*" in
+  *login.keychain-db) cat "$FAKE_TLS/keychain.pem" ;;
+esac
+exit 0
+SECURITY_EOF
+chmod +x "$tl/bin/"*
+
+fake_cert() {
+  printf -- '-----BEGIN CERTIFICATE-----\nSTATE=%s\nCN=%s\nISSUER=%s\n-----END CERTIFICATE-----\n' "$1" "$2" "$3"
+}
+fake_cert VALID valid.example "Example CA" > "$tl/fx/valid.pem"
+fake_cert EXPIRED expired.example "Example CA" > "$tl/fx/expired.pem"
+fake_cert SOON soon.example "Example CA" > "$tl/fx/soon.pem"
+fake_cert VALID host.example.test "Example CA" > "$tl/fx/host.pem"
+fake_cert VALID first.example "Example CA" > "$tl/certs/a.pem"
+fake_cert VALID second.example "Example CA" > "$tl/certs/b.pem"
+{ fake_cert VALID client.example "Example CA"; fake_cert VALID "Example Root" "Example Root"; } \
+  > "$tl/fx/keychain.pem"
+printf 'not a certificate\n' > "$tl/fx/notpem.txt"
+
+tlsx() {
+  FAKE_TLS="$tl/fx" HOME="$tl/home" TMPDIR="$tl/tmp" PATH="$tl/bin:/usr/bin:/bin" "$TLSX" "$@" 2>&1
+}
+
+out="$(tlsx --file "$tl/fx/valid.pem")"; rc=$?
+assert_eq "a valid certificate -> 0" "0" "$rc"
+assert_contains "a valid certificate passes with its CN" "$out" "[pass] $tl/fx/valid.pem (CN=valid.example)"
+out="$(tlsx --file "$tl/fx/valid.pem" --days=7)"; rc=$?
+assert_eq "tls_expiry accepts --days=N" "0" "$rc"
+
+out="$(tlsx --file "$tl/fx/expired.pem")"; rc=$?
+assert_eq "an expired certificate fails -> 1" "1" "$rc"
+assert_contains "an expired certificate is a FAIL" "$out" "[FAIL] $tl/fx/expired.pem (CN=expired.example) expired"
+
+out="$(tlsx --file "$tl/fx/soon.pem")"; rc=$?
+assert_eq "a certificate inside the window warns only -> 0" "0" "$rc"
+assert_contains "a certificate inside the window is a warning" "$out" "[warn] $tl/fx/soon.pem"
+tlsx --file "$tl/fx/soon.pem" --fail-on warn >/dev/null; rc=$?
+assert_eq "inside the window fails under --fail-on warn -> 1" "1" "$rc"
+tlsx --file "$tl/fx/expired.pem" --fail-on never >/dev/null; rc=$?
+assert_eq "--fail-on never always exits 0" "0" "$rc"
+
+out="$(tlsx --file "$tl/fx/notpem.txt")"; rc=$?
+assert_eq "a file that is not a PEM fails -> 1" "1" "$rc"
+assert_contains "a file that is not a PEM says so" "$out" "not a readable X.509 PEM"
+out="$(tlsx --file "$tl/certs")"
+assert_contains "a directory is refused, not walked" "$out" "does not walk"
+
+out="$(tlsx --file "$tl/certs/*.pem")"; rc=$?
+assert_eq "a quoted glob over two valid certificates -> 0" "0" "$rc"
+assert_contains "the glob grades the first certificate" "$out" "first.example"
+assert_contains "the glob grades the second certificate" "$out" "second.example"
+
+out="$(tlsx --host https://example.test/path)"; rc=$?
+assert_eq "a host with a valid leaf -> 0" "0" "$rc"
+assert_contains "the host leaf is graded" "$out" "host.example.test"
+s_client_args="$(cat "$tl/fx/s_client.calls" 2>/dev/null)"
+assert_contains "the host is fetched with SNI" "$s_client_args" "-servername example.test"
+assert_contains "the host is fetched on the default port" "$s_client_args" "-connect example.test:443"
+out="$(tlsx --host unreachable.test:8443)"; rc=$?
+assert_contains "an unreachable host is a warning" "$out" "could not fetch a leaf certificate"
+assert_eq "an unreachable host alone does not fail -> 0" "0" "$rc"
+
+out="$(tlsx --keychain)"; rc=$?
+assert_eq "a keychain with a valid client certificate -> 0" "0" "$rc"
+assert_contains "the keychain leaf is graded" "$out" "client.example (login keychain)"
+assert_contains "the self-signed root is counted, not graded" "$out" "1 self-signed root(s) not graded"
+assert_not_contains "the self-signed root is never graded" "$out" "Example Root (login keychain)"
+rm -rf "$tl"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of
