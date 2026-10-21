@@ -352,8 +352,9 @@ function Get-TestDistro {
     param([string]$Name, [long]$VhdxSize)
     [pscustomobject]@{ Name = $Name; VhdxSize = $VhdxSize }
 }
-# A scratch path that exists on any host: a literal D:\ fails on a machine
-# without that drive, and the plan only joins paths, it never writes them.
+# A scratch path under the temp root, which exists on any host (the path
+# itself does not): a literal D:\ fails on a machine without that drive,
+# and the plan only joins paths, it never writes them.
 $dest = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
 function Format-Plan {
     param([object[]]$Plan)
