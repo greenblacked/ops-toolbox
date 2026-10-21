@@ -1,6 +1,6 @@
 # A WSL2 distro's virtual disk keeps growing
 
-<!-- markdownlint-disable MD033 -->
+<!-- markdownlint-disable MD033 MD046 -->
 
 **When to use:** a WSL2 distro's virtual disk has grown large on C:, and
 deleting files inside the distro did not give the space back to Windows.
@@ -207,4 +207,4 @@ What the script header says about `restore`:
 - [`windows/` folder README](https://github.com/greenblacked/ops-toolbox/blob/master/windows/README.md)
 - [Scripts overview](../scripts/index.md)
 
-<!-- markdownlint-enable MD033 -->
+<!-- markdownlint-enable MD033 MD046 -->
