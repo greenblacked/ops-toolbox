@@ -430,7 +430,9 @@ if [[ ! -d "$DEST" ]]; then
 fi
 
 # An existing --dest keeps the mode it has; say so when others can read it.
-dest_mode="$(stat -f %Lp "$DEST" 2>/dev/null)"
+# BSD %Lp drops the sticky bit, so ask for the file-type-free 4-digit mode
+# (%Mp%Lp: special bits, then permissions); GNU stat -c %a keeps it already.
+dest_mode="$(stat -f '%Mp%Lp' "$DEST" 2>/dev/null)"
 [[ "$dest_mode" =~ ^[0-7]{3,4}$ ]] || dest_mode="$(stat -c %a "$DEST" 2>/dev/null)"
 dest_owner="$(stat -f %u "$DEST" 2>/dev/null)"
 [[ "$dest_owner" =~ ^[0-9]+$ ]] || dest_owner="$(stat -c %u "$DEST" 2>/dev/null)"
