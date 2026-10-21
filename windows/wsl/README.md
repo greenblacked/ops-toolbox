@@ -179,9 +179,14 @@ Dry run complete; 2 distro(s) would be exported, nothing was written.
   only its VHDX size is known; that is an upper bound, so a VHDX larger than
   the free space is a `WARN` and the export still runs. A `-DestDir` on a UNC
   share is not checked.
-- **One failed export does not stop the rest.** Its half-written tar is
-  removed, the others carry on, and the run ends with
-  `Exported N, skipped N, failed N` and exit `1` if anything failed.
+- **One failed export does not stop the rest.** The others carry on, and the
+  run ends with `Exported N, skipped N, failed N` and exit `1` if anything
+  failed.
+- **A failed export never costs you a backup.** Each export is written to a
+  temporary `.partial` file and moved onto its final name only once it has
+  succeeded, so a failure removes just its own partial file. Running
+  `backup` again in the same minute, where the name repeats, cannot delete
+  the valid tar and sidecar the earlier run left.
 - **The preview writes nothing**, not even `-DestDir`. `-All` and `-Distro`
   together are a usage error (exit `3`); `backup -Distro X -DryRun` previews
   one distro the same way.

@@ -544,21 +544,31 @@ function Format-WslOutput {
 # One export and its .sha256 sidecar: the body of the single-distro backup,
 # shared with -All. Returns $true or $false so -All can carry on past a
 # failure; the single-distro path turns $false into exit 1 as it always did.
+# The export goes to a path unique to this call and is moved onto $Out only
+# once it has succeeded, so a failure removes nothing but its own partial
+# file. A rerun in the same minute shares $Out with the earlier run, and
+# that earlier tar and its sidecar must survive a failed second export.
 function Invoke-DistroBackup {
     param(
         [string]$Name,
         [string]$Out
     )
+    $part = '{0}.{1}.partial' -f $Out, [guid]::NewGuid().ToString('N')
     Write-Host "Exporting '$Name' -> $Out (this can take a while)..."
-    $said = Format-WslOutput (wsl.exe --export $Name $Out)
-    if ($said) { Write-Host $said }
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "wsl --export failed (exit $LASTEXITCODE)" -ErrorAction Continue
-        return $false
+    try {
+        $said = Format-WslOutput (wsl.exe --export $Name $part)
+        if ($said) { Write-Host $said }
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "wsl --export failed (exit $LASTEXITCODE)" -ErrorAction Continue
+            return $false
+        }
+        $hash = (Get-FileHash -LiteralPath $part -Algorithm SHA256).Hash.ToLowerInvariant()
+        Move-Item -LiteralPath $part -Destination $Out -Force
+        Set-Content -LiteralPath "$Out.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($Out))"
+        return $true
+    } finally {
+        Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
     }
-    $hash = (Get-FileHash -LiteralPath $Out -Algorithm SHA256).Hash.ToLowerInvariant()
-    Set-Content -LiteralPath "$Out.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($Out))"
-    return $true
 }
 
 # Distros that are Running now, for the preview lines of the actions that
@@ -1088,9 +1098,8 @@ switch ($Action) {
                     Write-Host ('DONE  {0,-44} {1,10}' -f $row.Out, (Format-Size (Get-Item -LiteralPath $row.Out).Length)) -ForegroundColor Green
                     $exported++
                 } else {
-                    # The half-written tar carries this run's stamp and no
-                    # sidecar; leaving it would look like a backup to prune.
-                    Remove-Item -LiteralPath $row.Out -Force -ErrorAction SilentlyContinue
+                    # Invoke-DistroBackup removed its own partial file and
+                    # never touched $row.Out, which may be an earlier backup.
                     Write-Host ('FAIL  {0,-44} {1}' -f $row.Name, 'wsl --export failed') -ForegroundColor Red
                     $failed++
                 }

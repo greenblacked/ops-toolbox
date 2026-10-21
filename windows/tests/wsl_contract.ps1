@@ -394,6 +394,49 @@ Test-Case 'unknown free space (a UNC path) raises no space finding' (
     $plan.Count -eq 1 -and $plan[0].Verb -eq 'EXPORT'
 ) (Format-Plan $plan)
 
+# A failed export must never delete a backup that was already there. Two
+# runs in the same minute share one output path, so the second run's cleanup
+# used to remove the first run's valid tar and leave its sidecar behind. A
+# function named wsl.exe takes precedence over the program of that name, on
+# Windows too, so no real export happens.
+Import-ScriptFunction -Path $wslScript -Name @('Format-WslOutput', 'Invoke-DistroBackup')
+$backupDir = Initialize-ScratchDirectory 'wslbackup-'
+try {
+    $backupOut = Join-Path $backupDir 'Ubuntu_2026-10-21_1830.tar'
+    $earlierSide = 'earlier-hash  Ubuntu_2026-10-21_1830.tar'
+    [IO.File]::WriteAllText($backupOut, 'earlier good export')
+    [IO.File]::WriteAllText("$backupOut.sha256", $earlierSide)
+
+    function wsl.exe {
+        [IO.File]::WriteAllText([string]$args[2], 'half written')
+        $global:LASTEXITCODE = 1
+    }
+    $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
+    $left = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
+    Test-Case 'a failed export reports failure' ($backedUp -eq $false)
+    Test-Case 'and leaves the earlier tar and its sidecar of the same name as they were' (
+        [IO.File]::ReadAllText($backupOut) -eq 'earlier good export' -and
+        [IO.File]::ReadAllText("$backupOut.sha256") -eq $earlierSide
+    ) ($left -join "`n")
+    Test-Case 'and leaves no partial file behind' ($left.Count -eq 2) ($left -join "`n")
+
+    function wsl.exe {
+        [IO.File]::WriteAllText([string]$args[2], 'new export')
+        $global:LASTEXITCODE = 0
+    }
+    $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 6>$null
+    $left = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
+    $newHash = (Get-FileHash -LiteralPath $backupOut -Algorithm SHA256).Hash.ToLowerInvariant()
+    Test-Case 'a successful export replaces the tar and writes a sidecar that matches it' (
+        $backedUp -eq $true -and [IO.File]::ReadAllText($backupOut) -eq 'new export' -and
+        [IO.File]::ReadAllText("$backupOut.sha256") -eq "$newHash  Ubuntu_2026-10-21_1830.tar" -and
+        $left.Count -eq 2
+    ) ($left -join "`n")
+} finally {
+    Remove-Item -LiteralPath Function:\wsl.exe -ErrorAction SilentlyContinue
+    Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # Each preview must be decided before the branch reaches anything that
 # changes the machine. Read from the syntax tree of the switch, so moving a
 # call above the -DryRun check fails here even though nothing runs it.

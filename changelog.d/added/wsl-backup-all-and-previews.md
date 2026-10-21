@@ -3,7 +3,9 @@
   upgrade that used to be a loop written by hand. Docker Desktop's own
   distros are skipped, a running distro whose measured use will not fit on
   the destination drive is refused before anything is written (a stopped one
-  is never started to measure it), one failed export does not stop the rest,
+  is never started to measure it), one failed export does not stop the rest
+  and never deletes a backup of the same name from an earlier run (exports
+  are written to a temporary file and moved into place on success),
   and every tar gets the same `.sha256` sidecar a single backup writes.
   `-DryRun` now previews `backup`, `compact`, `sparse` and `shutdown` as well:
   the plan with sizes, the running distros a shutdown would stop, and, for
