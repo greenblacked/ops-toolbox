@@ -459,8 +459,8 @@ def main(argv=None):
     parser = Usage3Parser(
         description="Audit tracked files and history for committed credentials.",
         epilog="Exit codes: 0 nothing at fail level, 1 a fail-level finding or a git "
-               "command that could not answer, 2 not inside a Git repository, 3 usage, 4 n/a: a bare "
-               "repository has no work tree.",
+               "command that could not answer, 2 not inside a Git repository, 3 usage, "
+               "4 n/a: a bare repository has no work tree.",
     )
     parser.add_argument("--history", action="store_true",
                         help="also check every path ever added, on any ref")
