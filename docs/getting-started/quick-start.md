@@ -17,7 +17,9 @@ otherwise.
 
 ## 2. Run a report
 
-Reports are read-only. Pick the one for your platform.
+Reports are read-only. Pick the one for your platform. On your first visit
+from a computer, the tab for its operating system (macOS, Linux or Windows)
+opens by itself; pick another and the site remembers that instead.
 
 === "macOS"
 

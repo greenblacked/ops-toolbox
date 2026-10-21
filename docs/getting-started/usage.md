@@ -80,6 +80,12 @@ opens a page with the table already filtered, for example
 <https://ops.szolotov.com/scripts/?filter=linux+doctor>. Filtered rows are
 only hidden, so printing the page still prints the whole table.
 
+Where a page shows the same step for several systems in tabs, the tab you
+pick is remembered and opened on every page with the same tabs. On your
+first visit to such a page the site opens the tab for the system your
+browser reports (macOS, Linux or Windows); on a phone or tablet it leaves
+the first tab open.
+
 ## Shell versions
 
 The Bash scripts in `git/`, `macos-initial-setup/`, `linux/` and `dotfiles/`

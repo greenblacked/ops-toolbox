@@ -187,6 +187,12 @@ in every file of the folder.
   table with 15 or more body rows, and reads a `?filter=` link.
 - `rpt-checklist.js` turns Markdown task lists into checklists that keep
   their ticks across a reload. See below.
+- `rpt-os-tab.js` opens the visitor's OS tab, once per browser, on the
+  first page whose content tabs are labelled `macOS`, `Linux` or `Windows`
+  (the Quick start). It never overrides a tab the reader already chose, and
+  it leaves phones and tablets on the first tab. The labels are matched by
+  their text, so renaming one of those tabs turns the feature off for it;
+  `test_docs_site.py` fails if the Quick start's labels change.
 - `rpt-404.js` runs on the 404 page only (`overrides/404.html` loads it).
   It splits the missing address into words (`/runbooks/linux-low-disk-old/`
   gives `runbooks linux low disk old`), reads the site's own

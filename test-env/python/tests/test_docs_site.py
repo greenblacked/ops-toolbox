@@ -494,6 +494,127 @@ class BuildStampTests(unittest.TestCase):
         self.assertIn("'assets/javascripts/rpt-build-stamp.js' | url", main)
 
 
+class OsTabTests(unittest.TestCase):
+    SCRIPT = SCRIPTS_DIR / "rpt-os-tab.js"
+
+    MAC_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15"
+    WIN_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    LINUX_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+    ANDROID_UA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile"
+    IPHONE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15"
+    CROS_UA = "Mozilla/5.0 (X11; CrOS x86_64 15633.69.0) AppleWebKit/537.36"
+
+    def detect(self, nav: dict[str, object]) -> object:
+        return script_json(self.SCRIPT, "m.detectOs(%s)" % json.dumps(nav))
+
+    def assert_cases(self, cases: list[tuple[dict[str, object], str | None]]) -> None:
+        self.assertTrue(cases)
+        for nav, expected in cases:
+            with self.subTest(nav=nav):
+                self.assertEqual(self.detect(nav), expected)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_detect_os_from_user_agent_data(self) -> None:
+        self.assert_cases([
+            ({"userAgentData": {"platform": "macOS"}, "platform": "Win32"}, "macOS"),
+            ({"userAgentData": {"platform": "Windows"}, "userAgent": self.LINUX_UA}, "Windows"),
+            ({"userAgentData": {"platform": "Linux"}}, "Linux"),
+            ({"userAgentData": {"platform": "Android"}, "userAgent": "Mozilla/5.0"}, None),
+        ])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_detect_os_falls_back_to_platform_then_user_agent(self) -> None:
+        self.assert_cases([
+            ({"userAgentData": {"platform": ""}, "platform": "MacIntel"}, "macOS"),
+            ({"platform": "Win32", "userAgent": self.WIN_UA}, "Windows"),
+            ({"platform": "Linux x86_64", "userAgent": self.LINUX_UA}, "Linux"),
+            ({"platform": "", "userAgent": self.MAC_UA, "maxTouchPoints": 0}, "macOS"),
+            ({"userAgent": self.WIN_UA}, "Windows"),
+            ({"userAgent": self.WIN_UA + " Microsoft"}, "Windows"),
+            ({"userAgent": self.LINUX_UA}, "Linux"),
+        ])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_android_is_not_linux(self) -> None:
+        self.assert_cases([
+            ({"platform": "Linux armv8l", "userAgent": self.ANDROID_UA, "maxTouchPoints": 5}, None),
+            ({"userAgentData": {"platform": "Linux"}, "userAgent": self.ANDROID_UA}, None),
+        ])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_ios_and_ipados_desktop_mode_are_not_macos(self) -> None:
+        self.assert_cases([
+            ({"platform": "iPhone", "userAgent": self.IPHONE_UA, "maxTouchPoints": 5}, None),
+            ({"platform": "MacIntel", "userAgent": self.MAC_UA, "maxTouchPoints": 5}, None),
+        ])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_chromeos_maps_to_linux(self) -> None:
+        self.assert_cases([
+            ({"userAgentData": {"platform": "Chrome OS"}, "userAgent": self.CROS_UA}, "Linux"),
+            ({"platform": "Linux x86_64", "userAgent": self.CROS_UA}, "Linux"),
+        ])
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_unknown_returns_null(self) -> None:
+        self.assert_cases([
+            ({}, None),
+            ({"platform": "PlayStation 5", "userAgent": "Mozilla/5.0 (PlayStation 5)"}, None),
+            ({"userAgentData": {"platform": "Unknown"}, "platform": ""}, None),
+        ])
+        self.assertIsNone(script_json(self.SCRIPT, "m.detectOs(null)"))
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_pick_label_matches_trimmed_text_exactly(self) -> None:
+        labels = json.dumps([
+            {"textContent": "macOS (Homebrew)"},
+            {"textContent": " \n Linux \n"},
+            {"textContent": "Windows"},
+        ])
+        found = script_json(self.SCRIPT, "m.pickLabel(%s, 'Linux')" % labels)
+        self.assertEqual(found, {"textContent": " \n Linux \n"})
+        self.assertIsNone(script_json(self.SCRIPT, "m.pickLabel(%s, 'macOS')" % labels))
+        self.assertIsNone(script_json(self.SCRIPT, "m.pickLabel(%s, 'linux')" % labels))
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_saved_tab_choice_is_detected(self) -> None:
+        # A stand-in for localStorage holding the given entries.
+        fake = (
+            "(function (entries) { var keys = Object.keys(entries); return {"
+            " length: keys.length, key: function (i) { return keys[i]; },"
+            " getItem: function (k) { return entries[k]; } }; })(%s)"
+        )
+        cases = [
+            ({"/.__tabs": '["Linux"]'}, True),
+            ({"/.__tabs": "[]"}, False),
+            ({"/.__tabs": "{bad"}, False),
+            ({"/.__palette": '{"index":1}', "rpt.os-tab": "1"}, False),
+            ({}, False),
+        ]
+        self.assertTrue(cases)
+        for entries, expected in cases:
+            with self.subTest(entries=entries):
+                expression = "m.hasSavedTabChoice(%s)" % (fake % json.dumps(entries))
+                self.assertIs(script_json(self.SCRIPT, expression), expected)
+
+    def test_quick_start_tab_labels_are_the_os_names(self) -> None:
+        page = REPO_ROOT / "docs" / "getting-started" / "quick-start.md"
+        lines = set(page.read_text(encoding="utf-8").splitlines())
+        for label in ("macOS", "Linux", "Windows"):
+            with self.subTest(label=label):
+                self.assertIn('=== "%s"' % label, lines)
+
+    def test_script_never_reads_materials_private_functions(self) -> None:
+        text = self.SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("__md_get", text)
+        self.assertNotIn("__md_set", text)
+        self.assertIn("__tabs", text)
+
+    def test_script_is_loaded_from_main_html(self) -> None:
+        main = (OVERRIDES / "main.html").read_text(encoding="utf-8")
+        self.assertIn("'assets/javascripts/rpt-os-tab.js' | url", main)
+
+
 class PageScriptContractTests(unittest.TestCase):
     """The page scripts read text an attacker controls: the query string of a
     link (?filter=) and the path of a missing page. So no script may parse
