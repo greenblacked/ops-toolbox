@@ -555,8 +555,9 @@ usual space hog on a server that is not journald-only. A file qualifies only whe
 its name proves it was rotated: `*.gz`, `*.xz`, `*.bz2`, `*.zst`, a numeric
 suffix (`*.1` to `*.99`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
 `*.log-<digits>` (digits only, so `service.log-2-current` stays). An active
-`*.log`, `syslog` or `messages` never matches, and neither do numbered active logs such as `Xorg.0.log`. Login records (`wtmp`,
-`btmp`, `lastlog`, `faillog`, `utmp` and their rotations) are never touched,
+`*.log`, `syslog` or `messages` never matches, and neither do numbered active
+logs such as `Xorg.0.log`. Login records (`wtmp`, `btmp`, `lastlog`, `faillog`,
+`utmp` and their rotations) are never touched,
 anything below a directory named `journal` or `private` is pruned from the
 walk, symlinks are not followed and `-xdev` keeps it on one filesystem. Nothing
 is truncated. `--days 0` drops the age filter but not the name filter.
@@ -575,7 +576,7 @@ the flag without `--include-journal`, is exit `3`. journald's own vacuum is the
 only thing that deletes journal files.
 
 `--include-docker-images` is for CI runners and build hosts, where the space
-goes to tagged images nothing has used since last quarter. `--include-docker`
+goes to tagged images created long ago and no longer used. `--include-docker`
 removes only dangling images, stopped containers and build cache; this runs
 `docker image prune -a -f --filter until=<days*24>h` when `docker info` answers,
 and the same through `podman` when it is installed, so only images created

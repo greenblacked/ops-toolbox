@@ -105,7 +105,7 @@ Options:
   --include-docker       docker/podman system prune -f (volumes untouched)
   --include-docker-images
                          docker/podman image prune -a for unused images created
-                         more than --days ago (build time, not pull time, so a
+                         more than --days ago (creation time, not pull time, so a
                          freshly pulled old image can go); never prunes volumes
   --include-snap-revisions
                          snap remove each disabled revision (needs root)
@@ -815,10 +815,10 @@ fi
 
 # --- container images ------------------------------------------------------
 # Tagged images no container uses, created more than --days ago (docker's
-# until filter reads creation time, not pull or last-use time). image prune never takes
-# volumes and the engine will not remove an image a container references, so
-# the worst case is a re-pull. The dry run shows `system df`, which only reads,
-# so the sizes are on screen before anything is removed.
+# until filter reads creation time, not pull or last-use time). image prune
+# never takes volumes and the engine will not remove an image a container
+# references, so the worst case is a re-pull. The dry run shows `system df`,
+# which only reads, so the sizes are on screen before anything is removed.
 prune_images() {
   local engine="$1"
   local args=(image prune -a -f)
