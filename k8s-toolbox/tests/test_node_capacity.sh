@@ -51,7 +51,7 @@ def ctr(name='app', cpu=None, memory=None, **extra):
     doc.update(extra)
     return doc
 count=[0]
-def pod(containers, node='node-a', phase='Running', init=None, overhead=None, conditions=None):
+def pod(containers, node='node-a', phase='Running', init=None, overhead=None, conditions=None, podres=None):
     count[0]+=1
     spec={'containers':containers}
     if node:
@@ -60,6 +60,8 @@ def pod(containers, node='node-a', phase='Running', init=None, overhead=None, co
         spec['initContainers']=init
     if overhead:
         spec['overhead']=overhead
+    if podres:
+        spec['resources']={'requests':podres}
     status={'phase':phase}
     if conditions:
         status['conditions']=conditions
@@ -90,6 +92,10 @@ save('q-init-max', [pod([ctr('a','100m'),ctr('b','100m')],node='quant',init=[ctr
 save('q-sidecar-sum', [pod([ctr('app','200m')],node='quant',
                            init=[ctr('setup','250m'),ctr('proxy','100m',restartPolicy='Always')])])
 save('q-overhead', [pod([ctr('app','250m')],node='quant',overhead={'cpu':'250m'})])
+save('q-podlevel', [pod([ctr('a','100m'),ctr('b','100m')],node='quant',podres={'cpu':'400m'})])
+save('q-podlevel-partial', [pod([ctr('a','100m',memory='100M')],node='quant',podres={'cpu':'300m'})])
+save('q-podlevel-mem', [pod([ctr('a','100m',memory='100M')],node='quant',podres={'memory':'500M'})])
+save('q-podlevel-overhead', [pod([ctr('a','100m')],node='quant',podres={'cpu':'300m'},overhead={'cpu':'100m'})])
 save('q-succeeded-ignored', [pod([ctr(cpu='900m')],node='quant',phase='Succeeded'),
                              pod([ctr(cpu='900m')],node='quant',phase='Failed'),
                              pod([ctr(cpu='100m')],node='quant')])
@@ -212,6 +218,12 @@ for case_ in \
   'q-init-max|500m/1000m 50%' \
   'q-sidecar-sum|300m/1000m 30%' \
   'q-overhead|500m/1000m 50%' \
+  'q-podlevel|400m/1000m 40%' \
+  'q-podlevel-partial|300m/1000m 30%' \
+  'q-podlevel-partial|95Mi/954Mi' \
+  'q-podlevel-mem|477Mi/954Mi 50%' \
+  'q-podlevel-mem|100m/1000m 10%' \
+  'q-podlevel-overhead|400m/1000m 40%' \
   'q-succeeded-ignored|100m/1000m 10%' \
   'q-unscheduled-ignored|100m/1000m 10%'
 do

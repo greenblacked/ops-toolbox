@@ -420,7 +420,9 @@ pods against the node's pod limit, each with a percentage, and flags for
 node and until it has finished, with its request worked out the way the
 scheduler does it: the larger of the app containers plus restartable
 (sidecar) init containers, or each ordinary init container plus the sidecars
-started before it, and then pod `overhead` on top. Every quantity form the API
+started before it, and then pod `overhead` on top; requests set on the
+pod itself (`spec.resources.requests`) replace that sum for each resource
+they name. Every quantity form the API
 writes is parsed exactly (`250m`, `0.5`, `1500Mi`, `2Gi`, `1G`, `129e6`,
 `100k` and the rest); an unparsable one makes the run incomplete rather than
 guessing.

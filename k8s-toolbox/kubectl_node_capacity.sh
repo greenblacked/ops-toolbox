@@ -197,6 +197,11 @@ def pod_request(spec):
       peak=(max(peak[0],r[0]+sidecars[0]),max(peak[1],r[1]+sidecars[1]))
   total=add(apps,sidecars)
   total=(max(total[0],peak[0]),max(total[1],peak[1]))
+  # Pod-level requests (PodLevelResources) replace the container sum for
+  # each resource they name; the other resource keeps the container rule.
+  podlevel=(spec.get("resources") or {}).get("requests") or {}
+  total=(quantity(podlevel["cpu"])*1000 if "cpu" in podlevel else total[0],
+         quantity(podlevel["memory"]) if "memory" in podlevel else total[1])
   over=spec.get("overhead") or {}
   return add(total,(quantity(over["cpu"])*1000 if "cpu" in over else Fraction(0),
                     quantity(over["memory"]) if "memory" in over else Fraction(0)))
