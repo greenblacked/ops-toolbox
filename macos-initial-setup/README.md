@@ -481,7 +481,7 @@ installed but not the binary that actually runs.
 | --- | --- | --- |
 | `python` | `.python-version`, `.tool-versions` | `pyenv versions --bare`; `3.12` is met by `3.12.5` |
 | `terraform` | `.terraform-version`, `.tool-versions` | `tfenv list`, else `tenv tf list` |
-| `go` | `.go-version`, `go.mod` (`toolchain` exactly, else the `go` line as a minimum), `.tool-versions` (`golang`) | `goenv versions --bare`; a minimum is compared numerically, so `1.10` is newer than `1.9` |
+| `go` | `.go-version`, `go.mod` (`toolchain` exactly, else the `go` line as a minimum), `.tool-versions` (`golang`) | `goenv versions --bare`; a minimum is compared numerically, so `1.10` is newer than `1.9`; a prerelease ranks `alpha` < `beta` < `pre` < `rc`, by its number (`rc1` < `rc2`), and below its release, so `1.22rc1` does not meet `1.22` |
 | `node` | `.nvmrc`, `.node-version`, `.tool-versions` (`nodejs`) | the major version of `node --version` |
 
 When `mise` is on `PATH`, `mise where TOOL@VERSION` answers first. A
@@ -1796,6 +1796,7 @@ key `StartCalendarInterval` leaves out is a wildcard and shows as `**`.
 | --- | --- |
 | The job's program (an absolute `Program` or first `ProgramArguments`) does not exist | `warn`, with `stay_fresh.sh --prune-orphan-agents` for user agents and the `launchctl bootout` command for the others |
 | The plist, or the program it runs, is writable by its group or by everyone | `warn`, with `chmod go-w`: anyone who can edit either decides what runs as that user, or as root for a daemon |
+| The plist, or the program it runs, sits under a directory that its group or everyone can write without the sticky bit (or, for a daemon on the live system, one a non-root user owns) | `warn`, naming the directory: the file could be swapped before launchd runs it. Every parent up to `/` is checked, for the path as written (a symlinked component or file can be repointed) and again for where it resolves |
 | `KeepAlive` with no `ThrottleInterval` | `info`: the job restarts whenever it exits |
 | `Disabled` set in the plist | noted on the row |
 
