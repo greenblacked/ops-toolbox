@@ -1246,6 +1246,81 @@ printf '# only comments\n\n' >"$clone_dest/empty.txt"
 "$CLONE" --dry-run "$clone_dest/empty.txt" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "4" "an empty list exits 4"
 
+section "clone-repos.sh --update"
+# The same bare remote and the two checkouts cloned above, with a list that
+# holds only the two good lines so the exit code speaks for the updates alone.
+update_list="$clone_dest/update.txt"
+clone_up="$clone_dest/out/upstream"
+clone_nested="$clone_dest/out/nested/second"
+printf '%s\n%s   nested/second\n' "$clone_remote" "$clone_remote" >"$update_list"
+git -C "$clone_up" config user.name "Test User"
+git -C "$clone_up" config user.email "test@example.com"
+push_seed() {
+  printf '%s\n' "$1" >>"$clone_seed/file.txt"
+  git -C "$clone_seed" commit -q -am "$1" &&
+    git -C "$clone_seed" push -q origin main ||
+    err "pushing '$1' from the seed exited $? — every update below would find nothing to fetch"
+}
+push_seed two
+
+refs_up="$(git -C "$clone_up" for-each-ref)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" --dry-run 2>&1)"; rc=$?
+assert_eq "$rc" "0" "clone --update --dry-run exits 0"
+assert_contains "$out" "dry-run: would run: git -C $clone_up fetch --quiet" "--update --dry-run previews the fetch"
+assert_contains "$out" "dry-run: would run: git -C $clone_up merge --ff-only --quiet @{upstream}" "--update --dry-run previews the fast-forward"
+assert_contains "$out" "dry-run complete; no changes written" "--update --dry-run closes with the summary line"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD~1)" "--update --dry-run leaves HEAD behind"
+assert_eq "$(git -C "$clone_up" for-each-ref)" "$refs_up" "--update --dry-run fetches nothing"
+
+out="$("$CLONE" -u --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "clone -u exits 0"
+assert_contains "$out" "updated (+1 commit(s)): $clone_up" "-u fast-forwards the default destination"
+assert_contains "$out" "updated (+1 commit(s)): $clone_nested" "-u fast-forwards the nested destination"
+assert_contains "$out" "updated 2" "the summary counts both updates"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "the updated checkout is at the remote's tip"
+
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_contains "$out" "up to date: $clone_up" "a second --update finds nothing to do"
+assert_contains "$out" "updated 0" "a second --update counts no updates"
+
+out="$("$CLONE" --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "already cloned: $clone_up" "without --update an existing checkout is still only skipped"
+assert_contains "$out" "already present 2" "without --update the summary keeps its shape"
+
+printf 'local edit\n' >>"$clone_up/file.txt"
+push_seed three
+up_head="$(git -C "$clone_up" rev-parse HEAD)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a held checkout does not fail the run"
+assert_contains "$out" "held (uncommitted changes): $clone_up" "a modified tracked file holds the checkout"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a held checkout keeps its HEAD"
+assert_contains "$(cat "$clone_up/file.txt")" "local edit" "a held checkout keeps its edit"
+assert_contains "$out" "updated (+1 commit(s)): $clone_nested" "the other checkout is still updated"
+git -C "$clone_up" checkout -q -- file.txt
+
+git -C "$clone_up" switch -q --detach
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (detached HEAD): $clone_up" "a detached HEAD holds the checkout"
+git -C "$clone_up" switch -q main
+
+git -C "$clone_up" branch -q --unset-upstream
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (no upstream): $clone_up" "a branch with no upstream holds the checkout"
+git -C "$clone_up" branch -q --set-upstream-to=origin/main main
+
+git -C "$clone_up" commit -q --allow-empty -m "local only" ||
+  err "the local commit exited $? — without it the checkout is behind, not diverged"
+push_seed four
+up_head="$(git -C "$clone_up" rev-parse HEAD)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (diverged, +1/-2): $clone_up" "a diverged branch is held, not merged"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a diverged checkout keeps its HEAD"
+
+git -C "$clone_nested" remote set-url origin "$clone_dest/does-not-exist.git"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "a failed fetch fails the run"
+assert_contains "$out" "fetch failed: $clone_nested" "a failed fetch names the checkout"
+
 end_section
 # The file's own floor: it reached this line having opened sections, each of
 # which asserted something. Reaching it at all is what the removal of `-e` put

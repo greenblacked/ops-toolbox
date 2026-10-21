@@ -88,7 +88,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
 | `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
 | `git_commitlint.sh` | Lint every commit message a branch adds, in CI, against the commit-msg hook's rules. |
-| `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, and `repos.txt.example` shows the format. |
+| `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, or fast-forwards it with `--update`, and `repos.txt.example` shows the format. |
 | `git_prune_gone.sh` | Delete branches with deleted upstreams, with include/exclude filters. |
 | `git_stale_branches.sh` | Report old branches and optionally filter by gone/merged/unmerged state. |
 | `git_size_report.sh` | Report repository size across all history or selected refs. |
@@ -777,6 +777,8 @@ script once on a new machine, run it again whenever the list grows.
 ./git/clone-repos.sh --dry-run repos.txt              # preview; writes nothing
 ./git/clone-repos.sh --dir ~/src repos.txt            # clone into ~/src
 ./git/clone-repos.sh -n -d ~/src git/repos.txt.example  # the shipped example
+./git/clone-repos.sh --update --dir ~/src repos.txt   # and bring existing checkouts up to date
+./git/clone-repos.sh -u -n --dir ~/src repos.txt      # preview the fetches and fast-forwards
 ```
 
 The list format, shown in `repos.txt.example`: one URL per line; an
@@ -791,6 +793,33 @@ one entry failed, with the line number in the message; `2` when the list is
 unreadable, git is missing or `--dir` is unusable; `3` on a bad flag; `4`
 when the list has no entries. A clone that fails part-way is reported with
 its path, and the directory is left for you to inspect rather than removed.
+
+**`--update`** (`-u`) is the mirror of a second run: instead of
+`already cloned`, each checkout that is already there is fetched and
+fast-forwarded on the branch it has checked out, so the whole list is brought
+up to date without a loop of `git pull`. A checkout is **held** — reported
+with a `held (...)` line and left exactly as it is — when its `HEAD` is
+detached, its branch has no upstream, tracked files are modified, or the branch
+has diverged from its upstream. It never switches branches, stashes, or makes a
+merge commit; a fast-forward that cannot apply (an untracked file in the way)
+is reported as failed. A checkout that is ahead but not behind is reported as
+up to date with its unpushed count.
+
+| Line | Meaning |
+| --- | --- |
+| `updated (+N commit(s)): PATH` | Fetched and fast-forwarded. |
+| `up to date: PATH` | Nothing new upstream (`(N unpushed commit(s))` when it is ahead). |
+| `held (detached HEAD)`, `held (no upstream)`, `held (uncommitted changes)`, `held (diverged, +A/-B)` | Left alone; reconcile it yourself. |
+| `fetch failed: PATH`, `fast-forward failed: PATH` | Counted as failed. |
+
+The summary becomes `cloned N, updated U, up to date C, held H, failed F`.
+Held checkouts do not fail the run; a failed fetch or fast-forward exits `1`
+like a failed clone. Under `--dry-run` the local checks still run and print
+their `held` lines, and every other checkout prints
+`dry-run: would run: git -C PATH fetch --quiet` and
+`dry-run: would run: git -C PATH merge --ff-only --quiet @{upstream}`; nothing is
+fetched, so whether it is behind cannot be known yet. `--update` writes into
+the existing checkouts, so preview it first.
 
 ---
 
@@ -943,6 +972,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
 ./git/git_commitlint.sh --base origin/main
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
+./git/clone-repos.sh --update --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

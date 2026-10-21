@@ -69,7 +69,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_undo_last_commit.sh` | Git | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git/git_amend_last.sh` | Git | Amend the last commit. | `--dry-run` |
 | `git/git_hooks_install.sh` | Git | Install, check, remove pre-commit guards. | `--dry-run` (install, uninstall) |
-| `git/clone-repos.sh` | Git | Clone every URL in a list file. | `--dry-run` |
+| `git/clone-repos.sh` | Git | Clone every URL in a list file; `--update` fast-forwards existing checkouts. | `--dry-run` |
 | `git/git_ssh_doctor.py` | Git | Diagnose git-over-SSH auth. | <span class="stage stage-report">read-only</span> |
 | `git/git_signing_doctor.py` | Git | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
 | `git/git_remote_doctor.py` | Git | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |

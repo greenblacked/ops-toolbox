@@ -38,7 +38,7 @@ ignore rules.
 | `git_undo_last_commit.sh` | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git_amend_last.sh` | Amend the last commit. | `--dry-run` |
 | `git_hooks_install.sh` | `install`, `status`, `uninstall` pre-commit guards. | `--dry-run` |
-| `clone-repos.sh` | Clone every URL in a list file into one directory. | `--dry-run` |
+| `clone-repos.sh` | Clone every URL in a list file into one directory; `--update` fast-forwards existing checkouts. | `--dry-run` |
 | `git_ssh_doctor.py` | Diagnose git-over-SSH auth. | <span class="stage stage-report">read-only</span> |
 | `git_signing_doctor.py` | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
 | `git_remote_doctor.py` | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |
@@ -78,6 +78,7 @@ All paths are under `git/`.
     ./git/gacp.sh "update git scripts"
     ./git/gacp.sh --no-push -m "local only"
     ./git/git_undo_last_commit.sh --revert
+    ./git/clone-repos.sh --update --dir ~/src repos.txt
     ```
 
 ## Limitations and caveats
@@ -104,6 +105,9 @@ All paths are under `git/`.
   `git_ssh_doctor.py --test-auth` attempts SSH authentication.
 - `git_hooks_install.sh --commit-msg` enforces Conventional Commits and is off
   by default.
+- `clone-repos.sh --update` writes to checkouts that already exist: it fetches
+  and fast-forwards the checked-out branch, and holds any checkout with a
+  detached `HEAD`, no upstream, modified tracked files or a diverged branch.
 
 ## Repository
 
