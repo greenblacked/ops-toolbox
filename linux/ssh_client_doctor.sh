@@ -370,9 +370,17 @@ if want keys; then
       else
         pass "$base is passphrase-protected (or unreadable)"
       fi
-      # Type and size come from the public half, which needs no passphrase.
-      if [[ -f "$path.pub" ]]; then
-        fp_line="$(ssh-keygen -l -f "$path.pub" 2>/dev/null | clean | head -n 1)"
+      # Type and size need no passphrase: ssh-keygen -l reads the public part
+      # of an OpenSSH-format private key directly. The .pub beside it is the
+      # fallback for formats that hide it, and the check is skipped only
+      # when neither answers.
+      fp_line="$(ssh-keygen -l -P '' -f "$path" </dev/null 2>/dev/null | clean | head -n 1)"
+      if [[ -z "$fp_line" && -f "$path.pub" ]]; then
+        fp_line="$(ssh-keygen -l -f "$path.pub" </dev/null 2>/dev/null | clean | head -n 1)"
+      fi
+      if [[ -z "$fp_line" ]]; then
+        skip "$base: ssh-keygen could not read its public part; type and size not checked"
+      else
         bits="${fp_line%% *}"
         ktype="${fp_line##* }"
         ktype="${ktype#(}"
@@ -395,10 +403,8 @@ if want keys; then
             ;;
           ECDSA|ECDSA-SK) info "$base is an $ktype key ($bits bits)" ;;
           ED25519|ED25519-SK) pass "$base is an $ktype key" ;;
-          *) skip "$base: could not read a key type from $base.pub" ;;
+          *) skip "$base: could not read a key type" ;;
         esac
-      else
-        skip "$base has no $base.pub beside it; type and size not checked"
       fi
       # The file's age stands in for the key's. A key copied to a new machine
       # looks young; one that has followed you for years does not.

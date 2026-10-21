@@ -865,13 +865,13 @@ is whether it should, and the later groups grade that too.
 | `keys` | a private key with no passphrase (warn), DSA (FAIL), RSA under 3072 bits (warn) or under 2048 (FAIL), ECDSA (info), keys older than `--max-key-age` days (730; `0` turns it off), the same key in two files (info) |
 | `known_hosts` | unhashed entries (info, with `ssh-keygen -H`), `ssh-dss` host keys (FAIL), one host with two different keys of the same type (warn), `@revoked` lines (info) |
 | `authorized_keys` | duplicate keys (warn), `ssh-dss` keys (FAIL), keys with no `from=`, `command=` or `restrict` (info) |
-| `risks` | `StrictHostKeyChecking no` for every host (FAIL); `UserKnownHostsFile /dev/null`, `ForwardAgent`, `ForwardX11` or `PasswordAuthentication yes` for every host (warn); `Protocol 1` and CBC or arcfour ciphers (warn); several global `IdentityFile` lines without `IdentitiesOnly yes` (info). A setting under a narrower `Host` (including `Host *` with a `!pattern`) is noted, not graded, and each finding names its config line |
+| `risks` | `StrictHostKeyChecking no` for every host (FAIL); `UserKnownHostsFile /dev/null`, `ForwardAgent`, `ForwardX11` or `PasswordAuthentication yes` for every host (warn); `Protocol 1` and CBC or arcfour ciphers (warn); several global `IdentityFile` lines without `IdentitiesOnly yes` (info). A setting under a narrower `Host` (including `Host *` with a `!pattern`, or a `Host *` value for a keyword an earlier block already sets, since OpenSSH keeps the first value) is noted, not graded, and each finding names its config line |
 | `agent` | whether `SSH_AUTH_SOCK` reaches a live agent (a dead one warns) and how many keys it offers (more than five warns) |
 
 The passphrase check runs `ssh-keygen -y -P ''` with stdin closed, which
 derives the public key to `/dev/null` and fails on an encrypted key, so it
-can never prompt; type and size come from `ssh-keygen -l` on the `.pub`
-beside each key, and `ssh-add -l` only lists the agent. Key material is never
+can never prompt; type and size come from `ssh-keygen -l` on the private
+file (the `.pub` beside it is the fallback; both failing is a `skip`), and `ssh-add -l` only lists the agent. Key material is never
 printed. Without `ssh-keygen` the `keys` group is one `skip`.
 
 `--ssh-dir DIR` is the seam the tests use, and the way to inspect an

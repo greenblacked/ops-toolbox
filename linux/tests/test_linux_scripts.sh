@@ -2375,6 +2375,7 @@ case " $* " in
   *" -y "*) [[ "$last" == *plain* ]] && exit 0; exit 1 ;;
   *" -l "*)
     case "$last" in
+      *unreadable*) exit 1 ;;
       *rsa*) printf '2048 SHA256:abc comment (RSA)\n' ;;
       *)     printf '256 SHA256:def comment (ED25519)\n' ;;
     esac
@@ -2403,6 +2404,20 @@ assert_contains "ssh_client_doctor passes an Ed25519 key" \
   "$(grep -F 'id_ed25519 is an ED25519 key' <<<"$out" || true)" "[pass]"
 assert_contains "ssh_client_doctor passes a protected key" "$out" "id_ed25519 is passphrase-protected"
 assert_not_contains "ssh_client_doctor --only keys leaves the directory group out" "$out" "== directory =="
+# No .pub beside the key: type and size come from ssh-keygen -l on the
+# private file. When that fails too, the check is skipped with a line.
+nopub_dir="$(mktemp -d)"
+chmod 700 "$nopub_dir"
+for k in id_rsa_nopub id_unreadable; do
+  printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'not-a-real-key' '-----END OPENSSH PRIVATE KEY-----' > "$nopub_dir/$k"
+  chmod 600 "$nopub_dir/$k"
+done
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$nopub_dir" --only keys 2>&1)"
+assert_contains "ssh_client_doctor grades a key with no .pub from the private file" \
+  "$(grep -F 'id_rsa_nopub is a' <<<"$out" || true)" "2048-bit RSA key"
+assert_contains "ssh_client_doctor skips type and size when ssh-keygen -l fails" \
+  "$(grep -F 'id_unreadable' <<<"$out" | grep -F 'not checked' || true)" "[skip]"
+rm -rf "$nopub_dir"
 touch -d '3 years ago' "$keys_dir/id_ed25519"
 out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys --max-key-age 1 2>&1)"
 assert_contains "ssh_client_doctor warns on an old key" "$out" "consider rotating"
