@@ -221,6 +221,9 @@ def _in_script_comment(line, index):
     return segment.lstrip().startswith("#")
 
 
+_FIELD_EXPRESSION = re.compile(r'\$(?:[A-Za-z_\[("]|\\")')
+
+
 def _leak_spans(line):
     """(kind, start, end) of every secret value on one logical line."""
     for kind, skip_comments, pattern in _LEAK_PATTERNS:
@@ -236,8 +239,9 @@ def _leak_spans(line):
                 continue
             if kind == "sensitive field":
                 # A field value is plain text: `\$` there is a literal dollar
-                # in the secret, so only an unescaped `$name` is a reference.
-                if re.match(r"\$[A-Za-z_]", value) or value.startswith(("[", "(")):
+                # in the secret, so only an unescaped `$name`, `$[...]`,
+                # `$(...)` or `$"name"` is an expression, not a value.
+                if _FIELD_EXPRESSION.match(value) or value.startswith(("[", "(")):
                     continue
             else:
                 # An export escapes a script's `$` as `\$`; strip that one

@@ -10,4 +10,6 @@
   `--redact-secrets` is given, and the other modes warn on stderr.
   A quoted field value that never closes is treated as a secret to the end
   of the line, and a value that starts with an escaped `\$` in a field is a
-  literal dollar in the secret, not a variable reference.
+  literal dollar in the secret, not a variable reference. A field value
+  that is a RouterOS expression (`$name`, `$[...]`, `$(...)`) is still
+  not reported.
