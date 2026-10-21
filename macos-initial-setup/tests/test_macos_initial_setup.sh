@@ -3266,6 +3266,189 @@ assert_eq "status.sh argument error under --json exits 3" "3" "$rc"
 assert_eq "status.sh argument error under --json writes nothing to stdout" "" "$out"
 rm -rf "$js"
 
+section "schedule_report: section flags answer before preflight"
+SCHED="$M/schedule_report.sh"
+out="$("$SCHED" --list-sections 2>&1)"; rc=$?
+assert_eq "schedule_report --list-sections exits 0" "0" "$rc"
+for s in launchd-user launchd-agents launchd-daemons crontab at; do
+  if grep -qxF -- "$s" <<<"$out"; then
+    ok "schedule_report lists the $s section"
+  else
+    err "schedule_report --list-sections does not list $s"
+  fi
+done
+"$SCHED" --only nosuch >/dev/null 2>&1; rc=$?
+assert_eq "schedule_report rejects an unknown section -> 3" "3" "$rc"
+"$SCHED" --root /nonexistent/schedule-root >/dev/null 2>&1; rc=$?
+assert_eq "schedule_report rejects a --root that is not a directory -> 3" "3" "$rc"
+
+section "schedule_report: decodes plists, flags unsafe jobs"
+# plutil is faked to print the file it is given, so the fixtures are
+# hand-written XML plists - the form plutil -convert xml1 prints. crontab,
+# atq and launchctl are faked too, uname included, because this file also
+# runs on a real Mac. launchctl records every call: without --loaded the
+# report must never run it.
+sr="$(mktemp -d)"
+mkdir -p "$sr/bin" "$sr/home/Library/LaunchAgents" "$sr/tmp" \
+  "$sr/root/Library/LaunchAgents" "$sr/root/Library/LaunchDaemons" "$sr/fx"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sr/bin/uname"
+cat > "$sr/bin/plutil" <<'PLUTIL_EOF'
+#!/bin/sh
+[ "$1 $2 $3 $4" = "-convert xml1 -o -" ] || exit 1
+cat "$5"
+PLUTIL_EOF
+cat > "$sr/bin/crontab" <<'CRONTAB_EOF'
+#!/bin/sh
+[ "$1" = "-l" ] || exit 1
+if [ "${FAKE_NO_CRONTAB:-0}" = 1 ]; then
+  echo "crontab: no crontab for me" >&2
+  exit 1
+fi
+cat "$FAKE_SCHED/crontab.txt"
+CRONTAB_EOF
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$sr/bin/atq"
+cat > "$sr/bin/launchctl" <<'LAUNCHCTL_EOF'
+#!/bin/sh
+echo "$*" >> "$FAKE_SCHED/launchctl.calls"
+exit 0
+LAUNCHCTL_EOF
+chmod +x "$sr/bin/"*
+
+plist_head='<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>'
+plist_tail='</dict>
+</plist>'
+write_plist() {
+  printf '%s\n%s\n%s\n' "$plist_head" "$2" "$plist_tail" > "$1"
+}
+ua="$sr/home/Library/LaunchAgents"
+write_plist "$ua/com.example.backup.plist" '	<key>Label</key>
+	<string>com.example.backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>true</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>1</integer>
+		<key>Hour</key>
+		<integer>10</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>'
+write_plist "$ua/com.example.poll.plist" '	<key>Label</key>
+	<string>com.example.poll</string>
+	<key>Program</key>
+	<string>/bin/sh</string>
+	<key>StartInterval</key>
+	<integer>3600</integer>'
+write_plist "$ua/com.example.daemonish.plist" '	<key>Label</key>
+	<string>com.example.daemonish</string>
+	<key>Program</key>
+	<string>/bin/sh</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>'
+write_plist "$sr/root/Library/LaunchAgents/com.example.gone.plist" '	<key>Label</key>
+	<string>com.example.gone</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/nonexistent/vpn-helper</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>'
+write_plist "$sr/root/Library/LaunchDaemons/com.example.nightly.plist" '	<key>Label</key>
+	<string>com.example.nightly</string>
+	<key>Program</key>
+	<string>/bin/sh</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>'
+write_plist "$sr/root/Library/LaunchDaemons/com.apple.fixture.plist" '	<key>Label</key>
+	<string>com.apple.fixture</string>
+	<key>Program</key>
+	<string>/bin/sh</string>'
+printf '# nightly jobs\nMAILTO=""\n0 3 * * * /usr/local/bin/backup\n*/15 * * * * /usr/local/bin/sync\n' \
+  > "$sr/fx/crontab.txt"
+
+sched() {
+  FAKE_SCHED="$sr/fx" HOME="$sr/home" TMPDIR="$sr/tmp" PATH="$sr/bin:/usr/bin:/bin" \
+    "$SCHED" --root "$sr/root" "$@" 2>&1
+}
+
+out="$(sched)"; rc=$?
+assert_eq "schedule_report default run -> 0" "0" "$rc"
+assert_contains "a weekly calendar job is decoded" "$out" "com.example.backup   Mon 10:30   /bin/sh"
+assert_contains "a StartInterval job is decoded" "$out" "com.example.poll   every 3600s"
+assert_contains "a RunAtLoad and KeepAlive job is keep-alive" "$out" "com.example.daemonish   keep-alive"
+assert_contains "a daily daemon is decoded" "$out" "com.example.nightly   daily 03:00"
+assert_contains "a job whose program is gone is a warning naming the path" "$out" \
+  "[warn] com.example.gone runs /nonexistent/vpn-helper, which no longer exists"
+assert_not_contains "com.apple jobs are hidden by default" "$out" "com.apple.fixture   "
+assert_contains "hidden com.apple jobs are counted" "$out" "1 com.apple.* job(s) not shown"
+assert_contains "the crontab entries are counted" "$out" "2 cron entries"
+assert_not_contains "a crontab comment is not listed" "$out" "nightly jobs"
+assert_not_contains "a crontab variable is not counted as a job" "$out" "MAILTO"
+assert_contains "an empty at queue says so" "$out" "no queued at jobs"
+if [[ -e "$sr/fx/launchctl.calls" ]]; then
+  err "schedule_report ran launchctl without --loaded"
+else
+  ok "schedule_report never runs launchctl without --loaded"
+fi
+
+sched --strict >/dev/null; rc=$?
+assert_eq "a missing program fails under --strict -> 1" "1" "$rc"
+
+out="$(sched --include-apple --only launchd-daemons)"
+assert_contains "--include-apple lists com.apple jobs" "$out" "com.apple.fixture"
+out="$(sched --root="$sr/root" --only=launchd-agents)"
+assert_contains "--root=DIR and --only=SECTION are accepted" "$out" "com.example.gone"
+assert_not_contains "--only limits the report to its sections" "$out" "com.example.backup"
+
+chmod 666 "$ua/com.example.poll.plist"
+out="$(sched --only launchd-user)"
+assert_contains "a world-writable plist is a warning with its fix" "$out" "chmod go-w $ua/com.example.poll.plist"
+chmod 644 "$ua/com.example.poll.plist"
+
+esc_label="$(printf 'com.example.\033[31mred')"
+write_plist "$ua/com.example.esc.plist" "	<key>Label</key>
+	<string>$esc_label</string>
+	<key>Program</key>
+	<string>/bin/sh</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "a hostile label cannot write terminal escapes" "$out" $'\033'
+assert_contains "the sanitised label is still shown" "$out" "com.example.[31mred"
+rm -f "$ua/com.example.esc.plist"
+
+out="$(sched --only launchd-user --loaded)"
+assert_contains "--loaded marks each user agent" "$out" "[loaded]"
+assert_contains "--loaded asks launchctl about the user's domain" "$(cat "$sr/fx/launchctl.calls" 2>/dev/null)" "print gui/"
+rm -f "$sr/fx/launchctl.calls"
+
+out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?
+assert_eq "no crontab is not a failure -> 0" "0" "$rc"
+assert_contains "no crontab is a skip row" "$out" "no crontab for this user"
+
+empty_root="$sr/empty-root"
+mkdir -p "$empty_root/Library/LaunchAgents"
+out="$(sched --root "$empty_root" --only launchd-agents,launchd-daemons)"
+assert_contains "an empty LaunchAgents directory is a skip row" "$out" "no plists in $empty_root/Library/LaunchAgents"
+assert_contains "a missing LaunchDaemons directory is a skip row" "$out" "$empty_root/Library/LaunchDaemons does not exist"
+
+scratch_files="$(find "$sr/home" "$sr/tmp" -type f ! -name '*.plist' | wc -l | tr -d ' ')"
+assert_eq "schedule_report writes nothing under HOME or TMPDIR" "0" "$scratch_files"
+rm -rf "$sr"
+
 end_section
 # The file's own floor: it reached this line having opened sections, each of
 # which asserted something. Reaching it at all is what the removal of `-e` put

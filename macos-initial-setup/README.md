@@ -42,6 +42,7 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [`ops_context.sh`](#ops_contextsh)
 - [`net_doctor.sh`](#net_doctorsh)
 - [`tls_expiry.sh`](#tls_expirysh)
+- [`schedule_report.sh`](#schedule_reportsh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
@@ -94,6 +95,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
 | `net_doctor.sh` | Read-only "the network is wrong" report: interfaces, default route, split DNS, the system proxy against the shell's, VPN tunnels, `/etc/hosts` overrides, listeners, and an opt-in `--probe`. |
 | `tls_expiry.sh` | Read-only certificate expiry check for PEM files, hosts, and (`--keychain`) the client and identity certificates in the Keychain; exit `1` inside the `--days` window. |
+| `schedule_report.sh` | Read-only inventory of what fires when you are not looking: launchd agents and daemons with schedules decoded, crontab and `at` jobs; flags missing programs and writable plists. |
 | `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
@@ -123,6 +125,7 @@ than memorizing flags.
 | **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When git, brew or kubectl cannot reach something, especially after joining a VPN | Nothing — it only reads |
 | **Diagnose** | `tls_expiry.sh` | Weekly from a scheduler, or before a VPN or mTLS client certificate lapses | Nothing — it only reads |
+| **Diagnose** | `schedule_report.sh` | After installing or removing an app that runs in the background | Nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
@@ -1674,6 +1677,80 @@ nothing is written to disk.
 
 ---
 
+## `schedule_report.sh`
+
+What will fire when you are not looking? A developer Mac collects launchd jobs
+from installers (VPN clients, sync agents, Docker and OrbStack helpers), old
+cron lines and forgotten `at` jobs. This lists every one with its schedule in
+words, and flags the jobs worth a second look. The macOS half of
+[`linux/schedule_report.sh`](../linux/schedule_report.sh).
+
+```bash
+./schedule_report.sh                         # every section
+./schedule_report.sh --only launchd-user     # just ~/Library/LaunchAgents
+./schedule_report.sh --include-apple         # com.apple.* jobs too
+./schedule_report.sh --loaded                # mark each user agent loaded or not
+./schedule_report.sh --strict                # exit 1 on any warning
+```
+
+```text
+[info] com.example.backup   Mon 10:30   /usr/local/bin/backup
+[info] com.example.sync   every 3600s, at load   /Applications/Sync.app/Contents/MacOS/agent
+[warn] com.vendor.vpn-helper runs /Library/PrivilegedHelperTools/vpn-helper, which no longer exists
+```
+
+| Section | Source |
+| --- | --- |
+| `launchd-user` | `~/Library/LaunchAgents` |
+| `launchd-agents` | `/Library/LaunchAgents` |
+| `launchd-daemons` | `/Library/LaunchDaemons` |
+| `crontab` | `crontab -l`, comments and `NAME=value` lines left out, up to twenty entries |
+| `at` | `atq` |
+
+Each plist is read through `plutil -convert xml1 -o -`, so binary plists work
+too, and its schedule is rendered as `Mon 10:30`, `daily 03:00`,
+`every 3600s`, `at load`, `keep-alive`, `on path change` or `unscheduled`. A
+key `StartCalendarInterval` leaves out is a wildcard and shows as `**`.
+`com.apple.*` jobs are counted and hidden unless `--include-apple`.
+
+| Finding | Level |
+| --- | --- |
+| The job's program (an absolute `Program` or first `ProgramArguments`) does not exist | `warn`, with `stay_fresh.sh --prune-orphan-agents` for user agents and the `launchctl bootout` command for the others |
+| The plist, or the program it runs, is writable by its group or by everyone | `warn`, with `chmod go-w`: anyone who can edit either decides what runs as that user, or as root for a daemon |
+| `KeepAlive` with no `ThrottleInterval` | `info`: the job restarts whenever it exits |
+| `Disabled` set in the plist | noted on the row |
+
+**Strictly read-only.** Nothing is loaded, unloaded or edited: `plutil` only
+prints a plist, and the one `launchctl` call (`print`, behind `--loaded`)
+changes nothing. Removing a job stays with
+[`stay_fresh.sh`](#stay_freshsh)'s explicit `--prune-orphan-agents`. Plist and
+cron text is printed with control characters stripped and is never evaluated.
+`/Library/LaunchDaemons` is world-readable, so no `sudo` is needed.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--only SECTIONS` | Comma-separated subset (see `--list-sections`). |
+| `--list-sections` | Print the section ids and exit. |
+| `--include-apple` | Also list `com.apple.*` jobs. |
+| `--loaded` | Mark each user agent `[loaded]` or `[not loaded]` (one `launchctl print` per job). |
+| `--root DIR` | Where `/Library` is looked up (default `/`). |
+| `--strict` | Exit `1` when the report has any warning. |
+| `--quiet` | Print only warnings and the summary. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report ran; warnings do not change this. |
+| `1` | `--strict` was given and the report has a warning. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments, including an unknown section or a `--root` that is not a directory. |
+
+---
+
 ## `ssh_client_doctor.sh`
 
 `ssh` refuses a key with `Permission denied (publickey)` and names the reason
@@ -2166,6 +2243,8 @@ Homebrew / `pyenv` / `goenv` commands.
 - `tls_expiry.sh` reads the PEMs it is given and the public certificates
   in the Keychain. Its only network traffic is one TLS handshake per
   `--host`.
+- `schedule_report.sh` reads launchd plists, the crontab and the `at`
+  queue. It never loads, unloads or edits a job.
 - `ssh_client_doctor.sh` reads `~/.ssh` and asks `ssh-keygen` about each key
   without printing it. It never changes a mode; every fix is printed.
 
