@@ -23,7 +23,7 @@ unprivileged user by default.
 | [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh) | Read-only check of what would block or hurt a node drain; prints the drain command |
 | [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh) | Read-only per-node CPU, memory and pod requests against allocatable, plus Unschedulable pods |
 | [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Read-only pod-template audit: requests and limits, probes, image tags, security context, PDBs |
-| [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
+| [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster, node management, maintenance window, authorized networks, observability, shielded nodes, network policy |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
 | [`debug/`](debug/) | A pod, a job, and a kustomization for the debug image tag |
@@ -60,7 +60,7 @@ needs, and exits `2` rather than half-working when one is missing.
 | **Bash** | every script | `#!/usr/bin/env bash` with `set -euo pipefail`. |
 | **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
 | **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
-| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`python3`** | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) (six of its ten checks), [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
 | **`openssl`** | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Only to read a certificate's end date from stdin (`openssl x509 -noout -enddate`); no network use. OpenSSL and LibreSSL both work. |
 | **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
 
@@ -481,18 +481,42 @@ number, and `4` nothing to report. `--list-checks` and `--help` answer before
 ## Doctor a GKE cluster
 
 `gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
-reports release channel, control-plane vs node-pool skew, Workload Identity,
-and private-cluster flags, and prints the `gcloud` command that would fix
-each finding.
+runs `gcloud container clusters describe` and nothing else, and prints the
+`gcloud` command that would fix each finding.
 
 ```bash
 ./gke_cluster_doctor.sh --list-checks
 ./gke_cluster_doctor.sh --project P --cluster C --location europe-west1
 ./gke_cluster_doctor.sh --only channel,skew
+./gke_cluster_doctor.sh --only authnets,shielded,dataplane
 ```
+
+| Check | Finding | Fix printed |
+| --- | --- | --- |
+| `channel` | No release channel. | `--release-channel regular` |
+| `skew` | A node pool on a different version from the control plane, pool by pool. | `clusters upgrade --node-pool POOL --cluster-version` |
+| `identity` | Workload Identity not set. | `--workload-pool=PROJECT.svc.id.goog` |
+| `network` | Reports private nodes and private endpoint; never a finding. | none |
+| `nodepool-mgmt` | Node auto-repair off, or auto-upgrade off on a cluster with no release channel (a channel keeps auto-upgrade on whatever the pool says). | `node-pools update POOL --enable-autorepair --enable-autoupgrade` |
+| `maintenance` | No maintenance window, so upgrades can start at any hour. | `--maintenance-window-start START --maintenance-window-end END --maintenance-window-recurrence RRULE` |
+| `authnets` | A public control-plane endpoint with master authorized networks off, or `0.0.0.0/0` among the authorized blocks. Other blocks are counted, never printed. | `--enable-master-authorized-networks --master-authorized-networks CIDR` |
+| `observability` | Logging without `SYSTEM_COMPONENTS` or `WORKLOADS`, or monitoring without `SYSTEM_COMPONENTS`. | `--logging=SYSTEM,WORKLOAD --monitoring=SYSTEM` |
+| `shielded` | Shielded nodes off. | `--enable-shielded-nodes` |
+| `dataplane` | Neither Dataplane V2 nor network policy enforcement, so NetworkPolicies are accepted and ignored. Dataplane V2 can only be chosen when a cluster is created. | `--update-addons=NetworkPolicy=ENABLED`, then `--enable-network-policy` |
+
+The first four read single fields with `--format=value(...)` and need nothing
+but `gcloud`. The last six share one `--format=json` describe, reduced by a
+standard-library `python3` filter to booleans, names and counts. Without
+`python3` they are skipped with a warning and the first four still run, but
+naming one of them in `--only` exits `2`, because a skipped check asked for by
+name would read as a pass.
 
 Flags, or a kubectl context named `gke_PROJECT_LOCATION_CLUSTER`, resolve
 the cluster. `--list-checks` and `--help` answer before `gcloud` is required.
+Exit codes: `0` whether or not there are findings, `1` `gcloud` failed after
+connecting or its JSON could not be read, `2` no `gcloud`, an unresolved
+cluster, or no `python3` for a check `--only` named, `3` usage, and `4`
+`--only` selected nothing.
 
 ## Debug a running pod
 
@@ -604,7 +628,8 @@ certificate expiry windows and unreadable certificates (with an `openssl` stub,
 plus one real certificate when `openssl` is installed), drain blockers and
 budget selectors, every Kubernetes quantity form through the capacity
 percentages, each audit check with its label and fix, and query/JSON failures
-across every diagnostic section.
+across every diagnostic section. A stubbed `gcloud` runs all ten GKE doctor
+checks against cluster descriptions, with and without `python3`.
 Each of those suites also proves from the stub's call log that nothing but
 `get` and `cluster-info` ever ran. These tests never contact a real cluster.
 

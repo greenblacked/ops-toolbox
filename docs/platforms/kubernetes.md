@@ -11,8 +11,9 @@ only.
 
 - Bash on the host.
 - `kubectl` for triage and debug; `gcloud` for `gke_cluster_doctor.sh`.
-- `python3` for the read-only `kubectl_*` reports, and `openssl` for
-  `kubectl_cert_expiry.sh`, which only parses certificates from stdin.
+- `python3` for the read-only `kubectl_*` reports and six of the GKE
+  doctor's checks, and `openssl` for `kubectl_cert_expiry.sh`, which only
+  parses certificates from stdin.
 - Docker with buildx for `build.sh` and `run.sh`. Both exit 2 without Docker,
   except under `--dry-run`.
 - Credentials for any cluster you query.
@@ -29,7 +30,7 @@ only.
 | `kubectl_drain_preflight.sh` | What would block or hurt draining a node; prints the drain command, never runs it. | <span class="stage stage-report">read-only</span> |
 | `kubectl_node_capacity.sh` | Requests against allocatable per node, and Unschedulable pods; `--threshold`. | <span class="stage stage-report">read-only</span> |
 | `kubectl_workload_audit.sh` | Audit pod templates: requests, probes, image tags, security, PDBs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
-| `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `gke_cluster_doctor.sh` | GKE health checks: channel, skew, Workload Identity, node auto-repair, maintenance window, authorized networks, logging, shielded nodes, network policy; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
 | `run.sh` | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
 | `debug_pod.sh` | Attach an ephemeral debug container with `kubectl debug`. | `--dry-run` |

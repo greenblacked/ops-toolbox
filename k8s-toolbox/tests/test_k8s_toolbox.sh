@@ -197,7 +197,7 @@ assert_rc "build.sh --variant foo" 3 "$?"
 # --------------------------------------------------------------------------
 head_ "gke_cluster_doctor.sh before gcloud"
 checks="$("$K/gke_cluster_doctor.sh" --list-checks)"
-for check in channel skew identity network; do
+for check in channel skew identity network nodepool-mgmt maintenance authnets observability shielded dataplane; do
   if [[ "$checks" == *"$check"* ]]; then
     ok "gke_cluster_doctor lists check $check"
   else

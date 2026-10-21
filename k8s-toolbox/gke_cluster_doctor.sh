@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # gke_cluster_doctor.sh
 # Read-only GKE cluster report: release channel, control-plane vs node-pool
-# skew, Workload Identity, private nodes / private endpoint. Prints the
+# skew, Workload Identity, private nodes / private endpoint, node auto-repair
+# and auto-upgrade, maintenance window, master authorized networks, logging
+# and monitoring, shielded nodes, and network policy enforcement. Prints the
 # gcloud command that would fix each finding. Never mutates the cluster.
+# The last six read one JSON describe through python3; without python3 they
+# are skipped with a warning unless --only names them.
 #
 # Usage:
 #   ./gke_cluster_doctor.sh --project P --cluster C --location L
@@ -12,7 +16,8 @@
 # Exit codes:
 #   0 findings reported or cluster looks healthy
 #   1 gcloud failed after connecting
-#   2 wrong environment (no gcloud, cluster not resolved)
+#   2 wrong environment (no gcloud, cluster not resolved, or no python3
+#     for a check --only named)
 #   3 bad arguments
 #   4 --only selected nothing
 set -euo pipefail
@@ -43,7 +48,16 @@ CHECKS=(
   "skew|control-plane vs node-pool versions"
   "identity|Workload Identity pool"
   "network|private nodes / private endpoint"
+  "nodepool-mgmt|node auto-repair / auto-upgrade"
+  "maintenance|maintenance window"
+  "authnets|master authorized networks"
+  "observability|logging and monitoring"
+  "shielded|shielded nodes"
+  "dataplane|network policy / Dataplane V2"
 )
+
+# These read one JSON describe and need python3 to reduce it.
+JSON_CHECKS=" nodepool-mgmt maintenance authnets observability shielded dataplane "
 
 check_ids() {
   local row
@@ -63,6 +77,11 @@ Usage:
 Resolves the cluster from flags, or from a kubectl context named
 gke_PROJECT_LOCATION_CLUSTER.
 
+Checks: channel, skew, identity, network, nodepool-mgmt, maintenance,
+authnets, observability, shielded, dataplane. The last six read one JSON
+describe through python3; without python3 they are skipped with a warning,
+unless --only names one of them (then exit 2).
+
 Options:
   --project P         GCP project
   --cluster C         GKE cluster name
@@ -75,7 +94,8 @@ Options:
 Exit codes:
   0  findings reported or the cluster looks healthy
   1  gcloud failed after connecting
-  2  wrong environment (no gcloud, cluster not resolved)
+  2  wrong environment (no gcloud, cluster not resolved, or no python3
+     for a check --only named)
   3  usage
   4  --only selected nothing
 EOF
@@ -126,7 +146,7 @@ done
 if [[ -n "$ONLY" ]]; then
   IFS=',' read -r -a items <<< "$ONLY"
   for raw in "${items[@]}"; do
-    id="$(printf '%s' "$raw" | tr -d '[:space:]')"
+    id="${raw//[[:space:]]/}"
     [[ -n "$id" ]] || continue
     case "$known" in
       *" $id "*) SELECTED+=("$id") ;;
@@ -154,6 +174,24 @@ want() {
 if ! command -v gcloud >/dev/null 2>&1; then
   err "gcloud is not installed or not on PATH"
   exit 2
+fi
+
+# The four original checks need gcloud alone and keep working without
+# python3; the JSON checks are dropped with a warning, unless --only asked
+# for one by name, which would otherwise look like a pass.
+json_selected=()
+for s in "${SELECTED[@]}"; do
+  case "$JSON_CHECKS" in
+    *" $s "*) json_selected+=("$s") ;;
+  esac
+done
+if (( ${#json_selected[@]} > 0 )) && ! command -v python3 >/dev/null 2>&1; then
+  if [[ -n "$ONLY" ]]; then
+    err "python3 is not installed or not on PATH (needed by: ${json_selected[*]})"
+    exit 2
+  fi
+  warn "python3 not found; skipping ${json_selected[*]}"
+  json_selected=()
 fi
 
 if [[ -z "$PROJECT" || -z "$CLUSTER" || -z "$LOCATION" ]]; then
@@ -250,6 +288,130 @@ if want network; then
   nodes="$(describe 'value(privateClusterConfig.enablePrivateNodes)')"
   endpoint="$(describe 'value(privateClusterConfig.enablePrivateEndpoint)')"
   ok "network   privateNodes=${nodes:-false} privateEndpoint=${endpoint:-false}"
+fi
+
+if (( ${#json_selected[@]} > 0 )); then
+  if ! cluster_json="$(describe json)"; then
+    err "gcloud container clusters describe --format=json failed"
+    exit 1
+  fi
+  json_csv="$(IFS=','; printf '%s' "${json_selected[*]}")"
+  # Reduced to booleans, names and counts: no other field of the description
+  # reaches the output.
+  if ! report="$(printf '%s' "$cluster_json" | python3 -c '
+import json,sys
+selected=sys.argv[1].split(",")
+cluster=sys.argv[2]
+loc=sys.argv[3]
+doc=json.load(sys.stdin)
+if not isinstance(doc,dict):
+  raise ValueError("expected one cluster object")
+def obj(value):
+  if value is None:
+    return {}
+  if not isinstance(value,dict):
+    raise ValueError("expected an object")
+  return value
+update="gcloud container clusters update %s %s" % (cluster,loc)
+out=[]
+if "nodepool-mgmt" in selected:
+  channel=obj(doc.get("releaseChannel")).get("channel") or "UNSPECIFIED"
+  pools=doc.get("nodePools") or []
+  if not isinstance(pools,list):
+    raise ValueError("nodePools must be a list")
+  forced=False
+  if not pools:
+    out.append("I\tnodepool  no node pools reported")
+  for pool in pools:
+    name=obj(pool).get("name") or "?"
+    mgmt=obj(pool.get("management"))
+    off=[]
+    flags=[]
+    if mgmt.get("autoRepair") is not True:
+      off.append("auto-repair")
+      flags.append("--enable-autorepair")
+    # A release channel keeps auto-upgrade on whatever the pool says.
+    if mgmt.get("autoUpgrade") is not True:
+      if channel == "UNSPECIFIED":
+        off.append("auto-upgrade")
+        flags.append("--enable-autoupgrade")
+      else:
+        forced=True
+    if off:
+      out.append("W\tnodepool  node pool %s: %s off" % (name," and ".join(off)))
+      out.append("I\tfix       gcloud container node-pools update %s --cluster %s %s %s" % (name,cluster,loc," ".join(flags)))
+    else:
+      out.append("O\tnodepool  node pool %s: auto-repair and auto-upgrade on" % name)
+  if forced:
+    out.append("I\tnodepool  the %s release channel keeps auto-upgrade on regardless of the pool setting" % channel)
+if "maintenance" in selected:
+  window=obj(obj(doc.get("maintenancePolicy")).get("window"))
+  recurring=obj(window.get("recurringWindow"))
+  daily=obj(window.get("dailyMaintenanceWindow"))
+  if recurring.get("recurrence"):
+    out.append("O\tmaint     recurring window %s" % recurring["recurrence"])
+  elif daily.get("startTime"):
+    out.append("O\tmaint     daily window from %s" % daily["startTime"])
+  else:
+    out.append("W\tmaint     no maintenance window: upgrades can start at any hour")
+    out.append("I\tfix       %s --maintenance-window-start START --maintenance-window-end END --maintenance-window-recurrence RRULE" % update)
+if "authnets" in selected:
+  nets=obj(doc.get("masterAuthorizedNetworksConfig"))
+  private_endpoint=obj(doc.get("privateClusterConfig")).get("enablePrivateEndpoint") is True
+  fix="I\tfix       %s --enable-master-authorized-networks --master-authorized-networks CIDR" % update
+  if nets.get("enabled") is True:
+    blocks=nets.get("cidrBlocks") or []
+    if not isinstance(blocks,list):
+      raise ValueError("cidrBlocks must be a list")
+    out.append("O\tauthnets  master authorized networks on, %d CIDR block(s)" % len(blocks))
+    # Only the open-world block is ever printed; the rest are counted.
+    if any(obj(b).get("cidrBlock") == "0.0.0.0/0" for b in blocks):
+      out.append("W\tauthnets  0.0.0.0/0 is authorized: the control plane is open to the internet")
+      out.append(fix)
+  elif private_endpoint:
+    out.append("O\tauthnets  private endpoint only")
+  else:
+    out.append("W\tauthnets  public control-plane endpoint with master authorized networks off")
+    out.append(fix)
+if "observability" in selected:
+  logging=obj(obj(doc.get("loggingConfig")).get("componentConfig")).get("enableComponents") or []
+  monitoring=obj(obj(doc.get("monitoringConfig")).get("componentConfig")).get("enableComponents") or []
+  missing=["logging %s" % c for c in ("SYSTEM_COMPONENTS","WORKLOADS") if c not in logging]
+  missing+=["monitoring SYSTEM_COMPONENTS"] if "SYSTEM_COMPONENTS" not in monitoring else []
+  if missing:
+    out.append("W\tobserv    not collected: %s" % ", ".join(missing))
+    out.append("I\tfix       %s --logging=SYSTEM,WORKLOAD --monitoring=SYSTEM" % update)
+  else:
+    out.append("O\tobserv    logging %s; monitoring %s" % (",".join(logging),",".join(monitoring)))
+if "shielded" in selected:
+  if obj(doc.get("shieldedNodes")).get("enabled") is True:
+    out.append("O\tshielded  shielded nodes on")
+  else:
+    out.append("W\tshielded  shielded nodes off: node identity and boot integrity are not verified")
+    out.append("I\tfix       %s --enable-shielded-nodes" % update)
+if "dataplane" in selected:
+  if obj(doc.get("networkConfig")).get("datapathProvider") == "ADVANCED_DATAPATH":
+    out.append("O\tdataplane Dataplane V2, with network policy built in")
+  elif obj(doc.get("networkPolicy")).get("enabled") is True:
+    out.append("O\tdataplane network policy enforcement on")
+  else:
+    out.append("W\tdataplane no NetworkPolicy enforcement: policies are accepted and ignored")
+    out.append("I\tfix       %s --update-addons=NetworkPolicy=ENABLED" % update)
+    out.append("I\tfix       %s --enable-network-policy" % update)
+    out.append("I\tdataplane Dataplane V2 can only be chosen when a cluster is created")
+print("\n".join(out))
+' "$json_csv" "$CLUSTER" "${loc_flag[*]}" 2>/dev/null)"; then
+    err "could not parse the cluster description JSON"
+    exit 1
+  fi
+  cluster_json=""
+  while IFS=$'\t' read -r tag text; do
+    case "$tag" in
+      W) FINDINGS=1; warn "$text" ;;
+      O) ok "$text" ;;
+      I) info "$text" ;;
+    esac
+  done <<< "$report"
 fi
 
 if (( FINDINGS == 0 )); then
