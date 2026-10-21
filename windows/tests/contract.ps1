@@ -1266,18 +1266,35 @@ if (-not $sshDoctor) {
             @{ Label = 'config: BUILTIN\Users can modify'; WriteOnly = $true; Entries = @($owner, $usersModify); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; Offender = 'BUILTIN\Users' }
             @{ Label = 'config: Everyone has full control'; WriteOnly = $true; Entries = @($owner, $everyone); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; Offender = 'Everyone' }
         )
+        # The owner counts as well as the access list: Win32-OpenSSH refuses a
+        # file owned by anyone but the current user, SYSTEM or Administrators.
+        $ownedBy = {
+            param([string]$Name, [string]$Sid)
+            [pscustomobject]@{ Identity = $Name; Sid = $Sid }
+        }
+        $aclCases += @(
+            @{ Label = 'owned by the current user'; Entries = @($owner); Owner = (& $ownedBy 'LAPTOP\alice' 'S-1-5-21-1-2-3-1001'); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; WrongOwner = '' }
+            @{ Label = 'owned by Administrators (localised name, by SID)'; Entries = @($owner); Owner = (& $ownedBy 'VORDEFINIERT\Administratoren' 'S-1-5-32-544'); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; WrongOwner = '' }
+            @{ Label = 'owned by SYSTEM'; Entries = @($owner); Owner = (& $ownedBy 'NT AUTHORITY\SYSTEM' 'S-1-5-18'); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; WrongOwner = '' }
+            @{ Label = 'owned by another user, access list clean'; Entries = @($owner); Owner = (& $ownedBy 'LAPTOP\bob' 'S-1-5-21-1-2-3-1002'); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; WrongOwner = 'LAPTOP\bob' }
+            @{ Label = 'owned by the same name in another domain'; Entries = @($owner); Owner = (& $ownedBy 'CORP\alice' ''); User = 'LAPTOP\alice'; Sid = ''; Level = 'fail'; WrongOwner = 'CORP\alice' }
+            @{ Label = 'config owned by another user'; WriteOnly = $true; Entries = @($owner); Owner = (& $ownedBy 'LAPTOP\bob' 'S-1-5-21-1-2-3-1002'); User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'fail'; WrongOwner = 'LAPTOP\bob' }
+            @{ Label = 'owner unreadable is not judged'; Entries = @($owner); Owner = $null; User = 'LAPTOP\alice'; Sid = 'S-1-5-21-1-2-3-1001'; Level = 'pass'; WrongOwner = '' }
+        )
         $aclRan = 0
         foreach ($case in $aclCases) {
-            $verdict = Test-KeyAcl -Entries $case.Entries -CurrentUser $case.User -CurrentUserSid $case.Sid -WriteOnly:([bool]$case.WriteOnly)
+            $verdict = Test-KeyAcl -Entries $case.Entries -CurrentUser $case.User -CurrentUserSid $case.Sid -WriteOnly:([bool]$case.WriteOnly) -Owner $case.Owner
             $aclRan++
             $offenderOk = (-not $case.Offender) -or (@($verdict.Offenders) -contains $case.Offender)
+            $ownerVerdictOk = (-not $case.ContainsKey('WrongOwner')) -or ($verdict.WrongOwner -eq $case.WrongOwner)
+            $offenderOk = $offenderOk -and $ownerVerdictOk
             if ($verdict.Level -eq $case.Level -and $offenderOk) {
                 Test-Ok ("Test-KeyAcl {0} -> {1}" -f $case.Label, $verdict.Level)
             } else {
                 Test-Fail ("Test-KeyAcl {0}: got {1} [{2}], expected {3} [{4}]" -f $case.Label, $verdict.Level, (@($verdict.Offenders) -join ', '), $case.Level, $case.Offender)
             }
         }
-        if ($aclRan -lt 6) {
+        if ($aclRan -lt 17) {
             Test-Fail "only $aclRan ACL case(s) ran - this check has stopped checking"
         }
     }

@@ -124,6 +124,12 @@ function Write-Group { param([string]$Name) Write-Host ''; Write-Host "== $Name 
 # With -WriteOnly (the config file) only an Allow entry carrying write,
 # modify, delete, permission or ownership rights counts: others may read it.
 #
+# -Owner is { Identity, Sid } of the file's owner. Win32-OpenSSH refuses a
+# file ("Bad owner or permissions") whose owner is not the current user,
+# SYSTEM or Administrators, whatever its access list says, so such an owner
+# grades 'fail' and is returned as WrongOwner. Without -Owner (it could not be
+# read) the owner is not judged.
+#
 # An empty list grades as 'skip': there is nothing to read, which on Windows
 # means the ACL could not be read, and a verdict without evidence is not one.
 function Test-KeyAcl {
@@ -131,16 +137,37 @@ function Test-KeyAcl {
         [object[]]$Entries,
         [string]$CurrentUser,
         [string]$CurrentUserSid = '',
-        [switch]$WriteOnly
+        [switch]$WriteOnly,
+        [object]$Owner = $null
     )
     if (-not $Entries -or @($Entries).Count -eq 0) {
-        return [pscustomobject]@{ Level = 'skip'; Offenders = @() }
+        return [pscustomobject]@{ Level = 'skip'; Offenders = @(); WrongOwner = '' }
     }
 
     $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
     if ($CurrentUserSid) { $trustedSids += $CurrentUserSid }
     $trustedNames = @('NT AUTHORITY\SYSTEM', 'BUILTIN\Administrators')
     $userLeaf = ($CurrentUser -split '\\')[-1]
+
+    # The current user, written either way round: 'DOMAIN\alice' against
+    # 'alice' matches on the user part. Two qualified names must agree in
+    # full, because LAPTOP\alice and CORP\alice are different accounts.
+    $isCurrentUser = {
+        param([string]$Name)
+        if ($Name -match '\\' -and $CurrentUser -match '\\') { return ($Name -eq $CurrentUser) }
+        return (($Name -split '\\')[-1] -eq $userLeaf)
+    }
+
+    $wrongOwner = ''
+    if ($null -ne $Owner -and [string]$Owner.Identity) {
+        $ownerName = [string]$Owner.Identity
+        $ownerSid = [string]$Owner.Sid
+        $ownerOk = $false
+        if ($ownerSid -and $trustedSids -contains $ownerSid) { $ownerOk = $true }
+        elseif ($trustedNames -contains $ownerName) { $ownerOk = $true }
+        elseif (& $isCurrentUser $ownerName) { $ownerOk = $true }
+        if (-not $ownerOk) { $wrongOwner = $ownerName }
+    }
 
     $offenders = @()
     foreach ($entry in $Entries) {
@@ -159,23 +186,14 @@ function Test-KeyAcl {
         }
         if ($trustedNames -contains $identity) { continue }
 
-        # The current user, written either way round: 'DOMAIN\alice' against
-        # 'alice' matches on the user part. Two qualified names must agree in
-        # full, because LAPTOP\alice and CORP\alice are different accounts.
-        $isUser = $false
-        if ($identity -match '\\' -and $CurrentUser -match '\\') {
-            $isUser = ($identity -eq $CurrentUser)
-        } else {
-            $isUser = (($identity -split '\\')[-1] -eq $userLeaf)
-        }
-        if ($isUser) { continue }
+        if (& $isCurrentUser $identity) { continue }
 
         if ($offenders -notcontains $identity) { $offenders += $identity }
     }
 
     $level = 'pass'
-    if ($offenders.Count -gt 0) { $level = 'fail' }
-    return [pscustomobject]@{ Level = $level; Offenders = $offenders }
+    if ($offenders.Count -gt 0 -or $wrongOwner) { $level = 'fail' }
+    return [pscustomobject]@{ Level = $level; Offenders = $offenders; WrongOwner = $wrongOwner }
 }
 
 # IdentityFile lines from an ssh_config, as two lists:
@@ -323,6 +341,26 @@ function Get-AclEntry {
         }
     }
     return $rows
+}
+
+# The owner of a file as { Identity, Sid }, or $null when it cannot be read.
+function Get-AclOwner {
+    param([string]$Path)
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $name = [string]$acl.Owner
+        if (-not $name) { return $null }
+        $sid = ''
+        try {
+            $sid = (New-Object System.Security.Principal.NTAccount -ArgumentList $name).Translate([System.Security.Principal.SecurityIdentifier]).Value
+        } catch {
+            Write-Verbose $_.Exception.Message
+        }
+        return [pscustomobject]@{ Identity = $name; Sid = $sid }
+    } catch {
+        Write-Verbose ("{0}: {1}" -f $Path, $_.Exception.Message)
+        return $null
+    }
 }
 
 function Get-GitConfigValue {
@@ -507,7 +545,8 @@ foreach ($file in $aclSubjects) {
         continue
     }
     $isConfig = ($file.Name -eq 'config')
-    $verdict = Test-KeyAcl -Entries $entries -CurrentUser $currentUser -CurrentUserSid $currentSid -WriteOnly:$isConfig
+    $owner = Get-AclOwner -Path $file.FullName
+    $verdict = Test-KeyAcl -Entries $entries -CurrentUser $currentUser -CurrentUserSid $currentSid -WriteOnly:$isConfig -Owner $owner
     switch ($verdict.Level) {
         'pass' {
             if ($isConfig) { Write-Pass ('{0}: nobody but you, SYSTEM and Administrators can change it' -f $file.Name) }
@@ -515,13 +554,21 @@ foreach ($file in $aclSubjects) {
         }
         'skip' { Write-Skip ('{0}: no access entries readable' -f $file.Name) }
         default {
-            $hint = @(
+            $hint = @()
+            if ($verdict.WrongOwner) {
+                $hint += ('icacls "{0}" /setowner "{1}"' -f $file.FullName, $currentUser)
+            }
+            $hint += @(
                 ('icacls "{0}" /inheritance:r' -f $file.FullName),
                 ('icacls "{0}" /grant:r "{1}:(F)"' -f $file.FullName, $currentUser))
             foreach ($offender in $verdict.Offenders) {
                 $hint += ('icacls "{0}" /remove "{1}"' -f $file.FullName, $offender)
             }
-            if ($isConfig) {
+            if (@($verdict.Offenders).Count -eq 0) {
+                Write-Fail -Message ('{0}: owned by {1}, not you, SYSTEM or Administrators; Windows OpenSSH refuses it (bad owner)' -f $file.Name, $verdict.WrongOwner) -Hint $hint
+            } elseif ($verdict.WrongOwner) {
+                Write-Fail -Message ('{0}: owned by {1} (not you, SYSTEM or Administrators) and also accessible by {2}; Windows OpenSSH refuses it' -f $file.Name, $verdict.WrongOwner, ($verdict.Offenders -join ', ')) -Hint $hint
+            } elseif ($isConfig) {
                 Write-Fail -Message ('{0}: also writable by {1}; Windows OpenSSH refuses it (bad permissions)' -f $file.Name, ($verdict.Offenders -join ', ')) -Hint $hint
             } else {
                 Write-Fail -Message ('{0}: also readable by {1}; Windows OpenSSH refuses it as UNPROTECTED' -f $file.Name, ($verdict.Offenders -join ', ')) -Hint $hint
