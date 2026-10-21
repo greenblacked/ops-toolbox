@@ -139,6 +139,7 @@ function Get-PathFinding {
     $normalise = { param([string]$Text) $Text.Trim().Trim('"').TrimEnd('\', '/').ToLowerInvariant() }
     $findings = @()
     $seen = [ordered]@{}
+    $dupSeen = @{}
     $position = 0
     foreach ($raw in $Entries) {
         $entry = [string]$raw
@@ -163,12 +164,20 @@ function Get-PathFinding {
         }
 
         $key = & $normalise $effective
-        if ($seen.Contains($key)) {
-            $findings += [pscustomobject]@{ Level = 'warn'; Code = 'duplicate'; Entry = $entry
-                Message = "$Scope PATH entry $position ($entry) repeats entry $($seen[$key])" }
-            continue
+        # The same rule as Get-CleanedPath: only an entry clean can judge (an
+        # absolute drive path with no %VARIABLE%, not quoted) is a first copy
+        # or a duplicate. One it cannot judge may not work as written, so it
+        # never makes a later judgeable equivalent a duplicate.
+        $judgeable = ($entry -notmatch '%') -and ($entry.Trim() -match '^[A-Za-z]:\\')
+        if ($judgeable) {
+            if ($dupSeen.Contains($key)) {
+                $findings += [pscustomobject]@{ Level = 'warn'; Code = 'duplicate'; Entry = $entry
+                    Message = "$Scope PATH entry $position ($entry) repeats entry $($dupSeen[$key])" }
+                continue
+            }
+            $dupSeen[$key] = $position
         }
-        $seen[$key] = $position
+        if (-not $seen.Contains($key)) { $seen[$key] = $position }
 
         $bare = $effective.Trim().Trim('"')
         if ($bare -match '%') { continue }

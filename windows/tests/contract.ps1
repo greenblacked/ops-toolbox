@@ -1829,6 +1829,24 @@ if (-not $pathDoctor) {
         if ($findingRan -lt 7) {
             Test-Fail "only $findingRan PATH case(s) ran - this check has stopped checking"
         }
+        # The report must follow clean's rule: an entry clean cannot judge never
+        # makes a later judgeable equivalent a duplicate.
+        $toolsExpand = { param([string]$Text) $Text -replace '%TOOLS%', 'C:\Tools' }
+        $ruleCases = @(
+            @{ Label = 'REG_SZ %TOOLS% then C:\Tools'; Entries = @('%TOOLS%', 'C:\Tools'); Kind = 'String'; Want = 0 }
+            @{ Label = 'REG_EXPAND_SZ %TOOLS% then C:\Tools'; Entries = @('%TOOLS%', 'C:\Tools'); Kind = 'ExpandString'; Want = 0 }
+            @{ Label = 'quoted then unquoted C:\Tools'; Entries = @('"C:\Tools"', 'C:\Tools'); Kind = 'ExpandString'; Want = 0 }
+            @{ Label = 'quoted, unquoted, then a repeat of the unquoted'; Entries = @('"C:\Tools"', 'C:\Tools', 'c:\tools\'); Kind = 'ExpandString'; Want = 1 }
+        )
+        foreach ($rule in $ruleCases) {
+            $ruleDup = @(Get-PathFinding -Entries $rule.Entries -Scope 'User' -Kind $rule.Kind -Exists $fakeExists `
+                    -Expand $toolsExpand -Length 100 | Where-Object { $_.Code -eq 'duplicate' })
+            if ($ruleDup.Count -eq $rule.Want) {
+                Test-Ok "report matches clean: $($rule.Label) -> $($rule.Want) duplicate(s)"
+            } else {
+                Test-Fail "report differs from clean: $($rule.Label) gave $($ruleDup.Count) duplicate(s), expected $($rule.Want)"
+            }
+        }
     }
 }
 
