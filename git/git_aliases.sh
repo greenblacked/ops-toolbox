@@ -56,6 +56,7 @@ _pus_git_alias gdiffb   git_diff_branch.sh
 _pus_git_alias grecent  git_recent_branches.sh
 _pus_git_alias groot    git_repo_root.sh
 _pus_git_alias gwho     git_whoami.sh
+_pus_git_alias grepos   git_repos_status.sh
 
 # --- housekeeping ----------------------------------------------------------
 _pus_git_alias gsync    git_sync_default.sh

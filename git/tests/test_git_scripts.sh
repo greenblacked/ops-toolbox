@@ -26,6 +26,7 @@ PRUNE="$G/git_prune_gone.sh"
 STALE="$G/git_stale_branches.sh"
 SIZE="$G/git_size_report.sh"
 CLONE="$G/clone-repos.sh"
+REPOS_STATUS="$G/git_repos_status.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
@@ -246,6 +247,7 @@ fi
 alias_out="$(bash -c ". '$G/git_aliases.sh'; alias" 2>/dev/null)"
 assert_contains "$alias_out" "$G/gacp.sh" "git_aliases.sh points gacp at the script beside it"
 assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers the other helpers"
+assert_contains "$alias_out" "grepos='$REPOS_STATUS'" "git_aliases.sh defines grepos"
 
 # The guard is the point of the file: copied somewhere the scripts are not,
 # and with nothing of that name on PATH, it must define no aliases at all
@@ -771,6 +773,10 @@ fi
 section "prune durable recovery contracts"
 out="$(bash "$G/tests/test_prune_gone.sh" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "prune recovery contract suite succeeds: $out"
+
+section "git_repos_status.sh"
+out="$(bash "$G/tests/test_repos_status.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "repos status suite succeeds: $out"
 
 section "stale branch state filter"
 repo="$(new_repo)"

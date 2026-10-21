@@ -17,6 +17,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`set_git_profile.sh`](#set_git_profilesh)
 - [`git_whoami.sh`](#git_whoamish)
 - [`git_status_summary.sh`](#git_status_summarysh)
+- [`git_repos_status.sh`](#git_repos_statussh)
 - [`git_sync_default.sh`](#git_sync_defaultsh)
 - [`git_cleanup_merged.sh`](#git_cleanup_mergedsh)
 - [`git_prune_gone.sh`](#git_prune_gonesh)
@@ -78,6 +79,7 @@ the [aliases](#aliases) give each one a short name.
 | `set_git_profile.sh` | Set Git identity globally or per repository, save named profiles, apply them later. |
 | `git_whoami.sh` | Show the effective identity and optionally enforce an expected email. |
 | `git_status_summary.sh` | Compact status with optional stable `--porcelain` output. |
+| `git_repos_status.sh` | One-screen status of every checkout under a directory; `--strict` fails while work exists only locally. |
 | `git_sync_default.sh` | Fast-forward the default branch and optionally restore the starting branch. |
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
 | `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
@@ -135,7 +137,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `grecent` | `git_recent_branches.sh` | `ghooks` | `git_hooks_install.sh` |
 | `groot` | `git_repo_root.sh` | `gprofile` | `set_git_profile.sh` |
 | `gwho` | `git_whoami.sh` | `gssh` | `git_ssh_doctor.py` |
-| | | `gsign` | `git_signing_doctor.py` |
+| `grepos` | `git_repos_status.sh` | `gsign` | `git_signing_doctor.py` |
 | | | `gremote` | `git_remote_doctor.py` |
 | | | `gignore` | `git_ignore_doctor.py` |
 
@@ -254,6 +256,57 @@ One-screen summary: branch (or detached), short `HEAD`, upstream, ahead/behind c
 `branch`, `head`, `upstream`, `ahead`, `behind`, `changed`, `staged`,
 `unstaged`, `untracked`. It omits headings and presentation placeholders; an
 absent upstream has an empty value.
+
+---
+
+## `git_repos_status.sh`
+
+The read side of `clone-repos.sh`: one line per checkout under a directory,
+so "which of my thirty clones has uncommitted work, unpushed commits or a
+stash, and which are behind?" is one command instead of a `cd` loop. Run it
+before re-imaging a laptop, after a context switch, or as a morning catch-up.
+
+```bash
+./git/git_repos_status.sh --dir ~/src
+./git/git_repos_status.sh --dir ~/src --dir ~/work --depth 3
+./git/git_repos_status.sh --dir ~/src --only unpushed
+./git/git_repos_status.sh --dir ~/src --fetch            # refresh refs first (network)
+./git/git_repos_status.sh --dir ~/src --strict           # gate: exit 1 while anything is at risk
+./git/git_repos_status.sh --dir ~/src --porcelain
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--dir DIR` | Where to look; repeatable, default the current directory. A `DIR` that is itself a checkout is reported alone. |
+| `--depth N` | How many directory levels below `DIR` to search (default `2`). A checkout is never descended into, so its own subdirectories and submodules are not reported separately. |
+| `--only STATE` | Keep only rows that are `dirty`, `ahead`, `behind`, have `unpushed` commits, or have a `stash`. The summary and `--strict` describe the filtered set. |
+| `--fetch` | Run `git fetch --quiet` in each checkout that has a remote first, with terminal prompts off. It writes remote-tracking refs and nothing else; a failed fetch is noted as `fetch-failed` and the sweep goes on. |
+| `--dry-run` | Print the fetch each checkout with a remote would get, report from the refs already on disk, and close with `dry-run complete; no changes written`. |
+| `--strict` | Exit `1` when any reported checkout has work at risk. |
+| `--porcelain` | Tab-separated rows, no header or colour: `path branch upstream ahead behind changed stash unpushed notes`. `path` is the checkout as found under `--dir`; an absent upstream is an empty field. |
+
+The table columns are `REPO` (relative to the `--dir` it was found under),
+`BRANCH` (`detached@<sha>` for a detached `HEAD`), `SYNC` (`=`, `+2`, `-1`,
+`+2/-1`, or `-` with no upstream), `CHANGED` (tracked and untracked paths from
+`git status`; ignored files do not count), `STASH`, `UNPUSHED` (commits on
+local branches, or on a detached `HEAD`, that no remote-tracking ref contains)
+and `NOTES`: `dirty`, `ahead`, `behind`, `diverged`, `detached`,
+`no-upstream`, `no-remote`, `stash`, `fetch-failed`, `unreadable`.
+
+**Work at risk** is anything that exists only on this machine: changed or
+untracked files, commits ahead of the upstream, unpushed commits, or a stash.
+In a checkout with no remote every commit is unpushed, which is the truth. A
+checkout git cannot read at all is counted as at risk too, because it could not
+be proven otherwise. Being behind is reported but is not at risk.
+
+Read-only apart from the opt-in `--fetch`. It never pulls, merges, checks out,
+stashes or cleans, and `git status` runs with `--no-optional-locks`, so it does
+not even refresh an index in a checkout an editor has open. Without `--fetch`
+remote-tracking refs are as fresh as the last fetch in each checkout.
+
+Exit codes: `0` success (a plain run exits `0` even when checkouts need
+attention), `1` `--strict` found work at risk, `2` git missing or a `--dir` is
+not a readable directory, `3` usage, `4` no repository found.
 
 ---
 
@@ -710,6 +763,7 @@ All paths below assume the repo root is your current directory.
 ./git/set_git_profile.sh --local --profile work
 ./git/git_whoami.sh
 ./git/git_status_summary.sh --porcelain
+./git/git_repos_status.sh --dir ~/src --strict
 ./git/git_sync_default.sh --dry-run --restore
 ./git/git_cleanup_merged.sh --dry-run --base main --include 'feature/*'
 ./git/git_prune_gone.sh --dry-run --exclude '*keep*'

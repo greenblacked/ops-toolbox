@@ -43,6 +43,7 @@ _pretty_git_alias gdiffb   git_diff_branch.sh
 _pretty_git_alias grecent  git_recent_branches.sh
 _pretty_git_alias groot    git_repo_root.sh
 _pretty_git_alias gwho     git_whoami.sh
+_pretty_git_alias grepos   git_repos_status.sh
 
 # --- housekeeping ----------------------------------------------------------
 _pretty_git_alias gsync    git_sync_default.sh
