@@ -56,8 +56,8 @@ expected to be told what was missing. `-Yes` is that gate, spelled the way the
 Bash sibling spells it, and it is checked first — before elevation is probed
 and before any target is read.
 
-Exit codes: `0` success, `3` refused because neither `-DryRun` nor `-Yes` was
-given.
+Exit codes: `0` success, `1` `-IncludeComponentStore` ran and `Dism.exe`
+exited non-zero, `3` refused because neither `-DryRun` nor `-Yes` was given.
 
 Run from an **elevated** PowerShell to also clean the system-wide targets
 (Windows temp, WER reports, Delivery Optimization, Windows Update cache);
@@ -120,9 +120,10 @@ measures them and names the tool that does give the space back.
   (their tooling doesn't expose sizes cheaply); the real clean prints
   before/after free space, which captures everything. The component store
   runs last for that reason.
-- A `FAIL` line - DISM exiting non-zero, for instance - is reported and the
-  run carries on. It does not change the exit code, which stays `0` or `3`
-  as documented above; making failures change it is a separate decision.
+- A `FAIL` line for the component store - `Dism.exe` exiting non-zero - is
+  reported and the run carries on, then the script exits `1` after the
+  summary. Without `-IncludeComponentStore` the exit code stays `0` or `3`
+  as documented above.
 
 ## disk_usage.ps1
 
