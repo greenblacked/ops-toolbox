@@ -987,6 +987,32 @@ function Test-WslConfig {
     } else {
         $findings += [PSCustomObject]@{ Level = 'info'; Check = '[experimental] sparseVhd'; Message = 'consider sparseVhd=true (or wsl_manage.ps1 sparse for an existing distro)' }
     }
+    # Whole-number settings other than processors (checked above). Digits are
+    # matched as [0-9] so a non-ASCII digit does not pass. maxCrashDumpCount
+    # allows -1 (keep every dump); the millisecond timeouts do not go below 0.
+    $integerKeys = @{
+        'vmIdleTimeout' = 0; 'maxCrashDumpCount' = -1
+        'instanceIdleTimeout' = 0; 'initialAutoProxyTimeout' = 0
+    }
+    foreach ($intKey in @($integerKeys.Keys | Sort-Object)) {
+        if (-not $values.ContainsKey($intKey)) { continue }
+        $e = $values[$intKey]
+        $floor = $integerKeys[$intKey]
+        $number = [long]0
+        if ($e.Value -notmatch '^-?[0-9]{1,18}$' -or
+            -not [long]::TryParse($e.Value, [System.Globalization.NumberStyles]::AllowLeadingSign, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$number) -or
+            $number -lt $floor) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not a whole number of $floor or more" }
+        }
+    }
+
+    # Microsoft documents four networking modes. An unknown value makes WSL
+    # fall back to NAT, so it is reported rather than assumed to work. The
+    # check is -match, which ignores case.
+    if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -notmatch '^(nat|mirrored|virtioproxy|none)$') {
+        $e = $values['networkingMode']
+        $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not nat, mirrored, virtioproxy or none; WSL falls back to NAT" }
+    }
     if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -eq 'mirrored' -and
         $values.ContainsKey('localhostForwarding')) {
         $findings += [PSCustomObject]@{ Level = 'info'; Check = (Get-Label $values['localhostForwarding']); Message = 'moot with networkingMode=mirrored, which shares localhost already' }

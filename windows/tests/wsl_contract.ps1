@@ -286,6 +286,32 @@ Test-Case 'the ignored-section message names all three sections WSL reads' (
     @($found | Where-Object { $_.Message -match '\[general\], \[wsl2\] and \[experimental\]' }).Count -eq 1
 ) (Format-Finding $found)
 
+foreach ($mode in 'nat', 'mirrored', 'virtioproxy', 'none', 'Mirrored') {
+    $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nnetworkingMode=$mode"
+    Test-Case "networkingMode=$mode is accepted" (
+        @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0
+    ) (Format-Finding $found)
+}
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nnetworkingMode=bridged"
+Test-Case 'a networkingMode WSL does not define is reported, with the NAT fallback' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -match 'not nat, mirrored, virtioproxy or none.*NAT' }).Count -eq 1
+) (Format-Finding $found)
+
+foreach ($case in @(
+        @('vmIdleTimeout', '60000', 0), @('vmIdleTimeout', '0', 0), @('vmIdleTimeout', '-1', 1), @('vmIdleTimeout', '1m', 1),
+        @('vmIdleTimeout', '1.5', 1), @('vmIdleTimeout', '', 1),
+        @('maxCrashDumpCount', '10', 0), @('maxCrashDumpCount', '-1', 0), @('maxCrashDumpCount', '-2', 1), @('maxCrashDumpCount', 'many', 1))) {
+    $key, $val, $bad = $case
+    $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n$key=$val"
+    Test-Case "$key=$val is $(if ($bad) { 'reported as not a whole number' } else { 'accepted' })" (
+        @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq "[wsl2] $key (line 3)" -and $_.Message -match 'not a whole number' }).Count -eq $bad
+    ) (Format-Finding $found)
+}
+$found = Get-WslConfigFinding "[general]`ninstanceIdleTimeout=soon`n[wsl2]`nmemory=8GB`n[experimental]`ninitialAutoProxyTimeout=1s"
+Test-Case 'the other numeric keys are checked too' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match 'not a whole number' }).Count -eq 2
+) (Format-Finding $found)
+
 foreach ($mode in 'disabled', 'gradual', 'dropCache', 'DropCache') {
     $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n[experimental]`nautoMemoryReclaim=$mode"
     Test-Case "autoMemoryReclaim=$mode is accepted" (
