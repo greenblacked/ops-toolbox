@@ -443,6 +443,15 @@ else
   else
     err "print_startup.sh --only stay_fresh must list StayFreshDryRun commented out"
   fi
+  # A quoted default with spaces in it must survive the table's parsing whole,
+  # and its note must not swallow the end of the value.
+  backup_out="$(NO_COLOR=1 "$STARTUP" --only backup)"
+  if grep -qxF '# :global RouterBackupPassword "<paste backup password>";' <<<"$backup_out" \
+     && grep -qxF '# RouterBackupPassword: encrypts the binary backup; leave unset for none' <<<"$backup_out"; then
+    ok "--only backup prints the RouterBackupPassword placeholder intact"
+  else
+    err "print_startup.sh --only backup split the quoted RouterBackupPassword placeholder"
+  fi
   NO_COLOR=1 "$STARTUP" --only nosuch >/dev/null 2>&1
   rc=$?
   if (( rc == 3 )); then ok "print_startup.sh --only nosuch -> 3"; else err "print_startup.sh --only nosuch exited $rc, expected 3"; fi
