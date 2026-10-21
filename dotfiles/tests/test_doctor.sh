@@ -70,9 +70,10 @@ mkdir -p "$H" "$T"
 # Every doctor run gets the scratch home and tmp, and none of the variables
 # the doctor reads: with --home it ignores XDG_CONFIG_HOME by design, a test
 # must never be able to reach the developer's real config directory whatever
-# the shell exports, and an exported RIPGREP_CONFIG_PATH or GITLEAKS_CONFIG
-# would turn the environment-hook verdicts into the developer's own.
-NOENV=(-u XDG_CONFIG_HOME -u RIPGREP_CONFIG_PATH -u GITLEAKS_CONFIG)
+# the shell exports, an exported RIPGREP_CONFIG_PATH or GITLEAKS_CONFIG would
+# turn the environment-hook verdicts into the developer's own, and a
+# GIT_CONFIG_GLOBAL would aim the git checks at the developer's config.
+NOENV=(-u XDG_CONFIG_HOME -u RIPGREP_CONFIG_PATH -u GITLEAKS_CONFIG -u GIT_CONFIG_GLOBAL)
 run_doctor_in() {
   local home="$1"; shift
   guard env "${NOENV[@]}" HOME="$home" TMPDIR="$T" "$DOCTOR" --home "$home" "$@"
@@ -328,6 +329,92 @@ out="$(guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" PATH="$MINBIN" "$BASH" "$DO
 assert_rc "no tools on PATH exits 0" 0 "$rc"
 assert_contains "a missing rg is skipped" "$out" "[skip] RIPGREP_CONFIG_PATH: rg not installed"
 assert_contains "a missing gitleaks is skipped" "$out" "[skip] GITLEAKS_CONFIG: gitleaks not installed"
+
+# --------------------------------------------------------------------------
+head_ "ssh and git overlays"
+if command -v ssh >/dev/null 2>&1; then
+  rm -rf "$H"; mkdir -p "$H/.ssh"; chmod 700 "$H/.ssh"
+  printf 'BogusOption yes\n' > "$H/.ssh/config"
+  before="$(snapshot "$H" "$T")"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  after="$(snapshot "$H" "$T")"
+  assert_rc "an ssh config ssh rejects exits 1" 1 "$rc"
+  assert_contains "the rejected config is named" "$out" "[FAIL] ssh rejects $H/.ssh/config"
+  if [[ "$before" == "$after" ]]; then ok "the ssh check wrote nothing"; else err "the ssh check wrote into the home or tmp"; fi
+
+  # The shipped config, which turns HashKnownHosts on.
+  cp "$D/home/.ssh/config" "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_rc "the shipped ssh config exits 0" 0 "$rc"
+  assert_contains "ssh accepts the shipped config" "$out" "[pass] ssh accepts $H/.ssh/config"
+
+  printf '# a comment\n|1|abc=|def= ssh-ed25519 AAAA\nplain-one.example.invalid ssh-ed25519 AAAA\n@cert-authority plain-two.example.invalid ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+  before="$(snapshot "$H" "$T")"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  after="$(snapshot "$H" "$T")"
+  assert_rc "plaintext known_hosts entries are a warning, exit 0" 0 "$rc"
+  assert_contains "plaintext entries are counted" "$out" "[warn] 2 plaintext host entries in known_hosts although HashKnownHosts is on"
+  assert_contains "the fix keeps a .old copy" "$out" "ssh-keygen -H -f $H/.ssh/known_hosts"
+  assert_not_contains "no host name is printed" "$out" "plain-one"
+  assert_not_contains "no marked host name is printed" "$out" "plain-two"
+  if [[ "$before" == "$after" ]]; then ok "the known_hosts check wrote nothing"; else err "the known_hosts check wrote into the home or tmp"; fi
+  run_doctor --platform linux --fail-on warn >/dev/null 2>&1; rc=$?
+  assert_rc "--fail-on warn exits 1 on plaintext entries" 1 "$rc"
+  printf '|1|abc=|def= ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+  out="$(run_doctor --platform linux 2>&1)"
+  assert_contains "an all-hashed known_hosts passes" "$out" "[pass] known_hosts holds no plaintext host"
+
+  # A ControlMaster socket three days old. python3 makes the socket and ages
+  # it; without it, or when the scratch path is too long for a socket name,
+  # this part is skipped rather than failed.
+  PY="$(command -v python3 || true)"
+  sock="$H/.ssh/cm-x"
+  if [[ -n "$PY" ]] && "$PY" -I -c 'import os, socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.close()
+t = time.time() - 3 * 86400
+os.utime(sys.argv[1], (t, t))' "$sock" 2>/dev/null; then
+    out="$(run_doctor --platform linux 2>&1)"; rc=$?
+    assert_rc "a stale socket is a warning, exit 0" 0 "$rc"
+    assert_contains "the stale socket is counted" "$out" "[warn] 1 ControlMaster socket(s) older than a day"
+    assert_true "the doctor left the socket in place" test -S "$sock"
+    rm -f "$sock"
+  else
+    skip "no python3 to make a socket, or the scratch path is too long for one"
+  fi
+else
+  skip "no ssh: the ssh config, known_hosts and socket checks need it"
+fi
+
+if command -v git >/dev/null 2>&1; then
+  rm -rf "$H"; mkdir -p "$H"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_rc "a missing identity is a warning, exit 0" 0 "$rc"
+  assert_contains "a missing identity is reported" "$out" "[warn] no commit identity"
+  assert_contains "the fix writes to config.local" "$out" "git config --file $H/.config/git/config.local user.name"
+
+  # The tracked config includes config.local by a relative path; the identity
+  # is found only if the doctor asks git with --includes.
+  mkdir -p "$H/.config/git"
+  cp "$D/config/git/config" "$H/.config/git/config"
+  printf '[user]\n\tname = A\n\temail = a@example.invalid\n' > "$H/.config/git/config.local"
+  before="$(snapshot "$H" "$T")"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  after="$(snapshot "$H" "$T")"
+  assert_contains "an identity in config.local is found" "$out" "[pass] a commit identity is set"
+  assert_not_contains "no identity warning once config.local has one" "$out" "no commit identity"
+  assert_not_contains "the address is never printed" "$out" "a@example.invalid"
+  assert_contains "no ~/.gitconfig passes" "$out" "[pass] no $H/.gitconfig overrides"
+  if [[ "$before" == "$after" ]]; then ok "the git check wrote nothing"; else err "the git check wrote into the home or tmp"; fi
+
+  : > "$H/.gitconfig"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_rc "a ~/.gitconfig is a warning, exit 0" 0 "$rc"
+  assert_contains "a ~/.gitconfig is reported" "$out" "[warn] $H/.gitconfig exists: git reads it after"
+else
+  skip "no git: the identity and ~/.gitconfig checks need it"
+fi
 
 # --------------------------------------------------------------------------
 head_ "the shipped tree is clean"

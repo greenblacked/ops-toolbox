@@ -325,6 +325,30 @@ same visibility `rg` and gitleaks have, so a variable assigned in the shell
 but never exported is reported as missing, correctly. It prints the
 `export` line; it never edits `~/.zshenv`.
 
+**The ssh and git overlays.** The tracked ssh and git configs push identity,
+bastions and per-client blocks into files that are never tracked —
+`~/.ssh/config.d/*` and `~/.config/git/config.local` — and that is where
+things break. Each check is a `[skip]` when its tool or file is missing,
+never a failure:
+
+| Check | Finding | Fix printed |
+| --- | --- | --- |
+| `ssh -G` accepts `~/.ssh/config` | `[FAIL]` with ssh's first error line: a typo in a config file makes every ssh fail | — |
+| `known_hosts` with `HashKnownHosts yes` in effect | `[warn]` with the number of plaintext host entries; host names are never printed | `ssh-keygen -H -f ~/.ssh/known_hosts`, which keeps a `.old` copy to delete |
+| `~/.ssh/cm-*` sockets older than a day | `[warn]`: with `ControlPersist 10m` these are masters that were killed rather than closed, and they cause `Control socket connect: Connection refused` | `rm ~/.ssh/cm-*`, or `ssh -O check` one first; the doctor never removes or connects to one |
+| `user.name` and `user.email`, read with `git config --global --includes` | `[warn]` when either is missing; only presence is reported, never a value | the `git config --file ~/.config/git/config.local` line from above |
+| `~/.gitconfig`, once `config/git/config` is installed | `[warn]`: git reads it after the tracked config, so it wins on every key, and `git config --global` writes there | move its contents to `config.local` and delete it |
+
+`--includes` matters: `--global` alone does not follow `include.path`, and
+the identity is in `config.local`. git is asked with `HOME` and
+`XDG_CONFIG_HOME` pointed at the inspected home and `GIT_CONFIG_GLOBAL`
+dropped, so neither the caller's environment nor the real home answers. One
+caveat for `--home`: OpenSSH expands `~` in `Include` from the account's
+passwd entry rather than from `HOME`, so under a `--home` that is not your
+own the `config.d` files are not read; the main file still is. `ssh -G`
+connects to nothing, but it does evaluate `Match exec` lines in your config,
+as every ssh would.
+
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
 `2` preflight — no home directory, or a `--repo` without `config/` and
 `home/`; `3` usage.
@@ -860,19 +884,33 @@ passes, a token in a linked file reported by file and line with the token
 itself absent from the output, an npm value read from the environment and a
 keyed value in a comment both passing, a copy never read, a dangling link a
 warning that `--fail-on warn` turns into exit `1`, and the script copied
-alone into a bin directory still running. The credential-file section writes
-a sentinel line into every fixture and asserts it never reaches the output:
-a `600` file passes, a `644` one warns with the `chmod 600` fix and is left
-at `644`, a `666` one fails, a link is judged by the file it leads to, and
-an empty home reports all eleven as not present. The environment-hook
-section puts stub `rg`, `gitleaks` and `k9s` commands ahead of `PATH` so the
-verdicts do not depend on the host: unexported variables warn with the
-`export` line, a variable leading to a file passes, one leading nowhere
-fails, `--platform macos` names `Application Support` until
-`XDG_CONFIG_HOME` matches the config directory, `--platform linux` skips that
-hook, and with a `PATH` of only the utilities the doctor calls, every hook is
-skipped as not installed. Every doctor run in the suite unsets the three
-variables first, so a developer's own exports never decide a verdict. Every run is followed by a
+alone into a bin directory still running.
+
+The credential-file section writes a sentinel line into every fixture and
+asserts it never reaches the output: a `600` file passes, a `644` one warns
+with the `chmod 600` fix and is left at `644`, a `666` one fails, a link is
+judged by the file it leads to, and an empty home reports all eleven as not
+present.
+
+The environment-hook section puts stub `rg`, `gitleaks` and `k9s` commands
+ahead of `PATH` so the verdicts do not depend on the host: unexported
+variables warn with the `export` line, a variable leading to a file passes,
+one leading nowhere fails, `--platform macos` names `Application Support`
+until `XDG_CONFIG_HOME` matches the config directory, `--platform linux`
+skips that hook, and with a `PATH` of only the utilities the doctor calls,
+every hook is skipped as not installed.
+
+The overlay section, when ssh is installed, fails a config with a bogus
+option, passes the shipped one, counts two plaintext `known_hosts` entries
+without printing either host name, passes an all-hashed file, and warns
+about a three-day-old `cm-` socket made with python3 while leaving it in
+place; when git is installed, it warns on a missing identity, finds one in
+`config.local` through the shipped config's include without printing the
+address, and warns on a `~/.gitconfig`.
+
+Every doctor run in the suite unsets `XDG_CONFIG_HOME`,
+`RIPGREP_CONFIG_PATH`, `GITLEAKS_CONFIG` and `GIT_CONFIG_GLOBAL` first, so a
+developer's own exports never decide a verdict, and is followed by a
 snapshot comparison of the scratch home and tmp, because a doctor that
 writes is not read-only. Last, the real configs are installed into a
 scratch home and must give no finding at all, the false-positive guard for

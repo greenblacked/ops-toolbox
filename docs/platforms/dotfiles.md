@@ -19,7 +19,7 @@ copies each tracked file into place and reports drift.
 | Script | Purpose | Preview |
 | --- | --- | --- |
 | `install_dotfiles.sh` | Link (or copy) each tracked config into `$HOME` or `$XDG_CONFIG_HOME`. Modes: `--list`, `--status`, `--diff`, `--uninstall`, `--prune`, `--only UNIT`, `--force`. | `--dry-run` (also on `--uninstall` and `--prune`); `--list`, `--status` and `--diff` are read-only |
-| `dotfiles_doctor.sh` | Read-only health report for the installed configs: a credential written through a link into the tracked repository, reported by file and line, never by value. | read-only |
+| `dotfiles_doctor.sh` | Read-only health report for the installed configs: a credential written through a link into the tracked repository (reported by file and line, never by value), credential file modes, the environment exports four configs need, and the ssh and git overlays. | read-only |
 
 The installer works per file and never links whole directories. `--status`
 reports each file as `MATCH`, `DRIFT`, `MISSING`, `FOREIGN` or `CONFLICT`,
@@ -84,6 +84,12 @@ and each link into the folder that no tracked file installs to as `ORPHAN`;
   more) are not readable or writable by group or other. It only stats them
   and prints the `chmod 600` for you to run. `~/.ssh` is left to
   `linux/ssh_client_doctor.sh`.
+- `dotfiles_doctor.sh` also checks the untracked overlays: that `ssh -G`
+  accepts `~/.ssh/config`, that `known_hosts` holds no plaintext host while
+  `HashKnownHosts` is on, that no dead ControlMaster socket is left, that a
+  commit identity is set through `config.local`, and that no `~/.gitconfig`
+  overrides the tracked git config. Host names and identity values are never
+  printed.
 
 ## Repository
 

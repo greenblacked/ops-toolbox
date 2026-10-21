@@ -19,6 +19,12 @@
 # XDG_CONFIG_HOME, and without them the tool falls back to its defaults with
 # no error at all.
 #
+# Last, the untracked overlays the ssh and git configs push identity and
+# per-client settings into, which is where things break: an ssh config that
+# ssh rejects, plaintext host names in known_hosts despite HashKnownHosts,
+# dead ControlMaster sockets, no commit identity, and a ~/.gitconfig that
+# silently overrides the tracked git config on every key.
+#
 # It changes nothing: every check is a read, and every fix is a command
 # printed for you to run.
 #
@@ -75,6 +81,11 @@ Checks:
   environment hooks  RIPGREP_CONFIG_PATH and GITLEAKS_CONFIG are exported and
                      lead to a file, and on macOS XDG_CONFIG_HOME names the
                      config directory, for each tool that is on PATH
+  ssh                ssh accepts ~/.ssh/config, known_hosts holds no plaintext
+                     host while HashKnownHosts is on, no stale ControlMaster
+                     socket is left in ~/.ssh
+  git                a commit identity is set (through config.local), and no
+                     ~/.gitconfig overrides the installed git config
 
 Usage:
   $(basename "$0") [--repo DIR] [--home DIR] [--config-home DIR] [--platform macos|linux]
@@ -386,10 +397,116 @@ check_environment_hooks() {
   return 0
 }
 
+# Counts only: a host name never leaves awk. A line is an entry when it is
+# neither blank nor a comment, and it is plaintext when its host field - the
+# second after an @cert-authority or @revoked marker - is not |1|-hashed.
+# shellcheck disable=SC2016  # $1 and $2 are awk fields
+PLAINTEXT_HOSTS_AWK='
+/^[ \t]*$/ || /^[ \t]*#/ { next }
+{ f = $1; if (substr(f, 1, 1) == "@") f = $2; if (index(f, "|1|") != 1) n++ }
+END { print n + 0 }
+'
+
+# ssh -G resolves the config for a host without connecting and refuses on
+# any line it cannot parse. HOME points ssh at the inspected home, but OpenSSH
+# expands ~ in Include from the account's passwd entry, so under a --home that
+# is not the real one the config.d files are not read; the main file is.
+check_ssh() {
+  group "ssh"
+  local dir="$HOME_DIR/.ssh" cfg="$HOME_DIR/.ssh/config" gout first hk kh n
+  if ! command -v ssh >/dev/null 2>&1; then
+    skip "ssh: not installed"
+    return 0
+  fi
+  if [[ ! -d "$dir" ]]; then
+    skip "ssh: no $dir"
+    return 0
+  fi
+
+  hk=""
+  if [[ ! -f "$cfg" ]]; then
+    skip "ssh config: no $cfg"
+  elif gout="$(HOME="$HOME_DIR" ssh -G -F "$cfg" example.invalid 2>/dev/null)"; then
+    pass "ssh accepts $cfg"
+    hk="$(awk '$1 == "hashknownhosts" { print $2; exit }' <<<"$gout")"
+  else
+    # Run again for the message alone: stdout and stderr are wanted apart, and
+    # -G only reads files, so a second run costs nothing and writes nothing.
+    first="$(HOME="$HOME_DIR" ssh -G -F "$cfg" example.invalid 2>&1 >/dev/null | sed -n 1p)"
+    fail "ssh rejects $cfg" "${first:-ssh -G -F $cfg example.invalid exited non-zero}"
+  fi
+
+  kh="$dir/known_hosts"
+  if [[ "$hk" != "yes" ]]; then
+    skip "known_hosts: HashKnownHosts is not on in $cfg"
+  elif [[ ! -f "$kh" ]]; then
+    skip "known_hosts: no $kh"
+  else
+    n="$(awk "$PLAINTEXT_HOSTS_AWK" "$kh" 2>/dev/null)"
+    if [[ "${n:-0}" -gt 0 ]]; then
+      warn "$n plaintext host entries in known_hosts although HashKnownHosts is on" \
+        "ssh-keygen -H -f $kh  (keeps $kh.old; then delete the .old file)"
+    else
+      pass "known_hosts holds no plaintext host"
+    fi
+  fi
+
+  # ControlPath ~/.ssh/cm-%C with ControlPersist 10m: a socket older than a
+  # day is a master that was killed rather than closed, and the next ssh to
+  # that host fails with "Control socket connect: Connection refused". The
+  # doctor finds them; it never connects to one or removes it.
+  n="$(find "$dir" -maxdepth 1 -type s -name 'cm-*' -mmin +1440 2>/dev/null | wc -l | tr -d ' ')"
+  if [[ "${n:-0}" -gt 0 ]]; then
+    warn "$n ControlMaster socket(s) older than a day; ControlPersist is 10m, so unless a session has been open that long these are dead masters" \
+      "rm $dir/cm-*  (or check one first: ssh -O check -S <socket> host)"
+  else
+    pass "no stale ControlMaster socket in $dir"
+  fi
+  return 0
+}
+
+# Every query reads the global scope as git would for the inspected home:
+# HOME and XDG_CONFIG_HOME point at it and GIT_CONFIG_GLOBAL is dropped, so
+# neither the caller's environment nor the real home decides the answer.
+# --includes is required: --global alone does not follow include.path, and
+# the identity lives in config.local. Only presence is reported, never a
+# name or an address.
+git_global() {
+  env -u GIT_CONFIG_GLOBAL HOME="$HOME_DIR" XDG_CONFIG_HOME="$CONFIG_DIR" \
+    git config --global --includes --get "$1" 2>/dev/null
+}
+
+check_git() {
+  group "git"
+  if ! command -v git >/dev/null 2>&1; then
+    skip "git: not installed"
+    return 0
+  fi
+  if [[ -n "$(git_global user.name)" && -n "$(git_global user.email)" ]]; then
+    pass "a commit identity is set"
+  else
+    warn "no commit identity: user.name and user.email are not both set" \
+      "git config --file $CONFIG_DIR/git/config.local user.name \"Your Name\""
+  fi
+  # Only meaningful once the tracked config is installed; without it a
+  # ~/.gitconfig is simply where this user keeps their settings.
+  if [[ ! -e "$CONFIG_DIR/git/config" ]]; then
+    skip "gitconfig override: no $CONFIG_DIR/git/config installed"
+  elif [[ -e "$HOME_DIR/.gitconfig" ]]; then
+    warn "$HOME_DIR/.gitconfig exists: git reads it after $CONFIG_DIR/git/config, so it wins on every key and git config --global now writes there" \
+      "move its contents to $CONFIG_DIR/git/config.local and delete it"
+  else
+    pass "no $HOME_DIR/.gitconfig overrides $CONFIG_DIR/git/config"
+  fi
+  return 0
+}
+
 # --- main ------------------------------------------------------------------
 check_linked_configs
 check_credential_files
 check_environment_hooks
+check_ssh
+check_git
 
 printf "\n%s%s pass%s, %s%s warn%s, %s%s fail%s, %s%s skip%s\n" \
   "$C_GREEN" "$PASS_COUNT" "$C_RESET" \
