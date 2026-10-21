@@ -22,6 +22,7 @@ unprivileged user by default.
 | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Read-only report of expired and expiring TLS certificates in Secrets and cert-manager |
 | [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh) | Read-only check of what would block or hurt a node drain; prints the drain command |
 | [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh) | Read-only per-node CPU, memory and pod requests against allocatable, plus Unschedulable pods |
+| [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Read-only pod-template audit: requests and limits, probes, image tags, security context, PDBs |
 | [`gke_cluster_doctor.sh`](gke_cluster_doctor.sh) | Read-only GKE report: release channel, version skew, Workload Identity, private cluster |
 | [`debug_pod.sh`](debug_pod.sh) | Attach the image to a running pod as an ephemeral debug container |
 | [`examples/`](examples/) | A pod, a job, and a kustomization to retag both |
@@ -42,6 +43,7 @@ unprivileged user by default.
 - [Check certificate expiry](#check-certificate-expiry)
 - [Check a node before draining](#check-a-node-before-draining)
 - [Check node capacity](#check-node-capacity)
+- [Audit workloads](#audit-workloads)
 - [Debug a running pod](#debug-a-running-pod)
 - [Use it in a cluster](#use-it-in-a-cluster)
 - [GKE auth](#gke-auth)
@@ -57,8 +59,8 @@ needs, and exits `2` rather than half-working when one is missing.
 | --- | --- | --- |
 | **Bash** | every script | `#!/usr/bin/env bash` with `set -euo pipefail`. |
 | **Docker with `buildx`** | [`build.sh`](build.sh), [`run.sh`](run.sh) | `build.sh` invokes `docker buildx build`; `run.sh` invokes `docker run`. Both exit `2` without Docker — except under `--dry-run`, which prints the command it would have run and warns instead. |
-| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
-| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
+| **`kubectl`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh), [`debug_pod.sh`](debug_pod.sh) | Plus a kubeconfig with a context that reaches the cluster. `debug_pod.sh` wraps `kubectl debug`, so the image it attaches must be reachable from the *cluster* — `k8s-toolbox:local` only works where the nodes can see your local daemon. |
+| **`python3`** | [`kubectl_pod_diag.sh`](kubectl_pod_diag.sh), [`kubectl_workload_diag.sh`](kubectl_workload_diag.sh), [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh), [`kubectl_drain_preflight.sh`](kubectl_drain_preflight.sh), [`kubectl_node_capacity.sh`](kubectl_node_capacity.sh), [`kubectl_workload_audit.sh`](kubectl_workload_audit.sh) | Standard library only: the JSON from each `kubectl get` is reduced by an inline `python3 -c` filter. The macOS system interpreter (3.9) is enough. |
 | **`openssl`** | [`kubectl_cert_expiry.sh`](kubectl_cert_expiry.sh) | Only to read a certificate's end date from stdin (`openssl x509 -noout -enddate`); no network use. OpenSSL and LibreSSL both work. |
 | **`kustomize`** | [`examples/`](examples/), [`debug/`](debug/) | Optional, and only to retag the manifests with `kustomize edit set image`. |
 
@@ -429,6 +431,53 @@ Exit codes: `0` findings, `1` a query or JSON filter failed, `2` no `kubectl`
 or `python3`, or no reachable cluster, `3` usage, and `4` no node at or above
 the threshold and nothing pending.
 
+## Audit workloads
+
+`kubectl_workload_audit.sh` is a read-only "is this production-ready?" lint
+over the pod templates of every Deployment, StatefulSet, DaemonSet and
+CronJob. It has the same shape as the GKE doctor: stable check ids, `--only`,
+and a fix printed for every check, never run.
+
+```bash
+./kubectl_workload_audit.sh                   # every namespace, every check
+./kubectl_workload_audit.sh --namespace prod --only resources,security
+./kubectl_workload_audit.sh --list-checks
+./kubectl_workload_audit.sh --include-system --limit 100
+```
+
+| Check | Reports | Label |
+| --- | --- | --- |
+| `resources` | A container with no CPU or memory request, or no memory limit. A limit with no request counts as a request, because the API sets one from the other. CPU limits are not asked for: they throttle a container that has spare CPU next to it, while a missing memory limit lets one container take the node's memory. | `[risk]` when the memory limit is missing, otherwise `[advice]` |
+| `probes` | A Deployment or StatefulSet container with no `readinessProbe`. DaemonSets and CronJobs are exempt. | `[advice]` |
+| `image-tag` | An image with no tag and no `@sha256` digest, or tagged `latest`, init containers included. A registry port (`registry:5000/app`) is not mistaken for a tag. | `[advice]` |
+| `security` | `privileged`, `hostNetwork`, `hostPID`, `hostIPC` or a `hostPath` volume; a container whose `allowPrivilegeEscalation` is not explicitly `false`, or with `runAsNonRoot` set at neither pod nor container level. | `[risk]` for privileged, host namespaces and `hostPath`, otherwise `[advice]` |
+| `availability` | A Deployment with one replica, and a Deployment or StatefulSet with two or more that no PodDisruptionBudget in its namespace selects (`matchLabels` and `matchExpressions`, as the API matches them). | `[advice]` |
+
+Findings read like
+`[risk] deployment prod/api: container web has no memory limit`, so a CI
+wrapper can grep for `[risk]`. Each check ends with one `fix` line for its
+first finding, for example
+`kubectl set resources deployment/api -n prod -c web --requests=cpu=100m,memory=128Mi --limits=memory=256Mi`
+(the values are placeholders to size from real usage), `kubectl set image`,
+`kubectl scale`, or a `kubectl create poddisruptionbudget ... --dry-run=client
+-o yaml` that only prints a manifest. With `--context` the printed command
+names the same context.
+
+Only the kinds a selected check reads are listed, one `kubectl get` per kind,
+and PodDisruptionBudgets only for `availability`. `kube-system`,
+`kube-public`, `kube-node-lease` and namespaces starting `gke-` or `gmp-` are
+skipped unless `--include-system` is given, so managed components do not drown
+out your own workloads. `--limit N` (default 40) caps the rows per check and
+says how many more there were; the hidden ones still count. The audit reads
+images, probes, resources, security contexts and volume types only: it never
+reads Secrets or environment variable values.
+
+Exit codes: `0` findings, `1` a query or JSON filter failed, `2` no `kubectl`
+or `python3`, or no reachable cluster, `3` usage, including an unknown id or
+an empty selection in `--only` and a `--limit` that is not a positive whole
+number, and `4` nothing to report. `--list-checks` and `--help` answer before
+`kubectl` is required.
+
 ## Doctor a GKE cluster
 
 `gke_cluster_doctor.sh` is read-only. It never updates the cluster — it
@@ -554,7 +603,8 @@ StatefulSet and DaemonSet updates, autoscaler conditions, failed Jobs,
 certificate expiry windows and unreadable certificates (with an `openssl` stub,
 plus one real certificate when `openssl` is installed), drain blockers and
 budget selectors, every Kubernetes quantity form through the capacity
-percentages, and query/JSON failures across every diagnostic section.
+percentages, each audit check with its label and fix, and query/JSON failures
+across every diagnostic section.
 Each of those suites also proves from the stub's call log that nothing but
 `get` and `cluster-info` ever ran. These tests never contact a real cluster.
 

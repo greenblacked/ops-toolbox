@@ -166,6 +166,10 @@ missing_value_cases=(
   "kubectl_drain_preflight.sh --context"
   "kubectl_node_capacity.sh --threshold"
   "kubectl_node_capacity.sh --context"
+  "kubectl_workload_audit.sh --namespace"
+  "kubectl_workload_audit.sh --context"
+  "kubectl_workload_audit.sh --only"
+  "kubectl_workload_audit.sh --limit"
   "gke_cluster_doctor.sh --project"
   "gke_cluster_doctor.sh --cluster"
   "gke_cluster_doctor.sh --location"
@@ -212,6 +216,29 @@ if ! command -v gcloud >/dev/null 2>&1; then
 else
   ok "gke_cluster_doctor no-gcloud path skipped (gcloud is on PATH)"
 fi
+
+# --------------------------------------------------------------------------
+head_ "kubectl check selection before kubectl"
+# Same contract as the GKE doctor's ids, except that an empty selection is a
+# usage error: for these scripts exit 4 already means "ran and found nothing".
+for case_ in \
+  "kubectl_workload_diag.sh deployments statefulsets daemonsets hpa jobs" \
+  "kubectl_workload_audit.sh resources probes image-tag security availability"
+do
+  script="${case_%% *}"
+  checks="$(guard "$K/$script" --list-checks 2>/dev/null)"
+  for check in ${case_#* }; do
+    if [[ "$checks" == *"$check"* ]]; then
+      ok "$script lists check $check"
+    else
+      err "$script --list-checks missing $check"
+    fi
+  done
+  guard "$K/$script" --only nosuch >/dev/null 2>&1
+  assert_rc "$script unknown --only" 3 "$?"
+  guard "$K/$script" --only , >/dev/null 2>&1
+  assert_rc "$script --only empty selection" 3 "$?"
+done
 
 # --------------------------------------------------------------------------
 head_ "a dry run writes nothing"
