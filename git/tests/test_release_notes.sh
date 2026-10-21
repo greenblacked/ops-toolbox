@@ -174,6 +174,12 @@ assert_contains "$out" 'something' 'the whole history is listed'
 run_in "$none_repo" --next-version >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 3 '--next-version with no tag -> 3'
 
+git -C "$repo" branch v9.9.9 HEAD~1 || err 'create a branch named like a tag'
+out="$(run_in "$repo" --from v9.9.9 --to HEAD --next-version 2>&1)"; rc=$?
+assert_eq "$rc" 3 '--next-version from a branch named like a tag -> 3'
+assert_contains "$out" 'not a tag' 'the error says the start is not a tag'
+git -C "$repo" branch -D v9.9.9 >/dev/null 2>&1
+
 section "bad refs and usage"
 run_in "$repo" --from nope >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 3 'an unknown --from -> 3'

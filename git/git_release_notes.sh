@@ -45,7 +45,8 @@ Options:
   --match GLOB      Tags considered for the default --from (default: v[0-9]*)
   --next-version    Print only the version the commits imply after --from:
                     major for a breaking change, else minor for a feature,
-                    else patch. Needs --from to be a MAJOR.MINOR.PATCH tag,
+                    else patch. Needs --from to be a MAJOR.MINOR.PATCH tag (a branch
+                    named like one is refused),
                     with or without a leading v.
   -h, --help        Show this help
 
@@ -56,8 +57,8 @@ Read-only: it creates no tag and writes no file. Redirect the output where it
 should go. A shallow clone may not have the tag; fetch it with
 'git fetch --tags --unshallow' first.
 
-Exit codes: 0 success, 2 not a git repo, 3 usage, bad ref, or a --from tag that
-is not semver for --next-version, 4 no commits between FROM and TO
+Exit codes: 0 success, 2 not a git repo, 3 usage, bad ref, or a --from that is
+not a semver tag for --next-version, 4 no commits between FROM and TO
 EOF
 }
 
@@ -234,6 +235,12 @@ if (( NEXT_VERSION == 1 )); then
   semver_re='^v?([0-9]+)\.([0-9]+)\.([0-9]+)$'
   if [[ -z "$from_label" ]]; then
     printf -- "--next-version needs a tag to start from, and no tag matches %s\n" "$MATCH" >&2
+    exit 3
+  fi
+  # An explicit --from may name a branch or a bare commit-ish; only a tag
+  # is a release to bump from.
+  if ! git show-ref --verify --quiet "refs/tags/$from_label"; then
+    printf -- "--next-version needs a tag to start from, got: %s - it is not a tag\n" "$from_label" >&2
     exit 3
   fi
   if [[ ! "$from_label" =~ $semver_re ]]; then

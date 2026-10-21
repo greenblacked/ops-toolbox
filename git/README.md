@@ -853,7 +853,7 @@ tag; run `git fetch --tags --unshallow` first, and a missing ref exits `3`
 rather than printing an empty success.
 
 Exit codes: `0` success, `2` not a Git repository, `3` usage, a bad ref, or a
-`--from` tag that is not semver for `--next-version`, `4` no commits between
+`--from` that is not a tag, or a tag that is not semver, for `--next-version`, `4` no commits between
 `FROM` and `TO`.
 
 ---
