@@ -56,6 +56,7 @@ _pretty_git_alias ggone    git_prune_gone.sh
 _pretty_git_alias gstale   git_stale_branches.sh
 _pretty_git_alias gsize    git_size_report.sh
 _pretty_git_alias ghooks   git_hooks_install.sh
+_pretty_git_alias gbundle  git_bundle_backup.sh
 
 # --- identity and diagnostics ----------------------------------------------
 _pretty_git_alias gprofile set_git_profile.sh

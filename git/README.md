@@ -34,6 +34,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_commitlint.sh`](#git_commitlintsh)
 - [`git_release_notes.sh`](#git_release_notessh)
 - [`clone-repos.sh`](#clone-repossh)
+- [`git_bundle_backup.sh`](#git_bundle_backupsh)
 - [`git_ssh_doctor.py`](#git_ssh_doctorpy)
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
@@ -91,6 +92,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_commitlint.sh` | Lint every commit message a branch adds, in CI, against the commit-msg hook's rules. |
 | `git_release_notes.sh` | Release notes grouped by Conventional Commit type since the last tag, and the next semver version. |
 | `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, or fast-forwards it with `--update`, and `repos.txt.example` shows the format. |
+| `git_bundle_backup.sh` | Write a verified, timestamped bundle of every ref, with opt-in retention of older bundles. |
 | `git_prune_gone.sh` | Delete branches with deleted upstreams, with include/exclude filters. |
 | `git_stale_branches.sh` | Report old branches and optionally filter by gone/merged/unmerged state. |
 | `git_size_report.sh` | Report repository size across all history or selected refs. |
@@ -149,6 +151,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `gunpushed` | `git_unpushed.sh` | `gremote` | `git_remote_doctor.py` |
 | `gmcheck` | `git_merge_check.sh` | `gignore` | `git_ignore_doctor.py` |
 | `glint` | `git_commitlint.sh` | `gnotes` | `git_release_notes.sh` |
+| | | `gbundle` | `git_bundle_backup.sh` |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
 
@@ -907,6 +910,71 @@ the existing checkouts, so preview it first.
 
 ---
 
+## `git_bundle_backup.sh`
+
+One file that holds every ref of the repository, proven restorable. Run it
+before a risky operation — a history rewrite, a host migration, deleting a
+clone that holds the only copy of some branches — or on a schedule for a
+repository with no remote. `git bundle create --all` does the core of it; this
+adds the four steps people forget: the timestamp, the verify, the atomic write
+and the cleanup of old bundles.
+
+```bash
+./git/git_bundle_backup.sh --dry-run                     # what it would run
+./git/git_bundle_backup.sh                               # ~/git-bundles/<repo>-<stamp>.bundle
+./git/git_bundle_backup.sh --out /mnt/backup --name api
+./git/git_bundle_backup.sh --ref main --ref release/1.4  # only these refs
+./git/git_bundle_backup.sh --keep 7                      # list bundles beyond the newest 7
+./git/git_bundle_backup.sh --keep 7 --yes                # and delete them
+```
+
+The file is `OUT/NAME-YYYYMMDDTHHMMSSZ.bundle`, with the stamp in UTC from
+`date -u`, so names sort in time order on any system. `--out` defaults to
+`~/git-bundles`; `--name` defaults to the repository directory's name and takes
+letters, digits, `.`, `_` and `-` only. Without `--ref` the bundle holds every
+ref: branches, tags, remote-tracking refs, the newest stash entry and the
+recovery refs `git_prune_gone.sh` keeps. `--ref` (repeatable) bundles only the
+named refs, each checked to exist first.
+
+The bundle is written to a hidden `.NAME-<stamp>.bundle.partial`, checked with
+`git bundle verify`, and only then renamed into place; within one directory the
+rename is atomic, so the final name only ever holds a verified bundle. A
+failure removes the partial file and exits `1`, and an existing file with the
+same name is never overwritten. The output prints the size, the number of refs
+and the restore commands:
+
+```bash
+git bundle verify ~/git-bundles/api-20261021T120000Z.bundle
+git clone ~/git-bundles/api-20261021T120000Z.bundle api-restored
+```
+
+A clone of a bundle has its branches as `origin/<branch>` remote-tracking refs,
+as a clone of any remote does; `git switch <branch>` makes a local one.
+
+**Retention.** `--keep N` (1 or more) considers only files in `OUT` named
+`NAME-<8 digits>T<6 digits>Z.bundle` — the glob and then the exact shape again
+— sorted by name, and keeps the newest `N`, the one just written included.
+Without `--yes` it lists the rest as `would prune (pass --yes to delete): FILE`
+and deletes nothing; with `--yes` it deletes them and prints `pruned: FILE`.
+Another repository's bundles and any other file in `OUT` are never listed.
+`--yes` without `--keep` exits `3`.
+
+`--dry-run` prints the `mkdir`, `git bundle create`, `git bundle verify`, `mv`
+and `rm` it would run, creates nothing — not even `OUT` — and closes with
+`dry-run complete; no changes written`.
+
+It never changes the repository: `bundle create`, `verify` and `list-heads`
+only read it. A bundle contains the full history it covers, including any
+secret that was ever committed, so keep it as carefully as the repository
+itself. Nothing is uploaded anywhere.
+
+Exit codes: `0` success; `1` the bundle could not be created or verified, or
+the file already exists; `2` not a Git repository, or `OUT` exists and is not a
+directory or cannot be created; `3` usage; `4` nothing to back up (no refs yet)
+or a `--ref` not found.
+
+---
+
 ## `git_ssh_doctor.py`
 
 Answers the question `Permission denied (publickey)` refuses to: *which* of the things involved actually went wrong.
@@ -1060,6 +1128,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_release_notes.sh --format markdown
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/clone-repos.sh --update --dir ~/src repos.txt
+./git/git_bundle_backup.sh --keep 7 --dry-run
 ./git/git_remote_doctor.py --quiet
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

@@ -67,6 +67,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_sync_default.sh` | Git | Fetch and fast-forward the default branch. | `--dry-run` |
 | `git/git_cleanup_merged.sh` | Git | Delete local branches merged into a base. | `--dry-run` |
 | `git/git_prune_gone.sh` | Git | Delete local branches whose upstream is gone. | `--dry-run` |
+| `git/git_bundle_backup.sh` | Git | Verified, timestamped bundle of every ref. | `--dry-run` |
 | `git/git_undo_last_commit.sh` | Git | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git/git_amend_last.sh` | Git | Amend the last commit. | `--dry-run` |
 | `git/git_hooks_install.sh` | Git | Install, check, remove pre-commit guards; opt-in commit-msg and pre-push hooks. | `--dry-run` (install, uninstall) |

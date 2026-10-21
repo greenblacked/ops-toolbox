@@ -36,6 +36,7 @@ ignore rules.
 | `git_sync_default.sh` | Fetch and fast-forward the default branch. | `--dry-run` |
 | `git_cleanup_merged.sh` | Delete local branches merged into a base. | `--dry-run` |
 | `git_prune_gone.sh` | Delete local branches whose upstream is gone. | `--dry-run` |
+| `git_bundle_backup.sh` | Verified, timestamped bundle of every ref; `--keep` retention. | `--dry-run` |
 | `git_undo_last_commit.sh` | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git_amend_last.sh` | Amend the last commit. | `--dry-run` |
 | `git_hooks_install.sh` | `install`, `status`, `uninstall` pre-commit guards; opt-in commit-msg and pre-push hooks. | `--dry-run` |
@@ -72,6 +73,7 @@ All paths are under `git/`.
     ./git/git_prune_gone.sh --dry-run
     ./git/git_hooks_install.sh install --dry-run
     ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
+    ./git/git_bundle_backup.sh --keep 7 --dry-run
     ```
 
 === "Apply"
@@ -111,6 +113,8 @@ All paths are under `git/`.
   refuses every push to `main` and `master` (or the `--protect` names), and
   pushes carrying `fixup!` or `WIP` commits; bypass one push with
   `git push --no-verify`.
+- `git_bundle_backup.sh --keep N --yes` deletes older bundles of the same name
+  in the output directory; without `--yes` it only lists them.
 - `clone-repos.sh --update` writes to checkouts that already exist: it fetches
   and fast-forwards the checked-out branch, and holds any checkout with a
   detached `HEAD`, no upstream, modified tracked files or a diverged branch.
