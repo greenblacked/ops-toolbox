@@ -636,7 +636,9 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   `ssh-keygen -lf` steps that pin it after checking the fingerprint against
   the one the provider publishes; `StrictHostKeyChecking no` is a warning of
   its own. With `--require-known-host` an unknown key fails the host instead,
-  and authentication is not attempted, since it would record the key. A
+  also where `StrictHostKeyChecking accept-new` or `no` would trust it on
+  first use, and authentication is not attempted, since it would record the
+  key. A
   *changed* host key can only be seen by connecting;
   `git_remote_doctor.py --probe` names that one.
 

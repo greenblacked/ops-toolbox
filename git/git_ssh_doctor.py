@@ -355,7 +355,8 @@ def host_key_findings(host, port, strict, found_in, files_checked, hashed, requi
 
     host is the HostName ssh dials. Without `require` an unknown key is a
     warning, so nobody's exit code changes; with it (a CI preflight) it is a
-    failure.
+    failure, under accept-new and StrictHostKeyChecking no as well, since
+    those trust whatever key the first connection presents.
     """
     strict = normalise_strict(strict)
     port = str(port or "22")
@@ -375,21 +376,29 @@ def host_key_findings(host, port, strict, found_in, files_checked, hashed, requi
             findings.append(("info", "stored hashed (HashKnownHosts), so the file "
                                      "does not name the host in clear", None))
         return findings
-    if strict == "no":
-        return findings
-    if strict == "accept-new":
-        findings.append((
-            "info",
-            "host key for %s is not recorded; accept-new will record it on first "
-            "use, which is acceptable for a workstation, pin it for CI" % where,
-            None,
-        ))
-        return findings
+    checked = ", ".join(files_checked) or "any known_hosts file"
+    if strict in ("no", "accept-new"):
+        if not require:
+            if strict == "accept-new":
+                findings.append((
+                    "info",
+                    "host key for %s is not recorded; accept-new will record it on "
+                    "first use, which is acceptable for a workstation, pin it for CI"
+                    % where,
+                    None,
+                ))
+            return findings
+        message = ("host key for %s is not in %s: %s trusts whatever key the first "
+                   "connection presents, so it is not pinned"
+                   % (where, checked, "accept-new" if strict == "accept-new"
+                      else "StrictHostKeyChecking no"))
+    else:
+        message = ("host key for %s is not in %s: the first connection stops to ask, "
+                   "and a non-interactive run (CI, cron, BatchMode) fails with Host key "
+                   "verification failed" % (where, checked))
     findings.append((
         "fail" if require else "warn",
-        "host key for %s is not in %s: the first connection stops to ask, and a "
-        "non-interactive run (CI, cron, BatchMode) fails with Host key verification "
-        "failed" % (where, ", ".join(files_checked) or "any known_hosts file"),
+        message,
         "ssh-keyscan -t ed25519 -p %s %s > /tmp/hostkey; ssh-keygen -lf /tmp/hostkey"
         "   # compare with the fingerprint the provider publishes, then: "
         "cat /tmp/hostkey >> ~/.ssh/known_hosts"
@@ -656,7 +665,8 @@ def main(argv=None):
     parser.add_argument("--test-auth", action="store_true",
                         help="try each discovered key against the host")
     parser.add_argument("--require-known-host", action="store_true",
-                        help="fail when the host key is not in known_hosts (CI preflight)")
+                        help="fail when the host key is not in known_hosts, even under "
+                             "accept-new (CI preflight)")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")

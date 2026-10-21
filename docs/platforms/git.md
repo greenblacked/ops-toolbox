@@ -102,7 +102,8 @@ All paths are under `git/`.
   `git_ssh_doctor.py --test-auth` attempts SSH authentication. Those
   attempts use `StrictHostKeyChecking=accept-new` and so record an unknown
   host key; the doctor checks known_hosts before any of them, and
-  `--require-known-host` turns an unknown key into a failure.
+  `--require-known-host` turns an unknown key into a failure, also under
+  `StrictHostKeyChecking accept-new`.
 - `git_signing_doctor.py --verify-recent N` makes git verify the signatures
   of the last `N` existing commits, which runs gpg or ssh-keygen once per
   signed commit; it judges only your own commits unless `--all-authors`.

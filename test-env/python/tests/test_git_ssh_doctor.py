@@ -360,9 +360,27 @@ class HostKeyFindingsTestCase(unittest.TestCase):
             self.assertIn("man-in-the-middle", findings[0][1])
 
     def test_accept_new_with_an_unknown_key_is_information(self):
-        findings = doctor.host_key_findings("h", "22", "accept-new", [], self.FILES, False,
-                                            require=True)
+        findings = doctor.host_key_findings("h", "22", "accept-new", [], self.FILES, False)
         self.assertEqual(self.levels(findings), ["info"])
+
+    def test_require_fails_an_unknown_key_under_accept_new(self):
+        # accept-new would trust whatever key the runner's first connection
+        # sees, which is the case the CI preflight exists to catch.
+        [(level, message, fix)] = doctor.host_key_findings(
+            "h", "22", "accept-new", [], self.FILES, False, require=True)
+        self.assertEqual(level, "fail")
+        self.assertIn("accept-new", message)
+        self.assertIn("ssh-keygen -lf", fix)
+
+    def test_require_fails_an_unknown_key_with_strict_off(self):
+        findings = doctor.host_key_findings("h", "22", "no", [], self.FILES, False,
+                                            require=True)
+        self.assertEqual(self.levels(findings), ["warn", "fail"])
+        self.assertIn("StrictHostKeyChecking no", findings[1][1])
+
+    def test_strict_off_with_an_unknown_key_only_warns_without_require(self):
+        findings = doctor.host_key_findings("h", "22", "no", [], self.FILES, False)
+        self.assertEqual(self.levels(findings), ["warn"])
 
     def test_hashed_entries_are_information(self):
         findings = doctor.host_key_findings("h", "22", "ask", self.FILES, self.FILES, True)
