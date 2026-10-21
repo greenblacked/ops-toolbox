@@ -491,10 +491,14 @@ def check_host_key(host, cfg, require):
     return passed, bool(found_in)
 
 
-def try_auth(host, user="git", key=None, timeout=20):
-    """Attempt a non-interactive auth. Returns (authenticated, detail)."""
+def try_auth(host, user="git", key=None, timeout=20, strict="accept-new"):
+    """Attempt a non-interactive auth. Returns (authenticated, detail).
+
+    `strict` is the StrictHostKeyChecking value for the attempt: accept-new
+    records an unknown key on success, yes never writes known_hosts.
+    """
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o",
-           "StrictHostKeyChecking=accept-new"]
+           "StrictHostKeyChecking=%s" % strict]
     if key:
         cmd += ["-o", "IdentitiesOnly=yes", "-i", key]
     cmd += ["-T", "%s@%s" % (user, host)]
@@ -546,14 +550,20 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False):
     # Before any authentication attempt: try_auth connects with
     # StrictHostKeyChecking=accept-new, which records an unknown key on its
     # first success, so checked afterwards this could never fire twice.
+    # With --require-known-host it uses yes instead, so no attempt can ever
+    # write to known_hosts.
+    strict = "yes" if require_known_host else "accept-new"
     trusted, found = check_host_key(host, cfg, require_known_host)
     if not trusted:
-        info("authentication not attempted: it would record the unknown host key")
+        if shutil.which("ssh-keygen") is None:
+            info("authentication not attempted: the host key could not be checked")
+        else:
+            info("authentication not attempted: it would record the unknown host key")
         return False
 
     if existing or agent:
-        authed, detail = try_auth(host)
-        if not found:
+        authed, detail = try_auth(host, strict=strict)
+        if not found and not require_known_host:
             info("note: --test-auth/auth probing records new host keys (accept-new); "
                  "this check ran first")
         if authed:
@@ -571,7 +581,7 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False):
     head("testing %d discovered key(s) against %s" % (len(keys), host))
     winners = []
     for key in keys:
-        authed, detail = try_auth(host, key=key)
+        authed, detail = try_auth(host, key=key, strict=strict)
         if authed:
             ok("%s -> %s" % (shorten(key), detail))
             winners.append(key)

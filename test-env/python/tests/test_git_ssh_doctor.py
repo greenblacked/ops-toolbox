@@ -447,5 +447,77 @@ class CheckHostKeyTests(unittest.TestCase):
         self.assertIn("[fail]", out)
 
 
+class AuthStrictnessThroughMainTests(unittest.TestCase):
+    """main() with stub ssh, ssh-keygen and ssh-add programs on PATH.
+
+    The stub ssh answers `ssh -G` with a KnownHostsCommand and records the
+    arguments of every other call, so the auth command line is asserted as
+    it is really built.
+    """
+
+    def setUp(self):
+        if os.name == "nt":
+            self.skipTest("POSIX shell stubs cannot run on Windows")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.bin = os.path.join(self._tmp.name, "bin")
+        self.ssh_dir = os.path.join(self._tmp.name, "ssh")
+        self.log = os.path.join(self._tmp.name, "ssh-args.log")
+        os.makedirs(self.bin)
+        os.makedirs(self.ssh_dir)
+        self._stub("ssh", 'if [ "$1" = "-G" ]; then\n'
+                   '  echo "hostname h"; echo "port 22"\n'
+                   '  echo "knownhostscommand /bin/true %h"\n'
+                   '  echo "userknownhostsfile none"\n'
+                   '  echo "globalknownhostsfile none"\n'
+                   '  exit 0\nfi\n'
+                   'echo "$*" >> "' + self.log + '"\n'
+                   'echo "successfully authenticated" >&2\nexit 1\n')
+        self._stub("ssh-add", 'echo "256 SHA256:x key (ED25519)"\nexit 0\n')
+
+    def _stub(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+
+    def _main(self, argv):
+        saved = (os.environ["PATH"], list(doctor.EVENTS))
+        os.environ["PATH"] = self.bin
+        del doctor.EVENTS[:]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = doctor.main(["--ssh-dir", self.ssh_dir, "--host", "h"] + argv)
+        finally:
+            os.environ["PATH"] = saved[0]
+            doctor.EVENTS[:] = saved[1]
+        calls = []
+        if os.path.exists(self.log):
+            with open(self.log) as fh:
+                calls = fh.read().splitlines()
+        return rc, out.getvalue(), calls
+
+    def test_require_known_host_never_uses_accept_new(self):
+        self._stub("ssh-keygen", "exit 1\n")
+        rc, out, calls = self._main(["--require-known-host"])
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(len(calls), 1)
+        self.assertIn("StrictHostKeyChecking=yes", calls[0])
+        self.assertNotIn("accept-new", calls[0])
+
+    def test_without_require_the_auth_attempt_uses_accept_new(self):
+        self._stub("ssh-keygen", "exit 1\n")
+        rc, out, calls = self._main([])
+        self.assertEqual(len(calls), 1)
+        self.assertIn("StrictHostKeyChecking=accept-new", calls[0])
+
+    def test_missing_ssh_keygen_with_require_says_unchecked_and_skips_auth(self):
+        rc, out, calls = self._main(["--require-known-host"])
+        self.assertEqual(rc, 1)
+        self.assertEqual(calls, [])
+        self.assertIn("the host key could not be checked", out)
+        self.assertNotIn("would record the unknown host key", out)
+
+
 if __name__ == "__main__":
     unittest.main()
