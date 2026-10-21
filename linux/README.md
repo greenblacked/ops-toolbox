@@ -559,9 +559,10 @@ suffix (`*.1` to `*.99`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
 logs such as `Xorg.0.log`. Login records (`wtmp`, `btmp`, `lastlog`, `faillog`,
 `utmp` and their rotations) are never touched, anything below a directory
 named `journal` or `private` is pruned from the walk, symlinks are not
-followed and `-xdev` keeps it on one filesystem. Nothing is truncated. `--days 0` drops the age filter but not the name filter.
-`--log-dir DIR` replaces `/var/log` (repeatable, `/` refused in every spelling)
-and needs `--include-logs`. Root-owned logs go through the same `sudo` retry as
+followed and `-xdev` keeps it on one filesystem. Nothing is truncated.
+`--days 0` drops the age filter but not the name filter. `--log-dir DIR`
+replaces `/var/log` (repeatable, `/` refused in every spelling) and needs
+`--include-logs`. Root-owned logs go through the same `sudo` retry as
 coredumps; under `--no-sudo` a log in a directory this run cannot write is
 counted as skipped, not failed. As a non-root user the walk runs under `sudo`
 only if `sudo -n true` succeeds (checked once, never prompting, so `--dry-run`
