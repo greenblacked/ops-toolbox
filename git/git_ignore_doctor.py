@@ -29,6 +29,7 @@ ignore file, the index, or config.
     ./git_ignore_doctor.py                  # tracked files that a rule claims
     ./git_ignore_doctor.py .env build/keep/note.txt
     ./git_ignore_doctor.py --quiet .env     # verdict via exit code only
+    ./git_ignore_doctor.py --json           # the same verdict as one JSON object
 """
 
 from __future__ import annotations
@@ -37,7 +38,9 @@ import argparse
 import collections
 import contextlib
 import io
+import json
 import os
+import re
 import subprocess
 import sys
 
@@ -54,24 +57,68 @@ if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
 SCAN_LIMIT = 20
 
 
+# Every line the report prints is also recorded here, as (level, section,
+# text), so --json can hand the same verdict to a script. Recording happens in
+# the printers, after whatever redaction the caller applied, so the JSON never
+# says more than the text did. Copied, not shared, like Usage3Parser below.
+EVENTS = []
+SECTION = ""
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def record(level, text):
+    EVENTS.append((level, SECTION, _ANSI.sub("", text)))
+
+
 def ok(msg):
     print("%s[ ok ]%s %s" % (C_GREEN, C_RESET, msg))
+    record("ok", msg)
 
 
 def warn(msg):
     print("%s[warn]%s %s" % (C_YELLOW, C_RESET, msg))
+    record("warn", msg)
 
 
 def bad(msg):
     print("%s[fail]%s %s" % (C_RED, C_RESET, msg))
+    record("fail", msg)
 
 
 def info(msg):
     print("%s[info]%s %s" % (C_DIM, C_RESET, msg))
+    record("info", msg)
 
 
 def head(msg):
+    global SECTION
+    SECTION = msg
     print("\n%s== %s ==%s" % (C_BOLD, msg, C_RESET))
+
+
+def raw(text, level="detail"):
+    """Print a report line exactly as given, and record it without its indent
+    or colour. For the table rows and lists the level helpers do not cover."""
+    print(text)
+    record(level, _ANSI.sub("", text).strip())
+
+
+def render_json(tool, events, rc):
+    """The report as one JSON object.
+
+    schema 1 is a promise about shape: keys and levels may be added, none is
+    ever renamed. `problems` counts the fail-level events.
+    """
+    return json.dumps({
+        "tool": tool,
+        "schema": 1,
+        "exit_code": rc,
+        "problems": sum(1 for event in events if event[0] == "fail"),
+        "events": [
+            {"level": level, "section": section, "message": message}
+            for level, section, message in events
+        ],
+    }, sort_keys=True)
 
 
 def shorten(path):
@@ -611,7 +658,7 @@ def scan_tracked(root):
     bad("%d tracked file(s) match an ignore rule and are tracked anyway"
         % len(claimed))
     for path in claimed[:SCAN_LIMIT]:
-        print("        %s  (%s)" % (path, describe_rule(matches[path])))
+        raw("        %s  (%s)" % (path, describe_rule(matches[path])))
     if len(claimed) > SCAN_LIMIT:
         info("... and %d more" % (len(claimed) - SCAN_LIMIT))
     info("each was committed before its rule existed; the rule has no effect "
@@ -696,13 +743,22 @@ def main(argv=None):
     parser.add_argument("path", nargs="*",
                         help="path to explain; with none, scan for tracked files "
                              "an ignore rule claims")
-    parser.add_argument("--quiet", action="store_true",
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")
+    output.add_argument("--json", action="store_true",
+                        help="print one JSON object (exit code and every finding) "
+                             "instead of the report")
     args = parser.parse_args(argv)
 
     if args.quiet:
         with contextlib.redirect_stdout(io.StringIO()):
             return run_report(args)
+    if args.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = run_report(args)
+        print(render_json(os.path.basename(__file__), EVENTS, rc))
+        return rc
     return run_report(args)
 
 

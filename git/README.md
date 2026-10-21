@@ -111,6 +111,21 @@ Across these scripts, exit statuses are used consistently where it helps automat
 
 Scripts that do not need the full table may use a smaller subset (for example `git_whoami.sh` only cares about `2` for missing `git`).
 
+**Doctor output for scripts.** Every `*_doctor.py` takes `--json` and prints
+one JSON object instead of the report, with the same exit code as a text run.
+For `git_ignore_doctor.py secrets.txt`, with the other events left out:
+
+```json
+{"events": [{"level": "fail", "message": "not ignored — the file is tracked, so ignore rules do not apply", "section": "secrets.txt"}], "exit_code": 1, "problems": 1, "schema": 1, "tool": "git_ignore_doctor.py"}
+```
+
+Each event is one line of the report: `level` is `ok`, `warn`, `fail`, `info`
+or `detail` (a table row or list entry), `section` is the heading it sat
+under, and `problems` counts the `fail` events. Every line is recorded after
+the doctor's own redaction, so the JSON never holds more than the text did.
+The shape is `schema` 1: keys and levels may be added, none is renamed.
+`--json` and `--quiet` together are a usage error (exit `3`).
+
 ---
 
 ## Aliases
@@ -604,7 +619,9 @@ Read-only throughout: it never edits a config file, loads anything into the agen
 
 `--quiet` suppresses the report but preserves the verdict exit code. It does
 not imply `--test-auth`, so a quiet CI probe remains offline unless that
-network test was explicitly requested too.
+network test was explicitly requested too. `--json` prints the same report as
+one JSON object (see [Exit codes](#exit-codes-conventions)); it does not imply
+`--test-auth` either.
 
 ---
 
@@ -622,7 +639,8 @@ backend to produce one real signature in a temporary directory.
 
 `--quiet` prints nothing and preserves exit `0`/`1`, making the diagnostic safe
 to use as a preflight check without parsing colored text. It does not turn on
-`--test-sign`.
+`--test-sign`. `--json` keeps the findings as well as the exit code, one JSON
+object per run.
 
 ---
 
@@ -649,7 +667,9 @@ Anything it prints is redacted first: `https://x-access-token:TOKEN@github.com/`
 
 `--quiet` suppresses all diagnostic text while keeping those exit codes. URL
 redaction is still applied internally before any report is produced; quiet
-mode never exposes embedded credentials.
+mode never exposes embedded credentials. `--json` records each line after that
+redaction, so a token in a URL or a password in a shell credential helper is
+no more visible in the JSON than in the text.
 
 ---
 
@@ -681,7 +701,8 @@ Read-only: it never edits an ignore file, the index, or config. Requires `python
 
 A git that cannot answer is a problem, not a clean result. `check-ignore` exits `1` when nothing matched, which is an answer; anything else is reported with git's own message and exits `1`, because an empty result and "no rule matches this path" are the same value and a diagnostic must not confuse them. The no-argument scan raises its timeout with the size of the repository for the same reason — the call most likely to expire is the one whose empty result would read as an all-clear.
 
-`--quiet` suppresses the report and preserves the verdict exit code.
+`--quiet` suppresses the report and preserves the verdict exit code. `--json`
+prints it as one JSON object instead; the claimed paths are `detail` events.
 
 ---
 
@@ -693,7 +714,7 @@ From the **repository root** (so the repo mounts into the container as `/repo`):
 ./git/tests/run.sh
 ```
 
-This builds a small Debian image, runs **Shellcheck** (severity error), **`bash -n`**, `--help` on each script, and integration tests for profiles, `gacp`, status, cleanup/prune filters, stale/size report scoping, recent branches, sync/restore, repo paths, branch diff, undo/revert, amend, hooks, quiet doctor verdicts, and the two portable templates. Python 3 is present only to execute the standard-library doctor/template smoke tests.
+This builds a small Debian image, runs **Shellcheck** (severity error), **`bash -n`**, `--help` on each script, and integration tests for profiles, `gacp`, status, cleanup/prune filters, stale/size report scoping, recent branches, sync/restore, repo paths, branch diff, undo/revert, amend, hooks, quiet and JSON doctor verdicts, and the two portable templates. Python 3 is present only to execute the standard-library doctor/template smoke tests.
 
 **Prerequisites:** Docker and Docker Compose v2 (`docker compose`).
 
@@ -724,5 +745,6 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet
+./git/git_ignore_doctor.py --json
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

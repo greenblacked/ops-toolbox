@@ -19,6 +19,7 @@ or creates a key.
 
     ./git_signing_doctor.py              # diagnose signing in the current repo
     ./git_signing_doctor.py --test-sign  # also attempt one real signature
+    ./git_signing_doctor.py --json       # the same verdict as one JSON object
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import re
 import subprocess
@@ -41,24 +43,68 @@ if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
     C_RED, C_GREEN, C_YELLOW = "\033[31m", "\033[32m", "\033[33m"
 
 
+# Every line the report prints is also recorded here, as (level, section,
+# text), so --json can hand the same verdict to a script. Recording happens in
+# the printers, after whatever redaction the caller applied, so the JSON never
+# says more than the text did. Copied, not shared, like Usage3Parser below.
+EVENTS = []
+SECTION = ""
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def record(level, text):
+    EVENTS.append((level, SECTION, _ANSI.sub("", text)))
+
+
 def ok(msg):
     print("%s[ ok ]%s %s" % (C_GREEN, C_RESET, msg))
+    record("ok", msg)
 
 
 def warn(msg):
     print("%s[warn]%s %s" % (C_YELLOW, C_RESET, msg))
+    record("warn", msg)
 
 
 def bad(msg):
     print("%s[fail]%s %s" % (C_RED, C_RESET, msg))
+    record("fail", msg)
 
 
 def info(msg):
     print("%s[info]%s %s" % (C_DIM, C_RESET, msg))
+    record("info", msg)
 
 
 def head(msg):
+    global SECTION
+    SECTION = msg
     print("\n%s== %s ==%s" % (C_BOLD, msg, C_RESET))
+
+
+def raw(text, level="detail"):
+    """Print a report line exactly as given, and record it without its indent
+    or colour. For the table rows and lists the level helpers do not cover."""
+    print(text)
+    record(level, _ANSI.sub("", text).strip())
+
+
+def render_json(tool, events, rc):
+    """The report as one JSON object.
+
+    schema 1 is a promise about shape: keys and levels may be added, none is
+    ever renamed. `problems` counts the fail-level events.
+    """
+    return json.dumps({
+        "tool": tool,
+        "schema": 1,
+        "exit_code": rc,
+        "problems": sum(1 for event in events if event[0] == "fail"),
+        "events": [
+            {"level": level, "section": section, "message": message}
+            for level, section, message in events
+        ],
+    }, sort_keys=True)
 
 
 def shorten(path):
@@ -323,7 +369,7 @@ def report_config(entries):
             continue
         value, origin, scope = hit
         origin = shorten(origin.replace("file:", ""))
-        print("        %-28s %s  %s(%s, %s)%s" % (key, value, C_DIM, scope, origin, C_RESET))
+        raw("        %-28s %s  %s(%s, %s)%s" % (key, value, C_DIM, scope, origin, C_RESET))
 
         # A repo-local override beating a global one is invisible until you
         # notice signing behaves differently in one checkout.
@@ -581,14 +627,23 @@ def main(argv=None):
     )
     parser.add_argument("--test-sign", action="store_true",
                         help="attempt one real signature and report the raw error")
-    parser.add_argument("--quiet", action="store_true",
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")
+    output.add_argument("--json", action="store_true",
+                        help="print one JSON object (exit code and every finding) "
+                             "instead of the report")
     parser.add_argument("--now", type=int, default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     if args.quiet:
         with contextlib.redirect_stdout(io.StringIO()):
             return run_report(args)
+    if args.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = run_report(args)
+        print(render_json(os.path.basename(__file__), EVENTS, rc))
+        return rc
     return run_report(args)
 
 

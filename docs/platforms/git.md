@@ -52,6 +52,7 @@ All paths are under `git/`.
     ./git/git_whoami.sh
     ./git/git_whoami.sh --expect-email work@example.com
     ./git/git_ssh_doctor.py --host github.com
+    ./git/git_ignore_doctor.py --json
     ./git/git_hooks_install.sh status
     ```
 
@@ -94,6 +95,9 @@ All paths are under `git/`.
   `git_ssh_doctor.py --test-auth` attempts SSH authentication.
 - `git_hooks_install.sh --commit-msg` enforces Conventional Commits and is off
   by default.
+- Every `*_doctor.py` takes `--json`: one JSON object with the exit code and
+  each finding's level, section and message, redacted like the text report.
+  The shape is versioned (`schema` 1); keys may be added, never renamed.
 
 ## Repository
 

@@ -7,6 +7,9 @@ and a remote account, and mocking it would only assert that the mock was called.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -172,6 +175,86 @@ class KeyDetectionTestCase(unittest.TestCase):
     def test_correct_permissions_are_not_flagged(self):
         key = self.write("tight", "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n", mode=0o600)
         self.assertIsNone(doctor.permissions_problem(key))
+
+
+class RenderJsonTestCase(unittest.TestCase):
+    """--json: the same report as data.
+
+    EVENTS and SECTION are module state the printers write to, so each test
+    starts from an empty list and puts both back afterwards.
+    """
+
+    def setUp(self):
+        self._events = list(doctor.EVENTS)
+        self._section = doctor.SECTION
+        doctor.EVENTS.clear()
+        doctor.SECTION = ""
+
+    def tearDown(self):
+        doctor.EVENTS[:] = self._events
+        doctor.SECTION = self._section
+
+    def quietly(self, fn, *args):
+        with contextlib.redirect_stdout(io.StringIO()):
+            fn(*args)
+
+    def test_shape(self):
+        data = json.loads(doctor.render_json("x_doctor.py", [("ok", "s", "m")], 0))
+        self.assertEqual(
+            sorted(data), ["events", "exit_code", "problems", "schema", "tool"]
+        )
+        self.assertEqual(data["tool"], "x_doctor.py")
+        self.assertEqual(data["schema"], 1)
+        self.assertEqual(data["exit_code"], 0)
+        self.assertEqual(
+            data["events"], [{"level": "ok", "section": "s", "message": "m"}]
+        )
+
+    def test_problems_counts_only_fail_events(self):
+        events = [
+            ("fail", "a", "one"),
+            ("warn", "a", "two"),
+            ("info", "a", "three"),
+            ("detail", "b", "four"),
+            ("fail", "b", "five"),
+        ]
+        data = json.loads(doctor.render_json("t", events, 1))
+        self.assertEqual(data["problems"], 2)
+        self.assertEqual(data["exit_code"], 1)
+
+    def test_empty_events(self):
+        data = json.loads(doctor.render_json("t", [], 0))
+        self.assertEqual(data["events"], [])
+        self.assertEqual(data["problems"], 0)
+
+    def test_unicode_message_survives(self):
+        message = "not ignored — the file is tracked"
+        data = json.loads(doctor.render_json("t", [("fail", "s", message)], 1))
+        self.assertEqual(data["events"][0]["message"], message)
+
+    def test_output_is_one_line(self):
+        out = doctor.render_json("t", [("info", "s", "a\nb")], 0)
+        self.assertNotIn("\n", out)
+
+    def test_ansi_is_not_in_the_message(self):
+        self.quietly(doctor.raw, "        \x1b[2mpath\x1b[0m  (rule)")
+        self.assertEqual(doctor.EVENTS, [("detail", "", "path  (rule)")])
+        self.assertNotIn("\x1b", doctor.EVENTS[0][2])
+
+    def test_head_sets_the_section_of_following_events(self):
+        self.quietly(doctor.head, "remotes")
+        self.quietly(doctor.bad, "broken")
+        self.quietly(doctor.info, "fix: something")
+        self.assertEqual(
+            doctor.EVENTS,
+            [("fail", "remotes", "broken"), ("info", "remotes", "fix: something")],
+        )
+
+    def test_printers_record_their_level(self):
+        for fn, level in ((doctor.ok, "ok"), (doctor.warn, "warn"),
+                          (doctor.bad, "fail"), (doctor.info, "info")):
+            self.quietly(fn, "m")
+            self.assertEqual(doctor.EVENTS[-1][0], level)
 
 
 if __name__ == "__main__":

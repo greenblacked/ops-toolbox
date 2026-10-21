@@ -26,6 +26,7 @@ or reads the contents of a credential file.
     ./git_remote_doctor.py                 # diagnose this repository's remotes
     ./git_remote_doctor.py --remote origin
     ./git_remote_doctor.py --url https://github.com/owner/repo.git
+    ./git_remote_doctor.py --json          # the same verdict as one JSON object
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import re
 import stat
@@ -47,24 +49,68 @@ if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
     C_RED, C_GREEN, C_YELLOW = "\033[31m", "\033[32m", "\033[33m"
 
 
+# Every line the report prints is also recorded here, as (level, section,
+# text), so --json can hand the same verdict to a script. Recording happens in
+# the printers, after whatever redaction the caller applied, so the JSON never
+# says more than the text did. Copied, not shared, like Usage3Parser below.
+EVENTS = []
+SECTION = ""
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def record(level, text):
+    EVENTS.append((level, SECTION, _ANSI.sub("", text)))
+
+
 def ok(msg):
     print("%s[ ok ]%s %s" % (C_GREEN, C_RESET, msg))
+    record("ok", msg)
 
 
 def warn(msg):
     print("%s[warn]%s %s" % (C_YELLOW, C_RESET, msg))
+    record("warn", msg)
 
 
 def bad(msg):
     print("%s[fail]%s %s" % (C_RED, C_RESET, msg))
+    record("fail", msg)
 
 
 def info(msg):
     print("%s[info]%s %s" % (C_DIM, C_RESET, msg))
+    record("info", msg)
 
 
 def head(msg):
+    global SECTION
+    SECTION = msg
     print("\n%s== %s ==%s" % (C_BOLD, msg, C_RESET))
+
+
+def raw(text, level="detail"):
+    """Print a report line exactly as given, and record it without its indent
+    or colour. For the table rows and lists the level helpers do not cover."""
+    print(text)
+    record(level, _ANSI.sub("", text).strip())
+
+
+def render_json(tool, events, rc):
+    """The report as one JSON object.
+
+    schema 1 is a promise about shape: keys and levels may be added, none is
+    ever renamed. `problems` counts the fail-level events.
+    """
+    return json.dumps({
+        "tool": tool,
+        "schema": 1,
+        "exit_code": rc,
+        "problems": sum(1 for event in events if event[0] == "fail"),
+        "events": [
+            {"level": level, "section": section, "message": message}
+            for level, section, message in events
+        ],
+    }, sort_keys=True)
 
 
 def shorten(path):
@@ -498,13 +544,13 @@ def report_url(label, url, rewrites, push):
     """Print one URL, its rewrite and its problems. Returns the problem count."""
     parts = parse_url(url)
     dialled, pattern, base = apply_rewrites(url, rewrites, push=push)
-    print("        %-6s %s" % (label, redact_url(url)))
+    raw("        %-6s %s" % (label, redact_url(url)))
 
     if pattern is not None:
         kind = "pushInsteadOf" if push and _matched_push(url, rewrites) else "insteadOf"
-        print("        %-6s %s  %s(rewritten by url.%s.%s = %s)%s"
-              % ("dials", redact_url(dialled), C_DIM, redact_url(base), kind,
-                 redact_url(pattern), C_RESET))
+        raw("        %-6s %s  %s(rewritten by url.%s.%s = %s)%s"
+            % ("dials", redact_url(dialled), C_DIM, redact_url(base), kind,
+               redact_url(pattern), C_RESET))
         # Everything below judges the URL git will actually dial, not the one
         # in the config file. Judging the latter is how a rewrite hides a
         # problem instead of causing one.
@@ -541,7 +587,7 @@ def diagnose_remotes(remotes, rewrites, wanted):
 
     for name in names:
         entry = remotes[name]
-        print("  %s%s%s" % (C_BOLD, name, C_RESET))
+        raw("  %s%s%s" % (C_BOLD, name, C_RESET))
         for url in entry["fetch"]:
             problems += report_url("fetch", url, rewrites, push=False)
             dialled_parts.append(parse_url(apply_rewrites(url, rewrites)[0]))
@@ -593,7 +639,7 @@ def diagnose_rewrites(rewrites):
 
     problems = 0
     for base, pattern, kind in sorted(rewrites, key=lambda r: (r[2], r[1])):
-        print("        %-13s %s  ->  %s" % (kind, redact_url(pattern), redact_url(base)))
+        raw("        %-13s %s  ->  %s" % (kind, redact_url(pattern), redact_url(base)))
 
     # git rewrites once. A base that is itself matched by another pattern looks
     # like a chain and behaves like a dead end.
@@ -660,7 +706,7 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
         kind, resolved, problem = classify_helper(value, path_env, exec_path)
         origin = shorten(origin.replace("file:", ""))
         shown = redact_helper(value)
-        print("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
+        raw("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
         if problem:
             bad(problem)
             info("this is what a keychain helper copied between an old machine "
@@ -728,7 +774,7 @@ def run_report(args):
     if args.url:
         head("urls")
         for url in args.url:
-            print("  %s%s%s" % (C_BOLD, redact_url(url), C_RESET))
+            raw("  %s%s%s" % (C_BOLD, redact_url(url), C_RESET))
             problems += report_url("fetch", url, rewrites, push=False)
             dialled_parts.append(parse_url(apply_rewrites(url, rewrites)[0]))
 
@@ -774,13 +820,22 @@ def main(argv=None):
                         help="remote to check (repeatable); defaults to all of them")
     parser.add_argument("--url", action="append", default=[],
                         help="diagnose an arbitrary URL (repeatable), no repository needed")
-    parser.add_argument("--quiet", action="store_true",
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")
+    output.add_argument("--json", action="store_true",
+                        help="print one JSON object (exit code and every finding) "
+                             "instead of the report")
     args = parser.parse_args(argv)
 
     if args.quiet:
         with contextlib.redirect_stdout(io.StringIO()):
             return run_report(args)
+    if args.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = run_report(args)
+        print(render_json(os.path.basename(__file__), EVENTS, rc))
+        return rc
     return run_report(args)
 
 

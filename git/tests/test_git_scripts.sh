@@ -932,6 +932,69 @@ out="$(cd "$cwd_repo" && "$IGNORE_DOCTOR" a/b/logs/x 2>&1)"
 assert_contains "$out" "ignored by" "ignore doctor reports the **/ match"
 assert_not_contains "$out" "anchors it to" "ignore doctor does not call a leading **/ anchored"
 
+section "doctor --json"
+# One JSON object on stdout carrying the same exit code as the text run, so CI
+# can keep the diagnosis that --quiet throws away. Each doctor is driven the
+# offline way the quiet section above drives it. Comes after that section
+# because it reuses its claimed_repo and empty_ssh fixtures.
+json_verdict() {
+  # $1 is the exit code the run returned; the doctor's stdout is on stdin.
+  python3 -c 'import json, sys
+d = json.load(sys.stdin)
+assert d["tool"].endswith("_doctor.py"), d["tool"]
+assert d["schema"] == 1, d["schema"]
+assert isinstance(d["events"], list)
+assert d["exit_code"] == int(sys.argv[1]), (d["exit_code"], sys.argv[1])' "$1"
+}
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --json --url git@example.com:owner/repo.git)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "remote doctor --json is one object carrying exit $rc"; else err "remote doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "remote doctor --json prints exactly one line"
+
+out="$(cd "$repo" && "$IGNORE_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "ignore doctor --json is one object carrying exit $rc"; else err "ignore doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "ignore doctor --json prints exactly one line"
+
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "signing doctor --json is one object carrying exit $rc"; else err "signing doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "signing doctor --json prints exactly one line"
+
+out="$(cd "$repo" && "$SSH_DOCTOR" --json --ssh-dir "$empty_ssh" --host example.invalid)"; rc=$?
+assert_eq "$rc" "1" "ssh doctor --json keeps the failed verdict"
+if json_verdict "$rc" <<<"$out"; then ok "ssh doctor --json is one object carrying exit $rc"; else err "ssh doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "ssh doctor --json prints exactly one line"
+
+# The claimed file is named by a converted table row rather than a level
+# helper; a JSON report that dropped those rows would carry the verdict and
+# lose the diagnosis.
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" --json)"; rc=$?
+assert_eq "$rc" "1" "ignore doctor --json keeps the failing exit code"
+if json_verdict 1 <<<"$out"; then ok "ignore doctor --json reports exit_code 1"; else err "ignore doctor --json on a claimed file: $out"; fi
+assert_contains "$out" "secrets.txt" "ignore doctor --json names the tracked file"
+assert_contains "$out" "git rm --cached" "ignore doctor --json carries the repair"
+
+# Redaction happens before anything is recorded, so the JSON cannot say more
+# than the text did.
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --json --url 'https://user:s3cretpw@example.com/r.git')"
+assert_not_contains "$out" "s3cretpw" "remote doctor --json never carries a URL password"
+helper_repo="$(new_repo)"
+git -C "$helper_repo" config credential.helper '!f() { echo password=hunter2hunter2; }; f'
+out="$(cd "$helper_repo" && "$REMOTE_DOCTOR" --json --url https://example.com/r.git)"
+assert_not_contains "$out" "hunter2hunter2" "remote doctor --json never carries a helper's password"
+
+# --json and --quiet ask for opposite things; picking one silently would hide
+# the mistake, so the pair is a usage error on every doctor.
+json_doctors=0
+for f in "${py_doctors[@]}"; do
+  rel="${f#"$G/"}"
+  out="$(cd "$repo" && "$f" --json --quiet 2>/dev/null)"; rc=$?
+  assert_eq "$rc" "3" "$rel --json --quiet -> exit 3"
+  assert_eq "$out" "" "$rel --json --quiet prints nothing on stdout"
+  json_doctors=$((json_doctors + 1))
+done
+if (( json_doctors == 0 )); then err "the --json --quiet loop ran over no doctor"; fi
+
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
 out="$("$PY_TEMPLATE" --json --target definitely-missing --path "$empty_path")"
