@@ -76,7 +76,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | Requirement | Notes |
 | --- | --- |
 | **Linux** | Every script here exits `2` on anything else. |
-| **One of `apt`, `dnf` or `pacman`** | Only the five scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Three of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other nine never ask. |
+| **One of `apt`, `dnf` or `pacman`** | Only the five scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Three of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The rest never ask. |
 | **Bash 3.2 or newer** | These scripts are held to the same Bash 3.2 floor as the macOS package, so they also run on a box with an old `/bin/bash`. |
 | **`sudo`, or root** | Optional. Steps that need root are skipped with a warning when `sudo` is missing, and `--no-sudo` skips them deliberately. Running as root needs neither. |
 | **A systemd user manager** | Only for [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh), which exits `2` without one. `install --print-only` still prints the units anywhere. |
@@ -255,7 +255,7 @@ half lives in `install_devtools.sh` and GUI apps are left to you.
 
 The five scripts that need a package manager — `disk_cleanup.sh`,
 `install_devtools.sh`, `packages.sh`, `stay_fresh.sh`, `system_doctor.sh` —
-read `/etc/os-release` and map `ID`/`ID_LIKE` onto one. The other nine never
+read `/etc/os-release` and map `ID`/`ID_LIKE` onto one. The rest never
 ask. The lookup is duplicated in each script rather than shared, for the
 reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script has to work when
 copied on its own onto a box.
