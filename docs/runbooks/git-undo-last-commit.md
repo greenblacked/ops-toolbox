@@ -27,9 +27,9 @@ safe way for one that has already been pushed.
 
 ## Report
 
-<span class="stage stage-report">read-only</span>
+<span class="stage stage-report">read-only except fetch</span>
 
-!!! report "Nothing changes in this step"
+!!! report "Nothing in your branches or working tree changes"
     These commands leave your working tree, index, commits and branches
     unchanged. `git fetch` does update the remote-tracking refs
     (`origin/*`) and `.git/FETCH_HEAD`.
