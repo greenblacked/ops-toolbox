@@ -128,9 +128,10 @@ done
 
 # A policy list with a stray shell metacharacter or an uppercase word in it
 # would be pasted into a router and rejected there, several steps away from the
-# typo. Reject it here instead.
+# typo. Reject it here instead. The letters are spelled out: a range like a-z
+# follows the locale's collation, and on macOS it lets uppercase letters in.
 case "$POLICY" in
-  ''|*[!a-z,]*)
+  ''|*[!abcdefghijklmnopqrstuvwxyz,]*)
     printf -- '--policy takes a comma-separated RouterOS policy list, got: %s\n' "$POLICY" >&2
     exit 3
     ;;
