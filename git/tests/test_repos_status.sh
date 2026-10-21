@@ -156,6 +156,10 @@ assert_eq "$rc" 0 '--dry-run exits 0'
 assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --quiet" '--dry-run names the fetch it would run'
 assert_contains "$out" 'dry-run complete; no changes written' '--dry-run closes with the summary line'
 assert_eq "$(find "$parent" | sort)" "$tree_before" '--dry-run creates and removes no file'
+out="$("$REPOS_STATUS" --dir "$parent" --dry-run --porcelain 2>/dev/null)"
+assert_not_contains "$out" 'dry-run' '--dry-run --porcelain keeps dry-run lines off stdout'
+err="$("$REPOS_STATUS" --dir "$parent" --dry-run --porcelain 2>&1 >/dev/null)"
+assert_contains "$err" 'dry-run complete; no changes written' '--dry-run --porcelain sends the dry-run lines to stderr'
 assert_eq "$(git --git-dir="$origin" for-each-ref)" "$refs_before" '--dry-run leaves the origin refs alone'
 assert_eq "$(git -C "$parent/clean" rev-parse refs/remotes/origin/main)" "$tracking_before" \
   '--dry-run leaves the remote-tracking ref where it was'

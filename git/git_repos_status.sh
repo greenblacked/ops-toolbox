@@ -44,7 +44,8 @@ Options:
   --fetch         Run 'git fetch --quiet' in each repository first. Network;
                   it updates remote-tracking refs and nothing else.
   --dry-run       Print the fetch each repository would get and report from
-                  the refs already on disk; changes nothing
+                  the refs already on disk; changes nothing. With --porcelain
+                  the dry-run lines go to stderr, so stdout stays rows only
   --strict        Exit 1 when any reported repository has work at risk
   --porcelain     Tab-separated rows for scripts, no header or colour:
                   path branch upstream ahead behind changed stash unpushed notes
@@ -126,6 +127,15 @@ esac
 
 (( ${#DIRS[@]} > 0 )) || DIRS=(".")
 
+# Dry-run lines go to stderr under --porcelain so stdout stays rows only.
+dry_say() {
+  if (( PORCELAIN == 1 )); then
+    printf '%s\n' "$1" >&2
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 # --- preflight -------------------------------------------------------------
 if ! command -v git >/dev/null 2>&1; then
   err "git is not installed or not in PATH"
@@ -202,7 +212,7 @@ inspect_repo() {
     [[ -n "$(git -C "$repo" remote 2>/dev/null || true)" ]] && has_remote=1
     if (( has_remote == 1 )); then
       if (( DRY_RUN == 1 )); then
-        printf "dry-run: would run: git -C %s fetch --quiet\n" "$repo"
+        dry_say "dry-run: would run: git -C $repo fetch --quiet"
       elif (( FETCH == 1 )); then
         # No terminal prompt: one repository asking for a password would
         # otherwise stall the whole sweep.
@@ -365,7 +375,7 @@ else
 fi
 
 if (( DRY_RUN == 1 )); then
-  printf "dry-run complete; no changes written\n"
+  dry_say "dry-run complete; no changes written"
 fi
 
 if (( STRICT == 1 && at_risk > 0 )); then
