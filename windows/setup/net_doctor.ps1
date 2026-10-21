@@ -209,23 +209,36 @@ function Get-ProxyFinding {
     }
 
     # WinINET stores either one 'host:port' for every protocol, or a list such
-    # as 'http=host:port;https=host:port'. Take the https entry, then http.
+    # as 'http=host:port;https=host:port'. Keep the two protocols apart: a
+    # single value applies to both.
     $inet = [string]$Observed['WinInetServer']
+    $inetHttp = $inet
+    $inetHttps = $inet
     if ($inet -match '=') {
-        $perProtocol = @{}
+        $inetHttp = ''
+        $inetHttps = ''
         foreach ($part in ($inet -split ';')) {
             $kv = $part -split '=', 2
-            if ($kv.Count -eq 2) { $perProtocol[$kv[0].Trim().ToLowerInvariant()] = $kv[1] }
+            if ($kv.Count -ne 2) { continue }
+            $name = $kv[0].Trim().ToLowerInvariant()
+            if ($name -eq 'http') { $inetHttp = $kv[1] }
+            elseif ($name -eq 'https') { $inetHttps = $kv[1] }
         }
-        if ($perProtocol.ContainsKey('https')) { $inet = $perProtocol['https'] }
-        elseif ($perProtocol.ContainsKey('http')) { $inet = $perProtocol['http'] }
-        else { $inet = '' }
     }
-    $inetOn = [bool]$Observed['WinInetEnabled'] -and $inet
+    $inetOn = [bool]$Observed['WinInetEnabled'] -and ($inetHttp -or $inetHttps)
 
-    $envProxy = ''
-    foreach ($key in @('HttpsProxy', 'HttpProxy', 'AllProxy')) {
-        if ($Observed[$key]) { $envProxy = [string]$Observed[$key]; break }
+    # HTTP_PROXY pairs with the http entry, HTTPS_PROXY with the https one;
+    # ALL_PROXY stands in for whichever of the two is unset.
+    $envHttp = [string]$Observed['HttpProxy']
+    if (-not $envHttp) { $envHttp = [string]$Observed['AllProxy'] }
+    $envHttps = [string]$Observed['HttpsProxy']
+    if (-not $envHttps) { $envHttps = [string]$Observed['AllProxy'] }
+    $envProxy = $envHttp -or $envHttps
+
+    $mismatch = $false
+    if ($inetOn) {
+        if ($envHttp -and $inetHttp -and ((& $normalise $envHttp) -ne (& $normalise $inetHttp))) { $mismatch = $true }
+        if ($envHttps -and $inetHttps -and ((& $normalise $envHttps) -ne (& $normalise $inetHttps))) { $mismatch = $true }
     }
 
     $findings = @()
@@ -234,7 +247,7 @@ function Get-ProxyFinding {
             Id = 'env-without-wininet'; Level = 'warn'
             Message = 'HTTP(S)_PROXY is set but the WinINET proxy is off: curl, git and pip use the proxy, browsers and Windows itself do not'
         }
-    } elseif ($envProxy -and $inetOn -and ((& $normalise $envProxy) -ne (& $normalise $inet))) {
+    } elseif ($envProxy -and $mismatch) {
         $findings += [pscustomobject]@{
             Id = 'proxy-mismatch'; Level = 'warn'
             Message = 'HTTP(S)_PROXY and the WinINET proxy point at different proxies: command-line tools and browsers take different routes'
