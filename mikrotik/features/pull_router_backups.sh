@@ -19,6 +19,10 @@ TIMEOUT=10
 PORT=22
 IDENTITY=""
 DRY_RUN=0
+VERIFY=0
+# Empty means the freshness check is off, which keeps an existing cron line
+# behaving exactly as it did.
+MAX_AGE=""
 
 usage() {
   cat <<'EOF'
@@ -34,15 +38,22 @@ Options:
   --timeout SECONDS  SSH connect timeout (default: 10)
   --port PORT        SSH port (default: 22)
   --identity FILE    SSH private key (also enables IdentitiesOnly)
+  --verify           Check what this run pulled: no empty file, each .rsc
+                     starts with the RouterOS export header, and every
+                     .backup has its .rsc (and the reverse) in dest-dir
+  --max-age HOURS    Fail unless dest-dir holds a backup-*.backup modified
+                     within the last HOURS hours (a whole number, 1 or more)
   --dry-run          Preview the probe and transfers; contact nothing, write nothing
   -h, --help         Show this help
 
 Example:
   pull_router_backups.sh admin@192.168.88.1 ~/Archive/mikrotik-backups
+  pull_router_backups.sh --verify --max-age 26 admin@192.168.88.1 ~/Archive/mikrotik-backups
 
-Exit codes: 0 success (files pulled, or the router has no backups yet),
-1 reached the router but the transfer failed, 2 could not reach the router,
-3 usage
+Exit codes: 0 success (files pulled, or the router has no backups yet, and
+every requested check passed), 1 reached the router but the transfer failed,
+or a --verify or --max-age check failed (with --max-age, a router with no
+backups yet is 1), 2 could not reach the router, 3 usage
 EOF
 }
 
@@ -68,6 +79,9 @@ while (( $# > 0 )); do
     --port=*)    PORT="${1#*=}"; require_value "--port" "$PORT" ;;
     --identity)  require_value "$1" "${2:-}"; shift; IDENTITY="$1" ;;
     --identity=*) IDENTITY="${1#*=}"; require_value "--identity" "$IDENTITY" ;;
+    --verify)    VERIFY=1 ;;
+    --max-age)   require_value "$1" "${2:-}"; shift; MAX_AGE="$1" ;;
+    --max-age=*) MAX_AGE="${1#*=}"; require_value "--max-age" "$MAX_AGE" ;;
     --dry-run)   DRY_RUN=1 ;;
     -*)
       printf 'unknown option: %s\n\n' "$1" >&2
@@ -96,6 +110,21 @@ esac
 if (( ${#PORT} > 5 )) || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
   printf -- "--port requires a whole number from 1 to 65535, got: %s\n" "$PORT" >&2
   exit 3
+fi
+
+if [[ -n "$MAX_AGE" ]]; then
+  case "$MAX_AGE" in
+    *[!0-9]*)
+      printf -- "--max-age requires a whole number of hours, got: %s\n" "$MAX_AGE" >&2
+      exit 3
+      ;;
+  esac
+  # Length first, as for --port: an oversized value must not wrap in Bash
+  # arithmetic, and five digits is already eleven years.
+  if (( ${#MAX_AGE} > 5 )) || (( 10#$MAX_AGE < 1 )); then
+    printf -- "--max-age requires a whole number of hours, got: %s\n" "$MAX_AGE" >&2
+    exit 3
+  fi
 fi
 
 if (( ${#ARGS[@]} == 0 )); then
@@ -128,6 +157,13 @@ if (( DRY_RUN == 1 )); then
   print_cmd ssh "${SSH_OPTS[@]}" "$R" ':put "ok"'
   print_cmd scp "${SSH_OPTS[@]}" -p "$R:backup-*.backup" "$D/"
   print_cmd scp "${SSH_OPTS[@]}" -p "$R:backup-*.rsc" "$D/"
+  if (( VERIFY == 1 )); then
+    printf 'dry-run: would verify the pulled files (non-empty, export header, backup/rsc pairs)\n'
+  fi
+  if [[ -n "$MAX_AGE" ]]; then
+    printf 'dry-run: would require a backup-*.backup newer than %s hour(s) in %s\n' \
+      "$((10#$MAX_AGE))" "$D"
+  fi
   printf 'dry-run complete; no changes written\n'
   exit 0
 fi
@@ -177,6 +213,10 @@ fi
 # none of that attempt is allowed to replace an existing good generation.
 got=0
 failed=0
+# What this run published into $D, for --verify. Bash 3.2 has no mapfile and
+# treats an empty array as unset under -u, so it is read back below with the
+# ${pulled[@]+...} guard.
+pulled=()
 for ext in backup rsc; do
   mkdir "$stage/$ext"
   : >"$scp_err"
@@ -189,6 +229,7 @@ for ext in backup rsc; do
         failed=1
       else
         got=1
+        pulled+=("$name")
       fi
     done
   else
@@ -219,4 +260,66 @@ if (( got )); then
 elif (( failed == 0 )); then
   printf 'No backup-*.backup / backup-*.rsc on %s yet — nothing to pull.\n' "$R" >&2
 fi
+
+# Reaching the router and copying files is not the same as having a backup
+# that restores. Both checks below only read what is in $D and change nothing:
+# a bad file is reported and left where it is, for a person to look at.
+#
+# --verify: a run whose transfer already failed has its answer; the checks
+# would only repeat it. A run that pulled nothing has nothing to check and
+# passes.
+if (( VERIFY == 1 && failed == 0 )); then
+  checked=0
+  problems=0
+  for name in ${pulled[@]+"${pulled[@]}"}; do
+    checked=$((checked + 1))
+    file="$D/$name"
+    if [[ ! -s "$file" ]]; then
+      printf 'verify: %s: empty file\n' "$name" >&2
+      problems=$((problems + 1))
+      continue
+    fi
+    case "$name" in
+      *.rsc)
+        # /export opens with "# <date> by RouterOS <version>". Anything else
+        # is not an export: an error page, a truncated write, the wrong file.
+        first=""
+        IFS= read -r first <"$file" || true
+        if [[ "$first" != \#* || "$first" != *RouterOS* ]]; then
+          printf 'verify: %s: first line is not a RouterOS export header\n' "$name" >&2
+          problems=$((problems + 1))
+        fi
+        if [[ ! -f "$D/${name%.rsc}.backup" ]]; then
+          printf 'verify: %s: no matching %s in %s\n' "$name" "${name%.rsc}.backup" "$D" >&2
+          problems=$((problems + 1))
+        fi
+        ;;
+      *.backup)
+        if [[ ! -f "$D/${name%.backup}.rsc" ]]; then
+          printf 'verify: %s: no matching %s in %s\n' "$name" "${name%.backup}.rsc" "$D" >&2
+          problems=$((problems + 1))
+        fi
+        ;;
+    esac
+  done
+  printf 'verify: %d file(s) checked, %d problem(s)\n' "$checked" "$problems" >&2
+  if (( problems > 0 )); then
+    failed=1
+  fi
+fi
+
+# --max-age: the run can succeed every night while the router's own backup
+# scheduler has died, re-pulling the one stale pair RemovePrevious left. scp
+# -p keeps the router's timestamps, so the newest local mtime is the age of
+# the newest backup the router made. find -mmin works on GNU and BSD alike.
+if [[ -n "$MAX_AGE" ]]; then
+  minutes=$((10#$MAX_AGE * 60))
+  recent="$(find "$D" -maxdepth 1 -name 'backup-*.backup' -type f -mmin "-$minutes" 2>/dev/null || true)"
+  if [[ -z "$recent" ]]; then
+    printf 'newest backup in %s is older than %s hour(s) (or there is none)\n' \
+      "$D" "$((10#$MAX_AGE))" >&2
+    failed=1
+  fi
+fi
+
 exit "$failed"

@@ -1038,6 +1038,7 @@ directory over SFTP/SCP.
 ./pull_router_backups.sh --port 2222 --identity ~/.ssh/router admin@router.lan
 ./pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
 ./pull_router_backups.sh --timeout 30 admin@router.lan   # slow link or a WAN hop
+./pull_router_backups.sh --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
 ```
 
 `--timeout SECONDS` is the ssh connect timeout, 10 by default; a non-integer is
@@ -1049,8 +1050,31 @@ an empty result is allowed to mean "no backups yet", because those two used to
 be indistinguishable — an unreachable host, a rejected key and SFTP switched off
 all exited `0`, so a cron job reported success while backups had silently
 stopped for months. `--dry-run` previews the exact SSH/SCP calls without
-contacting the router or creating the destination. Exit codes: `0` files pulled or none exist yet, `1` reached
-the router but the transfer failed, `2` could not reach it, `3` usage.
+contacting the router or creating the destination.
+
+Reaching the router is not the same as having a backup that restores, and two
+opt-in checks cover the rest. Both only read the destination directory: a bad
+file is reported and left in place, never deleted or renamed.
+
+- `--verify` checks what this run pulled. Each file must be non-empty, each
+  `.rsc` must open with the RouterOS export header (`# <date> by RouterOS
+  <version>`), and each `backup-X.backup` must have its `backup-X.rsc` in the
+  destination, and the reverse. Each problem is printed as
+  `verify: <file>: <reason>` on stderr, followed by `verify: N file(s)
+  checked, M problem(s)`. A run that pulled nothing has nothing to check and
+  passes; a run whose transfer already failed is not checked again.
+- `--max-age HOURS` fails unless the destination holds a `backup-*.backup`
+  modified within the last HOURS hours (a whole number from 1). The run can
+  succeed every night while the router's own backup scheduler has died and
+  `RemovePrevious` left one old pair to be pulled again and again; `scp -p`
+  keeps the router's timestamps, so this sees how old the newest backup
+  really is. With `--max-age`, a router with no backups yet is a failure
+  (exit `1`) rather than success.
+
+Without either flag the behaviour is exactly what it was, so existing cron
+lines are unaffected. Exit codes: `0` files pulled or none exist yet, and
+every requested check passed, `1` reached the router but the transfer failed,
+or a `--verify` / `--max-age` check failed, `2` could not reach it, `3` usage.
 
 ## Security action surface
 

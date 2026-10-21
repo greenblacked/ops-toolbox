@@ -68,14 +68,21 @@ the host tools to inspect.
     ./mikrotik/features/print_schedulers.sh
     ./mikrotik/features/print_schedulers.sh --include-notify-boot
     ./mikrotik/features/pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
+    ./mikrotik/features/pull_router_backups.sh --dry-run --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
     ```
 
 === "Apply"
 
     ```bash
     ./mikrotik/features/pull_router_backups.sh admin@router.lan ~/Archive/mikrotik-backups
+    ./mikrotik/features/pull_router_backups.sh --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
     ./mikrotik/features/export_config.py --host router.lan --commit
     ```
+
+    `--verify` checks the pulled files (non-empty, export header, each
+    `.backup` with its `.rsc`) and `--max-age` fails when the newest backup is
+    older than the hours given, so a cron job notices a router whose own
+    backup scheduler stopped.
 
     Installing a router script means pasting its `.lua` file into
     `/system script` with the policy above. The file name becomes the script
