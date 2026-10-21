@@ -349,11 +349,18 @@ while IFS=$'\t' read -r ns name reason age uid phase; do
   # The uid precondition makes the API server refuse it (409 Conflict).
   if [[ "$uid" != "-" ]]; then
     body="{\"kind\":\"DeleteOptions\",\"apiVersion\":\"v1\",\"preconditions\":{\"uid\":\"${uid}\"}}"
-    out="$("${KUBECTL[@]}" delete --raw "/api/v1/namespaces/${ns}/pods/${name}" -f - 2>&1 >/dev/null <<<"$body")"
-    drc=$?
+    # Assigned inside the if so a failing delete cannot trip set -e.
+    if out="$("${KUBECTL[@]}" delete --raw "/api/v1/namespaces/${ns}/pods/${name}" -f - 2>&1 >/dev/null <<<"$body")"; then
+      drc=0
+    else
+      drc=$?
+    fi
   else
-    out="$("${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false 2>&1 >/dev/null)"
-    drc=$?
+    if out="$("${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false 2>&1 >/dev/null)"; then
+      drc=0
+    else
+      drc=$?
+    fi
   fi
   if (( drc == 0 )); then
     deleted=$((deleted + 1))
