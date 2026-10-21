@@ -219,6 +219,38 @@ assert_rc "an in-repository alias to an outside file is not read" 0 "$rc"
 assert_not_contains "the alias target is not scanned" "$out" "[FAIL]"
 rm -f "$scratch/outside-secret"
 
+# Links for a config that was renamed or deleted in the repository are not
+# driven by any current source, so they are looked for in the install
+# locations. Links elsewhere, or to other places, are never reported.
+make_fixture
+mkdir -p "$H/.config/gone" "$H/.olddir"
+ln -s "$R/config/gone/conf" "$H/.config/gone/conf"
+ln -s "$R/home/.gonerc" "$H/.gonerc"
+ln -s "$R/home/.olddir/settings" "$H/.olddir/settings"
+ln -s "$R/config/gone/conf" "$H/.config/gone/conf.backup-20260101-000000"
+ln -s "$scratch/not-the-repo/x" "$H/.config/gone/foreign"
+before="$(snapshot "$H" "$T")"
+out="$(run_doctor --repo "$R" 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "orphan links are warnings, exit 0" 0 "$rc"
+assert_contains "an orphan under the config home is named" "$out" "[warn] $H/.config/gone/conf links into $R, but $R/config/gone/conf does not exist"
+assert_contains "an orphan at the top of the home is named" "$out" "[warn] $H/.gonerc links into $R"
+assert_contains "an orphan in a deleted source directory is named" "$out" "[warn] $H/.olddir/settings links into $R"
+assert_not_contains "a --force backup is not reported" "$out" "conf.backup-"
+assert_not_contains "a dangling link elsewhere is not reported" "$out" "$H/.config/gone/foreign"
+assert_contains "the tracked links still pass" "$out" "[pass] 2 linked configs hold no credential"
+run_doctor --repo "$R" --fail-on warn >/dev/null 2>&1; rc=$?
+assert_rc "--fail-on warn turns an orphan into exit 1" 1 "$rc"
+if [[ "$before" == "$after" ]]; then ok "the orphan scan wrote nothing"; else err "the orphan scan wrote into the home or tmp"; fi
+
+# A tracked target that dangles is reported once, by the tracked-file loop.
+make_fixture
+rm "$H/.config/foo/conf"
+ln -s "$R/config/foo/renamed" "$H/.config/foo/conf"
+out="$(run_doctor --repo "$R" 2>&1)"
+n="$(grep -c "conf links into" <<<"$out")"
+if [[ "$n" == 1 ]]; then ok "a dangling tracked target is reported once"; else err "a dangling tracked target was reported $n times"; fi
+
 # Copied alone into a bin directory, as CONTRIBUTING's one rule asks.
 make_fixture
 mkdir -p "$scratch/bin"

@@ -267,6 +267,26 @@ links_into_repo() {
   [[ "$phys" == "$REPO"/* ]]
 }
 
+# Links in the places install_dotfiles.sh looks for its own, bounded so a
+# large home is never walked: the config home three levels deep, the top of
+# the home, each directory under home/ in the repository two levels deep, and
+# each hidden directory at the top of the home two levels deep (the links of
+# a source directory that was deleted). find -H follows a starting point that
+# is itself a link, such as a linked ~/.config; nothing below it.
+link_candidates() {
+  local d
+  if [[ -d "$CONFIG_DIR" ]]; then find -H "$CONFIG_DIR" -maxdepth 3 -type l 2>/dev/null; fi
+  find -H "$HOME_DIR" -maxdepth 1 -type l 2>/dev/null
+  while IFS= read -r d; do
+    d="${d##*/}"
+    if [[ -d "$HOME_DIR/$d" ]]; then find -H "$HOME_DIR/$d" -maxdepth 2 -type l 2>/dev/null; fi
+  done < <(find "$REPO/home" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+  while IFS= read -r d; do
+    find -H "$d" -maxdepth 2 -type l 2>/dev/null
+  done < <(find "$HOME_DIR" -mindepth 1 -maxdepth 1 -type d -name '.*' 2>/dev/null)
+  return 0
+}
+
 # Lines of a keyed pattern only count when the line is not a comment: the
 # tracked .npmrc explains in a comment why no _authToken line belongs in it.
 # A line whose first non-blank character is # or ; never matches.
@@ -310,10 +330,11 @@ check_linked_configs() {
     skip "linked configs: no config/ and home/ beside this script"
     return
   fi
-  local rel target t n label lrel scanned=0 before="$FAIL_COUNT"
+  local rel target t n label lrel l scanned=0 orphans=0 tracked="" before="$FAIL_COUNT"
   while IFS= read -r rel; do
     [[ -n "$rel" ]] || continue
     target="$(target_of "$rel")"
+    tracked="$tracked$target"$'\n'
     [[ -L "$target" ]] || continue
     links_into_repo "$target" || continue
     t="$(link_target "$target")"
@@ -333,7 +354,20 @@ check_linked_configs() {
   done < <(cd "$REPO" && find ./config ./home -type f \
     -not -name .DS_Store -not -path '*/__pycache__/*' | sed 's|^\./||' | sort)
 
-  if (( scanned == 0 )); then
+  # Links for a config that was renamed or deleted: the loop above starts
+  # from the files that exist today and never sees them.
+  while IFS= read -r l; do
+    [[ -n "$l" ]] || continue
+    case "$l" in *.backup-[0-9]*) continue ;; esac
+    [[ -e "$l" ]] && continue
+    grep -Fxq -- "$l" <<<"$tracked" && continue
+    links_into_repo "$l" || continue
+    orphans=$((orphans + 1))
+    t="$(link_target "$l")"
+    warn "$l links into $REPO, but $t does not exist" "rm $l  (its config was renamed or removed in the repository)"
+  done < <(link_candidates | sort -u)
+
+  if (( scanned == 0 && orphans == 0 )); then
     skip "linked configs: nothing in $HOME_DIR links into $REPO"
   elif (( FAIL_COUNT == before )); then
     pass "$scanned linked configs hold no credential"
