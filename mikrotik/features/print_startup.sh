@@ -168,9 +168,9 @@ stay_fresh           StayFreshRemovePrevious     true                           
 stay_fresh           StayFreshMaxWait            12                                  polls of 5 s to wait for the verdict
 stay_fresh           StayFreshTgSend             "tg_send_new"                       Telegram helper to use
 stay_fresh           RouterBackupPassword        "<paste backup password>"           encrypts the pre-upgrade binary backup
-security_check       SecurityManagementList      "LAN"                               interface list meant for MAC management
-security_check       SecurityManagementNetworks  "192.168.88.0/24"                   expected /ip service source restriction
-security_check       SecurityManagementWifi      "wifi1"                             the management Wi-Fi interface
+security_check       SecurityManagementList      ""                                  empty skips the check; set an interface list, e.g. "LAN"
+security_check       SecurityManagementNetworks  ""                                  empty skips the check; set the expected /ip service sources, e.g. "192.168.88.0/24"
+security_check       SecurityManagementWifi      ""                                  empty skips the check; set the management Wi-Fi interface, e.g. "wifi1"
 security_check       SecurityReportAlways        false                               true sends the report even when unchanged
 security_check       SecuritySendScript          "tg_send_new"                       Telegram helper to use
 rogue_dns_check      DnsExpected                 ";1.1.1.1;1.0.0.1;"                 answers the control name may resolve to
@@ -261,6 +261,7 @@ else
   comment "so this output is safe to keep in git; the router's copy is not."
 fi
 comment "Settings are commented out at their defaults; uncomment the ones you change."
+comment "An empty default (\"\") means off or unset: give it a value to turn that on."
 comment
 comment "Adding a name that already exists fails with \"already have such entry\"."
 comment "To replace both:  /system script remove [find name=\"$NAME\"]"

@@ -995,7 +995,9 @@ The script always declares `TgBotToken` and `TgChatId` (as
 `"<paste bot token>"` and `"<paste chat id>"` unless `--from-env` is given)
 and `OpsToolboxPaused false`. `--only SCRIPT` adds the settings that script
 reads, each commented out at its default with one line on what it does, so
-you uncomment only what you change: `backup`, `backup_update_check`,
+you uncomment only what you change (the three `SecurityManagement*`
+settings default to empty, which skips their check, and the note gives an
+example value): `backup`, `backup_update_check`,
 `stay_fresh`, `security_check`, `rogue_dns_check` and `conntrack_watch`. A setting two of them
 share, such as `RouterBackupPassword`, is listed once. State the scripts keep
 for themselves (`SecLastFp`, `RdnsDeliveredSig` and the like) is never
