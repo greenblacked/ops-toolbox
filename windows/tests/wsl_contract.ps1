@@ -294,6 +294,18 @@ Test-Case 'processors above the logical processors are reported' (
     @($found | Where-Object { $_.Level -eq 'warn' -and $_.Message -match 'logical processors' }).Count -eq 1
 ) (Format-Finding $found)
 
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nfirewall=yes`n[experimental]`nsparseVhd=1"
+Test-Case 'a boolean key that is not true or false is reported, sparseVhd included' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[experimental] sparseVhd (line 5)' -and $_.Message -match 'not true or false' }).Count -eq 1 -and
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] firewall (line 3)' -and $_.Message -match 'not true or false' }).Count -eq 1 -and
+    @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -like '*sparseVhd*' }).Count -eq 0
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nfirewall=FALSE`n[experimental]`nsparseVhd=True"
+Test-Case 'true and false are accepted in any case' (
+    @($found | Where-Object { $_.Message -match 'not true or false' }).Count -eq 0 -and
+    @($found | Where-Object { $_.Level -eq 'ok' -and $_.Check -like '*sparseVhd*' }).Count -eq 1
+) (Format-Finding $found)
+
 $lfText = "[wsl2]`nmemory=8GB`n# a comment`n; another`nswap=0`n"
 $crlfText = [string][char]0xFEFF + ($lfText -replace "`n", "`r`n")
 $lfEntries = @(ConvertFrom-WslConfig -Text $lfText) | ConvertTo-Json -Compress

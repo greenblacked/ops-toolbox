@@ -906,6 +906,22 @@ function Test-WslConfig {
         }
     }
 
+    # Keys that take true or false. WSL does not say what it does with
+    # anything else, so 'yes', '1' or 'ture' is reported rather than assumed
+    # to work. Case does not matter; the check is -match, which ignores it.
+    $booleanKeys = @('localhostForwarding', 'nestedVirtualization', 'guiApplications', 'debugConsole',
+                     'safeMode', 'firewall', 'dnsTunneling', 'autoProxy', 'dnsProxy', 'pageReporting',
+                     'sparseVhd', 'bestEffortDnsParsing', 'hostAddressLoopback', 'useWindowsDnsCache')
+    $notBoolean = @{}
+    foreach ($boolKey in $booleanKeys) {
+        if (-not $values.ContainsKey($boolKey)) { continue }
+        $e = $values[$boolKey]
+        if ($e.Value -notmatch '^(true|false)$') {
+            $notBoolean[$boolKey] = $true
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not true or false" }
+        }
+    }
+
     # WSL reads these as INI strings, so a single backslash is an escape and
     # 'C:\Users\me\bzImage' arrives mangled. Doubled, or forward slashes, work.
     foreach ($pathKey in @('kernel', 'swapFile')) {
@@ -929,7 +945,9 @@ function Test-WslConfig {
         $findings += [PSCustomObject]@{ Level = 'info'; Check = '[experimental] autoMemoryReclaim'; Message = 'consider autoMemoryReclaim=gradual: freed memory goes back to Windows' }
     }
     if ($values.ContainsKey('sparseVhd')) {
-        $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $values['sparseVhd']); Message = $values['sparseVhd'].Value }
+        if (-not $notBoolean.ContainsKey('sparseVhd')) {
+            $findings += [PSCustomObject]@{ Level = 'ok'; Check = (Get-Label $values['sparseVhd']); Message = $values['sparseVhd'].Value }
+        }
     } else {
         $findings += [PSCustomObject]@{ Level = 'info'; Check = '[experimental] sparseVhd'; Message = 'consider sparseVhd=true (or wsl_manage.ps1 sparse for an existing distro)' }
     }
