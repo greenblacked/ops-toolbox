@@ -391,6 +391,16 @@ class HostKeyFindingsTestCase(unittest.TestCase):
         self.assertIn("h port 2222", message)
         self.assertIn("-p 2222 h", fix)
 
+    def test_a_host_key_alias_is_what_the_fix_records(self):
+        [(_, _, fix)] = doctor.host_key_findings("h", "22", "ask", [], [], False,
+                                                 alias="my alias")
+        self.assertIn("awk -v a='my alias'", fix)
+        self.assertIn(">> ~/.ssh/known_hosts", fix)
+
+    def test_no_alias_keeps_the_plain_fix(self):
+        [(_, _, fix)] = doctor.host_key_findings("h", "22", "ask", [], [], False, alias="none")
+        self.assertIn("cat /tmp/hostkey >> ~/.ssh/known_hosts", fix)
+
 
 if __name__ == "__main__":
     unittest.main()

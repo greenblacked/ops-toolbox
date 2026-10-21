@@ -350,13 +350,15 @@ def normalise_strict(value):
     return value
 
 
-def host_key_findings(host, port, strict, found_in, files_checked, hashed, require=False):
+def host_key_findings(host, port, strict, found_in, files_checked, hashed, require=False,
+                      alias=""):
     """[(level, message, fix)] for one host's known_hosts state.
 
     host is the HostName ssh dials. Without `require` an unknown key is a
     warning, so nobody's exit code changes; with it (a CI preflight) it is a
     failure, under accept-new and StrictHostKeyChecking no as well, since
-    those trust whatever key the first connection presents.
+    those trust whatever key the first connection presents. With a
+    HostKeyAlias the fix records the key under the alias, the name ssh looks up.
     """
     strict = normalise_strict(strict)
     port = str(port or "22")
@@ -396,13 +398,15 @@ def host_key_findings(host, port, strict, found_in, files_checked, hashed, requi
         message = ("host key for %s is not in %s: the first connection stops to ask, "
                    "and a non-interactive run (CI, cron, BatchMode) fails with Host key "
                    "verification failed" % (where, checked))
+    use_alias = bool(alias) and alias.lower() != "none"
+    record = ("awk -v a=%s '{$1=a; print}' /tmp/hostkey" % shlex.quote(alias)
+              if use_alias else "cat /tmp/hostkey")
     findings.append((
         "fail" if require else "warn",
         message,
         "ssh-keyscan -t ed25519 -p %s %s > /tmp/hostkey; ssh-keygen -lf /tmp/hostkey"
         "   # compare with the fingerprint the provider publishes, then: "
-        "cat /tmp/hostkey >> ~/.ssh/known_hosts"
-        % (port, host),
+        "%s >> ~/.ssh/known_hosts" % (port, host, record),
     ))
     return findings
 
@@ -459,6 +463,7 @@ def check_host_key(host, cfg, require):
     for level, message, fix in host_key_findings(
         hostname, port, cfg.get("stricthostkeychecking", "ask"), found_in,
         [shorten(p) for p in files], hashed, require,
+        cfg.get("hostkeyalias", ""),
     ):
         if level == "fail":
             bad(message)
