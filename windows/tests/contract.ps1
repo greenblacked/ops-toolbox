@@ -2048,6 +2048,25 @@ if (-not $hardening) {
             }
         }
 
+        foreach ($list in @('host1,*', ' * ', 'host1, *, host2')) {
+            $facts = Get-GoodAuditFact -Now $auditNow
+            $facts.TrustedHosts = $list
+            $v = @(Test-AuditFact -Facts $facts | Where-Object { $_.Id -eq 'winrm-trustedhosts' })
+            if ($v.Count -eq 1 -and $v[0].Level -eq 'fail') {
+                Test-Ok "TrustedHosts '$list' is a wildcard: fail"
+            } else {
+                Test-Fail "TrustedHosts '$list' gave $(@($v | ForEach-Object { $_.Level }) -join ','), expected fail"
+            }
+        }
+        $facts = Get-GoodAuditFact -Now $auditNow
+        $facts.TrustedHosts = 'host1,*.corp.example'
+        $v = @(Test-AuditFact -Facts $facts | Where-Object { $_.Id -eq 'winrm-trustedhosts' })
+        if ($v.Count -eq 1 -and $v[0].Level -eq 'pass') {
+            Test-Ok 'TrustedHosts with a scoped pattern but no bare * passes'
+        } else {
+            Test-Fail "TrustedHosts 'host1,*.corp.example' gave $(@($v | ForEach-Object { $_.Level }) -join ','), expected pass"
+        }
+
         try {
             $blind = @(Test-AuditFact -Facts @{ Elevated = $false })
             $notSkipped = @($blind | Where-Object { $_.Level -ne 'skip' })

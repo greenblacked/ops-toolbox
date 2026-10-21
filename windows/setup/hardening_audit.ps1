@@ -220,8 +220,8 @@ function Test-AuditFact {
     $trusted = $Facts['TrustedHosts']
     if ($null -eq $trusted) {
         $findings.Add((& $new 'remote' 'winrm-trustedhosts' 'skip' "WinRM TrustedHosts: $unreadable (and the WinRM service has to be running)" ''))
-    } elseif (([string]$trusted).Trim() -eq '*') {
-        $findings.Add((& $new 'remote' 'winrm-trustedhosts' 'fail' 'WinRM TrustedHosts is *: this machine sends credentials to any host it is pointed at' "Set-Item WSMan:\localhost\Client\TrustedHosts -Value 'host1,host2' -Force"))
+    } elseif (@(([string]$trusted) -split ',' | ForEach-Object { $_.Trim() }) -contains '*') {
+        $findings.Add((& $new 'remote' 'winrm-trustedhosts' 'fail' 'WinRM TrustedHosts contains *: this machine sends credentials to any host it is pointed at' "Set-Item WSMan:\localhost\Client\TrustedHosts -Value 'host1,host2' -Force"))
     } else {
         $findings.Add((& $new 'remote' 'winrm-trustedhosts' 'pass' 'WinRM TrustedHosts is not a wildcard' ''))
     }
