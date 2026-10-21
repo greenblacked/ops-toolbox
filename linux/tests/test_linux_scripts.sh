@@ -39,7 +39,7 @@ rmdir "$tmp_probe"
 # bites: disk_cleanup.sh deleted its thumbnails even when --home pointed the run
 # at a scratch profile, so running this suite on a desktop Linux box emptied the
 # developer's real cache. Every test that needs one of these supplies it itself.
-unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME
+unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG
 # SYSTEMD_ANALYZE_CMD names a binary stay_fresh_timer.sh executes to verify the
 # units it writes. Exported, it aims that execution at whatever the host says,
 # which is the worst of this class: not a path the run reads, a command the run
@@ -1109,6 +1109,129 @@ else
   ok "net_doctor --quiet drops the healthy lines"
 fi
 assert_contains "net_doctor --quiet still summarises" "$out" "== summary =="
+
+section "log_triage.sh"
+TRIAGE="$L/log_triage.sh"
+scratch_home="$(mktemp -d)"
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$TRIAGE" 2>&1)"; rc=$?
+assert_eq "log_triage exits 0 with almost nothing installed" "0" "$rc"
+assert_contains "log_triage prints a summary" "$out" "== summary =="
+assert_contains "log_triage has a kernel section" "$out" "== kernel =="
+assert_contains "log_triage has an auth section" "$out" "== auth =="
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "log_triage wrote nothing"
+else
+  err "log_triage wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+out="$("$TRIAGE" --quiet 2>&1)"
+if grep -q '\[ ok \]' <<<"$out"; then
+  err "log_triage --quiet still printed [ ok ] lines"
+else
+  ok "log_triage --quiet drops the healthy lines"
+fi
+assert_contains "log_triage --quiet still summarises" "$out" "== summary =="
+
+triage_sections="$("$TRIAGE" --list-sections)"
+for s in kernel units auth repeats; do
+  assert_contains "log_triage lists section $s" "$triage_sections" "$s"
+done
+for bad in "--only nosuch" "--top 0" "--top abc" "--fail-on sometimes" "--bogus"; do
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$TRIAGE" $bad >/dev/null 2>&1
+  rc=$?
+  assert_eq "log_triage rejects $bad -> 3" "3" "$rc"
+done
+"$TRIAGE" --only , >/dev/null 2>&1; rc=$?
+assert_eq "log_triage --only empty selection -> 4" "4" "$rc"
+# --since is passed to journalctl, so anything that could be read as one of its
+# options, or that a shell would expand, is refused before a journal is read.
+"$TRIAGE" --since '-n 5' >/dev/null 2>&1; rc=$?
+assert_eq "log_triage refuses a --since that starts with a dash -> 3" "3" "$rc"
+# shellcheck disable=SC2016  # the literal $(id) is the point
+"$TRIAGE" --since '$(id)' >/dev/null 2>&1; rc=$?
+assert_eq "log_triage refuses a --since with shell syntax -> 3" "3" "$rc"
+
+# A container has no journal, so the parsers would never see a line. A stub
+# journalctl ahead of PATH answers each read with fixture lines in the real
+# `-o short` shape and records its argv, which is also how the run is proved
+# read-only: nothing but reads ever reaches it.
+triage_stub="$(mktemp -d)"
+cat > "$triage_stub/journalctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${0%/*}/argv.log"
+case " $* " in
+  *" -k "*)
+    printf 'Oct 21 10:00:00 host kernel: Out of memory: Killed process 42 (java)\n'
+    printf 'Oct 21 10:00:01 host kernel: EXT4-fs error (device sda1): ext4_find_entry: reading directory\n'
+    ;;
+  *" -p "*)
+    i=0
+    while (( i < 60 )); do
+      printf 'Oct 21 10:00:02 host nginx[1]: upstream timed out\n'
+      i=$((i + 1))
+    done
+    for n in 17 18 19; do
+      printf 'Oct 21 10:00:03 host app[2]: boom %s\n' "$n"
+    done
+    ;;
+  *" -u ssh "*)
+    i=0
+    while (( i < 30 )); do
+      printf 'Oct 21 10:00:04 host sshd[9]: Failed password for invalid user admin from 203.0.113.9 port 4242 ssh2\n'
+      i=$((i + 1))
+    done
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$triage_stub/journalctl"
+out="$(PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" 2>&1)"; rc=$?
+assert_eq "log_triage with findings still exits 0 by default" "0" "$rc"
+assert_contains "log_triage counts OOM kernel messages" "$out" "OOM message(s)"
+assert_contains "log_triage counts filesystem kernel messages" "$out" "filesystem message(s)"
+assert_contains "log_triage ranks the noisiest identifier" "$out" "nginx"
+assert_contains "log_triage warns on an identifier past 50 error lines" "$out" "nginx logged 60 error line(s)"
+assert_contains "log_triage folds numbers in repeated messages" "$out" "boom N"
+assert_contains "log_triage groups failed logins by source" "$out" "203.0.113.9"
+assert_contains "log_triage names invalid users, not whole lines" "$out" "admin"
+assert_contains "log_triage warns on brute force" "$out" "[warn]"
+PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --fail-on warn >/dev/null 2>&1; rc=$?
+assert_eq "log_triage --fail-on warn exits 1 on findings" "1" "$rc"
+out="$(PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --only auth 2>&1)"
+assert_not_contains "log_triage --only auth leaves the kernel out" "$out" "== kernel =="
+argv_log="$(cat "$triage_stub/argv.log" 2>/dev/null || true)"
+assert_contains "log_triage read the kernel log through journalctl" "$argv_log" "-k"
+if grep -qE -- '--vacuum|--rotate|--flush|--sync|--relinquish' <<<"$argv_log"; then
+  err "log_triage passed a journal-changing option to journalctl"
+else
+  ok "log_triage only ever reads the journal"
+fi
+
+# The file-only path: no journalctl on PATH at all, and the auth log named in
+# AUTH_LOG. The PATH holds only the tools the script reads with, so a
+# journalctl on the image cannot answer instead.
+triage_bin="$(mktemp -d)"
+for tool in bash awk sort uniq grep head tr sed date cat uname id wc; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ "$tool_path" == /* ]] && ln -s "$tool_path" "$triage_bin/$tool"
+done
+triage_log="$triage_stub/auth.log"
+i=0
+while (( i < 12 )); do
+  printf 'Oct 21 10:00:05 host sshd[9]: Failed password for root from 198.51.100.7 port 5555 ssh2\n' >> "$triage_log"
+  i=$((i + 1))
+done
+printf 'Oct 21 10:00:06 host sshd[9]: Accepted publickey for ops from 192.0.2.1 port 22 ssh2\n' >> "$triage_log"
+out="$(PATH="$triage_bin" AUTH_LOG="$triage_log" "$TRIAGE" 2>&1)"; rc=$?
+assert_eq "log_triage with only an auth log exits 0" "0" "$rc"
+assert_contains "log_triage reads the named auth log" "$out" "auth.log"
+assert_contains "log_triage ranks the auth log's sources" "$out" "198.51.100.7"
+assert_contains "log_triage warns at ten failures from one source" "$out" "[warn]"
+assert_contains "log_triage counts accepted logins" "$out" "1 accepted SSH login(s)"
+assert_contains "log_triage skips the kernel without a journal or dmesg" "$out" "neither journalctl nor dmesg"
+rm -rf "$triage_stub" "$triage_bin"
 
 section "schedule_report.sh"
 SCHED="$L/schedule_report.sh"

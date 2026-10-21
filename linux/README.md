@@ -38,6 +38,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [`net_doctor.sh`](#net_doctorsh)
 - [`sysctl_defaults.sh`](#sysctl_defaultssh)
 - [`tls_expiry.sh`](#tls_expirysh)
+- [`log_triage.sh`](#log_triagesh)
 - [`config_backup.sh`](#config_backupsh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [Scoped runs and kernel checks](#scoped-runs-and-kernel-checks)
@@ -55,6 +56,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, host keys, updates, kernel controls |
 | [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
 | [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
+| [`log_triage.sh`](log_triage.sh) | Read-only log summary since `--since`: kernel distress, noisiest identifiers, failed logins, repeats |
 | [`sysctl_defaults.sh`](sysctl_defaults.sh) | Report/apply/revert a short sysctl list (inotify watches, swappiness) |
 | [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
 | [`config_backup.sh`](config_backup.sh) | Dated tar of selected paths (default `/etc`); never a restore |
@@ -121,6 +123,7 @@ Read the machine without touching it:
 ./hardening_audit.sh        # is this machine safe?
 ./ssh_client_doctor.sh      # is ~/.ssh something ssh will actually use?
 ./tls_expiry.sh --file /etc/ssl/private/example.pem
+./log_triage.sh             # what has been going wrong lately?
 ./sysctl_defaults.sh        # current vs desired sysctl values
 ./schedule_report.sh        # what is scheduled to run?
 ```
@@ -156,6 +159,7 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When `Permission denied (publickey)` and the key is on disk | nothing — it only reads |
 | **Diagnose** | `tls_expiry.sh` | Monthly, or from cron | nothing — it only reads |
+| **Diagnose** | `log_triage.sh` | After an incident, or on a box you have just been handed | nothing — it only reads |
 
 `stay_fresh.sh` assumes a supported package manager but degrades if optional
 tools (docker, snap, journalctl) are missing. The diagnose scripts never
@@ -573,6 +577,53 @@ Name every PEM or hostname you actually serve:
 clients do. Missing `openssl` is exit `2`; `--help` and a missing `--file`
 still work without it.
 
+## `log_triage.sh`
+
+`system_doctor.sh` says whether the machine is well now, and shows at most
+twenty raw error lines since boot. This is the history question that comes
+next: what has been breaking, who is knocking, and what the kernel complained
+about, grouped over a window instead of dumped.
+
+```bash
+./log_triage.sh                          # the last 24 hours
+./log_triage.sh --since "2 days ago" --top 10
+./log_triage.sh --only kernel,auth
+./log_triage.sh --list-sections
+sudo ./log_triage.sh                     # the system journal needs root or the adm/systemd-journal group
+./log_triage.sh --fail-on warn           # exit 1 when anything warned
+```
+
+Four sections, each selectable with `--only`:
+
+- **kernel** counts the kernel's own distress signals by class (OOM kills,
+  segfaults and protection faults, storage I/O errors, filesystem errors and
+  read-only remounts, hung tasks and soft lockups, machine-check and EDAC
+  hardware errors, link drops), shows the first line of each and prints the
+  `journalctl -k -g` that lists the rest. Without a readable journal it falls
+  back to `dmesg`, which covers everything since boot.
+- **units** ranks the syslog identifiers that logged the most error-level
+  lines, and warns on any with fifty or more.
+- **auth** counts failed SSH logins, groups them by source address, names the
+  first three invalid user names tried, counts accepted logins and failed
+  `sudo`, and warns at twenty failures or ten from one address. It reads the
+  journal (`ssh` and `sshd` units, the `sudo` identifier) and falls back to
+  `/var/log/auth.log` or `/var/log/secure` when the journal holds none, since
+  rsyslog copies the same lines into both. `AUTH_LOG` names a file to read as
+  well.
+- **repeats** lists the most repeated warning-level messages, with hex and
+  digit runs folded so a message with a changing counter counts as one.
+
+It writes nothing and runs nothing but `journalctl`, `dmesg` and text tools.
+Every section prints a bounded number of lines whatever the log holds, log
+text has its control characters stripped before it is printed, and
+authentication lines are reduced to counts, addresses and names: a password
+never reaches the report. `--since` takes what `journalctl --since` reads,
+held to letters, digits, spaces and `: . + -` and refused when it starts with
+a dash, so it can never become a journalctl option.
+
+Exit codes: `0` report printed (warnings do not change it), `1` warnings with
+`--fail-on warn`, `2` not Linux, `3` usage, `4` `--only` selected nothing.
+
 ## `config_backup.sh`
 
 A dated tar of selected paths so an upgrade or an edit has something to roll
@@ -699,7 +750,9 @@ and revert against a fake procfs without touching `/etc`, that
 `config_backup.sh` writes a tar of `--paths` into `--dest` and honours
 `--keep`, that `ssh_client_doctor.sh` grades modes under `--ssh-dir`, and
 that `tls_expiry.sh` treats a committed expired PEM as a failure when
-`openssl` is present (and as exit `2` when it is not).
+`openssl` is present (and as exit `2` when it is not), and that
+`log_triage.sh` parses a stub journal and auth log without ever passing
+journalctl anything but reads.
 
 Discovery is by `find`, two levels deep, so `systemd/` is covered as well.
 A container has no user manager, so the timer can only be exercised through

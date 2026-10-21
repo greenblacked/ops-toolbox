@@ -30,6 +30,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/hardening_audit.sh` | Linux | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `linux/ssh_client_doctor.sh` | Linux | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
+| `linux/log_triage.sh` | Linux | What went wrong in the logs: kernel, units, auth, repeats. | <span class="stage stage-report">read-only</span> |
 | `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`. | <span class="stage stage-report">read-only</span> |
 | `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |
