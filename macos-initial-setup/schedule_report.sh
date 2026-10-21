@@ -183,6 +183,44 @@ foreign_writable() {
   (( (8#$m & 18) != 0 ))
 }
 
+# Owner uid of a path (BSD stat first, GNU stat in the Linux test container).
+file_uid() {
+  local u
+  u="$(stat -L -f '%u' "$1" 2>/dev/null)"
+  if [[ ! "$u" =~ ^[0-9]+$ ]]; then
+    u="$(stat -L -c '%u' "$1" 2>/dev/null)"
+  fi
+  [[ "$u" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$u"
+}
+
+# A file is only as safe as every directory above it: whoever can write one
+# of them can swap the file before launchd runs it. Walks from the parent of
+# $1 up to /, resolving symlinks, and prints the first directory that its
+# group or every user can write without the sticky bit, or (with $2 = root,
+# for a daemon, and only on the live system) that a non-root user owns.
+# Returns 0 when it printed one.
+unsafe_ancestor() {
+  local d m u
+  d="$(dirname -- "$1")"
+  d="$(cd -P -- "$d" 2>/dev/null && pwd -P)" || return 1
+  while :; do
+    if m="$(file_mode "$d")"; then
+      if (( (8#$m & 18) != 0 && (8#$m & 512) == 0 )); then
+        printf '%s\n' "$d"
+        return 0
+      fi
+    fi
+    if [[ "${2:-}" == root && "$ROOT" == "/" ]] && u="$(file_uid "$d")" && [[ "$u" != 0 ]]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    [[ "$d" == "/" ]] && break
+    d="$(dirname -- "$d")"
+  done
+  return 1
+}
+
 # Reads the XML that `plutil -convert xml1 -o -` prints and emits one
 # "field value" line per fact the report needs. The whole document is read
 # first and split on "<", so a value that spans lines (or several tags on one
@@ -305,7 +343,7 @@ render_cal() {
 report_dir() {
   local id="$1" dir="$2" scope="$3"
   local plist parsed field value label program runatload keepalive disabled
-  local interval throttle watch sched n=0 hidden=0 row base uid=""
+  local interval throttle watch sched n=0 hidden=0 row base uid="" owner_check bad_dir
   group "$id"
   if [[ ! -d "$dir" ]]; then
     skip "$dir does not exist"
@@ -396,6 +434,16 @@ report_dir() {
     fi
     if foreign_writable "$plist"; then
       warn "$(clean "$plist") can be written by its group or every user" "chmod go-w $(clean "$plist")"
+    fi
+    owner_check=""
+    [[ "$scope" == daemons ]] && owner_check=root
+    if bad_dir="$(unsafe_ancestor "$plist" "$owner_check")"; then
+      warn "$(clean "$plist") sits under $(clean "$bad_dir"), which another user can modify" \
+           "chmod go-w $(clean "$bad_dir") (or chown it to root), then re-check"
+    fi
+    if [[ "$program" == /* && -e "$program" ]] && bad_dir="$(unsafe_ancestor "$program" "$owner_check")"; then
+      warn "$label runs $program, which sits under $(clean "$bad_dir"), which another user can modify" \
+           "chmod go-w $(clean "$bad_dir") (or chown it to root), then re-check"
     fi
     if [[ "$keepalive" == "1" && -z "$throttle" ]]; then
       info "$label restarts whenever it exits (launchd's default 10s throttle)"

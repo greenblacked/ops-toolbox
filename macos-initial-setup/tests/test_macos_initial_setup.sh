@@ -3528,6 +3528,30 @@ assert_contains "--loaded marks each user agent" "$out" "[loaded]"
 assert_contains "--loaded asks launchctl about the user's domain" "$(cat "$sr/fx/launchctl.calls" 2>/dev/null)" "print gui/"
 rm -f "$sr/fx/launchctl.calls"
 
+# A program in a directory its group or everyone can write can be swapped
+# before launchd runs it, however safe the file's own mode is.
+mkdir -p "$sr/wdir/inner"
+printf '#!/bin/sh\nexit 0\n' > "$sr/wdir/inner/job"
+chmod 755 "$sr/wdir/inner/job"
+write_plist "$ua/com.example.wdir.plist" "	<key>Label</key>
+	<string>com.example.wdir</string>
+	<key>Program</key>
+	<string>$sr/wdir/inner/job</string>"
+chmod 755 "$sr/wdir" "$sr/wdir/inner"
+out="$(sched --only launchd-user)"
+assert_not_contains "a program in a private directory is not flagged for it" "$out" "which sits under"
+chmod 775 "$sr/wdir"
+out="$(sched --only launchd-user)"
+assert_contains "a program under a group-writable parent names that directory" "$out" \
+  "com.example.wdir runs $sr/wdir/inner/job, which sits under $sr/wdir, which another user can modify"
+chmod 755 "$sr/wdir"
+chmod 777 "$sr/home/Library"
+out="$(sched --only launchd-user)"
+assert_contains "a plist under a writable ancestor names that directory" "$out" \
+  "com.example.wdir.plist sits under $sr/home/Library, which another user can modify"
+chmod 755 "$sr/home/Library"
+rm -f "$ua/com.example.wdir.plist"
+
 out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?
 assert_eq "no crontab is not a failure -> 0" "0" "$rc"
 assert_contains "no crontab is a skip row" "$out" "no crontab for this user"

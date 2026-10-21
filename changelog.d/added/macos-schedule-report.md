@@ -6,3 +6,7 @@
   It warns when a job's program no longer exists and when a plist or the
   program it runs can be written by other users, and changes nothing:
   removal stays with `stay_fresh.sh`'s explicit opt-in.
+  It also warns, naming the directory, when a plist or its program sits
+  under a directory that its group or every user can write without the
+  sticky bit (and, for a daemon, one a non-root user owns), since the file
+  could be swapped before launchd runs it.
