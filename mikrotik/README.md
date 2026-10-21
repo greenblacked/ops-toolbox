@@ -1079,10 +1079,12 @@ uptime, and adds three findings, all `warn`:
   with no interval are not judged.
 - **Telegram globals that will not survive a reboot**: `TgBotToken` or
   `TgChatId` is set now, but no enabled `start-time=startup` scheduler
-  declares them again, either inline or by running a script whose source
-  mentions `TgBotToken`. The router does that search itself and returns only
-  the script's name, so no script source crosses the wire. `tg_send` and
-  `tg_send_new` read the globals and do not count.
+  declares it again, either inline or by running a script whose source
+  mentions that name. Each global is judged on its own: a startup entry that
+  restores only `TgBotToken` still gets a warning for `TgChatId`. The router
+  does the search itself and returns only the script's name and the global,
+  so no script source crosses the wire. `tg_send` and `tg_send_new` read the
+  globals and do not count.
 
 Each of these runs only on fields the router returned, so an older or partial
 answer produces no finding rather than a false one.

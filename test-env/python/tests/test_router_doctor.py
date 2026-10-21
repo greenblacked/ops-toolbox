@@ -641,11 +641,17 @@ class SchedulerHealthTestCase(unittest.TestCase):
         return self.scheduler("startup", interval="0s", on_event="/system script run startup",
                               start_time="startup", run_count=1)
 
-    def env(self, uptime=None, declares=("startup",)):
+    def env(self, uptime=None, declares=("startup",), chat_declares=None):
+        """declares: scripts mentioning TgBotToken; chat_declares: TgChatId
+        (the same scripts unless given)."""
         env = dict(self.HEALTHY_ENV)
         if uptime is not None:
             env[router_doctor.UPTIME_KEY] = uptime
+        chat = declares if chat_declares is None else chat_declares
         env[router_doctor.DECLARES_TG_KEY] = list(declares)
+        env[router_doctor.DECLARES_KEY] = {
+            "TgBotToken": list(declares), "TgChatId": list(chat),
+        }
         return env
 
     def test_scx_record_merges_into_its_scheduler_and_keeps_the_three_tuple(self):
@@ -653,8 +659,11 @@ class SchedulerHealthTestCase(unittest.TestCase):
             "SCX:backup|false|12|04:00:00\n"
             "SCX:startup|true|0|startup\n"
             "UPT:3d04:12:05\n"
-            "DECL:startup\n"
-            "DECL:tg_send\n"
+            "DECL:startup|TgBotToken\n"
+            "DECL:startup|TgChatId\n"
+            "DECL:tg_send|TgBotToken\n"
+            "DECL:legacy\n"
+            "DECL:other|NotRequired\n"
         )
         result = router_doctor.parse_report(text)
         self.assertEqual(len(result), 3)
@@ -667,7 +676,10 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertIs(schedulers[2]["disabled"], True)
         self.assertNotIn("disabled", schedulers[1])
         self.assertEqual(env[router_doctor.UPTIME_KEY], 3 * 86400 + 4 * 3600 + 12 * 60 + 5)
-        self.assertEqual(env[router_doctor.DECLARES_TG_KEY], ["startup", "tg_send"])
+        self.assertEqual(env[router_doctor.DECLARES_TG_KEY], ["legacy", "startup", "tg_send"])
+        self.assertEqual(env[router_doctor.DECLARES_KEY], {
+            "TgBotToken": ["legacy", "startup", "tg_send"], "TgChatId": ["startup"],
+        })
 
     def test_scx_for_an_unknown_scheduler_is_ignored(self):
         _, schedulers, _ = router_doctor.parse_report(REPORT + "SCX:nosuch|true|0|startup\n")
@@ -780,6 +792,30 @@ class SchedulerHealthTestCase(unittest.TestCase):
         )
         self.assertEqual(levels_for(findings, "re-declares"), ["warn"])
 
+    def test_startup_restoring_only_the_token_still_warns_about_the_chat_id(self):
+        schedulers = [self.scheduler("health_check"), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check", "startup"], schedulers,
+            self.env(uptime=3600, declares=("startup",), chat_declares=()),
+        )
+        self.assertEqual(levels_for(findings, "TgChatId is set now but nothing re-declares it"),
+                         ["warn"])
+        self.assertEqual(levels_for(findings, "TgBotToken"), [])
+
+    def test_inline_startup_restoring_only_the_token_warns_about_the_chat_id(self):
+        schedulers = [
+            self.scheduler("health_check"),
+            self.scheduler("set-token", interval="0s", start_time="startup",
+                           on_event=':global TgBotToken "x";'),
+        ]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=3600, declares=()),
+        )
+        self.assertEqual(levels_for(findings, "TgChatId is set now but nothing re-declares it"),
+                         ["warn"])
+        self.assertEqual(levels_for(findings, "TgBotToken is set now"), [])
+
     def test_check_is_silent_when_probe_gave_no_start_time(self):
         schedulers = [{"name": "health_check", "interval": "5m",
                        "on_event": "/system script run health_check"}]
@@ -809,7 +845,12 @@ class SchedulerHealthTestCase(unittest.TestCase):
         # The only place a script source is touched is inside the :find the
         # router evaluates; what is :put is the script's name.
         self.assertEqual(probe.count(" source]"), 1)
-        self.assertIn('[:find [/system script get $s source] "TgBotToken"]', probe)
+        self.assertIn('[:find [/system script get $s source] $g]', probe)
+        # one DECL record per script and required global, from a literal
+        # array of exactly REQUIRED_GLOBALS
+        self.assertIn(":foreach g in={%s}" % ";".join(
+            '"%s"' % g for g in router_doctor.REQUIRED_GLOBALS), probe)
+        self.assertIn('. "|" . $g)', probe)
         for record in re.findall(r":put \(([^;]*)\)", probe):
             # Whole word: "/system resource" holds the letters, not a read.
             self.assertIsNone(re.search(r"\bsource\b", record), record)

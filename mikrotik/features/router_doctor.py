@@ -97,12 +97,14 @@ PROBE = (
     ' . "|" . [:tostr [/system scheduler get $k run-count]]'
     ' . "|" . [:tostr [/system scheduler get $k start-time]])};'
     ' :put ("UPT:" . [:tostr [/system resource get uptime]]);'
-    # Which scripts mention TgBotToken. The router does the search and returns
-    # only the script's name: a source can hold a pasted token, so no source
-    # ever crosses the wire.
-    ' :foreach s in=[/system script find] do={'
-    ':if ([:typeof [:find [/system script get $s source] "TgBotToken"]] = "num") do={'
-    ':put ("DECL:" . [/system script get $s name])}};'
+    # Which scripts mention each required global, one DECL:script|global
+    # record per pair. The router does the search and returns only names: a
+    # source can hold a pasted token, so no source ever crosses the wire.
+    ' :foreach g in={%s} do={'
+    ':foreach s in=[/system script find] do={'
+    ':if ([:typeof [:find [/system script get $s source] $g]] = "num") do={'
+    ':put ("DECL:" . [/system script get $s name] . "|" . $g)}}};'
+    % ";".join('"%s"' % g for g in REQUIRED_GLOBALS)
 )
 
 # Asked only under --drift, and not part of PROBE: one ssh command per batch of
@@ -155,6 +157,9 @@ VERSION_TEXT_KEY = "__routeros_version_text"
 # uptime in seconds, and the scripts whose source mentions TgBotToken.
 UPTIME_KEY = "__uptime_seconds"
 DECLARES_TG_KEY = "__declares_tg"
+# Same, per required global: {global name: [script names whose source mentions
+# it]}. DECLARES_TG_KEY is its TgBotToken entry, kept for the older reader.
+DECLARES_KEY = "__declares"
 
 # Scripts that read the Telegram globals rather than set them. Mentioning
 # TgBotToken does not make them a startup script.
@@ -247,7 +252,8 @@ def parse_report(text):
     when the router reported one. A scheduler gains disabled, run_count and
     start_time when the probe returned them, and the reserved UPTIME_KEY and
     DECLARES_TG_KEY hold the uptime in seconds and the scripts that mention
-    TgBotToken.
+    TgBotToken; DECLARES_KEY holds that per required global, from DECL:script|
+    global records (a bare DECL:script is read as TgBotToken).
     """
     scripts = []
     schedulers = []
@@ -300,9 +306,15 @@ def parse_report(text):
                 env[UPTIME_KEY] = seconds
         elif line.startswith("DECL:"):
             current = None
-            name = line[5:].strip()
-            if name:
-                env[DECLARES_TG_KEY] = sorted(set(env.get(DECLARES_TG_KEY, [])) | {name})
+            name, sep, glob = line[5:].rpartition("|")
+            if not sep:
+                name, glob = glob, "TgBotToken"
+            name, glob = name.strip(), glob.strip()
+            if name and glob in REQUIRED_GLOBALS:
+                declares = env.setdefault(DECLARES_KEY, {})
+                declares[glob] = sorted(set(declares.get(glob, [])) | {name})
+                if glob == "TgBotToken":
+                    env[DECLARES_TG_KEY] = declares[glob]
         elif line.startswith("VER:"):
             current = None
             text_value = line[4:].strip()
@@ -805,23 +817,36 @@ def build_findings(local, installed, schedulers, env, underscored=None):
     probe_saw_start_times = UPTIME_KEY in env or any("start_time" in s for s in schedulers)
     set_now = [n for n in REQUIRED_GLOBALS if global_state(n, env) == "set"]
     if set_now and probe_saw_start_times:
-        declarers = set(env.get(DECLARES_TG_KEY, [])) - set(local) - set(TG_READERS)
-        restored = False
-        for entry in schedulers:
-            if entry.get("start_time") != "startup" or entry.get("disabled") is True:
-                continue
-            on_event = entry.get("on_event", "")
-            if ("TgBotToken" in on_event or entry.get("name") in declarers
-                    or any(runs_script(on_event, d) for d in declarers)):
-                restored = True
-                break
-        if not restored:
+        # Each name is judged on its own: a startup entry that restores only
+        # TgBotToken leaves TgChatId gone after a reboot.
+        declared = env.get(DECLARES_KEY, {})
+        not_restored = []
+        for glob in set_now:
+            if glob in declared:
+                names = declared[glob]
+            elif glob == "TgBotToken":
+                names = env.get(DECLARES_TG_KEY, [])
+            else:
+                names = []
+            declarers = set(names) - set(local) - set(TG_READERS)
+            restored = False
+            for entry in schedulers:
+                if entry.get("start_time") != "startup" or entry.get("disabled") is True:
+                    continue
+                on_event = entry.get("on_event", "")
+                if (glob in on_event or entry.get("name") in declarers
+                        or any(runs_script(on_event, d) for d in declarers)):
+                    restored = True
+                    break
+            if not restored:
+                not_restored.append(glob)
+        if not_restored:
             findings.append((
                 "warn",
                 "%s %s set now but nothing re-declares %s after a reboot: globals "
                 "do not survive one (see Installation step 4 in README.md)"
-                % (" and ".join(set_now), "is" if len(set_now) == 1 else "are",
-                   "it" if len(set_now) == 1 else "them"),
+                % (" and ".join(not_restored), "is" if len(not_restored) == 1 else "are",
+                   "it" if len(not_restored) == 1 else "them"),
             ))
 
     # --- will it run on this release ---
