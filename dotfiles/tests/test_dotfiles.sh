@@ -477,6 +477,37 @@ assert_contains "a link with a .. segment is not ours" "$out" "  links to $D/con
 rm "$H/.config/starship.toml"
 run_installer --only starship >/dev/null 2>&1 || err "could not relink starship.toml after the traversal check"
 
+# The final component counts too: an alias inside this folder that is itself
+# a link to a file outside leads out, whatever directory it sits in. Built in
+# a scratch copy of the installer so the repository tree is never written to.
+M="$(cd -P "$scratch" && pwd -P)/mirror"
+MH="$(cd -P "$scratch" && pwd -P)/mirror-home"
+mkdir -p "$M/config" "$M/home" "$MH/.config"
+cp "$SCRIPT" "$M/install_dotfiles.sh"
+printf 'format = "src"\n' > "$M/config/starship.toml"
+ln -s "$T/outside.txt" "$M/config/alias"
+mirror_installer() { HOME="$MH" TMPDIR="$T" env -u XDG_CONFIG_HOME "$M/install_dotfiles.sh" --home "$MH" "$@"; }
+ln -s "$M/config/alias" "$MH/.config/starship.toml"
+out="$(mirror_installer --diff --only starship 2>&1)"; rc=$?
+assert_rc "--diff exits 4 on an alias link to an outside file" 4 "$rc"
+assert_contains "--diff reports the alias link as CONFLICT" "$out" "CONFLICT $MH/.config/starship.toml"
+if [[ "$out" == *outside-marker-line* ]]; then err "--diff printed the file an in-repo alias leads to"; else ok "--diff never prints the file an in-repo alias leads to"; fi
+# A chain of two in-repo links that ends inside the folder is still ours.
+rm "$MH/.config/starship.toml"
+ln -s starship.toml "$M/config/hop1"
+ln -s "$M/config/hop1" "$M/config/hop2"
+ln -s "$M/config/hop2" "$MH/.config/starship.toml"
+out="$(mirror_installer --status --only starship 2>&1)"
+assert_contains "a chain of in-repo links is FOREIGN, not CONFLICT" "$out" "FOREIGN $MH/.config/starship.toml"
+# A loop is treated as outside rather than followed forever.
+rm "$MH/.config/starship.toml"
+ln -s loop2 "$M/config/loop1"
+ln -s loop1 "$M/config/loop2"
+ln -s "$M/config/loop1" "$MH/.config/starship.toml"
+out="$(mirror_installer --status --only starship 2>&1)"
+assert_contains "a link loop is CONFLICT" "$out" "CONFLICT $MH/.config/starship.toml"
+rm -rf "$M" "$MH"
+
 run_installer --diff --dry-run >/dev/null 2>&1; rc=$?
 assert_rc "--diff --dry-run exits 3" 3 "$rc"
 run_installer --diff --force >/dev/null 2>&1; rc=$?

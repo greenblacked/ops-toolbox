@@ -412,27 +412,50 @@ run_cmd() {
 # it resolves to.
 link_target() { readlink "$1" 2>/dev/null || true; }
 
-# A link is ours when its text starts with this folder's path AND it really
-# resolves under it: "$SCRIPT_DIR/../../etc/passwd" starts with the prefix but
-# leads out, and --diff would print the file it names. A `..` segment is
-# refused outright; the rest is resolved physically (cd -P and pwd -P, since
-# macOS has no readlink -f) on the deepest directory that exists, so a link
-# into a deleted source directory still counts and a link through a symlinked
-# directory that leaves this folder does not.
-points_here() {
-  local t d leaf phys
-  t="$(link_target "$1")"
-  [[ -n "$t" && "$t" == "$SCRIPT_DIR"/* ]] || return 1
-  case "$t/" in */../*) return 1 ;; esac
-  d="${t%/*}"
-  leaf="${t##*/}"
+# Follows a chain of symlinks by hand, since macOS has no readlink -f: each
+# hop reads the link text (relative text is joined to the link's own
+# directory) until the path is not a link, with a hop limit so a loop cannot
+# hang. Then the directory part is made physical with cd -P and pwd -P, on
+# the deepest directory that exists, so a target in a deleted source
+# directory still resolves. Prints the physical path; fails on a loop or an
+# unreachable directory.
+physical_path() {
+  local p="$1" hops=0 t d leaf phys
+  while [[ -L "$p" ]]; do
+    hops=$((hops + 1))
+    (( hops > 40 )) && return 1
+    t="$(readlink "$p" 2>/dev/null)" || return 1
+    [[ -n "$t" ]] || return 1
+    case "$t" in
+      /*) p="$t" ;;
+      *)  p="${p%/*}/$t" ;;
+    esac
+  done
+  d="${p%/*}"
+  leaf="${p##*/}"
   while [[ -n "$d" && ! -d "$d" ]]; do
     leaf="${d##*/}/$leaf"
     d="${d%/*}"
   done
   [[ -n "$d" ]] || return 1
   phys="$(cd -P "$d" 2>/dev/null && pwd -P)" || return 1
-  [[ "$phys/$leaf" == "$SCRIPT_DIR"/* ]]
+  printf '%s/%s\n' "${phys%/}" "$leaf"
+}
+
+# A link is ours when its text starts with this folder's path AND it really
+# resolves under it: "$SCRIPT_DIR/../../etc/passwd" starts with the prefix but
+# leads out, and --diff would print the file it names. A `..` segment in the
+# link text is refused outright; the rest is resolved physically, the whole
+# chain, not just the directory: an alias inside this folder that is itself a
+# link to /etc/passwd leads out too. A link into a deleted source directory
+# still counts.
+points_here() {
+  local t phys
+  t="$(link_target "$1")"
+  [[ -n "$t" && "$t" == "$SCRIPT_DIR"/* ]] || return 1
+  case "$t/" in */../*) return 1 ;; esac
+  phys="$(physical_path "$t")" || return 1
+  [[ "$phys" == "$SCRIPT_DIR"/* ]]
 }
 
 # GNU stat first: on Linux `stat -f` is the filesystem form and succeeds with
