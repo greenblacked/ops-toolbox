@@ -115,6 +115,12 @@ mismatch exits `1`; do not go on until this passes.
     utility VM stop, not only the one you name, and unsaved work inside any
     of them is lost. Save and close everything in WSL first.
 
+    `compact` starts `diskpart` right after `wsl.exe --shutdown` without
+    checking that the shutdown worked, so a check after `compact` comes
+    too late. Run `.\windows\wsl\wsl_manage.ps1 shutdown` first, confirm
+    with `wsl -l -v` that every distro shows `Stopped`, and only then run
+    `compact`.
+
 ```{ .powershell .rpt-apply title="Compact (elevated)" }
 .\windows\wsl\wsl_manage.ps1 compact -Distro Ubuntu
 ```
@@ -146,12 +152,6 @@ running (`terminate` takes `-DryRun`).
 | `2` | WSL is not installed or not operational. |
 | `3` | Bad arguments: no `-Distro`, no such distro, a missing or unusable `-Tar`, a `restore` name that is already registered, or a non-empty install directory. |
 | `4` | `compact` without an elevated shell. |
-
-`compact` starts `diskpart` right after `wsl.exe --shutdown` without
-checking that the shutdown worked, so a check after `compact` comes too
-late. Run `shutdown` first, confirm with `wsl -l -v` that every distro
-shows `Stopped`, and only then run `compact`. After `shutdown` the same
-check also applies before you run `diskpart` yourself.
 
 ## Verify
 
