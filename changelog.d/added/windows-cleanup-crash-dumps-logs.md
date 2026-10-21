@@ -5,5 +5,6 @@
   Windows' own `Dism.exe /Online /Cleanup-Image /StartComponentCleanup`,
   never with the flag that makes installed updates permanent. All three go
   through the existing `-DryRun` preview and `-Yes` gate, skip without
-  elevation where they need it, and the preview never starts DISM.
+  elevation where they need it, and the preview never starts DISM. A
+  failed DISM run makes the script exit 1 after the summary.
   `disk_usage.ps1` now points its crash-dump and log rows at them.

@@ -45,6 +45,7 @@
 .NOTES
     Exit codes, matching linux/disk_cleanup.sh:
       0  success
+      1  -IncludeComponentStore ran and Dism.exe exited non-zero
       3  refused: neither -DryRun nor -Yes was given
 #>
 [CmdletBinding()]
@@ -262,6 +263,7 @@ if ($IncludeLogs) {
 # flag that also makes installed updates permanent is left out on purpose -
 # see the README. The preview prints the command and does not run DISM, not
 # even its analysis, which writes logs of its own.
+$componentStoreFailed = $false
 if ($IncludeComponentStore) {
     if ($IsAdmin) {
         if ($DryRun) {
@@ -272,6 +274,7 @@ if ($IncludeComponentStore) {
                 Write-Host ('CLEAN {0,-38}' -f 'Component store cleanup') -ForegroundColor Green
             } else {
                 Write-Host ('FAIL  {0,-38} (Dism exited {1})' -f 'Component store cleanup', $LASTEXITCODE) -ForegroundColor Red
+                $componentStoreFailed = $true
             }
         }
     } else {
@@ -289,3 +292,7 @@ if ($DryRun) {
     Write-Host ("Freed (measured per target): {0}" -f (Format-Size $script:TotalFreed)) -ForegroundColor Green
     Write-Host ("Free space on C: now: {0} (was {1})" -f (Format-Size $freeAfter), (Format-Size $freeBefore))
 }
+
+# A failed DISM run is reported above and in the exit code, after the summary
+# so the freed-space numbers still print.
+if ($componentStoreFailed) { exit 1 }

@@ -2555,6 +2555,24 @@ if (-not $cleanDisk) {
     } else {
         Test-Fail "clean_disk_c.ps1 has ResetBase outside a comment on line $($resetBase[0].Extent.StartLineNumber)"
     }
+
+    # The script cannot run here and Dism.exe cannot be stubbed from outside
+    # it, so this is a static contract: a non-zero Dism exit is recorded where
+    # the FAIL line is printed, and the script exits 1 after the summary.
+    $cleanCode = (@(Get-Content -LiteralPath $cleanDisk.FullName | Where-Object { $_.TrimStart() -notlike '#*' }) -join "`n")
+    $recordsFailure = $cleanCode -match '(?s)Dism exited \{1\}[^\n]*\n\s*\$componentStoreFailed = \$true'
+    $exitsAfterSummary = $cleanCode -match '(?s)Free space on C: now.*\n\s*if \(\$componentStoreFailed\) \{ exit 1 \}\s*$'
+    if ($recordsFailure -and $exitsAfterSummary) {
+        Test-Ok 'clean_disk_c.ps1 records a failed Dism run and exits 1 after the summary'
+    } else {
+        Test-Fail "clean_disk_c.ps1 must set `$componentStoreFailed where Dism fails and 'exit 1' after the summary (recorded: $recordsFailure, exits: $exitsAfterSummary)"
+    }
+    $cleanHelp = Get-Content -LiteralPath $cleanDisk.FullName -Raw
+    if ($cleanHelp -match '(?m)^\s+1\s+-IncludeComponentStore ran and Dism') {
+        Test-Ok 'clean_disk_c.ps1 documents exit code 1'
+    } else {
+        Test-Fail 'clean_disk_c.ps1 .NOTES does not document exit code 1'
+    }
 }
 
 # --------------------------------------------------------------------------
