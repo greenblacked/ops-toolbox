@@ -35,6 +35,7 @@ full table.
 | `features/export_config.py` | Host: export over SSH, diff, optional git commit. | `--stdout` or `--diff` |
 | `features/router_doctor.py` | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `features/print_schedulers.sh` | Host: print scheduler commands. | prints only; contacts no router |
+| `features/print_startup.sh` | Host: print the startup script that sets the globals at boot. | prints only; contacts no router |
 | `features/pull_router_backups.sh` | Host: pull backups over SFTP/SCP. | `--dry-run` |
 
 <!-- markdownlint-enable MD033 -->
@@ -67,6 +68,7 @@ the host tools to inspect.
     ```bash
     ./mikrotik/features/print_schedulers.sh
     ./mikrotik/features/print_schedulers.sh --include-notify-boot
+    ./mikrotik/features/print_startup.sh --only backup --only stay_fresh
     ./mikrotik/features/pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
     ./mikrotik/features/pull_router_backups.sh --dry-run --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
     ```

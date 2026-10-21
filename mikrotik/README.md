@@ -172,6 +172,7 @@ their values, so no token crosses the wire.
 | `features/wireless_client_watch.lua`         | Alerts on wireless clients joining, leaving, or with poor signal.       |
 | `features/export_config.py`                  | Host-side: exports `/export` over ssh and versions it in git.           |
 | `features/print_schedulers.sh`               | Host-side: prints the `/system scheduler add` lines for these scripts.  |
+| `features/print_startup.sh`                  | Host-side: prints the startup script that sets the globals at boot.     |
 | `features/router_doctor.py`                  | Host-side: read-only audit of what is installed, scheduled and set.     |
 | `features/pull_router_backups.sh`            | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
@@ -198,6 +199,9 @@ their values, so no token crosses the wire.
 
    then add a Scheduler entry with `start-time=startup` pointing to it. The
    `tg_send` helper picks them up automatically.
+   [`features/print_startup.sh`](#featuresprint_startupsh) prints both, the
+   script and its scheduler entry, ready to paste, with placeholders where the
+   secrets go and every setting of the scripts you name listed at its default.
 
    RouterOS 7.24 refuses `:global` names with an underscore, so the package
    helper no longer reads `TG_BOT_TOKEN` / `TG_CHAT_ID`.
@@ -307,6 +311,11 @@ one-shot startup notifier that fires once the router is back online:
 
 The 20 s delay gives DHCP / WAN / DNS time to come up before `tg_send` tries
 to reach Telegram.
+
+That entry only helps if `TgBotToken` and `TgChatId` are set by the time it
+fires, and after a reboot they are set only if a startup script declares them
+again. [`features/print_startup.sh`](#featuresprint_startupsh) prints that
+script with its own `start-time=startup` entry.
 
 ## Script details
 
@@ -900,6 +909,56 @@ scripts — `tg_send`, `detect_internet`, `reboot-and-flush`,
 Everything it emits is valid RouterOS input, commentary included (the notes are
 `#` comment lines, and the colour only appears on a terminal), so the output can
 go into a file and be pasted from there.
+
+### `features/print_startup.sh`
+
+**Runs on your machine, not on the router**, and contacts nothing: it prints a
+`/system script add` for a startup script that declares the globals these
+scripts read, and the `start-time=startup` scheduler entry that runs it at
+every boot. It is the companion of `print_schedulers.sh`.
+
+Every setting in this package is a `:global`, and a `:global` lives in
+memory: a reboot clears all of them. Without a startup script the token you
+set by hand works until the next reboot, and then every alert is dropped. The
+7.24 migration above ends with "rewrite the startup script to the new names",
+and this is that script.
+
+```bash
+./print_startup.sh                                  # placeholders, safe to keep in git
+./print_startup.sh --only backup --only stay_fresh  # add those scripts' settings
+./print_startup.sh --list                           # names accepted by --only
+./print_startup.sh --name boot-globals --policy read,write,policy,test
+TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... ./print_startup.sh --from-env
+```
+
+The script always declares `TgBotToken` and `TgChatId` (as
+`"<paste bot token>"` and `"<paste chat id>"` unless `--from-env` is given)
+and `OpsToolboxPaused false`. `--only SCRIPT` adds the settings that script
+reads, each commented out at its default with one line on what it does, so
+you uncomment only what you change: `backup`, `backup_update_check`,
+`stay_fresh`, `security_check` and `rogue_dns_check`. A setting two of them
+share, such as `RouterBackupPassword`, is listed once. State the scripts keep
+for themselves (`SecLastFp`, `RdnsDeliveredSig` and the like) is never
+printed, because setting it at boot would erase what they remember. No name
+printed contains an underscore, since 7.24 refuses to run a script that
+declares one; the convention suite checks that, and that every setting is
+declared by the script it is listed under.
+
+`--from-env` fills the secrets from `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID`, and `RouterBackupPassword` from `ROUTER_BACKUP_PASSWORD`
+when a backup script is selected and the variable is set (encryption stays
+optional). They are read from the environment only, never from the command
+line, where `ps` and shell history keep them. A missing Telegram variable, or
+a value holding a character a RouterOS string cannot carry here (`"`, `\`,
+`$`, `[`, `]`, `{`, `}` or a line break), exits `3` naming the variable and
+never its value. Output made with `--from-env` holds the secrets: paste it,
+do not redirect it into git. Without it, the output holds no secret.
+
+`--name` (default `startup`, the name the README uses) and `--policy`
+(default `read,write,policy,test,sensitive,ftp`) apply to both the script and
+its scheduler entry. `--dry-run` is accepted for symmetry and adds a closing
+comment. Everything printed is valid RouterOS input, commentary included.
+Exit codes: `0` success, `3` usage.
 
 ### `features/router_doctor.py`
 

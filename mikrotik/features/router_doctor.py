@@ -979,8 +979,9 @@ def run_one(user, host, port, args, package=None):
     lines.append(("info", "scheduler lines for every script here: ./print_schedulers.sh"))
     lines.append(("info", "to install a missing script, paste the .lua body into System > "
                           "Scripts with policy read,write,policy,test,sensitive,ftp"))
-    lines.append(("info", "to set a global once at boot, see the startup snippet in "
-                          "README.md and give it a start-time=startup scheduler"))
+    lines.append(("info", "to set the globals again at every boot: ./print_startup.sh "
+                          "prints the startup script and its start-time=startup "
+                          "scheduler"))
     if payload["incompatible_scripts"]:
         lines.append(("info", "on 7.24, remove or replace what cannot run (Scripts "
                               "overview in README.md lists what runs); rollback is "
