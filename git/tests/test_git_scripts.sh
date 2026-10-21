@@ -29,6 +29,7 @@ CLONE="$G/clone-repos.sh"
 REPOS_STATUS="$G/git_repos_status.sh"
 UNPUSHED="$G/git_unpushed.sh"
 MERGE_CHECK="$G/git_merge_check.sh"
+COMMITLINT="$G/git_commitlint.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
@@ -252,6 +253,7 @@ assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers t
 assert_contains "$alias_out" "grepos='$REPOS_STATUS'" "git_aliases.sh defines grepos"
 assert_contains "$alias_out" "gunpushed='$UNPUSHED'" "git_aliases.sh defines gunpushed"
 assert_contains "$alias_out" "gmcheck='$MERGE_CHECK'" "git_aliases.sh defines gmcheck"
+assert_contains "$alias_out" "glint='$COMMITLINT'" "git_aliases.sh defines glint"
 
 # The guard is the point of the file: copied somewhere the scripts are not,
 # and with nothing of that name on PATH, it must define no aliases at all
@@ -789,6 +791,10 @@ assert_eq "$rc" "0" "unpushed suite succeeds: $out"
 section "git_merge_check.sh"
 out="$(bash "$G/tests/test_merge_check.sh" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "merge check suite succeeds: $out"
+
+section "git_commitlint.sh"
+out="$(bash "$G/tests/test_commitlint.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "commitlint suite succeeds: $out"
 
 section "stale branch state filter"
 repo="$(new_repo)"

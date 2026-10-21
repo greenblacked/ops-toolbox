@@ -31,6 +31,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_undo_last_commit.sh`](#git_undo_last_commitsh)
 - [`git_amend_last.sh`](#git_amend_lastsh)
 - [`git_hooks_install.sh`](#git_hooks_installsh)
+- [`git_commitlint.sh`](#git_commitlintsh)
 - [`clone-repos.sh`](#clone-repossh)
 - [`git_ssh_doctor.py`](#git_ssh_doctorpy)
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
@@ -86,6 +87,7 @@ the [aliases](#aliases) give each one a short name.
 | `git_sync_default.sh` | Fast-forward the default branch and optionally restore the starting branch. |
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
 | `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
+| `git_commitlint.sh` | Lint every commit message a branch adds, in CI, against the commit-msg hook's rules. |
 | `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, and `repos.txt.example` shows the format. |
 | `git_prune_gone.sh` | Delete branches with deleted upstreams, with include/exclude filters. |
 | `git_stale_branches.sh` | Report old branches and optionally filter by gone/merged/unmerged state. |
@@ -144,6 +146,7 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `grepos` | `git_repos_status.sh` | `gsign` | `git_signing_doctor.py` |
 | `gunpushed` | `git_unpushed.sh` | `gremote` | `git_remote_doctor.py` |
 | `gmcheck` | `git_merge_check.sh` | `gignore` | `git_ignore_doctor.py` |
+| `glint` | `git_commitlint.sh` | | |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
 
@@ -708,6 +711,59 @@ An existing hook this script did not write is backed up rather than clobbered, a
 
 ---
 
+## `git_commitlint.sh`
+
+The `commit-msg` hook above is local and `git commit --no-verify` skips it, so a
+team that wants the convention still needs the check where nobody can skip it:
+in CI, on the range a pull request adds. This lints every commit in a range
+against the same rules, plus the ones a hook cannot see.
+
+```bash
+./git/git_commitlint.sh                               # merge-base(main, HEAD)..HEAD
+./git/git_commitlint.sh --base origin/main
+./git/git_commitlint.sh --range "$BASE_SHA..$HEAD_SHA"
+./git/git_commitlint.sh --max-subject 50 --types feat,fix,docs
+./git/git_commitlint.sh --forbid 'WIP' --forbid '^Signed-off-by:'
+```
+
+| Problem | When |
+| --- | --- |
+| `not-conventional` | The subject is not `type(optional scope): subject`, with an optional `!`. The pattern and the default types are the hook's: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`; `--types` replaces them with a comma-separated list of lowercase words. Subjects starting `Revert ` are exempt, as in the hook. |
+| `too-long` | The subject is longer than `--max-subject` characters (default `72`). |
+| `no-blank-line` | The second line of the message is not blank, so git folds the body into the subject. |
+| `fixup` | A `fixup!`, `squash!` or `amend!` commit that was never squashed. The hook lets these through on purpose, mid-rebase; a merge is where they must be gone. `--allow-fixup` turns this off. |
+| `forbidden` | The whole message matches a `--forbid` extended regex, ignoring case (repeatable). |
+
+Every problem of every commit is reported, not the first one. Merge commits are
+never linted. Each offending commit prints one line, short SHA, problems,
+subject (cut at 60 characters), and then `N of M commit(s) have problems`; a
+clean range prints `M commit(s) checked, all fine`. `--porcelain` prints
+`sha<TAB>problem<TAB>subject`, one row per problem.
+
+The range is `--range` used as given, or `merge-base(--base, HEAD)..HEAD`. With
+neither, the base is local `main`, else `master`, else the branch
+`refs/remotes/origin/HEAD` points at. A GitHub Actions step:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0   # the whole range has to be in the clone
+- run: ./git/git_commitlint.sh --range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+```
+
+A shallow clone that lacks the base exits `3` (bad range) or `4`, never a
+false pass. An empty range exits `4`; a pipeline that wants an empty range to
+pass can write `./git/git_commitlint.sh --range "$R" || [ $? -eq 4 ]`.
+
+Read-only: `rev-list`, `merge-base` and `log`. `--forbid` patterns are matched
+with `grep -E` against commit text and are never evaluated by the shell.
+
+Exit codes: `0` every commit is fine, `1` problems found, `2` not a Git
+repository, `3` usage, a bad range or a bad type, `4` an empty range or no base
+branch could be inferred.
+
+---
+
 ## `clone-repos.sh`
 
 Clones every repository listed in a text file, one URL or local path per
@@ -885,6 +941,7 @@ cd "$(./git/git_repo_root.sh)"
 ./git/git_undo_last_commit.sh --revert
 ./git/git_amend_last.sh --add-all --message "fix: update the last commit"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
+./git/git_commitlint.sh --base origin/main
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
 ./git/git_remote_doctor.py --quiet
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh

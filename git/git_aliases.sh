@@ -49,6 +49,7 @@ _pus_git_alias() {
 _pus_git_alias gacp     gacp.sh
 _pus_git_alias gamend   git_amend_last.sh
 _pus_git_alias gundo    git_undo_last_commit.sh
+_pus_git_alias glint    git_commitlint.sh
 
 # --- looking around --------------------------------------------------------
 _pus_git_alias gsum     git_status_summary.sh
