@@ -339,14 +339,15 @@ if [[ -n "$RELEASES" ]]; then
   NEWEST="$(tail -n 1 <<<"$RELEASES")"
 fi
 
-# Space-delimited set of releases to keep. Release strings carry no spaces;
-# valid_release() above guarantees it.
+# Space-delimited set of releases to keep: the running kernel, then the newest
+# --keep of the others, so --keep counts kernels besides the running one.
+# Release strings carry no spaces; valid_release() above guarantees it.
 KEEP_SET=" $RELEASE "
 in_keep() { [[ "$KEEP_SET" == *" $1 "* ]]; }
 if [[ -n "$RELEASES" ]]; then
   while IFS= read -r rel; do
     [[ -n "$rel" ]] && ! in_keep "$rel" && KEEP_SET="$KEEP_SET$rel "
-  done < <(tail -n "$KEEP" <<<"$RELEASES")
+  done < <(grep -vxF -- "$RELEASE" <<<"$RELEASES" | tail -n "$KEEP")
   in_keep "$NEWEST" || KEEP_SET="$KEEP_SET$NEWEST "
 fi
 
@@ -361,9 +362,10 @@ kept_installed() {
   printf '%s\n' "$count"
 }
 
-# Never leave fewer than two kernels installed. With the running kernel also
-# the newest and --keep 1, the set above holds one; a fallback is what lets a
-# bad kernel be survived, so the newest of the rest stays too.
+# Never leave fewer than two kernels installed. When the running kernel is not
+# an installed package (a container or a chroot) and --keep is 1, the set above
+# holds one; a fallback is what lets a bad kernel be survived, so the newest of
+# the rest stays too.
 floor_note=""
 if (( total >= 2 )) && (( $(kept_installed) < 2 )); then
   while IFS= read -r rel; do

@@ -134,11 +134,11 @@ assert_contains 'dry run previews apt-get purge' "$purge_line" 'apt-get purge --
 assert_contains 'dry run removes 6.1.0-15' "$purge_line" 'linux-image-6.1.0-15-amd64'
 assert_contains 'dry run takes the headers along' "$purge_line" 'linux-headers-6.1.0-15-amd64'
 assert_contains 'dry run removes 6.1.0-17' "$purge_line" 'linux-image-6.1.0-17-amd64'
-assert_not_contains 'dry run keeps the second-newest (two-kernel floor)' "$purge_line" '6.1.0-18'
+assert_not_contains 'dry run keeps one besides the running kernel' "$purge_line" '6.1.0-18'
 assert_not_contains 'dry run keeps the running kernel' "$purge_line" '6.1.0-20'
 assert_not_contains 'the metapackage is never a candidate' "$out" 'linux-image-amd64'
 assert_not_contains 'a config-files-only kernel is not installed' "$out" '6.1.0-9-amd64'
-assert_contains 'the floor is announced' "$out" 'at least two kernels'
+assert_not_contains '--keep 1 beside the running kernel needs no floor' "$out" 'at least two kernels'
 assert_contains 'dry run estimates the space' "$out" 'would free about'
 assert_contains 'dry run closes with the linux/ summary' "$out" 'dry-run complete; no changes written'
 assert_eq 'dry run executed nothing' '' "$calls"
@@ -168,7 +168,8 @@ run_kc debian --list --release 6.1.0-20-amd64
 assert_eq '--list exits 0' 0 "$rc"
 assert_contains '--list marks the running kernel' "$(grep '6.1.0-20-amd64' <<<"$out")" 'running'
 assert_contains '--list marks the oldest for removal' "$(grep '6.1.0-15-amd64' <<<"$out")" 'remove'
-assert_contains '--list keeps the newest two by default' "$(grep '6.1.0-18-amd64' <<<"$out")" 'keep'
+assert_contains '--list keeps the newest two besides the running kernel' "$(grep '6.1.0-18-amd64' <<<"$out")" 'keep'
+assert_contains '--list keeps the second of the two by default' "$(grep '6.1.0-17-amd64' <<<"$out")" 'keep'
 assert_eq '--list runs nothing' '' "$calls"
 
 run_kc debian --dry-run --release 6.1.0-15-amd64 --keep 1
@@ -177,6 +178,17 @@ purge_line="$(grep 'apt-get purge' <<<"$out")"
 assert_not_contains 'the running kernel stays when it is the oldest' "$purge_line" '6.1.0-15'
 assert_not_contains 'the newest installed kernel stays' "$purge_line" '6.1.0-20'
 assert_contains 'the kernels between them go' "$purge_line" 'linux-image-6.1.0-17-amd64'
+
+# A running kernel that is not installed (a container or a chroot) leaves the
+# newest alone in the set under --keep 1, so the floor keeps the next-newest.
+run_kc debian --dry-run --release 6.1.0-99-amd64 --keep 1
+assert_eq 'not-installed running kernel dry run exits 0' 0 "$rc"
+purge_line="$(grep 'apt-get purge' <<<"$out")"
+assert_contains 'the uninstalled running kernel is reported' "$out" 'is not one of the installed kernel packages'
+assert_not_contains 'the newest installed kernel stays without a running one' "$purge_line" '6.1.0-20'
+assert_not_contains 'the floor keeps the next-newest' "$purge_line" '6.1.0-18'
+assert_contains 'the floor is announced' "$out" 'at least two kernels'
+assert_contains 'the older kernels go' "$purge_line" 'linux-image-6.1.0-17-amd64'
 
 run_kc debian --dry-run --release 6.1.0-20-amd64 --keep 5
 assert_eq 'nothing to remove exits 0' 0 "$rc"

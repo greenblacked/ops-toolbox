@@ -613,15 +613,16 @@ sudo ./kernel_cleanup.sh --yes
 | `--no-sudo` | Skip the removal with a warning instead of escalating. |
 | `--release VER` | Treat `VER` as the running kernel instead of `uname -r`. For a chroot, and the seam the tests use. |
 
-The keep set is the running kernel, the newest `--keep` kernels and the newest
-installed one, and at least two kernels always stay installed: with the running
-kernel also the newest and `--keep 1`, the next-newest is kept too, with a
-warning. Releases are ordered by version (`sort -V`), so `6.1.0-9` sorts before
-`6.1.0-10`. Only versioned packages are candidates; metapackages such as
-`linux-image-amd64`, `linux-image-generic` or an unversioned `kernel` never
-match. When `uname -r` names a kernel that is not installed — a container or a
-chroot — the script says so and keeps the newest instead. It refuses (exit `2`)
-rather than guesses when it cannot determine the running release at all.
+The keep set is the running kernel, the newest `--keep` kernels besides it and
+the newest installed one, and at least two kernels always stay installed: when
+the running kernel is not an installed package and `--keep 1` leaves only the
+newest, the next-newest is kept too, with a warning. Releases are ordered by
+version (`sort -V`), so `6.1.0-9` sorts before `6.1.0-10`. Only versioned
+packages are candidates; metapackages such as `linux-image-amd64`,
+`linux-image-generic` or an unversioned `kernel` never match. When `uname -r`
+names a kernel that is not installed — a container or a chroot — the script
+says so and keeps the newest instead. It refuses (exit `2`) rather than
+guesses when it cannot determine the running release at all.
 
 On apt each old release expands to whichever of `linux-image-REL`,
 `linux-image-unsigned-REL`, `linux-modules-REL`, `linux-modules-extra-REL` and
