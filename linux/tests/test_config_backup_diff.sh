@@ -138,6 +138,44 @@ else
 fi
 chmod 644 "$src/payload.txt"
 
+# The same as an unprivileged run sees it, whoever runs the suite: a tar stub
+# replays GNU tar 1.35's non-root output for -d (an unreadable file, a change,
+# a missing file, then the exit-2 trailer) and hands everything else to the
+# real tar. The trailer must not turn the SKIP into a failed compare.
+stub_bin="$fixture/stub-bin"
+mkdir -p "$stub_bin"
+real_tar="$(command -v tar)"
+cat > "$stub_bin/tar" <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == -dzf ]]; then
+  rel="\${STUB_SRC#/}"
+  {
+    printf 'tar: %s/secret.txt: Cannot open: Permission denied\n' "\$rel"
+    printf '%s/payload.txt: Size differs\n' "\$rel"
+    printf 'tar: %s/nested/file.txt: Warning: Cannot stat: No such file or directory\n' "\$rel"
+    [[ -n "\${STUB_EXTRA:-}" ]] && printf 'tar: %s\n' "\$STUB_EXTRA"
+    printf 'tar: Exiting with failure status due to previous errors\n'
+  } >&2
+  exit 2
+fi
+exec "$real_tar" "\$@"
+STUB
+chmod +x "$stub_bin/tar"
+out="$(PATH="$stub_bin:$PATH" STUB_SRC="$src" "$BACKUP" --diff "$archive" --paths "$src" 2>&1)"
+rc=$?
+assert_eq 'an unreadable file under tar exit 2 -> 1' 1 "$rc"
+assert_contains 'the unreadable file is a SKIP' "$(grep SKIP <<<"$out")" 'secret.txt (unreadable; rerun with sudo)'
+assert_not_contains 'the exit-2 trailer is not a compare failure' "$out" 'could not compare'
+assert_not_contains 'the exit-2 trailer is not echoed as unknown' "$out" 'Exiting with failure status'
+assert_contains 'the NEW list still runs' "$(grep NEW <<<"$out")" 'new.txt'
+assert_contains 'the summary counts the SKIP' "$out" '1 changed, 1 gone, 1 new, 1 skipped'
+assert_contains 'the restore is still suggested' "$out" 'tar -xzf'
+out="$(PATH="$stub_bin:$PATH" STUB_SRC="$src" STUB_EXTRA='something unexpected' \
+  "$BACKUP" --diff "$archive" --paths "$src" 2>&1)"
+rc=$?
+assert_eq 'an unknown tar line under exit 2 -> 1' 1 "$rc"
+assert_contains 'an unknown tar line is still a compare failure' "$out" 'could not compare'
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s config backup diff checks failed\n' "$failures" "$checks" >&2
   exit 1

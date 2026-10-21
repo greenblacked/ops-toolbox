@@ -366,7 +366,9 @@ diff_archive() {
   # tar -d compares every member with the file of the same name under -C and
   # extracts nothing. It exits 1 on a difference and 2 when it could not open
   # something, so the exit code alone cannot tell a difference from a failure;
-  # whether every line it printed was understood can.
+  # whether every line it printed was understood can. GNU tar closes an exit 2
+  # with a fixed trailer that only restates the lines before it, so it is
+  # recognised and not counted: an unreadable file alone stays a SKIP.
   out="$(LC_ALL=C tar -dzf "$archive" -C / 2>&1)"
   tar_rc=$?
   while IFS= read -r line; do
@@ -390,6 +392,9 @@ diff_archive() {
           diff_line SKIP "/$path" "unreadable; rerun with sudo"
           diff_skipped=$((diff_skipped + 1))
         fi
+        ;;
+      "Exiting with failure status due to previous errors")
+        flush_changed
         ;;
       *": "*" differs"|*": Contents differ")
         path="${line%: *}"
