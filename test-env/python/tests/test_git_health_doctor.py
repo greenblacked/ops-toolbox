@@ -99,6 +99,15 @@ class ClassifyLocksTestCase(unittest.TestCase):
         self.assertEqual(level, "warn")
         self.assertIn("only after confirming", fix)
 
+    def test_unattributed_git_process_warns_and_never_fails(self):
+        [(level, message, fix)] = doctor.classify_locks(
+            [(self.LOCK, NOW - 42 * 60)], NOW, 10, doctor.UNATTRIBUTED
+        )
+        self.assertEqual(level, "warn")
+        self.assertIn("running somewhere", message)
+        self.assertIn("cannot tell whether it owns this lock", message)
+        self.assertIn("only after confirming", fix)
+
     def test_a_two_minute_old_lock_is_information(self):
         [(level, message, fix)] = doctor.classify_locks(
             [(self.LOCK, NOW - 120)], NOW, 10, False
@@ -227,6 +236,57 @@ class ProcessNamesTestCase(unittest.TestCase):
     def test_only_git_itself_counts_as_running(self):
         self.assertTrue(doctor.git_is_running(["bash", "git"]))
         self.assertFalse(doctor.git_is_running(["gitk", "git-lfs", "git-credential-cache"]))
+
+
+class AttributeGitProcessesTestCase(unittest.TestCase):
+    REPO = "/srv/repo"
+    PATHS = ["/srv/repo", "/srv/repo/.git", "/srv/wt-b"]
+
+    def attribute(self, procs):
+        return doctor.attribute_git_processes(procs, self.PATHS)
+
+    def test_no_git_process_is_false(self):
+        self.assertIs(self.attribute([]), False)
+
+    def test_an_unrelated_git_does_not_count(self):
+        self.assertIs(self.attribute([("/home/me/other", None, None)]), False)
+
+    def test_a_sibling_directory_with_the_same_prefix_does_not_count(self):
+        self.assertIs(self.attribute([("/srv/repo-two", None, None)]), False)
+
+    def test_cwd_inside_the_worktree_counts(self):
+        self.assertIs(self.attribute([("/srv/repo/src/deep", None, None)]), True)
+
+    def test_cwd_in_a_linked_worktree_counts(self):
+        self.assertIs(self.attribute([("/srv/wt-b", None, None)]), True)
+
+    def test_git_dir_from_the_environment_counts(self):
+        self.assertIs(self.attribute([("/tmp", "/srv/repo/.git", None)]), True)
+
+    def test_relative_git_dir_resolves_against_the_cwd(self):
+        self.assertIs(self.attribute([("/srv/repo", ".git", None)]), True)
+
+    def test_work_tree_from_the_environment_counts(self):
+        self.assertIs(self.attribute([("/tmp", None, "/srv/repo")]), True)
+
+    def test_an_unreadable_cwd_is_unattributed_not_a_match(self):
+        self.assertEqual(
+            self.attribute([("/home/me/other", None, None), (None, None, None)]),
+            doctor.UNATTRIBUTED,
+        )
+
+    def test_a_match_wins_over_an_unreadable_process(self):
+        self.assertIs(self.attribute([(None, None, None), ("/srv/repo", None, None)]), True)
+
+    def test_git_running_uses_the_stubbed_process_lookup(self):
+        original = doctor._proc_git_processes
+        try:
+            doctor._proc_git_processes = lambda: [("/elsewhere", None, None)]
+            self.assertIs(doctor.git_running(self.PATHS), False)
+            doctor._proc_git_processes = lambda: [("/srv/repo", None, None)]
+            self.assertIs(doctor.git_running(self.PATHS), True)
+        finally:
+            doctor._proc_git_processes = original
 
 
 if __name__ == "__main__":

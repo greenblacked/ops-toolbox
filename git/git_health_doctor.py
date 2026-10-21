@@ -178,13 +178,19 @@ def parse_count_objects(text):
     return counts
 
 
+# git_running()'s answer when a git process exists but its repository is unknown.
+UNATTRIBUTED = "unattributed"
+
+
 def classify_locks(locks, now, min_age_minutes, git_running):
     """Judge each (path, mtime) lock file. Returns [(level, message, fix)].
 
     A lock is only called stale when it is old enough AND no git process is
     running: removing index.lock under a live `git rebase` breaks the very
     operation the user is waiting on. git_running is True, False, or None when
-    it could not be told, and None never earns the fail verdict.
+    it could not be told, and None never earns the fail verdict. UNATTRIBUTED
+    means a git process exists but could not be tied to this repository, which
+    is not enough to call the lock stale either.
     """
     findings = []
     for path, mtime in locks:
@@ -204,10 +210,18 @@ def classify_locks(locks, now, min_age_minutes, git_running):
                 "that needs it stops with '%s': File exists" % (path, age, name),
                 "rm -- %s   # after confirming no git is running" % shlex.quote(path),
             ))
+        elif git_running == UNATTRIBUTED:
+            findings.append((
+                "warn",
+                "%s is %d min old, and a git process is running somewhere; "
+                "cannot tell whether it owns this lock" % (path, age),
+                "rm -- %s   # only after confirming no git is running here"
+                % shlex.quote(path),
+            ))
         elif git_running:
             findings.append((
                 "warn",
-                "%s is %d min old, but a git process is running; wait for it"
+                "%s is %d min old, but a git process is running here; wait for it"
                 % (path, age),
                 "re-run this doctor once that process has exited",
             ))
@@ -331,6 +345,39 @@ def git_is_running(names):
     return "git" in names
 
 
+def _inside(path, root):
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def attribute_git_processes(procs, repo_paths):
+    """Whether any git process belongs to this repository.
+
+    procs is [(cwd, git_dir, work_tree)] for each process called `git`; cwd is
+    None when it could not be read, git_dir and work_tree are the GIT_DIR and
+    GIT_WORK_TREE of its environment or None. repo_paths are the worktree,
+    git directory and common directory of this repository (and its linked
+    worktrees). A process belongs to it when its working directory, GIT_DIR or
+    GIT_WORK_TREE lies inside one of them.
+
+    True: one does. False: none do and every process was placed elsewhere (or
+    there are none). UNATTRIBUTED: none do, but one could not be placed.
+    """
+    roots = [os.path.realpath(p) for p in repo_paths if p]
+    unplaced = False
+    for cwd, git_dir, work_tree in procs:
+        if cwd is None:
+            unplaced = True
+            continue
+        cwd = os.path.realpath(cwd)
+        candidates = [cwd]
+        for extra in (git_dir, work_tree):
+            if extra:
+                candidates.append(os.path.realpath(os.path.join(cwd, extra)))
+        if any(_inside(c, r) for c in candidates for r in roots):
+            return True
+    return UNATTRIBUTED if unplaced else False
+
+
 # --------------------------------------------------------------------------
 # The impure edge: git, the filesystem and the process table.
 # --------------------------------------------------------------------------
@@ -357,33 +404,74 @@ def config_value(key, *flags):
     return out.strip() if rc == 0 else None
 
 
-def git_running():
-    """True or False from the process table, None when it cannot be read.
+def _proc_git_processes():
+    """[(cwd, GIT_DIR, GIT_WORK_TREE)] per `git` process from /proc, or None
+    when /proc cannot place processes (macOS, a restricted container)."""
+    try:
+        entries = os.listdir("/proc")
+        os.readlink("/proc/self/cwd")
+    except OSError:
+        return None
+    procs = []
+    seen_any = False
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        base = os.path.join("/proc", entry)
+        try:
+            with open(os.path.join(base, "comm"), encoding="utf-8",
+                      errors="replace") as handle:
+                name = handle.read().strip()
+        except OSError:
+            continue
+        seen_any = True
+        if name != "git":
+            continue
+        try:
+            cwd = os.readlink(os.path.join(base, "cwd"))
+        except OSError:
+            cwd = None
+        git_dir = work_tree = None
+        try:
+            with open(os.path.join(base, "environ"), "rb") as handle:
+                for item in handle.read().split(b"\0"):
+                    if item.startswith(b"GIT_DIR="):
+                        git_dir = os.fsdecode(item[8:])
+                    elif item.startswith(b"GIT_WORK_TREE="):
+                        work_tree = os.fsdecode(item[14:])
+        except OSError:
+            pass
+        procs.append((cwd, git_dir, work_tree))
+    return procs if seen_any else None
 
-    ps first; on a minimal Linux image without procps, /proc. Neither is a
-    reason to guess, so the caller treats None as "cannot tell".
+
+def git_running(repo_paths=()):
+    """True when a git process works on this repository, False when none does,
+    UNATTRIBUTED when one runs but cannot be tied to it, None when the process
+    table cannot be read.
+
+    /proc first, where the working directory of each git process says which
+    repository it is in. Where only ps works (macOS) the names are all there
+    is: a git process is then UNATTRIBUTED, never a match, because any
+    unrelated git would otherwise hide a stale lock. Neither is a reason to
+    guess, so the caller treats None as "cannot tell".
     """
+    procs = _proc_git_processes()
+    if procs is not None:
+        return attribute_git_processes(procs, repo_paths)
     rc, out, _ = run(["ps", "-A", "-o", "comm="])
     if rc == 0 and out.strip():
-        return git_is_running(parse_process_names(out))
-    if os.path.isdir("/proc"):
-        names = []
-        try:
-            entries = os.listdir("/proc")
-        except OSError:
-            return None
-        for entry in entries:
-            if not entry.isdigit():
-                continue
-            try:
-                with open(os.path.join("/proc", entry, "comm"), encoding="utf-8",
-                          errors="replace") as handle:
-                    names.append(handle.read())
-            except OSError:
-                continue
-        if names:
-            return git_is_running(parse_process_names("\n".join(names)))
+        return UNATTRIBUTED if git_is_running(parse_process_names(out)) else False
     return None
+
+
+def worktree_paths():
+    """The paths of every worktree of this repository, [] when git cannot say."""
+    rc, out, _ = run(["git", "worktree", "list", "--porcelain"])
+    if rc != 0:
+        return []
+    return [line[len("worktree "):] for line in out.splitlines()
+            if line.startswith("worktree ")]
 
 
 def find_locks(directories, refs_dir):
@@ -445,7 +533,7 @@ def print_findings(findings):
     return problems
 
 
-def report_locks(git_dir, common_dir, now, lock_age):
+def report_locks(git_dir, common_dir, now, lock_age, toplevel=None):
     head("locks")
     directories = [git_dir] if git_dir == common_dir else [git_dir, common_dir]
     locks, truncated = find_locks(directories, os.path.join(common_dir, "refs"))
@@ -459,7 +547,9 @@ def report_locks(git_dir, common_dir, now, lock_age):
     # Absolute paths, not shorten()ed: the fix line is meant to be pasted,
     # and a quoted ~ is not expanded by the shell.
     old = any((now - mtime) // 60 >= lock_age for _, mtime in locks)
-    running = git_running() if old else False
+    running = False
+    if old:
+        running = git_running([toplevel, git_dir, common_dir, *worktree_paths()])
     if old and running is None:
         info("neither ps nor /proc could be read, so whether a git process is "
              "running cannot be told")
@@ -620,7 +710,7 @@ def run_report(args):
     gc_disabled = gc_auto is not None and gc_auto <= 0
     pack_limit = config_int("gc.autoPackLimit")
 
-    problems = report_locks(git_dir, common_dir, now, args.lock_age)
+    problems = report_locks(git_dir, common_dir, now, args.lock_age, toplevel)
     problems += report_auto_gc(common_dir, gc_auto, now,
                                config_value("gc.logExpiry"))
     object_problems, counts = report_objects(

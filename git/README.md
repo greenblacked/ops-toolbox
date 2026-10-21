@@ -795,9 +795,14 @@ looks at the repository itself rather than at what it connects to.
 - **Locks.** `rm .git/index.lock` is the usual advice and the wrong one while
   a git process still holds the lock. A `*.lock` in the git directory (or
   under `refs/`) is called stale only when it is older than `--lock-age`
-  minutes (default 10) **and** no `git` process is running; the `rm` is
-  printed, never run. If neither `ps` nor `/proc` can be read, the verdict
-  drops to a warning instead of guessing.
+  minutes (default 10) **and** no `git` process is running in this
+  repository or one of its worktrees; the `rm` is printed, never run. On
+  Linux the working directory of each `git` process (and its `GIT_DIR`, where
+  readable) says which repository it is in, so an unrelated git elsewhere on
+  the machine does not hide a stale lock. Where only `ps` can be read, or a
+  process cannot be placed, the verdict drops to a warning that says a git
+  process is running somewhere and cannot be tied to the lock; if neither
+  `ps` nor `/proc` can be read it drops to a warning instead of guessing.
 - **A failed automatic gc.** When `git gc --auto` fails it leaves `gc.log`
   behind, and while that file is there automatic gc does not run again until
   it is older than `gc.logExpiry` (a day by default; `N.days`, `N.weeks`,
