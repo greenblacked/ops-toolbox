@@ -415,8 +415,15 @@ if [[ -d "$h/.bash_profile" && ! -L "$h/.bash_profile" ]]; then
 else
   err "--restore replaced the directory"
 fi
-run_install "$h" --restore latest --dry-run
+# Not "latest": the restore above saved what it replaced as a newer set, which
+# holds no .bash_profile, so "latest" would now name a set with no directory
+# conflict at all.
+before="$(snapshot "$h")"
+run_install "$h" --restore 20260301-000000 --dry-run
+after="$(snapshot "$h")"
 assert_eq "--restore --dry-run with a directory in the way -> 1" 1 "$rc"
+assert_contains "--restore --dry-run names the directory it would skip" "$out" ".bash_profile is a directory"
+assert_eq "--restore --dry-run with a directory in the way wrote nothing" "$before" "$after"
 
 h="$(new_backup_home)"
 before="$(snapshot "$h")"
