@@ -424,7 +424,10 @@ clean_aged_dir() {
 log_candidates() {
   local dir="$1"
   local finder=(find)
-  if [[ ! -r "$dir" && -n "$SUDO" && "$SUDO" != "skip" ]]; then
+  # Whenever root escalation is on, walk the tree as root: a readable /var/log
+  # can still hold unreadable subdirectories (apache2, say), and an
+  # unprivileged find would drop them silently.
+  if [[ -n "$SUDO" && "$SUDO" != "skip" ]]; then
     finder=("$SUDO" find)
   fi
   "${finder[@]}" "$dir" -xdev \

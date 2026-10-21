@@ -161,6 +161,38 @@ assert_eq 'journalctl ran twice' 2 "$(grep -c . <<<"$calls")"
 assert_contains 'the age vacuum still runs' "$calls" '--vacuum-time=3d'
 assert_contains 'the size cap runs' "$calls" '--vacuum-size=200M'
 
+# A readable log directory can hold subdirectories this user cannot enter. The
+# stub find hides apache2/ unless it runs under the stub sudo, which is how an
+# unprivileged find would behave; the old code never retried with sudo there.
+if [[ "$(id -u)" != 0 ]]; then
+  mkdir -p "$fixture/hidebin"
+  cat > "$fixture/hidebin/find" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${STUB_AS_ROOT:-}" == 1 ]]; then
+  exec /usr/bin/find "$@"
+fi
+/usr/bin/find "$@" | grep -zv '/apache2/'
+exit 0
+STUB
+  cat > "$fixture/hidebin/sudo" <<'STUB'
+#!/usr/bin/env bash
+STUB_AS_ROOT=1 exec "$@"
+STUB
+  chmod +x "$fixture/hidebin/find" "$fixture/hidebin/sudo"
+  build_logs
+  mkdir -p "$logs/apache2"
+  printf 'hidden\n' > "$logs/apache2/error.log.1"
+  touch -d '10 days ago' "$logs/apache2/error.log.1"
+  out="$(PATH="$fixture/hidebin:$fixture/bin:$PATH" "$CLEAN" --home "$fixture/home" --tmp "$fixture/tmp" \
+    --dry-run --include-logs --log-dir "$logs" --days 1 2>&1)"
+  assert_contains 'a readable dir with unreadable children is walked as root' "$out" '/apache2/error.log.1 ('
+  out="$(PATH="$fixture/hidebin:$fixture/bin:$PATH" "$CLEAN" --home "$fixture/home" --tmp "$fixture/tmp" \
+    --dry-run --include-logs --log-dir "$logs" --days 1 --no-sudo 2>&1)"
+  assert_not_contains 'under --no-sudo the unreadable children stay out' "$out" '/apache2/error.log.1 ('
+else
+  printf '[skip] unreadable-subdirectory checks need a non-root user\n'
+fi
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s disk cleanup log checks failed\n' "$failures" "$checks" >&2
   exit 1
