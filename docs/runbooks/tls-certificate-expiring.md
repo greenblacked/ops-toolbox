@@ -117,7 +117,20 @@ service, check that file:
 ./linux/tls_expiry.sh --file /path/to/NEW/fullchain.pem --fail-on warn
 ```
 
-A `[pass]` with the new expiry date means the file is the one to deploy.
+A `[pass]` with the new expiry date only means the file has not expired
+(the script runs `openssl x509 -checkend`). It does not check the hostname
+or SAN, the chain or issuer, `notBefore` or the private key. Check those
+separately before you deploy:
+
+```{ .bash .rpt-preview title="Check the rest of the new file" }
+openssl x509 -in NEW/fullchain.pem -noout -subject -issuer -dates -ext subjectAltName
+openssl verify -untrusted NEW/fullchain.pem NEW/fullchain.pem
+openssl x509 -in NEW/fullchain.pem -noout -pubkey | openssl sha256
+openssl pkey -in NEW/privkey.pem -pubout | openssl sha256
+```
+
+The two `sha256` lines must be identical, the SAN list must include your
+hostname, and `notBefore` must not be in the future.
 
 ## Apply
 
