@@ -261,7 +261,7 @@ function Get-SshClientFinding {
         $pinned = ($GitSshCommand.Trim() -replace '/', '\')
         if ($pinned -match '^"([^"]*)"') { $pinned = $Matches[1] }
         elseif ($pinned -match '^(.*?\\ssh(\.exe)?)(\s|$)') { $pinned = $Matches[1] }
-        if ($AgentRunning -and $pinned -match '\\Git\\(usr\\bin|mingw(32|64)\\bin)\\ssh(\.exe)?$') {
+        if ($AgentRunning -and $pinned -match '\\(portable)?git\\(.+\\)?(usr\\bin|mingw(32|64)\\bin)\\ssh(\.exe)?$') {
             $findings += [pscustomobject]@{
                 Id = 'git-ssh-pinned-git'; Level = 'warn'
                 Message = "core.sshCommand pins git to Git's own ssh ($pinned), which cannot see the keys in the running Windows ssh-agent"
