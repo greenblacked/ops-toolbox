@@ -465,12 +465,17 @@ state_of() {
 #
 # Only these links. A link to /etc, into another repository, or any regular
 # file is never reported, so everything --prune removes was made by this
-# installer or a copy of it. The scan is bounded - three levels under the
-# config directory, the top of the home, two levels inside each home
-# directory this folder installs into (.ssh, .aws ...) and in each hidden
-# directory at the top of the home, so one whose source was deleted is still
-# seen - so a large home is never walked. find does not follow links below its starting points; -H
-# follows a starting point that is itself a link, such as a linked ~/.config.
+# installer or a copy of it.
+#
+# What is scanned, so that a large home is never walked:
+#   - this repository's own config/ tree, three levels deep;
+#   - the top level of the home;
+#   - each directory under home/ in this repository, as it exists in the
+#     home (.ssh, .aws ...), two levels deep;
+#   - each hidden directory at the top of the home, two levels deep, so the
+#     links of a source directory that was deleted are still found.
+# find does not follow links below its starting points; -H follows a starting
+# point that is itself a link, such as a linked ~/.config.
 # A repository that was moved is the documented exception: its old links no
 # longer start with this folder's path, so --status calls them CONFLICT.
 link_candidates() {
