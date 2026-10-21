@@ -3479,6 +3479,13 @@ printf 'credentials "app.terraform.io" {\n  token = "CANARY_TF_TOKEN"\n}\n' > "$
 mkdir -p "$cb/home/.terraform.d"
 printf '{"credentials":{"app.terraform.io":{"token":"CANARY_TF_LOGIN"}}}\n' \
   > "$cb/home/.terraform.d/credentials.tfrc.json"
+printf '[pypi]\npassword = CANARY_PYPIRC\n' > "$cb/home/.pypirc"
+mkdir -p "$cb/home/.config/gcloud/legacy_credentials/me@example.com"
+printf '{"client_secret":"CANARY_GCLOUD_ADC"}\n' \
+  > "$cb/home/.config/gcloud/application_default_credentials.json"
+printf 'CANARY_GCLOUD_DB\n' > "$cb/home/.config/gcloud/credentials.db"
+printf '{"private_key":"CANARY_GCLOUD_LEGACY"}\n' \
+  > "$cb/home/.config/gcloud/legacy_credentials/me@example.com/adc.json"
 mkdir -p "$cb/home/.ssh/keys"
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_DEPLOY\n-----END OPENSSH PRIVATE KEY-----\n' \
   > "$cb/home/.ssh/deploy_key"
@@ -3529,6 +3536,13 @@ cbrun --dry-run --paths "$cb/home/.terraform.d/credentials.tfrc.json" >/dev/null
 assert_eq "the terraform login credentials file is refused -> 3" "3" "$rc"
 out="$(cbrun --dry-run --paths "$cb/home/.terraform.d")"
 assert_not_contains "a refused terraform.d never prints the login token" "$out" "CANARY_TF_LOGIN"
+for f in .pypirc .config/gcloud/application_default_credentials.json \
+  .config/gcloud/credentials.db .config/gcloud/legacy_credentials \
+  .config/gcloud; do
+  out="$(cbrun --dry-run --paths "$cb/home/$f")"; rc=$?
+  assert_eq "~/$f is refused -> 3" "3" "$rc"
+  assert_not_contains "a refused ~/$f never prints its secret" "$out" "CANARY_"
+done
 out="$(cbrun --dry-run)"
 assert_not_contains "a default preview skips a .terraformrc with credentials" "$out" "would archive ~/.terraformrc"
 assert_not_contains "a default preview never prints the Terraform token" "$out" "CANARY_TF_TOKEN"

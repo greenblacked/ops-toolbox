@@ -1275,8 +1275,9 @@ credential store is refused with exit `3`: anything in `~/.ssh` except
 `config`, `known_hosts*` and `*.pub` (and `~/.ssh` as a whole),
 `~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`,
 `~/.npmrc`, `~/.git-credentials`, `~/.config/git/credentials`, the GitHub CLI
-`hosts.yml`, `~/.terraform.d/credentials.tfrc.json`, a `~/.terraformrc` with a
-`credentials` block,
+`hosts.yml`, `~/.terraform.d/credentials.tfrc.json`, `~/.pypirc`, gcloud's
+`~/.config/gcloud/application_default_credentials.json`, `credentials.db` and
+`legacy_credentials/`, a `~/.terraformrc` with a `credentials` block,
 `~/Library/Keychains` and `~/.gnupg`. A default run leaves
 `~/.config/git/credentials` out of `~/.config/git` and skips a
 `~/.terraformrc` that has a `credentials` block, saying so.

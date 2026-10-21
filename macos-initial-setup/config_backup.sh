@@ -70,7 +70,9 @@ DEFAULT_SOURCES=".zshrc .zprofile .zshenv .bash_profile .bashrc .gitconfig
 # with a credentials block, are matched separately in holds_secret.
 SECRET_PATHS=".aws/credentials .kube/config .docker/config.json .netrc .npmrc
 .git-credentials .config/git/credentials .config/gh/hosts.yml Library/Keychains
-.gnupg .terraform.d/credentials.tfrc.json"
+.gnupg .terraform.d/credentials.tfrc.json .pypirc
+.config/gcloud/application_default_credentials.json .config/gcloud/credentials.db
+.config/gcloud/legacy_credentials"
 
 usage() {
   local defaults
