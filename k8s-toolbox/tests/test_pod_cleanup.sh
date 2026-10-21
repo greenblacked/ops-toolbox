@@ -107,6 +107,32 @@ for p in json.load(open(sys.argv[1]))['items']:
 PY2
     exit 0
     ;;
+  *" delete --raw "*)
+    path=""; prev=""
+    for arg in "$@"; do
+      if [[ "$prev" == "--raw" ]]; then path="$arg"; fi
+      prev="$arg"
+    done
+    body="$(cat)"
+    name="${path##*/}"
+    ns="${path#/api/v1/namespaces/}"; ns="${ns%%/*}"
+    printf 'body %s\n' "$body" >> "$CLEAN_CALLS"
+    for gone in $CLEAN_GONE; do
+      if [[ "$name" == "$gone" ]]; then printf 'Error from server (NotFound): pods "%s" not found\n' "$name" >&2; exit 1; fi
+    done
+    for bad in $CLEAN_FAIL; do
+      if [[ "$name" == "$bad" ]]; then printf 'Error from server (Forbidden): pods "%s" is forbidden\n' "$name" >&2; exit 1; fi
+    done
+    want="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["preconditions"]["uid"])' "$body")" || exit 2
+    for racer in $CLEAN_RECREATE; do
+      if [[ "$name" == "$racer" ]]; then
+        printf 'Error from server (Conflict): Precondition failed: UID in precondition: %s, UID in object meta: uid-new\n' "$want" >&2
+        exit 1
+      fi
+    done
+    printf '%s/%s\n' "$ns" "$name" >> "$CLEAN_DELETED"
+    exit 0
+    ;;
   *" delete pod "*)
     name=""; ns=""; prev=""
     for arg in "$@"; do
@@ -148,7 +174,7 @@ run_with_path() {
 }
 run_clean() { run_with_path "$scratch/bin:$PATH" "$@"; }
 reset_fixtures() {
-  export CLEAN_PODS=mixed CLEAN_FAIL='' CLEAN_GONE='' CLEAN_CLUSTER_DOWN='' CLEAN_LIST_FAIL='' CLEAN_SWAP='' CLEAN_NEWUID=''
+  export CLEAN_PODS=mixed CLEAN_FAIL='' CLEAN_GONE='' CLEAN_CLUSTER_DOWN='' CLEAN_LIST_FAIL='' CLEAN_SWAP='' CLEAN_NEWUID='' CLEAN_RECREATE=''
 }
 deletes() { grep -cE '(^| )delete ' "$CLEAN_CALLS"; }
 deleted_set() { sort "$CLEAN_DELETED" | tr '\n' ' '; }
@@ -160,7 +186,7 @@ assert_rc 'bare invocation previews and exits 0' 0 "$rc"
 assert_contains 'context is named' 'context   fixture-context'
 assert_contains 'scope is named' 'scope     all namespaces'
 assert_contains 'the preview says nothing is deleted' 'mode      preview: nothing is deleted'
-assert_contains 'old Failed pod is previewed' 'dry-run: would run: kubectl delete pod job-a-1 --namespace demo --wait=false'
+assert_contains 'old Failed pod is previewed' 'dry-run: would run: kubectl delete --raw /api/v1/namespaces/demo/pods/job-a-1 -f - # DeleteOptions precondition uid=uid-job-a-1'
 assert_contains 'Evicted pod is previewed with its reason' 'pod demo/web-evicted-1: Failed (Evicted)'
 assert_contains 'preview closes with the completion line' 'dry-run complete; no changes written'
 assert_contains 'preview says how to apply' 're-run with --yes to delete 2 pod(s)'
@@ -182,10 +208,16 @@ else
   err "unexpected deletions: $(deleted_set)"
 fi
 calls="$(grep -E '(^| )delete ' "$CLEAN_CALLS")"
-if [[ -n "$calls" ]] && ! grep -v -- '--namespace demo --wait=false' <<<"$calls" | grep -q .; then
-  ok 'every delete names its namespace and does not wait'
+if [[ -n "$calls" ]] && ! grep -Ev -- '^delete --raw /api/v1/namespaces/demo/pods/[a-z0-9-]+ -f -$' <<<"$calls" | grep -q .; then
+  ok 'every delete targets one named pod in its namespace'
 else
-  err "delete calls without --namespace/--wait=false: $calls"
+  err "delete calls not scoped to one namespaced pod: $calls"
+fi
+if grep -q -- '^body {"kind":"DeleteOptions","apiVersion":"v1","preconditions":{"uid":"uid-job-a-1"}}$' "$CLEAN_CALLS" \
+  && grep -q -- '"uid":"uid-web-evicted-1"' "$CLEAN_CALLS"; then
+  ok 'every delete carries the listed uid as a precondition'
+else
+  err "delete bodies lack the uid precondition: $(cat "$CLEAN_CALLS")"
 fi
 if grep -Eq -- '--force|--grace-period|--all|-l |--selector|--field-selector' <<<"$calls"; then
   err "a delete used a blanket or forced form: $calls"
@@ -214,7 +246,7 @@ else
   err "--older-than 3d deleted: $(deleted_set)"
 fi
 assert_contains '--context is the context shown' 'context   other-context'
-if grep -q -- '^--context other-context delete pod web-evicted-1 --namespace demo --wait=false$' "$CLEAN_CALLS"; then
+if grep -q -- '^--context other-context delete --raw /api/v1/namespaces/demo/pods/web-evicted-1 -f -$' "$CLEAN_CALLS"; then
   ok 'deletes go to the --context that was listed'
 else
   err "delete did not carry --context: $(cat "$CLEAN_CALLS")"
@@ -237,6 +269,16 @@ assert_contains 'the swapped pod is reported' 'skipped demo/job-a-1: it changed 
 assert_contains 'the new-uid pod is reported' 'skipped demo/web-evicted-1: it changed since the listing'
 assert_contains 'the summary counts the skips' 'deleted 0, already gone 0, skipped 2, failed 0'
 if [[ "$(deletes)" == "0" ]]; then ok 'no delete was issued for replaced pods'; else err "replaced pods deleted: $(cat "$CLEAN_CALLS")"; fi
+
+printf '\n--- A pod recreated after the re-check is refused by the uid precondition ---\n'
+reset_fixtures
+export CLEAN_RECREATE=job-a-1
+run_clean --yes
+assert_rc 'a precondition conflict is a skip, not an error' 0 "$rc"
+assert_contains 'the recreated pod is reported' 'skipped demo/job-a-1: recreated since the listing (uid precondition failed)'
+assert_contains 'the other pod is still deleted' 'deleted demo/web-evicted-1'
+assert_contains 'the summary counts the conflict as a skip' 'deleted 1, already gone 0, skipped 1, failed 0'
+if [[ "$(deleted_set)" == 'demo/web-evicted-1 ' ]]; then ok 'the recreated pod was not deleted'; else err "recreated pod deleted: $(deleted_set)"; fi
 
 reset_fixtures
 export CLEAN_FAIL=job-a-1

@@ -3,7 +3,8 @@
 # Remove dead pods: Failed (Evicted and the like) and, on request, Succeeded
 # pods older than a grace period. Previews by default; deletes only with
 # --yes, and then only the pods it listed, one by one, by name, each re-checked
-# (uid and phase) just before its delete.
+# (phase) just before its delete, which carries a uid precondition so a pod
+# recreated under the same name is refused by the API server (409).
 #
 # Usage:
 #   ./kubectl_pod_cleanup.sh [--namespace NS] [--context CTX] [--all-namespaces]
@@ -55,7 +56,10 @@ kubectl delete it would run for each. Nothing is deleted without --yes, and
 --dry-run always wins. With --yes it deletes exactly the pods it listed, one
 at a time, by name and namespace: never a selector, never --force, never a
 zero grace period. Each pod is re-read just before its
-delete and skipped if it was recreated (new uid) or left its listed phase.
+delete and skipped if it left its listed phase. The delete itself is a
+DeleteOptions request with the listed uid as a precondition
+(kubectl delete --raw, body on stdin), so the API server refuses it (409
+Conflict) when the pod was recreated in between; that is reported as skipped.
 Running, Pending and already-terminating pods are never
 candidates. The context is printed before anything is deleted.
 
@@ -294,7 +298,12 @@ if (( PREVIEW == 1 )); then
   while IFS=$'\t' read -r ns name reason age uid phase; do
     [[ -n "$name" ]] || continue
     printf "dry-run: would run:"
-    printf " %q" "${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false
+    if [[ "$uid" != "-" ]]; then
+      printf " %q" "${KUBECTL[@]}" delete --raw "/api/v1/namespaces/${ns}/pods/${name}" -f -
+      printf " # DeleteOptions precondition uid=%s" "$uid"
+    else
+      printf " %q" "${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false
+    fi
     printf "\n"
   done <<<"$plan"
   printf "dry-run complete; no changes written\n"
@@ -333,9 +342,23 @@ while IFS=$'\t' read -r ns name reason age uid phase; do
     warn "could not re-check ${ns}/${name}: ${cur%%$'\n'*}"
     continue
   fi
-  if out="$("${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false 2>&1 >/dev/null)"; then
+  # The re-read above is only a fast path: kubectl delete by name checks no
+  # uid, so a pod recreated between that read and this call would be deleted.
+  # The uid precondition makes the API server refuse it (409 Conflict).
+  if [[ "$uid" != "-" ]]; then
+    body="{\"kind\":\"DeleteOptions\",\"apiVersion\":\"v1\",\"preconditions\":{\"uid\":\"${uid}\"}}"
+    out="$("${KUBECTL[@]}" delete --raw "/api/v1/namespaces/${ns}/pods/${name}" -f - 2>&1 >/dev/null <<<"$body")"
+    drc=$?
+  else
+    out="$("${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false 2>&1 >/dev/null)"
+    drc=$?
+  fi
+  if (( drc == 0 )); then
     deleted=$((deleted + 1))
     ok "deleted ${ns}/${name}"
+  elif [[ "$out" == *Conflict* || "$out" == *"Precondition failed"* ]]; then
+    skipped=$((skipped + 1))
+    warn "skipped ${ns}/${name}: recreated since the listing (uid precondition failed)"
   elif [[ "$out" == *NotFound* || "$out" == *"not found"* ]]; then
     gone=$((gone + 1))
     ok "already gone: ${ns}/${name}"

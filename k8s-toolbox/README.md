@@ -546,13 +546,17 @@ container's finish time, and creation) longer ago than `--older-than` (`1d` by
 default, because a failed pod is post-mortem evidence). Running, Pending and
 terminating pods are never candidates. The preview prints the context, the
 scope, each candidate with its reason (for example `Failed (Evicted)`) and
-age, then one `dry-run: would run: kubectl delete pod NAME --namespace NS
---wait=false` per pod and `dry-run complete; no changes written`.
+age, then one `dry-run: would run: kubectl delete --raw
+/api/v1/namespaces/NS/pods/NAME -f -` line per pod, with the uid it will
+require and `dry-run complete; no changes written`.
 
 With `--yes`, it deletes those pods and no others, one call per pod by name and
 namespace: never a selector, never `--force`, never `--grace-period=0`. Each pod
-is re-read just before its delete and skipped (reported, not an error) if it was
-recreated under the same name (new uid) or is no longer in its listed phase. A pod
+is re-read just before its delete and skipped (reported, not an error) if it is
+no longer in its listed phase or its uid changed. The delete itself is a
+`kubectl delete --raw` with a `DeleteOptions` body that carries the listed uid as
+a precondition, so a pod recreated under the same name after that re-read is
+refused by the API server (409 Conflict) and reported as skipped, never deleted. A pod
 already gone by then counts as done; any other failure is reported and the
 rest still run. `--max N` (default 200) caps the blast radius: more matches
 than that is exit `3` before anything is deleted, and the preview stops with
