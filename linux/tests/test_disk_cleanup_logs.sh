@@ -68,7 +68,8 @@ build_logs() {
   rm -rf "$logs"
   mkdir -p "$logs/journal" "$logs/nginx"
   for name in app.log app.log.1 app.log.12 app.log.2.gz syslog-20200101 wtmp wtmp.1 Xorg.0.log \
-              nginx/access.log.4.gz journal/x.journal journal/old.log.1; do
+              nginx/access.log.4.gz journal/x.journal journal/old.log.1 \
+              svc.log-20200101 svc.log-2 service.log-2-current svc.log-1x; do
     printf 'log bytes for %s\n' "$name" > "$logs/$name"
     touch -d '10 days ago' "$logs/$name"
   done
@@ -91,20 +92,24 @@ assert_contains 'a dateext rotation is named' "$out" '/syslog-20200101 ('
 assert_contains 'a nested rotation is named' "$out" '/nginx/access.log.4.gz ('
 assert_not_contains 'the active log is never named' "$out" '/app.log ('
 assert_not_contains 'an active log with a number in it is never named' "$out" 'Xorg.0.log ('
+assert_contains 'an all-digit .log-N rotation is named' "$out" '/svc.log-2 ('
+assert_contains 'a .log-YYYYMMDD rotation is named' "$out" '/svc.log-20200101 ('
+assert_not_contains 'a .log-N-suffix active log is never named' "$out" 'service.log-2-current ('
+assert_not_contains 'a .log-digits-then-letters name is never named' "$out" 'svc.log-1x ('
 assert_not_contains 'a fresh rotation is age-filtered' "$out" 'app.log.3.gz'
 assert_not_contains 'wtmp is never named' "$out" '/wtmp ('
 assert_not_contains 'a rotated wtmp is never named' "$out" '/wtmp.1 ('
 assert_not_contains 'the journal directory is pruned' "$out" '/journal/'
-assert_contains 'the dry run counts what it found' "$out" '5 file(s) in'
+assert_contains 'the dry run counts what it found' "$out" '7 file(s) in'
 assert_contains 'the dry run closes with the summary' "$out" 'dry-run complete; no changes written'
 assert_eq 'the dry run changed nothing' "$before" "$(snapshot)"
 
 run_clean --yes --include-logs --log-dir "$logs" --days 1
 assert_eq 'logs --yes exits 0' 0 "$rc"
-for name in app.log.1 app.log.12 app.log.2.gz syslog-20200101 nginx/access.log.4.gz; do
+for name in app.log.1 app.log.12 app.log.2.gz syslog-20200101 nginx/access.log.4.gz svc.log-2; do
   assert_eq "--yes removes old rotated $name" gone "$(present "$logs/$name")"
 done
-for name in app.log app.log.3.gz wtmp wtmp.1 Xorg.0.log journal/x.journal journal/old.log.1; do
+for name in app.log service.log-2-current svc.log-1x app.log.3.gz wtmp wtmp.1 Xorg.0.log journal/x.journal journal/old.log.1; do
   assert_eq "--yes keeps $name" present "$(present "$logs/$name")"
 done
 

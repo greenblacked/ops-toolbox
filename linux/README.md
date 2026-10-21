@@ -554,8 +554,8 @@ deleted files outside the directory `--home` named.
 usual space hog on a server that is not journald-only. A file qualifies only when
 its name proves it was rotated: `*.gz`, `*.xz`, `*.bz2`, `*.zst`, a numeric
 suffix (`*.1` to `*.99`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
-`*.log-<digits>`. An active `*.log`, `syslog` or `messages` never matches, and
-neither do numbered active logs such as `Xorg.0.log`. Login records (`wtmp`,
+`*.log-<digits>` (digits only, so `service.log-2-current` stays). An active
+`*.log`, `syslog` or `messages` never matches, and neither do numbered active logs such as `Xorg.0.log`. Login records (`wtmp`,
 `btmp`, `lastlog`, `faillog`, `utmp` and their rotations) are never touched,
 anything below a directory named `journal` or `private` is pruned from the
 walk, symlinks are not followed and `-xdev` keeps it on one filesystem. Nothing
