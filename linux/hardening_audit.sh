@@ -333,10 +333,32 @@ if want ssh; then
     v="$(sshd_all ChannelTimeout)"
     if [[ -z "${v//[[:space:]]/}" ]] || [[ "$(lower "$v")" == "none" ]]; then
       info "ChannelTimeout not set: an idle but responsive session is never closed (OpenSSH 9.2+ only; add 'ChannelTimeout session=30m' in /etc/ssh/sshd_config, $reload)"
-    elif [[ "$(lower "$v")" =~ (^|[[:space:]])(session|\*)[^[:space:]=]*= ]]; then
-      pass "ChannelTimeout bounds idle sessions: $(printf '%s' "$v" | tr '\n' ' ')"
     else
-      info "ChannelTimeout is set but has no session entry: idle login sessions are not bounded (add 'ChannelTimeout session=30m', $reload)"
+      # type=interval pairs, a type of session, session:* or a bare *. An
+      # interval of 0 disables that timeout, so only a positive one bounds.
+      ct_session=0
+      ct_bounded=0
+      # read -a, not an unquoted loop: a bare * must not glob.
+      read -r -a ct_toks <<< "$(lower "$v" | tr '\n' ' ')"
+      for ct_tok in "${ct_toks[@]+"${ct_toks[@]}"}"; do
+        [[ "$ct_tok" == *=* ]] || continue
+        ct_type="${ct_tok%%=*}"
+        ct_val="${ct_tok#*=}"
+        case "$ct_type" in
+          session|'session:*'|'*') ;;
+          *) continue ;;
+        esac
+        ct_session=1
+        ct_secs="$(sshd_seconds "$ct_val")" || continue
+        (( ct_secs > 0 )) && ct_bounded=1
+      done
+      if (( ct_bounded )); then
+        pass "ChannelTimeout bounds idle sessions: $(printf '%s' "$v" | tr '\n' ' ')"
+      elif (( ct_session )); then
+        info "ChannelTimeout session interval is 0 or unreadable: idle login sessions are not bounded (add 'ChannelTimeout session=30m', $reload)"
+      else
+        info "ChannelTimeout is set but has no session entry: idle login sessions are not bounded (add 'ChannelTimeout session=30m', $reload)"
+      fi
     fi
 
     # ~/.ssh/environment can set LD_PRELOAD for the login shell, which turns a
