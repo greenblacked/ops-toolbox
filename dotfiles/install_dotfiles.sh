@@ -12,7 +12,8 @@
 # A few files are copied rather than linked, because the tool that owns them
 # rewrites the whole file on its own and would strip every comment out of the
 # tracked copy: see copy_mode() below. --status reports DRIFT when a copy has
-# been edited, which is the reminder to fold the change back into the repo.
+# been edited, which is the reminder to fold the change back into the repo,
+# and --diff shows what the edit was.
 #
 # Nothing here is ever deleted. A file that is already in the way is left
 # alone and reported; --force moves it to a timestamped .backup first, the
@@ -24,7 +25,8 @@
 #   1   a link or copy could not be made
 #   2   preflight failed (config/ or home/ missing, HOME unset)
 #   3   bad CLI arguments
-#   4   something was left in place (install: a conflict; status: not current)
+#   4   something was left in place (install: a conflict; status: not current;
+#       diff: a file differs)
 set -u
 set -o pipefail
 
@@ -34,6 +36,7 @@ DRY_RUN=0
 STATUS=0
 UNINSTALL=0
 LIST=0
+DIFF=0
 FORCE=0
 QUIET=0
 HOME_DIR="${HOME:-}"
@@ -65,6 +68,7 @@ Usage:
   $(basename "$0") --status    [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
   $(basename "$0") --list      [--only UNIT ...] [--home DIR] [--config-home DIR]
+  $(basename "$0") --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
 
 Options:
   --dry-run          Show what would change; write nothing
@@ -72,6 +76,8 @@ Options:
                      CONFLICT; write nothing. Exit 4 unless everything is MATCH
   --uninstall        Remove links that point into this folder, and copies that still match
   --list             Print UNIT, MODE (link or copy), SOURCE and TARGET per file, then exit
+  --diff             Unified diff, source against what is on disk, for each DRIFT,
+                     CONFLICT or FOREIGN file; write nothing. Exit 4 if any differ
   --force            Move a file that is in the way to NAME.backup-TIMESTAMP, then install
   --only UNIT        Limit to one unit (repeatable, or comma-separated): a tool
                      directory under config/ such as k9s, or a dotfile under home/
@@ -103,6 +109,7 @@ while (( $# > 0 )); do
     --status)         STATUS=1 ;;
     --uninstall)      UNINSTALL=1 ;;
     --list)           LIST=1 ;;
+    --diff)           DIFF=1 ;;
     --force)          FORCE=1 ;;
     --quiet)          QUIET=1 ;;
     --only)           require_value "$1" "${2:-}"; ONLY="${ONLY:+$ONLY,}$2"; shift ;;
@@ -120,12 +127,12 @@ while (( $# > 0 )); do
   shift
 done
 
-modes=$(( STATUS + UNINSTALL + LIST ))
+modes=$(( STATUS + UNINSTALL + LIST + DIFF ))
 if (( modes > 1 )); then
-  err "--status, --uninstall and --list are separate modes; choose one"
+  err "the mode flags are separate modes; choose one"
   exit 3
 fi
-if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1) )); then
+if (( DRY_RUN == 1 && (STATUS == 1 || LIST == 1 || DIFF == 1) )); then
   err "--dry-run only applies to install and --uninstall"
   exit 3
 fi
@@ -362,6 +369,72 @@ do_status() {
   return 4
 }
 
+# Credential values a drifted copy may hold by now - docker login writes
+# base64 auths into ~/.docker/config.json, aws configure can write keys - are
+# replaced by <redacted> before a line is printed. The key names are matched
+# by how they end (auth, token, password, secret, aws_secret_access_key), so
+# identitytoken, registrytoken, _authToken and aws_session_token are covered,
+# in the JSON "key": "value", the key = value and the key: value forms. BSD
+# sed has no case-insensitive flag, hence the bracket classes. Token shapes,
+# a password in a URL and private key blocks are redacted wherever they sit.
+REDACT_KEYS='[Aa][Uu][Tt][Hh]|[Tt][Oo][Kk][Ee][Nn]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Aa][Ww][Ss]_[Ss][Ee][Cc][Rr][Ee][Tt]_[Aa][Cc][Cc][Ee][Ss][Ss]_[Kk][Ee][Yy]'
+redact() {
+  sed -E \
+    -e 's/("[^"]*('"$REDACT_KEYS"')"[[:space:]]*:[[:space:]]*)"[^"]*"/\1"<redacted>"/g' \
+    -e 's/('"$REDACT_KEYS"')([[:space:]]*=[[:space:]]*)[^[:space:]].*$/\1\2<redacted>/' \
+    -e 's/('"$REDACT_KEYS"')(:[[:space:]]+)[^[:space:]].*$/\1\2<redacted>/' \
+    -e 's#(://[^/@[:space:]:]+:)[^/@[:space:]]+@#\1<redacted>@#g' \
+    -e 's/AKIA[0-9A-Z]{16}/<redacted>/g' \
+    -e 's/ghp_[A-Za-z0-9]{20,}/<redacted>/g' \
+    -e 's/glpat-[A-Za-z0-9_-]{20,}/<redacted>/g' \
+    -e 's/xox[baprs]-[A-Za-z0-9-]{10,}/<redacted>/g' \
+    -e '/BEGIN [A-Z ]*PRIVATE KEY/,/END [A-Z ]*PRIVATE KEY/s/^(.).*$/\1<redacted>/'
+}
+
+# The same header line --status prints, then what the file differs by. Only
+# DRIFT, CONFLICT and FOREIGN have anything to show; MATCH and MISSING print
+# nothing. diff reads both files directly, so nothing is written, not even a
+# temp file. Its two path-and-timestamp header lines are dropped so the output
+# is stable; plain diff -u, because macOS diff has no --label. A link that
+# leads out of this folder is named, never followed and read.
+do_diff() {
+  local f src target st d shown=0
+  for f in "${files[@]}"; do
+    selected "$f" || continue
+    src="$SCRIPT_DIR/$f"
+    target="$(target_of "$f")"
+    st="$(state_of "$f" "$target")"
+    case "$st" in
+      DRIFT|CONFLICT|FOREIGN) ;;
+      *) continue ;;
+    esac
+    printf '%-8s %s\n' "$st" "$target"
+    shown=$((shown + 1))
+    if [[ -L "$target" ]] && ! points_here "$target"; then
+      printf '  links to %s\n' "$(link_target "$target")"
+      continue
+    fi
+    if [[ -d "$target" ]]; then
+      if [[ -L "$target" ]]; then printf '  links to %s\n' "$(link_target "$target")"; else printf '  is a directory\n'; fi
+      continue
+    fi
+    if [[ ! -f "$target" ]]; then
+      if [[ -L "$target" ]]; then printf '  links to %s\n' "$(link_target "$target")"; else printf '  is not a regular file\n'; fi
+      continue
+    fi
+    if cmp -s "$src" "$target"; then
+      printf '  same content as %s\n' "$f"
+      continue
+    fi
+    # Captured first and printed after, so diff's own exit status (1 when the
+    # files differ) never meets pipefail.
+    d="$(diff -u "$src" "$target")"
+    printf '%s\n' "$d" | sed '1,2d' | redact
+  done
+  (( shown == 0 )) && return 0
+  return 4
+}
+
 do_install() {
   local f d src target st dir stamp failed=0 conflicts=0 installed=0
   stamp="$(date +%Y%m%d-%H%M%S)"
@@ -458,6 +531,8 @@ if (( LIST )); then
   do_list
 elif (( STATUS )); then
   do_status
+elif (( DIFF )); then
+  do_diff
 elif (( UNINSTALL )); then
   do_uninstall
 else

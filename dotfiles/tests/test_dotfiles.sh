@@ -5,7 +5,8 @@
 # asserts what it promises: --help before preflight, exit 3 on a bad flag, a
 # dry run that writes nothing, links that point at this folder, copies for the
 # files their tools rewrite, conflicts left in place, --force moving them to a
-# .backup, --status telling MATCH from DRIFT, and an uninstall that removes
+# .backup, --status telling MATCH from DRIFT, --diff showing what a drifted
+# file differs by with credentials redacted, and an uninstall that removes
 # only what it made. The file table is read from `--list` rather than
 # re-derived here, so the suite asserts what the installer says it will do.
 # The second half reads the tracked configs themselves: every file parses in
@@ -215,6 +216,60 @@ assert_contains "a directory at a copy target is CONFLICT" "$out" "CONFLICT"
 if [[ "$out" == *"Is a directory"* ]]; then err "cmp was run against a directory"; else ok "no cmp noise for a directory"; fi
 rmdir "$H/.config/gh/config.yml"
 run_installer --only gh >/dev/null 2>&1
+
+# --------------------------------------------------------------------------
+head_ "--diff"
+# The k9s copy still carries the '# local edit' line from the section above.
+before="$(snapshot "$H" "$T")"
+out="$(run_installer --diff --only k9s 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "--diff exits 4 when a copy has drifted" 4 "$rc"
+assert_contains "--diff names the DRIFT file" "$out" "DRIFT    $H/.config/k9s/config.yaml"
+assert_contains "--diff shows the local edit as an added line" "$out" "+# local edit"
+if [[ "$out" == *"$D/config/k9s/config.yaml"* ]]; then err "--diff printed the diff header with the source path"; else ok "--diff drops the path and timestamp header"; fi
+if [[ "$before" == "$after" ]]; then ok "--diff wrote nothing"; else err "--diff wrote into the home or tmp"; fi
+
+out="$(run_installer --diff --only git 2>&1)"; rc=$?
+assert_rc "--diff exits 0 when every selected file matches" 0 "$rc"
+if [[ -z "$out" ]]; then ok "--diff prints nothing for matching files"; else err "--diff printed output for matching files: $out"; fi
+
+rm "$H/.config/starship.toml"
+printf 'format = "old"\n' > "$H/.config/starship.toml"
+out="$(run_installer --diff --only starship 2>&1)"; rc=$?
+assert_rc "--diff exits 4 on a CONFLICT file" 4 "$rc"
+if [[ "$out" == CONFLICT* ]]; then ok "--diff output starts with the CONFLICT header"; else err "--diff output does not start with CONFLICT: $out"; fi
+assert_contains "--diff shows the source lines as removed" "$out" $'\n-'
+assert_contains "--diff shows the file on disk as added" "$out" '+format = "old"'
+rm "$H/.config/starship.toml"
+run_installer --only starship >/dev/null 2>&1 || err "could not relink starship.toml after the --diff check"
+
+rm "$H/.config/gh/config.yml"; mkdir "$H/.config/gh/config.yml"
+out="$(run_installer --diff --only gh 2>&1)"; rc=$?
+assert_rc "--diff exits 4 on a directory at a target" 4 "$rc"
+assert_contains "--diff notes a directory instead of diffing it" "$out" "  is a directory"
+if [[ "$out" == *"Is a directory"* ]]; then err "diff was run against a directory"; else ok "no diff noise for a directory"; fi
+rmdir "$H/.config/gh/config.yml"
+run_installer --only gh >/dev/null 2>&1 || err "could not restore gh/config.yml after the --diff check"
+
+# A drifted docker copy is where a real credential sits after `docker login`.
+# The value is assembled here so no literal sits in this file.
+secret="$(printf 'c2VjcmV0%s' 'c2VjcmV0')"
+printf '{"auths":{"x":{"auth":"%s"}}}\n' "$secret" > "$H/.docker/config.json"
+out="$(run_installer --diff --only docker 2>&1)"; rc=$?
+assert_rc "--diff exits 4 on an edited docker copy" 4 "$rc"
+if [[ "$out" == *"$secret"* ]]; then err "--diff printed the docker auth value"; else ok "--diff never prints the docker auth value"; fi
+assert_contains "--diff marks the value redacted" "$out" "<redacted>"
+rm "$H/.docker/config.json"
+run_installer --only docker >/dev/null 2>&1 || err "could not restore the docker copy after the --diff check"
+
+run_installer --diff --dry-run >/dev/null 2>&1; rc=$?
+assert_rc "--diff --dry-run exits 3" 3 "$rc"
+run_installer --diff --force >/dev/null 2>&1; rc=$?
+assert_rc "--diff --force exits 3" 3 "$rc"
+run_installer --diff --status >/dev/null 2>&1; rc=$?
+assert_rc "--diff --status exits 3" 3 "$rc"
+out="$(guard "$SCRIPT" --help 2>&1)"
+assert_contains "--help documents --diff" "$out" "--diff"
 
 # --------------------------------------------------------------------------
 head_ "uninstall"

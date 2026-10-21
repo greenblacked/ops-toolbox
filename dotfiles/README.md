@@ -101,6 +101,7 @@ install_dotfiles.sh [--dry-run] [--force] [--only UNIT ...] [--home DIR] [--conf
 install_dotfiles.sh --status    [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --list
+install_dotfiles.sh --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
 ```
 
 | Flag | Effect |
@@ -109,6 +110,7 @@ install_dotfiles.sh --list
 | `--status` | One bare `STATE   path` line per file, the shape `windows/git-bash/install_dotfiles.sh` prints: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file, link or directory). Also checks that `~/.ssh` and `~/.gnupg` are mode `700` when a file in them is selected. Exit `4` if anything is not `MATCH`. |
 | `--uninstall` | Remove links that point into this folder and copies that still equal their source. A `DRIFT` copy and a `CONFLICT` file are kept and reported. |
 | `--list` | Every tracked file with its unit name, `link` or `copy`, and its target. Needs no home directory. |
+| `--diff` | For each `DRIFT`, `CONFLICT` or `FOREIGN` file, the `--status` header line and then a unified diff of the tracked source (`-`) against what is on disk (`+`), with credential values replaced by `<redacted>`. A directory or a link out of this folder gets a one-line note instead of a diff. Writes nothing. Exit `4` if any file differs. |
 | `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`. |
 | `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). An unknown unit exits `3`. |
 | `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, because a caller pointing at another home wants everything under it; without `--home`, `XDG_CONFIG_HOME` is honoured. |
@@ -137,10 +139,22 @@ line-ending override. This one refuses to touch an existing file unless
 `--force` says so, because a config already in `~/.config` is more likely to
 be deliberate than a stray `.bashrc` on a fresh Windows machine.
 
+**Folding a change back.** k9s rewrites `config.yaml` on every exit, and
+`aws configure`, `docker login` and `gh config set` rewrite theirs, so a copy
+drifts. `--diff --only k9s` shows what changed, source against disk, so the
+setting worth keeping can be copied into the tracked file by hand. There is
+deliberately no automatic fold-back: the four copy-mode tools write their
+file without comments, and copying it over the tracked source would delete
+every comment that explains a setting. Values that look like credentials —
+keys ending in `auth`, `token`, `password` or `secret`, an AWS secret key, a
+password in a URL, token shapes, private key blocks — print as `<redacted>`,
+because a drifted `~/.docker/config.json` holds base64 `auths` by then.
+
 **Exit codes:** `0` success (for `--status`: everything matches); `1` a link
 or copy could not be made; `2` preflight — `config/` or `home/` missing next to
 the script, or no home directory; `3` usage; `4` something was left in place — a
-conflict under install, or a non-`MATCH` under `--status`.
+conflict under install, a non-`MATCH` under `--status`, or a file that differs
+under `--diff`.
 
 **Git and symlinks.** `git config --global` writes through the link into the
 tracked `config/git/config`. That is what you want for a setting you mean to
@@ -694,7 +708,10 @@ run that leaves the home byte-identical, every tracked file installed as a
 link into this folder or as a matching copy, `~/.ssh` and `~/.gnupg` mode
 `700`, a second install that changes nothing, a foreign file left in place
 with exit `4`, `--force` keeping a `.backup`, `--status` telling `MATCH`
-from `DRIFT` and reporting a directory at a copy target as `CONFLICT`, a
+from `DRIFT` and reporting a directory at a copy target as `CONFLICT`,
+`--diff` (a drifted copy's edit and a conflicting file's lines with no
+diff header, nothing for matching files, a note instead of diff noise for a
+directory, a docker `auth` value redacted), a
 drifted `~/.ssh` mode repaired by install, and an uninstall that removes
 every link and matching copy, keeps the edited copy and the `.backup`. The
 file table is read from `--list` rather than re-derived, and the run is
