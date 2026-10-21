@@ -299,8 +299,10 @@ if (( PREVIEW == 1 )); then
     [[ -n "$name" ]] || continue
     printf "dry-run: would run:"
     if [[ "$uid" != "-" ]]; then
+      # The DeleteOptions body goes on stdin, so print a pipeline that can be
+      # pasted as-is (the uid is an API-server UUID, safe inside quotes).
+      printf " printf %%s '{\"kind\":\"DeleteOptions\",\"apiVersion\":\"v1\",\"preconditions\":{\"uid\":\"%s\"}}' |" "$uid"
       printf " %q" "${KUBECTL[@]}" delete --raw "/api/v1/namespaces/${ns}/pods/${name}" -f -
-      printf " # DeleteOptions precondition uid=%s" "$uid"
     else
       printf " %q" "${KUBECTL[@]}" delete pod "$name" --namespace "$ns" --wait=false
     fi

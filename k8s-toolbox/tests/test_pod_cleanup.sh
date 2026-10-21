@@ -186,7 +186,7 @@ assert_rc 'bare invocation previews and exits 0' 0 "$rc"
 assert_contains 'context is named' 'context   fixture-context'
 assert_contains 'scope is named' 'scope     all namespaces'
 assert_contains 'the preview says nothing is deleted' 'mode      preview: nothing is deleted'
-assert_contains 'old Failed pod is previewed' 'dry-run: would run: kubectl delete --raw /api/v1/namespaces/demo/pods/job-a-1 -f - # DeleteOptions precondition uid=uid-job-a-1'
+assert_contains 'old Failed pod is previewed' 'dry-run: would run: printf %s '"'"'{"kind":"DeleteOptions","apiVersion":"v1","preconditions":{"uid":"uid-job-a-1"}}'"'"' | kubectl delete --raw /api/v1/namespaces/demo/pods/job-a-1 -f -'
 assert_contains 'Evicted pod is previewed with its reason' 'pod demo/web-evicted-1: Failed (Evicted)'
 assert_contains 'preview closes with the completion line' 'dry-run complete; no changes written'
 assert_contains 'preview says how to apply' 're-run with --yes to delete 2 pod(s)'
