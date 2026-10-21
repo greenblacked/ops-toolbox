@@ -3,14 +3,15 @@
   Themed 404 page for the report/preview/apply theme. It extends main.html
   (the site's own override, which extends Material's base.html) so the
   favicon links of that file apply here too. Nothing here names a site: the
-  name comes from config.site_name, and every link goes through the url
-  filter, which on an error page resolves against the site root. There are no
-  external requests.
+  name comes from config.site_name, and every link is a site-root URL (it
+  starts with "/"), never a relative one and never passed through the url
+  filter. There are no external requests.
 
   The host serves this one file for a miss at any depth (/runbooks/missing/),
   so a relative URL would resolve under the missing path. The script, the
   search index and the home link are therefore built from `root`: the path of
-  config.site_url when set, else "/". Styles: .rpt-404 and .rpt-steps in the theme stylesheet.
+  config.site_url when set, else "/". Styles: .rpt-404 and .rpt-steps in the
+  theme stylesheet.
 
   .rpt-404__suggest is filled by assets/javascripts/rpt-404.js with the pages
   the missing address probably meant, ranked from the site's own search
