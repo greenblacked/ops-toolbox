@@ -58,7 +58,9 @@ It prints these sections:
 3. Then one section for the backend in use:
     - **gpg keyring** (`openpgp`, the default): no secret key at all; a key
       that is revoked, invalid or expired ("the most common cause of a sudden
-      'gpg failed to sign the data'"); a key that expires within 30 days; no
+      'gpg failed to sign the data'"); a key that expires within 30 days (these
+      checks read the primary secret key, the `sec` record, only; see the note
+      below the exit codes for signing subkeys); no
       user id matching `user.email`, which is why a signed commit still shows
       as Unverified; and `GPG_TTY is unset and stdin is not a terminal`, so
       pinentry cannot ask for the passphrase.
@@ -78,6 +80,14 @@ It prints these sections:
 | `1` | Problems found; the last line gives the count. |
 | `2` | `git config` could not be read (no `git`). |
 | `3` | Bad arguments. |
+
+Exit `0` does not clear a signing subkey. The expiry and revocation checks
+read only the primary key (`sec` records); the doctor does not parse `ssb`
+subkey records. If you sign with a dedicated signing subkey, an expired or
+revoked subkey is not diagnosed and the report can still exit `0`. Check it
+with `--test-sign` (below), or by hand: `gpg -K --with-colons`, then read the
+`ssb` lines for your signing subkey (field 2 is the validity, `e` expired or
+`r` revoked; field 7 is the expiry as a unix timestamp).
 
 Only `[fail]` lines count as problems. The `[warn]` findings (a key that
 expires soon, a user id that does not match `user.email`, `GPG_TTY` unset,
