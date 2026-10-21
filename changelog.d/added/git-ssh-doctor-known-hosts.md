@@ -10,7 +10,6 @@
   effective `KnownHostsCommand` is reported as not checked (never run)
   instead of failing the requirement on the file scan alone.
   With `--require-known-host` the authentication attempt uses
-  `StrictHostKeyChecking=yes` and `UpdateHostKeys=no`, so it does not
-  write to known_hosts, and a
-  missing `ssh-keygen` is reported as an unchecked key rather than an
-  unknown one.
+  `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no`,
+  so it does not write to known_hosts, and a missing `ssh-keygen` is
+  reported as an unchecked key rather than an unknown one.
