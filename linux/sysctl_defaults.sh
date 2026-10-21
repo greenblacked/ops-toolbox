@@ -499,17 +499,31 @@ backup_current() {
     err "it already exists and is not empty; choose another --backup-file"
     exit 3
   fi
-  : > "$dest"
-  printf '# sysctl_defaults.sh backup %s\n' "$(date)" >> "$dest"
+  # Build the whole backup first and write it once, so there is a single
+  # write to check. A redirection error (missing or unwritable directory, full
+  # disk) used to be printed and then ignored, and --apply went on to rewrite
+  # the drop-in and the live values with nothing to revert to.
+  local content
+  content="# sysctl_defaults.sh backup $(date)"
   while IFS='|' read -r group key value blurb; do
     [[ -n "$group" ]] || continue
     group_wanted "$group" || continue
     if current="$(read_current "$key")"; then
-      printf '%s=%s\n' "$key" "$current" >> "$dest"
+      content="${content}"$'\n'"${key}=${current}"
     fi
   done <<EOF
 ${SETTINGS}
 EOF
+  if ! printf '%s\n' "$content" > "$dest" 2>/dev/null; then
+    rm -f -- "$dest" 2>/dev/null || true
+    err "cannot write the backup to $dest; nothing was changed"
+    exit 1
+  fi
+  if [[ ! -s "$dest" ]]; then
+    rm -f -- "$dest" 2>/dev/null || true
+    err "the backup at $dest is missing or empty; nothing was changed"
+    exit 1
+  fi
 }
 
 needs_real_root() {
@@ -557,13 +571,16 @@ EOF
     return 0
   fi
 
-  mkdir -p "$SYSCTL_D" || { err "cannot create $SYSCTL_D"; exit 1; }
-
   if [[ -z "$BACKUP_FILE" ]]; then
     BACKUP_FILE="$BACKUP_DIR/sysctl_defaults-backup-$(date +%Y%m%d-%H%M%S).txt"
   fi
+  # The backup comes first and must exist before anything is changed: it exits
+  # nonzero otherwise, before the drop-in directory, the drop-in or any live
+  # value is touched.
   backup_current "$BACKUP_FILE"
   info "backup: $BACKUP_FILE"
+
+  mkdir -p "$SYSCTL_D" || { err "cannot create $SYSCTL_D"; exit 1; }
 
   printf '%s\n' "$body" > "$DROP_IN" || { err "cannot write $DROP_IN"; exit 1; }
   ok "wrote $DROP_IN"

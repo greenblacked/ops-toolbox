@@ -1258,6 +1258,26 @@ else
   err "sysctl_defaults --revert did not restore max_user_watches"
 fi
 
+# A backup that cannot be written stops --apply before anything changes: no
+# drop-in (not even its directory) and no live value.
+sysctl_nobackup_d="$sysctl_root/never-created.d"
+out="$(
+  SYSCTL_D="$sysctl_nobackup_d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
+    "$SYSCTL" --apply --only inotify --backup-file "$sysctl_root/no-such-dir/backup.txt" 2>&1
+)"; rc=$?
+assert_eq "sysctl_defaults --apply with an unwritable --backup-file exits nonzero" "1" "$rc"
+assert_contains "sysctl_defaults names the backup it could not write" "$out" "cannot write the backup"
+if [[ -e "$sysctl_nobackup_d" || -e "$sysctl_root/no-such-dir" ]]; then
+  err "sysctl_defaults wrote a drop-in or directory without a backup"
+else
+  ok "sysctl_defaults wrote no drop-in without a backup"
+fi
+if [[ "$(cat "$sysctl_root/proc/fs/inotify/max_user_watches")" == "8192" ]]; then
+  ok "sysctl_defaults changed no live value without a backup"
+else
+  err "sysctl_defaults changed a live value without a backup"
+fi
+
 # --revert used to feed every key in the backup straight to write_live, and
 # picked its backup by globbing a world-writable TMPDIR. Between them, any
 # local user could leave a file for root to find and set a sysctl of their

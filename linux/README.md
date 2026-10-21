@@ -695,6 +695,10 @@ sudo ./sysctl_defaults.sh --revert-from /root/sysctl.before
 and `--revert-from PATH` restores from a named one instead of the last apply's.
 Both exist so a revert can be run from a machine image or a runbook that keeps
 the backup alongside its own state.
+The backup is written, and checked to exist and be non-empty, before anything
+else: if it cannot be written (a missing or unwritable directory, a full disk)
+`--apply` exits `1` with the drop-in directory, the drop-in and every live
+value untouched.
 
 `SYSCTL_D` and `PROC_SYS` are honoured so the apply path is testable
 without writing into `/etc`. `--apply` without root exits `2`; preview
