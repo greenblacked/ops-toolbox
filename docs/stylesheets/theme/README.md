@@ -5,8 +5,9 @@
 `rpt-theme.css` is one portable stylesheet: "report, preview, apply" for
 Material for MkDocs. It holds every generic rule
 (tokens, header, headings, navigation, code, stage pills, stage code titles,
-stage admonitions, home hero and cards, 404 page, print, reduced motion and
-forced colours) and nothing that names a site. A site adds its own tweaks in a
+stage admonitions, home hero and cards, 404 page, the controls the optional
+page scripts add, print, reduced motion and forced colours) and nothing that
+names a site. A site adds its own tweaks in a
 second stylesheet loaded after it.
 
 The idea: the tools it documents work in three stages, and each stage owns a
@@ -27,7 +28,8 @@ Tested against Material for MkDocs 9.7, MkDocs 1.6 and PyMdown Extensions 12.
 | `docs/stylesheets/theme/rpt-theme.css` | The theme. |
 | `docs/assets/fonts/` | The self-hosted IBM Plex woff2 files and their licence texts. The `@font-face` URLs in the theme are `../../assets/fonts/...`; change those five lines if the folder moves. The fonts folder has its own `README.md` (provenance and checksums). |
 | `overrides/404.html` | The themed 404 page. It extends `main.html`. |
-| `overrides/main.html` | Adds the PNG favicon fallback, a typed SVG icon and the iOS icon. Copy it if you provide those three icon files (and point the hrefs at yours); otherwise drop it, and `404.html` then extends Material's own `main.html`. |
+| `overrides/main.html` | Adds the PNG favicon fallback, a typed SVG icon and the iOS icon, and loads the page scripts below. Copy it if you provide those three icon files (and point the hrefs at yours) or want the page scripts; otherwise drop it, and `404.html` then extends Material's own `main.html`. |
+| `overrides/assets/javascripts/rpt-table-filter.js` (optional) | Adds a live filter box above every Markdown table of 15 or more rows. MkDocs publishes the folder at `assets/javascripts/`; `main.html` loads the file. Drop the file and its `<script>` line to go without. |
 | `docs/assets/images/` (optional) | A logo and favicons. Material needs `theme.logo` and `theme.favicon` pointing at your own. |
 
 ## mkdocs.yml
@@ -153,6 +155,7 @@ non-text parts.
 | `.rpt-stages`, `.rpt-stage`, `.rpt-stage--report`, `.rpt-stage--preview`, `.rpt-stage--apply` | Three-stage strip and its cards. |
 | `.grid.cards.cols-2` | Material's card grid in two columns from 40em (one column below). |
 | `.rpt-404`, `.rpt-steps`, `.rpt-step--report`, `.rpt-step--preview`, `.rpt-step--apply` | The 404 page and its three steps. |
+| `.rpt-filter`, `.rpt-filter__count` | The filter box above a long table and its status line. Added by `rpt-table-filter.js`; you do not write them. |
 
 The admonition kinds `report`, `preview` and `apply` need no class. Material's
 `.grid.cards` cards are restyled without extra markup.
@@ -234,3 +237,10 @@ Markdown linter that wants the file to start with a heading is satisfied):
 
 The strip shows three columns from 60em, two from 45em and one below. The
 faint grid behind the hero appears in browsers that support `:has()`.
+
+Long tables need nothing from the author. Any Markdown table with 15 or more
+body rows gets a "Filter rows" box: a row stays visible when it contains
+every word typed, in any case and order. A link can open the page already
+filtered with a `filter` query parameter, `scripts/?filter=linux+doctor`
+for example. Filtered rows are hidden, not removed, so a printout shows
+them all.

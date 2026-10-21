@@ -72,6 +72,14 @@ A link with `?q=` opens the search with its term already typed, for example
 <https://ops.szolotov.com/?q=disk+cleanup>. Runbooks and other pages can
 link to a search that way.
 
+Long tables, such as the [script overview](../scripts/index.md), have a
+**Filter rows** box above them. Type words from the row you want, in any
+order (`linux doctor`, `dry run`, `read-only`), and only the rows that
+contain all of them stay; Escape clears the box. A link with `?filter=`
+opens a page with the table already filtered, for example
+<https://ops.szolotov.com/scripts/?filter=linux+doctor>. Filtered rows are
+only hidden, so printing the page still prints the whole table.
+
 ## Shell versions
 
 The Bash scripts in `git/`, `macos-initial-setup/`, `linux/` and `dotfiles/`

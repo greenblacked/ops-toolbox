@@ -171,6 +171,21 @@ live system:
 The other kinds keep their meaning: `note` and `info` are blue, `warning` and
 `danger` are red, and `tip` and `example` are neutral.
 
+#### Page scripts
+
+The site's own JavaScript lives in `overrides/assets/javascripts/`. MkDocs
+copies every non-template file of `theme.custom_dir` into the site, so the
+files are published at `assets/javascripts/`, and `overrides/main.html`
+loads them after Material's bundle with `defer`. They are small ES5 files
+with no framework and no build step, they make no request to another
+origin, and a page without JavaScript looks as it did before them. Each
+exports its pure functions for `test-env/python/tests/test_docs_site.py`,
+which also refuses HTML parsing APIs, `eval` and requests to another origin
+in every file of the folder.
+
+- `rpt-table-filter.js` puts a **Filter rows** box above every Markdown
+  table with 15 or more body rows, and reads a `?filter=` link.
+
 ### Preview locally
 
 ```bash

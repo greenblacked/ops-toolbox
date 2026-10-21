@@ -9,9 +9,9 @@
    Each stage owns a colour, so a reader sees what a command does before
    reading it. Everything generic lives in this file; a site only adds its own
    tweaks in a second stylesheet that loads after it. To reuse the theme in
-   another repository, copy this folder, the fonts folder and the two files
-   in overrides/ (see README.md beside this file) and change the brand tokens
-   below.
+   another repository, copy this folder, the fonts folder and the files in
+   overrides/ you want (see README.md beside this file) and change the brand
+   tokens below.
 
    How the file is organised
      1  Fonts                       self-hosted IBM Plex @font-face rules
@@ -31,6 +31,8 @@
     15  Touch targets, motion       small screens and reduced motion
     16  Print
     17  Forced colours
+    18  Page tools                  table filter (with its own print and
+                                    forced-colours rules)
 
    Class index (every class the theme defines or styles by name)
      .stage .stage-report .stage-preview .stage-apply
@@ -47,6 +49,9 @@
                                     narrow); used with Material's .grid.cards
      .rpt-404 .rpt-steps .rpt-step--report | --preview | --apply
                                     404 page and its three steps
+     .rpt-filter .rpt-filter__count
+                                    filter box above a long table and its
+                                    status line (added by rpt-table-filter.js)
 
    Tokens are plain custom properties set per scheme, then mapped onto
    Material's own --md-* variables. Material sets its scheme variables on the
@@ -1177,6 +1182,77 @@ input:focus-visible,
   }
 
   .md-typeset table:not([class]) {
+    border: 1px solid CanvasText;
+  }
+}
+
+/* ---- 18. Page tools ----------------------------------------------------- */
+
+/* Controls the theme's page scripts (overrides/assets/javascripts/) insert.
+   Without JavaScript none of them exist, so nothing here changes a page that
+   has no script. Their print and forced-colours rules live here too, so the
+   section can be copied or dropped as one. */
+
+/* Table filter: a labelled search box and a status line above a long table
+   (rpt-table-filter.js). The input border is the control border (3:1 or more
+   on the page and on a panel) and the status line is muted text (5.7:1 light,
+   7.2:1 dark). The status line stays rendered while empty: a live region
+   that is display: none when its text arrives is not announced by every
+   screen reader. The focus ring is the shared one from section 4. */
+.rpt-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.8rem;
+  margin: 1em 0 0.4em;
+}
+
+.rpt-filter label {
+  color: var(--rpt-text);
+  font-family: var(--rpt-font-mono);
+  font-size: 0.68rem;
+  font-weight: 500;
+}
+
+.rpt-filter input {
+  flex: 1 1 12rem;
+  max-width: 24rem;
+  min-height: 2rem;
+  padding: 0.25em 0.6em;
+  color: var(--rpt-text);
+  background-color: var(--rpt-surface);
+  border: 1px solid var(--rpt-control-border);
+  border-radius: 0.25rem;
+  font-family: inherit;
+  font-size: 0.75rem;
+}
+
+.md-typeset .rpt-filter__count {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--rpt-muted);
+  font-size: 0.68rem;
+}
+
+@media (pointer: coarse) {
+  .rpt-filter input {
+    min-height: 44px;
+  }
+}
+
+@media print {
+  .rpt-filter {
+    display: none;
+  }
+
+  /* A filtered table still prints in full. */
+  .md-typeset table tr[hidden] {
+    display: table-row;
+  }
+}
+
+@media (forced-colors: active) {
+  .rpt-filter input {
     border: 1px solid CanvasText;
   }
 }
