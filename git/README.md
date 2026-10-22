@@ -913,9 +913,14 @@ it; this diagnoses any repository's hook setup.
   tree root for client hooks, but against `$GIT_DIR` for the hooks a push
   runs (`pre-receive`, `update`, `post-receive`, `post-update`,
   `push-to-checkout`, `proc-receive`, `reference-transaction`), as git
-  does. The report names both locations, checks the exec bit and shebang of
-  receive-side hooks under `$GIT_DIR`, and a missing `$GIT_DIR` directory is
-  information only, since most work trees never receive pushes.
+  does. The report names both locations and checks the exec bit and shebang
+  of the receive-side hooks under `$GIT_DIR`. A push to the main
+  repository's path runs them with the common git dir as `$GIT_DIR`; a push
+  to a linked worktree's path runs them with that worktree's private
+  `.git/worktrees/<name>` directory instead, so in a linked worktree both
+  receive-side locations are named, each labelled with the push target it
+  applies to. A missing `$GIT_DIR` directory is information only, since
+  most work trees never receive pushes.
 - **Each hook.** One without the exec bit fails (git skips it). The first
   line is checked: a carriage return at its end (a CRLF checkout, where the
   kernel looks for an interpreter called `sh` plus a carriage return) fails
