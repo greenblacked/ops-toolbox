@@ -17,6 +17,8 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`set_git_profile.sh`](#set_git_profilesh)
 - [`git_whoami.sh`](#git_whoamish)
 - [`git_status_summary.sh`](#git_status_summarysh)
+- [`git_repos_status.sh`](#git_repos_statussh)
+- [`git_unpushed.sh`](#git_unpushedsh)
 - [`git_sync_default.sh`](#git_sync_defaultsh)
 - [`git_cleanup_merged.sh`](#git_cleanup_mergedsh)
 - [`git_prune_gone.sh`](#git_prune_gonesh)
@@ -25,10 +27,14 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_recent_branches.sh`](#git_recent_branchessh)
 - [`git_repo_root.sh`](#git_repo_rootsh)
 - [`git_diff_branch.sh`](#git_diff_branchsh)
+- [`git_merge_check.sh`](#git_merge_checksh)
 - [`git_undo_last_commit.sh`](#git_undo_last_commitsh)
 - [`git_amend_last.sh`](#git_amend_lastsh)
 - [`git_hooks_install.sh`](#git_hooks_installsh)
+- [`git_commitlint.sh`](#git_commitlintsh)
+- [`git_release_notes.sh`](#git_release_notessh)
 - [`clone-repos.sh`](#clone-repossh)
+- [`git_bundle_backup.sh`](#git_bundle_backupsh)
 - [`git_ssh_doctor.py`](#git_ssh_doctorpy)
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
@@ -41,7 +47,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | Requirement | Notes |
 | --- | --- |
 | **Bash** | 3.2 or newer (`/bin/bash` on macOS is enough). |
-| **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). |
+| **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). `git_merge_check.sh` needs Git 2.38 or newer for `git merge-tree --write-tree`, and exits `2` on anything older. |
 | **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
 | **Python 3.9+** | Optional; only for the four `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
@@ -78,16 +84,22 @@ the [aliases](#aliases) give each one a short name.
 | `set_git_profile.sh` | Set Git identity globally or per repository, save named profiles, apply them later. |
 | `git_whoami.sh` | Show the effective identity and optionally enforce an expected email. |
 | `git_status_summary.sh` | Compact status with optional stable `--porcelain` output. |
+| `git_repos_status.sh` | One-screen status of every checkout under a directory; `--strict` fails while work exists only locally. |
+| `git_unpushed.sh` | Everything in one repository that exists only on this machine: commits, upstream-less branches, stashes, edits, tags. |
 | `git_sync_default.sh` | Fast-forward the default branch and optionally restore the starting branch. |
 | `git_cleanup_merged.sh` | Delete merged local branches, with include/exclude filters and dry-run. |
-| `git_hooks_install.sh` | Install staged-content guards; token scanning and Conventional Commits are opt-in. |
-| `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, and `repos.txt.example` shows the format. |
+| `git_hooks_install.sh` | Install staged-content guards; token scanning, Conventional Commits and a protected-branch pre-push guard are opt-in. |
+| `git_commitlint.sh` | Lint every commit message a branch adds, in CI, against the commit-msg hook's rules. |
+| `git_release_notes.sh` | Release notes grouped by Conventional Commit type since the last tag, and the next semver version. |
+| `clone-repos.sh` | Clone every repository in a list file into one parent directory; skips what is already there, or fast-forwards it with `--update`, and `repos.txt.example` shows the format. |
+| `git_bundle_backup.sh` | Write a verified, timestamped bundle of every ref, with opt-in retention of older bundles. |
 | `git_prune_gone.sh` | Delete branches with deleted upstreams, with include/exclude filters. |
 | `git_stale_branches.sh` | Report old branches and optionally filter by gone/merged/unmerged state. |
 | `git_size_report.sh` | Report repository size across all history or selected refs. |
 | `git_recent_branches.sh` | List/switch recent branches; `--names-only` is script-friendly. |
 | `git_repo_root.sh` | Print the worktree root or absolute Git metadata directory. |
-| `git_diff_branch.sh` | Diff committed branch work or include the current index/worktree. |
+| `git_diff_branch.sh` | Diff committed branch work or include the current index/worktree; `--name-only`, `--path` and `--require-changes` answer "did anything under X change?" in CI. |
+| `git_merge_check.sh` | Forecast whether branches merge cleanly into a base, with no checkout (Git 2.38+). |
 | `git_undo_last_commit.sh` | Reset local HEAD or create a history-preserving revert commit. |
 | `git_amend_last.sh` | Amend content and optionally replace the last commit message. |
 | `git_ssh_doctor.py` | Diagnose SSH auth; `--quiet` exposes only the verdict exit code. |
@@ -135,9 +147,11 @@ echo '. /path/to/ops-toolbox/git/git_aliases.sh' >> ~/.bashrc
 | `grecent` | `git_recent_branches.sh` | `ghooks` | `git_hooks_install.sh` |
 | `groot` | `git_repo_root.sh` | `gprofile` | `set_git_profile.sh` |
 | `gwho` | `git_whoami.sh` | `gssh` | `git_ssh_doctor.py` |
-| | | `gsign` | `git_signing_doctor.py` |
-| | | `gremote` | `git_remote_doctor.py` |
-| | | `gignore` | `git_ignore_doctor.py` |
+| `grepos` | `git_repos_status.sh` | `gsign` | `git_signing_doctor.py` |
+| `gunpushed` | `git_unpushed.sh` | `gremote` | `git_remote_doctor.py` |
+| `gmcheck` | `git_merge_check.sh` | `gignore` | `git_ignore_doctor.py` |
+| `glint` | `git_commitlint.sh` | `gnotes` | `git_release_notes.sh` |
+| | | `gbundle` | `git_bundle_backup.sh` |
 
 Each alias is defined only if its script is actually there: next to the alias file, or failing that under that name on `PATH`, for anyone who copied the scripts into `~/bin`. An alias pointing at a script that is not installed is worse than no alias — it fails at use time, in the middle of something else, with a message about a missing file rather than about the alias.
 
@@ -254,6 +268,118 @@ One-screen summary: branch (or detached), short `HEAD`, upstream, ahead/behind c
 `branch`, `head`, `upstream`, `ahead`, `behind`, `changed`, `staged`,
 `unstaged`, `untracked`. It omits headings and presentation placeholders; an
 absent upstream has an empty value.
+
+---
+
+## `git_repos_status.sh`
+
+The read side of `clone-repos.sh`: one line per checkout under a directory,
+so "which of my thirty clones has uncommitted work, unpushed commits or a
+stash, and which are behind?" is one command instead of a `cd` loop. Run it
+before re-imaging a laptop, after a context switch, or as a morning catch-up.
+
+```bash
+./git/git_repos_status.sh --dir ~/src
+./git/git_repos_status.sh --dir ~/src --dir ~/work --depth 3
+./git/git_repos_status.sh --dir ~/src --only unpushed
+./git/git_repos_status.sh --dir ~/src --fetch            # refresh refs first (network)
+./git/git_repos_status.sh --dir ~/src --strict           # gate: exit 1 while anything is at risk
+./git/git_repos_status.sh --dir ~/src --porcelain
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--dir DIR` | Where to look; repeatable, default the current directory. A `DIR` that is itself a checkout is reported alone. |
+| `--depth N` | How many directory levels below `DIR` to search (default `2`). A checkout is never descended into, so its own subdirectories and submodules are not reported separately. |
+| `--only STATE` | Keep only rows that are `dirty`, `ahead`, `behind`, have `unpushed` commits, or have a `stash`. Rows that could not be checked are kept under every filter, so a filter cannot hide them from `--strict`: a failed git status, fetch, stash list or upstream walk and an `unreadable` checkout. The summary and `--strict` describe the filtered set. |
+| `--fetch` | Run `git fetch --prune --quiet <remote>` for every remote of each checkout that has one, with terminal prompts off. It writes remote-tracking refs and nothing else; every remote is fetched by name (so `remote.<name>.skipFetchAll` cannot hide one), not only the default, and `--prune` drops refs for branches deleted on any of them, so commits that were pushed to a since-deleted branch count as unpushed. A failure on any remote is noted as `fetch-failed`, counts as work at risk (so `--strict` exits `1`) and the sweep goes on. |
+| `--dry-run` | Print the fetch each checkout with a remote would get, report from the refs already on disk, and close with `dry-run complete; no changes written`. With `--porcelain` those lines go to stderr, so stdout carries only the rows. |
+| `--strict` | Exit `1` when any reported checkout has work at risk. A checkout whose `git status` fails (for example a corrupt index) is noted `status-failed` and counts as at risk; so does a checkout whose history walk fails (a missing or unreadable object), noted `walk-failed`, because its unpushed count cannot be trusted; and so does one whose `git stash list` fails (a damaged `refs/stash`), noted `stash-failed`, because it cannot be shown to hold no stash. |
+| `--porcelain` | Tab-separated rows, no header or colour: `path branch upstream ahead behind changed stash unpushed notes`. `path` is the checkout as found under `--dir`; an absent upstream is an empty field. |
+
+The table columns are `REPO` (relative to the `--dir` it was found under),
+`BRANCH` (`detached@<sha>` for a detached `HEAD`), `SYNC` (`=`, `+2`, `-1`,
+`+2/-1`, or `-` with no upstream), `CHANGED` (tracked and untracked paths from
+`git status`; ignored files do not count), `STASH`, `UNPUSHED` (commits on
+local branches, or on a detached `HEAD`, that no remote-tracking ref contains)
+and `NOTES`: `dirty`, `ahead`, `behind`, `diverged`, `detached`,
+`no-upstream`, `no-remote`, `stash`, `status-failed`, `walk-failed`, `stash-failed`, `fetch-failed`, `unreadable`.
+
+**Work at risk** is anything that exists only on this machine: changed or
+untracked files, commits ahead of the upstream, unpushed commits, a stash, a
+`--fetch` that failed, a `git status` that failed (`status-failed`) or a
+history walk that failed (`walk-failed`) or a `git stash list` that failed
+(`stash-failed`).
+In a checkout with no remote every commit is unpushed, which is the truth. A
+checkout git cannot read at all is counted as at risk too, because it could not
+be proven otherwise. Being behind is reported but is not at risk.
+
+Read-only apart from the opt-in `--fetch`. It never pulls, merges, checks out,
+stashes or cleans, and `git status` runs with `--no-optional-locks`, so it does
+not even refresh an index in a checkout an editor has open. Without `--fetch`
+remote-tracking refs are as fresh as the last fetch in each checkout.
+
+Exit codes: `0` success (a plain run exits `0` even when checkouts need
+attention), `1` `--strict` found work at risk, `2` git missing or a `--dir` is
+not a readable directory, `3` usage, `4` no repository found.
+
+---
+
+## `git_unpushed.sh`
+
+What would you lose if this clone disappeared? Before reinstalling a laptop,
+destroying a CI worker or a dev VM, or deleting a checkout, Git keeps the answer
+in five different places, and this reports all five for the current
+repository. `git_repos_status.sh` is the same question across many checkouts,
+one line each; this is the detailed answer for one.
+
+```bash
+./git/git_unpushed.sh
+./git/git_unpushed.sh --limit 20
+./git/git_unpushed.sh --remote origin --tags   # also tags origin does not have
+./git/git_unpushed.sh --strict                  # gate a decommission script
+./git/git_unpushed.sh --porcelain
+```
+
+Each section is printed only when it has something in it:
+
+| Section | What counts |
+| --- | --- |
+| commits on no remote | Commits on a local branch that no remote-tracking ref contains, with the newest subjects (`--limit`, default 5). On a detached `HEAD`, commits no branch holds either. |
+| branches with no upstream | Local branches with no upstream configured, listed even when their commits are already on a remote, because the branch itself exists only here. |
+| stashes | The stash count and the newest entry's subject. |
+| uncommitted | Changed tracked files and untracked files. Ignored files are not counted. |
+| tags missing or different on REMOTE | With `--tags` only: local tags the remote does not have, or has under the same name at a different object (a tag moved or re-annotated locally after it was pushed). |
+
+`--remote NAME` counts a commit as pushed only when it is on that remote; the
+default is any remote-tracking ref. An unknown name exits `4` rather than
+quietly counting every commit. `--tags` asks `--remote NAME`, or the only remote
+when there is exactly one, with `git ls-remote --tags`; with several remotes and
+no `--remote` it exits `3`. A remote that cannot be reached is reported as
+`cannot reach NAME` and exits `1`, because the question could not be answered. When `git status` fails or `--tags` cannot query the remote, the
+result is `incomplete: could not check ...` on stdout instead of `nothing
+exists only on this machine`, since a check that did not run is not a clean
+answer.
+
+A repository with no remotes at all prints `no remotes configured` once and
+reports every commit as unpushed, which is the truth. The closing block prints
+the command that deals with each kind of finding (`git push -u`,
+`git stash branch`, `git switch -c`); nothing is ever run.
+
+`--porcelain` prints `kind<TAB>name<TAB>count<TAB>detail` rows and no
+headings, in this order: `commits` (name is the branch, or `HEAD` for a
+detached one; detail is the newest subject), `no-upstream` (count is the
+branch's commits on no remote), `stash` (detail is the newest subject),
+`uncommitted` (name `tracked` or `untracked`) and `tag` (detail is the remote).
+
+Read-only. It never fetches, so remote-tracking refs are as fresh as the last
+fetch; `--tags` is the only network call, and `ls-remote` writes nothing.
+
+Exit codes: `0` success, whether or not anything was found; `1` `--strict`
+found something or could not read `git status` (reported on stderr), or
+`--tags` could not reach the remote; `2` not a Git repository; `3` usage;
+`4` no commits yet, or `--remote` names no remote. A plain run exits `0`
+even when `git status` cannot be read.
 
 ---
 
@@ -459,6 +585,9 @@ Shows what changed on your current branch since it diverged from a base branch (
 ./git/git_diff_branch.sh --stat
 ./git/git_diff_branch.sh --patch --base main
 ./git/git_diff_branch.sh --working-tree --stat --base main
+./git/git_diff_branch.sh --base origin/main --name-only
+./git/git_diff_branch.sh --base origin/main --name-status --path k8s/ --path ':(glob)**/*.yaml'
+./git/git_diff_branch.sh --base origin/main --path docs/ --require-changes && echo "docs changed"
 ```
 
 The default remains committed branch work (`merge-base..HEAD`).
@@ -466,7 +595,78 @@ The default remains committed branch work (`merge-base..HEAD`).
 working tree, adding staged and unstaged tracked changes. Git cannot include
 untracked files in a diff until they are staged.
 
-**Exit code `4`** if the base branch cannot be inferred or the local base ref is missing.
+`--name-only` prints the changed paths one per line and `--name-status` the
+status letter (`A`, `M`, `D`, `R`...) and path, tab-separated; both are the
+stable forms for a script, so nothing has to scrape the diffstat. The last mode
+flag given wins, as between `--stat` and `--patch`.
+
+`--path PATHSPEC` limits every mode, `--stat` and `--patch` included, to that
+pathspec, and is repeatable: a directory such as `k8s/`, a file, or git's own
+pathspec forms such as `':(glob)**/*.yaml'`. Pathspecs are passed after `--`,
+so none of them can be read as an option.
+
+`--require-changes` is the CI switch for "build or deploy only if something
+under this path changed": with nothing to show it prints `no changes in RANGE`
+on stderr, nothing on stdout, and exits `4`. Without it an empty diff still
+exits `0`, as it always has.
+
+`--base` takes a local branch first and, failing that, a remote-tracking one,
+so `--base origin/main` works in a fresh CI checkout that has no local `main`.
+The inferred default is still local `main`, else `master`.
+
+**Exit code `4`** if the base branch cannot be inferred, if `--base` is neither
+a local nor a remote-tracking branch, or with `--require-changes` when nothing
+changed.
+
+---
+
+## `git_merge_check.sh`
+
+Will these branches still merge? Release and merge-queue work keeps asking
+whether `hotfix/x` still merges into `release/1.4`, or which open branches have
+rotted against `main`. The usual answer is to check out the target, run
+`git merge`, read the conflict and `git merge --abort`, which needs a clean
+tree and rewrites the worktree twice. This asks `git merge-tree --write-tree`
+instead, which computes the real three-way merge in memory.
+
+```bash
+./git/git_merge_check.sh                              # HEAD into the default branch
+./git/git_merge_check.sh --into release/1.4 hotfix/x
+./git/git_merge_check.sh --all-local                  # every local branch into main
+./git/git_merge_check.sh --into origin/main --porcelain feature/a feature/b
+```
+
+One line per branch:
+
+```text
+clean     feature/a
+conflict  feature/b  2 file(s): src/app.c, README.md
+merged    feature/c  already in main
+ff        feature/d  fast-forward
+error     feature/e  fatal: refusing to merge unrelated histories
+```
+
+`merged` means the branch is already contained in the base, `ff` that the base
+is an ancestor of it, and `error` that git could not merge the two at all. The
+base defaults to the branch `refs/remotes/origin/HEAD` points at, else `main`,
+else `master`, resolved like `git_sync_default.sh`; the local branch is used
+when it exists, and `origin/NAME` otherwise, so a fresh CI checkout still has
+one. `--into` takes any branch or remote-tracking ref. With no branch named and
+no `--all-local`, `HEAD` is checked. `--porcelain` prints
+`status<TAB>branch<TAB>base<TAB>path`, one row per conflicting path, with
+`path` empty for every other status. Paths with unusual bytes appear C-quoted,
+the way git prints them.
+
+It does not touch `HEAD`, the index, the working tree or any ref, so it works
+with a dirty tree, in the middle of a rebase and in a bare repository. It is
+honest rather than write-free: `merge-tree` stores the merge result's trees and
+blobs in the object database, unreachable from any ref, where `git gc` collects
+them. It needs **Git 2.38 or newer** and checks before the first branch: an
+older git exits `2` rather than reporting every branch as an error.
+
+Exit codes: `0` every branch is clean, merged or a fast-forward; `1` at least
+one conflict or error; `2` not a Git repository or Git older than 2.38; `3`
+usage; `4` the base or a branch was not found, or `HEAD` has no commits.
 
 ---
 
@@ -516,6 +716,8 @@ Writes hooks into `.git/hooks` of the current repository. Each body is embedded 
 ```bash
 ./git/git_hooks_install.sh install                 # pre-commit only
 ./git/git_hooks_install.sh install --commit-msg    # and the message hook
+./git/git_hooks_install.sh install --pre-push      # and the push guard
+./git/git_hooks_install.sh install --pre-push --protect main --protect release
 ./git/git_hooks_install.sh install --token-scan    # opt-in access-token patterns
 ./git/git_hooks_install.sh install --max-size 4096
 ./git/git_hooks_install.sh status
@@ -542,9 +744,121 @@ Types are `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `re
 
 It is off by default deliberately: a message convention is a team decision, and a hook that imposes one on a repository that has not agreed to it gets bypassed on its first use and then never runs again.
 
-An existing hook this script did not write is backed up rather than clobbered, and only with `--force`; `uninstall` restores it. Hook versions are tracked per hook, so `status` can tell an out-of-date hook from a current one.
+**`pre-push`** (only with `--pre-push`) guards what is pushed rather than what is committed, because the expensive mistakes happen at push time. It refuses:
+
+- **any push to a protected branch** — `main` and `master` by default; repeat `--protect NAME` to replace that set. A deletion (`git push origin :main`) and a non-fast-forward (`git push --force`) are named as such. When the old remote tip is not in this clone, the push cannot be proven to be a fast-forward and is refused as one that may not be.
+- **unfinished commits** on any branch: a subject starting `fixup!`, `squash!` or `amend!`, or a subject that starts with `WIP` or `wip` as a word, that is the prefix not followed by a letter (`WIP`, `WIP: spike`, `wip tidy`, `WIP-spike`, `WIP/test`; not `WIPE` or `Wip`). Only the commits the push adds are read: those after the remote's old tip, or for a new branch those the remote does not already advertise (asked with `git ls-remote`, never taken from possibly stale remote-tracking refs). If the remote cannot be listed, the newest 200 commits of the pushed history are read instead.
+
+Bypass one push deliberately with `git push --no-verify`, or with `GIT_ALLOW_PROTECTED_PUSH=1 git push ...` where a tool runs the push for you. It is opt-in for the same reason as `commit-msg`: whether a branch takes direct pushes is a team decision, and a repository that merges through pull requests is the one that wants it. `--protect` without `--pre-push` exits `3`, and so does a name with anything but letters, digits, `.`, `_`, `/` and `-`, because the names are written into the hook as plain words.
+
+An existing hook this script did not write — any of the three — is backed up rather than clobbered, and only with `--force`; `uninstall` restores it. Hook versions are tracked per hook, so `status` can tell an out-of-date hook from a current one.
 
 **Exit codes:** `1` refused to act (a foreign hook is in the way), `4` nothing to uninstall.
+
+---
+
+## `git_commitlint.sh`
+
+The `commit-msg` hook above is local and `git commit --no-verify` skips it, so a
+team that wants the convention still needs the check where nobody can skip it:
+in CI, on the range a pull request adds. This lints every commit in a range
+against the same rules, plus the ones a hook cannot see.
+
+```bash
+./git/git_commitlint.sh                               # merge-base(main, HEAD)..HEAD
+./git/git_commitlint.sh --base origin/main
+./git/git_commitlint.sh --range "$BASE_SHA..$HEAD_SHA"
+./git/git_commitlint.sh --max-subject 50 --types feat,fix,docs
+./git/git_commitlint.sh --forbid 'WIP' --forbid '^Signed-off-by:'
+```
+
+| Problem | When |
+| --- | --- |
+| `not-conventional` | The subject is not `type(optional scope): subject`, with an optional `!`. The pattern and the default types are the hook's: `build`, `chore`, `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`; `--types` replaces them with a comma-separated list of lowercase words. Subjects starting with `Merge` or `Revert` and a space are exempt, as in the hook, even on a plain commit such as a squash merge. |
+| `too-long` | The subject is longer than `--max-subject` characters (default `72`). |
+| `no-blank-line` | The second line of the message is not blank, so git folds the body into the subject. |
+| `fixup` | A `fixup!`, `squash!` or `amend!` commit that was never squashed. The hook lets these through on purpose, mid-rebase; a merge is where they must be gone. `--allow-fixup` turns this off. |
+| `forbidden` | The whole message matches a `--forbid` extended regex, ignoring case (repeatable). |
+
+Every problem of every commit is reported, not the first one. Merge commits are
+never linted. Each offending commit prints one line, short SHA, problems,
+subject (cut at 60 characters), and then `N of M commit(s) have problems`; a
+clean range prints `M commit(s) checked, all fine`. `--porcelain` prints
+`sha<TAB>problem<TAB>subject`, one row per problem.
+
+The range is `--range` used as given, or `merge-base(--base, HEAD)..HEAD`. With
+neither, the base is local `main`, else `master`, else the branch
+`refs/remotes/origin/HEAD` points at. A GitHub Actions step:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0   # the whole range has to be in the clone
+- run: ./git/git_commitlint.sh --range "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+```
+
+A shallow clone that lacks the base exits `3` (bad range) or `4`, never a
+false pass. An empty range exits `4`; a pipeline that wants an empty range to
+pass can write `./git/git_commitlint.sh --range "$R" || [ $? -eq 4 ]`.
+
+Read-only: `rev-list`, `merge-base` and `log`. `--forbid` patterns are matched
+with `grep -E` against commit text and are never evaluated by the shell.
+
+Exit codes: `0` every commit is fine, `1` problems found, `2` not a Git
+repository, `3` usage, a bad range or a bad type, `4` an empty range or no base
+branch could be inferred.
+
+---
+
+## `git_release_notes.sh`
+
+Release notes without scrolling `git log` between two tags. The commits since
+the last tag are grouped by Conventional Commit type, breaking changes first,
+and printed as text or markdown ready to paste into a release, a deploy note
+or a change ticket. It reads the convention `git_hooks_install.sh --commit-msg`
+and `git_commitlint.sh` enforce, in the other direction.
+
+```bash
+./git/git_release_notes.sh                          # since the last v* tag
+./git/git_release_notes.sh --format markdown > notes.md
+./git/git_release_notes.sh --to v1.4.0              # the notes for that release
+./git/git_release_notes.sh --from v1.2.0 --to v1.3.0
+./git/git_release_notes.sh --match 'release-*'
+./git/git_release_notes.sh --next-version           # e.g. 1.5.0
+```
+
+Sections, in order, each only when it has commits: **Breaking changes** (a `!`
+after the type, or a body line starting `BREAKING CHANGE:`), **Features**
+(`feat`), **Fixes** (`fix`), **Performance** (`perf`), **Documentation**
+(`docs`), **Build and CI** (`build`, `ci`) and **Other** (`chore`, `refactor`,
+`style`, `test`, `revert`, any other type, and every subject that is not a
+Conventional Commit, so nothing is dropped silently). A scope is one or more of
+`a-z A-Z 0-9 . _ / -`, the commit-msg hook's rule, so `feat(): x` is Other and
+does not bump the version. Each entry is
+`- scope: description (shortsha)`, or `- description (shortsha)` without a
+scope. Merge commits are left out.
+
+`--from` defaults to the nearest tag matching `--match` (default `v[0-9]*`)
+reachable from `--to` (default `HEAD`). A tag on `--to` itself is the release
+being described, so `--to v1.4.0` runs from the tag before it. With no matching
+tag the whole history is used and a note on stderr says so. `--format markdown`
+opens with `## FROM..TO`, or `## TAG (DATE)` when `--to` is a tag, and uses
+`###` section headings.
+
+`--next-version` prints only the version the commits imply after the `--from`
+tag, which must be `MAJOR.MINOR.PATCH` with or without a leading `v`: major for
+any breaking change, else minor for any feature, else patch. It is the plain
+semver rule; a 0.x project that bumps the minor for breaking changes should
+read it as a suggestion.
+
+Read-only: it creates no tag and writes no file. A shallow clone may lack the
+tag; run `git fetch --tags --unshallow` first, and a missing ref exits `3`
+rather than printing an empty success.
+
+Exit codes: `0` success, `2` not a Git repository, `3` usage, a bad ref, a
+`--from` that is not an ancestor of `--to` (unrelated or rewritten history), or
+a `--from` that is not a tag, or a tag that is not semver, for
+`--next-version`, `4` no commits between `FROM` and `TO`.
 
 ---
 
@@ -561,6 +875,8 @@ script once on a new machine, run it again whenever the list grows.
 ./git/clone-repos.sh --dry-run repos.txt              # preview; writes nothing
 ./git/clone-repos.sh --dir ~/src repos.txt            # clone into ~/src
 ./git/clone-repos.sh -n -d ~/src git/repos.txt.example  # the shipped example
+./git/clone-repos.sh --update --dir ~/src repos.txt   # and bring existing checkouts up to date
+./git/clone-repos.sh -u -n --dir ~/src repos.txt      # preview the fetches and fast-forwards
 ```
 
 The list format, shown in `repos.txt.example`: one URL per line; an
@@ -575,6 +891,100 @@ one entry failed, with the line number in the message; `2` when the list is
 unreadable, git is missing or `--dir` is unusable; `3` on a bad flag; `4`
 when the list has no entries. A clone that fails part-way is reported with
 its path, and the directory is left for you to inspect rather than removed.
+
+**`--update`** (`-u`) is the mirror of a second run: instead of
+`already cloned`, each checkout that is already there is fetched and
+fast-forwarded on the branch it has checked out, so the whole list is brought
+up to date without a loop of `git pull`. A checkout is **held** — reported
+with a `held (...)` line and left exactly as it is — when its `HEAD` is
+detached, its branch has no upstream (or its upstream branch was deleted
+on the remote), tracked files are modified (or `git status`
+cannot be read, for example with a corrupt index), or the branch
+has diverged from its upstream. It never switches branches, stashes, or makes a
+merge commit; a fast-forward that cannot apply (an untracked file in the way)
+is reported as failed. A checkout that is ahead but not behind is reported as
+up to date with its unpushed count.
+
+| Line | Meaning |
+| --- | --- |
+| `updated (+N commit(s)): PATH` | Fetched and fast-forwarded. |
+| `up to date: PATH` | Nothing new upstream (`(N unpushed commit(s))` when it is ahead). |
+| `held (detached HEAD)`, `held (no upstream)`, `held (upstream gone)`, `held (uncommitted changes)`, `held (cannot read git status)`, `held (diverged, +A/-B)` | Left alone; reconcile it yourself. `upstream gone` means the branch's upstream no longer exists on the remote (its remote-tracking ref was pruned, or was already gone before the run). |
+| `fetch failed: PATH`, `fast-forward failed: PATH` | Counted as failed. |
+
+The summary becomes `cloned N, updated U, up to date C, held H, failed F`.
+Held checkouts do not fail the run; a failed fetch or fast-forward exits `1`
+like a failed clone. Under `--dry-run` the local checks still run and print
+their `held` lines, and every other checkout prints
+`dry-run: would run: git -C PATH fetch --prune --quiet` and
+`dry-run: would run: git -C PATH merge --ff-only --quiet @{upstream}`; nothing is
+fetched, so whether it is behind cannot be known yet. `--update` writes into
+the existing checkouts, so preview it first.
+
+---
+
+## `git_bundle_backup.sh`
+
+One file that holds every ref of the repository, proven restorable. Run it
+before a risky operation — a history rewrite, a host migration, deleting a
+clone that holds the only copy of some branches — or on a schedule for a
+repository with no remote. `git bundle create --all` does the core of it; this
+adds the four steps people forget: the timestamp, the verify, the atomic write
+and the cleanup of old bundles.
+
+```bash
+./git/git_bundle_backup.sh --dry-run                     # what it would run
+./git/git_bundle_backup.sh                               # ~/git-bundles/<repo>-<stamp>.bundle
+./git/git_bundle_backup.sh --out /mnt/backup --name api
+./git/git_bundle_backup.sh --ref main --ref release/1.4  # only these refs
+./git/git_bundle_backup.sh --keep 7                      # list bundles beyond the newest 7
+./git/git_bundle_backup.sh --keep 7 --yes                # and delete them
+```
+
+The file is `OUT/NAME-YYYYMMDDTHHMMSSZ.bundle`, with the stamp in UTC from
+`date -u`, so names sort in time order on any system. `--out` defaults to
+`~/git-bundles`; `--name` defaults to the repository directory's name and takes
+letters, digits, `.`, `_` and `-` only. Without `--ref` the bundle holds every
+ref: branches, tags, remote-tracking refs, the newest stash entry and the
+recovery refs `git_prune_gone.sh` keeps. `--ref` (repeatable) bundles only the
+named refs, each checked to exist first.
+
+The bundle is written to a hidden `.NAME-<stamp>.bundle.partial`, checked with
+`git bundle verify`, and only then renamed into place; within one directory the
+rename is atomic, so the final name only ever holds a verified bundle. A
+failure removes the partial file and exits `1`, and an existing file with the
+same name is never overwritten. The output prints the size, the number of refs
+and the restore commands:
+
+```bash
+git bundle verify ~/git-bundles/api-20261021T120000Z.bundle
+git clone ~/git-bundles/api-20261021T120000Z.bundle api-restored
+```
+
+A clone of a bundle has its branches as `origin/<branch>` remote-tracking refs,
+as a clone of any remote does; `git switch <branch>` makes a local one.
+
+**Retention.** `--keep N` (1 or more) considers only files in `OUT` named
+`NAME-<8 digits>T<6 digits>Z.bundle` — the glob and then the exact shape again
+— sorted by name, and keeps the newest `N`, the one just written included.
+Without `--yes` it lists the rest as `would prune (pass --yes to delete): FILE`
+and deletes nothing; with `--yes` it deletes them and prints `pruned: FILE`.
+Another repository's bundles and any other file in `OUT` are never listed.
+`--yes` without `--keep` exits `3`.
+
+`--dry-run` prints the `mkdir`, `git bundle create`, `git bundle verify`, `mv`
+and `rm` it would run, creates nothing — not even `OUT` — and closes with
+`dry-run complete; no changes written`.
+
+It never changes the repository: `bundle create`, `verify` and `list-heads`
+only read it. A bundle contains the full history it covers, including any
+secret that was ever committed, so keep it as carefully as the repository
+itself. Nothing is uploaded anywhere.
+
+Exit codes: `0` success; `1` the bundle could not be created or verified, or
+the file already exists; `2` not a Git repository, or `OUT` exists and is not a
+directory or cannot be created; `3` usage; `4` nothing to back up (no refs yet)
+or a `--ref` not found.
 
 ---
 
@@ -710,6 +1120,8 @@ All paths below assume the repo root is your current directory.
 ./git/set_git_profile.sh --local --profile work
 ./git/git_whoami.sh
 ./git/git_status_summary.sh --porcelain
+./git/git_repos_status.sh --dir ~/src --strict
+./git/git_unpushed.sh --tags --strict
 ./git/git_sync_default.sh --dry-run --restore
 ./git/git_cleanup_merged.sh --dry-run --base main --include 'feature/*'
 ./git/git_prune_gone.sh --dry-run --exclude '*keep*'
@@ -718,11 +1130,18 @@ All paths below assume the repo root is your current directory.
 ./git/git_size_report.sh --ref main --threshold 1048576
 cd "$(./git/git_repo_root.sh)"
 ./git/git_diff_branch.sh --working-tree --stat
+./git/git_diff_branch.sh --base origin/main --name-only --path k8s/ --require-changes
+./git/git_merge_check.sh --all-local --into main
 ./git/git_undo_last_commit.sh --dry-run
 ./git/git_undo_last_commit.sh --revert
 ./git/git_amend_last.sh --add-all --message "fix: update the last commit"
 ./git/git_hooks_install.sh install --commit-msg --token-scan
+./git/git_hooks_install.sh install --pre-push --protect main
+./git/git_commitlint.sh --base origin/main
+./git/git_release_notes.sh --format markdown
 ./git/clone-repos.sh --dry-run --dir ~/src repos.txt
+./git/clone-repos.sh --update --dir ~/src repos.txt
+./git/git_bundle_backup.sh --keep 7 --dry-run
 ./git/git_remote_doctor.py --quiet
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```

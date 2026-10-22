@@ -10,6 +10,10 @@ set -uo pipefail
 
 REPO_ROOT="${REPO_ROOT:-/repo}"
 G="$REPO_ROOT/git"
+# The pre-push hook git_hooks_install.sh writes skips every check when this is
+# 1. Exported in the shell that runs the suite, it would turn each refusal
+# asserted below into a pass; it is set for exactly one push further down.
+unset GIT_ALLOW_PROTECTED_PUSH
 GACP="$G/gacp.sh"
 SET="$G/set_git_profile.sh"
 WHO="$G/git_whoami.sh"
@@ -26,6 +30,12 @@ PRUNE="$G/git_prune_gone.sh"
 STALE="$G/git_stale_branches.sh"
 SIZE="$G/git_size_report.sh"
 CLONE="$G/clone-repos.sh"
+REPOS_STATUS="$G/git_repos_status.sh"
+UNPUSHED="$G/git_unpushed.sh"
+MERGE_CHECK="$G/git_merge_check.sh"
+COMMITLINT="$G/git_commitlint.sh"
+RELEASE_NOTES="$G/git_release_notes.sh"
+BUNDLE_BACKUP="$G/git_bundle_backup.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
@@ -246,6 +256,12 @@ fi
 alias_out="$(bash -c ". '$G/git_aliases.sh'; alias" 2>/dev/null)"
 assert_contains "$alias_out" "$G/gacp.sh" "git_aliases.sh points gacp at the script beside it"
 assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers the other helpers"
+assert_contains "$alias_out" "grepos='$REPOS_STATUS'" "git_aliases.sh defines grepos"
+assert_contains "$alias_out" "gunpushed='$UNPUSHED'" "git_aliases.sh defines gunpushed"
+assert_contains "$alias_out" "gmcheck='$MERGE_CHECK'" "git_aliases.sh defines gmcheck"
+assert_contains "$alias_out" "glint='$COMMITLINT'" "git_aliases.sh defines glint"
+assert_contains "$alias_out" "gnotes='$RELEASE_NOTES'" "git_aliases.sh defines gnotes"
+assert_contains "$alias_out" "gbundle='$BUNDLE_BACKUP'" "git_aliases.sh defines gbundle"
 
 # The guard is the point of the file: copied somewhere the scripts are not,
 # and with nothing of that name on PATH, it must define no aliases at all
@@ -658,6 +674,91 @@ git -C "$repo" add local.txt
 out="$(cd "$repo" && "$DIFFBR" --stat --base main --working-tree)"
 assert_contains "$out" "local.txt" "git_diff_branch --working-tree includes staged work"
 
+section "diff branch changed files"
+# A branch that adds k8s/a.yaml, modifies file.txt, and adds docs/b.md only to
+# delete it again, so the doc is absent from the net change.
+repo="$(new_repo)"
+printf "stable\n" >"$repo/extra.txt"
+git -C "$repo" add extra.txt
+git -C "$repo" commit -q -m "a file the branch leaves alone"
+git -C "$repo" switch -q -c feature
+mkdir -p "$repo/k8s" "$repo/docs"
+printf "kind: ConfigMap\n" >"$repo/k8s/a.yaml"
+printf "doc\n" >"$repo/docs/b.md"
+printf "changed\n" >>"$repo/file.txt"
+git -C "$repo" add k8s/a.yaml docs/b.md file.txt
+git -C "$repo" commit -q -m "feature work" ||
+  err "the feature commit exited $? — every changed-file assertion below would read an empty branch"
+git -C "$repo" rm -q docs/b.md
+git -C "$repo" commit -q -m "drop the doc again"
+
+out="$(cd "$repo" && "$DIFFBR" --base main)"
+# The diffstat pads names to the longest one, so match the column loosely.
+if grep -Eq -- 'file\.txt +\|' <<<"$out" && grep -Fq -- "2 files changed" <<<"$out"; then
+  ok "git_diff_branch still defaults to a diffstat"
+else
+  err "git_diff_branch still defaults to a diffstat: got: $out"
+fi
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
+assert_contains "$out" "k8s/a.yaml" "--name-only lists an added file"
+assert_contains "$out" "file.txt" "--name-only lists a modified file"
+assert_not_contains "$out" "docs/b.md" "--name-only leaves out a file added and deleted on the branch"
+assert_not_contains "$out" "|" "--name-only prints no diffstat"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-status)"
+assert_contains "$out" $'A\tk8s/a.yaml' "--name-status marks an added file A"
+assert_contains "$out" $'M\tfile.txt' "--name-status marks a modified file M"
+
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/)"
+assert_contains "$out" "k8s/a.yaml" "--path keeps the matching file"
+assert_not_contains "$out" "file.txt" "--path drops everything outside it"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path=k8s/)"
+assert_eq "$out" "k8s/a.yaml" "--path= equals form is accepted"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/ --path file.txt)"
+assert_contains "$out" "k8s/a.yaml" "two --path values: the first is kept"
+assert_contains "$out" "file.txt" "two --path values: the second is kept too"
+out="$(cd "$repo" && "$DIFFBR" --base main --stat --path k8s/)"
+assert_contains "$out" "k8s/a.yaml" "--stat --path keeps the matching file"
+assert_not_contains "$out" "file.txt" "--stat --path filters the stat too"
+(cd "$repo" && "$DIFFBR" --base main --path) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--path without a value -> 3"
+
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path docs/ --require-changes 2>/dev/null)"; rc=$?
+assert_eq "$rc" "4" "--require-changes with nothing under the path -> 4"
+assert_eq "$out" "" "--require-changes with nothing to show prints nothing on stdout"
+(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/ --require-changes) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "--require-changes with a change under the path -> 0"
+(cd "$repo" && "$DIFFBR" --base main --name-only --path docs/) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "an empty filtered diff without --require-changes still exits 0"
+
+printf "edited\n" >>"$repo/extra.txt"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
+assert_not_contains "$out" "extra.txt" "--name-only leaves out an unstaged edit by default"
+out="$(cd "$repo" && "$DIFFBR" --base main --working-tree --name-only)"
+assert_contains "$out" "extra.txt" "--working-tree --name-only includes an unstaged tracked edit"
+git -C "$repo" checkout -q -- extra.txt
+
+git -C "$repo" switch -q -c removal main
+git -C "$repo" rm -q file.txt
+git -C "$repo" commit -q -m "remove file.txt"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-status)"
+assert_contains "$out" $'D\tfile.txt' "--name-status marks a deleted file D"
+
+# A fresh CI-style clone has origin/main and no local main.
+diff_origin="$(mktemp -d /tmp/git-diffbr-origin.XXXXXX)/origin.git"
+diff_clone="$(mktemp -d /tmp/git-diffbr-clone.XXXXXX)"
+rmdir "$diff_clone"
+git init -q --bare -b main "$diff_origin"
+git -C "$repo" push -q "$diff_origin" main feature ||
+  err "pushing to the bare origin exited $? — the clone below would have nothing to compare"
+git clone -q --branch feature "$diff_origin" "$diff_clone"
+out="$(cd "$diff_clone" && "$DIFFBR" --base origin/main --name-only 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a remote-tracking --base is accepted"
+assert_contains "$out" "k8s/a.yaml" "a remote-tracking --base diffs against the merge base"
+(cd "$diff_clone" && "$DIFFBR" --base nope --name-only) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "a base that is neither local nor remote-tracking -> 4"
+(cd "$diff_clone" && "$DIFFBR" --name-only) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "the default base is still inferred from local branches only"
+
 section "undo last commit"
 repo="$(new_repo)"
 printf "second\n" >>"$repo/file.txt"
@@ -771,6 +872,30 @@ fi
 section "prune durable recovery contracts"
 out="$(bash "$G/tests/test_prune_gone.sh" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "prune recovery contract suite succeeds: $out"
+
+section "git_repos_status.sh"
+out="$(bash "$G/tests/test_repos_status.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "repos status suite succeeds: $out"
+
+section "git_unpushed.sh"
+out="$(bash "$G/tests/test_unpushed.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "unpushed suite succeeds: $out"
+
+section "git_merge_check.sh"
+out="$(bash "$G/tests/test_merge_check.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "merge check suite succeeds: $out"
+
+section "git_commitlint.sh"
+out="$(bash "$G/tests/test_commitlint.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "commitlint suite succeeds: $out"
+
+section "git_release_notes.sh"
+out="$(bash "$G/tests/test_release_notes.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "release notes suite succeeds: $out"
+
+section "git_bundle_backup.sh"
+out="$(bash "$G/tests/test_bundle_backup.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "bundle backup suite succeeds: $out"
 
 section "stale branch state filter"
 repo="$(new_repo)"
@@ -1161,6 +1286,193 @@ else
   ok "the refused install wrote nothing"
 fi
 
+section "the optional pre-push hook"
+# Opt-in like commit-msg: whether a branch takes direct pushes is a team
+# decision. Real pushes to a bare remote run the hook the way git runs it.
+assert_contains "$("$HOOKS" --help)" "--pre-push" "--help documents --pre-push"
+
+push_origin="$(mktemp -d /tmp/git-prepush-origin.XXXXXX)/origin.git"
+repo="$(new_repo)"
+git init -q --bare -b main "$push_origin"
+git -C "$repo" remote add origin "$push_origin"
+git -C "$repo" push -q -u origin main ||
+  err "the initial push exited $? — every ref comparison below starts from an empty remote"
+(cd "$repo" && "$HOOKS" install) >/dev/null ||
+  err "plain install exited $? — an install that wrote nothing also leaves pre-push alone"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "a plain install wrote a pre-push hook"
+else
+  ok "a plain install leaves pre-push alone"
+fi
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push --dry-run 2>&1)"
+assert_contains "$out" "pre-push (protected: main master, wip and fixup guard)" \
+  "install --pre-push --dry-run previews the hook and its protected set"
+assert_contains "$out" "no changes written" "install --pre-push --dry-run says so"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "install --pre-push --dry-run wrote a hook"
+else
+  ok "install --pre-push --dry-run wrote nothing"
+fi
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push 2>&1)"
+assert_contains "$out" "installed pre-push hook" "install --pre-push reports the hook"
+if [[ -x "$repo/.git/hooks/pre-push" ]]; then
+  ok "install --pre-push wrote an executable hook"
+else
+  err "install --pre-push left no executable hook"
+fi
+assert_not_contains "$(cat "$repo/.git/hooks/pre-push")" "$HOOKS" \
+  "the installed pre-push hook does not reference the installer's path"
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "pre-push hook installed and current" "status reports pre-push"
+
+git -C "$repo" switch -q -c feature/x
+git -C "$repo" commit -q --allow-empty -m "feat: normal work"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "a normal push to a feature branch goes through"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x 2>/dev/null)" \
+  "$(git -C "$repo" rev-parse HEAD)" "the feature branch reached the remote"
+feature_tip="$(git -C "$repo" rev-parse HEAD)"
+
+git -C "$repo" commit -q --allow-empty -m "fixup! feat: normal work"
+out="$(git -C "$repo" push origin feature/x 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a fixup! commit is refused"; else err "a fixup! commit was pushed"; fi
+assert_contains "$out" "unfinished commit" "the refusal names the unfinished commit"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$feature_tip" \
+  "a refused fixup! push leaves the remote branch alone"
+git -C "$repo" reset -q --hard HEAD~1
+
+git -C "$repo" commit -q --allow-empty -m "WIP: spike"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+if (( rc != 0 )); then ok "a WIP commit is refused"; else err "a WIP commit was pushed"; fi
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$feature_tip" \
+  "a refused WIP push leaves the remote branch alone"
+git -C "$repo" reset -q --hard HEAD~1
+
+for wip_subject in "WIP-spike" "WIP/test" "wip(tidy)"; do
+  git -C "$repo" commit -q --allow-empty -m "$wip_subject"
+  git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+  if (( rc != 0 )); then ok "a '$wip_subject' commit is refused"; else err "a '$wip_subject' commit was pushed"; fi
+  git -C "$repo" reset -q --hard HEAD~1
+done
+git -C "$repo" commit -q --allow-empty -m "WIPE the cache"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+if (( rc == 0 )); then ok "a subject that merely starts with the letters WIP is allowed"; else err "WIPE was refused"; fi
+feature_tip="$(git -C "$repo" rev-parse HEAD)"
+
+# A new branch is compared with what the remote advertises, not with
+# remote-tracking refs: a stale one that still holds an unfinished commit
+# (never pushed, or deleted on the remote) must not hide it.
+git -C "$repo" switch -q -c stale-src main
+git -C "$repo" commit -q --allow-empty -m "WIP: stale spike"
+stale_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/stale-src "$stale_sha"
+git -C "$repo" switch -q -c fresh-branch
+git -C "$repo" commit -q --allow-empty -m "feat: fresh work"
+out="$(git -C "$repo" push origin fresh-branch 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a WIP commit hidden by a stale remote-tracking ref is refused on a new branch"; else err "a stale remote-tracking ref let a WIP commit through"; fi
+assert_contains "$out" "unfinished commit" "the stale-ref refusal names the unfinished commit"
+if git --git-dir="$push_origin" rev-parse -q --verify refs/heads/fresh-branch >/dev/null; then
+  err "the refused new branch reached the remote"
+else
+  ok "the refused new branch did not reach the remote"
+fi
+# Once the remote really has the commit, it is not this push's business.
+git -C "$repo" push -q --no-verify origin stale-src >/dev/null 2>&1 || err "park the WIP commit on the remote"
+git -C "$repo" push -q origin fresh-branch >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "a new branch on top of a commit the remote already has goes through"
+git -C "$repo" switch -q feature/x
+git -C "$repo" branch -q -D fresh-branch stale-src
+git -C "$repo" update-ref -d refs/remotes/origin/stale-src
+
+git -C "$repo" switch -q main
+main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
+git -C "$repo" commit -q --allow-empty -m "feat: straight onto main"
+out="$(git -C "$repo" push origin main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a push to main is refused"; else err "a push to main went through"; fi
+assert_contains "$out" "direct pushes to the protected branch main are blocked" \
+  "the refusal says main is protected"
+assert_contains "$out" "git push --no-verify" "the refusal names the bypass"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused push leaves main on the remote alone"
+
+GIT_ALLOW_PROTECTED_PUSH=1 git -C "$repo" push -q origin main >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "GIT_ALLOW_PROTECTED_PUSH=1 lets one push to main through"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" \
+  "$(git -C "$repo" rev-parse main)" "the bypassed push reached the remote"
+main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
+
+out="$(git -C "$repo" push origin :main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "deleting main is refused"; else err "main was deleted"; fi
+assert_contains "$out" "deleting the protected branch main is blocked" "the refusal names the deletion"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused deletion leaves main on the remote"
+
+git -C "$repo" reset -q --hard HEAD~1
+git -C "$repo" commit -q --allow-empty -m "fix: rewritten history"
+out="$(git -C "$repo" push --force origin main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a force push to main is refused"; else err "a force push to main went through"; fi
+assert_contains "$out" "non-fast-forward" "the refusal names the force push"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused force push leaves main on the remote alone"
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push --protect release 2>&1)"
+assert_contains "$out" "protected: release" "--protect replaces the protected set"
+git -C "$repo" reset -q --hard origin/main
+git -C "$repo" commit -q --allow-empty -m "feat: main is open now"
+git -C "$repo" push -q origin main >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "with --protect release a push to main goes through"
+git -C "$repo" push -q origin main:release >/dev/null 2>&1; rc=$?
+if (( rc != 0 )); then ok "with --protect release a push to release is refused"; else err "a push to release went through"; fi
+if git --git-dir="$push_origin" show-ref --verify --quiet refs/heads/release; then
+  err "the refused push created release on the remote"
+else
+  ok "the refused push did not create release on the remote"
+fi
+
+(cd "$repo" && "$HOOKS" install --protect release) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect without --pre-push -> 3"
+(cd "$repo" && "$HOOKS" install --pre-push --protect 'a b') >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect with a space in the name -> 3"
+(cd "$repo" && "$HOOKS" install --pre-push --protect) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect without a value -> 3"
+
+out="$(cd "$repo" && "$HOOKS" uninstall 2>&1)"; rc=$?
+assert_eq "$rc" "0" "uninstall removes our hooks -> 0"
+assert_contains "$out" "removed the pre-push hook" "uninstall removes the pre-push hook"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "uninstall left the pre-push hook behind"
+else
+  ok "uninstall leaves no pre-push hook"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "a second uninstall with nothing left -> 4"
+
+# A pre-push hook somebody else wrote stops the install before anything is
+# written, is backed up only with --force, and comes back on uninstall.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-push"
+chmod +x "$repo/.git/hooks/pre-push"
+out="$(cd "$repo" && "$HOOKS" install --pre-push 2>&1)"; rc=$?
+assert_eq "$rc" "1" "a foreign pre-push hook refuses the install -> 1"
+assert_contains "$(cat "$repo/.git/hooks/pre-push")" "exit 0" "the foreign pre-push hook is left untouched"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "the refused install still wrote the pre-commit hook"
+else
+  ok "the refused install wrote nothing"
+fi
+(cd "$repo" && "$HOOKS" install --pre-push --force) >/dev/null ||
+  err "install --pre-push --force exited $? — the backup asserted next is judged by what is on disk"
+if [[ -f "$repo/.git/hooks/pre-push.hooks-install-backup" ]]; then
+  ok "--force backs the foreign pre-push hook up"
+else
+  err "--force did not back the foreign pre-push hook up"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null ||
+  err "uninstall exited $? — the hook it was meant to restore is judged only by what is on disk afterwards"
+assert_contains "$(cat "$repo/.git/hooks/pre-push")" "exit 0" "uninstall restores the foreign pre-push hook"
+
 section "clone-repos.sh"
 # A bare repository stands in for the remote; the list mixes a default
 # destination, a nested one, and a line that is not a URL at all.
@@ -1221,6 +1533,107 @@ fi
 printf '# only comments\n\n' >"$clone_dest/empty.txt"
 "$CLONE" --dry-run "$clone_dest/empty.txt" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "4" "an empty list exits 4"
+
+section "clone-repos.sh --update"
+# The same bare remote and the two checkouts cloned above, with a list that
+# holds only the two good lines so the exit code speaks for the updates alone.
+update_list="$clone_dest/update.txt"
+clone_up="$clone_dest/out/upstream"
+clone_nested="$clone_dest/out/nested/second"
+printf '%s\n%s   nested/second\n' "$clone_remote" "$clone_remote" >"$update_list"
+git -C "$clone_up" config user.name "Test User"
+git -C "$clone_up" config user.email "test@example.com"
+push_seed() {
+  printf '%s\n' "$1" >>"$clone_seed/file.txt"
+  git -C "$clone_seed" commit -q -am "$1" &&
+    git -C "$clone_seed" push -q origin main ||
+    err "pushing '$1' from the seed exited $? — every update below would find nothing to fetch"
+}
+push_seed two
+
+refs_up="$(git -C "$clone_up" for-each-ref)"
+# An old mtime on an unchanged tracked file leaves the index stale, which a
+# plain `git status` would refresh and write back to disk.
+touch -t 200101010000 "$clone_up/file.txt"
+index_up="$(cksum <"$clone_up/.git/index")"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" --dry-run 2>&1)"; rc=$?
+assert_eq "$rc" "0" "clone --update --dry-run exits 0"
+assert_contains "$out" "dry-run: would run: git -C $clone_up fetch --prune --quiet" "--update --dry-run previews the pruning fetch"
+assert_contains "$out" "dry-run: would run: git -C $clone_up merge --ff-only --quiet @{upstream}" "--update --dry-run previews the fast-forward"
+assert_contains "$out" "dry-run complete; no changes written" "--update --dry-run closes with the summary line"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD~1)" "--update --dry-run leaves HEAD behind"
+assert_eq "$(git -C "$clone_up" for-each-ref)" "$refs_up" "--update --dry-run fetches nothing"
+assert_eq "$(cksum <"$clone_up/.git/index")" "$index_up" "--update --dry-run leaves the index file untouched"
+
+out="$("$CLONE" -u --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "clone -u exits 0"
+assert_contains "$out" "updated (+1 commit(s)): $clone_up" "-u fast-forwards the default destination"
+assert_contains "$out" "updated (+1 commit(s)): $clone_nested" "-u fast-forwards the nested destination"
+assert_contains "$out" "updated 2" "the summary counts both updates"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "the updated checkout is at the remote's tip"
+
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_contains "$out" "up to date: $clone_up" "a second --update finds nothing to do"
+assert_contains "$out" "updated 0" "a second --update counts no updates"
+
+out="$("$CLONE" --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "already cloned: $clone_up" "without --update an existing checkout is still only skipped"
+assert_contains "$out" "already present 2" "without --update the summary keeps its shape"
+
+printf 'local edit\n' >>"$clone_up/file.txt"
+push_seed three
+up_head="$(git -C "$clone_up" rev-parse HEAD)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a held checkout does not fail the run"
+assert_contains "$out" "held (uncommitted changes): $clone_up" "a modified tracked file holds the checkout"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a held checkout keeps its HEAD"
+assert_contains "$(cat "$clone_up/file.txt")" "local edit" "a held checkout keeps its edit"
+assert_contains "$out" "updated (+1 commit(s)): $clone_nested" "the other checkout is still updated"
+git -C "$clone_up" checkout -q -- file.txt
+
+git -C "$clone_up" switch -q --detach
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (detached HEAD): $clone_up" "a detached HEAD holds the checkout"
+git -C "$clone_up" switch -q main
+
+git -C "$clone_up" branch -q --unset-upstream
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (no upstream): $clone_up" "a branch with no upstream holds the checkout"
+git -C "$clone_up" branch -q --set-upstream-to=origin/main main
+
+git -C "$clone_up" commit -q --allow-empty -m "local only" ||
+  err "the local commit exited $? — without it the checkout is behind, not diverged"
+push_seed four
+up_head="$(git -C "$clone_up" rev-parse HEAD)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (diverged, +1/-2): $clone_up" "a diverged branch is held, not merged"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a diverged checkout keeps its HEAD"
+
+cp "$clone_up/.git/index" "$clone_dest/index.bak" || err "save the index before corrupting it"
+printf 'not an index\n' >"$clone_up/.git/index" || err "corrupt the index"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a checkout with an unreadable index is held, not failed"
+assert_contains "$out" "held (cannot read git status): $clone_up" "a failing git status holds the checkout"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "an unreadable-index checkout keeps its HEAD"
+cp "$clone_dest/index.bak" "$clone_up/.git/index" || err "restore the index"
+
+# An upstream deleted on the remote: the pruning fetch drops the stale
+# remote-tracking ref, so the branch is held rather than read as up to date.
+git -C "$clone_seed" push -q origin main:topic || err "push the topic branch"
+git -C "$clone_up" fetch -q origin || err "fetch the topic branch"
+git -C "$clone_up" switch -q -c topic --track origin/topic || err "track the topic branch"
+git -C "$clone_seed" push -q origin --delete topic || err "delete the topic branch upstream"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a deleted upstream holds the checkout without failing the run"
+assert_contains "$out" "held (upstream gone): $clone_up" "a deleted upstream is reported, not read as up to date"
+assert_eq "$(git -C "$clone_up" rev-parse --verify --quiet refs/remotes/origin/topic || true)" "" "the stale remote-tracking ref is pruned"
+git -C "$clone_up" switch -q main
+git -C "$clone_up" branch -q -D topic
+
+git -C "$clone_nested" remote set-url origin "$clone_dest/does-not-exist.git"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "a failed fetch fails the run"
+assert_contains "$out" "fetch failed: $clone_nested" "a failed fetch names the checkout"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of

@@ -72,19 +72,25 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
 | `git/git_status_summary.sh` | Git | Compact branch and dirty-count summary. | <span class="stage stage-report">read-only</span> |
 | `git/git_repo_root.sh` | Git | Print the worktree root or git dir. | <span class="stage stage-report">read-only</span> |
-| `git/git_diff_branch.sh` | Git | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
+| `git/git_diff_branch.sh` | Git | Diff from the merge base to `HEAD`; changed-file modes for CI. | <span class="stage stage-report">read-only</span> |
+| `git/git_merge_check.sh` | Git | Forecast merge conflicts with no checkout. | <span class="stage stage-report">read-only</span> |
 | `git/git_recent_branches.sh` | Git | List recent branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
 | `git/git_stale_branches.sh` | Git | Report old branches and their state. | <span class="stage stage-report">read-only</span> |
 | `git/git_size_report.sh` | Git | Repository size and largest blobs. | <span class="stage stage-report">read-only</span> |
+| `git/git_commitlint.sh` | Git | Lint every commit message in a range, for CI. | <span class="stage stage-report">read-only</span> |
+| `git/git_release_notes.sh` | Git | Release notes since the last tag, and the next version. | <span class="stage stage-report">read-only</span> |
+| `git/git_repos_status.sh` | Git | Status of every checkout under a directory. | <span class="stage stage-report">read-only</span> |
+| `git/git_unpushed.sh` | Git | Everything in a repository that exists only locally. | <span class="stage stage-report">read-only</span> |
 | `git/gacp.sh` | Git | Add all, commit and push. | `--dry-run` |
 | `git/set_git_profile.sh` | Git | Set or save Git author identity profiles. | `--dry-run` |
 | `git/git_sync_default.sh` | Git | Fetch and fast-forward the default branch. | `--dry-run` |
 | `git/git_cleanup_merged.sh` | Git | Delete local branches merged into a base. | `--dry-run` |
 | `git/git_prune_gone.sh` | Git | Delete local branches whose upstream is gone. | `--dry-run` |
+| `git/git_bundle_backup.sh` | Git | Verified, timestamped bundle of every ref. | `--dry-run` |
 | `git/git_undo_last_commit.sh` | Git | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git/git_amend_last.sh` | Git | Amend the last commit. | `--dry-run` |
-| `git/git_hooks_install.sh` | Git | Install, check, remove pre-commit guards. | `--dry-run` (install, uninstall) |
-| `git/clone-repos.sh` | Git | Clone every URL in a list file. | `--dry-run` |
+| `git/git_hooks_install.sh` | Git | Install, check, remove pre-commit guards; opt-in commit-msg and pre-push hooks. | `--dry-run` (install, uninstall) |
+| `git/clone-repos.sh` | Git | Clone every URL in a list file; `--update` fast-forwards existing checkouts. | `--dry-run` |
 | `git/git_ssh_doctor.py` | Git | Diagnose git-over-SSH auth. | <span class="stage stage-report">read-only</span> |
 | `git/git_signing_doctor.py` | Git | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
 | `git/git_remote_doctor.py` | Git | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |
