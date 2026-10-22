@@ -38,9 +38,13 @@ Options:
   --timeout SECONDS  SSH connect timeout (default: 10)
   --port PORT        SSH port (default: 22)
   --identity FILE    SSH private key (also enables IdentitiesOnly)
-  --verify           Check what this run pulled: no empty file, each .rsc
-                     starts with the RouterOS export header, and every
-                     .backup has its .rsc (and the reverse) in dest-dir
+  --verify           Check the pulled files in staging before publishing:
+                     no empty file, each .rsc starts with the RouterOS
+                     export header, and every .backup has its .rsc (and the
+                     reverse). A partner pulled in the same run, or already
+                     archived in dest-dir when the router sent none, pairs
+                     them. Rejected files are never published; an archived
+                     copy of the same name stays as it was
   --max-age HOURS    Fail unless a backup-*.backup pulled in this run was made
                      by the router within the last HOURS hours (a whole
                      number, 1 or more); other routers' files in dest-dir
