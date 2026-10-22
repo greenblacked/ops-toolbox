@@ -556,7 +556,7 @@ command that would fix it.
 | `boot` | `secureboot`, `tpm`, `lsa-ppl`, `vbs` | Secure Boot off; no TPM or one not ready; LSA not running as a protected process; virtualization-based security not running. |
 | `defender` | `defender-rtp`, `defender-tamper`, `defender-sigs`, `defender-pua`, `defender-netprot` | Real-time protection off; tamper protection off; signatures over 7 days old; PUA blocking or network protection off. All five are skips where another antivirus product replaced Defender. |
 | `logging` | `ps-scriptblock` | PowerShell script block logging off. |
-| `updates` | `hotfix-age`, `reboot-pending` | The newest installed update over 60 days old (warn) or over 120 (fail); a restart pending. |
+| `updates` | `hotfix-age`, `reboot-pending` | The newest installed update over 60 days old (warn) or over 120 (fail); a restart pending (servicing or Update flag, queued file renames, a pending computer rename). |
 
 | Option | Meaning |
 | --- | --- |

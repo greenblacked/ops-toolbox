@@ -559,6 +559,27 @@ function Get-RegistryFact {
     }
 }
 
+# True when any of the usual signs says a restart is still owed: component
+# servicing or Windows Update flagged one, an installer queued file renames
+# for the next boot, or the computer was renamed and has not been restarted
+# (running name and configured name disagree). Pure, so a test can drive it.
+function Test-RebootPendingState {
+    param(
+        [bool]$Servicing,
+        [bool]$UpdateRequired,
+        $RenameOperations,
+        $ActiveName,
+        $ConfiguredName
+    )
+    if ($Servicing -or $UpdateRequired) { return $true }
+    if (@($RenameOperations | Where-Object { $_ }).Count -gt 0) { return $true }
+    $active = [string]$ActiveName
+    $configured = [string]$ConfiguredName
+    if ($active -and $configured -and $active -ne 'absent' -and $configured -ne 'absent' -and
+        $active -ine $configured) { return $true }
+    return $false
+}
+
 function Get-AuditFact {
     param(
         [string[]]$Groups,
@@ -677,8 +698,14 @@ function Get-AuditFact {
             if ($dates.Count -gt 0) { $facts['NewestHotfix'] = ($dates | Sort-Object -Descending | Select-Object -First 1) }
         } catch { Write-Verbose $_.Exception.Message }
         if ($registry) {
-            $facts['RebootPending'] = (Test-Path -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or
-                (Test-Path -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+            $sessionManager = Get-RegistryFact -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name 'PendingFileRenameOperations'
+            $computerName = 'HKLM:\SYSTEM\CurrentControlSet\Control\ComputerName'
+            $facts['RebootPending'] = Test-RebootPendingState `
+                -Servicing (Test-Path -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') `
+                -UpdateRequired (Test-Path -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') `
+                -RenameOperations $(if ($sessionManager -eq 'absent') { $null } else { $sessionManager }) `
+                -ActiveName (Get-RegistryFact -Path "$computerName\ActiveComputerName" -Name 'ComputerName') `
+                -ConfiguredName (Get-RegistryFact -Path "$computerName\ComputerName" -Name 'ComputerName')
         }
     }
     return $facts

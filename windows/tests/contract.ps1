@@ -2284,6 +2284,32 @@ if (-not $hardening) {
             }
         }
 
+        $rebootSrc = Get-ScriptFunctionSource -Script $hardening -Name 'Test-RebootPendingState'
+        if (-not $rebootSrc) {
+            Test-Fail 'hardening_audit.ps1 : Test-RebootPendingState not found - this check has stopped checking'
+        } else {
+            . ([scriptblock]::Create($rebootSrc))
+            $rebootCases = @(
+                @{ Name = 'nothing queued'; Args = @{ Servicing = $false; UpdateRequired = $false; RenameOperations = $null; ActiveName = 'PC1'; ConfiguredName = 'PC1' }; Want = $false },
+                @{ Name = 'rename value absent'; Args = @{ Servicing = $false; UpdateRequired = $false; RenameOperations = $null; ActiveName = 'absent'; ConfiguredName = 'absent' }; Want = $false },
+                @{ Name = 'names unreadable'; Args = @{ Servicing = $false; UpdateRequired = $false; RenameOperations = @(); ActiveName = $null; ConfiguredName = 'PC1' }; Want = $false },
+                @{ Name = 'same name in another case'; Args = @{ Servicing = $false; UpdateRequired = $false; RenameOperations = @(); ActiveName = 'PC1'; ConfiguredName = 'pc1' }; Want = $false },
+                @{ Name = 'component servicing flag'; Args = @{ Servicing = $true; UpdateRequired = $false; RenameOperations = $null; ActiveName = 'PC1'; ConfiguredName = 'PC1' }; Want = $true },
+                @{ Name = 'Windows Update flag'; Args = @{ Servicing = $false; UpdateRequired = $true; RenameOperations = $null; ActiveName = 'PC1'; ConfiguredName = 'PC1' }; Want = $true },
+                @{ Name = 'PendingFileRenameOperations'; Args = @{ Servicing = $false; UpdateRequired = $false; RenameOperations = @('\??\C:\a', '', '\??\C:\b'); ActiveName = 'PC1'; ConfiguredName = 'PC1' }; Want = $true },
+                @{ Name = 'pending computer rename'; Args = @{ Servicing = $false; UpdateRequired = $false; RenameOperations = $null; ActiveName = 'PC1'; ConfiguredName = 'PC2' }; Want = $true }
+            )
+            foreach ($case in $rebootCases) {
+                $caseArgs = $case.Args
+                $got = Test-RebootPendingState @caseArgs
+                if ($got -eq $case.Want) {
+                    Test-Ok ("reboot pending, {0}: {1}" -f $case.Name, $got)
+                } else {
+                    Test-Fail ("reboot pending, {0}: got {1}, expected {2}" -f $case.Name, $got, $case.Want)
+                }
+            }
+        }
+
         foreach ($list in @('host1,*', ' * ', 'host1, *, host2')) {
             $facts = Get-GoodAuditFact -Now $auditNow
             $facts.TrustedHosts = $list
