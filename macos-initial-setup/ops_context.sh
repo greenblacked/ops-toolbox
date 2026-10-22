@@ -459,10 +459,12 @@ fi
 # A context whose endpoint is not a local socket sends `docker system prune`
 # and friends to somebody else's daemon. The Docker CLI documents that
 # DOCKER_CONTEXT overrides DOCKER_HOST, so with both set the context's
-# endpoint is the effective target and DOCKER_HOST is ignored.
+# endpoint is the effective target and DOCKER_HOST is ignored. The built-in
+# `default` context is the exception: its endpoint is DOCKER_HOST when that
+# is set, so there DOCKER_HOST is the endpoint and nothing is ignored.
 if want docker; then
   dnote=""
-  if [[ -n "${DOCKER_CONTEXT:-}" && -n "${DOCKER_HOST:-}" ]]; then
+  if [[ -n "${DOCKER_CONTEXT:-}" && "$DOCKER_CONTEXT" != "default" && -n "${DOCKER_HOST:-}" ]]; then
     dnote="  (DOCKER_HOST=$(clean "$DOCKER_HOST") is ignored: DOCKER_CONTEXT overrides it)"
   fi
   if [[ -z "${DOCKER_CONTEXT:-}" && -n "${DOCKER_HOST:-}" ]]; then
@@ -480,7 +482,11 @@ if want docker; then
     if [[ -z "$dctx" ]]; then
       row info docker "no Docker context"
     else
-      dhost="$(clean "$(docker context inspect "$dctx" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)")"
+      if [[ "$dctx" == "default" && -n "${DOCKER_HOST:-}" ]]; then
+        dhost="$(clean "$DOCKER_HOST")"
+      else
+        dhost="$(clean "$(docker context inspect "$dctx" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)")"
+      fi
       case "$dhost" in
         unix://*|"")
           judge docker ok "context=$dctx${dhost:+  $dhost}$dnote" "$dctx" "$dhost" ;;

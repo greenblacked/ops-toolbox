@@ -2426,6 +2426,14 @@ assert_contains "the local context is reported, not the overridden host" "$out" 
 assert_not_contains "the overridden host is not called a remote daemon" "$out" "remote Docker daemon"
 out="$(export DOCKER_HOST=tcp://prod-host:2376; ops --only docker --warn-on prod)"; rc=$?
 assert_eq "DOCKER_HOST alone still matches --warn-on -> 1" "1" "$rc"
+# The built-in `default` context takes its endpoint from DOCKER_HOST, so that
+# host is the effective target: it is reported, matched, and not "ignored".
+out="$(export DOCKER_CONTEXT=default DOCKER_HOST=tcp://prod-host:2376 \
+  FAKE_DOCKER_ENDPOINT=unix:///var/run/docker.sock; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "DOCKER_CONTEXT=default with a remote DOCKER_HOST matches --warn-on -> 1" "1" "$rc"
+assert_contains "the DOCKER_HOST endpoint is reported for the default context" "$out" "tcp://prod-host:2376"
+assert_contains "the default context is named" "$out" "context=default"
+assert_not_contains "DOCKER_HOST is not called ignored under the default context" "$out" "is ignored"
 
 mv "$oc/bin/kubectl" "$oc/kubectl.off"
 out="$(ops --only kube)"; rc=$?
