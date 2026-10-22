@@ -9,4 +9,6 @@
   Debian, once no kept release shares its ABI version, whatever its flavour) in one call; on dnf it
   removes the versioned kernel packages; pacman needs nothing. `--list` shows the plan read-only,
   `--dry-run` previews the removal and a real run needs `--yes`. It never
-  autoremoves, reboots or edits the bootloader.
+  autoremoves, reboots or edits the bootloader. A failing package query
+  (dpkg-query, rpm) stops it with exit 2 instead of reporting nothing to
+  remove.

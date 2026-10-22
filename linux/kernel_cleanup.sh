@@ -25,7 +25,8 @@
 #   0   done, or nothing to remove
 #   1   the removal failed
 #   2   preflight failed (not Linux, unsupported distribution, package tool
-#       missing, or the running kernel release could not be determined)
+#       missing or failing, or the running kernel release could not be
+#       determined)
 #   3   bad CLI arguments, or a real run without --yes
 set -u
 set -o pipefail
@@ -78,7 +79,8 @@ Options:
   --help, -h       Show this help
 
 Exit codes: 0 done or nothing to remove, 1 removal failed, 2 not Linux /
-unsupported distro / package tool missing / running kernel unknown, 3 usage
+unsupported distro / package tool missing or failing / running kernel
+unknown, 3 usage
 EOF
 }
 
@@ -258,9 +260,13 @@ run_root() {
 # digit after the prefix, which is what keeps metapackages such as
 # linux-image-amd64, linux-image-generic and an unversioned kernel out.
 kernel_rows() {
+  local raw
   case "$PKG_MGR" in
     apt)
-      dpkg-query -W -f='${Package}\t${Status}\t${Installed-Size}\n' 2>/dev/null | awk -F'\t' '
+      # The query's own status is checked before the rows are parsed: a
+      # failed query must not read as "no kernels installed".
+      raw="$(dpkg-query -W -f='${Package}\t${Status}\t${Installed-Size}\n' 2>/dev/null)" || return 1
+      printf '%s\n' "$raw" | awk -F'\t' '
         $2 != "install ok installed" { next }
         $1 ~ /-(dbg|dbgsym)$/ { next }
         {
@@ -275,7 +281,8 @@ kernel_rows() {
         }'
       ;;
     dnf)
-      rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}.%{ARCH}\t%{SIZE}\n' 2>/dev/null | awk -F'\t' '
+      raw="$(rpm -qa --qf '%{NAME}\t%{VERSION}-%{RELEASE}.%{ARCH}\t%{SIZE}\n' 2>/dev/null)" || return 1
+      printf '%s\n' "$raw" | awk -F'\t' '
         {
           anchor = -1
           if ($1 == "kernel-core") anchor = 1
@@ -290,7 +297,10 @@ kernel_rows() {
   esac
 }
 
-ROWS="$(kernel_rows)"
+if ! ROWS="$(kernel_rows)"; then
+  err "cannot list installed packages ($PKG_MGR query failed); not touching any kernel"
+  exit 2
+fi
 
 releases_with_anchor() {
   local want="$1" rel _pkg _size anchor

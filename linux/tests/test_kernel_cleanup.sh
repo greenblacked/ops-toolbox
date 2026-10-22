@@ -73,10 +73,12 @@ printf '%s\t%s\t%s\n' \
 
 cat > "$fixture/bin/dpkg-query" <<'STUB'
 #!/usr/bin/env bash
+[[ -n "${QUERY_RC:-}" ]] && exit "$QUERY_RC"
 cat "$STUB_DIR/dpkg.rows"
 STUB
 cat > "$fixture/bin/rpm" <<'STUB'
 #!/usr/bin/env bash
+[[ -n "${QUERY_RC:-}" ]] && exit "$QUERY_RC"
 cat "$STUB_DIR/rpm.rows"
 STUB
 # The removal tools only record what they were asked to do.
@@ -125,6 +127,19 @@ done
 
 run_kc debian --dry-run --release 'bad release'
 assert_eq '--release with a space -> 3' 3 "$rc"
+
+# A failing package query is a preflight failure, never "nothing to remove".
+QUERY_RC=1 run_kc debian --dry-run --release 6.1.0-20-amd64 --keep 1
+assert_eq 'a failing dpkg-query -> 2' 2 "$rc"
+assert_contains 'a failing dpkg-query says so' "$out" 'cannot list installed packages'
+assert_not_contains 'a failing dpkg-query is not "nothing to remove"' "$out" 'nothing to remove'
+assert_eq 'a failing dpkg-query ran nothing' '' "$calls"
+QUERY_RC=1 run_kc debian --yes --release 6.1.0-20-amd64 --keep 1
+assert_eq 'a failing dpkg-query on a real run -> 2' 2 "$rc"
+assert_eq 'a failing dpkg-query on a real run removed nothing' '' "$calls"
+QUERY_RC=1 run_kc fedora --list --release 6.11.4-301.fc41.x86_64
+assert_eq 'a failing rpm query -> 2' 2 "$rc"
+assert_contains 'a failing rpm query says so' "$out" 'cannot list installed packages'
 
 run_kc debian --dry-run --release 6.1.0-20-amd64 --keep 1
 assert_eq 'debian dry run exits 0' 0 "$rc"
