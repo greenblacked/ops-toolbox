@@ -103,24 +103,50 @@ PROBE = (
     # long the router has been up says nothing about how old a scheduler is.
     ' :put ("CLK:" . [:tostr [/system clock get date]]'
     ' . "|" . [:tostr [/system clock get time]]);'
-    # Which scripts assign each required global, one DECL:script|global
-    # record per pair. A mention is not enough: a script that only reads
-    # $TgBotToken restores nothing. A record needs ":global NAME <value>" or
-    # ":set NAME <value>", the name followed by a space and then something
-    # other than the end of the statement. The router does the search and
-    # returns only names: a source can hold a pasted token, so no source ever
-    # crosses the wire.
+    # Which scripts declare or assign each required global. The router only
+    # finds the candidates and describes each one with three facts; parse_report
+    # and global_events_restore() decide, in Python, whether it counts. One
+    # EVT:script|global|keyword|position|assigned|commented record per
+    # ":global NAME", ":local NAME" or ":set NAME" (one or more spaces or tabs
+    # between keyword and name, the name followed by a blank, ";", "}", a line
+    # end or the end of the source). assigned is 1 when a value follows the
+    # name, commented is true when the line's first non-blank character is "#".
+    # A source can hold a pasted token, so no source and no value ever crosses
+    # the wire: only the name, the keyword, an offset and two flags.
     ' :foreach g in={%s} do={'
     ':foreach s in=[/system script find] do={'
     ':local src [/system script get $s source];'
-    ':foreach pre in={":global ";":set "} do={'
-    ':local pat ($pre . $g . " ");'
-    ':local n [:len $pat];'
+    ':local sn [/system script get $s name];'
+    ':foreach kw in={"global";"local";"set"} do={'
+    ':local pat (":" . $kw);'
+    ':local gl [:len $g];'
     ':local k [:find $src $pat];'
     ':while ([:typeof $k] = "num") do={'
-    ':local c [:pick $src ($k + $n) ($k + $n + 1)];'
-    ':if ($c != "" and $c != ";" and $c != "}" and $c != "\\r" and $c != "\\n") do={'
-    ':put ("DECL:" . [/system script get $s name] . "|" . $g)};'
+    ':local e ($k + [:len $pat]);'
+    ':local ch [:pick $src $e ($e + 1)];'
+    ':if ($ch = " " or $ch = "\\t") do={'
+    ':while ($ch = " " or $ch = "\\t") do={:set e ($e + 1); :set ch [:pick $src $e ($e + 1)]};'
+    ':if (($e + $gl) <= [:len $src]) do={'
+    ':if ([:pick $src $e ($e + $gl)] = $g) do={'
+    ':local f ($e + $gl);'
+    ':local nx [:pick $src $f ($f + 1)];'
+    ':if ($nx = "" or $nx = " " or $nx = "\\t" or $nx = ";" or $nx = "}"'
+    ' or $nx = "\\r" or $nx = "\\n") do={'
+    ':while ($nx = " " or $nx = "\\t") do={:set f ($f + 1); :set nx [:pick $src $f ($f + 1)]};'
+    ':local a "0";'
+    ':if ($nx != "" and $nx != ";" and $nx != "}" and $nx != "\\r" and $nx != "\\n")'
+    ' do={:set a "1"};'
+    ':local b ($k - 1);'
+    ':local first "";'
+    ':local go true;'
+    ':while ($go) do={'
+    ':if ($b < 0) do={:set go false} else={'
+    ':local cc [:pick $src $b ($b + 1)];'
+    ':if ($cc = "\\n") do={:set go false} else={'
+    ':if ($cc != " " and $cc != "\\t" and $cc != "\\r") do={:set first $cc};'
+    ':set b ($b - 1)}}};'
+    ':put ("EVT:" . $sn . "|" . $g . "|" . $kw . "|" . [:tostr $k]'
+    ' . "|" . $a . "|" . [:tostr ($first = "#")])}}}};'
     ':set k [:find $src $pat ($k + 1)]}}}};'
     % ";".join('"%s"' % g for g in REQUIRED_GLOBALS)
 )
@@ -272,13 +298,16 @@ def parse_report(text):
     when the router reported one. A scheduler gains disabled, run_count,
     start_time and start_date when the probe returned them, and the reserved UPTIME_KEY and
     DECLARES_TG_KEY hold the uptime in seconds and the scripts that assign
-    TgBotToken; DECLARES_KEY holds that per required global, from DECL:script|
-    global records (a bare DECL:script is read as TgBotToken).
+    TgBotToken; DECLARES_KEY holds that per required global, decided from the
+    EVT:script|global|keyword|offset|assigned|commented records by
+    events_restore() (a DECL:script|global record, from an older probe, is
+    taken as already decided; a bare DECL:script is read as TgBotToken).
     """
     scripts = []
     schedulers = []
     env = {}
     current = None
+    events = {}
 
     for raw in text.splitlines():
         line = raw.rstrip("\r")
@@ -331,6 +360,15 @@ def parse_report(text):
             seconds = router_datetime(date, clock)
             if seconds is not None:
                 env[CLOCK_KEY] = seconds
+        elif line.startswith("EVT:"):
+            current = None
+            # From the right, so a '|' in a script name cannot shift fields.
+            fields = line[4:].rsplit("|", 5)
+            if len(fields) == 6:
+                name, glob, keyword, position, assigned, commented = (f.strip() for f in fields)
+                if name and glob in REQUIRED_GLOBALS and keyword in ("global", "local", "set"):
+                    events.setdefault((glob, name), []).append((
+                        _as_int(position), keyword, assigned == "1", commented == "true"))
         elif line.startswith("DECL:"):
             current = None
             name, sep, glob = line[5:].rpartition("|")
@@ -353,6 +391,16 @@ def parse_report(text):
             # A multi-line on-event. Keeping the newlines means the text stays
             # searchable for a script name that sits on a later line.
             current["on_event"] += "\n" + line
+
+    # The router describes each ":global/:local/:set NAME" it found; whether
+    # that restores the global is decided here, in source order.
+    for (glob, name), found in sorted(events.items()):
+        if events_restore([(kw, assigned, commented)
+                           for _, kw, assigned, commented in sorted(found)]):
+            declares = env.setdefault(DECLARES_KEY, {})
+            declares[glob] = sorted(set(declares.get(glob, [])) | {name})
+            if glob == "TgBotToken":
+                env[DECLARES_TG_KEY] = declares[glob]
 
     return scripts, schedulers, env
 
@@ -453,11 +501,63 @@ def format_duration(seconds):
     return "%dd%s" % (days, clock) if days else clock
 
 
+def global_events(text, name):
+    """Every ":global NAME", ":local NAME" and ":set NAME" in the text, in
+    source order, as (keyword, assigned, commented) - the same three facts the
+    on-router probe reports in its EVT records, so one rule decides both.
+
+    One or more spaces or tabs sit between keyword and name; the name ends at
+    a blank, ";", "}", a line end or the end of the text. assigned means a
+    value follows the name on the statement. commented means the first
+    non-blank character of the line is "#".
+    """
+    pattern = r":(global|local|set)[ \t]+%s(?=[ \t;}\r\n]|\Z)[ \t]*(.?)" % re.escape(name)
+    found = []
+    for match in re.finditer(pattern, text, re.S):
+        line_start = text.rfind("\n", 0, match.start()) + 1
+        commented = text[line_start:match.start()].lstrip(" \t\r").startswith("#")
+        found.append((match.group(1), match.group(2) not in ("", ";", "}", "\r", "\n"),
+                      commented))
+    return found
+
+
+def events_restore(events):
+    """Whether a source, read top to bottom, leaves the global with a value.
+
+    ":global NAME value" assigns. ":set NAME value" assigns only while a
+    ":global NAME" is in scope before it: a ":set" with no declaration, or
+    after ":local NAME" shadowed it, sets something else. Commented lines are
+    skipped.
+    """
+    declared = restored = False
+    for keyword, assigned, commented in events:
+        if commented:
+            continue
+        if keyword == "global":
+            declared = True
+            restored = restored or assigned
+        elif keyword == "local":
+            declared = False
+        elif declared and assigned:
+            restored = True
+    return restored
+
+
 def assigns_global(text, name):
-    """Whether a script body assigns the global: ":global NAME value" or
-    ":set NAME value". A bare ":global NAME;" and a read ($NAME) do not."""
-    pattern = r":(?:global|set)[ \t]+%s(?![A-Za-z0-9_-])[ \t]+[^\s;}]" % re.escape(name)
-    return re.search(pattern, text) is not None
+    """Whether a script body gives the global a value that survives it: see
+    events_restore(). A bare ":global NAME;" and a read ($NAME) do not."""
+    return events_restore(global_events(text, name))
+
+
+def invokes_script(on_event, name):
+    """Whether an on-event body runs the named script: "/system script run
+    NAME", ":execute NAME" or the bare name as a statement. A name merely
+    mentioned (":put NAME") or commented out does not count."""
+    code = "\n".join(
+        line for line in on_event.splitlines() if not line.lstrip().startswith("#"))
+    pattern = (r"(?:^|[;\n\[{])[ \t]*(?:/system[ /]script[ /]run[ \t]+(?:name=)?"
+               r"|:execute[ \t]+(?:script=)?)?\"?%s\"?[ \t]*(?=[;\n\]}]|$)" % re.escape(name))
+    return re.search(pattern, code) is not None
 
 
 def runs_script(on_event, name):
@@ -953,8 +1053,8 @@ def build_findings(local, installed, schedulers, env, underscored=None):
                 if entry.get("start_time") != "startup" or entry.get("disabled") is True:
                     continue
                 on_event = entry.get("on_event", "")
-                if (assigns_global(on_event, glob) or entry.get("name") in declarers
-                        or any(runs_script(on_event, d) for d in declarers)):
+                if (assigns_global(on_event, glob)
+                        or any(invokes_script(on_event, d) for d in declarers)):
                     restored = True
                     break
             if not restored:

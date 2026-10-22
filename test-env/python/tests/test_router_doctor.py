@@ -907,7 +907,9 @@ class SchedulerHealthTestCase(unittest.TestCase):
         for body, warned in (
             (':global TgBotToken "x"; :put $TgChatId', "TgChatId"),
             (':global TgChatId 42; :put $TgBotToken', "TgBotToken"),
-            (':global TgBotToken "x"; :set TgChatId "y"', None),
+            (':global TgBotToken "x"; :set TgChatId "y"', "TgChatId"),
+            (':global TgBotToken "x"; :global TgChatId; :set TgChatId "y"', None),
+            (':global TgBotToken "x"; :local TgChatId; :set TgChatId "y"', "TgChatId"),
             (':global TgBotToken $a; :global TgChatId [:tostr 1]', None),
         ):
             with self.subTest(body=body):
@@ -938,15 +940,102 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertFalse(assigns(":global TgBotTokenX 1", "TgBotToken"))
         self.assertFalse(assigns(':global TgChatId "1"', "TgBotToken"))
 
-    def test_decl_assignment_for_one_global_leaves_the_other_warned(self):
-        # The probe now returns a DECL record only for an assigned name.
-        schedulers = [self.scheduler("health_check"), self.restorer()]
+    def test_set_counts_only_after_a_global_declaration_in_the_same_source(self):
+        assigns = router_doctor.assigns_global
+        name = "TgChatId"
+        self.assertFalse(assigns(':set TgChatId "y"', name))
+        self.assertFalse(assigns(':local TgChatId; :set TgChatId "y"', name))
+        self.assertFalse(assigns(':global TgChatId; :local TgChatId; :set TgChatId "y"', name))
+        self.assertFalse(assigns(':global Other "x"; :set TgChatId "y"', name))
+        self.assertTrue(assigns(':global TgChatId; :set TgChatId "y"', name))
+        self.assertTrue(assigns(':global TgChatId\n:set TgChatId "y"', name))
+        self.assertTrue(assigns(':local TgChatId 1; :global TgChatId 2', name))
+
+    def test_assignment_whitespace_and_comments_are_read_one_way(self):
+        assigns = router_doctor.assigns_global
+        name = "TgBotToken"
+        self.assertTrue(assigns(':global\tTgBotToken\t"x"', name))
+        self.assertTrue(assigns(':global   TgBotToken   "x"', name))
+        self.assertTrue(assigns(':global TgBotToken; :set\tTgBotToken  "x"', name))
+        self.assertFalse(assigns('# :global TgBotToken "x"', name))
+        self.assertFalse(assigns('  \t# :global TgBotToken "x"', name))
+        self.assertFalse(assigns(':put 1\n# :global TgBotToken "x"\n:put 2', name))
+        self.assertTrue(assigns('# note\n:global TgBotToken "x"', name))
+
+    def test_global_events_describe_each_candidate_in_source_order(self):
+        events = router_doctor.global_events(
+            ':global TgBotToken;\n# :local TgBotToken\n:set TgBotToken "x"\n'
+            ':global TgBotTokenX 1', "TgBotToken")
+        self.assertEqual(events, [
+            ("global", False, False), ("local", False, True), ("set", True, False)])
+
+    def test_evt_records_are_decided_per_script_and_global(self):
+        # The router reports facts; parse_report applies the rule per script
+        # and per global, so each case below is one script's source.
+        evt = "EVT:%s|%s|%s|%d|%s|%s\n"
+        text = (
+            # restores both: global with a value, then a set after a declaration
+            evt % ("both", "TgBotToken", "global", 0, "1", "false")
+            + evt % ("both", "TgChatId", "global", 40, "0", "false")
+            + evt % ("both", "TgChatId", "set", 60, "1", "false")
+            # a read-only mention is never reported as an assignment
+            + evt % ("reader", "TgBotToken", "global", 0, "0", "false")
+            # set with no declaration restores nothing
+            + evt % ("bare-set", "TgChatId", "set", 0, "1", "false")
+            # set after local shadows the global
+            + evt % ("shadow", "TgChatId", "global", 0, "0", "false")
+            + evt % ("shadow", "TgChatId", "local", 20, "0", "false")
+            + evt % ("shadow", "TgChatId", "set", 40, "1", "false")
+            # a commented assignment is ignored
+            + evt % ("commented", "TgBotToken", "global", 0, "1", "true")
+            # records arrive per keyword, not per position: sorted by offset
+            + evt % ("late", "TgChatId", "set", 30, "1", "false")
+            + evt % ("late", "TgChatId", "global", 5, "0", "false")
+        )
+        _, _, env = router_doctor.parse_report(text)
+        self.assertEqual(env[router_doctor.DECLARES_KEY], {
+            "TgBotToken": ["both"], "TgChatId": ["both", "late"],
+        })
+        self.assertEqual(env[router_doctor.DECLARES_TG_KEY], ["both"])
+
+    def test_evt_record_with_a_pipe_in_the_script_name_and_bad_fields(self):
+        text = (
+            "EVT:a|b|TgBotToken|global|0|1|false\n"
+            "EVT:x|TgBotToken|bogus|0|1|false\n"
+            "EVT:x|NotRequired|global|0|1|false\n"
+            "EVT:short|1|false\n"
+        )
+        _, _, env = router_doctor.parse_report(text)
+        self.assertEqual(env[router_doctor.DECLARES_KEY], {"TgBotToken": ["a|b"]})
+
+    def test_a_scheduler_sharing_a_script_name_does_not_restore_without_running_it(self):
+        schedulers = [
+            self.scheduler("health_check"),
+            self.scheduler("startup", interval="0s", start_time="startup",
+                           on_event=":put 1"),
+        ]
         findings = router_doctor.build_findings(
             ["tg_send", "health_check"], ["tg_send", "health_check", "startup"], schedulers,
-            self.env(uptime=3600, declares=("startup",), chat_declares=()),
+            self.env(uptime=3600, declares=("startup",)),
         )
-        self.assertEqual(levels_for(findings, "TgChatId is set now but nothing re-declares it"),
-                         ["warn"])
+        self.assertEqual(
+            levels_for(findings, "TgBotToken and TgChatId are set now but nothing re-declares"),
+            ["warn"])
+
+    def test_invokes_script_needs_a_run_not_a_mention(self):
+        invokes = router_doctor.invokes_script
+        self.assertTrue(invokes("/system script run startup", "startup"))
+        self.assertTrue(invokes('/system script run "startup"', "startup"))
+        self.assertTrue(invokes("/system script run name=startup", "startup"))
+        self.assertTrue(invokes(":delay 5s; /system script run startup", "startup"))
+        self.assertTrue(invokes(":execute startup", "startup"))
+        self.assertTrue(invokes("startup", "startup"))
+        self.assertTrue(invokes("/system script run startup\n:put 1", "startup"))
+        self.assertFalse(invokes(":put startup", "startup"))
+        self.assertFalse(invokes("/system script run startup2", "startup"))
+        self.assertFalse(invokes("/system script run my-startup", "startup"))
+        self.assertFalse(invokes("# /system script run startup", "startup"))
+        self.assertFalse(invokes(":local S [/system script get startup source]", "startup"))
 
     def test_a_disabled_startup_scheduler_does_not_restore(self):
         restorer = self.restorer()
@@ -1010,15 +1099,17 @@ class SchedulerHealthTestCase(unittest.TestCase):
         # router evaluates; what is :put is the script's name.
         self.assertEqual(probe.count(" source]"), 1)
         self.assertIn(':local src [/system script get $s source];', probe)
-        # an assignment, not a mention: ":global NAME <value>" or ":set NAME
-        # <value>", with the end of the statement excluded
-        self.assertIn('{":global ";":set "}', probe)
-        self.assertIn('$c != ";"', probe)
-        # one DECL record per script and required global, from a literal
+        # the router only describes candidates (keyword, offset, two flags);
+        # the read-versus-assignment decision is made in Python
+        self.assertIn('{"global";"local";"set"}', probe)
+        self.assertIn('"EVT:"', probe)
+        self.assertNotIn('"DECL:"', probe)
+        self.assertIn('"\\t"', probe)
+        # one EVT record per candidate, searched for each required global from a literal
         # array of exactly REQUIRED_GLOBALS
         self.assertIn(":foreach g in={%s}" % ";".join(
             '"%s"' % g for g in router_doctor.REQUIRED_GLOBALS), probe)
-        self.assertIn('. "|" . $g)', probe)
+        self.assertIn('. $g . "|"', probe)
         for record in re.findall(r":put \(([^;]*)\)", probe):
             # Whole word: "/system resource" holds the letters, not a read.
             self.assertIsNone(re.search(r"\bsource\b", record), record)
@@ -1026,7 +1117,6 @@ class SchedulerHealthTestCase(unittest.TestCase):
         self.assertIn('"UPT:"', probe)
         self.assertIn('"CLK:"', probe)
         self.assertIn("start-date]", probe)
-        self.assertIn('"DECL:"', probe)
 
     def test_json_scheduler_state_is_separate_from_schedulers(self):
         report = (

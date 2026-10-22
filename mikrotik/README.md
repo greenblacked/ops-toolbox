@@ -1094,15 +1094,21 @@ router's clock and uptime, and adds three findings, all `warn`:
   come due yet is an `info` ("has not run yet"), not a warning. Startup
   entries and entries with no interval are not judged.
 - **Telegram globals that will not survive a reboot**: `TgBotToken` or
-  `TgChatId` is set now, but no enabled `start-time=startup` scheduler
-  assigns it again, either inline or by running a script whose source
-  holds `:global NAME <value>` or `:set NAME <value>`. A mention does not
-  count: `:put $TgBotToken`, a bare `:global TgBotToken;` or any other read
-  restores nothing. Each global is judged on its own: a startup entry that
-  restores only `TgBotToken` still gets a warning for `TgChatId`. The router
-  does the search itself and returns only the script's name and the global,
-  so no script source crosses the wire. `tg_send` and `tg_send_new` read the
-  globals and do not count.
+  `TgChatId` is set now, but no enabled `start-time=startup` scheduler assigns
+  it again, either inline or by running a script (`/system script run NAME`,
+  `:execute NAME` or the bare name; a scheduler that only shares the script's
+  name does not count) whose source holds `:global NAME <value>`, or `:global
+  NAME` followed by `:set NAME <value>`. A `:set` with no `:global NAME`
+  before it, or after `:local NAME`, sets something else. Spaces or tabs may
+  separate the words, and a line whose first character is `#` is ignored. A
+  mention does not count: `:put $TgBotToken`, a bare `:global TgBotToken;` or
+  any other read restores nothing. Each global is judged on its own: a startup
+  entry that restores only `TgBotToken` still gets a warning for `TgChatId`.
+  The router finds each `:global`, `:local` or `:set` of the name and returns
+  only the script's name, the global, the keyword, an offset and two flags (a
+  value follows, the line is commented out); the verdict is made on this side,
+  so no script source or value crosses the wire. `tg_send` and `tg_send_new`
+  read the globals and do not count.
 
 Each of these runs only on fields the router returned, so an older or partial
 answer produces no finding rather than a false one.
