@@ -312,11 +312,13 @@ function Get-SshClientFinding {
         }
     } elseif ($AgentRunning -and $kinds -contains 'git-for-windows') {
         # A running Windows agent means the OpenSSH client feature is
-        # installed, even when its folder is off PATH and only Git's bundled
-        # ssh was found: git still runs its own, which cannot see the agent.
+        # installed, even when its folder is off PATH and no Windows
+        # OpenSSH client was found (Git's ssh, possibly with plink or
+        # another non-Windows client): git still runs its own, which
+        # cannot see the agent.
         $both = ($kinds -contains 'windows-openssh')
         $findings += [pscustomobject]@{
-            Id = $(if ($both) { 'two-clients' } else { 'bundled-client-only' }); Level = 'warn'
+            Id = $(if ($both) { 'two-clients' } else { 'no-windows-client' }); Level = 'warn'
             Message = "git will use its own ssh, which cannot see the keys in the Windows ssh-agent"
             Fix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
         }
@@ -325,8 +327,10 @@ function Get-SshClientFinding {
     # "Git and ssh agree" is a claim about the Windows agent, so it is made
     # only when the client git will run is positively Windows OpenSSH: the
     # pinned one, or, with nothing pinned, the only client there is. Anything
-    # else (plink, a wrapper script, a bare 'ssh' with options, Git's own ssh
-    # with no pin) is not verified, and says so instead of passing.
+    # else (plink, a wrapper script, a bare 'ssh' with options, or a pinned
+    # client that is not Windows OpenSSH) is not verified, and says so
+    # instead of passing. Git's own ssh with no pin never gets here: it
+    # draws a warning above.
     if ($AgentRunning -and @($findings | Where-Object { $_.Level -eq 'warn' }).Count -eq 0) {
         $windowsSsh = '\\System32\\OpenSSH\\ssh(\.exe)?$'
         $client = ''
