@@ -458,6 +458,17 @@ fi
 rc=$?
 assert_eq "packages.sh --file rejects the next flag as a path -> 3" "3" "$rc"
 
+# holds and orphans against the real package database answer with names only,
+# whatever this image happens to hold; the stubbed suite below pins the parsing
+# for all three managers.
+out="$("$L/packages.sh" holds 2>/dev/null)"; rc=$?
+assert_eq "packages.sh holds exits 0 on a real $EXPECT_PKG_MGR database" "0" "$rc"
+assert_eq "packages.sh holds prints a sorted, unique list" "$out" "$(printf '%s\n' "$out" | LC_ALL=C sort -u | awk 'NF')"
+out="$("$L/packages.sh" orphans 2>/dev/null)"; rc=$?
+assert_eq "packages.sh orphans exits 0 on a real $EXPECT_PKG_MGR database" "0" "$rc"
+bash "$L/tests/test_packages_holds_orphans.sh"
+assert_eq "packages.sh holds and orphans suite exits 0" "0" "$?"
+
 section "aliases are sourceable, and guarded"
 if bash -c ". $L/bash_aliases.sh" >/dev/null 2>&1; then
   ok "bash_aliases.sh sources cleanly"
@@ -512,6 +523,8 @@ assert_contains "toolbox-help lists schedule-report" "$out" "schedule-report"
 assert_contains "toolbox-help lists tls-expiry" "$out" "tls-expiry"
 assert_contains "toolbox-help lists config-backup" "$out" "config-backup"
 assert_contains "toolbox-help lists ssh-client-doctor" "$out" "ssh-client-doctor"
+assert_contains "toolbox-help lists kernel-cleanup" "$out" "kernel-cleanup"
+assert_contains "toolbox-help lists swap-setup" "$out" "swap-setup"
 
 section "stay_fresh degrades rather than failing when a tool is absent"
 # journald is not present in these containers. That must be a note, not a
@@ -1073,6 +1086,29 @@ assert_eq "disk_cleanup empties a relocated Trash" "" \
 assert_not_contains "disk_cleanup counts what a relocated trash freed" "$out" "freed at least 0B"
 rm -rf "$trash_home" "$trash_tmp" "$other_disk"
 
+# Rotated logs and the journal size cap, against scratch log directories and a
+# stubbed journalctl so no run reaches /var/log or a real journal.
+bash "$L/tests/test_disk_cleanup_logs.sh"
+assert_eq "disk_cleanup logs suite exits 0" 0 "$?"
+
+# Unused images and disabled snap revisions, against stubbed docker, podman
+# and snap: no container engine or snapd is reached.
+bash "$L/tests/test_disk_cleanup_images.sh"
+assert_eq "disk_cleanup images suite exits 0" 0 "$?"
+
+section "kernel_cleanup.sh"
+# The package tools are stubbed in the suite below, so no container ever lists
+# or removes a real kernel; it drives apt, dnf and pacman from any one image.
+bash "$L/tests/test_kernel_cleanup.sh"
+assert_eq "kernel_cleanup suite exits 0" 0 "$?"
+
+section "swap_setup.sh"
+# A fixture fstab and stubbed swap tools: nothing here formats, enables or
+# disables real swap. The create and remove round trip needs root, which the
+# tester containers have.
+bash "$L/tests/test_swap_setup.sh"
+assert_eq "swap_setup suite exits 0" 0 "$?"
+
 section "net_doctor.sh"
 NET="$L/net_doctor.sh"
 scratch_home="$(mktemp -d)"
@@ -1136,6 +1172,11 @@ else
   ok "schedule_report --quiet drops the healthy lines"
 fi
 assert_contains "schedule_report --quiet still summarises" "$out" "== summary =="
+
+# --failed, --strict and --cron-dir against a stubbed systemctl and crontab and
+# a fixture cron directory; the host's systemd and cron are never asked.
+bash "$L/tests/test_schedule_report_failed.sh"
+assert_eq "schedule_report --failed suite exits 0" "0" "$?"
 
 section "sysctl_defaults.sh"
 SYSCTL="$L/sysctl_defaults.sh"
@@ -1217,6 +1258,26 @@ else
   err "sysctl_defaults --revert did not restore max_user_watches"
 fi
 
+# A backup that cannot be written stops --apply before anything changes: no
+# drop-in (not even its directory) and no live value.
+sysctl_nobackup_d="$sysctl_root/never-created.d"
+out="$(
+  SYSCTL_D="$sysctl_nobackup_d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
+    "$SYSCTL" --apply --only inotify --backup-file "$sysctl_root/no-such-dir/backup.txt" 2>&1
+)"; rc=$?
+assert_eq "sysctl_defaults --apply with an unwritable --backup-file exits nonzero" "1" "$rc"
+assert_contains "sysctl_defaults names the backup it could not write" "$out" "cannot write the backup"
+if [[ -e "$sysctl_nobackup_d" || -e "$sysctl_root/no-such-dir" ]]; then
+  err "sysctl_defaults wrote a drop-in or directory without a backup"
+else
+  ok "sysctl_defaults wrote no drop-in without a backup"
+fi
+if [[ "$(cat "$sysctl_root/proc/fs/inotify/max_user_watches")" == "8192" ]]; then
+  ok "sysctl_defaults changed no live value without a backup"
+else
+  err "sysctl_defaults changed a live value without a backup"
+fi
+
 # --revert used to feed every key in the backup straight to write_live, and
 # picked its backup by globbing a world-writable TMPDIR. Between them, any
 # local user could leave a file for root to find and set a sysctl of their
@@ -1254,6 +1315,202 @@ assert_contains "sysctl_defaults refuses sysctl(8) under a PROC_SYS override" \
   "$out" "refusing 'sysctl -w"
 
 rm -rf "$sysctl_root"
+
+# --check is the report as a gate. It reads the same fake procfs and sysctl.d,
+# needs no root, and writes nothing, so every state below is built by hand
+# between runs and the digest proves the runs themselves changed nothing.
+check_root="$(mktemp -d)"
+mkdir -p "$check_root/proc/fs/inotify" "$check_root/proc/vm" "$check_root/sysctl.d" "$check_root/tmp"
+printf '8192\n' > "$check_root/proc/fs/inotify/max_user_watches"
+printf '128\n' > "$check_root/proc/fs/inotify/max_user_instances"
+printf '16384\n' > "$check_root/proc/fs/inotify/max_queued_events"
+printf '60\n' > "$check_root/proc/vm/swappiness"
+check_dropin="$check_root/sysctl.d/99-ops-toolbox.conf"
+run_check() {
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      "$SYSCTL" --check "$@" 2>&1
+  )"
+  rc=$?
+}
+check_digest() {
+  find "$check_root" -type f -exec sha256sum {} + | LC_ALL=C sort
+}
+
+SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+  "$SYSCTL" --apply --backup-file "$check_root/tmp/backup.txt" >/dev/null 2>&1 \
+  || err "sysctl_defaults --apply against the check fixture exited $? - every --check below starts from the wrong state"
+
+before="$(check_digest)"
+run_check
+assert_eq "sysctl_defaults --check after --apply exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check marks a key OK" "$out" "OK          vm.swappiness = 10"
+assert_contains "sysctl_defaults --check summarises" "$out" "4 ok, 0 drift, 0 unpersisted, 0 stale, 0 shadowed, 0 skipped"
+assert_eq "sysctl_defaults --check writes nothing" "$before" "$(check_digest)"
+
+printf '60\n' > "$check_root/proc/vm/swappiness"
+before="$(check_digest)"
+run_check
+assert_eq "sysctl_defaults --check with a drifted value -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check names the drift" "$out" "DRIFT"
+assert_contains "sysctl_defaults --check names the drifted key" "$(grep DRIFT <<<"$out")" "vm.swappiness = 60 (want 10)"
+assert_eq "sysctl_defaults --check on drift writes nothing" "$before" "$(check_digest)"
+printf '10\n' > "$check_root/proc/vm/swappiness"
+
+mv "$check_dropin" "$check_root/tmp/dropin.saved"
+run_check
+assert_eq "sysctl_defaults --check without the drop-in -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls a live-only value UNPERSISTED" "$out" "UNPERSISTED"
+assert_contains "sysctl_defaults --check prints the fix" "$out" "--apply"
+printf 'vm.swappiness = 10\n' > "$check_root/sysctl.d/60-other.conf"
+run_check --only vm
+assert_eq "sysctl_defaults --check accepts a value another file persists" "0" "$rc"
+assert_contains "sysctl_defaults --check names the persisting file" "$out" "persisted by $check_root/sysctl.d/60-other.conf"
+printf 'vm.swappiness = 20\n' > "$check_root/sysctl.d/60-other.conf"
+run_check --only vm
+assert_eq "sysctl_defaults --check with another file setting a different value -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check still calls that UNPERSISTED" "$out" "UNPERSISTED"
+rm -f "$check_root/sysctl.d/60-other.conf"
+mv "$check_root/tmp/dropin.saved" "$check_dropin"
+
+sed -i 's/^vm.swappiness = 10$/vm.swappiness = 30/' "$check_dropin"
+run_check
+assert_eq "sysctl_defaults --check with a stale drop-in -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls the drop-in STALE" "$(grep STALE <<<"$out")" "vm.swappiness"
+sed -i 's/^vm.swappiness = 30$/vm.swappiness = 10/' "$check_dropin"
+
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+printf 'vm.swappiness = 5\n' > "$check_root/sysctl.d/10-early.conf"
+run_check
+assert_eq "sysctl_defaults --check with a later override -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls it SHADOWED" "$out" "SHADOWED"
+assert_contains "sysctl_defaults --check names the shadowing file" "$(grep SHADOWED <<<"$out")" "99-zz.conf"
+assert_not_contains "sysctl_defaults --check ignores a file read before ours" "$out" "10-early.conf"
+rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/sysctl.d/10-early.conf"
+
+# systemd-sysctl precedence across directories: the first directory holding a
+# basename wins, and a symlink to /dev/null masks the name below it.
+mkdir -p "$check_root/run.d" "$check_root/lib.d"
+extra_dirs="$check_root/run.d:$check_root/lib.d"
+printf 'vm.swappiness = 60\n' > "$check_root/lib.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check sees a later override in a lower directory -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check names the lower-directory file" "$(grep SHADOWED <<<"$out")" "lib.d/99-zz.conf"
+run_check
+assert_eq "sysctl_defaults --check ignores the extra directories by default" "0" "$rc"
+printf 'vm.swappiness = 10\n' > "$check_root/run.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check lets a higher directory replace a same-name file" "0" "$rc"
+rm -f "$check_root/run.d/99-zz.conf"
+ln -s /dev/null "$check_root/run.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check honours a /dev/null mask in a higher directory" "0" "$rc"
+rm -f "$check_root/run.d/99-zz.conf"
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check sees the same-name file in sysctl.d" "1" "$rc"
+rm -f "$check_root/sysctl.d/99-zz.conf"
+ln -s /dev/null "$check_root/sysctl.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check honours a /dev/null mask in sysctl.d" "0" "$rc"
+rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/lib.d/99-zz.conf"
+rmdir "$check_root/run.d" "$check_root/lib.d"
+
+run_check --only vm
+assert_eq "sysctl_defaults --check --only vm exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check --only vm checks swappiness" "$out" "vm.swappiness"
+assert_not_contains "sysctl_defaults --check --only vm leaves inotify alone" "$out" "fs.inotify"
+
+run_check --apply
+assert_eq "sysctl_defaults --check with --apply -> 3" "3" "$rc"
+run_check --revert
+assert_eq "sysctl_defaults --check with --revert -> 3" "3" "$rc"
+run_check --backup-file "$check_root/tmp/other.txt"
+assert_eq "sysctl_defaults --check with --backup-file -> 3" "3" "$rc"
+
+# A later-sorting file this user cannot read (0600, run as non-root) may
+# override any key, and its contents are unknown: every key whose verdict
+# would be OK is a SKIP naming the file instead. Root reads everything, so
+# there the case runs as nobody via setpriv; where the file stays readable
+# it is skipped with a printed line.
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+chmod 000 "$check_root/sysctl.d/99-zz.conf"
+sysctl_runner=()
+sysctl_can=1
+if [[ "$(id -u)" == 0 ]]; then
+  sysctl_can=0
+  if command -v setpriv >/dev/null 2>&1; then
+    chmod 755 "$check_root" "$check_root/sysctl.d" "$check_root/proc" "$check_root/proc/vm" \
+      "$check_root/proc/fs" "$check_root/proc/fs/inotify" "$check_root/tmp"
+    sysctl_runner=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+    if "${sysctl_runner[@]}" test -r "$SYSCTL" && ! "${sysctl_runner[@]}" test -r "$check_root/sysctl.d/99-zz.conf"; then
+      sysctl_can=1
+    fi
+  fi
+elif [[ -r "$check_root/sysctl.d/99-zz.conf" ]]; then
+  sysctl_can=0
+fi
+if (( sysctl_can )); then
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check with an unreadable later file exits 0" "0" "$rc"
+  assert_not_contains "sysctl_defaults --check never calls a key OK beside an unreadable later file" "$out" "OK  "
+  assert_contains "sysctl_defaults --check names the unreadable file" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/99-zz.conf"
+  assert_eq "sysctl_defaults --check skips every key beside an unreadable later file" "4" "$(grep -c SKIP <<<"$out")"
+  assert_contains "sysctl_defaults --check counts them as skipped" "$out" "0 ok, 0 drift, 0 unpersisted, 0 stale, 0 shadowed, 4 skipped"
+else
+  ok "sysctl_defaults unreadable later-file check skipped (the file stays readable: root without setpriv)"
+fi
+chmod 644 "$check_root/sysctl.d/99-zz.conf"
+rm -f "$check_root/sysctl.d/99-zz.conf"
+if (( sysctl_can )); then
+  # The file that matters is the one read after the file that sets the key,
+  # not only after our drop-in: 10-a.conf sets it, an unreadable 50-b.conf
+  # (read before ours) could still override it, and ours does not set it.
+  mv "$check_dropin" "$check_root/tmp/dropin.saved"
+  printf 'vm.swappiness = 10\n' > "$check_root/sysctl.d/10-a.conf"
+  printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/50-b.conf"
+  chmod 000 "$check_root/sysctl.d/50-b.conf"
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check --only vm 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check beside a middle unreadable file exits 0" "0" "$rc"
+  assert_contains "sysctl_defaults --check cannot call a key OK past a middle unreadable file" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/50-b.conf"
+  assert_not_contains "sysctl_defaults --check does not call that key OK" "$out" "OK  "
+  printf 'vm.swappiness = 20\n' > "$check_root/sysctl.d/10-a.conf"
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check --only vm 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check exits 0 when UNPERSISTED is undecidable" "0" "$rc"
+  assert_not_contains "sysctl_defaults --check holds UNPERSISTED back when a file could fix it" "$out" "UNPERSISTED"
+  assert_contains "sysctl_defaults --check skips that key instead" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/50-b.conf"
+  chmod 644 "$check_root/sysctl.d/50-b.conf"
+  rm -f "$check_root/sysctl.d/10-a.conf" "$check_root/sysctl.d/50-b.conf"
+  mv "$check_root/tmp/dropin.saved" "$check_dropin"
+fi
+
+# An unreadable key is a SKIP, never a false OK or a false failure; the rest
+# still decide the exit code.
+rm -f "$check_root/proc/fs/inotify/max_queued_events"
+run_check
+assert_eq "sysctl_defaults --check with one unreadable key exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check skips the unreadable key" "$(grep SKIP <<<"$out")" "fs.inotify.max_queued_events"
+printf '60\n' > "$check_root/proc/vm/swappiness"
+run_check
+assert_eq "sysctl_defaults --check still fails on drift beside a SKIP" "1" "$rc"
+
+mkdir -p "$check_root/empty-proc"
+out="$(
+  SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/empty-proc" TMPDIR="$check_root/tmp" \
+    "$SYSCTL" --check 2>&1
+)"; rc=$?
+assert_eq "sysctl_defaults --check with nothing readable exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check says nothing was readable" "$out" "nothing to check"
+rm -rf "$check_root"
 
 section "tls_expiry.sh"
 TLS="$L/tls_expiry.sh"
@@ -1406,6 +1663,10 @@ rm -rf "$src" "$dest"
 
 bash "$L/tests/test_config_backup.sh"
 assert_eq "config_backup publication regression suite exits 0" "0" "$?"
+bash "$L/tests/test_config_backup_diff.sh"
+assert_eq "config_backup --diff suite exits 0" "0" "$?"
+bash "$L/tests/test_config_backup_exclude.sh"
+assert_eq "config_backup --exclude suite exits 0" "0" "$?"
 
 section "ssh_client_doctor.sh"
 SSHDOC="$L/ssh_client_doctor.sh"

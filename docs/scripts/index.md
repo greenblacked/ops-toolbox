@@ -30,13 +30,15 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/hardening_audit.sh` | Linux | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `linux/ssh_client_doctor.sh` | Linux | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
-| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`. | <span class="stage stage-report">read-only</span> |
-| `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert` |
+| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`; `--failed` finds broken ones. | <span class="stage stage-report">read-only</span> |
+| `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--check` gates on drift; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
+| `linux/swap_setup.sh` | Linux | Report swap; create or remove a swapfile and its fstab line. | `--dry-run` with `--create` or `--remove` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |
 | `linux/install_devtools.sh` | Linux | Install CLIs, Python, Go, Terraform, Helm. | `--dry-run` |
-| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras. | `--dry-run` |
-| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation. | `--dry-run` |
-| `linux/packages.sh` | Linux | List, dump, check, diff, install the package set. | `--dry-run` (install) |
+| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs, a journal size cap, unused images and old snap revisions. | `--dry-run` |
+| `linux/kernel_cleanup.sh` | Linux | Remove old kernel packages, keeping the running one plus N. | `--dry-run`; `--list` is read-only |
+| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation and exclusions; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
+| `linux/packages.sh` | Linux | List, dump, check, diff, install the package set; list holds and orphans. | `--dry-run` (install) |
 | `linux/install_aliases.sh` | Linux | Add a marked alias block to `~/.bashrc`. | `--dry-run` |
 | `linux/bash_aliases.sh` | Linux | Bash aliases; sourced. | n/a (sourced) |
 | `linux/systemd/stay_fresh_timer.sh` | Linux | Install and manage a systemd user timer. | `--dry-run` (install); `--print-only` |
