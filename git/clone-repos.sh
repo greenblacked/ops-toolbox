@@ -201,6 +201,20 @@ repo_name_from_url() {
   printf '%s' "$name"
 }
 
+# A branch whose upstream is configured but whose remote-tracking ref is gone
+# (deleted on the remote and pruned) is told apart from one that never had an
+# upstream. Both are held; neither is merged into.
+upstream_missing() {
+  local dest="$1" branch
+  branch="$(git -C "$dest" branch --show-current 2>/dev/null || true)"
+  if [[ -n "$branch" ]] && git -C "$dest" config --get "branch.$branch.merge" >/dev/null 2>&1; then
+    warn "held (upstream gone): $dest"
+  else
+    warn "held (no upstream): $dest"
+  fi
+  held=$((held + 1))
+}
+
 # --update for one existing checkout. The local checks come first and run
 # under --dry-run too, because they only read; the fetch and the merge go
 # through run(). Every refusal is a visible "held" line, never a repair: a
@@ -213,8 +227,7 @@ update_checkout() {
     return 0
   fi
   if ! git -C "$dest" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
-    warn "held (no upstream): $dest"
-    held=$((held + 1))
+    upstream_missing "$dest"
     return 0
   fi
   # Untracked files do not block: a fast-forward that would overwrite one
@@ -236,15 +249,21 @@ update_checkout() {
   # Nothing is fetched in a dry run, so whether the checkout is behind is
   # unknowable; both steps are previewed and counted as an update to make.
   if (( DRY_RUN == 1 )); then
-    run git -C "$dest" fetch --quiet
+    run git -C "$dest" fetch --prune --quiet
     run git -C "$dest" merge --ff-only --quiet '@{upstream}'
     updated=$((updated + 1))
     return 0
   fi
 
-  if ! run git -C "$dest" fetch --quiet; then
+  if ! run git -C "$dest" fetch --prune --quiet; then
     err "fetch failed: $dest"
     failed=$((failed + 1))
+    return 0
+  fi
+  # --prune above removed a remote-tracking ref whose branch was deleted
+  # upstream; without it the stale ref would read as "up to date".
+  if ! git -C "$dest" rev-parse --verify --quiet '@{upstream}^{commit}' >/dev/null 2>&1; then
+    upstream_missing "$dest"
     return 0
   fi
   if ! counts="$(git -C "$dest" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"; then

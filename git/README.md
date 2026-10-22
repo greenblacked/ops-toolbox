@@ -894,7 +894,8 @@ its path, and the directory is left for you to inspect rather than removed.
 fast-forwarded on the branch it has checked out, so the whole list is brought
 up to date without a loop of `git pull`. A checkout is **held** — reported
 with a `held (...)` line and left exactly as it is — when its `HEAD` is
-detached, its branch has no upstream, tracked files are modified (or `git status`
+detached, its branch has no upstream (or its upstream branch was deleted
+on the remote), tracked files are modified (or `git status`
 cannot be read, for example with a corrupt index), or the branch
 has diverged from its upstream. It never switches branches, stashes, or makes a
 merge commit; a fast-forward that cannot apply (an untracked file in the way)
@@ -905,14 +906,14 @@ up to date with its unpushed count.
 | --- | --- |
 | `updated (+N commit(s)): PATH` | Fetched and fast-forwarded. |
 | `up to date: PATH` | Nothing new upstream (`(N unpushed commit(s))` when it is ahead). |
-| `held (detached HEAD)`, `held (no upstream)`, `held (uncommitted changes)`, `held (cannot read git status)`, `held (diverged, +A/-B)` | Left alone; reconcile it yourself. |
+| `held (detached HEAD)`, `held (no upstream)`, `held (upstream gone)`, `held (uncommitted changes)`, `held (cannot read git status)`, `held (diverged, +A/-B)` | Left alone; reconcile it yourself. `upstream gone` means the pruning fetch removed the branch's remote-tracking ref. |
 | `fetch failed: PATH`, `fast-forward failed: PATH` | Counted as failed. |
 
 The summary becomes `cloned N, updated U, up to date C, held H, failed F`.
 Held checkouts do not fail the run; a failed fetch or fast-forward exits `1`
 like a failed clone. Under `--dry-run` the local checks still run and print
 their `held` lines, and every other checkout prints
-`dry-run: would run: git -C PATH fetch --quiet` and
+`dry-run: would run: git -C PATH fetch --prune --quiet` and
 `dry-run: would run: git -C PATH merge --ff-only --quiet @{upstream}`; nothing is
 fetched, so whether it is behind cannot be known yet. `--update` writes into
 the existing checkouts, so preview it first.

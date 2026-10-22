@@ -1533,7 +1533,7 @@ touch -t 200101010000 "$clone_up/file.txt"
 index_up="$(cksum <"$clone_up/.git/index")"
 out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" --dry-run 2>&1)"; rc=$?
 assert_eq "$rc" "0" "clone --update --dry-run exits 0"
-assert_contains "$out" "dry-run: would run: git -C $clone_up fetch --quiet" "--update --dry-run previews the fetch"
+assert_contains "$out" "dry-run: would run: git -C $clone_up fetch --prune --quiet" "--update --dry-run previews the pruning fetch"
 assert_contains "$out" "dry-run: would run: git -C $clone_up merge --ff-only --quiet @{upstream}" "--update --dry-run previews the fast-forward"
 assert_contains "$out" "dry-run complete; no changes written" "--update --dry-run closes with the summary line"
 assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD~1)" "--update --dry-run leaves HEAD behind"
@@ -1591,6 +1591,19 @@ assert_eq "$rc" "0" "a checkout with an unreadable index is held, not failed"
 assert_contains "$out" "held (cannot read git status): $clone_up" "a failing git status holds the checkout"
 assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "an unreadable-index checkout keeps its HEAD"
 cp "$clone_dest/index.bak" "$clone_up/.git/index" || err "restore the index"
+
+# An upstream deleted on the remote: the pruning fetch drops the stale
+# remote-tracking ref, so the branch is held rather than read as up to date.
+git -C "$clone_seed" push -q origin main:topic || err "push the topic branch"
+git -C "$clone_up" fetch -q origin || err "fetch the topic branch"
+git -C "$clone_up" switch -q -c topic --track origin/topic || err "track the topic branch"
+git -C "$clone_seed" push -q origin --delete topic || err "delete the topic branch upstream"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a deleted upstream holds the checkout without failing the run"
+assert_contains "$out" "held (upstream gone): $clone_up" "a deleted upstream is reported, not read as up to date"
+assert_eq "$(git -C "$clone_up" rev-parse --verify --quiet refs/remotes/origin/topic || true)" "" "the stale remote-tracking ref is pruned"
+git -C "$clone_up" switch -q main
+git -C "$clone_up" branch -q -D topic
 
 git -C "$clone_nested" remote set-url origin "$clone_dest/does-not-exist.git"
 out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?

@@ -4,3 +4,5 @@
   with a detached HEAD, no upstream, modified tracked files, a `git status`
   that cannot be read or a diverged branch is held and reported, never merged
   into, stashed or switched, and a held checkout does not fail the run.
+  The fetch prunes, so a branch whose upstream was deleted on the remote is
+  held as `upstream gone` instead of reading as up to date.
