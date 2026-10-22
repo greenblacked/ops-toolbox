@@ -135,18 +135,22 @@ function Get-AuditCheckId {
 # could have set any keyword earlier than the lines after it: what was set
 # before it still stands, and the paths are listed under the key
 # '#unreadable-include' (no real keyword has a '#') so the caller can say a
-# missing keyword was not judged instead of passing it.
+# missing keyword was not judged instead of passing it. A Match block is
+# never global, but one that turns PasswordAuthentication or
+# PermitEmptyPasswords on is listed under '#match-risks' (one line each,
+# naming the Match criteria), as a pass would be wrong for those users.
 function Get-SshdSetting {
     param(
         [string[]]$Lines,
         [string]$BaseDir = '',
         [string]$ProgramData = '',
         [int]$Depth = 0,
-        [hashtable]$State = $null
+        [hashtable]$State = $null,
+        [string]$MatchCriteria = ''
     )
     $top = $false
     if ($null -eq $State) {
-        $State = @{ Settings = @{}; Stop = $false; Unreadable = @() }
+        $State = @{ Settings = @{}; Stop = $false; Unreadable = @(); MatchRisks = @() }
         $top = $true
     }
     $settings = $State.Settings
@@ -159,12 +163,14 @@ function Get-SshdSetting {
         if (-not $m.Success) { continue }
         $key = $m.Groups['key'].Value.ToLowerInvariant()
         if ($key -eq 'match') {
-            # In the main file a Match ends the global part for good. In an
-            # included file it ends only that file, as sshd restores the
-            # parent's state after an Include: the parent's later lines and
-            # later Includes are still global.
-            if ($top) { $State.Stop = $true }
-            break
+            # A Match ends the global part of its file: what follows applies
+            # only to the users it names, so it is never a global setting.
+            # An Include inside a Match is read in that Match, and sshd
+            # restores the parent's state after an Include, so the parent's
+            # later lines stay global.
+            $MatchCriteria = $m.Groups['value'].Value.Trim()
+            if (-not $MatchCriteria) { $MatchCriteria = '(no criteria)' }
+            continue
         }
         if ($key -eq 'include') {
             foreach ($token in [regex]::Matches($m.Groups['value'].Value, '"([^"]*)"|(\S+)')) {
@@ -203,15 +209,23 @@ function Get-SshdSetting {
                         & $fail $file
                         break
                     }
-                    $null = Get-SshdSetting -Lines $included -BaseDir $BaseDir -ProgramData $ProgramData -Depth ($Depth + 1) -State $State
+                    $null = Get-SshdSetting -Lines $included -BaseDir $BaseDir -ProgramData $ProgramData -Depth ($Depth + 1) -State $State -MatchCriteria $MatchCriteria
                     if ($State.Stop) { break }
                 }
+            }
+            continue
+        }
+        if ($MatchCriteria) {
+            $value = $m.Groups['value'].Value.Trim()
+            if (($key -eq 'passwordauthentication' -or $key -eq 'permitemptypasswords') -and $value -match '^(?i:yes|true)$') {
+                $State.MatchRisks += "$key $value in Match $MatchCriteria"
             }
             continue
         }
         if (-not $settings.ContainsKey($key)) { $settings[$key] = $m.Groups['value'].Value.Trim() }
     }
     if ($top) {
+        if ($State.MatchRisks.Count -gt 0) { $settings['#match-risks'] = @($State.MatchRisks) }
         if ($State.Unreadable.Count -gt 0) { $settings['#unreadable-include'] = @($State.Unreadable) }
         return $settings
     }
@@ -318,19 +332,33 @@ function Test-AuditFact {
         $blind = $sshd.ContainsKey('#unreadable-include')
         $blindWhy = ''
         if ($blind) { $blindWhy = 'an Include in sshd_config could not be read: ' + (@($sshd['#unreadable-include']) -join ', ') }
+        # A Match block can turn either keyword back on for some users, so
+        # the global value alone is not a pass.
+        $risks = @()
+        if ($sshd.ContainsKey('#match-risks')) { $risks = @($sshd['#match-risks']) }
+        $pwRisks = @($risks | Where-Object { $_ -like 'passwordauthentication *' })
+        $emptyRisks = @($risks | Where-Object { $_ -like 'permitemptypasswords *' })
+        $pwFix = 'set PasswordAuthentication no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'
+        $pwMatchFix = 'remove PasswordAuthentication yes from the Match block(s) in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'
         if ($sshd.ContainsKey('passwordauthentication')) {
-            if ([string]$sshd['passwordauthentication'] -eq 'no') {
-                $findings.Add((& $new 'remote' 'sshd-password' 'pass' 'sshd accepts keys only (PasswordAuthentication no)' ''))
+            if ([string]$sshd['passwordauthentication'] -ne 'no') {
+                $findings.Add((& $new 'remote' 'sshd-password' 'warn' 'sshd accepts passwords, which invites guessing' $pwFix))
+            } elseif ($pwRisks.Count -gt 0) {
+                $findings.Add((& $new 'remote' 'sshd-password' 'warn' ('sshd accepts passwords for some users: ' + ($pwRisks -join '; ')) $pwMatchFix))
             } else {
-                $findings.Add((& $new 'remote' 'sshd-password' 'warn' 'sshd accepts passwords, which invites guessing' 'set PasswordAuthentication no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
+                $findings.Add((& $new 'remote' 'sshd-password' 'pass' 'sshd accepts keys only (PasswordAuthentication no)' ''))
             }
+        } elseif ($pwRisks.Count -gt 0) {
+            $findings.Add((& $new 'remote' 'sshd-password' 'warn' ('sshd accepts passwords for some users: ' + ($pwRisks -join '; ')) $pwMatchFix))
         } elseif ($blind) {
             $findings.Add((& $new 'remote' 'sshd-password' 'skip' "PasswordAuthentication not judged: $blindWhy" ''))
         } else {
-            $findings.Add((& $new 'remote' 'sshd-password' 'warn' 'sshd accepts passwords, which invites guessing' 'set PasswordAuthentication no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
+            $findings.Add((& $new 'remote' 'sshd-password' 'warn' 'sshd accepts passwords, which invites guessing' $pwFix))
         }
         if ([string]$sshd['permitemptypasswords'] -eq 'yes') {
             $findings.Add((& $new 'remote' 'sshd-empty-password' 'fail' 'sshd accepts accounts with an empty password' 'set PermitEmptyPasswords no in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
+        } elseif ($emptyRisks.Count -gt 0) {
+            $findings.Add((& $new 'remote' 'sshd-empty-password' 'warn' ('sshd accepts empty passwords for some users: ' + ($emptyRisks -join '; ')) 'remove PermitEmptyPasswords yes from the Match block(s) in $env:ProgramData\ssh\sshd_config, then Restart-Service sshd'))
         } elseif ($blind -and -not $sshd.ContainsKey('permitemptypasswords')) {
             $findings.Add((& $new 'remote' 'sshd-empty-password' 'skip' "PermitEmptyPasswords not judged: $blindWhy" ''))
         } else {

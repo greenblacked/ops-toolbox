@@ -2466,6 +2466,38 @@ Match Group administrators
         } else {
             Test-Fail 'a setting after a Match in the main file was read as global'
         }
+
+        # A Match block that turns passwords or empty passwords on is listed
+        # with its criteria; one that does not touch them, or sets them to no,
+        # is not.
+        $r = Get-SshdSetting -Lines @('PasswordAuthentication no', 'PermitEmptyPasswords no', 'Match User bob,carol', 'PasswordAuthentication yes', 'Match Address 10.0.0.*', 'PermitEmptyPasswords YES')
+        $risks = @($r['#match-risks'])
+        if ($r['passwordauthentication'] -eq 'no' -and $r['permitemptypasswords'] -eq 'no' -and $risks.Count -eq 2 -and
+            $risks[0] -like '*User bob,carol*' -and $risks[1] -like '*Address 10.0.0.**') {
+            Test-Ok 'a Match block that enables passwords or empty passwords is listed with its criteria, the global values stay'
+        } else {
+            Test-Fail "Match risks read as [$($risks -join ' | ')], global password='$($r['passwordauthentication'])' empty='$($r['permitemptypasswords'])'"
+        }
+        $r = Get-SshdSetting -Lines @('PasswordAuthentication no', 'Match Group administrators', 'PasswordAuthentication no', 'PubkeyAuthentication no')
+        if (-not $r.ContainsKey('#match-risks')) {
+            Test-Ok 'a Match block that sets the keywords to no, or leaves them alone, is not a risk'
+        } else {
+            Test-Fail "a harmless Match block was listed: $(@($r['#match-risks']) -join ' | ')"
+        }
+        & $writeInc (Join-Path $incBox 'matchrisk.conf') "Match User dave`nPasswordAuthentication yes`n"
+        $r = Get-SshdSetting -Lines @('Include matchrisk.conf', 'Port 22') -BaseDir $incBox
+        if (@($r['#match-risks']).Count -eq 1 -and @($r['#match-risks'])[0] -like '*User dave*' -and $r['port'] -eq '22' -and -not $r.ContainsKey('passwordauthentication')) {
+            Test-Ok 'a Match risk inside an included file is listed and is not a global setting'
+        } else {
+            Test-Fail "Match risk in an Include read [$(@($r['#match-risks']) -join ' | ')] port='$($r['port'])'"
+        }
+        & $writeInc (Join-Path $incBox 'inmatch.conf') "PermitEmptyPasswords yes`n"
+        $r = Get-SshdSetting -Lines @('PermitEmptyPasswords no', 'Match User erin', 'Include inmatch.conf') -BaseDir $incBox
+        if (@($r['#match-risks']).Count -eq 1 -and @($r['#match-risks'])[0] -like '*User erin*' -and $r['permitemptypasswords'] -eq 'no') {
+            Test-Ok 'an Include inside a Match block is read in that Match'
+        } else {
+            Test-Fail "Include inside a Match read [$(@($r['#match-risks']) -join ' | ')] empty='$($r['permitemptypasswords'])'"
+        }
         $r = Get-SshdSetting -Lines @('PasswordAuthentication no', 'Include sshd_config.d/*.conf') -BaseDir $incBox
         if ($r['passwordauthentication'] -eq 'no' -and $r['permitemptypasswords'] -eq 'no') {
             Test-Ok 'a value set before the Include is not overridden by it'
@@ -2552,6 +2584,11 @@ Match Group administrators
                 @{ Label = 'PermitEmptyPasswords yes set before the unreadable Include'; Config = @{ permitemptypasswords = 'yes'; $cut = @('x.conf') }; Id = 'sshd-empty-password'; Expect = 'fail' }
                 @{ Label = 'nothing set, every Include read: password check'; Config = @{}; Id = 'sshd-password'; Expect = 'warn' }
                 @{ Label = 'nothing set, every Include read: empty-password check'; Config = @{}; Id = 'sshd-empty-password'; Expect = 'pass' }
+                @{ Label = 'PasswordAuthentication no, a Match block enables passwords'; Config = @{ passwordauthentication = 'no'; '#match-risks' = @('passwordauthentication yes in Match User bob') }; Id = 'sshd-password'; Expect = 'warn' }
+                @{ Label = 'PasswordAuthentication no, Match blocks that do not enable passwords'; Config = @{ passwordauthentication = 'no'; permitemptypasswords = 'no' }; Id = 'sshd-password'; Expect = 'pass' }
+                @{ Label = 'PermitEmptyPasswords no, a Match block enables empty passwords'; Config = @{ permitemptypasswords = 'no'; '#match-risks' = @('permitemptypasswords yes in Match User bob') }; Id = 'sshd-empty-password'; Expect = 'warn' }
+                @{ Label = 'a Match password risk does not touch the empty-password check'; Config = @{ permitemptypasswords = 'no'; '#match-risks' = @('passwordauthentication yes in Match User bob') }; Id = 'sshd-empty-password'; Expect = 'pass' }
+                @{ Label = 'nothing set, an Include unreadable, a Match enables passwords'; Config = @{ $cut = @('x.conf'); '#match-risks' = @('passwordauthentication yes in Match User bob') }; Id = 'sshd-password'; Expect = 'warn' }
             )
             foreach ($case in $cases) {
                 $got = & $levelOf $case.Config $case.Id

@@ -12,3 +12,6 @@
   It follows `Include` lines in `sshd_config` as sshd does, first value
   wins, and reports a setting it could not read as not judged rather than
   as a pass.
+  A `Match` block that turns `PasswordAuthentication` or
+  `PermitEmptyPasswords` on for some users is a warning naming its
+  criteria, not a pass.
