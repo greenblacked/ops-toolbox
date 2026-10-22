@@ -179,6 +179,15 @@ out="$(run_in "$repo" --from v9.9.9 --to HEAD --next-version 2>&1)"; rc=$?
 assert_eq "$rc" 3 '--next-version from a branch named like a tag -> 3'
 assert_contains "$out" 'not a tag' 'the error says the start is not a tag'
 git -C "$repo" branch -D v9.9.9 >/dev/null 2>&1
+out="$(run_in "$repo" --from refs/tags/v1.2.3 --to HEAD --next-version 2>&1)"; rc=$?
+assert_eq "$rc" 0 '--next-version accepts a fully-qualified tag ref'
+assert_eq "$out" '2.0.0' 'a refs/tags/ start bumps like the bare tag name'
+out="$(run_in "$repo" --from v1.2.3 --to HEAD --next-version 2>&1)"
+assert_eq "$out" '2.0.0' 'the bare tag name still works'
+git -C "$repo" branch v9.9.9 HEAD~1 || err 'create a branch behind HEAD'
+run_in "$repo" --from refs/heads/v9.9.9 --to HEAD --next-version >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 3 '--next-version from a fully-qualified branch ref -> 3'
+git -C "$repo" branch -D v9.9.9 >/dev/null 2>&1
 
 section "bad refs and usage"
 run_in "$repo" --from nope >/dev/null 2>&1; rc=$?

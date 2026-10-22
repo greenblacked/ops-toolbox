@@ -238,12 +238,16 @@ if (( NEXT_VERSION == 1 )); then
     exit 3
   fi
   # An explicit --from may name a branch or a bare commit-ish; only a tag
-  # is a release to bump from.
-  if ! git show-ref --verify --quiet "refs/tags/$from_label"; then
+  # is a release to bump from. A fully-qualified refs/tags/ name is accepted
+  # and stripped, so the version match below sees the bare tag name.
+  tag_name="$from_label"
+  if [[ "$from_label" == refs/tags/* ]] && git show-ref --verify --quiet "$from_label"; then
+    tag_name="${from_label#refs/tags/}"
+  elif ! git show-ref --verify --quiet "refs/tags/$from_label"; then
     printf -- "--next-version needs a tag to start from, got: %s - it is not a tag\n" "$from_label" >&2
     exit 3
   fi
-  if [[ ! "$from_label" =~ $semver_re ]]; then
+  if [[ ! "$tag_name" =~ $semver_re ]]; then
     printf -- "--next-version needs a MAJOR.MINOR.PATCH tag, got: %s\n" "$from_label" >&2
     exit 3
   fi
