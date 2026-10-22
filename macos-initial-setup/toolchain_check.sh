@@ -376,6 +376,21 @@ mise_name() {
   esac
 }
 
+# Every version a pin file lists, on one line: pyenv allows several, one per
+# line or separated by whitespace, with # comments. Blank and comment-only
+# lines are dropped.
+all_versions() {
+  local line out=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" ]] && out="${out:+$out }$line"
+  done < "$1"
+  printf '%s\n' "$out"
+}
+
 # check_pin TOOL VERSION SOURCE KIND PROBE_ACTIVE
 check_pin() {
   local tool="$1" raw="$2" src="$3" kind="$4" probe="$5"
@@ -449,7 +464,7 @@ check_tool() {
   case "$tool" in
     python)
       if [[ -f "$DIR/.python-version" ]]; then
-        src=".python-version"; versions="$(first_line "$DIR/.python-version")"
+        src=".python-version"; versions="$(all_versions "$DIR/.python-version")"
         [[ -n "$(tool_versions python)" ]] && other=".tool-versions"
       else
         versions="$(tool_versions python)"; [[ -n "$versions" ]] && src=".tool-versions"

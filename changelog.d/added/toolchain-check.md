@@ -9,3 +9,6 @@
   A prerelease (`rc`, `beta`, `alpha`, `pre`) counts as older than the same
   release, and `rc1` is older than `rc2`, so Go `1.22rc1` does not meet a
   `1.22` or `1.22rc2` minimum.
+  A `.python-version` that lists several versions (one per line or
+  separated by spaces, with `#` comments) has every one of them checked,
+  not only the first.

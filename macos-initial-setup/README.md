@@ -485,8 +485,9 @@ installed but not the binary that actually runs.
 | `node` | `.nvmrc`, `.node-version`, `.tool-versions` (`nodejs`) | the major version of `node --version` |
 
 When `mise` is on `PATH`, `mise where TOOL@VERSION` answers first. A
-`.tool-versions` line can list several versions; each one is checked and only
-the missing ones are named. A pin found in a second file is noted, not
+`.tool-versions` line or a `.python-version` file (one version per line or
+separated by spaces, `#` comments allowed) can list several versions; each one
+is checked and only the missing ones are named. A pin found in a second file is noted, not
 checked. `system`, `latest`, `lts/*` and anything that is not a plain version
 number are notes too.
 

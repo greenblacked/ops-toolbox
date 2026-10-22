@@ -2991,6 +2991,22 @@ printf '3.12\n' > "$d/.python-version"
 out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
 assert_eq "a 3.12 pin is met by 3.12.5 -> 0" "0" "$rc"
 
+# pyenv lets .python-version list several versions, one per line or
+# separated by spaces, with comments: every one is checked.
+d="$(pindir py-multi)"
+printf '# interpreters\n3.12.5\n3.11.9 # legacy\n\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.11.9 3.12.5" tcrun "$d")"; rc=$?
+assert_eq "two installed Python versions -> 0" "0" "$rc"
+assert_contains "the first listed version is reported" "$out" "(.python-version, pyenv 3.12.5)"
+assert_contains "the second listed version is reported" "$out" "(.python-version, pyenv 3.11.9)"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a second listed Python version that is missing -> 1" "1" "$rc"
+assert_contains "the missing second version is named" "$out" "3.11.9 not installed"
+printf '3.12.5 3.10.4\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a space-separated second version that is missing -> 1" "1" "$rc"
+assert_contains "the missing space-separated version is named" "$out" "3.10.4 not installed"
+
 d="$(pindir py-crlf)"
 printf '3.12.5\r\n' > "$d/.python-version"
 out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
