@@ -152,10 +152,41 @@ class ClassifySigningKeyTestCase(unittest.TestCase):
         self.assertIsNotNone(problem)
         self.assertIn("ssh", problem)
 
-    def test_ssh_key_with_openpgp_format_is_the_reverse_mismatch(self):
-        _, problem = doctor.classify_signing_key("openpgp", "~/.ssh/id_ed25519.pub")
+    def test_ssh_literal_with_openpgp_format_is_the_reverse_mismatch(self):
+        kind, problem = doctor.classify_signing_key("openpgp", "ssh-ed25519 AAAAC3Nza")
+        self.assertEqual(kind, "ssh-literal")
         self.assertIsNotNone(problem)
         self.assertIn("openpgp", problem)
+
+    def test_email_is_a_gnupg_selector_under_openpgp(self):
+        for fmt in ("openpgp", "", None):
+            kind, problem = doctor.classify_signing_key(fmt, "me@example.com")
+            self.assertEqual(kind, "gpg-selector")
+            self.assertIsNone(problem)
+
+    def test_user_id_and_path_like_value_are_selectors_under_openpgp(self):
+        for value in ("Jane Doe", "~/keys/work"):
+            kind, problem = doctor.classify_signing_key("openpgp", value)
+            self.assertEqual(kind, "gpg-selector")
+            self.assertIsNone(problem)
+
+    def test_forced_subkey_is_a_gpg_keyid(self):
+        kind, problem = doctor.classify_signing_key(
+            "openpgp", "0123456789ABCDEF0123456789ABCDEF01234567!")
+        self.assertEqual(kind, "gpg-keyid")
+        self.assertIsNone(problem)
+
+    def test_key_literal_is_ssh_only_with_ssh_format(self):
+        kind, problem = doctor.classify_signing_key("ssh", "key::ssh-ed25519 AAAA")
+        self.assertEqual(kind, "ssh-literal")
+        self.assertIsNone(problem)
+        kind, _ = doctor.classify_signing_key("openpgp", "key::ssh-ed25519 AAAA")
+        self.assertEqual(kind, "gpg-selector")
+
+    def test_ssh_format_forced_hex_is_still_a_mismatch(self):
+        kind, problem = doctor.classify_signing_key("ssh", "ABCD1234EF567890!")
+        self.assertEqual(kind, "gpg-keyid")
+        self.assertIsNotNone(problem)
 
     def test_unset_signingkey_is_flagged_for_both_formats(self):
         for fmt in ("openpgp", "ssh"):

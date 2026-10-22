@@ -262,14 +262,21 @@ _HEX_KEYID = re.compile(r"^(0x)?[0-9A-Fa-f]{8,40}$")
 def classify_signing_key(fmt, signingkey):
     """Work out what kind of thing user.signingkey names, and whether it fits.
 
-    Returns (kind, problem). kind is one of 'gpg-keyid', 'ssh-path',
-    'ssh-literal' or 'unknown'; problem is None or a human explanation. The
-    mismatch this catches — a GPG key id left in place after switching
-    gpg.format to ssh, or the reverse — produces an error message that names
-    neither the format nor the key.
+    Returns (kind, problem). kind is one of 'gpg-keyid', 'gpg-selector',
+    'ssh-path', 'ssh-literal' or 'unknown'; problem is None or a human
+    explanation. The mismatch this catches — a GPG key id left in place after
+    switching gpg.format to ssh, or an SSH public key under openpgp — produces
+    an error message that names neither the format nor the key.
+
+    gpg.format decides how the value is read. Under openpgp (or unset) any
+    string is a GnuPG key selector: a key id, a fingerprint, a `<fpr>!`
+    forced subkey, an email address or a user-id fragment, so only a literal
+    SSH public key is flagged there. Paths and `key::` literals are SSH forms
+    only when gpg.format is ssh.
     """
     fmt = (fmt or "openpgp").strip().lower()
     value = (signingkey or "").strip()
+    literal_prefix = ("ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-sha2-")
 
     if not value:
         if fmt == "openpgp":
@@ -279,24 +286,24 @@ def classify_signing_key(fmt, signingkey):
             )
         return "unknown", "user.signingkey is unset, which the %s format requires" % fmt
 
-    if value.startswith("ssh-") or value.startswith("ecdsa-sha2-"):
-        kind = "ssh-literal"
-    elif _HEX_KEYID.match(value):
-        kind = "gpg-keyid"
-    else:
-        kind = "ssh-path"
+    if fmt == "ssh":
+        if value.startswith(literal_prefix) or value.startswith("key::"):
+            return "ssh-literal", None
+        if _HEX_KEYID.match(value.rstrip("!")):
+            return "gpg-keyid", (
+                "gpg.format is ssh but user.signingkey looks like a GPG key id; "
+                "the ssh backend wants a path to a key or a literal public key"
+            )
+        return "ssh-path", None
 
-    if fmt == "ssh" and kind == "gpg-keyid":
-        return kind, (
-            "gpg.format is ssh but user.signingkey looks like a GPG key id; "
-            "the ssh backend wants a path to a key or a literal public key"
+    if value.startswith(literal_prefix):
+        return "ssh-literal", (
+            "gpg.format is openpgp (the default) but user.signingkey is an SSH "
+            "public key; set gpg.format to ssh, or use a GPG key id"
         )
-    if fmt == "openpgp" and kind in ("ssh-path", "ssh-literal"):
-        return kind, (
-            "gpg.format is openpgp (the default) but user.signingkey looks like "
-            "an SSH key; set gpg.format to ssh, or use a GPG key id"
-        )
-    return kind, None
+    if _HEX_KEYID.match(value.rstrip("!")):
+        return "gpg-keyid", None
+    return "gpg-selector", None
 
 
 def parse_allowed_signers(text):

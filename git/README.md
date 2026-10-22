@@ -677,6 +677,13 @@ backend to produce one real signature in a temporary directory.
 ./git/git_signing_doctor.py --verify-recent 50   # git's verdict on your last 50 commits
 ```
 
+**Signing key.** `gpg.format` decides how `user.signingkey` is read. With
+`openpgp` (or unset) any string is a valid GnuPG selector: a key id, a
+fingerprint, a `<fingerprint>!` forced subkey, an email address or a user-id
+fragment, so only a literal SSH public key (`ssh-ed25519 AAAA...`) is
+flagged there. With `ssh` the value is a key path or a `key::` literal, and
+a GPG key id is the mismatch that gets reported.
+
 **`--verify-recent N`** answers the question people actually ask: why do my
 recent commits show Unverified? It reads git's own verdict (`%G?`) for the
 last `N` commits and prints one line of counts (`last 50 commits (yours): 47
