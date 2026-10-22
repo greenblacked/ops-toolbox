@@ -19,7 +19,7 @@ hurry.
 | When to use | One line: the situation this page is for. |
 | Symptoms | What you see when it applies. |
 | Before you start | Access you need, how to get the scripts, and a link to the platform page. |
-| Report | Read-only commands. Nothing changes. |
+| Report | Read-only commands. Nothing changes, with two exceptions: the SSH runbook may add a host key to `known_hosts`, and the undo runbook runs `git fetch`, which updates remote-tracking refs and `FETCH_HEAD`. Both pages say so. |
 | Preview | The same fix as a dry run. Nothing is deleted or written. |
 | Apply | The commands that change the machine. |
 | Verify | How to confirm the fix worked. |
