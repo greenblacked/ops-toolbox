@@ -980,6 +980,7 @@ chmod +x "$df_stub/df"
 PATH="$df_stub:$PATH" PROC_DIR="$storage_fx" FSTAB="$storage_fx/fstab" \
   "$L/system_doctor.sh" --skip-containers --skip-units --skip-smart --skip-remote-mounts >/dev/null 2>&1
 assert_contains "system_doctor --skip-remote-mounts passes -l to df" "$(cat "$df_stub/argv.log")" "-Pk -l /"
+assert_contains "system_doctor --skip-remote-mounts passes -l to the inode df" "$(cat "$df_stub/argv.log")" "-Pi -l /"
 assert_eq "system_doctor --skip-remote-mounts leaves no df unrestricted" "0" \
   "$(grep -c -e '^-Pk /' -e '^-Pk *$' "$df_stub/argv.log" || true)"
 rm -rf "$df_stub"

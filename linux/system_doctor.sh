@@ -94,7 +94,9 @@ Options:
   --max-psi PCT      Warn when 60-second stall time exceeds this percent (default: $MAX_PSI)
   --skip-containers  Don't probe docker/podman (slow when a daemon is wedged)
   --skip-units       Don't run 'systemctl --failed'
-  --skip-remote-mounts  Don't probe NFS/CIFS/sshfs mounts (each probe waits up to 5s)
+  --skip-remote-mounts  Don't probe NFS/CIFS/sshfs mounts (each probe waits up to 5s);
+                     disk checks use 'df -l', so remote filesystems are not
+                     checked for being full either
   --skip-smart       Don't query disk health with smartctl
   --quiet            Print only warnings
   --help, -h         Show this help
@@ -396,7 +398,7 @@ fi
 
 # A filesystem out of inodes looks exactly like a healthy one in df -h, which
 # is why that outage takes so long to diagnose the first time.
-inode_pct="$(df -Pi / 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
+inode_pct="$(df -Pi ${DF_LOCAL[@]+"${DF_LOCAL[@]}"} / 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')"
 if [[ -n "$inode_pct" && "$inode_pct" =~ ^[0-9]+$ ]]; then
   if (( inode_pct >= 90 )); then
     warn "/ has used ${inode_pct}% of its inodes" "space can be free while creating a file still fails: df -i"
