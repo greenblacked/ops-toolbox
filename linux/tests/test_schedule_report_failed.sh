@@ -196,6 +196,12 @@ if (( can_dir )); then
   assert_not_contains 'an untraversable cron directory never prints "all resolve"' "$out" 'path(s) resolve'
   assert_contains 'the unreadable directory is counted' "$out" "cron directory $noaccess unreadable"
   assert_eq 'an untraversable cron directory fails --strict' 1 "$rc"
+  # The inventory pass (no --failed) walks the same directory and must not
+  # report an untraversable one as "no distro cron drop-ins".
+  out="$(PATH="$fixture/bin:$PATH" ${dir_runner[@]+"${dir_runner[@]}"} "$SCHED" --strict --cron-dir "$noaccess" 2>&1)"
+  rc=$?
+  assert_contains 'the inventory warns about an untraversable cron directory' "$out" "cannot fully read directory $noaccess"
+  assert_eq 'the inventory of an untraversable cron directory fails --strict' 1 "$rc"
 else
   printf '[skip] untraversable cron directory checks: the directory stays listable (root without setpriv)\n'
 fi

@@ -181,15 +181,31 @@ fi
 group "cron.d"
 cron_files=0
 if [[ -d "$CRON_DIR" ]]; then
-  while IFS= read -r -d '' f; do
-    [[ -n "$f" ]] || continue
-    base="$(basename "$f")"
-    case "$base" in
-      .placeholder|*.dpkg-*|*.rpmsave|*.rpmnew) continue ;;
-    esac
-    cron_files=$((cron_files + 1))
-    info "$CRON_DIR/$base"
-  done < <(find "$CRON_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+  # find's status must not vanish: a directory that cannot be traversed would
+  # otherwise read as "no distro cron drop-ins". The listing goes to a scratch
+  # file so the loop below still runs in this shell and its counters survive.
+  cron_inv="$(mktemp "${TMPDIR:-/tmp}/schedule_report.XXXXXX")" || cron_inv=""
+  if [[ -z "$cron_inv" ]]; then
+    warn "cron: cannot create a scratch file; $CRON_DIR not listed" \
+      "set TMPDIR to a writable directory"
+  else
+    find "$CRON_DIR" -maxdepth 1 -type f -print0 >"$cron_inv" 2>/dev/null
+    cron_inv_rc=$?
+    if (( cron_inv_rc != 0 )); then
+      warn "cron: cannot fully read directory $CRON_DIR (find exit $cron_inv_rc); the list below may be incomplete" \
+        "run as root, or fix the directory's permissions"
+    fi
+    while IFS= read -r -d '' f; do
+      [[ -n "$f" ]] || continue
+      base="$(basename "$f")"
+      case "$base" in
+        .placeholder|*.dpkg-*|*.rpmsave|*.rpmnew) continue ;;
+      esac
+      cron_files=$((cron_files + 1))
+      info "$CRON_DIR/$base"
+    done < "$cron_inv"
+    rm -f -- "$cron_inv"
+  fi
 fi
 for period in hourly daily weekly monthly; do
   dir="/etc/cron.$period"
