@@ -254,6 +254,7 @@ failed_timers() {
 # or sourced: the check is whether the file is there and executable.
 CRON_OK=0
 CRON_BAD=0
+CRON_UNREADABLE=0
 check_cron_lines() {
   local src="$1" has_user="$2"
   local line idx cmd
@@ -298,11 +299,21 @@ if (( FAILED )); then
       case "$(basename "$f")" in
         .placeholder|*.dpkg-*|*.rpm*) continue ;;
       esac
+      # An unreadable file (a 0600 drop-in seen by a non-root user) would
+      # fail the redirection below before any line is judged.
+      if [[ ! -r "$f" ]]; then
+        warn "cron: cannot read $f; its jobs were not checked" \
+          "run as root, or fix the file's permissions"
+        CRON_UNREADABLE=$((CRON_UNREADABLE + 1))
+        continue
+      fi
       # shellcheck disable=SC2094  # the path is only a label; the file is only read
       check_cron_lines "$f" 1 < "$f"
     done < <(find "$CRON_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
   fi
-  if (( CRON_BAD == 0 )); then
+  if (( CRON_UNREADABLE > 0 )); then
+    skip "$CRON_UNREADABLE cron file(s) unreadable, not checked; $CRON_OK command path(s) found in the rest"
+  elif (( CRON_BAD == 0 )); then
     ok "$CRON_OK cron command path(s) resolve"
   fi
 fi

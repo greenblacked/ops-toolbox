@@ -502,10 +502,12 @@ warning. For cron it reads the user crontab and every file in the cron
 directory (skipping `.placeholder`, `*.dpkg-*` and `*.rpm*`), takes the first
 word of each job's command (after five time fields or an `@keyword`, plus the
 user field in `cron.d`), and warns when that is an absolute path that is not an
-executable file: the job an upgrade quietly orphaned. Comments, blank lines
-and `NAME=value` lines are not jobs, and a word without a slash is not judged,
-since it may be a builtin or a `PATH` lookup. Nothing is run, sourced, started,
-stopped or reset.
+executable file: the job an upgrade quietly orphaned. A cron file that cannot
+be read (a `0600` drop-in seen by a non-root user) is a warning, and the
+summary line then says how many files were skipped instead of claiming that
+every path resolves. Comments, blank lines and `NAME=value` lines are not
+jobs, and a word without a slash is not judged, since it may be a builtin or a
+`PATH` lookup. Nothing is run, sourced, started, stopped or reset.
 
 `--strict` exits `1` when any warning was printed, with or without `--failed`,
 so lingering being off counts too. `--cron-dir DIR` replaces `/etc/cron.d` for
@@ -859,9 +861,9 @@ under a name it does not list are still archived. Without it, a default run
 still carries every secret in `/etc`. An excluded path is not a missing one, so
 it never makes a `*.partial.tar.gz`, and an unreadable file that is excluded no
 longer turns a non-root run into a partial one. If the patterns leave nothing
-at all, the staged archive fails validation, nothing is published and the run
-exits `1`. `--dry-run` prints each `would exclude:` line, and both flags are
-refused with `--list`.
+at all, or only the exclusion record below, the staged archive fails
+validation, nothing is published and the run exits `1`. `--dry-run` prints
+each `would exclude:` line, and both flags are refused with `--list`.
 
 The exclusions are recorded in the archive, as a small member
 `.config_backup/excludes` (two `#` header lines, one of them saying whether
