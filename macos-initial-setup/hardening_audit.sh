@@ -469,6 +469,9 @@ if want secrets; then
         i = index(line, " allow ")
         if (i == 0) next
         subject = substr(line, 1, i - 1)
+        # "user:me inherited allow read": the inherited flag sits between
+        # the subject and the verb and is not part of the name.
+        sub(/ inherited$/, "", subject)
         n = split(substr(line, i + 7), perm, /[ ,]+/)
         for (k = 1; k <= n; k++) {
           if (perm[k] == "read" && subject != ("user:" owner)) found = 1
