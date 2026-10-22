@@ -626,7 +626,7 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
   printf 'set %s\n' "$n" > "$bh/.bashrc.backup-20260501-000000-$n"
 done
 run_install "$bh" --list-backups
-assert_eq "--list-backups orders -10 above -9" "20260501-000000-10" "$(printf '%s\n' "$out" | head -n 1 | awk '{print $1}')"
+assert_eq "--list-backups orders -10 above -9" "20260501-000000-10" "$(awk 'NR==1{print $1; exit}' <<<"$out")"
 run_install "$bh" --restore latest
 assert_eq "--restore latest -> 0 with -1..-10 sets" 0 "$rc"
 assert_eq "--restore latest picks the -10 set" "set 10" "$(cat "$bh/.bashrc")"
