@@ -16,6 +16,13 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `macos-initial-setup/status.sh` | macOS | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | <span class="stage stage-report">read-only</span> |
 | `macos-initial-setup/workstation_doctor.sh` | macOS | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `macos-initial-setup/hardening_audit.sh` | macOS | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/ops_context.sh` | macOS | Which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login this shell is pointed at. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/toolchain_check.sh` | macOS | Are the Python, Terraform, Go and Node versions a checkout pins installed and active? | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/net_doctor.sh` | macOS | Interfaces, default route, split DNS, system proxy against the shell, VPN tunnels, listeners. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/tls_expiry.sh` | macOS | Certificate expiry for PEM files, hosts and Keychain certificates within `--days`. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/schedule_report.sh` | macOS | Inventory of launchd agents and daemons, crontab and `at` jobs. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/ssh_client_doctor.sh` | macOS | `~/.ssh` permissions, weak keys and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/config_backup.sh` | macOS | Dated, verified, rotated archive of dotfiles and tool config. | `--dry-run` |
 | `macos-initial-setup/install_apps.sh` | macOS | Install Homebrew casks, CLI formulae and the Google Cloud SDK. | `--dry-run` |
 | `macos-initial-setup/install_devtools.sh` | macOS | Install Python, Terraform, Go and Helm toolchains. | `--dry-run` |
 | `macos-initial-setup/stay_fresh.sh` | macOS | Recurring housekeeping, upgrades and reports. | `--dry-run` |
