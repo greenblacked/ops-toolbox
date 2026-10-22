@@ -319,7 +319,8 @@ def receive_hooks_dir(value, toplevel, git_dir):
 
     Those hooks run with $GIT_DIR as the working directory, so a relative
     path resolves from there; an absolute path (or a bare repository, where
-    both are the git dir) has only one location.
+    both are the git dir) has only one location. Which directory $GIT_DIR is
+    depends on the push target: see receive_locations().
     """
     if not git_dir or os.path.isabs(os.path.expanduser(value)):
         return None
@@ -327,23 +328,51 @@ def receive_hooks_dir(value, toplevel, git_dir):
     return None if server == resolve_hooks_path(value, toplevel) else server
 
 
+def receive_locations(value, toplevel, common_dir, git_dir=None):
+    """[(label, directory)] the receive-side hooks are looked up in, one per
+    push target, empty when there is only the client-hook location.
+
+    A push to the main repository's path runs receive-pack in the common
+    directory. A push to a linked worktree's path runs it in that worktree's
+    private .git/worktrees/<name> directory (the .git file leads there), where
+    a relative core.hooksPath resolves from that directory instead. The two
+    differ only when git_dir (--absolute-git-dir) is not common_dir; each is
+    then labelled with the push target it applies to. With one location the
+    label is None.
+    """
+    main = receive_hooks_dir(value, toplevel, common_dir)
+    if not git_dir or os.path.realpath(git_dir) == os.path.realpath(common_dir or git_dir):
+        return [(None, main)] if main else []
+    main_path = os.path.dirname(common_dir) if os.path.basename(common_dir) == ".git" \
+        else common_dir
+    found = []
+    if main:
+        found.append(("push to %s" % shorten(main_path), main))
+    linked = receive_hooks_dir(value, toplevel, git_dir)
+    if linked:
+        found.append(("push to this worktree's path", linked))
+    return found
+
+
 def hooks_path_findings(value, origin, scope, toplevel, local_hooks_present, exists_fn,
-                        git_dir=None):
+                        git_dir=None, worktree_git_dir=None):
     """[(level, message, fix)] for core.hooksPath.
 
     local_hooks_present names the active hooks in the repository's own
     hooks directory, which a global or system hooksPath shadows. With git_dir
-    a relative path is also resolved for the receive-side hooks, which run
-    from there.
+    (the repository's common directory) a relative path is also resolved for
+    the receive-side hooks, which run from $GIT_DIR; worktree_git_dir is the
+    private directory of a linked worktree, the $GIT_DIR of a push to that
+    worktree's path (see receive_locations()).
     """
     if not value:
         return []
     resolved = resolve_hooks_path(value, toplevel)
-    server = receive_hooks_dir(value, toplevel, git_dir)
+    locations = receive_locations(value, toplevel, git_dir, worktree_git_dir)
     where = origin or "an unnamed source"
     flag = "--%s " % scope if scope in ("global", "system") else ""
     if not exists_fn(resolved):
-        which = " for client hooks (read from the work tree root)" if server else ""
+        which = " for client hooks (read from the work tree root)" if locations else ""
         return [(
             "fail",
             "core.hooksPath=%s (set in %s) does not exist%s: git runs NO hooks and "
@@ -352,13 +381,21 @@ def hooks_path_findings(value, origin, scope, toplevel, local_hooks_present, exi
             % (shlex.quote(resolved), flag),
         )]
     findings = []
-    if server and not exists_fn(server):
+    for label, server in locations:
+        if exists_fn(server):
+            continue
+        hooks = ", ".join(sorted(RECEIVE_HOOKS))
+        if label is None:
+            message = ("core.hooksPath=%s is relative, so the receive-side hooks (%s) "
+                       "are read from $GIT_DIR, %s, which does not exist: none of "
+                       "them runs when this repository is a push target"
+                       % (value, hooks, server))
+        else:
+            message = ("core.hooksPath=%s is relative, so for a %s the receive-side "
+                       "hooks (%s) are read from $GIT_DIR, %s, which does not exist: "
+                       "none of them runs" % (value, label, hooks, server))
         findings.append((
-            "info",
-            "core.hooksPath=%s is relative, so the receive-side hooks (%s) are read "
-            "from $GIT_DIR, %s, which does not exist: none of them runs when this "
-            "repository is a push target" % (value, ", ".join(sorted(RECEIVE_HOOKS)),
-                                             server),
+            "info", message,
             "mkdir -p %s, if this repository receives pushes" % shlex.quote(server),
         ))
     if scope in ("global", "system") and local_hooks_present:
@@ -540,13 +577,14 @@ def run_report(args):
     if value and os.path.realpath(active_dir) != os.path.realpath(default_dir):
         _, local_hooks, _ = scan_hooks(default_dir)
         local_present = [n for n, p in local_hooks if os.access(p, os.X_OK)]
-    server_dir = receive_hooks_dir(value, toplevel, git_dir) if value else None
-    if server_dir:
+    locations = (receive_locations(value, toplevel, common_dir, git_dir)
+                 if value else [])
+    for label, server_dir in locations:
         info("relative path: client hooks are read from the work tree root, "
-             "receive-side hooks (pre-receive, update, ...) from $GIT_DIR -> %s"
-             % shorten(server_dir))
+             "receive-side hooks (pre-receive, update, ...) from $GIT_DIR%s -> %s"
+             % (" (%s)" % label if label else "", shorten(server_dir)))
     findings = hooks_path_findings(value, origin, scope, toplevel, local_present,
-                                   os.path.isdir, git_dir)
+                                   os.path.isdir, common_dir, git_dir)
     for finding in findings:
         problems += report_level(*finding)
     if not findings and value:
@@ -555,17 +593,21 @@ def run_report(args):
     head("hooks")
     hook_texts = {}
     checked = [(name, path, name) for name, path in hooks]
-    if server_dir:
+    if locations:
         # A receive-side hook next to the client ones is not run from there
         # in a push target; the copy under $GIT_DIR is the one that runs.
+        looks_in = "; ".join(
+            "%s%s" % (shorten(server_dir), " for a %s" % label if label else "")
+            for label, server_dir in locations)
         for name, path in hooks:
             if name in RECEIVE_HOOKS:
                 info("%s in %s runs for local ref updates only: a push into this "
-                     "repository looks in %s" % (name, shorten(active_dir),
-                                                 shorten(server_dir)))
-        _, server_hooks, _ = scan_hooks(server_dir)
-        checked += [(name, path, "%s (receive-side, in %s)" % (name, shorten(server_dir)))
-                    for name, path in server_hooks if name in RECEIVE_HOOKS]
+                     "repository looks in %s" % (name, shorten(active_dir), looks_in))
+        for label, server_dir in locations:
+            _, server_hooks, _ = scan_hooks(server_dir)
+            checked += [(name, path, "%s (receive-side, in %s%s)"
+                         % (name, shorten(server_dir), ", " + label if label else ""))
+                        for name, path in server_hooks if name in RECEIVE_HOOKS]
     for hook, path, name in checked:
         if not os.access(path, os.X_OK):
             problems += report_level(

@@ -1,17 +1,22 @@
 """Tests for git/git_hooks_doctor.py.
 
-Only the pure parts are covered: hook-name near misses, shebang parsing and
-judgement, core.hooksPath and the hook-manager checks. Anything that lists a
-hooks directory or asks git is left alone; the integration suite drives it
-against real repositories. PATH lookups and directory existence are passed in
-as callables, so nothing here depends on the machine running it.
+Mostly the pure parts: hook-name near misses, shebang parsing and judgement,
+core.hooksPath and the hook-manager checks. PATH lookups and directory
+existence are passed in as callables, so nothing here depends on the machine
+running it. The one report-level test (a linked worktree) stubs the git
+queries and builds its directories under a temporary one; the integration
+suite drives the whole tool against real repositories.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import os
 import sys
+import tempfile
 import unittest
+from unittest import mock
 
 REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -227,6 +232,43 @@ class HooksPathFindingsTestCase(unittest.TestCase):
         self.assertIn("never run", findings[1][1])
         self.assertIn("pre-commit", findings[1][1])
 
+    def test_receive_hooks_dir_uses_the_given_common_directory(self):
+        self.assertEqual(
+            doctor.receive_hooks_dir("hooks", "/wt", "/main/.git"), "/main/.git/hooks"
+        )
+
+    def test_one_receive_location_without_a_linked_worktree(self):
+        self.assertEqual(
+            doctor.receive_locations("hooks", "/r", "/r/.git", "/r/.git"),
+            [(None, "/r/.git/hooks")],
+        )
+        self.assertEqual(doctor.receive_locations("/h", "/r", "/r/.git", "/r/.git"), [])
+
+    def test_a_linked_worktree_has_a_receive_location_per_push_target(self):
+        with mock.patch.object(doctor, "HOME", "/nonexistent-home"):
+            self.assertEqual(
+                doctor.receive_locations(
+                    "hooks", "/wt", "/main/.git", "/main/.git/worktrees/wt"
+                ),
+                [
+                    ("push to /main", "/main/.git/hooks"),
+                    ("push to this worktree's path", "/main/.git/worktrees/wt/hooks"),
+                ],
+            )
+
+    def test_each_missing_receive_location_is_reported_with_its_push_target(self):
+        with mock.patch.object(doctor, "HOME", "/nonexistent-home"):
+            findings = doctor.hooks_path_findings(
+                "hooks", ".git/config", "local", "/wt", [], lambda p: p == "/wt/hooks",
+                "/main/.git", "/main/.git/worktrees/wt"
+            )
+        self.assertEqual([level for level, _, _ in findings], ["info", "info"])
+        self.assertIn("for a push to /main the", findings[0][1])
+        self.assertIn("/main/.git/hooks, which does not exist", findings[0][1])
+        self.assertIn("for a push to this worktree's path the", findings[1][1])
+        self.assertIn("/main/.git/worktrees/wt/hooks, which does not exist", findings[1][1])
+        self.assertIn("mkdir -p /main/.git/worktrees/wt/hooks", findings[1][2])
+
     def test_an_absolute_path_has_one_location(self):
         seen = []
 
@@ -338,6 +380,61 @@ class FrameworkFindingsTestCase(unittest.TestCase):
 
     def test_no_framework(self):
         self.assertEqual(doctor.framework_findings(set(), "", {}), [])
+
+
+class LinkedWorktreeReportTestCase(unittest.TestCase):
+    """run_report with git's answers stubbed, over real temporary directories."""
+
+    def report(self, root, git_dir):
+        main_git = os.path.join(root, "main", ".git")
+        worktree = os.path.join(root, "wt")
+        answers = {
+            "--absolute-git-dir": git_dir,
+            "--git-common-dir": main_git,
+        }
+        os.makedirs(os.path.join(worktree, "hooks"))
+        os.makedirs(os.path.join(main_git, "hooks"))
+        for directory in (os.path.join(worktree, "hooks"), os.path.join(main_git, "hooks")):
+            hook = os.path.join(directory, "pre-receive")
+            with open(hook, "w") as handle:
+                handle.write("#!/bin/sh\nexit 0\n")
+            os.chmod(hook, 0o755)
+        out = io.StringIO()
+        with contextlib.ExitStack() as stack:
+            stack.enter_context(mock.patch.object(doctor, "HOME", "/nonexistent-home"))
+            stack.enter_context(mock.patch.object(
+                doctor, "git_path", side_effect=lambda *a: answers.get(a[0])))
+            stack.enter_context(mock.patch.object(
+                doctor, "run", return_value=(0, worktree + "\n", "")))
+            stack.enter_context(mock.patch.object(
+                doctor, "hooks_path_config", return_value=("hooks", ".git/config", "local")))
+            stack.enter_context(contextlib.redirect_stdout(out))
+            doctor.run_report(None)
+        return out.getvalue(), main_git
+
+    def test_a_linked_worktree_reports_both_receive_side_locations(self):
+        with tempfile.TemporaryDirectory() as root:
+            private = os.path.join(root, "main", ".git", "worktrees", "wt")
+            text, main_git = self.report(root, private)
+        main_path = os.path.dirname(main_git)
+        self.assertIn("$GIT_DIR (push to %s) -> %s" % (main_path, main_git + "/hooks"), text)
+        self.assertIn(
+            "$GIT_DIR (push to this worktree's path) -> %s" % (private + "/hooks"), text
+        )
+        self.assertIn("for a push to %s" % main_path, text)
+        self.assertIn("for a push to this worktree's path", text)
+        self.assertIn(
+            "pre-receive (receive-side, in %s, push to %s)" % (main_git + "/hooks", main_path),
+            text,
+        )
+        self.assertIn("%s, which does not exist" % (private + "/hooks"), text)
+
+    def test_a_plain_repository_names_one_receive_side_location(self):
+        with tempfile.TemporaryDirectory() as root:
+            text, main_git = self.report(root, os.path.join(root, "main", ".git"))
+        self.assertIn("$GIT_DIR -> %s" % (main_git + "/hooks"), text)
+        self.assertNotIn("this worktree's path", text)
+        self.assertNotIn("(push to", text)
 
 
 if __name__ == "__main__":
