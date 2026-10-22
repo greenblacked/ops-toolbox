@@ -2566,7 +2566,7 @@ out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
 assert_not_contains "ssh_client_doctor does not grade Match host *,!bastion as global" "$out" "[FAIL]"
 assert_not_contains "ssh_client_doctor does not warn on Match host *,!bastion" "$out" "[warn]"
 assert_eq "ssh_client_doctor Match host *,!bastion -> 0" "0" "$rc"
-# OpenSSH boolean aliases (false/off = no, true/on = yes) grade like the
+# OpenSSH boolean aliases (false/off = no, true = yes) grade like the
 # canonical word.
 for shk_alias in false Off FALSE; do
   printf '%s\n' 'Host *' "  StrictHostKeyChecking $shk_alias" > "$risky_dir/config"
@@ -2578,6 +2578,10 @@ printf '%s\n' 'Host *' '  ForwardAgent TRUE' > "$risky_dir/config"
 out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
 assert_contains "ssh_client_doctor grades ForwardAgent true like yes" \
   "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+# off is valid only for StrictHostKeyChecking; ForwardAgent on is not yes.
+printf '%s\n' 'Host *' '  ForwardAgent on' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_not_contains "ssh_client_doctor does not read ForwardAgent on as yes" "$out" "[warn]"
 # First value wins: an earlier block that sets the keyword narrows a later
 # Host * value to the hosts that block does not match.
 printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' '  ForwardAgent no' \

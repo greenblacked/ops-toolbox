@@ -600,13 +600,21 @@ if want risks; then
       fi
       key_lc="$(lower "$key")"
       val_lc="$(lower "$rest")"
-      # OpenSSH reads true/on as yes and false/off as no for these keywords,
-      # so grade the canonical word rather than the spelling.
+      # OpenSSH reads true as yes and false as no for these keywords, and
+      # StrictHostKeyChecking alone also takes off (as no); grade the
+      # canonical word rather than the spelling. OpenSSH does not accept
+      # "on" here; it is mapped to yes only so it is not misreported.
       case "$key_lc" in
-        stricthostkeychecking|forwardagent|forwardx11|forwardx11trusted|passwordauthentication|identitiesonly|hashknownhosts)
+        stricthostkeychecking)
           case "$val_lc" in
             false|off) val_lc="no" ;;
             true|on) val_lc="yes" ;;
+          esac
+          ;;
+        forwardagent|forwardx11|forwardx11trusted|passwordauthentication|identitiesonly|hashknownhosts)
+          case "$val_lc" in
+            false) val_lc="no" ;;
+            true) val_lc="yes" ;;
           esac
           ;;
       esac
