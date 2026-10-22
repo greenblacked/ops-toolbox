@@ -648,8 +648,8 @@ edits the bootloader: the package manager's own removal hooks update GRUB and
 the initramfs. No log file is written.
 
 Exit codes: `0` done or nothing to remove, `1` the removal failed, `2` not Linux,
-an unsupported distribution, the package tool missing or the running kernel
-unknown, `3` bad usage or a real run without `--yes`.
+an unsupported distribution, the package tool missing or failing, or the running
+kernel unknown, `3` bad usage or a real run without `--yes`.
 
 ## `net_doctor.sh`
 
@@ -768,7 +768,7 @@ equal to RAM up to 8G, then 4G). No swap at all is reported, not failed.
 | `--create` | `fallocate` (or `dd` where that fails), `chmod 600`, `mkswap`, `swapon`, then one fstab line |
 | `--remove` | `swapoff`, drop the fstab line this script added, delete the file |
 | `--size SIZE` | `128M` to `64G`, like `512M` or `4G` (default `2G`); `--create` only |
-| `--path FILE` | Absolute swapfile path (default `/swapfile`); never `/`, `/proc`, `/sys` or `/dev`, and no whitespace, control characters or backslashes (exit 3), since the path is an fstab field |
+| `--path FILE` | Absolute swapfile path (default `/swapfile`); never `/`, `/proc`, `/sys` or `/dev`, and no whitespace, control characters or backslashes (exit 3), since the path is an fstab field; `--create` refuses a parent directory others can write to, or any symlink in the path (exit 2), and a symlink at the path itself (exit 4) |
 | `--fstab FILE` | The fstab to read and edit (default `/etc/fstab`) |
 | `--force` | `--create` even though swap is already active |
 | `--dry-run` | Print every step; write nothing |
@@ -794,9 +794,11 @@ file is reported and left alone, with the file. It never enables swap on a devic
 or partition and never sets `vm.swappiness`.
 
 Exit codes: `0` done or report printed, `1` a step failed or not enough space,
-`2` not Linux, not root (preview with `--dry-run`), `mkswap`/`swapon` missing or
-an unsupported filesystem, `3` bad usage or a change without `--yes`, `4`
-nothing to do: the file exists, swap is already active, nothing to remove, or
+`2` not Linux, not root (preview with `--dry-run`), `mkswap`/`swapon` missing,
+an unsupported filesystem, a parent directory writable by others or owned by
+another user, or a symlink in the path, `3` bad usage or a change without
+`--yes`, `4` nothing to do: the file exists (a symlink at the path counts),
+swap is already active, nothing to remove, or
 the fstab line is not this script's.
 
 ## `tls_expiry.sh`
