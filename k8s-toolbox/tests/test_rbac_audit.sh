@@ -80,6 +80,7 @@ save('cr-escalate', BUILTINS+[role('rbac-manager',[rule(['escalate','bind','get'
 save('rb-default-sa', [binding('app-edit','edit',[sa('default','demo')],ns='demo')])
 save('crb-default-group-all', [binding('everyone','view',[group('system:serviceaccounts')])])
 save('rb-default-group-ns', [binding('demo-sas','edit',[group('system:serviceaccounts:demo')],ns='demo')])
+save('crb-admin-sa-group', [binding('all-sas-admin','cluster-admin',[group('system:serviceaccounts')])])
 save('crb-default-group-other', [binding('some-group','view',[group('system:authenticated'),group('system:serviceaccounts-ops')])])
 save('crb-default-sa-other', [binding('metrics-reader','view',[sa('default','other')])])
 save('crb-dangling', [binding('old-ci','ci-deployer-v1',[sa('deployer','ci')])])
@@ -201,6 +202,12 @@ run_rbac --only default-sa
 assert_rc 'other system: groups do not name the default ServiceAccounts' 4 "$rc"
 run_rbac --only default-sa --include-system
 assert_rc 'other system: groups stay out of default-sa with --include-system' 4 "$rc"
+
+reset_fixtures
+export RBAC_CRB=crb-admin-sa-group
+run_rbac
+assert_rc 'a ServiceAccount group bound to cluster-admin is judged by default' 0 "$rc"
+assert_contains 'cluster-admin row for a ServiceAccount group' '[risk] clusterrolebinding all-sas-admin -> cluster-admin: Group system:serviceaccounts'
 
 reset_fixtures
 export RBAC_RB=rb-dangling-role RBAC_ROLES=roles-other-ns
