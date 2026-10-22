@@ -11,4 +11,5 @@
   `UserKnownHostsFile /dev/null` applies to every host (`Host *`,
   `Match all` or `Match host *`). It changes nothing, never prints key
   material, and prints the `chmod` or `ssh-keygen` command for each
-  finding.
+  finding. Modes are read through symlinks, so a link to a `0600` key or a
+  symlinked `--ssh-dir` is graded by its target, not as `0777`.

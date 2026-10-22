@@ -169,15 +169,17 @@ summary() {
 # Config text is data: control characters are stripped before it is printed.
 clean() { printf '%s' "$1" | tr -d '\000-\037\177'; }
 
-# Permission bits of a path as octal. BSD stat answers on a Mac; GNU stat
-# answers in the Linux test container. GNU `stat -f` means --file-system and
-# prints filesystem details on stdout as well as failing, so each answer is
-# accepted only when it looks like a mode.
+# Permission bits of a path as octal, following symlinks as OpenSSH does (a
+# link's own mode is always 777 and says nothing about the key it points
+# at). BSD stat answers on a Mac; GNU stat answers in the Linux test
+# container. GNU `stat -f` means --file-system and prints filesystem details
+# on stdout as well as failing, so each answer is accepted only when it
+# looks like a mode.
 file_mode() {
   local m
-  m="$(stat -f '%Lp' "$1" 2>/dev/null)"
+  m="$(stat -L -f '%Lp' "$1" 2>/dev/null)"
   if [[ ! "$m" =~ ^[0-7]{3,4}$ ]]; then
-    m="$(stat -c '%a' "$1" 2>/dev/null)"
+    m="$(stat -L -c '%a' "$1" 2>/dev/null)"
   fi
   [[ "$m" =~ ^[0-7]{3,4}$ ]] || return 1
   printf '%s\n' "$m"

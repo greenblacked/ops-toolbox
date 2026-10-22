@@ -2523,6 +2523,29 @@ assert_not_contains "ssh_client_doctor never prints key material" "$out" "SECRET
 out="$(sshdoc --ssh-dir="$sshd_dir")"; rc=$?
 assert_eq "ssh_client_doctor accepts --ssh-dir=DIR" "0" "$rc"
 
+# A symlinked key or ~/.ssh is graded by its target's mode: a link itself is
+# always 777 and must not be reported as an open key.
+mkdir -p "$sd/linkreal"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 256 SHA256:linked me@example (ED25519)\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sd/linkreal/id_linked"
+chmod 600 "$sd/linkreal/id_linked"
+ln -s "$sd/linkreal/id_linked" "$sshd_dir/id_linked"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a symlink to a 0600 key passes -> 0" "0" "$rc"
+assert_contains "the symlinked key is graded by its target mode" "$out" "id_linked mode 600"
+assert_not_contains "the symlinked key is not reported as 777" "$out" "mode 777"
+chmod 644 "$sd/linkreal/id_linked"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a symlink to a 0644 key still fails -> 1" "1" "$rc"
+assert_contains "the symlinked key's loose target mode is reported" "$out" "id_linked mode 644"
+rm -f "$sshd_dir/id_linked"
+ln -s "$sshd_dir" "$sd/ssh-link"
+out="$(sshdoc --only dir --ssh-dir "$sd/ssh-link")"; rc=$?
+assert_eq "a symlinked --ssh-dir to a 0700 directory passes -> 0" "0" "$rc"
+assert_contains "the symlinked directory shows its target mode" "$out" "mode 700"
+assert_not_contains "the symlinked directory is not reported as 777" "$out" "mode 777"
+rm -f "$sd/ssh-link"
+
 chmod 755 "$sshd_dir"
 out="$(sshdoc --only dir)"; rc=$?
 assert_eq "a 755 ~/.ssh is only a warning -> 0" "0" "$rc"
