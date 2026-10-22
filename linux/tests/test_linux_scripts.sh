@@ -2116,6 +2116,7 @@ else
   assert_contains "tls_expiry parses [IPv6]:PORT" "$out" "[::1]:1: could not fetch a leaf certificate"
   assert_contains "tls_expiry connects to the bracketed IPv6 target" "$out" "-connect [::1]:1 "
   out="$("$TLS" --host '[::1]' 2>&1)"; rc=$?
+  assert_contains "tls_expiry defaults a bare [IPv6] to port 443" "$out" "-connect [::1]:443 "
   assert_eq "tls_expiry accepts a bare [IPv6] (no 'host must be' error)" "0" "$(grep -c 'host must be' <<<"$out")"
   out="$("$TLS" --host '2001:db8::1' 2>&1)"; rc=$?
   assert_eq "tls_expiry refuses an unbracketed IPv6 -> 1" "1" "$rc"
@@ -2468,6 +2469,7 @@ kh_dir="$(mktemp -d)"
 chmod 700 "$kh_dir"
 printf '%s\n' 'a.example,b.example ssh-ed25519 AAAA1' 'a.example ssh-ed25519 AAAA2' \
   'c.example ssh-ed25519 AAAA3' 'C.example,!d.example ssh-ed25519 AAAA3' \
+  '!d.example ssh-ed25519 AAAA9' 'g.example ssh-ed25519 AAAA10' 'G.EXAMPLE ssh-ed25519 AAAA11' \
   '[e.example]:22 ssh-ed25519 AAAA5' 'e.example ssh-ed25519 AAAA6' \
   '[f.example]:2222 ssh-ed25519 AAAA7' 'f.example ssh-ed25519 AAAA8' > "$kh_dir/known_hosts"
 chmod 644 "$kh_dir/known_hosts"
@@ -2480,6 +2482,10 @@ assert_not_contains "ssh_client_doctor does not conflict an alias that only one 
   "$out" "host b.example"
 assert_not_contains "ssh_client_doctor compares host names case-insensitively without false clashes" \
   "$out" "host c.example"
+assert_contains "ssh_client_doctor folds host name case when keys differ" \
+  "$out" "host g.example has conflicting ssh-ed25519 keys"
+assert_not_contains "ssh_client_doctor skips a negated !pattern alias" \
+  "$out" "!d.example"
 assert_not_contains "ssh_client_doctor keeps [host]:2222 apart from the plain host" \
   "$out" "host f.example"
 rm -rf "$kh_dir"
