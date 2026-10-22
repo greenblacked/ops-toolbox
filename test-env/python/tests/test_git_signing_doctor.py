@@ -165,6 +165,13 @@ class ClassifySigningKeyTestCase(unittest.TestCase):
         _, problem = doctor.classify_signing_key("", "ssh-ed25519 AAAAC3Nza")
         self.assertIn("openpgp (the default)", problem)
 
+    def test_the_alternative_fits_the_format(self):
+        _, problem = doctor.classify_signing_key("x509", "ssh-ed25519 AAAAC3Nza")
+        self.assertIn("gpgsm", problem)
+        self.assertNotIn("GPG key id", problem)
+        _, problem = doctor.classify_signing_key("openpgp", "ssh-ed25519 AAAAC3Nza")
+        self.assertIn("use a GPG key id", problem)
+
     def test_email_is_a_gnupg_selector_under_openpgp(self):
         for fmt in ("openpgp", "", None):
             kind, problem = doctor.classify_signing_key(fmt, "me@example.com")

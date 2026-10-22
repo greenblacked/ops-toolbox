@@ -298,10 +298,15 @@ def classify_signing_key(fmt, signingkey):
         return "ssh-path", None
 
     if value.startswith(literal_prefix):
+        if fmt == "x509":
+            alternative = ("use a certificate ID or fingerprint that gpgsm "
+                           "accepts")
+        else:
+            alternative = "use a GPG key id"
         return "ssh-literal", (
             "gpg.format is %s but user.signingkey is an SSH public key; "
-            "set gpg.format to ssh, or use a GPG key id"
-            % ("openpgp (the default)" if unset else fmt)
+            "set gpg.format to ssh, or %s"
+            % ("openpgp (the default)" if unset else fmt, alternative)
         )
     if _HEX_KEYID.match(value.rstrip("!")):
         return "gpg-keyid", None
