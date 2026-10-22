@@ -157,15 +157,20 @@ if [[ "$SWAP_PATH" =~ [[:space:][:cntrl:]\\] ]]; then
   err "--path must not contain whitespace, control characters or backslashes"
   exit 3
 fi
-# Compare the resolved path, not the string: '/proc/../proc/x' and '//' name
-# the same places as their plain spellings.
-swap_resolved="$(realpath -m -- "$SWAP_PATH" 2>/dev/null || printf '%s' "$SWAP_PATH")"
-case "$swap_resolved" in
-  /|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*)
-    err "--path refuses $swap_resolved (resolved from '$SWAP_PATH')"
-    exit 3
-    ;;
-esac
+# Compare both resolutions, not the string: '/proc/../proc/x' and '//' name
+# the same places as their plain spellings. The physical form follows links
+# ('/lnk/../proc/x' with lnk -> /a/b is /a/proc/x), the lexical one does not
+# ('/proc/x'); a refused place in either is refused.
+for swap_resolved in \
+  "$(realpath -m -- "$SWAP_PATH" 2>/dev/null || printf '%s' "$SWAP_PATH")" \
+  "$(realpath -m -s -- "$SWAP_PATH" 2>/dev/null || printf '%s' "$SWAP_PATH")"; do
+  case "$swap_resolved" in
+    /|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*)
+      err "--path refuses $swap_resolved (resolved from '$SWAP_PATH')"
+      exit 3
+      ;;
+  esac
+done
 # Tidy the spelling ('//', '.', '..') without following links, so the symlink
 # check in create() still sees every component the caller gave.
 SWAP_PATH="$(realpath -m -s -- "$SWAP_PATH" 2>/dev/null || printf '%s' "$SWAP_PATH")"

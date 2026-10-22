@@ -263,6 +263,16 @@ run_sw --create --size 128M --dry-run --path "$fixture/linkdir/swapfile"
 assert_eq 'a symlinked parent component is refused -> 2' 2 "$rc"
 assert_contains 'the symlinked component is named' "$out" 'is a symlink'
 assert_not_contains 'a symlinked parent is not reported as mode 777' "$out" 'writable by users other than'
+# '..' after a link: lexically the path is /proc/x, physically it is not
+# (the link target sits deeper than the link), so only the lexical check sees it.
+mkdir -p "$fixture/real/sub/deep"
+ln -s "$fixture/real/sub/deep" "$fixture/deeplink"
+ups=""
+fx="$fixture"
+while [[ "$fx" != "/" ]]; do ups="$ups../"; fx="$(dirname -- "$fx")"; done
+run_sw --create --size 128M --dry-run --path "$fixture/deeplink/../${ups}proc/x"
+assert_eq 'a link then .. that is /proc lexically is refused -> 3' 3 "$rc"
+rm -f -- "$fixture/deeplink"
 ln -s "$fixture/real/target" "$fixture/linkfile"
 run_sw --create --size 128M --dry-run --path "$fixture/linkfile"
 assert_eq 'a symlink at the path itself is refused -> 4' 4 "$rc"
