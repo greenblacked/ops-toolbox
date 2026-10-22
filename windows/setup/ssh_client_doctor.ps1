@@ -296,8 +296,9 @@ function Get-SshClientFinding {
         if ($pinned -match '^"([^"]*)"') { $pinned = $Matches[1] }
         elseif ($pinned -match '^(.*?\\ssh(\.exe)?)(\s|$)') { $pinned = $Matches[1] }
         if ($AgentRunning -and $pinned -match '\\(portable)?git\\(.+\\)?(usr\\bin|mingw(32|64)\\bin)\\ssh(\.exe)?$') {
-            # The environment variables outrank core.sshCommand, so setting
-            # the config would change nothing while they stay.
+            # GIT_SSH_COMMAND outranks core.sshCommand, which outranks
+            # GIT_SSH, so setting the config changes nothing while a
+            # higher one stays.
             $pinFix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
             if ($source -ne 'core.sshCommand') {
                 $pinFix = "point $source at C:/Windows/System32/OpenSSH/ssh.exe, or remove it"
