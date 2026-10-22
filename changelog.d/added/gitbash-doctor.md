@@ -19,3 +19,6 @@
   first, then the XDG file, then `~/.gitconfig`, with an empty
   `helper =` line dropping the ones before it, and a bare `helper` key
   with no `=`, which Git rejects, left out and warned about by file.
+  `include.path` entries in those files are followed, and one such as
+  `~/x` resolves under `--home`, since `HOME` is set to the inspected home
+  for the Git lookups, not under the caller's home.
