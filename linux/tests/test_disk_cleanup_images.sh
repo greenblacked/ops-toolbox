@@ -73,7 +73,7 @@ LIST
 cat > "$fixture/bin/snap" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
-  list) cat "$STUB_DIR/snap.list"; exit 0 ;;
+  list) [[ -n "${SNAP_LIST_RC:-}" ]] && exit "$SNAP_LIST_RC"; cat "$STUB_DIR/snap.list"; exit 0 ;;
 esac
 printf '%s\n' "$*" >> "$STUB_DIR/snap.calls"
 exit "${SNAP_RC:-0}"
@@ -163,6 +163,16 @@ assert_eq 'snap dry run removes nothing' '' "$snap_calls"
 SNAP_RC=1 run_clean --include-snap-revisions --yes
 assert_eq 'a failed snap remove -> 1' 1 "$rc"
 assert_contains 'a failed snap remove is reported' "$out" 'failed'
+
+# snapd down: the listing fails, which is not "no disabled revisions".
+SNAP_LIST_RC=1 run_clean --include-snap-revisions --yes
+assert_eq 'a failed snap list -> 1' 1 "$rc"
+assert_contains 'a failed snap list is a warning' "$out" 'snap list --all failed'
+assert_not_contains 'a failed snap list is not "no disabled revisions"' "$out" 'no disabled snap revisions'
+assert_eq 'a failed snap list removes nothing' '' "$snap_calls"
+SNAP_LIST_RC=1 run_clean --include-snap-revisions --dry-run
+assert_eq 'a failed snap list fails a dry run too -> 1' 1 "$rc"
+assert_contains 'the dry run names the failure' "$out" 'snap list --all failed'
 
 # No snap at all: a PATH with the stubs but without snap. If the host itself
 # has a real snap in /usr/bin or /bin, the absence cannot be staged here.

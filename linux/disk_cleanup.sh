@@ -30,7 +30,7 @@
 #
 # Exit codes:
 #   0   success
-#   1   one or more deletions failed
+#   1   one or more deletions or steps failed (snap list included)
 #   2   preflight failed (not Linux)
 #   3   bad CLI arguments
 set -u
@@ -118,7 +118,7 @@ Options:
                          needs --include-logs)
   --help, -h             Show this help
 
-Exit codes: 0 success, 1 one or more deletions failed, 2 not Linux, 3 usage
+Exit codes: 0 success, 1 one or more deletions or steps failed, 2 not Linux, 3 usage
 EOF
 }
 
@@ -870,7 +870,18 @@ fi
 if (( INCLUDE_SNAP_REVISIONS == 1 )); then
   step "snap revisions"
   if have snap; then
-    snap_revs="$(LC_ALL=C snap list --all 2>/dev/null | awk 'NR > 1 && $NF ~ /disabled/ { print $1, $3 }')"
+    # The listing's own status matters: with snapd down it prints nothing,
+    # which must not read as "no disabled revisions".
+    snap_listing=""
+    snap_list_ok=1
+    snap_listing="$(LC_ALL=C snap list --all 2>/dev/null)" || snap_list_ok=0
+    if (( snap_list_ok == 0 )); then
+      warn "snap list --all failed (is snapd running?) - snap revisions not checked"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+      snap_revs=""
+    else
+      snap_revs="$(awk 'NR > 1 && $NF ~ /disabled/ { print $1, $3 }' <<<"$snap_listing")"
+    fi
     snap_count=0
     while read -r snap_name snap_rev; do
       [[ -n "$snap_name" ]] || continue
@@ -881,7 +892,7 @@ if (( INCLUDE_SNAP_REVISIONS == 1 )); then
       # stdin is the list being read; nothing run here may consume it.
       run_root "remove snap $snap_name revision $snap_rev" snap remove "$snap_name" --revision="$snap_rev" < /dev/null
     done <<< "$snap_revs"
-    if (( snap_count == 0 )); then
+    if (( snap_count == 0 && snap_list_ok == 1 )); then
       info "no disabled snap revisions"
     fi
     info "to keep fewer from now on: sudo snap set system refresh.retain=2"
@@ -948,11 +959,15 @@ printf "\n"
 if (( DRY_RUN == 1 )); then
   info "would free at least $(human_bytes "$WOULD_BYTES") in total"
   printf "dry-run complete; no changes written\n"
+  if (( FAIL_COUNT > 0 )); then
+    err "$FAIL_COUNT step(s) failed"
+    exit 1
+  fi
   exit 0
 fi
 info "freed at least $(human_bytes "$FREED_BYTES") in total"
 if (( FAIL_COUNT > 0 )); then
-  err "$FAIL_COUNT deletion(s) failed"
+  err "$FAIL_COUNT deletion(s) or step(s) failed"
   exit 1
 fi
 ok "done"
