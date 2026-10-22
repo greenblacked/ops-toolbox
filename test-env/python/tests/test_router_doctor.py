@@ -1370,6 +1370,17 @@ class DriftTestCase(unittest.TestCase):
         big = router_doctor.drift_commands({"a": b"y" * 5000, "b": b"z"}, limit=100)
         self.assertEqual([names for names, _ in big], [["a"], ["b"]])
 
+    def test_expected_source_turns_a_tab_into_four_spaces(self):
+        # RouterOS stores a tab in a script source as four spaces.
+        self.assertEqual(router_doctor.expected_source(b":put 1;\t:put 2;"),
+                         b":put 1;    :put 2;")
+        self.assertEqual(router_doctor.expected_source(b"\ta\r\n\tb\n", crlf=True),
+                         b"    a\r\n    b")
+        commands = router_doctor.drift_commands({"s": b"a\tb\n"})
+        text = "".join(cmd for _names, cmd in commands)
+        self.assertIn(':local exp "a    b";', text)
+        self.assertNotIn("\\09", text)
+
     def test_expected_source_drops_one_trailing_line_end(self):
         self.assertEqual(router_doctor.expected_source(b"a\nb\n"), b"a\nb")
         self.assertEqual(router_doctor.expected_source(b"a\r\nb\r\n"), b"a\nb")

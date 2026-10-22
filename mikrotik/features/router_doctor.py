@@ -545,8 +545,10 @@ def escape_routeros_string(value):
     dollar get a backslash (a question mark is left as it is, as in the
     package's own scripts); CR and LF become \\r, \\n;
     every other control character (a tab included: the CHR did not read
-    \\t back as the tab it stored), DEL and every non-ASCII byte becomes \\XX
-    (two uppercase hex digits), so the result is printable ASCII on one line.
+    \\t back as the tab it stored; the drift check sends four spaces
+    instead, see expected_source), DEL and every non-ASCII byte becomes
+    \\XX (two uppercase hex digits), so the result is printable ASCII on
+    one line.
     The caller adds the surrounding quotes.
     """
     if isinstance(value, str):
@@ -567,12 +569,15 @@ def expected_source(raw, crlf=False):
 
     One trailing line end is dropped (the inline block adds it back in
     each spelling), and the line ends are LF, or CRLF when crlf is set.
+    Each tab becomes four spaces: RouterOS keeps a tab in a script source
+    as four spaces (a fixed four, not a tab stop), so a tab in the file
+    would otherwise read as a difference in an unmodified script.
     """
     if raw.endswith(b"\r\n"):
         raw = raw[:-2]
     elif raw.endswith(b"\n"):
         raw = raw[:-1]
-    text = raw.replace(b"\r\n", b"\n")
+    text = raw.replace(b"\r\n", b"\n").replace(b"\t", b"    ")
     return text.replace(b"\n", b"\r\n") if crlf else text
 
 

@@ -7,4 +7,5 @@
   wire and nothing is written to the router. A difference is a warning naming
   the file to paste; the JSON output carries only the verdict per script. A
   CHR test runs the comparison, with quotes, dollars, backslashes and
-  newlines in the source, on the pinned RouterOS release.
+  newlines in the source, on the pinned RouterOS release. A tab in a file is
+  compared as four spaces, which is how RouterOS keeps it.
