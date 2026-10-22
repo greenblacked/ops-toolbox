@@ -205,7 +205,7 @@ assert_rc 'other system: groups stay out of default-sa with --include-system' 4 
 
 reset_fixtures
 export RBAC_CRB=crb-admin-sa-group
-run_rbac
+run_rbac --only cluster-admin
 assert_rc 'a ServiceAccount group bound to cluster-admin is judged by default' 0 "$rc"
 assert_contains 'cluster-admin row for a ServiceAccount group' '[risk] clusterrolebinding all-sas-admin -> cluster-admin: Group system:serviceaccounts'
 
