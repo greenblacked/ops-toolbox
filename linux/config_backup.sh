@@ -103,8 +103,8 @@ Options:
   --diff [FILE]      Compare FILE (or the newest archive) with the live --paths;
                      read-only, no --yes; exit 1 when anything differs
   --paths LIST       Comma-separated absolute paths (repeatable; default: /etc)
-                     Mounts nested below a path are not entered (tar
-                     --one-file-system); list a mount as its own path
+                     Mounts nested below a path are not entered
+                     (tar --one-file-system); list a mount as its own path
   --dest DIR         Directory for archives (default: ~/ops-toolbox-backups)
   --keep N           Complete and partial archives to retain separately (default: $KEEP; 0 = keep all)
   --prefix NAME      Filename prefix (default: $PREFIX)
