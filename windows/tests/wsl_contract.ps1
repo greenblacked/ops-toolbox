@@ -350,6 +350,14 @@ $found = Get-WslConfigFinding "[wsl2]`nmemory=4GB`nkernel=C:\\Users\\x\\k"
 Test-Case 'doubled backslashes in kernel= are not' (
     @($found | Where-Object { $_.Message -match 'doubled' }).Count -eq 0
 ) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=4GB`nkernelModules=C:\Users\x\m.vhdx"
+Test-Case 'single backslashes in kernelModules= are reported' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -like '*kernelModules*' -and $_.Message -match 'doubled' }).Count -eq 1
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=4GB`nkernelModules=C:\\Users\\x\\m.vhdx"
+Test-Case 'doubled backslashes in kernelModules= are not' (
+    @($found | Where-Object { $_.Message -match 'doubled' }).Count -eq 0
+) (Format-Finding $found)
 
 $found = Get-WslConfigFinding "[wsl2]`nmemory=64GB" -Memory 16GB -Processors 8
 Test-Case 'memory above the installed RAM is reported' (
