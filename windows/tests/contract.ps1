@@ -2397,6 +2397,26 @@ Match Group administrators
         } else {
             Test-Fail "nested Include read permitemptypasswords='$($r['permitemptypasswords'])' pubkeyauthentication='$($r['pubkeyauthentication'])' port='$($r['port'])'"
         }
+        # A Match inside an included file ends that file only: the parent's
+        # later lines and later Includes are still global, as in sshd.
+        & $writeInc (Join-Path $incBox 'matchinc.conf') "PermitEmptyPasswords no`nMatch User bob`nPasswordAuthentication yes`nBanner none`n"
+        & $writeInc (Join-Path $incBox 'afterwards.conf') "UsePAM yes`n"
+        $r = Get-SshdSetting -Lines @('Include matchinc.conf afterwards.conf', 'PasswordAuthentication no', 'Port 22', 'Match User alice', 'LoginGraceTime 5') -BaseDir $incBox
+        if ($r['permitemptypasswords'] -eq 'no' -and $r['passwordauthentication'] -eq 'no' -and -not $r.ContainsKey('banner')) {
+            Test-Ok 'a Match inside an included file hides the rest of that file from the global settings'
+        } else {
+            Test-Fail "Match in an Include read permitemptypasswords='$($r['permitemptypasswords'])' passwordauthentication='$($r['passwordauthentication'])' banner present=$($r.ContainsKey('banner'))"
+        }
+        if ($r['usepam'] -eq 'yes' -and $r['port'] -eq '22') {
+            Test-Ok 'after an included file ends in a Match, a later Include and the parent lines are still read'
+        } else {
+            Test-Fail "after a Match in an Include, usepam='$($r['usepam'])' port='$($r['port'])', expected yes and 22"
+        }
+        if (-not $r.ContainsKey('logingracetime')) {
+            Test-Ok 'a Match in the main file still ends the global settings'
+        } else {
+            Test-Fail 'a setting after a Match in the main file was read as global'
+        }
         $r = Get-SshdSetting -Lines @('PasswordAuthentication no', 'Include sshd_config.d/*.conf') -BaseDir $incBox
         if ($r['passwordauthentication'] -eq 'no' -and $r['permitemptypasswords'] -eq 'no') {
             Test-Ok 'a value set before the Include is not overridden by it'

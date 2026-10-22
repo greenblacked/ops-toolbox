@@ -122,7 +122,8 @@ function Get-AuditCheckId {
 
 # sshd_config keywords, lower-cased, to their value. The first occurrence
 # wins, as it does for sshd, and reading stops at the first Match block,
-# because what follows applies only to some connections.
+# because what follows applies only to some connections. A Match inside an
+# included file ends only that file; the file that included it carries on.
 #
 # Include lines are followed where they stand, as sshd does: each pattern is
 # relative to -BaseDir (the folder of sshd_config) unless rooted, may hold
@@ -157,7 +158,14 @@ function Get-SshdSetting {
         $m = [regex]::Match($text, '^(?<key>[A-Za-z]+)(\s*=\s*|\s+)(?<value>.*)$')
         if (-not $m.Success) { continue }
         $key = $m.Groups['key'].Value.ToLowerInvariant()
-        if ($key -eq 'match') { $State.Stop = $true; break }
+        if ($key -eq 'match') {
+            # In the main file a Match ends the global part for good. In an
+            # included file it ends only that file, as sshd restores the
+            # parent's state after an Include: the parent's later lines and
+            # later Includes are still global.
+            if ($top) { $State.Stop = $true }
+            break
+        }
         if ($key -eq 'include') {
             foreach ($token in [regex]::Matches($m.Groups['value'].Value, '"([^"]*)"|(\S+)')) {
                 if ($State.Stop) { break }
