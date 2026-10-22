@@ -640,6 +640,75 @@ try {
     Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# backup -All carries on past a distro whose backup returns $false, reports
+# it and exits 1 at the end. The script body cannot run here (its distro list
+# comes from the registry), so the statements of the -All branch that run the
+# backups are cut out of the syntax tree and run in a child process with a
+# stand-in Invoke-DistroBackup that fails for one distro by name.
+$allParsed = [System.Management.Automation.Language.Parser]::ParseFile($wslScript, [ref]$null, [ref]$null)
+$exportedInit = $allParsed.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -eq '$exported' -and $node.Right.Extent.Text -eq '0'
+    }, $true)
+$allStatements = @()
+if ($exportedInit) {
+    $inBlock = $false
+    foreach ($statement in $exportedInit.Parent.Statements) {
+        if ($statement -eq $exportedInit) { $inBlock = $true }
+        if (-not $inBlock) { continue }
+        $allStatements += $statement.Extent.Text
+        if ($statement -is [System.Management.Automation.Language.IfStatementAst] -and
+            $statement.Clauses[0].Item1.Extent.Text -match '\$failed\s+-gt\s+0') { break }
+    }
+}
+Test-Case 'the backup -All loop and its exit status were found in the script' (
+    $allStatements.Count -gt 0 -and $allStatements[-1] -match 'exit 1'
+) ($allStatements -join "`n")
+if ($allStatements.Count -gt 0) {
+    $allDir = Initialize-ScratchDirectory 'wslall-'
+    try {
+        $sizeText = $allParsed.Find({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Format-Size'
+            }, $true).Extent.Text
+        $trace = Join-Path $allDir 'trace.log'
+        $template = @'
+@@SIZE@@
+function Invoke-DistroBackup {
+    param([string]$Name, [string]$Out)
+    Add-Content -LiteralPath '@@TRACE@@' -Value $Name
+    if ($Name -eq 'Broken') { return $false }
+    [IO.File]::WriteAllText($Out, 'exported')
+    return $true
+}
+$plan = @(
+    [pscustomobject]@{ Name = 'Broken'; Out = '@@BROKEN@@'; Verb = 'EXPORT'; Reason = '' }
+    [pscustomobject]@{ Name = 'Healthy'; Out = '@@HEALTHY@@'; Verb = 'EXPORT'; Reason = '' }
+)
+@@LOOP@@
+'@
+        $driver = $template.Replace('@@SIZE@@', $sizeText).Replace('@@TRACE@@', $trace.Replace("'", "''")).
+            Replace('@@BROKEN@@', (Join-Path $allDir 'Broken.tar').Replace("'", "''")).
+            Replace('@@HEALTHY@@', (Join-Path $allDir 'Healthy.tar').Replace("'", "''")).
+            Replace('@@LOOP@@', ($allStatements -join "`n"))
+        $driverPath = Join-Path $allDir 'driver.ps1'
+        [IO.File]::WriteAllText($driverPath, $driver, [Text.Encoding]::ASCII)
+        $allText = & $pwshExe -NoProfile -File $driverPath 2>&1 | Out-String
+        $allExit = $LASTEXITCODE
+        $order = @(Get-Content -LiteralPath $trace -ErrorAction SilentlyContinue)
+        Test-Case 'a distro whose backup returns false does not stop the next one' (
+            ($order -join ',') -eq 'Broken,Healthy' -and (Test-Path -LiteralPath (Join-Path $allDir 'Healthy.tar'))
+        ) ("{0}`n{1}" -f ($order -join ','), $allText)
+        Test-Case 'and the failure is reported, the other distro counted, and the exit status is 1' (
+            $allExit -eq 1 -and $allText -cmatch 'FAIL\s+Broken' -and $allText -cmatch 'DONE\s+.*Healthy\.tar' -and
+            $allText -match 'Exported 1, skipped 0, failed 1'
+        ) "exit $allExit`n$allText"
+    } finally {
+        Remove-Item -Path $allDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # Each preview must be decided before the branch reaches anything that
 # changes the machine. Read from the syntax tree of the switch, so moving a
 # call above the -DryRun check fails here even though nothing runs it.
