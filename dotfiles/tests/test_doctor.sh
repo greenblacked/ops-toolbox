@@ -416,6 +416,42 @@ if command -v ssh >/dev/null 2>&1; then
   out="$(run_doctor --platform linux 2>&1)"; rc=$?
   assert_contains "Match exec in the main config is reported" "$out" "config uses Match exec"
   if [[ -e "$marker" ]]; then err "the doctor ran a Match exec command"; else ok "the Match exec command never ran"; fi
+  # A negated or quoted criterion still runs the command; so does an
+  # Include=... form with a Match exec inside; so does a home with a space.
+  printf 'Match !exec "touch %s"\n' "$marker" > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "Match !exec is reported" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a negated Match exec command"; else ok "the negated Match exec command never ran"; fi
+  printf 'Match "!exec" "touch %s"\n' "$marker" > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "a quoted !exec is reported" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a quoted Match exec command"; else ok "the quoted Match exec command never ran"; fi
+  mkdir -p "$H/.ssh/config.d"
+  printf 'Include=config.d/*\n' > "$H/.ssh/config"
+  printf 'Match exec "touch %s"\n' "$marker" > "$H/.ssh/config.d/x.conf"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "Include=... with a Match exec inside is reported" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind Include="; else ok "no Match exec behind Include= ran"; fi
+  SP="$scratch/my home"
+  mkdir -p "$SP/.ssh/config.d"; chmod 700 "$SP/.ssh"
+  printf 'Include config.d/*\n' > "$SP/.ssh/config"
+  printf 'Match exec "touch %s"\n' "$marker" > "$SP/.ssh/config.d/x.conf"
+  out="$(run_doctor_in "$SP" --platform linux 2>&1)"; rc=$?
+  assert_contains "an include under a home with a space is scanned" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec under a home with a space"; else ok "no Match exec under a home with a space ran"; fi
+  # OpenSSH resolves a relative Include against the passwd home's .ssh, so
+  # with --home elsewhere that file is read too and must be scanned. A getent
+  # stub stands in for the account database.
+  PWH="$scratch/pwhome"; STUB="$scratch/stub"
+  mkdir -p "$PWH/.ssh/config.d" "$STUB"
+  printf '#!/bin/sh\nprintf "u:x:1:1::%s:/bin/sh\\n"\n' "$PWH" > "$STUB/getent"
+  chmod +x "$STUB/getent"
+  printf 'Include config.d/*\n' > "$H/.ssh/config"
+  printf 'Match exec "touch %s"\n' "$marker" > "$PWH/.ssh/config.d/x.conf"
+  out="$(guard env "${NOENV[@]}" HOME="$H" PATH="$STUB:$PATH" TMPDIR="$T" "$DOCTOR" --home "$H" --platform linux 2>&1)"; rc=$?
+  assert_contains "an include under the passwd home is scanned" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec from the passwd home"; else ok "no Match exec from the passwd home ran"; fi
+  rm -rf "$H/.ssh/config.d" "$SP" "$PWH" "$STUB"
   printf 'BogusOption yes\n' > "$H/.ssh/config"
 
   # The shipped config, which turns HashKnownHosts on.

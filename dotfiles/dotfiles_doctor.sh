@@ -488,15 +488,33 @@ PLAINTEXT_HOSTS_AWK='
 END { print n + 0 }
 '
 
+# The home directory OpenSSH itself uses for ~ and for relative Include paths
+# is the passwd entry of the running account, not $HOME. Empty when it cannot
+# be found (no getent and no dscl) or is the same as the inspected home.
+passwd_home() {
+  local u h=""
+  u="$(id -un 2>/dev/null)" || return 0
+  if command -v getent >/dev/null 2>&1; then
+    h="$(getent passwd "$u" 2>/dev/null | cut -d: -f6)"
+  elif command -v dscl >/dev/null 2>&1; then
+    h="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory:[[:space:]]*//p')"
+  fi
+  h="${h%/}"
+  [[ -n "$h" && "$h" != "$HOME_DIR" ]] && printf '%s\n' "$h"
+  return 0
+}
+
 # True when the config, or a file one of its Include lines pulls in, has a
-# Match line with an exec criterion: ssh -G would run that command. Includes
-# are followed (globs too, relative to ~/.ssh, ~ as the inspected home and as
-# the real one) to a depth of 5. Reads only; nothing is run or written.
+# Match line with an exec criterion (also negated or quoted): ssh -G would run
+# that command. Includes are followed (globs too; relative paths against
+# ~/.ssh and ~ against the inspected home, $HOME and the passwd home, as
+# OpenSSH reads the last) to a depth of 5. Reads only; nothing is run.
 ssh_config_runs_exec() {
-  local file="$1" depth="${2:-0}" line low w pat c f
+  local file="$1" depth="${2:-0}" line low norm w pat c f pw
   local -a words cands
   (( depth <= 5 )) || return 1
   [[ -r "$file" ]] || return 1
+  pw="$(passwd_home)"
   while IFS= read -r line || [[ -n "$line" ]]; do
     low="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]' | tr '\t=' '  ')"
     case "$low" in
@@ -509,26 +527,38 @@ ssh_config_runs_exec() {
         (( ${#words[@]} > 1 )) || continue
         for w in "${words[@]:1}"; do
           [[ "$w" == '#'* ]] && break
-          [[ "$w" == exec || "$w" == '"exec"' ]] && return 0
+          w="${w//[\"\']/}"
+          w="${w#!}"
+          [[ "$w" == exec ]] && return 0
         done
         ;;
       include)
-        read -r -a words <<<"$line"
+        # Tabs and the keyword's = become spaces first, so Include=a and
+        # Include<TAB>a split like Include a; the pattern keeps its case.
+        norm="$(printf '%s' "$line" | tr '\t' ' ' | sed 's/^[[:space:]]*\([A-Za-z]*\)[[:space:]]*=/\1 /')"
+        read -r -a words <<<"$norm"
         (( ${#words[@]} > 1 )) || continue
         for pat in "${words[@]:1}"; do
           [[ "$pat" == '#'* ]] && break
           pat="${pat//\"/}"
           cands=()
           case "$pat" in
-            [~]/*) cands=("$HOME_DIR/${pat#??}" "${HOME:-$HOME_DIR}/${pat#??}") ;;
+            [~]/*)
+              cands=("$HOME_DIR/${pat#??}" "${HOME:-$HOME_DIR}/${pat#??}")
+              [[ -n "$pw" ]] && cands+=("$pw/${pat#??}")
+              ;;
             /*) cands=("$pat") ;;
-            *) cands=("$HOME_DIR/.ssh/$pat") ;;
+            *)
+              cands=("$HOME_DIR/.ssh/$pat")
+              [[ -n "$pw" ]] && cands+=("$pw/.ssh/$pat")
+              ;;
           esac
           for c in "${cands[@]}"; do
-            # shellcheck disable=SC2086  # the glob is the point
-            for f in $c; do
+            # compgen -G prints one match per line, so a space in the path
+            # does not split it the way an unquoted expansion would.
+            while IFS= read -r f; do
               [[ -f "$f" ]] && ssh_config_runs_exec "$f" $((depth + 1)) && return 0
-            done
+            done < <(compgen -G "$c" 2>/dev/null)
           done
         done
         ;;
