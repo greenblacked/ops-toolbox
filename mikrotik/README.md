@@ -916,11 +916,11 @@ name may itself be quoted, as in `:global "api-token" "x"`); and the fields
 RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
 `private-key=`, `secret=`, `psk=`, `preshared-key=` (WireGuard peers), the
 WPA pre-shared keys, `authentication-key=`, `encryption-key=`). Empty values,
-variables and expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`), `<redacted>`,
-the exact placeholder assignments the package ships
-(`TgBotToken "<paste bot token>"`,
-`RouterBackupPassword "<paste backup password>"` and the helper's
-`BotToken "token"`) and examples in commented-out script lines are skipped.
+variables and expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`),
+`<redacted>`, the exact placeholder assignments the package ships
+(`TgBotToken "<paste bot token>"`, `RouterBackupPassword "<paste backup
+password>"` and the helper's `BotToken "token"`) and examples in
+commented-out script lines are skipped.
 Any other value is reported, even one in angle brackets. A finding names the
 line and the kind, never the value.
 This is a guard against the known shapes, not proof that an export is clean:
