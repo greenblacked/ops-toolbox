@@ -862,6 +862,8 @@ never have been committed, and was something committed once and then deleted?
   they often but not always carry a secret. A name ending in `.example`,
   `.sample`, `.template`, `.dist`, `.tpl` or `.tmpl` is a placeholder and
   passes, so `.env.example` is fine.
+  Names are read from HEAD and from the index, so a file taken out with
+  `git rm --cached` is still reported until that removal is committed.
 - **Content at HEAD.** Private key blocks and GitHub, GitLab, Slack and Stripe
   live tokens fail; an AWS access key id warns, since the id alone is not the
   secret. The search is `git grep -l`, which returns file names only, so a

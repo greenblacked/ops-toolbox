@@ -18,8 +18,9 @@ never have been committed, and was something committed once and then deleted?
             "gone from HEAD but still in history" is the case where the
             credential has to be rotated.
 
-Read-only. It opens no file in the working tree: names come from
-`git ls-files`, content from `git grep` against HEAD, history from `git log`.
+Read-only. It opens no file in the working tree: names come from HEAD
+(`git ls-tree`) and the index (`git ls-files`), content from `git grep`
+against HEAD, history from `git log`.
 It never edits .gitignore, the index or history, and its advice stops at
 "rotate the credential".
 
@@ -289,13 +290,34 @@ def print_capped(findings):
     return sum(1 for level, _ in findings if level == "fail")
 
 
-def report_names(allow):
-    head("tracked files")
+def committed_and_staged_paths():
+    """(rc, err, paths): every path at HEAD plus every path in the index.
+
+    HEAD is read as well as the index because `git rm --cached` removes a
+    file from the index while it is still committed, and the credential is
+    still in HEAD until that removal is committed. An unborn HEAD (no
+    commits yet) has nothing to list, so only the index is read there.
+    """
+    paths = set()
+    if run(["git", "rev-parse", "--verify", "-q", "HEAD"])[0] == 0:
+        rc, out, err = run(["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+                           timeout=120)
+        if rc != 0:
+            return rc, "git ls-tree: " + err, []
+        paths.update(p for p in out.split("\0") if p)
     rc, out, err = run(["git", "ls-files", "-z"], timeout=120)
     if rc != 0:
-        could_not_answer("git ls-files", rc, err)
+        return rc, "git ls-files: " + err, []
+    paths.update(p for p in out.split("\0") if p)
+    return 0, "", sorted(paths)
+
+
+def report_names(allow):
+    head("tracked files")
+    rc, err, paths = committed_and_staged_paths()
+    if rc != 0:
+        could_not_answer("git ls-tree / git ls-files", rc, err)
         return 1
-    paths = [p for p in out.split("\0") if p]
     findings = []
     for path in paths:
         if is_allowed(path, allow):
@@ -303,7 +325,7 @@ def report_names(allow):
         for rule_id, level, advice in match_path(path):
             findings.append((level, "%s  [%s] %s" % (path, rule_id, advice)))
     if not findings:
-        ok("no tracked file has a credential-shaped name (%d checked)" % len(paths))
+        ok("no tracked or committed file has a credential-shaped name (%d checked)" % len(paths))
         return 0
     problems = print_capped(findings)
     info("fix: git rm --cached -- <path>, then add the path to .gitignore "

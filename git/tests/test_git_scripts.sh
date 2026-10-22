@@ -1174,6 +1174,24 @@ out="$(cd "$hist_repo" && "$SECRETS_DOCTOR" --history 2>&1)"; rc=$?
 assert_eq "$rc" "1" "secrets doctor --history fails on a state file deleted from the tree"
 assert_contains "$out" "still in history" "secrets doctor --history says the file is still in history"
 
+# `git rm --cached` empties the index but the file stays in HEAD until the
+# removal is committed, so the names pass has to read HEAD as well.
+rmc_repo="$(new_repo)"
+printf 'K=v\n' >"$rmc_repo/.env"
+git -C "$rmc_repo" add -f .env && git -C "$rmc_repo" commit -qm "env" >/dev/null
+git -C "$rmc_repo" rm -q --cached .env
+out="$(cd "$rmc_repo" && "$SECRETS_DOCTOR" --no-content 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor still fails a .env removed with rm --cached but not committed"
+assert_contains "$out" "env-file" "secrets doctor names the rule for the uncommitted removal"
+# A repository with no commit yet has no HEAD to read; the index still counts.
+unborn_repo="$(mktemp -d /tmp/git-doctor-unborn.XXXXXX)"
+git -C "$unborn_repo" init -q
+printf 'K=v\n' >"$unborn_repo/.env"
+git -C "$unborn_repo" add -f .env
+out="$(cd "$unborn_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor reads the index of a repository with no commits"
+rm -rf "$unborn_repo"
+
 outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
 (cd "$outside" && "$SECRETS_DOCTOR" --quiet); rc=$?
 assert_eq "$rc" "2" "secrets doctor outside a repository -> exit 2"
