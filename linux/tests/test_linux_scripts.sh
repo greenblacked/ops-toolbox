@@ -2522,6 +2522,21 @@ assert_not_contains "ssh_client_doctor does not grade Host * with a negation as 
 assert_not_contains "ssh_client_doctor does not warn on Host * with a negation" "$out" "[warn]"
 assert_contains "ssh_client_doctor says all hosts except the negated one" "$out" "for all hosts except !trusted.example"
 assert_eq "ssh_client_doctor Host * with a negation -> 0" "0" "$rc"
+# Match host * (only non-excluding patterns, any case) is global like Match all.
+for match_line in 'Match host *' 'MATCH HOST *'; do
+  printf '%s\n' "$match_line" '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+  out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+  assert_contains "ssh_client_doctor grades StrictHostKeyChecking no under '$match_line' as global" \
+    "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+  assert_contains "ssh_client_doctor warns on ForwardAgent under '$match_line'" \
+    "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+  assert_eq "ssh_client_doctor '$match_line' without host key checking -> 1" "1" "$rc"
+done
+printf '%s\n' 'Match host *,!bastion' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor does not grade Match host *,!bastion as global" "$out" "[FAIL]"
+assert_not_contains "ssh_client_doctor does not warn on Match host *,!bastion" "$out" "[warn]"
+assert_eq "ssh_client_doctor Match host *,!bastion -> 0" "0" "$rc"
 # First value wins: an earlier block that sets the keyword narrows a later
 # Host * value to the hosts that block does not match.
 printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' '  ForwardAgent no' \

@@ -608,6 +608,14 @@ if want risks; then
           scope_all=0
           scope_only="only for ${scope:0:60}"
           [[ "$val_lc" == "all" ]] && scope_all=1
+          # "Match host *" is the same as Match all, as long as it is the only
+          # criterion and no pattern in the list excludes a host.
+          if [[ "$val_lc" =~ ^host[[:space:]]+([^[:space:]]+)$ ]]; then
+            m_list="${BASH_REMATCH[1]}"
+            if [[ ",$m_list," == *,\*,* && "$m_list" != *'!'* ]]; then
+              scope_all=1
+            fi
+          fi
           continue
           ;;
       esac
