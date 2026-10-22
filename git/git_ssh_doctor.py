@@ -15,8 +15,9 @@ prompted this script, is an Include whose glob matches directories. ssh skips
 those silently, so a config file one level deeper is never read and no error is
 ever printed.
 
-Offline by default: only --test-auth makes a connection. The user probed is the
-one a remote URL (or --host user@host) names, else a User in ssh config, else git.
+Offline by default: only --test-auth makes a connection. When diagnosing a
+repository's remotes it honours GIT_SSH_COMMAND / core.sshCommand (the -i, -F,
+-p, -o and -l of an ssh-compatible command) and the user a remote URL names.
 
 Read-only. It prints commands to run; it never edits config, touches the agent,
 or writes a key.
@@ -218,6 +219,76 @@ def ssh_target_of(url):
         if left and not left.startswith("/") and not os.path.exists(url.split(":")[0]):
             return (left, "")
     return None
+
+
+# --------------------------------------------------------------------------
+# GIT_SSH_COMMAND / core.sshCommand
+# --------------------------------------------------------------------------
+_SSH_ARG_OPTIONS = "iFpol"
+_SSH_PLAIN_FLAGS = "46AaCKkNqTtVvXxYy"
+
+
+def parse_ssh_command(command, program_only=False):
+    """The ssh options in a GIT_SSH_COMMAND-style string, or None.
+
+    None means this is not an ssh-compatible command the doctor can reason
+    about: another program, an unparsable string, or an option it does not
+    know the arity of. Guessing there would diagnose the wrong connection.
+    Kept: -i, -F, -p, -o and -l (value attached or separate) and the plain
+    flags in _SSH_PLAIN_FLAGS. program_only is for GIT_SSH, a program path
+    that takes no arguments.
+    """
+    if program_only:
+        tokens = [command]
+    else:
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return None
+    if not tokens:
+        return None
+    program = os.path.basename(tokens[0]).lower()
+    if program.endswith(".exe"):
+        program = program[:-4]
+    if program != "ssh":
+        return None
+    opts = []
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if len(token) < 2 or not token.startswith("-"):
+            return None
+        letter = token[1]
+        if letter in _SSH_ARG_OPTIONS:
+            if len(token) > 2:
+                opts += [token[:2], token[2:]]
+            elif i + 1 < len(tokens):
+                opts += [token, tokens[i + 1]]
+                i += 1
+            else:
+                return None
+        elif all(c in _SSH_PLAIN_FLAGS for c in token[1:]):
+            opts.append(token)
+        else:
+            return None
+        i += 1
+    return opts
+
+
+def configured_ssh_command():
+    """(source, command, program_only) git uses to reach ssh remotes, or
+    ("", "", False) for plain `ssh`. Git's precedence: GIT_SSH_COMMAND, then
+    core.sshCommand (repository-effective), then GIT_SSH."""
+    env = os.environ.get("GIT_SSH_COMMAND", "")
+    if env.strip():
+        return "GIT_SSH_COMMAND", env, False
+    rc, out, _ = run(["git", "config", "core.sshCommand"])
+    if rc == 0 and out.strip():
+        return "core.sshCommand", out.strip(), False
+    legacy = os.environ.get("GIT_SSH", "")
+    if legacy.strip():
+        return "GIT_SSH", legacy, True
+    return "", "", False
 
 
 # --------------------------------------------------------------------------
@@ -448,10 +519,12 @@ def host_key_findings(host, port, strict, found_in, files_checked, hashed, requi
     return findings
 
 
-def effective_config(host, port=""):
-    """`ssh -G` for host. A port from the remote URL goes in as -p, as git
-    passes it, so it wins over a Port in ssh_config."""
-    rc, out, err = run(["ssh", "-G"] + (["-p", port] if port else []) + [host])
+def effective_config(host, port="", ssh_opts=()):
+    """`ssh -G` for host. The options of a GIT_SSH_COMMAND / core.sshCommand
+    come first and a port from the remote URL goes in as -p after them, the
+    order git builds its command in, so the first -p wins as it does for git."""
+    rc, out, err = run(["ssh", "-G"] + list(ssh_opts)
+                       + (["-p", port] if port else []) + [host])
     if rc != 0:
         return None, err
     return parse_ssh_g(out), ""
@@ -553,7 +626,8 @@ def configured_user(cfg):
     return "" if user in local_accounts() else user
 
 
-def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port=""):
+def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="",
+             ssh_opts=()):
     """Attempt a non-interactive auth. Returns (authenticated, detail).
 
     `strict` is the StrictHostKeyChecking value for the attempt: accept-new
@@ -561,7 +635,10 @@ def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="
     passes UpdateHostKeys=no and CheckHostIP=no, since ssh would otherwise
     add further host keys (UpdateHostKeys) or an IP address entry for a
     known hostname (CheckHostIP, on by default before OpenSSH 8.5 or set in
-    ssh_config) to known_hosts after a successful login.
+    ssh_config) to known_hosts after a successful login. ssh_opts are the
+    options of a GIT_SSH_COMMAND / core.sshCommand; they follow the doctor's
+    own -o flags, and ssh keeps the first value of an option, so they cannot
+    loosen the host key policy chosen here.
     """
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o",
            "StrictHostKeyChecking=%s" % strict]
@@ -569,6 +646,7 @@ def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="
         cmd += ["-o", "UpdateHostKeys=no", "-o", "CheckHostIP=no"]
     if key:
         cmd += ["-o", "IdentitiesOnly=yes", "-i", key]
+    cmd += list(ssh_opts)
     if port:
         cmd += ["-p", port]
     cmd += ["-T", "%s@%s" % (user, host)]
@@ -589,10 +667,10 @@ def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="
 
 # --------------------------------------------------------------------------
 def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="",
-                  user=""):
+                  user="", ssh_opts=()):
     label = "%s port %s" % (host, port) if port else host
     head("host: %s" % label)
-    cfg, err = effective_config(host, port)
+    cfg, err = effective_config(host, port, ssh_opts)
     if cfg is None:
         bad("ssh -G %s failed: %s" % (label, err.strip()[:200]))
         return False
@@ -652,7 +730,8 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
         return has_identity
 
     if has_identity:
-        authed, detail = try_auth(host, user=user, strict=strict, port=port)
+        authed, detail = try_auth(host, user=user, strict=strict, port=port,
+                                  ssh_opts=ssh_opts)
         if not found and not require_known_host:
             info("note: --test-auth records new host keys (accept-new); "
                  "this check ran first")
@@ -664,7 +743,8 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
     head("testing %d discovered key(s) against %s" % (len(keys), label))
     winners = []
     for key in keys:
-        authed, detail = try_auth(host, user=user, key=key, strict=strict, port=port)
+        authed, detail = try_auth(host, user=user, key=key, strict=strict, port=port,
+                                  ssh_opts=ssh_opts)
         if authed:
             ok("%s -> %s" % (shorten(key), detail))
             winners.append(key)
@@ -739,6 +819,7 @@ def run_report(args):
 
     agent = agent_identities()
 
+    ssh_opts = ()
     if args.host:
         hosts = []
         for spec in dict.fromkeys(args.host):
@@ -746,13 +827,32 @@ def run_report(args):
             hosts.append((name, "", user))
     else:
         hosts = sorted(git_remote_hosts())
+        if hosts:
+            source, command, program_only = configured_ssh_command()
+            if source:
+                parsed = parse_ssh_command(command, program_only)
+                head("ssh command")
+                if parsed is None:
+                    message = ("%s is a custom SSH command, not inspected; the "
+                               "host checks would describe plain ssh, not what "
+                               "git runs" % source)
+                    # Nothing was verified, so the run cannot pass: warn-level
+                    # exit 1, and a recorded failure under --require-known-host.
+                    if args.require_known_host:
+                        bad(message)
+                    else:
+                        warn(message)
+                    return 1
+                ssh_opts = tuple(parsed)
+                info("%s runs ssh%s" % (source, " " + " ".join(
+                    shlex.quote(o) for o in parsed) if parsed else ""))
     if not hosts:
         head("hosts")
         warn("no SSH remotes in this repository and no --host given")
         return 1
 
     results = [diagnose_host(h, keys, agent, args.test_auth, args.require_known_host, p,
-                             user=u)
+                             user=u, ssh_opts=ssh_opts)
                for h, p, u in hosts]
     return 0 if all(results) else 1
 

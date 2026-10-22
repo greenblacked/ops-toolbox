@@ -644,7 +644,8 @@ class RemotePortThroughMainTests(unittest.TestCase):
 
 
 class SshCommandAndUserThroughMainTests(unittest.TestCase):
-    """The user git would use reaches the authentication attempt. Stub ssh logs every call; ssh -G answers with a
+    """The user and the ssh command git would use reach `ssh -G` and the
+    authentication attempt. Stub ssh logs every call; ssh -G answers with a
     configured user that the tests must not see win over a user in the URL."""
 
     def setUp(self):
@@ -693,18 +694,28 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
         subprocess.run(["git"] + list(args), cwd=self.repo, check=True,
                        capture_output=True)
 
-    def _main(self, url, argv=("--test-auth",)):
+    def _main(self, url, ssh_command=None, env_command=None, argv=("--test-auth",)):
         subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repo,
                        capture_output=True)
         if os.path.exists(self.log):
             os.remove(self.log)
         self._git("remote", "add", "origin", url)
-        names = ("PATH", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")
+        if ssh_command:
+            self._git("config", "core.sshCommand", ssh_command)
+        else:
+            subprocess.run(["git", "config", "--unset", "core.sshCommand"],
+                           cwd=self.repo, capture_output=True)
+        names = ("PATH", "GIT_SSH_COMMAND", "GIT_SSH", "GIT_CONFIG_GLOBAL",
+                 "GIT_CONFIG_NOSYSTEM")
         saved = {n: os.environ.get(n) for n in names}
         saved_state = (os.getcwd(), list(doctor.EVENTS))
         os.environ["PATH"] = self.bin + os.pathsep + saved["PATH"]
+        os.environ.pop("GIT_SSH", None)
+        os.environ.pop("GIT_SSH_COMMAND", None)
         os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
         os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+        if env_command:
+            os.environ["GIT_SSH_COMMAND"] = env_command
         os.chdir(self.repo)
         del doctor.EVENTS[:]
         try:
@@ -744,6 +755,56 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
         auth = self._auth(calls)
         self.assertTrue(auth[0].endswith("-T cfguser@example.com"), auth[0])
 
+    def test_core_ssh_command_options_reach_ssh_g_and_the_probe(self):
+        rc, out, calls = self._main(
+            "ssh://alice@example.com/o/r.git",
+            ssh_command="ssh -F /x/cfg -i /k/id -p2022 -o 'Foo=bar baz' -4")
+        self.assertEqual(
+            calls[0], "-G -F /x/cfg -i /k/id -p 2022 -o Foo=bar baz -4 example.com")
+        auth = self._auth(calls)
+        self.assertEqual(len(auth), 1, out)
+        self.assertIn("-F /x/cfg -i /k/id -p 2022 -o Foo=bar baz -4", auth[0])
+        self.assertTrue(auth[0].endswith("-T alice@example.com"), auth[0])
+
+    def test_ssh_command_cannot_loosen_the_host_key_policy(self):
+        rc, out, calls = self._main(
+            "ssh://alice@example.com/o/r.git",
+            ssh_command="ssh -o StrictHostKeyChecking=no",
+            argv=("--test-auth", "--require-known-host"))
+        auth = self._auth(calls)[0]
+        self.assertLess(auth.index("StrictHostKeyChecking=yes"),
+                        auth.index("StrictHostKeyChecking=no"))
+
+    def test_git_ssh_command_environment_wins_over_the_config(self):
+        rc, out, calls = self._main(
+            "ssh://alice@example.com/o/r.git",
+            ssh_command="ssh -F /from/config", env_command="ssh -F /from/env")
+        self.assertEqual(calls[0], "-G -F /from/env example.com")
+
+    def test_a_non_ssh_command_is_reported_not_inspected(self):
+        for command in ("myproxy --fast", "ssh -J jump.example", "ssh extra-host"):
+            rc, out, calls = self._main("ssh://alice@example.com/o/r.git",
+                                        ssh_command=command)
+            self.assertEqual(rc, 1, command)
+            self.assertIn("custom SSH command, not inspected", out, command)
+            self.assertEqual(calls, [], command)
+
+    def test_a_non_ssh_command_fails_under_require_known_host(self):
+        rc, out, calls = self._main(
+            "ssh://alice@example.com/o/r.git", ssh_command="myproxy --fast",
+            argv=("--require-known-host", "--json"))
+        self.assertEqual(rc, 1)
+        report = json.loads(out)
+        self.assertEqual(report["problems"], 1, out)
+        self.assertEqual(calls, [])
+
+    def test_host_flag_ignores_the_ssh_command(self):
+        rc, out, calls = self._main("ssh://alice@example.com/o/r.git",
+                                    ssh_command="myproxy --fast",
+                                    argv=("--test-auth", "--host", "example.com"))
+        self.assertNotIn("custom SSH command", out)
+        self.assertTrue(self._auth(calls)[0].endswith("-T cfguser@example.com"))
+
     def test_without_a_url_user_the_local_account_is_not_probed(self):
         for local in sorted(doctor.local_accounts()) or ["nobody-here"]:
             self._set_g_user(local)
@@ -767,10 +828,31 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
         self.assertTrue(self._auth(calls)[0].endswith("-T deploy@example.com"))
 
 
-class SshUserOfTestCase(unittest.TestCase):
+class SshCommandParsingTestCase(unittest.TestCase):
     def test_user_of_ssh_and_scp_urls(self):
         self.assertEqual(doctor.ssh_user_of("ssh://a@h:22/r"), "a")
         self.assertEqual(doctor.ssh_user_of("b@h:r"), "b")
         self.assertEqual(doctor.ssh_user_of("ssh://h/r"), "")
         self.assertEqual(doctor.ssh_user_of("h:r"), "")
         self.assertEqual(doctor.ssh_user_of("https://u@h/r"), "")
+
+    def test_accepted_options_are_kept(self):
+        self.assertEqual(
+            doctor.parse_ssh_command("/usr/bin/ssh -i ~/k -F cfg -p 22 -l me -o A=b"),
+            ["-i", "~/k", "-F", "cfg", "-p", "22", "-l", "me", "-o", "A=b"])
+        self.assertEqual(doctor.parse_ssh_command("ssh -oA=b -lme"),
+                         ["-o", "A=b", "-l", "me"])
+        self.assertEqual(doctor.parse_ssh_command("ssh"), [])
+
+    def test_anything_else_is_not_inspected(self):
+        for command in ("plink -batch", "ssh -J jump", "ssh host", "ssh -i",
+                        "ssh 'unterminated", ""):
+            self.assertIsNone(doctor.parse_ssh_command(command), command)
+
+    def test_git_ssh_is_a_program_without_arguments(self):
+        self.assertEqual(doctor.parse_ssh_command("/opt/my tools/ssh", True), [])
+        self.assertIsNone(doctor.parse_ssh_command("/opt/wrapper", True))
+
+
+if __name__ == "__main__":
+    unittest.main()
