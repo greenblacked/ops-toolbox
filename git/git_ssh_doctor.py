@@ -626,6 +626,19 @@ def configured_user(cfg):
     return "" if user in local_accounts() else user
 
 
+def ssh_opts_user(ssh_opts):
+    """The user a -l option in the effective ssh command names, or "". ssh
+    keeps the first value of an option, so the first -l wins; it also beats
+    a User in ssh config, so it is kept even when it spells the local
+    account, and it also beats the user of the URL, which git appends as
+    user@host after the command's options."""
+    opts = list(ssh_opts)
+    for i, opt in enumerate(opts[:-1]):
+        if opt == "-l":
+            return opts[i + 1]
+    return ""
+
+
 def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="",
              ssh_opts=()):
     """Attempt a non-interactive auth. Returns (authenticated, detail).
@@ -678,11 +691,14 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
     configured = [os.path.expanduser(p) for p in cfg.get("identityfile", [])]
     existing = [p for p in configured if os.path.exists(p)]
 
-    # The user ssh will log in as: the one the remote URL (or --host
-    # user@host) spells out, else a User set in ssh config, else "git". ssh -G
-    # always reports a user, the local account when none is configured, so a
-    # value equal to the local account is taken as "none configured".
-    user = user or configured_user(cfg) or "git"
+    # The user ssh will log in as. The probe and git both run
+    # `ssh <command options> ... user@host`, and ssh keeps the first user it
+    # is given: a -l in the effective ssh command comes first and wins over
+    # the user the remote URL (or --host user@host) spells out, then a User
+    # set in ssh config, else "git". ssh -G always reports a user, the local
+    # account when none is configured, so a config value equal to the local
+    # account is taken as "none configured".
+    user = ssh_opts_user(ssh_opts) or user or configured_user(cfg) or "git"
     info("resolves to %s@%s:%s" % (user, cfg.get("hostname", host),
                                    cfg.get("port", "22")))
 
@@ -883,7 +899,8 @@ def main(argv=None):
         description="Diagnose git-over-SSH authentication failures."
     )
     parser.add_argument("--host", action="append", default=[],
-                        help="host to check (repeatable); defaults to this repo's remotes")
+                        help="host to check, as host or user@host (repeatable); "
+                             "defaults to this repo's remotes")
     parser.add_argument("--test-auth", action="store_true",
                         help="authenticate to the host (the only option that connects "
                              "to it), then try each discovered key if that fails")

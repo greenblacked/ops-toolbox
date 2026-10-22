@@ -820,6 +820,26 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
             argv=("--test-auth", "--host", "example.com"))
         self.assertTrue(self._auth(calls)[0].endswith("-T git@example.com"))
 
+    def test_first_l_in_the_ssh_command_is_the_user_shown_and_probed(self):
+        # ssh keeps the first -l; it beats the config User, and is kept even
+        # when it spells the local account.
+        locals_ = sorted(doctor.local_accounts()) or ["nobody-here"]
+        for first in ("deploy", locals_[0]):
+            rc, out, calls = self._main(
+                "example.com:o/r.git",
+                ssh_command="ssh -l %s -l other" % first)
+            self.assertIn("resolves to %s@example.com:" % first, out)
+            self.assertTrue(
+                self._auth(calls)[0].endswith("-T %s@example.com" % first),
+                self._auth(calls))
+
+    def test_l_in_the_ssh_command_wins_over_the_url_user(self):
+        # git passes the URL user as user@host after the command's options,
+        # and ssh keeps the first user it is given, so -l wins.
+        rc, out, calls = self._main("ssh://alice@example.com/o/r.git",
+                                    ssh_command="ssh -l deploy")
+        self.assertIn("resolves to deploy@example.com:", out)
+
     def test_host_flag_accepts_user_at_host(self):
         rc, out, calls = self._main(
             "ssh://alice@example.com/o/r.git",
@@ -829,6 +849,11 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
 
 
 class SshCommandParsingTestCase(unittest.TestCase):
+    def test_ssh_opts_user_is_the_first_l(self):
+        self.assertEqual(doctor.ssh_opts_user(["-l", "a", "-l", "b"]), "a")
+        self.assertEqual(doctor.ssh_opts_user(["-o", "User=x", "-4"]), "")
+        self.assertEqual(doctor.ssh_opts_user([]), "")
+
     def test_user_of_ssh_and_scp_urls(self):
         self.assertEqual(doctor.ssh_user_of("ssh://a@h:22/r"), "a")
         self.assertEqual(doctor.ssh_user_of("b@h:r"), "b")
