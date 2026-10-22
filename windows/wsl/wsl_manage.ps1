@@ -830,7 +830,13 @@ function ConvertTo-WslByteCount {
         'GB' { 1GB }
         'TB' { 1TB }
     }
-    return [long]([double]$Matches['n'] * $scale)
+    # Past Int64 (or not a finite number at all) is not a size WSL can use:
+    # report it as 'not a size' instead of letting the [long] cast throw.
+    $number = 0.0
+    if (-not [double]::TryParse($Matches['n'], [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$number)) { return $null }
+    $scaled = $number * $scale
+    if ([double]::IsNaN($scaled) -or [double]::IsInfinity($scaled) -or $scaled -ge 9.2233720368547758E+18) { return $null }
+    return [long]$scaled
 }
 
 # The audit itself: entries from ConvertFrom-WslConfig in, findings

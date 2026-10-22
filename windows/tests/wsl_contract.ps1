@@ -389,6 +389,16 @@ Test-Case "ConvertTo-WslByteCount refuses '8 GB'" ($null -eq (ConvertTo-WslByteC
 Test-Case "ConvertTo-WslByteCount reads a bare number as bytes ('0', '1024')" (
     (ConvertTo-WslByteCount '0') -eq 0 -and (ConvertTo-WslByteCount '1024') -eq 1024
 )
+Test-Case 'ConvertTo-WslByteCount returns $null past Int64 instead of throwing' (
+    $null -eq (ConvertTo-WslByteCount '999999999999999999999TB') -and
+    $null -eq (ConvertTo-WslByteCount '9223372036854775808') -and
+    $null -eq (ConvertTo-WslByteCount ('9' * 400)) -and
+    $null -eq (ConvertTo-WslByteCount '9000000TB')
+)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=999999999999999999999TB`n"
+Test-Case 'a memory size beyond Int64 is reported as not a size, and the audit goes on' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] memory (line 2)' -and $_.Message -match 'is not a size' }).Count -eq 1
+) (Format-Finding $found)
 $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nswap=0`n"
 Test-Case 'swap=0 (no unit, swap off) is a valid size, not a warning' (
     @($found | Where-Object { $_.Message -match 'is not a size' }).Count -eq 0 -and

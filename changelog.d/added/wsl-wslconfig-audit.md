@@ -13,3 +13,4 @@
   and none (WSL falls back to NAT; the deprecated bridged is only noted),
   and on a timeout or `maxCrashDumpCount` that is not a whole number
   (-1 is allowed for the idle timeouts and the dump count).
+  A size too large for 64 bits is reported as not a size.
