@@ -142,10 +142,24 @@ Every connection the doctor makes passes
 feature: the first connection to a host whose key you have never accepted
 adds that key to `~/.ssh/known_hosts` without asking. Do not copy that
 option into your own `~/.ssh/config`: keep the default strict checking.
-Instead, compare the host's key with the fingerprints the host publishes
-(for GitHub, its documented SSH key fingerprints page) using
-`ssh-keygen -lf` on the key, then add the verified key to
-`~/.ssh/known_hosts` yourself.
+
+To stay in control of that entry, verify the host key before you run
+`--test-auth`: compare the fingerprint of the key the host serves with the
+ones the host publishes (for GitHub, its documented SSH key fingerprints
+page), then add the verified key to `~/.ssh/known_hosts` yourself.
+
+```bash
+ssh-keyscan github.com | ssh-keygen -lf -
+```
+
+If you already ran `--test-auth`, check the entry it added. `-lF` shows
+the stored key as a fingerprint to compare with the published one;
+`-R` removes a wrong entry (it keeps a backup as `known_hosts.old`):
+
+```bash
+ssh-keygen -lF github.com
+ssh-keygen -R github.com
+```
 
 ## Apply
 
