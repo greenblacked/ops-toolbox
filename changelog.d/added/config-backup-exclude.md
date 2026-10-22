@@ -12,4 +12,6 @@
   before.
   Exclusions that cover every source now fail the run (exit `1`, nothing
   published) instead of publishing an archive holding only that record or
-  bare directory entries.
+  bare directory entries. When no `--exclude` was given, the message says
+  the sources contain no files to back up instead of blaming exclusions;
+  the `--exclude-secrets` patterns count as exclusions.

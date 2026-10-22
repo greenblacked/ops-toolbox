@@ -863,6 +863,9 @@ it never makes a `*.partial.tar.gz`, and an unreadable file that is excluded no
 longer turns a non-root run into a partial one. If the patterns leave nothing
 at all, or only the exclusion record below and bare directory entries, the
 staged archive fails validation, nothing is published and the run exits `1`.
+The `--exclude-secrets` patterns count as exclusions here, so the message
+blames "the exclusions" for either flag; only a run with neither says the
+sources contain no files to back up.
 `--dry-run` prints each `would exclude:` line, and both flags are refused with
 `--list`.
 

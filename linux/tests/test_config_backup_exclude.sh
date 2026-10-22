@@ -126,6 +126,29 @@ assert_eq 'excluding all contents of the source -> 1' 1 "$rc"
 assert_contains 'a bare directory member is not data' "$out" 'leave nothing to back up'
 assert_eq 'excluding all contents leaves no archive or staging' '' "$(ls -A "$dest")"
 
+# With no --exclude at all, a source holding only empty directories fails
+# for a different reason, and the message must not blame exclusions.
+new_dest
+empty_src="$fixture/empty_src"
+mkdir -p "$empty_src/a/b" || exit 1
+out="$("$BACKUP" --yes --paths "$empty_src" --dest "$dest" 2>&1)"; rc=$?
+assert_eq 'sources with no files and no exclusions -> 1' 1 "$rc"
+assert_contains 'no exclusions: says the sources hold no files' "$out" 'the sources contain no files to back up'
+assert_not_contains 'no exclusions: does not blame exclusions' "$out" 'exclusions leave nothing'
+assert_eq 'no files and no exclusions leaves no archive or staging' '' "$(ls -A "$dest")"
+
+# --exclude-secrets patterns are exclusions too: a source holding nothing
+# but a secret fails with the exclusions message, not the no-files one.
+new_dest
+secret_src="$fixture/secret_src"
+mkdir -p "$secret_src/etc" || exit 1
+printf 'not a real hash\n' > "$secret_src/etc/shadow"
+out="$("$BACKUP" --yes --exclude-secrets --paths "$secret_src" --dest "$dest" 2>&1)"; rc=$?
+assert_eq '--exclude-secrets leaving nothing -> 1' 1 "$rc"
+assert_contains '--exclude-secrets leaving nothing blames the exclusions' "$out" 'the exclusions leave nothing to back up'
+assert_not_contains '--exclude-secrets leaving nothing is not "no files"' "$out" 'sources contain no files'
+assert_eq '--exclude-secrets leaving nothing leaves no archive or staging' '' "$(ls -A "$dest")"
+
 new_dest
 out="$("$BACKUP" --dry-run --exclude-secrets --paths /etc --dest "$dest" 2>&1)"; rc=$?
 assert_eq '--exclude-secrets --dry-run exits 0' 0 "$rc"

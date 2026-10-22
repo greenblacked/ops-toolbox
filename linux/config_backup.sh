@@ -768,7 +768,11 @@ while IFS= read -r member; do
   esac
 done <<<"$staged_members"
 if (( ! data_found )); then
-  err "the exclusions leave nothing to back up; previous archives preserved"
+  if (( ${#EXCLUDES[@]} > 0 )); then
+    err "the exclusions leave nothing to back up; previous archives preserved"
+  else
+    err "the sources contain no files to back up; previous archives preserved"
+  fi
   exit 1
 fi
 
