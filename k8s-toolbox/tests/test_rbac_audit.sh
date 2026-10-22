@@ -200,7 +200,7 @@ export RBAC_CRB=crb-default-group-other
 run_rbac --only default-sa
 assert_rc 'other system: groups do not name the default ServiceAccounts' 4 "$rc"
 run_rbac --only default-sa --include-system
-assert_rc 'other system: groups do not name the default ServiceAccounts' 4 "$rc"
+assert_rc 'other system: groups stay out of default-sa with --include-system' 4 "$rc"
 
 reset_fixtures
 export RBAC_RB=rb-dangling-role RBAC_ROLES=roles-other-ns
