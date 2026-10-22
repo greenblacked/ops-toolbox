@@ -11,6 +11,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -43,7 +44,29 @@ class SshHostOfTestCase(unittest.TestCase):
             doctor.ssh_host_of("ssh://git@example.com:2222/repo.git"), "example.com"
         )
 
+    def test_ssh_scheme_port_is_kept_in_the_target(self):
+        self.assertEqual(
+            doctor.ssh_target_of("ssh://git@example.com:2222/repo.git"),
+            ("example.com", "2222"),
+        )
+
+    def test_target_without_a_port_has_an_empty_one(self):
+        self.assertEqual(
+            doctor.ssh_target_of("ssh://git@example.com/repo.git"), ("example.com", "")
+        )
+        self.assertEqual(
+            doctor.ssh_target_of("git@github.com:owner/repo.git"), ("github.com", "")
+        )
+
+    def test_bracketed_ipv6_host_with_a_port(self):
+        self.assertEqual(
+            doctor.ssh_target_of("ssh://git@[::1]:2222/repo.git"), ("::1", "2222")
+        )
+
     def test_https_is_not_ssh(self):
+        self.assertIsNone(doctor.ssh_target_of("https://github.com/o/r.git"))
+
+    def test_https_url_is_not_ssh(self):
         self.assertIsNone(doctor.ssh_host_of("https://github.com/owner/repo.git"))
 
     def test_plain_local_path_is_not_ssh(self):
@@ -521,6 +544,87 @@ class AuthStrictnessThroughMainTests(unittest.TestCase):
         self.assertEqual(calls, [])
         self.assertIn("the host key could not be checked", out)
         self.assertNotIn("would record the unknown host key", out)
+
+
+class RemotePortThroughMainTests(unittest.TestCase):
+    """A port in an ssh:// remote URL reaches `ssh -G -p`, the known_hosts
+    lookup ([host]:port) and the authentication attempt.
+
+    Stub ssh and ssh-keygen sit first on PATH: the ssh stub echoes the port it
+    was given, and the ssh-keygen stub matches its -F name against the first
+    field of the known_hosts file it is pointed at.
+    """
+
+    def setUp(self):
+        if os.name == "nt":
+            self.skipTest("POSIX shell stubs cannot run on Windows")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = self._tmp.name
+        self.bin = os.path.join(root, "bin")
+        self.ssh_dir = os.path.join(root, "ssh")
+        self.log = os.path.join(root, "ssh-args.log")
+        self.known = os.path.join(root, "known_hosts")
+        self.repo = os.path.join(root, "repo")
+        for d in (self.bin, self.ssh_dir, self.repo):
+            os.makedirs(d)
+        self._stub("ssh", 'echo "$*" >> "' + self.log + '"\n'
+                   'if [ "$1" = "-G" ]; then\n'
+                   '  port=22; [ "$2" = "-p" ] && port="$3"\n'
+                   '  echo "hostname example.com"; echo "port $port"\n'
+                   '  echo "stricthostkeychecking ask"\n'
+                   '  echo "userknownhostsfile ' + self.known + '"\n'
+                   '  echo "globalknownhostsfile none"\n'
+                   '  exit 0\nfi\n'
+                   'echo "successfully authenticated" >&2\nexit 1\n')
+        self._stub("ssh-keygen", 'while read -r name rest; do\n'
+                   '  [ "$name" = "$2" ] && exit 0\ndone < "$4"\nexit 1\n')
+        self._stub("ssh-add", 'echo "256 SHA256:x key (ED25519)"\nexit 0\n')
+        for cmd in (["git", "init", "-q"],
+                    ["git", "remote", "add", "origin",
+                     "ssh://git@example.com:2222/owner/repo.git"]):
+            subprocess.run(cmd, cwd=self.repo, check=True, capture_output=True)
+
+    def _stub(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+
+    def _main(self, known_line):
+        with open(self.known, "w") as fh:
+            fh.write(known_line + "\n")
+        saved = (os.environ["PATH"], os.getcwd(), list(doctor.EVENTS))
+        os.environ["PATH"] = self.bin + os.pathsep + saved[0]
+        os.chdir(self.repo)
+        del doctor.EVENTS[:]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = doctor.main(["--ssh-dir", self.ssh_dir, "--require-known-host"])
+        finally:
+            os.environ["PATH"] = saved[0]
+            os.chdir(saved[1])
+            doctor.EVENTS[:] = saved[2]
+        with open(self.log) as fh:
+            calls = fh.read().splitlines()
+        return rc, out.getvalue(), calls
+
+    def test_a_pinned_bracketed_entry_satisfies_require_known_host(self):
+        rc, out, calls = self._main("[example.com]:2222 ssh-ed25519 AAAA")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(calls[0], "-G -p 2222 example.com")
+        self.assertIn("port 2222", out)
+        self.assertIn("host key present", out)
+        auth = [c for c in calls if "-T" in c.split()]
+        self.assertEqual(len(auth), 1)
+        self.assertIn("-p 2222", auth[0])
+        self.assertIn("StrictHostKeyChecking=yes", auth[0])
+
+    def test_an_entry_for_the_default_port_does_not_pin_the_custom_port(self):
+        rc, out, calls = self._main("example.com ssh-ed25519 AAAA")
+        self.assertEqual(rc, 1)
+        self.assertIn("example.com port 2222 is not in", out)
+        self.assertEqual([c for c in calls if "-T" in c.split()], [])
 
 
 if __name__ == "__main__":

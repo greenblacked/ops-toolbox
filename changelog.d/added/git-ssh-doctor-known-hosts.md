@@ -13,3 +13,6 @@
   `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no`, so
   it does not write to known_hosts, and a missing `ssh-keygen` is reported
   as an unchecked key rather than an unknown one.
+  A port in an `ssh://` remote URL is kept: it goes to `ssh -G -p PORT`, to
+  the authentication attempt and to the `[host]:port` known_hosts lookup,
+  as git passes it to ssh.
