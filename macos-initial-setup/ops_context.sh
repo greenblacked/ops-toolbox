@@ -361,21 +361,29 @@ if want aws; then
     astanza=1
   fi
   aregion="$(clean "$(ini_get "$aconfig" "$asection" region)")"
+  # AWS_REGION beats AWS_DEFAULT_REGION, and both beat the profile's region:
+  # report (and match --warn-on against) the region a command would use.
+  aregion_mark=""
+  if [[ -n "${AWS_REGION:-}" ]]; then
+    aregion="$(clean "$AWS_REGION")"; aregion_mark=" (env AWS_REGION)"
+  elif [[ -n "${AWS_DEFAULT_REGION:-}" ]]; then
+    aregion="$(clean "$AWS_DEFAULT_REGION")"; aregion_mark=" (env AWS_DEFAULT_REGION)"
+  fi
   asso="$(clean "$(ini_get "$aconfig" "$asection" sso_session)")"
   asso_url="$(clean "$(ini_get "$aconfig" "$asection" sso_start_url)")"
   aaccount="$(clean "$(ini_get "$aconfig" "$asection" sso_account_id)")"
   arole="$(clean "$(ini_get "$aconfig" "$asection" role_arn)")"
 
   text="profile=$aprofile"
-  [[ -n "$aregion" ]] && text="$text region=$aregion"
+  [[ -n "$aregion" ]] && text="$text region=$aregion$aregion_mark"
   [[ -n "$aaccount" ]] && text="$text account=$aaccount"
   [[ -n "$arole" ]] && text="$text role=$arole"
   if (( astanza )); then
-    judge aws ok "$text" "$aprofile" "$arole" "$aaccount"
+    judge aws ok "$text" "$aprofile" "$aregion" "$arole" "$aaccount"
   elif [[ "$aprofile" == "default" ]]; then
-    judge aws info "$text (no [default] stanza in $aconfig)" "$aprofile"
+    judge aws info "$text (no [default] stanza in $aconfig)" "$aprofile" "$aregion"
   else
-    judge aws warn "$text (profile $aprofile is not in $aconfig)" "$aprofile"
+    judge aws warn "$text (profile $aprofile is not in $aconfig)" "$aprofile" "$aregion"
   fi
 
   if [[ -n "$asso" || -n "$asso_url" ]]; then

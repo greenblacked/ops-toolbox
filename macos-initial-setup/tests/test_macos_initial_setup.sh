@@ -2403,6 +2403,24 @@ out="$(export AWS_ACCESS_KEY_ID=AKIAFAKE; ops --only aws)"
 assert_contains "ops_context names AWS_ACCESS_KEY_ID when it is set" "$out" "AWS_ACCESS_KEY_ID"
 assert_not_contains "ops_context never prints the key itself" "$out" "AKIAFAKE"
 
+# The region a command uses: AWS_REGION, then AWS_DEFAULT_REGION, then the
+# profile's. The row shows that one with its source, and --warn-on matches it
+# (the profile's own eu-west-1 is replaced, so it no longer matches).
+out="$(ops --only aws)"
+assert_not_contains "no region variable leaves the profile region unmarked" "$out" "(env"
+out="$(export AWS_DEFAULT_REGION=us-prod-1; ops --only aws)"
+assert_contains "AWS_DEFAULT_REGION overrides the profile region, marked" "$out" "region=us-prod-1 (env AWS_DEFAULT_REGION)"
+assert_not_contains "the overridden profile region is not shown" "$out" "region=eu-west-1"
+out="$(export AWS_DEFAULT_REGION=us-prod-1 AWS_REGION=ap-south-9; ops --only aws)"
+assert_contains "AWS_REGION overrides AWS_DEFAULT_REGION, marked" "$out" "region=ap-south-9 (env AWS_REGION)"
+assert_not_contains "the overridden AWS_DEFAULT_REGION is not shown" "$out" "us-prod-1"
+(export AWS_REGION=eu-prod-2; ops --only aws --warn-on prod >/dev/null); rc=$?
+assert_eq "--warn-on matches the effective AWS_REGION -> 1" "1" "$rc"
+(export AWS_REGION=eu-central-1; ops --only aws --warn-on west >/dev/null); rc=$?
+assert_eq "--warn-on does not match the profile region AWS_REGION replaced -> 0" "0" "$rc"
+(ops --only aws --warn-on west >/dev/null); rc=$?
+assert_eq "--warn-on matches the profile region when no variable is set -> 1" "1" "$rc"
+
 out="$(export GH_TOKEN=ghp_CANARYTOKEN; ops --only gh)"
 assert_contains "ops_context names GH_TOKEN when it is set" "$out" "GH_TOKEN"
 assert_not_contains "ops_context never prints the GitHub token" "$out" "ghp_CANARYTOKEN"

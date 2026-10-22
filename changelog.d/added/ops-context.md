@@ -13,3 +13,6 @@
   `DOCKER_CONTEXT` and `DOCKER_HOST` set it reports the context, which the
   Docker CLI lets win, and `--warn-on` is matched against that endpoint;
   the built-in `default` context uses `DOCKER_HOST` as its endpoint.
+  The AWS region reported is the effective one (`AWS_REGION`, then
+  `AWS_DEFAULT_REGION`, then the profile's), marked with its source, and
+  `--warn-on` is matched against it.
