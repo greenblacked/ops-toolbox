@@ -280,7 +280,9 @@ cat > "$fx/home/.gitconfig-included" <<'EOF'
 [credential]
 	helper = manager
 EOF
-printf '[include]\n\tpath = %s\n' "$fx/home/.gitconfig-included" > "$fx/home/.gitconfig"
+# A relative path is resolved against the including file's directory by git,
+# so it works for native git.exe as well as MSYS git.
+printf '[include]\n\tpath = .gitconfig-included\n' > "$fx/home/.gitconfig"
 run_doctor "$fx" ""
 assert_contains "core.longpaths set by an include is seen" "$out" "core.longpaths is true"
 assert_not_contains "credential.helper set by an include is seen" "$out" "no credential.helper"
