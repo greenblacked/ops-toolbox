@@ -310,9 +310,13 @@ function Get-SshClientFinding {
                 Fix = $pinFix
             }
         }
-    } elseif ($AgentRunning -and $kinds -contains 'git-for-windows' -and $kinds -contains 'windows-openssh') {
+    } elseif ($AgentRunning -and $kinds -contains 'git-for-windows') {
+        # A running Windows agent means the OpenSSH client feature is
+        # installed, even when its folder is off PATH and only Git's bundled
+        # ssh was found: git still runs its own, which cannot see the agent.
+        $both = ($kinds -contains 'windows-openssh')
         $findings += [pscustomobject]@{
-            Id = 'two-clients'; Level = 'warn'
+            Id = $(if ($both) { 'two-clients' } else { 'bundled-client-only' }); Level = 'warn'
             Message = "git will use its own ssh, which cannot see the keys in the Windows ssh-agent"
             Fix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
         }

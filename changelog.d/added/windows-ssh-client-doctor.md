@@ -5,7 +5,8 @@
   Administrators read it, an owner other than you, SYSTEM or
   Administrators (with the `icacls /setowner` fix), an `ssh-agent`
   service that is still Disabled, and Git's bundled ssh that cannot see
-  the keys in the Windows agent, whether by default or because
+  the keys in the Windows agent, whether by default (even when its
+  own ssh is the only client found) or because
   `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` (the first one set,
   as git decides) pins it. It reports that git and ssh agree on the
   agent's client only when that client is positively Windows OpenSSH, and
