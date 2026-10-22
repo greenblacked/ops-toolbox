@@ -57,11 +57,15 @@ ssh-keyscan github.com | ssh-keygen -lf -
 If you already ran the Report command or `--test-auth`, check the entry
 they may have added. `-lF` shows the stored key as a fingerprint to
 compare with the published one; `-R` removes a wrong entry (it keeps a
-backup as `known_hosts.old`). Use the host you passed to `--host`:
+backup as `known_hosts.old`). Use the host you passed to `--host`. If
+you ran the doctor without `--host`, use the remote's host, as shown in
+the Report. OpenSSH stores a host on a port other than 22 as
+`[host]:port`, so look it up that way:
 
 ```bash
 ssh-keygen -lF github.com
 ssh-keygen -R github.com
+ssh-keygen -lF '[gerrit.example]:29418'
 ```
 
 Start with the doctor that asks OpenSSH what it will really do:
