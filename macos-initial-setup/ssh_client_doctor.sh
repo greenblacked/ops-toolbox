@@ -186,7 +186,11 @@ file_mode() {
 # set. Owner bits can be 7/6/5/4; the last two digits must be 0.
 mode_private() {
   local mode="$1"
-  [[ "$mode" =~ ^0?[0-7]00$ ]]
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  # Last three digits only: a setgid or sticky bit (2700) is not a permission
+  # for group or other. ${mode%???} drops them, so this works in Bash 3.2.
+  mode="${mode#"${mode%???}"}"
+  [[ "$mode" =~ ^[0-7]00$ ]]
 }
 
 # Can group or other write to this mode? A directory they can write to lets
@@ -194,8 +198,8 @@ mode_private() {
 # group/other read or search only is a hardening warning (ssh still works).
 mode_group_other_writable() {
   local mode="$1"
-  mode="${mode#0}"
-  [[ "$mode" =~ ^[0-7][0-7][0-7]$ ]] || return 1
+  [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  mode="${mode#"${mode%???}"}"
   (( ((8#${mode:1:1}) & 2) != 0 || ((8#${mode:2:1}) & 2) != 0 ))
 }
 
