@@ -298,11 +298,18 @@ class AttributeGitProcessesTestCase(unittest.TestCase):
             self.attribute([("/tmp", None, None,
                              ["--work-tree=/srv/repo", "status"])]), True)
 
-    def test_dash_c_moves_the_directory(self):
+    def test_dash_c_is_already_reflected_in_the_live_cwd(self):
+        # /proc/PID/cwd is the directory after git's own -C.
         self.assertIs(
-            self.attribute([("/tmp", None, None, ["-C", "/srv/repo", "gc"])]), True)
+            self.attribute([("/srv/repo", None, None, ["-C", "/srv/repo", "gc"])]),
+            True)
         self.assertIs(
-            self.attribute([("/srv/repo", None, None, ["-C", "/tmp", "gc"])]), False)
+            self.attribute([("/tmp", None, None, ["-C", "/tmp", "gc"])]), False)
+
+    def test_dash_c_parent_is_not_applied_twice(self):
+        # `git -C .. gc` run from /srv/repo/sub has live cwd /srv/repo.
+        self.assertIs(
+            self.attribute([("/srv/repo", None, None, ["-C", "..", "gc"])]), True)
 
     def test_options_stop_at_the_subcommand(self):
         self.assertIs(

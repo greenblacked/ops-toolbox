@@ -390,8 +390,9 @@ def attribute_git_processes(procs, repo_paths):
     the GIT_DIR and GIT_WORK_TREE of its environment or None, args its command
     line after `git` (or None). The options of the command line count too:
     `git --git-dir=/repo/.git fetch` run from elsewhere sets GIT_DIR only
-    internally, so /proc/PID/environ never shows it, and -C changes the
-    directory the others are relative to. repo_paths are the worktree, git
+    internally, so /proc/PID/environ never shows it. cwd is the live
+    directory, which already includes any -C, so -C is not applied again.
+    repo_paths are the worktree, git
     directory and common directory of this repository (and its linked
     worktrees). A process belongs to it when its working directory, GIT_DIR or
     GIT_WORK_TREE lies inside one of them.
@@ -405,23 +406,16 @@ def attribute_git_processes(procs, repo_paths):
     for proc in procs:
         cwd, git_dir, work_tree = proc[:3]
         args = proc[3] if len(proc) > 3 else None
-        arg_dir, arg_tree, chdirs = parse_git_args(args or [])
+        arg_dir, arg_tree, _ = parse_git_args(args or [])
+        # /proc/PID/cwd is the live directory, which already reflects git's
+        # own -C, so -C is not applied again. The live directory is always a
+        # candidate; relative paths resolve against it.
         candidates = []
-        base = cwd
-        for extra in (git_dir, work_tree):
+        if cwd is not None:
+            candidates.append(os.path.realpath(cwd))
+        for extra in (git_dir, work_tree, arg_dir, arg_tree):
             if extra:
-                path = _resolve(base, extra)
-                if path:
-                    candidates.append(path)
-        for chdir in chdirs:
-            base = _resolve(base, chdir)
-            if base is None:
-                break
-        if base is not None:
-            candidates.append(base)
-        for extra in (arg_dir, arg_tree):
-            if extra:
-                path = _resolve(base, extra)
+                path = _resolve(cwd, extra)
                 if path:
                     candidates.append(path)
         if any(_inside(c, r) for c in candidates for r in roots):
