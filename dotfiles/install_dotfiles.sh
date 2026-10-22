@@ -365,9 +365,10 @@ for want in ${only_units[@]+"${only_units[@]}"}; do
     [[ "$(unit_of "$f")" == "$want" ]] && { found=1; break; }
   done
   if (( found == 0 )); then
-    # --prune may name the unit of an orphan whose source was wholly deleted;
-    # that is checked against the orphans once they can be listed.
-    if (( PRUNE )); then
+    # --prune may name the unit of an orphan whose source was wholly deleted,
+    # and --backups/--restore that of a stray backup of one; each is checked
+    # against what it can list once the helpers exist.
+    if (( PRUNE || BACKUPS || RESTORE )); then
       prune_extra_units+=("$want")
       continue
     fi
@@ -513,19 +514,24 @@ state_of() {
 # point that is itself a link, such as a linked ~/.config.
 # A repository that was moved is the documented exception: its old links no
 # longer start with this folder's path, so --status calls them CONFLICT.
-link_candidates() {
+link_candidates() { scan_candidates -type l; }
+
+# The same bounded walk for any find test: link_candidates passes -type l,
+# backup_candidates the backup name. One list of roots, so the two scans
+# can never cover different places.
+scan_candidates() {
   local d
-  if [[ -d "$CONFIG_DIR" ]]; then find -H "$CONFIG_DIR" -maxdepth 3 -type l 2>/dev/null; fi
-  find -H "$HOME_DIR" -maxdepth 1 -type l 2>/dev/null
+  if [[ -d "$CONFIG_DIR" ]]; then find -H "$CONFIG_DIR" -maxdepth 3 "$@" 2>/dev/null; fi
+  find -H "$HOME_DIR" -maxdepth 1 "$@" 2>/dev/null
   while IFS= read -r d; do
     d="${d##*/}"
-    if [[ -d "$HOME_DIR/$d" ]]; then find -H "$HOME_DIR/$d" -maxdepth 2 -type l 2>/dev/null; fi
+    if [[ -d "$HOME_DIR/$d" ]]; then find -H "$HOME_DIR/$d" -maxdepth 2 "$@" 2>/dev/null; fi
   done < <(find "$SCRIPT_DIR/home" -mindepth 1 -maxdepth 1 -type d)
   # A whole source directory that was deleted (home/.foo) leaves ~/.foo/...
   # links the loop above never visits, so also scan the hidden directories
   # that exist at the top of the home, to the same two levels.
   while IFS= read -r d; do
-    find -H "$d" -maxdepth 2 -type l 2>/dev/null
+    find -H "$d" -maxdepth 2 "$@" 2>/dev/null
   done < <(find "$HOME_DIR" -mindepth 1 -maxdepth 1 -type d -name '.*' 2>/dev/null)
   return 0
 }
@@ -566,6 +572,51 @@ backups_of() {
     q="${s:16}"
     printf '%s %08d %s\n' "${s:0:15}" "$((10#${q:-0}))" "$b"
   done | sort | cut -d' ' -f3-
+}
+
+# The original paths of backups that sit beside something no tracked file
+# installs to: what --force left of a config that was later renamed or
+# deleted in the repository, which the loop over today's files never sees.
+# Found in the same bounded roots as the orphan scan, and only names that
+# are exactly NAME.backup-STAMP[-N]. Honours --only by the unit the path
+# would belong to; with "all", every one regardless of --only (used to
+# validate --only), and without a word about the ones skipped.
+#
+# Only backups that are ours: NAME.backup-STAMP is a name other tools use
+# too, so the path must be a link into this folder (what --force left
+# there) or belong to a unit this installer has a tracked file for.
+# Anything else is reported as not ours and skipped, never restored.
+# One path per line, each once.
+stray_backup_originals() {
+  local f b s orig rel units="" tracked=""
+  for f in "${files[@]}"; do
+    tracked="$tracked$(target_of "$f")"$'\n'
+    units="$units$(unit_of "$f")"$'\n'
+  done
+  while IFS= read -r b; do
+    [[ -n "$b" ]] || continue
+    s="${b##*.backup-}"
+    [[ "$s" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || continue
+    orig="${b%".backup-$s"}"
+    [[ -n "$orig" && "$orig" != "$b" ]] || continue
+    [[ -e "$b" || -L "$b" ]] || continue
+    [[ -d "$b" && ! -L "$b" ]] && continue
+    grep -Fxq -- "$orig" <<<"$tracked" && continue
+    if [[ "$orig" == "$CONFIG_DIR"/* ]]; then
+      rel="config/${orig#"$CONFIG_DIR"/}"
+    elif [[ "$orig" == "$HOME_DIR"/* ]]; then
+      rel="home/${orig#"$HOME_DIR"/}"
+    else
+      continue
+    fi
+    [[ "${1:-}" == all ]] || selected "$rel" || continue
+    if ! { [[ -L "$orig" ]] && points_here "$orig"; } &&
+       ! grep -Fxq -- "$(unit_of "$rel")" <<<"$units"; then
+      [[ "${1:-}" == all ]] || info "not ours, skipped: $b" >&2
+      continue
+    fi
+    printf '%s\n' "$orig"
+  done < <(scan_candidates -name '*.backup-[0-9]*' | sort -u) | sort -u
 }
 
 # --- modes -----------------------------------------------------------------
@@ -790,9 +841,15 @@ do_uninstall() {
 
 do_backups() {
   local f target b n=0
+  local -a targets=()
   for f in "${files[@]}"; do
     selected "$f" || continue
-    target="$(target_of "$f")"
+    targets+=("$(target_of "$f")")
+  done
+  while IFS= read -r target; do
+    [[ -n "$target" ]] && targets+=("$target")
+  done < <(stray_backup_originals)
+  for target in ${targets[@]+"${targets[@]}"}; do
     while IFS= read -r b; do
       [[ -n "$b" ]] || continue
       printf 'BACKUP  %s  %s\n' "${b##*.backup-}" "$b"
@@ -810,46 +867,16 @@ do_backups() {
 # now, so the file is left alone and the backup kept. A backup is never
 # deleted, only renamed into place; the mode it had travels with it.
 do_restore() {
-  local f target st b pick restored=0 refused=0 failed=0
+  local f target
+  restored=0; refused=0; failed=0   # shared with restore_one
   for f in "${files[@]}"; do
     selected "$f" || continue
-    target="$(target_of "$f")"
-    pick=""
-    while IFS= read -r b; do
-      [[ -n "$b" ]] || continue
-      if [[ -n "$STAMP" ]]; then
-        [[ "$b" == "$target.backup-$STAMP" ]] && pick="$b"
-      else
-        pick="$b"
-      fi
-    done < <(backups_of "$target")
-    if [[ -z "$pick" ]]; then
-      # Named as a warning when the caller asked for this file or this stamp;
-      # a bare --restore over every file would otherwise warn for each one
-      # that was never moved aside.
-      if (( ${#only_units[@]} > 0 )) || [[ -n "$STAMP" ]]; then
-        warn "no backup${STAMP:+ with stamp $STAMP}: $target"
-      else
-        info "no backup: $target"
-      fi
-      continue
-    fi
-    st="$(state_of "$f" "$target")"
-    case "$st" in
-      MISSING) ;;
-      MATCH|FOREIGN)
-        run_cmd "remove $st" rm "$target" || { err "could not remove $target"; failed=$((failed + 1)); continue; }
-        ;;
-      *)
-        warn "$st, left in place: $target holds changes; backup kept: $pick"
-        refused=$((refused + 1))
-        continue
-        ;;
-    esac
-    run_cmd "restore" mv "$pick" "$target" || { err "could not move $pick back to $target"; failed=$((failed + 1)); continue; }
-    (( DRY_RUN )) || ok "restored: $target (backup ${pick##*.backup-})"
-    restored=$((restored + 1))
+    restore_one "$f" "$(target_of "$f")"
   done
+  while IFS= read -r target; do
+    [[ -n "$target" ]] || continue
+    restore_one "" "$target"
+  done < <(stray_backup_originals)
   if (( DRY_RUN )); then
     printf "dry-run complete; no changes written\n"
   else
@@ -861,8 +888,83 @@ do_restore() {
   return 0
 }
 
+# One path of do_restore, updating its restored, refused and failed counts.
+# F is the tracked file, or empty for the original path of a backup whose
+# config is gone from the repository: that path is free to take when
+# nothing is there or a link into this folder is (an orphan the repository
+# can no longer recreate, so nothing is lost); anything else is somebody's.
+restore_one() {
+  local f="$1" target="$2" st b pick=""
+  while IFS= read -r b; do
+    [[ -n "$b" ]] || continue
+    if [[ -n "$STAMP" ]]; then
+      [[ "$b" == "$target.backup-$STAMP" ]] && pick="$b"
+    else
+      pick="$b"
+    fi
+  done < <(backups_of "$target")
+  if [[ -z "$pick" ]]; then
+    # Named as a warning when the caller asked for this file or this stamp;
+    # a bare --restore over every file would otherwise warn for each one
+    # that was never moved aside. A stray path always has some backup, so
+    # only a --stamp that misses it can get here: not worth a line each.
+    [[ -n "$f" ]] || return 0
+    if (( ${#only_units[@]} > 0 )) || [[ -n "$STAMP" ]]; then
+      warn "no backup${STAMP:+ with stamp $STAMP}: $target"
+    else
+      info "no backup: $target"
+    fi
+    return 0
+  fi
+  if [[ -n "$f" ]]; then
+    st="$(state_of "$f" "$target")"
+  elif [[ ! -e "$target" && ! -L "$target" ]]; then
+    st="MISSING"
+  elif [[ -L "$target" ]] && points_here "$target"; then
+    st="FOREIGN"
+  else
+    st="CONFLICT"
+  fi
+  case "$st" in
+    MISSING) ;;
+    MATCH|FOREIGN)
+      run_cmd "remove $st" rm "$target" || { err "could not remove $target"; failed=$((failed + 1)); return 0; }
+      ;;
+    *)
+      warn "$st, left in place: $target holds changes; backup kept: $pick"
+      refused=$((refused + 1))
+      return 0
+      ;;
+  esac
+  run_cmd "restore" mv "$pick" "$target" || { err "could not move $pick back to $target"; failed=$((failed + 1)); return 0; }
+  (( DRY_RUN )) || ok "restored: $target (backup ${pick##*.backup-})"
+  restored=$((restored + 1))
+}
+
 # rm of the link itself: never rm -r, never rmdir. A directory the last
 # orphan leaves empty is mentioned and kept; it may be the tool's own.
+# --backups/--restore --only UNIT where UNIT has no tracked file any more:
+# valid when a backup of ours sits beside a path of that unit.
+check_stray_units() {
+  local want o rel found
+  for want in ${prune_extra_units[@]+"${prune_extra_units[@]}"}; do
+    found=0
+    while IFS= read -r o; do
+      [[ -n "$o" ]] || continue
+      if [[ "$o" == "$CONFIG_DIR"/* ]]; then
+        rel="config/${o#"$CONFIG_DIR"/}"
+      else
+        rel="home/${o#"$HOME_DIR"/}"
+      fi
+      [[ "$(unit_of "$rel")" == "$want" ]] && { found=1; break; }
+    done < <(stray_backup_originals all)
+    if (( found == 0 )); then
+      err "no such unit: $want (see --list)"
+      exit 3
+    fi
+  done
+}
+
 # --prune --only UNIT where UNIT has no tracked file any more: valid when an
 # orphan link belongs to that unit, so a wholly deleted source directory can
 # be pruned by name. Anything else is still "no such unit".
@@ -932,6 +1034,8 @@ installed_only_preflight() {
 # --- main ------------------------------------------------------------------
 if (( PRUNE )); then
   check_prune_units
+elif (( BACKUPS || RESTORE )); then
+  check_stray_units
 fi
 if (( INSTALLED_ONLY && GROUPS_MODE == 0 )); then
   installed_only_preflight

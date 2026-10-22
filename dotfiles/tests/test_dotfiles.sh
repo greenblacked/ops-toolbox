@@ -384,6 +384,64 @@ assert_rc "--restore --force exits 3" 3 "$rc"
 run_installer --backups --dry-run >/dev/null 2>&1; rc=$?
 assert_rc "--backups --dry-run exits 3" 3 "$rc"
 
+# A config renamed or deleted in the repository after --force backed it up:
+# nothing tracked points at the path any more, but the backup is still
+# there and must be listed and restorable. The orphan link stands in for
+# what the old install left at the path.
+mkdir -p "$H/.config/oldtool"
+old="$H/.config/oldtool/x"
+printf 'before-rename\n' > "$old.backup-20200101-000000"
+printf 'not-ours\n' > "$old.backup-bogus"
+ln -s "$D/config/oldtool/x" "$old"
+out="$(run_installer --backups 2>&1)"; rc=$?
+assert_rc "--backups exits 0 with a stray backup" 0 "$rc"
+assert_contains "--backups lists a backup of a path no file installs to" "$out" "BACKUP  20200101-000000  $old.backup-20200101-000000"
+if [[ "$out" == *"backup-bogus"* ]]; then err "--backups listed a name that is not NAME.backup-STAMP"; else ok "--backups skips a malformed backup name"; fi
+out="$(run_installer --backups --only starship 2>&1)"
+if [[ "$out" == *"oldtool"* ]]; then err "--backups --only starship listed another unit's backup"; else ok "--backups --only leaves other units' stray backups"; fi
+out="$(run_installer --backups --only oldtool 2>&1)"
+assert_contains "--backups --only selects a stray backup by its unit" "$out" "$old.backup-20200101-000000"
+
+before="$(snapshot "$H" "$T")"
+out="$(run_installer --restore --dry-run --only oldtool 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "--restore --dry-run of a stray backup exits 0" 0 "$rc"
+if [[ "$before" == "$after" ]]; then ok "--restore --dry-run of a stray backup wrote nothing"; else err "--restore --dry-run of a stray backup changed the home"; fi
+
+# A stray path in a unit this installer tracks, holding an edit: refused.
+gold="$H/.config/git/oldname"
+mkdir -p "$H/.config/git"
+printf 'before-rename\n' > "$gold.backup-20200101-000000"
+printf 'edited\n' > "$gold"
+out="$(run_installer --restore --only git 2>&1)"; rc=$?
+assert_rc "--restore over a changed stray path exits 4" 4 "$rc"
+assert_true "the changed stray file survived" grep -qx edited "$gold"
+assert_true "the stray backup was kept" test -f "$gold.backup-20200101-000000"
+rm -f "$gold" "$gold.backup-20200101-000000"
+rmdir "$H/.config/git" 2>/dev/null || true
+
+rm "$old"; ln -s "$D/config/oldtool/x" "$old"
+out="$(run_installer --restore --only oldtool 2>&1)"; rc=$?
+assert_rc "--restore of a stray backup exits 0" 0 "$rc"
+assert_true "--restore put the stray backup back over the orphan link" grep -qx before-rename "$old"
+assert_true "--restore consumed the stray backup" test ! -e "$old.backup-20200101-000000"
+rm -f "$old" "$old.backup-bogus"; rmdir "$H/.config/oldtool"
+
+# NAME.backup-STAMP is a name other tools use too. With no link into this
+# folder and no unit of ours at the path, it is not ours: listed as such,
+# never restored, and not a unit --only may name.
+mkdir -p "$H/.config/othertool"
+other="$H/.config/othertool/y"
+printf 'theirs\n' > "$other.backup-20200101-000000"
+out="$(run_installer --backups 2>&1)"
+if [[ "$out" == *"BACKUP"*"$other"* ]]; then err "--backups listed another tool's backup"; else ok "--backups skips a backup that is not ours"; fi
+assert_contains "--backups says a backup is not ours" "$out" "not ours, skipped: $other.backup-20200101-000000"
+out="$(run_installer --restore --dry-run 2>&1)"
+if [[ "$out" == *"mv $other.backup"* ]]; then err "bare --restore would restore another tool's backup"; else ok "bare --restore leaves another tool's backup alone"; fi
+run_installer --restore --only othertool >/dev/null 2>&1; rc=$?
+assert_rc "--restore --only a unit with only a foreign backup exits 3" 3 "$rc"
+rm -f "$other.backup-20200101-000000"; rmdir "$H/.config/othertool"
+
 rm -f "$st" "$st".backup-*
 run_installer --only starship >/dev/null 2>&1 || err "could not relink starship.toml after the restore checks"
 
