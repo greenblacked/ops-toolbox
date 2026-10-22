@@ -238,8 +238,9 @@ def resolve_relative_url(base, url):
     "../new.git" against "superrepo" is "new.git". A leading "./" on the
     result is always dropped, so "./foo/super" with "../x.git" is
     "foo/x.git". One trailing "/" on url is removed first, as git does, so
-    "../x.git/" resolves like "../x.git". None when base has no component to remove or url is not
-    relative, so the caller can say it did not compare rather than guess.
+    "../x.git/" resolves like "../x.git". None when base has no component
+    to remove or url is not relative, so the caller can say it did not
+    compare rather than guess.
     """
     rel = (url or "").strip()
     if rel.endswith("/"):
