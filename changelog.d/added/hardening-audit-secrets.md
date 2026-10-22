@@ -5,6 +5,7 @@
   readable by every local user fails and one readable by its group warns,
   each with the `chmod 600` that fixes it. A `600` file whose extended
   ACL lets another user read it warns with `chmod -N`. Static AWS keys,
-  base64 registry passwords (even beside a credential store), a literal
-  npm token, a `.netrc` password and `credential.helper store` are
-  warnings. It names files and never prints a value.
+  base64 registry passwords and `identitytoken` / `registrytoken` values
+  (even beside a credential store), a literal npm token, a `.netrc`
+  password and `credential.helper store` are warnings. It names files
+  and never prints a value.

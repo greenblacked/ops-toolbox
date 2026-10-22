@@ -2738,6 +2738,22 @@ assert_contains "the leftover legacy auth is called out" "$out" "legacy registry
 assert_not_contains "a legacy auth next to credsStore is not a pass" "$out" "Docker config uses a credential store"
 assert_not_contains "the legacy registry credential is never printed" "$out" "Q0FOQVJZ"
 
+# Token-based logins keep the secret in identitytoken / registrytoken.
+for tokkey in identitytoken registrytoken; do
+  printf '{"auths": {"registry.example": {"%s": "TOKCANARY"}}, "credsStore": "osxkeychain"}\n' \
+    "$tokkey" > "$sec/home/.docker/config.json"
+  chmod 644 "$sec/home/.docker/config.json"
+  out="$(audit_secrets)"; rc=$?
+  assert_eq "a 644 Docker config with a $tokkey fails -> 1" "1" "$rc"
+  assert_contains "a $tokkey is graded as a secret" "$out" "[FAIL] Docker config.json is readable by every local user"
+  assert_contains "a $tokkey is called out" "$out" "legacy registry credentials remain in config.json"
+  assert_not_contains "the $tokkey value is never printed" "$out" "TOKCANARY"
+done
+printf '{"auths": {"registry.example": {"identitytoken": ""}}, "credsStore": "osxkeychain"}\n' \
+  > "$sec/home/.docker/config.json"
+out="$(audit_secrets)"; rc=$?
+assert_eq "a 644 Docker config with an empty identitytoken is not a failure -> 0" "0" "$rc"
+
 sec_home
 printf '//registry.npmjs.org/:_authToken=npm_CANARY\n' > "$sec/home/.npmrc"
 chmod 600 "$sec/home/.npmrc"

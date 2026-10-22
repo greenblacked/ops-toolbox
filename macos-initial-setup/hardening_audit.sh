@@ -487,6 +487,10 @@ if want secrets; then
 
   # relative path|label|kind. Newline-separated rather than an associative
   # array, which Bash 3.2 does not have.
+  # A Docker config holds a registry secret in "auth" (base64 password), or
+  # in "identitytoken" / "registrytoken" (token-based logins).
+  docker_cred_re='"(auth|identitytoken|registrytoken)"[[:space:]]*:[[:space:]]*"[^"]'
+
   SECRET_FILES='.aws/credentials|AWS credentials|aws
 .kube/config|kubeconfig|kube
 .docker/config.json|Docker config.json|docker
@@ -520,7 +524,7 @@ if want secrets; then
         docker)
           # A credsStore does not clear legacy "auth" entries left in the
           # same file: those are still base64 passwords on disk.
-          file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]' \
+          file_has "$path" "$docker_cred_re" \
             || secret_free=1
           ;;
         npmrc)
@@ -555,7 +559,7 @@ if want secrets; then
           fi
           ;;
         docker)
-          if file_has "$path" '"auth"[[:space:]]*:[[:space:]]*"[^"]'; then
+          if file_has "$path" "$docker_cred_re"; then
             if file_has "$path" '"credsStore"[[:space:]]*:'; then
               warn "legacy registry credentials remain in config.json despite its credential store ($shown)" \
                    'docker logout each registry, then docker login again'
