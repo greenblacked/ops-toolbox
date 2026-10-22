@@ -53,15 +53,15 @@ It prints these sections:
    and a note when a key is set in more than one place.
 2. **signing key**: whether `user.signingkey` fits `gpg.format`. A GPG key id
    with `gpg.format=ssh`, an SSH key with the default `openpgp` format, an
-   unset key, or a key path that does not exist are failures. Read the
-   verdict as a classification of the value: the doctor treats a value
-   that is not hex as an SSH path or key. Git itself accepts any GnuPG
-   selector (an email address, a user ID) in `user.signingkey` with
-   `openpgp`, and an unset key makes GnuPG pick its default secret key, so
-   a working OpenPGP setup that uses an email selector or no key is not
-   broken even if the doctor flags it; judge it by whether signing
-   succeeds. So is a
-   `gpg.program` (or `gpg.ssh.program`) that is not an executable on `PATH`.
+   unset key, or a key path that does not exist are failures. A
+   `gpg.program` (or `gpg.ssh.program`) that is not an executable on `PATH`
+   is a failure too. Read the verdict on the key as a classification of the
+   value: the doctor treats a value that is not hex as an SSH path or key.
+   Git itself accepts any GnuPG selector (an email address, a user ID) in
+   `user.signingkey` with `openpgp`, and an unset key makes GnuPG pick its
+   default secret key, so a working OpenPGP setup that uses an email
+   selector or no key is not broken even if the doctor flags it; judge it
+   by whether signing succeeds.
 3. Then one section for the backend in use:
     - **gpg keyring** (`openpgp`, the default): no secret key at all; a key
       that is revoked, invalid or expired ("the most common cause of a sudden
