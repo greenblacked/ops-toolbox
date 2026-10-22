@@ -410,171 +410,102 @@ assert_contains "a missing gitleaks is skipped" "$out" "[skip] GITLEAKS_CONFIG: 
 
 # --------------------------------------------------------------------------
 head_ "ssh and git overlays"
-if command -v ssh >/dev/null 2>&1; then
-  rm -rf "$H"; mkdir -p "$H/.ssh"; chmod 700 "$H/.ssh"
-  printf 'BogusOption yes\n' > "$H/.ssh/config"
-  before="$(snapshot "$H" "$T")"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  after="$(snapshot "$H" "$T")"
-  assert_rc "an ssh config ssh rejects exits 1" 1 "$rc"
-  assert_contains "the rejected config is named" "$out" "[FAIL] ssh rejects $H/.ssh/config"
-  if [[ "$before" == "$after" ]]; then ok "the ssh check wrote nothing"; else err "the ssh check wrote into the home or tmp"; fi
+# The doctor must never run ssh: `ssh -G` evaluates Match exec lines and so
+# runs commands. A stub ssh first on PATH leaves a marker if anything calls it,
+# and the config holds Match exec lines, directly and through an Include.
+SSHSTUB="$scratch/sshstub"; marker="$T/ssh-ran-marker"
+mkdir -p "$SSHSTUB"
+printf '#!/bin/sh\n: > "%s"\nexit 0\n' "$marker" > "$SSHSTUB/ssh"
+chmod +x "$SSHSTUB/ssh"
+rm -rf "$H"; mkdir -p "$H/.ssh/config.d"; chmod 700 "$H/.ssh"
+printf 'Include config.d/*\nMatch exec "touch %s"\nHost *\n  HashKnownHosts yes\n' "$marker" > "$H/.ssh/config"
+printf 'Match host a Exec "touch %s"\n' "$marker" > "$H/.ssh/config.d/x.conf"
+printf 'plain.example.invalid ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+before="$(snapshot "$H" "$T")"
+out="$(guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" PATH="$SSHSTUB:$PATH" "$DOCTOR" --home "$H" --platform linux 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "an ssh config with Match exec exits 0" 0 "$rc"
+if [[ -e "$marker" ]]; then err "the doctor ran ssh"; else ok "the doctor never ran ssh"; fi
+assert_contains "the ssh config is read as text" "$out" "[pass] ssh config $H/.ssh/config read as text (ssh is never run)"
+assert_contains "HashKnownHosts under Host * is found without ssh" "$out" "[warn] 1 plaintext host entries in known_hosts although HashKnownHosts is on"
+if [[ "$before" == "$after" ]]; then ok "the ssh check wrote nothing"; else err "the ssh check wrote into the home or tmp"; fi
+# A HashKnownHosts inside a Host block other than Host * is not global.
+printf 'Host a\n  HashKnownHosts yes\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "HashKnownHosts in another Host block is not global" "$out" "[skip] known_hosts: HashKnownHosts is not on in $H/.ssh/config"
+rm -rf "$H/.ssh/config.d" "$SSHSTUB"; rm -f "$marker"
+# The shipped config turns HashKnownHosts on under Host *, but its Include
+# line comes first and may set the option, so hashing is not judged.
+cp "$D/home/.ssh/config" "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"; rc=$?
+assert_rc "the shipped ssh config exits 0" 0 "$rc"
+assert_contains "the shipped config is read as text" "$out" "[pass] ssh config $H/.ssh/config read as text (ssh is never run)"
+assert_contains "the shipped config's Include means hashing is not judged" "$out" "[info] known_hosts: HashKnownHosts not judged: an Include before it may set it ($H/.ssh/config)"
+printf 'plain.example.invalid ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+out="$(run_doctor --platform linux 2>&1)"
+assert_not_contains "an Include before Host * gives no plaintext warning" "$out" "plaintext host entries"
+# Without an Include, Host * HashKnownHosts no is judged and does not warn.
+printf 'Host *\n  HashKnownHosts no\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_not_contains "HashKnownHosts no gives no plaintext warning" "$out" "plaintext host entries"
+assert_contains "HashKnownHosts no is skipped" "$out" "[skip] known_hosts: HashKnownHosts is not on in $H/.ssh/config"
+# Without an Include, Host * HashKnownHosts yes is judged and warns.
+printf 'Host *\n  HashKnownHosts yes\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "no Include: Host * HashKnownHosts yes warns" "$out" "[warn] 1 plaintext host entries in known_hosts although HashKnownHosts is on"
+# Match all is global, like Host *.
+printf 'Match all\n  HashKnownHosts yes\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "Match all is treated as global" "$out" "[warn] 1 plaintext host entries in known_hosts although HashKnownHosts is on"
+# A quoted value and a trailing comment are accepted.
+printf 'Host * # everything\n  HashKnownHosts "yes" # on\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "a quoted yes and comments are accepted" "$out" "[warn] 1 plaintext host entries in known_hosts although HashKnownHosts is on"
+# An Include after the found line does not matter; one at the end with no
+# HashKnownHosts line still means not judged.
+printf 'Host *\n  HashKnownHosts yes\nInclude config.d/*\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "an Include after the line is ignored" "$out" "[warn] 1 plaintext host entries"
+printf 'Include config.d/*\n' > "$H/.ssh/config"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "an Include and no HashKnownHosts is not judged" "$out" "[info] known_hosts: HashKnownHosts not judged"
+# The remaining known_hosts checks need hashing judged on.
+printf 'Host *\n  HashKnownHosts yes\n' > "$H/.ssh/config"
 
-  # Match exec: ssh -G would run the command, so the doctor must not ask.
-  marker="$T/match-exec-marker"; rm -f "$marker"
-  mkdir -p "$H/.ssh/config.d"
-  printf 'Include config.d/*\nHost *\n  User x\n' > "$H/.ssh/config"
-  printf 'Host a\nMATCH host a Exec "touch %s"\n' "$marker" > "$H/.ssh/config.d/x.conf"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "Match exec in an include is reported" "$out" "config uses Match exec, which ssh -G would run"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec command"; else ok "the Match exec command never ran"; fi
-  printf 'Match exec "touch %s"\n' "$marker" > "$H/.ssh/config"
-  rm -rf "$H/.ssh/config.d"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "Match exec in the main config is reported" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec command"; else ok "the Match exec command never ran"; fi
-  # A negated or quoted criterion still runs the command; so does an
-  # Include=... form with a Match exec inside; so does a home with a space.
-  printf 'Match !exec "touch %s"\n' "$marker" > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "Match !exec is reported" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a negated Match exec command"; else ok "the negated Match exec command never ran"; fi
-  printf 'Match "!exec" "touch %s"\n' "$marker" > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "a quoted !exec is reported" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a quoted Match exec command"; else ok "the quoted Match exec command never ran"; fi
-  mkdir -p "$H/.ssh/config.d"
-  printf 'Include=config.d/*\n' > "$H/.ssh/config"
-  printf 'Match exec "touch %s"\n' "$marker" > "$H/.ssh/config.d/x.conf"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "Include=... with a Match exec inside is reported" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind Include="; else ok "no Match exec behind Include= ran"; fi
-  SP="$scratch/my home"
-  mkdir -p "$SP/.ssh/config.d"; chmod 700 "$SP/.ssh"
-  printf 'Include config.d/*\n' > "$SP/.ssh/config"
-  printf 'Match exec "touch %s"\n' "$marker" > "$SP/.ssh/config.d/x.conf"
-  out="$(run_doctor_in "$SP" --platform linux 2>&1)"; rc=$?
-  assert_contains "an include under a home with a space is scanned" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec under a home with a space"; else ok "no Match exec under a home with a space ran"; fi
-  # OpenSSH resolves a relative Include against the passwd home's .ssh, so
-  # with --home elsewhere that file is read too and must be scanned. A getent
-  # stub stands in for the account database.
-  PWH="$scratch/pwhome"; STUB="$scratch/stub"
-  mkdir -p "$PWH/.ssh/config.d" "$STUB"
-  printf '#!/bin/sh\nprintf "u:x:1:1::%s:/bin/sh\\n"\n' "$PWH" > "$STUB/getent"
-  chmod +x "$STUB/getent"
-  printf 'Include config.d/*\n' > "$H/.ssh/config"
-  printf 'Match exec "touch %s"\n' "$marker" > "$PWH/.ssh/config.d/x.conf"
-  out="$(guard env "${NOENV[@]}" HOME="$H" PATH="$STUB:$PATH" TMPDIR="$T" "$DOCTOR" --home "$H" --platform linux 2>&1)"; rc=$?
-  assert_contains "an include under the passwd home is scanned" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec from the passwd home"; else ok "no Match exec from the passwd home ran"; fi
-  # OpenSSH follows Includes 16 levels deep; so does the scan. Beyond that
-  # limit, or in a loop, the config is not known to be exec-free: skip ssh -G.
-  mkdir -p "$H/.ssh/chain"
-  mk_chain() { # mk_chain N LAST: chain/c1..cN, each including the next
-    local i n="$1" last="$2"
-    rm -f "$H/.ssh/chain"/*
-    printf 'Include chain/c1\n' > "$H/.ssh/config"
-    for ((i = 1; i < n; i++)); do printf 'Include chain/c%d\n' $((i + 1)) > "$H/.ssh/chain/c$i"; done
-    printf '%s\n' "$last" > "$H/.ssh/chain/c$n"
-  }
-  mk_chain 6 "Match exec \"touch $marker\""
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "a Match exec six Includes deep is reported" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec six Includes deep"; else ok "no Match exec six Includes deep ran"; fi
-  mk_chain 16 "Match exec \"touch $marker\""
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "a Match exec at the Include limit is reported" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec at the Include limit"; else ok "no Match exec at the Include limit ran"; fi
-  mk_chain 20 "Host z"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "an Include chain past the limit skips ssh -G" "$out" "config uses Match exec"
-  mk_chain 3 "Include chain/c1"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "an Include loop skips ssh -G" "$out" "config uses Match exec"
-  mk_chain 3 "Host z"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_not_contains "a short clean Include chain is probed" "$out" "config uses Match exec"
-  rm -rf "$H/.ssh/chain"
-  # A quoted Include path keeps its spaces (and several arguments are all
-  # followed); an Include that cannot be resolved with confidence skips the
-  # probe instead of guessing.
-  INC="$scratch/include dir"; mkdir -p "$INC"
-  printf 'Match exec "touch %s"\n' "$marker" > "$INC/exec.conf"
-  printf 'Include "%s/exec.conf"\n' "$INC" > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "a quoted Include path with a space is scanned" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind a quoted Include"; else ok "no Match exec behind a quoted Include ran"; fi
-  printf 'Include nothing-here.conf "%s/exec.conf"\n' "$INC" > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "a second Include argument is scanned" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind a second Include argument"; else ok "no Match exec behind a second Include argument ran"; fi
-  printf 'Include "%s/exec.conf\n' "$INC" > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "an Include with an unbalanced quote skips ssh -G" "$out" "config uses Match exec"
-  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind an unbalanced quote"; else ok "no Match exec behind an unbalanced quote ran"; fi
-  printf 'Include /p/a\\b.conf\n' > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "an Include with an unknown backslash escape skips ssh -G" "$out" "config uses Match exec"
-  printf 'Include %%d/exec.conf\n' > "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_contains "an Include with an unexpanded token skips ssh -G" "$out" "config uses Match exec"
-  printf 'Include "%s/exec.conf"\n' "$INC" > "$H/.ssh/config"
-  chmod 000 "$INC/exec.conf"
-  if [[ -r "$INC/exec.conf" ]]; then
-    skip "an unreadable Include file: running as a user that reads mode 000 files"
-  else
-    out="$(run_doctor --platform linux 2>&1)"; rc=$?
-    assert_contains "an unreadable included file skips ssh -G" "$out" "config uses Match exec"
-  fi
-  chmod 600 "$INC/exec.conf"
-  rm -rf "$INC"
-  rm -rf "$H/.ssh/config.d" "$SP" "$PWH" "$STUB"
-  printf 'BogusOption yes\n' > "$H/.ssh/config"
+printf '# a comment\n|1|abc=|def= ssh-ed25519 AAAA\nplain-one.example.invalid ssh-ed25519 AAAA\n@cert-authority plain-two.example.invalid ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+before="$(snapshot "$H" "$T")"
+out="$(run_doctor --platform linux 2>&1)"; rc=$?
+after="$(snapshot "$H" "$T")"
+assert_rc "plaintext known_hosts entries are a warning, exit 0" 0 "$rc"
+assert_contains "plaintext entries are counted" "$out" "[warn] 2 plaintext host entries in known_hosts although HashKnownHosts is on"
+assert_contains "the fix keeps a .old copy" "$out" "ssh-keygen -H -f $H/.ssh/known_hosts"
+assert_not_contains "no host name is printed" "$out" "plain-one"
+assert_not_contains "no marked host name is printed" "$out" "plain-two"
+if [[ "$before" == "$after" ]]; then ok "the known_hosts check wrote nothing"; else err "the known_hosts check wrote into the home or tmp"; fi
+run_doctor --platform linux --fail-on warn >/dev/null 2>&1; rc=$?
+assert_rc "--fail-on warn exits 1 on plaintext entries" 1 "$rc"
+printf '|1|abc=|def= ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+out="$(run_doctor --platform linux 2>&1)"
+assert_contains "an all-hashed known_hosts passes" "$out" "[pass] known_hosts holds no plaintext host"
 
-  # The shipped config, which turns HashKnownHosts on.
-  cp "$D/home/.ssh/config" "$H/.ssh/config"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  assert_rc "the shipped ssh config exits 0" 0 "$rc"
-  assert_contains "ssh accepts the shipped config" "$out" "[pass] ssh accepts $H/.ssh/config"
-
-  printf '# a comment\n|1|abc=|def= ssh-ed25519 AAAA\nplain-one.example.invalid ssh-ed25519 AAAA\n@cert-authority plain-two.example.invalid ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
-  before="$(snapshot "$H" "$T")"
-  out="$(run_doctor --platform linux 2>&1)"; rc=$?
-  after="$(snapshot "$H" "$T")"
-  assert_rc "plaintext known_hosts entries are a warning, exit 0" 0 "$rc"
-  assert_contains "plaintext entries are counted" "$out" "[warn] 2 plaintext host entries in known_hosts although HashKnownHosts is on"
-  assert_contains "the fix keeps a .old copy" "$out" "ssh-keygen -H -f $H/.ssh/known_hosts"
-  assert_not_contains "no host name is printed" "$out" "plain-one"
-  assert_not_contains "no marked host name is printed" "$out" "plain-two"
-  if [[ "$before" == "$after" ]]; then ok "the known_hosts check wrote nothing"; else err "the known_hosts check wrote into the home or tmp"; fi
-  run_doctor --platform linux --fail-on warn >/dev/null 2>&1; rc=$?
-  assert_rc "--fail-on warn exits 1 on plaintext entries" 1 "$rc"
-  printf '|1|abc=|def= ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
-  out="$(run_doctor --platform linux 2>&1)"
-  assert_contains "an all-hashed known_hosts passes" "$out" "[pass] known_hosts holds no plaintext host"
-
-  # A ControlMaster socket three days old. python3 makes the socket and ages
-  # it; without it, or when the scratch path is too long for a socket name,
-  # this part is skipped rather than failed.
-  PY="$(command -v python3 || true)"
-  sock="$H/.ssh/cm-x"
-  if [[ -n "$PY" ]] && "$PY" -I -c 'import os, socket, sys, time
+# A ControlMaster socket three days old. python3 makes the socket and ages
+# it; without it, or when the scratch path is too long for a socket name,
+# this part is skipped rather than failed.
+PY="$(command -v python3 || true)"
+sock="$H/.ssh/cm-x"
+if [[ -n "$PY" ]] && "$PY" -I -c 'import os, socket, sys, time
 s = socket.socket(socket.AF_UNIX)
 s.bind(sys.argv[1])
 s.close()
 t = time.time() - 3 * 86400
 os.utime(sys.argv[1], (t, t))' "$sock" 2>/dev/null; then
-    out="$(run_doctor --platform linux 2>&1)"; rc=$?
-    assert_rc "a stale socket is a warning, exit 0" 0 "$rc"
-    assert_contains "the stale socket is counted" "$out" "[warn] 1 ControlMaster socket(s) older than a day"
-    assert_true "the doctor left the socket in place" test -S "$sock"
-    rm -f "$sock"
-  else
-    skip "no python3 to make a socket, or the scratch path is too long for one"
-  fi
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_rc "a stale socket is a warning, exit 0" 0 "$rc"
+  assert_contains "the stale socket is counted" "$out" "[warn] 1 ControlMaster socket(s) older than a day"
+  assert_true "the doctor left the socket in place" test -S "$sock"
+  rm -f "$sock"
 else
-  skip "no ssh: the ssh config, known_hosts and socket checks need it"
+  skip "no python3 to make a socket, or the scratch path is too long for one"
 fi
 
 if command -v git >/dev/null 2>&1; then

@@ -379,8 +379,8 @@ never a failure:
 
 | Check | Finding | Fix printed |
 | --- | --- | --- |
-| `ssh -G` accepts `~/.ssh/config` | `[FAIL]` with ssh's first error line: a typo in a config file makes every ssh fail; `[warn]` and no probe when a `Match` line uses `exec` | — |
-| `known_hosts` with `HashKnownHosts yes` in effect | `[warn]` with the number of plaintext host entries; host names are never printed | `ssh-keygen -H -f ~/.ssh/known_hosts`, which keeps a `.old` copy to delete |
+| `~/.ssh/config`, read as text | `[pass]` when it is readable, `[warn]` when it is not. The doctor never runs ssh, so it does not check that ssh accepts the file | — |
+| `known_hosts` with `HashKnownHosts yes` in `~/.ssh/config` | `[warn]` with the number of plaintext host entries; host names are never printed | `ssh-keygen -H -f ~/.ssh/known_hosts`, which keeps a `.old` copy to delete |
 | `~/.ssh/cm-*` sockets older than a day | `[warn]`: with `ControlPersist 10m` these are masters that were killed rather than closed, and they cause `Control socket connect: Connection refused` | `rm ~/.ssh/cm-*`, or `ssh -O check` one first; the doctor never removes or connects to one |
 | `user.name` and `user.email`, read with `git config --global --includes` | `[warn]` when either is missing; only presence is reported, never a value | the `git config --file ~/.config/git/config.local` line from above |
 | `~/.gitconfig`, once `config/git/config` is installed | `[warn]`: git reads it after the tracked config, so it wins on every key, and `git config --global` writes there | move its contents to `config.local` and delete it |
@@ -388,20 +388,14 @@ never a failure:
 `--includes` matters: `--global` alone does not follow `include.path`, and
 the identity is in `config.local`. git is asked with `HOME` and
 `XDG_CONFIG_HOME` pointed at the inspected home and `GIT_CONFIG_GLOBAL`
-dropped, so neither the caller's environment nor the real home answers. One
-caveat for `--home`: OpenSSH expands `~` in `Include` from the account's
-passwd entry rather than from `HOME`, so under a `--home` that is not your
-own the `config.d` files are not read; the main file still is. `ssh -G`
-connects to nothing, but it evaluates `Match exec` lines, so the doctor
-scans the config and its `Include` files first (globs relative to `~/.ssh`
-of the inspected home and of the passwd home, as deep as OpenSSH follows
-them, 16 levels) and, if any `Match` line has an `exec` criterion, negated
-or quoted or not, or the chain is deeper than that or loops, or an
-`Include` cannot be resolved with confidence (an unbalanced quote, a
-backslash before an ordinary character, a `%d`-style or `${VAR}` token, a
-file that cannot be read), warns and skips `ssh -G` rather than run the
-command. `Include` arguments are split as OpenSSH does: quotes keep spaces
-and several arguments are all followed.
+dropped, so neither the caller's environment nor the real home answers. The
+doctor reads the main ssh config as text and does not run ssh: `ssh -G`
+evaluates `Match exec` lines and so runs commands, which would break the
+read-only promise. `HashKnownHosts` is read from the main `~/.ssh/config`
+only (outside any block, under `Host *` or under `Match all`; the first
+line wins). Included files are not followed, so when an `Include` comes
+before that line the doctor reports the hashing as not judged instead of
+guessing.
 
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
 `2` preflight — no home directory, or a `--repo` without `config/` and

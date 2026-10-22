@@ -20,10 +20,10 @@
 # no error at all.
 #
 # Last, the untracked overlays the ssh and git configs push identity and
-# per-client settings into, which is where things break: an ssh config that
-# ssh rejects, plaintext host names in known_hosts despite HashKnownHosts,
-# dead ControlMaster sockets, no commit identity, and a ~/.gitconfig that
-# silently overrides the tracked git config on every key.
+# per-client settings into, which is where things break: plaintext host
+# names in known_hosts despite HashKnownHosts, dead ControlMaster sockets, no
+# commit identity, and a ~/.gitconfig that silently overrides the tracked git
+# config on every key. The ssh config is read as text; ssh is never run.
 #
 # It changes nothing: every check is a read, and every fix is a command
 # printed for you to run.
@@ -81,9 +81,9 @@ Checks:
   environment hooks  RIPGREP_CONFIG_PATH and GITLEAKS_CONFIG are exported and
                      lead to a file, and on macOS XDG_CONFIG_HOME names the
                      config directory, for each tool that is on PATH
-  ssh                ssh accepts ~/.ssh/config, known_hosts holds no plaintext
-                     host while HashKnownHosts is on, no stale ControlMaster
-                     socket is left in ~/.ssh
+  ssh                known_hosts holds no plaintext host while the config turns
+                     HashKnownHosts on, no stale ControlMaster socket is left
+                     in ~/.ssh; the config is read as text, ssh is never run
   git                a commit identity is set (through config.local), and no
                      ~/.gitconfig overrides the installed git config
 
@@ -505,170 +505,42 @@ PLAINTEXT_HOSTS_AWK='
 END { print n + 0 }
 '
 
-# The home directory OpenSSH itself uses for ~ and for relative Include paths
-# is the passwd entry of the running account, not $HOME. Empty when it cannot
-# be found (no getent and no dscl) or is the same as the inspected home.
-passwd_home() {
-  local u h=""
-  u="$(id -un 2>/dev/null)" || return 0
-  if command -v getent >/dev/null 2>&1; then
-    h="$(getent passwd "$u" 2>/dev/null | cut -d: -f6)"
-  elif command -v dscl >/dev/null 2>&1; then
-    h="$(dscl . -read "/Users/$u" NFSHomeDirectory 2>/dev/null | sed -n 's/^NFSHomeDirectory:[[:space:]]*//p')"
-  fi
-  h="${h%/}"
-  [[ -n "$h" && "$h" != "$HOME_DIR" ]] && printf '%s\n' "$h"
-  return 0
+# The doctor never runs ssh: `ssh -G` evaluates `Match exec` lines in the
+# inspected config, i.e. runs commands, which a read-only report must not do.
+# The main ssh config is read as text; included files are not followed.
+# HashKnownHosts is taken where it applies to every host (outside any block,
+# under `Host *`, or under `Match all`); the first such line wins, as in
+# OpenSSH. An Include line before that line (or before the end of the file
+# when there is none) may set the option first, so the answer is then
+# "include" and the caller does not judge hashing. Surrounding double quotes
+# are dropped from the value and words starting with # are comments.
+# shellcheck disable=SC2016  # $0 is an awk field
+SSH_HASHKNOWNHOSTS_AWK='
+{
+  line = tolower($0)
+  sub(/^[ \t]+/, "", line)
+  if (line == "" || substr(line, 1, 1) == "#") next
+  gsub(/[=\t]+/, " ", line)
+  gsub(/"/, "", line)
+  sub(/ #.*/, "", line)
+  split(line, w, " ")
+  if (w[1] == "include") { inc = 1; next }
+  if (w[1] == "host" || w[1] == "match") {
+    inblock = 1
+    glob = ((w[1] == "host" && w[2] == "*" && w[3] == "") ||
+            (w[1] == "match" && w[2] == "all" && w[3] == ""))
+    next
+  }
+  if (w[1] == "hashknownhosts" && (inblock == 0 || glob)) {
+    print (inc ? "include" : w[2]); found = 1; exit
+  }
 }
+END { if (!found && inc) print "include" }
+'
 
-# Splits $1 into SSH_ARGS the way OpenSSH's argv_split does for a config
-# line: whitespace separates, "..." and '...' group, a backslash escapes
-# the next character, an unquoted # at the start of a word ends the line.
-# Returns 1 on an unbalanced quote, a trailing backslash, or an unquoted
-# backslash before anything but a space, quote or backslash (the escapes
-# argv_split recognises). Bash 3.2 safe.
-SSH_ARGS=()
-ssh_split_args() {
-  local s="$1" i=0 n ch q="" cur="" have=0 bs=$'\\'
-  n=${#s}
-  SSH_ARGS=()
-  while (( i < n )); do
-    ch="${s:i:1}"
-    if [[ -n "$q" ]]; then
-      if [[ "$ch" == "$q" ]]; then
-        q=""
-      elif [[ "$ch" == "$bs" ]]; then
-        i=$((i + 1))
-        (( i < n )) || return 1
-        ch="${s:i:1}"
-        case "$ch" in
-          '"' | "'" | "$bs") cur="$cur$ch" ;;
-          *) cur="$cur\\$ch" ;;
-        esac
-      else
-        cur="$cur$ch"
-      fi
-    else
-      case "$ch" in
-        ' ')
-          if (( have )); then SSH_ARGS+=("$cur"); cur=""; have=0; fi
-          ;;
-        '"' | "'") q="$ch"; have=1 ;;
-        "$bs")
-          i=$((i + 1))
-          (( i < n )) || return 1
-          ch="${s:i:1}"
-          # OpenSSH keeps the backslash before any other character; this
-          # splitter cannot tell what it would pass on, so fail closed.
-          case "$ch" in
-            ' ' | '"' | "'" | "$bs") ;;
-            *) return 1 ;;
-          esac
-          cur="$cur$ch"; have=1
-          ;;
-        '#')
-          if (( have )); then cur="$cur#"; else break; fi
-          ;;
-        *) cur="$cur$ch"; have=1 ;;
-      esac
-    fi
-    i=$((i + 1))
-  done
-  [[ -z "$q" ]] || return 1
-  if (( have )); then SSH_ARGS+=("$cur"); fi
-  return 0
-}
-
-# True when the config, or a file one of its Include lines pulls in, has a
-# Match line with an exec criterion (also negated or quoted): ssh -G would run
-# that command. Includes are followed (globs too; relative paths against
-# ~/.ssh and ~ against the inspected home, $HOME and the passwd home, as
-# OpenSSH reads the last) to OpenSSH's own limit of 16 levels. Reaching that
-# limit, an Include loop, or an Include that cannot be resolved with
-# confidence counts as a hit: the config is not known to be
-# free of exec, so the caller skips the probe. Reads only; nothing is run.
-ssh_config_runs_exec() {
-  local file="$1" depth="${2:-0}" chain="${3:-}" line low rest w pat c f pw
-  local -a words cands
-  (( depth <= 16 )) || return 0
-  case "$chain" in
-    *$'\n'"$file"$'\n'*) return 0 ;;
-  esac
-  chain="$chain"$'\n'"$file"$'\n'
-  [[ -r "$file" ]] || return 1
-  pw="$(passwd_home)"
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    low="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]' | tr '\t=' '  ')"
-    case "$low" in
-      *[![:space:]]*) ;;
-      *) continue ;;
-    esac
-    read -r -a words <<<"$low"
-    case "${words[0]:-}" in
-      match)
-        (( ${#words[@]} > 1 )) || continue
-        for w in "${words[@]:1}"; do
-          [[ "$w" == '#'* ]] && break
-          w="${w//[\"\']/}"
-          w="${w#!}"
-          [[ "$w" == exec ]] && return 0
-        done
-        ;;
-      include)
-        # The arguments are split the way OpenSSH splits them: double and
-        # single quotes group (spaces stay), a backslash escapes, an
-        # unquoted # starts a comment. Anything not understood with
-        # confidence (unbalanced quote, a %-token or ${VAR} OpenSSH would
-        # expand) counts as a hit, like the depth limit: the caller skips
-        # the probe.
-        rest="$(printf '%s' "$line" | tr '\t' ' ' | sed 's/^[[:space:]]*[A-Za-z]*[[:space:]]*=\{0,1\}[[:space:]]*//')"
-        ssh_split_args "$rest" || return 0
-        for pat in "${SSH_ARGS[@]+"${SSH_ARGS[@]}"}"; do
-          # shellcheck disable=SC2016  # a literal ${, not an expansion
-          case "$pat" in
-            *%* | *'${'*) return 0 ;;
-          esac
-          cands=()
-          case "$pat" in
-            [~]/*)
-              cands=("$HOME_DIR/${pat#??}" "${HOME:-$HOME_DIR}/${pat#??}")
-              [[ -n "$pw" ]] && cands+=("$pw/${pat#??}")
-              ;;
-            /*) cands=("$pat") ;;
-            *)
-              cands=("$HOME_DIR/.ssh/$pat")
-              [[ -n "$pw" ]] && cands+=("$pw/.ssh/$pat")
-              ;;
-          esac
-          for c in "${cands[@]}"; do
-            # compgen -G prints one match per line, so a space in the path
-            # does not split it the way an unquoted expansion would.
-            while IFS= read -r f; do
-              [[ -f "$f" ]] || continue
-              # A matched file that cannot be read cannot be shown free of
-              # exec, so it is a hit too.
-              [[ -r "$f" ]] || return 0
-              ssh_config_runs_exec "$f" $((depth + 1)) "$chain" && return 0
-            done < <(compgen -G "$c" 2>/dev/null)
-          done
-        done
-        ;;
-    esac
-  done <"$file"
-  return 1
-}
-
-# ssh -G resolves the config for a host without connecting and refuses on
-# any line it cannot parse. HOME points ssh at the inspected home, but OpenSSH
-# expands ~ in Include from the account's passwd entry, so under a --home that
-# is not the real one the config.d files are not read; the main file is.
 check_ssh() {
   group "ssh"
-  local dir="$HOME_DIR/.ssh" cfg="$HOME_DIR/.ssh/config" gout first hk kh n
-  if ! command -v ssh >/dev/null 2>&1; then
-    skip "ssh: not installed"
-    return 0
-  fi
+  local dir="$HOME_DIR/.ssh" cfg="$HOME_DIR/.ssh/config" hk kh n
   if [[ ! -d "$dir" ]]; then
     skip "ssh: no $dir"
     return 0
@@ -677,24 +549,17 @@ check_ssh() {
   hk=""
   if [[ ! -f "$cfg" ]]; then
     skip "ssh config: no $cfg"
-  elif ssh_config_runs_exec "$cfg"; then
-    # ssh -G evaluates Match exec, i.e. runs the command: not read-only.
-    warn "ssh config not validated: config uses Match exec, which ssh -G would run (or has an Include that could not be resolved)" \
-      "$cfg (or a file it includes) has a Match line with exec, or an Include that could not be read with confidence; check it by hand"
+  elif [[ ! -r "$cfg" ]]; then
+    warn "ssh config is not readable: $cfg" "chmod u+r $cfg"
   else
-    # One run, stderr merged: on a failure the first line is ssh's message,
-    # and the options are read from the output only on success.
-    if gout="$(HOME="$HOME_DIR" ssh -G -F "$cfg" example.invalid 2>&1)"; then
-      pass "ssh accepts $cfg"
-      hk="$(awk '$1 == "hashknownhosts" { print $2; exit }' <<<"$gout")"
-    else
-      first="$(sed -n 1p <<<"$gout")"
-      fail "ssh rejects $cfg" "${first:-ssh -G -F $cfg example.invalid exited non-zero}"
-    fi
+    pass "ssh config $cfg read as text (ssh is never run)"
+    hk="$(awk "$SSH_HASHKNOWNHOSTS_AWK" "$cfg" 2>/dev/null)"
   fi
 
   kh="$dir/known_hosts"
-  if [[ "$hk" != "yes" ]]; then
+  if [[ "$hk" == "include" ]]; then
+    info "known_hosts: HashKnownHosts not judged: an Include before it may set it ($cfg)"
+  elif [[ "$hk" != "yes" ]]; then
     skip "known_hosts: HashKnownHosts is not on in $cfg"
   elif [[ ! -f "$kh" ]]; then
     skip "known_hosts: no $kh"

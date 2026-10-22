@@ -85,12 +85,13 @@ and each link into the folder that no tracked file installs to as `ORPHAN`;
   more) are not readable or writable by group or other. It only stats them
   and prints the `chmod 600` for you to run. `~/.ssh` is left to
   `linux/ssh_client_doctor.sh`.
-- `dotfiles_doctor.sh` also checks the untracked overlays: that `ssh -G`
-  accepts `~/.ssh/config`, that `known_hosts` holds no plaintext host while
-  `HashKnownHosts` is on, that no dead ControlMaster socket is left, that a
-  commit identity is set through `config.local`, and that no `~/.gitconfig`
-  overrides the tracked git config. Host names and identity values are never
-  printed.
+- `dotfiles_doctor.sh` also checks the untracked overlays: that `known_hosts`
+  holds no plaintext host while `~/.ssh/config` turns `HashKnownHosts` on,
+  that no dead ControlMaster socket is left, that a commit identity is set
+  through `config.local`, and that no `~/.gitconfig` overrides the tracked
+  git config. Host names and identity values are never printed. It reads
+  the main ssh config as text, does not follow included files and never
+  runs ssh.
 
 ## Repository
 
