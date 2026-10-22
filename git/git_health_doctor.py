@@ -350,11 +350,11 @@ def _inside(path, root):
 
 
 def parse_git_args(args):
-    """(git_dir, work_tree, chdirs) from the global options of a git command
-    line (args without the leading `git`), in both `--opt=X` and `--opt X`
-    forms. Parsing stops at the subcommand; a missing value gives None."""
+    """(git_dir, work_tree) from the global options of a git command line
+    (args without the leading `git`), in both `--opt=X` and `--opt X`
+    forms. Parsing stops at the subcommand; a missing value gives None.
+    -C is skipped with its value: the live cwd already reflects it."""
     git_dir = work_tree = None
-    chdirs = []
     skip_value = ("-c", "--namespace", "--super-prefix", "--config-env",
                   "--exec-path", "--list-cmds")
     i = 0
@@ -373,13 +373,11 @@ def parse_git_args(args):
                 value = args[i + 1]
             i += 1
         i += 1
-        if name == "-C" and value is not None:
-            chdirs.append(value)
-        elif name == "--git-dir" and value is not None:
+        if name == "--git-dir" and value is not None:
             git_dir = value
         elif name == "--work-tree" and value is not None:
             work_tree = value
-    return git_dir, work_tree, chdirs
+    return git_dir, work_tree
 
 
 def attribute_git_processes(procs, repo_paths):
@@ -392,10 +390,9 @@ def attribute_git_processes(procs, repo_paths):
     `git --git-dir=/repo/.git fetch` run from elsewhere sets GIT_DIR only
     internally, so /proc/PID/environ never shows it. cwd is the live
     directory, which already includes any -C, so -C is not applied again.
-    repo_paths are the worktree, git
-    directory and common directory of this repository (and its linked
-    worktrees). A process belongs to it when its working directory, GIT_DIR or
-    GIT_WORK_TREE lies inside one of them.
+    repo_paths are the worktree, git directory and common directory of this
+    repository (and its linked worktrees). A process belongs to it when its
+    working directory, GIT_DIR or GIT_WORK_TREE lies inside one of them.
 
     True: one does. False: none do and every process was placed elsewhere (or
     there are none). UNATTRIBUTED: none do, but one has no repository
@@ -406,7 +403,7 @@ def attribute_git_processes(procs, repo_paths):
     for proc in procs:
         cwd, git_dir, work_tree = proc[:3]
         args = proc[3] if len(proc) > 3 else None
-        arg_dir, arg_tree, _ = parse_git_args(args or [])
+        arg_dir, arg_tree = parse_git_args(args or [])
         # /proc/PID/cwd is the live directory, which already reflects git's
         # own -C, so -C is not applied again. The live directory is always a
         # candidate; relative paths resolve against it.

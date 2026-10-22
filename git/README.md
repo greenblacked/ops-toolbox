@@ -798,9 +798,10 @@ looks at the repository itself rather than at what it connects to.
   minutes (default 10) **and** no `git` process is running in this
   repository or one of its worktrees; the `rm` is printed, never run. On
   Linux the working directory of each `git` process (and its `GIT_DIR`, where
-  readable, and the `--git-dir`, `--work-tree` and `-C` options on its command
-  line) says which repository it is in, so an unrelated git elsewhere on
-  the machine does not hide a stale lock. Where only `ps` can be read, or a
+  readable, and the `--git-dir` and `--work-tree` options on its command
+  line) says which repository it is in (the live working directory already
+  reflects any `-C`), so an unrelated git elsewhere on the machine does not
+  hide a stale lock. Where only `ps` can be read, or a
   process cannot be placed, the verdict drops to a warning that says a git
   process is running somewhere and cannot be tied to the lock; if neither
   `ps` nor `/proc` can be read it drops to a warning instead of guessing.
