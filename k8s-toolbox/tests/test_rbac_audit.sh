@@ -192,13 +192,13 @@ assert_rc 'an exact non-resource URL is not a wildcard' 4 "$rc"
 reset_fixtures
 export RBAC_CRB=crb-default-group-all RBAC_RB=rb-default-group-ns
 run_rbac --only default-sa
-assert_rc 'system: ServiceAccount groups are skipped by default' 4 "$rc"
-run_rbac --only default-sa --include-system
-assert_rc 'ServiceAccount groups reach the default ServiceAccounts with --include-system' 0 "$rc"
+assert_rc 'ServiceAccount groups reach the default ServiceAccounts by default' 0 "$rc"
 assert_contains 'all-ServiceAccounts group on a clusterrolebinding' '[risk] clusterrolebinding everyone -> view: Group system:serviceaccounts'
 assert_contains 'per-namespace group on a rolebinding' '[advice] rolebinding demo/demo-sas -> edit: Group system:serviceaccounts:demo'
 reset_fixtures
 export RBAC_CRB=crb-default-group-other
+run_rbac --only default-sa
+assert_rc 'other system: groups do not name the default ServiceAccounts' 4 "$rc"
 run_rbac --only default-sa --include-system
 assert_rc 'other system: groups do not name the default ServiceAccounts' 4 "$rc"
 

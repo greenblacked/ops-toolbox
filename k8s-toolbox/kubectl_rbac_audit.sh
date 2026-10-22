@@ -270,6 +270,12 @@ roles=load(parts[3],"roles")
 BUILTIN=("cluster-admin","admin","edit","view")
 def system(name):
   return not include_system and name.startswith("system:")
+def sa_group(s):
+  # The groups of all ServiceAccounts (or of one namespace) include the
+  # default ServiceAccounts, so they are judged like a default subject.
+  n=str(s.get("name",""))
+  return s.get("kind") == "Group" and (n == "system:serviceaccounts" or
+                                       (n.startswith("system:serviceaccounts:") and len(n) > 23))
 def bindings():
   for kind,items in (("clusterrolebinding",crbs),("rolebinding",rbs)):
     for b in items or []:
@@ -280,7 +286,7 @@ def bindings():
       ns=meta.get("namespace","")
       label=meta["name"] if kind == "clusterrolebinding" else "%s/%s" % (ns,meta["name"])
       describe="kubectl describe %s %s%s" % (kind,meta["name"]," -n "+ns if kind == "rolebinding" else "")
-      subjects=[s for s in b.get("subjects") or [] if not system(str(s.get("name","")))]
+      subjects=[s for s in b.get("subjects") or [] if sa_group(s) or not system(str(s.get("name","")))]
       yield kind,ns,meta["name"],label,ref,subjects,describe
 def subject_text(s):
   if s.get("kind") == "ServiceAccount":
@@ -320,12 +326,7 @@ if "cluster-admin" in rows or "default-sa" in rows or "dangling" in rows:
     if "default-sa" in rows:
       for s in subjects:
         sname=str(s.get("name",""))
-        # The groups of all ServiceAccounts (or of one namespace) include
-        # the default ServiceAccounts. They are system: names, so they are
-        # judged only with --include-system, like any system: subject.
-        group_sa=s.get("kind") == "Group" and (sname == "system:serviceaccounts" or
-                                              (sname.startswith("system:serviceaccounts:") and len(sname) > 23))
-        if (s.get("kind") == "ServiceAccount" and sname == "default") or group_sa:
+        if (s.get("kind") == "ServiceAccount" and sname == "default") or sa_group(s):
           rows["default-sa"].append((scope,"%s %s -> %s: %s (every pod without its own serviceAccountName inherits it)" % (
             kind,label,ref.get("name",""),subject_text(s)),[describe]))
     if "dangling" in rows:
