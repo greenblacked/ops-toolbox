@@ -264,11 +264,19 @@ function Get-ProxyFinding {
         # directly. The URL is shown without any user:password part.
         $pacShown = [string]$Observed['AutoConfigUrl']
         $pacSchemeEnd = $pacShown.IndexOf('://')
-        $pacAt = $pacShown.LastIndexOf('@')
-        if ($pacAt -ge 0) {
-            $pacHead = ''
-            if ($pacSchemeEnd -ge 0 -and $pacSchemeEnd -lt $pacAt) { $pacHead = $pacShown.Substring(0, $pacSchemeEnd + 3) }
-            $pacShown = $pacHead + $pacShown.Substring($pacAt + 1)
+        $pacAuthStart = 0
+        if ($pacSchemeEnd -ge 0) { $pacAuthStart = $pacSchemeEnd + 3 }
+        # Userinfo can only sit in the authority, which ends at the first
+        # '/', '?' or '#'. An '@' later (a path or query such as
+        # ?owner=a@b.com) is not a credential and must stay visible.
+        $pacAuthEnd = $pacShown.Length
+        foreach ($pacStop in '/', '?', '#') {
+            $pacStopAt = $pacShown.IndexOf($pacStop, $pacAuthStart)
+            if ($pacStopAt -ge 0 -and $pacStopAt -lt $pacAuthEnd) { $pacAuthEnd = $pacStopAt }
+        }
+        $pacAt = $pacShown.Substring(0, $pacAuthEnd).LastIndexOf('@')
+        if ($pacAt -ge $pacAuthStart) {
+            $pacShown = $pacShown.Substring(0, $pacAuthStart) + $pacShown.Substring($pacAt + 1)
         }
         $findings += [pscustomobject]@{
             Id = 'env-with-pac'; Level = 'info'

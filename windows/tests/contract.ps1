@@ -1137,6 +1137,24 @@ if (-not $netDoctor) {
         } else {
             Test-Fail 'the PAC finding must name the PAC URL, hide its credentials and not claim a direct connection'
         }
+        # Only an '@' in the authority is userinfo; one in the path or the
+        # query (an e-mail address, say) is part of the URL and stays.
+        $pacMask = @(
+            @{ Url = 'http://wpad.corp/p.pac?owner=a@b.com'; Want = 'http://wpad.corp/p.pac?owner=a@b.com' },
+            @{ Url = 'http://wpad.corp/a@b/p.pac'; Want = 'http://wpad.corp/a@b/p.pac' },
+            @{ Url = 'http://wpad.corp/p.pac#x@y'; Want = 'http://wpad.corp/p.pac#x@y' },
+            @{ Url = 'http://u:s3cret@wpad.corp/p.pac?owner=a@b.com'; Want = 'http://wpad.corp/p.pac?owner=a@b.com' },
+            @{ Url = 'http://u:p@ss@wpad.corp'; Want = 'http://wpad.corp' }
+        )
+        foreach ($m in $pacMask) {
+            $f = @(Get-ProxyFinding -Observed @{ WinInetEnabled = $false; HttpProxy = 'http://proxy:8080'; AutoConfigUrl = $m.Url; NoProxy = 'localhost' } |
+                Where-Object { $_.Id -eq 'env-with-pac' })
+            if ($f.Count -eq 1 -and $f[0].Message -like ('*(' + $m.Want + ')*') -and $f[0].Message -notlike '*s3cret*') {
+                Test-Ok ('the PAC URL {0} is shown as {1}' -f $m.Url, $m.Want)
+            } else {
+                Test-Fail ('the PAC URL {0} must be shown as {1}' -f $m.Url, $m.Want)
+            }
+        }
     }
 }
 
