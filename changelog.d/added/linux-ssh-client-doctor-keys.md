@@ -8,4 +8,6 @@
   `--list-groups` select groups. It stays read-only: the passphrase
   probe cannot prompt and key material is never printed. An unquoted end-of-line
   `# comment` is dropped before a config value is graded, so
-  `StrictHostKeyChecking no # legacy` is still caught.
+  `StrictHostKeyChecking no # legacy` is still caught. A `Ciphers` line is read with its list
+  modifier: `-` removes names, so only `+`, `^` or a plain list that names
+  CBC or arcfour is flagged.

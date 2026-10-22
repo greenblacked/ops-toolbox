@@ -694,7 +694,13 @@ if want risks; then
           [[ "$val_lc" == *1* ]] && warn "Protocol $rest ($where)" "SSH protocol 1 is broken and long removed: delete the line"
           ;;
         ciphers)
-          if [[ "$val_lc" == *cbc* || "$val_lc" == *arcfour* ]]; then
+          # A leading - removes the names from the default list, so naming a
+          # weak cipher there is the fix, not the problem. A leading + or ^
+          # adds to the defaults and no prefix replaces them: all three can
+          # enable one. A per-line reading, not ssh -G: the line may sit in a
+          # Host block that one -G run would not reach.
+          cipher_list="${val_lc#[\"\']}"
+          if [[ "$cipher_list" != -* && ( "$cipher_list" == *cbc* || "$cipher_list" == *arcfour* ) ]]; then
             warn "Ciphers enables CBC or arcfour ($where)" "remove those names; the OpenSSH defaults are better"
           fi
           ;;

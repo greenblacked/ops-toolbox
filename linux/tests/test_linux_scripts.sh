@@ -2582,6 +2582,20 @@ printf '%s\n' 'Host *' '  StrictHostKeyChecking "no # not a comment"' > "$risky_
 out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
 assert_not_contains "ssh_client_doctor keeps a quoted # in the value" "$out" "[FAIL]"
 
+# Ciphers list modifiers: - removes, + and ^ add to the defaults, none replaces.
+for cipher_case in 'Ciphers -aes128-cbc,3des-cbc:0' 'Ciphers +aes128-cbc:1' 'Ciphers ^aes128-cbc,aes256-gcm@openssh.com:1' \
+  'Ciphers aes128-cbc,aes256-ctr:1' 'Ciphers aes256-gcm@openssh.com:0' 'Ciphers +aes256-ctr:0'; do
+  cipher_line="${cipher_case%:*}"
+  cipher_want="${cipher_case##*:}"
+  printf '%s\n' 'Host *' "  $cipher_line" > "$risky_dir/config"
+  out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+  if [[ "$cipher_want" == 1 ]]; then
+    assert_contains "ssh_client_doctor warns on '$cipher_line'" "$out" "Ciphers enables CBC"
+  else
+    assert_not_contains "ssh_client_doctor leaves '$cipher_line' alone" "$out" "Ciphers enables CBC"
+  fi
+done
+
 out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
 assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"
 out="$("$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
