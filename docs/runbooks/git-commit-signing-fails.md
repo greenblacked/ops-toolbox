@@ -152,10 +152,10 @@ That is plain `git`. Then run only the fix the report printed for your case:
 | An SSH private key path in `user.signingkey` | Point `user.signingkey` at the `.pub` beside it |
 | `gpg.ssh.allowedSignersFile` is unset | A `printf` line that writes `~/.config/git/allowed_signers` with your address, and the `git config --global gpg.ssh.allowedSignersFile` that points at it |
 
-The printed allowed-signers command contains the literal placeholder
-`<your key>`; replace it with your public key, which is the contents of
-your `.pub` file, and put your principal (the email you commit with) in
-front of it. This command does both, and appends instead of replacing:
+The printed allowed-signers command already starts with your commit
+email. Only the literal placeholder `<your key>` needs replacing, with
+your public key, which is the contents of your `.pub` file. This command
+fills in both parts for you, and appends instead of replacing:
 
 ```{ .bash .rpt-apply title="Apply, after the directory exists" }
 printf '%s namespaces="git" %s\n' "$(git config user.email)" "$(cat ~/.ssh/id_ed25519.pub)" >> ~/.config/git/allowed_signers
@@ -164,8 +164,8 @@ printf '%s namespaces="git" %s\n' "$(git config user.email)" "$(cat ~/.ssh/id_ed
 Use the path of your own `.pub` file if it is not `id_ed25519.pub`. The
 command the doctor prints writes the file with `>`, which replaces a file
 that is already there. Check for one first and add your line to it instead.
-It also fails if `~/.config/git` does not exist yet, so create the directory
-before running it:
+That command also fails if `~/.config/git` does not exist yet, so create
+the directory before running the doctor's command:
 
 ```{ .bash .rpt-apply title="Apply, only if the directory is missing" }
 mkdir -p ~/.config/git
