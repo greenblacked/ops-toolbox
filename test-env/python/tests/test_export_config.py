@@ -1053,6 +1053,169 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
         self.assertEqual(raised.exception.code, 3)
 
 
+SECRET_WORD = "hunter2xyz"
+SECRET_NUMBER = "12345678"
+_KEYWORDS = (":global", ":local", ":set", ":GLOBAL", ":global\t")
+_CONTAINERS = (
+    "plain", "after-semicolon", "in-block", "in-do-block", "after-comment-string",
+    "export-source", "export-on-event", "export-after-comment-string",
+    "commented-plain", "commented-source", "commented-after-newline",
+)
+
+
+def _name_forms(export):
+    quote = '\\"' if export else '"'
+    return (("ApiToken", "ApiToken"), ("BACKUP_PASSWORD", "BACKUP_PASSWORD"),
+            ("my_secret_key", "my_secret_key"),
+            ("quoted-name", quote + "api-token" + quote))
+
+
+def _value_forms(export):
+    """(label, text) for every way of giving a variable a literal. In an
+    export the script's quote, dollar and backslash arrive escaped."""
+    quote = '\\"' if export else '"'
+    dollar = "\\$" if export else "$"
+    backslash = "\\\\" if export else "\\"
+    inner_quote = backslash + quote if export else '\\"'
+    forms = [
+        ("quoted", quote + SECRET_WORD + quote),
+        ("unquoted", SECRET_WORD),
+        ("escaped-quote", quote + "hun" + inner_quote + "ter2xyz" + quote),
+        ("numeric", SECRET_NUMBER),
+        ("hex-escaped", quote + "hunter" + backslash + "32xyz" + quote),
+    ]
+    for kind, literal in (("word", SECRET_WORD), ("number", SECRET_NUMBER)):
+        forms += [
+            ("[:tostr %s]" % kind, "[:tostr %s]" % literal),
+            ("(%s)" % kind, "(%s)" % literal),
+            ("$[:tostr %s]" % kind, dollar + "[:tostr %s]" % literal),
+            ("{%s}" % kind, "{%s}" % literal),
+            ('"$[:tostr %s]"' % kind, quote + dollar + "[:tostr %s]" % literal + quote),
+            ('"(%s)"' % kind, quote + "(" + literal + ")" + quote),
+        ]
+    return forms
+
+
+def _wrap(container, statement):
+    """The export text that carries one assignment in the given container."""
+    if container == "plain":
+        return statement
+    if container == "after-semicolon":
+        return ":log info x; " + statement
+    if container == "in-block":
+        return "{ " + statement + " }"
+    if container == "in-do-block":
+        return ":foreach i in={1} do={ " + statement + " }"
+    if container == "after-comment-string":
+        return ':put "#"; ' + statement
+    if container == "export-source":
+        return 'add name=s source=":log info x; ' + statement + '"'
+    if container == "export-on-event":
+        return 'add name=s on-event="' + statement + '"'
+    if container == "export-after-comment-string":
+        return 'add name=s source=":put \\"#\\"; ' + statement + '"'
+    if container == "commented-plain":
+        return "# " + statement
+    if container == "commented-source":
+        return 'add name=s source="# ' + statement + '"'
+    return 'add name=s source=":log info x\\r\\n# ' + statement + '"'
+
+
+def generated_secret_cases():
+    """(label, export) for the cross product of keyword, variable name,
+    value and container. Exhaustive and ordered, so a run never varies."""
+    for container in _CONTAINERS:
+        export = container.startswith("export") or container in (
+            "commented-source", "commented-after-newline")
+        for keyword in _KEYWORDS:
+            glue = "" if keyword.endswith("\t") else " "
+            for name_label, name in _name_forms(export):
+                for value_label, value in _value_forms(export):
+                    statement = "%s%s%s %s" % (keyword, glue, name, value)
+                    label = "%s | %s | %s | %s" % (
+                        container, keyword.replace("\t", "<tab>"), name_label, value_label)
+                    yield label, "/system script\n" + _wrap(container, statement) + "\n"
+
+
+# Nothing in these is a secret, or it is a value the scan is told to accept.
+CLEAN_ASSIGNMENTS = (
+    ("non-secret name with a secret-looking word", ":set Hostname hunter2xyz"),
+    ("non-secret name with a number", ":global counter 12345678"),
+    ("non-secret quoted name", ':local "site-name" "hunter2xyz"'),
+    ("bot token placeholder", ':global TgBotToken "<paste bot token>"'),
+    ("backup password placeholder", ':global RouterBackupPassword "<paste backup password>"'),
+    ("helper bot token placeholder", ':local BotToken "token"'),
+    ("quoted redacted", ':set ApiToken "<redacted>"'),
+    ("bare redacted", ":set ApiToken <redacted>"),
+    ("variable", ":set ApiToken $other"),
+    ("quoted variable", ':set ApiToken "$other"'),
+    ("pick with small numbers", ":set ApiToken [:pick $a 0 4]"),
+    ("quoted pick with small numbers", ':set ApiToken "$[:pick $a 0 4]"'),
+    ("arithmetic on a variable", ":set ApiToken ($a + 1)"),
+    ("empty quoted value", ':set ApiToken ""'),
+    ("empty value", ":set ApiToken"),
+    ("empty array", ":set ApiToken {}"),
+    ("variable in a block", "{ :set ApiToken $other }"),
+    ("commented non-secret name", "# :set Hostname hunter2xyz"),
+    ("commented placeholder", '# :global TgBotToken "<paste bot token>"'),
+    ("commented redacted", '# :set ApiToken "<redacted>"'),
+    ("commented variable", "# :set ApiToken $other"),
+    ("prose that names the keyword", "# use :set to change a value"),
+    ("export non-secret name", 'add name=s source=":set Hostname \\"hunter2xyz\\""'),
+    ("export variable", 'add name=s source=":set ApiToken \\$other"'),
+    ("export redacted", 'add name=s source=":set ApiToken \\"<redacted>\\""'),
+    ("export commented non-secret name",
+     'add name=s source="# :set Hostname \\"hunter2xyz\\""'),
+)
+
+
+class GeneratedSecretVariantsTestCase(unittest.TestCase):
+    """Every way the scan has been got past, enumerated rather than listed.
+
+    The cross product is exhaustive and ordered, so the test is deterministic.
+    A case the scan misses is a gap in the scan, not in this test: fix the
+    scan so it fails closed.
+    """
+
+    def test_every_assignment_variant_is_found_and_blocks_commit(self):
+        cases = list(generated_secret_cases())
+        self.assertGreaterEqual(len(cases), 3700)
+        out, errout = io.StringIO(), io.StringIO()
+        fetch = mock.Mock()
+        git = mock.Mock(return_value=(0, "", ""))
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(export_config, "fetch_export", fetch), \
+             mock.patch.object(export_config, "git", git), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            for label, export in cases:
+                with self.subTest(label):
+                    self.assertTrue(
+                        export_config.find_leaks(export)
+                        or export_config.find_unverifiable(export),
+                        "the scan finds nothing")
+                    fetch.return_value = (0, export, "")
+                    out.seek(0)
+                    out.truncate()
+                    errout.seek(0)
+                    errout.truncate()
+                    rc = export_config.main(
+                        ["--host", "router", "--out", tmp, "--commit"])
+                    self.assertEqual(rc, 1, "--commit is not refused")
+                    self.assertEqual(git.call_count, 0, "git was called")
+                    self.assertEqual(os.listdir(tmp), [], "a file was written")
+                    shown = out.getvalue() + errout.getvalue()
+                    self.assertNotIn(SECRET_WORD, shown)
+                    self.assertNotIn(SECRET_NUMBER, shown)
+
+    def test_the_clean_variants_produce_no_finding(self):
+        self.assertGreaterEqual(len(CLEAN_ASSIGNMENTS), 20)
+        for label, statement in CLEAN_ASSIGNMENTS:
+            export = "/system script\\n%s\\n" % statement
+            with self.subTest(label):
+                self.assertEqual(export_config.find_leaks(export), [])
+                self.assertEqual(export_config.find_unverifiable(export), [])
+
+
 SUMMARY_BEFORE = """\
 /interface bridge
 add name=bridge
