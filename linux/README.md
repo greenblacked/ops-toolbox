@@ -906,22 +906,24 @@ The `ssh` group grades the settings an sshd audit asks about beyond root
 login and passwords: `MaxAuthTries` (above 4 warns), `X11Forwarding`,
 `AllowAgentForwarding` and `AllowTcpForwarding` (warn when on, which is
 intentional on a bastion), `LoginGraceTime` (`0` fails, above 60 seconds
-warns), `ClientAliveInterval` times `ClientAliveCountMax` as a connection-liveness
-check (count 3 when unset; it drops a client that stops answering probes, not
-an idle user; a window over 900 seconds, an interval of `0` or a count of `0`
-warns), `ChannelTimeout` for the idle bound (OpenSSH 9.2+; an `info` line when
-none is set, none covers `session`, or `session=0` turns it off; a pass for
-e.g. `ChannelTimeout session=30m`), `PermitUserEnvironment yes`,
+warns), `ClientAliveInterval` times `ClientAliveCountMax` as a
+connection-liveness check (count 3 when unset; it drops a client that
+stops answering probes, not an idle user; a window over 900 seconds, an
+interval of `0` or a count of `0` warns), `ChannelTimeout` for the idle
+bound (OpenSSH 9.2+; an `info` line when none is set, none covers
+`session`, or `session=0` turns it off; a pass for e.g.
+`ChannelTimeout session=30m`), `PermitUserEnvironment yes`,
 `HostbasedAuthentication yes` and `IgnoreRhosts no` (each a FAIL),
-`PubkeyAuthentication no` and a `PermitTunnel` other than `no` (warn). A setting that is not set is graded by
-the OpenSSH default, and none of the FAIL-level ones is at its default on
-OpenSSH 8 or 9. Weak ciphers, MACs and key exchange (CBC and arcfour ciphers,
-MD5 and SHA-1 MACs, SHA-1 Diffie-Hellman) warn and `ssh-dss` host keys fail,
-graded only from `sshd -T`, so they need root; without it they are one
-`skip`. Each hint prints the line to add, with the `-name` removal syntax for
-algorithm lists (OpenSSH 7.5+). `sshd -T` is read without `-C`, so `Match`
-blocks are not evaluated: a setting overridden for one user or address is
-graded by its global value.
+`PubkeyAuthentication no` and a `PermitTunnel` other than `no` (warn). A
+setting that is not set is graded by the OpenSSH default, and none of the
+FAIL-level ones is at its default on OpenSSH 8 or 9. Weak ciphers, MACs
+and key exchange (CBC and arcfour ciphers, MD5 and SHA-1 MACs, SHA-1
+Diffie-Hellman) warn and `ssh-dss` host keys fail, graded only from
+`sshd -T`, so they need root; without it they are one `skip`. Each hint
+prints the line to add, with the `-name` removal syntax for algorithm
+lists (OpenSSH 7.5+). `sshd -T` is read without `-C`, so `Match` blocks
+are not evaluated: a setting overridden for one user or address is graded
+by its global value.
 
 These remain findings rather than automatic fixes: a container or deliberately
 permissive development host can validly differ from a server baseline.
