@@ -523,12 +523,12 @@ Each check prints at most 40 rows and says how many more there were.
 Objects and subjects whose names start with `system:` (such as the
 `system:masters` group) and the built-in `cluster-admin`, `admin`, `edit` and
 `view` roles are not judged unless `--include-system` is given, so the report
-shows what someone added. The one exception is the `system:serviceaccounts`
-and `system:serviceaccounts:<ns>` groups, which are judged by default
-because they cover every ServiceAccount, so they can appear in the
-cluster-admin, default-sa and secrets rows. A `Forbidden` on any RBAC listing is itself worth
-knowing and makes the run incomplete (exit `1`). The script reads RBAC objects
-only, never a Secret or a token.
+shows what someone added. The one exception is the `system:serviceaccounts` and
+`system:serviceaccounts:<ns>` groups, which are judged by default because they
+cover every ServiceAccount, so they can appear in the cluster-admin, default-sa
+and secrets rows. A `Forbidden` on any RBAC listing is itself worth knowing and
+makes the run incomplete (exit `1`). The script reads RBAC objects only, never
+a Secret or a token.
 
 Exit codes: `0` findings, `1` a query or JSON filter failed, `2` no `kubectl`
 or `python3`, or no reachable cluster, `3` usage, including an unknown id or
