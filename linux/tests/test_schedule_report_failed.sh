@@ -133,15 +133,16 @@ SYSTEMCTL_RC=1 run_sr --failed --strict --cron-dir "$fixture/clean.d"
 assert_eq 'a systemctl that cannot answer is not a failure, even with --strict' 0 "$rc"
 assert_contains 'a systemctl that cannot answer is a skip' "$out" 'list-units unavailable'
 
-# An unreadable drop-in (root 0600 seen by another user) must not be taken
-# for a clean one: it is a counted warning and "all resolve" is not claimed.
-# Root reads everything, so there the check runs as nobody via setpriv when
-# that works, and is skipped with a printed line otherwise.
+# An unreadable drop-in (mode 000) must not be taken for a clean one: it is a
+# counted warning and "all resolve" is not claimed. Root reads everything, so
+# there the check runs as nobody via setpriv when that works. Wherever the
+# file is still readable after the chmod, the case is skipped with a printed
+# line instead of asserting.
 unreadable="$fixture/unreadable.d"
 mkdir -p "$unreadable" || exit 1
 cp "$fixture/cron.d/ok" "$unreadable/ok"
 printf '5 4 * * * root %s\n' "$TRUE_BIN" > "$unreadable/locked"
-chmod 0600 "$unreadable/locked"
+chmod 000 "$unreadable/locked"
 runner=()
 can_check=1
 if [[ "$(id -u)" == 0 ]]; then
@@ -154,6 +155,8 @@ if [[ "$(id -u)" == 0 ]]; then
       can_check=1
     fi
   fi
+elif [[ -r "$unreadable/locked" ]]; then
+  can_check=0
 fi
 if (( can_check )); then
   out="$(PATH="$fixture/bin:$PATH" ${runner[@]+"${runner[@]}"} "$SCHED" --failed --strict --cron-dir "$unreadable" 2>&1)"
@@ -163,7 +166,7 @@ if (( can_check )); then
   assert_contains 'the skipped file is counted' "$out" '1 cron file(s) unreadable'
   assert_eq 'an unreadable cron file fails --strict' 1 "$rc"
 else
-  printf '[skip] unreadable cron file checks: need a non-root user or setpriv\n'
+  printf '[skip] unreadable cron file checks: the file stays readable (root without setpriv)\n'
 fi
 
 run_sr --failed --cron-dir
