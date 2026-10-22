@@ -919,8 +919,9 @@ WPA pre-shared keys, `authentication-key=`, `encryption-key=`). Empty values,
 variables and expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`),
 `<redacted>`, the exact placeholder assignments the package ships
 (`TgBotToken "<paste bot token>"`, `RouterBackupPassword "<paste backup
-password>"` and the helper's `BotToken "token"`) and examples in
-commented-out script lines are skipped.
+password>"` and the helper's `BotToken "token"`) are skipped. A quoted
+value that starts with `[` or `(` (`"[abc]"`) is a plain string in RouterOS,
+so it is a literal and is reported.
 Any other value is reported, even one in angle brackets. A finding names the
 line and the kind, never the value.
 This is a guard against the known shapes, not proof that an export is clean:
@@ -935,9 +936,16 @@ expression value it cannot show to hold no literal (`"$x text"`,
 `($a . "text")`, an unclosed `[...]`, an array with elements). Inside
 `[...]`, `(...)` and `{...}` only `$variables`, numbers, operators, nested
 groups, a `/path` or `:command` word where a command starts, and `key=` before
-one of those count as safe; any other bare word is a literal in RouterOS
+one of those count as safe, and a number counts only up to three digits with
+no dot (`[:pick $a 0 4]`; `(12345678)` and `10.20.30.40` do not); any other
+bare word is a literal in RouterOS
 (`[:tostr hunter2]`), so `[/system script environment get [find name=x] value]`
 is reported too. That is an accepted false positive: the scan fails closed.
+A commented-out assignment is checked too: a secret-named variable given a
+literal in a `#` line (`# :set ApiToken "realtoken"`, or after `\r\n#` inside
+a `source=`) is still in git history, so it is reported as `commented
+assignment with a literal` and `--commit` refuses it. Placeholders,
+`<redacted>`, variables and names that are not secret stay quiet in a comment.
 A `:global` or `:set` glued to the next character (`:global"Name" ...`,
 `:set(...)`) is read as well. `--commit`
 refuses an export with one: exit `1` (the same code as a leak), nothing

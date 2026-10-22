@@ -88,9 +88,9 @@ _BY_ROUTEROS = re.compile(r"^#\s*(?:model|software id|serial number).*$", re.IGN
 # replaces. Matching runs on logical lines - an export wraps long lines with a
 # trailing backslash, and a token can be split across the wrap. The flag says
 # whether a match inside a commented-out script line counts: a token is a
-# token wherever it sits, but the package's own comments show `:global
-# RouterBackupPassword "s3cret"` as an example, and reporting that on every
-# router would teach people to ignore the scan.
+# token wherever it sits. A secret-named assignment in a commented-out line is
+# not reported here as a leak; the second pass (find_unverifiable) reports it
+# as a commented assignment with a literal, and --commit refuses it.
 _LEAK_PATTERNS = (
     # A Telegram bot token by its shape, wherever it appears - including inside
     # a hand-built https://api.telegram.org/bot<token>/ URL.
@@ -220,16 +220,33 @@ def _logical_lines(text):
         yield first, "".join(chars), offsets
 
 
+# The RouterOS fields that hold script text, and the shape of an export line
+# that carries one (`add ...`, `set ...` or a /menu path first). Only there are
+# the escapes \n and \r line breaks; a plain script line that merely holds a
+# string like "a=" is not an export, and reading it as one would let a later
+# backslash-n and "#" hide a live assignment.
+_SCRIPT_FIELDS = frozenset((
+    "source", "on-event", "on-up", "on-down", "on-login", "on-logout",
+    "script", "do",
+))
+_EXPORT_SHAPED = re.compile(r"\s*(?:/|(?:add|set)(?:\s|$))")
+
+
 def _export_field_start(line, index):
     """Index just past the opening `="` of the quoted export field that is
     still open at position index, or None when index is not inside one.
 
     In an export a field value is quoted and every quote inside it is escaped,
-    so a bare quote closes the field. The last unclosed `name="` wins; a
-    `url="..."` that closed before index does not count, which keeps a plain
-    script line from being read as an export.
+    so a bare quote closes the field. The last unclosed `name="` wins, and only
+    when name is a field that holds a script and the line is shaped like an
+    export; a `url="..."` that closed before index does not count, which keeps
+    a plain script line from being read as an export. When unsure it says no.
     """
+    if not _EXPORT_SHAPED.match(line):
+        return None
     for match in reversed(list(re.finditer(r'[\w-]+="', line[:index]))):
+        if match.group()[:-2] not in _SCRIPT_FIELDS:
+            continue
         position, closed = match.end(), False
         while position < index:
             if line[position] == "\\":
@@ -298,7 +315,9 @@ def _leak_spans(line):
                 # An export escapes a script's `$` as `\$`; strip that one
                 # backslash so a variable reference is not mistaken for a value.
                 bare = value[1:] if value.startswith("\\") else value
-                if bare.startswith(("$", "[", "(")):
+                # Unquoted, a leading $, [ or ( is an expression; quoted,
+                # only a leading $ is ("[x]" is a plain string).
+                if bare.startswith(("$", "[", "(") if group == "bare" else "$"):
                     continue
             if skip_comments and _in_script_comment(line, match.start()):
                 continue
@@ -417,6 +436,11 @@ def _decode_export_layer(text):
 
 
 _NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)*(?![A-Za-z0-9_])")
+# A number can be the secret itself (`(12345678)`, `[:tostr 12345678]`), so
+# inside an expression only a short plain integer counts as an index or a
+# count, like the 0 and 4 of `[:pick $a 0 4]`. Dots and colons make it an
+# address or a long code, which is unverifiable.
+_SMALL_NUMBER = re.compile(r"[0-9]{1,3}")
 _OPERATOR = re.compile(r"[-+*/%<>=!&|^~.,]+")
 _COMMAND_WORD = re.compile(r":[A-Za-z][A-Za-z0-9-]*(?![A-Za-z0-9_-])")
 _PATH_WORD = re.compile(r"/[A-Za-z0-9_/-]*(?![A-Za-z0-9_])")
@@ -432,7 +456,8 @@ def _balanced_end(s, index):
     so every token must be one that cannot carry a value: a $variable, a
     nested group, a number, an operator, a /path or :command word where a
     command starts, or a key= prefix. Any other word, any quote (apart from
-    the one in $"name") and any backslash fail closed.
+    the one in $"name") and any backslash fail closed. A number longer than
+    three digits, or with a dot, could be the secret and fails closed too.
     """
     stack = [_CLOSERS[s[index]]]
     position, command = index + 1, True
@@ -466,6 +491,9 @@ def _balanced_end(s, index):
                                            (_KEY, False), (_NUMBER, False),
                                            (_OPERATOR, False)):
                 token = pattern.match(s, position)
+                if token and pattern is _NUMBER and \
+                        not _SMALL_NUMBER.fullmatch(token.group()):
+                    token = None
                 if token and (command or not needs_command):
                     position, command = token.end(), False
                     break
@@ -554,7 +582,9 @@ def _check_assignment(rest, export_layer):
         if content == "" or content == REDACTED or \
                 (name, content) in _PLACEHOLDER_ASSIGNMENTS:
             return None, False
-        if content[0] in "$[(":
+        # Only a leading $ makes a quoted value an expression; "[x]" and
+        # "(x)" are plain strings in RouterOS, so they are literals.
+        if content[0] == "$":
             stop = _expression_end(content, 0)
             if stop is None or stop != len(content):
                 return "expression value that may hold a literal", False
@@ -587,17 +617,37 @@ def _check_assignment(rest, export_layer):
     return None, True
 
 
+# Reasons that come from reading the variable name, before the scan knows
+# whether the variable is secret. In a comment they say nothing about a value.
+_NAME_REASONS = frozenset((
+    "no variable name after the keyword",
+    "unbalanced quote around the variable name",
+    "cannot extract the variable name",
+    "unexpected character after the variable name",
+))
+
+
 def _unverifiable_reasons(line):
     """Why a logical line holds an assignment the scan cannot verify."""
     reasons = []
     literals = 0
     for match in _ASSIGN_KEYWORD.finditer(line):
-        if _in_script_comment(line, match.start()):
-            continue
+        commented = _in_script_comment(line, match.start())
         rest = line[match.end():]
         export_layer = _export_field_start(line, match.start()) is not None \
             or '\\"' in rest
         reason, literal = _check_assignment(rest, export_layer)
+        if commented:
+            # Fail closed: a real secret left in a commented-out line is still
+            # in git history. A secret-named variable given a literal, or a
+            # value the scan cannot read, counts; a name that is not secret,
+            # a placeholder, <redacted> and a plain $variable stay quiet, as
+            # does prose that only looks like a statement.
+            if literal or (reason and reason not in _NAME_REASONS):
+                reason = "commented assignment with a literal"
+                if reason not in reasons:
+                    reasons.append(reason)
+            continue
         if reason and reason not in reasons:
             reasons.append(reason)
         literals += bool(literal)

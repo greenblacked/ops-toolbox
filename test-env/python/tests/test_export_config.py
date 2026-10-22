@@ -844,10 +844,20 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
         redacted = export_config.redact_secrets(LEAKY_EXPORT)
         self.assertEqual(export_config.find_unverifiable(redacted), [])
 
-    def test_a_comment_example_is_not_an_assignment(self):
+    def test_a_comment_example_with_a_placeholder_is_not_an_assignment(self):
+        text = ('add name=s source="# :global RouterBackupPassword '
+                '\\"<paste backup password>\\"\\r\\n'
+                '# :set Password \\"<redacted>\\"\\r\\n:log info x"\n')
+        self.assertEqual(export_config.find_unverifiable(text), [])
+        self.assertEqual(export_config.find_leaks(text), [])
+
+    def test_a_comment_example_with_a_real_looking_value_is_reported(self):
+        # Fail closed: a commented-out line is still in git history, and the
+        # scan cannot tell an example from a secret somebody disabled.
         text = ('add name=s source="# :global RouterBackupPassword \\"s3cret\\r\\n'
                 '# :set Password \\"\\r\\n:log info x"\n')
-        self.assertEqual(export_config.find_unverifiable(text), [])
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(1, "commented assignment with a literal")])
 
     def assert_leak_blocks_commit(self, export):
         with tempfile.TemporaryDirectory() as tmp:
@@ -884,8 +894,98 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
                          [(2, "secret assigned in a script")])
         commented = ('/x\nadd name=s source="# :global ApiToken \\"hunter2\\"'
                      '\\n:log info x"\n')
+        # Not a live leak, but a commented secret is still reported.
         self.assertEqual(export_config.find_leaks(commented), [])
-        self.assertEqual(export_config.find_unverifiable(commented), [])
+        self.assertEqual(export_config.find_unverifiable(commented),
+                         [(2, "commented assignment with a literal")])
+        for harmless in ('# :global Hostname \\"hunter2\\"',
+                         '# :global ApiToken \\"<redacted>\\"',
+                         '# :global TgBotToken \\"<paste bot token>\\"'):
+            text = ('/x\nadd name=s source="%s\\n:log info x"\n' % harmless)
+            self.assertEqual(export_config.find_leaks(text), [], harmless)
+            self.assertEqual(export_config.find_unverifiable(text), [], harmless)
+
+    def test_numbers_inside_an_expression_may_be_the_secret(self):
+        # (12345678) and [:tostr 12345678] hold a literal as surely as a word.
+        for stmt in (":set WifiPassword (12345678)",
+                     ":set WifiPassword [:tostr 12345678]",
+                     ":set WifiPassword $[:tostr 12345678]",
+                     ':set WifiPassword "$[:tostr 12345678]"',
+                     ":set ApiToken (10.20.30.40.50.60)",
+                     ":set ApiToken [:tostr 1234]",
+                     ":set ApiToken (123.4)"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "expression value that may hold a literal")], stmt)
+            self.assert_commit_blocked(text, "expression value that may hold a literal")
+        export_form = '/x\nadd name=s source=":set WifiPassword [:tostr 12345678]"\n'
+        self.assertEqual(export_config.find_unverifiable(export_form),
+                         [(2, "expression value that may hold a literal")])
+        self.assert_commit_blocked(export_form, "expression value that may hold a literal")
+
+    def test_small_numbers_in_an_expression_are_still_accepted(self):
+        for stmt in (":set ApiToken [:pick $a 0 4]", ":set ApiToken ($a + 1)",
+                     ':set ApiToken "$[:pick $a 0 999]"'):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text), [], stmt)
+            self.assertEqual(export_config.find_leaks(text), [], stmt)
+
+    def test_a_quoted_value_starting_with_a_bracket_is_a_literal_string(self):
+        # Only a leading $ makes a quoted value an expression in RouterOS.
+        for stmt in (':set ApiToken "[hunter2]"', ':set ApiToken "(hunter2)"',
+                     ':set ApiToken "[12345678]"', ':set ApiToken "(12345678)"'):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_leaks(text),
+                             [(2, "secret assigned in a script")], stmt)
+            self.assertNotIn("hunter2", export_config.redact_secrets(text))
+            self.assert_leak_blocks_commit(text)
+        export_form = '/x\nadd name=s source=":set ApiToken \\"[hunter2]\\""\n'
+        self.assertEqual(export_config.find_leaks(export_form),
+                         [(2, "secret assigned in a script")])
+        self.assert_leak_blocks_commit(export_form)
+
+    def test_a_string_that_ends_in_equals_does_not_open_an_export_field(self):
+        # "a=" is a closed plain string; a later backslash-n is not a line
+        # break in plain script, so the "#" is not a comment start.
+        text = '/x\n:global k "a="; :put \\n#; :set ApiToken hunter2\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(2, "secret assigned in a script")])
+        self.assert_leak_blocks_commit(text)
+        # Even a script-field name inside a line that is not an export.
+        text = '/x\n:global k "source=\\"x"; :put \\n#; :set ApiToken hunter2\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(2, "secret assigned in a script")])
+        # A field that holds no script is not a script field either.
+        self.assert_leak_blocks_commit(
+            '/x\nadd name=s comment="a=" source=":put x; :set ApiToken hunter2"\n')
+
+    def test_a_real_export_field_still_ends_a_comment_at_a_break(self):
+        for field in ("source", "on-event", "on-up", "on-down", "on-login",
+                      "on-logout", "script", "do"):
+            live = ('/x\nadd name=s %s="# note\\r\\n:set ApiToken \\"hunter2\\""\n'
+                    % field)
+            self.assertEqual(export_config.find_leaks(live),
+                             [(2, "secret assigned in a script")], field)
+
+    def test_a_commented_secret_assignment_blocks_commit(self):
+        plain = "/x\n# :set ApiToken realtok\n"
+        in_source = ('/x\nadd name=s source=":log info x\\r\\n'
+                     '# :set ApiToken \\"realtoken123\\""\n')
+        for text in (plain, in_source, "/x\n#:set ApiToken realtok\n",
+                     '/x\n# :global ApiToken "realtok"\n'):
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "commented assignment with a literal")], text)
+            self.assert_commit_blocked(text, "commented assignment with a literal")
+
+    def test_commented_placeholders_and_other_names_stay_clean(self):
+        for text in ("/x\n# :set ApiToken <redacted>\n",
+                     '/x\n# :set ApiToken "<redacted>"\n',
+                     '/x\n# :global TgBotToken "<paste bot token>"\n',
+                     "/x\n# :set ApiToken $other\n",
+                     "/x\n# :set Hostname realtok\n",
+                     "/x\n# use :set to change a value\n"):
+            self.assertEqual(export_config.find_unverifiable(text), [], text)
+            self.assertEqual(export_config.find_leaks(text), [], text)
 
     def test_a_keyword_glued_to_the_next_character_is_still_read(self):
         for stmt in (':global"ApiToken" "hunter2"', ':set"ApiToken" "hunter2"',
