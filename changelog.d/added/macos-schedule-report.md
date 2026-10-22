@@ -13,3 +13,7 @@
   The check follows symlinks both ways: it walks the path as written and
   the path it resolves to, so a symlinked component or program cannot hide
   an unsafe directory.
+  It also warns when an extended ACL (`ls -le`) lets another user change
+  a plist, its program or a parent directory, and, for a LaunchDaemon, when
+  the plist or its program is not owned by root, since a user-owned file
+  is code that user can edit and launchd runs as root.

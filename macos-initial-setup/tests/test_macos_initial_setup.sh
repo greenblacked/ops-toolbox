@@ -3793,6 +3793,76 @@ assert_contains "a symlinked program is checked where it points" "$out" \
 chmod 755 "$sr/wdir"
 rm -f "$ua/com.example.lnk.plist" "$sr/ldir/job-link"
 
+# A daemon runs as root, so the plist and the executable must be root's own:
+# a 0644 or 0755 file a normal user owns is code that user can edit. The
+# owner is faked with a stat stub (under --root the reference owner is the
+# owner of the root directory); a path outside --root is not judged.
+mkdir -p "$sr/root/usr/local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$sr/root/usr/local/bin/djob"
+chmod 755 "$sr/root/usr/local/bin/djob"
+dplist="$sr/root/Library/LaunchDaemons/com.example.djob.plist"
+write_plist "$dplist" "	<key>Label</key>
+	<string>com.example.djob</string>
+	<key>Program</key>
+	<string>$sr/root/usr/local/bin/djob</string>"
+cat > "$sr/bin/stat" <<'STAT_EOF'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+case " $* " in
+  *" %u "*) if [ "$last" = "${FAKE_OWNER_PATH:-}" ]; then echo 4242; exit 0; fi ;;
+esac
+exec /usr/bin/stat "$@"
+STAT_EOF
+chmod +x "$sr/bin/stat"
+out="$(sched --only launchd-daemons)"
+assert_not_contains "a daemon whose plist and program share the root's owner is quiet" "$out" "root does not own"
+out="$(FAKE_OWNER_PATH="$dplist" sched --only launchd-daemons)"
+assert_contains "a daemon plist root does not own is a warning with its fix" "$out" \
+  "$dplist is a LaunchDaemon that root does not own"
+assert_contains "the daemon plist owner fix is printed" "$out" "sudo chown root:wheel $dplist"
+out="$(FAKE_OWNER_PATH="$sr/root/usr/local/bin/djob" sched --only launchd-daemons)"
+assert_contains "a daemon program root does not own is a warning" "$out" \
+  "com.example.djob runs $sr/root/usr/local/bin/djob as root, but root does not own it"
+out="$(FAKE_OWNER_PATH="$sr/root/usr/local/bin/djob" sched --only launchd-agents)"
+assert_not_contains "the root-owner rule is for daemons only" "$out" "root does not own"
+rm -f "$sr/bin/stat"
+
+# ACL grants count as write access. `ls -led` is stubbed (GNU ls has no -e,
+# which must stay silent), and only a path named in FAKE_ACL_PATH has entries.
+cat > "$sr/bin/ls" <<'LS_EOF'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+if [ "$1" = "-led" ] && [ "$last" = "${FAKE_ACL_PATH:-}" ]; then
+  printf '%s\n' "-rwxr-xr-x+ 1 me staff 10 Oct  1 00:00 $last"
+  printf '%b' "$FAKE_ACL"
+  exit 0
+fi
+exec /bin/ls "$@"
+LS_EOF
+chmod +x "$sr/bin/ls"
+jobp="$sr/wdir/inner/job"
+write_plist "$ua/com.example.acl.plist" "	<key>Label</key>
+	<string>com.example.acl</string>
+	<key>Program</key>
+	<string>$jobp</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "no ACL entry means no ACL warning" "$out" "ACL entry"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory allow write,append\n' sched --only launchd-user)"
+assert_contains "a program with an ACL write grant is a warning" "$out" \
+  "com.example.acl runs $jobp, which an ACL entry lets another user change"
+assert_contains "the program ACL fix is printed" "$out" "chmod -N $jobp"
+out="$(FAKE_ACL_PATH="$ua/com.example.acl.plist" FAKE_ACL=' 0: group:staff allow read,delete\n' sched --only launchd-user)"
+assert_contains "a plist with an ACL delete grant is a warning" "$out" \
+  "$ua/com.example.acl.plist has an ACL entry that lets another user change it"
+out="$(FAKE_ACL_PATH="$sr/wdir" FAKE_ACL=' 0: user:mallory allow add_file,delete_child\n' sched --only launchd-user)"
+assert_contains "an ancestor directory with an ACL grant is named" "$out" \
+  "com.example.acl runs $jobp, which sits under $sr/wdir, which another user can modify"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:me allow write\n 1: user:root allow write\n 2: group:everyone deny write\n 3: user:bob allow read,readattr,execute\n' sched --only launchd-user)"
+assert_not_contains "the owner, root, deny entries and read rights are not grants" "$out" "ACL entry"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory inherited allow chown\n' sched --only launchd-user)"
+assert_contains "an inherited chown grant counts" "$out" "which an ACL entry lets another user change"
+rm -f "$sr/bin/ls" "$ua/com.example.acl.plist" "$dplist"
+
 out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?
 assert_eq "no crontab is not a failure -> 0" "0" "$rc"
 assert_contains "no crontab is a skip row" "$out" "no crontab for this user"

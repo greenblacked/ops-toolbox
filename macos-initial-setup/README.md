@@ -1804,6 +1804,8 @@ key `StartCalendarInterval` leaves out is a wildcard and shows as `**`.
 | --- | --- |
 | The job's program (an absolute `Program` or first `ProgramArguments`) does not exist | `warn`, with `stay_fresh.sh --prune-orphan-agents` for user agents and the `launchctl bootout` command for the others |
 | The plist, or the program it runs, is writable by its group or by everyone | `warn`, with `chmod go-w`: anyone who can edit either decides what runs as that user, or as root for a daemon |
+| The plist, or the program it runs, has an extended ACL (`ls -le`) with an allow entry for anyone but its owner, root or wheel that grants `write`, `append`, `delete`, `add_file`, `add_subdirectory`, `delete_child`, `writeattr`, `writeextattr`, `writesecurity` or `chown`; a parent directory with such an entry is named like a writable one | `warn`, with `chmod -N`. Checked on macOS only |
+| A LaunchDaemon plist, or the program it runs, is not owned by root | `warn`, with `sudo chown root:wheel`: a user-owned file is code that user can edit and launchd runs as root, whatever its mode |
 | The plist, or the program it runs, sits under a directory that its group or everyone can write without the sticky bit (or, for a daemon on the live system, one a non-root user owns) | `warn`, naming the directory: the file could be swapped before launchd runs it. Every parent up to `/` is checked, for the path as written (a symlinked component or file can be repointed) and again for where it resolves |
 | `KeepAlive` with no `ThrottleInterval` | `info`: the job restarts whenever it exits |
 | `Disabled` set in the plist | noted on the row |

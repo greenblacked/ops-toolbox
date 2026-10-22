@@ -188,6 +188,37 @@ foreign_writable() {
   (( (8#$m & 18) != 0 ))
 }
 
+# Does an extended ACL on $1 give anyone but its owner (or root) a right to
+# change it? macOS `ls -led` lists the entries under the mode line ("0:
+# user:bob allow write,delete"). Only an allow entry counts, with one of the
+# rights that modify a file or a directory's contents (write, append,
+# delete, add_file, add_subdirectory, delete_child, writeattr, writeextattr,
+# writesecurity, chown). The owner's own entry, root and wheel are not
+# foreign. ACLs are consulted on Darwin only; where ls has no -e (GNU ls) or
+# the path has no ACL the answer is no, silently. Returns 0 on a grant.
+acl_foreign_grant() {
+  [[ "$(uname -s)" == "Darwin" ]] || return 1
+  local listing
+  listing="$(ls -led -- "$1" 2>/dev/null)" || return 1
+  awk '
+    NR == 1 { owner = $3; next }
+    /^[[:space:]]*[0-9]+: / {
+      line = $0
+      sub(/^[[:space:]]*[0-9]+: /, "", line)
+      i = index(line, " allow ")
+      if (i == 0) next
+      subject = substr(line, 1, i - 1)
+      sub(/ inherited$/, "", subject)
+      if (subject == ("user:" owner) || subject == "user:root" || subject == "group:wheel") next
+      n = split(substr(line, i + 7), perm, /[ ,]+/)
+      for (k = 1; k <= n; k++) {
+        if (perm[k] ~ /^(write|append|delete|add_file|add_subdirectory|delete_child|writeattr|writeextattr|writesecurity|chown)$/) found = 1
+      }
+    }
+    END { exit !found }
+  ' <<<"$listing"
+}
+
 # Owner uid of a path (BSD stat first, GNU stat in the Linux test container).
 file_uid() {
   local u
@@ -197,6 +228,23 @@ file_uid() {
   fi
   [[ "$u" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$u"
+}
+
+# For a daemon, the file itself must be owned by root: a 0644 or 0755 file
+# a normal user owns is code that user can edit and launchd runs as root.
+# On the live system that owner is uid 0; under --root (a fixture tree) it is
+# whoever owns the root directory (a path outside it is not judged).
+# Returns 0 when the owner is someone else.
+foreign_owned() {
+  local want u
+  if [[ "$ROOT" == "/" ]]; then
+    want=0
+  else
+    case "$1" in "${ROOT%/}"/*) ;; *) return 1 ;; esac
+    want="$(file_uid "$ROOT")" || return 1
+  fi
+  u="$(file_uid "$1")" || return 1
+  [[ "$u" != "$want" ]]
 }
 
 # Walks from directory $1 up to /, printing the first directory that its
@@ -211,6 +259,10 @@ unsafe_dir_chain() {
         printf '%s\n' "$d"
         return 0
       fi
+    fi
+    if acl_foreign_grant "$d"; then
+      printf '%s\n' "$d"
+      return 0
     fi
     if [[ "${2:-}" == root && "$ROOT" == "/" ]] && u="$(file_uid "$d")" && [[ "$u" != 0 ]]; then
       printf '%s\n' "$d"
@@ -467,11 +519,26 @@ report_dir() {
     elif [[ "$program" == /* ]] && foreign_writable "$program"; then
       warn "$label runs $(clean "$program"), which its group or every user can write" "chmod go-w $(clean "$program")"
     fi
+    if [[ "$program" == /* ]] && ! foreign_writable "$program" && acl_foreign_grant "$program"; then
+      warn "$label runs $(clean "$program"), which an ACL entry lets another user change" "chmod -N $(clean "$program")"
+    fi
     if foreign_writable "$plist"; then
       warn "$(clean "$plist") can be written by its group or every user" "chmod go-w $(clean "$plist")"
+    elif acl_foreign_grant "$plist"; then
+      warn "$(clean "$plist") has an ACL entry that lets another user change it" "chmod -N $(clean "$plist")"
     fi
     owner_check=""
-    [[ "$scope" == daemons ]] && owner_check=root
+    if [[ "$scope" == daemons ]]; then
+      owner_check=root
+      if foreign_owned "$plist"; then
+        warn "$(clean "$plist") is a LaunchDaemon that root does not own, so its owner can edit what runs as root" \
+             "sudo chown root:wheel $(clean "$plist")"
+      fi
+      if [[ "$program" == /* && -e "$program" ]] && foreign_owned "$program"; then
+        warn "$label runs $(clean "$program") as root, but root does not own it" \
+             "sudo chown root:wheel $(clean "$program")"
+      fi
+    fi
     if bad_dir="$(unsafe_ancestor "$plist" "$owner_check")"; then
       warn "$(clean "$plist") sits under $(clean "$bad_dir"), which another user can modify" \
            "chmod go-w $(clean "$bad_dir") (or chown it to root), then re-check"
