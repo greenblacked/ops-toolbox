@@ -14,8 +14,9 @@
 # ssh -G about one git remote. None of them looks at ~/.ssh itself.
 #
 # This script does not reimplement ssh_config. It reads ~/.ssh/config line by
-# line, never follows Include and never evaluates Match; ssh -G (and
-# git/git_ssh_doctor.py) is the tool for the effective configuration.
+# line, never follows Include and never evaluates Match (beyond the global
+# Match all and Match host *); ssh -G (and git/git_ssh_doctor.py) is the
+# tool for the effective configuration.
 #
 # It never changes a mode: every fix is printed, not run. ssh-keygen is asked
 # about private keys with stdin from /dev/null, an empty -P so it can never
@@ -223,7 +224,7 @@ is_private_key() {
   local base head5
   base="$(basename "$path")"
   case "$base" in
-    *.pub|config|known_hosts|known_hosts.old|known_hosts2|authorized_keys|authorized_keys2|rc|environment|agent)
+    *.pub|config|known_hosts*|authorized_keys*|rc|environment|agent)
       return 1
       ;;
     id_rsa|id_ed25519|id_ecdsa|id_dsa|id_ecdsa_sk|id_ed25519_sk|*_sk)
@@ -315,7 +316,7 @@ command -v ssh-keygen >/dev/null 2>&1 && HAVE_KEYGEN=1
 # Private keys found in the directory, newline-separated, for the keys group.
 PRIVATE_KEYS=""
 shopt -s nullglob
-for path in "$SSH_DIR"/*; do
+for path in "$SSH_DIR"/* "$SSH_DIR"/.[!.]* "$SSH_DIR"/..?*; do
   [[ -f "$path" ]] || continue
   is_private_key "$path" && PRIVATE_KEYS="$PRIVATE_KEYS$path"$'\n'
 done
@@ -343,7 +344,7 @@ if want files; then
   group "files"
   found_pub=0
   shopt -s nullglob
-  for path in "$SSH_DIR"/*; do
+  for path in "$SSH_DIR"/* "$SSH_DIR"/.[!.]* "$SSH_DIR"/..?*; do
     [[ -f "$path" ]] || continue
     base="$(basename "$path")"
     mode="$(file_mode "$path")" || continue
@@ -453,8 +454,9 @@ fi
 
 # --- config ------------------------------------------------------------------
 # Options before the first Host line, and under a Host line whose patterns
-# include a bare *, apply to every host this account connects to. The same
-# options under one named host are a deliberate choice and only noted.
+# include a bare *, or in a Match whose only criterion is all (or host *),
+# apply to every host this account connects to. The same options under one
+# named host are a deliberate choice and only noted.
 if want config; then
   group "config"
   config="$SSH_DIR/config"
@@ -493,12 +495,15 @@ if want config; then
           host_label="Host $shown"
           ;;
         match)
-          # A Match whose only criterion is "all" matches every host, so the
-          # risky-setting checks treat it like Host *.
-          if [[ "$val_lc" == "all" ]]; then
+          # A Match whose only criterion is "all", or "host *" with no
+          # exclusions, matches every host, so the risky-setting checks treat
+          # it like Host *. "host *,!x" is not global.
+          read -r -a match_words <<< "$val_lc"
+          all_hosts=0
+          if [[ "${#match_words[@]}" -eq 1 && "${match_words[0]}" == "all" ]]; then
             all_hosts=1
-          else
-            all_hosts=0
+          elif [[ "${#match_words[@]}" -eq 2 && "${match_words[0]}" == "host" && "${match_words[1]}" == "*" ]]; then
+            all_hosts=1
           fi
           host_label="Match $shown"
           ;;
@@ -556,7 +561,23 @@ if want config; then
           fi
           if [[ -f "$ident" ]]; then
             pass "IdentityFile $shown"
-            if (( HAVE_KEYGEN )) && [[ -z "$protected_identity" ]] && ! key_unencrypted "$ident"; then
+            # A target inside SSH_DIR is graded by the files group; one
+            # elsewhere (or a symlink out) is checked here. ssh-keygen
+            # refuses a key whose mode is too open, which would read as
+            # "has a passphrase", so a loose key is not probed at all.
+            ident_loose=0
+            if is_private_key "$ident"; then
+              ident_mode="$(file_mode "$ident")" || ident_mode=""
+              if [[ -n "$ident_mode" ]] && ! mode_private "$ident_mode"; then
+                ident_loose=1
+                if [[ "$(dirname -- "$ident")" != "$SSH_DIR" ]]; then
+                  fail "IdentityFile $shown mode $ident_mode" \
+                       "private keys must not be group- or world-accessible: chmod 600 $(clean "$ident")"
+                fi
+                info "IdentityFile $shown: passphrase not checked: permissions too open"
+              fi
+            fi
+            if (( ident_loose == 0 )) && (( HAVE_KEYGEN )) && [[ -z "$protected_identity" ]] && ! key_unencrypted "$ident"; then
               protected_identity="$shown"
             fi
           else

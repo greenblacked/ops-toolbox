@@ -2551,6 +2551,34 @@ assert_contains "the key fix is printed" "$out" "chmod 600 $sshd_dir/id_ed25519"
 assert_contains "the passphrase is not judged while the mode is wrong" "$out" "passphrase not checked"
 chmod 600 "$sshd_dir/id_ed25519"
 
+# A dot-prefixed key is still a private key.
+cp "$sshd_dir/id_ed25519" "$sshd_dir/.deploy_key"
+chmod 644 "$sshd_dir/.deploy_key"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a 644 ~/.ssh/.deploy_key fails -> 1" "1" "$rc"
+assert_contains "the dot-prefixed key fix is printed" "$out" "chmod 600 $sshd_dir/.deploy_key"
+chmod 600 "$sshd_dir/.deploy_key"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a 600 ~/.ssh/.deploy_key passes -> 0" "0" "$rc"
+rm -f "$sshd_dir/.deploy_key"
+
+# An IdentityFile target outside ~/.ssh is graded too.
+mkdir -p "$sd/home/keys"
+cp "$sshd_dir/id_ed25519" "$sd/home/keys/deploy"
+chmod 644 "$sd/home/keys/deploy"
+cp "$sshd_dir/config" "$sd/config.bak"
+printf 'Host ci\n  IdentityFile ~/keys/deploy\n' >> "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_eq "a 644 IdentityFile outside ~/.ssh fails -> 1" "1" "$rc"
+assert_contains "the IdentityFile fix is printed" "$out" "chmod 600 $sd/home/keys/deploy"
+assert_contains "a loose IdentityFile key is not probed for a passphrase" "$out" \
+  "passphrase not checked: permissions too open"
+assert_not_contains "a loose IdentityFile key gets no keychain advice" "$out" \
+  "~/keys/deploy has a passphrase"
+cp "$sd/config.bak" "$sshd_dir/config"
+rm -rf "$sd/home/keys" "$sd/config.bak"
+chmod 600 "$sshd_dir/config"
+
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 1024 SHA256:rsafixture me@example (RSA)\n-----END OPENSSH PRIVATE KEY-----\n' \
   > "$sshd_dir/id_rsa"
 printf '1024 SHA256:rsafixture me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
@@ -2635,6 +2663,12 @@ assert_eq "ForwardAgent yes under Match all fails --fail-on warn -> 1" "1" "$rc"
 printf 'Match ALL\n  StrictHostKeyChecking no\n' > "$sshd_dir/config"
 out="$(sshdoc --only config)"
 assert_contains "Match ALL is matched case-insensitively" "$out" "StrictHostKeyChecking no applies to every host (Match ALL)"
+printf 'Match HOST *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "Match host * is global and case-insensitive" "$out" "[warn] ForwardAgent yes applies to every host (Match HOST *)"
+printf 'Match host *,!example.com\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "Match host with an exclusion is only noted" "$out" "ForwardAgent yes under Match host *,!example.com"
 printf 'Match host example.com\n  ForwardAgent yes\n' > "$sshd_dir/config"
 out="$(sshdoc --only config)"
 assert_contains "a Match with another criterion is only noted" "$out" "ForwardAgent yes under Match host example.com"

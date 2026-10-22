@@ -98,7 +98,7 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | `net_doctor.sh` | Read-only "the network is wrong" report: interfaces, default route, split DNS, the system proxy against the shell's, VPN tunnels, `/etc/hosts` overrides, listeners, and an opt-in `--probe`. |
 | `tls_expiry.sh` | Read-only certificate expiry check for PEM files, hosts, and (`--keychain`) the client and identity certificates in the Keychain; exit `1` on an expired certificate, or inside `--days` with `--fail-on warn`. |
 | `schedule_report.sh` | Read-only inventory of what fires when you are not looking: launchd agents and daemons with schedules decoded, crontab and `at` jobs; flags missing programs and writable plists. |
-| `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`. |
+| `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`, `Match all` or `Match host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
 | `lib/npx_cache.py` | Classifier for old npx cache entries; used by deep cleanup and the age-limited presets. Keeps entries when activity or cache ownership is uncertain. |
@@ -1855,16 +1855,16 @@ private key with no passphrase, and the Keychain options.
 | Group | Checks |
 | --- | --- |
 | `dir` | `~/.ssh` is not writable by group or other (a failure, `chmod 700`); group or other read or search access (`755`) is a hardening warning, because `ssh` still uses `600` keys there. |
-| `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header, are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
+| `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header (dot-prefixed files such as `.deploy_key` included), are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
 | `keys` | From each private key alone (its public half from `ssh-keygen -y -P ""`, or, for an encrypted OpenSSH-format key, a symlink to it with no `.pub` beside the link, both in a private scratch directory; no key bytes are copied), not from a `.pub` that can be stale: DSA fails, RSA under 3072 bits warns. A `.pub` whose fingerprint differs from its private key's warns, and the `.pub` is only used for the key type, reported as unverified, when the private key cannot be read. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
-| `config` | `IdentityFile` paths that do not exist; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line or under `Host *`, where they apply to every server (the same lines under one named host are only noted); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |
+| `config` | `IdentityFile` paths that do not exist, and a private-key `IdentityFile` target outside `~/.ssh` that is group- or world-accessible; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line, under `Host *`, `Match all` or `Match host *` (no exclusions), where they apply to every server (the same lines under one named host are only noted); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |
 
 It never changes a mode: every fix is printed, not run. The passphrase test
 runs `ssh-keygen -y -P "" -f KEY` with stdin from `/dev/null` and all output
 discarded, so it cannot prompt and no key material reaches the terminal; a key
 whose mode is too open is not tested, because `ssh-keygen` refuses to read it.
 `~/.ssh/config` is read line by line: `Include` is not followed and `Match`
-is not evaluated, and
+is not evaluated (apart from `Match all` and `Match host *`), and
 [`git/git_ssh_doctor.py`](../git/git_ssh_doctor.py) is the tool that asks
 `ssh -G` for the effective configuration. A missing `--ssh-dir` is a single
 `skip`, not a failure.

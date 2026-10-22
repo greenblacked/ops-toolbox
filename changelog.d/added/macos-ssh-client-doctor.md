@@ -3,9 +3,12 @@
   group- or other-writable directory fails, read access only warns) and
   its keys, grades DSA and short RSA keys from the private key itself
   (warning when a `.pub` beside it does not match), finds private keys
-  that open with no passphrase, names `IdentityFile` paths that do not
-  exist, and warns when `ForwardAgent yes`, `StrictHostKeyChecking no`
-  or `UserKnownHostsFile /dev/null` applies to every host (`Host *` or
-  `Match all`). It changes
-  nothing, never prints key material, and prints the `chmod` or
-  `ssh-keygen` command for each finding.
+  that open with no passphrase (dot-prefixed ones such as `.deploy_key`
+  and `IdentityFile` targets outside `~/.ssh` included; a key with loose
+  permissions is reported as not checked, with no keychain advice), names
+  `IdentityFile` paths that do not exist, and warns when
+  `ForwardAgent yes`, `StrictHostKeyChecking no` or
+  `UserKnownHostsFile /dev/null` applies to every host (`Host *`,
+  `Match all` or `Match host *`). It changes nothing, never prints key
+  material, and prints the `chmod` or `ssh-keygen` command for each
+  finding.
