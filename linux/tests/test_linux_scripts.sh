@@ -2573,6 +2573,15 @@ assert_not_contains "ssh_client_doctor does not say everything is fine when ever
   "$out" "no config setting weakens every connection"
 assert_eq "ssh_client_doctor same-value Host * after an earlier block -> 1" "1" "$rc"
 
+# An end-of-line comment is not part of the value; a quoted # is.
+printf '%s\n' 'Host *' '  StrictHostKeyChecking no # legacy' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_contains "ssh_client_doctor strips an end-of-line comment before grading" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+printf '%s\n' 'Host *' '  StrictHostKeyChecking "no # not a comment"' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_not_contains "ssh_client_doctor keeps a quoted # in the value" "$out" "[FAIL]"
+
 out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
 assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"
 out="$("$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"

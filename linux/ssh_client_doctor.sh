@@ -304,6 +304,24 @@ if want files; then
   (( found_pub )) || info "no public keys under $SSH_DIR"
 fi
 
+# Drops an end-of-line "# comment": a # that is outside quotes and starts the
+# line or follows whitespace. A quoted # and one inside a word (a#b) stay.
+# Trailing whitespace goes with it.
+strip_comment() {
+  awk '{
+    out = ""; q = ""; n = length($0)
+    for (i = 1; i <= n; i++) {
+      c = substr($0, i, 1)
+      if (q != "") { if (c == q) q = "" }
+      else if (c == "\"" || c == "\047") q = c
+      else if (c == "#" && (i == 1 || substr($0, i - 1, 1) ~ /[ \t]/)) break
+      out = out c
+    }
+    sub(/[ \t]+$/, "", out)
+    print out
+  }'
+}
+
 if want config; then
   group "config"
   config="$SSH_DIR/config"
@@ -315,6 +333,7 @@ if want config; then
       case "$trimmed" in
         ''|\#*) continue ;;
       esac
+      trimmed="$(strip_comment <<<"$trimmed")"
       # Host-specific IdentityFile still matters: a missing path is a missing
       # path even if this script does not know which Host block it belongs to.
       key=""
@@ -569,7 +588,8 @@ if want risks; then
       case "$trimmed" in
         ''|\#*) continue ;;
       esac
-      trimmed="$(clean <<<"$trimmed")"
+      trimmed="$(clean <<<"$trimmed" | strip_comment)"
+      [[ -n "$trimmed" ]] || continue
       key=""
       rest=""
       if [[ "$trimmed" =~ ^([A-Za-z0-9]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
