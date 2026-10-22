@@ -202,12 +202,15 @@ git -C "$repo" checkout -q --orphan unrelated-root || err 'create an orphan bran
 git -C "$repo" -c user.name=t -c user.email=t@example.invalid \
   commit -q --allow-empty -m 'feat: unrelated root' || err 'commit on the orphan branch'
 orphan_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" tag v0.0.1 "$orphan_sha" || err 'tag the orphan root'
 git -C "$repo" checkout -q - || err 'return to the previous branch'
 out="$(run_in "$repo" --from "$orphan_sha" --to HEAD 2>&1)"; rc=$?
 assert_eq "$rc" 3 'a --from that is not an ancestor of --to -> 3'
 assert_contains "$out" 'not an ancestor' 'the error says the start is not an ancestor'
-out="$(run_in "$repo" --from "$orphan_sha" --to HEAD --next-version 2>&1)"; rc=$?
-assert_eq "$rc" 3 '--next-version from a non-ancestor -> 3'
+out="$(run_in "$repo" --from v0.0.1 --to HEAD --next-version 2>&1)"; rc=$?
+assert_eq "$rc" 3 '--next-version from a non-ancestor tag -> 3'
+assert_contains "$out" 'not an ancestor' '--next-version names the missing ancestry'
+git -C "$repo" tag -d v0.0.1 >/dev/null 2>&1
 git -C "$repo" branch -D unrelated-root >/dev/null 2>&1
 run_in "$repo" --definitely-not-a-flag >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 3 'unknown flag -> 3'
