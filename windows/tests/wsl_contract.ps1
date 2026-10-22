@@ -561,7 +561,7 @@ Test-Case 'and a set that fits together is not refused' (
 # used to remove the first run's valid tar and leave its sidecar behind. A
 # function named wsl.exe takes precedence over the program of that name, on
 # Windows too, so no real export happens.
-Import-ScriptFunction -Path $wslScript -Name @('Format-WslOutput', 'Invoke-DistroBackup')
+Import-ScriptFunction -Path $wslScript -Name @('Format-WslOutput', 'Get-BackupRollbackLead', 'Invoke-DistroBackup')
 $backupDir = Initialize-ScratchDirectory 'wslbackup-'
 try {
     $backupOut = Join-Path $backupDir 'Ubuntu_2026-10-21_1830.tar'
@@ -638,7 +638,7 @@ try {
             $global:LASTEXITCODE = 0
         }
         try {
-            $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
+            $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut -ErrorVariable rollbackErrors -ErrorAction SilentlyContinue 2>$null 6>$null
             $leftover = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
         } finally {
             if ($null -ne $script:heldExport) { $script:heldExport.Dispose(); $script:heldExport = $null }
@@ -648,6 +648,11 @@ try {
             $global:LASTEXITCODE = 0
         }
         Test-Case 'a failure after the earlier pair was set aside returns false' ($backedUp -eq $false)
+        # The earlier pair went back, so nothing earlier is stuck and the
+        # error must not lead with the earlier backup (if it reports at all).
+        Test-Case 'and does not claim the earlier backup could not be put back' (
+            @($rollbackErrors | Where-Object { "$_" -like 'The earlier backup could not be fully put back*' }).Count -eq 0
+        ) (@($rollbackErrors | ForEach-Object { "$_" }) -join "`n")
         Test-Case 'and puts the earlier tar and sidecar back with their content' (
             [IO.File]::ReadAllText($backupOut) -eq $pairTar -and
             [IO.File]::ReadAllText("$backupOut.sha256") -eq $pairSide
@@ -666,6 +671,17 @@ try {
     } else {
         Test-Skip 'the rollback after the swap starts needs a file open without delete sharing, which only Windows enforces'
     }
+
+    # The lead of the rollback error, chosen from whether an earlier file is
+    # still out of place. A failure to clean up only a new file cannot be
+    # forced on the real filesystem without a mock, so the choice is tested
+    # on its own.
+    Test-Case 'the rollback error leads with the earlier backup when an earlier file is stuck' (
+        (Get-BackupRollbackLead -EarlierStuck $true) -eq 'The earlier backup could not be fully put back: '
+    )
+    Test-Case 'and leads with the new backup when only new files could not be cleaned up' (
+        (Get-BackupRollbackLead -EarlierStuck $false) -eq 'The new backup could not be cleaned up: '
+    )
 
     # A read-only earlier sidecar: whether the platform lets it be replaced
     # or not, the tar and its sidecar must agree afterwards and the call

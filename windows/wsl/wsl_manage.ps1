@@ -599,6 +599,15 @@ function Format-WslOutput {
     return ((@($Output) -join "`n") -replace "`0", '').Trim()
 }
 
+# The opening words of the error a failed rollback reports. The earlier
+# backup leads only when an earlier file is still out of place; a failure
+# to clean up a new file alone is not about the earlier backup.
+function Get-BackupRollbackLead {
+    param([bool]$EarlierStuck)
+    if ($EarlierStuck) { return 'The earlier backup could not be fully put back: ' }
+    return 'The new backup could not be cleaned up: '
+}
+
 # One export and its .sha256 sidecar: the body of the single-distro backup,
 # shared with -All. Returns $true or $false so -All can carry on past a
 # failure; the single-distro path turns $false into exit 1 as it always did.
@@ -666,8 +675,7 @@ function Invoke-DistroBackup {
                 else { $stuck += "the new sidecar could not be removed from $side" }
             }
             if ($stuck.Count -gt 0) {
-                $lead = if ($earlierStuck) { 'The earlier backup could not be fully put back: ' } else { 'The new backup could not be cleaned up: ' }
-                Write-Error ($lead + ($stuck -join '; ')) -ErrorAction Continue
+                Write-Error ((Get-BackupRollbackLead -EarlierStuck $earlierStuck) + ($stuck -join '; ')) -ErrorAction Continue
             }
             return $false
         }
