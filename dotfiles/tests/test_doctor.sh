@@ -451,6 +451,34 @@ if command -v ssh >/dev/null 2>&1; then
   out="$(guard env "${NOENV[@]}" HOME="$H" PATH="$STUB:$PATH" TMPDIR="$T" "$DOCTOR" --home "$H" --platform linux 2>&1)"; rc=$?
   assert_contains "an include under the passwd home is scanned" "$out" "config uses Match exec"
   if [[ -e "$marker" ]]; then err "the doctor ran a Match exec from the passwd home"; else ok "no Match exec from the passwd home ran"; fi
+  # OpenSSH follows Includes 16 levels deep; so does the scan. Beyond that
+  # limit, or in a loop, the config is not known to be exec-free: skip ssh -G.
+  mkdir -p "$H/.ssh/chain"
+  mk_chain() { # mk_chain N LAST: chain/c1..cN, each including the next
+    local i n="$1" last="$2"
+    rm -f "$H/.ssh/chain"/*
+    printf 'Include chain/c1\n' > "$H/.ssh/config"
+    for ((i = 1; i < n; i++)); do printf 'Include chain/c%d\n' $((i + 1)) > "$H/.ssh/chain/c$i"; done
+    printf '%s\n' "$last" > "$H/.ssh/chain/c$n"
+  }
+  mk_chain 6 "Match exec \"touch $marker\""
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "a Match exec six Includes deep is reported" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec six Includes deep"; else ok "no Match exec six Includes deep ran"; fi
+  mk_chain 16 "Match exec \"touch $marker\""
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "a Match exec at the Include limit is reported" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec at the Include limit"; else ok "no Match exec at the Include limit ran"; fi
+  mk_chain 20 "Host z"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "an Include chain past the limit skips ssh -G" "$out" "config uses Match exec"
+  mk_chain 3 "Include chain/c1"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "an Include loop skips ssh -G" "$out" "config uses Match exec"
+  mk_chain 3 "Host z"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_not_contains "a short clean Include chain is probed" "$out" "config uses Match exec"
+  rm -rf "$H/.ssh/chain"
   rm -rf "$H/.ssh/config.d" "$SP" "$PWH" "$STUB"
   printf 'BogusOption yes\n' > "$H/.ssh/config"
 

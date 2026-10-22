@@ -391,8 +391,9 @@ passwd entry rather than from `HOME`, so under a `--home` that is not your
 own the `config.d` files are not read; the main file still is. `ssh -G`
 connects to nothing, but it evaluates `Match exec` lines, so the doctor
 scans the config and its `Include` files first (globs relative to `~/.ssh`
-of the inspected home and of the passwd home, five levels deep) and, if any
-`Match` line has an `exec` criterion, negated or quoted or not, warns and
+of the inspected home and of the passwd home, as deep as OpenSSH follows
+them, 16 levels) and, if any `Match` line has an `exec` criterion, negated
+or quoted or not, or the chain is deeper than that or loops, warns and
 skips `ssh -G` rather than run the command.
 
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;

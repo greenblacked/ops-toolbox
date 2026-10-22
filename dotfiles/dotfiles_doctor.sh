@@ -508,11 +508,17 @@ passwd_home() {
 # Match line with an exec criterion (also negated or quoted): ssh -G would run
 # that command. Includes are followed (globs too; relative paths against
 # ~/.ssh and ~ against the inspected home, $HOME and the passwd home, as
-# OpenSSH reads the last) to a depth of 5. Reads only; nothing is run.
+# OpenSSH reads the last) to OpenSSH's own limit of 16 levels. Reaching that
+# limit, or an Include loop, counts as a hit: the config is not known to be
+# free of exec, so the caller skips the probe. Reads only; nothing is run.
 ssh_config_runs_exec() {
-  local file="$1" depth="${2:-0}" line low norm w pat c f pw
+  local file="$1" depth="${2:-0}" chain="${3:-}" line low norm w pat c f pw
   local -a words cands
-  (( depth <= 5 )) || return 1
+  (( depth <= 16 )) || return 0
+  case "$chain" in
+    *$'\n'"$file"$'\n'*) return 0 ;;
+  esac
+  chain="$chain"$'\n'"$file"$'\n'
   [[ -r "$file" ]] || return 1
   pw="$(passwd_home)"
   while IFS= read -r line || [[ -n "$line" ]]; do
@@ -557,7 +563,7 @@ ssh_config_runs_exec() {
             # compgen -G prints one match per line, so a space in the path
             # does not split it the way an unquoted expansion would.
             while IFS= read -r f; do
-              [[ -f "$f" ]] && ssh_config_runs_exec "$f" $((depth + 1)) && return 0
+              [[ -f "$f" ]] && ssh_config_runs_exec "$f" $((depth + 1)) "$chain" && return 0
             done < <(compgen -G "$c" 2>/dev/null)
           done
         done

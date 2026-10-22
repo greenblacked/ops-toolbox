@@ -3,4 +3,5 @@
   so the read-only promise holds. The probe also runs once instead of twice.
   The scan also catches a negated or quoted `exec`, an `Include=` form, an
   include under the passwd home that OpenSSH reads, and a home path with
-  spaces.
+  spaces. Includes are followed to OpenSSH's own depth of 16; a deeper
+  chain or an Include loop also skips the probe.
