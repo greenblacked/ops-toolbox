@@ -641,3 +641,136 @@ class RemotePortThroughMainTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("example.com port 2222 is not in", out)
         self.assertEqual([c for c in calls if "-T" in c.split()], [])
+
+
+class SshCommandAndUserThroughMainTests(unittest.TestCase):
+    """The user git would use reaches the authentication attempt. Stub ssh logs every call; ssh -G answers with a
+    configured user that the tests must not see win over a user in the URL."""
+
+    def setUp(self):
+        if os.name == "nt":
+            self.skipTest("POSIX shell stubs cannot run on Windows")
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = self._tmp.name
+        self.bin = os.path.join(root, "bin")
+        self.ssh_dir = os.path.join(root, "ssh")
+        self.log = os.path.join(root, "ssh-args.log")
+        self.known = os.path.join(root, "known_hosts")
+        self.userfile = os.path.join(root, "ssh-g-user")
+        self.repo = os.path.join(root, "repo")
+        for d in (self.bin, self.ssh_dir, self.repo):
+            os.makedirs(d)
+        with open(self.known, "w") as fh:
+            fh.write("example.com ssh-ed25519 AAAA\n")
+        self._set_g_user("cfguser")
+        self._stub("ssh", 'echo "$*" >> "' + self.log + '"\n'
+                   'if [ "$1" = "-G" ]; then\n'
+                   '  echo "hostname example.com"; echo "port 22"\n'
+                   '  echo "user $(cat "' + self.userfile + '")"\n'
+                   '  echo "stricthostkeychecking ask"\n'
+                   '  echo "userknownhostsfile ' + self.known + '"\n'
+                   '  echo "globalknownhostsfile none"\n'
+                   '  exit 0\nfi\n'
+                   'echo "successfully authenticated" >&2\nexit 1\n')
+        self._stub("ssh-keygen", 'while read -r name rest; do\n'
+                   '  [ "$name" = "$2" ] && exit 0\ndone < "$4"\nexit 1\n')
+        self._stub("ssh-add", 'echo "256 SHA256:x key (ED25519)"\nexit 0\n')
+        subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True,
+                       capture_output=True)
+
+    def _set_g_user(self, name):
+        with open(self.userfile, "w") as fh:
+            fh.write(name + "\n")
+
+    def _stub(self, name, body):
+        path = os.path.join(self.bin, name)
+        with open(path, "w") as fh:
+            fh.write("#!/bin/sh\n" + body)
+        os.chmod(path, 0o755)
+
+    def _git(self, *args):
+        subprocess.run(["git"] + list(args), cwd=self.repo, check=True,
+                       capture_output=True)
+
+    def _main(self, url, argv=("--test-auth",)):
+        subprocess.run(["git", "remote", "remove", "origin"], cwd=self.repo,
+                       capture_output=True)
+        if os.path.exists(self.log):
+            os.remove(self.log)
+        self._git("remote", "add", "origin", url)
+        names = ("PATH", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM")
+        saved = {n: os.environ.get(n) for n in names}
+        saved_state = (os.getcwd(), list(doctor.EVENTS))
+        os.environ["PATH"] = self.bin + os.pathsep + saved["PATH"]
+        os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
+        os.environ["GIT_CONFIG_NOSYSTEM"] = "1"
+        os.chdir(self.repo)
+        del doctor.EVENTS[:]
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                rc = doctor.main(["--ssh-dir", self.ssh_dir] + list(argv))
+        finally:
+            for n, v in saved.items():
+                if v is None:
+                    os.environ.pop(n, None)
+                else:
+                    os.environ[n] = v
+            os.chdir(saved_state[0])
+            doctor.EVENTS[:] = saved_state[1]
+        calls = []
+        if os.path.exists(self.log):
+            with open(self.log) as fh:
+                calls = fh.read().splitlines()
+        return rc, out.getvalue(), calls
+
+    @staticmethod
+    def _auth(calls):
+        return [c for c in calls if "-T" in c.split()]
+
+    def test_user_in_an_ssh_url_is_the_one_probed(self):
+        rc, out, calls = self._main("ssh://alice@example.com/o/r.git")
+        auth = self._auth(calls)
+        self.assertEqual(len(auth), 1, out)
+        self.assertTrue(auth[0].endswith("-T alice@example.com"), auth[0])
+
+    def test_user_in_an_scp_like_url_is_the_one_probed(self):
+        rc, out, calls = self._main("bob@example.com:o/r.git")
+        auth = self._auth(calls)
+        self.assertTrue(auth[0].endswith("-T bob@example.com"), auth[0])
+
+    def test_without_a_url_user_the_ssh_g_user_is_probed(self):
+        rc, out, calls = self._main("example.com:o/r.git")
+        auth = self._auth(calls)
+        self.assertTrue(auth[0].endswith("-T cfguser@example.com"), auth[0])
+
+    def test_without_a_url_user_the_local_account_is_not_probed(self):
+        for local in sorted(doctor.local_accounts()) or ["nobody-here"]:
+            self._set_g_user(local)
+            rc, out, calls = self._main("example.com:o/r.git")
+            self.assertTrue(self._auth(calls)[0].endswith("-T git@example.com"),
+                            self._auth(calls))
+
+    def test_host_flag_probes_git_when_ssh_g_only_reports_the_local_account(self):
+        self._set_g_user(sorted(doctor.local_accounts())[0]
+                         if doctor.local_accounts() else "nobody-here")
+        rc, out, calls = self._main(
+            "ssh://alice@example.com/o/r.git",
+            argv=("--test-auth", "--host", "example.com"))
+        self.assertTrue(self._auth(calls)[0].endswith("-T git@example.com"))
+
+    def test_host_flag_accepts_user_at_host(self):
+        rc, out, calls = self._main(
+            "ssh://alice@example.com/o/r.git",
+            argv=("--test-auth", "--host", "deploy@example.com"))
+        self.assertEqual(calls[0], "-G example.com")
+        self.assertTrue(self._auth(calls)[0].endswith("-T deploy@example.com"))
+
+
+class SshUserOfTestCase(unittest.TestCase):
+    def test_user_of_ssh_and_scp_urls(self):
+        self.assertEqual(doctor.ssh_user_of("ssh://a@h:22/r"), "a")
+        self.assertEqual(doctor.ssh_user_of("b@h:r"), "b")
+        self.assertEqual(doctor.ssh_user_of("ssh://h/r"), "")
+        self.assertEqual(doctor.ssh_user_of("h:r"), "")
+        self.assertEqual(doctor.ssh_user_of("https://u@h/r"), "")

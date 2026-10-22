@@ -15,7 +15,8 @@ prompted this script, is an Include whose glob matches directories. ssh skips
 those silently, so a config file one level deeper is never read and no error is
 ever printed.
 
-Offline by default: only --test-auth makes a connection.
+Offline by default: only --test-auth makes a connection. The user probed is the
+one a remote URL (or --host user@host) names, else a User in ssh config, else git.
 
 Read-only. It prints commands to run; it never edits config, touches the agent,
 or writes a key.
@@ -148,7 +149,9 @@ def run(cmd, timeout=15):
 # --------------------------------------------------------------------------
 def git_remote_hosts():
     """SSH targets used by the current repository's remotes, as
-    {(host, port): [urls]}. port is "" unless an ssh:// URL names one."""
+    {(host, port, user): [urls]}. port is "" unless an ssh:// URL names one;
+    user is "" unless the URL spells one out (git then dials user@host, which
+    wins over any User in ssh_config)."""
     rc, out, _ = run(["git", "remote", "-v"])
     if rc != 0:
         return {}
@@ -160,6 +163,7 @@ def git_remote_hosts():
         url = parts[1]
         target = ssh_target_of(url)
         if target:
+            target = target + (ssh_user_of(url),)
             hosts.setdefault(target, [])
             if url not in hosts[target]:
                 hosts[target].append(url)
@@ -170,6 +174,18 @@ def ssh_host_of(url):
     """Extract the host from an SSH git URL, or None if it is not SSH."""
     target = ssh_target_of(url)
     return target[0] if target else None
+
+
+def ssh_user_of(url):
+    """The user an SSH git URL spells out (ssh://user@host, user@host:path),
+    or "" when it names none."""
+    if url.startswith("ssh://"):
+        authority = url[len("ssh://") :].split("/", 1)[0]
+        return authority.rsplit("@", 1)[0] if "@" in authority else ""
+    if "://" in url or ":" not in url:
+        return ""
+    left = url.split(":", 1)[0]
+    return left.rsplit("@", 1)[0] if "@" in left else ""
 
 
 def ssh_target_of(url):
@@ -514,6 +530,29 @@ def check_host_key(host, cfg, require):
     return passed, bool(found_in)
 
 
+def local_accounts():
+    """Names the local account goes by, as ssh -G would report it when no
+    User is configured."""
+    names = set()
+    try:
+        import pwd
+        names.add(pwd.getpwuid(os.getuid()).pw_name)
+    except (ImportError, KeyError, AttributeError, OSError):
+        pass
+    for var in ("USER", "LOGNAME", "USERNAME"):
+        if os.environ.get(var):
+            names.add(os.environ[var])
+    return names
+
+
+def configured_user(cfg):
+    """The User ssh config sets for a host, or "" when ssh -G only reports
+    the local account (a User spelled the same as the local account cannot
+    be told apart from none, and then falls back to git)."""
+    user = cfg.get("user") or ""
+    return "" if user in local_accounts() else user
+
+
 def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port=""):
     """Attempt a non-interactive auth. Returns (authenticated, detail).
 
@@ -549,7 +588,8 @@ def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="
 
 
 # --------------------------------------------------------------------------
-def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port=""):
+def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="",
+                  user=""):
     label = "%s port %s" % (host, port) if port else host
     head("host: %s" % label)
     cfg, err = effective_config(host, port)
@@ -560,7 +600,12 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
     configured = [os.path.expanduser(p) for p in cfg.get("identityfile", [])]
     existing = [p for p in configured if os.path.exists(p)]
 
-    info("resolves to %s@%s:%s" % (cfg.get("user", "?"), cfg.get("hostname", host),
+    # The user ssh will log in as: the one the remote URL (or --host
+    # user@host) spells out, else a User set in ssh config, else "git". ssh -G
+    # always reports a user, the local account when none is configured, so a
+    # value equal to the local account is taken as "none configured".
+    user = user or configured_user(cfg) or "git"
+    info("resolves to %s@%s:%s" % (user, cfg.get("hostname", host),
                                    cfg.get("port", "22")))
 
     if not configured:
@@ -607,7 +652,7 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
         return has_identity
 
     if has_identity:
-        authed, detail = try_auth(host, strict=strict, port=port)
+        authed, detail = try_auth(host, user=user, strict=strict, port=port)
         if not found and not require_known_host:
             info("note: --test-auth records new host keys (accept-new); "
                  "this check ran first")
@@ -619,7 +664,7 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
     head("testing %d discovered key(s) against %s" % (len(keys), label))
     winners = []
     for key in keys:
-        authed, detail = try_auth(host, key=key, strict=strict, port=port)
+        authed, detail = try_auth(host, user=user, key=key, strict=strict, port=port)
         if authed:
             ok("%s -> %s" % (shorten(key), detail))
             winners.append(key)
@@ -627,7 +672,7 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
             info("%s -> %s" % (shorten(key), detail))
 
     if winners:
-        suggest_fix(host, winners[0], port)
+        suggest_fix(host, winners[0], port, user)
     else:
         bad("none of the discovered keys authenticate to %s" % label)
         info("the key for this host may not be in ~/.ssh, or is not registered with "
@@ -635,22 +680,22 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
     return bool(winners)
 
 
-def suggest_fix(host, key, port=""):
+def suggest_fix(host, key, port="", user="git"):
     head("fix")
     raw("A key that authenticates exists but ssh never offers it. Either:\n")
     raw("  %s1. Declare it for this host%s" % (C_BOLD, C_RESET))
     raw("     Append to %s:\n" % os.path.join(SSH_DIR, "config"))
     raw("       Host %s" % host)
     raw("         HostName %s" % host)
-    raw("         User git")
+    raw("         User %s" % user)
     if port:
         raw("         Port %s" % port)
     raw("         IdentityFile %s" % key)
     raw("         IdentitiesOnly yes\n")
     raw("  %s2. Or load it into the agent%s" % (C_BOLD, C_RESET))
     raw("     ssh-add --apple-use-keychain %s\n" % key)
-    raw("  %sVerify with%s  ssh %s-T git@%s"
-        % (C_DIM, C_RESET, "-p %s " % port if port else "", host))
+    raw("  %sVerify with%s  ssh %s-T %s@%s"
+        % (C_DIM, C_RESET, "-p %s " % port if port else "", user, host))
 
 
 def shorten(path):
@@ -694,14 +739,21 @@ def run_report(args):
 
     agent = agent_identities()
 
-    hosts = [(h, "") for h in dict.fromkeys(args.host)] or sorted(git_remote_hosts())
+    if args.host:
+        hosts = []
+        for spec in dict.fromkeys(args.host):
+            user, _, name = spec.rpartition("@")
+            hosts.append((name, "", user))
+    else:
+        hosts = sorted(git_remote_hosts())
     if not hosts:
         head("hosts")
         warn("no SSH remotes in this repository and no --host given")
         return 1
 
-    results = [diagnose_host(h, keys, agent, args.test_auth, args.require_known_host, p)
-               for h, p in hosts]
+    results = [diagnose_host(h, keys, agent, args.test_auth, args.require_known_host, p,
+                             user=u)
+               for h, p, u in hosts]
     return 0 if all(results) else 1
 
 
