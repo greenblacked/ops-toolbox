@@ -317,6 +317,9 @@ whose file no longer exists is a `[warn]`: the config was renamed or removed
 and the tool reads nothing. That includes links for configs that are no
 longer tracked at all, found by scanning the same bounded install locations
 the installer's `--prune` uses.
+A leftover link of that kind that still reaches an existing file in the
+repository is read by its tool, so it gets the same credential scan as a
+tracked config.
 
 **Credential files are private.** [What is deliberately not
 here](#what-is-deliberately-not-here) lists the files that hold tokens and

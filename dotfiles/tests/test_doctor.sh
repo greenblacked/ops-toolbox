@@ -243,6 +243,23 @@ run_doctor --repo "$R" --fail-on warn >/dev/null 2>&1; rc=$?
 assert_rc "--fail-on warn turns an orphan into exit 1" 1 "$rc"
 if [[ "$before" == "$after" ]]; then ok "the orphan scan wrote nothing"; else err "the orphan scan wrote into the home or tmp"; fi
 
+# A renamed install target whose old link still points at an existing,
+# tracked file is read by its tool, so the credential scan covers it too.
+make_fixture
+printf '//r/:_authToken=abc\n' >> "$R/home/.npmrc"
+rm "$H/.npmrc"
+ln -s "$R/home/.npmrc" "$H/.npmrc-old"
+out="$(run_doctor --repo "$R" 2>&1)"; rc=$?
+assert_rc "a live orphan link to a credential exits 1" 1 "$rc"
+assert_contains "the live orphan is scanned and named" "$out" "$H/.npmrc-old: npm auth value at line 3"
+assert_not_contains "a live orphan is not reported as dangling" "$out" "[warn] $H/.npmrc-old"
+
+make_fixture
+ln -s "$R/home/.npmrc" "$H/.npmrc-old"
+out="$(run_doctor --repo "$R" 2>&1)"; rc=$?
+assert_rc "a clean live orphan link exits 0" 0 "$rc"
+assert_not_contains "a clean live orphan is not a finding" "$out" "[FAIL]"
+
 # A tracked target that dangles is reported once, by the tracked-file loop.
 make_fixture
 rm "$H/.config/foo/conf"

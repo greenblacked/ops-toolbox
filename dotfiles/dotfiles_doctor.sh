@@ -320,6 +320,20 @@ credential_lines() {
   scan_pattern "$f" "JSON auth value"      "$KEYED"'"auth"[[:space:]]*:[[:space:]]*"[^"]+"'
 }
 
+# Reports every credential shape in a file that is a link into the
+# repository. $1 is the link, $2 its text (already known to resolve under the
+# repository). Only line numbers and labels reach the report.
+scan_linked() {
+  local target="$1" t="$2" n label lrel
+  lrel="${t#"$REPO"/}"
+  [[ "$lrel" == "$t" ]] && lrel="${t#"$REPO_GIVEN"/}"
+  while IFS=$'\t' read -r n label; do
+    [[ -n "$n" ]] || continue
+    fail "$target: $label at line $n, in a file that is a link into $REPO" \
+      "remove the line, rotate the credential, then git -C $REPO diff -- $lrel must be clean"
+  done < <(credential_lines "$target" | sort -n)
+}
+
 # --- checks ----------------------------------------------------------------
 # Every tracked file whose target is a link into the repository is read
 # through that link. A copy-mode file (~/.docker/config.json) is not a link
@@ -330,7 +344,7 @@ check_linked_configs() {
     skip "linked configs: no config/ and home/ beside this script"
     return
   fi
-  local rel target t n label lrel l scanned=0 orphans=0 tracked="" before="$FAIL_COUNT"
+  local rel target t l scanned=0 orphans=0 tracked="" before="$FAIL_COUNT"
   while IFS= read -r rel; do
     [[ -n "$rel" ]] || continue
     target="$(target_of "$rel")"
@@ -344,13 +358,7 @@ check_linked_configs() {
     fi
     [[ -f "$target" ]] || continue
     scanned=$((scanned + 1))
-    lrel="${t#"$REPO"/}"
-    [[ "$lrel" == "$t" ]] && lrel="${t#"$REPO_GIVEN"/}"
-    while IFS=$'\t' read -r n label; do
-      [[ -n "$n" ]] || continue
-      fail "$target: $label at line $n, in a file that is a link into $REPO" \
-        "remove the line, rotate the credential, then git -C $REPO diff -- $lrel must be clean"
-    done < <(credential_lines "$target" | sort -n)
+    scan_linked "$target" "$t"
   done < <(cd "$REPO" && find ./config ./home -type f \
     -not -name .DS_Store -not -path '*/__pycache__/*' | sed 's|^\./||' | sort)
 
@@ -359,11 +367,20 @@ check_linked_configs() {
   while IFS= read -r l; do
     [[ -n "$l" ]] || continue
     case "$l" in *.backup-[0-9]*) continue ;; esac
-    [[ -e "$l" ]] && continue
     grep -Fxq -- "$l" <<<"$tracked" && continue
     links_into_repo "$l" || continue
-    orphans=$((orphans + 1))
     t="$(link_target "$l")"
+    if [[ -e "$l" ]]; then
+      # Still points at a file in the repository, which a renamed install
+      # target left behind: the tool reads it, so it is scanned like any
+      # other linked config.
+      if [[ -f "$l" ]]; then
+        scanned=$((scanned + 1))
+        scan_linked "$l" "$t"
+      fi
+      continue
+    fi
+    orphans=$((orphans + 1))
     warn "$l links into $REPO, but $t does not exist" "rm $l  (its config was renamed or removed in the repository)"
   done < <(link_candidates | sort -u)
 
