@@ -446,7 +446,7 @@ INFO  [experimental] sparseVhd                     consider sparseVhd=true (or w
 | A true/false key (`sparseVhd`, `firewall`, `dnsTunneling`, `localhostForwarding` and the like) set to anything but `true` or `false`, in any case | `WARN` |
 | `vmIdleTimeout` or `instanceIdleTimeout` that is not a whole number of milliseconds (-1 or more; -1 turns idle shutdown off), `initialAutoProxyTimeout` that is not a whole number of milliseconds (0 or more), or `maxCrashDumpCount` that is not a whole number of -1 or more | `WARN` |
 | `networkingMode` other than `nat`, `mirrored`, `virtioproxy`, `none` or the deprecated `bridged`, in any case; WSL falls back to NAT | `WARN` (`INFO` for `bridged`) |
-| A single backslash in `kernel`, `kernelModules` or `swapFile`: write `C:\\Users\\me\\...` or use forward slashes | `WARN` |
+| A single backslash in `kernel`, `kernelModules`, `swapFile` or `distributionInstallPath`: write `C:\\Users\\me\\...` or use forward slashes | `WARN` |
 | `autoMemoryReclaim` set to anything but `disabled`, `gradual` or `dropCache`, in any case | `WARN` |
 | No `memory` cap | `WARN` |
 | No `autoMemoryReclaim` or `sparseVhd` under `[experimental]` | `INFO` |

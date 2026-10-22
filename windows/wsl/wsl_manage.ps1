@@ -981,7 +981,7 @@ function Test-WslConfig {
 
     # WSL reads these as INI strings, so a single backslash is an escape and
     # 'C:\Users\me\bzImage' arrives mangled. Doubled, or forward slashes, work.
-    foreach ($pathKey in @('kernel', 'swapFile', 'kernelModules')) {
+    foreach ($pathKey in @('kernel', 'swapFile', 'kernelModules', 'distributionInstallPath')) {
         if (-not $values.ContainsKey($pathKey)) { continue }
         $e = $values[$pathKey]
         if ($e.Value -match '(?<!\\)\\(?!\\)') {
