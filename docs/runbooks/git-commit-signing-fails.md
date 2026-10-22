@@ -53,7 +53,14 @@ It prints these sections:
    and a note when a key is set in more than one place.
 2. **signing key**: whether `user.signingkey` fits `gpg.format`. A GPG key id
    with `gpg.format=ssh`, an SSH key with the default `openpgp` format, an
-   unset key, or a key path that does not exist are failures. So is a
+   unset key, or a key path that does not exist are failures. Read the
+   verdict as a classification of the value: the doctor treats a value
+   that is not hex as an SSH path or key. Git itself accepts any GnuPG
+   selector (an email address, a user ID) in `user.signingkey` with
+   `openpgp`, and an unset key makes GnuPG pick its default secret key, so
+   a working OpenPGP setup that uses an email selector or no key is not
+   broken even if the doctor flags it; judge it by whether signing
+   succeeds. So is a
    `gpg.program` (or `gpg.ssh.program`) that is not an executable on `PATH`.
 3. Then one section for the backend in use:
     - **gpg keyring** (`openpgp`, the default): no secret key at all; a key
@@ -145,7 +152,17 @@ That is plain `git`. Then run only the fix the report printed for your case:
 | An SSH private key path in `user.signingkey` | Point `user.signingkey` at the `.pub` beside it |
 | `gpg.ssh.allowedSignersFile` is unset | A `printf` line that writes `~/.config/git/allowed_signers` with your address, and the `git config --global gpg.ssh.allowedSignersFile` that points at it |
 
-The allowed-signers command writes the file with `>`, which replaces a file
+The printed allowed-signers command contains the literal placeholder
+`<your key>`; replace it with your public key, which is the contents of
+your `.pub` file, and put your principal (the email you commit with) in
+front of it. This command does both, and appends instead of replacing:
+
+```{ .bash .rpt-apply title="Apply, after the directory exists" }
+printf '%s namespaces="git" %s\n' "$(git config user.email)" "$(cat ~/.ssh/id_ed25519.pub)" >> ~/.config/git/allowed_signers
+```
+
+Use the path of your own `.pub` file if it is not `id_ed25519.pub`. The
+command the doctor prints writes the file with `>`, which replaces a file
 that is already there. Check for one first and add your line to it instead.
 It also fails if `~/.config/git` does not exist yet, so create the directory
 before running it:
