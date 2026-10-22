@@ -110,6 +110,14 @@ assert_eq 'excluding every member -> 1' 1 "$rc"
 assert_contains 'excluding every member fails validation' "$out" 'failed validation'
 assert_eq 'excluding every member leaves no archive or staging' '' "$(ls -A "$dest")"
 
+# Excluding the one source leaves only the exclusion manifest, which is
+# metadata: no data member means no backup, so nothing is published.
+new_dest
+run_backup --yes --exclude "${src#/}"
+assert_eq 'excluding the only source -> 1' 1 "$rc"
+assert_contains 'excluding the only source says nothing is left' "$out" 'leave nothing to back up'
+assert_eq 'excluding the only source leaves no archive or staging' '' "$(ls -A "$dest")"
+
 new_dest
 out="$("$BACKUP" --dry-run --exclude-secrets --paths /etc --dest "$dest" 2>&1)"; rc=$?
 assert_eq '--exclude-secrets --dry-run exits 0' 0 "$rc"

@@ -749,23 +749,29 @@ if (( tar_rc > 1 )); then
 fi
 # GNU tar accepts an empty stream (and some short non-tar streams) as an
 # empty archive. At least one listed member is required: every included file
-# or directory should contribute one. Drain the listing to avoid SIGPIPE.
-if ! gzip -t -- "$staged_archive" || ! tar -tzf "$staged_archive" | (
-  found=0
-  while IFS= read -r; do found=1; done
-  (( found ))
-); then
+# or directory should contribute one. The exclusion manifest is metadata, not
+# data: exclusions that cover every source would otherwise leave an archive
+# holding only .config_backup/excludes, published as if it were a backup.
+if ! gzip -t -- "$staged_archive" || ! staged_members="$(tar -tzf "$staged_archive")" \
+   || [[ -z "$staged_members" ]]; then
   err "staged archive failed validation; previous archives preserved"
+  exit 1
+fi
+data_found=0
+while IFS= read -r member; do
+  case "$member" in
+    .config_backup|.config_backup/|.config_backup/*) ;;
+    *) data_found=1; break ;;
+  esac
+done <<<"$staged_members"
+if (( ! data_found )); then
+  err "the exclusions leave nothing to back up; previous archives preserved"
   exit 1
 fi
 
 # A pattern that also matches the manifest member would drop it silently, and
 # the archive would then be diffed as if nothing had been excluded.
 if (( ${#manifest_args[@]} > 0 )); then
-  if ! staged_members="$(tar -tzf "$staged_archive" 2>/dev/null)"; then
-    err "cannot list the staged archive; previous archives preserved"
-    exit 1
-  fi
   if ! grep -qx -- '\.config_backup/excludes' <<<"$staged_members"; then
     err "an --exclude pattern also matches .config_backup/excludes; narrow it"
     exit 1

@@ -10,3 +10,5 @@
   listing each as `NEW`; `--exclude` and `--exclude-secrets` are also
   accepted on `--diff`, and older archives without the record compare as
   before.
+  Exclusions that cover every source now fail the run (exit `1`, nothing
+  published) instead of publishing an archive holding only that record.
