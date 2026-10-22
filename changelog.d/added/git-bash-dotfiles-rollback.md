@@ -2,7 +2,8 @@
   left `<name>.backup-<stamp>` files in `$HOME` with no way back but finding
   the right stamp and copying three files by hand while the shell was already
   broken, and the backups piled up forever. `--list-backups` shows the sets
-  newest first, `--restore STAMP` (or `latest`) puts one back after saving
+  newest first (a `-10` suffix counts as newer than `-9`),
+  `--restore STAMP` (or `latest`) puts one back after saving
   what it replaces as a new set (under a `-1`, `-2` ... suffixed stamp when
   the current second's is taken, never over an existing set), so a rollback
   is itself undoable, and keeps a symlinked dotfile a symlink (a destination

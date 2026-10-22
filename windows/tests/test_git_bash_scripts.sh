@@ -616,6 +616,33 @@ run_install "$h" --list-backups
 assert_eq "--prune-backups 1 --yes keeps exactly the newest set" \
   "20260301-000000  .bashrc .bash_profile .aliases" "$out"
 assert_eq "--prune-backups leaves an unrelated look-alike alone" "my own notes" "$(cat "$h/.bashrc.backup-notes")"
+
+# Collision suffixes order numerically: -10 is newer than -9, and a bare stamp
+# is the oldest of its second.
+bh="$(mktemp -d "$SCRATCH/home.XXXXXX")"
+printf 'current\n' > "$bh/.bashrc"
+printf 'bare\n' > "$bh/.bashrc.backup-20260501-000000"
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  printf 'set %s\n' "$n" > "$bh/.bashrc.backup-20260501-000000-$n"
+done
+run_install "$bh" --list-backups
+assert_eq "--list-backups orders -10 above -9" "20260501-000000-10" "$(printf '%s\n' "$out" | head -n 1 | awk '{print $1}')"
+run_install "$bh" --restore latest
+assert_eq "--restore latest -> 0 with -1..-10 sets" 0 "$rc"
+assert_eq "--restore latest picks the -10 set" "set 10" "$(cat "$bh/.bashrc")"
+bh="$(mktemp -d "$SCRATCH/home.XXXXXX")"
+printf 'bare\n' > "$bh/.bashrc.backup-20260501-000000"
+for n in 1 2 3 4 5 6 7 8 9 10; do
+  printf 'set %s\n' "$n" > "$bh/.bashrc.backup-20260501-000000-$n"
+done
+run_install "$bh" --prune-backups 1 --yes
+assert_eq "--prune-backups 1 --yes -> 0 with -1..-10 sets" 0 "$rc"
+if [[ -e "$bh/.bashrc.backup-20260501-000000-10" && ! -e "$bh/.bashrc.backup-20260501-000000-9" \
+  && ! -e "$bh/.bashrc.backup-20260501-000000" ]]; then
+  ok "--prune-backups 1 keeps the -10 set and removes -9 and the bare one"
+else
+  err "--prune-backups 1 did not keep exactly the -10 set"
+fi
 assert_eq "--prune-backups leaves the dotfiles themselves alone" "current .bashrc" "$(cat "$h/.bashrc")"
 
 run_install "$h" --prune-backups x

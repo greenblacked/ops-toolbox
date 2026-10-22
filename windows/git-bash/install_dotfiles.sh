@@ -223,7 +223,21 @@ backup_stamps() {
       [[ "$stamp" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || continue
       printf '%s\n' "$stamp"
     done
-  done | sort -ru
+  done | sort -u | backup_order
+}
+
+# Reads stamps on stdin and prints them newest first: by the timestamp, then
+# by the numeric collision suffix (a bare stamp counts as 0), so -10 is newer
+# than -9, which a plain text sort gets wrong.
+backup_order() {
+  local stamp base suffix
+  while IFS= read -r stamp; do
+    base="${stamp:0:15}"
+    suffix="${stamp:16}"
+    printf '%s %s %s\n' "$base" "${suffix:-0}" "$stamp"
+  done | sort -k1,1r -k2,2nr | while read -r base suffix stamp; do
+    printf '%s\n' "$stamp"
+  done
 }
 
 # The backup files of one set that exist, one path per line.
