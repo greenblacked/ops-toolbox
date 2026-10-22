@@ -113,9 +113,10 @@ run_mixed_case "success plus absent extension" 0 "" 1 "scp: backup-*.rsc: No suc
 
 # --verify and --max-age: what was pulled is usable, and the newest backup is
 # recent. The scp stub publishes whatever the case asks for, with a real-looking
-# export header on a good .rsc. Every case asserts an exit code, and the bad
-# file cases also assert the file is still there: the checks report, they never
-# delete.
+# export header on a good .rsc. Every case asserts an exit code. --verify runs
+# in the staging directory, so a file it rejects is never published and an
+# archived copy of the same name is never replaced by it; SEED=1 puts a good
+# earlier pair in the destination first.
 #   good          a .backup and its .rsc
 #   empty-backup  a zero-byte .backup and a good .rsc
 #   no-header     a .backup and an .rsc that is not an export
@@ -144,6 +145,10 @@ exit 0
 EOF
   chmod +x "$STUB_DIR/bin/ssh" "$STUB_DIR/bin/scp"
   rm -rf "${DEST:?}"/*
+  if [[ "${SEED:-0}" == 1 ]]; then
+    printf 'good archived backup\n' >"$DEST/backup-1.backup"
+    printf '# 2026-10-20 04:00:00 by RouterOS 7.24.5\n/system identity\n' >"$DEST/backup-1.rsc"
+  fi
   local rc
   PATH="$STUB_DIR/bin:$PATH" "$SCRIPT" "$@" admin@router "$DEST" >/dev/null 2>&1
   rc=$?
@@ -152,16 +157,38 @@ EOF
 
 run_check_case "verify good pair"                  0 good         --verify
 run_check_case "verify empty .backup"              1 empty-backup --verify
-if [[ -e "$DEST/backup-1.backup" ]]; then
-  ok "verify does not delete a bad file"
+if [[ ! -e "$DEST/backup-1.backup" && ! -e "$DEST/backup-1.rsc" ]]; then
+  ok "verify publishes neither an empty .backup nor its orphaned .rsc"
 else
-  err "verify deleted the empty backup-1.backup it reported"
+  err "verify published a rejected .backup or the .rsc that lost its pair"
 fi
 run_check_case "verify .rsc without export header" 1 no-header    --verify
-if [[ -s "$DEST/backup-1.rsc" ]]; then
-  ok "verify leaves an .rsc it rejected in place"
+if [[ ! -e "$DEST/backup-1.rsc" ]]; then
+  ok "verify does not publish an .rsc it rejected"
 else
-  err "verify removed or emptied the .rsc it rejected"
+  err "verify published the .rsc it rejected"
+fi
+# A zero-byte re-pull of a name already archived must not replace the archived
+# copy: the prior destination is kept intact and the run fails.
+SEED=1 run_check_case "verify zero-byte re-pull of an archived name" 1 empty-backup --verify
+if [[ "$(cat "$DEST/backup-1.backup" 2>/dev/null)" == "good archived backup" ]] &&
+   [[ "$(sed -n 2p "$DEST/backup-1.rsc" 2>/dev/null)" == "/system identity" ]] &&
+   [[ "$(head -c 21 "$DEST/backup-1.rsc")" == "# 2026-10-20 04:00:00" ]]; then
+  ok "verify keeps the archived pair when the re-pull is rejected"
+else
+  err "verify replaced or removed the archived copy with a rejected re-pull"
+fi
+SEED=1 run_check_case "verify headerless re-pull of an archived .rsc" 1 no-header --verify
+if [[ "$(head -c 21 "$DEST/backup-1.rsc")" == "# 2026-10-20 04:00:00" ]]; then
+  ok "verify keeps the archived .rsc when the re-pull has no export header"
+else
+  err "verify replaced the archived .rsc with a headerless re-pull"
+fi
+SEED=1 run_check_case "verify good re-pull replaces the archived pair" 0 good --verify
+if [[ "$(head -c 21 "$DEST/backup-1.rsc")" == "# 2026-10-21 04:00:00" ]]; then
+  ok "verify publishes a re-pull that passes"
+else
+  err "verify did not publish a re-pull that passes"
 fi
 run_check_case "verify .backup without .rsc"       1 lone-backup  --verify
 run_check_case "verify nothing pulled"             0 none         --verify

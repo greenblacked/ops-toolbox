@@ -213,11 +213,14 @@ fi
 
 # Stage each extension independently. A failed scp may leave truncated files;
 # none of that attempt is allowed to replace an existing good generation.
-got=0
 failed=0
-# What this run published into $D, for --verify. Bash 3.2 has no mapfile and
-# treats an empty array as unset under -u, so it is read back below with the
-# ${pulled[@]+...} guard.
+# What this run pulled into the staging directory, in order, and what it
+# published into $D (for --max-age). Bash 3.2 has no mapfile and treats an
+# empty array as unset under -u, so they are read back below with the
+# ${arr[@]+...} guard, and the candidate count is kept in a plain variable.
+cand_file=()
+cand_name=()
+ncand=0
 pulled=()
 for ext in backup rsc; do
   mkdir "$stage/$ext"
@@ -225,14 +228,9 @@ for ext in backup rsc; do
   if scp "${SSH_OPTS[@]}" -p "$R:backup-*.$ext" "$stage/$ext/" 2>"$scp_err"; then
     for file in "$stage/$ext"/backup-*.$ext; do
       [[ -f "$file" && ! -L "$file" ]] || continue
-      name="${file##*/}"
-      if [[ -d "$D/$name" ]] || ! mv -f "$file" "$D/$name"; then
-        printf 'could not publish %s into %s\n' "$name" "$D" >&2
-        failed=1
-      else
-        got=1
-        pulled+=("$name")
-      fi
+      cand_file+=("$file")
+      cand_name+=("${file##*/}")
+      ncand=$((ncand + 1))
     done
   else
     transfer_rc=$?
@@ -257,57 +255,116 @@ for ext in backup rsc; do
   fi
 done
 
-if (( got )); then
-  printf 'Pulled backup-* files into %s\n' "$D"
-elif (( failed == 0 )); then
-  printf 'No backup-*.backup / backup-*.rsc on %s yet — nothing to pull.\n' "$R" >&2
-fi
-
 # Reaching the router and copying files is not the same as having a backup
-# that restores. Both checks below only read what is in $D and change nothing:
-# a bad file is reported and left where it is, for a person to look at.
+# that restores.
 #
-# --verify: a run whose transfer already failed has its answer; the checks
-# would only repeat it. A run that pulled nothing has nothing to check and
-# passes.
-if (( VERIFY == 1 && failed == 0 )); then
+# --verify runs in the staging directory, before anything is published: a
+# file that fails is reported and never copied into $D, so a rejected pull (a
+# zero-byte file, an error page) cannot replace a good archived copy of the
+# same name. The files that pass are still published and the run exits 1.
+# Each file must be non-empty, an .rsc must open with the export header, and a
+# .backup / .rsc must have its partner: pulled and accepted in this run, or,
+# when the router sent no partner, already in $D. A partner pulled in this run
+# and rejected does not count, whatever an older run left in $D.
+cand_ok=()
+i=0
+while (( i < ncand )); do
+  cand_ok+=(1)
+  i=$((i + 1))
+done
+if (( VERIFY == 1 )); then
   checked=0
   problems=0
-  for name in ${pulled[@]+"${pulled[@]}"}; do
+  i=0
+  while (( i < ncand )); do
     checked=$((checked + 1))
-    file="$D/$name"
+    name="${cand_name[$i]}"
+    file="${cand_file[$i]}"
     if [[ ! -s "$file" ]]; then
       printf 'verify: %s: empty file\n' "$name" >&2
       problems=$((problems + 1))
-      continue
+      cand_ok[i]=0
+    elif [[ "$name" == *.rsc ]]; then
+      # /export opens with "# <date> by RouterOS <version>". Anything else
+      # is not an export: an error page, a truncated write, the wrong file.
+      first=""
+      IFS= read -r first <"$file" || true
+      if [[ "$first" != \#* || "$first" != *RouterOS* ]]; then
+        printf 'verify: %s: first line is not a RouterOS export header\n' "$name" >&2
+        problems=$((problems + 1))
+        cand_ok[i]=0
+      fi
     fi
-    case "$name" in
-      *.rsc)
-        # /export opens with "# <date> by RouterOS <version>". Anything else
-        # is not an export: an error page, a truncated write, the wrong file.
-        first=""
-        IFS= read -r first <"$file" || true
-        if [[ "$first" != \#* || "$first" != *RouterOS* ]]; then
-          printf 'verify: %s: first line is not a RouterOS export header\n' "$name" >&2
+    i=$((i + 1))
+  done
+  # Pairing, judged on the individual results above so the order of the
+  # files does not matter.
+  cand_pair=()
+  i=0
+  while (( i < ncand )); do
+    cand_pair+=("${cand_ok[i]}")
+    i=$((i + 1))
+  done
+  i=0
+  while (( i < ncand )); do
+    if [[ "${cand_ok[i]}" == 1 ]]; then
+      name="${cand_name[$i]}"
+      case "$name" in
+        *.rsc) partner="${name%.rsc}.backup" ;;
+        *) partner="${name%.backup}.rsc" ;;
+      esac
+      found=-1
+      j=0
+      while (( j < ncand )); do
+        if [[ "${cand_name[$j]}" == "$partner" ]]; then found=$j; break; fi
+        j=$((j + 1))
+      done
+      if (( found >= 0 )); then
+        if [[ "${cand_ok[$found]}" != 1 ]]; then
+          printf 'verify: %s: its %s was rejected\n' "$name" "$partner" >&2
           problems=$((problems + 1))
+          cand_pair[i]=0
         fi
-        if [[ ! -f "$D/${name%.rsc}.backup" ]]; then
-          printf 'verify: %s: no matching %s in %s\n' "$name" "${name%.rsc}.backup" "$D" >&2
-          problems=$((problems + 1))
-        fi
-        ;;
-      *.backup)
-        if [[ ! -f "$D/${name%.backup}.rsc" ]]; then
-          printf 'verify: %s: no matching %s in %s\n' "$name" "${name%.backup}.rsc" "$D" >&2
-          problems=$((problems + 1))
-        fi
-        ;;
-    esac
+      elif [[ ! -f "$D/$partner" ]]; then
+        printf 'verify: %s: no matching %s in %s\n' "$name" "$partner" "$D" >&2
+        problems=$((problems + 1))
+        cand_pair[i]=0
+      fi
+    fi
+    i=$((i + 1))
+  done
+  i=0
+  while (( i < ncand )); do
+    cand_ok[i]="${cand_pair[i]}"
+    i=$((i + 1))
   done
   printf 'verify: %d file(s) checked, %d problem(s)\n' "$checked" "$problems" >&2
   if (( problems > 0 )); then
     failed=1
   fi
+fi
+
+# Publish what passed. Without --verify that is everything.
+got=0
+i=0
+while (( i < ncand )); do
+  if [[ "${cand_ok[i]}" == 1 ]]; then
+    name="${cand_name[$i]}"
+    if [[ -d "$D/$name" ]] || ! mv -f "${cand_file[$i]}" "$D/$name"; then
+      printf 'could not publish %s into %s\n' "$name" "$D" >&2
+      failed=1
+    else
+      got=1
+      pulled+=("$name")
+    fi
+  fi
+  i=$((i + 1))
+done
+
+if (( got )); then
+  printf 'Pulled backup-* files into %s\n' "$D"
+elif (( failed == 0 )); then
+  printf 'No backup-*.backup / backup-*.rsc on %s yet — nothing to pull.\n' "$R" >&2
 fi
 
 # --max-age: the run can succeed every night while the router's own backup

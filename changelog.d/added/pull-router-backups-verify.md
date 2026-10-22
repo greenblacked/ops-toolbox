@@ -5,5 +5,7 @@
   older than that (files other routers left in a shared destination do not
   count). The script used to exit 0 for all of those, including a
   router whose backup scheduler had died and left one stale pair to be pulled
-  again every night. Both checks only read the destination and are off
-  unless asked for.
+  again every night. Both checks are off unless asked for. `--verify`
+  runs in the staging directory and publishes only the files that pass,
+  so a rejected re-pull (a zero-byte file, say) never replaces an archived
+  copy of the same name; the run exits 1 and the earlier copy is kept.
