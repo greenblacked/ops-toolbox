@@ -783,7 +783,10 @@ before `swapon` fails the file it just created is removed. The fstab line is
 `FILE none swap sw 0 0 # ops-toolbox swapfile`; it is written only when no line
 already names the file, after a copy to `FSTAB.ops-toolbox.<timestamp>.bak`
 (an existing backup is never overwritten), into a temporary file beside fstab
-that is renamed over it, so a crash leaves the old fstab or the new one.
+that is renamed over it, so a crash leaves the old fstab or the new one. If
+`--fstab` is a symlink, the link is kept and its target is replaced; the backup
+is named after the target (`TARGET.ops-toolbox.<timestamp>.bak`, not after the
+link) and the temporary file sits beside the target too.
 
 `--remove` accepts only a regular file that is active or in fstab, and removes
 only the exact line `--create` wrote; a line somebody else wrote for the same

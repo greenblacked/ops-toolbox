@@ -6,5 +6,7 @@
   as an fstab field (whitespace, backslash), or touches a partition, refuses filesystems
   that cannot hold a swapfile, and edits fstab only after a timestamped
   backup and through an atomic rename, removing only the line it added.
+  A symlinked `--fstab` keeps its link: the backup and the temporary file
+  sit beside the target, which is what gets replaced.
   It is the missing step between the `system_doctor.sh` swap line and
   `sysctl_defaults.sh`.

@@ -194,6 +194,27 @@ else
   assert_eq '--remove after that exits 0' 0 "$rc"
   assert_eq '--remove leaves the old record alone' 1 \
     "$(grep -cFx 'UUID=0000-fixture / ext4 defaults 0 1' "$fstab")"
+
+  # --fstab may be a symlink: the target is edited in place (atomically, in
+  # its own directory) and the link survives.
+  mkdir "$fixture/managed" || exit 1
+  printf 'UUID=0000-fixture / ext4 defaults 0 1\n' > "$fixture/managed/fstab"
+  real_fstab="$fixture/managed/fstab"
+  ln -s "$real_fstab" "$fixture/fstab-link" || exit 1
+  fstab_saved="$fstab"
+  fstab="$fixture/fstab-link"
+  : > "$fixture/calls"
+  run_sw --create --size 128M --yes
+  assert_eq '--create on a symlinked fstab exits 0' 0 "$rc"
+  assert_eq 'the fstab symlink is still a symlink' link "$([[ -L "$fstab" ]] && printf link || printf file)"
+  assert_eq 'the symlink still points at the same target' "$real_fstab" "$(readlink "$fstab")"
+  assert_eq 'the target gained the swap line' 1 \
+    "$(grep -cFx "$swapfile none swap sw 0 0 # ops-toolbox swapfile" "$real_fstab")"
+  run_sw --remove --yes
+  assert_eq '--remove on a symlinked fstab exits 0' 0 "$rc"
+  assert_eq 'the fstab symlink survives --remove' link "$([[ -L "$fstab" ]] && printf link || printf file)"
+  assert_eq '--remove drops the line from the target' 0 "$(grep -c 'ops-toolbox swapfile' "$real_fstab")"
+  fstab="$fstab_saved"
 fi
 
 # --dry-run from here on: the answers below are the same for any user, and a

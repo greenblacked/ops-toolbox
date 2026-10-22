@@ -12,7 +12,8 @@
 # --remove change the machine, preview with --dry-run, and need --yes. It never
 # touches an existing file or a partition, never enables swap on a device,
 # never sets swappiness, and edits fstab only by an atomic same-directory
-# replace after a timestamped backup, removing only the line it added. If any
+# replace (of the target, when --fstab is a symlink, which stays a symlink)
+# after a timestamped backup, removing only the line it added. If any
 # step fails before swapon succeeds, the file it just created is removed.
 #
 # --path and --fstab are how the tests point it at fixtures; no environment
@@ -272,17 +273,32 @@ run_step() {
   return 1
 }
 
+# The file --fstab names, with any symlink followed. /etc/fstab is sometimes a
+# link (to a managed copy elsewhere); renaming a temporary file over the link
+# would swap it for a regular file and leave the managed copy stale, so the
+# backup and the atomic replace both work on the target, in its directory.
+fstab_real() {
+  local real
+  real="$(readlink -f -- "$FSTAB")" || real=""
+  if [[ -z "$real" || ! -f "$real" ]]; then
+    err "cannot resolve $FSTAB to a regular file"
+    return 1
+  fi
+  printf '%s\n' "$real"
+}
+
 # Copy fstab aside, refusing to overwrite an earlier copy. cp -p keeps the
 # mode and ownership, so the backup is no more readable than the original.
 backup_fstab() {
-  local backup
-  backup="$FSTAB.ops-toolbox.$(date +%Y%m%d-%H%M%S-%N).bak"
+  local backup real
+  real="$(fstab_real)" || return 1
+  backup="$real.ops-toolbox.$(date +%Y%m%d-%H%M%S-%N).bak"
   if [[ -e "$backup" ]]; then
     err "refusing to overwrite $backup"
     return 1
   fi
-  if ! cp -p -- "$FSTAB" "$backup"; then
-    err "could not back up $FSTAB"
+  if ! cp -p -- "$real" "$backup"; then
+    err "could not back up $real"
     return 1
   fi
   info "backup: $backup"
@@ -292,14 +308,15 @@ backup_fstab() {
 # either the old file or the new one, never half of each. The temporary file
 # starts as a cp -p of the original, so it inherits its mode and owner.
 replace_fstab() {
-  local filter="$1" tmp
-  tmp="$(mktemp "$(dirname "$FSTAB")/.fstab.ops-toolbox.XXXXXXXX")" || {
-    err "could not create a temporary file beside $FSTAB"
+  local filter="$1" tmp real
+  real="$(fstab_real)" || return 1
+  tmp="$(mktemp "$(dirname "$real")/.fstab.ops-toolbox.XXXXXXXX")" || {
+    err "could not create a temporary file beside $real"
     return 1
   }
-  if ! cp -p -- "$FSTAB" "$tmp"; then
+  if ! cp -p -- "$real" "$tmp"; then
     rm -f -- "$tmp"
-    err "could not copy $FSTAB"
+    err "could not copy $real"
     return 1
   fi
   case "$filter" in
@@ -312,12 +329,12 @@ replace_fstab() {
       fstab_line "$SWAP_PATH" >> "$tmp" || { rm -f -- "$tmp"; return 1; }
       ;;
     drop)
-      awk -v l="$(fstab_line "$SWAP_PATH")" '$0 != l' "$FSTAB" > "$tmp" || { rm -f -- "$tmp"; return 1; }
+      awk -v l="$(fstab_line "$SWAP_PATH")" '$0 != l' "$real" > "$tmp" || { rm -f -- "$tmp"; return 1; }
       ;;
   esac
-  if ! mv -f -- "$tmp" "$FSTAB"; then
+  if ! mv -f -- "$tmp" "$real"; then
     rm -f -- "$tmp"
-    err "could not replace $FSTAB"
+    err "could not replace $real"
     return 1
   fi
 }
