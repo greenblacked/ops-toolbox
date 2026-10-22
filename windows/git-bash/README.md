@@ -240,24 +240,24 @@ under `# ---` section headers. By category:
   the current context.
 - **Where am I pointed?** — `ctx` prints one line per tool that is
   configured: the Kubernetes context and namespace, the AWS profile and
-  region (with no `AWS_PROFILE` or exported keys, the `[default]` profile of
-  `~/.aws/config` or `~/.aws/credentials`, honouring `AWS_CONFIG_FILE` and
-  `AWS_SHARED_CREDENTIALS_FILE`, with the region from its `region` key; with
-  `AWS_PROFILE` set and no `AWS_REGION`, the region of its `[profile NAME]`
-  section), the
-  gcloud project (`CLOUDSDK_CORE_PROJECT`, else the project of the
-  configuration `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config` names, read
-  from `CLOUDSDK_CONFIG` or `%APPDATA%\gcloud`), the Terraform workspace
-  (`TF_WORKSPACE`, else `environment` in `TF_DATA_DIR` or `.terraform` of the
-  current directory, `default` when that directory has no such file), the
-  Docker context (`DOCKER_CONTEXT`, else `DOCKER_HOST`, else the saved
-  context in `DOCKER_CONFIG` or `~/.docker`), and the Git branch with its
-  origin host. Run it before `tfaa`, `tfda` or
-  `kdelete`, which act on whatever these point at. A value that looks like
-  production (`prod`, `production` or `prd`, any case) ends in `!`, in red on
-  a terminal; the `!` stays when colour is off (`NO_COLOR`, `ctx --plain`, or
-  output piped to a log). It prints names only: exported AWS keys show as the
-  word `static-keys`, never their value.
+  region (with no `AWS_PROFILE` or exported keys, the `[default]` profile
+  of `~/.aws/config` or `~/.aws/credentials`, honouring `AWS_CONFIG_FILE`
+  and `AWS_SHARED_CREDENTIALS_FILE`, with the region from its `region` key;
+  with `AWS_PROFILE` set and no `AWS_REGION`, the region of its
+  `[profile NAME]` section), the gcloud project (`CLOUDSDK_CORE_PROJECT`,
+  else the project of the configuration `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+  `active_config` names, read from `CLOUDSDK_CONFIG` or
+  `%APPDATA%\gcloud`), the Terraform workspace (`TF_WORKSPACE`, else
+  `environment` in `TF_DATA_DIR` or `.terraform` of the current directory,
+  `default` when that directory has no such file), the Docker context
+  (`DOCKER_CONTEXT`, else `DOCKER_HOST`, else the saved context in
+  `DOCKER_CONFIG` or `~/.docker`), and the Git branch with its origin host.
+  Run it before `tfaa`, `tfda` or `kdelete`, which act on whatever these
+  point at. A value that looks like production (`prod`, `production` or
+  `prd`, any case) ends in `!`, in red on a terminal; the `!` stays when
+  colour is off (`NO_COLOR`, `ctx --plain`, or output piped to a log). It
+  prints names only: exported AWS keys show as the word `static-keys`,
+  never their value.
 - **SSH** — `sshkeys`, `sshadd`/`sshremove` (reuse `$SSH_KEY` from
   `.bashrc`), `sshtestgithub`/`sshtestgitlab`.
 - **Windows networking** — `ipconfig`, `flushdns`, `ports`, `listening`,
