@@ -14,7 +14,7 @@ opaque one. Each of these has its own error, or none:
   URLs         a local path or file:// URL that only works on one machine,
                git:// (unauthenticated, read-only), http://, an ssh URL that
                needs a deploy key on every runner, a relative URL with no
-               origin to resolve against.
+               remote to resolve against.
   drift        .gitmodules changed but .git/config still dials the old URL,
                until `git submodule sync`. A relative URL is resolved against
                the default remote first, as git does; one that cannot be
@@ -299,15 +299,17 @@ _URL_FINDINGS = {
 }
 
 
-def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, recorded=None,
+def submodule_findings(modules, gitlinks, statuses, local_urls, has_remote, recorded=None,
                        base_url=None):
     """[(level, message, fix)] for a superproject's submodules.
 
     modules is parse_gitmodules() output, gitlinks the gitlink paths in the
     index, statuses parse_submodule_status() output, local_urls {name: url}
-    from .git/config, recorded {path: sha} from the index, base_url what a
-    relative URL resolves against (the default remote's URL, else the
-    superproject's path), None when that is unknown.
+    from .git/config, recorded {path: sha} from the index, has_remote whether
+    git has a remote to resolve a relative URL against (the branch's remote,
+    such as upstream, or origin), base_url what a relative URL resolves
+    against (the default remote's URL, else the superproject's path), None
+    when that is unknown.
     """
     recorded = recorded or {}
     findings = []
@@ -354,13 +356,13 @@ def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, reco
         url = modules[name]["url"]
         kind = classify_submodule_url(url)
         if kind == "relative":
-            if not has_origin:
+            if not has_remote:
                 findings.append((
                     "warn",
                     "%s: relative URL %s resolves against this repository's own "
-                    "directory, because there is no origin remote; that works on this "
-                    "machine only" % (name, url),
-                    "add the origin remote, or use an absolute URL",
+                    "directory, because there is no remote to resolve it against; "
+                    "that works on this machine only" % (name, url),
+                    "add a remote (origin), or use an absolute URL",
                 ))
         elif kind == "unknown":
             findings.append((
@@ -418,11 +420,11 @@ def could_not_answer(what, rc, err):
         info("        %s" % line)
 
 
-def default_base_url(has_origin):
-    """What git resolves a relative submodule URL against.
+def default_remote_url(has_origin):
+    """The raw URL of the remote git resolves a relative submodule URL against.
 
     The current branch's remote (branch.<b>.remote, ignoring "." for a local
-    upstream), else origin; with no such remote, the superproject's own path.
+    upstream), else origin. None when there is no such remote or it has no URL.
     """
     remote = None
     rc, out, _ = run(["git", "symbolic-ref", "-q", "--short", "HEAD"])
@@ -439,7 +441,13 @@ def default_base_url(has_origin):
         rc, out, _ = run(["git", "config", "--get", "remote.%s.url" % remote])
         if rc == 0 and out.strip():
             return out.strip()
-    return GIT_CWD
+    return None
+
+
+def default_base_url(has_origin):
+    """What git resolves a relative submodule URL against: the default
+    remote's URL, else the superproject's own path."""
+    return default_remote_url(has_origin) or GIT_CWD
 
 
 def run_report(args):
@@ -498,7 +506,8 @@ def run_report(args):
         out if rc == 0 else "", ("url",)).items()}
     rc, out, _ = run(["git", "remote"])
     has_origin = rc == 0 and "origin" in out.split()
-    base_url = default_base_url(has_origin)
+    remote_url = default_remote_url(has_origin)
+    base_url = remote_url or GIT_CWD
 
     head("submodules")
     state_of = {path: state for state, _, path in statuses}
@@ -512,8 +521,8 @@ def run_report(args):
             raw("        %-24s %-14s %s" % (path, "unmapped", "(no .gitmodules entry)"))
 
     head("findings")
-    findings = submodule_findings(modules, gitlinks, statuses, local_urls, has_origin,
-                                  recorded, base_url)
+    findings = submodule_findings(modules, gitlinks, statuses, local_urls,
+                                  remote_url is not None, recorded, base_url)
     for level, message, fix in findings:
         if level == "fail":
             bad(message)

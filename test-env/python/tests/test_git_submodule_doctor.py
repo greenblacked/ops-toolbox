@@ -201,6 +201,36 @@ class SubmoduleFindingsTestCase(unittest.TestCase):
         findings = self.findings({"lib": module(url="../lib.git")}, has_origin=False)
         self.assertEqual([f[0] for f in findings], ["warn"])
 
+    def test_a_relative_url_with_only_a_non_origin_remote_is_fine(self):
+        # has_remote is true when default_remote_url() found any usable remote
+        # (here the branch's upstream), whatever its name.
+        calls = {
+            ("git", "symbolic-ref", "-q", "--short", "HEAD"): (0, "main\n", ""),
+            ("git", "config", "--get", "branch.main.remote"): (0, "upstream\n", ""),
+            ("git", "config", "--get", "remote.upstream.url"): (
+                0, "https://example.com/super.git\n", ""),
+        }
+        original = doctor.run
+        doctor.run = lambda cmd, timeout=15: calls.get(tuple(cmd), (1, "", ""))
+        try:
+            self.assertEqual(doctor.default_remote_url(False),
+                             "https://example.com/super.git")
+            self.assertEqual(doctor.default_base_url(False),
+                             "https://example.com/super.git")
+            has_remote = doctor.default_remote_url(False) is not None
+        finally:
+            doctor.run = original
+        self.assertEqual(
+            self.findings({"lib": module(url="../lib.git")}, has_origin=has_remote), [])
+
+    def test_no_remote_at_all_means_no_default_remote_url(self):
+        original = doctor.run
+        doctor.run = lambda cmd, timeout=15: (1, "", "")
+        try:
+            self.assertIsNone(doctor.default_remote_url(False))
+        finally:
+            doctor.run = original
+
     def test_drift_names_the_sync(self):
         [(level, _, fix)] = self.findings(
             {"lib": module()}, local_urls={"lib": "https://old.example.com/lib.git"}
