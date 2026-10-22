@@ -2110,6 +2110,17 @@ else
   assert_eq "tls_expiry tries exactly one target from the hosts file" "1" "$(grep -c '\[warn\]' <<<"$out")"
   rm -rf "$hosts_dir"
 
+  # Bracketed IPv6 targets parse as an address, with and without a port; an
+  # unbracketed one is refused rather than split at its last colon.
+  out="$("$TLS" --host '[::1]:1' 2>&1)"; rc=$?
+  assert_contains "tls_expiry parses [IPv6]:PORT" "$out" "[::1]:1: could not fetch a leaf certificate"
+  assert_contains "tls_expiry connects to the bracketed IPv6 target" "$out" "-connect [::1]:1 "
+  out="$("$TLS" --host '[::1]' 2>&1)"; rc=$?
+  assert_eq "tls_expiry accepts a bare [IPv6] (no 'host must be' error)" "0" "$(grep -c 'host must be' <<<"$out")"
+  out="$("$TLS" --host '2001:db8::1' 2>&1)"; rc=$?
+  assert_eq "tls_expiry refuses an unbracketed IPv6 -> 1" "1" "$rc"
+  assert_contains "tls_expiry explains that IPv6 needs brackets" "$out" "needs brackets"
+
   "$TLS" --cafile /nonexistent --host localhost:1 >/dev/null 2>&1; rc=$?
   assert_eq "tls_expiry rejects an unreadable --cafile -> 3" "3" "$rc"
 

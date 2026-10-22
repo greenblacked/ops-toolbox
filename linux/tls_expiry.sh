@@ -336,16 +336,44 @@ grade_pem() {
   fi
 }
 
+# HOST, HOST:PORT, [IPv6] or [IPv6]:PORT. An unbracketed address with more
+# than one colon is ambiguous and leaves HOST_NAME empty. HOST_TARGET is the
+# host:port form s_client wants (an IPv6 address stays bracketed).
+HOST_TARGET=""
 split_host_port() {
-  local spec="$1"
+  local spec="$1" rest
   spec="${spec#https://}"
   spec="${spec%%/*}"
-  if [[ "$spec" == *:* ]]; then
+  HOST_NAME=""
+  HOST_PORT=""
+  HOST_TARGET=""
+  if [[ "$spec" == "["* ]]; then
+    rest="${spec#\[}"
+    [[ "$rest" == *"]"* ]] || return 0
+    HOST_NAME="${rest%%\]*}"
+    rest="${rest#*\]}"
+    if [[ -z "$rest" ]]; then
+      HOST_PORT=443
+    elif [[ "$rest" == :* ]]; then
+      HOST_PORT="${rest#:}"
+    else
+      HOST_NAME=""
+      return 0
+    fi
+    [[ "$HOST_NAME" == *:* ]] || { HOST_NAME=""; return 0; }
+  elif [[ "$spec" == *:*:* ]]; then
+    return 0
+  elif [[ "$spec" == *:* ]]; then
     HOST_NAME="${spec%:*}"
     HOST_PORT="${spec##*:}"
   else
     HOST_NAME="$spec"
     HOST_PORT=443
+  fi
+  if [[ "$HOST_NAME" == *:* ]]; then
+    HOST_TARGET="[${HOST_NAME}]:${HOST_PORT}"
+  else
+    HOST_TARGET="${HOST_NAME}:${HOST_PORT}"
   fi
 }
 
@@ -359,6 +387,7 @@ fetch_host() {
   local host="$1"
   local port="$2"
   local target="${host}:${port}"
+  [[ "$host" == *:* ]] && target="[${host}]:${port}"
   local out
   local args=(s_client -connect "$target" -servername "$host" -showcerts)
   [[ -n "$CAFILE" ]] && args+=(-CAfile "$CAFILE" ${CA_SC[@]+"${CA_SC[@]}"})
@@ -442,11 +471,11 @@ grade_chain() {
       if chain_lacks_intermediate "$last_pem"; then
         fail "$label: incomplete chain: the server sent no CA certificate and the issuer is not in the trust store ($verify)" "serve fullchain.pem rather than cert.pem, or pass the private CA's root with --cafile"
       else
-        warn "$label: issuer not trusted locally: private CA or missing intermediate ($verify)" "if it is a private CA, pass its root with --cafile; else: openssl s_client -connect ${HOST_NAME}:${HOST_PORT} -servername ${HOST_NAME} -showcerts"
+        warn "$label: issuer not trusted locally: private CA or missing intermediate ($verify)" "if it is a private CA, pass its root with --cafile; else: openssl s_client -connect ${HOST_TARGET} -servername ${HOST_NAME} -showcerts"
       fi
       ;;
     10)    : ;;
-    *)     warn "$label: chain does not verify ($verify)" "openssl s_client -connect ${HOST_NAME}:${HOST_PORT} -servername ${HOST_NAME} -showcerts" ;;
+    *)     warn "$label: chain does not verify ($verify)" "openssl s_client -connect ${HOST_TARGET} -servername ${HOST_NAME} -showcerts" ;;
   esac
 }
 
@@ -540,17 +569,15 @@ if (( ${#HOSTS[@]} > 0 )); then
     info "--cafile: this openssl cannot ignore its default trust sources, so system trust sources may still apply"
   fi
   for spec in "${HOSTS[@]}"; do
-    HOST_NAME=""
-    HOST_PORT=""
     split_host_port "$spec"
     if [[ -z "$HOST_NAME" || -z "$HOST_PORT" ]] || ! [[ "$HOST_PORT" =~ ^[0-9]+$ ]]; then
-      fail "$spec: host must be HOST or HOST:PORT"
+      fail "$spec: host must be HOST, HOST:PORT, [IPv6] or [IPv6]:PORT (an IPv6 address needs brackets)"
       continue
     fi
     fetch_host "$HOST_NAME" "$HOST_PORT"
     pem="$HOST_PEM"
     if [[ -z "$pem" ]]; then
-      warn "$spec: could not fetch a leaf certificate" "openssl s_client -connect ${HOST_NAME}:${HOST_PORT} -servername ${HOST_NAME}"
+      warn "$spec: could not fetch a leaf certificate" "openssl s_client -connect ${HOST_TARGET} -servername ${HOST_NAME}"
       continue
     fi
     grade_pem "$spec" "$pem"
