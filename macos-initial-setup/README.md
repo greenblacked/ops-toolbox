@@ -1277,29 +1277,33 @@ credential store is refused with exit `3`: anything in `~/.ssh` except
 `~/.npmrc`, `~/.git-credentials`, `~/.config/git/credentials`, the GitHub CLI
 `hosts.yml`, `~/.terraform.d/credentials.tfrc.json`, `~/.pypirc`, gcloud's
 `~/.config/gcloud/application_default_credentials.json`, `credentials.db` and
-`legacy_credentials/`, a `~/.terraformrc` with a `credentials` block,
-`~/Library/Keychains` and `~/.gnupg`. A default run leaves
-`~/.config/git/credentials` out of `~/.config/git` and skips a
-`~/.terraformrc` that has a `credentials` block, saying so.
-`--include-secrets` lifts that and warns that the archive now holds secrets.
-Either way the archive is created `0600`; a `--dest` the script creates is
-`0700`, while an existing one keeps its mode and is reported when group- or
-world-accessible.
+`legacy_credentials/`, a `~/.terraformrc` with a `credentials` block, a
+`~/.aws/config` with static keys, `~/Library/Keychains` and `~/.gnupg`. A
+default run leaves `~/.config/git/credentials` out of `~/.config/git` and
+skips a `~/.terraformrc` that has a `credentials` block and a `~/.aws/config`
+with static keys (`aws_access_key_id`, `aws_secret_access_key` or
+`aws_session_token`), saying so. `--include-secrets` lifts that and warns that
+the archive now holds secrets. Either way the archive is created `0600`; a
+`--dest` the script creates is `0700`, while an existing one keeps its mode
+and is reported when group- or world-accessible.
 
-How a run writes: a `--dest` that group or other users can write to is
-refused (exit `3`; a sticky one owned by you, like `/tmp`, is accepted). The
-archive is built as a hidden temporary file in `--dest`, created exclusively
-with `mktemp` under an unpredictable name, so a symlink planted in `--dest`
-is never followed. `tar` runs under `umask 077` (with `COPYFILE_DISABLE=1`,
-so macOS `tar` adds no `._` AppleDouble members, and `.DS_Store` excluded),
-and the result is checked with `tar -tzf` for at
-least one member, then published with `mv -n`, which never replaces a file.
-A failed run removes its temporary file and keeps every earlier archive.
-Rotation then removes the oldest `PREFIX-YYYYmmdd-HHMMSS.tar.gz` files beyond
-`--keep`, printing each one, and touches nothing else in `--dest`; it runs only
-after the new archive is published, and `--dry-run` lists what it would
-remove. A dry run writes nothing at all, not even the destination directory,
-and previews on any machine.
+How a run writes: a `--dest` that group or other users can write to is refused
+(exit `3`; a sticky one owned by you, like `/tmp`, is accepted), and so is one
+below an ancestor directory that is not owned by root or you, or that group or
+other users can write to unless it is sticky, since anyone who can write to an
+ancestor can rename `--dest` away and put their own directory in its place.
+The archive is built as a hidden temporary file in `--dest`, created
+exclusively with `mktemp` under an unpredictable name, so a symlink planted in
+`--dest` is never followed. `tar` runs under `umask 077` (with
+`COPYFILE_DISABLE=1`, so macOS `tar` adds no `._` AppleDouble members, and
+`.DS_Store` excluded), and the result is checked with `tar -tzf` for at least
+one member, then published with `mv -n`, which never replaces a file. A failed
+run removes its temporary file and keeps every earlier archive. Rotation then
+removes the oldest `PREFIX-YYYYmmdd-HHMMSS.tar.gz` files beyond `--keep`,
+printing each one, and touches nothing else in `--dest`; it runs only after
+the new archive is published, and `--dry-run` lists what it would remove. A
+dry run writes nothing at all, not even the destination directory, and
+previews on any machine.
 
 | Flag | Purpose |
 | --- | --- |
