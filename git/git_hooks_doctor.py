@@ -601,8 +601,14 @@ def run_report(args):
             for label, server_dir in locations)
         for name, path in hooks:
             if name in RECEIVE_HOOKS:
-                info("%s in %s runs for local ref updates only: a push into this "
-                     "repository looks in %s" % (name, shorten(active_dir), looks_in))
+                if name == "reference-transaction":
+                    info("%s in %s runs here for local ref updates only; for a push "
+                         "into this repository Git looks in %s"
+                         % (name, shorten(active_dir), looks_in))
+                else:
+                    info("%s in %s never runs: it only runs when this repository "
+                         "receives a push, and that looks in %s"
+                         % (name, shorten(active_dir), looks_in))
         for label, server_dir in locations:
             _, server_hooks, _ = scan_hooks(server_dir)
             checked += [(name, path, "%s (receive-side, in %s%s)"

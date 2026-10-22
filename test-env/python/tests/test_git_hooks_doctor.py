@@ -399,6 +399,10 @@ class LinkedWorktreeReportTestCase(unittest.TestCase):
             with open(hook, "w") as handle:
                 handle.write("#!/bin/sh\nexit 0\n")
             os.chmod(hook, 0o755)
+        transaction = os.path.join(worktree, "hooks", "reference-transaction")
+        with open(transaction, "w") as handle:
+            handle.write("#!/bin/sh\nexit 0\n")
+        os.chmod(transaction, 0o755)
         out = io.StringIO()
         with contextlib.ExitStack() as stack:
             stack.enter_context(mock.patch.object(doctor, "HOME", "/nonexistent-home"))
@@ -420,6 +424,12 @@ class LinkedWorktreeReportTestCase(unittest.TestCase):
         self.assertIn("$GIT_DIR (push to %s) -> %s" % (main_path, main_git + "/hooks"), text)
         self.assertIn(
             "$GIT_DIR (push to this worktree's path) -> %s" % (private + "/hooks"), text
+        )
+        self.assertIn("never runs: it only runs when this repository receives a push", text)
+        self.assertIn(
+            "runs here for local ref updates only; for a push into this repository "
+            "Git looks in %s for a push to %s; " % (main_git + "/hooks", main_path),
+            text,
         )
         self.assertIn("for a push to %s" % main_path, text)
         self.assertIn("for a push to this worktree's path", text)
