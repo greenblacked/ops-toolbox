@@ -568,7 +568,7 @@ ctx() {
     local plain=0 printed=0 pattern red='' reset=''
     local aws_cfg aws_cred aws_section
     local kube_ctx kube_ns aws_profile aws_region aws_extra gc_dir gc_name gc_project
-    local tf_ws tf_from docker_ctx docker_from branch url host
+    local tf_ws tf_dir tf_from docker_ctx docker_from branch url host
     [ "${1:-}" = "--plain" ] && plain=1
     pattern="${CTX_DANGER_PATTERN:-prod|production|prd}"
     if [ "$plain" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then

@@ -651,7 +651,7 @@ run_ctx() {
       status=$?
       # ctx keeps its variables local; one escaping would linger in the
       # interactive shell that sourced .aliases.
-      [ -n "${plain+x}${printed+x}${pattern+x}${aws_profile+x}${tf_ws+x}" ] && echo "LEAKED"
+      [ -n "${plain+x}${printed+x}${pattern+x}${aws_profile+x}${tf_ws+x}${tf_dir+x}${gc_dir+x}${docker_ctx+x}" ] && echo "LEAKED"
       exit "$status"
     ' "$GB/.aliases" ${args[@]+"${args[@]}"} 2>&1)"
   rc=$?
