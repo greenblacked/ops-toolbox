@@ -114,9 +114,46 @@ Run exactly the form you previewed:
 !!! apply "--hard discards uncommitted work"
     `--hard --force` resets the working tree as well. Every change to a
     tracked file that you had not committed, staged or not, is gone, together
-    with the undone commit's changes. Untracked files are not touched: the
-    script runs no `git clean`, so they stay in place. Without `--force` it refuses with exit `3`:
+    with the undone commit's changes. The script runs no `git clean`, so
+    untracked files normally stay in place. The exception is git's own
+    rule: an untracked file that sits where a tracked file has to be
+    written is overwritten. That happens when the undone commit deleted or
+    renamed a path that exists in the commit before it, and you have since
+    created a file at that path. Without `--force` the script refuses with
+    exit `3`:
     `--hard requires --force (destructive: discards uncommitted work)`.
+
+Before a `--hard` run, list the untracked and ignored files and copy any
+you want to keep somewhere outside the repository:
+
+```{ .bash .rpt-report title="List files at risk" }
+git status --short --ignored
+```
+
+Copying them out is the safest backup. A stash is a poor fit here, for two
+reasons. `git stash pop` after the reset stops with an "already exists"
+error when the stashed untracked path is tracked again, and it would also
+re-apply the tracked changes you meant to discard.
+
+If you stash anyway, use `--all`: it saves untracked and ignored files
+(`--include-untracked` alone leaves the ignored ones out). Run one stash
+only, so that `stash@{0}` is the one you recover from:
+
+```{ .bash .rpt-apply title="Stash as a last resort" }
+git stash push --all
+```
+
+`--all` also stashes, and so removes from the working tree, ignored
+build directories such as `node_modules` or `.venv`; they come back only
+with the stash. When such directories are large, copy the few files at
+risk out of the repository instead of stashing.
+
+Untracked and ignored files live in the stash's third parent, so you can
+recover one without `git stash pop`:
+
+```{ .bash .rpt-apply title="Recover one file from the stash" }
+git show 'stash@{0}^3:<path>' > /somewhere/outside/the/repo/<name>
+```
 
 ```{ .bash .rpt-apply title="Apply, discard everything" }
 ./git/git_undo_last_commit.sh --hard --force
