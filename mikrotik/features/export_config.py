@@ -129,10 +129,16 @@ _LEAK_PATTERNS = (
     # does not end it. A quote that never closes runs to the end of the line
     # (an unterminated value is a leak, not something to pass over). An
     # unquoted `$"name"` is one expression token, not a value ending at `$`.
+    # Inside a script field of an export the script's own quotes arrive
+    # escaped: `password=\"x\"` is the `equoted` form, which runs to the
+    # matching escaped quote (a script's own backslash pair, escaped quote
+    # or escape inside it does not end it) or, unterminated, to the first
+    # bare quote or the end of the line.
     ("sensitive field", True, re.compile(
         r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
         r"|wpa-pre-shared-key|preshared-key|authentication-key|encryption-key)"
         r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)(?:"|\\?$)'
+        r'|\\"(?P<equoted>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)'
         r'|(?P<value>\$"(?:[^"\\]|\\.)*"|[^\s\\"]+))'
     )),
 )
@@ -233,9 +239,24 @@ def _logical_lines(text):
 # string like "a=" is not an export, and reading it as one would let a later
 # backslash-n and "#" hide a live assignment.
 _SCRIPT_FIELDS = frozenset((
-    "source", "on-event", "on-up", "on-down", "on-login", "on-logout",
-    "script", "do",
+    "source", "script", "do",
+    # scheduler, traffic-monitor, ppp profile, hotspot, vrrp, dhcp alert
+    "on-event", "on-up", "on-down", "on-login", "on-logout",
+    "on-master", "on-backup", "on-fault", "on-alert", "on-alarm",
+    # netwatch, dhcp-server, dhcp-client
+    "up-script", "down-script", "test-script", "lease-script",
 ))
+
+
+def _is_script_field(name):
+    """Whether a field name holds script text. RouterOS adds these over time,
+    so beyond the known names any `*-script` or `on-*` field counts: reading
+    a plain field as a script only makes the scan look harder."""
+    name = name.lower()
+    return name in _SCRIPT_FIELDS or name.endswith("-script") or \
+        name.startswith("on-")
+
+
 _EXPORT_SHAPED = re.compile(r"\s*(?:/|(?:add|set)(?:\s|$))")
 
 
@@ -252,7 +273,7 @@ def _export_field_start(line, index):
     if not _EXPORT_SHAPED.match(line):
         return None
     for match in reversed(list(re.finditer(r'[\w-]+="', line[:index]))):
-        if match.group()[:-2] not in _SCRIPT_FIELDS:
+        if not _is_script_field(match.group()[:-2]):
             continue
         position, closed = match.end(), False
         while position < index:
@@ -302,18 +323,37 @@ _FIELD_EXPRESSION = re.compile(r'\$(?:[A-Za-z_\[("]|\\")')
 _SECRET_WORDS = (
     "token", "password", "passwd", "secret", "apikey", "passphrase", "psk",
     "privatekey", "accesskey", "sharedkey", "wpakey", "wpa2key", "pincode",
+    "credential", "bearer", "hmac",
 )
-# A PIN is too short to match inside a word (mapping, spinner), so it counts
-# only as a word of its own: pin, Pin, SimPin, wifi_pin, WIFI-PIN.
+# These are too short to match inside a word (mapping, spinner, bypass,
+# compass, credit), so they count only as a word of their own: pin, Pin,
+# SimPin, wifi_pin, WIFI-PIN, ApiPass, db_pwd, Cred.
+_SECRET_NAME_WORDS = frozenset(("pin", "pass", "pwd", "cred"))
+# Words that often name a secret but just as often name a lookup key or an
+# auth mode (`:local key ("ipsec-" . $addr)`, `:local auth [...]`). They count
+# only as a word of their own, and only a plain literal value is a finding:
+# an expression or a variable is not.
+_WEAK_NAME_WORDS = frozenset(("key", "auth"))
 _NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def _name_strength(name, loose=False):
+    """2 for a name that is secret, 1 for one that is secret only given a
+    plain literal, 0 for one that is not."""
+    squashed = re.sub(r"[^a-z0-9]" if loose else r"[_-]", "", name.lower())
+    if any(word in squashed for word in _SECRET_WORDS):
+        return 2
+    words = {word.lower() for word in _NAME_WORDS.findall(name)}
+    if words & _SECRET_NAME_WORDS:
+        return 2
+    if not loose and words & _WEAK_NAME_WORDS:
+        return 1
+    return 0
 
 
 def _is_secret_name(name, loose=False):
     """Whether a variable name (or, loose, any text) names a secret."""
-    squashed = re.sub(r"[^a-z0-9]" if loose else r"[_-]", "", name.lower())
-    if any(word in squashed for word in _SECRET_WORDS):
-        return True
-    return any(word.lower() == "pin" for word in _NAME_WORDS.findall(name))
+    return _name_strength(name, loose) > 0
 
 
 def _statement_start(line, index):
@@ -351,7 +391,7 @@ def _leak_spans(line):
             # step one character: a match for a harmless assignment must not
             # swallow the secret one that starts inside it.
             position = match.start() + 1 if named else match.end()
-            group = next((g for g in ("quoted", "value", "bare")
+            group = next((g for g in ("quoted", "equoted", "value", "bare")
                           if g in pattern.groupindex and match.group(g) is not None),
                          None)
             if group is None:
@@ -367,7 +407,12 @@ def _leak_spans(line):
                     continue
                 if (match.group("name"), value) in _PLACEHOLDER_ASSIGNMENTS:
                     continue
-            if kind == "sensitive field":
+            if kind == "sensitive field" and group == "equoted":
+                # In a script, the export escapes `$` as `\$`: `\$name`,
+                # `\$[...]`, `\$(...)` and `\$"name"` start an expression.
+                if re.match(r'\\\$(?:[A-Za-z_\[("]|\\")', value):
+                    continue
+            elif kind == "sensitive field":
                 # A field value is plain text: `\$` there is a literal dollar
                 # in the secret, so only an unescaped `$name`, `$[...]`,
                 # `$(...)` or `$"name"` is an expression, not a value.
@@ -538,8 +583,12 @@ def _check_assignment(rest, export_layer):
         name, index = match.group(), match.end()
     if index < size and s[index] not in _BOUNDARY:
         return "unexpected character after the variable name", False
-    if not _is_secret_name(name):
+    strength = _name_strength(name)
+    if not strength:
         return None, False
+    # A weak name (key, auth) is secret only given a plain literal, so an
+    # expression or a variable is not reported for it.
+    weak = strength == 1
 
     index = skip(index)
     if index >= size:
@@ -577,7 +626,7 @@ def _check_assignment(rest, export_layer):
         if _VAR_REF.fullmatch(content):
             return None, False
         if content[0] == "$":
-            return _NOT_A_VARIABLE, False
+            return (None, False) if weak else (_NOT_A_VARIABLE, False)
         return None, True
     if not export_layer and s[index:index + 2] == "\\$":
         index += 1
@@ -589,7 +638,7 @@ def _check_assignment(rest, export_layer):
         match = _VAR_REF.match(s, index)
         if first != "$" or not match or \
                 (match.end() < size and s[match.end()] not in _BOUNDARY):
-            return _NOT_A_VARIABLE, False
+            return (None, False) if weak else (_NOT_A_VARIABLE, False)
         return None, False
     end = index
     while end < size and s[end] not in " \t\r\n;\"})]":

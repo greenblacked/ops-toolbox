@@ -913,14 +913,26 @@ appears; a `:global`, `:local` or `:set` (the colon is optional where the
 keyword starts a statement: at the start of a line, after `;` or `{`, or at
 the start of a script field) whose name contains `token`, `password`,
 `passwd`, `secret`, `apikey`, `passphrase`, `psk`, `privatekey`, `accesskey`,
-`sharedkey`, `wpakey` or `pincode`, or has `pin` as a word of its own, and is
-given a literal value, quoted or a bare word, in a script or an `on-event`.
+`sharedkey`, `wpakey`, `pincode`, `credential`, `bearer` or `hmac`, or has
+`pin`, `pass`, `pwd` or `cred` as a word of its own (so `bypass`, `compass`
+and `credit` stay clean), and is given a literal value, quoted or a bare
+word, in a script or in any script field. A name with `key` or `auth` as a
+word of its own (`key`, `nowKey`, `auth`) is weaker, because scripts use
+them for lookup keys and modes (`:local key ("ipsec-" . $addr)`,
+`:local auth [...]`): it is reported only when given a plain literal
+(`:global key "abc"`), never for an expression or a variable. Script fields
+are `source`, `on-event`, `up-script`, `down-script`, `test-script`,
+`lease-script`, `on-master`, `on-backup`, `on-fault`, `on-alert` and
+`do`, and any other field whose name ends in `-script` or starts with `on-`.
 Names are compared with `_` and `-` removed and case ignored, so `api_key`,
 `api-key` and `API_KEY` all count as `apikey`; the variable name may itself
 be quoted, as in `:global "api-token" "x"`. The scan also covers the fields
 RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
 `private-key=`, `secret=`, `psk=`, `preshared-key=` (WireGuard peers), the
-WPA pre-shared keys, `authentication-key=`, `encryption-key=`). Empty values,
+WPA pre-shared keys, `authentication-key=`, `encryption-key=`), also inside
+a script field, where the export writes the script's quotes escaped
+(`password=\"x\"`, as in `/ppp secret add`, `/tool fetch` or `/tool e-mail
+send`) and an escaped variable (`password=\$pw`) is not a value. Empty values,
 `$variables` (`$Password`), `<redacted>` and the exact placeholder assignments
 the package ships
 (`TgBotToken "<paste bot token>"`, `RouterBackupPassword "<paste backup

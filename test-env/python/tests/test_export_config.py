@@ -1186,6 +1186,7 @@ _KEYWORDS = (":global", ":local", ":set", ":GLOBAL", ":global\t", "global", "set
 _CONTAINERS = (
     "plain", "after-semicolon", "in-block", "in-do-block", "after-comment-string",
     "export-source", "export-on-event", "export-after-comment-string",
+    "export-up-script", "export-lease-script",
     "commented-plain", "commented-source", "commented-after-newline",
 )
 
@@ -1249,6 +1250,10 @@ def _wrap(container, statement):
         return 'add name=s source=":log info x; ' + statement + '"'
     if container == "export-on-event":
         return 'add name=s on-event="' + statement + '"'
+    if container == "export-up-script":
+        return 'add host=192.0.2.1 up-script=":log info x; ' + statement + '"'
+    if container == "export-lease-script":
+        return 'add name=d lease-script=":log info x; ' + statement + '"'
     if container == "export-after-comment-string":
         return 'add name=s source=":put \\"#\\"; ' + statement + '"'
     if container == "commented-plain":
@@ -1318,8 +1323,8 @@ class GeneratedSecretVariantsTestCase(unittest.TestCase):
 
     def test_every_assignment_variant_is_found_and_blocks_commit(self):
         cases = list(generated_secret_cases())
-        # 11 containers x 7 keywords x 6 names x 21 values.
-        self.assertEqual(len(cases), 9702)
+        # 13 containers x 7 keywords x 6 names x 21 values.
+        self.assertEqual(len(cases), 11466)
         out, errout = io.StringIO(), io.StringIO()
         fetch = mock.Mock()
         git = mock.Mock(return_value=(0, "", ""))
@@ -1355,6 +1360,171 @@ class GeneratedSecretVariantsTestCase(unittest.TestCase):
             with self.subTest(label):
                 self.assertEqual(export_config.find_leaks(export), [])
                 self.assertEqual(export_config.find_unverifiable(export), [])
+
+
+_SENSITIVE_FIELDS = (
+    "password", "passphrase", "private-key", "secret", "psk",
+    "wpa2-pre-shared-key", "wpa-pre-shared-key", "preshared-key",
+    "authentication-key", "encryption-key",
+)
+# Script fields of an export: the script text sits inside the quotes and
+# every quote of the script itself arrives escaped.
+_SCRIPT_CONTAINERS = ("source", "on-event", "up-script", "lease-script", "on-master")
+
+
+def _in_field(container, script):
+    return "add name=s %s=\":log info x; %s\"\n" % (container, script)
+
+
+def generated_sensitive_field_cases():
+    """(label, export, is_a_leak) for every sensitive field in a plain
+    quoted value and, in each script field, an escaped-quoted, a bare and an
+    escaped-variable value."""
+    for field in _SENSITIVE_FIELDS:
+        yield ("plain quoted | " + field,
+               '/ppp secret\nadd name=u %s="%s"\n' % (field, SECRET_WORD), True)
+        for container in _SCRIPT_CONTAINERS:
+            head = "/ppp secret add name=u %s=" % field
+            for form, value, leak in (
+                ("escaped quoted", '\\"%s\\"' % SECRET_WORD, True),
+                ("escaped quoted, escaped quote inside",
+                 '\\"hun\\\\\\"ter2xyz\\"', True),
+                ("bare", SECRET_WORD, True),
+                ("escaped variable", "\\$pw", False),
+                ("escaped quoted variable", '\\"\\$pw\\"', False),
+            ):
+                yield ("%s | %s | %s" % (container, field, form),
+                       "/system script\n" + _in_field(container, head + value), leak)
+
+
+class GeneratedSensitiveFieldTestCase(unittest.TestCase):
+    """The show-sensitive fields, in the form a script field of an export
+    gives them, where the script's quotes are escaped."""
+
+    def test_every_sensitive_field_variant_is_found_or_clean(self):
+        cases = list(generated_sensitive_field_cases())
+        # 10 fields x (1 plain + 5 containers x 5 forms).
+        self.assertEqual(len(cases), 260)
+        for label, export, leak in cases:
+            with self.subTest(label):
+                found = export_config.find_leaks(export)
+                if leak:
+                    self.assertTrue(found, "the scan finds nothing")
+                    redacted = export_config.redact_secrets(export)
+                    self.assertNotIn("hunter2xyz", redacted)
+                    self.assertNotIn("ter2xyz", redacted)
+                    self.assertEqual(export_config.find_leaks(redacted), [])
+                    self.assertEqual(export_config.redact_secrets(redacted), redacted)
+                else:
+                    self.assertEqual(found, [])
+                    self.assertEqual(export_config.redact_secrets(export), export)
+
+    def test_real_world_escaped_quoted_scripts(self):
+        for stmt in ('/ppp secret add name=u password=\\"hunter2xyz\\"',
+                     '/tool fetch url=https://x/ user=u password=\\"hunter2xyz\\"',
+                     '/tool e-mail send to=a@b password=\\"hunter2xyz\\"',
+                     '/interface wireless security-profiles add '
+                     'wpa2-pre-shared-key=\\"hunter2xyz\\"'):
+            export = _in_field("source", stmt)
+            with self.subTest(stmt):
+                self.assertEqual(export_config.find_leaks(export),
+                                 [(1, "sensitive field")])
+                self.assertNotIn("hunter2xyz", export_config.redact_secrets(export))
+
+    def test_an_unterminated_escaped_quote_still_counts(self):
+        export = 'add name=s source=":log x; /ppp secret add password=\\"hunter2xyz\n'
+        self.assertTrue(export_config.find_leaks(export))
+        self.assertNotIn("hunter2xyz", export_config.redact_secrets(export))
+
+    def test_the_closing_escaped_quote_is_kept_by_redaction(self):
+        export = _in_field("source", 'add password=\\"hunter2xyz\\" name=u')
+        self.assertEqual(
+            export_config.redact_secrets(export),
+            _in_field("source", 'add password=\\"<redacted>\\" name=u'))
+
+
+class ScriptFieldRecognitionTestCase(unittest.TestCase):
+    def test_known_and_generic_script_fields(self):
+        for name in ("source", "on-event", "up-script", "down-script",
+                     "test-script", "lease-script", "on-master", "on-backup",
+                     "on-fault", "on-alert", "on-future-thing", "new-script"):
+            with self.subTest(name):
+                self.assertTrue(export_config._is_script_field(name))
+        for name in ("comment", "name", "scripts", "onevent", "script-x"):
+            with self.subTest(name):
+                self.assertFalse(export_config._is_script_field(name))
+
+    def test_a_colonless_assignment_in_each_script_field_is_found(self):
+        # Without its colon the keyword counts only where it starts a
+        # statement, which the scan knows only inside a script field.
+        for name in ("up-script", "down-script", "test-script", "lease-script",
+                     "on-master", "on-backup", "on-fault", "on-alert",
+                     "on-future-thing", "vendor-script"):
+            export = 'add name=s %s="global ApiToken \\"hunter2xyz\\""\n' % name
+            with self.subTest(name):
+                self.assertEqual(export_config.find_leaks(export),
+                                 [(1, "secret assigned in a script")])
+
+    def test_a_plain_field_does_not_start_a_statement(self):
+        export = 'add name=s comment="global ApiToken \\"hunter2xyz\\""\n'
+        self.assertEqual(export_config.find_leaks(export), [])
+
+
+class SecretNameWordsTestCase(unittest.TestCase):
+    def leaks(self, statement):
+        return export_config.find_leaks("/system script\n%s\n" % statement)
+
+    def unverifiable(self, statement):
+        return export_config.find_unverifiable("/system script\n%s\n" % statement)
+
+    def test_pass_pwd_cred_bearer_hmac_with_a_literal_are_findings(self):
+        for name in ("pass", "Pass", "ApiPass", "db_pwd", "PWD", "cred", "Cred",
+                     "credential", "UserCredentials", "bearer", "ApiBearer",
+                     "hmac", "HmacSecretValue", "wifi-pass"):
+            for value in ('"hunter2xyz"', "hunter2xyz"):
+                statement = ":global %s %s" % (name, value)
+                with self.subTest(statement):
+                    self.assertTrue(self.leaks(statement))
+
+    def test_names_that_merely_contain_a_word_stay_clean(self):
+        for name in ("bypass", "compass", "passenger", "credit",
+                     "Keywords", "authentication"):
+            statement = ':global %s "hunter2xyz"' % name
+            with self.subTest(statement):
+                self.assertEqual(self.leaks(statement), [])
+                self.assertEqual(self.unverifiable(statement), [])
+
+    def test_pass_given_a_variable_or_expression_is_unverifiable_not_clean(self):
+        self.assertEqual(self.leaks(":global Pass ($a . $b)"), [])
+        self.assertTrue(self.unverifiable(":global Pass ($a . $b)"))
+        self.assertEqual(self.unverifiable(":global Pass $other"), [])
+
+    def test_a_weak_name_given_an_expression_or_variable_is_clean(self):
+        for statement in (':local key ("ipsec-" . $addr)',
+                          ":local key (\";\" . $ip . \":\")",
+                          ':local auth [:tostr ($row->"security.authentication-types")]',
+                          ":local prevKey (\";\" . $tunnel . \"=\")",
+                          ":local keyStart [:find $BW_PREV_RX \";\"]",
+                          ':set nowKey [/interface get [find name=$W] detect-internet-state]',
+                          ":set key $other", ':set key "$other"',
+                          ':local nowKey ""', ":local key", ":global auth {1;2}",
+                          'add name=s source=":local key (\\"a\\" . \\$x)"'):
+            with self.subTest(statement):
+                self.assertEqual(self.leaks(statement), [])
+                self.assertEqual(self.unverifiable(statement), [])
+
+    def test_a_weak_name_given_a_literal_is_a_finding(self):
+        for statement in (':global key "abc"', ":global key abc", ':local auth "abc"',
+                          ":local auth abc", ':local nowKey "abc"', ":set key 12345",
+                          'add name=s source=":global key \\"abc\\""'):
+            with self.subTest(statement):
+                self.assertTrue(self.leaks(statement))
+
+    def test_redaction_covers_the_new_names(self):
+        self.assertEqual(export_config.redact_secrets(":global Pass abc123; :log x\n"),
+                         ":global Pass <redacted>; :log x\n")
+        self.assertEqual(export_config.redact_secrets(':global key "abc"\n'),
+                         ':global key "<redacted>"\n')
 
 
 SUMMARY_BEFORE = """\
