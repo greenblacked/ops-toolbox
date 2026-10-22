@@ -665,7 +665,8 @@ function Invoke-DistroBackup {
                 else { $stuck += "the new sidecar could not be removed from $side" }
             }
             if ($stuck.Count -gt 0) {
-                Write-Error ("The earlier backup could not be fully put back: " + ($stuck -join '; ')) -ErrorAction Continue
+                $lead = if ($hadTar -or $hadSide) { 'The earlier backup could not be fully put back: ' } else { 'The new backup could not be cleaned up: ' }
+                Write-Error ($lead + ($stuck -join '; ')) -ErrorAction Continue
             }
             return $false
         }
