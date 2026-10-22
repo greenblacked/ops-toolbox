@@ -1554,13 +1554,19 @@ switch ($Action) {
                     Write-Error "Could not pick a free backup name in $destRoot; the export is kept at $staging" -ErrorAction Continue
                     $rc = 1
                 } else {
+                    $moved = $false
                     try {
                         Move-Item -LiteralPath $staging -Destination $dated -ErrorAction Stop
+                        $moved = $true
                         $hash = (Get-FileHash -LiteralPath $dated -Algorithm SHA256).Hash.ToLowerInvariant()
                         Set-Content -LiteralPath "$dated.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($dated))"
                         Write-Host "Kept the export as a backup: $dated (with a .sha256 sidecar)."
                     } catch {
-                        Write-Error "Could not keep the export as $dated ($($_.Exception.Message)); any export left over is at $staging" -ErrorAction Continue
+                        if ($moved) {
+                            Write-Error "The export is at $dated but its .sha256 sidecar was not written ($($_.Exception.Message))" -ErrorAction Continue
+                        } else {
+                            Write-Error "Could not keep the export as $dated ($($_.Exception.Message)); any export left over is at $staging" -ErrorAction Continue
+                        }
                         $rc = 1
                     }
                 }
