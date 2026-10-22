@@ -622,40 +622,50 @@ try {
     ) ($left -join "`n")
 
     # A failure after the earlier pair has been set aside must put it back.
-    # The stand-in export plants a non-empty directory where the earlier
-    # sidecar is to be set aside, with a child named like the sidecar. The
-    # earlier tar has been moved aside by then, and the sidecar's move
-    # lands on that child, which a real filesystem refuses, so the
-    # rollback has work to do.
-    [IO.File]::WriteAllText($backupOut, $pairTar)
-    [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
-    function wsl.exe {
-        [IO.File]::WriteAllText([string]$args[2], 'unfinished export')
-        $planted = '{0}.sha256' -f (([string]$args[2]) -replace '\.partial$', '.old')
-        $blocker = Join-Path $planted 'Ubuntu_2026-10-21_1830.tar.sha256'
-        New-Item -ItemType Directory -Path (Join-Path $blocker 'x') -Force | Out-Null
-        $global:LASTEXITCODE = 0
+    # The stand-in export keeps its output open for reading without delete
+    # sharing, which Get-FileHash can still read. The earlier tar and sidecar
+    # have both been set aside by the time the export is moved onto the tar's
+    # name, and Windows refuses to rename a file that is open that way, so the
+    # rollback has both files to put back. Only Windows enforces that, so the
+    # case is skipped elsewhere and says so.
+    if ($onWindows) {
+        [IO.File]::WriteAllText($backupOut, $pairTar)
+        [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
+        $script:heldExport = $null
+        function wsl.exe {
+            [IO.File]::WriteAllText([string]$args[2], 'unfinished export')
+            $script:heldExport = [IO.File]::Open([string]$args[2], [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            $global:LASTEXITCODE = 0
+        }
+        try {
+            $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
+            $leftover = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
+        } finally {
+            if ($null -ne $script:heldExport) { $script:heldExport.Dispose(); $script:heldExport = $null }
+        }
+        function wsl.exe {
+            [IO.File]::WriteAllText([string]$args[2], 'new export')
+            $global:LASTEXITCODE = 0
+        }
+        Test-Case 'a failure after the earlier pair was set aside returns false' ($backedUp -eq $false)
+        Test-Case 'and puts the earlier tar and sidecar back with their content' (
+            [IO.File]::ReadAllText($backupOut) -eq $pairTar -and
+            [IO.File]::ReadAllText("$backupOut.sha256") -eq $pairSide
+        ) ($leftover -join "`n")
+        # The held export cannot be deleted while it is open, so it is the
+        # one file allowed to remain at that point; nothing else may.
+        $strays = @($leftover | Where-Object { $_ -ne 'Ubuntu_2026-10-21_1830.tar' -and $_ -ne 'Ubuntu_2026-10-21_1830.tar.sha256' })
+        Test-Case 'and leaves no set-aside copy or temporary sidecar' (
+            @($strays | Where-Object { $_ -match '\.old' -or $_ -match '\.sha256$' }).Count -eq 0 -and
+            @($strays | Where-Object { $_ -match '\.partial$' }).Count -le 1
+        ) ($leftover -join "`n")
+        Get-ChildItem -LiteralPath $backupDir -Force | Where-Object { $_.Name -match '\.partial' } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
+        [IO.File]::WriteAllText($backupOut, $pairTar)
+        [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
+    } else {
+        Test-Skip 'the rollback after the swap starts needs a file open without delete sharing, which only Windows enforces'
     }
-    $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
-    function wsl.exe {
-        [IO.File]::WriteAllText([string]$args[2], 'new export')
-        $global:LASTEXITCODE = 0
-    }
-    $leftover = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
-    $plantedDirs = @(Get-ChildItem -LiteralPath $backupDir -Force -Directory)
-    Test-Case 'a failure after the earlier pair was set aside returns false' ($backedUp -eq $false)
-    Test-Case 'and puts the earlier tar and sidecar back with their content' (
-        [IO.File]::ReadAllText($backupOut) -eq $pairTar -and
-        [IO.File]::ReadAllText("$backupOut.sha256") -eq $pairSide
-    ) ($leftover -join "`n")
-    Test-Case 'and leaves no temporary file but the directory the test planted' (
-        $plantedDirs.Count -eq 1 -and $leftover.Count -eq 3 -and
-        @($leftover | Where-Object { $_ -match '\.partial' }).Count -eq 0 -and
-        @(Get-ChildItem -LiteralPath $backupDir -Force -File | Where-Object { $_.Name -match '\.old' }).Count -eq 0
-    ) ($leftover -join "`n")
-    foreach ($dir in $plantedDirs) { Remove-Item -LiteralPath $dir.FullName -Recurse -Force }
-    [IO.File]::WriteAllText($backupOut, $pairTar)
-    [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
 
     # A read-only earlier sidecar: whether the platform lets it be replaced
     # or not, the tar and its sidecar must agree afterwards and the call
