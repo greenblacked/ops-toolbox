@@ -102,7 +102,7 @@ Options:
                      missing; a file holding changes is left alone. Exit 4 if
                      anything was refused or nothing was restored
   --stamp STAMP      With --restore: use the backup with this stamp
-                     (YYYYmmdd-HHMMSS, as --backups prints it) instead of the newest
+                     (YYYYmmdd-HHMMSS[-N], as --backups prints it) instead of the newest
   --force            Move a file that is in the way to NAME.backup-TIMESTAMP, then install
   --only UNIT        Limit to one unit (repeatable, or comma-separated): a tool
                      directory under config/ such as k9s, or a dotfile under home/
@@ -178,8 +178,8 @@ if [[ -n "$STAMP" ]]; then
     err "--stamp only applies to --restore"
     exit 3
   fi
-  if [[ ! "$STAMP" =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
-    err "--stamp must look like YYYYmmdd-HHMMSS, as --backups prints it: $STAMP"
+  if [[ ! "$STAMP" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]; then
+    err "--stamp must look like YYYYmmdd-HHMMSS[-N], as --backups prints it: $STAMP"
     exit 3
   fi
 fi
@@ -554,15 +554,18 @@ orphans() {
 }
 
 # The backups --force made of one target, oldest first: the stamp is
-# fixed-width digits, so the sorted order is the chronological one. Anything
-# else with .backup- in its name is not one of ours and is skipped.
+# fixed-width digits and a same-second repeat adds -N, so the order is the
+# stamp, then N numerically (a bare stamp is N=0). Anything else with
+# .backup- in its name is not one of ours and is skipped.
 backups_of() {
-  local b
+  local b s q
   for b in "$1".backup-[0-9]*; do
     [[ -e "$b" || -L "$b" ]] || continue
-    [[ "${b##*.backup-}" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
-    printf '%s\n' "$b"
-  done | sort
+    s="${b##*.backup-}"
+    [[ "$s" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || continue
+    q="${s:16}"
+    printf '%s %08d %s\n' "${s:0:15}" "$((10#${q:-0}))" "$b"
+  done | sort | cut -d' ' -f3-
 }
 
 # --- modes -----------------------------------------------------------------
@@ -682,7 +685,7 @@ do_diff() {
 }
 
 do_install() {
-  local f d src target st dir stamp failed=0 conflicts=0 installed=0
+  local f d src target st dir stamp bak n failed=0 conflicts=0 installed=0
   stamp="$(date +%Y%m%d-%H%M%S)"
   for f in "${files[@]}"; do
     selected "$f" || continue
@@ -701,7 +704,20 @@ do_install() {
         conflicts=$((conflicts + 1))
         continue
       fi
-      run_cmd "back up $st file" mv "$target" "$target.backup-$stamp" || { err "could not move $target aside"; failed=$((failed + 1)); continue; }
+      # Two forced runs in one second share a stamp: take the first free
+      # name (STAMP, STAMP-1, STAMP-2, ...) and let mv -n refuse to replace.
+      bak="$target.backup-$stamp"
+      n=0
+      while [[ -e "$bak" || -L "$bak" ]]; do
+        n=$((n + 1))
+        bak="$target.backup-$stamp-$n"
+      done
+      run_cmd "back up $st file" mv -n "$target" "$bak" || { err "could not move $target aside"; failed=$((failed + 1)); continue; }
+      if (( DRY_RUN == 0 )) && [[ -e "$target" || -L "$target" ]]; then
+        err "could not move $target aside: $bak appeared first"
+        failed=$((failed + 1))
+        continue
+      fi
     fi
 
     dir="$(dirname "$target")"

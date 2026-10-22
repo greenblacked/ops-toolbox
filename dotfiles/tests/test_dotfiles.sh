@@ -405,6 +405,27 @@ assert_rc "--force exits 0" 0 "$rc"
 assert_true "--force installed the link" test -L "$H/.config/starship.toml"
 if ls "$H/.config/"starship.toml.backup-* >/dev/null 2>&1; then ok "--force kept the old file as .backup-TIMESTAMP"; else err "--force did not keep a .backup"; fi
 
+# Two forced replacements in one second must keep two distinct backups.
+# A fake date pins the stamp so the second run is certain to collide.
+fk="$T/fakebin"; mkdir -p "$fk"
+printf '#!/bin/sh\necho 20300101-000000\n' > "$fk/date"; chmod +x "$fk/date"
+rm -f "$H/.config/starship.toml" "$H/.config/"starship.toml.backup-*
+printf 'first\n' > "$H/.config/starship.toml"
+PATH="$fk:$PATH" run_installer --force --only starship >/dev/null 2>&1; rc=$?
+assert_rc "first same-second --force exits 0" 0 "$rc"
+rm -f "$H/.config/starship.toml"; printf 'second\n' > "$H/.config/starship.toml"
+PATH="$fk:$PATH" run_installer --force --only starship >/dev/null 2>&1; rc=$?
+assert_rc "second same-second --force exits 0" 0 "$rc"
+assert_true "the first backup kept its content" grep -qx first "$H/.config/starship.toml.backup-20300101-000000"
+assert_true "the second backup got a suffixed name" grep -qx second "$H/.config/starship.toml.backup-20300101-000000-1"
+out="$(run_installer --backups --only starship 2>&1)"
+assert_contains "--backups lists the suffixed backup" "$out" "20300101-000000-1"
+rm -f "$H/.config/starship.toml"
+run_installer --restore --only starship >/dev/null 2>&1; rc=$?
+assert_rc "--restore exits 0" 0 "$rc"
+assert_true "--restore picks the newest (suffixed) backup" grep -qx second "$H/.config/starship.toml"
+run_installer --force --only starship >/dev/null 2>&1
+
 printf '\n# local edit\n' >> "$H/.config/k9s/config.yaml"
 out="$(run_installer --status --only k9s 2>&1)"; rc=$?
 assert_rc "--status exits 4 on an edited copy" 4 "$rc"
