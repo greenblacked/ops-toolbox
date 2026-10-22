@@ -12,6 +12,11 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
+# gitbash_doctor.sh locates the global git config through XDG_CONFIG_HOME, so a
+# host that exports it would aim every doctor run at its own config. Unset it
+# here; the cases that need it set it explicitly on the invocation.
+unset XDG_CONFIG_HOME
+
 echo "=== Running Windows Git Bash contract checks ==="
 # "${BASH:-bash}", not "bash". These files target Git Bash, so the right
 # interpreter is whichever shell is running this suite — on windows-2025 that
