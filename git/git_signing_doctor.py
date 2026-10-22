@@ -274,6 +274,7 @@ def classify_signing_key(fmt, signingkey):
     SSH public key is flagged there. Paths and `key::` literals are SSH forms
     only when gpg.format is ssh.
     """
+    unset = not (fmt or "").strip()
     fmt = (fmt or "openpgp").strip().lower()
     value = (signingkey or "").strip()
     literal_prefix = ("ssh-", "ecdsa-sha2-", "sk-ssh-", "sk-ecdsa-sha2-")
@@ -298,8 +299,9 @@ def classify_signing_key(fmt, signingkey):
 
     if value.startswith(literal_prefix):
         return "ssh-literal", (
-            "gpg.format is openpgp (the default) but user.signingkey is an SSH "
-            "public key; set gpg.format to ssh, or use a GPG key id"
+            "gpg.format is %s but user.signingkey is an SSH public key; "
+            "set gpg.format to ssh, or use a GPG key id"
+            % ("openpgp (the default)" if unset else fmt)
         )
     if _HEX_KEYID.match(value.rstrip("!")):
         return "gpg-keyid", None

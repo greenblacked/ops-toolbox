@@ -158,6 +158,13 @@ class ClassifySigningKeyTestCase(unittest.TestCase):
         self.assertIsNotNone(problem)
         self.assertIn("openpgp", problem)
 
+    def test_the_mismatch_message_names_the_actual_format(self):
+        _, problem = doctor.classify_signing_key("x509", "ssh-ed25519 AAAAC3Nza")
+        self.assertIn("gpg.format is x509", problem)
+        self.assertNotIn("openpgp", problem)
+        _, problem = doctor.classify_signing_key("", "ssh-ed25519 AAAAC3Nza")
+        self.assertIn("openpgp (the default)", problem)
+
     def test_email_is_a_gnupg_selector_under_openpgp(self):
         for fmt in ("openpgp", "", None):
             kind, problem = doctor.classify_signing_key(fmt, "me@example.com")
