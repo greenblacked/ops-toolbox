@@ -1190,6 +1190,7 @@ printf 'K=v\n' >"$unborn_repo/.env"
 git -C "$unborn_repo" add -f .env
 out="$(cd "$unborn_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
 assert_eq "$rc" "1" "secrets doctor reads the index of a repository with no commits"
+assert_contains "$out" "env-file" "secrets doctor names the rule for the staged file in a repository with no commits"
 rm -rf "$unborn_repo"
 
 outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
