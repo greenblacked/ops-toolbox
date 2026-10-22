@@ -1251,9 +1251,9 @@ def _wrap(container, statement):
     if container == "export-on-event":
         return 'add name=s on-event="' + statement + '"'
     if container == "export-up-script":
-        return 'add host=192.0.2.1 up-script=":log info x; ' + statement + '"'
+        return 'add host=192.0.2.1 up-script="' + statement + '"'
     if container == "export-lease-script":
-        return 'add name=d lease-script=":log info x; ' + statement + '"'
+        return 'add name=d lease-script="' + statement + '"'
     if container == "export-after-comment-string":
         return 'add name=s source=":put \\"#\\"; ' + statement + '"'
     if container == "commented-plain":
@@ -1372,7 +1372,16 @@ _SENSITIVE_FIELDS = (
 _SCRIPT_CONTAINERS = ("source", "on-event", "up-script", "lease-script", "on-master")
 
 
+# Commented-out script lines: the statement follows `# ` at the opening
+# quote, or after an escaped line break (\\r\\n) in the script.
+_COMMENTED_CONTAINERS = ("commented-source", "commented-after-newline")
+
+
 def _in_field(container, script):
+    if container == "commented-source":
+        return 'add name=s source="# %s"\n' % script
+    if container == "commented-after-newline":
+        return 'add name=s source=":log x\\r\\n# %s"\n' % script
     return "add name=s %s=\":log info x; %s\"\n" % (container, script)
 
 
@@ -1383,7 +1392,7 @@ def generated_sensitive_field_cases():
     for field in _SENSITIVE_FIELDS:
         yield ("plain quoted | " + field,
                '/ppp secret\nadd name=u %s="%s"\n' % (field, SECRET_WORD), True)
-        for container in _SCRIPT_CONTAINERS:
+        for container in _SCRIPT_CONTAINERS + _COMMENTED_CONTAINERS:
             head = "/ppp secret add name=u %s=" % field
             for form, value, leak in (
                 ("escaped quoted", '\\"%s\\"' % SECRET_WORD, True),
@@ -1403,8 +1412,8 @@ class GeneratedSensitiveFieldTestCase(unittest.TestCase):
 
     def test_every_sensitive_field_variant_is_found_or_clean(self):
         cases = list(generated_sensitive_field_cases())
-        # 10 fields x (1 plain + 5 containers x 5 forms).
-        self.assertEqual(len(cases), 260)
+        # 10 fields x (1 plain + 7 containers x 5 forms).
+        self.assertEqual(len(cases), 360)
         for label, export, leak in cases:
             with self.subTest(label):
                 found = export_config.find_leaks(export)
@@ -1418,6 +1427,26 @@ class GeneratedSensitiveFieldTestCase(unittest.TestCase):
                 else:
                     self.assertEqual(found, [])
                     self.assertEqual(export_config.redact_secrets(export), export)
+
+    def test_a_commented_sensitive_field_blocks_commit(self):
+        for container in _COMMENTED_CONTAINERS:
+            for value in ('\\"hunter2xyz\\"', "hunter2xyz"):
+                export = "/system script\n" + _in_field(
+                    container, "/tool fetch url=https://h/ user=u password=" + value)
+                with self.subTest(container + " " + value):
+                    self.assertEqual(export_config.find_leaks(export),
+                                     [(2, "sensitive field")])
+                    with tempfile.TemporaryDirectory() as tmp, \
+                         mock.patch.object(export_config, "fetch_export",
+                                           return_value=(0, export, "")), \
+                         mock.patch.object(export_config, "git") as git, \
+                         contextlib.redirect_stdout(io.StringIO()), \
+                         contextlib.redirect_stderr(io.StringIO()):
+                        rc = export_config.main(
+                            ["--host", "router", "--out", tmp, "--commit"])
+                        self.assertEqual(rc, 1)
+                        self.assertEqual(git.call_count, 0)
+                        self.assertEqual(os.listdir(tmp), [])
 
     def test_real_world_escaped_quoted_scripts(self):
         for stmt in ('/ppp secret add name=u password=\\"hunter2xyz\\"',

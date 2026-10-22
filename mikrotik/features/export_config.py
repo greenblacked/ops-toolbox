@@ -89,8 +89,10 @@ _BY_ROUTEROS = re.compile(r"^#\s*(?:model|software id|serial number).*$", re.IGN
 # as group "value", "quoted" or "bare", which is the only part redaction
 # replaces. Matching runs on logical lines - an export wraps long lines with a
 # trailing backslash, and a token can be split across the wrap. The flag says
-# whether a match inside a commented-out script line counts: a token is a
-# token wherever it sits. A secret-named assignment in a commented-out line is
+# whether a match inside a commented-out script line is skipped. Only the
+# secret-assigned pattern skips them; a token and a show-sensitive field
+# value are secrets wherever they sit, commented out or not, because a
+# commented line is still in git history. A secret-named assignment in a commented-out line is
 # not reported here as a leak; the second pass (find_unverifiable) reports it
 # as a commented assignment with a literal, and --commit refuses it.
 _LEAK_PATTERNS = (
@@ -134,7 +136,7 @@ _LEAK_PATTERNS = (
     # matching escaped quote (a script's own backslash pair, escaped quote
     # or escape inside it does not end it) or, unterminated, to the first
     # bare quote or the end of the line.
-    ("sensitive field", True, re.compile(
+    ("sensitive field", False, re.compile(
         r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
         r"|wpa-pre-shared-key|preshared-key|authentication-key|encryption-key)"
         r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)(?:"|\\?$)'
