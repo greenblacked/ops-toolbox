@@ -2612,6 +2612,19 @@ else
 fi
 assert_eq "warnings alone keep the default threshold -> 0" "0" "$rc"
 
+printf 'Match all\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_contains "ForwardAgent yes under Match all applies to every host" "$out" "[warn] ForwardAgent yes applies to every host (Match all)"
+assert_eq "a Match all warning alone keeps the default threshold -> 0" "0" "$rc"
+out="$(sshdoc --only config --fail-on warn)"; rc=$?
+assert_eq "ForwardAgent yes under Match all fails --fail-on warn -> 1" "1" "$rc"
+printf 'Match ALL\n  StrictHostKeyChecking no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "Match ALL is matched case-insensitively" "$out" "StrictHostKeyChecking no applies to every host (Match ALL)"
+printf 'Match host example.com\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a Match with another criterion is only noted" "$out" "ForwardAgent yes under Match host example.com"
+
 chmod 666 "$sshd_dir/config"
 out="$(sshdoc --only files)"
 assert_contains "a world-writable config is a warning with its fix" "$out" "chmod 600 $sshd_dir/config"

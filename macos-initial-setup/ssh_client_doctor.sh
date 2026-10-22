@@ -493,7 +493,13 @@ if want config; then
           host_label="Host $shown"
           ;;
         match)
-          all_hosts=0
+          # A Match whose only criterion is "all" matches every host, so the
+          # risky-setting checks treat it like Host *.
+          if [[ "$val_lc" == "all" ]]; then
+            all_hosts=1
+          else
+            all_hosts=0
+          fi
           host_label="Match $shown"
           ;;
         include)
