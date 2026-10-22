@@ -443,6 +443,17 @@ def apply_rewrites(url, rewrites, push=False):
     return _longest_match(url, [r for r in rewrites if r[2] == "insteadOf"])
 
 
+def _apply_helper_values(values, helpers, resets):
+    """Fold one key's (value, origin, scope) entries into helpers and resets."""
+    for value, origin, scope in values:
+        if value.strip() == "":
+            resets.append((origin, scope, len(helpers)))
+            helpers = []
+        else:
+            helpers.append((value, origin, scope))
+    return helpers
+
+
 def credential_helpers(entries, key="credential.helper"):
     """(helpers, resets) for a multi-valued credential.helper.
 
@@ -451,14 +462,67 @@ def credential_helpers(entries, key="credential.helper"):
     configured before it — the documented way to ignore a system-wide helper,
     and the undocumented way to lose your keychain by copying a config snippet.
     """
-    helpers = []
     resets = []
-    for value, origin, scope in entries.get(key.lower(), []):
-        if value.strip() == "":
-            resets.append((origin, scope, len(helpers)))
-            helpers = []
-        else:
-            helpers.append((value, origin, scope))
+    helpers = _apply_helper_values(entries.get(key.lower(), []), [], resets)
+    return helpers, resets
+
+
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _norm_port(parts):
+    return parts["port"] or _DEFAULT_PORTS.get(parts["scheme"], "")
+
+
+def credential_url_matches(pattern, parts):
+    """Does a credential.<pattern>.helper section apply to this remote?
+
+    Follows git's URL matching: scheme and port must agree (default ports
+    are filled in), the host matches case-insensitively with an optional
+    leading `*.` wildcard (one label), a user in the pattern must equal the URL's, and the
+    pattern path must be a prefix of the URL path on a segment boundary.
+    """
+    pat = parse_url(pattern)
+    if "://" not in pattern or pat["kind"] not in ("https", "http"):
+        return False
+    if pat["scheme"] != parts["scheme"] or _norm_port(pat) != _norm_port(parts):
+        return False
+    phost, host = pat["host"].lower(), parts["host"].lower()
+    if phost.startswith("*."):
+        if host.partition(".")[2] != phost[2:]:
+            return False
+    elif phost != host:
+        return False
+    if pat["user"] and pat["user"].split(":")[0] != parts["user"].split(":")[0]:
+        return False
+    ppath = pat["path"].strip("/")
+    path = parts["path"].strip("/")
+    return not ppath or path == ppath or path.startswith(ppath + "/")
+
+
+def scoped_credential_keys(entries):
+    """[(url_pattern, key)] for every credential.<url>.helper in the config."""
+    found = []
+    for key in sorted(entries):
+        if (key.startswith("credential.") and key.endswith(".helper")
+                and key != "credential.helper"):
+            found.append((key[len("credential."):-len(".helper")], key))
+    return found
+
+
+def effective_credential_helpers(entries, parts):
+    """(helpers, resets) git would consult for one HTTP remote.
+
+    The unscoped credential.helper values come first, then every URL-scoped
+    credential.<url>.helper whose URL matches. git interleaves them in config
+    order; the order across keys is not kept by parse_git_config, so unscoped
+    first is the approximation, exact whenever only one kind is present.
+    """
+    resets = []
+    helpers = _apply_helper_values(entries.get("credential.helper", []), [], resets)
+    for pattern, key in scoped_credential_keys(entries):
+        if credential_url_matches(pattern, parts):
+            helpers = _apply_helper_values(entries[key], helpers, resets)
     return helpers, resets
 
 
@@ -794,6 +858,37 @@ def diagnose_rewrites(rewrites):
     return problems
 
 
+def _check_helper(value, origin, scope, path_env, exec_path):
+    """Report one helper; returns the number of problems found."""
+    problems = 0
+    kind, resolved, problem = classify_helper(value, path_env, exec_path)
+    origin = shorten(origin.replace("file:", ""))
+    shown = redact_helper(value)
+    raw("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
+    if problem:
+        bad(problem)
+        info("this is what a keychain helper copied between an old machine "
+             "and a new one looks like")
+        problems += 1
+    elif kind == "shell":
+        info("a shell command, run through /bin/sh; nothing here to resolve")
+    elif resolved:
+        ok("resolves to %s" % shorten(resolved))
+
+    if value.split()[0] == "store":
+        for path in (os.path.join(HOME, ".git-credentials"),
+                     os.path.join(os.environ.get("XDG_CONFIG_HOME",
+                                                 os.path.join(HOME, ".config")),
+                                  "git", "credentials")):
+            mode = credential_file_problem(path)
+            if mode:
+                bad("%s is mode %s — it holds passwords in clear text"
+                    % (shorten(path), mode))
+                info("fix: chmod 600 %s" % shorten(path))
+                problems += 1
+    return problems
+
+
 def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
     head("credential helpers")
     problems = 0
@@ -810,7 +905,20 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
             info("an empty credential.helper in %s (%s) resets the list"
                  % (shorten(origin.replace("file:", "")), scope))
 
-    if not helpers:
+    # What git consults per HTTP remote: the unscoped list plus every
+    # credential.<url>.helper whose URL matches. A helper configured only for
+    # one host is a working setup, not a missing one.
+    per_url = [(p, effective_credential_helpers(entries, p)[0]) for p in http_urls]
+    unserved = [p for p, hs in per_url if not hs]
+    scoped_used = []
+    seen = set((v, o) for v, o, _ in helpers)
+    for _, hs in per_url:
+        for value, origin, scope in hs:
+            if (value, origin) not in seen:
+                seen.add((value, origin))
+                scoped_used.append((value, origin, scope))
+
+    if not helpers and not scoped_used:
         if http_urls:
             bad("no credential helper configured, and %d URL(s) here are HTTP"
                 % len(http_urls))
@@ -827,49 +935,27 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
             problems += 1
         else:
             info("no credential helper configured; no HTTP remote needs one")
-        return problems
+    else:
+        for value, origin, scope in helpers + scoped_used:
+            problems += _check_helper(value, origin, scope, path_env, exec_path)
 
-    for value, origin, scope in helpers:
-        kind, resolved, problem = classify_helper(value, path_env, exec_path)
-        origin = shorten(origin.replace("file:", ""))
-        shown = redact_helper(value)
-        raw("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
-        if problem:
-            bad(problem)
-            info("this is what a keychain helper copied between an old machine "
-                 "and a new one looks like")
+        if unserved:
+            bad("%d HTTP URL(s) here match no credential helper: %s"
+                % (len(unserved), ", ".join(redact_url(p["url"]) for p in unserved)))
+            info("a URL-scoped credential.<url>.helper covers only URLs under "
+                 "its <url>; add credential.helper for the rest")
             problems += 1
-        elif kind == "shell":
-            info("a shell command, run through /bin/sh; nothing here to resolve")
-        elif resolved:
-            ok("resolves to %s" % shorten(resolved))
 
-        if value.split()[0] == "store":
-            for path in (os.path.join(HOME, ".git-credentials"),
-                         os.path.join(os.environ.get("XDG_CONFIG_HOME",
-                                                     os.path.join(HOME, ".config")),
-                                      "git", "credentials")):
-                mode = credential_file_problem(path)
-                if mode:
-                    bad("%s is mode %s — it holds passwords in clear text"
-                        % (shorten(path), mode))
-                    info("fix: chmod 600 %s" % shorten(path))
-                    problems += 1
+        if helpers and not http_urls:
+            info("no HTTP remote here, so none of these helpers is consulted; ssh "
+                 "authentication is git_ssh_doctor.py's department")
 
-    if helpers and not http_urls:
-        info("no HTTP remote here, so none of these helpers is consulted; ssh "
-             "authentication is git_ssh_doctor.py's department")
-
-    scoped = sorted(k for k in entries
-                    if k.startswith("credential.") and k.endswith(".helper")
-                    and k != "credential.helper")
-    for key in scoped:
+    for pattern, key in scoped_credential_keys(entries):
         # Looked up directly rather than through effective(): the middle of
         # this key is a URL, and a URL is case-sensitive.
         value = entries[key][-1][0]
-        url = key[len("credential."):-len(".helper")]
         info("credential.%s.helper = %s applies only to URLs under %s"
-             % (redact_url(url), redact_helper(value), redact_url(url)))
+             % (redact_url(pattern), redact_helper(value), redact_url(pattern)))
 
     return problems
 

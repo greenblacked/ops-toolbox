@@ -578,6 +578,55 @@ class JsonRedactionTestCase(unittest.TestCase):
         self.assertIn("password=***", out)
 
 
+class ScopedCredentialHelperTestCase(unittest.TestCase):
+    """credential.<url>.helper counts toward the helpers a URL gets."""
+
+    SHELL = "!f() { :; }; f"
+
+    def diagnose(self, entries, urls):
+        parts = [doctor.parse_url(u) for u in urls]
+        with contextlib.redirect_stdout(io.StringIO()):
+            return doctor.diagnose_credentials(entries, parts, "", "")
+
+    def test_scoped_only_helper_passes_for_a_matching_url(self):
+        entries = {"credential.https://github.com.helper": [
+            (self.SHELL, "file:/x/config", "global")]}
+        self.assertEqual(
+            self.diagnose(entries, ["https://github.com/o/r.git"]), 0)
+
+    def test_scoped_helper_does_not_cover_another_host(self):
+        entries = {"credential.https://github.com.helper": [
+            (self.SHELL, "file:/x/config", "global")]}
+        self.assertEqual(
+            self.diagnose(entries, ["https://gitlab.com/o/r.git"]), 1)
+
+    def test_no_helper_at_all_is_still_a_problem(self):
+        self.assertEqual(self.diagnose({}, ["https://github.com/o/r.git"]), 1)
+
+    def test_url_matching_rules(self):
+        match = doctor.credential_url_matches
+        url = doctor.parse_url("https://user@example.com:443/team/repo.git")
+        self.assertTrue(match("https://example.com", url))
+        self.assertTrue(match("https://EXAMPLE.com/team", url))
+        self.assertTrue(match("https://user@example.com", url))
+        self.assertFalse(match("https://other@example.com", url))
+        self.assertFalse(match("https://example.com/tea", url))
+        self.assertFalse(match("http://example.com", url))
+        self.assertFalse(match("https://example.com:8443", url))
+        self.assertFalse(match("https://*.example.com", url))
+        self.assertTrue(match("https://*.example.com", doctor.parse_url(
+            "https://git.example.com/r")))
+
+    def test_empty_scoped_value_resets_the_list(self):
+        entries = {
+            "credential.helper": [(self.SHELL, "file:/x/config", "global")],
+            "credential.https://a.example.helper": [("", "file:/x/config", "local")],
+        }
+        helpers, _ = doctor.effective_credential_helpers(
+            entries, doctor.parse_url("https://a.example/r"))
+        self.assertEqual(helpers, [])
+
+
 class ClassifyRemoteErrorTestCase(unittest.TestCase):
     """--probe: one named cause per failure, from git's and ssh's own words.
 
