@@ -23,6 +23,7 @@ tools, not by a shell.
 - [Quick start](#quick-start)
 - [What is deliberately not here](#what-is-deliberately-not-here)
 - [`install_dotfiles.sh`](#install_dotfilessh)
+- [`dotfiles_doctor.sh`](#dotfiles_doctorsh)
 - [Shell and terminal](#shell-and-terminal)
 - [Git and GitHub](#git-and-github)
 - [SSH and GnuPG](#ssh-and-gnupg)
@@ -38,8 +39,8 @@ tools, not by a shell.
 | Requirement | Notes |
 | --- | --- |
 | **macOS 12+ or Linux** | The installer and every config target both. |
-| **Bash 3.2 or newer** | Only [`install_dotfiles.sh`](install_dotfiles.sh) needs a shell at all; it stays Bash 3.2-clean like the macOS package, so the `/bin/bash` on a Mac is enough. |
-| **The tools themselves** | A config is inert until the tool that reads it is installed — nothing here installs one. `--only UNIT` limits any mode to the tools you actually have, and `--list` shows every unit name. |
+| **Bash 3.2 or newer** | Only [`install_dotfiles.sh`](install_dotfiles.sh) and [`dotfiles_doctor.sh`](dotfiles_doctor.sh) need a shell at all; both stay Bash 3.2-clean like the macOS package, so the `/bin/bash` on a Mac is enough. |
+| **The tools themselves** | A config is inert until the tool that reads it is installed — nothing here installs one. `--installed-only` limits any mode to the tools on `PATH`, `--only UNIT` to the ones you name, and `--list` shows every unit name. |
 | **`git`** | Only for the suite in [`tests/`](tests/), which needs nothing else — no Docker. |
 
 Four of the configs are found only if the shell exports a path to them; see
@@ -96,20 +97,32 @@ Links `config/` under `$XDG_CONFIG_HOME` (default `~/.config`) and `home/`
 under `~`, one file at a time.
 
 ```text
-install_dotfiles.sh [--dry-run] [--force] [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh [--dry-run] [--force] [--only UNIT ...] [--installed-only] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --status    [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --uninstall [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
 install_dotfiles.sh --list
+install_dotfiles.sh --diff      [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh --prune     [--dry-run] [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh --groups
+install_dotfiles.sh --backups   [--only UNIT ...] [--home DIR] [--config-home DIR]
+install_dotfiles.sh --restore   [--dry-run] [--stamp STAMP] [--only UNIT ...] [--home DIR] [--config-home DIR]
 ```
 
 | Flag | Effect |
 | --- | --- |
 | `--dry-run` | Print each `mkdir`, `ln -s`, `cp` or `rm` in the indented `(dry-run)` form and the closing `dry-run complete; no changes written`. Nothing is written, not even a directory. |
-| `--status` | One bare `STATE   path` line per file, the shape `windows/git-bash/install_dotfiles.sh` prints: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file, link or directory). Also checks that `~/.ssh` and `~/.gnupg` are mode `700` when a file in them is selected. Exit `4` if anything is not `MATCH`. |
+| `--status` | One bare `STATE   path` line per file, the shape `windows/git-bash/install_dotfiles.sh` prints: `MATCH` (linked here, or an identical copy), `DRIFT` (a copy that has been edited), `MISSING`, `FOREIGN` (a link into this folder but to the wrong file), `CONFLICT` (an unrelated file, link or directory). Then one `ORPHAN` line per link that points into this folder from a path no tracked file installs to (see `--prune`). Also checks that `~/.ssh` and `~/.gnupg` are mode `700` when a file in them is selected. Exit `4` if anything is not `MATCH`. |
 | `--uninstall` | Remove links that point into this folder and copies that still equal their source. A `DRIFT` copy and a `CONFLICT` file are kept and reported. |
+| `--prune` | Remove the `ORPHAN` links: links whose text points into this folder, at a path no tracked file installs to. Renaming `config/foo/x` to `config/foo/y` leaves `~/.config/foo/x` pointing into the repository forever, and install, `--status` and `--uninstall` never see it because they start from the files that exist today. Only the link is removed (`rm`, never `rm -r`); a directory it leaves empty is mentioned and kept. Links elsewhere, regular files and `.backup-*` links are never touched. Honours `--dry-run` and `--only` (by the unit the orphan's path would belong to). |
 | `--list` | Every tracked file with its unit name, `link` or `copy`, and its target. Needs no home directory. |
-| `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install. The `.backup` is never removed, not even by `--uninstall`. |
-| `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). An unknown unit exits `3`. |
+| `--diff` | For each `DRIFT`, `CONFLICT` or `FOREIGN` file, the `--status` header line and then a unified diff of the tracked source (`-`) against what is on disk (`+`), with credential values replaced by `<redacted>`. A directory or a link out of this folder gets a one-line note instead of a diff. Writes nothing. Exit `4` if any file differs. |
+| `--force` | Move a `CONFLICT`, `FOREIGN` or `DRIFT` file to `NAME.backup-YYYYmmdd-HHMMSS`, then install; a second backup in the same second gets `-1`, `-2`, ... after the stamp and never replaces an earlier one. The `.backup` is never removed, not even by `--uninstall`; `--backups` lists them and `--restore` puts one back. |
+| `--backups` | One `BACKUP  STAMP  PATH` line per backup `--force` made of a selected file, oldest first. Also lists backups beside a path no tracked file installs to any more (a config renamed or deleted after `--force` backed it up), found in the same bounded places as the `ORPHAN` scan, and only where it is ours: the path is a link into this folder or belongs to a unit with a tracked file, or it is a path this installer restored a backup to while older ones remain (remembered in `~/.dotfiles-restored`, removed with the last backup). Any other `NAME.backup-STAMP` is reported as not ours and skipped. Read-only; exit `0` even when there are none. |
+| `--restore` | Move the newest backup of each selected file back into place. It acts only where nothing would be lost: the path is `MISSING`, or holds a link into this folder or a copy identical to its source (`MATCH`, `FOREIGN`), which is removed first. A `DRIFT` or `CONFLICT` file holds somebody's changes and is left in place with its backup kept, and the run exits `4`. A backup of a path no tracked file installs to is restored where it sits, if it is ours (see `--backups`) and nothing is there or an orphan link into this folder is. A backup is never deleted, only renamed into place. Honours `--dry-run` and `--only`. |
+| `--stamp STAMP` | With `--restore` only: restore the backup with this stamp, as `--backups` prints it (`YYYYmmdd-HHMMSS[-N]`), instead of the newest. Anything of another shape exits `3` before the disk is touched. |
+| `--only UNIT` | Limit to one unit; repeatable or comma-separated. A unit is a tool directory under `config/` (`k9s`, `git`), a file's stem when it sits at the top (`starship`), or a dotfile under `home/` with its dot dropped (`ssh`, `gnupg`, `aws`, `terraformrc`). `@GROUP` selects a named group of units, see [Groups](#groups), and mixes with unit names (`--only @k8s,starship`). An unknown unit or group exits `3`; with `--prune`, `--backups` or `--restore` a unit with no tracked file is valid when an orphan link or a backup of ours belongs to it. |
+| `--groups` | Print each group and the units in it, then exit. Read-only and needs no home directory. |
+| `--installed-only` | Limit any mode — install, `--status`, `--list`, `--diff`, `--prune`, `--backups`, `--restore` — to the units whose tool is on `PATH`, so a server gets no kitty config and `--status` reports no false `MISSING` for tools that are not there. Composes with `--only` and groups; `--only kitty --installed-only` on a machine without kitty is a valid request that selects nothing. When nothing is left, it says so and exits `4`. The command each unit looks for is in [the table below](#commands---installed-only-looks-for). |
 | `--home DIR` | Use `DIR` as the home directory. `config/` then goes under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, because a caller pointing at another home wants everything under it; without `--home`, `XDG_CONFIG_HOME` is honoured. |
 | `--config-home DIR` | Put `config/` under `DIR` instead. |
 | `--quiet` | Suppress `[info]` and `[ ok ]` lines; warnings, errors and dry-run previews remain. |
@@ -136,10 +149,42 @@ line-ending override. This one refuses to touch an existing file unless
 `--force` says so, because a config already in `~/.config` is more likely to
 be deliberate than a stray `.bashrc` on a fresh Windows machine.
 
+**Rolling back.** "Try the dotfiles, change my mind" is `--uninstall` and
+then `--restore`: the first takes the links out, the second moves what
+`--force` set aside back. The **oldest** backup of a path is usually the file
+that was there before the dotfiles ever were, and later ones are what an
+earlier run of the dotfiles left; `--backups` shows the stamps, and
+`--restore --stamp STAMP` reaches the oldest. Backups otherwise accumulate
+next to their file; delete the ones you no longer want by hand.
+
+**Folding a change back.** k9s rewrites `config.yaml` on every exit, and
+`aws configure`, `docker login` and `gh config set` rewrite theirs, so a copy
+drifts. `--diff --only k9s` shows what changed, source against disk, so the
+setting worth keeping can be copied into the tracked file by hand. There is
+deliberately no automatic fold-back: the four copy-mode tools write their
+file without comments, and copying it over the tracked source would delete
+every comment that explains a setting. Values that look like credentials —
+keys ending in `auth`, `token`, `password` or `secret`, an AWS secret key, a
+password in a URL, token shapes, private key blocks — print as `<redacted>`,
+because a drifted `~/.docker/config.json` holds base64 `auths` by then.
+
+**Renamed configs.** `--uninstall` keeps its contract and removes only what
+the files tracked today installed; `--prune` is its companion for what a
+rename or a delete left behind. It finds them in a bounded scan — three
+levels under the config directory, the top of the home, and two levels inside
+each directory `home/` installs into (`~/.ssh`, `~/.aws` ...) and inside each
+hidden directory at the top of the home, so a source directory deleted
+outright is still found — and a large home is never walked. One limit: if the repository itself was moved, the old
+links no longer point into this folder's path, and `--status` reports them as
+`CONFLICT` rather than `ORPHAN`; `--force` replaces them.
+
 **Exit codes:** `0` success (for `--status`: everything matches); `1` a link
-or copy could not be made; `2` preflight — `config/` or `home/` missing next to
+or copy could not be made, `--prune` could not remove one, or `--restore`
+could not move one; `2` preflight — `config/` or `home/` missing next to
 the script, or no home directory; `3` usage; `4` something was left in place — a
-conflict under install, or a non-`MATCH` under `--status`.
+conflict under install, a non-`MATCH` under `--status`, a file that differs
+under `--diff`, or a `--restore` that refused a changed file or found nothing
+to restore.
 
 **Git and symlinks.** `git config --global` writes through the link into the
 tracked `config/git/config`. That is what you want for a setting you mean to
@@ -154,6 +199,207 @@ git config --file ~/.config/git/config.local user.email "you@example.com"
 [`git/set_git_profile.sh`](../git/set_git_profile.sh) uses `--global`, so
 after running it, move the three `user.*` lines it wrote from
 `config/git/config` into `config.local` before committing.
+
+### Groups
+
+Unit names follow the tools, and a machine is chosen by its role, so
+`--only` also takes a group: `--only @server` is everything a jump host
+needs and nothing it does not. The table lives in `group_units()` next to
+the file table, so it travels with the script into `~/bin`.
+
+| Group | Units |
+| --- | --- |
+| `@shell` | `starship` `bat` `ripgrep` `ncdu` `thefuck` `nvim` `homebrew` |
+| `@terminal` | `kitty` `alacritty` |
+| `@git` | `git` `gh` `gitleaks` |
+| `@access` | `ssh` `gnupg` |
+| `@k8s` | `k9s` `kube` |
+| `@cloud` | `aws` `terraformrc` `docker` |
+| `@scanners` | `trivy` `grype` `syft` `gitleaks` |
+| `@packages` | `npmrc` `pip` `homebrew` |
+| `@server` | `git` `ssh` `gnupg` `bat` `ripgrep` `ncdu` `nvim` `pip` — no GUI terminal, no k9s, no Homebrew |
+
+```bash
+./install_dotfiles.sh --groups                      # the table above, from the script
+./install_dotfiles.sh --dry-run --only @server      # preview a jump host
+./install_dotfiles.sh --only @k8s,@cloud,starship   # groups and units mix
+```
+
+A group is pure selection: it only narrows what the other modes touch.
+An unknown group exits `3`, and so does a group that names a unit no longer
+in the repository, before anything is written. The suite fails when a unit
+belongs to no group but `@server`, so a config added later has to be
+placed.
+
+### Commands --installed-only looks for
+
+`PATH` is the only input: a command is looked up with `command -v`, never
+run. The first one found wins. A GUI app that is not on `PATH` — `kitty.app`
+or `Alacritty.app` dragged into `/Applications` without its command-line
+link — is not seen, so name it with `--only`. A unit added later without
+an entry here looks for a command of its own name, and the suite fails until
+this table names one it finds.
+
+| Unit | Commands |
+| --- | --- |
+| `alacritty` | `alacritty` |
+| `bat` | `bat`, `batcat` |
+| `gh` | `gh` |
+| `git` | `git` |
+| `gitleaks` | `gitleaks` |
+| `grype` | `grype` |
+| `homebrew` | `brew` |
+| `k9s` | `k9s` |
+| `kitty` | `kitty` |
+| `ncdu` | `ncdu` |
+| `nvim` | `nvim` |
+| `pip` | `pip3`, `pip` |
+| `ripgrep` | `rg` |
+| `starship` | `starship` |
+| `syft` | `syft` |
+| `thefuck` | `thefuck` |
+| `trivy` | `trivy` |
+| `aws` | `aws` |
+| `docker` | `docker` |
+| `gnupg` | `gpg`, `gpg2` |
+| `kube` | `kubectl` |
+| `npmrc` | `npm` |
+| `ssh` | `ssh` |
+| `terraformrc` | `terraform`, `tofu` |
+
+## `dotfiles_doctor.sh`
+
+A read-only health report for what `install_dotfiles.sh` put in place. It
+changes nothing: every check is a read, and every finding comes with the
+command that fixes it, printed for you to run.
+
+```text
+dotfiles_doctor.sh [--repo DIR] [--home DIR] [--config-home DIR] [--platform macos|linux]
+                   [--fail-on warn|fail] [--quiet]
+```
+
+| Flag | Effect |
+| --- | --- |
+| `--repo DIR` | The dotfiles folder the links point into. Default: the folder the script sits in, when `config/` and `home/` are beside it. Copied alone into `~/bin`, or run through a link from there, it has none, and the link check is skipped with a `[skip]` line while everything else still runs. A `DIR` without `config/` and `home/` exits `2`. |
+| `--home DIR` | The home directory to inspect instead of `$HOME`. `config/` targets are then looked for under `DIR/.config` and `XDG_CONFIG_HOME` is ignored, the same rule the installer follows. |
+| `--config-home DIR` | Where `config/` was installed, instead of `$XDG_CONFIG_HOME` or `~/.config`. |
+| `--platform NAME` | `macos` or `linux`, overriding `uname -s`. Only the `XDG_CONFIG_HOME` hook differs between them; the tests use it to check both on one host. Anything else exits `3`. |
+| `--fail-on LEVEL` | `fail` (default) exits `1` only on a `[FAIL]`; `warn` exits `1` on a `[warn]` too. |
+| `--quiet` | Print only warnings, failures and the closing count. |
+
+Output is one `== group ==` heading per check, indented `[pass]`, `[warn]`,
+`[FAIL]` and `[skip]` lines with the fix on a dimmed second line, and a
+closing `N pass, N warn, N fail, N skip`.
+
+**Linked configs hold no credential.** Most configs here are links into this
+folder, and this folder is a public repository. A tool that writes a secret
+into its config writes it straight into a tracked file: `npm login` adds a
+`_authToken` line to `~/.npmrc`, `pip config set` with a token in an index URL
+writes it into `pip.conf`, a git `url.<base>.insteadOf` with a password in it
+lands in `config/git/config`. Nothing notices before `git add`. For every
+tracked file whose target is a link into the repository, the doctor reads the
+file through the link and reports each line that carries a token shape (AWS
+key id, private key header, GitHub, GitLab and Slack tokens, an AWS secret key,
+a gh `oauth_token`), a literal npm `_auth`, `_authToken` or `_password` value,
+a URL with a password in it, or a JSON `"auth"` value. A finding names the
+file and the line number, never the value, so the report is safe to paste
+into a ticket; the fix is to remove the line, rotate the credential, and
+check that `git -C <repo> diff` of that file is clean. An npm value written
+as an environment reference (`_authToken=${NPM_TOKEN}`) is the documented
+way to keep it out of the file and passes, and the keyed patterns ignore
+comment lines, because the tracked `.npmrc` explains in one why no token
+belongs in it. Copies (`~/.docker/config.json` and the other three) are not
+links and may hold what their tool writes there, so they are not read. A
+link only counts as a link into the repository when it really resolves
+under it, the whole chain: one whose text climbs out with `..`, or whose
+alias leads to a file outside, is never read. A link into the repository
+whose file no longer exists is a `[warn]`: the config was renamed or removed
+and the tool reads nothing. That includes links for configs that are no
+longer tracked at all, found by scanning the same bounded install locations
+the installer's `--prune` uses.
+A leftover link of that kind that still reaches an existing file in the
+repository is read by its tool, so it gets the same credential scan as a
+tracked config.
+
+**Credential files are private.** [What is deliberately not
+here](#what-is-deliberately-not-here) lists the files that hold tokens and
+are never tracked. Nothing else checks that they are private on the machine:
+a `~/.kube/config` or `~/.aws/credentials` at `644` on a shared jump host is
+readable by everyone on it. The doctor stats each of these, never opening
+one, and follows a link to the file it leads to:
+
+| Path | Tool |
+| --- | --- |
+| `~/.aws/credentials` | AWS CLI |
+| `~/.config/gh/hosts.yml` | gh |
+| `~/.kube/config` | kubectl |
+| `~/.docker/config.json` | docker (`auths`) |
+| `~/.terraform.d/credentials.tfrc.json` | `terraform login` |
+| `~/.netrc` | curl, git, ftp |
+| `~/.config/argocd/config` | argocd |
+| `~/.jfrog/jfrog-cli.conf.v6` | jfrog-cli |
+| `~/.config/gcloud/credentials.db`, `access_tokens.db` | gcloud |
+| `~/.azure/accessTokens.json` | Azure CLI |
+
+Writable by group or other is a `[FAIL]`; readable by them is a `[warn]`, as
+is a file owned by another user; the fix printed is `chmod 600 <path>`, and
+the doctor never runs it. Paths under `~/.config` follow `--config-home`.
+Absent files are the normal case on a machine without that tool, so they are
+counted in one `[skip] N of 11 credential files not present` line rather than
+listed. `~/.ssh` is deliberately not here:
+[`linux/ssh_client_doctor.sh`](../linux/ssh_client_doctor.sh) owns it and
+knows which of its files may be `644`.
+
+**Environment hooks.** Four configs are inert unless the shell exports a
+path (see [Environment variables](#environment-variables)), and installing
+the files without the exports is the most common silent failure: `rg` just
+ignores its config, gitleaks falls back to its defaults, and nobody sees an
+error. Each hook is checked only when its tool is on `PATH`, and is a
+`[skip]` otherwise:
+
+| Hook | Unset | Set |
+| --- | --- | --- |
+| `RIPGREP_CONFIG_PATH` (for `rg`) | `[warn]` with the `export` line to add | `[FAIL]` when the path does not exist (a dangling link included) or is not a readable regular file (a directory, say), `[pass]` when it is one; a path other than the installed one is allowed and noted |
+| `GITLEAKS_CONFIG` (for `gitleaks`) | the same | the same |
+| `XDG_CONFIG_HOME` (for `k9s` or `brew`, macOS only) | `[warn]`: k9s reads `~/Library/Application Support/k9s` and brew no `brew.env` | `[warn]` when it names another directory than the one the configs went into, `[pass]` when it names that one |
+
+On Linux the `XDG_CONFIG_HOME` hook is a `[skip]`: both tools read
+`~/.config` there with no help. `trivy` gets one `[info]` line and never a
+verdict, because its config is reached through a shell alias and no script
+can see an alias. The doctor sees only **exported** variables, which is the
+same visibility `rg` and gitleaks have, so a variable assigned in the shell
+but never exported is reported as missing, correctly. It prints the
+`export` line; it never edits `~/.zshenv`.
+
+**The ssh and git overlays.** The tracked ssh and git configs push identity,
+bastions and per-client blocks into files that are never tracked —
+`~/.ssh/config.d/*` and `~/.config/git/config.local` — and that is where
+things break. Each check is a `[skip]` when its tool or file is missing,
+never a failure:
+
+| Check | Finding | Fix printed |
+| --- | --- | --- |
+| `~/.ssh/config`, read as text | `[pass]` when it is readable, `[warn]` when it is not. The doctor never runs ssh, so it does not check that ssh accepts the file | — |
+| `known_hosts` with `HashKnownHosts yes` in `~/.ssh/config` | `[warn]` with the number of plaintext host entries; host names are never printed | `ssh-keygen -H -f ~/.ssh/known_hosts`, which keeps a `.old` copy to delete |
+| `~/.ssh/cm-*` sockets older than a day | `[warn]`: with `ControlPersist 10m` these are masters that were killed rather than closed, and they cause `Control socket connect: Connection refused` | `rm ~/.ssh/cm-*`, or `ssh -O check` one first; the doctor never removes or connects to one |
+| `user.name` and `user.email`, read with `git config --global --includes` | `[warn]` when either is missing; only presence is reported, never a value | the `git config --file ~/.config/git/config.local` line from above |
+| `~/.gitconfig`, once `config/git/config` is installed | `[warn]`: git reads it after the tracked config, so it wins on every key, and `git config --global` writes there | move its contents to `config.local` and delete it |
+
+`--includes` matters: `--global` alone does not follow `include.path`, and
+the identity is in `config.local`. git is asked with `HOME` and
+`XDG_CONFIG_HOME` pointed at the inspected home and `GIT_CONFIG_GLOBAL`
+dropped, so neither the caller's environment nor the real home answers. The
+doctor reads the main ssh config as text and does not run ssh: `ssh -G`
+evaluates `Match exec` lines and so runs commands, which would break the
+read-only promise. `HashKnownHosts` is read from the main `~/.ssh/config`
+only (outside any block, under `Host *` or under `Match all`; the first
+line wins). Included files are not followed, so when an `Include` comes
+before that line the doctor reports the hashing as not judged instead of
+guessing.
+
+**Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
+`2` preflight — no home directory, or a `--repo` without `config/` and
+`home/`; `3` usage.
 
 ## Environment variables
 
@@ -631,23 +877,55 @@ set` — `core/disable_usage_reporting true`,
 ## Tests
 
 `tests/run.sh` needs nothing but bash and git, so it runs everywhere the
-static suite does; CI runs it as `Test / dotfiles`.
+static suite does; CI runs it as `Test / dotfiles`. It runs two files:
+`test_dotfiles.sh` for the installer and the tracked configs, and
+`test_doctor.sh` for the doctor.
 
 ```bash
 ./dotfiles/tests/run.sh      # or: ./run-tests.sh dotfiles
 ```
 
 The first half runs `install_dotfiles.sh` against a scratch home and asserts
-what it promises: `--help` before preflight, exit `3` on a bad flag, a dry
-run that leaves the home byte-identical, every tracked file installed as a
-link into this folder or as a matching copy, `~/.ssh` and `~/.gnupg` mode
-`700`, a second install that changes nothing, a foreign file left in place
-with exit `4`, `--force` keeping a `.backup`, `--status` telling `MATCH`
-from `DRIFT` and reporting a directory at a copy target as `CONFLICT`, a
-drifted `~/.ssh` mode repaired by install, and an uninstall that removes
-every link and matching copy, keeps the edited copy and the `.backup`. The
-file table is read from `--list` rather than re-derived, and the run is
-isolated from any `XDG_CONFIG_HOME` the shell exports.
+what it promises. The file table is read from `--list` rather than
+re-derived, and the run is isolated from any `XDG_CONFIG_HOME` the shell
+exports.
+
+- **Contract:** `--help` before preflight; exit `3` on a bad flag, an unknown
+  unit or group, and a mode combination that makes no sense.
+- **Install:** a dry run that leaves the home byte-identical, every tracked
+  file installed as a link into this folder or as a matching copy, `~/.ssh`
+  and `~/.gnupg` mode `700` and a drifted mode repaired, a second install
+  that changes nothing, a foreign file left in place with exit `4`, `--force`
+  keeping a `.backup`.
+- **`--status` and `--diff`:** `MATCH` told from `DRIFT`, a directory at a
+  copy target reported as `CONFLICT`; `--diff` showing a drifted copy's edit
+  and a conflicting file's lines with no diff header, nothing for matching
+  files, a note instead of diff noise for a directory, and a docker `auth`
+  value redacted.
+- **Groups:** every `--groups` row selecting exactly its units through
+  `--only @NAME`, every unit placed in a group other than `@server`, and
+  `--dry-run --only @server` previewing ssh and git but no terminal and
+  writing nothing.
+- **Orphans:** a dangling link and an untracked link into this folder
+  reported as `ORPHAN`, a link to `/etc/hosts` and a backup link not;
+  `--only` filtering them by unit; `--prune --dry-run` writing nothing,
+  `--prune` removing exactly the two and keeping the emptied directory, a
+  second `--prune` finding none.
+- **Backups:** `--backups` listing what `--force` set aside,
+  `--restore --dry-run` writing nothing, `--restore` putting the original
+  back and consuming the backup, a changed file refused with exit `4` and its backup
+  kept, the newest of two backups restored by default and the older one by
+  `--stamp`, and a malformed `--stamp` or one without `--restore` exiting
+  `3`.
+- **`--installed-only`:** with a `PATH` of the installer's own utilities plus
+  stub commands, exactly the units whose tool is there, `batcat` standing in
+  for `bat`, a dry run that writes nothing, an install that creates only
+  those configs, a `--status` with no false `MISSING`, exit `4` when no tool
+  is there or `--only` names an absent one, and every unit selected once
+  every command in [the table](#commands---installed-only-looks-for) is on
+  `PATH`.
+- **Uninstall:** every link and matching copy removed, the edited copy and
+  the `.backup` kept.
 
 The second half reads the tracked configs themselves: none is executable or
 starts with a shebang; every TOML, YAML, JSON, Lua and Python file parses,
@@ -659,3 +937,45 @@ AWS keys, GitHub and GitLab tokens, Slack tokens, private key headers.
 Parsers that are missing on the host are skipped with a note rather than
 failed, so a verdict on the installer never depends on having Python or gpg
 installed.
+
+`test_doctor.sh` builds a fake dotfiles folder and a scratch home whose
+configs are links into it, so no tracked file is edited to make a finding
+appear, and asserts the doctor's contract: `--help` with no dry-run flag in
+it, exit `3` on bad usage and `2` on a missing home, a clean fixture that
+passes, a token in a linked file reported by file and line with the token
+itself absent from the output, an npm value read from the environment and a
+keyed value in a comment both passing, a copy never read, a dangling link a
+warning that `--fail-on warn` turns into exit `1`, a link that climbs out
+of the repository or leads out through an alias never read, a dangling
+link for a deleted config reported once, and the script copied alone into a bin directory still running.
+
+The credential-file section writes a sentinel line into every fixture and
+asserts it never reaches the output: a `600` file passes, a `644` one warns
+with the `chmod 600` fix and is left at `644`, a `666` one fails, a link is
+judged by the file it leads to, and an empty home reports all eleven as not
+present.
+
+The environment-hook section puts stub `rg`, `gitleaks` and `k9s` commands
+ahead of `PATH` so the verdicts do not depend on the host: unexported
+variables warn with the `export` line, a variable leading to a file passes,
+one leading nowhere fails, `--platform macos` names `Application Support`
+until `XDG_CONFIG_HOME` matches the config directory, `--platform linux`
+skips that hook, and with a `PATH` of only the utilities the doctor calls,
+every hook is skipped as not installed.
+
+The overlay section, when ssh is installed, fails a config with a bogus
+option, passes the shipped one, counts two plaintext `known_hosts` entries
+without printing either host name, passes an all-hashed file, and warns
+about a three-day-old `cm-` socket made with python3 while leaving it in
+place; when git is installed, it warns on a missing identity, finds one in
+`config.local` through the shipped config's include without printing the
+address, and warns on a `~/.gitconfig`.
+
+Every doctor run in the suite unsets `XDG_CONFIG_HOME`,
+`RIPGREP_CONFIG_PATH`, `GITLEAKS_CONFIG` and `GIT_CONFIG_GLOBAL` first, so a
+developer's own exports never decide a verdict, and is followed by a
+snapshot comparison of the scratch home and tmp, because a doctor that
+writes is not read-only. Last, the real configs are installed into a
+scratch home and must give no finding at all, the false-positive guard for
+the patterns. Token-shaped values are assembled at run time, so no literal
+one sits in the suite.
