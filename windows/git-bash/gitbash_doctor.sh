@@ -351,27 +351,45 @@ else
   # Git collects helpers from the system file, then the XDG file, then
   # ~/.gitconfig, and an empty value resets the list so far. Walk them in
   # that order so the list is what Git would run, never an empty entry.
-  # A bare `helper` key with no `=` is skipped, since Git rejects it. The
-  # list is read with -z so it can be told from `helper =`: a record is
-  # "key", a newline and the value, or just "key" when there is no `=`.
+  # A bare `helper` key with no `=` makes Git fail with "missing value for
+  # credential.helper", so it is neither a reset nor an entry: it is left
+  # out of the list and reported as a warning naming the file. The list is
+  # read with -z so it can be told from `helper =`: a record is "key", a
+  # newline and the value, or just "key" when there is no `=`.
   helper=""
-  while IFS= read -r -d '' record; do
-    [[ "$record" == *$'\n'* ]] || continue
-    [[ "${record%%$'\n'*}" == "credential.helper" ]] || continue
-    entry="${record#*$'\n'}"
-    if [[ -z "$entry" ]]; then
-      helper=""
-    else
-      [[ -z "$helper" ]] || helper+=$'\n'
-      helper+="$entry"
-    fi
-  done < <(
-    system_value --list -z
-    for file in "$xdg_gitconfig" "$gitconfig"; do
-      [[ -f "$file" ]] || continue
-      git config --file "$file" --includes --list -z 2>/dev/null
-    done
-  )
+  bare_helper_files=()
+  collect_helpers() {
+    local label="$1" source="$2" record entry
+    while IFS= read -r -d '' record; do
+      if [[ "$record" != *$'\n'* ]]; then
+        [[ "$record" != "credential.helper" ]] || bare_helper_files+=("$label")
+        continue
+      fi
+      [[ "${record%%$'\n'*}" == "credential.helper" ]] || continue
+      entry="${record#*$'\n'}"
+      if [[ -z "$entry" ]]; then
+        helper=""
+      else
+        [[ -z "$helper" ]] || helper+=$'\n'
+        helper+="$entry"
+      fi
+    done < <(
+      if [[ -z "$source" ]]; then
+        system_value --list -z
+      else
+        git config --file "$source" --includes --list -z 2>/dev/null
+      fi
+    )
+  }
+  collect_helpers "the system Git config" ""
+  for file in "$xdg_gitconfig" "$gitconfig"; do
+    [[ -f "$file" ]] || continue
+    collect_helpers "$file" "$file"
+  done
+  for file in ${bare_helper_files[@]+"${bare_helper_files[@]}"}; do
+    warn "credential.helper has no value in $file: Git rejects it (missing value for credential.helper)" \
+      "fix: give it a value (credential.helper = manager) or delete the line"
+  done
   if [[ -n "$helper" ]]; then
     # Git runs every helper in the order listed, so name them all in that
     # order rather than imply that the first one is the only one.

@@ -354,12 +354,14 @@ printf '[core]\n\tlongpaths = true\n[credential]\n\thelper = homeone\n\thelper =
 run_doctor "$fx" ""
 assert_contains "a reset with nothing after it leaves no helper" "$out" "no credential.helper"
 
-# A bare `helper` key with no `=` is neither a reset nor an entry.
+# A bare `helper` key with no `=` is neither a reset nor an entry, and Git
+# rejects it, so the doctor warns and names the file.
 fx="$(new_doctor_fixture)"
 printf '[core]\n\tlongpaths = true\n[credential]\n\thelper = homeone\n\thelper\n\thelper = hometwo\n' > "$fx/home/.gitconfig"
 run_doctor "$fx" ""
 assert_contains "a bare helper key is skipped, not a reset" "$out" "credential.helper is set (homeone, hometwo)"
 assert_not_contains "and prints no empty entry" "$out" ", ,"
+assert_contains "and warns, naming the file" "$out" "credential.helper has no value in $fx/home/.gitconfig"
 
 # System helpers are listed too, ahead of the user's, as Git runs them. The
 # system file is read through GIT_CONFIG_SYSTEM, so NOSYSTEM stays unset.

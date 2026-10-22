@@ -18,4 +18,4 @@
   are configured, all are listed in the order Git runs them: system file
   first, then the XDG file, then `~/.gitconfig`, with an empty
   `helper =` line dropping the ones before it, and a bare `helper` key
-  with no `=` skipped.
+  with no `=`, which Git rejects, left out and warned about by file.
