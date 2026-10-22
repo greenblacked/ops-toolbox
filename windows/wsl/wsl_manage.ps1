@@ -1255,9 +1255,11 @@ switch ($Action) {
                     Write-Host ('DONE  {0,-44} {1,10}' -f $row.Out, (Format-Size (Get-Item -LiteralPath $row.Out).Length)) -ForegroundColor Green
                     $exported++
                 } else {
-                    # Invoke-DistroBackup removed its own partial file and
-                    # never touched $row.Out, which may be an earlier backup.
-                    Write-Host ('FAIL  {0,-44} {1}' -f $row.Name, 'wsl --export failed') -ForegroundColor Red
+                    # Invoke-DistroBackup removed its own partial file and,
+                    # whether the export or the finishing step failed, put
+                    # any earlier backup at $row.Out back. It has already
+                    # said which step failed.
+                    Write-Host ('FAIL  {0,-44} {1}' -f $row.Name, 'backup failed') -ForegroundColor Red
                     $failed++
                 }
             }
