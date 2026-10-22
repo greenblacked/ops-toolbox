@@ -140,6 +140,19 @@ public static extern uint GetCompressedFileSizeW(string lpFileName, out uint lpF
     }
 }
 
+# The two lookups the size walks depend on, kept as small functions so a
+# test can answer them from a table (a Cloud Files placeholder and a
+# OneDrive-style reparse folder cannot be made outside Windows).
+function Get-ReparseLinkInfo {
+    param([string]$Path)
+    return (Get-Item -LiteralPath $Path -Force -ErrorAction Stop)
+}
+
+function ConvertTo-DirectoryInfo {
+    param([string]$Path)
+    return (New-Object System.IO.DirectoryInfo -ArgumentList $Path)
+}
+
 # True for a reparse point that is a link to somewhere else: a symbolic link
 # or junction, which Get-Item reports through LinkType or Target. Any other
 # reparse point (a OneDrive / Cloud Files placeholder, a dedup stub) is data
@@ -148,7 +161,7 @@ public static extern uint GetCompressedFileSizeW(string lpFileName, out uint lpF
 function Test-NameSurrogateLink {
     param([object]$Item)
     try {
-        $got = Get-Item -LiteralPath ([string]$Item.FullName) -Force -ErrorAction Stop
+        $got = Get-ReparseLinkInfo -Path ([string]$Item.FullName)
     } catch {
         Write-Verbose ("{0}: {1}" -f $Item.FullName, $_.Exception.Message)
         return $true
@@ -186,7 +199,7 @@ function Get-DirectorySize {
     $bytes = 0L
     $inaccessible = 0
     $stack = New-Object 'System.Collections.Generic.Stack[object]'
-    $stack.Push((New-Object System.IO.DirectoryInfo -ArgumentList $Path))
+    $stack.Push((ConvertTo-DirectoryInfo -Path $Path))
     while ($stack.Count -gt 0) {
         $directory = $stack.Pop()
         try {
@@ -320,7 +333,7 @@ function Get-TreeNode {
         $size = Get-DirectorySize -Path $Path
         return [pscustomobject]@{ Name = $Name; Bytes = $size.Bytes; Inaccessible = $size.Inaccessible; Children = @() }
     }
-    $directory = New-Object System.IO.DirectoryInfo -ArgumentList $Path
+    $directory = ConvertTo-DirectoryInfo -Path $Path
     $bytes = 0L
     $inaccessible = 0
     $children = @()

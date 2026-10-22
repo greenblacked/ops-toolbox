@@ -1474,6 +1474,14 @@ if (-not $diskUsage) {
             $linkSrc = 'function Test-NameSurrogateLink { param([object]$Item) return $true }'
         }
         . ([scriptblock]::Create($linkSrc))
+        foreach ($helperName in 'Get-ReparseLinkInfo', 'ConvertTo-DirectoryInfo') {
+            $helperSrc = Get-ScriptFunctionSource -Script $diskUsage -Name $helperName
+            if (-not $helperSrc) {
+                Test-Fail "disk_usage.ps1 : $helperName not found - this check has stopped checking"
+            } else {
+                . ([scriptblock]::Create($helperSrc))
+            }
+        }
         $skipSrc = Get-ScriptFunctionSource -Script $diskUsage -Name 'Test-SkippedReparse'
         if (-not $skipSrc) {
             Test-Fail 'disk_usage.ps1 : Test-SkippedReparse not found - this check has stopped checking'
@@ -1551,12 +1559,12 @@ if (-not $diskUsage) {
         }
         # A reparse-point file is skipped only when it is a link. A Cloud
         # Files placeholder (OneDrive) has the attribute but no LinkType and
-        # no Target, and counts at its allocated size. Get-Item is shadowed
-        # by a stub that answers from the item's name, since a placeholder
+        # no Target, and counts at its allocated size. Get-ReparseLinkInfo is
+        # replaced by a stub that answers from the item's name, since a placeholder
         # cannot be made here.
-        function Get-Item {
-            param([string]$LiteralPath, [switch]$Force)
-            $leaf = Split-Path -Leaf $LiteralPath
+        function Get-ReparseLinkInfo {
+            param([string]$Path)
+            $leaf = Split-Path -Leaf $Path
             if ($leaf -eq 'symlink.bin') { return [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = @('C:\elsewhere\x.bin') } }
             if ($leaf -eq 'junction-like.bin') { return [pscustomobject]@{ LinkType = $null; Target = @('C:\elsewhere') } }
             if ($leaf -eq 'unreadable.bin') { throw 'access denied' }
@@ -1608,11 +1616,10 @@ if (-not $diskUsage) {
             (& $mkFile 'placeholder.bin' 4096 ($reparseAttr -bor [IO.FileAttributes]::Archive)),
             (& $mkFile 'symlink.bin' 7777 ($reparseAttr -bor [IO.FileAttributes]::Archive))
         ) @($cloudDir, $juncDir) $plainAttr
-        function New-Object {
-            param([string]$TypeName, [object[]]$ArgumentList)
-            if ($TypeName -eq 'System.IO.DirectoryInfo' -and $fakeDirs.ContainsKey([string]$ArgumentList[0])) { return $fakeDirs[[string]$ArgumentList[0]] }
-            if ($ArgumentList) { return Microsoft.PowerShell.Utility\New-Object -TypeName $TypeName -ArgumentList $ArgumentList }
-            return Microsoft.PowerShell.Utility\New-Object -TypeName $TypeName
+        function ConvertTo-DirectoryInfo {
+            param([string]$Path)
+            if ($fakeDirs.ContainsKey($Path)) { return $fakeDirs[$Path] }
+            return (New-Object System.IO.DirectoryInfo -ArgumentList $Path)
         }
         function Get-FileDiskSize { param([object]$File) return [long]$File.Length }
         $fakeSize = Get-DirectorySize -Path $fakeRoot.FullName
@@ -1629,9 +1636,9 @@ if (-not $diskUsage) {
                 Test-Fail "Get-TreeNode (MaxLevel $maxLevel) returned $($node.Bytes) bytes for the fake tree, expected 5596"
             }
         }
-        Remove-Item Function:\New-Object -ErrorAction SilentlyContinue
+        Remove-Item Function:\ConvertTo-DirectoryInfo -ErrorAction SilentlyContinue
         Remove-Item Function:\Get-FileDiskSize -ErrorAction SilentlyContinue
-        Remove-Item Function:\Get-Item -ErrorAction SilentlyContinue
+        Remove-Item Function:\Get-ReparseLinkInfo -ErrorAction SilentlyContinue
         Remove-Item -Path $sizeBox -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
@@ -2461,7 +2468,6 @@ Match Group administrators
         } else {
             Test-Fail 'an Include loop was not stopped and reported at the depth limit'
         }
-        $chainOk = $true
         for ($i = 1; $i -le 16; $i++) {
             $tail = "Include chain$($i + 1).conf`n"
             if ($i -eq 16) { $tail = "PermitEmptyPasswords no`n" }
