@@ -427,6 +427,31 @@ assert_true "--restore put the stray backup back over the orphan link" grep -qx 
 assert_true "--restore consumed the stray backup" test ! -e "$old.backup-20200101-000000"
 rm -f "$old" "$old.backup-bogus"; rmdir "$H/.config/oldtool"
 
+# Two backups of a deleted unit: restoring the newest leaves a regular file
+# where the link was, yet the older one stays listed and restorable (the
+# installer remembers it restored that path), and nothing is left behind
+# once the last backup is back.
+mkdir -p "$H/.config/oldtool"
+old="$H/.config/oldtool/y"
+printf 'older\n' > "$old.backup-20200101-000000"
+printf 'newer\n' > "$old.backup-20200202-000000"
+ln -s "$D/config/oldtool/y" "$old"
+out="$(run_installer --restore --only oldtool 2>&1)"; rc=$?
+assert_rc "--restore of two stray backups exits 0" 0 "$rc"
+assert_true "--restore put the newest stray backup back" grep -qx newer "$old"
+out="$(run_installer --backups --only oldtool 2>&1)"; rc=$?
+assert_rc "--backups --only after restoring the newest exits 0" 0 "$rc"
+assert_contains "the older stray backup is still listed" "$out" "BACKUP  20200101-000000  $old.backup-20200101-000000"
+out="$(run_installer --restore --stamp 20200101-000000 --only oldtool 2>&1)"; rc=$?
+assert_rc "--restore --stamp over the restored file is refused" 4 "$rc"
+assert_true "the restored file survived the refusal" grep -qx newer "$old"
+rm "$old"
+out="$(run_installer --restore --stamp 20200101-000000 --only oldtool 2>&1)"; rc=$?
+assert_rc "--restore --stamp of the older stray backup exits 0" 0 "$rc"
+assert_true "--restore put the older stray backup back" grep -qx older "$old"
+assert_true "the restore ledger is gone with the last backup" test ! -e "$H/.dotfiles-restored"
+rm -f "$old"; rmdir "$H/.config/oldtool"
+
 # NAME.backup-STAMP is a name other tools use too. With no link into this
 # folder and no unit of ours at the path, it is not ours: listed as such,
 # never restored, and not a unit --only may name.

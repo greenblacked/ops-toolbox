@@ -559,6 +559,28 @@ orphans() {
   done < <(link_candidates | sort -u)
 }
 
+# Paths a stray backup was restored to while older backups of the same path
+# remain, one per line. Without it, restoring the newest backup of a deleted
+# unit would leave a regular file where the link was, and the older backups
+# would stop looking like ours. Dropped again when the last backup is gone.
+RESTORED_LEDGER="$HOME_DIR/.dotfiles-restored"
+
+ledger_forget() {
+  local keep
+  [[ -f "$RESTORED_LEDGER" ]] || return 0
+  keep="$(grep -Fxv -- "$1" "$RESTORED_LEDGER" 2>/dev/null || true)"
+  if [[ -n "$keep" ]]; then
+    printf '%s\n' "$keep" > "$RESTORED_LEDGER" || return 1
+  else
+    rm -f "$RESTORED_LEDGER" || return 1
+  fi
+}
+
+ledger_note() {
+  ledger_forget "$1" || return 1
+  printf '%s\n' "$1" >> "$RESTORED_LEDGER"
+}
+
 # The backups --force made of one target, oldest first: the stamp is
 # fixed-width digits and a same-second repeat adds -N, so the order is the
 # stamp, then N numerically (a bare stamp is N=0). Anything else with
@@ -585,10 +607,14 @@ backups_of() {
 # Only backups that are ours: NAME.backup-STAMP is a name other tools use
 # too, so the path must be a link into this folder (what --force left
 # there) or belong to a unit this installer has a tracked file for.
+# A path this installer restored a stray backup to is ours as well, while
+# older backups of it remain (RESTORED_LEDGER): the restore replaced the
+# link that showed it, and the older ones are still ours to list and restore.
 # Anything else is reported as not ours and skipped, never restored.
 # One path per line, each once.
 stray_backup_originals() {
-  local f b s orig rel units="" tracked=""
+  local f b s orig rel units="" tracked="" restored=""
+  [[ -r "$RESTORED_LEDGER" ]] && restored="$(cat "$RESTORED_LEDGER" 2>/dev/null)"
   for f in "${files[@]}"; do
     tracked="$tracked$(target_of "$f")"$'\n'
     units="$units$(unit_of "$f")"$'\n'
@@ -611,7 +637,8 @@ stray_backup_originals() {
     fi
     [[ "${1:-}" == all ]] || selected "$rel" || continue
     if ! { [[ -L "$orig" ]] && points_here "$orig"; } &&
-       ! grep -Fxq -- "$(unit_of "$rel")" <<<"$units"; then
+       ! grep -Fxq -- "$(unit_of "$rel")" <<<"$units" &&
+       ! grep -Fxq -- "$orig" <<<"$restored"; then
       [[ "${1:-}" == all ]] || info "not ours, skipped: $b" >&2
       continue
     fi
@@ -939,6 +966,13 @@ restore_one() {
   run_cmd "restore" mv "$pick" "$target" || { err "could not move $pick back to $target"; failed=$((failed + 1)); return 0; }
   (( DRY_RUN )) || ok "restored: $target (backup ${pick##*.backup-})"
   restored=$((restored + 1))
+  if [[ -z "$f" ]] && (( ! DRY_RUN )); then
+    if [[ -n "$(backups_of "$target")" ]]; then
+      ledger_note "$target" || warn "could not record $target in $RESTORED_LEDGER"
+    else
+      ledger_forget "$target" || warn "could not update $RESTORED_LEDGER"
+    fi
+  fi
 }
 
 # rm of the link itself: never rm -r, never rmdir. A directory the last
