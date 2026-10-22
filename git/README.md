@@ -852,9 +852,10 @@ Read-only: it creates no tag and writes no file. A shallow clone may lack the
 tag; run `git fetch --tags --unshallow` first, and a missing ref exits `3`
 rather than printing an empty success.
 
-Exit codes: `0` success, `2` not a Git repository, `3` usage, a bad ref, or a
-`--from` that is not a tag, or a tag that is not semver, for `--next-version`, `4` no commits between
-`FROM` and `TO`.
+Exit codes: `0` success, `2` not a Git repository, `3` usage, a bad ref, a
+`--from` that is not an ancestor of `--to` (unrelated or rewritten history), or
+a `--from` that is not a tag, or a tag that is not semver, for
+`--next-version`, `4` no commits between `FROM` and `TO`.
 
 ---
 

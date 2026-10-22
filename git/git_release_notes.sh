@@ -57,8 +57,9 @@ Read-only: it creates no tag and writes no file. Redirect the output where it
 should go. A shallow clone may not have the tag; fetch it with
 'git fetch --tags --unshallow' first.
 
-Exit codes: 0 success, 2 not a git repo, 3 usage, bad ref, or a --from that is
-not a semver tag for --next-version, 4 no commits between FROM and TO
+Exit codes: 0 success, 2 not a git repo, 3 usage, bad ref, a --from that is
+not an ancestor of --to, or a --from that is not a semver tag for
+--next-version, 4 no commits between FROM and TO
 EOF
 }
 
@@ -148,6 +149,14 @@ else
   else
     printf "no tag matches %s; using the whole history\n" "$MATCH" >&2
   fi
+fi
+
+# An explicit --from that is not an ancestor of --to (an unrelated or
+# rewritten history) would otherwise list all of --to and suggest a bogus
+# next version.
+if [[ -n "$from_sha" ]] && ! git merge-base --is-ancestor "$from_sha" "$to_sha" 2>/dev/null; then
+  printf "%s is not an ancestor of %s\n" "$from_label" "$TO" >&2
+  exit 3
 fi
 
 if [[ -n "$from_sha" ]]; then

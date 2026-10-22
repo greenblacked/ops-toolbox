@@ -196,6 +196,19 @@ run_in "$repo" --from HEAD --to HEAD >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 4 'an empty range -> 4'
 run_in "$repo" --from >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 3 '--from without a value -> 3'
+# A --from from an unrelated history is not an ancestor of --to: it must fail
+# rather than list all of --to and suggest a bogus next version.
+git -C "$repo" checkout -q --orphan unrelated-root || err 'create an orphan branch'
+git -C "$repo" -c user.name=t -c user.email=t@example.invalid \
+  commit -q --allow-empty -m 'feat: unrelated root' || err 'commit on the orphan branch'
+orphan_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" checkout -q - || err 'return to the previous branch'
+out="$(run_in "$repo" --from "$orphan_sha" --to HEAD 2>&1)"; rc=$?
+assert_eq "$rc" 3 'a --from that is not an ancestor of --to -> 3'
+assert_contains "$out" 'not an ancestor' 'the error says the start is not an ancestor'
+out="$(run_in "$repo" --from "$orphan_sha" --to HEAD --next-version 2>&1)"; rc=$?
+assert_eq "$rc" 3 '--next-version from a non-ancestor -> 3'
+git -C "$repo" branch -D unrelated-root >/dev/null 2>&1
 run_in "$repo" --definitely-not-a-flag >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 3 'unknown flag -> 3'
 out="$(run_in "$repo" --help 2>&1)"
