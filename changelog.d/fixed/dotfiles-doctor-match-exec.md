@@ -4,4 +4,7 @@
   The scan also catches a negated or quoted `exec`, an `Include=` form, an
   include under the passwd home that OpenSSH reads, and a home path with
   spaces. Includes are followed to OpenSSH's own depth of 16; a deeper
-  chain or an Include loop also skips the probe.
+  chain or an Include loop also skips the probe. Quoted Include paths with
+  spaces and several Include arguments are scanned; an Include that cannot be
+  resolved with confidence (unbalanced quote, `%d` or `${VAR}` token,
+  unreadable file) skips the probe too.

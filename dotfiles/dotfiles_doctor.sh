@@ -521,15 +521,65 @@ passwd_home() {
   return 0
 }
 
+# Splits $1 into SSH_ARGS the way OpenSSH's argv_split does for a config
+# line: whitespace separates, "..." and '...' group, a backslash escapes
+# the next character, an unquoted # at the start of a word ends the line.
+# Returns 1 on an unbalanced quote or a trailing backslash. Bash 3.2 safe.
+SSH_ARGS=()
+ssh_split_args() {
+  local s="$1" i=0 n ch q="" cur="" have=0 bs=$'\\'
+  n=${#s}
+  SSH_ARGS=()
+  while (( i < n )); do
+    ch="${s:i:1}"
+    if [[ -n "$q" ]]; then
+      if [[ "$ch" == "$q" ]]; then
+        q=""
+      elif [[ "$ch" == "$bs" ]]; then
+        i=$((i + 1))
+        (( i < n )) || return 1
+        ch="${s:i:1}"
+        case "$ch" in
+          '"' | "'" | "$bs") cur="$cur$ch" ;;
+          *) cur="$cur\\$ch" ;;
+        esac
+      else
+        cur="$cur$ch"
+      fi
+    else
+      case "$ch" in
+        ' ')
+          if (( have )); then SSH_ARGS+=("$cur"); cur=""; have=0; fi
+          ;;
+        '"' | "'") q="$ch"; have=1 ;;
+        "$bs")
+          i=$((i + 1))
+          (( i < n )) || return 1
+          cur="$cur${s:i:1}"; have=1
+          ;;
+        '#')
+          if (( have )); then cur="$cur#"; else break; fi
+          ;;
+        *) cur="$cur$ch"; have=1 ;;
+      esac
+    fi
+    i=$((i + 1))
+  done
+  [[ -z "$q" ]] || return 1
+  if (( have )); then SSH_ARGS+=("$cur"); fi
+  return 0
+}
+
 # True when the config, or a file one of its Include lines pulls in, has a
 # Match line with an exec criterion (also negated or quoted): ssh -G would run
 # that command. Includes are followed (globs too; relative paths against
 # ~/.ssh and ~ against the inspected home, $HOME and the passwd home, as
 # OpenSSH reads the last) to OpenSSH's own limit of 16 levels. Reaching that
-# limit, or an Include loop, counts as a hit: the config is not known to be
+# limit, an Include loop, or an Include that cannot be resolved with
+# confidence counts as a hit: the config is not known to be
 # free of exec, so the caller skips the probe. Reads only; nothing is run.
 ssh_config_runs_exec() {
-  local file="$1" depth="${2:-0}" chain="${3:-}" line low norm w pat c f pw
+  local file="$1" depth="${2:-0}" chain="${3:-}" line low rest w pat c f pw
   local -a words cands
   (( depth <= 16 )) || return 0
   case "$chain" in
@@ -556,14 +606,19 @@ ssh_config_runs_exec() {
         done
         ;;
       include)
-        # Tabs and the keyword's = become spaces first, so Include=a and
-        # Include<TAB>a split like Include a; the pattern keeps its case.
-        norm="$(printf '%s' "$line" | tr '\t' ' ' | sed 's/^[[:space:]]*\([A-Za-z]*\)[[:space:]]*=/\1 /')"
-        read -r -a words <<<"$norm"
-        (( ${#words[@]} > 1 )) || continue
-        for pat in "${words[@]:1}"; do
-          [[ "$pat" == '#'* ]] && break
-          pat="${pat//\"/}"
+        # The arguments are split the way OpenSSH splits them: double and
+        # single quotes group (spaces stay), a backslash escapes, an
+        # unquoted # starts a comment. Anything not understood with
+        # confidence (unbalanced quote, a %-token or ${VAR} OpenSSH would
+        # expand) counts as a hit, like the depth limit: the caller skips
+        # the probe.
+        rest="$(printf '%s' "$line" | tr '\t' ' ' | sed 's/^[[:space:]]*[A-Za-z]*[[:space:]]*=\{0,1\}[[:space:]]*//')"
+        ssh_split_args "$rest" || return 0
+        for pat in "${SSH_ARGS[@]+"${SSH_ARGS[@]}"}"; do
+          # shellcheck disable=SC2016  # a literal ${, not an expansion
+          case "$pat" in
+            *%* | *'${'*) return 0 ;;
+          esac
           cands=()
           case "$pat" in
             [~]/*)
@@ -580,7 +635,11 @@ ssh_config_runs_exec() {
             # compgen -G prints one match per line, so a space in the path
             # does not split it the way an unquoted expansion would.
             while IFS= read -r f; do
-              [[ -f "$f" ]] && ssh_config_runs_exec "$f" $((depth + 1)) "$chain" && return 0
+              [[ -f "$f" ]] || continue
+              # A matched file that cannot be read cannot be shown free of
+              # exec, so it is a hit too.
+              [[ -r "$f" ]] || return 0
+              ssh_config_runs_exec "$f" $((depth + 1)) "$chain" && return 0
             done < <(compgen -G "$c" 2>/dev/null)
           done
         done
@@ -611,8 +670,8 @@ check_ssh() {
     skip "ssh config: no $cfg"
   elif ssh_config_runs_exec "$cfg"; then
     # ssh -G evaluates Match exec, i.e. runs the command: not read-only.
-    warn "ssh config not validated: config uses Match exec, which ssh -G would run" \
-      "$cfg (or a file it includes) has a Match line with exec; check it by hand"
+    warn "ssh config not validated: config uses Match exec, which ssh -G would run (or has an Include that could not be resolved)" \
+      "$cfg (or a file it includes) has a Match line with exec, or an Include that could not be read with confidence; check it by hand"
   else
     # One run, stderr merged: on a failure the first line is ssh's message,
     # and the options are read from the output only on success.

@@ -496,6 +496,36 @@ if command -v ssh >/dev/null 2>&1; then
   out="$(run_doctor --platform linux 2>&1)"; rc=$?
   assert_not_contains "a short clean Include chain is probed" "$out" "config uses Match exec"
   rm -rf "$H/.ssh/chain"
+  # A quoted Include path keeps its spaces (and several arguments are all
+  # followed); an Include that cannot be resolved with confidence skips the
+  # probe instead of guessing.
+  INC="$scratch/include dir"; mkdir -p "$INC"
+  printf 'Match exec "touch %s"\n' "$marker" > "$INC/exec.conf"
+  printf 'Include "%s/exec.conf"\n' "$INC" > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "a quoted Include path with a space is scanned" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind a quoted Include"; else ok "no Match exec behind a quoted Include ran"; fi
+  printf 'Include nothing-here.conf "%s/exec.conf"\n' "$INC" > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "a second Include argument is scanned" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind a second Include argument"; else ok "no Match exec behind a second Include argument ran"; fi
+  printf 'Include "%s/exec.conf\n' "$INC" > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "an Include with an unbalanced quote skips ssh -G" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind an unbalanced quote"; else ok "no Match exec behind an unbalanced quote ran"; fi
+  printf 'Include %%d/exec.conf\n' > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "an Include with an unexpanded token skips ssh -G" "$out" "config uses Match exec"
+  printf 'Include "%s/exec.conf"\n' "$INC" > "$H/.ssh/config"
+  chmod 000 "$INC/exec.conf"
+  if [[ -r "$INC/exec.conf" ]]; then
+    skip "an unreadable Include file: running as a user that reads mode 000 files"
+  else
+    out="$(run_doctor --platform linux 2>&1)"; rc=$?
+    assert_contains "an unreadable included file skips ssh -G" "$out" "config uses Match exec"
+  fi
+  chmod 600 "$INC/exec.conf"
+  rm -rf "$INC"
   rm -rf "$H/.ssh/config.d" "$SP" "$PWH" "$STUB"
   printf 'BogusOption yes\n' > "$H/.ssh/config"
 
