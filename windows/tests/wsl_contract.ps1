@@ -594,7 +594,47 @@ try {
         [IO.File]::ReadAllText("$backupOut.sha256").TrimEnd("`r", "`n") -eq "$newHash  Ubuntu_2026-10-21_1830.tar" -and
         $left.Count -eq 2
     ) ($left -join "`n")
+
+    # The new sidecar failing to land must not cost the earlier pair. A
+    # function named Move-Item takes precedence over the cmdlet, so the one
+    # step that moves a sidecar into place fails the way a locked or
+    # read-only file does; the tar moves go through the real cmdlet.
+    $pairTar = 'earlier good export 2'
+    $pairSide = 'earlier-hash-2  Ubuntu_2026-10-21_1830.tar'
+    [IO.File]::WriteAllText($backupOut, $pairTar)
+    [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
+    function Move-Item {
+        [CmdletBinding()]
+        param([string]$LiteralPath, [string]$Destination, [switch]$Force)
+        if ($LiteralPath -like '*.partial.sha256') { throw 'simulated sidecar failure' }
+        Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
+    }
+    $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
+    Remove-Item -LiteralPath Function:\Move-Item -ErrorAction SilentlyContinue
+    $left = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
+    Test-Case 'a sidecar that cannot be put in place makes the backup return false' ($backedUp -eq $false)
+    Test-Case 'and leaves the earlier tar and sidecar pair as it was, with nothing else' (
+        [IO.File]::ReadAllText($backupOut) -eq $pairTar -and
+        [IO.File]::ReadAllText("$backupOut.sha256") -eq $pairSide -and
+        $left.Count -eq 2
+    ) ($left -join "`n")
+
+    # A read-only earlier sidecar: whether the platform lets it be replaced
+    # or not, the tar and its sidecar must agree afterwards and the call
+    # must return normally.
+    Set-ItemProperty -LiteralPath "$backupOut.sha256" -Name IsReadOnly -Value $true
+    $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
+    $left = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
+    $tarNow = [IO.File]::ReadAllText($backupOut)
+    $sideNow = [IO.File]::ReadAllText("$backupOut.sha256").TrimEnd("`r", "`n")
+    $hashNow = (Get-FileHash -LiteralPath $backupOut -Algorithm SHA256).Hash.ToLowerInvariant()
+    Test-Case 'with a read-only earlier sidecar the tar and sidecar still agree' (
+        $backedUp -is [bool] -and $left.Count -eq 2 -and
+        (($backedUp -and $tarNow -eq 'new export' -and $sideNow -eq "$hashNow  Ubuntu_2026-10-21_1830.tar") -or
+        (-not $backedUp -and $tarNow -eq $pairTar -and $sideNow -eq $pairSide))
+    ) ($left -join "`n")
 } finally {
+    Remove-Item -LiteralPath Function:\Move-Item -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath Function:\wsl.exe -ErrorAction SilentlyContinue
     Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
 }

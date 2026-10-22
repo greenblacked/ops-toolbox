@@ -611,7 +611,12 @@ function Invoke-DistroBackup {
         [string]$Name,
         [string]$Out
     )
-    $part = '{0}.{1}.partial' -f $Out, [guid]::NewGuid().ToString('N')
+    $token = [guid]::NewGuid().ToString('N')
+    $part = '{0}.{1}.partial' -f $Out, $token
+    $partSide = "$part.sha256"
+    $keepTar = '{0}.{1}.old' -f $Out, $token
+    $keepSide = "$keepTar.sha256"
+    $side = "$Out.sha256"
     Write-Host "Exporting '$Name' -> $Out (this can take a while)..."
     try {
         $said = Format-WslOutput (wsl.exe --export $Name $part)
@@ -621,11 +626,40 @@ function Invoke-DistroBackup {
             return $false
         }
         $hash = (Get-FileHash -LiteralPath $part -Algorithm SHA256).Hash.ToLowerInvariant()
-        Move-Item -LiteralPath $part -Destination $Out -Force
-        Set-Content -LiteralPath "$Out.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($Out))"
+        # Both new files exist under temporary names before anything old is
+        # touched. The old pair is then set aside, the new pair moved in, and
+        # the old pair put back if any step fails, so a tar is never left
+        # next to a checksum of a different file.
+        $hadTar = Test-Path -LiteralPath $Out
+        $hadSide = Test-Path -LiteralPath $side
+        try {
+            Set-Content -LiteralPath $partSide -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($Out))" -ErrorAction Stop
+            if ($hadTar) { Move-Item -LiteralPath $Out -Destination $keepTar -Force -ErrorAction Stop }
+            if ($hadSide) { Move-Item -LiteralPath $side -Destination $keepSide -Force -ErrorAction Stop }
+            Move-Item -LiteralPath $part -Destination $Out -Force -ErrorAction Stop
+            Move-Item -LiteralPath $partSide -Destination $side -Force -ErrorAction Stop
+        } catch {
+            Write-Error "Could not finish the backup of '$Name' ($($_.Exception.Message))" -ErrorAction Continue
+            try {
+                if ($hadTar -and (Test-Path -LiteralPath $keepTar)) {
+                    Move-Item -LiteralPath $keepTar -Destination $Out -Force -ErrorAction Stop
+                } elseif (-not $hadTar -and (Test-Path -LiteralPath $Out)) {
+                    Remove-Item -LiteralPath $Out -Force -ErrorAction Stop
+                }
+                if ($hadSide -and (Test-Path -LiteralPath $keepSide)) {
+                    Move-Item -LiteralPath $keepSide -Destination $side -Force -ErrorAction Stop
+                } elseif (-not $hadSide -and (Test-Path -LiteralPath $side)) {
+                    Remove-Item -LiteralPath $side -Force -ErrorAction Stop
+                }
+            } catch {
+                Write-Error "The earlier backup could not be put back; it is kept as $keepTar" -ErrorAction Continue
+            }
+            return $false
+        }
+        Remove-Item -LiteralPath $keepTar, $keepSide -Force -ErrorAction SilentlyContinue
         return $true
     } finally {
-        Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $part, $partSide -Force -ErrorAction SilentlyContinue
     }
 }
 

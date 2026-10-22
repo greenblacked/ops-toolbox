@@ -6,8 +6,10 @@
   in the same run) is refused before anything is written (a stopped one
   is never started to measure it), one failed export does not stop the rest
   and never deletes a backup of the same name from an earlier run (exports
-  are written to a temporary file and moved into place on success),
-  and every tar gets the same `.sha256` sidecar a single backup writes.
+  are written to a temporary file and moved into place on success, with
+  the new sidecar, and the earlier tar and sidecar restored if either
+  cannot be replaced), and every tar gets the same `.sha256` sidecar a
+  single backup writes.
   `-DryRun` now previews `backup`, `compact`, `sparse` and `shutdown` as well:
   the plan with sizes, the running distros a shutdown would stop, and, for
   `compact`, whether the shell is elevated, without calling `wsl --export`,
