@@ -27,6 +27,7 @@ set -o pipefail
 FAIL_ON="fail"
 QUIET=0
 HOME_DIR="${HOME:-}"
+HOME_GIVEN=0
 SOURCE_DIR=""
 SSH_KEY_FILE=""
 
@@ -92,8 +93,8 @@ require_value() {
 while (( $# > 0 )); do
   case "$1" in
     -h|--help)   usage; exit 0 ;;
-    --home)      require_value "$1" "${2:-}"; HOME_DIR="$2"; shift ;;
-    --home=*)    HOME_DIR="${1#*=}"; require_value "--home" "$HOME_DIR" ;;
+    --home)      require_value "$1" "${2:-}"; HOME_DIR="$2"; HOME_GIVEN=1; shift ;;
+    --home=*)    HOME_DIR="${1#*=}"; HOME_GIVEN=1; require_value "--home" "$HOME_DIR" ;;
     --source)    require_value "$1" "${2:-}"; SOURCE_DIR="$2"; shift ;;
     --source=*)  SOURCE_DIR="${1#*=}"; require_value "--source" "$SOURCE_DIR" ;;
     --ssh-key)   require_value "$1" "${2:-}"; SSH_KEY_FILE="$2"; shift ;;
@@ -303,7 +304,13 @@ fi
 # --- git -------------------------------------------------------------------
 group "git"
 gitconfig="$HOME_DIR/.gitconfig"
-xdg_gitconfig="${XDG_CONFIG_HOME:-$HOME_DIR/.config}/git/config"
+# An explicit --home inspects that home, so the ambient XDG_CONFIG_HOME (the
+# caller's own) must not redirect the lookup to a different user's files.
+if [[ "$HOME_GIVEN" == "1" ]]; then
+  xdg_gitconfig="$HOME_DIR/.config/git/config"
+else
+  xdg_gitconfig="${XDG_CONFIG_HOME:-$HOME_DIR/.config}/git/config"
+fi
 if ! command -v git >/dev/null 2>&1; then
   skip "git not found"
 elif [[ ! -f "$gitconfig" && ! -f "$xdg_gitconfig" ]]; then
@@ -341,8 +348,24 @@ else
       "fix: git config --global core.longpaths true"
   fi
 
-  helper="$(user_value --get-all credential.helper)"
-  [[ -n "$helper" ]] || helper="$(system_value --get-all credential.helper)"
+  # Git collects helpers from the system file, then the XDG file, then
+  # ~/.gitconfig, and an empty value resets the list so far. Walk them in
+  # that order so the list is what Git would run, never an empty entry.
+  helper=""
+  while IFS= read -r entry; do
+    if [[ -z "$entry" ]]; then
+      helper=""
+    else
+      [[ -z "$helper" ]] || helper+=$'\n'
+      helper+="$entry"
+    fi
+  done < <(
+    system_value --get-all credential.helper
+    for file in "$xdg_gitconfig" "$gitconfig"; do
+      [[ -f "$file" ]] || continue
+      git config --file "$file" --includes --get-all credential.helper 2>/dev/null
+    done
+  )
   if [[ -n "$helper" ]]; then
     # Git runs every helper in the order listed, so name them all in that
     # order rather than imply that the first one is the only one.

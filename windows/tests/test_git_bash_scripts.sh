@@ -304,7 +304,15 @@ fx="$(new_doctor_fixture)"
 mkdir -p "$fx/elsewhere/git"
 mv "$fx/home/.gitconfig" "$fx/elsewhere/git/config"
 DOCTOR_XDG="$fx/elsewhere" run_doctor "$fx" ""
-assert_not_contains "XDG_CONFIG_HOME moves the XDG file that is read" "$out" "no credential.helper"
+assert_contains "with --home an ambient XDG_CONFIG_HOME is not read" "$out" "no $fx/home/.gitconfig"
+assert_not_contains "and the file it points to is not used" "$out" "core.longpaths is true"
+
+# Without --home the ambient XDG_CONFIG_HOME applies, as it does for git.
+out="$(HOME="$fx/home" XDG_CONFIG_HOME="$fx/elsewhere" \
+  PATH="$fx/bin:$BASE_PATH" GIT_CONFIG_SYSTEM="$fx/system-gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+  "$DOCTOR" 2>&1)"
+assert_contains "without --home XDG_CONFIG_HOME moves the XDG file that is read" "$out" "core.longpaths is true"
+assert_not_contains "and the config there is not reported missing" "$out" "no $fx/home/.gitconfig"
 
 fx="$(new_doctor_fixture)"
 mkdir -p "$fx/home/.config/git"
@@ -330,6 +338,34 @@ assert_contains "every credential.helper is listed, the XDG one first" "$out" "c
 assert_not_contains "a user.name only in the XDG file is seen" "$out" "user.name is not set"
 assert_contains "while user.email, in neither, is reported" "$out" "user.email is not set"
 assert_contains "and safe.directory = * in the XDG file is seen" "$out" "disables the ownership check"
+
+# An empty `helper =` resets the helpers before it, and an empty entry is
+# never printed.
+fx="$(new_doctor_fixture)"
+mkdir -p "$fx/home/.config/git"
+printf '[credential]\n\thelper = xdgone\n\thelper =\n\thelper = xdgtwo\n' > "$fx/home/.config/git/config"
+printf '[core]\n\tlongpaths = true\n[credential]\n\thelper = homeone\n' > "$fx/home/.gitconfig"
+run_doctor "$fx" ""
+assert_contains "an empty helper resets the earlier ones, in Git's order" "$out" "credential.helper is set (xdgtwo, homeone)"
+assert_not_contains "and no empty entry is printed" "$out" "(, "
+
+fx="$(new_doctor_fixture)"
+printf '[core]\n\tlongpaths = true\n[credential]\n\thelper = homeone\n\thelper =\n' > "$fx/home/.gitconfig"
+run_doctor "$fx" ""
+assert_contains "a reset with nothing after it leaves no helper" "$out" "no credential.helper"
+
+# System helpers are listed too, ahead of the user's, as Git runs them. The
+# system file is read through GIT_CONFIG_SYSTEM, so NOSYSTEM stays unset.
+fx="$(new_doctor_fixture)"
+printf '[credential]\n\thelper = sysone\n' > "$fx/system-gitconfig"
+printf '[core]\n\tlongpaths = true\n[credential]\n\thelper = homeone\n' > "$fx/home/.gitconfig"
+out="$(HOME="$fx/home" PATH="$fx/bin:$BASE_PATH" GIT_CONFIG_SYSTEM="$fx/system-gitconfig" \
+  "$DOCTOR" --home "$fx/home" 2>&1)"
+assert_contains "system helpers are listed first, then the user's" "$out" "credential.helper is set (sysone, homeone)"
+printf '[credential]\n\thelper =\n' > "$fx/home/.gitconfig"
+out="$(HOME="$fx/home" PATH="$fx/bin:$BASE_PATH" GIT_CONFIG_SYSTEM="$fx/system-gitconfig" \
+  "$DOCTOR" --home "$fx/home" 2>&1)"
+assert_contains "and an empty user helper resets the system ones" "$out" "no credential.helper"
 
 fx="$(new_doctor_fixture)"
 rm "$fx/home/.gitconfig"
