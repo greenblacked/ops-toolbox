@@ -872,6 +872,82 @@ class SchedulerHealthTestCase(unittest.TestCase):
         )
         self.assertEqual(levels_for(findings, "re-declares"), ["warn"])
 
+    def test_startup_scheduler_only_reading_the_globals_does_not_restore(self):
+        # Mentioning a name is not declaring it: a read restores nothing.
+        schedulers = [
+            self.scheduler("health_check"),
+            self.scheduler("show", interval="0s", start_time="startup",
+                           on_event=":put $TgBotToken; :put $TgChatId"),
+        ]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=3600, declares=()),
+        )
+        self.assertEqual(
+            levels_for(findings, "TgBotToken and TgChatId are set now but nothing re-declares"),
+            ["warn"],
+        )
+
+    def test_bare_declaration_without_a_value_does_not_restore(self):
+        schedulers = [
+            self.scheduler("health_check"),
+            self.scheduler("decl", interval="0s", start_time="startup",
+                           on_event=":global TgBotToken; :global TgChatId\n:put $TgChatId"),
+        ]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+            self.env(uptime=3600, declares=()),
+        )
+        self.assertEqual(
+            levels_for(findings, "TgBotToken and TgChatId are set now but nothing re-declares"),
+            ["warn"],
+        )
+
+    def test_each_global_needs_its_own_assignment_inline(self):
+        for body, warned in (
+            (':global TgBotToken "x"; :put $TgChatId', "TgChatId"),
+            (':global TgChatId 42; :put $TgBotToken', "TgBotToken"),
+            (':global TgBotToken "x"; :set TgChatId "y"', None),
+            (':global TgBotToken $a; :global TgChatId [:tostr 1]', None),
+        ):
+            with self.subTest(body=body):
+                schedulers = [
+                    self.scheduler("health_check"),
+                    self.scheduler("set", interval="0s", start_time="startup", on_event=body),
+                ]
+                findings = router_doctor.build_findings(
+                    ["tg_send", "health_check"], ["tg_send", "health_check"], schedulers,
+                    self.env(uptime=3600, declares=()),
+                )
+                if warned is None:
+                    self.assertEqual(levels_for(findings, "re-declares"), [])
+                else:
+                    self.assertEqual(
+                        levels_for(findings, "%s is set now but nothing re-declares" % warned),
+                        ["warn"])
+
+    def test_assigns_global_distinguishes_assignment_from_reference(self):
+        assigns = router_doctor.assigns_global
+        self.assertTrue(assigns(':global TgBotToken "x"', "TgBotToken"))
+        self.assertTrue(assigns(":global TgBotToken 12", "TgBotToken"))
+        self.assertTrue(assigns(':set TgBotToken "x"', "TgBotToken"))
+        self.assertTrue(assigns(":global  TgBotToken $v", "TgBotToken"))
+        self.assertFalse(assigns(":put $TgBotToken", "TgBotToken"))
+        self.assertFalse(assigns(":global TgBotToken;", "TgBotToken"))
+        self.assertFalse(assigns(":global TgBotToken\n:put 1", "TgBotToken"))
+        self.assertFalse(assigns(":global TgBotTokenX 1", "TgBotToken"))
+        self.assertFalse(assigns(':global TgChatId "1"', "TgBotToken"))
+
+    def test_decl_assignment_for_one_global_leaves_the_other_warned(self):
+        # The probe now returns a DECL record only for an assigned name.
+        schedulers = [self.scheduler("health_check"), self.restorer()]
+        findings = router_doctor.build_findings(
+            ["tg_send", "health_check"], ["tg_send", "health_check", "startup"], schedulers,
+            self.env(uptime=3600, declares=("startup",), chat_declares=()),
+        )
+        self.assertEqual(levels_for(findings, "TgChatId is set now but nothing re-declares it"),
+                         ["warn"])
+
     def test_a_disabled_startup_scheduler_does_not_restore(self):
         restorer = self.restorer()
         restorer["disabled"] = True
@@ -933,7 +1009,11 @@ class SchedulerHealthTestCase(unittest.TestCase):
         # The only place a script source is touched is inside the :find the
         # router evaluates; what is :put is the script's name.
         self.assertEqual(probe.count(" source]"), 1)
-        self.assertIn('[:find [/system script get $s source] $g]', probe)
+        self.assertIn(':local src [/system script get $s source];', probe)
+        # an assignment, not a mention: ":global NAME <value>" or ":set NAME
+        # <value>", with the end of the statement excluded
+        self.assertIn('{":global ";":set "}', probe)
+        self.assertIn('$c != ";"', probe)
         # one DECL record per script and required global, from a literal
         # array of exactly REQUIRED_GLOBALS
         self.assertIn(":foreach g in={%s}" % ";".join(

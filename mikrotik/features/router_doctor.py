@@ -103,13 +103,25 @@ PROBE = (
     # long the router has been up says nothing about how old a scheduler is.
     ' :put ("CLK:" . [:tostr [/system clock get date]]'
     ' . "|" . [:tostr [/system clock get time]]);'
-    # Which scripts mention each required global, one DECL:script|global
-    # record per pair. The router does the search and returns only names: a
-    # source can hold a pasted token, so no source ever crosses the wire.
+    # Which scripts assign each required global, one DECL:script|global
+    # record per pair. A mention is not enough: a script that only reads
+    # $TgBotToken restores nothing. A record needs ":global NAME <value>" or
+    # ":set NAME <value>", the name followed by a space and then something
+    # other than the end of the statement. The router does the search and
+    # returns only names: a source can hold a pasted token, so no source ever
+    # crosses the wire.
     ' :foreach g in={%s} do={'
     ':foreach s in=[/system script find] do={'
-    ':if ([:typeof [:find [/system script get $s source] $g]] = "num") do={'
-    ':put ("DECL:" . [/system script get $s name] . "|" . $g)}}};'
+    ':local src [/system script get $s source];'
+    ':foreach pre in={":global ";":set "} do={'
+    ':local pat ($pre . $g . " ");'
+    ':local n [:len $pat];'
+    ':local k [:find $src $pat];'
+    ':while ([:typeof $k] = "num") do={'
+    ':local c [:pick $src ($k + $n) ($k + $n + 1)];'
+    ':if ($c != "" and $c != ";" and $c != "}" and $c != "\\r" and $c != "\\n") do={'
+    ':put ("DECL:" . [/system script get $s name] . "|" . $g)};'
+    ':set k [:find $src $pat ($k + 1)]}}}};'
     % ";".join('"%s"' % g for g in REQUIRED_GLOBALS)
 )
 
@@ -259,7 +271,7 @@ def parse_report(text):
     the scripts enforce them. VERSION_KEY holds the RouterOS (major, minor)
     when the router reported one. A scheduler gains disabled, run_count,
     start_time and start_date when the probe returned them, and the reserved UPTIME_KEY and
-    DECLARES_TG_KEY hold the uptime in seconds and the scripts that mention
+    DECLARES_TG_KEY hold the uptime in seconds and the scripts that assign
     TgBotToken; DECLARES_KEY holds that per required global, from DECL:script|
     global records (a bare DECL:script is read as TgBotToken).
     """
@@ -439,6 +451,13 @@ def format_duration(seconds):
     days, rest = divmod(int(seconds), 86400)
     clock = "%02d:%02d:%02d" % (rest // 3600, rest % 3600 // 60, rest % 60)
     return "%dd%s" % (days, clock) if days else clock
+
+
+def assigns_global(text, name):
+    """Whether a script body assigns the global: ":global NAME value" or
+    ":set NAME value". A bare ":global NAME;" and a read ($NAME) do not."""
+    pattern = r":(?:global|set)[ \t]+%s(?![A-Za-z0-9_-])[ \t]+[^\s;}]" % re.escape(name)
+    return re.search(pattern, text) is not None
 
 
 def runs_script(on_event, name):
@@ -934,7 +953,7 @@ def build_findings(local, installed, schedulers, env, underscored=None):
                 if entry.get("start_time") != "startup" or entry.get("disabled") is True:
                     continue
                 on_event = entry.get("on_event", "")
-                if (glob in on_event or entry.get("name") in declarers
+                if (assigns_global(on_event, glob) or entry.get("name") in declarers
                         or any(runs_script(on_event, d) for d in declarers)):
                     restored = True
                     break

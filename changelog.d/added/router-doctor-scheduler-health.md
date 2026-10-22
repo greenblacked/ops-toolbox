@@ -11,5 +11,6 @@
   `TgBotToken` set by hand with nothing to set it again at boot passed as
   healthy until the next reboot cleared it. All three are now warnings. They
   are judged only on what the router returned, and the search for a startup
-  script that sets the token runs on the router, so no script source is
+  script that assigns the token (`:global NAME value` or `:set NAME value`,
+  not a mere mention or read) runs on the router, so no script source is
   read over ssh.
