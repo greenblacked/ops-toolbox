@@ -307,6 +307,19 @@ class SecretScanTestCase(unittest.TestCase):
             self.assertEqual(export_config.find_leaks(redacted), [], text)
         self.assertEqual(export_config.find_leaks(':global "api-name" "x"\n'), [])
 
+    def test_finds_and_redacts_a_wireguard_preshared_key(self):
+        text = ('add allowed-address=10.0.0.2/32 interface=wg0 '
+                'preshared-key="Zm9vYmFyZm9vYmFy" public-key="abc"\n')
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        redacted = export_config.redact_secrets(text)
+        self.assertNotIn("Zm9vYmFyZm9vYmFy", redacted)
+        self.assertIn('preshared-key="<redacted>" public-key="abc"', redacted)
+        self.assertEqual(export_config.find_leaks(redacted), [])
+        bare = "set [ find ] preshared-key=Zm9vYmFy\n"
+        self.assertEqual(export_config.find_leaks(bare), [(1, "sensitive field")])
+        self.assertEqual(export_config.redact_secrets(bare),
+                         "set [ find ] preshared-key=<redacted>\n")
+
     def test_every_secret_global_the_scripts_use_is_detected(self):
         import re
         pattern = re.compile(

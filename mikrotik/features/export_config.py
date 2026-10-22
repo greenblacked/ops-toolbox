@@ -118,7 +118,7 @@ _LEAK_PATTERNS = (
     # unquoted `$"name"` is one expression token, not a value ending at `$`.
     ("sensitive field", True, re.compile(
         r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
-        r"|wpa-pre-shared-key|authentication-key|encryption-key)"
+        r"|wpa-pre-shared-key|preshared-key|authentication-key|encryption-key)"
         r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)(?:"|\\?$)'
         r'|(?P<value>\$"(?:[^"\\]|\\.)*"|[^\s\\"]+))'
     )),
