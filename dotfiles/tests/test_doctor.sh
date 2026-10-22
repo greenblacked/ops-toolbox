@@ -538,6 +538,105 @@ else
 fi
 
 # --------------------------------------------------------------------------
+head_ "ssh config layouts without running ssh"
+# Table-driven: every layout below is read as text, so none of the stubbed
+# network tools may run (each leaves the marker), and the run must end with
+# exit 0 or 1 (1 is the documented warn-or-fail status; 2 and 3 are usage or
+# environment errors) and print a report.
+STUBS="$scratch/layoutstubs"; marker="$T/layout-marker"
+mkdir -p "$STUBS"
+for u in ssh ssh-keygen scp sftp nc; do
+  printf '#!/bin/sh\n: > "%s"\nexit 0\n' "$marker" > "$STUBS/$u"
+  chmod +x "$STUBS/$u"
+done
+
+# Writes the layout named $1 under the scratch home's ~/.ssh.
+write_layout() {
+  local name="$1" s="$H/.ssh" m="$marker"
+  chmod -R u+rwx "$H" 2>/dev/null; rm -rf "$H"
+  mkdir -p "$s/config.d"; chmod 700 "$s"
+  printf 'plain.example.invalid ssh-ed25519 AAAA\n' > "$s/known_hosts"
+  case "$name" in
+    match-exec-main)    printf 'Match exec "touch %s"\nHost *\n  HashKnownHosts yes\n' "$m" > "$s/config" ;;
+    match-exec-include) printf 'Host *\n  HashKnownHosts yes\nInclude config.d/*\n' > "$s/config"
+                        printf 'Match exec "touch %s"\n' "$m" > "$s/config.d/x.conf" ;;
+    include-quoted-space) mkdir -p "$s/my conf"
+                        printf 'Include "my conf/*"\nHost *\n  HashKnownHosts yes\n' > "$s/config"
+                        printf 'Match exec "touch %s"\n' "$m" > "$s/my conf/x.conf" ;;
+    include-glob)       printf 'Include config.d/*.conf\nHost *\n  HashKnownHosts yes\n' > "$s/config"
+                        printf 'Match exec "touch %s"\n' "$m" > "$s/config.d/a.conf"
+                        printf 'Match exec "touch %s"\n' "$m" > "$s/config.d/b.conf" ;;
+    match-not-exec)     printf 'Match !exec "touch %s"\nHost *\n  HashKnownHosts yes\n' "$m" > "$s/config" ;;
+    match-exec-quoted)  printf 'Match host a exec "touch %s" user u\nHost *\n  HashKnownHosts yes\n' "$m" > "$s/config" ;;
+    proxycommand)       printf 'Host *\n  HashKnownHosts yes\n  ProxyCommand touch %s\n' "$m" > "$s/config" ;;
+    localcommand)       printf 'Host *\n  HashKnownHosts yes\n  PermitLocalCommand yes\n  LocalCommand touch %s\n' "$m" > "$s/config" ;;
+    knownhostscommand)  printf 'Host *\n  HashKnownHosts yes\n  KnownHostsCommand touch %s\n' "$m" > "$s/config" ;;
+    include-loop)       printf 'Include a.conf\nHost *\n  HashKnownHosts yes\n' > "$s/config"
+                        printf 'Include b.conf\nMatch exec "touch %s"\n' "$m" > "$s/a.conf"
+                        printf 'Include a.conf\nMatch exec "touch %s"\n' "$m" > "$s/b.conf" ;;
+    include-unreadable) printf 'Host *\n  HashKnownHosts yes\nInclude config.d/*\n' > "$s/config"
+                        printf 'Match exec "touch %s"\n' "$m" > "$s/config.d/x.conf"
+                        chmod 000 "$s/config.d/x.conf" "$s/config.d" ;;
+    empty-config)       : > "$s/config" ;;
+    no-config)          : ;;
+    no-ssh-dir)         rm -rf "$s" ;;
+    *) err "unknown layout $name" ;;
+  esac
+}
+
+layouts=(match-exec-main match-exec-include include-quoted-space include-glob
+  match-not-exec match-exec-quoted proxycommand localcommand knownhostscommand
+  include-loop include-unreadable empty-config no-config no-ssh-dir)
+for name in "${layouts[@]}"; do
+  write_layout "$name"
+  rm -f "$marker"
+  out="$(guard env "${NOENV[@]}" HOME="$H" TMPDIR="$T" PATH="$STUBS:$PATH" "$DOCTOR" --home "$H" --platform linux 2>&1)"; rc=$?
+  if [[ -e "$marker" ]]; then err "layout $name: a network tool ran"; else ok "layout $name: no network tool ran"; fi
+  if [[ "$rc" == 0 || "$rc" == 1 ]]; then ok "layout $name: exit status $rc is 0 or the warn status"; else err "layout $name: exit status $rc"; fi
+  if [[ -n "$out" ]]; then ok "layout $name: the doctor printed a report"; else err "layout $name: no output"; fi
+done
+
+# HashKnownHosts verdict per layout: the awk answers yes, no, include or
+# none (no global line); the doctor prints one line for each.
+tt_name=(); tt_cfg=(); tt_want=()
+tt() { tt_name+=("$1"); tt_cfg+=("$2"); tt_want+=("$3"); }
+tt bare-yes        'HashKnownHosts yes\n'                                              yes
+tt host-star-yes   'Host *\n  HashKnownHosts yes\n'                                    yes
+tt host-star-no    'Host *\n  HashKnownHosts no\n'                                     no
+tt host-other-yes  'Host a\n  HashKnownHosts yes\n'                                    none
+tt match-all-yes   'Match all\n  HashKnownHosts yes\n'                                yes
+tt include-first   'Include config.d/*\nHost *\n  HashKnownHosts yes\n'               include
+tt include-after   'Host *\n  HashKnownHosts yes\nInclude config.d/*\n'               yes
+tt include-only    'Include config.d/*\n'                                              include
+tt empty           ''                                                                  none
+tt commented       '# HashKnownHosts yes\n'                                            none
+tt equals-sign     'HashKnownHosts=yes\n'                                              yes
+tt quoted-upper    'hashknownhosts "yes"\n'                                            yes
+tt host-star-extra 'Host * extra\n  HashKnownHosts yes\n'                              none
+tt first-wins      'Host *\n  HashKnownHosts yes\n  HashKnownHosts no\n'               yes
+tt later-block     'Host a\n  HashKnownHosts no\nHost *\n  HashKnownHosts yes\n'       yes
+tt match-exec-blk  'Match exec "true"\n  HashKnownHosts yes\n'                         none
+W_WARN="[warn] 1 plaintext host entries in known_hosts although HashKnownHosts is on"
+W_INFO="[info] known_hosts: HashKnownHosts not judged"
+W_SKIP="[skip] known_hosts: HashKnownHosts is not on in $H/.ssh/config"
+for i in "${!tt_name[@]}"; do
+  rm -rf "$H"; mkdir -p "$H/.ssh"; chmod 700 "$H/.ssh"
+  printf 'plain.example.invalid ssh-ed25519 AAAA\n' > "$H/.ssh/known_hosts"
+  printf "${tt_cfg[$i]}" > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"
+  case "${tt_want[$i]}" in
+    yes)     want="$W_WARN" ;;
+    include) want="$W_INFO" ;;
+    *)       want="$W_SKIP" ;;
+  esac
+  assert_contains "HashKnownHosts ${tt_name[$i]} -> ${tt_want[$i]}" "$out" "$want"
+  n=0
+  for w in "$W_WARN" "$W_INFO" "$W_SKIP"; do [[ "$out" == *"$w"* ]] && n=$((n + 1)); done
+  assert_rc "HashKnownHosts ${tt_name[$i]} prints one verdict line" 1 "$n"
+done
+chmod -R u+rwx "$H" 2>/dev/null; rm -rf "$H" "$STUBS"; rm -f "$marker"
+
+# --------------------------------------------------------------------------
 head_ "the shipped tree is clean"
 # The false-positive guard: the configs this repository ships, installed the
 # way the installer installs them, must give no finding at all. It mirrors the
