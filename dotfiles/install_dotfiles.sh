@@ -49,6 +49,9 @@ INSTALLED_ONLY=0
 STAMP=""
 FORCE=0
 QUIET=0
+# Internal switch of stray_backup_originals; reset so an exported value
+# cannot silence the notices of a real run.
+STRAY_QUIET=
 HOME_DIR="${HOME:-}"
 HOME_GIVEN=0
 CONFIG_DIR=""
@@ -610,7 +613,8 @@ backups_of() {
 # A path this installer restored a stray backup to is ours as well, while
 # older backups of it remain (RESTORED_LEDGER): the restore replaced the
 # link that showed it, and the older ones are still ours to list and restore.
-# Anything else is reported as not ours and skipped, never restored.
+# Anything else is reported as not ours and skipped, never restored (with
+# STRAY_QUIET set, skipped without the report, for a caller that only counts).
 # One path per line, each once.
 stray_backup_originals() {
   local f b s orig rel units="" tracked="" restored=""
@@ -639,7 +643,7 @@ stray_backup_originals() {
     if ! { [[ -L "$orig" ]] && points_here "$orig"; } &&
        ! grep -Fxq -- "$(unit_of "$rel")" <<<"$units" &&
        ! grep -Fxq -- "$orig" <<<"$restored"; then
-      [[ "${1:-}" == all ]] || info "not ours, skipped: $b" >&2
+      [[ "${1:-}" == all || -n "${STRAY_QUIET:-}" ]] || info "not ours, skipped: $b" >&2
       continue
     fi
     printf '%s\n' "$orig"
@@ -1061,7 +1065,7 @@ installed_only_preflight() {
     any=1
   fi
   # --backups/--restore may name the unit of a stray backup the same way.
-  if (( any == 0 && (BACKUPS || RESTORE) )) && [[ -n "$(stray_backup_originals)" ]]; then
+  if (( any == 0 && (BACKUPS || RESTORE) )) && [[ -n "$(STRAY_QUIET=1 stray_backup_originals)" ]]; then
     any=1
   fi
   if (( any == 0 )); then
