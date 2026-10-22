@@ -44,6 +44,26 @@ help. Nothing on this page needs its contents.
     `StrictHostKeyChecking=accept-new`, so a host that is not yet in
     `~/.ssh/known_hosts` has its key added there.
 
+**Verify the host key first.** The doctor's connection (below) accepts an
+unknown host key without asking. To stay in control of that entry, before
+you run it compare the fingerprint of the key the host serves with the
+ones the host publishes (for GitHub, its documented SSH key fingerprints
+page), then add the verified key to `~/.ssh/known_hosts` yourself.
+
+```bash
+ssh-keyscan github.com | ssh-keygen -lf -
+```
+
+If you already ran the Report command or `--test-auth`, check the entry
+they may have added. `-lF` shows the stored key as a fingerprint to
+compare with the published one; `-R` removes a wrong entry (it keeps a
+backup as `known_hosts.old`). Use the host you passed to `--host`:
+
+```bash
+ssh-keygen -lF github.com
+ssh-keygen -R github.com
+```
+
 Start with the doctor that asks OpenSSH what it will really do:
 
 ```{ .bash .rpt-report title="Report" }
@@ -143,23 +163,10 @@ feature: the first connection to a host whose key you have never accepted
 adds that key to `~/.ssh/known_hosts` without asking. Do not copy that
 option into your own `~/.ssh/config`: keep the default strict checking.
 
-To stay in control of that entry, verify the host key before you run
-`--test-auth`: compare the fingerprint of the key the host serves with the
-ones the host publishes (for GitHub, its documented SSH key fingerprints
-page), then add the verified key to `~/.ssh/known_hosts` yourself.
-
-```bash
-ssh-keyscan github.com | ssh-keygen -lf -
-```
-
-If you already ran `--test-auth`, check the entry it added. `-lF` shows
-the stored key as a fingerprint to compare with the published one;
-`-R` removes a wrong entry (it keeps a backup as `known_hosts.old`):
-
-```bash
-ssh-keygen -lF github.com
-ssh-keygen -R github.com
-```
+The Report step makes the same kind of connection, so the host key
+check comes before it: see "Verify the host key first" under Report. If
+you skipped it, run the after-the-fact check there for the entry either
+step added.
 
 ## Apply
 
