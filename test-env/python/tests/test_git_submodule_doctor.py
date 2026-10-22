@@ -120,9 +120,10 @@ class ClassifySubmoduleUrlTestCase(unittest.TestCase):
 
 class SubmoduleFindingsTestCase(unittest.TestCase):
     def findings(self, modules, gitlinks=("lib",), statuses=(), local_urls=None,
-                 has_origin=True, recorded=None):
+                 has_origin=True, recorded=None, base_url=None):
         return doctor.submodule_findings(
-            modules, list(gitlinks), list(statuses), local_urls or {}, has_origin, recorded
+            modules, list(gitlinks), list(statuses), local_urls or {}, has_origin, recorded,
+            base_url,
         )
 
     def test_healthy(self):
@@ -210,9 +211,28 @@ class SubmoduleFindingsTestCase(unittest.TestCase):
     def test_drift_compares_absolute_urls_only(self):
         self.assertEqual(
             self.findings({"lib": module(url="../lib.git")},
-                          local_urls={"lib": "https://example.com/lib.git"}),
+                          local_urls={"lib": "https://example.com/lib.git"},
+                          base_url="https://example.com/super.git"),
             [],
         )
+
+    def test_a_relative_url_with_no_base_is_reported_as_not_compared(self):
+        [(level, message, fix)] = self.findings(
+            {"lib": module(url="../lib.git")},
+            local_urls={"lib": "https://example.com/lib.git"},
+        )
+        self.assertEqual(level, "info")
+        self.assertIn("could not be resolved", message)
+        self.assertIsNone(fix)
+
+    def test_a_relative_url_resolved_to_another_url_warns(self):
+        [(level, _, fix)] = self.findings(
+            {"lib": module(url="../lib.git")},
+            local_urls={"lib": "https://old.example.com/lib.git"},
+            base_url="https://example.com/super.git",
+        )
+        self.assertEqual(level, "warn")
+        self.assertEqual(fix, "git submodule sync --recursive")
 
     def test_passwords_never_reach_a_message(self):
         findings = self.findings(
