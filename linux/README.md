@@ -912,8 +912,8 @@ an idle user; a window over 900 seconds, an interval of `0` or a count of `0`
 warns), `ChannelTimeout` for the idle bound (OpenSSH 9.2+; an `info` line when
 none is set, none covers `session`, or `session=0` turns it off; a pass for
 e.g. `ChannelTimeout session=30m`), `PermitUserEnvironment yes`,
-`HostbasedAuthentication yes` and `IgnoreRhosts no` (each a FAIL), `PubkeyAuthentication no` and a
-`PermitTunnel` other than `no` (warn). A setting that is not set is graded by
+`HostbasedAuthentication yes` and `IgnoreRhosts no` (each a FAIL),
+`PubkeyAuthentication no` and a `PermitTunnel` other than `no` (warn). A setting that is not set is graded by
 the OpenSSH default, and none of the FAIL-level ones is at its default on
 OpenSSH 8 or 9. Weak ciphers, MACs and key exchange (CBC and arcfour ciphers,
 MD5 and SHA-1 MACs, SHA-1 Diffie-Hellman) warn and `ssh-dss` host keys fail,
