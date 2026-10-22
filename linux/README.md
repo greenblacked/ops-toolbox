@@ -869,7 +869,7 @@ The exclusions are recorded in the archive, as a small member
 `--diff` can leave the same files out of its new-file scan. An archive made
 with no exclusions has no such member. A pattern that would also match the
 member itself (for example `*config_backup*`) fails the run, and a pattern
-starting with `# ` is exit `3`.
+starting with `#` followed by a space is exit `3`.
 
 Each run creates a private staging directory in `--dest`, validates the gzip
 stream and a nonempty tar member listing, and publishes a unique timestamped
