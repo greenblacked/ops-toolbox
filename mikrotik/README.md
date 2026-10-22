@@ -911,7 +911,8 @@ history. Three flags deal with that:
 What counts as a secret: a Telegram bot token by its shape, wherever it
 appears; a `:global`, `:local` or `:set` whose name contains `token`,
 `password`, `secret`, `apikey`, `passphrase` or `psk` and is given a literal
-value, quoted or a bare word, in a script or an `on-event`; and the fields
+value, quoted or a bare word, in a script or an `on-event` (the variable
+name may itself be quoted, as in `:global "api-token" "x"`); and the fields
 RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
 `private-key=`, `secret=`, `psk=`, the WPA pre-shared keys,
 `authentication-key=`, `encryption-key=`). Empty values, variables and

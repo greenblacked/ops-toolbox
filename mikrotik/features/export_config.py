@@ -100,10 +100,12 @@ _LEAK_PATTERNS = (
     # is one token that stops at whitespace, `;`, a quote, an escape or a
     # closing } ] ) (so `do={:set password abc}` keeps its brace); one that
     # starts with { is an array and one that starts with $, [ or ( is an
-    # expression, and none of them is a literal.
+    # expression, and none of them is a literal. The variable name may itself
+    # be quoted (`:global "api-token" "x"`, escaped inside an export), which is
+    # how RouterOS spells a name with a hyphen.
     ("secret assigned in a script", True, re.compile(
-        r'(?i):(?:global|local|set)\s+(?P<name>[A-Za-z0-9_]*'
-        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_]*)\s+'
+        r'(?i):(?:global|local|set)\s+(?:\\?")?(?P<name>[A-Za-z0-9_-]*'
+        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_-]*)(?:\\?")?\s+'
         r'(?:\\?"'
         r'(?P<value>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
         r'|(?P<bare>(?!\{)[^\s;\\"}\])]+))'

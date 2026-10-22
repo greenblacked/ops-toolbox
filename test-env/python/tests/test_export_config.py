@@ -292,6 +292,21 @@ class SecretScanTestCase(unittest.TestCase):
                              [(1, "secret assigned in a script")], name)
             self.assertNotIn("z9z9z9", export_config.redact_secrets(text))
 
+    def test_finds_and_redacts_a_quoted_variable_name(self):
+        for text in (':global "api-token" "supersecret"\n',
+                     ':local "my-password" "supersecret"\n',
+                     ':global "api-token" supersecret\n',
+                     'add name=s source=":global \\"api-token\\" '
+                     '\\"supersecret\\";"\n',
+                     'add name=s source=":global \\"api-token\\" supersecret;"\n'):
+            self.assertEqual(export_config.find_leaks(text),
+                             [(1, "secret assigned in a script")], text)
+            redacted = export_config.redact_secrets(text)
+            self.assertNotIn("supersecret", redacted, text)
+            self.assertEqual(redacted.count(export_config.REDACTED), 1, text)
+            self.assertEqual(export_config.find_leaks(redacted), [], text)
+        self.assertEqual(export_config.find_leaks(':global "api-name" "x"\n'), [])
+
     def test_every_secret_global_the_scripts_use_is_detected(self):
         import re
         pattern = re.compile(
