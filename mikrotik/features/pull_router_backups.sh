@@ -41,9 +41,10 @@ Options:
   --verify           Check the pulled files in staging before publishing:
                      no empty file, each .rsc starts with the RouterOS
                      export header, and every .backup has its .rsc (and the
-                     reverse). A partner pulled in the same run, or already
-                     archived in dest-dir when the router sent none, pairs
-                     them. Rejected files are never published; an archived
+                     reverse). A partner pulled and accepted in the same
+                     run, or already archived in dest-dir when the router
+                     sent none, pairs them. A rejected partner fails the
+                     pair. Rejected files are never published; an archived
                      copy of the same name stays as it was
   --max-age HOURS    Fail unless a backup-*.backup pulled in this run was made
                      by the router within the last HOURS hours (a whole
