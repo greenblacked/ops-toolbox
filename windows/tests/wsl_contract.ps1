@@ -595,22 +595,24 @@ try {
         $left.Count -eq 2
     ) ($left -join "`n")
 
-    # The new sidecar failing to land must not cost the earlier pair. A
-    # function named Move-Item takes precedence over the cmdlet, so the one
-    # step that moves a sidecar into place fails the way a locked or
-    # read-only file does; the tar moves go through the real cmdlet.
+    # The new sidecar failing to land must not cost the earlier pair. The
+    # stand-in export leaves a directory where the new sidecar is about to be
+    # written, so that step fails the way a locked or read-only path does,
+    # through the real cmdlets and with no built-in shadowed.
     $pairTar = 'earlier good export 2'
     $pairSide = 'earlier-hash-2  Ubuntu_2026-10-21_1830.tar'
     [IO.File]::WriteAllText($backupOut, $pairTar)
     [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
-    function Move-Item {
-        [CmdletBinding()]
-        param([string]$LiteralPath, [string]$Destination, [switch]$Force)
-        if ($LiteralPath -like '*.partial.sha256') { throw 'simulated sidecar failure' }
-        Microsoft.PowerShell.Management\Move-Item -LiteralPath $LiteralPath -Destination $Destination -Force:$Force
+    function wsl.exe {
+        [IO.File]::WriteAllText([string]$args[2], 'unfinished export')
+        New-Item -ItemType Directory -Path ('{0}.sha256' -f $args[2]) | Out-Null
+        $global:LASTEXITCODE = 0
     }
     $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
-    Remove-Item -LiteralPath Function:\Move-Item -ErrorAction SilentlyContinue
+    function wsl.exe {
+        [IO.File]::WriteAllText([string]$args[2], 'new export')
+        $global:LASTEXITCODE = 0
+    }
     $left = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
     Test-Case 'a sidecar that cannot be put in place makes the backup return false' ($backedUp -eq $false)
     Test-Case 'and leaves the earlier tar and sidecar pair as it was, with nothing else' (
@@ -634,7 +636,6 @@ try {
         (-not $backedUp -and $tarNow -eq $pairTar -and $sideNow -eq $pairSide))
     ) ($left -join "`n")
 } finally {
-    Remove-Item -LiteralPath Function:\Move-Item -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath Function:\wsl.exe -ErrorAction SilentlyContinue
     Remove-Item -Path $backupDir -Recurse -Force -ErrorAction SilentlyContinue
 }
