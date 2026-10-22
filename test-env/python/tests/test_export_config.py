@@ -391,6 +391,69 @@ class SecretScanTestCase(unittest.TestCase):
         )
         self.assertEqual(export_config.find_leaks(text), [])
 
+    def test_finds_and_redacts_an_unquoted_literal(self):
+        for stmt in (":global ApiPassword abc123", ":local my_token x1",
+                     ":set BACKUP_PASSWORD hunter2hunter", ":global CfApiToken a-b.c"):
+            for text in ("%s;\n" % stmt, "%s\n" % stmt,
+                         'add name=s source="%s;\\r\\n:log info x"\n' % stmt):
+                self.assertEqual(export_config.find_leaks(text),
+                                 [(1, "secret assigned in a script")], text)
+                redacted = export_config.redact_secrets(text)
+                self.assertEqual(redacted.count(export_config.REDACTED), 1, text)
+                self.assertNotIn(stmt.split()[-1], redacted, text)
+                self.assertEqual(export_config.find_leaks(redacted), [], text)
+                self.assertEqual(export_config.redact_secrets(redacted), redacted)
+        self.assertEqual(
+            export_config.redact_secrets(":global ApiPassword abc123; :log info x\n"),
+            ":global ApiPassword <redacted>; :log info x\n")
+
+    def test_an_unquoted_expression_or_declaration_is_not_a_value(self):
+        for text in (":set BackupPassword $RouterBackupPassword;\n",
+                     ":set Password [:pick $a 0 4]\n",
+                     ":set Password ($a . $b)\n",
+                     ":global TgBotToken;\n",
+                     ':set Password \\$other;\n',
+                     'add name=s source=":set Password \\$other;"\n'):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+            self.assertEqual(export_config.redact_secrets(text), text)
+
+    def test_an_unquoted_literal_stops_at_a_closing_bracket(self):
+        for text, want in (
+                ("add name=s do={:set password abc}\n",
+                 "add name=s do={:set password <redacted>}\n"),
+                (":set Password abc)\n", ":set Password <redacted>)\n"),
+                (":set Password abc]\n", ":set Password <redacted>]\n")):
+            self.assertEqual(export_config.find_leaks(text),
+                             [(1, "secret assigned in a script")], text)
+            self.assertEqual(export_config.redact_secrets(text), want)
+
+    def test_an_unquoted_array_is_not_a_bare_literal(self):
+        for text in (':global ApiToken {"a";"b"}\n',
+                     ':global ApiToken {\\"a\\";\\"b\\"}\n',
+                     ":global ApiToken {1;2}\n"):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+            self.assertEqual(export_config.redact_secrets(text), text)
+
+    def test_only_the_shipped_placeholder_assignments_are_exempt(self):
+        shipped = (':local BotToken "token"\n',
+                   ':global TgBotToken "<paste bot token>"\n',
+                   ':global RouterBackupPassword "<paste backup password>"\n',
+                   ':global RouterBackupPassword \\"<paste backup password>\\";\n',
+                   ":global ApiPassword <redacted>\n",
+                   ':global ApiPassword "<redacted>"\n')
+        for text in shipped:
+            self.assertEqual(export_config.find_leaks(text), [], text)
+        flagged = (':global ApiPassword "<production-secret>"\n',
+                   ':global TgBotToken "token"\n',
+                   ':global ApiToken "ID"\n',
+                   ':local BotToken "<paste bot token>"\n',
+                   ':global RouterBackupPassword "<anything else>"\n',
+                   "set wifi1 passphrase=<production-secret>\n",
+                   'set wifi1 passphrase="token"\n')
+        for text in flagged:
+            self.assertTrue(export_config.find_leaks(text), text)
+            self.assertIn(export_config.REDACTED, export_config.redact_secrets(text))
+
     def test_finds_sensitive_fields_and_redacts_inside_their_quotes(self):
         text = 'set [ find default-name=wlan1 ] comment="#x" passphrase="my pass"\n'
         self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])

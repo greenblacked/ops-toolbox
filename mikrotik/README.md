@@ -911,12 +911,17 @@ history. Three flags deal with that:
 What counts as a secret: a Telegram bot token by its shape, wherever it
 appears; a `:global`, `:local` or `:set` whose name contains `token`,
 `password`, `secret`, `apikey`, `passphrase` or `psk` and is given a literal
-value in a script or an `on-event`; and the fields RouterOS prints only under
-`show-sensitive` (`password=`, `passphrase=`, `private-key=`, `secret=`,
-`psk=`, the WPA pre-shared keys, `authentication-key=`, `encryption-key=`).
-Empty values, variables (`$Password`), placeholders in angle brackets, the
-helper's own `token` / `ID` placeholders and examples in commented-out script
-lines are skipped. A finding names the line and the kind, never the value.
+value, quoted or a bare word, in a script or an `on-event`; and the fields
+RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
+`private-key=`, `secret=`, `psk=`, the WPA pre-shared keys,
+`authentication-key=`, `encryption-key=`). Empty values, variables and
+expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`), `<redacted>`,
+the exact placeholder assignments the package ships
+(`TgBotToken "<paste bot token>"`,
+`RouterBackupPassword "<paste backup password>"` and the helper's
+`BotToken "token"`) and examples in commented-out script lines are skipped.
+Any other value is reported, even one in angle brackets. A finding names the
+line and the kind, never the value.
 This is a guard against the known shapes, not proof that an export is clean:
 it can miss a secret stored under a name it does not recognise.
 

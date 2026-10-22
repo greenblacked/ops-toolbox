@@ -78,13 +78,13 @@ _HEADER_DATE = re.compile(
 _BY_ROUTEROS = re.compile(r"^#\s*(?:model|software id|serial number).*$", re.IGNORECASE)
 
 # What a secret looks like in an export. Each pattern marks the value it found
-# as group "value" (or "quoted"), which is the only part redaction replaces.
-# Matching runs on logical lines - an export wraps long lines with a trailing
-# backslash, and a token can be split across the wrap. The flag says whether a
-# match inside a commented-out script line counts: a token is a token wherever
-# it sits, but the package's own comments show `:global RouterBackupPassword
-# "s3cret"` as an example, and reporting that on every router would teach
-# people to ignore the scan.
+# as group "value", "quoted" or "bare", which is the only part redaction
+# replaces. Matching runs on logical lines - an export wraps long lines with a
+# trailing backslash, and a token can be split across the wrap. The flag says
+# whether a match inside a commented-out script line counts: a token is a
+# token wherever it sits, but the package's own comments show `:global
+# RouterBackupPassword "s3cret"` as an example, and reporting that on every
+# router would teach people to ignore the scan.
 _LEAK_PATTERNS = (
     # A Telegram bot token by its shape, wherever it appears - including inside
     # a hand-built https://api.telegram.org/bot<token>/ URL.
@@ -96,11 +96,17 @@ _LEAK_PATTERNS = (
     # A script's own backslash, quote or dollar is itself escaped by the export,
     # so a literal $ arrives as \\\$ (backslash pair, then \$): after a pair
     # the value may continue with another pair, an escaped quote, an escape
-    # or a plain character.
+    # or a plain character. An unquoted literal (`:global ApiPassword abc`)
+    # is one token that stops at whitespace, `;`, a quote, an escape or a
+    # closing } ] ) (so `do={:set password abc}` keeps its brace); one that
+    # starts with { is an array and one that starts with $, [ or ( is an
+    # expression, and none of them is a literal.
     ("secret assigned in a script", True, re.compile(
-        r'(?i):(?:global|local|set)\s+[A-Za-z0-9_]*'
-        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_]*\s+\\?"'
+        r'(?i):(?:global|local|set)\s+(?P<name>[A-Za-z0-9_]*'
+        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_]*)\s+'
+        r'(?:\\?"'
         r'(?P<value>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
+        r'|(?P<bare>(?!\{)[^\s;\\"}\])]+))'
     )),
     # Fields RouterOS only prints under show-sensitive. A quoted value runs to
     # the first unescaped quote: a backslash escapes the next character (\\,
@@ -117,9 +123,16 @@ _LEAK_PATTERNS = (
 )
 
 REDACTED = "<redacted>"
-# The values the package itself ships as placeholders; reporting them would
-# teach people to ignore the scan.
-_PLACEHOLDERS = ("token", "ID", REDACTED)
+# The assignments the package itself ships as placeholders, as exact
+# (variable, value) pairs; reporting them would teach people to ignore the
+# scan. Any other value is a finding, whatever it looks like: a secret does
+# not become safe by being wrapped in <...>. REDACTED is the one value that
+# is exempt anywhere, so redaction is idempotent.
+_PLACEHOLDER_ASSIGNMENTS = frozenset((
+    ("BotToken", "token"),                                  # core/tg_send.lua
+    ("TgBotToken", "<paste bot token>"),                    # print_startup.sh
+    ("RouterBackupPassword", "<paste backup password>"),    # print_startup.sh
+))
 
 C_RESET = C_RED = C_GREEN = C_YELLOW = C_DIM = ""
 if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
@@ -230,14 +243,16 @@ def _leak_spans(line):
     """(kind, start, end) of every secret value on one logical line."""
     for kind, skip_comments, pattern in _LEAK_PATTERNS:
         for match in pattern.finditer(line):
-            group = "value"
-            if "quoted" in pattern.groupindex and match.group("quoted") is not None:
-                group = "quoted"
-            value = match.group(group)
-            if value is None or value in _PLACEHOLDERS:
+            group = next((g for g in ("quoted", "value", "bare")
+                          if g in pattern.groupindex and match.group(g) is not None),
+                         None)
+            if group is None:
                 continue
-            # <paste token here> is a placeholder; $Password is a variable.
-            if value.startswith("<") and value.endswith(">"):
+            value = match.group(group)
+            if value == REDACTED:
+                continue
+            if "name" in pattern.groupindex and \
+                    (match.group("name"), value) in _PLACEHOLDER_ASSIGNMENTS:
                 continue
             if kind == "sensitive field":
                 # A field value is plain text: `\$` there is a literal dollar
