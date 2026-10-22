@@ -104,9 +104,9 @@ PROBE = (
     ' :put ("CLK:" . [:tostr [/system clock get date]]'
     ' . "|" . [:tostr [/system clock get time]]);'
     # Which scripts declare or assign each required global. The router only
-    # finds the candidates and describes each one with three facts; parse_report
-    # and global_events_restore() decide, in Python, whether it counts. One
-    # EVT:script|global|keyword|position|assigned|commented record per
+    # finds the candidates and describes each one with its keyword, offset and
+    # two flags; parse_report and events_restore() decide, in Python, whether
+    # it counts. One EVT:script|global|keyword|position|assigned|commented record per
     # ":global NAME", ":local NAME" or ":set NAME" (one or more spaces or tabs
     # between keyword and name, the name followed by a blank, ";", "}", a line
     # end or the end of the source). assigned is 1 when a value follows the
