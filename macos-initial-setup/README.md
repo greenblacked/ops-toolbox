@@ -1283,9 +1283,13 @@ default run leaves `~/.config/git/credentials` out of `~/.config/git` and
 skips a `~/.terraformrc` that has a `credentials` block and a `~/.aws/config`
 with static keys (`aws_access_key_id`, `aws_secret_access_key` or
 `aws_session_token`), saying so. `--include-secrets` lifts that and warns that
-the archive now holds secrets. Either way the archive is created `0600`; a
-`--dest` the script creates is `0700`, while an existing one keeps its mode
-and is reported when group- or world-accessible.
+the archive now holds secrets. Each `--paths` entry is checked by its
+written name and by where it really points (folder components and a final
+symlink are resolved), so an alias such as `~/alias` onto `~/.aws` is refused
+like `~/.aws`, and a link that cannot be resolved is refused. Either way
+the archive is created `0600`; a `--dest` the script creates is `0700`,
+while an existing one keeps its mode and is reported when group- or
+world-accessible.
 
 How a run writes: a `--dest` that group or other users can write to is refused
 (exit `3`; a sticky one owned by you, like `/tmp`, is accepted), and so is one

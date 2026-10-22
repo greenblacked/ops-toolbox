@@ -3824,6 +3824,42 @@ cbrun --dry-run --paths "$cb/home/.ssh" >/dev/null; rc=$?
 assert_eq "the whole .ssh directory is refused, it holds the private keys -> 3" "3" "$rc"
 cbrun --dry-run --paths "$cb/home/.ssh/deploy_key" >/dev/null; rc=$?
 assert_eq "a private key with a free-form name under .ssh is refused -> 3" "3" "$rc"
+
+# A symlink must not launder a secret: tar stores the file behind an alias
+# directory by content, so the physical path is judged as well as the written
+# one (a symlinked folder component, and a symlink as the last component).
+ln -s "$cb/home/.aws" "$cb/home/alias"
+out="$(cbrun --dry-run --paths "$cb/home/alias/credentials")"; rc=$?
+assert_eq "an alias directory onto ~/.aws does not hide credentials -> 3" "3" "$rc"
+assert_contains "the alias refusal says it holds credentials" "$out" "holds credentials (use --include-secrets to override)"
+cbrun --dry-run --paths "$cb/home/alias" >/dev/null; rc=$?
+assert_eq "the alias directory itself is refused -> 3" "3" "$rc"
+cbrun --dry-run --include-secrets --paths "$cb/home/alias/credentials" >/dev/null; rc=$?
+assert_eq "--include-secrets accepts the alias path -> 0" "0" "$rc"
+ln -s ".aws/credentials" "$cb/home/credlink"
+cbrun --dry-run --paths "$cb/home/credlink" >/dev/null; rc=$?
+assert_eq "a relative symlink to a credentials file is refused -> 3" "3" "$rc"
+ln -s "$cb/home/.ssh" "$cb/home/sshalias"
+cbrun --dry-run --paths "$cb/home/sshalias/deploy_key" >/dev/null; rc=$?
+assert_eq "an alias onto ~/.ssh does not hide a private key -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/sshalias/config" >/dev/null; rc=$?
+assert_eq "an alias onto ~/.ssh still allows the client config -> 0" "0" "$rc"
+ln -s "$cb/home/alias/credentials" "$cb/home/chain1"
+ln -s "$cb/home/chain1" "$cb/home/chain2"
+cbrun --dry-run --paths "$cb/home/chain2" >/dev/null; rc=$?
+assert_eq "a chain of symlinks to credentials is refused -> 3" "3" "$rc"
+ln -s "$cb/home/loop2" "$cb/home/loop1"
+ln -s "$cb/home/loop1" "$cb/home/loop2"
+cbrun --dry-run --paths "$cb/home/loop1" >/dev/null; rc=$?
+assert_eq "a symlink loop cannot be resolved and is refused -> 3" "3" "$rc"
+mkdir -p "$cb/home/plain"
+printf 'notes\n' > "$cb/home/plain/n.txt"
+ln -s "$cb/home/plain" "$cb/home/plainlink"
+cbrun --dry-run --paths "$cb/home/plainlink/n.txt" >/dev/null; rc=$?
+assert_eq "an alias onto a harmless folder is accepted -> 0" "0" "$rc"
+rm -f "$cb/home/alias" "$cb/home/credlink" "$cb/home/sshalias" "$cb/home/chain1" \
+  "$cb/home/chain2" "$cb/home/loop1" "$cb/home/loop2" "$cb/home/plainlink"
+rm -rf "$cb/home/plain"
 cbrun --dry-run --paths "$cb/home/.ssh/keys" >/dev/null; rc=$?
 assert_eq "a sub-folder of .ssh is refused -> 3" "3" "$rc"
 cbrun --dry-run --paths "$cb/home/.ssh/deploy_key.pub" >/dev/null; rc=$?

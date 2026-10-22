@@ -15,4 +15,6 @@
   other users can write to unless it is sticky; the temporary archive is
   made exclusively with `mktemp`), a dry run writes nothing, a real run
   needs `--yes`, and rotation only removes its own older archives. A
-  `--dest` that reaches a source through a symlink is refused too.
+  `--dest` that reaches a source through a symlink is refused too, and a
+  `--paths` entry is judged by where it really points as well as by its
+  name, so an alias folder onto `~/.aws` does not hide credentials.

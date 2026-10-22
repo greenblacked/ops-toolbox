@@ -282,6 +282,94 @@ holds_secret() {
   return 1
 }
 
+# Physical path of $1 (symlinks resolved, BSD-safe: cd -P and pwd -P). A path
+# that does not exist yet is resolved through its deepest existing directory
+# and the missing tail is appended as written.
+canon_path() {
+  local p="$1" tail="" base d
+  while [[ "$p" != "/" && "$p" == */ ]]; do p="${p%/}"; done
+  while :; do
+    if [[ -d "$p" ]]; then
+      d="$(cd -P -- "$p" 2>/dev/null && pwd -P)" || d=""
+      if [[ -n "$d" ]]; then
+        if [[ -z "$tail" ]]; then
+          printf '%s\n' "$d"
+        elif [[ "$d" == "/" ]]; then
+          printf '/%s\n' "$tail"
+        else
+          printf '%s/%s\n' "$d" "$tail"
+        fi
+        return 0
+      fi
+    fi
+    [[ "$p" == "/" || "$p" != */* ]] && break
+    base="${p##*/}"
+    tail="${tail:+$base/$tail}"
+    tail="${tail:-$base}"
+    p="${p%/*}"
+    [[ -n "$p" ]] || p="/"
+  done
+  printf '%s\n' "$1"
+}
+
+# Fully resolved path of $1: every directory component through cd -P and
+# pwd -P, and a final component that is itself a symlink followed by a
+# readlink loop (readlink without -f, which Bash 3.2 / BSD lack). A link loop
+# or a chain longer than 40 hops prints nothing and fails, so the caller can
+# refuse.
+canon_full() {
+  local p="$1" n=0 parent t
+  while [[ -L "$p" ]]; do
+    n=$((n + 1))
+    (( n <= 40 )) || return 1
+    t="$(readlink "$p")" || return 1
+    [[ -n "$t" ]] || return 1
+    parent="${p%/*}"
+    [[ -n "$parent" ]] || parent="/"
+    case "$t" in
+      /*) p="$t" ;;
+      *)  p="$(canon_path "$parent")/$t" ;;
+    esac
+  done
+  canon_path "$p"
+}
+
+# Does the physical location of the absolute path $1 hold credentials,
+# although its written form may not look like it? An alias such as
+# ~/alias -> ~/.aws makes ~/alias/credentials the same file as
+# ~/.aws/credentials, and tar archives it by content. The resolved path is
+# judged by holds_secret relative to the resolved HOME, and also against the
+# resolved location of every secret path, in case a secret folder is itself
+# a link to somewhere else. A path that cannot be resolved is refused.
+resolves_to_secret() {
+  local c ch rel d cdir
+  c="$(canon_full "$1")" || return 0
+  [[ -n "$c" ]] || return 0
+  ch="$(canon_path "$HOME_DIR")"
+  if [[ "$c" == "$ch"/* ]]; then
+    rel="${c#"$ch"/}"
+    holds_secret "$rel" && return 0
+  fi
+  for d in $SECRET_PATHS .ssh; do
+    cdir="$(canon_full "$HOME_DIR/$d" 2>/dev/null)" || continue
+    [[ -n "$cdir" ]] || continue
+    if [[ "$d" == ".ssh" ]]; then
+      # Only the client config, known hosts and public keys are safe in it,
+      # so a path inside the resolved folder is judged by its name there.
+      if [[ "$c" == "$cdir" ]]; then
+        return 0
+      elif [[ "$c" == "$cdir"/* ]]; then
+        holds_secret ".ssh/${c#"$cdir"/}" && return 0
+      elif [[ "$cdir" == "$c"/* ]]; then
+        return 0
+      fi
+    elif [[ "$c" == "$cdir" || "$c" == "$cdir"/* || "$cdir" == "$c"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 RELS=()
 MISSING=()
 # Tar exclusions that keep credentials out of a default run.
@@ -308,7 +396,8 @@ if (( ${#PATHS[@]} > 0 )); then
       exit 3
     fi
     rel="${p#"$HOME_DIR"/}"
-    if holds_secret "$rel"; then
+    # Judged by the written path and by where it really points.
+    if holds_secret "$rel" || resolves_to_secret "$p"; then
       if (( INCLUDE_SECRETS == 0 )); then
         err "refusing to archive $p: it holds credentials (use --include-secrets to override)"
         exit 3
@@ -340,36 +429,6 @@ if (( INCLUDE_SECRETS == 0 )); then
   # git-credential-store keeps passwords here, inside a default source.
   EXCLUDES+=(--exclude=.config/git/credentials)
 fi
-
-# Physical path of $1 (symlinks resolved, BSD-safe: cd -P and pwd -P). A path
-# that does not exist yet is resolved through its deepest existing directory
-# and the missing tail is appended as written.
-canon_path() {
-  local p="$1" tail="" base d
-  while [[ "$p" != "/" && "$p" == */ ]]; do p="${p%/}"; done
-  while :; do
-    if [[ -d "$p" ]]; then
-      d="$(cd -P -- "$p" 2>/dev/null && pwd -P)" || d=""
-      if [[ -n "$d" ]]; then
-        if [[ -z "$tail" ]]; then
-          printf '%s\n' "$d"
-        elif [[ "$d" == "/" ]]; then
-          printf '/%s\n' "$tail"
-        else
-          printf '%s/%s\n' "$d" "$tail"
-        fi
-        return 0
-      fi
-    fi
-    [[ "$p" == "/" || "$p" != */* ]] && break
-    base="${p##*/}"
-    tail="${tail:+$base/$tail}"
-    tail="${tail:-$base}"
-    p="${p%/*}"
-    [[ -n "$p" ]] || p="/"
-  done
-  printf '%s\n' "$1"
-}
 
 # The archive must not land inside something it archives, or each run would
 # carry the previous ones. Compared lexically and again by physical path, so
