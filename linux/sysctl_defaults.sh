@@ -343,9 +343,9 @@ sysctl_extra_dirs() {
 # Every *.conf read after our drop-in, in the order it is read: names that
 # sort after 99-ops-toolbox.conf in byte order (every name, ours included,
 # when called with "all", those after NAME when called with "after:NAME").
-# systemd's precedence applies: the first directory holding a basename
-# wins outright, and a symlink to /dev/null there masks the name in every
-# later directory.
+# systemd's precedence applies: the first directory holding a basename wins
+# outright, and a symlink to /dev/null there masks the name in every later
+# directory.
 later_conf_files() {
   local scope="${1:-later}" dir f name tab extra p floor
   local seen=$'\n'
