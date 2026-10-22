@@ -147,6 +147,17 @@ out="$("$REPOS_STATUS" --dir "$parent/corrupt" --only dirty --porcelain 2>&1)"
 assert_contains "$out" 'status-failed' '--only dirty keeps a checkout whose status failed'
 rm -rf "$parent/corrupt"
 
+section "an unreadable checkout is kept under every --only filter"
+mkdir -p "$parent/unreadable" || err 'make the unreadable fixture'
+printf 'not a gitdir file\n' >"$parent/unreadable/.git" || err 'write the broken .git file'
+for filter in dirty ahead behind unpushed stash; do
+  out="$("$REPOS_STATUS" --dir "$parent/unreadable" --only "$filter" --porcelain 2>&1)"
+  assert_contains "$out" 'unreadable' "--only $filter keeps an unreadable checkout"
+  "$REPOS_STATUS" --dir "$parent/unreadable" --only "$filter" --strict >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" 1 "--only $filter --strict exits 1 for an unreadable checkout"
+done
+rm -rf "$parent/unreadable"
+
 section "environment and empty results"
 mkdir -p "$scratch/empty" || err 'create empty directory'
 out="$("$REPOS_STATUS" --dir "$scratch/empty" 2>&1)"; rc=$?
@@ -217,12 +228,36 @@ if [[ -f "$lost_obj" ]]; then
   assert_contains "$out" 'walk-failed' 'a failing rev-list is reported as walk-failed'
   "$REPOS_STATUS" --dir "$parent/damaged" --strict >/dev/null 2>&1; rc=$?
   assert_eq "$rc" 1 '--strict exits 1 when the history walk fails'
-  out="$("$REPOS_STATUS" --dir "$parent/damaged" --only unpushed --porcelain 2>&1)"
-  assert_contains "$out" 'walk-failed' '--only unpushed keeps a checkout whose walk failed'
+  for filter in dirty ahead behind unpushed stash; do
+    out="$("$REPOS_STATUS" --dir "$parent/damaged" --only "$filter" --porcelain 2>&1)"
+    assert_contains "$out" 'walk-failed' "--only $filter keeps a checkout whose walk failed"
+    "$REPOS_STATUS" --dir "$parent/damaged" --only "$filter" --strict >/dev/null 2>&1; rc=$?
+    assert_eq "$rc" 1 "--only $filter --strict exits 1 when the walk failed"
+  done
 else
   err 'the loose commit object was not where expected'
 fi
 rm -rf "$parent/damaged"
+
+section "a failed upstream walk is kept under every --only filter"
+clone_into "$parent/brokenwalk" &&
+  printf 'unseen\n' >"$parent/brokenwalk/unseen.txt" &&
+  git -C "$parent/brokenwalk" add unseen.txt &&
+  git -C "$parent/brokenwalk" commit -q -m unseen || err 'build the broken-walk fixture'
+unseen_sha="$(git -C "$parent/brokenwalk" rev-parse HEAD)"
+unseen_obj="$parent/brokenwalk/.git/objects/${unseen_sha:0:2}/${unseen_sha:2}"
+if [[ -f "$unseen_obj" ]]; then
+  rm -f "$unseen_obj" || err 'remove the loose tip commit object'
+  for filter in dirty ahead behind unpushed stash; do
+    out="$("$REPOS_STATUS" --dir "$parent/brokenwalk" --only "$filter" --porcelain 2>&1)"
+    assert_contains "$out" 'walk-failed' "--only $filter keeps a row whose upstream walk failed"
+    "$REPOS_STATUS" --dir "$parent/brokenwalk" --only "$filter" --strict >/dev/null 2>&1; rc=$?
+    assert_eq "$rc" 1 "--only $filter --strict exits 1 when the upstream walk failed"
+  done
+else
+  err 'the loose tip commit object was not where expected'
+fi
+rm -rf "$parent/brokenwalk"
 
 section "damaged stash"
 clone_into "$parent/badstash" || err 'build the damaged-stash fixture'
@@ -234,6 +269,12 @@ assert_eq "$rc" 0 'a plain run still exits 0 when git stash list fails'
 assert_contains "$out" 'stash-failed' 'a failing git stash list is reported as stash-failed'
 "$REPOS_STATUS" --dir "$parent/badstash" --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 1 '--strict exits 1 when git stash list fails'
+for filter in dirty ahead behind unpushed stash; do
+  out="$("$REPOS_STATUS" --dir "$parent/badstash" --only "$filter" --porcelain 2>&1)"
+  assert_contains "$out" 'stash-failed' "--only $filter keeps a row whose stash list failed"
+  "$REPOS_STATUS" --dir "$parent/badstash" --only "$filter" --strict >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" 1 "--only $filter --strict exits 1 when git stash list fails"
+done
 rm -rf "$parent/badstash"
 
 section "--fetch failure is work at risk"
@@ -244,6 +285,12 @@ assert_eq "$rc" 0 'a failed fetch still exits 0 without --strict'
 assert_contains "$out" 'fetch-failed' 'a failed fetch is noted'
 "$REPOS_STATUS" --dir "$parent/unreach" --fetch --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 1 '--strict --fetch exits 1 when the fetch failed'
+for filter in dirty ahead behind unpushed stash; do
+  out="$("$REPOS_STATUS" --dir "$parent/unreach" --fetch --only "$filter" --porcelain 2>&1)"
+  assert_contains "$out" 'fetch-failed' "--only $filter keeps a row whose fetch failed"
+  "$REPOS_STATUS" --dir "$parent/unreach" --fetch --only "$filter" --strict >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" 1 "--only $filter --fetch --strict exits 1 when the fetch failed"
+done
 "$REPOS_STATUS" --dir "$parent/unreach" --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 0 '--strict without --fetch ignores the unreachable remote'
 rm -rf "$parent/unreach"

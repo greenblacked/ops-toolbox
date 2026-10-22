@@ -6,4 +6,7 @@
   `--fetch` refreshes (and prunes) remote-tracking refs first; a failed
   fetch counts as work at risk, and so does a history walk that fails (a
   missing or unreadable object), noted `walk-failed`, and a stash list that
-  fails (a damaged `refs/stash`), noted `stash-failed`.
+  fails (a damaged `refs/stash`), noted `stash-failed`. The `--only`
+  filters keep such rows under every filter, so a failed fetch, stash
+  list or upstream walk, and an `unreadable` checkout, cannot hide behind
+  a filter under `--strict`.
