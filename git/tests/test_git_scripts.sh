@@ -8,6 +8,10 @@
 # Tests).
 set -uo pipefail
 
+# The ssh doctor honours GIT_SSH and GIT_SSH_COMMAND, so a value inherited from
+# the host must not aim the run. A test that needs one sets it for that command.
+unset GIT_SSH GIT_SSH_COMMAND
+
 REPO_ROOT="${REPO_ROOT:-/repo}"
 G="$REPO_ROOT/git"
 GACP="$G/gacp.sh"
