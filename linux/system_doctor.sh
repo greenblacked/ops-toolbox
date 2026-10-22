@@ -376,7 +376,11 @@ fi
 
 # --- disk ------------------------------------------------------------------
 group "disk"
-root_line="$(df -Pk / 2>/dev/null | awk 'NR == 2')"
+# A stale NFS/CIFS/sshfs mount blocks an unrestricted df forever, so the flag
+# that promises to leave remote mounts alone also limits df to local ones.
+DF_LOCAL=()
+(( SKIP_REMOTE_MOUNTS )) && DF_LOCAL=(-l)
+root_line="$(df -Pk ${DF_LOCAL[@]+"${DF_LOCAL[@]}"} / 2>/dev/null | awk 'NR == 2')"
 if [[ -n "$root_line" ]]; then
   used_pct="$(printf '%s\n' "$root_line" | awk '{ gsub(/%/, "", $5); print $5 }')"
   free_b="$(printf '%s\n' "$root_line" | awk '{ printf "%.0f", $4 * 1024 }')"
@@ -403,7 +407,7 @@ fi
 
 # Other real filesystems, so a full /var or /home is not invisible behind a
 # healthy /. Only block devices: tmpfs and overlay churn by design.
-others="$(df -Pk 2>/dev/null | awk -v min="$MIN_FREE_PCT" '
+others="$(df -Pk ${DF_LOCAL[@]+"${DF_LOCAL[@]}"} 2>/dev/null | awk -v min="$MIN_FREE_PCT" '
   NR > 1 && $1 ~ /^\/dev\// && $6 != "/" {
     gsub(/%/, "", $5)
     if (100 - $5 < min) printf "%s %s%% full\n", $6, $5
