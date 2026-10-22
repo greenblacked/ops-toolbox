@@ -668,7 +668,15 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
         self._stub("ssh", 'echo "$*" >> "' + self.log + '"\n'
                    'if [ "$1" = "-G" ]; then\n'
                    '  echo "hostname example.com"; echo "port 22"\n'
-                   '  echo "user $(cat "' + self.userfile + '")"\n'
+                   '  u=$(cat "' + self.userfile + '"); prev=\n'
+                   '  for a in "$@"; do\n'
+                   '    if [ "$prev" = "-l" ]; then u=$a; break; fi\n'
+                   '    if [ "$prev" = "-o" ]; then\n'
+                   '      case "$a" in [Uu][Ss][Ee][Rr]=*) u=${a#*=}; break;; esac\n'
+                   '    fi\n'
+                   '    prev=$a\n'
+                   '  done\n'
+                   '  echo "user $u"\n'
                    '  echo "stricthostkeychecking ask"\n'
                    '  echo "userknownhostsfile ' + self.known + '"\n'
                    '  echo "globalknownhostsfile none"\n'
@@ -839,6 +847,34 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
         rc, out, calls = self._main("ssh://alice@example.com/o/r.git",
                                     ssh_command="ssh -l deploy")
         self.assertIn("resolves to deploy@example.com:", out)
+        self.assertTrue(self._auth(calls)[0].endswith("-T deploy@example.com"),
+                        self._auth(calls))
+
+    def test_o_user_in_the_ssh_command_is_the_user_shown_and_probed(self):
+        # -o User=x in any spelling is ssh's first user, as -l is; it beats
+        # the URL user and is kept even when it spells the local account.
+        locals_ = sorted(doctor.local_accounts()) or ["nobody-here"]
+        for spelled in ("-o User=deploy", "-oUser=deploy", "-o user=deploy",
+                        "-o USER=deploy"):
+            rc, out, calls = self._main("ssh://alice@example.com/o/r.git",
+                                        ssh_command="ssh " + spelled)
+            self.assertIn("resolves to deploy@example.com:", out, spelled)
+            self.assertTrue(
+                self._auth(calls)[0].endswith("-T deploy@example.com"),
+                (spelled, self._auth(calls)))
+        rc, out, calls = self._main(
+            "example.com:o/r.git", ssh_command="ssh -o User=%s" % locals_[0])
+        self.assertTrue(
+            self._auth(calls)[0].endswith("-T %s@example.com" % locals_[0]),
+            self._auth(calls))
+
+    def test_first_of_l_and_o_user_wins(self):
+        rc, out, calls = self._main(
+            "example.com:o/r.git", ssh_command="ssh -o User=first -l second")
+        self.assertIn("resolves to first@example.com:", out)
+        rc, out, calls = self._main(
+            "example.com:o/r.git", ssh_command="ssh -l first -o User=second")
+        self.assertIn("resolves to first@example.com:", out)
 
     def test_host_flag_accepts_user_at_host(self):
         rc, out, calls = self._main(
@@ -849,10 +885,14 @@ class SshCommandAndUserThroughMainTests(unittest.TestCase):
 
 
 class SshCommandParsingTestCase(unittest.TestCase):
-    def test_ssh_opts_user_is_the_first_l(self):
-        self.assertEqual(doctor.ssh_opts_user(["-l", "a", "-l", "b"]), "a")
-        self.assertEqual(doctor.ssh_opts_user(["-o", "User=x", "-4"]), "")
-        self.assertEqual(doctor.ssh_opts_user([]), "")
+    def test_ssh_opts_set_user_sees_l_and_o_user(self):
+        self.assertTrue(doctor.ssh_opts_set_user(["-l", "a", "-l", "b"]))
+        self.assertTrue(doctor.ssh_opts_set_user(["-o", "User=x", "-4"]))
+        self.assertTrue(doctor.ssh_opts_set_user(["-o", "user x"]))
+        self.assertTrue(doctor.ssh_opts_set_user(["-4", "-o", "USER=x"]))
+        self.assertFalse(doctor.ssh_opts_set_user(["-o", "UserKnownHostsFile=x", "-4"]))
+        self.assertFalse(doctor.ssh_opts_set_user(["-i", "-l", "-p", "22"]))
+        self.assertFalse(doctor.ssh_opts_set_user([]))
 
     def test_user_of_ssh_and_scp_urls(self):
         self.assertEqual(doctor.ssh_user_of("ssh://a@h:22/r"), "a")

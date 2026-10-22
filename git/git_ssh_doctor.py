@@ -626,17 +626,25 @@ def configured_user(cfg):
     return "" if user in local_accounts() else user
 
 
-def ssh_opts_user(ssh_opts):
-    """The user a -l option in the effective ssh command names, or "". ssh
-    keeps the first value of an option, so the first -l wins; it also beats
-    a User in ssh config, so it is kept even when it spells the local
-    account, and it also beats the user of the URL, which git appends as
-    user@host after the command's options."""
+def ssh_opts_set_user(ssh_opts):
+    """True when the effective ssh command sets the login user itself, with
+    -l or with -o User=... (any case, also "User x"). ssh keeps the first
+    value it is given for the user, and the command's options come before
+    the user@host git appends, so such an option beats the user of the URL
+    and a User in ssh config; ssh -G, which receives the same options,
+    reports the one that wins."""
     opts = list(ssh_opts)
-    for i, opt in enumerate(opts[:-1]):
+    i = 0
+    while i < len(opts):
+        opt = opts[i]
         if opt == "-l":
-            return opts[i + 1]
-    return ""
+            return True
+        if opt == "-o" and i + 1 < len(opts) and re.match(
+                r"\s*user\s*(=|\s)", opts[i + 1], re.IGNORECASE):
+            return True
+        # an option that takes a value: skip the value too
+        i += 2 if len(opt) == 2 and opt[1] in _SSH_ARG_OPTIONS else 1
+    return False
 
 
 def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="",
@@ -693,12 +701,18 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
 
     # The user ssh will log in as. The probe and git both run
     # `ssh <command options> ... user@host`, and ssh keeps the first user it
-    # is given: a -l in the effective ssh command comes first and wins over
-    # the user the remote URL (or --host user@host) spells out, then a User
-    # set in ssh config, else "git". ssh -G always reports a user, the local
-    # account when none is configured, so a config value equal to the local
-    # account is taken as "none configured".
-    user = ssh_opts_user(ssh_opts) or user or configured_user(cfg) or "git"
+    # is given. When the effective ssh command sets one (-l or -o User), it
+    # comes first and wins over the user the remote URL (or --host
+    # user@host) spells out and over ssh config; ssh -G got the same
+    # options, so its user is the answer, even if it spells the local
+    # account. Otherwise the URL user, then a User set in ssh config, else
+    # "git"; ssh -G always reports a user, the local account when none is
+    # configured, so a config value equal to the local account is taken as
+    # "none configured".
+    if ssh_opts_set_user(ssh_opts):
+        user = cfg.get("user") or "git"
+    else:
+        user = user or configured_user(cfg) or "git"
     info("resolves to %s@%s:%s" % (user, cfg.get("hostname", host),
                                    cfg.get("port", "22")))
 
