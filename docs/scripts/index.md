@@ -16,6 +16,13 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `macos-initial-setup/status.sh` | macOS | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | <span class="stage stage-report">read-only</span> |
 | `macos-initial-setup/workstation_doctor.sh` | macOS | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `macos-initial-setup/hardening_audit.sh` | macOS | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/ops_context.sh` | macOS | Which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login this shell is pointed at. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/toolchain_check.sh` | macOS | Are the Python, Terraform, Go and Node versions a checkout pins installed and active? | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/net_doctor.sh` | macOS | Interfaces, default route, split DNS, system proxy against the shell, VPN tunnels, listeners. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/tls_expiry.sh` | macOS | Certificate expiry for PEM files, hosts and Keychain certificates within `--days`. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/schedule_report.sh` | macOS | Inventory of launchd agents and daemons, crontab and `at` jobs. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/ssh_client_doctor.sh` | macOS | `~/.ssh` permissions, weak keys and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/config_backup.sh` | macOS | Dated, verified, rotated archive of dotfiles and tool config. | `--dry-run` |
 | `macos-initial-setup/install_apps.sh` | macOS | Install Homebrew casks, CLI formulae and the Google Cloud SDK. | `--dry-run` |
 | `macos-initial-setup/install_devtools.sh` | macOS | Install Python, Terraform, Go and Helm toolchains. | `--dry-run` |
 | `macos-initial-setup/stay_fresh.sh` | macOS | Recurring housekeeping, upgrades and reports. | `--dry-run` |
@@ -33,13 +40,15 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
 | `linux/container_doctor.sh` | Linux | Grade Docker/Podman containers: state, security, logs. | <span class="stage stage-report">read-only</span> |
 | `linux/log_triage.sh` | Linux | What went wrong in the logs: kernel, units, auth, repeats. | <span class="stage stage-report">read-only</span> |
-| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`. | <span class="stage stage-report">read-only</span> |
-| `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert` |
+| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`; `--failed` finds broken ones. | <span class="stage stage-report">read-only</span> |
+| `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--check` gates on drift; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
+| `linux/swap_setup.sh` | Linux | Report swap; create or remove a swapfile and its fstab line. | `--dry-run` with `--create` or `--remove` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |
 | `linux/install_devtools.sh` | Linux | Install CLIs, Python, Go, Terraform, Helm. | `--dry-run` |
-| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras. | `--dry-run` |
-| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation. | `--dry-run` |
-| `linux/packages.sh` | Linux | List, dump, check, diff, install the package set. | `--dry-run` (install) |
+| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs, a journal size cap, unused images and old snap revisions. | `--dry-run` |
+| `linux/kernel_cleanup.sh` | Linux | Remove old kernel packages, keeping the running one plus N. | `--dry-run`; `--list` is read-only |
+| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation and exclusions; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
+| `linux/packages.sh` | Linux | List, dump, check, diff, install the package set; list holds and orphans. | `--dry-run` (install) |
 | `linux/install_aliases.sh` | Linux | Add a marked alias block to `~/.bashrc`. | `--dry-run` |
 | `linux/bash_aliases.sh` | Linux | Bash aliases; sourced. | n/a (sourced) |
 | `linux/systemd/stay_fresh_timer.sh` | Linux | Install and manage a systemd user timer. | `--dry-run` (install); `--print-only` |
@@ -85,6 +94,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/stay_fresh.lua` | MikroTik | Back up, update RouterOS and firmware; reboots. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/update_check.lua` | MikroTik | Back up, then notify of an update (retired on 7.24). | n/a (RouterOS script, no flags) |
 | `mikrotik/features/health_check.lua` | MikroTik | CPU, RAM, disk, temperature watchdog. | n/a (RouterOS script, no flags) |
+| `mikrotik/features/conntrack_watch.lua` | MikroTik | Warn before the connection-tracking table fills. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/security_check.lua` | MikroTik | Hardening audit; reports findings only. | <span class="stage stage-report">read-only</span> |
 | `mikrotik/features/cert_expiry_watch.lua` | MikroTik | Warn before a certificate expires. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/netwatch_notify.lua` | MikroTik | Telegram alerts from netwatch events. | n/a (RouterOS script, no flags) |
@@ -106,6 +116,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/export_config.py` | MikroTik | Host: export `/export` over SSH, diff, optional git commit. | `--stdout` or `--diff` |
 | `mikrotik/features/router_doctor.py` | MikroTik | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `mikrotik/features/print_schedulers.sh` | MikroTik | Host: print `/system scheduler` commands. | prints only; `--dry-run` accepted |
+| `mikrotik/features/print_startup.sh` | MikroTik | Host: print the startup script that sets the globals at boot. | prints only; `--dry-run` accepted |
 | `mikrotik/features/pull_router_backups.sh` | MikroTik | Host: pull backups over SFTP/SCP. | `--dry-run` |
 | `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, events and PVCs. | <span class="stage stage-report">read-only</span> |
 | `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks. | <span class="stage stage-report">read-only</span> |

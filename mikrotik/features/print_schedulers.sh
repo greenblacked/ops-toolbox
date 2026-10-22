@@ -7,7 +7,7 @@
 # Installing a script is the easy half. Scheduling it is where this package goes
 # quiet: a script that was never scheduled looks exactly like a script that has
 # nothing to report, and the mistake is invisible until the month you needed the
-# backup. Twenty-three scripts here are meant to run unattended and only eleven of
+# backup. Twenty-four scripts here are meant to run unattended and only eleven of
 # them have an interval written down in README.md.
 #
 # Usage:
@@ -18,7 +18,7 @@
 # No router is contacted and nothing is written — this only prints text.
 #
 # The intervals come from README.md's "Suggested schedules" table, and for the
-# twelve scripts that table omits, from each script's own header comment — which
+# thirteen scripts that table omits, from each script's own header comment — which
 # is where its author already wrote one down. The deliberately manual ones are
 # never printed: tg_send (a library, called by the others), detect_internet,
 # reboot-and-flush, firewall_drift_baseline and change_WIFI_pw.
@@ -141,7 +141,7 @@ case "$POLICY" in
     ;;
 esac
 
-SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota backup_file_cleanup cert_expiry_watch backup_update_check stay_fresh security_check"
+SCHEDULED_NAMES="backup health_check update_check wan_failover_notify dhcp_lease_watch firewall_drift mac_allowlist_dhcp rogue_dns_check wan_link_flap_notify netwatch_notify latency_monitor bandwidth_spike brute_force_block vpn_health wireguard_watch wireless_client_watch ddns_update traffic_quota conntrack_watch backup_file_cleanup cert_expiry_watch backup_update_check stay_fresh security_check"
 
 known=0
 for name in $UPDATE_SCRIPTS; do
@@ -239,7 +239,7 @@ EOF
 
 comment "--- not in that table; taken from each script's own header comment ---"
 comment
-comment "Eight of these name an interval outright and it is used as written."
+comment "Nine of these name an interval outright and it is used as written."
 comment "netwatch_notify and wireguard_watch each ask for \"1-5m\", where the slower"
 comment "end is the safer default to paste. The last two are the ones whose headers"
 comment "describe rather than specify: backup_file_cleanup says \"weekly or after"
@@ -257,6 +257,7 @@ wireguard_watch        5m
 wireless_client_watch  1m
 ddns_update            5m
 traffic_quota          1h
+conntrack_watch        5m
 backup_file_cleanup    1d   04:40:00
 cert_expiry_watch      1d   05:00:00
 EOF

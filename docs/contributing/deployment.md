@@ -294,17 +294,49 @@ this repository does not use it.
 ## Check a deploy
 
 ```bash
-curl -sSI https://stage.ops.szolotov.com/ | grep -i 'x-robots-tag\|x-frame-options'
+curl -sSI https://stage.ops.szolotov.com/ \
+  | grep -i 'x-robots-tag\|x-frame-options\|content-security-policy\|permissions-policy'
 curl -sS https://stage.ops.szolotov.com/version.txt
 curl -sSI https://ops.szolotov.com/
 curl -sS https://ops.szolotov.com/version.txt
+curl -sSI https://stage.ops.szolotov.com/version.txt | grep -i 'cache-control'
+curl -sS https://stage.ops.szolotov.com/robots.txt
+curl -sS https://ops.szolotov.com/robots.txt
+curl -sS https://ops.szolotov.com/.well-known/security.txt
+curl -sSI "https://stage.ops.szolotov.com/$(curl -sS https://stage.ops.szolotov.com/ \
+  | grep -o 'assets/javascripts/bundle\.[0-9a-f]*\.min\.js' | head -n 1)" | grep -i 'cache-control'
 ```
 
 - `version.txt` holds the SHA of the deployed commit.
 - `X-Robots-Tag: noindex` appears on stage and not on production.
-- Both answer with `X-Content-Type-Options`, `Referrer-Policy` and
-  `X-Frame-Options`.
+- Both answer with `X-Content-Type-Options`, `Referrer-Policy`,
+  `X-Frame-Options`, `Content-Security-Policy` (only `base-uri`,
+  `form-action`, `frame-ancestors` and `object-src`), `Permissions-Policy`,
+  `Cross-Origin-Opener-Policy`, `X-Permitted-Cross-Domain-Policies` and
+  `Strict-Transport-Security`. The full list and the reasons are in the
+  [Worker README](https://github.com/greenblacked/ops-toolbox/blob/master/worker/README.md#notes).
 - An unknown path answers 404 with the site's 404 page.
+- The footer of every page ends with "Build" and the first seven characters
+  of the deployed SHA, linked to the commit. On stage, "Preview build" comes
+  before it (see below).
+- Production's `robots.txt` allows everything and names
+  `https://ops.szolotov.com/sitemap.xml`; stage's has an empty `Disallow:`
+  and no sitemap. `security.txt` names the private advisory form and an
+  `Expires` date 180 days ahead. The Worker writes both only because the
+  site ships neither (see the Worker README).
+- `version.txt` answers `Cache-Control: no-store`, and Material's hashed
+  bundle answers `Cache-Control: public, max-age=31536000, immutable`. Pages
+  carry no `Cache-Control` from the Worker (the rules are in the
+  [Worker README](https://github.com/greenblacked/ops-toolbox/blob/master/worker/README.md#caching)).
+
+The footer stamp is read in the browser:
+`overrides/assets/javascripts/rpt-build-stamp.js` fetches the site's own
+`version.txt` and shows the SHA it holds, and marks the page as a preview
+build when that response carries `X-Robots-Tag: noindex`, which only stage
+sends. It stays empty in three cases, all expected: under `mkdocs serve` or
+a local `mkdocs build` (only the workflow writes `version.txt`), when the
+file does not hold exactly one 40-character SHA, and with JavaScript off or
+the request failing.
 
 ## Roll back
 
@@ -359,9 +391,15 @@ curl -sS https://ops.szolotov.com/version.txt
   next release. Approve or reject the deploy promptly.
 - A deploy replaces the Worker's Custom Domains and any DNS record already at
   the name.
-- There is no `Content-Security-Policy` header: Material for MkDocs uses
-  inline scripts and styles. The fonts are self-hosted, so they no longer
+- The `Content-Security-Policy` header restricts only `base-uri`,
+  `form-action`, `frame-ancestors` and `object-src`, not scripts or styles:
+  Material for MkDocs uses inline scripts and styles, and a static site
+  cannot hand out nonces. The fonts are self-hosted, so they no longer
   stand in the way.
+- `Strict-Transport-Security` is sent by the Worker for one year, on this
+  host only. A browser that has seen it will refuse plain http for the site
+  until it expires, so it cannot be undone quickly; it is safe because the
+  site is served only over https.
 - The automatic rollback needs a recorded earlier version. The first
   production deploy has none and fails without one to go back to.
 - Live Cloudflare behaviour, such as Worker Previews (an open beta feature at

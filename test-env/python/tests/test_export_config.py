@@ -1,10 +1,12 @@
 """Tests for mikrotik/features/export_config.py.
 
-Only normalisation is covered, and deliberately so: it is the part with a
-judgement call in it. Strip too little and every export is a noisy diff; strip
-too much and a real configuration change disappears into the filter. Everything
-else in that script is ssh and git plumbing that would need a router to mean
-anything.
+Normalisation is covered because it is the part with a judgement call in it.
+Strip too little and every export is a noisy diff; strip too much and a real
+configuration change disappears into the filter. The secret scan is covered for
+the same reason, and for one more: it is the last thing between a pasted bot
+token and git history, and the one thing it must never do is print what it
+found. Everything else in that script is ssh and git plumbing that would need a
+router to mean anything.
 """
 
 from __future__ import annotations
@@ -23,6 +25,10 @@ REPO_ROOT = os.path.dirname(
 sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "features"))
 
 import export_config  # noqa: E402
+
+NOT_A_VARIABLE = (
+    "secret-named value is not a variable, placeholder or <redacted>"
+)
 
 # Shape of a real RouterOS 7 export.
 EXPORT_TEMPLATE = """\
@@ -242,6 +248,1461 @@ class PrivateAtomicOutputTestCase(unittest.TestCase):
             with open(dest) as fh:
                 self.assertEqual(fh.read(), "old config\n")
             self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+
+# A fake token in the shape BotFather issues. It never left this file.
+BOT_FAKE = "123456789" + ":" + "AAH-" + "fake_" * 6 + "fake1"
+
+# Real export shapes: /export does not hide a script's source or a scheduler's
+# on-event, and the install steps put the token in a startup script. Inside an
+# export the script's quotes are escaped and its line breaks are \r\n.
+LEAKY_EXPORT = (
+    "/system scheduler\n"
+    'add interval=1d name=boot on-event=":global TgBotToken \\"' + BOT_FAKE + '\\"; '
+    '/system script run startup" policy=read,write start-time=startup\n'
+    "/system script\n"
+    "add dont-require-permissions=no name=startup owner=admin policy=ftp,read,write "
+    'source=":global TgBotToken \\"' + BOT_FAKE + '\\";\\r\\n:global TgChatId \\"12345678\\";"\n'
+    "/ip firewall filter\n"
+    'add action=accept chain=input comment="#critical" connection-state=established,related\n'
+)
+
+CLEAN_EXPORT = EXPORT_TEMPLATE.format(date="jul/29/2026 18:04:11")
+
+
+class SecretScanTestCase(unittest.TestCase):
+    def run_main(self, argv, export=LEAKY_EXPORT):
+        out, errout = io.StringIO(), io.StringIO()
+        with mock.patch.object(export_config, "fetch_export",
+                               return_value=(0, export, "")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            rc = export_config.main(argv)
+        return rc, out.getvalue(), errout.getvalue()
+
+    def test_finds_the_telegram_token_by_shape(self):
+        text = 'url="https://api.telegram.org/bot%s/sendMessage"\n' % BOT_FAKE
+        self.assertEqual(export_config.find_leaks(text), [(1, "telegram bot token")])
+
+    def test_finds_a_global_assignment_with_escaped_quotes(self):
+        text = ('add name=s source=":global RouterBackupPassword \\"hunter2hunter\\";"\n')
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+
+    def test_finds_underscored_secret_names(self):
+        for name in ("BACKUP_PASSWORD", "CF_API_TOKEN", "my_secret_key"):
+            kind = "local" if name.islower() else "global"
+            text = ':%s %s "z9z9z9"\n' % (kind, name)
+            self.assertEqual(export_config.find_leaks(text),
+                             [(1, "secret assigned in a script")], name)
+            self.assertNotIn("z9z9z9", export_config.redact_secrets(text))
+
+    def test_finds_and_redacts_a_quoted_variable_name(self):
+        for text in (':global "api-token" "supersecret"\n',
+                     ':local "my-password" "supersecret"\n',
+                     ':global "api-token" supersecret\n',
+                     'add name=s source=":global \\"api-token\\" '
+                     '\\"supersecret\\";"\n',
+                     'add name=s source=":global \\"api-token\\" supersecret;"\n'):
+            self.assertEqual(export_config.find_leaks(text),
+                             [(1, "secret assigned in a script")], text)
+            redacted = export_config.redact_secrets(text)
+            self.assertNotIn("supersecret", redacted, text)
+            self.assertEqual(redacted.count(export_config.REDACTED), 1, text)
+            self.assertEqual(export_config.find_leaks(redacted), [], text)
+        self.assertEqual(export_config.find_leaks(':global "api-name" "x"\n'), [])
+
+    def test_finds_and_redacts_a_wireguard_preshared_key(self):
+        text = ('add allowed-address=10.0.0.2/32 interface=wg0 '
+                'preshared-key="Zm9vYmFyZm9vYmFy" public-key="abc"\n')
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        redacted = export_config.redact_secrets(text)
+        self.assertNotIn("Zm9vYmFyZm9vYmFy", redacted)
+        self.assertIn('preshared-key="<redacted>" public-key="abc"', redacted)
+        self.assertEqual(export_config.find_leaks(redacted), [])
+        bare = "set [ find ] preshared-key=Zm9vYmFy\n"
+        self.assertEqual(export_config.find_leaks(bare), [(1, "sensitive field")])
+        self.assertEqual(export_config.redact_secrets(bare),
+                         "set [ find ] preshared-key=<redacted>\n")
+
+    def test_every_secret_global_the_scripts_use_is_detected(self):
+        import re
+        pattern = re.compile(
+            r":(?:global|local)\s+([A-Za-z0-9_]*"
+            r"(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_]*)",
+            re.IGNORECASE)
+        names = set()
+        root = os.path.join(REPO_ROOT, "mikrotik")
+        for base, _, files in os.walk(root):
+            for fname in files:
+                if fname.endswith(".lua"):
+                    with open(os.path.join(base, fname), encoding="utf-8") as fh:
+                        names.update(pattern.findall(fh.read()))
+        self.assertIn("CF_API_TOKEN", names)
+        self.assertIn("BACKUP_PASSWORD", names)
+        for name in sorted(names):
+            text = ':global %s "s3cr3tvalue"\n' % name
+            self.assertTrue(export_config.find_leaks(text), name)
+
+    def test_diff_with_redact_never_prints_a_stored_secret(self):
+        stored = ('/system script\nadd name=s source=":global TgBotToken '
+                  '\\"%s\\";"\n' % BOT_FAKE)
+        live = '/system script\nadd name=s source=":global TgChatId 1;"\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "router.rsc"), "w", encoding="utf-8") as fh:
+                fh.write(stored)
+            rc, out, err = self.run_main(
+                ["--host", "router", "--name", "router", "--out", tmp, "--diff",
+                 "--redact-secrets"], export=live)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("AAH-fake", out + err)
+        self.assertNotIn(BOT_FAKE, out + err)
+
+    def test_finds_a_value_holding_escaped_backslashes(self):
+        # A script's own `\\` is `\\\\` in an export, and the value goes on
+        # past it. The old pattern stopped at the first backslash and found
+        # nothing, so --commit could write the whole value.
+        text = 'add name=s source=":global ApiPassword \\"abc\\\\def\\";"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'add name=s source=":global ApiPassword \\"<redacted>\\";"\n',
+        )
+        # A trailing escaped backslash does not swallow the closing quote.
+        # (script `"abc\\"` is five backslashes and a quote in an export).
+        text = 'add name=s source=":global ApiPassword \\"abc\\\\\\\\\\";"\n'
+        self.assertEqual(export_config.redact_secrets(text),
+                         'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+        # Other escapes inside the value (\$, \n) stay part of it.
+        text = 'add name=s source=":global ApiPassword \\"a\\$b\\";"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+
+    def test_a_value_holding_an_escaped_quote_is_redacted_whole(self):
+        # Script value a"b: the script escapes the quote as \", and the
+        # export escapes both characters, giving three backslashes and a quote.
+        text = 'add name=s source=":global ApiPassword \\"a\\\\\\"b\\";"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+        redacted = export_config.redact_secrets(text)
+        self.assertEqual(
+            redacted, 'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+
+    def test_a_value_holding_a_literal_dollar_is_redacted_whole(self):
+        # Script value a$b: the script writes \$, and the export escapes the
+        # backslash as well, giving a backslash pair followed by \$.
+        text = 'add name=s source=":global ApiPassword \\"a\\\\\\$b\\";"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+        # Script value pa$$"\w: every special character is escaped twice.
+        text = ('add name=s source=":global ApiPassword '
+                '\\"pa\\\\\\$\\\\\\$\\\\\\\"\\\\\\\\w\\";"\n')
+        self.assertEqual(export_config.find_leaks(text),
+                         [(1, "secret assigned in a script")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'add name=s source=":global ApiPassword \\"<redacted>\\";"\n')
+
+    def test_an_escaped_variable_reference_is_not_a_value(self):
+        # The export spells a script's `$other` as `\$other`.
+        text = 'add name=s source=":set ApiPassword \\"\\$other\\";"\n'
+        self.assertEqual(export_config.find_leaks(text), [])
+        self.assertEqual(export_config.redact_secrets(text), text)
+
+    def test_ignores_the_shipped_placeholders_and_empty_values(self):
+        text = (
+            'add name=s source=":local BotToken \\"token\\";\\r\\n'
+            ':local Password \\"\\";\\r\\n'
+            ':global RouterBackupPassword \\"<paste backup password>\\";\\r\\n'
+            '# :global RouterBackupPassword \\"s3cret\\"\\r\\n'
+            '/system backup save password=\\$Password"\n'
+            "set wifi1 passphrase=<redacted>\n"
+        )
+        self.assertEqual(export_config.find_leaks(text), [])
+
+    def test_finds_and_redacts_an_unquoted_literal(self):
+        for stmt in (":global ApiPassword abc123", ":local my_token x1",
+                     ":set BACKUP_PASSWORD hunter2hunter", ":global CfApiToken a-b.c"):
+            for text in ("%s;\n" % stmt, "%s\n" % stmt,
+                         'add name=s source="%s;\\r\\n:log info x"\n' % stmt):
+                self.assertEqual(export_config.find_leaks(text),
+                                 [(1, "secret assigned in a script")], text)
+                redacted = export_config.redact_secrets(text)
+                self.assertEqual(redacted.count(export_config.REDACTED), 1, text)
+                self.assertNotIn(stmt.split()[-1], redacted, text)
+                self.assertEqual(export_config.find_leaks(redacted), [], text)
+                self.assertEqual(export_config.redact_secrets(redacted), redacted)
+        self.assertEqual(
+            export_config.redact_secrets(":global ApiPassword abc123; :log info x\n"),
+            ":global ApiPassword <redacted>; :log info x\n")
+
+    def test_an_unquoted_expression_or_declaration_is_not_a_value(self):
+        for text in (":set BackupPassword $RouterBackupPassword;\n",
+                     ":set Password [:pick $a 0 4]\n",
+                     ":set Password ($a . $b)\n",
+                     ":global TgBotToken;\n",
+                     ':set Password \\$other;\n',
+                     'add name=s source=":set Password \\$other;"\n'):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+            self.assertEqual(export_config.redact_secrets(text), text)
+
+    def test_an_unquoted_literal_stops_at_a_closing_bracket(self):
+        for text, want in (
+                ("add name=s do={:set password abc}\n",
+                 "add name=s do={:set password <redacted>}\n"),
+                (":set Password abc)\n", ":set Password <redacted>)\n"),
+                (":set Password abc]\n", ":set Password <redacted>]\n")):
+            self.assertEqual(export_config.find_leaks(text),
+                             [(1, "secret assigned in a script")], text)
+            self.assertEqual(export_config.redact_secrets(text), want)
+
+    def test_an_unquoted_array_is_not_a_bare_literal(self):
+        for text in (':global ApiToken {"a";"b"}\n',
+                     ':global ApiToken {\\"a\\";\\"b\\"}\n',
+                     ":global ApiToken {1;2}\n"):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+            self.assertEqual(export_config.redact_secrets(text), text)
+
+    def test_only_the_shipped_placeholder_assignments_are_exempt(self):
+        shipped = (':local BotToken "token"\n',
+                   ':global TgBotToken "<paste bot token>"\n',
+                   ':global RouterBackupPassword "<paste backup password>"\n',
+                   ':global RouterBackupPassword \\"<paste backup password>\\";\n',
+                   ":global ApiPassword <redacted>\n",
+                   ':global ApiPassword "<redacted>"\n')
+        for text in shipped:
+            self.assertEqual(export_config.find_leaks(text), [], text)
+        flagged = (':global ApiPassword "<production-secret>"\n',
+                   ':global TgBotToken "token"\n',
+                   ':global ApiToken "ID"\n',
+                   ':local BotToken "<paste bot token>"\n',
+                   ':global RouterBackupPassword "<anything else>"\n',
+                   "set wifi1 passphrase=<production-secret>\n",
+                   'set wifi1 passphrase="token"\n')
+        for text in flagged:
+            self.assertTrue(export_config.find_leaks(text), text)
+            self.assertIn(export_config.REDACTED, export_config.redact_secrets(text))
+
+    def test_finds_sensitive_fields_and_redacts_inside_their_quotes(self):
+        text = 'set [ find default-name=wlan1 ] comment="#x" passphrase="my pass"\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set [ find default-name=wlan1 ] comment="#x" passphrase="<redacted>"\n',
+        )
+
+    def test_quoted_field_with_an_escaped_quote_is_redacted_whole(self):
+        text = 'set wifi1 passphrase="abc\\"def" comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        redacted = export_config.redact_secrets(text)
+        self.assertEqual(redacted, 'set wifi1 passphrase="<redacted>" comment=x\n')
+        self.assertEqual(export_config.find_leaks(redacted), [])
+
+    def test_quoted_field_with_an_escaped_backslash_before_the_closing_quote(self):
+        text = 'set wifi1 passphrase="abc\\\\" comment=x\n'
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set wifi1 passphrase="<redacted>" comment=x\n')
+
+    def test_quoted_field_with_hex_and_dollar_escapes_is_redacted_whole(self):
+        text = 'set u password="a\\41b\\$c\\"d\\\\" comment=x\n'
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set u password="<redacted>" comment=x\n')
+
+    def test_unterminated_quoted_field_is_a_leak_redacted_to_the_line_end(self):
+        text = 'set u password="abc\\"\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        redacted = export_config.redact_secrets(text)
+        self.assertNotIn("abc", redacted)
+        self.assertEqual(export_config.find_leaks(redacted), [])
+        # Unterminated, with more text after it: all of it goes.
+        text = 'set u password="abc comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        self.assertNotIn("abc", export_config.redact_secrets(text))
+
+    def test_quoted_field_starting_with_an_escaped_dollar_is_a_value(self):
+        # `\$` in a field is a literal dollar in the secret, not a variable.
+        text = 'set u password="\\$ecret" comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [(1, "sensitive field")])
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            'set u password="<redacted>" comment=x\n')
+
+    def test_a_field_holding_a_real_variable_reference_is_not_a_value(self):
+        for text in ('set u password=$Password comment=x\n',
+                     'set u password="$Password" comment=x\n'):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+
+    def test_a_field_holding_a_routeros_expression_is_not_a_value(self):
+        for text in ('set u password=$[/system/identity/get name] comment=x\n',
+                     'set u password="$[/system/identity/get name]" comment=x\n',
+                     'set u password="$(1+2)" comment=x\n',
+                     'set u password=$(1+2) comment=x\n',
+                     'set u password="$\\"name\\"" comment=x\n',
+                     'set u password=$"name" comment=x\n'):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+
+    def test_unquoted_name_expression_is_not_redacted(self):
+        text = 'set u password=$"name" comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [])
+        self.assertEqual(export_config.redact_secrets(text), text)
+
+    def test_unquoted_field_value_is_unchanged_by_the_escape_handling(self):
+        text = "set u password=hunter2 comment=x\n"
+        self.assertEqual(
+            export_config.redact_secrets(text),
+            "set u password=<redacted> comment=x\n")
+
+    def test_findings_never_contain_the_value(self):
+        findings = export_config.find_leaks(LEAKY_EXPORT)
+        self.assertTrue(findings)
+        for finding in findings:
+            self.assertNotIn(BOT_FAKE, repr(finding))
+            self.assertNotIn("AAH-fake", repr(finding))
+        with tempfile.TemporaryDirectory() as tmp:
+            for argv in (["--host", "router", "--scan-secrets"],
+                         ["--host", "router", "--out", tmp, "--stdout", "--redact-secrets"],
+                         ["--host", "router", "--out", tmp, "--diff", "--redact-secrets"],
+                         ["--host", "router", "--out", tmp, "--commit"]):
+                _, out, err = self.run_main(argv)
+                self.assertNotIn("AAH-fake", out + err, argv)
+
+    def test_redaction_replaces_only_the_value_and_keeps_the_rest_of_the_line(self):
+        redacted = export_config.redact_secrets(LEAKY_EXPORT)
+        lines = redacted.splitlines()
+        self.assertEqual(
+            lines[3],
+            "add dont-require-permissions=no name=startup owner=admin policy=ftp,read,write "
+            'source=":global TgBotToken \\"<redacted>\\";\\r\\n:global TgChatId \\"12345678\\";"',
+        )
+        self.assertNotIn(BOT_FAKE, redacted)
+        self.assertEqual(lines[0], "/system scheduler")
+        self.assertEqual(lines[5], LEAKY_EXPORT.splitlines()[5])
+        self.assertEqual(len(lines), len(LEAKY_EXPORT.splitlines()))
+
+    def test_redaction_is_idempotent(self):
+        once = export_config.redact_secrets(LEAKY_EXPORT)
+        self.assertEqual(export_config.redact_secrets(once), once)
+        self.assertEqual(export_config.find_leaks(once), [])
+
+    def test_a_line_continuation_is_joined_before_matching_but_reports_the_first_line(self):
+        # /export wraps long lines anywhere, the middle of a token included.
+        split = (
+            "/system script\n"
+            'add name=startup source=":global TgBotToken \\"123456789:AAH-fake_fake_fake_fa\\\n'
+            '    ke_fake_fake_fake_fake1\\";"\n'
+            "/ip address\n"
+        )
+        findings = export_config.find_leaks(split)
+        self.assertEqual({line for line, _ in findings}, {2})
+        self.assertIn((2, "telegram bot token"), findings)
+        redacted = export_config.redact_secrets(split)
+        self.assertNotIn("fake_fake", redacted)
+        self.assertEqual(
+            redacted,
+            "/system script\n"
+            'add name=startup source=":global TgBotToken \\"<redacted>\\";"\n'
+            "/ip address\n",
+        )
+
+    def test_clean_export_has_no_findings(self):
+        self.assertEqual(export_config.find_leaks(CLEAN_EXPORT), [])
+        self.assertEqual(export_config.redact_secrets(CLEAN_EXPORT), CLEAN_EXPORT)
+
+    def test_scan_file_needs_no_host_and_no_ssh(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "router.rsc")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(LEAKY_EXPORT)
+            fetch = mock.Mock(side_effect=AssertionError("--scan-file must not use ssh"))
+            out = io.StringIO()
+            with mock.patch.object(export_config, "fetch_export", fetch), \
+                 contextlib.redirect_stdout(out), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = export_config.main(["--scan-file", path])
+            self.assertEqual(rc, 1)
+            fetch.assert_not_called()
+            self.assertIn("line 4: secret assigned in a script", out.getvalue())
+            self.assertIn("values are never printed", out.getvalue())
+
+    def test_scan_secrets_exits_1_on_findings_0_when_clean(self):
+        rc, out, _ = self.run_main(["--host", "router", "--scan-secrets"])
+        self.assertEqual(rc, 1)
+        self.assertIn("4 finding(s)", out)
+        rc, out, _ = self.run_main(["--host", "router", "--scan-secrets"], export=CLEAN_EXPORT)
+        self.assertEqual(rc, 0)
+        self.assertIn("0 finding(s)", out)
+
+    def test_scan_secrets_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            before = sorted(os.listdir(tmp))
+            rc, _, _ = self.run_main(["--host", "router", "--out", tmp, "--scan-secrets"])
+            self.assertEqual(rc, 1)
+            self.assertEqual(sorted(os.listdir(tmp)), before)
+
+    def test_commit_is_refused_when_secrets_are_found_without_redact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(return_value=(0, "", ""))
+            with mock.patch.object(export_config, "git", git):
+                rc, _, err = self.run_main(["--host", "router", "--out", tmp, "--commit"])
+            self.assertEqual(rc, 1)
+            git.assert_not_called()
+            self.assertEqual(os.listdir(tmp), [])
+            self.assertIn("--redact-secrets", err)
+
+    def test_commit_proceeds_with_redact_and_the_stored_file_has_no_token(self):
+        def fake_git(args, cwd):
+            if args[:1] == ["diff"]:
+                return 0, " router.rsc | 7 +++++++\n", ""
+            return 0, "", ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(side_effect=fake_git)
+            with mock.patch.object(export_config, "git", git):
+                rc, _, _ = self.run_main(
+                    ["--host", "router", "--out", tmp, "--commit", "--redact-secrets"]
+                )
+            self.assertEqual(rc, 0)
+            self.assertTrue(any(c.args[0][:1] == ["commit"] for c in git.call_args_list))
+            with open(os.path.join(tmp, "router.rsc"), encoding="utf-8") as fh:
+                stored = fh.read()
+            self.assertNotIn(BOT_FAKE, stored)
+            self.assertIn("<redacted>", stored)
+
+    def test_a_plain_write_warns_on_stderr_and_still_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, out, err = self.run_main(["--host", "router", "--out", tmp])
+            self.assertEqual(rc, 0)
+            self.assertIn("possible secret(s)", err)
+            self.assertNotIn("possible secret(s)", out)
+            self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+    def test_scan_flags_are_mutually_exclusive_with_stdout_diff_commit(self):
+        for extra in (["--stdout"], ["--diff"], ["--commit"], ["--redact-secrets"]):
+            for scan in (["--scan-secrets"], ["--scan-file", "/nonexistent.rsc"]):
+                rc, _, _ = self.run_main(["--host", "router"] + scan + extra)
+                self.assertEqual(rc, 3, scan + extra)
+
+    def test_missing_host_without_scan_file_is_still_usage_3(self):
+        errout = io.StringIO()
+        with contextlib.redirect_stderr(errout), self.assertRaises(SystemExit) as raised:
+            export_config.main(["--stdout"])
+        self.assertEqual(raised.exception.code, 3)
+        self.assertIn("--host", errout.getvalue())
+
+    def test_show_sensitive_with_commit_is_still_refused_with_3(self):
+        rc, _, _ = self.run_main(["--host", "router", "--show-sensitive", "--commit"])
+        self.assertEqual(rc, 3)
+
+
+class UnverifiableAssignmentTestCase(unittest.TestCase):
+    """The scan fails closed: what it cannot read with confidence blocks
+    --commit instead of passing."""
+
+    def run_main(self, argv, export):
+        out, errout = io.StringIO(), io.StringIO()
+        with mock.patch.object(export_config, "fetch_export",
+                               return_value=(0, export, "")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            rc = export_config.main(argv)
+        return rc, out.getvalue(), errout.getvalue()
+
+    def assert_commit_blocked(self, export, reason, redacting_too=True):
+        # Redaction replaces a value, so it cannot repair a quote that never
+        # closes, but it does remove a value whose only fault was its escapes.
+        variants = [[], ["--redact-secrets"]] if redacting_too else [[]]
+        for extra in variants:
+            with tempfile.TemporaryDirectory() as tmp:
+                git = mock.Mock(return_value=(0, "", ""))
+                with mock.patch.object(export_config, "git", git):
+                    rc, _, err = self.run_main(
+                        ["--host", "router", "--out", tmp, "--commit"] + extra, export)
+                self.assertEqual(rc, 1, extra)
+                git.assert_not_called()
+                self.assertEqual(os.listdir(tmp), [], extra)
+                self.assertIn("line 2", err, extra)
+                self.assertIn(reason, err, extra)
+                self.assertNotIn("hunter2", err, extra)
+
+    def assert_commit_proceeds(self, export):
+        def fake_git(args, cwd):
+            if args[:1] == ["diff"]:
+                return 0, " router.rsc | 3 +++\n", ""
+            return 0, "", ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(side_effect=fake_git)
+            with mock.patch.object(export_config, "git", git):
+                rc, _, err = self.run_main(
+                    ["--host", "router", "--out", tmp, "--commit"], export)
+            self.assertEqual(rc, 0, err)
+            self.assertTrue(any(c.args[0][:1] == ["commit"] for c in git.call_args_list))
+
+    def test_an_unbalanced_quote_in_a_secret_assignment_blocks_commit(self):
+        export = '/system script\nadd name=s source=":global ApiToken \\"hunter2;"\n'
+        self.assertEqual(export_config.find_unverifiable(export),
+                         [(2, "unbalanced quote")])
+        self.assert_commit_blocked(export, "unbalanced quote")
+
+    def test_an_unbalanced_plain_quote_blocks_commit(self):
+        export = '/system script\n:global ApiPassword "hunter2\n'
+        self.assertEqual(export_config.find_unverifiable(export),
+                         [(2, "unbalanced quote")])
+        self.assert_commit_blocked(export, "unbalanced quote")
+
+    def test_an_unknown_escape_blocks_commit(self):
+        # Script value ab\qc: \q is not a RouterOS escape.
+        inner = 'add name=s source=":global ApiToken \\"hunter2\\\\qc\\";"\n'
+        self.assertEqual(export_config.find_unverifiable("/x\n" + inner),
+                         [(2, "unrecognized escape in the value")])
+        self.assert_commit_blocked("/x\n" + inner, "unrecognized escape", False)
+        # The same unknown escape in the export's own layer.
+        outer = 'add name=s source=":global ApiToken \\"hunter2\\q\\";"\n'
+        self.assertEqual([r for _, r in export_config.find_unverifiable("/x\n" + outer)],
+                         ["unrecognized escape"])
+        self.assert_commit_blocked("/x\n" + outer, "unrecognized escape", False)
+
+    def test_an_ambiguous_hex_escape_is_unverifiable(self):
+        text = '/x\nadd name=s source=":global ApiToken \\"hunter2\\\\ab\\";"\n'
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "ambiguous escape in the value")])
+
+    def test_a_stray_quote_inside_the_field_is_unverifiable(self):
+        text = '/x\nadd name=s source=":global ApiToken "hunter2" ;"\n'
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "unescaped quote inside a quoted field")])
+        self.assert_commit_blocked(text, "unescaped quote")
+
+    def test_a_name_that_cannot_be_extracted_is_unverifiable(self):
+        for stmt in (":global $x 1", ":set (a) 1", ":global", ':set "a$b" 1',
+                     ":global Name$x 1"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, stmt)
+        self.assertEqual(export_config.find_unverifiable("/x\n:local i 0; :set i 1\n"), [])
+
+    def test_an_expression_that_may_hold_a_literal_is_unverifiable(self):
+        for stmt in (':set Password "$other hunter2"', ':set Password ($a . "hunter2")',
+                     ":set Password [:pick $a 0", ":set Password $a-hunter2",
+                     ':global ApiToken {"hunter2"}', ":global ApiToken {1;2}",
+                     # A bare word inside brackets is a literal in RouterOS.
+                     ":global ApiToken [:tostr hunter2]",
+                     ":set Password [:pick s3cretvalue 0 8]",
+                     ":set Password $[:tostr hunter2]",
+                     ":set Password (hunter2)",
+                     ":set Password [:tostr {hunter2}]",
+                     ":set Password [:tostr [:tostr hunter2]]",
+                     ":set Password [:pick $a 0 4 hunter2]",
+                     ":set Password [/system script environment get [find name=x] value]",
+                     ":set Password $[/system/identity/get name]"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, NOT_A_VARIABLE)], stmt)
+
+    def test_a_quoted_string_around_an_expression_is_a_leak_not_unverifiable(self):
+        # A quoted value that does not start with $ is a plain string.
+        text = '/x\n:set Password "[:pick $a 0 4] hunter2"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(2, "secret assigned in a script")])
+        self.assertEqual(export_config.find_unverifiable(text), [])
+
+    def test_only_variables_placeholders_and_redacted_are_verifiable(self):
+        # The structural rule: a secret-named variable may be empty, a lone
+        # variable reference, <redacted> or a shipped placeholder, and
+        # nothing else.
+        for stmt in (":set BackupPassword $RouterBackupPassword;",
+                     ':set Password "$other"', ':set Password $"my var"',
+                     ":global TgBotToken;", ":set ApiToken", ':global Password ""',
+                     ":set Password <redacted>", ':set Password "<redacted>"',
+                     ':global TgBotToken "<paste bot token>"',
+                     ':local BotToken "token"', "{ :set ApiToken $other }"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text), [], stmt)
+            self.assertEqual(export_config.find_leaks(text), [], stmt)
+        self.assertEqual(export_config.find_unverifiable(
+            'add name=s source=":set Password \\$other;"\n'), [])
+
+    def test_computed_values_for_a_secret_name_are_findings(self):
+        # Fail closed (Serhii's rule): an operator, bracket, paren, brace,
+        # number or command result next to the value could assemble a
+        # secret, so none of it is checked piece by piece any more. These
+        # were accepted by the earlier token allowlist.
+        for stmt in (":set Password [:pick $a 0 4]", ":set Password ($a . $b)",
+                     ":set Password ($a + 1)", ':set Password "$[:pick $a 0 999]"',
+                     ":set Password $[/system/identity/get $name]",
+                     ":set Password [:tostr [:pick $a 0 4]]",
+                     ":global ApiToken {}",
+                     ":set PSK (123 . 456 . 78)", ":set PSK [:tostr (1 . 2 . 3)]",
+                     ':set PSK "$[:tostr (123 . 456)]"'):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, NOT_A_VARIABLE)], stmt)
+            self.assert_commit_blocked(text, NOT_A_VARIABLE)
+        # A name that is not secret keeps every expression.
+        for stmt in (":set Counter [:pick $a 0 4]", ":set Host ($a . $b)",
+                     ":set Total {}", ":set Hostname $[/system/identity/get name]"):
+            self.assertEqual(export_config.find_unverifiable("/x\n%s\n" % stmt), [],
+                             stmt)
+
+    def test_a_secret_literal_is_a_leak_not_an_unverifiable_finding(self):
+        for stmt in (':global ApiPassword "abc123"', ":global ApiPassword abc123",
+                     ':local BotToken "<paste bot token>"'):
+            text = "/x\n%s\n" % stmt
+            self.assertTrue(export_config.find_leaks(text), stmt)
+            self.assertEqual(export_config.find_unverifiable(text), [], stmt)
+
+    def test_a_normal_non_secret_script_still_commits(self):
+        export = (
+            "/system script\n"
+            'add name=s source=":local i 0;\\r\\n:global TgChatId \\"12345678\\";\\r\\n'
+            ':log info \\"hello\\";\\r\\n:set i ($i + 1)"\n'
+            "/ip firewall filter\n"
+            "add action=accept chain=input\n"
+        )
+        self.assertEqual(export_config.find_unverifiable(export), [])
+        self.assertEqual(export_config.find_leaks(export), [])
+        self.assert_commit_proceeds(export)
+
+    def test_the_known_redacted_placeholder_still_commits(self):
+        export = (
+            "/system script\n"
+            'add name=s source=":global TgBotToken \\"<redacted>\\";\\r\\n'
+            ':global RouterBackupPassword \\"<paste backup password>\\";"\n'
+        )
+        self.assertEqual(export_config.find_unverifiable(export), [])
+        self.assert_commit_proceeds(export)
+        # A real token redacted by --redact-secrets ends up in that same shape.
+        redacted = export_config.redact_secrets(LEAKY_EXPORT)
+        self.assertEqual(export_config.find_unverifiable(redacted), [])
+
+    def test_a_comment_example_with_a_placeholder_is_not_an_assignment(self):
+        text = ('add name=s source="# :global RouterBackupPassword '
+                '\\"<paste backup password>\\"\\r\\n'
+                '# :set Password \\"<redacted>\\"\\r\\n:log info x"\n')
+        self.assertEqual(export_config.find_unverifiable(text), [])
+        self.assertEqual(export_config.find_leaks(text), [])
+
+    def test_a_comment_example_with_a_real_looking_value_is_reported(self):
+        # Fail closed: a commented-out line is still in git history, and the
+        # scan cannot tell an example from a secret somebody disabled.
+        text = ('add name=s source="# :global RouterBackupPassword \\"s3cret\\r\\n'
+                '# :set Password \\"\\r\\n:log info x"\n')
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(1, "commented assignment with a literal")])
+
+    def assert_leak_blocks_commit(self, export):
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(return_value=(0, "", ""))
+            with mock.patch.object(export_config, "git", git):
+                rc, _, err = self.run_main(
+                    ["--host", "router", "--out", tmp, "--commit"], export)
+            self.assertEqual(rc, 1)
+            git.assert_not_called()
+            self.assertEqual(os.listdir(tmp), [])
+            self.assertNotIn("hunter2", err)
+
+    def test_a_backslash_n_in_plain_script_is_not_a_line_break(self):
+        # In a plain script `\n` is a string escape, so the `#` is inside the
+        # string and the :global after it is a live assignment.
+        export = '/x\n:log info "a\\n# x"; :global ApiToken "hunter2"\n'
+        self.assertEqual(export_config.find_leaks(export),
+                         [(2, "secret assigned in a script")])
+        self.assertNotIn("hunter2", export_config.redact_secrets(export))
+        self.assert_leak_blocks_commit(export)
+
+    def test_an_escaped_backslash_n_in_an_export_is_not_a_line_break(self):
+        # The script's own backslash-n arrives as backslash-backslash-n.
+        export = ('/x\nadd name=s source=":log info \\"a\\\\n# x\\"; '
+                  ':global ApiToken \\"hunter2\\""\n')
+        self.assertEqual(export_config.find_leaks(export),
+                         [(2, "secret assigned in a script")])
+        self.assertNotIn("hunter2", export_config.redact_secrets(export))
+        self.assert_leak_blocks_commit(export)
+
+    def test_a_real_line_break_in_an_export_ends_a_comment(self):
+        live = '/x\nadd name=s source="# note\\n:global ApiToken \\"hunter2\\""\n'
+        self.assertEqual(export_config.find_leaks(live),
+                         [(2, "secret assigned in a script")])
+        commented = ('/x\nadd name=s source="# :global ApiToken \\"hunter2\\"'
+                     '\\n:log info x"\n')
+        # Not a live leak, but a commented secret is still reported.
+        self.assertEqual(export_config.find_leaks(commented), [])
+        self.assertEqual(export_config.find_unverifiable(commented),
+                         [(2, "commented assignment with a literal")])
+        for harmless in ('# :global Hostname \\"hunter2\\"',
+                         '# :global ApiToken \\"<redacted>\\"',
+                         '# :global TgBotToken \\"<paste bot token>\\"'):
+            text = ('/x\nadd name=s source="%s\\n:log info x"\n' % harmless)
+            self.assertEqual(export_config.find_leaks(text), [], harmless)
+            self.assertEqual(export_config.find_unverifiable(text), [], harmless)
+
+    def test_numbers_inside_an_expression_may_be_the_secret(self):
+        # (12345678) and [:tostr 12345678] hold a literal as surely as a word.
+        for stmt in (":set WifiPassword (12345678)",
+                     ":set WifiPassword [:tostr 12345678]",
+                     ":set WifiPassword $[:tostr 12345678]",
+                     ':set WifiPassword "$[:tostr 12345678]"',
+                     ":set ApiToken (10.20.30.40.50.60)",
+                     ":set ApiToken [:tostr 1234]",
+                     ":set ApiToken (123.4)"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, NOT_A_VARIABLE)], stmt)
+            self.assert_commit_blocked(text, NOT_A_VARIABLE)
+        export_form = '/x\nadd name=s source=":set WifiPassword [:tostr 12345678]"\n'
+        self.assertEqual(export_config.find_unverifiable(export_form),
+                         [(2, NOT_A_VARIABLE)])
+        self.assert_commit_blocked(export_form, NOT_A_VARIABLE)
+
+    def test_a_quoted_value_starting_with_a_bracket_is_a_literal_string(self):
+        # Only a leading $ makes a quoted value an expression in RouterOS.
+        for stmt in (':set ApiToken "[hunter2]"', ':set ApiToken "(hunter2)"',
+                     ':set ApiToken "[12345678]"', ':set ApiToken "(12345678)"'):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_leaks(text),
+                             [(2, "secret assigned in a script")], stmt)
+            self.assertNotIn("hunter2", export_config.redact_secrets(text))
+            self.assert_leak_blocks_commit(text)
+        export_form = '/x\nadd name=s source=":set ApiToken \\"[hunter2]\\""\n'
+        self.assertEqual(export_config.find_leaks(export_form),
+                         [(2, "secret assigned in a script")])
+        self.assert_leak_blocks_commit(export_form)
+
+    def test_a_string_that_ends_in_equals_does_not_open_an_export_field(self):
+        # "a=" is a closed plain string; a later backslash-n is not a line
+        # break in plain script, so the "#" is not a comment start.
+        text = '/x\n:global k "a="; :put \\n#; :set ApiToken hunter2\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(2, "secret assigned in a script")])
+        self.assert_leak_blocks_commit(text)
+        # Even a script-field name inside a line that is not an export.
+        text = '/x\n:global k "source=\\"x"; :put \\n#; :set ApiToken hunter2\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(2, "secret assigned in a script")])
+        # A field that holds no script is not a script field either.
+        self.assert_leak_blocks_commit(
+            '/x\nadd name=s comment="a=" source=":put x; :set ApiToken hunter2"\n')
+
+    def test_a_real_export_field_still_ends_a_comment_at_a_break(self):
+        for field in ("source", "on-event", "on-up", "on-down", "on-login",
+                      "on-logout", "script", "do"):
+            live = ('/x\nadd name=s %s="# note\\r\\n:set ApiToken \\"hunter2\\""\n'
+                    % field)
+            self.assertEqual(export_config.find_leaks(live),
+                             [(2, "secret assigned in a script")], field)
+
+    def test_a_commented_secret_assignment_blocks_commit(self):
+        plain = "/x\n# :set ApiToken realtok\n"
+        in_source = ('/x\nadd name=s source=":log info x\\r\\n'
+                     '# :set ApiToken \\"realtoken123\\""\n')
+        for text in (plain, in_source, "/x\n#:set ApiToken realtok\n",
+                     '/x\n# :global ApiToken "realtok"\n'):
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "commented assignment with a literal")], text)
+            self.assert_commit_blocked(text, "commented assignment with a literal")
+
+    def test_commented_placeholders_and_other_names_stay_clean(self):
+        for text in ("/x\n# :set ApiToken <redacted>\n",
+                     '/x\n# :set ApiToken "<redacted>"\n',
+                     '/x\n# :global TgBotToken "<paste bot token>"\n',
+                     "/x\n# :set ApiToken $other\n",
+                     "/x\n# :set Hostname realtok\n",
+                     "/x\n# use :set to change a value\n"):
+            self.assertEqual(export_config.find_unverifiable(text), [], text)
+            self.assertEqual(export_config.find_leaks(text), [], text)
+
+    def test_a_keyword_glued_to_the_next_character_is_still_read(self):
+        for stmt in (':global"ApiToken" "hunter2"', ':set"ApiToken" "hunter2"',
+                     ":set(ApiToken) hunter2"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, stmt)
+            self.assert_commit_blocked(text, "", False)
+
+    def test_a_closed_field_before_the_keyword_is_not_an_export(self):
+        text = '/tool fetch url="https://e.x"; :set ApiToken "$x"\n'
+        self.assertEqual(export_config.find_unverifiable(text), [])
+        text = '/x\n/tool fetch url="https://e.x"; :set ApiToken "hunter2;\n'
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "unbalanced quote")])
+
+    def test_a_commit_is_blocked_by_an_expression_with_a_bare_word(self):
+        text = "/x\n:global ApiToken [:tostr hunter2]\n"
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, NOT_A_VARIABLE)])
+        self.assert_commit_blocked(text, NOT_A_VARIABLE)
+
+    def test_secret_names_match_whatever_the_separator(self):
+        for name in ("api_key", "api-key", "API_KEY", "ApiKey", "apikey",
+                     "secret_key", "access_key", "private_key", "client_secret",
+                     "pre_shared_key", "psk", "wpa_key", "wpa2-key", "pass_phrase",
+                     "pass-word", "to_ken", "PIN", "sim_pin", "SimPin", "wifi-pin"):
+            for quoted in ('"%s"' % name, name):
+                text = '/x\n:global %s "hunter2xyz"\n' % quoted
+                self.assertEqual(export_config.find_leaks(text),
+                                 [(2, "secret assigned in a script")], quoted)
+                self.assertNotIn("hunter2xyz", export_config.redact_secrets(text))
+                self.assert_leak_blocks_commit(text)
+        export_form = '/x\nadd name=s source=":set \\"api-key\\" \\"hunter2xyz\\""\n'
+        self.assertEqual(export_config.find_leaks(export_form),
+                         [(2, "secret assigned in a script")])
+
+    def test_a_pin_is_a_word_of_its_own_not_a_substring(self):
+        for name in ("mapping", "spinner", "shipping", "Pinned"):
+            text = "/x\n:set %s hunter2xyz\n" % name
+            self.assertEqual(export_config.find_leaks(text), [], name)
+            self.assertEqual(export_config.find_unverifiable(text), [], name)
+
+    def test_keywords_without_a_colon_start_a_statement(self):
+        for text in ('/x\nglobal ApiToken "hunter2xyz"\n',
+                     "/x\nlocal ApiToken hunter2xyz\n",
+                     "/x\n  set api_key hunter2xyz\n",
+                     '/x\n:log info x; global ApiToken "hunter2xyz"\n',
+                     '/x\n{ set Password "hunter2xyz" }\n',
+                     '/x\n:foreach i in={1} do={set Password hunter2xyz}\n',
+                     '/x\nadd name=s source="global ApiToken \\"hunter2xyz\\""\n',
+                     '/x\nadd name=s on-event="set Password \\"hunter2xyz\\""\n',
+                     '/x\nadd name=s source=":log info x\\r\\nglobal ApiToken '
+                     '\\"hunter2xyz\\""\n',
+                     '/x\nadd name=s source=":log info x\\nset ApiToken hunter2xyz"\n'):
+            self.assertEqual(export_config.find_leaks(text),
+                             [(2, "secret assigned in a script")], text)
+            self.assertNotIn("hunter2xyz", export_config.redact_secrets(text))
+            self.assert_leak_blocks_commit(text)
+        for text in ("/x\nglobal ApiToken $x[:pick $a 0 4]\n",
+                     "/x\nset Password (1 . 2)\n",
+                     '/x\n:log info x; global ApiToken "unbalanced\n'):
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, text)
+            self.assert_commit_blocked(text, "", False)
+
+    def test_a_word_that_merely_contains_a_keyword_is_not_one(self):
+        for text in ("/x\nreset ApiToken hunter2xyz\n",
+                     "/x\nobject.set ApiToken hunter2xyz\n",
+                     "/x\n:log info global ApiToken hunter2xyz\n",
+                     '/x\nadd name=s comment="set Password hunter2xyz"\n',
+                     "/x\n# please set the token\n"):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+            self.assertEqual(export_config.find_unverifiable(text), [], text)
+
+    def test_menu_set_lines_are_not_mistaken_for_assignments(self):
+        export = (
+            "/interface ethernet\n"
+            "set [ find default-name=ether1 ] name=wan\n"
+            "/system identity\n"
+            "set name=router\n"
+            "/ip service\n"
+            "set telnet disabled=yes\n"
+            "set api-ssl certificate=cert1\n"
+            "/user settings\n"
+            "set minimum-categories=0\n"
+        )
+        self.assertEqual(export_config.find_leaks(export), [])
+        self.assertEqual(export_config.find_unverifiable(export), [])
+        self.assert_commit_proceeds(export)
+
+    def test_a_commented_colonless_assignment_is_reported_like_a_colon_one(self):
+        for text in ('/x\n# global ApiToken "hunter2xyz"\n',
+                     "/x\n#set Password hunter2xyz\n",
+                     '/x\nadd name=s source="# set ApiToken \\"hunter2xyz\\""\n'):
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "commented assignment with a literal")], text)
+
+    def test_a_commented_secret_with_an_unreadable_name_is_reported(self):
+        # The name cannot be parsed, but the raw text names a secret and a
+        # value follows: a disabled line is still in git history.
+        for stmt in ('# :set "Api\\54oken" "hunter2xyz"',
+                     '# :global "api:token" "hunter2xyz"',
+                     "# :set ApiToken(hunter2xyz)",
+                     "# :set Api$Token hunter2xyz"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "commented assignment with a literal")], stmt)
+            self.assert_commit_blocked(text, "commented assignment with a literal")
+        export_form = ('/x\nadd name=s source="# :set \\"api:token\\" '
+                       '\\"hunter2xyz\\"\\r\\n:log info x"\n')
+        self.assertEqual(export_config.find_unverifiable(export_form),
+                         [(2, "commented assignment with a literal")])
+        # Prose and unreadable names that name nothing secret stay quiet, and
+        # a comment ends at its line break.
+        for stmt in ("# :set (see the docs) later", '# :global "a:b" "x"',
+                     "# use :set to change a value"):
+            self.assertEqual(export_config.find_unverifiable("/x\n%s\n" % stmt), [], stmt)
+        after_break = ('/x\nadd name=s source="# :set (a)\\r\\n'
+                       ':log info \\"password\\""\n')
+        self.assertEqual(export_config.find_unverifiable(after_break), [])
+
+    def test_the_leaky_export_has_nothing_unverifiable(self):
+        self.assertEqual(export_config.find_unverifiable(LEAKY_EXPORT), [])
+
+    def test_print_only_output_warns_and_still_redacts(self):
+        export = '/system script\nadd name=s source=":global ApiToken \\"hunter2;"\n'
+        rc, out, err = self.run_main(["--host", "router", "--stdout"], export)
+        self.assertEqual(rc, 0)
+        self.assertIn("cannot verify", err)
+        self.assertIn("(lines 2)", err)
+        rc, out, err = self.run_main(
+            ["--host", "router", "--stdout", "--redact-secrets"], export)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("hunter2", out)
+
+    def test_a_plain_write_warns_and_still_writes(self):
+        export = '/system script\n:global ApiPassword "hunter2\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _, err = self.run_main(["--host", "router", "--out", tmp], export)
+            self.assertEqual(rc, 0)
+            self.assertIn("cannot verify", err)
+            self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+    def test_scans_report_unverifiable_findings_and_exit_1(self):
+        export = '/system script\n:global ApiPassword "hunter2\n'
+        rc, out, _ = self.run_main(["--host", "router", "--scan-secrets"], export)
+        self.assertEqual(rc, 1)
+        self.assertIn("line 2: unverifiable: unbalanced quote", out)
+        self.assertIn("1 finding(s)", out)
+        self.assertNotIn("hunter2", out)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "router.rsc")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(export)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(export_config.main(["--scan-file", path]), 1)
+            self.assertIn("unverifiable", out.getvalue())
+
+    def test_there_is_no_override_flag(self):
+        errout = io.StringIO()
+        with contextlib.redirect_stderr(errout), self.assertRaises(SystemExit) as raised:
+            export_config.main(["--host", "router", "--commit", "--allow-unverified"])
+        self.assertEqual(raised.exception.code, 3)
+
+
+SECRET_WORD = "hunter2xyz"
+SECRET_NUMBER = "12345678"
+# The last two have no colon: they count where they start a statement.
+_KEYWORDS = (":global", ":local", ":set", ":GLOBAL", ":global\t", "global", "set")
+_CONTAINERS = (
+    "plain", "after-semicolon", "in-block", "in-do-block", "after-comment-string",
+    "export-source", "export-on-event", "export-after-comment-string",
+    "export-up-script", "export-lease-script",
+    "commented-plain", "commented-source", "commented-after-newline",
+)
+
+
+def _name_forms(export):
+    quote = '\\"' if export else '"'
+    return (("ApiToken", "ApiToken"), ("BACKUP_PASSWORD", "BACKUP_PASSWORD"),
+            ("my_secret_key", "my_secret_key"),
+            ("quoted-name", quote + "api-token" + quote),
+            ("API_KEY", "API_KEY"),
+            ("quoted-api-key", quote + "api-key" + quote))
+
+
+def _value_forms(export):
+    """(label, text) for every way of giving a variable a literal. In an
+    export the script's quote, dollar and backslash arrive escaped."""
+    quote = '\\"' if export else '"'
+    dollar = "\\$" if export else "$"
+    backslash = "\\\\" if export else "\\"
+    inner_quote = backslash + quote if export else '\\"'
+    forms = [
+        ("quoted", quote + SECRET_WORD + quote),
+        ("unquoted", SECRET_WORD),
+        ("escaped-quote", quote + "hun" + inner_quote + "ter2xyz" + quote),
+        ("numeric", SECRET_NUMBER),
+        ("hex-escaped", quote + "hunter" + backslash + "32xyz" + quote),
+    ]
+    for kind, literal in (("word", SECRET_WORD), ("number", SECRET_NUMBER)):
+        forms += [
+            ("[:tostr %s]" % kind, "[:tostr %s]" % literal),
+            ("(%s)" % kind, "(%s)" % literal),
+            ("$[:tostr %s]" % kind, dollar + "[:tostr %s]" % literal),
+            ("{%s}" % kind, "{%s}" % literal),
+            ('"$[:tostr %s]"' % kind, quote + dollar + "[:tostr %s]" % literal + quote),
+            ('"(%s)"' % kind, quote + "(" + literal + ")" + quote),
+        ]
+    # Expressions that assemble a value from pieces none of which is a word.
+    forms += [
+        ("(123 . 456 . 78)", "(123 . 456 . 78)"),
+        ("[:tostr (1 . 2 . 3)]", "[:tostr (1 . 2 . 3)]"),
+        ('"$[:tostr (123 . 456)]"',
+         quote + dollar + "[:tostr (123 . 456)]" + quote),
+        ("[:pick $a 0 4]", "[:pick $a 0 4]"),
+    ]
+    return forms
+
+
+def _wrap(container, statement):
+    """The export text that carries one assignment in the given container."""
+    if container == "plain":
+        return statement
+    if container == "after-semicolon":
+        return ":log info x; " + statement
+    if container == "in-block":
+        return "{ " + statement + " }"
+    if container == "in-do-block":
+        return ":foreach i in={1} do={ " + statement + " }"
+    if container == "after-comment-string":
+        return ':put "#"; ' + statement
+    if container == "export-source":
+        return 'add name=s source=":log info x; ' + statement + '"'
+    if container == "export-on-event":
+        return 'add name=s on-event="' + statement + '"'
+    if container == "export-up-script":
+        return 'add host=192.0.2.1 up-script="' + statement + '"'
+    if container == "export-lease-script":
+        return 'add name=d lease-script="' + statement + '"'
+    if container == "export-after-comment-string":
+        return 'add name=s source=":put \\"#\\"; ' + statement + '"'
+    if container == "commented-plain":
+        return "# " + statement
+    if container == "commented-source":
+        return 'add name=s source="# ' + statement + '"'
+    return 'add name=s source=":log info x\\r\\n# ' + statement + '"'
+
+
+def generated_secret_cases():
+    """(label, export) for the cross product of keyword, variable name,
+    value and container. Exhaustive and ordered, so a run never varies."""
+    for container in _CONTAINERS:
+        export = container.startswith("export") or container in (
+            "commented-source", "commented-after-newline")
+        for keyword in _KEYWORDS:
+            glue = "" if keyword.endswith("\t") else " "
+            for name_label, name in _name_forms(export):
+                for value_label, value in _value_forms(export):
+                    statement = "%s%s%s %s" % (keyword, glue, name, value)
+                    label = "%s | %s | %s | %s" % (
+                        container, keyword.replace("\t", "<tab>"), name_label, value_label)
+                    yield label, "/system script\n" + _wrap(container, statement) + "\n"
+
+
+# Nothing in these is a secret, or it is a value the scan is told to accept.
+CLEAN_ASSIGNMENTS = (
+    ("non-secret name with a secret-looking word", ":set Hostname hunter2xyz"),
+    ("non-secret name with a number", ":global counter 12345678"),
+    ("non-secret quoted name", ':local "site-name" "hunter2xyz"'),
+    ("bot token placeholder", ':global TgBotToken "<paste bot token>"'),
+    ("backup password placeholder", ':global RouterBackupPassword "<paste backup password>"'),
+    ("helper bot token placeholder", ':local BotToken "token"'),
+    ("quoted redacted", ':set ApiToken "<redacted>"'),
+    ("bare redacted", ":set ApiToken <redacted>"),
+    ("variable", ":set ApiToken $other"),
+    ("quoted variable", ':set ApiToken "$other"'),
+    ("quoted variable name", ':set ApiToken $"my var"'),
+    ("colonless variable", "global ApiToken $other"),
+    ("colonless placeholder", 'global TgBotToken "<paste bot token>"'),
+    ("colonless non-secret name", "set Hostname hunter2xyz"),
+    ("empty quoted value", ':set ApiToken ""'),
+    ("empty value", ":set ApiToken"),
+    ("api_key variable", ":set api_key $other"),
+    ("non-secret name with an expression", ":set Counter ($a . $b)"),
+    ("variable in a block", "{ :set ApiToken $other }"),
+    ("commented non-secret name", "# :set Hostname hunter2xyz"),
+    ("commented placeholder", '# :global TgBotToken "<paste bot token>"'),
+    ("commented redacted", '# :set ApiToken "<redacted>"'),
+    ("commented variable", "# :set ApiToken $other"),
+    ("prose that names the keyword", "# use :set to change a value"),
+    ("export non-secret name", 'add name=s source=":set Hostname \\"hunter2xyz\\""'),
+    ("export variable", 'add name=s source=":set ApiToken \\$other"'),
+    ("export redacted", 'add name=s source=":set ApiToken \\"<redacted>\\""'),
+    ("export commented non-secret name",
+     'add name=s source="# :set Hostname \\"hunter2xyz\\""'),
+)
+
+
+class GeneratedSecretVariantsTestCase(unittest.TestCase):
+    """Every way the scan has been got past, enumerated rather than listed.
+
+    The cross product is exhaustive and ordered, so the test is deterministic.
+    A case the scan misses is a gap in the scan, not in this test: fix the
+    scan so it fails closed.
+    """
+
+    def test_every_assignment_variant_is_found_and_blocks_commit(self):
+        cases = list(generated_secret_cases())
+        # 13 containers x 7 keywords x 6 names x 21 values.
+        self.assertEqual(len(cases), 11466)
+        out, errout = io.StringIO(), io.StringIO()
+        fetch = mock.Mock()
+        git = mock.Mock(return_value=(0, "", ""))
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(export_config, "fetch_export", fetch), \
+             mock.patch.object(export_config, "git", git), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            for label, export in cases:
+                with self.subTest(label):
+                    self.assertTrue(
+                        export_config.find_leaks(export)
+                        or export_config.find_unverifiable(export),
+                        "the scan finds nothing")
+                    fetch.return_value = (0, export, "")
+                    out.seek(0)
+                    out.truncate()
+                    errout.seek(0)
+                    errout.truncate()
+                    rc = export_config.main(
+                        ["--host", "router", "--out", tmp, "--commit"])
+                    self.assertEqual(rc, 1, "--commit is not refused")
+                    self.assertEqual(git.call_count, 0, "git was called")
+                    self.assertEqual(os.listdir(tmp), [], "a file was written")
+                    shown = out.getvalue() + errout.getvalue()
+                    self.assertNotIn(SECRET_WORD, shown)
+                    self.assertNotIn(SECRET_NUMBER, shown)
+
+    def test_the_clean_variants_produce_no_finding(self):
+        self.assertGreaterEqual(len(CLEAN_ASSIGNMENTS), 20)
+        self.assertEqual(len(CLEAN_ASSIGNMENTS), len(dict(CLEAN_ASSIGNMENTS)))
+        for label, statement in CLEAN_ASSIGNMENTS:
+            export = "/system script\n%s\n" % statement
+            with self.subTest(label):
+                self.assertEqual(export_config.find_leaks(export), [])
+                self.assertEqual(export_config.find_unverifiable(export), [])
+
+
+_SENSITIVE_FIELDS = (
+    "password", "passphrase", "private-key", "secret", "psk",
+    "wpa2-pre-shared-key", "wpa-pre-shared-key", "preshared-key",
+    "authentication-key", "encryption-key",
+)
+# Script fields of an export: the script text sits inside the quotes and
+# every quote of the script itself arrives escaped.
+_SCRIPT_CONTAINERS = ("source", "on-event", "up-script", "lease-script", "on-master")
+
+
+# Commented-out script lines: the statement follows `# ` at the opening
+# quote, or after an escaped line break (\\r\\n) in the script.
+_COMMENTED_CONTAINERS = ("commented-source", "commented-after-newline")
+
+
+def _in_field(container, script):
+    if container == "commented-source":
+        return 'add name=s source="# %s"\n' % script
+    if container == "commented-after-newline":
+        return 'add name=s source=":log x\\r\\n# %s"\n' % script
+    return "add name=s %s=\":log info x; %s\"\n" % (container, script)
+
+
+def generated_sensitive_field_cases():
+    """(label, export, is_a_leak) for every sensitive field in a plain
+    quoted value and, in each script field, an escaped-quoted, a bare and an
+    escaped-variable value."""
+    for field in _SENSITIVE_FIELDS:
+        yield ("plain quoted | " + field,
+               '/ppp secret\nadd name=u %s="%s"\n' % (field, SECRET_WORD), True)
+        for container in _SCRIPT_CONTAINERS + _COMMENTED_CONTAINERS:
+            head = "/ppp secret add name=u %s=" % field
+            for form, value, leak in (
+                ("escaped quoted", '\\"%s\\"' % SECRET_WORD, True),
+                ("escaped quoted, escaped quote inside",
+                 '\\"hun\\\\\\"ter2xyz\\"', True),
+                ("bare", SECRET_WORD, True),
+                ("escaped variable", "\\$pw", False),
+                ("escaped quoted variable", '\\"\\$pw\\"', False),
+            ):
+                yield ("%s | %s | %s" % (container, field, form),
+                       "/system script\n" + _in_field(container, head + value), leak)
+
+
+class GeneratedSensitiveFieldTestCase(unittest.TestCase):
+    """The show-sensitive fields, in the form a script field of an export
+    gives them, where the script's quotes are escaped."""
+
+    def test_every_sensitive_field_variant_is_found_or_clean(self):
+        cases = list(generated_sensitive_field_cases())
+        # 10 fields x (1 plain + 7 containers x 5 forms).
+        self.assertEqual(len(cases), 360)
+        for label, export, leak in cases:
+            with self.subTest(label):
+                found = export_config.find_leaks(export)
+                if leak:
+                    self.assertTrue(found, "the scan finds nothing")
+                    redacted = export_config.redact_secrets(export)
+                    self.assertNotIn("hunter2xyz", redacted)
+                    self.assertNotIn("ter2xyz", redacted)
+                    self.assertEqual(export_config.find_leaks(redacted), [])
+                    self.assertEqual(export_config.redact_secrets(redacted), redacted)
+                else:
+                    self.assertEqual(found, [])
+                    self.assertEqual(export_config.redact_secrets(export), export)
+
+    def test_a_commented_sensitive_field_blocks_commit(self):
+        for container in _COMMENTED_CONTAINERS:
+            for value in ('\\"hunter2xyz\\"', "hunter2xyz"):
+                export = "/system script\n" + _in_field(
+                    container, "/tool fetch url=https://h/ user=u password=" + value)
+                with self.subTest(container + " " + value):
+                    self.assertEqual(export_config.find_leaks(export),
+                                     [(2, "sensitive field")])
+                    with tempfile.TemporaryDirectory() as tmp, \
+                         mock.patch.object(export_config, "fetch_export",
+                                           return_value=(0, export, "")), \
+                         mock.patch.object(export_config, "git") as git, \
+                         contextlib.redirect_stdout(io.StringIO()), \
+                         contextlib.redirect_stderr(io.StringIO()):
+                        rc = export_config.main(
+                            ["--host", "router", "--out", tmp, "--commit"])
+                        self.assertEqual(rc, 1)
+                        self.assertEqual(git.call_count, 0)
+                        self.assertEqual(os.listdir(tmp), [])
+
+    def test_real_world_escaped_quoted_scripts(self):
+        for stmt in ('/ppp secret add name=u password=\\"hunter2xyz\\"',
+                     '/tool fetch url=https://x/ user=u password=\\"hunter2xyz\\"',
+                     '/tool e-mail send to=a@b password=\\"hunter2xyz\\"',
+                     '/interface wireless security-profiles add '
+                     'wpa2-pre-shared-key=\\"hunter2xyz\\"'):
+            export = _in_field("source", stmt)
+            with self.subTest(stmt):
+                self.assertEqual(export_config.find_leaks(export),
+                                 [(1, "sensitive field")])
+                self.assertNotIn("hunter2xyz", export_config.redact_secrets(export))
+
+    def test_an_unterminated_escaped_quote_still_counts(self):
+        export = 'add name=s source=":log x; /ppp secret add password=\\"hunter2xyz\n'
+        self.assertTrue(export_config.find_leaks(export))
+        self.assertNotIn("hunter2xyz", export_config.redact_secrets(export))
+
+    def test_the_closing_escaped_quote_is_kept_by_redaction(self):
+        export = _in_field("source", 'add password=\\"hunter2xyz\\" name=u')
+        self.assertEqual(
+            export_config.redact_secrets(export),
+            _in_field("source", 'add password=\\"<redacted>\\" name=u'))
+
+
+class ScriptFieldRecognitionTestCase(unittest.TestCase):
+    def test_known_and_generic_script_fields(self):
+        for name in ("source", "on-event", "up-script", "down-script",
+                     "test-script", "lease-script", "on-master", "on-backup",
+                     "on-fault", "on-alert", "on-future-thing", "new-script"):
+            with self.subTest(name):
+                self.assertTrue(export_config._is_script_field(name))
+        for name in ("comment", "name", "scripts", "onevent", "script-x"):
+            with self.subTest(name):
+                self.assertFalse(export_config._is_script_field(name))
+
+    def test_a_colonless_assignment_in_each_script_field_is_found(self):
+        # Without its colon the keyword counts only where it starts a
+        # statement, which the scan knows only inside a script field.
+        for name in ("up-script", "down-script", "test-script", "lease-script",
+                     "on-master", "on-backup", "on-fault", "on-alert",
+                     "on-future-thing", "vendor-script"):
+            export = 'add name=s %s="global ApiToken \\"hunter2xyz\\""\n' % name
+            with self.subTest(name):
+                self.assertEqual(export_config.find_leaks(export),
+                                 [(1, "secret assigned in a script")])
+
+    def test_a_plain_field_does_not_start_a_statement(self):
+        export = 'add name=s comment="global ApiToken \\"hunter2xyz\\""\n'
+        self.assertEqual(export_config.find_leaks(export), [])
+
+
+class SecretNameWordsTestCase(unittest.TestCase):
+    def leaks(self, statement):
+        return export_config.find_leaks("/system script\n%s\n" % statement)
+
+    def unverifiable(self, statement):
+        return export_config.find_unverifiable("/system script\n%s\n" % statement)
+
+    def test_pass_pwd_cred_bearer_hmac_with_a_literal_are_findings(self):
+        for name in ("pass", "Pass", "ApiPass", "db_pwd", "PWD", "cred", "Cred",
+                     "credential", "UserCredentials", "bearer", "ApiBearer",
+                     "hmac", "HmacSecretValue", "wifi-pass"):
+            for value in ('"hunter2xyz"', "hunter2xyz"):
+                statement = ":global %s %s" % (name, value)
+                with self.subTest(statement):
+                    self.assertTrue(self.leaks(statement))
+
+    def test_names_that_merely_contain_a_word_stay_clean(self):
+        for name in ("bypass", "compass", "passenger", "credit",
+                     "Keywords", "authentication"):
+            statement = ':global %s "hunter2xyz"' % name
+            with self.subTest(statement):
+                self.assertEqual(self.leaks(statement), [])
+                self.assertEqual(self.unverifiable(statement), [])
+
+    def test_pass_given_a_variable_or_expression_is_unverifiable_not_clean(self):
+        self.assertEqual(self.leaks(":global Pass ($a . $b)"), [])
+        self.assertTrue(self.unverifiable(":global Pass ($a . $b)"))
+        self.assertEqual(self.unverifiable(":global Pass $other"), [])
+
+    def test_a_weak_name_given_an_expression_or_variable_is_clean(self):
+        for statement in (':local key ("ipsec-" . $addr)',
+                          ":local key (\";\" . $ip . \":\")",
+                          ':local auth [:tostr ($row->"security.authentication-types")]',
+                          ":local prevKey (\";\" . $tunnel . \"=\")",
+                          ":local keyStart [:find $BW_PREV_RX \";\"]",
+                          ':set nowKey [/interface get [find name=$W] detect-internet-state]',
+                          ":set key $other", ':set key "$other"',
+                          ':local nowKey ""', ":local key", ":global auth {1;2}",
+                          'add name=s source=":local key (\\"a\\" . \\$x)"'):
+            with self.subTest(statement):
+                self.assertEqual(self.leaks(statement), [])
+                self.assertEqual(self.unverifiable(statement), [])
+
+    def test_a_weak_name_given_a_literal_is_a_finding(self):
+        for statement in (':global key "abc"', ":global key abc", ':local auth "abc"',
+                          ":local auth abc", ':local nowKey "abc"', ":set key 12345",
+                          'add name=s source=":global key \\"abc\\""'):
+            with self.subTest(statement):
+                self.assertTrue(self.leaks(statement))
+
+    def test_redaction_covers_the_new_names(self):
+        self.assertEqual(export_config.redact_secrets(":global Pass abc123; :log x\n"),
+                         ":global Pass <redacted>; :log x\n")
+        self.assertEqual(export_config.redact_secrets(':global key "abc"\n'),
+                         ':global key "<redacted>"\n')
+
+
+SUMMARY_BEFORE = """\
+/interface bridge
+add name=bridge
+/ip firewall filter
+add action=accept chain=input comment="defconf: accept established" \\
+    connection-state=established,related
+add action=drop chain=input comment="block the scanner" src-address=203.0.113.77
+/ip dns
+set servers=1.1.1.1
+"""
+
+
+class SummaryTestCase(unittest.TestCase):
+    """--diff --summary: what kind of change happened, without the change.
+
+    The unified diff of a real router is hundreds of lines and carries rule
+    bodies, comments and addresses into whatever it is pasted into. The summary
+    is counts per menu, so it is safe in a ticket or an alert text.
+    """
+
+    def run_diff(self, stored, live, extra=("--summary",)):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = os.path.join(tmp, "router.rsc")
+            if stored is not None:
+                with open(dest, "w", encoding="utf-8") as fh:
+                    fh.write(stored)
+            before = sorted(os.listdir(tmp))
+            stdout = io.StringIO()
+            with mock.patch.object(export_config, "fetch_export",
+                                   return_value=(0, live, "")), \
+                 contextlib.redirect_stdout(stdout), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                rc = export_config.main(["--host", "router", "--name", "router",
+                                         "--out", tmp, "--diff"] + list(extra))
+            after = sorted(os.listdir(tmp))
+            content = None
+            if stored is not None:
+                with open(dest, encoding="utf-8") as fh:
+                    content = fh.read()
+        return rc, stdout.getvalue(), before, after, content
+
+    def test_added_rule_counts_plus_one_in_its_menu(self):
+        after = SUMMARY_BEFORE.replace("add name=bridge\n", "add name=bridge\nadd name=guest\n")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/interface bridge", 1, 0)])
+
+    def test_removed_rule_counts_minus_one(self):
+        after = SUMMARY_BEFORE.replace(
+            'add action=drop chain=input comment="block the scanner" src-address=203.0.113.77\n', ""
+        )
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/ip firewall filter", 0, 1)])
+
+    def test_modified_rule_is_plus_one_minus_one_in_the_same_menu(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.78")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/ip firewall filter", 1, 1)])
+
+    def test_continuation_lines_are_one_rule(self):
+        # The same rule, wrapped differently by /export, is not a change; the
+        # same rule with its continued half edited is one change, not two.
+        unwrapped = SUMMARY_BEFORE.replace(" \\\n    connection-state", " connection-state")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, unwrapped), [])
+        edited = SUMMARY_BEFORE.replace("connection-state=established,related",
+                                        "connection-state=established")
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, edited),
+                         [("/ip firewall filter", 1, 1)])
+
+    def test_two_menus_are_reported_separately_and_in_file_order(self):
+        after = (SUMMARY_BEFORE
+                 .replace("set servers=1.1.1.1", "set servers=9.9.9.9")
+                 .replace("add name=bridge\n", "add name=bridge\nadd name=guest\n"))
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after),
+                         [("/interface bridge", 1, 0), ("/ip dns", 1, 1)])
+
+    def test_lines_before_the_first_header_go_to_top(self):
+        self.assertEqual(
+            export_config.summarise_diff("x=1\n/ip address\nadd address=192.0.2.1/24\n",
+                                         "x=2\n/ip address\nadd address=192.0.2.1/24\n"),
+            [("(top)", 1, 1)],
+        )
+
+    def test_terse_export_uses_the_path_before_add(self):
+        before = "/ip firewall filter add chain=input action=accept\n"
+        after = before + (
+            "/ip firewall filter add chain=input action=drop\n/ip dns set servers=9.9.9.9\n"
+        )
+        self.assertEqual(export_config.summarise_diff(before, after),
+                         [("/ip firewall filter", 1, 0), ("/ip dns", 1, 0)])
+
+    def test_comments_and_blank_lines_are_ignored(self):
+        after = "# aug/03/2026 09:12:47 by RouterOS 7.22\n\n" + SUMMARY_BEFORE.replace(
+            "/ip dns\n", "/ip dns\n# a note\n\n"
+        )
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, after), [])
+
+    def test_a_reorder_is_reported_without_counts(self):
+        lines = SUMMARY_BEFORE.splitlines(keepends=True)
+        swapped = "".join(lines[:3] + lines[5:6] + lines[3:5] + lines[6:])
+        rows = export_config.summarise_diff(SUMMARY_BEFORE, swapped)
+        self.assertEqual(rows, [("/ip firewall filter", 0, 0)])
+        self.assertIn("order changed", export_config.render_summary(rows))
+
+    def test_output_never_contains_rule_bodies(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.99")
+        table = export_config.render_summary(export_config.summarise_diff(SUMMARY_BEFORE, after))
+        for secret in ("203.0.113", "block the scanner", "chain=input", "action=drop"):
+            self.assertNotIn(secret, table)
+        self.assertIn("/ip firewall filter", table)
+        self.assertTrue(table.endswith("total: +1 -1 in 1 menu(s)\n"))
+
+    def test_identical_texts_yield_an_empty_list(self):
+        self.assertEqual(export_config.summarise_diff(SUMMARY_BEFORE, SUMMARY_BEFORE), [])
+        self.assertEqual(export_config.summarise_diff("", ""), [])
+
+    def test_summary_without_diff_is_exit_3(self):
+        fetch = mock.Mock(return_value=(0, SUMMARY_BEFORE, ""))
+        with mock.patch.object(export_config, "fetch_export", fetch), \
+             contextlib.redirect_stdout(io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            for extra in ([], ["--stdout"], ["--commit"]):
+                rc = export_config.main(["--host", "router", "--summary"] + extra)
+                self.assertEqual(rc, 3, extra)
+        fetch.assert_not_called()
+
+    def test_diff_summary_exits_1_on_drift_and_0_when_equal(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.99")
+        rc, out, _, _, _ = self.run_diff(SUMMARY_BEFORE, after)
+        self.assertEqual(rc, 1)
+        self.assertIn("/ip firewall filter", out)
+        self.assertNotIn("203.0.113", out)
+        self.assertNotIn("@@", out)
+        rc, out, _, _, _ = self.run_diff(SUMMARY_BEFORE, SUMMARY_BEFORE)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("total:", out)
+
+    def test_diff_summary_writes_nothing(self):
+        after = SUMMARY_BEFORE.replace("203.0.113.77", "203.0.113.99")
+        rc, _, before, files_after, content = self.run_diff(SUMMARY_BEFORE, after)
+        self.assertEqual(rc, 1)
+        self.assertEqual(files_after, before)
+        self.assertEqual(content, SUMMARY_BEFORE)
+        rc, out, before, files_after, _ = self.run_diff(None, SUMMARY_BEFORE)
+        self.assertEqual(rc, 1)
+        self.assertEqual(files_after, before)
+        self.assertEqual(files_after, [])
+        self.assertIn("total: +4 -0 in 3 menu(s)", out)
 
 
 class DefaultOutputTestCase(unittest.TestCase):

@@ -97,7 +97,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 14 of these 28 scripts do not run at all.** That release
+> **On RouterOS 7.24, 14 of these 29 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
@@ -106,9 +106,9 @@ their values, so no token crosses the wire.
 >
 > **Runs on 7.24:** `backup.lua`, `backup_file_cleanup.lua`,
 > `backup_update_check.lua`, `cert_expiry_watch.lua`, `change_WIFI_pw.lua`,
-> `detect_internet.lua`, `health_check.lua`, `netwatch_notify.lua`,
-> `reboot-and-flush.lua`, `security_check.lua`, `stay_fresh.lua`,
-> `tg_send.lua`, `wireguard_watch.lua`.
+> `conntrack_watch.lua`, `detect_internet.lua`, `health_check.lua`,
+> `netwatch_notify.lua`, `reboot-and-flush.lua`, `security_check.lua`,
+> `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
 >
 > **Migrated source; targeted CHR coverage:** `rogue_dns_check.lua`.
 > Its variable names avoid the 7.24 parser restriction. The pinned 7.24.5 tests
@@ -170,8 +170,10 @@ their values, so no token crosses the wire.
 | `features/vpn_health.lua`                    | Watches IPsec / OVPN / WireGuard sessions and alerts on state changes.  |
 | `features/wireguard_watch.lua`               | Alerts when a WireGuard peer stops handshaking.                         |
 | `features/wireless_client_watch.lua`         | Alerts on wireless clients joining, leaving, or with poor signal.       |
+| `features/conntrack_watch.lua`               | Alerts before the connection-tracking table fills, and on recovery.     |
 | `features/export_config.py`                  | Host-side: exports `/export` over ssh and versions it in git.           |
 | `features/print_schedulers.sh`               | Host-side: prints the `/system scheduler add` lines for these scripts.  |
+| `features/print_startup.sh`                  | Host-side: prints the startup script that sets the globals at boot.     |
 | `features/router_doctor.py`                  | Host-side: read-only audit of what is installed, scheduled and set.     |
 | `features/pull_router_backups.sh`            | Host-side: pulls `backup-*` files off the router over SFTP/SCP.         |
 
@@ -198,6 +200,9 @@ their values, so no token crosses the wire.
 
    then add a Scheduler entry with `start-time=startup` pointing to it. The
    `tg_send` helper picks them up automatically.
+   [`features/print_startup.sh`](#featuresprint_startupsh) prints both, the
+   script and its scheduler entry, ready to paste, with placeholders where the
+   secrets go and every setting of the scripts you name listed at its default.
 
    RouterOS 7.24 refuses `:global` names with an underscore, so the package
    helper no longer reads `TG_BOT_TOKEN` / `TG_CHAT_ID`.
@@ -285,7 +290,7 @@ Add via **System → Scheduler** (use the same policy set as the scripts):
 intentionally manual / on-demand — don't schedule them.
 
 [`features/print_schedulers.sh`](#featuresprint_schedulerssh) prints all of this as ready-to-paste
-`/system scheduler add` commands, including the twelve scripts the table above
+`/system scheduler add` commands, including the thirteen scripts the table above
 does not cover:
 
 ```bash
@@ -307,6 +312,11 @@ one-shot startup notifier that fires once the router is back online:
 
 The 20 s delay gives DHCP / WAN / DNS time to come up before `tg_send` tries
 to reach Telegram.
+
+That entry only helps if `TgBotToken` and `TgChatId` are set by the time it
+fires, and after a reboot they are set only if a startup script declares them
+again. [`features/print_startup.sh`](#featuresprint_startupsh) prints that
+script with its own `start-time=startup` entry.
 
 ## Script details
 
@@ -765,6 +775,42 @@ or `:local` names, so it actually runs on RouterOS 7.24.
 Schedule at `1d` / `05:20:00` — after `cert_expiry_watch`, well clear of the
 nightly backup/update slot.
 
+### `features/conntrack_watch.lua`
+
+Warns before the connection-tracking table fills. A full table is how a
+router goes up-but-nothing-works: a scan, a flood, a torrent client or one
+leaking device fills it, new connections are dropped, and every interface
+still looks fine. `health_check.lua` watches CPU, memory, disk and
+temperature; nothing else here watched this.
+
+Each run reads `total-entries` and `max-entries` from
+`/ip firewall connection tracking`, two numbers the router already keeps, and
+works out how full the table is. At or above `ConntrackWarnPercent` (a
+`:global`, whole number 0-100, default `80`) the state is `high`. It sends a
+plain-text Telegram message only when the state changes: once when the table
+crosses the threshold, with the identity, the percentage, the two counts and
+the threshold, and once when it falls back. The first run after a boot
+records a healthy table silently and reports one that is already high. Every
+change is logged as well.
+
+A failed send is retried: the state Telegram last acknowledged is kept in
+`ConntrackDeliveredState`, and until a send succeeds the next run tries
+again, with the reason in `ConntrackSendError`. It sends through
+`tg_send_new` and falls back to `tg_send`, like `security_check.lua` and
+`stay_fresh.lua`; `ConntrackSendScript` names another helper. With no helper
+at all it logs the alert and carries on.
+
+It is read-only: it writes only its own globals and never flushes, removes or
+changes a connection or a tracking setting (`reboot-and-flush.lua` is the
+script that flushes). With tracking disabled it logs that and stops. When
+`max-entries` cannot be read, or is zero, it logs
+`max-entries unavailable - skipping` and does nothing, rather than divide by
+zero; when `total-entries` cannot be read it counts the table instead, which
+is slower on a busy router. It declares no underscored `:global` or `:local`,
+so it runs on RouterOS 7.24, and honours `OpsToolboxPaused`. Schedule it every
+`5m`; `print_schedulers.sh` prints that entry and `print_startup.sh --only
+conntrack_watch` lists its settings.
+
 ### `features/export_config.py`
 
 **Runs on your machine, not on the router** — it is the only file here that is
@@ -781,9 +827,13 @@ baseline actual history and turning any change — intended or not — into a di
 ./export_config.py --host router.lan --commit     # commit if it changed
 ./export_config.py --host router.lan --stdout     # print, write nothing
 ./export_config.py --host router.lan --diff       # compare live vs stored; write nothing
+./export_config.py --host router.lan --diff --summary   # counts per menu, no config text
+./export_config.py --host router.lan --scan-secrets               # where are secrets? write nothing
+./export_config.py --scan-file config-history/router.lan.rsc     # audit a stored export, no ssh
+./export_config.py --host router.lan --commit --redact-secrets    # commit with values replaced
 ```
 
-The connection flags are `--host` (the only required one), `--user` (default
+The connection flags are `--host` (required, except with `--scan-file`), `--user` (default
 `admin`), `--identity`, `--port` (22) and `--timeout` (60 s). Where the export
 lands is `--out`, the output directory, and `--name`, the basename, which
 defaults to the host.
@@ -815,11 +865,143 @@ accident.
 against the configured output file without creating or changing that file.
 `--stdout`, `--diff`, and `--commit` are intentionally mutually exclusive.
 
+`--summary` changes what `--diff` prints. The unified diff of a real router
+runs to hundreds of lines and carries rule bodies, comments and addresses, so
+it cannot be pasted into a ticket or a chat. With `--summary` the output is
+one line per RouterOS menu with the number of lines added and removed, then a
+total:
+
+```text
+/interface bridge    +1 -0
+/ip firewall filter  +2 -1
+total: +3 -1 in 2 menu(s)
+```
+
+A rule that changed counts as one removed and one added in its menu. A menu
+whose rules only changed order is listed as `+0 -0  (order changed)`, since
+in a firewall the order is the configuration. Lines wrapped by `/export` are
+joined first, so a rewrap is not a change; comments and blank lines are
+ignored, and lines before the first menu header are counted under `(top)`.
+No rule, comment or value is printed, which makes it suitable as the alert
+text of `export_config.py --diff --summary || notify`. Everything else about
+`--diff` is unchanged: it writes nothing and exits `0` with no drift, `1` with
+drift. `--summary` without `--diff` is a usage error (exit `3`).
+
+**Plain `/export` still carries secrets.** It hides the router's own
+credentials, but not the source of a `/system script` or the `on-event` of a
+scheduler, and [Installation](#installation) step 4 puts
+`:global TgBotToken "..."` (and `RouterBackupPassword`) into a startup
+script. So an export committed as it is can put a live bot token into git
+history. Three flags deal with that:
+
+- `--scan-secrets` fetches the live export and prints one
+  `[warn] line N: <kind>` per finding, then `N finding(s); values are never
+  printed`. It writes nothing. Exit `0` when nothing was found and `1` when
+  something was, like `--diff`, so it can gate a cron job.
+- `--scan-file PATH` does the same for an export already on disk, such as
+  `config-history/router.lan.rsc` or an older copy checked out of history. It
+  needs no `--host` and makes no ssh connection.
+- `--redact-secrets` replaces each value it finds with the literal
+  `<redacted>` before the export is printed, diffed or written. The rest of
+  the line is kept and the same input always gives the same output, so a
+  redacted history diffs cleanly. Under `--diff` it redacts the stored file
+  as well as the live side, so a token already in history is never printed
+  and does not show as a change.
+
+What counts as a secret: a Telegram bot token by its shape, wherever it
+appears; a `:global`, `:local` or `:set` (the colon is optional where the
+keyword starts a statement: at the start of a line, after `;` or `{`, or at
+the start of a script field) whose name contains `token`, `password`,
+`passwd`, `secret`, `apikey`, `passphrase`, `psk`, `privatekey`, `accesskey`,
+`sharedkey`, `wpakey`, `pincode`, `credential`, `bearer` or `hmac`, or has
+`pin`, `pass`, `pwd` or `cred` as a word of its own (so `bypass`, `compass`
+and `credit` stay clean), and is given a literal value, quoted or a bare
+word, in a script or in any script field. A name with `key` or `auth` as a
+word of its own (`key`, `nowKey`, `auth`) is weaker, because scripts use
+them for lookup keys and modes (`:local key ("ipsec-" . $addr)`,
+`:local auth [...]`): it is reported only when given a plain literal
+(`:global key "abc"`), never for an expression or a variable. Script fields
+are `source`, `script`, `on-event`, `on-alarm`, `up-script`,
+`down-script`, `test-script`, `lease-script`, `on-master`, `on-backup`,
+`on-fault`, `on-alert` and `do`, and any other field whose name ends in
+`-script` or starts with `on-`.
+Names are compared with `_` and `-` removed and case ignored, so `api_key`,
+`api-key` and `API_KEY` all count as `apikey`; the variable name may itself
+be quoted, as in `:global "api-token" "x"`. The scan also covers the fields
+RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
+`private-key=`, `secret=`, `psk=`, `preshared-key=` (WireGuard peers), the
+WPA pre-shared keys, `authentication-key=`, `encryption-key=`), also inside
+a script field, where the export writes the script's quotes escaped
+(`password=\"x\"`, as in `/ppp secret add`, `/tool fetch` or `/tool e-mail
+send`) and an escaped variable (`password=\$pw`) is not a value. Empty values,
+`$variables` (`$Password`), `<redacted>` and the exact placeholder assignments
+the package ships
+(`TgBotToken "<paste bot token>"`, `RouterBackupPassword "<paste backup
+password>"` and the helper's `BotToken "token"`) are skipped. A quoted
+value that starts with `[` or `(` (`"[abc]"`) is a plain string in RouterOS,
+so it is a literal and is reported.
+Any other value is reported, even one in angle brackets. An expression
+(`[...]`, `(...)`, `{...}`, `$[...]`) is not a literal the first pass can
+point at, so the second pass reports it as unverifiable (below). A finding names the
+line and the kind, never the value.
+This is a guard against the known shapes, not proof that an export is clean:
+it can miss a secret stored under a name it does not recognise.
+
+**The scan fails closed.** Besides the patterns above, every `:global`,
+`:local` and `:set` is tokenized on its own. One whose variable name or value
+the scan cannot fully read is reported as *unverifiable*, not passed: an
+unbalanced quote, an escape RouterOS does not define, a quote that is not
+escaped inside the exported field, a variable name it cannot extract, or an
+value that is not exactly one of the few shapes known to hold no secret.
+For a secret-named variable the value is accepted only when it is empty (or
+absent), a lone variable reference (`$Password`, `$"my var"`, also quoted as
+`"$Password"`), `<redacted>`, or one of the exact placeholder pairs above.
+Everything else is reported as `secret-named value is not a variable,
+placeholder or <redacted>`, whatever it contains: `[:pick $a 0 4]`,
+`($a . $b)`, `(123 . 456 . 78)`, `$[:tostr (1 . 2)]`, `{}`, a number, a
+`/path` result. The scan used to look inside brackets and allow short
+numbers and operators; every such rule was a way to assemble a secret from
+pieces (`(123 . 456 . 78)` is a pre-shared key), so none is left. Names that
+are not secret are not checked this way. That is an accepted false positive:
+the scan fails closed.
+A commented-out assignment is checked too: a secret-named variable given a
+literal in a `#` line (`# :set ApiToken "realtoken"`, or after `\r\n#` inside
+a `source=`) is still in git history, so it is reported as `commented
+assignment with a literal` and `--commit` refuses it. So is a commented
+statement whose variable name cannot be read (`# :set "api:token" "x"`,
+`# :set ApiToken(x)`) when its raw text, hex escapes decoded and separators
+ignored, names a secret. Placeholders, `<redacted>`, variables and names that
+are not secret stay quiet in a comment.
+A `:global` or `:set` glued to the next character (`:global"Name" ...`,
+`:set(...)`) is read as well. `--commit`
+refuses an export with one: exit `1` (the same code as a leak), nothing
+written, and an error naming the line and the reason. `--redact-secrets`
+does not override it, and there is no flag that does; fix or remove that
+script line. A plain write, `--stdout` and `--diff` warn on stderr and carry
+on, and `--scan-secrets` and `--scan-file` list the line as
+`unverifiable: <reason>` and exit `1`. Empty values, `<redacted>`, the
+shipped placeholders and plain variable references (`$Password`) are still
+verified clean.
+
+**One behaviour change.** A plain write, `--stdout` and `--diff` now print
+`[warn] N possible secret(s) in the export (lines ...); re-run with
+--redact-secrets` on stderr when the export holds one, and carry on. `--commit`
+refuses instead: exit `1`, nothing written, nothing staged, until you add
+`--redact-secrets` (or move the secret out of the script). `--show-sensitive`
+with `--commit` stays refused outright with exit `3`. `--scan-secrets` and
+`--scan-file` cannot be combined with `--stdout`, `--diff`, `--commit` or
+`--redact-secrets` (exit `3`).
+
+Exit codes: `0` success (under `--diff`, no drift; under a scan, nothing
+found), `1` an error, drift under `--diff`, a finding under a scan, or a
+refused commit, `2` preflight failed (ssh missing, router unreachable), `3`
+bad arguments.
+
 ### `features/print_schedulers.sh`
 
 **Runs on your machine, not on the router**, and contacts nothing at all: it
 prints the `/system scheduler add` command for every script here that is meant
-to run unattended — the eight intervals from the table above, and for the twelve
+to run unattended — the eight intervals from the table above, and for the thirteen
 scripts that table omits, the interval named in each script's own header comment
 — and you paste what you agree with.
 
@@ -852,6 +1034,58 @@ Everything it emits is valid RouterOS input, commentary included (the notes are
 `#` comment lines, and the colour only appears on a terminal), so the output can
 go into a file and be pasted from there.
 
+### `features/print_startup.sh`
+
+**Runs on your machine, not on the router**, and contacts nothing: it prints a
+`/system script add` for a startup script that declares the globals these
+scripts read, and the `start-time=startup` scheduler entry that runs it at
+every boot. It is the companion of `print_schedulers.sh`.
+
+Every setting in this package is a `:global`, and a `:global` lives in
+memory: a reboot clears all of them. Without a startup script the token you
+set by hand works until the next reboot, and then every alert is dropped. The
+7.24 migration above ends with "rewrite the startup script to the new names",
+and this is that script.
+
+```bash
+./print_startup.sh                                  # placeholders, safe to keep in git
+./print_startup.sh --only backup --only stay_fresh  # add those scripts' settings
+./print_startup.sh --list                           # names accepted by --only
+./print_startup.sh --name boot-globals --policy read,write,policy,test
+TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... ./print_startup.sh --from-env
+```
+
+The script always declares `TgBotToken` and `TgChatId` (as
+`"<paste bot token>"` and `"<paste chat id>"` unless `--from-env` is given)
+and `OpsToolboxPaused false`. `--only SCRIPT` adds the settings that script
+reads, each commented out at its default with one line on what it does, so
+you uncomment only what you change (the three `SecurityManagement*`
+settings default to empty, which skips their check, and the note gives an
+example value): `backup`, `backup_update_check`,
+`stay_fresh`, `security_check`, `rogue_dns_check` and `conntrack_watch`. A setting two of them
+share, such as `RouterBackupPassword`, is listed once. State the scripts keep
+for themselves (`SecLastFp`, `RdnsDeliveredSig` and the like) is never
+printed, because setting it at boot would erase what they remember. No name
+printed contains an underscore, since 7.24 refuses to run a script that
+declares one; the convention suite checks that, and that every setting is
+declared by the script it is listed under.
+
+`--from-env` fills the secrets from `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID`, and `RouterBackupPassword` from `ROUTER_BACKUP_PASSWORD`
+when a backup script is selected and the variable is set (encryption stays
+optional). They are read from the environment only, never from the command
+line, where `ps` and shell history keep them. A missing Telegram variable, or
+a value holding a character a RouterOS string cannot carry here (`"`, `\`,
+`$`, `[`, `]`, `{`, `}` or a line break), exits `3` naming the variable and
+never its value. Output made with `--from-env` holds the secrets: paste it,
+do not redirect it into git. Without it, the output holds no secret.
+
+`--name` (default `startup`, the name the README uses) and `--policy`
+(default `read,write,policy,test,sensitive,ftp`) apply to both the script and
+its scheduler entry. `--dry-run` is accepted for symmetry and adds a closing
+comment. Everything printed is valid RouterOS input, commentary included.
+Exit codes: `0` success, `3` usage.
+
 ### `features/router_doctor.py`
 
 **Runs on your machine, not on the router.** Read-only, like the other
@@ -865,6 +1099,8 @@ fixes what it found.
 ./router_doctor.py --host router.lan --identity ~/.ssh/keys/projects/mikrotik/mikrotik_rsa
 ./router_doctor.py --host router.lan --port 2222
 ./router_doctor.py --host router.lan --format json
+./router_doctor.py --hosts-file ~/routers.txt     # every router, one summary
+./router_doctor.py --host router.lan --drift      # which installed scripts are stale
 ```
 
 Secrets stay on the router. The check on `TgBotToken` and `TgChatId` asks
@@ -879,12 +1115,130 @@ Three things are real findings: a scheduler that runs a script which is not
 installed (it fails at every run, and only `/log` says so), a script installed
 but scheduled nowhere, and a manual-only script somebody put on a timer.
 
+It also asks the router which RouterOS release it runs, and turns the
+compatibility list under [Scripts overview](#scripts-overview) into a verdict
+for that router. On 7.24 or later, each installed script that declares an
+underscored `:global` or `:local` is a finding: `fail` when a scheduler runs
+it, because every run dies in the parser without logging a line, `warn` when
+nothing does. The message names the replacement where one exists
+(`update_check` → `backup_update_check`). On 7.23 or earlier the same scripts
+get one `info` line, so you migrate before you upgrade. The list comes from
+the `.lua` files in this checkout; a lone copy of `router_doctor.py` falls
+back to the list it carries, which a unit test keeps equal to the files. The
+judgement is by name only: the router's copy of a script is never read, so a
+script renamed or rewritten on the router is not inspected. A router whose
+probe returned no version gets no verdict at all.
+
+Being named in a scheduler is not the same as being run, so it reads each
+entry's state too (`disabled`, `run-count`, `start-date`, `start-time`) and the
+router's clock and uptime, and adds three findings, all `warn`:
+
+- **a disabled scheduler** that runs an installed script: the script counts as
+  scheduled and never runs. It replaces the "no scheduler runs it" warning
+  rather than adding to it.
+- **an enabled entry that has never fired**: `run-count` still `0` more than
+  an interval plus a minute after its first run was due. The first run is due
+  at `start-date` and `start-time` when that is still ahead, else one
+  interval after it, read against the router's own clock; the router's uptime
+  is not the scheduler's age, so an entry created minutes ago on a router
+  that has been up for weeks is not accused. A router restarted within twice
+  the interval plus a minute is not judged either, nor is an entry whose
+  start does not show when it was added: a `start-date` of `jan/01/1970`
+  (what RouterOS fills in when only `start-time` was given) or a start from
+  before the last boot is an `info` ("not judged"). That is usually RouterOS
+  refusing to start it ("not enough permissions" in `/log`), because the
+  scheduler's policy does not cover the script's. An entry that has simply not
+  come due yet is an `info` ("has not run yet"), not a warning. Startup
+  entries and entries with no interval are not judged.
+- **Telegram globals that will not survive a reboot**: `TgBotToken` or
+  `TgChatId` is set now, but no enabled `start-time=startup` scheduler assigns
+  it again, either inline or by running a script (`/system script run NAME`,
+  also in brackets or as `:execute "/system script run NAME"`, or an
+  `on-event` that is nothing but the bare script name; `:execute NAME` and a
+  bare name among other statements such as `:delay 5s; NAME` do not count,
+  nor does a scheduler that only shares the script's name) whose source
+  holds `:global NAME <value>`, or `:global
+  NAME` followed by `:set NAME <value>`. A `:set` with no `:global NAME`
+  before it, or after `:local NAME`, sets something else. Spaces or tabs may
+  separate the words, and a line whose first character is `#` is ignored. A
+  mention does not count: `:put $TgBotToken`, a bare `:global TgBotToken;` or
+  any other read restores nothing. Each global is judged on its own: a startup
+  entry that restores only `TgBotToken` still gets a warning for `TgChatId`.
+  The router finds each `:global`, `:local` or `:set` of the name and returns
+  only the script's name, the global, the keyword, an offset and two flags (a
+  value follows, the line is commented out); the verdict is made on this side,
+  so no script source or value crosses the wire. `tg_send` and `tg_send_new`
+  read the globals and do not count.
+
+Each of these runs only on fields the router returned, so an older or partial
+answer produces no finding rather than a false one.
+
+`--drift` answers which routers still run an old copy of a script. Scripts are
+pasted into *Source* by hand, and this package changes them (the 7.24 renames,
+fixes), so there was no answer short of opening each one in Winbox. With the
+flag, the file here is sent to the router as a string literal in a short
+inline block of `:local`, `:if` and `:put`, and the router compares it with
+the installed script's *Source* and answers `same`, `changed` or `missing`
+per script. The router's source is never read back, since it may hold a pasted
+token, and nothing is written to the router: no global, no script, no
+scheduler. (An earlier design had the router hash each script; RouterOS 7.24
+rejects every `:convert` spelling tried for that. The comparison is an inline
+string comparison, which needs no hash.) The scripts go in
+batches of about 24 KB of escaped text per ssh command. A paste that kept or
+dropped the trailing newline, or stored CRLF line ends, counts as the same,
+and so does a file with a tab where the router's copy has four spaces, since
+RouterOS stores a tab in a script source as four spaces.
+A script that differs is a `warn` naming the file (edited in place or out of
+date) and the fix line says to paste the file body into
+*System > Scripts > NAME > Source*. Thresholds you tuned in the router's copy
+show up here too, which is why this is a flag and not part of the default
+verdict. One `info` line counts how many compared package scripts match. A
+script the router gave no answer for is a `warn` and verdict `unknown`, never
+a guess. Scripts that are not in the package are skipped. JSON gains `drift`,
+a map from script name to `same`, `changed` or `unknown`: a verdict only. A
+lone copy of `router_doctor.py` with no `.lua` files beside it has nothing to
+compare against and says so once.
+
 Same connection flags as `export_config.py` (`--host`, `--user`, `--identity`,
 `--port`). `--format json` returns installed script names, scheduler
-names/intervals, controls, and structured findings. Free-form scheduler source
-is deliberately omitted because an inline `on-event` can contain credentials.
+names/intervals, controls, `routeros_version` (the string the router
+reported, or `null`), `incompatible_scripts` (installed scripts the router's
+release refuses to run), `scheduler_state` (each entry's name, `disabled`,
+`run_count` and `start_time`, kept apart from `schedulers`), `uptime_seconds`,
+and structured findings. Free-form scheduler source is deliberately omitted
+because an inline `on-event` can contain credentials.
 It preserves the same exit semantics: `0` findings printed, `1` connected but
-the probe failed, `2` could not connect, `4` nothing wrong.
+the probe failed, `2` could not connect, `3` usage, `4` nothing wrong.
+
+`--hosts-file FILE` audits a fleet in one run instead of one `--host` at a
+time, which is what makes it usable from cron or CI. The file lists one router
+per line as `host`, `user@host`, `host:port`, `user@host:port` or
+`[v6addr]:port`; blank lines and anything after `#` are ignored, `--user` and
+`--port` are the defaults for a line that does not say, and a router listed
+twice is audited once. The whole file is checked before the first router is
+contacted: an empty file, a line that is none of those forms, or a token that
+starts with `-` (ssh would read it as an option) exits `3` and names the line.
+`--host` and `--hosts-file` are mutually exclusive.
+
+```text
+# routers.txt
+192.168.88.1
+ops@hall.lan:2222   # the one in the hall
+[2001:db8::1]
+```
+
+Routers are probed one after another with the same read-only probe, and
+`--timeout` applies to each. One that cannot be reached is reported and the
+run carries on. The package is scanned once for the whole run. Text output
+prints each router's report under its own heading, then a `== fleet ==` table
+with one row per router: its state (`reachable`, `unreachable` or
+`probe-failed`), its `fail` and `warn` counts, and the first finding. With
+`--format json` the output is `{"fleet": true, "hosts": [...], "summary":
+{...}}`, where each host entry is exactly what a single `--host` run prints
+and the summary counts `total`, `unreachable`, `probe_failed`,
+`with_findings` and `healthy`. The fleet exits with its worst router: `2` if
+any could not be reached, else `1` if any probe failed, else `0` if any
+printed findings, and `4` only when every router is clean.
 
 ### `features/pull_router_backups.sh`
 
@@ -898,6 +1252,7 @@ directory over SFTP/SCP.
 ./pull_router_backups.sh --port 2222 --identity ~/.ssh/router admin@router.lan
 ./pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
 ./pull_router_backups.sh --timeout 30 admin@router.lan   # slow link or a WAN hop
+./pull_router_backups.sh --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
 ```
 
 `--timeout SECONDS` is the ssh connect timeout, 10 by default; a non-integer is
@@ -909,8 +1264,43 @@ an empty result is allowed to mean "no backups yet", because those two used to
 be indistinguishable — an unreachable host, a rejected key and SFTP switched off
 all exited `0`, so a cron job reported success while backups had silently
 stopped for months. `--dry-run` previews the exact SSH/SCP calls without
-contacting the router or creating the destination. Exit codes: `0` files pulled or none exist yet, `1` reached
-the router but the transfer failed, `2` could not reach it, `3` usage.
+contacting the router or creating the destination.
+
+Reaching the router is not the same as having a backup that restores, and two
+opt-in checks cover the rest. `--max-age` only reads the destination
+directory. `--verify` runs on the files in a staging directory before anything
+is copied into the destination, so a file that fails is reported and never
+published: an archived copy of the same name is kept as it was and is never
+deleted or renamed.
+
+- `--verify` checks what this run pulled. Each file must be non-empty, each
+  `.rsc` must open with the RouterOS export header (`# <date> by RouterOS
+  <version>`), and each `backup-X.backup` must have its `backup-X.rsc` pulled
+  in the same run (or already in the destination when the router sent none),
+  and the reverse. A partner whose transfer failed (anything but "no such
+  file") is not replaced by the archived copy, so the pair is not accepted on
+  an older partner's word. Files that pass are published and files that fail
+  are not, so a zero-byte re-pull of an archived name leaves the archived copy
+  intact and the run exits 1. Each problem is printed as `verify: <file>:
+  <reason>` on stderr, followed by `verify: N file(s) checked, M problem(s)`.
+  A run that pulled nothing has nothing to check and passes; a run whose
+  transfer already failed is still checked, so nothing unchecked is published.
+- `--max-age HOURS` fails unless a `backup-*.backup` pulled in this run was
+  made by the router within the last HOURS hours (a whole number from 1).
+  Files other routers left in a shared destination do not count. The run can
+  succeed every night while the router's own backup scheduler has died and
+  `RemovePrevious` left one old pair to be pulled again and again; `scp -p`
+  keeps the router's timestamps, so this sees how old the newest backup
+  the router made really is. A file stamped more than 5 minutes ahead of
+  this machine's clock (`FUTURE_SKEW_MINUTES` in the script) is rejected as
+  `timestamp in the future (router clock ahead?)` and does not count as
+  fresh. With `--max-age`, a router with no backups yet
+  is a failure (exit `1`) rather than success.
+
+Without either flag the behaviour is exactly what it was, so existing cron
+lines are unaffected. Exit codes: `0` files pulled or none exist yet, and
+every requested check passed, `1` reached the router but the transfer failed,
+or a `--verify` / `--max-age` check failed, `2` could not reach it, `3` usage.
 
 ## Security action surface
 
