@@ -382,10 +382,13 @@ Five of those exist because the ordinary tools hide them:
   working until the next write; an fstab mount that failed at boot leaves its
   data on the root filesystem; an md array runs on one disk without a word.
   None of that shows in `df`. A mount that fstab declares `ro`, a bind mounted
-  `:ro` and the ostree `/sysroot` are read-only on purpose and are not flagged. A hung NFS or CIFS mount blocks `df` itself, so
-  each one is probed with a five-second `stat` that `--skip-remote-mounts`
-  turns off. `PROC_DIR` and `FSTAB` point the section at other files; the
-  tests use them.
+  `:ro` and the ostree `/sysroot` are read-only on purpose and are not
+  flagged. The evidence is fstab saying read-write while the live mount is
+  read-only; the `errors=remount-ro` option is a policy, not an error, so a
+  read-only mount with no fstab entry is not flagged. A hung NFS or CIFS
+  mount blocks `df` itself, so each one is probed with a five-second `stat`
+  that `--skip-remote-mounts` turns off. `PROC_DIR` and `FSTAB` point the
+  section at other files; the tests use them.
 - **Stalls, not load.** Load average counts tasks waiting on disk as busy and
   never sees a memory stall, so it is high on an idle box with a slow disk and
   low on one that is thrashing. Pressure stall information (Linux 4.20+) is the

@@ -454,9 +454,11 @@ else
   # Real filesystems only, and the token "ro" exactly: "errors=remount-ro" is
   # an option, not a state. squashfs, iso9660, erofs and overlay are read-only
   # by design, and snaps and desktop media mounts are expected to be. So is
-  # the ostree /sysroot, and any mount fstab declares ro. A mount with no
-  # fstab entry (a bind or volume mounted :ro) is only reported when it
-  # carries errors=remount-ro, which is what a kernel remount leaves behind.
+  # the ostree /sysroot, and any mount fstab declares ro. The evidence of a
+  # kernel remount is fstab saying rw (or defaults) while the live mount is
+  # ro. errors=remount-ro is only the policy a filesystem was mounted with,
+  # so it proves nothing; a ro mount with no fstab entry (a bind or volume
+  # mounted :ro) is taken as intentional and is not reported.
   fstab_in=/dev/null
   [[ -r "$FSTAB" ]] && fstab_in="$FSTAB"
   ro_rows="$(awk -v fstab_file="$fstab_in" '
@@ -475,7 +477,7 @@ else
     $3 ~ /^(ext2|ext3|ext4|xfs|btrfs|f2fs|vfat|exfat|ntfs|ntfs3|zfs)$/ &&
     ("," $4 ",") ~ /,ro,/ &&
     $2 != "/sysroot" && !($2 in fsro) &&
-    (($2 in fs) || ("," $4 ",") ~ /,errors=remount-ro,/) &&
+    ($2 in fs) &&
     $2 !~ /^\/(snap|var\/lib\/snapd|run\/media)(\/|$)/ { print $2, $3 }
   ' <<<"$mounts_txt")"
   ro_n=0
