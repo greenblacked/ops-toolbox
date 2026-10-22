@@ -50,6 +50,18 @@ on the Windows side, and **Used**, what `df` reports inside the distro.
 **Reclaimable** is allocated minus used, which is what a compact (or sparse
 mode) can give back. `-Distro NAME` narrows it to one distro.
 
+**Allocated** is the file's logical length, not the space it takes on the
+disk. If the VHDX is sparse, NTFS can free ranges inside it without the
+length changing, so Reclaimable then overstates what a compact recovers.
+For a sparse VHDX, check the size on disk before you decide to shrink:
+Explorer's "Size on disk" in the file's properties, or one of these
+(`fsutil` needs an elevated PowerShell):
+
+```{ .powershell .rpt-report title="Size on disk of a sparse VHDX" }
+fsutil sparse queryrange C:\path\to\ext4.vhdx
+compact /q C:\path\to\ext4.vhdx
+```
+
 Measuring runs a command inside the distro, and running a command in a
 stopped distro starts it. So `df` measures only running distros; a stopped
 one shows `-` and a note that `-Force` measures it anyway, at the cost of
