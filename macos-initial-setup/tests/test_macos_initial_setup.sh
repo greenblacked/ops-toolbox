@@ -2500,12 +2500,16 @@ assert_contains "a 755 ~/.ssh is a hardening warning" "$out" "[warn] $sshd_dir m
 assert_contains "the directory fix is printed" "$out" "chmod 700 $sshd_dir"
 out="$(sshdoc --only dir --fail-on warn)"; rc=$?
 assert_eq "a 755 ~/.ssh fails under --fail-on warn -> 1" "1" "$rc"
-for dm in 775 777 770 757; do
+for dm in 775 777 770 757 2775 1777; do
   chmod "$dm" "$sshd_dir"
   out="$(sshdoc --only dir)"; rc=$?
   assert_eq "a $dm ~/.ssh fails -> 1" "1" "$rc"
   assert_contains "a $dm ~/.ssh is called writable" "$out" "[FAIL] $sshd_dir mode $dm is writable by group or other"
 done
+chmod 2700 "$sshd_dir"
+out="$(sshdoc --only dir)"; rc=$?
+assert_eq "a setgid 2700 ~/.ssh is private -> 0" "0" "$rc"
+assert_contains "a 2700 ~/.ssh passes" "$out" "[pass] $sshd_dir mode 2700"
 chmod 700 "$sshd_dir"
 
 chmod 644 "$sshd_dir/id_ed25519"
@@ -2665,6 +2669,10 @@ out="$(FAKE_LS_ACL=' 0: group:staff allow read\n' audit_secrets)"
 assert_contains "an ACL granting a group read is a warning" "$out" "ACL entry that lets another user read it"
 out="$(FAKE_LS_ACL=' 0: user:me allow read,write\n' audit_secrets)"
 assert_contains "an ACL entry for the owner is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:me inherited allow read\n' audit_secrets)"
+assert_contains "an inherited ACL entry for the owner is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:mallory inherited allow read\n' audit_secrets)"
+assert_contains "an inherited ACL entry for another user is a warning" "$out" "ACL entry that lets another user read it"
 out="$(FAKE_LS_ACL=' 0: user:mallory deny read\n 1: user:bob allow readattr,write\n' audit_secrets)"
 assert_contains "a deny entry or a non-read right is private" "$out" "AWS credentials is private to its owner"
 out="$(audit_secrets)"
