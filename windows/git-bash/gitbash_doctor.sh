@@ -351,8 +351,14 @@ else
   # Git collects helpers from the system file, then the XDG file, then
   # ~/.gitconfig, and an empty value resets the list so far. Walk them in
   # that order so the list is what Git would run, never an empty entry.
+  # A bare `helper` key with no `=` is skipped, since Git rejects it. The
+  # list is read with -z so it can be told from `helper =`: a record is
+  # "key", a newline and the value, or just "key" when there is no `=`.
   helper=""
-  while IFS= read -r entry; do
+  while IFS= read -r -d '' record; do
+    [[ "$record" == *$'\n'* ]] || continue
+    [[ "${record%%$'\n'*}" == "credential.helper" ]] || continue
+    entry="${record#*$'\n'}"
     if [[ -z "$entry" ]]; then
       helper=""
     else
@@ -360,10 +366,10 @@ else
       helper+="$entry"
     fi
   done < <(
-    system_value --get-all credential.helper
+    system_value --list -z
     for file in "$xdg_gitconfig" "$gitconfig"; do
       [[ -f "$file" ]] || continue
-      git config --file "$file" --includes --get-all credential.helper 2>/dev/null
+      git config --file "$file" --includes --list -z 2>/dev/null
     done
   )
   if [[ -n "$helper" ]]; then
