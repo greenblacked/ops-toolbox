@@ -695,6 +695,264 @@ class SecretScanTestCase(unittest.TestCase):
         self.assertEqual(rc, 3)
 
 
+class UnverifiableAssignmentTestCase(unittest.TestCase):
+    """The scan fails closed: what it cannot read with confidence blocks
+    --commit instead of passing."""
+
+    def run_main(self, argv, export):
+        out, errout = io.StringIO(), io.StringIO()
+        with mock.patch.object(export_config, "fetch_export",
+                               return_value=(0, export, "")), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(errout):
+            rc = export_config.main(argv)
+        return rc, out.getvalue(), errout.getvalue()
+
+    def assert_commit_blocked(self, export, reason, redacting_too=True):
+        # Redaction replaces a value, so it cannot repair a quote that never
+        # closes, but it does remove a value whose only fault was its escapes.
+        variants = [[], ["--redact-secrets"]] if redacting_too else [[]]
+        for extra in variants:
+            with tempfile.TemporaryDirectory() as tmp:
+                git = mock.Mock(return_value=(0, "", ""))
+                with mock.patch.object(export_config, "git", git):
+                    rc, _, err = self.run_main(
+                        ["--host", "router", "--out", tmp, "--commit"] + extra, export)
+                self.assertEqual(rc, 1, extra)
+                git.assert_not_called()
+                self.assertEqual(os.listdir(tmp), [], extra)
+                self.assertIn("line 2", err, extra)
+                self.assertIn(reason, err, extra)
+                self.assertNotIn("hunter2", err, extra)
+
+    def assert_commit_proceeds(self, export):
+        def fake_git(args, cwd):
+            if args[:1] == ["diff"]:
+                return 0, " router.rsc | 3 +++\n", ""
+            return 0, "", ""
+
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(side_effect=fake_git)
+            with mock.patch.object(export_config, "git", git):
+                rc, _, err = self.run_main(
+                    ["--host", "router", "--out", tmp, "--commit"], export)
+            self.assertEqual(rc, 0, err)
+            self.assertTrue(any(c.args[0][:1] == ["commit"] for c in git.call_args_list))
+
+    def test_an_unbalanced_quote_in_a_secret_assignment_blocks_commit(self):
+        export = '/system script\nadd name=s source=":global ApiToken \\"hunter2;"\n'
+        self.assertEqual(export_config.find_unverifiable(export),
+                         [(2, "unbalanced quote")])
+        self.assert_commit_blocked(export, "unbalanced quote")
+
+    def test_an_unbalanced_plain_quote_blocks_commit(self):
+        export = '/system script\n:global ApiPassword "hunter2\n'
+        self.assertEqual(export_config.find_unverifiable(export),
+                         [(2, "unbalanced quote")])
+        self.assert_commit_blocked(export, "unbalanced quote")
+
+    def test_an_unknown_escape_blocks_commit(self):
+        # Script value ab\qc: \q is not a RouterOS escape.
+        inner = 'add name=s source=":global ApiToken \\"hunter2\\\\qc\\";"\n'
+        self.assertEqual(export_config.find_unverifiable("/x\n" + inner),
+                         [(2, "unrecognized escape in the value")])
+        self.assert_commit_blocked("/x\n" + inner, "unrecognized escape", False)
+        # The same unknown escape in the export's own layer.
+        outer = 'add name=s source=":global ApiToken \\"hunter2\\q\\";"\n'
+        self.assertEqual([r for _, r in export_config.find_unverifiable("/x\n" + outer)],
+                         ["unrecognized escape"])
+        self.assert_commit_blocked("/x\n" + outer, "unrecognized escape", False)
+
+    def test_an_ambiguous_hex_escape_is_unverifiable(self):
+        text = '/x\nadd name=s source=":global ApiToken \\"hunter2\\\\ab\\";"\n'
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "ambiguous escape in the value")])
+
+    def test_a_stray_quote_inside_the_field_is_unverifiable(self):
+        text = '/x\nadd name=s source=":global ApiToken "hunter2" ;"\n'
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "unescaped quote inside a quoted field")])
+        self.assert_commit_blocked(text, "unescaped quote")
+
+    def test_a_name_that_cannot_be_extracted_is_unverifiable(self):
+        for stmt in (":global $x 1", ":set (a) 1", ":global", ':set "a$b" 1',
+                     ":global Name$x 1"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, stmt)
+        self.assertEqual(export_config.find_unverifiable("/x\n:local i 0; :set i 1\n"), [])
+
+    def test_an_expression_that_may_hold_a_literal_is_unverifiable(self):
+        for stmt in (':set Password "$other hunter2"', ':set Password ($a . "hunter2")',
+                     ":set Password [:pick $a 0", ":set Password $a-hunter2",
+                     ':global ApiToken {"hunter2"}', ":global ApiToken {1;2}",
+                     ':set Password "[:pick $a 0 4] hunter2"',
+                     # A bare word inside brackets is a literal in RouterOS.
+                     ":global ApiToken [:tostr hunter2]",
+                     ":set Password [:pick s3cretvalue 0 8]",
+                     ":set Password $[:tostr hunter2]",
+                     ":set Password (hunter2)",
+                     ":set Password [:tostr {hunter2}]",
+                     ":set Password [:tostr [:tostr hunter2]]",
+                     ":set Password [:pick $a 0 4 hunter2]",
+                     # Accepted fail-closed false positive: `value` and `x` are
+                     # bare words, and so is `name` here.
+                     ":set Password [/system script environment get [find name=x] value]",
+                     ":set Password $[/system/identity/get name]"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, stmt)
+
+    def test_expressions_that_hold_no_literal_are_verifiable(self):
+        for stmt in (":set BackupPassword $RouterBackupPassword;",
+                     ":set Password [:pick $a 0 4]", ":set Password ($a . $b)",
+                     ':set Password "$other"', ':set Password "[:pick $a 0 4]"',
+                     ":global TgBotToken;", ":global ApiToken {}",
+                     ":set Password $[/system/identity/get $name]",
+                     ":set Password [:tostr [:pick $a 0 4]]",
+                     ':global Password ""'):
+            self.assertEqual(export_config.find_unverifiable("/x\n%s\n" % stmt), [],
+                             stmt)
+        self.assertEqual(export_config.find_unverifiable(
+            'add name=s source=":set Password \\$other;"\n'), [])
+
+    def test_a_secret_literal_is_a_leak_not_an_unverifiable_finding(self):
+        for stmt in (':global ApiPassword "abc123"', ":global ApiPassword abc123",
+                     ':local BotToken "<paste bot token>"'):
+            text = "/x\n%s\n" % stmt
+            self.assertTrue(export_config.find_leaks(text), stmt)
+            self.assertEqual(export_config.find_unverifiable(text), [], stmt)
+
+    def test_a_normal_non_secret_script_still_commits(self):
+        export = (
+            "/system script\n"
+            'add name=s source=":local i 0;\\r\\n:global TgChatId \\"12345678\\";\\r\\n'
+            ':log info \\"hello\\";\\r\\n:set i ($i + 1)"\n'
+            "/ip firewall filter\n"
+            "add action=accept chain=input\n"
+        )
+        self.assertEqual(export_config.find_unverifiable(export), [])
+        self.assertEqual(export_config.find_leaks(export), [])
+        self.assert_commit_proceeds(export)
+
+    def test_the_known_redacted_placeholder_still_commits(self):
+        export = (
+            "/system script\n"
+            'add name=s source=":global TgBotToken \\"<redacted>\\";\\r\\n'
+            ':global RouterBackupPassword \\"<paste backup password>\\";"\n'
+        )
+        self.assertEqual(export_config.find_unverifiable(export), [])
+        self.assert_commit_proceeds(export)
+        # A real token redacted by --redact-secrets ends up in that same shape.
+        redacted = export_config.redact_secrets(LEAKY_EXPORT)
+        self.assertEqual(export_config.find_unverifiable(redacted), [])
+
+    def test_a_comment_example_is_not_an_assignment(self):
+        text = ('add name=s source="# :global RouterBackupPassword \\"s3cret\\r\\n'
+                '# :set Password \\"\\r\\n:log info x"\n')
+        self.assertEqual(export_config.find_unverifiable(text), [])
+
+    def assert_leak_blocks_commit(self, export):
+        with tempfile.TemporaryDirectory() as tmp:
+            git = mock.Mock(return_value=(0, "", ""))
+            with mock.patch.object(export_config, "git", git):
+                rc, _, err = self.run_main(
+                    ["--host", "router", "--out", tmp, "--commit"], export)
+            self.assertEqual(rc, 1)
+            git.assert_not_called()
+            self.assertEqual(os.listdir(tmp), [])
+            self.assertNotIn("hunter2", err)
+
+    def test_a_backslash_n_in_plain_script_is_not_a_line_break(self):
+        # In a plain script `\n` is a string escape, so the `#` is inside the
+        # string and the :global after it is a live assignment.
+        export = '/x\n:log info "a\\n# x"; :global ApiToken "hunter2"\n'
+        self.assertEqual(export_config.find_leaks(export),
+                         [(2, "secret assigned in a script")])
+        self.assertNotIn("hunter2", export_config.redact_secrets(export))
+        self.assert_leak_blocks_commit(export)
+
+    def test_an_escaped_backslash_n_in_an_export_is_not_a_line_break(self):
+        # The script's own backslash-n arrives as backslash-backslash-n.
+        export = ('/x\nadd name=s source=":log info \\"a\\\\n# x\\"; '
+                  ':global ApiToken \\"hunter2\\""\n')
+        self.assertEqual(export_config.find_leaks(export),
+                         [(2, "secret assigned in a script")])
+        self.assertNotIn("hunter2", export_config.redact_secrets(export))
+        self.assert_leak_blocks_commit(export)
+
+    def test_a_real_line_break_in_an_export_ends_a_comment(self):
+        live = '/x\nadd name=s source="# note\\n:global ApiToken \\"hunter2\\""\n'
+        self.assertEqual(export_config.find_leaks(live),
+                         [(2, "secret assigned in a script")])
+        commented = ('/x\nadd name=s source="# :global ApiToken \\"hunter2\\"'
+                     '\\n:log info x"\n')
+        self.assertEqual(export_config.find_leaks(commented), [])
+        self.assertEqual(export_config.find_unverifiable(commented), [])
+
+    def test_a_keyword_glued_to_the_next_character_is_still_read(self):
+        for stmt in (':global"ApiToken" "hunter2"', ':set"ApiToken" "hunter2"',
+                     ":set(ApiToken) hunter2"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, stmt)
+            self.assert_commit_blocked(text, "", False)
+
+    def test_a_closed_field_before_the_keyword_is_not_an_export(self):
+        text = '/tool fetch url="https://e.x"; :set ApiToken "$x"\n'
+        self.assertEqual(export_config.find_unverifiable(text), [])
+        text = '/x\n/tool fetch url="https://e.x"; :set ApiToken "hunter2;\n'
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "unbalanced quote")])
+
+    def test_a_commit_is_blocked_by_an_expression_with_a_bare_word(self):
+        text = "/x\n:global ApiToken [:tostr hunter2]\n"
+        self.assertEqual(export_config.find_unverifiable(text),
+                         [(2, "expression value that may hold a literal")])
+        self.assert_commit_blocked(text, "expression value that may hold a literal")
+
+    def test_the_leaky_export_has_nothing_unverifiable(self):
+        self.assertEqual(export_config.find_unverifiable(LEAKY_EXPORT), [])
+
+    def test_print_only_output_warns_and_still_redacts(self):
+        export = '/system script\nadd name=s source=":global ApiToken \\"hunter2;"\n'
+        rc, out, err = self.run_main(["--host", "router", "--stdout"], export)
+        self.assertEqual(rc, 0)
+        self.assertIn("cannot verify", err)
+        self.assertIn("(lines 2)", err)
+        rc, out, err = self.run_main(
+            ["--host", "router", "--stdout", "--redact-secrets"], export)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("hunter2", out)
+
+    def test_a_plain_write_warns_and_still_writes(self):
+        export = '/system script\n:global ApiPassword "hunter2\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            rc, _, err = self.run_main(["--host", "router", "--out", tmp], export)
+            self.assertEqual(rc, 0)
+            self.assertIn("cannot verify", err)
+            self.assertEqual(os.listdir(tmp), ["router.rsc"])
+
+    def test_scans_report_unverifiable_findings_and_exit_1(self):
+        export = '/system script\n:global ApiPassword "hunter2\n'
+        rc, out, _ = self.run_main(["--host", "router", "--scan-secrets"], export)
+        self.assertEqual(rc, 1)
+        self.assertIn("line 2: unverifiable: unbalanced quote", out)
+        self.assertIn("1 finding(s)", out)
+        self.assertNotIn("hunter2", out)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "router.rsc")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(export)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(export_config.main(["--scan-file", path]), 1)
+            self.assertIn("unverifiable", out.getvalue())
+
+    def test_there_is_no_override_flag(self):
+        errout = io.StringIO()
+        with contextlib.redirect_stderr(errout), self.assertRaises(SystemExit) as raised:
+            export_config.main(["--host", "router", "--commit", "--allow-unverified"])
+        self.assertEqual(raised.exception.code, 3)
+
+
 SUMMARY_BEFORE = """\
 /interface bridge
 add name=bridge

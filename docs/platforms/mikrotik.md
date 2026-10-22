@@ -115,6 +115,10 @@ the host tools to inspect.
     keeps `TgBotToken`. `--commit` now refuses an export that holds a secret
     unless you add `--redact-secrets`, and `--scan-file` audits an export
     that is already stored.
+    The scan fails closed: a `:global`, `:local` or `:set` it cannot fully
+    read (an unbalanced quote, an unknown escape, an expression that might
+    hold a literal, such as `[:tostr word]`) blocks `--commit` with the line and the reason, and
+    nothing overrides that.
 
 - Choose one of `update_check`, `backup_update_check` or `stay_fresh`. They do
   one job three ways and must not run together.

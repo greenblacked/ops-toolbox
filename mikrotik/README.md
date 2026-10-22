@@ -926,6 +926,29 @@ line and the kind, never the value.
 This is a guard against the known shapes, not proof that an export is clean:
 it can miss a secret stored under a name it does not recognise.
 
+**The scan fails closed.** Besides the patterns above, every `:global`,
+`:local` and `:set` is tokenized on its own. One whose variable name or value
+the scan cannot fully read is reported as *unverifiable*, not passed: an
+unbalanced quote, an escape RouterOS does not define, a quote that is not
+escaped inside the exported field, a variable name it cannot extract, or an
+expression value it cannot show to hold no literal (`"$x text"`,
+`($a . "text")`, an unclosed `[...]`, an array with elements). Inside
+`[...]`, `(...)` and `{...}` only `$variables`, numbers, operators, nested
+groups, a `/path` or `:command` word where a command starts, and `key=` before
+one of those count as safe; any other bare word is a literal in RouterOS
+(`[:tostr hunter2]`), so `[/system script environment get [find name=x] value]`
+is reported too. That is an accepted false positive: the scan fails closed.
+A `:global` or `:set` glued to the next character (`:global"Name" ...`,
+`:set(...)`) is read as well. `--commit`
+refuses an export with one: exit `1` (the same code as a leak), nothing
+written, and an error naming the line and the reason. `--redact-secrets`
+does not override it, and there is no flag that does; fix or remove that
+script line. A plain write, `--stdout` and `--diff` warn on stderr and carry
+on, and `--scan-secrets` and `--scan-file` list the line as
+`unverifiable: <reason>` and exit `1`. Empty values, `<redacted>`, the
+shipped placeholders and plain variable references (`$Password`) are still
+verified clean.
+
 **One behaviour change.** A plain write, `--stdout` and `--diff` now print
 `[warn] N possible secret(s) in the export (lines ...); re-run with
 --redact-secrets` on stderr when the export holds one, and carry on. `--commit`

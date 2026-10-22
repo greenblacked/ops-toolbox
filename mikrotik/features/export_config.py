@@ -34,13 +34,19 @@ value with `<redacted>` before anything is printed, diffed or written; and
 --commit refuses an export that still has one. The scan is a heuristic: it is
 a guard against the known shapes, not proof that an export is clean.
 
+It fails closed. A :global, :local or :set whose name or value the scan cannot
+fully tokenize (an unbalanced quote, an escape it does not know, a name it
+cannot extract, an expression it cannot show to hold no literal) is reported
+as unverifiable, and --commit refuses it with the line number and the reason,
+exit 1, whatever else is given. There is no option to skip that check.
+
 Exit codes:
 
     0   success; under --diff, the live configuration matches the stored file;
         under --scan-secrets/--scan-file, no secret was found
     1   an error; under --diff, the live configuration has drifted; under
-        --scan-secrets/--scan-file, a secret was found; --commit refused an
-        export that holds one
+        --scan-secrets/--scan-file, a secret was found or an assignment the
+        scan cannot verify; --commit refused an export that holds either
     2   preflight failed (ssh missing, router unreachable)
     3   bad CLI arguments
 
@@ -214,28 +220,54 @@ def _logical_lines(text):
         yield first, "".join(chars), offsets
 
 
+def _export_field_start(line, index):
+    """Index just past the opening `="` of the quoted export field that is
+    still open at position index, or None when index is not inside one.
+
+    In an export a field value is quoted and every quote inside it is escaped,
+    so a bare quote closes the field. The last unclosed `name="` wins; a
+    `url="..."` that closed before index does not count, which keeps a plain
+    script line from being read as an export.
+    """
+    for match in reversed(list(re.finditer(r'[\w-]+="', line[:index]))):
+        position, closed = match.end(), False
+        while position < index:
+            if line[position] == "\\":
+                position += 2
+                continue
+            if line[position] == '"':
+                closed = True
+                break
+            position += 1
+        if not closed:
+            return match.end()
+    return None
+
+
 def _in_script_comment(line, index):
     """Whether position index of a logical line sits in a commented-out line
-    of script source.
+    of script source. When unsure it says no, so the line is scanned.
 
-    In an export a script's lines are joined by the two characters \\n, and
-    the first one follows the opening `="` of source= or on-event= (quotes
-    inside the value are escaped, so the last bare `="` is that opening). In
-    any other text, the logical line is the script line.
+    In plain script text only a real line break ends a line; a backslash and
+    n there are a string escape. In an export a script's lines are joined by
+    the escapes \\n and \\r, read left to right so that \\\\n, a script's
+    own backslash-n, is not a break. The first line follows the opening `="`
+    of source= or on-event=.
     """
-    start = line.rfind("\\n", 0, index)
-    if start >= 0:
-        segment = line[start + 2:index]
-    else:
+    start = _export_field_start(line, index)
+    if start is None:
         segment = line[:index]
-        opening = segment.rfind('="')
-        if opening >= 0:
-            segment = segment[opening + 2:]
-            # A bare quote after the opening closed that value: this is a
-            # plain field such as comment="#critical", not script source.
-            if re.search(r'(?<!\\)"', segment):
-                return False
-    return segment.lstrip().startswith("#")
+        cut = max(segment.rfind("\n"), segment.rfind("\r"))
+        return segment[cut + 1:].lstrip().startswith("#")
+    begin, position = start, start
+    while position < index:
+        if line[position] == "\\":
+            if line[position + 1:position + 2] in ("n", "r"):
+                begin = position + 2
+            position += 2
+        else:
+            position += 1
+    return line[begin:index].lstrip().startswith("#")
 
 
 _FIELD_EXPRESSION = re.compile(r'\$(?:[A-Za-z_\[("]|\\")')
@@ -314,6 +346,280 @@ def redact_secrets(text):
         cursor = end
     out.append(text[cursor:])
     return "".join(out)
+
+
+# The scan above is a set of patterns, and a pattern that does not match says
+# nothing about the text it skipped. So a second pass reads every :global,
+# :local and :set the way the router would, and anything it cannot tokenize
+# with confidence is "unverifiable": a name it cannot extract, an unbalanced
+# quote, an escape it does not know, an expression it cannot show to hold no
+# literal, a value the patterns above did not classify. --commit refuses an
+# export with one; there is no option to skip the check.
+_ASSIGN_KEYWORD = re.compile(r"(?i):(?:global|local|set)(?![A-Za-z0-9_-])")
+_SECRET_NAME = re.compile(r"(?i)token|password|secret|apikey|passphrase|psk")
+_PLAIN_NAME = re.compile(r"[A-Za-z0-9_-]+")
+_QUOTED_NAME = re.compile(r'[A-Za-z0-9_. -]+')
+_VAR_REF = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|"[^"\\]*")')
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+# RouterOS string escapes: \\ \" \$ \? \_ \a \b \f \n \r \t \v and \XX (hex).
+_ESCAPES = {
+    "\\": "\\", '"': '"', "$": "$", "?": "?", "_": " ", "a": "\a", "b": "\b",
+    "f": "\f", "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+}
+_BOUNDARY = frozenset(" \t\r\n;})]")
+
+
+def _escape_at(text, index):
+    """(decoded character, length) of the escape at text[index], or
+    (None, reason) when it is not one the parser can read with confidence."""
+    nxt = text[index + 1:index + 2]
+    after = text[index + 2:index + 3]
+    if nxt != "" and after != "" and nxt in _HEX_DIGITS and after in _HEX_DIGITS:
+        if nxt in _ESCAPES:
+            # \ab is the escape \a then b, or the byte 0xAB: say neither.
+            return None, "ambiguous escape"
+        return chr(int(text[index + 1:index + 3], 16)), 3
+    if nxt != "" and nxt in _ESCAPES:
+        return _ESCAPES[nxt], 2
+    return None, "unrecognized escape"
+
+
+def _decode_export_layer(text):
+    """Undo the export's own escaping of a script, from the start of text up
+    to the quote that ends the field.
+
+    Returns (characters, escaped flags, problem). problem is None, or the
+    reason the text after the characters could not be read: an escape that is
+    not one RouterOS defines, or a quote that does not end the field (one
+    followed by more text, so it is a stray quote inside the script).
+    """
+    chars, escaped = [], []
+    index = 0
+    while index < len(text):
+        ch = text[index]
+        if ch == '"':
+            after = text[index + 1:index + 2]
+            if after != "" and not after.isspace():
+                return chars, escaped, "unescaped quote inside a quoted field"
+            return chars, escaped, None
+        if ch != "\\":
+            chars.append(ch)
+            escaped.append(False)
+            index += 1
+            continue
+        char, length = _escape_at(text, index)
+        if char is None:
+            return chars, escaped, length
+        chars.append(char)
+        escaped.append(True)
+        index += length
+    return chars, escaped, None
+
+
+_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)*(?![A-Za-z0-9_])")
+_OPERATOR = re.compile(r"[-+*/%<>=!&|^~.,]+")
+_COMMAND_WORD = re.compile(r":[A-Za-z][A-Za-z0-9-]*(?![A-Za-z0-9_-])")
+_PATH_WORD = re.compile(r"/[A-Za-z0-9_/-]*(?![A-Za-z0-9_])")
+_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*=(?!=)")
+_CLOSERS = {"[": "]", "(": ")", "{": "}"}
+
+
+def _balanced_end(s, index):
+    """Index just past the bracket expression that opens at s[index], or None
+    when it never closes or cannot be shown to hold no literal.
+
+    A bare word inside brackets is a literal in RouterOS (`[:tostr hunter2]`),
+    so every token must be one that cannot carry a value: a $variable, a
+    nested group, a number, an operator, a /path or :command word where a
+    command starts, or a key= prefix. Any other word, any quote (apart from
+    the one in $"name") and any backslash fail closed.
+    """
+    stack = [_CLOSERS[s[index]]]
+    position, command = index + 1, True
+    while position < len(s):
+        ch = s[position]
+        if ch in " \t\r\n":
+            position += 1
+        elif ch == stack[-1]:
+            stack.pop()
+            position += 1
+            if not stack:
+                return position
+            command = False
+        elif ch in ")]}":
+            return None
+        elif ch == "$":
+            ref = _VAR_REF.match(s, position)
+            if ref:
+                position, command = ref.end(), False
+            elif s[position + 1:position + 2] in ("[", "(", "{"):
+                position += 1
+            else:
+                return None
+        elif ch in _CLOSERS:
+            stack.append(_CLOSERS[ch])
+            position, command = position + 1, True
+        elif ch == ";":
+            position, command = position + 1, True
+        else:
+            for pattern, needs_command in ((_COMMAND_WORD, True), (_PATH_WORD, True),
+                                           (_KEY, False), (_NUMBER, False),
+                                           (_OPERATOR, False)):
+                token = pattern.match(s, position)
+                if token and (command or not needs_command):
+                    position, command = token.end(), False
+                    break
+            else:
+                return None
+    return None
+
+
+def _expression_end(s, index):
+    """Index just past the variable reference or bracket expression at
+    s[index] that holds no literal, or None when that cannot be shown."""
+    match = _VAR_REF.match(s, index)
+    if match:
+        return match.end()
+    start = index + 1 if s[index:index + 1] == "$" else index
+    if s[start:start + 1] in ("[", "("):
+        return _balanced_end(s, start)
+    return None
+
+
+def _check_assignment(rest, export_layer):
+    """(reason or None, whether a secret-named literal value was seen) for the
+    assignment whose keyword was just before rest."""
+    if export_layer:
+        chars, escaped, problem = _decode_export_layer(rest)
+    else:
+        chars, escaped, problem = list(rest), [False] * len(rest), None
+    s = "".join(chars)
+    size = len(s)
+
+    def skip(index):
+        while index < size and s[index] in " \t":
+            index += 1
+        return index
+
+    index = skip(0)
+    if index >= size:
+        return (problem or "no variable name after the keyword"), False
+    if s[index] in "\r\n;":
+        return "no variable name after the keyword", False
+    if s[index] == '"':
+        close = s.find('"', index + 1)
+        if close < 0:
+            return (problem or "unbalanced quote around the variable name"), False
+        name = s[index + 1:close]
+        if not _QUOTED_NAME.fullmatch(name):
+            return "cannot extract the variable name", False
+        index = close + 1
+    else:
+        match = _PLAIN_NAME.match(s, index)
+        if not match:
+            return "cannot extract the variable name", False
+        name, index = match.group(), match.end()
+    if index < size and s[index] not in _BOUNDARY:
+        return "unexpected character after the variable name", False
+    if not _SECRET_NAME.search(name):
+        return None, False
+
+    index = skip(index)
+    if index >= size:
+        return problem, False
+    first = s[index]
+    if first in "\r\n;})]":
+        return None, False
+    if first == '"':
+        end = index + 1
+        while True:
+            if end >= size:
+                return (problem or "unbalanced quote"), False
+            ch = s[end]
+            if ch == '"':
+                break
+            if ch in "\r\n":
+                return "unbalanced quote", False
+            if ch == "\\":
+                char, length = _escape_at(s, end)
+                if char is None:
+                    return "%s in the value" % length, False
+                end += length
+            else:
+                end += 1
+        content = s[index + 1:end]
+        after = end + 1
+        if after < size and s[after] not in _BOUNDARY:
+            return "text after the closing quote of the value", False
+        if content == "" or content == REDACTED or \
+                (name, content) in _PLACEHOLDER_ASSIGNMENTS:
+            return None, False
+        if content[0] in "$[(":
+            stop = _expression_end(content, 0)
+            if stop is None or stop != len(content):
+                return "expression value that may hold a literal", False
+            return None, False
+        return None, True
+    if first == "{":
+        if s[index + 1:index + 2] == "}":
+            return None, False
+        return "array value that may hold a literal", False
+    if not export_layer and s[index:index + 2] == "\\$":
+        index += 1
+        first = "$"
+    if first == "$" or first in "[(":
+        stop = _expression_end(s, index)
+        if stop is None or (stop < size and s[stop] not in _BOUNDARY):
+            return "expression value that may hold a literal", False
+        return None, False
+    end = index
+    while end < size and s[end] not in " \t\r\n;\"})]":
+        end += 1
+    if end < size and s[end] == '"':
+        return "quote inside an unquoted value", False
+    if end >= size and problem:
+        return problem, False
+    if any(escaped[index:end]) or "\\" in s[index:end]:
+        return "escape inside an unquoted value", False
+    token = s[index:end]
+    if token == REDACTED or (name, token) in _PLACEHOLDER_ASSIGNMENTS:
+        return None, False
+    return None, True
+
+
+def _unverifiable_reasons(line):
+    """Why a logical line holds an assignment the scan cannot verify."""
+    reasons = []
+    literals = 0
+    for match in _ASSIGN_KEYWORD.finditer(line):
+        if _in_script_comment(line, match.start()):
+            continue
+        rest = line[match.end():]
+        export_layer = _export_field_start(line, match.start()) is not None \
+            or '\\"' in rest
+        reason, literal = _check_assignment(rest, export_layer)
+        if reason and reason not in reasons:
+            reasons.append(reason)
+        literals += bool(literal)
+    reported = sum(1 for kind, _, _ in _leak_spans(line)
+                   if kind == "secret assigned in a script")
+    if literals > reported:
+        reasons.append("value the secret scan did not classify")
+    return reasons
+
+
+def find_unverifiable(text):
+    """[(line number, reason)] for every assignment the scan cannot verify.
+
+    Fail closed: a :global, :local or :set whose name or value cannot be fully
+    tokenized is not "probably fine". Like find_leaks, never returns a value.
+    """
+    findings = []
+    for number, line, _ in _logical_lines(text):
+        for reason in _unverifiable_reasons(line):
+            if (number, reason) not in findings:
+                findings.append((number, reason))
+    return findings
 
 
 # A verb that makes a /path line a command rather than a menu header: the
@@ -403,12 +709,15 @@ def describe_lines(findings):
     return shown + (", ..." if len(numbers) > 10 else "")
 
 
-def report_leaks(findings):
+def report_leaks(findings, unverifiable=()):
     """Print a scan's findings. Returns the scan's exit code."""
     for number, kind in findings:
         warn("line %d: %s" % (number, kind))
-    info("%d finding(s); values are never printed" % len(findings))
-    return 1 if findings else 0
+    for number, reason in unverifiable:
+        warn("line %d: unverifiable: %s" % (number, reason))
+    total = len(findings) + len(unverifiable)
+    info("%d finding(s); values are never printed" % total)
+    return 1 if total else 0
 
 
 def read_stored_export(path):
@@ -576,7 +885,7 @@ def main(argv=None):
         except (OSError, UnicodeError) as exc:
             bad("could not read %s: %s" % (args.scan_file, exc))
             return 1
-        return report_leaks(find_leaks(stored))
+        return report_leaks(find_leaks(stored), find_unverifiable(stored))
 
     if args.show_sensitive and args.commit:
         bad("--show-sensitive with --commit would write router secrets into git history")
@@ -599,19 +908,33 @@ def main(argv=None):
     content = text if args.no_normalise else normalise(text)
 
     if args.scan_secrets:
-        return report_leaks(find_leaks(content))
+        return report_leaks(find_leaks(content), find_unverifiable(content))
 
     if args.redact_secrets:
         content = redact_secrets(content)
     hits = find_leaks(content)
+    unverifiable = find_unverifiable(content)
     if hits:
         # Only a count and line numbers reach the message, never a value.
         warn_stderr("%d possible secret(s) in the export (lines %s); re-run with "
                     "--redact-secrets" % (len(hits), describe_lines(hits)))
-        if args.commit:
-            # Fail closed, like --show-sensitive: the way past this is the
-            # option that removes the values, not one that skips the check.
+    if unverifiable:
+        warn_stderr("%d assignment(s) the secret scan cannot verify (lines %s)"
+                    % (len(unverifiable), describe_lines(unverifiable)))
+    if args.commit:
+        # Fail closed, like --show-sensitive: the way past a leak is the
+        # option that removes the values, not one that skips the check. Past
+        # something the scan cannot read there is no way at all: redaction
+        # would be guessing too, so the script line has to be fixed or removed.
+        if hits:
             bad("refusing to commit an export that holds secrets")
+        for number, reason in unverifiable:
+            bad("refusing to commit: line %d: %s; the secret scan cannot "
+                "verify it" % (number, reason))
+        if hits or unverifiable:
+            if unverifiable:
+                info("fix or remove that script line; --redact-secrets does not "
+                     "override this")
             return 1
 
     if args.stdout:
