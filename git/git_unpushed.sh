@@ -368,10 +368,24 @@ if (( status_failed == 1 )); then
   err "git status failed; uncommitted work could not be checked"
 fi
 
+# A check that could not run must never read as a clean bill of health.
+incomplete=""
+(( status_failed == 1 )) && incomplete="uncommitted changes"
+if (( tags_failed == 1 )); then
+  incomplete="${incomplete:+$incomplete, }tags on $tag_remote"
+fi
+
 if (( PORCELAIN == 0 )); then
   if (( found_any == 0 )); then
-    printf "nothing exists only on this machine\n"
+    if [[ -n "$incomplete" ]]; then
+      printf "incomplete: could not check %s\n" "$incomplete"
+    else
+      printf "nothing exists only on this machine\n"
+    fi
   else
+    if [[ -n "$incomplete" ]]; then
+      printf "incomplete: could not check %s\n" "$incomplete"
+    fi
     summary="$commit_total unpushed commit(s) on $commit_branches branch(es), $noup_total branch(es) without upstream, $stash_count stash(es), $uncommitted_total uncommitted path(s)"
     (( TAGS == 1 )) && summary="$summary, $tag_total unpushed tag(s)"
     printf "%s\n" "$summary"

@@ -240,6 +240,19 @@ run_in "$scratch/corrupt" --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 1 '--strict exits 1 when git status cannot be read'
 out="$(run_in "$scratch/corrupt" --porcelain 2>&1)"
 assert_contains "$out" 'git status failed' '--porcelain also reports the failure'
+out="$(run_in "$scratch/corrupt" 2>/dev/null)"
+assert_contains "$out" 'incomplete: could not check uncommitted changes' 'a failed status prints an incomplete result on stdout'
+assert_not_contains "$out" 'nothing exists only on this machine' 'a failed status never claims nothing is at risk'
+out="$(run_in "$scratch/corrupt" --strict 2>/dev/null)"
+assert_not_contains "$out" 'nothing exists only on this machine' '--strict with a failed status never claims nothing is at risk'
+
+section "unreachable tag remote fails closed"
+git clone -q "$scratch/origin.git" "$scratch/notags" || err 'clone notags fixture'
+git -C "$scratch/notags" remote add broken "$scratch/does-not-exist.git" || err 'add unreachable remote'
+out="$(run_in "$scratch/notags" --tags --remote broken 2>/dev/null)"; rc=$?
+assert_eq "$rc" 1 'an unreachable tag remote -> 1'
+assert_contains "$out" 'incomplete: could not check tags on broken' 'an unreachable tag remote prints an incomplete result on stdout'
+assert_not_contains "$out" 'nothing exists only on this machine' 'an unreachable tag remote never claims nothing is at risk'
 
 end_section
 if (( checks == 0 || failures > 0 )); then

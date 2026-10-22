@@ -356,7 +356,10 @@ default is any remote-tracking ref. An unknown name exits `4` rather than
 quietly counting every commit. `--tags` asks `--remote NAME`, or the only remote
 when there is exactly one, with `git ls-remote --tags`; with several remotes and
 no `--remote` it exits `3`. A remote that cannot be reached is reported as
-`cannot reach NAME` and exits `1`, because the question could not be answered.
+`cannot reach NAME` and exits `1`, because the question could not be answered. When `git status` fails or `--tags` cannot query the remote, the
+result is `incomplete: could not check ...` on stdout instead of `nothing
+exists only on this machine`, since a check that did not run is not a clean
+answer.
 
 A repository with no remotes at all prints `no remotes configured` once and
 reports every commit as unpushed, which is the truth. The closing block prints
