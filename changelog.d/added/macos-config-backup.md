@@ -6,7 +6,9 @@
   non-public-key file under `~/.ssh`, the git credential store,
   `~/.terraform.d/credentials.tfrc.json`, `~/.pypirc`, gcloud's
   application-default credentials, `credentials.db` and `legacy_credentials/`, a
-  `~/.terraformrc` with a `credentials` block) are refused unless
+  `~/.terraformrc` with a `credentials` block, a `~/.aws/config` with
+  `aws_access_key_id`, `aws_secret_access_key` or `aws_session_token`) are
+  refused unless
   `--include-secrets` and left out of a default run, the archive is private
   to its owner (a `--dest` it creates is `0700`, and one other users can
   write to is refused; the temporary archive is made exclusively with

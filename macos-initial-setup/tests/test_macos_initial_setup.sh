@@ -3755,6 +3755,24 @@ done
 out="$(cbrun --dry-run)"
 assert_not_contains "a default preview skips a .terraformrc with credentials" "$out" "would archive ~/.terraformrc"
 assert_not_contains "a default preview never prints the Terraform token" "$out" "CANARY_TF_TOKEN"
+printf '[profile dev]\nregion = eu-west-1\n  AWS_Secret_Access_Key = CANARY_AWS_CFG\n' \
+  > "$cb/home/.aws/config"
+out="$(cbrun --dry-run)"; rc=$?
+assert_eq "a default preview with static keys in .aws/config -> 0" "0" "$rc"
+assert_not_contains "a default preview skips an .aws/config with static keys" "$out" "would archive ~/.aws/config"
+assert_contains "the skipped .aws/config is announced" "$out" "skipped ~/.aws/config"
+assert_not_contains "the preview never prints the AWS config key" "$out" "CANARY_AWS_CFG"
+cbrun --dry-run --paths "$cb/home/.aws/config" >/dev/null; rc=$?
+assert_eq "an .aws/config with static keys is refused by --paths -> 3" "3" "$rc"
+cbrun --dry-run --include-secrets --paths "$cb/home/.aws/config" >/dev/null; rc=$?
+assert_eq "--include-secrets accepts an .aws/config with static keys -> 0" "0" "$rc"
+printf '[profile dev]\nAWS_SESSION_TOKEN=CANARY_AWS_TOK\n' > "$cb/home/.aws/config"
+out="$(cbrun --dry-run)"
+assert_not_contains "a session token in .aws/config is skipped too" "$out" "would archive ~/.aws/config"
+printf '[profile dev]\nregion = eu-west-1\nsso_session = corp\n' > "$cb/home/.aws/config"
+out="$(cbrun --dry-run)"
+assert_contains "a keyless .aws/config is still archived" "$out" "would archive ~/.aws/config"
+rm -f "$cb/home/.aws/config"
 out="$(cbrun --dry-run --include-secrets --paths "$cb/home/.aws/credentials")"; rc=$?
 assert_eq "--include-secrets accepts a credentials path -> 0" "0" "$rc"
 assert_contains "--include-secrets warns that the archive holds secrets" "$out" "[warn] --include-secrets"

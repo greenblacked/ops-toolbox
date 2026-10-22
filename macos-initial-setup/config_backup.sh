@@ -68,7 +68,8 @@ DEFAULT_SOURCES=".zshrc .zprofile .zshenv .bash_profile .bashrc .gitconfig
 # Relative to HOME. A requested path that is one of these, lies inside one,
 # or contains one is refused without --include-secrets. Everything under
 # ~/.ssh except config, known_hosts* and public keys, and a ~/.terraformrc
-# with a credentials block, are matched separately in holds_secret.
+# with a credentials block, and a ~/.aws/config with static keys, are
+# matched separately in holds_secret.
 SECRET_PATHS=".aws/credentials .kube/config .docker/config.json .netrc .npmrc
 .git-credentials .config/git/credentials .config/gh/hosts.yml Library/Keychains
 .gnupg .terraform.d/credentials.tfrc.json .pypirc
@@ -271,6 +272,12 @@ holds_secret() {
       grep -Eq '^[[:space:]]*credentials[[:space:]]' "$HOME_DIR/.terraformrc" 2>/dev/null \
         && return 0
       ;;
+    .aws/config)
+      # AWS documents static keys and session tokens in the config file too,
+      # in any profile section; key names are case-insensitive.
+      grep -Eiq '^[[:space:]]*aws_(access_key_id|secret_access_key|session_token)[[:space:]]*=' \
+        "$HOME_DIR/.aws/config" 2>/dev/null && return 0
+      ;;
   esac
   return 1
 }
@@ -317,9 +324,9 @@ if (( ${#PATHS[@]} > 0 )); then
 else
   for rel in $DEFAULT_SOURCES; do
     if [[ -e "$HOME_DIR/$rel" || -L "$HOME_DIR/$rel" ]]; then
-      if (( INCLUDE_SECRETS == 0 )) && [[ "$rel" == ".terraformrc" ]] \
+      if (( INCLUDE_SECRETS == 0 )) && [[ "$rel" == ".terraformrc" || "$rel" == ".aws/config" ]] \
          && holds_secret "$rel"; then
-        warn "skipped ~/$rel: it has a credentials block (use --include-secrets to keep it)"
+        warn "skipped ~/$rel: it holds credentials (use --include-secrets to keep it)"
         continue
       fi
       RELS+=("$rel")
