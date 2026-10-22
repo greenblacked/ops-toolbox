@@ -638,7 +638,11 @@ try {
             $global:LASTEXITCODE = 0
         }
         try {
-            $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut -ErrorVariable rollbackErrors -ErrorAction SilentlyContinue 2>$null 6>$null
+            # Invoke-DistroBackup is a simple function, so -ErrorVariable does
+            # not bind; read its error stream through the pipeline instead.
+            $all = @(Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>&1 6>$null)
+            $rollbackErrors = @($all | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] })
+            $backedUp = @($all | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) | Select-Object -Last 1
             $leftover = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
         } finally {
             if ($null -ne $script:heldExport) { $script:heldExport.Dispose(); $script:heldExport = $null }
@@ -650,6 +654,9 @@ try {
         Test-Case 'a failure after the earlier pair was set aside returns false' ($backedUp -eq $false)
         # The earlier pair went back, so nothing earlier is stuck and the
         # error must not lead with the earlier backup (if it reports at all).
+        Test-Case 'and reports the failed backup (proves the error was captured)' (
+            @($rollbackErrors | Where-Object { "$_" -like '*Could not finish the backup*' }).Count -ge 1
+        ) (@($rollbackErrors | ForEach-Object { "$_" }) -join "`n")
         Test-Case 'and does not claim the earlier backup could not be put back' (
             @($rollbackErrors | Where-Object { "$_" -like 'The earlier backup could not be fully put back*' }).Count -eq 0
         ) (@($rollbackErrors | ForEach-Object { "$_" }) -join "`n")
