@@ -13,3 +13,7 @@
   literal dollar in the secret, not a variable reference. A field value
   that is a RouterOS expression (`$name`, `$[...]`, `$(...)`, `$"name"`) is still
   not reported.
+  The scan also catches script variables with underscores in the name
+  (`BACKUP_PASSWORD`, `CF_API_TOKEN`), and `--redact-secrets --diff`
+  redacts the stored export too, so an old secret never prints on a
+  removed line.

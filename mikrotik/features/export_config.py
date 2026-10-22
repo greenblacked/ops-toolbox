@@ -98,8 +98,8 @@ _LEAK_PATTERNS = (
     # the value may continue with another pair, an escaped quote, an escape
     # or a plain character.
     ("secret assigned in a script", True, re.compile(
-        r'(?i):(?:global|local|set)\s+[A-Za-z0-9]*'
-        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9]*\s+\\?"'
+        r'(?i):(?:global|local|set)\s+[A-Za-z0-9_]*'
+        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_]*\s+\\?"'
         r'(?P<value>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
     )),
     # Fields RouterOS only prints under show-sensitive. A quoted value runs to
@@ -624,6 +624,12 @@ def main(argv=None):
     except (OSError, UnicodeError) as exc:
         bad("could not read existing %s: %s" % (dest, exc))
         return 1
+
+    if args.diff and args.redact_secrets and previous is not None:
+        # The stored export may predate redaction or hold a secret from an
+        # unredacted run; diffing it raw would print the old value on a
+        # removed line.
+        previous = redact_secrets(previous)
 
     if previous == content and (args.diff or previous_mode == 0o600):
         ok("no change: %s" % dest)

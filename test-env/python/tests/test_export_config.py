@@ -284,6 +284,48 @@ class SecretScanTestCase(unittest.TestCase):
         self.assertEqual(export_config.find_leaks(text),
                          [(1, "secret assigned in a script")])
 
+    def test_finds_underscored_secret_names(self):
+        for name in ("BACKUP_PASSWORD", "CF_API_TOKEN", "my_secret_key"):
+            kind = "local" if name.islower() else "global"
+            text = ':%s %s "z9z9z9"\n' % (kind, name)
+            self.assertEqual(export_config.find_leaks(text),
+                             [(1, "secret assigned in a script")], name)
+            self.assertNotIn("z9z9z9", export_config.redact_secrets(text))
+
+    def test_every_secret_global_the_scripts_use_is_detected(self):
+        import re
+        pattern = re.compile(
+            r":(?:global|local)\s+([A-Za-z0-9_]*"
+            r"(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_]*)",
+            re.IGNORECASE)
+        names = set()
+        root = os.path.join(REPO_ROOT, "mikrotik")
+        for base, _, files in os.walk(root):
+            for fname in files:
+                if fname.endswith(".lua"):
+                    with open(os.path.join(base, fname), encoding="utf-8") as fh:
+                        names.update(pattern.findall(fh.read()))
+        self.assertIn("CF_API_TOKEN", names)
+        self.assertIn("BACKUP_PASSWORD", names)
+        for name in sorted(names):
+            text = ':global %s "s3cr3tvalue"\n' % name
+            self.assertTrue(export_config.find_leaks(text), name)
+
+    def test_diff_with_redact_never_prints_a_stored_secret(self):
+        stored = ('/system script\nadd name=s source=":global TgBotToken '
+                  '\\"%s\\";"\n' % BOT_FAKE)
+        live = '/system script\nadd name=s source=":global TgChatId 1;"\n'
+        for extra in ((), ("--summary",)):
+            with tempfile.TemporaryDirectory() as tmp:
+                with open(os.path.join(tmp, "router.rsc"), "w", encoding="utf-8") as fh:
+                    fh.write(stored)
+                rc, out, err = self.run_main(
+                    ["--host", "router", "--name", "router", "--out", tmp, "--diff",
+                     "--redact-secrets"] + list(extra), export=live)
+            self.assertEqual(rc, 1)
+            self.assertNotIn("AAH-fake", out + err)
+            self.assertNotIn(BOT_FAKE, out + err)
+
     def test_finds_a_value_holding_escaped_backslashes(self):
         # A script's own `\\` is `\\\\` in an export, and the value goes on
         # past it. The old pattern stopped at the first backslash and found
