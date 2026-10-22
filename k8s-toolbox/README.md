@@ -293,8 +293,7 @@ on one kind costs that section only. What counts as a finding:
   is the number of ordinals from `partition` up (the partition is an absolute
   ordinal, counted from `spec.ordinals.start`, which defaults to `0`), so a
   deliberate hold stays quiet but a partitioned update that has not moved is
-  still reported. An `OnDelete`
-  StatefulSet is never judged on its rollout.
+  still reported. An `OnDelete` StatefulSet is never judged on its rollout.
 - `daemonsets`: unavailable or not-ready pods, and pods scheduled where the
   DaemonSet no longer wants them (misscheduled).
 - `hpa`: `ScalingActive=False` (for example `FailedGetResourceMetric`, with the
