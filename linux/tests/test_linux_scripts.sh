@@ -1428,6 +1428,71 @@ assert_eq "sysctl_defaults --check with --revert -> 3" "3" "$rc"
 run_check --backup-file "$check_root/tmp/other.txt"
 assert_eq "sysctl_defaults --check with --backup-file -> 3" "3" "$rc"
 
+# A later-sorting file this user cannot read (0600, run as non-root) may
+# override any key, and its contents are unknown: every key whose verdict
+# would be OK is a SKIP naming the file instead. Root reads everything, so
+# there the case runs as nobody via setpriv; where the file stays readable
+# it is skipped with a printed line.
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+chmod 000 "$check_root/sysctl.d/99-zz.conf"
+sysctl_runner=()
+sysctl_can=1
+if [[ "$(id -u)" == 0 ]]; then
+  sysctl_can=0
+  if command -v setpriv >/dev/null 2>&1; then
+    chmod 755 "$check_root" "$check_root/sysctl.d" "$check_root/proc" "$check_root/proc/vm" \
+      "$check_root/proc/fs" "$check_root/proc/fs/inotify" "$check_root/tmp"
+    sysctl_runner=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+    if "${sysctl_runner[@]}" test -r "$SYSCTL" && ! "${sysctl_runner[@]}" test -r "$check_root/sysctl.d/99-zz.conf"; then
+      sysctl_can=1
+    fi
+  fi
+elif [[ -r "$check_root/sysctl.d/99-zz.conf" ]]; then
+  sysctl_can=0
+fi
+if (( sysctl_can )); then
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check with an unreadable later file exits 0" "0" "$rc"
+  assert_not_contains "sysctl_defaults --check never calls a key OK beside an unreadable later file" "$out" "OK  "
+  assert_contains "sysctl_defaults --check names the unreadable file" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/99-zz.conf"
+  assert_eq "sysctl_defaults --check skips every key beside an unreadable later file" "4" "$(grep -c SKIP <<<"$out")"
+  assert_contains "sysctl_defaults --check counts them as skipped" "$out" "0 ok, 0 drift, 0 unpersisted, 0 stale, 0 shadowed, 4 skipped"
+else
+  ok "sysctl_defaults unreadable later-file check skipped (the file stays readable: root without setpriv)"
+fi
+chmod 644 "$check_root/sysctl.d/99-zz.conf"
+rm -f "$check_root/sysctl.d/99-zz.conf"
+if (( sysctl_can )); then
+  # The file that matters is the one read after the file that sets the key,
+  # not only after our drop-in: 10-a.conf sets it, an unreadable 50-b.conf
+  # (read before ours) could still override it, and ours does not set it.
+  mv "$check_dropin" "$check_root/tmp/dropin.saved"
+  printf 'vm.swappiness = 10\n' > "$check_root/sysctl.d/10-a.conf"
+  printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/50-b.conf"
+  chmod 000 "$check_root/sysctl.d/50-b.conf"
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check --only vm 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check beside a middle unreadable file exits 0" "0" "$rc"
+  assert_contains "sysctl_defaults --check cannot call a key OK past a middle unreadable file" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/50-b.conf"
+  assert_not_contains "sysctl_defaults --check does not call that key OK" "$out" "OK  "
+  printf 'vm.swappiness = 20\n' > "$check_root/sysctl.d/10-a.conf"
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check --only vm 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check exits 0 when UNPERSISTED is undecidable" "0" "$rc"
+  assert_not_contains "sysctl_defaults --check holds UNPERSISTED back when a file could fix it" "$out" "UNPERSISTED"
+  assert_contains "sysctl_defaults --check skips that key instead" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/50-b.conf"
+  chmod 644 "$check_root/sysctl.d/50-b.conf"
+  rm -f "$check_root/sysctl.d/10-a.conf" "$check_root/sysctl.d/50-b.conf"
+  mv "$check_root/tmp/dropin.saved" "$check_dropin"
+fi
+
 # An unreadable key is a SKIP, never a false OK or a false failure; the rest
 # still decide the exit code.
 rm -f "$check_root/proc/fs/inotify/max_queued_events"

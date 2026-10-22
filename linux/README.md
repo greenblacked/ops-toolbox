@@ -716,12 +716,20 @@ the first that applies:
 
 | Word | Meaning |
 | --- | --- |
-| `SKIP` | The live value is unreadable. Never a pass or a failure. |
+| `SKIP` | The live value is unreadable, or a config file that could override the key is (see below). Never a pass or a failure. |
 | `DRIFT` | The live value is not the desired one. |
 | `UNPERSISTED` | Live is right, but `99-ops-toolbox.conf` does not set the key and no other `sysctl.d` file or `/etc/sysctl.conf` sets it to the wanted value, so the next reboot returns it to the default (a `sysctl -w` by hand). A value another file persists counts as `OK`. |
 | `STALE` | The drop-in sets a different value than this script wants. |
 | `SHADOWED` | A `*.conf` read after ours (a name that sorts later, such as `99-zz.conf`, or `/etc/sysctl.conf`) sets the key to something else; the file is named. |
 | `OK` | Live, persisted (by the drop-in or another file) and effective all match. |
+
+A `*.conf` file this user cannot read (a `0600` drop-in seen by a non-root
+user) sets nothing as far as `--check` can tell, and its contents are unknown.
+Only a file read after the one that decides a key can change the verdict, so
+a key that would be `OK` or `UNPERSISTED` is a `SKIP` naming the unreadable
+file when one is read after the file that last sets the key (when no file
+sets it, any unreadable file counts). Run as root to get a verdict. Such a
+`SKIP` does not fail `--check`.
 
 `UNPERSISTED` and `STALE` print `sudo ./sysctl_defaults.sh --apply` as the fix,
 as text. A summary line counts each word. `--check` exits `1` on any `DRIFT`,

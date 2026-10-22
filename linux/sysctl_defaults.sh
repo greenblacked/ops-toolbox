@@ -342,15 +342,21 @@ sysctl_extra_dirs() {
 
 # Every *.conf read after our drop-in, in the order it is read: names that
 # sort after 99-ops-toolbox.conf in byte order (every name, ours included,
-# when called with "all"). systemd's precedence applies: the first directory
-# holding a basename wins outright, and a symlink to /dev/null there masks the
-# name in every later directory.
+# when called with "all", those after NAME when called with "after:NAME").
+# systemd's precedence applies: the first directory holding a basename
+# wins outright, and a symlink to /dev/null there masks the name in every
+# later directory.
 later_conf_files() {
-  local scope="${1:-later}" dir f name tab extra p
+  local scope="${1:-later}" dir f name tab extra p floor
   local seen=$'\n'
   local dirs=("$SYSCTL_D")
   local parts=()
   tab="$(printf '\t')"
+  case "$scope" in
+    all)     floor="" ;;
+    after:*) floor="${scope#after:}" ;;
+    *)       floor="$DROP_IN_NAME" ;;
+  esac
   extra="$(sysctl_extra_dirs)"
   if [[ -n "$extra" ]]; then
     IFS=':' read -r -a parts <<<"$extra"
@@ -371,7 +377,7 @@ later_conf_files() {
       printf '%s\t%s\n' "$name" "$f"
     done
   done | LC_ALL=C sort -t "$tab" -k1,1 \
-    | LC_ALL=C awk -F'\t' -v ours="$DROP_IN_NAME" -v scope="$scope" 'scope == "all" || $1 > ours { print $2 }'
+    | LC_ALL=C awk -F'\t' -v floor="$floor" '$1 > floor { print $2 }'
 }
 
 # The file with the last word on KEY, as "path<TAB>value", or status 1 when
@@ -399,6 +405,31 @@ last_setting() {
   printf '%s\t%s\n' "$last_file" "$last_value"
 }
 
+# The candidate files (see later_conf_files) this user cannot read, one per
+# line. conf_value treats such a file as setting nothing, so a verdict that
+# rests on "no file overrides this" is only a guess while one exists: the
+# contents are unknown, so every key is affected. /etc/sysctl.conf counts
+# where it is consulted (it is read last, so it follows every name).
+unreadable_conf_files() {
+  local scope="${1:-later}" f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ -r "$f" ]] || printf '%s\n' "$f"
+  done < <(later_conf_files "$scope")
+  if [[ "$SYSCTL_D" == "/etc/sysctl.d" && -e /etc/sysctl.conf && ! -r /etc/sysctl.conf ]]; then
+    printf '%s\n' /etc/sysctl.conf
+  fi
+  return 0
+}
+
+# The unreadable candidates read after FILE (a path last_setting returned).
+# /etc/sysctl.conf is read last, so nothing follows it.
+unreadable_after() {
+  local file="$1"
+  [[ "$file" != /etc/sysctl.conf ]] || return 0
+  unreadable_conf_files "after:${file##*/}"
+}
+
 # The file with the last word on KEY after our drop-in, when its value is not
 # the one we want: "path<TAB>value".
 shadowing_file() {
@@ -424,10 +455,13 @@ check_line() {
 check() {
   local group key value blurb live persisted shadow elsewhere
   local n_ok=0 n_drift=0 n_unpersisted=0 n_stale=0 n_shadowed=0 n_skipped=0
+  local n_unknown=0 unreadable_all unreadable_later unreadable_past
   local fix tab
   fix="fix: sudo ./$(basename "$0") --apply"
   tab="$(printf '\t')"
   [[ -f "$DROP_IN" ]] || info "no drop-in at $DROP_IN"
+  unreadable_all="$(unreadable_conf_files all | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+  unreadable_later="$(unreadable_conf_files later | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
   while IFS='|' read -r group key value blurb; do
     [[ -n "$group" ]] || continue
     group_wanted "$group" || continue
@@ -437,26 +471,44 @@ check() {
       continue
     fi
     persisted="$(conf_value "$DROP_IN" "$key")"
+    elsewhere=""
+    unreadable_past=""
+    if [[ -z "$persisted" ]]; then
+      elsewhere="$(last_setting "$key" all)" || elsewhere=""
+    fi
+    if [[ -n "$elsewhere" ]]; then
+      unreadable_past="$(unreadable_after "${elsewhere%%"$tab"*}" | tr '\n' ',' | sed 's/,$//; s/,/, /g')"
+    fi
     if [[ "$live" != "$value" ]]; then
       check_line DRIFT "$key = $live (want $value)"
       n_drift=$((n_drift + 1))
-    elif [[ -z "$persisted" ]] && ! elsewhere="$(last_setting "$key" all)"; then
+    elif [[ -z "$persisted" && -z "$elsewhere" && -n "$unreadable_all" ]]; then
+      check_line SKIP "$key = $live live; cannot tell whether boot config sets it, cannot read $unreadable_all"
+      n_skipped=$((n_skipped + 1))
+      n_unknown=$((n_unknown + 1))
+    elif [[ -z "$persisted" && -z "$elsewhere" ]]; then
       check_line UNPERSISTED "$key = $live live, but no sysctl.d file or /etc/sysctl.conf sets it, so a reboot returns it to the default. $fix"
       n_unpersisted=$((n_unpersisted + 1))
+    elif [[ -z "$persisted" && -n "$unreadable_past" ]]; then
+      check_line SKIP "$key = $live live; cannot tell whether a file read after ${elsewhere%%"$tab"*} overrides it, cannot read $unreadable_past"
+      n_skipped=$((n_skipped + 1))
+      n_unknown=$((n_unknown + 1))
+    elif [[ -z "$persisted" && "${elsewhere#*"$tab"}" == "$value" ]]; then
+      check_line OK "$key = $live (persisted by ${elsewhere%%"$tab"*})"
+      n_ok=$((n_ok + 1))
     elif [[ -z "$persisted" ]]; then
-      if [[ "${elsewhere#*"$tab"}" == "$value" ]]; then
-        check_line OK "$key = $live (persisted by ${elsewhere%%"$tab"*})"
-        n_ok=$((n_ok + 1))
-      else
-        check_line UNPERSISTED "$key = $live live, but at boot ${elsewhere%%"$tab"*} sets ${elsewhere#*"$tab"}, and $DROP_IN does not set it. $fix"
-        n_unpersisted=$((n_unpersisted + 1))
-      fi
+      check_line UNPERSISTED "$key = $live live, but at boot ${elsewhere%%"$tab"*} sets ${elsewhere#*"$tab"}, and $DROP_IN does not set it. $fix"
+      n_unpersisted=$((n_unpersisted + 1))
     elif [[ "$persisted" != "$value" ]]; then
       check_line STALE "$key: $DROP_IN sets $persisted, want $value. $fix"
       n_stale=$((n_stale + 1))
     elif shadow="$(shadowing_file "$key" "$value")"; then
       check_line SHADOWED "$key: ${shadow%%"$tab"*} sets ${shadow#*"$tab"}, and is read after $DROP_IN_NAME"
       n_shadowed=$((n_shadowed + 1))
+    elif [[ -n "$unreadable_later" ]]; then
+      check_line SKIP "$key = $live live; cannot tell whether a later file overrides it, cannot read $unreadable_later"
+      n_skipped=$((n_skipped + 1))
+      n_unknown=$((n_unknown + 1))
     else
       check_line OK "$key = $live"
       n_ok=$((n_ok + 1))
@@ -466,7 +518,7 @@ ${SETTINGS}
 EOF
   printf "%s ok, %s drift, %s unpersisted, %s stale, %s shadowed, %s skipped\n" \
     "$n_ok" "$n_drift" "$n_unpersisted" "$n_stale" "$n_shadowed" "$n_skipped"
-  if (( n_ok + n_drift + n_unpersisted + n_stale + n_shadowed == 0 )); then
+  if (( n_ok + n_drift + n_unpersisted + n_stale + n_shadowed + n_unknown == 0 )); then
     info "no managed key was readable; nothing to check"
     return 0
   fi
