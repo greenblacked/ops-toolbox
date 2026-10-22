@@ -24,3 +24,6 @@
   A bare literal stops at a closing `}`, `]` or `)`, so
   `do={:set password abc}` redacts only `abc`, and an array value
   (`{"a";"b"}`) is not reported as a literal.
+  A quoted variable name (`:global "api-token" "x"`, escaped inside an
+  export) is recognised, and `preshared-key=` on a WireGuard peer is
+  treated as a secret field.
