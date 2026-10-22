@@ -198,3 +198,8 @@ Read the numbers as lower bounds when the shell is not elevated: folders under
 `Windows` and other users' profiles are partly unreadable, and a row that hit
 one says so. Measuring a large profile or `WinSxS` takes a while; the report
 says how many locations it is about to measure before it starts.
+
+Sizes are apparent: a file with several NTFS hard links, which is most of
+`WinSxS`, counts once per link, so a total can exceed the space really used.
+Telling links apart needs a handle on every file, which a walk of a whole
+profile cannot afford, so the report says "apparent" rather than guessing.

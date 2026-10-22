@@ -1769,6 +1769,17 @@ if (-not $diskUsage) {
             }
         }
 
+        foreach ($apparentAction in @('tree', 'hotspots')) {
+            $apparentArgs = @($apparentAction, '-MinSizeMB', '0')
+            if ($apparentAction -eq 'tree') { $apparentArgs += @('-Path', $usageData) }
+            $apparentRun = Invoke-InScratch -Path $usageCopy -Arguments $apparentArgs
+            if ($apparentRun.Output -cmatch 'sizes are apparent: .*hard links.*once per link') {
+                Test-Ok "disk_usage.ps1 $apparentAction labels its sizes as apparent (hard links counted per link)"
+            } else {
+                Test-Fail "disk_usage.ps1 $apparentAction must say its sizes are apparent, with hard links counted per link"
+            }
+        }
+
         $run = Invoke-InScratch -Path $usageCopy -Arguments @('hotspots', '-MinSizeMB', '0')
         if ($run.ExitCode -eq 0 -and $run.Output -match '(?m)^(SKIP |FOUND) ') {
             Test-Ok 'disk_usage.ps1 hotspots ran to the end and printed its FOUND / SKIP rows'

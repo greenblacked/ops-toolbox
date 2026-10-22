@@ -193,7 +193,8 @@ function Test-SkippedReparse {
 # target twice, and a link to an ancestor would never finish. A OneDrive or
 # other Cloud Files folder or placeholder is data on this volume and is
 # walked and counted. Each file counts at the space it occupies
-# (Get-FileDiskSize), not its logical length.
+# (Get-FileDiskSize), not its logical length. A hard-linked file counts once
+# per link: sizes are apparent, and the report says so.
 function Get-DirectorySize {
     param([string]$Path)
     $bytes = 0L
@@ -447,6 +448,11 @@ try {
 if (-not $isAdmin) {
     Write-Info 'not elevated: folders under Windows and other profiles may be partly unreadable, so their sizes are lower bounds'
 }
+
+# Telling NTFS hard links apart needs a handle on every file, which a walk of
+# WinSxS or a profile cannot afford, so a file with several links counts once
+# per link. Said up front rather than left to look like an exact figure.
+Write-Info 'sizes are apparent: a file with several hard links (WinSxS) counts once per link, so totals can exceed the space really used'
 
 if ($Action -eq 'tree') {
     if (-not $Path) { $Path = $systemDrive + '\' }

@@ -8,4 +8,6 @@
   symbolic link (a OneDrive placeholder or Files On-Demand folder is not
   one, and counts), counts a sparse, compressed or placeholder file at
   the space it occupies rather than its logical size, and says when a
-  size is a lower bound because a folder could not be read.
+  size is a lower bound because a folder could not be read. Sizes are
+  apparent: a file with several hard links counts once per link, and the
+  report says so.
