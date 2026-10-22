@@ -185,7 +185,7 @@ tree_before="$(find "$parent" | sort)"
 refs_before="$(git --git-dir="$origin" for-each-ref)"
 out="$("$REPOS_STATUS" --dir "$parent" --dry-run 2>&1)"; rc=$?
 assert_eq "$rc" 0 '--dry-run exits 0'
-assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --all --prune --quiet" '--dry-run names the fetch it would run'
+assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --prune --quiet origin" '--dry-run names the fetch it would run'
 assert_contains "$out" 'dry-run complete; no changes written' '--dry-run closes with the summary line'
 assert_eq "$(find "$parent" | sort)" "$tree_before" '--dry-run creates and removes no file'
 out="$("$REPOS_STATUS" --dir "$parent" --dry-run --porcelain 2>/dev/null)"
@@ -304,6 +304,22 @@ assert_contains "$out" $'\tside\t\t0\t0\t0\t0\t1\t' '--fetch prunes the secondar
 "$REPOS_STATUS" --dir "$parent/multi" --fetch --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 1 '--strict --fetch exits 1 for a branch deleted on a secondary remote'
 rm -rf "$parent/multi" "$second"
+
+section "--fetch prunes a skipFetchAll remote"
+second="$scratch/second.git"
+git init -q --bare "$second" || err 'create the skipped remote'
+clone_into "$parent/skipped" &&
+  git -C "$parent/skipped" remote add backup "$second" &&
+  git -C "$parent/skipped" config remote.backup.skipFetchAll true &&
+  git -C "$parent/skipped" switch -q -c skipside &&
+  printf 'skip\n' >"$parent/skipped/skip.txt" &&
+  git -C "$parent/skipped" add skip.txt &&
+  git -C "$parent/skipped" commit -q -m skipside &&
+  git -C "$parent/skipped" push -q -u backup skipside || err 'push skipside to the skipped remote'
+git --git-dir="$second" branch -D skipside >/dev/null 2>&1 || err 'delete skipside on the skipped remote'
+out="$("$REPOS_STATUS" --dir "$parent/skipped" --fetch --porcelain 2>&1)"
+assert_contains "$out" $'\tskipside\t\t0\t0\t0\t0\t1\t' '--fetch prunes a remote that skipFetchAll excludes from --all'
+rm -rf "$parent/skipped" "$second"
 
 section "--fetch failure on a secondary remote"
 clone_into "$parent/halfbroken" &&

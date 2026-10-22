@@ -44,8 +44,8 @@ Options:
                   checked (failed git status, fetch, stash list or upstream
                   walk, or an unreadable repository) are kept under every
                   filter.
-  --fetch         Run 'git fetch --all --prune --quiet' in each repository first,
-                  so every remote is refreshed and pruned, not only the default.
+  --fetch         Run 'git fetch --prune --quiet' for every remote of each
+                  repository first, so all are refreshed and pruned.
                   Network; it updates remote-tracking refs and nothing else.
                   A failure on any remote counts as work at risk.
   --dry-run       Print the fetch each repository would get and report from
@@ -206,7 +206,7 @@ add_note() {
 inspect_repo() {
   local repo="$1" rel="$2"
   local branch upstream counts ahead=0 behind=0 changed=0 stash=0 unpushed=0
-  local sync risk=0 keep=1 has_remote tips status_out stash_out status_failed=0 fetch_failed=0 walk_failed=0
+  local sync risk=0 keep=1 has_remote remotes remote tips status_out stash_out status_failed=0 fetch_failed=0 walk_failed=0
   local stash_failed=0 unreadable=0
   notes=""
 
@@ -220,23 +220,34 @@ inspect_repo() {
     changed=""; stash=""; unpushed=""; risk=1
   else
     has_remote=0
-    [[ -n "$(git -C "$repo" remote 2>/dev/null || true)" ]] && has_remote=1
+    remotes="$(git -C "$repo" remote 2>/dev/null || true)"
+    [[ -n "$remotes" ]] && has_remote=1
     if (( has_remote == 1 )); then
       if (( DRY_RUN == 1 )); then
-        dry_say "dry-run: would run: git -C $repo fetch --all --prune --quiet"
+        while IFS= read -r remote; do
+          [[ -n "$remote" ]] || continue
+          dry_say "dry-run: would run: git -C $repo fetch --prune --quiet $remote"
+        done <<EOF_REMOTES
+$remotes
+EOF_REMOTES
       elif (( FETCH == 1 )); then
         # No terminal prompt: one repository asking for a password would
         # otherwise stall the whole sweep.
         # --prune drops remote-tracking refs for branches deleted on the
         # remote; otherwise a stale ref makes formerly pushed commits look
-        # pushed. --all covers every remote, so a branch pushed to and then
-        # deleted on a secondary remote is pruned too. A failure on any
-        # remote leaves the refs unverified, so it counts as
-        # work at risk below.
-        if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --all --prune --quiet >/dev/null 2>&1; then
-          fetch_failed=1
-          add_note "fetch-failed"
-        fi
+        # pushed. Each remote is fetched by name because 'fetch --all'
+        # skips remotes with remote.<name>.skipFetchAll set, which would
+        # leave their stale refs behind. A failure on any remote leaves
+        # the refs unverified, so it counts as work at risk below.
+        while IFS= read -r remote; do
+          [[ -n "$remote" ]] || continue
+          if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --prune --quiet "$remote" </dev/null >/dev/null 2>&1; then
+            fetch_failed=1
+          fi
+        done <<EOF_REMOTES
+$remotes
+EOF_REMOTES
+        (( fetch_failed == 0 )) || add_note "fetch-failed"
       fi
     fi
 
