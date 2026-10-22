@@ -269,6 +269,24 @@ run_doctor "$fx" ""
 assert_contains ".gitconfig without core.longpaths is reported" "$out" "core.longpaths is not true"
 assert_contains "safe.directory = * is reported" "$out" "disables the ownership check"
 
+# Values set through [include] and [includeIf] are what git itself would use.
+fx="$(new_doctor_fixture)"
+cat > "$fx/home/.gitconfig-included" <<'EOF'
+[user]
+	name = Included User
+	email = included@example.invalid
+[core]
+	longpaths = true
+[credential]
+	helper = manager
+EOF
+printf '[include]\n\tpath = %s\n' "$fx/home/.gitconfig-included" > "$fx/home/.gitconfig"
+run_doctor "$fx" ""
+assert_contains "core.longpaths set by an include is seen" "$out" "core.longpaths is true"
+assert_not_contains "credential.helper set by an include is seen" "$out" "no credential.helper"
+assert_not_contains "user.name set by an include is seen" "$out" "user.name is not set"
+assert_not_contains "user.email set by an include is seen" "$out" "user.email is not set"
+
 fx="$(new_doctor_fixture)"
 mkdir -p "$fx/win/System32/OpenSSH"
 shim "$fx/win/System32/OpenSSH/ssh" 'exit 0'

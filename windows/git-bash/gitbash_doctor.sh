@@ -312,7 +312,7 @@ else
   # Read from the one file, never the ambient environment, so what is
   # reported is what that file says. The system file is consulted only for
   # the two settings Git for Windows' installer can put there.
-  user_value() { git config --file "$gitconfig" "$@" 2>/dev/null; }
+  user_value() { git config --file "$gitconfig" --includes "$@" 2>/dev/null; }
   system_value() { git config --system "$@" 2>/dev/null; }
 
   longpaths="$(user_value --bool --get core.longpaths)"
