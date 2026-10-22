@@ -1510,7 +1510,8 @@ if (-not $sshDoctor) {
         $gitSsh = 'C:\Program Files\Git\usr\bin\ssh.exe'
         $winSsh = 'C:\Windows\System32\OpenSSH\ssh.exe'
         $clientCases = @(
-            @{ Label = 'Git for Windows only, agent running (System32\OpenSSH off PATH)'; Clients = @($gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client bundled-client-only' }
+            @{ Label = 'Git for Windows only, agent running (System32\OpenSSH off PATH)'; Clients = @($gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client no-windows-client' }
+            @{ Label = 'Git ssh and plink, no Windows OpenSSH on PATH, agent running'; Clients = @('C:\Program Files\PuTTY\plink.exe', $gitSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client no-windows-client' }
             @{ Label = 'Git for Windows only, agent not running'; Clients = @($gitSsh); Agent = $false; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client' }
             @{ Label = 'Git for Windows only, core.sshCommand pinned to Windows OpenSSH'; Clients = @($gitSsh); Agent = $true; Command = 'C:/Windows/System32/OpenSSH/ssh.exe'; Env = ''; EnvCommand = ''; Expect = 'first-client git-ssh-command agent-client' }
             @{ Label = 'Windows OpenSSH only'; Clients = @($winSsh); Agent = $true; Command = ''; Env = ''; EnvCommand = ''; Expect = 'first-client agent-client' }
