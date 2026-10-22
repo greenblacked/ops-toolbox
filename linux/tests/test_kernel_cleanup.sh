@@ -293,10 +293,13 @@ assert_not_contains 'the +deb common headers of the running base stay' "$purge_l
 assert_not_contains 'the headers metapackage stays beside +deb names' "$purge_line" 'linux-headers-amd64'
 
 # Debian backports carry a bare +bpo: 6.12.12+bpo-amd64 pairs with
-# linux-headers-6.12.12+bpo-common.
+# linux-headers-6.12.12+bpo-common. --keep 1 keeps the newest kernel besides
+# the running one, so 6.12.16 stays and 6.12.12 is the one removed.
 printf '%s\t%s\t%s\n' \
   linux-image-6.12.12+bpo-amd64 'install ok installed' 300000 \
   linux-headers-6.12.12+bpo-common 'install ok installed' 80000 \
+  linux-image-6.12.16+bpo-amd64 'install ok installed' 300000 \
+  linux-headers-6.12.16+bpo-common 'install ok installed' 80000 \
   linux-image-6.12.20+bpo-amd64 'install ok installed' 300000 \
   linux-headers-6.12.20+bpo-common 'install ok installed' 80000 \
   > "$fixture/dpkg.rows"
@@ -305,14 +308,18 @@ assert_eq 'debian +bpo names dry run exits 0' 0 "$rc"
 purge_line="$(grep 'apt-get purge' <<<"$out")"
 assert_contains 'a +bpo old image goes' "$purge_line" 'linux-image-6.12.12+bpo-amd64'
 assert_contains 'the +bpo common headers of a removed base go' "$purge_line" 'linux-headers-6.12.12+bpo-common'
+assert_not_contains 'the +bpo common headers of a kept base stay' "$purge_line" 'linux-headers-6.12.16+bpo-common'
 assert_not_contains 'the +bpo common headers of the running base stay' "$purge_line" 'linux-headers-6.12.20+bpo-common'
 
 # Old-style Debian point and backport kernels keep an ABI number and add the
 # release after it: 6.1.0-0.deb11.13-amd64 pairs with
-# linux-headers-6.1.0-0.deb11.13-common, not with a base of 6.1.0-0.
+# linux-headers-6.1.0-0.deb11.13-common, not with a base of 6.1.0-0. With
+# --keep 1, deb11.17 is the kept one; deb11.13 and 5.10.0-0.bpo.4 go.
 printf '%s\t%s\t%s\n' \
   linux-image-6.1.0-0.deb11.13-amd64 'install ok installed' 300000 \
   linux-headers-6.1.0-0.deb11.13-common 'install ok installed' 80000 \
+  linux-image-6.1.0-0.deb11.17-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-0.deb11.17-common 'install ok installed' 80000 \
   linux-image-6.1.0-0.deb11.21-amd64 'install ok installed' 300000 \
   linux-headers-6.1.0-0.deb11.21-common 'install ok installed' 80000 \
   linux-image-5.10.0-0.bpo.4-amd64 'install ok installed' 300000 \
@@ -323,6 +330,7 @@ assert_eq 'debian 0.debNN.N names dry run exits 0' 0 "$rc"
 purge_line="$(grep 'apt-get purge' <<<"$out")"
 assert_contains 'a 0.deb old image goes' "$purge_line" 'linux-image-6.1.0-0.deb11.13-amd64'
 assert_contains 'the 0.deb common headers of a removed base go' "$purge_line" 'linux-headers-6.1.0-0.deb11.13-common'
+assert_not_contains 'the 0.deb common headers of a kept base stay' "$purge_line" 'linux-headers-6.1.0-0.deb11.17-common'
 assert_not_contains 'the 0.deb common headers of the running base stay' "$purge_line" 'linux-headers-6.1.0-0.deb11.21-common'
 assert_contains 'a 0.bpo.N image goes' "$purge_line" 'linux-image-5.10.0-0.bpo.4-amd64'
 assert_contains 'the 0.bpo.N common headers of a removed base go' "$purge_line" 'linux-headers-5.10.0-0.bpo.4-common'
