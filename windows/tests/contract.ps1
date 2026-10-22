@@ -1197,6 +1197,53 @@ if (-not $netDoctor) {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'net_doctor tries every resolved address'
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $netDoctor -Name 'Test-TcpAddress'
+    if (-not $src) {
+        Test-Fail 'net_doctor.ps1 : Test-TcpAddress not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        $v4 = [System.Net.IPAddress]::Loopback
+        $listener = New-Object System.Net.Sockets.TcpListener -ArgumentList $v4, 0
+        $listener.Start()
+        $livePort = ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+        # A port nothing listens on: bind, note it, release it.
+        $closer = New-Object System.Net.Sockets.TcpListener -ArgumentList $v4, 0
+        $closer.Start()
+        $deadPort = ([System.Net.IPEndPoint]$closer.LocalEndpoint).Port
+        $closer.Stop()
+        try {
+            # The first address (IPv6 loopback, where this listener is not)
+            # fails; the second one answers.
+            $first = [System.Net.IPAddress]::IPv6Loopback
+            $r = Test-TcpAddress -Addresses @($first, $v4) -Port $livePort -TimeoutMs 3000
+            if ($r.Connected -and $r.Address.ToString() -eq $v4.ToString() -and @($r.Failures).Count -eq 1) {
+                Test-Ok 'the second address is tried when the first refuses, and the one that worked is reported'
+            } else {
+                Test-Fail ('expected a connection to {0} after one failure; got Connected={1}, Address={2}, Failures={3}' -f $v4, $r.Connected, $r.Address, @($r.Failures).Count)
+            }
+            $r = Test-TcpAddress -Addresses @($v4, $first) -Port $livePort -TimeoutMs 3000
+            if ($r.Connected -and $r.Address.ToString() -eq $v4.ToString() -and @($r.Failures).Count -eq 0) {
+                Test-Ok 'the first address is used when it connects'
+            } else {
+                Test-Fail 'the first address connects, so no other address may be tried or reported as failed'
+            }
+            $r = Test-TcpAddress -Addresses @($first, $v4) -Port $deadPort -TimeoutMs 3000
+            if (-not $r.Connected -and @($r.Failures).Count -eq 2) {
+                Test-Ok 'every address is reported when none connects'
+            } else {
+                Test-Fail ('expected 2 failures and no connection; got Connected={0}, Failures={1}' -f $r.Connected, @($r.Failures).Count)
+            }
+        } finally {
+            $listener.Stop()
+        }
+    }
+}
+
+# --------------------------------------------------------------------------
 Write-Section 'net_doctor classifies adapters'
 if (-not $netDoctor) {
     Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'

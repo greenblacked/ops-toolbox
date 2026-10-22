@@ -372,6 +372,38 @@ function Get-GitConfigValue {
     return $null
 }
 
+# Connect to each address in turn, in the order given, until one answers.
+# Returns Connected, the Address that worked (or $null), Milliseconds for that
+# attempt, and Failures: one "address: reason" line per address that did not.
+function Test-TcpAddress {
+    param([object[]]$Addresses, [int]$Port, [int]$TimeoutMs = 3000)
+    $failures = @()
+    foreach ($remote in $Addresses) {
+        $client = $null
+        $timer = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $client = New-Object System.Net.Sockets.TcpClient -ArgumentList $remote.AddressFamily
+            $done = $client.ConnectAsync($remote, $Port).Wait($TimeoutMs)
+            $timer.Stop()
+            if ($done -and $client.Connected) {
+                return [pscustomobject]@{
+                    Connected = $true; Address = $remote
+                    Milliseconds = $timer.ElapsedMilliseconds; Failures = $failures
+                }
+            }
+            $failures += ('{0}: no answer within {1} s' -f $remote, [math]::Round($TimeoutMs / 1000))
+        } catch {
+            $timer.Stop()
+            # Wait() wraps the socket error twice (a method-invocation error
+            # around an AggregateException); the innermost one says why.
+            $failures += ('{0}: {1} (after {2} ms)' -f $remote, $_.Exception.GetBaseException().Message, $timer.ElapsedMilliseconds)
+        } finally {
+            if ($client) { $client.Close() }
+        }
+    }
+    return [pscustomobject]@{ Connected = $false; Address = $null; Milliseconds = 0; Failures = $failures }
+}
+
 # One plain object per adapter that is up and is not loopback.
 function Get-NicFact {
     param($Nic)
@@ -716,27 +748,16 @@ if ((Test-Want 'probe') -and ($Probe -or $onlyGiven)) {
         }
 
         if ($addresses.Count -gt 0) {
-            $remote = $addresses[0]
-            $client = $null
-            $timer = [Diagnostics.Stopwatch]::StartNew()
-            try {
-                $client = New-Object System.Net.Sockets.TcpClient -ArgumentList $remote.AddressFamily
-                $connected = $client.ConnectAsync($remote, $Port).Wait(3000)
-                $timer.Stop()
-                if ($connected -and $client.Connected) {
-                    Write-Ok ('TCP {0}:{1} connected in {2} ms (nothing sent)' -f $remote, $Port, $timer.ElapsedMilliseconds)
-                } else {
-                    Write-Warn ('TCP {0}:{1} did not answer within 3 s' -f $remote, $Port)
-                    Write-Detail -Always 'a firewall that drops rather than refuses looks like this; so does a proxy-only network'
+            $result = Test-TcpAddress -Addresses $addresses -Port $Port -TimeoutMs 3000
+            if ($result.Connected) {
+                Write-Ok ('TCP {0}:{1} connected in {2} ms (nothing sent)' -f $result.Address, $Port, $result.Milliseconds)
+                foreach ($failure in $result.Failures) {
+                    Write-Detail ('tried first, did not connect - {0}' -f $failure)
                 }
-            } catch {
-                $timer.Stop()
-                # Wait() wraps the socket error twice (a method-invocation error
-                # around an AggregateException); the innermost one says why.
-                $reason = $_.Exception.GetBaseException().Message
-                Write-Warn ('TCP {0}:{1} failed after {2} ms ({3})' -f $remote, $Port, $timer.ElapsedMilliseconds, $reason)
-            } finally {
-                if ($client) { $client.Close() }
+            } else {
+                Write-Warn ('TCP {0}: no resolved address connected' -f $Port)
+                foreach ($failure in $result.Failures) { Write-Detail -Always $failure }
+                Write-Detail -Always 'a firewall that drops rather than refuses looks like this; so does a proxy-only network'
             }
         }
     }
