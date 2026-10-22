@@ -313,9 +313,12 @@ fi
 # linux-image-6.1.0-9-amd64. It goes with the first release of its
 # base, and only when no kept release still uses the same base.
 # The base is the ABI prefix (6.8.0-79, 6.1.0-9), so one- and two-part flavours
-# (-generic, -amd64, -cloud-amd64, -rt-amd64) of an ABI share one base.
+# (-generic, -amd64, -cloud-amd64, -rt-amd64) of an ABI share one base. Debian
+# backports and point kernels name it by the Debian release instead, with no
+# ABI number: linux-image-6.12.107+deb12-amd64 pairs with
+# linux-headers-6.12.107+deb12-common, so +debNN ends the base (6.12.107+deb12).
 base_of() {
-  local re='^[0-9]+(\.[0-9]+)*-[0-9]+'
+  local re='^[0-9]+(\.[0-9]+)*(\+deb[0-9]+|-[0-9]+)'
   [[ "$1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[0]}"
 }
 
