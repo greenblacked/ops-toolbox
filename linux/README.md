@@ -734,7 +734,7 @@ sudo ./container_doctor.sh                  # log files under /var/lib/docker ne
 | `state` | restarting, or at least `--restart-threshold` restarts (warn); OOM-killed (FAIL); unhealthy healthcheck (FAIL); exited non-zero with no restart policy, or under `on-failure:N` with its N restarts used up (warn) |
 | `security` | privileged (warn); `docker.sock` or `podman.sock` mounted (FAIL); host network and containers with no `USER` (info) |
 | `resources` | running containers with no memory limit (info, up to five named) |
-| `logs` | `json-file` with no `max-size` in the container or the daemon default (warn); a log at or above `--log-warn-mb` MiB (FAIL) |
+| `logs` | `json-file` with no `max-size` in that container's own `LogConfig` (warn; a `daemon.json` cap reaches only containers created after it was set); a log at or above `--log-warn-mb` MiB (FAIL) |
 | `images` | dangling images and the `system df` image row (info); containers on `latest` or an untagged image (info) |
 
 It changes nothing. The engine verbs it runs are `info`, `version`, `ps`,
