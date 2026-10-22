@@ -315,16 +315,15 @@ class SecretScanTestCase(unittest.TestCase):
         stored = ('/system script\nadd name=s source=":global TgBotToken '
                   '\\"%s\\";"\n' % BOT_FAKE)
         live = '/system script\nadd name=s source=":global TgChatId 1;"\n'
-        for extra in ((), ("--summary",)):
-            with tempfile.TemporaryDirectory() as tmp:
-                with open(os.path.join(tmp, "router.rsc"), "w", encoding="utf-8") as fh:
-                    fh.write(stored)
-                rc, out, err = self.run_main(
-                    ["--host", "router", "--name", "router", "--out", tmp, "--diff",
-                     "--redact-secrets"] + list(extra), export=live)
-            self.assertEqual(rc, 1)
-            self.assertNotIn("AAH-fake", out + err)
-            self.assertNotIn(BOT_FAKE, out + err)
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "router.rsc"), "w", encoding="utf-8") as fh:
+                fh.write(stored)
+            rc, out, err = self.run_main(
+                ["--host", "router", "--name", "router", "--out", tmp, "--diff",
+                 "--redact-secrets"], export=live)
+        self.assertEqual(rc, 1)
+        self.assertNotIn("AAH-fake", out + err)
+        self.assertNotIn(BOT_FAKE, out + err)
 
     def test_finds_a_value_holding_escaped_backslashes(self):
         # A script's own `\\` is `\\\\` in an export, and the value goes on

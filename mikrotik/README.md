@@ -904,8 +904,9 @@ history. Three flags deal with that:
 - `--redact-secrets` replaces each value it finds with the literal
   `<redacted>` before the export is printed, diffed or written. The rest of
   the line is kept and the same input always gives the same output, so a
-  redacted history diffs cleanly. Redact the stored file and the live side of
-  `--diff` the same way, or every run shows the token as a change.
+  redacted history diffs cleanly. Under `--diff` it redacts the stored file
+  as well as the live side, so a token already in history is never printed
+  and does not show as a change.
 
 What counts as a secret: a Telegram bot token by its shape, wherever it
 appears; a `:global`, `:local` or `:set` whose name contains `token`,
