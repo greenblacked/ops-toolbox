@@ -160,6 +160,28 @@ want() {
 
 group() { printf "\n%s== %s ==%s\n" "$C_BOLD" "$1" "$C_RESET"; }
 
+# The raw sshd_config lines that apply to every connection: comments dropped,
+# and anything after a Match line other than "Match all" left out, since a
+# value inside Match only applies to the connections that match it. Used only
+# when sshd -T is unavailable; sshd -T already prints the global view.
+sshd_raw_global() {
+  awk 'BEGIN { g = 1 }
+    /^[ \t]*#/ { next }
+    tolower($1) == "match" { g = (tolower($2) == "all" && NF == 2); next }
+    g && NF { print }' "$ETC_SSH/sshd_config"
+}
+
+# Succeeds when sshd_config sets KEY only inside a Match block that is not
+# "Match all", the case the raw fallback cannot grade.
+sshd_raw_match_has() {
+  [[ -r "$ETC_SSH/sshd_config" ]] || return 1
+  awk -v k="$1" 'BEGIN { g = 1; f = 0 }
+    /^[ \t]*#/ { next }
+    tolower($1) == "match" { g = (tolower($2) == "all" && NF == 2); next }
+    !g && tolower($1) == tolower(k) { f = 1 }
+    END { exit !f }' "$ETC_SSH/sshd_config"
+}
+
 # Effective sshd setting. Reads the merged config where sshd supports it, since
 # a value in an Include'd file beats sshd_config and grepping the main file
 # alone reports the wrong answer.
@@ -170,7 +192,7 @@ sshd_value() {
       'tolower($1) == k { print $2; exit }')"
   fi
   if [[ -z "$out" && -r "$ETC_SSH/sshd_config" ]]; then
-    out="$(grep -ivE '^\s*#' "$ETC_SSH/sshd_config" 2>/dev/null \
+    out="$(sshd_raw_global 2>/dev/null \
       | awk -v k="$key" 'tolower($1) == tolower(k) { print $2; exit }')"
   fi
   printf '%s' "$out"
@@ -187,7 +209,7 @@ sshd_values() {
       'tolower($1) == k { $1 = ""; sub(/^[ \t]+/, ""); print; exit }')"
   fi
   if [[ -z "$out" && -r "$ETC_SSH/sshd_config" ]]; then
-    out="$(grep -ivE '^\s*#' "$ETC_SSH/sshd_config" 2>/dev/null \
+    out="$(sshd_raw_global 2>/dev/null \
       | awk -v k="$key" 'tolower($1) == tolower(k) { $1 = ""; sub(/^[ \t]+/, ""); print; exit }')"
   fi
   printf '%s' "$out"
@@ -203,7 +225,7 @@ sshd_all() {
       'tolower($1) == k { $1 = ""; sub(/^[ \t]+/, ""); print }')"
   fi
   if [[ -z "$out" && -r "$ETC_SSH/sshd_config" ]]; then
-    out="$(grep -ivE '^\s*#' "$ETC_SSH/sshd_config" 2>/dev/null \
+    out="$(sshd_raw_global 2>/dev/null \
       | awk -v k="$key" 'tolower($1) == tolower(k) { $1 = ""; sub(/^[ \t]+/, ""); print }')"
   fi
   printf '%s' "$out"
@@ -331,7 +353,9 @@ if want ssh; then
     # (OpenSSH 9.2+) closes an idle session. Every ChannelTimeout line is
     # read: sshd -T may print one per channel type.
     v="$(sshd_all ChannelTimeout)"
-    if [[ -z "${v//[[:space:]]/}" ]] || [[ "$(lower "$v")" == "none" ]]; then
+    if [[ -z "${v//[[:space:]]/}" ]] && sshd_raw_match_has ChannelTimeout; then
+      warn "ChannelTimeout is set only inside a Match block, so it is not graded for every connection (run as root with sshd available to read the merged view)" "set it outside any Match block, or under 'Match all': ChannelTimeout session=30m, $reload"
+    elif [[ -z "${v//[[:space:]]/}" ]] || [[ "$(lower "$v")" == "none" ]]; then
       info "ChannelTimeout not set: an idle but responsive session is never closed (OpenSSH 9.2+ only; add 'ChannelTimeout session=30m' in /etc/ssh/sshd_config, $reload)"
     else
       # type=interval pairs, a type of session, session:* or a bare *. An

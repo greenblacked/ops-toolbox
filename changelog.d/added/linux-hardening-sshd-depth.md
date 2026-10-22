@@ -7,4 +7,6 @@
   default when it is not set. As root it also reads the effective cipher,
   MAC, key exchange and host key lists from `sshd -T` and names the weak
   ones, with the removal line to add. The group names, flags and exit codes
-  are unchanged.
+  are unchanged. Without `sshd -T`, the raw `sshd_config` fallback reads
+  only global values (before any `Match`, or under `Match all`); a value
+  that appears only inside a `Match` block is never graded as a pass.
