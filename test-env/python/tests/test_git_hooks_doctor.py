@@ -120,6 +120,18 @@ class ShebangFindingsTestCase(unittest.TestCase):
         )
         self.assertIn("mkdir -p '/my repo/hooks'", fix)
 
+    def test_a_direct_interpreter_with_several_arguments_warns(self):
+        [(level, message, fix)] = doctor.shebang_findings(
+            b"#!/usr/bin/python3 -u -B\n", found
+        )
+        self.assertEqual(level, "warn")
+        self.assertIn("ONE word", message)
+        self.assertIn("-u -B", message)
+        self.assertEqual(fix, "use a single option, or #!/usr/bin/env -S python3 -u -B")
+
+    def test_a_direct_interpreter_with_one_argument_is_fine(self):
+        self.assertEqual(doctor.shebang_findings(b"#!/bin/bash -e\n", found), [])
+
     def test_env_options_are_skipped(self):
         self.assertEqual(doctor.shebang_findings(b"#!/usr/bin/env -S node --x\n", found), [])
 

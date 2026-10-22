@@ -289,6 +289,12 @@ def shebang_findings(first_line, find_program, path="<file>"):
     if find_program(interpreter) is None:
         return [("fail", "interpreter %s is not an executable" % interpreter,
                  "install it, or change the #! line")]
+    if len(args) > 1:
+        return [("warn", "the shebang gives %s %d arguments (%s): Linux passes them as "
+                         "ONE word, so the interpreter sees a single option it does not "
+                         "know" % (interpreter, len(args), " ".join(args)),
+                 "use a single option, or #!/usr/bin/env -S %s %s"
+                 % (os.path.basename(interpreter), " ".join(args)))]
     return []
 
 
