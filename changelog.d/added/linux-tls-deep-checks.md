@@ -9,4 +9,5 @@
   cannot), the key size against `--min-key-bits` and MD5 or SHA-1
   signatures. `--hosts-file` reads a list of endpoints. The chain comes
   from the handshake the expiry check already makes, and default runs
-  behave as before.
+  behave as before. An IPv6 target is written in brackets, with or without
+  a port; an unbracketed one is refused.

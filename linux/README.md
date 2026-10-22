@@ -698,7 +698,9 @@ key size against `--min-key-bits` (2048), the EC curve, and MD5 or SHA-1
 signatures.
 The chain comes from the same single handshake the expiry check makes.
 `--hosts-file FILE` reads one `HOST[:PORT]` per line, with `#` comments; an
-unreadable file is exit `3` before anything else runs.
+unreadable file is exit `3` before anything else runs. An IPv6 address is
+written in brackets, `[2001:db8::1]` or `[2001:db8::1]:8443` (port 443 when
+omitted); an unbracketed one is refused as ambiguous.
 
 With the default `--fail-on expired`, a FAIL from these checks (wrong name,
 provably missing intermediate, short key, weak signature) exits `1` too, and a
@@ -908,9 +910,9 @@ warns), `ClientAliveInterval` times `ClientAliveCountMax` as a connection-livene
 check (count 3 when unset; it drops a client that stops answering probes, not
 an idle user; a window over 900 seconds, an interval of `0` or a count of `0`
 warns), `ChannelTimeout` for the idle bound (OpenSSH 9.2+; an `info` line when
-none is set or none covers `session`, a pass for e.g. `ChannelTimeout
-session=30m`), `PermitUserEnvironment yes`, `HostbasedAuthentication yes` and
-`IgnoreRhosts no` (each a FAIL), `PubkeyAuthentication no` and a
+none is set, none covers `session`, or `session=0` turns it off; a pass for
+e.g. `ChannelTimeout session=30m`), `PermitUserEnvironment yes`,
+`HostbasedAuthentication yes` and `IgnoreRhosts no` (each a FAIL), `PubkeyAuthentication no` and a
 `PermitTunnel` other than `no` (warn). A setting that is not set is graded by
 the OpenSSH default, and none of the FAIL-level ones is at its default on
 OpenSSH 8 or 9. Weak ciphers, MACs and key exchange (CBC and arcfour ciphers,

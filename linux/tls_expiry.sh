@@ -71,7 +71,8 @@ Usage:
 
 Options:
   --file PATH      PEM to inspect (repeatable; first cert in a bundle)
-  --host HOST[:PORT]  Fetch the leaf over TLS (default port 443; repeatable)
+  --host HOST[:PORT]  Fetch the leaf over TLS (default port 443; repeatable;
+                      IPv6 in brackets: [2001:db8::1]:8443)
   --hosts-file FILE   One HOST[:PORT] per line, # comments (repeatable)
   --days N         Warn this many days before expiry (default: $DAYS)
   --check-host NAME   Fail when the certificate does not cover NAME (a --host
