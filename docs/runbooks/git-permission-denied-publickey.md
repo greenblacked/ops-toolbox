@@ -57,7 +57,7 @@ Without `--host` it checks the SSH remotes of the repository you are in.
 | Section | What it reports |
 | --- | --- |
 | `ssh config` | Every config file it loaded, following `Include`. An `Include` whose glob matches **only directories** is a `[fail]`: ssh does not descend into a directory and reports no error, so every file inside is silently ignored. The suggested fix is printed on the next line (`fix: Include PATTERN/*`). An `Include` that matches nothing is a `[warn]`. |
-| `keys` | Every private key under `~/.ssh`, at any depth. A key that is group- or world-accessible is a `[fail]`: "ssh will refuse it (chmod 600)". |
+| `keys` | Every private key under `~/.ssh`, at any depth, except inside hidden directories (names starting with a dot, such as `~/.ssh/.old/`), which are skipped: keys there are not listed or tried, so the doctor never offers them. Point ssh at such a key with `ssh -i` or an `IdentityFile` line. A key that is group- or world-accessible is a `[fail]`: "ssh will refuse it (chmod 600)". |
 | `host: NAME` | What `ssh -G` resolves the host to (`user@hostname:port`), which identity files it offers and whether they exist, and whether the agent holds any identity. When none of the offered files exist it says these are OpenSSH's built-in defaults and that no `Host` block matched. |
 | `fix` | Printed only after `--test-auth` finds a key that works (see Preview). |
 
@@ -140,7 +140,12 @@ remote account.
 Every connection the doctor makes passes
 `StrictHostKeyChecking=accept-new`. That is OpenSSH behaviour, not a script
 feature: the first connection to a host whose key you have never accepted
-adds that key to `~/.ssh/known_hosts` without asking.
+adds that key to `~/.ssh/known_hosts` without asking. Do not copy that
+option into your own `~/.ssh/config`: keep the default strict checking.
+Instead, compare the host's key with the fingerprints the host publishes
+(for GitHub, its documented SSH key fingerprints page) using
+`ssh-keygen -lf` on the key, then add the verified key to
+`~/.ssh/known_hosts` yourself.
 
 ## Apply
 
