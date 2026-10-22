@@ -1301,6 +1301,44 @@ if (-not $sshDoctor) {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'ssh_client_doctor reads git config from the system scope too'
+if (-not $sshDoctor) {
+    Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $sshDoctor -Name 'Get-GitConfigValue'
+    if (-not $src) {
+        Test-Fail 'ssh_client_doctor.ps1 : Get-GitConfigValue not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        # A stand-in for git: it answers `git config <scope> --get <key>`
+        # from $script:FakeGit, keyed by scope.
+        function git {
+            $scope = [string]$args[1]
+            if ($script:FakeGit.ContainsKey($scope)) {
+                $global:LASTEXITCODE = 0
+                return $script:FakeGit[$scope]
+            }
+            $global:LASTEXITCODE = 1
+        }
+        $gitScopeCases = @(
+            @{ Label = 'only the system scope sets it'; Config = @{ '--system' = 'C:/sys/ssh.exe' }; Want = 'C:/sys/ssh.exe' }
+            @{ Label = 'global outranks system'; Config = @{ '--global' = 'C:/glob/ssh.exe'; '--system' = 'C:/sys/ssh.exe' }; Want = 'C:/glob/ssh.exe' }
+            @{ Label = 'neither scope sets it'; Config = @{}; Want = '' }
+        )
+        foreach ($case in $gitScopeCases) {
+            $script:FakeGit = $case.Config
+            $got = Get-GitConfigValue -Key 'core.sshCommand'
+            if ($got -eq $case.Want) {
+                Test-Ok ("core.sshCommand, {0} -> [{1}]" -f $case.Label, $got)
+            } else {
+                Test-Fail ("core.sshCommand, {0}: got [{1}], expected [{2}]" -f $case.Label, $got, $case.Want)
+            }
+        }
+        Remove-Item Function:\git -ErrorAction SilentlyContinue
+    }
+}
+
+# --------------------------------------------------------------------------
 Write-Section 'ssh_client_doctor reads IdentityFile lines'
 if (-not $sshDoctor) {
     Test-Fail 'ssh_client_doctor.ps1 was not found among the scripts - this check has stopped checking'

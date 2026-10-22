@@ -11,4 +11,5 @@
   agent's client only when that client is positively Windows OpenSSH, and
   otherwise says agent use is not verified for it. It reads only the first
   line of each key, prints no key material, and prints the `icacls` or
-  `git config` fix instead of applying it.
+  `git config` fix instead of applying it. A `core.sshCommand` set only
+  in the system-wide git config is graded too.
