@@ -122,6 +122,8 @@ run_mixed_case "success plus absent extension" 0 "" 1 "scp: backup-*.rsc: No suc
 #   no-header     a .backup and an .rsc that is not an export
 #   lone-backup   a .backup, and no .rsc on the router
 #   none          nothing on the router
+#   rsc-error     a .backup, and the .rsc transfer fails with a permission error
+#   backup-error  a good .rsc, and the .backup transfer fails with a permission error
 #   stale         a good pair, backdated to 2020
 #   future        a good pair, stamped a day ahead of now (router clock ahead)
 #   skew          a good pair, stamped one minute ahead (within the allowed skew)
@@ -136,6 +138,8 @@ pattern="\${remote#*:}"
 missing() { printf 'scp: %s: No such file or directory\n' "\$pattern" >&2; exit 1; }
 case "$mode:\$pattern" in
   none:*) missing ;;
+  rsc-error:*.rsc) printf 'scp: /backup-1.rsc: Permission denied\n' >&2; exit 1 ;;
+  backup-error:*.backup) printf 'scp: /backup-1.backup: Permission denied\n' >&2; exit 1 ;;
   lone-backup:*.rsc) missing ;;
   empty-backup:*.backup) : >"\$dest/backup-1.backup" ;;
   no-header:*.rsc) printf '/ip address\nadd address=192.0.2.1/24\n' >"\$dest/backup-1.rsc" ;;
@@ -195,6 +199,19 @@ else
   err "verify did not publish a re-pull that passes"
 fi
 run_check_case "verify .backup without .rsc"       1 lone-backup  --verify
+# A companion transfer that failed (not the recognised "no such file") must
+# not be papered over by an archived same-named partner: the staged file is
+# rejected and the archived pair is left exactly as it was.
+for mode in rsc-error backup-error; do
+  SEED=1 run_check_case "verify $mode with an archived pair" 1 $mode --verify
+  if [[ "$(cat "$DEST/backup-1.backup" 2>/dev/null)" == "good archived backup" ]] &&
+     [[ "$(head -c 21 "$DEST/backup-1.rsc" 2>/dev/null)" == "# 2026-10-20 04:00:00" ]]; then
+    ok "verify $mode leaves the archived pair unchanged"
+  else
+    err "verify $mode replaced or removed part of the archived pair"
+  fi
+done
+SEED=1 run_check_case "verify recognised no-.rsc reuses the archived partner" 0 lone-backup --verify
 run_check_case "verify nothing pulled"             0 none         --verify
 run_check_case "max-age fresh"                     0 good         --max-age 24
 run_check_case "max-age stale"                     1 stale        --max-age 24

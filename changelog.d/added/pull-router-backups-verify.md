@@ -11,3 +11,7 @@
   copy of the same name; the run exits 1 and the earlier copy is kept.
   `--max-age` also rejects a backup stamped more than 5 minutes in the
   future (a router clock running ahead), which would otherwise look fresh.
+  When one extension's transfer fails (a permission or transport error, not
+  the "no such file" result), the other extension's file is not paired with
+  an archived copy of the missing one: it is rejected and the archived pair
+  stays coherent.

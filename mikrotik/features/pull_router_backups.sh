@@ -46,8 +46,9 @@ Options:
                      export header, and every .backup has its .rsc (and the
                      reverse). A partner pulled and accepted in the same
                      run, or already archived in dest-dir when the router
-                     sent none, pairs them. A rejected partner fails the
-                     pair. Rejected files are never published; an archived
+                     sent none, pairs them. A partner whose transfer failed
+                     (not "no such file") is not replaced by the archived
+                     one. A rejected partner fails the pair. Rejected files are never published; an archived
                      copy of the same name stays as it was
   --max-age HOURS    Fail unless a backup-*.backup pulled in this run was made
                      by the router within the last HOURS hours (a whole
@@ -230,6 +231,11 @@ cand_file=()
 cand_name=()
 ncand=0
 pulled=()
+# 1 for an extension whose transfer failed for a reason other than the
+# recognised "no such file" result: its absence from this run says nothing
+# about the router having no such file.
+xfer_failed_backup=0
+xfer_failed_rsc=0
 for ext in backup rsc; do
   mkdir "$stage/$ext"
   : >"$scp_err"
@@ -259,6 +265,7 @@ for ext in backup rsc; do
       printf 'reached %s but could not pull backup-*.%s\n' "$R" "$ext" >&2
       sed 's/^/  /' "$scp_err" >&2
       failed=1
+      if [[ "$ext" == backup ]]; then xfer_failed_backup=1; else xfer_failed_rsc=1; fi
     fi
   fi
 done
@@ -273,7 +280,11 @@ done
 # Each file must be non-empty, an .rsc must open with the export header, and a
 # .backup / .rsc must have its partner: pulled and accepted in this run, or,
 # when the router sent no partner, already in $D. A partner pulled in this run
-# and rejected does not count, whatever an older run left in $D.
+# and rejected does not count, whatever an older run left in $D. An archived
+# partner is reused only when the companion transfer reported the recognised
+# "no such file" result: if it failed for any other reason (permission,
+# transport) the archived file is not vouched for, the staged file is
+# rejected and the archived pair stays as it was.
 cand_ok=()
 i=0
 while (( i < ncand )); do
@@ -333,6 +344,12 @@ if (( VERIFY == 1 )); then
           problems=$((problems + 1))
           cand_pair[i]=0
         fi
+      elif [[ "$partner" == *.rsc && "$xfer_failed_rsc" == 1 ]] ||
+           [[ "$partner" == *.backup && "$xfer_failed_backup" == 1 ]]; then
+        printf 'verify: %s: transferring its %s failed; not pairing it with the archived copy\n' \
+          "$name" "$partner" >&2
+        problems=$((problems + 1))
+        cand_pair[i]=0
       elif [[ ! -f "$D/$partner" ]]; then
         printf 'verify: %s: no matching %s in %s\n' "$name" "$partner" "$D" >&2
         problems=$((problems + 1))
