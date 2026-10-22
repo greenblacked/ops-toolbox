@@ -93,6 +93,8 @@ save('roles-secrets', [role('app-secrets',[rule(['get'],['secrets'])],ns='demo')
 save('rb-secrets', [binding('app-secrets','app-secrets',[sa('app','demo')],ns='demo',role_kind='Role')])
 save('roles-secrets-limited', [role('tls-reader',[rule(['get'],['secrets'],names=['web-tls'])],ns='demo')])
 save('rb-secrets-limited', [binding('tls-reader','tls-reader',[sa('ingress','demo')],ns='demo',role_kind='Role')])
+save('roles-secrets-mixed', [role('mixed-reader',[rule(['get'],['secrets'],names=['web-tls']),rule(['list'],['secrets'])],ns='demo')])
+save('rb-secrets-mixed', [binding('mixed-reader','mixed-reader',[sa('ingress','demo')],ns='demo',role_kind='Role')])
 save('roles-secrets-other-group', [role('fake-secrets',[rule(['get'],['secrets'],['example.com'])],ns='demo')])
 save('rb-secrets-other-group', [binding('fake-secrets','fake-secrets',[sa('app','demo')],ns='demo',role_kind='Role')])
 save('crb-many', [binding('admin-%02d' % i,'cluster-admin',[user('user-%02d' % i)]) for i in range(60)])
@@ -232,6 +234,12 @@ export RBAC_RB=rb-secrets-limited RBAC_ROLES=roles-secrets-limited
 run_rbac
 assert_rc 'a resourceNames-limited grant is still reported' 0 "$rc"
 assert_contains 'the limit is spelled out' '(limited by resourceNames: web-tls)'
+reset_fixtures
+export RBAC_RB=rb-secrets-mixed RBAC_ROLES=roles-secrets-mixed
+run_rbac
+assert_rc 'a role with a limited and an open Secret rule is reported' 0 "$rc"
+assert_contains 'the open rule is listed' 'role demo/mixed-reader can get, list secrets; bound to:'
+assert_absent 'the limit is not claimed when another rule reads every Secret' 'limited by resourceNames'
 reset_fixtures
 export RBAC_RB=rb-secrets-other-group RBAC_ROLES=roles-secrets-other-group
 run_rbac

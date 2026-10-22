@@ -348,6 +348,7 @@ if "wildcard" in rows or "secrets" in rows:
     strong=False
     secret_verbs=set()
     limited=[]
+    open_read=False
     for rule in rules:
       verbs=rule.get("verbs") or []
       resources=rule.get("resources") or []
@@ -377,6 +378,9 @@ if "wildcard" in rows or "secrets" in rows:
           secret_verbs|=read
           if rule.get("resourceNames"):
             limited.extend(rule["resourceNames"])
+          else:
+            # One rule that reads every Secret outweighs any narrower one.
+            open_read=True
     if "wildcard" in rows and wild:
       rows["wildcard"].append(("risk" if kind == "clusterrole" and strong else "advice",
                                "%s %s grants %s" % (kind,label,"; ".join(wild)),[describe]))
@@ -384,7 +388,7 @@ if "wildcard" in rows or "secrets" in rows:
       bound=grants(kind,ns,name)
       if bound:
         scope="risk" if any(b[0] == "clusterrolebinding" for b in bound) else "advice"
-        note=" (limited by resourceNames: %s)" % ", ".join(limited) if limited else ""
+        note=" (limited by resourceNames: %s)" % ", ".join(limited) if limited and not open_read else ""
         rows["secrets"].append((scope,"%s %s can %s secrets%s; bound to: %s" % (
           kind,label,", ".join(sorted(secret_verbs)),note,"; ".join(b[1] for b in bound)),[describe]))
 HEADINGS={"cluster-admin":("cluster-admin bindings","no binding to cluster-admin outside system: names"),
