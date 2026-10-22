@@ -640,19 +640,32 @@ function Invoke-DistroBackup {
             Move-Item -LiteralPath $partSide -Destination $side -Force -ErrorAction Stop
         } catch {
             Write-Error "Could not finish the backup of '$Name' ($($_.Exception.Message))" -ErrorAction Continue
+            # Each file is put back on its own, so one that cannot be restored
+            # does not stop the other, and the message names exactly what is
+            # still out of place and where it is kept.
+            $stuck = @()
             try {
                 if ($hadTar -and (Test-Path -LiteralPath $keepTar)) {
                     Move-Item -LiteralPath $keepTar -Destination $Out -Force -ErrorAction Stop
                 } elseif (-not $hadTar -and (Test-Path -LiteralPath $Out)) {
                     Remove-Item -LiteralPath $Out -Force -ErrorAction Stop
                 }
+            } catch {
+                if ($hadTar) { $stuck += "the earlier tar is kept as $keepTar (it belongs at $Out)" }
+                else { $stuck += "the new tar could not be removed from $Out" }
+            }
+            try {
                 if ($hadSide -and (Test-Path -LiteralPath $keepSide)) {
                     Move-Item -LiteralPath $keepSide -Destination $side -Force -ErrorAction Stop
                 } elseif (-not $hadSide -and (Test-Path -LiteralPath $side)) {
                     Remove-Item -LiteralPath $side -Force -ErrorAction Stop
                 }
             } catch {
-                Write-Error "The earlier backup could not be put back; it is kept as $keepTar" -ErrorAction Continue
+                if ($hadSide) { $stuck += "the earlier sidecar is kept as $keepSide (it belongs at $side)" }
+                else { $stuck += "the new sidecar could not be removed from $side" }
+            }
+            if ($stuck.Count -gt 0) {
+                Write-Error ("The earlier backup could not be fully put back: " + ($stuck -join '; ')) -ErrorAction Continue
             }
             return $false
         }
