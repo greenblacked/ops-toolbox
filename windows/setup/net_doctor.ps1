@@ -755,7 +755,7 @@ if ((Test-Want 'probe') -and ($Probe -or $onlyGiven)) {
                     Write-Detail ('tried first, did not connect - {0}' -f $failure)
                 }
             } else {
-                Write-Warn ('TCP {0}: no resolved address connected' -f $Port)
+                Write-Warn ('TCP {0} to {1}: no resolved address connected' -f $Port, $target)
                 foreach ($failure in $result.Failures) { Write-Detail -Always $failure }
                 Write-Detail -Always 'a firewall that drops rather than refuses looks like this; so does a proxy-only network'
             }
