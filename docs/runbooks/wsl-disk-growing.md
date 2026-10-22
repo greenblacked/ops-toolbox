@@ -150,8 +150,13 @@ freed space to Windows by itself:
 .\windows\wsl\wsl_manage.ps1 sparse -Distro Ubuntu
 ```
 
-It runs `wsl --manage NAME --set-sparse true`. That needs a recent WSL; if
-it fails, the script exits `1` and suggests `wsl --update`.
+It runs `wsl --manage NAME --set-sparse true`. That needs a recent WSL. If
+it fails, the script exits `1` (its hint to run `wsl --update` is not a
+fix to rely on). Newer WSL releases may refuse sparse mode or gate it
+behind an explicit unsafe opt-in because of a risk of data corruption.
+Run `wsl --manage --help` on your machine to see what yours offers, and
+take a verified backup first (`wsl_manage.ps1 backup`) before any sparse
+change. When in doubt, prefer `compact`.
 
 To stop things yourself first, `shutdown` stops all distros and the utility
 VM, and `terminate -Distro NAME` stops one distro and leaves the others
