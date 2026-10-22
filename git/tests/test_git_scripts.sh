@@ -1361,6 +1361,31 @@ git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
 if (( rc == 0 )); then ok "a subject that merely starts with the letters WIP is allowed"; else err "WIPE was refused"; fi
 feature_tip="$(git -C "$repo" rev-parse HEAD)"
 
+# A new branch is compared with what the remote advertises, not with
+# remote-tracking refs: a stale one that still holds an unfinished commit
+# (never pushed, or deleted on the remote) must not hide it.
+git -C "$repo" switch -q -c stale-src main
+git -C "$repo" commit -q --allow-empty -m "WIP: stale spike"
+stale_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/stale-src "$stale_sha"
+git -C "$repo" switch -q -c fresh-branch
+git -C "$repo" commit -q --allow-empty -m "feat: fresh work"
+out="$(git -C "$repo" push origin fresh-branch 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a WIP commit hidden by a stale remote-tracking ref is refused on a new branch"; else err "a stale remote-tracking ref let a WIP commit through"; fi
+assert_contains "$out" "unfinished commit" "the stale-ref refusal names the unfinished commit"
+if git --git-dir="$push_origin" rev-parse -q --verify refs/heads/fresh-branch >/dev/null; then
+  err "the refused new branch reached the remote"
+else
+  ok "the refused new branch did not reach the remote"
+fi
+# Once the remote really has the commit, it is not this push's business.
+git -C "$repo" push -q --no-verify origin stale-src >/dev/null 2>&1 || err "park the WIP commit on the remote"
+git -C "$repo" push -q origin fresh-branch >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "a new branch on top of a commit the remote already has goes through"
+git -C "$repo" switch -q feature/x
+git -C "$repo" branch -q -D fresh-branch stale-src
+git -C "$repo" update-ref -d refs/remotes/origin/stale-src
+
 git -C "$repo" switch -q main
 main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
 git -C "$repo" commit -q --allow-empty -m "feat: straight onto main"

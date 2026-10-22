@@ -356,13 +356,39 @@ is_protected() {
   return 1
 }
 
-# Commits already on the remote are not this push's business. With a named
-# remote that means its remote-tracking refs; pushing to a bare URL there is
-# no name to match, so every remote-tracking ref counts.
-not_remote="--remotes"
-if [ -n "\$remote" ] && git remote get-url "\$remote" >/dev/null 2>&1; then
-  not_remote="--remotes=\$remote"
-fi
+# Commits already on the remote are not this push's business, but only the
+# remote can say what it has: remote-tracking refs go stale, and one that
+# still points at an unfinished commit would hide it from a new branch. So a
+# new branch is compared with what the remote advertises (git ls-remote),
+# asked only when a new branch is pushed. When the remote cannot be listed,
+# the newest \$scan_bound commits of the pushed history are read instead.
+scan_bound=200
+adv_ok=0
+adv_shas=""
+
+load_advertised() {
+  local target listing
+  target="\${2:-\$remote}"
+  [ -n "\$target" ] || return 0
+  listing="\$(GIT_TERMINAL_PROMPT=0 git ls-remote "\$target" 2>/dev/null)" || return 0
+  adv_ok=1
+  # Only objects this clone has can be excluded; the rest are not its history.
+  adv_shas="\$(printf '%s\\n' "\$listing" | awk 'NF >= 2 { print \$1 "^{commit}" }' |
+    git cat-file --batch-check 2>/dev/null | awk '\$2 == "commit" { print \$1 }')" || adv_shas=""
+}
+
+new_branch_subjects() {
+  local sha
+  load_advertised "\$@"
+  if [ "\$adv_ok" -eq 0 ]; then
+    git log --max-count="\$scan_bound" --format='%h %s' "\$local_sha" 2>/dev/null
+    return
+  fi
+  {
+    printf '%s\\n' "\$local_sha"
+    for sha in \$adv_shas; do printf '^%s\\n' "\$sha"; done
+  } | git log --format='%h %s' --stdin 2>/dev/null
+}
 
 while read -r _local_ref local_sha remote_ref remote_sha; do
   [ -n "\${remote_ref:-}" ] || continue
@@ -394,7 +420,7 @@ while read -r _local_ref local_sha remote_ref remote_sha; do
   if ! is_zero "\$remote_sha" && git cat-file -e "\$remote_sha^{commit}" 2>/dev/null; then
     subjects="\$(git log --format='%h %s' "\$remote_sha..\$local_sha" 2>/dev/null)" || subjects=""
   else
-    subjects="\$(git log --format='%h %s' "\$local_sha" --not "\$not_remote" 2>/dev/null)" || subjects=""
+    subjects="\$(new_branch_subjects "\$@")" || subjects=""
   fi
   while IFS= read -r line; do
     [ -n "\$line" ] || continue

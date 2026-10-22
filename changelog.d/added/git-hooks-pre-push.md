@@ -5,3 +5,5 @@
   to be squashed first. A default install is unchanged, a foreign pre-push
   hook is backed up only with `--force` and restored on uninstall, and one
   push can be let through with `git push --no-verify`.
+  For a new branch the check compares with what the remote advertises,
+  not with possibly stale remote-tracking refs.
