@@ -54,12 +54,19 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/systemd/stay_fresh_timer.sh` | Linux | Install and manage a systemd user timer. | `--dry-run` (install); `--print-only` |
 | `linux/cloud-init/kali-vm-init.yaml` | Linux | cloud-init user-data for a Kali VM (not a script). | n/a; validate with `cloud-init schema` |
 | `windows/setup/status.ps1` | Windows | One-screen verdict: OS, disk, winget, WSL, reboot, git identity. | <span class="stage stage-report">read-only</span> |
-| `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy, disk health, uptime, patch age, memory. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/net_doctor.ps1` | Windows | Adapters, routes, DNS, proxy, hosts file, listening ports; optional `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/tls_expiry.ps1` | Windows | Certificate expiry for files, TLS endpoints and the personal stores. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/hardening_audit.ps1` | Windows | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/dev_env_doctor.ps1` | Windows | Long paths, git line endings and symlinks, virtualization, clock skew, `HOME`, docker context. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/ssh_client_doctor.ps1` | Windows | Key access lists, `ssh-agent` service, Git's bundled ssh, `IdentityFile` paths. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/path_doctor.ps1` | Windows | PATH report and shadowed commands; `clean` tidies the user PATH with a backup. | `-DryRun` (clean); `-Yes` to write |
 | `windows/setup/stay_fresh.ps1` | Windows | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `windows/setup/winget_bootstrap.ps1` | Windows | Export, list, check, import, diff the winget package set. | `-DryRun` (import) |
 | `windows/setup/choco_bootstrap.ps1` | Windows | Export, list, check, install, diff Chocolatey packages. | `-DryRun` (install) |
 | `windows/setup/winget_configure.ps1` | Windows | Validate, show, test, apply `configuration.winget`. | `-DryRun` (apply) |
-| `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; deletes only with `-Yes`. | `-DryRun` |
+| `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; opt-in crash dumps, servicing logs and component store; deletes only with `-Yes`. | `-DryRun` |
+| `windows/cleanup/disk_usage.ps1` | Windows | What fills `C:` and which tool gives each item back; `tree` for one folder. | <span class="stage stage-report">read-only</span> |
 | `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, restore, prune, compact and more. | `-DryRun` (restore, prune-backups, terminate) |
 | `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
