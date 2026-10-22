@@ -322,12 +322,13 @@ else
   # ~/.gitconfig after it, so ~/.gitconfig wins for a single value; a
   # multi-valued key (--get-all) lists the XDG values first. The system
   # file is consulted only for the two settings Git for Windows' installer
-  # can put there.
+  # can put there. Every lookup runs with HOME set to the inspected home, so
+  # an include.path of ~/x resolves under it, not under the caller's home.
   user_value() {
     local file result="" part
     for file in "$xdg_gitconfig" "$gitconfig"; do
       [[ -f "$file" ]] || continue
-      part="$(git config --file "$file" --includes "$@" 2>/dev/null)"
+      part="$(HOME="$HOME_DIR" git config --file "$file" --includes "$@" 2>/dev/null)"
       [[ -n "$part" ]] || continue
       if [[ " $* " == *" --get-all "* && -n "$result" ]]; then
         result+=$'\n'"$part"
@@ -337,7 +338,7 @@ else
     done
     [[ -z "$result" ]] || printf '%s\n' "$result"
   }
-  system_value() { git config --system "$@" 2>/dev/null; }
+  system_value() { HOME="$HOME_DIR" git config --system "$@" 2>/dev/null; }
 
   longpaths="$(user_value --bool --get core.longpaths)"
   [[ -n "$longpaths" ]] || longpaths="$(system_value --bool --get core.longpaths)"
@@ -377,7 +378,7 @@ else
       if [[ -z "$source" ]]; then
         system_value --list -z
       else
-        git config --file "$source" --includes --list -z 2>/dev/null
+        HOME="$HOME_DIR" git config --file "$source" --includes --list -z 2>/dev/null
       fi
     )
   }

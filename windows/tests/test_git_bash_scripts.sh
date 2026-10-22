@@ -307,6 +307,18 @@ DOCTOR_XDG="$fx/elsewhere" run_doctor "$fx" ""
 assert_contains "with --home an ambient XDG_CONFIG_HOME is not read" "$out" "no $fx/home/.gitconfig"
 assert_not_contains "and the file it points to is not used" "$out" "core.longpaths is true"
 
+# With --home, an include.path of ~/x resolves under that home, not under the
+# caller's HOME.
+ifx="$(new_doctor_fixture)"
+mkdir -p "$ifx/caller"
+printf '[core]\n\tlongpaths = false\n' > "$ifx/caller/gitconfig-extra"
+printf '[core]\n\tlongpaths = true\n' > "$ifx/home/gitconfig-extra"
+printf '[include]\n\tpath = ~/gitconfig-extra\n[credential]\n\thelper = manager\n[user]\n\tname = a\n\temail = a@example.invalid\n' > "$ifx/home/.gitconfig"
+out="$(HOME="$ifx/caller" XDG_CONFIG_HOME="$ifx/caller/.config" \
+  PATH="$ifx/bin:$BASE_PATH" GIT_CONFIG_SYSTEM="$ifx/system-gitconfig" GIT_CONFIG_NOSYSTEM=1 \
+  "$DOCTOR" --home "$ifx/home" 2>&1)"
+assert_contains "with --home an include of ~/x resolves under that home" "$out" "core.longpaths is true"
+
 # Without --home the ambient XDG_CONFIG_HOME applies, as it does for git.
 out="$(HOME="$fx/home" XDG_CONFIG_HOME="$fx/elsewhere" \
   PATH="$fx/bin:$BASE_PATH" GIT_CONFIG_SYSTEM="$fx/system-gitconfig" GIT_CONFIG_NOSYSTEM=1 \
