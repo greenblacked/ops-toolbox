@@ -11,3 +11,6 @@
   absent is skipped, so it also runs on Linux. With `--source`, a managed file
   missing from the source directory is a failure (exit 1), so an incomplete
   source cannot pass as a clean one.
+  The global Git settings are read from both `~/.gitconfig` and the XDG file
+  (`$XDG_CONFIG_HOME/git/config`, default `~/.config/git/config`), with
+  `~/.gitconfig` winning, as Git itself resolves them.

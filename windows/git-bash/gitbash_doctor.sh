@@ -303,16 +303,33 @@ fi
 # --- git -------------------------------------------------------------------
 group "git"
 gitconfig="$HOME_DIR/.gitconfig"
+xdg_gitconfig="${XDG_CONFIG_HOME:-$HOME_DIR/.config}/git/config"
 if ! command -v git >/dev/null 2>&1; then
   skip "git not found"
-elif [[ ! -f "$gitconfig" ]]; then
-  warn "no $gitconfig: no identity, credential helper or long-path setting" \
+elif [[ ! -f "$gitconfig" && ! -f "$xdg_gitconfig" ]]; then
+  warn "no $gitconfig or $xdg_gitconfig: no identity, credential helper or long-path setting" \
     "set them with: git config --global user.name ...; git/set_git_profile.sh does all of it"
 else
-  # Read from the one file, never the ambient environment, so what is
-  # reported is what that file says. The system file is consulted only for
-  # the two settings Git for Windows' installer can put there.
-  user_value() { git config --file "$gitconfig" --includes "$@" 2>/dev/null; }
+  # Read from the two global files, never the ambient environment, so what
+  # is reported is what they say. Git reads the XDG file first and
+  # ~/.gitconfig after it, so ~/.gitconfig wins for a single value; a
+  # multi-valued key (--get-all) lists the XDG values first. The system
+  # file is consulted only for the two settings Git for Windows' installer
+  # can put there.
+  user_value() {
+    local file result="" part
+    for file in "$xdg_gitconfig" "$gitconfig"; do
+      [[ -f "$file" ]] || continue
+      part="$(git config --file "$file" --includes "$@" 2>/dev/null)"
+      [[ -n "$part" ]] || continue
+      if [[ " $* " == *" --get-all "* && -n "$result" ]]; then
+        result+=$'\n'"$part"
+      else
+        result="$part"
+      fi
+    done
+    [[ -z "$result" ]] || printf '%s\n' "$result"
+  }
   system_value() { git config --system "$@" 2>/dev/null; }
 
   longpaths="$(user_value --bool --get core.longpaths)"
@@ -347,7 +364,7 @@ else
     if [[ -n "$value" ]]; then
       pass "$key is set"
     else
-      warn "$key is not set in $gitconfig" "fix: git config --global $key ..."
+      warn "$key is not set in the global git config" "fix: git config --global $key ..."
     fi
   done
 fi

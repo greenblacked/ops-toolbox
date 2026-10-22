@@ -175,7 +175,8 @@ EOF
 run_doctor() {
   local fx="$1" prefix="$2"
   shift 2
-  out="$(HOME="$fx/home" PATH="${prefix:+$prefix:}$fx/bin:$BASE_PATH" \
+  out="$(HOME="$fx/home" XDG_CONFIG_HOME="${DOCTOR_XDG:-$fx/home/.config}" \
+    PATH="${prefix:+$prefix:}$fx/bin:$BASE_PATH" \
     GIT_CONFIG_SYSTEM="$fx/system-gitconfig" GIT_CONFIG_NOSYSTEM=1 \
     "$DOCTOR" --home "$fx/home" "$@" 2>&1)"
   rc=$?
@@ -288,6 +289,52 @@ assert_contains "core.longpaths set by an include is seen" "$out" "core.longpath
 assert_not_contains "credential.helper set by an include is seen" "$out" "no credential.helper"
 assert_not_contains "user.name set by an include is seen" "$out" "user.name is not set"
 assert_not_contains "user.email set by an include is seen" "$out" "user.email is not set"
+
+# The global config may live in the XDG file instead of ~/.gitconfig, or in
+# both; git reads the XDG file first and ~/.gitconfig after it.
+fx="$(new_doctor_fixture)"
+mkdir -p "$fx/home/.config/git"
+mv "$fx/home/.gitconfig" "$fx/home/.config/git/config"
+run_doctor "$fx" ""
+assert_not_contains "a global config only in the XDG file is not reported missing" "$out" "no $fx/home/.gitconfig"
+assert_contains "and its core.longpaths is seen" "$out" "core.longpaths is true"
+assert_not_contains "and its identity is seen" "$out" "user.name is not set"
+
+fx="$(new_doctor_fixture)"
+mkdir -p "$fx/elsewhere/git"
+mv "$fx/home/.gitconfig" "$fx/elsewhere/git/config"
+DOCTOR_XDG="$fx/elsewhere" run_doctor "$fx" ""
+assert_not_contains "XDG_CONFIG_HOME moves the XDG file that is read" "$out" "no credential.helper"
+
+fx="$(new_doctor_fixture)"
+mkdir -p "$fx/home/.config/git"
+cat > "$fx/home/.config/git/config" <<'EOF'
+[user]
+	name = Xdg User
+[core]
+	longpaths = false
+[credential]
+	helper = store
+[safe]
+	directory = *
+EOF
+cat > "$fx/home/.gitconfig" <<'EOF'
+[core]
+	longpaths = true
+[credential]
+	helper = manager
+EOF
+run_doctor "$fx" ""
+assert_contains "with both files ~/.gitconfig wins for core.longpaths" "$out" "core.longpaths is true"
+assert_contains "a credential.helper from ~/.gitconfig is the one reported" "$out" "credential.helper is set (manager)"
+assert_not_contains "a user.name only in the XDG file is seen" "$out" "user.name is not set"
+assert_contains "while user.email, in neither, is reported" "$out" "user.email is not set"
+assert_contains "and safe.directory = * in the XDG file is seen" "$out" "disables the ownership check"
+
+fx="$(new_doctor_fixture)"
+rm "$fx/home/.gitconfig"
+run_doctor "$fx" ""
+assert_contains "no global config at all is still reported" "$out" "no $fx/home/.gitconfig"
 
 fx="$(new_doctor_fixture)"
 mkdir -p "$fx/win/System32/OpenSSH"
