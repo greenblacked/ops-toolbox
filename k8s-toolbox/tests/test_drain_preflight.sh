@@ -32,16 +32,19 @@ import json, pathlib, sys
 root=pathlib.Path(sys.argv[1])
 def save(name, doc):
     (root/(name+'.json')).write_text(json.dumps(doc))
-def node(name='node-a', ready=True, unschedulable=False, taints=None):
+def node(name='node-a', ready=True, unschedulable=False, taints=None, disk=None):
     spec={}
     if unschedulable:
         spec['unschedulable']=True
     if taints:
         spec['taints']=taints
-    return {'metadata':{'name':name},'spec':spec,
+    labels={'kubernetes.io/hostname':name}
+    if disk:
+        labels['disk']=disk
+    return {'metadata':{'name':name,'labels':labels},'spec':spec,
             'status':{'conditions':[{'type':'Ready','status':'True' if ready else 'False',
                                      'reason':'KubeletReady' if ready else 'KubeletNotReady'}]}}
-def pod(name, owner='ReplicaSet', labels=None, volumes=None, phase='Running', ns='demo', annotations=None, ready=None):
+def pod(name, owner='ReplicaSet', labels=None, volumes=None, phase='Running', ns='demo', annotations=None, ready=None, spec_extra=None):
     meta={'namespace':ns,'name':name,'labels':labels or {'app':'web'}}
     if owner:
         meta['ownerReferences']=[{'kind':owner,'name':name.rsplit('-',1)[0],'controller':True}]
@@ -50,7 +53,21 @@ def pod(name, owner='ReplicaSet', labels=None, volumes=None, phase='Running', ns
     status={'phase':phase}
     if ready is not None:
         status['conditions']=[{'type':'Ready','status':'True' if ready else 'False'}]
-    return {'metadata':meta,'spec':{'nodeName':'node-a','volumes':volumes or []},'status':status}
+    spec={'nodeName':'node-a','volumes':volumes or []}
+    spec.update(spec_extra or {})
+    return {'metadata':meta,'spec':spec,'status':status}
+def affinity(*values):
+    return {'affinity':{'nodeAffinity':{'requiredDuringSchedulingIgnoredDuringExecution':{'nodeSelectorTerms':[
+        {'matchExpressions':[{'key':'kubernetes.io/hostname','operator':'In','values':list(values)}]}]}}}}
+def pvc(name, volume, ns='demo'):
+    return {'metadata':{'namespace':ns,'name':name},'spec':{'volumeName':volume}}
+def pv(name, *hosts):
+    spec={}
+    if hosts:
+        spec['nodeAffinity']={'required':{'nodeSelectorTerms':[
+            {'matchExpressions':[{'key':'kubernetes.io/hostname','operator':'In','values':list(hosts)}]}]}}
+    return {'metadata':{'name':name},'spec':spec}
+data_volume=[{'name':'data','persistentVolumeClaim':{'claimName':'web-data'}}]
 def pdb(name, allowed, selector, ns='demo', policy=None):
     spec={'selector':selector,'minAvailable':1}
     if policy:
@@ -85,7 +102,19 @@ save('pdb-zero-notin', items(pdb('web',0,{'matchExpressions':[{'key':'app','oper
 save('pdb-empty-selector', items(pdb('everything',0,{})))
 save('pdb-other-namespace', items(pdb('web',0,{'matchLabels':{'app':'web'}},ns='other')))
 save('pdb-two-match', items(pdb('web',1,{'matchLabels':{'app':'web'}}),pdb('web-also',1,{'matchExpressions':[{'key':'app','operator':'Exists'}]})))
-save('nodes-others-ready', items(node(),node('node-b'),node('node-c',unschedulable=True)))
+save('pods-selector-host', items(pod('web-7d9f8-abcde',spec_extra={'nodeSelector':{'kubernetes.io/hostname':'node-a'}})))
+save('pods-selector-label', items(pod('web-7d9f8-abcde',spec_extra={'nodeSelector':{'disk':'nvme'}})))
+save('pods-selector-movable', items(pod('web-7d9f8-abcde',spec_extra={'nodeSelector':{'disk':'ssd'}})))
+save('pods-affinity-pinned', items(pod('web-7d9f8-abcde',spec_extra=affinity('node-a'))))
+save('pods-affinity-movable', items(pod('web-7d9f8-abcde',spec_extra=affinity('node-a','node-b'))))
+save('pods-pvc-local', items(pod('web-7d9f8-abcde',volumes=data_volume)))
+save('pvc-none', items())
+save('pvc-local', items(pvc('web-data','pv-local')))
+save('pv-none', items())
+save('pv-local', items(pv('pv-local','node-a')))
+save('pv-movable', items(pv('pv-local','node-a','node-b')))
+save('pv-unpinned', items(pv('pv-local')))
+save('nodes-others-ready', items(node(disk='nvme'),node('node-b',disk='ssd'),node('node-c',unschedulable=True,disk='nvme')))
 save('nodes-only-self', items(node(),node('node-b',ready=False),node('node-c',unschedulable=True)))
 (root/'malformed.json').write_text('{broken')
 (root/'missing-items.json').write_text('{}')
@@ -112,6 +141,8 @@ case " $* " in
     resource=pods; fixture="$DRAIN_PODS" ;;
   *" get pdb "*) resource=pdb; fixture="$DRAIN_PDB" ;;
   *" get nodes "*) resource=nodes; fixture="$DRAIN_NODES" ;;
+  *" get pvc "*) resource=pvc; fixture="$DRAIN_PVC" ;;
+  *" get pv "*) resource=pv; fixture="$DRAIN_PV" ;;
   *) printf 'unexpected stub command: %s\n' "$*" >&2; exit 99 ;;
 esac
 if [[ "$resource" == "$DRAIN_FAIL_RESOURCE" ]]; then exit 1; fi
@@ -132,22 +163,24 @@ run_drain() {
   cat "$DRAIN_CALLS" >> "$ALL_CALLS"
 }
 reset_fixtures() {
-  export DRAIN_NODE=node-ready DRAIN_PODS=pods-clean DRAIN_PDB=pdb-allows-one DRAIN_NODES=nodes-others-ready
+  export DRAIN_NODE=node-ready DRAIN_PODS=pods-clean DRAIN_PDB=pdb-allows-one DRAIN_NODES=nodes-others-ready DRAIN_PVC=pvc-none DRAIN_PV=pv-none
   export DRAIN_FAIL_RESOURCE='' DRAIN_EMPTY_RESOURCE='' DRAIN_BAD_RESOURCE='' DRAIN_BAD_FIXTURE=malformed
 }
 
 printf '\n--- A node with nothing in the way ---\n'
 reset_fixtures
 run_drain --node node-a
-assert_rc 'replicated pods with room to move -> safe exit 4' 4 "$rc"
-assert_contains 'safe verdict' 'safe to drain: no blockers and nothing to note'
+assert_rc 'replicated pods with room to move -> nothing to report exit 4' 4 "$rc"
+assert_contains 'verdict names the absence of blockers and the limit' 'no blockers found and nothing to note (placement of evicted pods is not simulated: taints, affinity, resources, topology)'
+assert_absent 'the verdict never says safe' 'safe to drain'
 assert_contains 'cordon command is printed' 'next      kubectl cordon node-a'
 assert_contains 'drain command carries only the default flags' 'next      kubectl drain node-a --ignore-daemonsets --timeout=300s'
 assert_contains 'pods are counted' 'pods      2 to evict'
 assert_absent 'nothing to block' 'BLOCKER'
 calls="$(cat "$DRAIN_CALLS")"
 for query in 'get node node-a -o json' 'get pods --all-namespaces --field-selector spec.nodeName=node-a -o json' \
-             'get pdb --all-namespaces -o json' 'get nodes -o json'; do
+             'get pdb --all-namespaces -o json' 'get nodes -o json' \
+             'get pvc --all-namespaces -o json' 'get pv -o json'; do
   if [[ "$calls" == *"$query"* ]]; then ok "queried: $query"; else err "missing query '$query': $calls"; fi
 done
 
@@ -156,7 +189,9 @@ for case_ in \
   'DRAIN_PDB|pdb-zero-notin|a NotIn selector that excludes the pods does not apply' \
   'DRAIN_PODS|pods-daemonset-only|DaemonSet pods are skipped by --ignore-daemonsets' \
   'DRAIN_PODS|pods-mirror|static mirror pods are left alone' \
-  'DRAIN_PODS|pods-terminal|finished pods are ignored'
+  'DRAIN_PODS|pods-terminal|finished pods are ignored' \
+  'DRAIN_PODS|pods-selector-movable|a nodeSelector another node satisfies can move' \
+  'DRAIN_PODS|pods-affinity-movable|a required affinity another node satisfies can move'
 do
   IFS='|' read -r var fixture label <<<"$case_"
   reset_fixtures
@@ -197,7 +232,30 @@ do
   assert_rc "$fixture -> findings exit 0" 0 "$rc"
   assert_contains "$fixture blocker" "$want"
   assert_contains "$fixture asks for the blockers to be resolved" 'blocker(s): resolve them before draining'
-  assert_absent "$fixture is not called safe" 'safe to drain'
+  assert_absent "$fixture gets no clean verdict" 'placement of evicted pods is not simulated'
+done
+for case_ in \
+  'DRAIN_PODS|pods-selector-host|pvc-none|pv-none|BLOCKER   pod demo/web-7d9f8-abcde cannot move: its nodeSelector or required nodeAffinity matches no other Ready schedulable node' \
+  'DRAIN_PODS|pods-selector-label|pvc-none|pv-none|BLOCKER   pod demo/web-7d9f8-abcde cannot move: its nodeSelector or required nodeAffinity matches no other Ready schedulable node' \
+  'DRAIN_PODS|pods-affinity-pinned|pvc-none|pv-none|BLOCKER   pod demo/web-7d9f8-abcde cannot move: its nodeSelector or required nodeAffinity matches no other Ready schedulable node' \
+  'DRAIN_PODS|pods-pvc-local|pvc-local|pv-local|BLOCKER   pod demo/web-7d9f8-abcde cannot move: PVC web-data is bound to PV pv-local, whose nodeAffinity matches no other Ready schedulable node'
+do
+  IFS='|' read -r var fixture pvc_fixture pv_fixture want <<<"$case_"
+  reset_fixtures
+  export "$var=$fixture"
+  export DRAIN_PVC="$pvc_fixture" DRAIN_PV="$pv_fixture"
+  run_drain --node node-a
+  assert_rc "$fixture -> findings exit 0" 0 "$rc"
+  assert_contains "$fixture blocker" "$want"
+  assert_absent "$fixture gets no clean verdict" 'placement of evicted pods is not simulated'
+done
+for pv_fixture in pv-movable pv-unpinned; do
+  reset_fixtures
+  export DRAIN_PODS=pods-pvc-local DRAIN_PVC=pvc-local DRAIN_PV="$pv_fixture"
+  run_drain --node node-a
+  assert_absent "a volume that $pv_fixture allows elsewhere does not block" 'BLOCKER'
+  assert_contains "$pv_fixture still gets the PVC note" 'NOTE      pod demo/web-7d9f8-abcde mounts PVC web-data'
+  assert_contains "$pv_fixture verdict carries the placement caveat" 'placement of evicted pods is not simulated'
 done
 reset_fixtures
 export DRAIN_PODS=pods-unready DRAIN_PDB=pdb-zero-alwaysallow
@@ -247,7 +305,7 @@ run_drain --node node-a
 assert_contains 'emptyDir adds only --delete-emptydir-data' 'next      kubectl drain node-a --ignore-daemonsets --delete-emptydir-data --timeout=300s'
 
 printf '\n--- Failed queries and malformed JSON never give a verdict ---\n'
-for resource in node pods pdb nodes; do
+for resource in node pods pdb nodes pvc pv; do
   for mode in query empty malformed missing-items invalid-items invalid-entry; do
     reset_fixtures
     case "$mode" in
@@ -259,7 +317,8 @@ for resource in node pods pdb nodes; do
     assert_rc "$resource $mode -> incomplete exit 1" 1 "$rc"
     assert_contains "$resource $mode reported" 'could not'
     assert_contains "$resource $mode says there is no verdict" 'drain preflight incomplete, no verdict'
-    assert_absent "$resource $mode never calls the node safe" 'safe to drain'
+    assert_absent "$resource $mode never gives a clean verdict" 'placement of evicted pods is not simulated'
+    assert_absent "$resource $mode never says no blockers found" 'no blockers found'
     assert_absent "$resource $mode prints no drain command" 'kubectl drain node-a'
     if [[ "$(cat "$DRAIN_CALLS")" == *'get nodes -o json'* ]]; then
       ok "$resource $mode still ran every query"

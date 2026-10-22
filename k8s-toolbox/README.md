@@ -367,8 +367,9 @@ commands that would:
 ./kubectl_drain_preflight.sh --node gke-pool-1-abcd --context prod
 ```
 
-It reads the node, the pods scheduled on it, every PodDisruptionBudget and the
-other nodes, then reports:
+It reads the node, the pods scheduled on it, every PodDisruptionBudget, the
+other nodes, and the PersistentVolumeClaims and PersistentVolumes, then
+reports:
 
 - **BLOCKER** lines, for what makes `kubectl drain` hang or refuse: a pod
   covered by a PodDisruptionBudget whose `disruptionsAllowed` is `0` (the
@@ -376,8 +377,12 @@ other nodes, then reports:
   when the budget sets `unhealthyPodEvictionPolicy: AlwaysAllow`; a Pending
   pod is never held by a budget), a pod covered by more than one
   budget (the eviction API refuses it), a pod with no controller (drain
-  refuses it without `--force`, and nothing would recreate it), and no other
-  node that is Ready and schedulable when there are pods to move.
+  refuses it without `--force`, and nothing would recreate it), no other
+  node that is Ready and schedulable when there are pods to move, a pod whose
+  `nodeSelector` or required `nodeAffinity` no other Ready schedulable node
+  satisfies (for example `kubernetes.io/hostname` set to this node), and a
+  pod whose PVC is bound to a PersistentVolume with a `nodeAffinity` that no
+  other Ready schedulable node satisfies (a local volume).
 - **NOTE** lines, for what a drain does that is easy to regret: an `emptyDir`
   volume whose data is lost (`--delete-emptydir-data`), a pod bound to a PVC
   that can only restart where its volume can attach (a zonal disk stays in
@@ -398,10 +403,15 @@ added only when a finding needs it, and a warning that `--force` deletes the
 pods with no controller for good. Both are printed, never run, and name the
 `--context` that was read.
 
+Where the evicted pods land is not simulated: taints and tolerations,
+resource requests, topology spread, preferred affinity and zones are not
+checked, so a clean run reads "no blockers found", never "safe". The
+placement blockers above are only the certain cases.
+
 Exit codes: `0` blockers or notes reported, `1` a query or JSON filter failed,
 in which case there is no verdict and no command to paste, `2` no `kubectl` or
 `python3`, or no reachable cluster, `3` usage (`--node` is required), and `4`
-nothing to report: safe to drain.
+nothing to report: no blockers found.
 
 ## Check node capacity
 

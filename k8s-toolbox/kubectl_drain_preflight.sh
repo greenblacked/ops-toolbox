@@ -12,7 +12,7 @@
 #   1 query or JSON parsing failed (no verdict)
 #   2 kubectl or python3 missing / cannot reach cluster
 #   3 bad arguments
-#   4 nothing to report: safe to drain
+#   4 nothing to report: no blockers found
 set -euo pipefail
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
@@ -46,11 +46,15 @@ Usage:
 Reports what would stall or hurt a drain before anything is cordoned:
 BLOCKER lines for pods covered by a PodDisruptionBudget that allows no
 disruption (or by more than one budget), pods with no controller, and no
-other Ready, schedulable node to move to; NOTE lines for emptyDir data that
+other Ready, schedulable node to move to, and pods whose nodeSelector,
+required nodeAffinity or bound volume (a local PersistentVolume) no other
+Ready, schedulable node satisfies; NOTE lines for emptyDir data that
 would be lost, pods bound to a PVC, and StatefulSet pods. DaemonSet, static
 and finished pods are counted and left out, as kubectl drain leaves them.
-Then it prints the kubectl cordon and kubectl drain commands with only the
-flags this node needs. It never runs them.
+Where evicted pods land is not simulated (taints, resources, topology, soft
+affinity), so a clean run means no blockers found, not a promise. Then it
+prints the kubectl cordon and kubectl drain commands with only the flags
+this node needs. It never runs them.
 
 Options:
   --node NAME             Node to check (required)
@@ -59,7 +63,7 @@ Options:
 
 Exit codes: 0 blockers or notes reported, 1 query or JSON parsing error
             (no verdict), 2 wrong environment, 3 usage,
-            4 nothing to report: safe to drain
+            4 nothing to report: no blockers found
 EOF
 }
 
@@ -147,19 +151,23 @@ fetch "list PodDisruptionBudgets" pdb --all-namespaces
 pdb_json="$FETCHED"
 fetch "list nodes" nodes
 nodes_json="$FETCHED"
+fetch "list PersistentVolumeClaims" pvc --all-namespaces
+pvc_json="$FETCHED"
+fetch "list PersistentVolumes" pv
+pv_json="$FETCHED"
 FETCHED=""
 
-# The four documents travel on one pipe, split by the ASCII record separator,
+# The six documents travel on one pipe, split by the ASCII record separator,
 # which valid JSON cannot contain unescaped.
 RS=$'\x1e'
 NEED_EMPTYDIR=0
 NEED_FORCE=0
-if ! report="$(printf '%s%s%s%s%s%s%s' "$node_json" "$RS" "$pod_json" "$RS" "$pdb_json" "$RS" "$nodes_json" | python3 -c '
+if ! report="$(printf '%s%s%s%s%s%s%s%s%s%s%s' "$node_json" "$RS" "$pod_json" "$RS" "$pdb_json" "$RS" "$nodes_json" "$RS" "$pvc_json" "$RS" "$pv_json" | python3 -c '
 import json,sys
 node_name=sys.argv[1]
 parts=sys.stdin.read().split("\x1e")
-if len(parts) != 4:
-  raise ValueError("expected four documents")
+if len(parts) != 6:
+  raise ValueError("expected six documents")
 out=[]
 def load(raw,what,single=False):
   # An empty part is a query that already failed and was counted.
@@ -185,6 +193,8 @@ node=load(parts[0],"node",True)
 pods=load(parts[1],"pods")
 pdbs=load(parts[2],"PodDisruptionBudgets")
 nodes=load(parts[3],"nodes")
+pvcs=load(parts[4],"PersistentVolumeClaims")
+pvs=load(parts[5],"PersistentVolumes")
 def matches(selector,labels):
   # policy/v1: an empty selector matches every pod in the namespace, a
   # missing one matches none.
@@ -214,6 +224,52 @@ def matches(selector,labels):
     else:
       raise ValueError("unknown selector operator")
   return True
+def expr_ok(e,labels):
+  # One node-selector requirement. Anything this does not understand counts
+  # as satisfiable, so only a certain mismatch is ever reported.
+  key=e.get("key")
+  op=e.get("operator")
+  values=e.get("values") or []
+  if op == "In":
+    return key in labels and labels[key] in values
+  if op == "NotIn":
+    return not (key in labels and labels[key] in values)
+  if op == "Exists":
+    return key in labels
+  if op == "DoesNotExist":
+    return key not in labels
+  if op in ("Gt","Lt"):
+    try:
+      want=int(values[0])
+    except (IndexError,ValueError,TypeError):
+      return True
+    try:
+      have=int(labels[key])
+    except (KeyError,ValueError,TypeError):
+      return False
+    return have > want if op == "Gt" else have < want
+  return True
+def terms_ok(terms,n):
+  # nodeSelectorTerms are ORed, the requirements inside one term are ANDed.
+  if not terms:
+    return True
+  labels=(n.get("metadata") or {}).get("labels") or {}
+  fields={"metadata.name":n["metadata"]["name"]}
+  for t in terms:
+    good=all(expr_ok(e,labels) for e in t.get("matchExpressions") or [])
+    for e in t.get("matchFields") or []:
+      if e.get("key") in fields and not expr_ok(e,fields):
+        good=False
+    if good:
+      return True
+  return False
+def pod_fits(spec,n):
+  labels=(n.get("metadata") or {}).get("labels") or {}
+  for key,value in (spec.get("nodeSelector") or {}).items():
+    if labels.get(key) != value:
+      return False
+  req=((spec.get("affinity") or {}).get("nodeAffinity") or {}).get("requiredDuringSchedulingIgnoredDuringExecution") or {}
+  return terms_ok(req.get("nodeSelectorTerms"),n)
 def ready(n):
   for c in (n.get("status") or {}).get("conditions") or []:
     if c.get("type") == "Ready":
@@ -296,10 +352,32 @@ if pods is not None:
             and ready(n)[0] and (n.get("spec") or {}).get("unschedulable") is not True]
     if not others:
       blockers.append("no other node is Ready and schedulable: %d evicted pod(s) cannot reschedule anywhere" % len(evictable))
+    else:
+      # Only the certain cases: a required nodeSelector or nodeAffinity, or
+      # a bound volume, that no other Ready schedulable node satisfies.
+      claims_by={((c.get("metadata") or {}).get("namespace",""),c["metadata"]["name"]):c for c in pvcs or []}
+      pv_by={v["metadata"]["name"]:v for v in pvs or []}
+      for p in evictable:
+        meta=p.get("metadata") or {}
+        spec=p.get("spec") or {}
+        label="pod %s/%s" % (meta.get("namespace",""),meta["name"])
+        if not any(pod_fits(spec,n) for n in others):
+          blockers.append("%s cannot move: its nodeSelector or required nodeAffinity matches no other Ready schedulable node" % label)
+        if pvcs is None or pvs is None:
+          continue
+        for v in spec.get("volumes") or []:
+          claim=(v.get("persistentVolumeClaim") or {}).get("claimName")
+          bound=((claims_by.get((meta.get("namespace",""),claim)) or {}).get("spec") or {}).get("volumeName")
+          pv=pv_by.get(bound)
+          if pv is None:
+            continue
+          terms=((((pv.get("spec") or {}).get("nodeAffinity") or {}).get("required")) or {}).get("nodeSelectorTerms")
+          if terms and not any(terms_ok(terms,n) for n in others):
+            blockers.append("%s cannot move: PVC %s is bound to PV %s, whose nodeAffinity matches no other Ready schedulable node (a local volume stays on its node)" % (label,claim,bound))
 out.append("S\tBlockers")
 out.extend("B\t"+b for b in blockers)
-if not blockers and pods is not None and pdbs is not None and nodes is not None:
-  out.append("Q\tno blockers")
+if not blockers and node is not None and pods is not None and pdbs is not None and nodes is not None and pvcs is not None and pvs is not None:
+  out.append("Q\tno blockers found")
 out.append("S\tNotes")
 out.extend("O\t"+n for n in notes)
 if not notes and pods is not None:
@@ -345,13 +423,14 @@ if (( NEED_FORCE == 1 )); then
 fi
 drain_cmd="$drain_cmd --timeout=300s"
 
+placement="placement of evicted pods is not simulated: taints, affinity, resources, topology"
 if (( FINDINGS == 0 )); then
-  ok "safe to drain: no blockers and nothing to note"
+  ok "no blockers found and nothing to note ($placement)"
 elif (( BLOCKERS > 0 )); then
   warn "${BLOCKERS} blocker(s): resolve them before draining"
   info "${FINDINGS} finding(s)"
 else
-  info "${FINDINGS} finding(s); read the notes before draining"
+  info "${FINDINGS} finding(s); read the notes before draining ($placement)"
 fi
 next_step "kubectl cordon $NODE"
 next_step "$drain_cmd"
