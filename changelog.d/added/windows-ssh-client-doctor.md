@@ -7,6 +7,8 @@
   service that is still Disabled, and Git's bundled ssh that cannot see
   the keys in the Windows agent, whether by default or because
   `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` (the first one set,
-  as git decides) pins it. It reads only the first line of each key,
-  prints no key material, and prints the `icacls` or `git config` fix
-  instead of applying it.
+  as git decides) pins it. It reports that git and ssh agree on the
+  agent's client only when that client is positively Windows OpenSSH, and
+  otherwise says agent use is not verified for it. It reads only the first
+  line of each key, prints no key material, and prints the `icacls` or
+  `git config` fix instead of applying it.

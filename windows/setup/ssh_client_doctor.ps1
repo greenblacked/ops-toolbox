@@ -273,6 +273,7 @@ function Get-SshClientFinding {
     # set). Only the winning one counts.
     $source = ''
     $chosen = ''
+    $pinned = ''
     if ($GitSshCommandEnv) { $source = 'GIT_SSH_COMMAND'; $chosen = $GitSshCommandEnv }
     elseif ($GitSshCommand) { $source = 'core.sshCommand'; $chosen = $GitSshCommand }
     elseif ($GitSshEnv) { $source = 'GIT_SSH'; $chosen = $GitSshEnv }
@@ -314,6 +315,35 @@ function Get-SshClientFinding {
             Id = 'two-clients'; Level = 'warn'
             Message = "git will use its own ssh, which cannot see the keys in the Windows ssh-agent"
             Fix = 'git config --global core.sshCommand "C:/Windows/System32/OpenSSH/ssh.exe"'
+        }
+    }
+
+    # "Git and ssh agree" is a claim about the Windows agent, so it is made
+    # only when the client git will run is positively Windows OpenSSH: the
+    # pinned one, or, with nothing pinned, the only client there is. Anything
+    # else (plink, a wrapper script, a bare 'ssh' with options, Git's own ssh
+    # with no pin) is not verified, and says so instead of passing.
+    if ($AgentRunning -and @($findings | Where-Object { $_.Level -eq 'warn' }).Count -eq 0) {
+        $windowsSsh = '\\System32\\OpenSSH\\ssh(\.exe)?$'
+        $client = ''
+        $verified = $false
+        if ($source) {
+            $client = $pinned
+            $verified = ($pinned -match $windowsSsh)
+        } else {
+            $client = $Clients[0]
+            $verified = (@($kinds | Where-Object { $_ -ne 'windows-openssh' }).Count -eq 0)
+        }
+        if ($verified) {
+            $findings += [pscustomobject]@{
+                Id = 'agent-client'; Level = 'pass'
+                Message = 'git and ssh agree on which client the agent serves'; Fix = ''
+            }
+        } else {
+            $findings += [pscustomobject]@{
+                Id = 'agent-client-unverified'; Level = 'info'
+                Message = "agent use not verified for $client"; Fix = ''
+            }
         }
     }
     return $findings
@@ -520,11 +550,9 @@ foreach ($finding in $clientFindings) {
     switch ($finding.Level) {
         'warn' { Write-Warn -Message $finding.Message -Hint @($finding.Fix) }
         'skip' { Write-Skip $finding.Message }
+        'pass' { Write-Pass $finding.Message }
         default { Write-Info $finding.Message }
     }
-}
-if ($agentRunning -and @($clientFindings | Where-Object { $_.Level -eq 'warn' }).Count -eq 0) {
-    Write-Pass 'git and ssh agree on which client the agent serves'
 }
 
 # --- keys -------------------------------------------------------------------
