@@ -488,6 +488,55 @@ PLAINTEXT_HOSTS_AWK='
 END { print n + 0 }
 '
 
+# True when the config, or a file one of its Include lines pulls in, has a
+# Match line with an exec criterion: ssh -G would run that command. Includes
+# are followed (globs too, relative to ~/.ssh, ~ as the inspected home and as
+# the real one) to a depth of 5. Reads only; nothing is run or written.
+ssh_config_runs_exec() {
+  local file="$1" depth="${2:-0}" line low w pat c f
+  local -a words cands
+  (( depth <= 5 )) || return 1
+  [[ -r "$file" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    low="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]' | tr '\t=' '  ')"
+    case "$low" in
+      *[![:space:]]*) ;;
+      *) continue ;;
+    esac
+    read -r -a words <<<"$low"
+    case "${words[0]:-}" in
+      match)
+        (( ${#words[@]} > 1 )) || continue
+        for w in "${words[@]:1}"; do
+          [[ "$w" == '#'* ]] && break
+          [[ "$w" == exec || "$w" == '"exec"' ]] && return 0
+        done
+        ;;
+      include)
+        read -r -a words <<<"$line"
+        (( ${#words[@]} > 1 )) || continue
+        for pat in "${words[@]:1}"; do
+          [[ "$pat" == '#'* ]] && break
+          pat="${pat//\"/}"
+          cands=()
+          case "$pat" in
+            [~]/*) cands=("$HOME_DIR/${pat#??}" "${HOME:-$HOME_DIR}/${pat#??}") ;;
+            /*) cands=("$pat") ;;
+            *) cands=("$HOME_DIR/.ssh/$pat") ;;
+          esac
+          for c in "${cands[@]}"; do
+            # shellcheck disable=SC2086  # the glob is the point
+            for f in $c; do
+              [[ -f "$f" ]] && ssh_config_runs_exec "$f" $((depth + 1)) && return 0
+            done
+          done
+        done
+        ;;
+    esac
+  done <"$file"
+  return 1
+}
+
 # ssh -G resolves the config for a host without connecting and refuses on
 # any line it cannot parse. HOME points ssh at the inspected home, but OpenSSH
 # expands ~ in Include from the account's passwd entry, so under a --home that
@@ -507,14 +556,20 @@ check_ssh() {
   hk=""
   if [[ ! -f "$cfg" ]]; then
     skip "ssh config: no $cfg"
-  elif gout="$(HOME="$HOME_DIR" ssh -G -F "$cfg" example.invalid 2>/dev/null)"; then
-    pass "ssh accepts $cfg"
-    hk="$(awk '$1 == "hashknownhosts" { print $2; exit }' <<<"$gout")"
+  elif ssh_config_runs_exec "$cfg"; then
+    # ssh -G evaluates Match exec, i.e. runs the command: not read-only.
+    warn "ssh config not validated: config uses Match exec, which ssh -G would run" \
+      "$cfg (or a file it includes) has a Match line with exec; check it by hand"
   else
-    # Run again for the message alone: stdout and stderr are wanted apart, and
-    # -G only reads files, so a second run costs nothing and writes nothing.
-    first="$(HOME="$HOME_DIR" ssh -G -F "$cfg" example.invalid 2>&1 >/dev/null | sed -n 1p)"
-    fail "ssh rejects $cfg" "${first:-ssh -G -F $cfg example.invalid exited non-zero}"
+    # One run, stderr merged: on a failure the first line is ssh's message,
+    # and the options are read from the output only on success.
+    if gout="$(HOME="$HOME_DIR" ssh -G -F "$cfg" example.invalid 2>&1)"; then
+      pass "ssh accepts $cfg"
+      hk="$(awk '$1 == "hashknownhosts" { print $2; exit }' <<<"$gout")"
+    else
+      first="$(sed -n 1p <<<"$gout")"
+      fail "ssh rejects $cfg" "${first:-ssh -G -F $cfg example.invalid exited non-zero}"
+    fi
   fi
 
   kh="$dir/known_hosts"

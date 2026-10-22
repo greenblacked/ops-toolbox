@@ -403,6 +403,21 @@ if command -v ssh >/dev/null 2>&1; then
   assert_contains "the rejected config is named" "$out" "[FAIL] ssh rejects $H/.ssh/config"
   if [[ "$before" == "$after" ]]; then ok "the ssh check wrote nothing"; else err "the ssh check wrote into the home or tmp"; fi
 
+  # Match exec: ssh -G would run the command, so the doctor must not ask.
+  marker="$T/match-exec-marker"; rm -f "$marker"
+  mkdir -p "$H/.ssh/config.d"
+  printf 'Include config.d/*\nHost *\n  User x\n' > "$H/.ssh/config"
+  printf 'Host a\nMATCH host a Exec "touch %s"\n' "$marker" > "$H/.ssh/config.d/x.conf"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "Match exec in an include is reported" "$out" "config uses Match exec, which ssh -G would run"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec command"; else ok "the Match exec command never ran"; fi
+  printf 'Match exec "touch %s"\n' "$marker" > "$H/.ssh/config"
+  rm -rf "$H/.ssh/config.d"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "Match exec in the main config is reported" "$out" "config uses Match exec"
+  if [[ -e "$marker" ]]; then err "the doctor ran a Match exec command"; else ok "the Match exec command never ran"; fi
+  printf 'BogusOption yes\n' > "$H/.ssh/config"
+
   # The shipped config, which turns HashKnownHosts on.
   cp "$D/home/.ssh/config" "$H/.ssh/config"
   out="$(run_doctor --platform linux 2>&1)"; rc=$?

@@ -376,7 +376,7 @@ never a failure:
 
 | Check | Finding | Fix printed |
 | --- | --- | --- |
-| `ssh -G` accepts `~/.ssh/config` | `[FAIL]` with ssh's first error line: a typo in a config file makes every ssh fail | — |
+| `ssh -G` accepts `~/.ssh/config` | `[FAIL]` with ssh's first error line: a typo in a config file makes every ssh fail; `[warn]` and no probe when a `Match` line uses `exec` | — |
 | `known_hosts` with `HashKnownHosts yes` in effect | `[warn]` with the number of plaintext host entries; host names are never printed | `ssh-keygen -H -f ~/.ssh/known_hosts`, which keeps a `.old` copy to delete |
 | `~/.ssh/cm-*` sockets older than a day | `[warn]`: with `ControlPersist 10m` these are masters that were killed rather than closed, and they cause `Control socket connect: Connection refused` | `rm ~/.ssh/cm-*`, or `ssh -O check` one first; the doctor never removes or connects to one |
 | `user.name` and `user.email`, read with `git config --global --includes` | `[warn]` when either is missing; only presence is reported, never a value | the `git config --file ~/.config/git/config.local` line from above |
@@ -389,8 +389,10 @@ dropped, so neither the caller's environment nor the real home answers. One
 caveat for `--home`: OpenSSH expands `~` in `Include` from the account's
 passwd entry rather than from `HOME`, so under a `--home` that is not your
 own the `config.d` files are not read; the main file still is. `ssh -G`
-connects to nothing, but it does evaluate `Match exec` lines in your config,
-as every ssh would.
+connects to nothing, but it evaluates `Match exec` lines, so the doctor
+scans the config and its `Include` files first (globs relative to `~/.ssh`,
+five levels deep) and, if any `Match` line has an `exec` criterion, warns
+and skips `ssh -G` rather than run the command.
 
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
 `2` preflight — no home directory, or a `--repo` without `config/` and
