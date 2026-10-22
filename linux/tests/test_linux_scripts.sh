@@ -2529,6 +2529,18 @@ assert_contains "ssh_client_doctor still warns on a Host * keyword no earlier bl
   "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
 assert_not_contains "ssh_client_doctor still spares the keyword an earlier block set" \
   "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+# The same unsafe value earlier and under Host *: every host gets it, so it
+# stays universal. A different earlier value demotes it (tested above).
+printf '%s\n' 'Host build-*' '  StrictHostKeyChecking no' '  ForwardAgent yes' \
+  'Host *' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor still fails Host * when an earlier block has the same unsafe value" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" | grep -F 'for every host' || true)" "[FAIL]"
+assert_contains "ssh_client_doctor still warns ForwardAgent for every host after the same value" \
+  "$(grep -F 'ForwardAgent' <<<"$out" | grep -F 'for every host' || true)" "[warn]"
+assert_not_contains "ssh_client_doctor does not say everything is fine when every host is weakened" \
+  "$out" "no config setting weakens every connection"
+assert_eq "ssh_client_doctor same-value Host * after an earlier block -> 1" "1" "$rc"
 
 out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
 assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"

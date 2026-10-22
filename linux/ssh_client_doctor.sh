@@ -553,6 +553,16 @@ if want risks; then
     global_ids=0
     global_only=0
     seen_keys=","
+    seen_vals=""
+    # Succeeds when an earlier line set KEY to something other than VALUE.
+    earlier_value_differs() {
+      local want_key="$1" want_val="$2" line
+      while IFS= read -r line; do
+        [[ "$line" == "$want_key="* ]] || continue
+        [[ "${line#*=}" == "$want_val" ]] || return 0
+      done <<< "$seen_vals"
+      return 1
+    }
     while IFS= read -r line || [[ -n "$line" ]]; do
       ln=$((ln + 1))
       trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -609,7 +619,9 @@ if want risks; then
       line_only="$scope_only"
       case "$key_lc" in
         stricthostkeychecking|userknownhostsfile|forwardagent|forwardx11|forwardx11trusted|passwordauthentication|identitiesonly)
-          if [[ "$seen_keys" == *",$key_lc,"* ]]; then
+          # Same value earlier: every host ends up with it, so a Host * line
+          # stays universal. Only a different earlier value demotes it.
+          if [[ "$seen_keys" == *",$key_lc,"* ]] && earlier_value_differs "$key_lc" "$val_lc"; then
             line_all=0
             line_only="for hosts not matched by an earlier block that sets it"
           fi
@@ -669,6 +681,7 @@ if want risks; then
           ;;
       esac
       seen_keys="${seen_keys}${key_lc},"
+      seen_vals="${seen_vals}${key_lc}=${val_lc}"$'\n'
     done < "$config"
     if (( global_ids >= 2 && global_only == 0 )); then
       info "ssh offers every key to every server: $global_ids IdentityFile lines apply to all hosts and IdentitiesOnly is not yes"
