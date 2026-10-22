@@ -2504,12 +2504,26 @@ for dm in 775 777 770 757 2775 1777; do
   chmod "$dm" "$sshd_dir"
   out="$(sshdoc --only dir)"; rc=$?
   assert_eq "a $dm ~/.ssh fails -> 1" "1" "$rc"
-  assert_contains "a $dm ~/.ssh is called writable" "$out" "[FAIL] $sshd_dir mode $dm is writable by group or other"
+  # BSD stat drops the setgid/sticky digit (2775 reads 775), GNU stat keeps
+  # it, so the verdict is matched with either spelling of the mode.
+  want="[FAIL] $sshd_dir mode $dm is writable by group or other"
+  want3="[FAIL] $sshd_dir mode ${dm#?} is writable by group or other"
+  case "$dm" in
+    ???) want3="$want" ;;
+  esac
+  case "$out" in
+    *"$want"*|*"$want3"*) assert_eq "a $dm ~/.ssh is called writable" "ok" "ok" ;;
+    *) assert_eq "a $dm ~/.ssh is called writable" "$want" "$out" ;;
+  esac
 done
 chmod 2700 "$sshd_dir"
 out="$(sshdoc --only dir)"; rc=$?
 assert_eq "a setgid 2700 ~/.ssh is private -> 0" "0" "$rc"
-assert_contains "a 2700 ~/.ssh passes" "$out" "[pass] $sshd_dir mode 2700"
+case "$out" in
+  *"[pass] $sshd_dir mode 2700"*|*"[pass] $sshd_dir mode 700"*)
+    assert_eq "a 2700 ~/.ssh passes" "ok" "ok" ;;
+  *) assert_eq "a 2700 ~/.ssh passes" "[pass] $sshd_dir mode 2700" "$out" ;;
+esac
 chmod 700 "$sshd_dir"
 
 chmod 644 "$sshd_dir/id_ed25519"
