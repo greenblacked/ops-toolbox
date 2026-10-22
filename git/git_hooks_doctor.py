@@ -165,6 +165,13 @@ HOOK_NAMES = frozenset((
     "p4-prepare-changelist", "p4-post-changelist", "p4-pre-submit",
     "post-index-change",
 ))
+# Hooks git runs in a push target with $GIT_DIR as the working directory, so
+# a relative core.hooksPath is read from there, not from the work tree root
+# (githooks(5); reference-transaction also runs there for pushed updates).
+RECEIVE_HOOKS = frozenset((
+    "pre-receive", "update", "post-receive", "post-update", "push-to-checkout",
+    "proc-receive", "reference-transaction",
+))
 # Suffixes that make a hook file a near miss rather than a hook. The last
 # three usually mark a copy someone disabled on purpose.
 _HOOK_SUFFIXES = (".sh", ".py", ".js", ".bak", ".disabled", ".orig")
@@ -300,29 +307,58 @@ def shebang_findings(first_line, find_program, path="<file>"):
 
 def resolve_hooks_path(value, toplevel):
     """core.hooksPath as an absolute path. A relative one is relative to the
-    directory git runs hooks from: the work tree root (the git dir when bare)."""
+    directory git runs hooks from: the work tree root (the git dir when bare).
+    That is the client-hook location; see receive_hooks_dir() for the other."""
     path = os.path.expanduser(value)
     return path if os.path.isabs(path) else os.path.join(toplevel, path)
 
 
-def hooks_path_findings(value, origin, scope, toplevel, local_hooks_present, exists_fn):
+def receive_hooks_dir(value, toplevel, git_dir):
+    """Where the receive-side hooks (RECEIVE_HOOKS) are looked up for this
+    core.hooksPath, or None when it is the same place as for client hooks.
+
+    Those hooks run with $GIT_DIR as the working directory, so a relative
+    path resolves from there; an absolute path (or a bare repository, where
+    both are the git dir) has only one location.
+    """
+    if not git_dir or os.path.isabs(os.path.expanduser(value)):
+        return None
+    server = os.path.join(git_dir, os.path.expanduser(value))
+    return None if server == resolve_hooks_path(value, toplevel) else server
+
+
+def hooks_path_findings(value, origin, scope, toplevel, local_hooks_present, exists_fn,
+                        git_dir=None):
     """[(level, message, fix)] for core.hooksPath.
 
     local_hooks_present names the active hooks in the repository's own
-    hooks directory, which a global or system hooksPath shadows.
+    hooks directory, which a global or system hooksPath shadows. With git_dir
+    a relative path is also resolved for the receive-side hooks, which run
+    from there.
     """
     if not value:
         return []
     resolved = resolve_hooks_path(value, toplevel)
+    server = receive_hooks_dir(value, toplevel, git_dir)
     where = origin or "an unnamed source"
     flag = "--%s " % scope if scope in ("global", "system") else ""
     if not exists_fn(resolved):
+        which = " for client hooks (read from the work tree root)" if server else ""
         return [(
             "fail",
-            "core.hooksPath=%s (set in %s) does not exist: git runs NO hooks and says "
-            "nothing" % (value, where),
+            "core.hooksPath=%s (set in %s) does not exist%s: git runs NO hooks and "
+            "says nothing" % (value, where, which),
             "mkdir -p %s, or git config %s--unset core.hooksPath"
             % (shlex.quote(resolved), flag),
+        )]
+    if server and not exists_fn(server):
+        return [(
+            "info",
+            "core.hooksPath=%s is relative, so the receive-side hooks (%s) are read "
+            "from $GIT_DIR, %s, which does not exist: none of them runs when this "
+            "repository is a push target" % (value, ", ".join(sorted(RECEIVE_HOOKS)),
+                                             server),
+            "mkdir -p %s, if this repository receives pushes" % shlex.quote(server),
         )]
     if scope in ("global", "system") and local_hooks_present:
         return [(
@@ -503,8 +539,13 @@ def run_report(args):
     if value and os.path.realpath(active_dir) != os.path.realpath(default_dir):
         _, local_hooks, _ = scan_hooks(default_dir)
         local_present = [n for n, p in local_hooks if os.access(p, os.X_OK)]
+    server_dir = receive_hooks_dir(value, toplevel, git_dir) if value else None
+    if server_dir:
+        info("relative path: client hooks are read from the work tree root, "
+             "receive-side hooks (pre-receive, update, ...) from $GIT_DIR -> %s"
+             % shorten(server_dir))
     findings = hooks_path_findings(value, origin, scope, toplevel, local_present,
-                                   os.path.isdir)
+                                   os.path.isdir, git_dir)
     for finding in findings:
         problems += report_level(*finding)
     if not findings and value:
@@ -512,7 +553,19 @@ def run_report(args):
 
     head("hooks")
     hook_texts = {}
-    for name, path in hooks:
+    checked = [(name, path, name) for name, path in hooks]
+    if server_dir:
+        # A receive-side hook next to the client ones is not run from there
+        # in a push target; the copy under $GIT_DIR is the one that runs.
+        for name, path in hooks:
+            if name in RECEIVE_HOOKS:
+                info("%s in %s runs for local ref updates only: a push into this "
+                     "repository looks in %s" % (name, shorten(active_dir),
+                                                 shorten(server_dir)))
+        _, server_hooks, _ = scan_hooks(server_dir)
+        checked += [(name, path, "%s (receive-side, in %s)" % (name, shorten(server_dir)))
+                    for name, path in server_hooks if name in RECEIVE_HOOKS]
+    for hook, path, name in checked:
         if not os.access(path, os.X_OK):
             problems += report_level(
                 "fail", "%s is not executable: git ignores it" % name,
@@ -526,7 +579,8 @@ def run_report(args):
         if b"\0" in first:
             info("%s is a binary; nothing to check in its first line" % name)
             continue
-        hook_texts[name] = start.decode("utf-8", "replace")
+        if name == hook:
+            hook_texts[hook] = start.decode("utf-8", "replace")
         shebang = shebang_findings(first, lambda p: find_program(p, path_env), path)
         for finding in shebang:
             problems += report_level(finding[0], "%s: %s" % (name, finding[1]), finding[2])

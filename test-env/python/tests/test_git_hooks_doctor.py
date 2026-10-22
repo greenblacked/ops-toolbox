@@ -183,6 +183,61 @@ class HooksPathFindingsTestCase(unittest.TestCase):
         )
         self.assertEqual(seen, ["/r/.githooks"])
 
+    def test_a_relative_path_is_also_resolved_from_the_git_dir(self):
+        seen = []
+
+        def exists(path):
+            seen.append(path)
+            return True
+
+        self.assertEqual(
+            doctor.hooks_path_findings(
+                ".githooks", ".git/config", "local", "/r", [], exists, "/r/.git"
+            ),
+            [],
+        )
+        self.assertEqual(seen, ["/r/.githooks", "/r/.git/.githooks"])
+
+    def test_a_missing_client_directory_names_the_work_tree_root(self):
+        [(level, message, fix)] = doctor.hooks_path_findings(
+            "hooks", ".git/config", "local", "/r", [], lambda p: p == "/r/.git/hooks",
+            "/r/.git"
+        )
+        self.assertEqual(level, "fail")
+        self.assertIn("for client hooks (read from the work tree root)", message)
+        self.assertIn("mkdir -p /r/hooks", fix)
+
+    def test_a_missing_receive_side_directory_is_information(self):
+        [(level, message, fix)] = doctor.hooks_path_findings(
+            "hooks", ".git/config", "local", "/r", [], lambda p: p == "/r/hooks",
+            "/r/.git"
+        )
+        self.assertEqual(level, "info")
+        self.assertIn("$GIT_DIR, /r/.git/hooks, which does not exist", message)
+        self.assertIn("pre-receive", message)
+        self.assertIn("reference-transaction", message)
+        self.assertIn("mkdir -p /r/.git/hooks", fix)
+
+    def test_an_absolute_path_has_one_location(self):
+        seen = []
+
+        def exists(path):
+            seen.append(path)
+            return True
+
+        doctor.hooks_path_findings("/h", ".git/config", "local", "/r", [], exists, "/r/.git")
+        self.assertEqual(seen, ["/h"])
+
+    def test_a_bare_repository_has_one_location(self):
+        self.assertIsNone(doctor.receive_hooks_dir("hooks", "/r.git", "/r.git"))
+
+    def test_receive_hooks_dir_for_a_work_tree(self):
+        self.assertEqual(doctor.receive_hooks_dir("hooks", "/r", "/r/.git"), "/r/.git/hooks")
+        self.assertIsNone(doctor.receive_hooks_dir("/h", "/r", "/r/.git"))
+
+    def test_receive_side_hooks_are_all_known_hook_names(self):
+        self.assertTrue(doctor.RECEIVE_HOOKS <= doctor.HOOK_NAMES)
+
     def test_a_missing_directory_fails(self):
         [(level, message, fix)] = doctor.hooks_path_findings(
             "hooks", ".git/config", "local", "/r", [], lambda p: False

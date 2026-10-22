@@ -909,7 +909,12 @@ it; this diagnoses any repository's hook setup.
   fails: git then runs no hooks at all and says nothing. A global or system
   `core.hooksPath` that shadows hooks in this repository's own `.git/hooks`
   is a warning that names them. A relative path is read against the work
-  tree root, as git does.
+  tree root for client hooks, but against `$GIT_DIR` for the hooks a push
+  runs (`pre-receive`, `update`, `post-receive`, `post-update`,
+  `push-to-checkout`, `proc-receive`, `reference-transaction`), as git
+  does. The report names both locations, checks the exec bit and shebang of
+  receive-side hooks under `$GIT_DIR`, and a missing `$GIT_DIR` directory is
+  information only, since most work trees never receive pushes.
 - **Each hook.** One without the exec bit fails (git skips it). The first
   line is checked: a carriage return at its end (a CRLF checkout, where the
   kernel looks for an interpreter called `sh` plus a carriage return) fails
