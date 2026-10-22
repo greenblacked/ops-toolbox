@@ -396,12 +396,12 @@ connects to nothing, but it evaluates `Match exec` lines, so the doctor
 scans the config and its `Include` files first (globs relative to `~/.ssh`
 of the inspected home and of the passwd home, as deep as OpenSSH follows
 them, 16 levels) and, if any `Match` line has an `exec` criterion, negated
-or quoted or not, or the chain is deeper than that or loops, or an `Include` cannot be
-resolved with confidence (an unbalanced quote, a backslash before an
-ordinary character, a `%d`-style or `${VAR}` token, a file that cannot be
-read), warns and skips `ssh -G` rather than
-run the command. `Include` arguments are split as OpenSSH does: quotes keep
-spaces and several arguments are all followed.
+or quoted or not, or the chain is deeper than that or loops, or an
+`Include` cannot be resolved with confidence (an unbalanced quote, a
+backslash before an ordinary character, a `%d`-style or `${VAR}` token, a
+file that cannot be read), warns and skips `ssh -G` rather than run the
+command. `Include` arguments are split as OpenSSH does: quotes keep spaces
+and several arguments are all followed.
 
 **Exit codes:** `0` no finding at or above `--fail-on`; `1` one or more;
 `2` preflight — no home directory, or a `--repo` without `config/` and
