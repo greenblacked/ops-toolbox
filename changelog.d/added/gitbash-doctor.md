@@ -13,4 +13,5 @@
   source cannot pass as a clean one.
   The global Git settings are read from both `~/.gitconfig` and the XDG file
   (`$XDG_CONFIG_HOME/git/config`, default `~/.config/git/config`), with
-  `~/.gitconfig` winning, as Git itself resolves them.
+  `~/.gitconfig` winning, as Git itself resolves them. When several
+  credential helpers are configured, all are listed in the order Git runs them.

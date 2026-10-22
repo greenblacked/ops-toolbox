@@ -344,7 +344,9 @@ else
   helper="$(user_value --get-all credential.helper)"
   [[ -n "$helper" ]] || helper="$(system_value --get-all credential.helper)"
   if [[ -n "$helper" ]]; then
-    pass "credential.helper is set (${helper%%$'\n'*})"
+    # Git runs every helper in the order listed, so name them all in that
+    # order rather than imply that the first one is the only one.
+    pass "credential.helper is set (${helper//$'\n'/, })"
   else
     warn "no credential.helper: every HTTPS push asks for a password or token" \
       "fix: git config --global credential.helper manager"

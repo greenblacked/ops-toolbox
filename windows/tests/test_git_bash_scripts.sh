@@ -326,7 +326,7 @@ cat > "$fx/home/.gitconfig" <<'EOF'
 EOF
 run_doctor "$fx" ""
 assert_contains "with both files ~/.gitconfig wins for core.longpaths" "$out" "core.longpaths is true"
-assert_contains "a credential.helper from ~/.gitconfig is the one reported" "$out" "credential.helper is set (manager)"
+assert_contains "every credential.helper is listed, the XDG one first" "$out" "credential.helper is set (store, manager)"
 assert_not_contains "a user.name only in the XDG file is seen" "$out" "user.name is not set"
 assert_contains "while user.email, in neither, is reported" "$out" "user.email is not set"
 assert_contains "and safe.directory = * in the XDG file is seen" "$out" "disables the ownership check"
