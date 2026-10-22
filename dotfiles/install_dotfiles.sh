@@ -596,7 +596,11 @@ backups_of() {
     [[ "$s" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || continue
     q="${s:16}"
     printf '%s %08d %s\n' "${s:0:15}" "$((10#${q:-0}))" "$b"
-  done | sort | cut -d' ' -f3-
+  done | sort | while IFS= read -r b; do
+    # Drop the stamp and counter fields; the path may hold spaces.
+    b="${b#* }"
+    printf '%s\n' "${b#* }"
+  done
 }
 
 # The original paths of backups that sit beside something no tracked file
