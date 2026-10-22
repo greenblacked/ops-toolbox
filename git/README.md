@@ -614,7 +614,7 @@ Answers the question `Permission denied (publickey)` refuses to: *which* of the 
 ```bash
 ./git/git_ssh_doctor.py                  # check this repo's SSH remotes
 ./git/git_ssh_doctor.py --host github.com
-./git/git_ssh_doctor.py --test-auth      # try every key, report which one works
+./git/git_ssh_doctor.py --test-auth      # connect: try ssh, then every key, report which works
 ./git/git_ssh_doctor.py --quiet --host github.com
 ./git/git_ssh_doctor.py --require-known-host --host github.com   # CI preflight
 ```
@@ -650,15 +650,17 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   host key can only be seen by connecting; `git_remote_doctor.py --probe`
   names that one.
 
-With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason. With `--require-known-host` they instead use `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no` and write nothing.
+**Offline by default.** Without `--test-auth` the doctor never opens a connection: it reports the effective configuration, the keys, the agent and the known_hosts state, then says authentication was not attempted. A host with no existing key and an empty agent still fails.
+
+With **`--test-auth`** it authenticates, then tries each discovered private key against the host if that fails, and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason. With `--require-known-host` they instead use `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no` and write nothing.
 
 Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
-**Exit code `1`** if any checked host fails to authenticate, or with `--require-known-host` has a host key that is not in known_hosts.
+**Exit code `1`** if any checked host has no usable key or (with `--test-auth`) fails to authenticate, or with `--require-known-host` has a host key that is not in known_hosts.
 
 `--quiet` suppresses the report but preserves the verdict exit code. It does
-not imply `--test-auth`, so a quiet CI probe remains offline unless that
-network test was explicitly requested too. `--json` prints the same report as
+not imply `--test-auth`, and no authentication happens without it, so a quiet
+CI probe makes no connection unless that test was explicitly requested too. `--json` prints the same report as
 one JSON object (see [Exit codes](#exit-codes-conventions)); it does not imply
 `--test-auth` either.
 

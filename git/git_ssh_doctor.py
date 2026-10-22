@@ -15,12 +15,14 @@ prompted this script, is an Include whose glob matches directories. ssh skips
 those silently, so a config file one level deeper is never read and no error is
 ever printed.
 
+Offline by default: only --test-auth makes a connection.
+
 Read-only. It prints commands to run; it never edits config, touches the agent,
 or writes a key.
 
     ./git_ssh_doctor.py                 # diagnose remotes of the current repo
     ./git_ssh_doctor.py --host github.com
-    ./git_ssh_doctor.py --test-auth     # also try candidate keys against the host
+    ./git_ssh_doctor.py --test-auth     # connect: try ssh, then each candidate key
     ./git_ssh_doctor.py --require-known-host   # CI: an unknown host key fails
     ./git_ssh_doctor.py --json          # the same verdict as one JSON object
 """
@@ -592,22 +594,27 @@ def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="
             info("authentication not attempted: it would record the unknown host key")
         return False
 
-    if existing or agent:
+    has_identity = bool(existing or agent)
+    if not has_identity:
+        bad("nothing to authenticate with: no existing configured key, empty agent")
+
+    # Every authentication attempt connects to the host, and accept-new may
+    # write its key to known_hosts, so none runs unless asked for.
+    if not test_auth:
+        info("authentication not attempted: it contacts the host; re-run with "
+             "--test-auth to try it and to find which of your %d key(s) the host "
+             "accepts" % len(keys))
+        return has_identity
+
+    if has_identity:
         authed, detail = try_auth(host, strict=strict, port=port)
         if not found and not require_known_host:
-            info("note: --test-auth/auth probing records new host keys (accept-new); "
+            info("note: --test-auth records new host keys (accept-new); "
                  "this check ran first")
         if authed:
             ok("authentication succeeds: %s" % detail)
             return True
         bad("authentication fails: %s" % detail)
-    else:
-        bad("nothing to authenticate with: no existing configured key, empty agent")
-
-    if not test_auth:
-        info("re-run with --test-auth to find which of your %d key(s) this host accepts"
-             % len(keys))
-        return False
 
     head("testing %d discovered key(s) against %s" % (len(keys), label))
     winners = []
@@ -726,7 +733,8 @@ def main(argv=None):
     parser.add_argument("--host", action="append", default=[],
                         help="host to check (repeatable); defaults to this repo's remotes")
     parser.add_argument("--test-auth", action="store_true",
-                        help="try each discovered key against the host")
+                        help="authenticate to the host (the only option that connects "
+                             "to it), then try each discovered key if that fails")
     parser.add_argument("--require-known-host", action="store_true",
                         help="fail when the host key is not in known_hosts, even under "
                              "accept-new (CI preflight)")

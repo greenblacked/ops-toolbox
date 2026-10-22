@@ -522,7 +522,7 @@ class AuthStrictnessThroughMainTests(unittest.TestCase):
 
     def test_require_known_host_never_uses_accept_new(self):
         self._stub("ssh-keygen", "exit 1\n")
-        rc, out, calls = self._main(["--require-known-host"])
+        rc, out, calls = self._main(["--require-known-host", "--test-auth"])
         self.assertEqual(rc, 0, out)
         self.assertEqual(len(calls), 1)
         self.assertIn("StrictHostKeyChecking=yes", calls[0])
@@ -532,14 +532,29 @@ class AuthStrictnessThroughMainTests(unittest.TestCase):
 
     def test_without_require_the_auth_attempt_uses_accept_new(self):
         self._stub("ssh-keygen", "exit 1\n")
-        rc, out, calls = self._main([])
+        rc, out, calls = self._main(["--test-auth"])
         self.assertEqual(len(calls), 1)
         self.assertIn("StrictHostKeyChecking=accept-new", calls[0])
         self.assertNotIn("UpdateHostKeys", calls[0])
         self.assertNotIn("CheckHostIP", calls[0])
 
+    def test_no_authentication_without_test_auth(self):
+        self._stub("ssh-keygen", "exit 1\n")
+        for argv in ([], ["--quiet"], ["--json"], ["--require-known-host"]):
+            rc, out, calls = self._main(argv)
+            self.assertEqual(calls, [], argv)
+            self.assertEqual(rc, 0, argv)
+        _, out, _ = self._main([])
+        self.assertIn("authentication not attempted", out)
+
+    def test_quiet_with_test_auth_still_authenticates(self):
+        self._stub("ssh-keygen", "exit 1\n")
+        rc, out, calls = self._main(["--quiet", "--test-auth"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(out, "")
+
     def test_missing_ssh_keygen_with_require_says_unchecked_and_skips_auth(self):
-        rc, out, calls = self._main(["--require-known-host"])
+        rc, out, calls = self._main(["--require-known-host", "--test-auth"])
         self.assertEqual(rc, 1)
         self.assertEqual(calls, [])
         self.assertIn("the host key could not be checked", out)
@@ -600,7 +615,8 @@ class RemotePortThroughMainTests(unittest.TestCase):
         del doctor.EVENTS[:]
         try:
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                rc = doctor.main(["--ssh-dir", self.ssh_dir, "--require-known-host"])
+                rc = doctor.main(["--ssh-dir", self.ssh_dir, "--require-known-host",
+                                  "--test-auth"])
         finally:
             os.environ["PATH"] = saved[0]
             os.chdir(saved[1])
@@ -625,7 +641,3 @@ class RemotePortThroughMainTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("example.com port 2222 is not in", out)
         self.assertEqual([c for c in calls if "-T" in c.split()], [])
-
-
-if __name__ == "__main__":
-    unittest.main()
