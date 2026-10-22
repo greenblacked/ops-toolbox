@@ -1096,8 +1096,11 @@ router's clock and uptime, and adds three findings, all `warn`:
 - **Telegram globals that will not survive a reboot**: `TgBotToken` or
   `TgChatId` is set now, but no enabled `start-time=startup` scheduler assigns
   it again, either inline or by running a script (`/system script run NAME`,
-  `:execute NAME` or the bare name; a scheduler that only shares the script's
-  name does not count) whose source holds `:global NAME <value>`, or `:global
+  also in brackets or as `:execute "/system script run NAME"`, or an
+  `on-event` that is nothing but the bare script name; `:execute NAME` and a
+  bare name among other statements such as `:delay 5s; NAME` do not count,
+  nor does a scheduler that only shares the script's name) whose source
+  holds `:global NAME <value>`, or `:global
   NAME` followed by `:set NAME <value>`. A `:set` with no `:global NAME`
   before it, or after `:local NAME`, sets something else. Spaces or tabs may
   separate the words, and a line whose first character is `#` is ignored. A

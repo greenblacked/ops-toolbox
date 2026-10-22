@@ -550,14 +550,25 @@ def assigns_global(text, name):
 
 
 def invokes_script(on_event, name):
-    """Whether an on-event body runs the named script: "/system script run
-    NAME", ":execute NAME" or the bare name as a statement. A name merely
-    mentioned (":put NAME") or commented out does not count."""
+    """Whether an on-event body runs the named script.
+
+    Accepted: the whole on-event being the bare script name (RouterOS runs
+    that as a command), "/system script run NAME" as a statement, also
+    inside brackets, and the same command passed to :execute as a string
+    (":execute \"/system script run NAME\"", with or without script=). A
+    bare NAME or ":execute NAME" among other statements is not accepted: it
+    is a command name there, not a promise that the script is run. A name
+    merely mentioned (":put NAME") or commented out does not count.
+    """
     code = "\n".join(
         line for line in on_event.splitlines() if not line.lstrip().startswith("#"))
-    pattern = (r"(?:^|[;\n\[{])[ \t]*(?:/system[ /]script[ /]run[ \t]+(?:name=)?"
-               r"|:execute[ \t]+(?:script=)?)?\"?%s\"?[ \t]*(?=[;\n\]}]|$)" % re.escape(name))
-    return re.search(pattern, code) is not None
+    n = re.escape(name)
+    if re.fullmatch(r"\s*\"?%s\"?\s*;?\s*" % n, code):
+        return True
+    run = r"/system[ /]script[ /]run[ \t]+(?:name=)?"
+    stmt = (r"(?:^|[;\n\[{])[ \t]*(?:%s\\?\"?%s\\?\"?[ \t]*(?=[;\n\]}]|$)"
+            r"|:execute[ \t]+(?:script=)?\"[ \t]*%s\\?\"?%s\\?\"?[ \t]*\")") % (run, n, run, n)
+    return re.search(stmt, code) is not None
 
 
 def runs_script(on_event, name):
