@@ -918,7 +918,11 @@ it; this diagnoses any repository's hook setup.
   `env` shebang with more than one word after it and no `-S` (or
   `--split-string`) fails too: Linux hands everything after `env` over as
   one word, so `#!/usr/bin/env python3 -u` looks for a program called
-  `python3 -u`. The repair is the same line with `-S`. Every repair command
+  `python3 -u`. The repair is the same line with `-S`. A direct interpreter
+  given more than one argument (`#!/usr/bin/python3 -u -B`) is a warning for
+  the same reason: Linux passes the arguments as one word, so the
+  interpreter sees the single option `-u -B`. Use one option, or
+  `#!/usr/bin/env -S python3 -u -B`. Every repair command
   the doctor prints (`chmod +x`, the `.bak` rewrite, `mkdir -p`) quotes the
   path for the shell, so it can be pasted as it is even when the path holds
   a space.
@@ -966,8 +970,9 @@ each kind and prints the repair.
   wrote it, and `git://` is unauthenticated and read-only; both fail.
   `http://` warns. An ssh URL is noted, because every machine that clones it
   needs a key (a CI runner needs a deploy key, or an `insteadOf` to https). A
-  relative URL with no `origin` remote resolves against the repository's own
-  directory, which works on this machine only, and warns.
+  relative URL with no remote at all (the branch's remote, then `origin`)
+  resolves against the repository's own directory, which works on this
+  machine only, and warns.
 - **Drift.** A URL changed in `.gitmodules` while `.git/config` still dials
   the old one, until `git submodule sync --recursive`. A relative URL
   (`../new.git`) is first resolved the way git does, against the URL of the
