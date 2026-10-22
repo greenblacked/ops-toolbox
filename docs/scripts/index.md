@@ -34,9 +34,12 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/status.sh` | Linux | One-screen verdict: distro, disk, packages, reboot, timer, git identity. | <span class="stage stage-report">read-only</span> |
 | `linux/system_doctor.sh` | Linux | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `linux/net_doctor.sh` | Linux | Interfaces, routes, DNS, sockets; optional `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `linux/listen_audit.sh` | Linux | Who owns each listening port; baseline drift check. | <span class="stage stage-report">read-only</span> |
 | `linux/hardening_audit.sh` | Linux | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `linux/ssh_client_doctor.sh` | Linux | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
+| `linux/container_doctor.sh` | Linux | Grade Docker/Podman containers: state, security, logs. | <span class="stage stage-report">read-only</span> |
+| `linux/log_triage.sh` | Linux | What went wrong in the logs: kernel, units, auth, repeats. | <span class="stage stage-report">read-only</span> |
 | `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`; `--failed` finds broken ones. | <span class="stage stage-report">read-only</span> |
 | `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--check` gates on drift; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
 | `linux/swap_setup.sh` | Linux | Report swap; create or remove a swapfile and its fstab line. | `--dry-run` with `--create` or `--remove` |

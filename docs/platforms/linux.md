@@ -26,10 +26,13 @@ and a Kali cloud-init profile.
 | --- | --- | --- |
 | `status.sh` | One-screen verdict; `--only` selects sections. | <span class="stage stage-report">read-only</span> |
 | `system_doctor.sh` | Long health report. | <span class="stage stage-report">read-only</span> |
-| `net_doctor.sh` | Interfaces, routes, DNS, listening sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
-| `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
-| `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
-| `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
+| `net_doctor.sh` | Interfaces, routes, link errors, DNS, sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `listen_audit.sh` | Listening-port owners and scope; `--baseline` drift for cron. | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding, sshd algorithms included. | <span class="stage stage-report">read-only</span> |
+| `ssh_client_doctor.sh` | `~/.ssh` modes, keys, known_hosts, risky config, agent. | <span class="stage stage-report">read-only</span> |
+| `tls_expiry.sh` | Certificate expiry within `--days`; `--deep` name, chain and key checks. | <span class="stage stage-report">read-only</span> |
+| `container_doctor.sh` | Restart loops, OOM kills, socket mounts, uncapped container logs. | <span class="stage stage-report">read-only</span> |
+| `log_triage.sh` | Kernel distress, noisiest units, failed logins and repeats since `--since`. | <span class="stage stage-report">read-only</span> |
 | `schedule_report.sh` | systemd timers, user crontab, `cron.d`; `--failed` flags failed timer services and missing cron commands, `--strict` exits 1 on a warning. | <span class="stage stage-report">read-only</span> |
 | `sysctl_defaults.sh` | Report sysctl values; `--check` exits 1 on drift, unpersisted, stale or shadowed values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
 | `swap_setup.sh` | Report swap; `--create` or `--remove` a swapfile and its marked fstab line. | `--dry-run` with `--create` or `--remove` |
