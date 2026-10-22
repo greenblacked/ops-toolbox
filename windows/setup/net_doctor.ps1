@@ -359,11 +359,15 @@ function Get-GitConfigValue {
     # 'Continue' here so a git that writes to stderr cannot turn into a
     # terminating error under Windows PowerShell 5.1.
     $ErrorActionPreference = 'Continue'
-    try {
-        $value = & git config --global --get $Key 2>$null
-        if ($LASTEXITCODE -eq 0 -and $value) { return ([string]$value).Trim() }
-    } catch {
-        Write-Verbose ("git config {0}: {1}" -f $Key, $_.Exception.Message)
+    # The global value, else the system one (where the Git for Windows
+    # installer writes its choices), so a system-wide proxy is graded too.
+    foreach ($scope in @('--global', '--system')) {
+        try {
+            $value = & git config $scope --get $Key 2>$null
+            if ($LASTEXITCODE -eq 0 -and $value) { return ([string]$value).Trim() }
+        } catch {
+            Write-Verbose ("git config {0} {1}: {2}" -f $scope, $Key, $_.Exception.Message)
+        }
     }
     return $null
 }

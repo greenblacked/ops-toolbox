@@ -1159,6 +1159,44 @@ if (-not $netDoctor) {
 }
 
 # --------------------------------------------------------------------------
+Write-Section 'net_doctor reads git config from the system scope too'
+if (-not $netDoctor) {
+    Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
+} else {
+    $src = Get-ScriptFunctionSource -Script $netDoctor -Name 'Get-GitConfigValue'
+    if (-not $src) {
+        Test-Fail 'net_doctor.ps1 : Get-GitConfigValue not found - this check has stopped checking'
+    } else {
+        . ([scriptblock]::Create($src))
+        # A stand-in for git: it answers `git config <scope> --get <key>`
+        # from $script:FakeGit, keyed by scope.
+        function git {
+            $scope = [string]$args[1]
+            if ($script:FakeGit.ContainsKey($scope)) {
+                $global:LASTEXITCODE = 0
+                return $script:FakeGit[$scope]
+            }
+            $global:LASTEXITCODE = 1
+        }
+        $netGitCases = @(
+            @{ Label = 'only the system scope sets it'; Config = @{ '--system' = 'http://sys:3128' }; Want = 'http://sys:3128' }
+            @{ Label = 'global outranks system'; Config = @{ '--global' = 'http://glob:8080'; '--system' = 'http://sys:3128' }; Want = 'http://glob:8080' }
+            @{ Label = 'neither scope sets it'; Config = @{}; Want = '' }
+        )
+        foreach ($case in $netGitCases) {
+            $script:FakeGit = $case.Config
+            $got = [string](Get-GitConfigValue -Key 'http.proxy')
+            if ($got -eq $case.Want) {
+                Test-Ok ("http.proxy, {0} -> [{1}]" -f $case.Label, $got)
+            } else {
+                Test-Fail ("http.proxy, {0}: got [{1}], expected [{2}]" -f $case.Label, $got, $case.Want)
+            }
+        }
+        Remove-Item Function:\git -ErrorAction SilentlyContinue
+    }
+}
+
+# --------------------------------------------------------------------------
 Write-Section 'net_doctor classifies adapters'
 if (-not $netDoctor) {
     Test-Fail 'net_doctor.ps1 was not found among the scripts - this check has stopped checking'
