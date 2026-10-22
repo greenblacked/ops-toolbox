@@ -304,6 +304,7 @@ fi
 # Files only: starting the gcloud CLI costs a second or more of Python start-up
 # and can try to refresh credentials. The active configuration is a file name
 # under configurations/, so its name is validated before it is used in a path.
+# The CLOUDSDK_CORE_* and CLOUDSDK_COMPUTE_REGION variables override the file.
 if want gcloud; then
   gdir="${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
   gname="${CLOUDSDK_ACTIVE_CONFIG_NAME:-}"
@@ -311,22 +312,32 @@ if want gcloud; then
     gname="$(head -n 1 "$gdir/active_config" 2>/dev/null | tr -d '\r')"
   fi
   [[ -n "$gname" ]] || gname="default"
+  # CLOUDSDK_CORE_PROJECT, CLOUDSDK_CORE_ACCOUNT and CLOUDSDK_COMPUTE_REGION
+  # take precedence over the configuration file in gcloud, so they are the
+  # effective values and are what --warn-on is matched against.
+  eproject="$(clean "${CLOUDSDK_CORE_PROJECT:-}")"
+  eaccount="$(clean "${CLOUDSDK_CORE_ACCOUNT:-}")"
+  eregion="$(clean "${CLOUDSDK_COMPUTE_REGION:-}")"
+  gfile="$gdir/configurations/config_$gname"
   if ! plain_word "$gname" || [[ "$gname" == .* ]]; then
     row warn gcloud "active configuration name is not valid: $(clean "$gname")"
-  elif [[ ! -d "$gdir" ]]; then
-    row info gcloud "no gcloud configuration ($gdir)"
-  else
-    gfile="$gdir/configurations/config_$gname"
-    if [[ ! -r "$gfile" ]]; then
-      row info gcloud "configuration $gname has no file ($gfile)"
+  elif [[ ! -r "$gfile" && -z "$eproject$eaccount$eregion" ]]; then
+    if [[ ! -d "$gdir" ]]; then
+      row info gcloud "no gcloud configuration ($gdir)"
     else
-      gaccount="$(clean "$(ini_get "$gfile" core account)")"
-      gproject="$(clean "$(ini_get "$gfile" core project)")"
-      gregion="$(clean "$(ini_get "$gfile" compute region)")"
-      text="config=$gname project=${gproject:-unset} account=${gaccount:-unset}"
-      [[ -n "$gregion" ]] && text="$text region=$gregion"
-      judge gcloud ok "$text" "$gname" "$gproject" "$gaccount"
+      row info gcloud "configuration $gname has no file ($gfile)"
     fi
+  else
+    gaccount="$(clean "$(ini_get "$gfile" core account)")"
+    gproject="$(clean "$(ini_get "$gfile" core project)")"
+    gregion="$(clean "$(ini_get "$gfile" compute region)")"
+    pmark="" amark="" rmark=""
+    if [[ -n "$eproject" ]]; then gproject="$eproject"; pmark=" (env)"; fi
+    if [[ -n "$eaccount" ]]; then gaccount="$eaccount"; amark=" (env)"; fi
+    if [[ -n "$eregion" ]]; then gregion="$eregion"; rmark=" (env)"; fi
+    text="config=$gname project=${gproject:-unset}$pmark account=${gaccount:-unset}$amark"
+    [[ -n "$gregion" ]] && text="$text region=$gregion$rmark"
+    judge gcloud ok "$text" "$gname" "$gproject" "$gaccount"
   fi
 fi
 

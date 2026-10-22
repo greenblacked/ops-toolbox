@@ -4,6 +4,9 @@
   pointed at, from local files only. A `--warn-on prod,live` pattern that
   matches any of them is a warning and exits 1, so
   `ops_context.sh --warn-on prod --quiet && terraform apply` is a one-line
-  pre-flight against running the right command in the wrong place. It never
-  opens `~/.aws/credentials`, names token variables without printing them,
-  and flags an expired AWS SSO login and a remote Docker daemon.
+  pre-flight against running the right command in the wrong place.
+  `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT` and
+  `CLOUDSDK_COMPUTE_REGION` override the gcloud file values, are marked
+  `(env)` and are what `--warn-on` sees. It never opens
+  `~/.aws/credentials`, names token variables without printing them, and
+  flags an expired AWS SSO login and a remote Docker daemon.

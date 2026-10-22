@@ -1604,7 +1604,7 @@ front of a command:
 | Tool | Where the answer comes from |
 | --- | --- |
 | `kube` | `kubectl config current-context`, and the namespace and cluster of that context. `KUBECONFIG` is honoured because `kubectl` honours it. |
-| `gcloud` | Files only: `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config`, then `configurations/config_NAME` under `CLOUDSDK_CONFIG` (default `~/.config/gcloud`). The CLI is never started. |
+| `gcloud` | Files only: `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config`, then `configurations/config_NAME` under `CLOUDSDK_CONFIG` (default `~/.config/gcloud`). `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT` and `CLOUDSDK_COMPUTE_REGION` override the file values, are marked `(env)`, and are what `--warn-on` is matched against. The CLI is never started. |
 | `aws` | `AWS_PROFILE`, `AWS_DEFAULT_PROFILE` or `default`, and that stanza of `~/.aws/config` (`AWS_CONFIG_FILE`). For an SSO profile, the expiry of the newest cached login. |
 | `terraform` | `TF_WORKSPACE`, else `.terraform/environment` in `--dir`, else `default`; reported only where `--dir` holds `.terraform/` or `*.tf`. |
 | `docker` | `DOCKER_HOST`, `DOCKER_CONTEXT` or `docker context show`, and that context's endpoint. Anything but a local `unix://` socket is a warning. |

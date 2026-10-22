@@ -57,7 +57,8 @@ unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
 # fixtures, and a set token would add a warning no fixture asked for.
 unset KUBECONFIG AWS_PROFILE AWS_DEFAULT_PROFILE AWS_CONFIG_FILE AWS_ACCESS_KEY_ID \
   CLOUDSDK_ACTIVE_CONFIG_NAME DOCKER_CONTEXT DOCKER_HOST TF_WORKSPACE \
-  GH_CONFIG_DIR XDG_CONFIG_HOME GH_TOKEN GITHUB_TOKEN
+  GH_CONFIG_DIR XDG_CONFIG_HOME GH_TOKEN GITHUB_TOKEN \
+  CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT CLOUDSDK_COMPUTE_REGION
 # net_doctor.sh compares the system proxy with these and names the ones that
 # are set. A proxy exported in a developer's shell, or in CI, would turn the
 # fixtures' "no proxy anywhere" case into a different report.
@@ -2367,6 +2368,19 @@ ops --dir "$oc/empty" --warn-on staging >/dev/null; rc=$?
 assert_eq "ops_context --warn-on with no match -> 0" "0" "$rc"
 ops --dir "$oc/empty" --warn-on=prod >/dev/null; rc=$?
 assert_eq "ops_context accepts --warn-on=PATTERN" "1" "$rc"
+# CLOUDSDK_* variables override the configuration file, and are what
+# --warn-on is matched against.
+out="$(CLOUDSDK_CORE_PROJECT=prod-x ops --only gcloud --dir "$oc/empty" --warn-on prod)"; rc=$?
+assert_eq "ops_context --warn-on prod with CLOUDSDK_CORE_PROJECT=prod-x -> 1" "1" "$rc"
+assert_contains "the env project is shown and labelled" "$out" "project=prod-x (env)"
+assert_not_contains "the file project is overridden" "$out" "acme-sandbox-42"
+out="$(CLOUDSDK_CORE_ACCOUNT=ops@example.com CLOUDSDK_COMPUTE_REGION=us-east1 \
+  ops --only gcloud --dir "$oc/empty")"
+assert_contains "the env account is labelled" "$out" "account=ops@example.com (env)"
+assert_contains "the env region is labelled" "$out" "region=us-east1 (env)"
+assert_contains "the file project stays when not overridden" "$out" "project=acme-sandbox-42 "
+CLOUDSDK_CORE_PROJECT=sandbox-y ops --only gcloud --dir "$oc/empty" --warn-on acme >/dev/null; rc=$?
+assert_eq "a file value that the env overrides no longer matches --warn-on -> 0" "0" "$rc"
 
 out="$(ops --dir "$oc/empty" --warn-on prod --quiet)"
 assert_contains "ops_context --quiet keeps the warning" "$out" "[warn] kube"
