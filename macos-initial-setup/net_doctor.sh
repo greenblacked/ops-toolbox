@@ -465,7 +465,10 @@ if [[ -n "$PROBE_HOST" ]]; then
   addr=""
   if have dscacheutil; then
     pr="$(with_timeout 5 dscacheutil -q host -a name "$PROBE_HOST" 2>/dev/null)" || pr=""
-    addr="$(awk '$1 == "ip_address:" { print $2; exit }' <<< "$pr")"
+    # Prefer an IPv4 answer; an AAAA-only name has only ipv6_address: rows.
+    addr="$(awk '$1 == "ip_address:" && v4 == "" { v4 = $2 }
+                 $1 == "ipv6_address:" && v6 == "" { v6 = $2 }
+                 END { print (v4 != "" ? v4 : v6) }' <<< "$pr")"
     addr="$(clean "$addr")"
   fi
   if [[ "$PROBE_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -477,12 +480,14 @@ if [[ -n "$PROBE_HOST" ]]; then
     warn "could not resolve $PROBE_HOST" "dscacheutil -q host -a name $PROBE_HOST"
   fi
   if [[ -n "$addr" ]]; then
+    nc_family=""
+    [[ "$addr" == *:* ]] && nc_family="-6"
     if ! have nc; then
       skip "nc not found; not probing TCP"
-    elif with_timeout 8 nc -z -G 5 "$addr" "$PROBE_PORT" >/dev/null 2>&1; then
+    elif with_timeout 8 nc ${nc_family:+"$nc_family"} -z -G 5 "$addr" "$PROBE_PORT" >/dev/null 2>&1; then
       ok "$addr:$PROBE_PORT accepted a TCP connection"
     else
-      warn "no TCP path to $addr:$PROBE_PORT" "repeat it with: nc -vz -G 5 $addr $PROBE_PORT"
+      warn "no TCP path to $addr:$PROBE_PORT" "repeat it with: nc ${nc_family:+$nc_family }-vz -G 5 $addr $PROBE_PORT"
     fi
   fi
 fi

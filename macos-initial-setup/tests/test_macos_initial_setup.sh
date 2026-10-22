@@ -3072,11 +3072,13 @@ cat > "$nd/bin/dscacheutil" <<'DSCACHE_EOF'
 #!/bin/sh
 case "$5" in
   fake-mac.local|example.test) printf 'name: %s\nip_address: 192.0.2.10\n\n' "$5" ;;
+  v6only.test) printf 'name: %s\nipv6_address: 2001:db8::10\n\n' "$5" ;;
 esac
 exit 0
 DSCACHE_EOF
 cat > "$nd/bin/nc" <<'NC_EOF'
 #!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_NET/nc.args"
 exit "${FAKE_NC_RC:-0}"
 NC_EOF
 chmod +x "$nd/bin/"*
@@ -3135,6 +3137,16 @@ assert_eq "a failed probe does not change the exit code -> 0" "0" "$rc"
 out="$(netdoc --skip-listen --probe=example.test:8443)"; rc=$?
 assert_eq "net_doctor accepts --probe=HOST:PORT" "0" "$rc"
 assert_contains "the probe uses the given port" "$out" "192.0.2.10:8443 accepted a TCP connection"
+
+rm -f "$nd/fx/nc.args"
+out="$(netdoc --skip-listen --probe v6only.test)"; rc=$?
+assert_eq "a probe of an AAAA-only name -> 0" "0" "$rc"
+assert_contains "an AAAA-only name resolves from ipv6_address" "$out" "v6only.test resolves to 2001:db8::10"
+assert_contains "the IPv6 address is probed" "$out" "2001:db8::10:443 accepted a TCP connection"
+assert_contains "nc is told to use IPv6" "$(cat "$nd/fx/nc.args" 2>/dev/null)" "-6 -z -G 5 2001:db8::10 443"
+out="$(FAKE_NC_RC=1 netdoc --skip-listen --probe v6only.test)"
+assert_contains "a failed IPv6 probe prints the matching nc command" "$out" "nc -6 -vz -G 5 2001:db8::10 443"
+rm -f "$nd/fx/nc.args"
 
 out="$(netdoc --quiet)"
 assert_not_contains "--quiet drops ok rows" "$out" "[ ok ]"

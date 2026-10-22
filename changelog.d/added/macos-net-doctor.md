@@ -5,4 +5,5 @@
   browsers use and `curl`, `git` and `brew` do not, connected VPN services
   and tunnels, `/etc/hosts` overrides and listening sockets. It changes
   nothing, names proxy variables without printing them, and contacts the
-  network only for an explicit `--probe HOST[:PORT]`.
+  network only for an explicit `--probe HOST[:PORT]`, which also follows
+  an IPv6-only (AAAA) answer.
