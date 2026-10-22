@@ -658,7 +658,7 @@ With **`--test-auth`** it authenticates the way git would (the user from the rem
 
 Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
-**Exit code `1`** if any checked host has no usable key or (with `--test-auth`) fails to authenticate, or with `--require-known-host` has a host key that is not in known_hosts.
+**Exit code `1`** if any checked host has no usable key or (with `--test-auth`) fails to authenticate, or with `--require-known-host` has a host key that is not in known_hosts, or when the repository's `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` is a custom (non-`ssh`) command that was not inspected.
 
 `--quiet` suppresses the report but preserves the verdict exit code. It does
 not imply `--test-auth`, and no authentication happens without it, so a quiet
