@@ -3931,6 +3931,21 @@ rm -f "$wdest"/config-*.tar.gz
 chmod 1777 "$wdest"
 out="$(cbrun --yes --dest "$wdest")"; rc=$?
 assert_eq "a sticky world-writable --dest owned by the user is accepted -> 0" "0" "$rc"
+rm -f "$wdest"/config-*.tar.gz
+# A writable, non-sticky ancestor lets its owner swap the destination.
+mkdir -p "$cb/anc/sub"
+chmod 777 "$cb/anc"
+out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
+assert_eq "a --dest under a world-writable ancestor is refused -> 3" "3" "$rc"
+assert_contains "the refusal names the offending ancestor" "$out" "$cb/anc "
+assert_eq "nothing is created under a bad ancestor" "0" "$(find "$cb/anc/sub" -mindepth 1 | wc -l | tr -d ' ')"
+chmod 775 "$cb/anc"
+out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
+assert_eq "a --dest under a group-writable ancestor is refused -> 3" "3" "$rc"
+chmod 1777 "$cb/anc"
+out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
+assert_eq "a --dest under a sticky ancestor owned by the user -> 0" "0" "$rc"
+chmod 755 "$cb/anc"
 rm -rf "$cb"
 
 end_section

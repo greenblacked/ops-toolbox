@@ -11,7 +11,9 @@
   refused unless
   `--include-secrets` and left out of a default run, the archive is private
   to its owner (a `--dest` it creates is `0700`, and one other users can
-  write to is refused; the temporary archive is made exclusively with
+  write to is refused, as is one below an ancestor directory that is
+  not owned by root or you, or that other users can write to unless it is
+  sticky; the temporary archive is made exclusively with
   `mktemp`), a dry run
   writes nothing, a real run needs `--yes`, and rotation only removes its
   own older archives.

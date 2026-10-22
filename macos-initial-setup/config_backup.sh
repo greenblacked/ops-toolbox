@@ -463,6 +463,44 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Every existing ancestor of the physical --dest must belong to root or this
+# user and not be writable by group or other, unless it is sticky (like /tmp):
+# anyone who can write to an ancestor can rename the destination away and put
+# their own directory in its place.
+dir_mode_of() {
+  local m
+  m="$(stat -f '%Mp%Lp' "$1" 2>/dev/null)"
+  [[ "$m" =~ ^[0-7]{3,4}$ ]] || m="$(stat -c %a "$1" 2>/dev/null)"
+  printf '%s\n' "$m"
+}
+dir_owner_of() {
+  local o
+  o="$(stat -f %u "$1" 2>/dev/null)"
+  [[ "$o" =~ ^[0-9]+$ ]] || o="$(stat -c %u "$1" 2>/dev/null)"
+  printf '%s\n' "$o"
+}
+anc="$CANON_DEST"
+while [[ "$anc" != "/" && "$anc" == */* ]]; do
+  anc="${anc%/*}"
+  [[ -n "$anc" ]] || anc="/"
+  [[ -d "$anc" ]] || continue
+  a_mode="$(dir_mode_of "$anc")"
+  a_owner="$(dir_owner_of "$anc")"
+  if [[ ! "$a_mode" =~ ^[0-7]{3,4}$ || ! "$a_owner" =~ ^[0-9]+$ ]]; then
+    err "refusing --dest $DEST: cannot read the owner and mode of $anc"
+    exit 3
+  fi
+  if [[ "$a_owner" != "0" && "$a_owner" != "$(id -u)" ]]; then
+    err "refusing --dest $DEST: $anc is owned by uid $a_owner, not root or you"
+    exit 3
+  fi
+  a_bits=$((8#$a_mode))
+  if (( (a_bits & 18) != 0 && (a_bits & 512) == 0 )); then
+    err "refusing --dest $DEST: $anc (mode $a_mode) lets other users write to it and rename the destination"
+    exit 3
+  fi
+done
+
 if [[ ! -d "$DEST" ]]; then
   if ! (umask 077 && mkdir -p -- "$DEST"); then
     err "could not create $DEST"
