@@ -2894,6 +2894,8 @@ out="$(FAKE_LS_ACL=' 0: user:mallory inherited allow read\n' audit_secrets)"
 assert_contains "an inherited ACL entry for another user is a warning" "$out" "ACL entry that lets another user read it"
 out="$(FAKE_LS_ACL=' 0: user:mallory deny read\n 1: user:bob allow readattr,write\n' audit_secrets)"
 assert_contains "a deny entry or a non-read right is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:mallory allow read,file_inherit,only_inherit\n' audit_secrets)"
+assert_contains "an only_inherit read entry does not govern the file itself" "$out" "AWS credentials is private to its owner"
 out="$(audit_secrets)"
 assert_contains "ls without ACL support stays silent" "$out" "AWS credentials is private to its owner"
 rm -f "$sec/bin/ls"
@@ -3987,6 +3989,8 @@ assert_contains "a symlinked program whose target has an ACL write grant is a wa
 out="$(FAKE_ACL_PATH="$sr/wdir/inner/joblink" FAKE_ACL=' 0: user:mallory allow write\n' sched --only launchd-user)"
 assert_not_contains "an ACL on the link alone does not make the target writable" "$out" "which an ACL entry lets another user change"
 rm -f "$sr/wdir/inner/joblink"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory allow write,only_inherit\n' sched --only launchd-user)"
+assert_not_contains "an only_inherit ACL entry does not govern the object itself" "$out" "ACL entry"
 rm -f "$sr/bin/ls" "$ua/com.example.acl.plist" "$dplist"
 
 out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?

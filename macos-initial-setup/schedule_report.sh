@@ -194,7 +194,8 @@ foreign_writable() {
 # user:bob allow write,delete"). Only an allow entry counts, with one of the
 # rights that modify a file or a directory's contents (write, append,
 # delete, add_file, add_subdirectory, delete_child, writeattr, writeextattr,
-# writesecurity, chown). The owner's own entry, root and wheel are not
+# writesecurity, chown), unless the entry is only_inherit (it then governs
+# children, not the object). The owner's own entry, root and wheel are not
 # foreign. ACLs are consulted on Darwin only; where ls has no -e (GNU ls) or
 # the path has no ACL the answer is no, silently. Returns 0 on a grant.
 acl_foreign_grant() {
@@ -212,9 +213,13 @@ acl_foreign_grant() {
       sub(/ inherited$/, "", subject)
       if (subject == ("user:" owner) || subject == "user:root" || subject == "group:wheel") next
       n = split(substr(line, i + 7), perm, /[ ,]+/)
+      hit = 0; inh = 0
       for (k = 1; k <= n; k++) {
-        if (perm[k] ~ /^(write|append|delete|add_file|add_subdirectory|delete_child|writeattr|writeextattr|writesecurity|chown)$/) found = 1
+        if (perm[k] == "only_inherit") inh = 1
+        if (perm[k] ~ /^(write|append|delete|add_file|add_subdirectory|delete_child|writeattr|writeextattr|writesecurity|chown)$/) hit = 1
       }
+      # only_inherit: the entry governs children, not this object.
+      if (hit && !inh) found = 1
     }
     END { exit !found }
   ' <<<"$listing"

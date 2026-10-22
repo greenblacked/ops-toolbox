@@ -473,9 +473,13 @@ if want secrets; then
         # the subject and the verb and is not part of the name.
         sub(/ inherited$/, "", subject)
         n = split(substr(line, i + 7), perm, /[ ,]+/)
+        hit = 0; inh = 0
         for (k = 1; k <= n; k++) {
-          if (perm[k] == "read" && subject != ("user:" owner)) found = 1
+          if (perm[k] == "only_inherit") inh = 1
+          if (perm[k] == "read" && subject != ("user:" owner)) hit = 1
         }
+        # only_inherit: the entry governs children, not this object.
+        if (hit && !inh) found = 1
       }
       END { exit !found }
     ' <<<"$listing"
