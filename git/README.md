@@ -969,13 +969,19 @@ each kind and prints the repair.
   relative URL with no `origin` remote resolves against the repository's own
   directory, which works on this machine only, and warns.
 - **Drift.** A URL changed in `.gitmodules` while `.git/config` still dials
-  the old one, until `git submodule sync --recursive`.
+  the old one, until `git submodule sync --recursive`. A relative URL
+  (`../new.git`) is first resolved the way git does, against the URL of the
+  branch's remote (else `origin`; with no remote, the repository's own path;
+  the remote URL is read raw, before any `insteadOf`), and compared with
+  `.git/config`. When it cannot be resolved the doctor says it did not
+  compare, rather than reporting nothing.
 
-Read-only: it runs `git ls-files`, `git config` reads and
-`git submodule status`, which neither fetches nor recurses, from the
-repository root whatever directory it is started in, and never runs
-`git submodule update`, `sync` or `init`. URLs are printed with any password
-blanked, because a CI-written `.gitmodules` sometimes carries a token.
+Read-only: it runs `git ls-files`, `git config` reads (including the raw
+`remote.<r>.url`, before any `insteadOf` rewrite) and `git submodule status`,
+which neither fetches nor recurses, from the repository root whatever
+directory it is started in, and never runs `git submodule update`, `sync`
+or `init`. URLs are printed with any password blanked, because a
+CI-written `.gitmodules` sometimes carries a token.
 
 **Exit codes:** `0` no fail-level finding, `1` a fail-level finding or a git
 command that could not answer, `2` not inside a Git repository, `3` bad

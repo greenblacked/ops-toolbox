@@ -16,12 +16,15 @@ opaque one. Each of these has its own error, or none:
                needs a deploy key on every runner, a relative URL with no
                origin to resolve against.
   drift        .gitmodules changed but .git/config still dials the old URL,
-               until `git submodule sync`.
+               until `git submodule sync`. A relative URL is resolved against
+               the default remote first, as git does; one that cannot be
+               resolved is reported as not compared.
 
-Read-only. It runs git ls-files, git config reads and `git submodule status`
-(no network, no recursion, no fetch), works from the repository root whatever
-directory it is started in, and never runs `git submodule update`, `sync` or
-`init`; it prints them. URLs are printed with any password blanked.
+Read-only. It runs git ls-files, git config and git remote reads and
+`git submodule status` (no network, no recursion, no fetch), works from the
+repository root whatever directory it is started in, and never runs
+`git submodule update`, `sync` or `init`; it prints them. URLs are printed
+with any password blanked.
 
     ./git_submodule_doctor.py
     ./git_submodule_doctor.py --json     # the same verdict as one JSON object
@@ -223,6 +226,53 @@ def classify_submodule_url(url):
     return "unknown"
 
 
+def resolve_relative_url(base, url):
+    """The URL git writes to .git/config for a relative .gitmodules URL, or None.
+
+    base is the superproject's default remote URL, or its own path when it has
+    no remote. This follows git's relative_url(): leading "./" is dropped and
+    each leading "../" removes one trailing component of base, a component
+    being cut at "/" or, for an scp-style "host:path" with no slash left, at
+    the last colon. A local base that does not start with "./", "../" or "/"
+    (a bare path, or "foo/super") gets "./" in front first, as git does, so
+    "../new.git" against "superrepo" is "new.git". A leading "./" on the
+    result is always dropped, so "./foo/super" with "../x.git" is
+    "foo/x.git". One trailing "/" on url is removed first, as git does, so
+    "../x.git/" resolves like "../x.git". None when base has no component to remove or url is not
+    relative, so the caller can say it did not compare rather than guess.
+    """
+    rel = (url or "").strip()
+    if rel.endswith("/"):
+        rel = rel[:-1]
+    remote = (base or "").strip().rstrip("/")
+    if not remote or not rel.startswith(("./", "../")):
+        return None
+    sep = "/"
+    first = remote.split("/", 1)[0]
+    url_like = "://" in remote or ":" in first
+    if not url_like and remote != "." and not remote.startswith(("./", "../", "/")):
+        remote = "./" + remote
+    while True:
+        if rel.startswith("./"):
+            rel = rel[2:]
+        elif rel.startswith("../"):
+            rel = rel[3:]
+            cut = remote.rfind("/")
+            if cut >= 0:
+                remote = remote[:cut]
+            elif ":" in remote:
+                remote = remote[:remote.rindex(":")]
+                sep = ":"
+            else:
+                return None
+        else:
+            break
+    result = "%s%s%s" % (remote, sep, rel) if rel else remote
+    if result.startswith("./"):
+        result = result[2:]
+    return result
+
+
 _USERINFO_PASSWORD = re.compile(r"(\w+://[^/\s:@]+):[^@/\s]+@")
 _LONG_USERINFO = re.compile(r"(\w+://)[^/\s:@]{20,}@")
 
@@ -248,12 +298,15 @@ _URL_FINDINGS = {
 }
 
 
-def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, recorded=None):
+def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, recorded=None,
+                       base_url=None):
     """[(level, message, fix)] for a superproject's submodules.
 
     modules is parse_gitmodules() output, gitlinks the gitlink paths in the
     index, statuses parse_submodule_status() output, local_urls {name: url}
-    from .git/config, recorded {path: sha} from the index.
+    from .git/config, recorded {path: sha} from the index, base_url what a
+    relative URL resolves against (the default remote's URL, else the
+    superproject's path), None when that is unknown.
     """
     recorded = recorded or {}
     findings = []
@@ -321,9 +374,31 @@ def submodule_findings(modules, gitlinks, statuses, local_urls, has_origin, reco
             findings.append((level, "%s: %s" % (name, message), fix))
 
         configured = local_urls.get(name)
-        if (configured and url and configured != url
-                and classify_submodule_url(configured) != "relative"
-                and kind != "relative"):
+        if configured and url and kind == "relative":
+            # git submodule init writes the URL resolved against the
+            # superproject's remote, so that is what .git/config should hold.
+            expected = resolve_relative_url(base_url, url)
+            if configured == url:
+                pass
+            elif expected is None:
+                findings.append((
+                    "info",
+                    "%s: relative URL %s could not be resolved against %s, so "
+                    "it was not compared with .git/config (%s)"
+                    % (name, url, redact(base_url) if base_url else
+                       "any remote or path", redact(configured)),
+                    None,
+                ))
+            elif configured.rstrip("/") != expected.rstrip("/"):
+                findings.append((
+                    "warn",
+                    "%s: .git/config still dials %s, .gitmodules says %s, which "
+                    "resolves to %s" % (name, redact(configured), url,
+                                        redact(expected)),
+                    "git submodule sync --recursive",
+                ))
+        elif (configured and url and configured != url
+                and classify_submodule_url(configured) != "relative"):
             findings.append((
                 "warn",
                 "%s: .git/config still dials %s, .gitmodules says %s"
@@ -340,6 +415,30 @@ def could_not_answer(what, rc, err):
     bad("%s could not answer (exit %d)" % (what, rc))
     for line in err.strip().splitlines()[:3]:
         info("        %s" % line)
+
+
+def default_base_url(has_origin):
+    """What git resolves a relative submodule URL against.
+
+    The current branch's remote (branch.<b>.remote, ignoring "." for a local
+    upstream), else origin; with no such remote, the superproject's own path.
+    """
+    remote = None
+    rc, out, _ = run(["git", "symbolic-ref", "-q", "--short", "HEAD"])
+    if rc == 0 and out.strip():
+        rc, out, _ = run(["git", "config", "--get", "branch.%s.remote" % out.strip()])
+        if rc == 0 and out.strip() not in ("", "."):
+            remote = out.strip()
+    if remote is None and has_origin:
+        remote = "origin"
+    if remote is not None:
+        # The raw remote.<name>.url: git resolves a relative submodule URL
+        # against it, before any url.<base>.insteadOf rewrite that
+        # "git remote get-url" would apply.
+        rc, out, _ = run(["git", "config", "--get", "remote.%s.url" % remote])
+        if rc == 0 and out.strip():
+            return out.strip()
+    return GIT_CWD
 
 
 def run_report(args):
@@ -398,6 +497,7 @@ def run_report(args):
         out if rc == 0 else "", ("url",)).items()}
     rc, out, _ = run(["git", "remote"])
     has_origin = rc == 0 and "origin" in out.split()
+    base_url = default_base_url(has_origin)
 
     head("submodules")
     state_of = {path: state for state, _, path in statuses}
@@ -412,7 +512,7 @@ def run_report(args):
 
     head("findings")
     findings = submodule_findings(modules, gitlinks, statuses, local_urls, has_origin,
-                                  recorded)
+                                  recorded, base_url)
     for level, message, fix in findings:
         if level == "fail":
             bad(message)

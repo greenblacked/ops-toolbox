@@ -1412,6 +1412,65 @@ out="$(cd "$sm_space" && "$SUBMODULE_DOCTOR" 2>&1)"
 assert_contains "$out" "--remove-section 'submodule.my lib'" \
   "submodule doctor quotes a stale entry's section name with a space"
 
+# A relative .gitmodules URL is resolved the way git does, against the default
+# remote's URL, and compared with what .git/config holds. The gitlink is made
+# with update-index so no clone or network is needed.
+sm_rel="$(new_repo)"
+git -C "$sm_rel" remote add origin https://example.com/org/super.git
+git -C "$sm_rel" update-index --add --cacheinfo "160000,$(git -C "$sm_rel" rev-parse HEAD),lib"
+git -C "$sm_rel" config -f .gitmodules submodule.lib.path lib
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../old.git
+git -C "$sm_rel" config submodule.lib.url https://example.com/org/old.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_not_contains "$out" "still dials" "submodule doctor accepts a relative URL that resolves to .git/config"
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../new.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "still dials https://example.com/org/old.git" "submodule doctor reports drift behind a relative URL"
+assert_contains "$out" "https://example.com/org/new.git" "submodule doctor shows where the relative URL resolves"
+assert_contains "$out" "git submodule sync" "submodule doctor prints the sync for relative drift"
+# A remote URL with no slash is a bare path: git prefixes "./" and resolves
+# "../new.git" to "new.git", so the drift is still reported.
+git -C "$sm_rel" remote set-url origin superrepo
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "still dials https://example.com/org/old.git" "submodule doctor resolves a relative URL against a slashless remote"
+assert_contains "$out" "resolves to new.git" "submodule doctor shows git's resolution for a slashless remote"
+assert_not_contains "$out" "not compared" "submodule doctor compares against a slashless remote"
+# A remote path with a slash but no leading "./" gets the same prefix.
+git -C "$sm_rel" remote set-url origin foo/super
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../../x.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to x.git" "submodule doctor prefixes ./ to a remote path like foo/super"
+assert_not_contains "$out" "not compared" "submodule doctor compares against a remote path like foo/super"
+# git drops a leading "./" from the result however the remote spelled it.
+git -C "$sm_rel" remote set-url origin ./foo/super
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../x.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to foo/x.git" "submodule doctor drops ./ from a ./foo/super resolution"
+# git cuts an scp-style remote at its last colon.
+git -C "$sm_rel" remote set-url origin git@host:a:b
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../../x.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to git@host:x.git" "submodule doctor cuts an scp-style remote at the last colon"
+# git strips a trailing "/" from the submodule URL before resolving it.
+git -C "$sm_rel" remote set-url origin https://example.com/org/super.git
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../x.git/
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to https://example.com/org/x.git" "submodule doctor resolves a URL with a trailing slash"
+assert_not_contains "$out" "org/x.git/" "submodule doctor drops the trailing slash of a relative URL"
+# git resolves against the raw remote.<name>.url, not the insteadOf rewrite.
+git -C "$sm_rel" remote set-url origin https://example.com/org/super.git
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../old.git
+git -C "$sm_rel" config url.https://mirror.example/.insteadOf https://example.com/
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_not_contains "$out" "still dials" "submodule doctor ignores url.*.insteadOf when resolving a relative URL"
+# A relative URL with nothing left to strip still cannot be resolved.
+git -C "$sm_rel" config --unset url.https://mirror.example/.insteadOf
+git -C "$sm_rel" remote set-url origin superrepo
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../../new.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "not compared" "submodule doctor says when a relative URL cannot be resolved"
+assert_not_contains "$out" "still dials" "submodule doctor does not guess drift it cannot resolve"
+
 # Work-tree doctors report n/a (exit 4) in a bare repository, which has no
 # work tree and no toplevel, and the fleet shows n/a rather than ERR.
 bare_root="$(mktemp -d /tmp/git-doctor-bare.XXXXXX)"

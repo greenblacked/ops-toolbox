@@ -4,6 +4,7 @@
   different commit than the superproject records, a merge conflict in the
   pointer, a URL that is a path on one machine or uses `git://` or
   `http://`, an ssh URL that needs a deploy key on every runner, and a
-  `.git/config` still dialling an old URL until `git submodule sync`. It
-  prints each repair, runs none, and blanks passwords in the URLs it shows.
-  It takes `--quiet` and `--json` like the other doctors.
+  `.git/config` still dialling an old URL until `git submodule sync`, also
+  behind a relative URL, which is resolved against the remote as git does.
+  It prints each repair, runs none, and blanks passwords in the URLs it
+  shows. It takes `--quiet` and `--json` like the other doctors.
