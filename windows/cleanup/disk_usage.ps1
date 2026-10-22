@@ -159,31 +159,39 @@ function Test-NameSurrogateLink {
     return $false
 }
 
+# True for a file or folder the size walks must not enter or count: one with
+# the ReparsePoint attribute that is a link (Test-NameSurrogateLink). Any other
+# reparse point, such as a OneDrive Files On-Demand folder or placeholder file,
+# holds data on this volume and is walked and counted.
+function Test-SkippedReparse {
+    param([object]$Item)
+    if (($Item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) { return $false }
+    return [bool](Test-NameSurrogateLink -Item $Item)
+}
+
 # An explicit stack and a try/catch per directory, rather than
 # Get-ChildItem -Recurse or EnumerateFiles(AllDirectories): those stop at the
 # first folder that refuses access, and .NET Framework has no option to carry
 # on. A refusal here costs that one folder and is counted, so the caller can
 # say the total is a lower bound.
 #
-# A folder with the ReparsePoint attribute is skipped: a junction or symbolic
-# link would count its target twice, and a link to an ancestor would never
-# finish. A file with it is skipped only when it is such a link
-# (Test-NameSurrogateLink); a OneDrive or other Cloud Files placeholder is
-# data on this volume and counts. Each file counts at the space it occupies
+# A folder or file with the ReparsePoint attribute is skipped only when it is
+# a link (Test-SkippedReparse): a junction or symbolic link would count its
+# target twice, and a link to an ancestor would never finish. A OneDrive or
+# other Cloud Files folder or placeholder is data on this volume and is
+# walked and counted. Each file counts at the space it occupies
 # (Get-FileDiskSize), not its logical length.
 function Get-DirectorySize {
     param([string]$Path)
     $bytes = 0L
     $inaccessible = 0
-    $stack = New-Object 'System.Collections.Generic.Stack[System.IO.DirectoryInfo]'
+    $stack = New-Object 'System.Collections.Generic.Stack[object]'
     $stack.Push((New-Object System.IO.DirectoryInfo -ArgumentList $Path))
     while ($stack.Count -gt 0) {
         $directory = $stack.Pop()
         try {
             foreach ($file in $directory.GetFiles()) {
-                if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
-                    if (Test-NameSurrogateLink -Item $file) { continue }
-                }
+                if (Test-SkippedReparse -Item $file) { continue }
                 $bytes += Get-FileDiskSize -File $file
             }
         } catch {
@@ -191,7 +199,7 @@ function Get-DirectorySize {
         }
         try {
             foreach ($child in $directory.GetDirectories()) {
-                if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if (Test-SkippedReparse -Item $child) { continue }
                 $stack.Push($child)
             }
         } catch {
@@ -318,7 +326,7 @@ function Get-TreeNode {
     $children = @()
     try {
         foreach ($file in $directory.GetFiles()) {
-            if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            if (Test-SkippedReparse -Item $file) { continue }
             $fileBytes = Get-FileDiskSize -File $file
             $bytes += $fileBytes
             $children += [pscustomobject]@{ Name = $file.Name; Bytes = $fileBytes; Inaccessible = 0; Children = @() }
@@ -328,7 +336,7 @@ function Get-TreeNode {
     }
     try {
         foreach ($child in $directory.GetDirectories()) {
-            if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            if (Test-SkippedReparse -Item $child) { continue }
             $node = Get-TreeNode -Path $child.FullName -Name $child.Name -Level ($Level + 1) -MaxLevel $MaxLevel
             $bytes += $node.Bytes
             $inaccessible += $node.Inaccessible

@@ -1474,6 +1474,18 @@ if (-not $diskUsage) {
             $linkSrc = 'function Test-NameSurrogateLink { param([object]$Item) return $true }'
         }
         . ([scriptblock]::Create($linkSrc))
+        $skipSrc = Get-ScriptFunctionSource -Script $diskUsage -Name 'Test-SkippedReparse'
+        if (-not $skipSrc) {
+            Test-Fail 'disk_usage.ps1 : Test-SkippedReparse not found - this check has stopped checking'
+            $skipSrc = 'function Test-SkippedReparse { param([object]$Item) return $true }'
+        }
+        . ([scriptblock]::Create($skipSrc))
+        $treeSrc = Get-ScriptFunctionSource -Script $diskUsage -Name 'Get-TreeNode'
+        if (-not $treeSrc) {
+            Test-Fail 'disk_usage.ps1 : Get-TreeNode not found - this check has stopped checking'
+            $treeSrc = 'function Get-TreeNode { param([string]$Path, [string]$Name, [int]$Level, [int]$MaxLevel) return [pscustomobject]@{ Bytes = -1L; Inaccessible = 0; Children = @() } }'
+        }
+        . ([scriptblock]::Create($treeSrc))
         $sizeBox = Join-Path ([IO.Path]::GetTempPath()) ('winsize_' + [Guid]::NewGuid().ToString('N'))
         $deep = Join-Path (Join-Path $sizeBox 'sub') 'deep'
         $emptyDir = Join-Path $sizeBox 'empty'
@@ -1548,6 +1560,7 @@ if (-not $diskUsage) {
             if ($leaf -eq 'symlink.bin') { return [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = @('C:\elsewhere\x.bin') } }
             if ($leaf -eq 'junction-like.bin') { return [pscustomobject]@{ LinkType = $null; Target = @('C:\elsewhere') } }
             if ($leaf -eq 'unreadable.bin') { throw 'access denied' }
+            if ($leaf -eq 'junction-dir') { return [pscustomobject]@{ LinkType = 'Junction'; Target = @('C:\elsewhere') } }
             return [pscustomobject]@{ LinkType = $null; Target = $null }
         }
         $reparse = [IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::Archive
@@ -1570,6 +1583,54 @@ if (-not $diskUsage) {
         } else {
             Test-Fail 'Get-FileDiskSize returned an impossible size for a reparse-point file'
         }
+        # Both walks, over a fake tree (a placeholder file, a link file, a
+        # OneDrive-style reparse folder holding 500 bytes, and a junction
+        # holding 9999). Real reparse points cannot be made here, so
+        # DirectoryInfo is answered from a table. The placeholder and the
+        # cloud folder count at every depth; the link file and the junction
+        # never do: 1000 + 4096 + 500 = 5596.
+        $reparseAttr = [IO.FileAttributes]::ReparsePoint
+        $plainAttr = [IO.FileAttributes]::Directory
+        $fakeDirs = @{}
+        $mkFile = { param($n, $len, $attr) [pscustomobject]@{ Name = $n; FullName = (Join-Path $sizeBox $n); Length = [long]$len; Attributes = $attr } }
+        $mkDir = {
+            param($path, $files, $dirs, $attr)
+            $d = [pscustomobject]@{ Name = (Split-Path -Leaf $path); FullName = $path; Attributes = $attr; Files = @($files); Dirs = @($dirs) }
+            $d | Add-Member -MemberType ScriptMethod -Name GetFiles -Value { $this.Files }
+            $d | Add-Member -MemberType ScriptMethod -Name GetDirectories -Value { $this.Dirs }
+            $fakeDirs[$path] = $d
+            $d
+        }
+        $cloudDir = & $mkDir (Join-Path $sizeBox 'cloud-dir') @(& $mkFile 'cf.bin' 500 ([IO.FileAttributes]::Archive)) @() ($plainAttr -bor $reparseAttr)
+        $juncDir = & $mkDir (Join-Path $sizeBox 'junction-dir') @(& $mkFile 'jf.bin' 9999 ([IO.FileAttributes]::Archive)) @() ($plainAttr -bor $reparseAttr)
+        $fakeRoot = & $mkDir (Join-Path $sizeBox 'fake-root') @(
+            (& $mkFile 'plain.bin' 1000 ([IO.FileAttributes]::Archive)),
+            (& $mkFile 'placeholder.bin' 4096 ($reparseAttr -bor [IO.FileAttributes]::Archive)),
+            (& $mkFile 'symlink.bin' 7777 ($reparseAttr -bor [IO.FileAttributes]::Archive))
+        ) @($cloudDir, $juncDir) $plainAttr
+        function New-Object {
+            param([string]$TypeName, [object[]]$ArgumentList)
+            if ($TypeName -eq 'System.IO.DirectoryInfo' -and $fakeDirs.ContainsKey([string]$ArgumentList[0])) { return $fakeDirs[[string]$ArgumentList[0]] }
+            if ($ArgumentList) { return Microsoft.PowerShell.Utility\New-Object -TypeName $TypeName -ArgumentList $ArgumentList }
+            return Microsoft.PowerShell.Utility\New-Object -TypeName $TypeName
+        }
+        function Get-FileDiskSize { param([object]$File) return [long]$File.Length }
+        $fakeSize = Get-DirectorySize -Path $fakeRoot.FullName
+        if ($fakeSize.Bytes -eq 5596) {
+            Test-Ok 'Get-DirectorySize counts a placeholder file and a OneDrive-style reparse folder, and skips a link file and a junction'
+        } else {
+            Test-Fail "Get-DirectorySize returned $($fakeSize.Bytes) bytes for the fake tree, expected 5596 (placeholder file + non-link reparse folder counted, links skipped)"
+        }
+        foreach ($maxLevel in 1, 2, 3) {
+            $node = Get-TreeNode -Path $fakeRoot.FullName -Name 'fake-root' -Level 0 -MaxLevel $maxLevel
+            if ($node.Bytes -eq 5596) {
+                Test-Ok "Get-TreeNode (MaxLevel $maxLevel) agrees with Get-DirectorySize on the placeholder, the reparse folder and the links"
+            } else {
+                Test-Fail "Get-TreeNode (MaxLevel $maxLevel) returned $($node.Bytes) bytes for the fake tree, expected 5596"
+            }
+        }
+        Remove-Item Function:\New-Object -ErrorAction SilentlyContinue
+        Remove-Item Function:\Get-FileDiskSize -ErrorAction SilentlyContinue
         Remove-Item Function:\Get-Item -ErrorAction SilentlyContinue
         Remove-Item -Path $sizeBox -Recurse -Force -ErrorAction SilentlyContinue
     }
