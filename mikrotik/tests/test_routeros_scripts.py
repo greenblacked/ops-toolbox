@@ -1826,6 +1826,79 @@ def test_drift_comparison_reports_a_missing_script(
     assert answer == "DRF:pu_ut_drift_absent|missing", answer
 
 
+# --- router_doctor.py probe ------------------------------------------------
+#
+# The probe is one RouterOS command that router_doctor sends over ssh and
+# parses on this side. Nothing offline shows that RouterOS accepts it, nor
+# that it answers with the records parse_report expects, so this runs the very
+# text on the pinned release against a fixture script and scheduler. Only one
+# change is made to it: :put (a script run by the scheduler has nowhere to
+# show it) becomes :log info, and the test reads the lines back from /log.
+PROBE_SUBJECT = "pu_ut_probe_subject"
+PROBE_SCHEDULER = "pu_ut_probe_sched"
+PROBE_TAGS = ("SCR:", "SCH:", "SCX:", "ENV:", "CTL:", "UPT:", "CLK:", "EVT:", "VER:")
+
+
+def _probe_log_lines(api: Any) -> list[str]:
+    rows = list(api.get_binary_resource("/log").get())
+    return [m for m in (_row_str(r, "message") for r in rows) if m.startswith(PROBE_TAGS)]
+
+
+def test_router_doctor_probe_parses_and_describes_the_fixture(
+    api: Any, script_resource: Any
+) -> None:
+    module = _router_doctor_module()
+    assert module.PROBE.count(":put (") >= 9, "the probe no longer prints with :put ("
+    runner = "pu_ut_probe_run"
+    sched = api.get_binary_resource("/system/scheduler")
+    _unset_global(api, "PuProbeDone")
+    source = (
+        ":global PuProbeDone;\n"
+        + module.PROBE.replace(":put (", ":log info (")
+        + '\n:set PuProbeDone "yes";\n'
+    )
+    on_event = f"/system script run {PROBE_SUBJECT}"
+    try:
+        _add_script(script_resource, PROBE_SUBJECT, ':global TgBotToken "x";\n')
+        _remove_by_name(sched, PROBE_SCHEDULER)
+        sched.call(
+            "add",
+            {
+                "name": PROBE_SCHEDULER.encode(),
+                "on-event": on_event.encode(),
+                "interval": b"1h",
+                "disabled": b"yes",
+            },
+        )
+        _add_script(script_resource, runner, source)
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "PuProbeDone") == "yes", timeout=60.0
+        )
+        lines = _probe_log_lines(api)
+    finally:
+        _remove_by_name(script_resource, runner)
+        _remove_by_name(script_resource, PROBE_SUBJECT)
+        _remove_by_name(sched, PROBE_SCHEDULER)
+        _unset_global(api, "PuProbeDone")
+    scripts, schedulers, env = module.parse_report("\n".join(lines))
+    assert PROBE_SUBJECT in scripts, lines
+    mine = [s for s in schedulers if s["name"] == PROBE_SCHEDULER]
+    assert mine, lines
+    entry = mine[0]
+    assert entry["on_event"] == on_event, entry
+    assert entry["interval"], entry
+    assert entry["disabled"] is True and entry["run_count"] == 0, entry
+    assert module.VERSION_KEY in env and module.UPTIME_KEY in env, env
+    assert module.CLOCK_KEY in env, env
+    # The fixture script assigns TgBotToken, so the router described it and
+    # parse_report decided it restores the global.
+    assert env.get(module.DECLARES_KEY, {}).get("TgBotToken") == [PROBE_SUBJECT], (
+        lines,
+        env,
+    )
+    assert module.invokes_script(entry["on_event"], PROBE_SUBJECT)
+
+
 # --- conntrack_watch.lua ----------------------------------------------------
 #
 # Written without an underscored name, so unlike most of the watchers it runs
