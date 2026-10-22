@@ -406,8 +406,14 @@ class SecretScanTestCase(unittest.TestCase):
                      'set u password="$[/system/identity/get name]" comment=x\n',
                      'set u password="$(1+2)" comment=x\n',
                      'set u password=$(1+2) comment=x\n',
-                     'set u password="$\\"name\\"" comment=x\n'):
+                     'set u password="$\\"name\\"" comment=x\n',
+                     'set u password=$"name" comment=x\n'):
             self.assertEqual(export_config.find_leaks(text), [], text)
+
+    def test_unquoted_name_expression_is_not_redacted(self):
+        text = 'set u password=$"name" comment=x\n'
+        self.assertEqual(export_config.find_leaks(text), [])
+        self.assertEqual(export_config.redact_secrets(text), text)
 
     def test_unquoted_field_value_is_unchanged_by_the_escape_handling(self):
         text = "set u password=hunter2 comment=x\n"

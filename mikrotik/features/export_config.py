@@ -106,11 +106,13 @@ _LEAK_PATTERNS = (
     # the first unescaped quote: a backslash escapes the next character (\\,
     # \", \$, and the first digit of a \XX hex pair), so an escaped quote
     # does not end it. A quote that never closes runs to the end of the line
-    # (an unterminated value is a leak, not something to pass over).
+    # (an unterminated value is a leak, not something to pass over). An
+    # unquoted `$"name"` is one expression token, not a value ending at `$`.
     ("sensitive field", True, re.compile(
         r"\b(?:password|passphrase|private-key|secret|psk|wpa2-pre-shared-key"
         r"|wpa-pre-shared-key|authentication-key|encryption-key)"
-        r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)(?:"|\\?$)|(?P<value>[^\s\\"]+))'
+        r'=(?:"(?P<quoted>(?:[^"\\]|\\.)+)(?:"|\\?$)'
+        r'|(?P<value>\$"(?:[^"\\]|\\.)*"|[^\s\\"]+))'
     )),
 )
 
