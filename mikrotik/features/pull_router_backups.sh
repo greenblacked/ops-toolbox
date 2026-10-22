@@ -23,6 +23,9 @@ VERIFY=0
 # Empty means the freshness check is off, which keeps an existing cron line
 # behaving exactly as it did.
 MAX_AGE=""
+# --max-age: how far ahead of this machine's clock a pulled file's timestamp
+# may be before it is rejected as "in the future" (router clock ahead).
+FUTURE_SKEW_MINUTES=5
 
 usage() {
   cat <<'EOF'
@@ -378,12 +381,31 @@ fi
 # the age of a backup this router made. Only this run's files count: a
 # destination shared by several routers also holds their backup-*.backup, and
 # one router's fresh backup must not vouch for another's dead scheduler.
-# find -mmin works on GNU and BSD alike.
+# find -mmin works on GNU and BSD alike. find -mmin -N also matches a mtime in
+# the future, so a stale generation stamped by a router clock that runs ahead
+# would pass: a file more than FUTURE_SKEW_MINUTES ahead of now is rejected,
+# using find -newer against a reference file touched to now + the skew (GNU
+# date -d, BSD date -v; touch -t takes local time on both).
 if [[ -n "$MAX_AGE" ]]; then
   minutes=$((10#$MAX_AGE * 60))
   recent=""
+  future_ref=""
+  future_stamp="$(date -d "+${FUTURE_SKEW_MINUTES} minutes" +%Y%m%d%H%M.%S 2>/dev/null \
+    || date -v"+${FUTURE_SKEW_MINUTES}M" +%Y%m%d%H%M.%S 2>/dev/null || true)"
+  if [[ -n "$future_stamp" ]]; then
+    future_ref="$(mktemp)"
+    trap 'rm -f "$probe_err" "$scp_err" "$future_ref"; rm -rf "$stage"' EXIT
+    touch -t "$future_stamp" "$future_ref" 2>/dev/null || future_ref=""
+  fi
+  if [[ -z "$future_ref" ]]; then
+    printf 'warning: cannot compute a reference time; not checking for future timestamps\n' >&2
+  fi
   for name in ${pulled[@]+"${pulled[@]}"}; do
     [[ "$name" == *.backup ]] || continue
+    if [[ -n "$future_ref" && -n "$(find "$D/$name" -maxdepth 0 -type f -newer "$future_ref" 2>/dev/null || true)" ]]; then
+      printf '%s: timestamp in the future (router clock ahead?)\n' "$name" >&2
+      continue
+    fi
     if [[ -n "$(find "$D/$name" -maxdepth 0 -type f -mmin "-$minutes" 2>/dev/null || true)" ]]; then
       recent="$name"
       break

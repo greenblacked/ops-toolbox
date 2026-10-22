@@ -1222,7 +1222,10 @@ deleted or renamed.
   succeed every night while the router's own backup scheduler has died and
   `RemovePrevious` left one old pair to be pulled again and again; `scp -p`
   keeps the router's timestamps, so this sees how old the newest backup
-  the router made really is. With `--max-age`, a router with no backups yet
+  the router made really is. A file stamped more than 5 minutes ahead of
+  this machine's clock (`FUTURE_SKEW_MINUTES` in the script) is rejected as
+  `timestamp in the future (router clock ahead?)` and does not count as
+  fresh. With `--max-age`, a router with no backups yet
   is a failure (exit `1`) rather than success.
 
 Without either flag the behaviour is exactly what it was, so existing cron

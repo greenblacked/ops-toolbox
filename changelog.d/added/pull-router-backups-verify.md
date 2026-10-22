@@ -9,3 +9,5 @@
   runs in the staging directory and publishes only the files that pass,
   so a rejected re-pull (a zero-byte file, say) never replaces an archived
   copy of the same name; the run exits 1 and the earlier copy is kept.
+  `--max-age` also rejects a backup stamped more than 5 minutes in the
+  future (a router clock running ahead), which would otherwise look fresh.

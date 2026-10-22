@@ -123,6 +123,8 @@ run_mixed_case "success plus absent extension" 0 "" 1 "scp: backup-*.rsc: No suc
 #   lone-backup   a .backup, and no .rsc on the router
 #   none          nothing on the router
 #   stale         a good pair, backdated to 2020
+#   future        a good pair, stamped a day ahead of now (router clock ahead)
+#   skew          a good pair, stamped one minute ahead (within the allowed skew)
 run_check_case() {
   local label="$1" expected="$2" mode="$3"; shift 3
   printf '#!/usr/bin/env bash\nexit 0\n' >"$STUB_DIR/bin/ssh"
@@ -141,6 +143,8 @@ case "$mode:\$pattern" in
   *:*.rsc) printf '# 2026-10-21 04:00:00 by RouterOS 7.24.5\n/system identity\n' >"\$dest/backup-1.rsc" ;;
 esac
 if [ "$mode" = stale ]; then touch -t 202001010000 "\$dest"/backup-1.*; fi
+if [ "$mode" = future ]; then touch -t "\$(date -d '+1 day' +%Y%m%d%H%M.%S 2>/dev/null || date -v+1d +%Y%m%d%H%M.%S)" "\$dest"/backup-1.*; fi
+if [ "$mode" = skew ]; then touch -t "\$(date -d '+1 minute' +%Y%m%d%H%M.%S 2>/dev/null || date -v+1M +%Y%m%d%H%M.%S)" "\$dest"/backup-1.*; fi
 exit 0
 EOF
   chmod +x "$STUB_DIR/bin/ssh" "$STUB_DIR/bin/scp"
@@ -194,6 +198,8 @@ run_check_case "verify .backup without .rsc"       1 lone-backup  --verify
 run_check_case "verify nothing pulled"             0 none         --verify
 run_check_case "max-age fresh"                     0 good         --max-age 24
 run_check_case "max-age stale"                     1 stale        --max-age 24
+run_check_case "max-age future timestamp"          1 future       --max-age 24
+run_check_case "max-age small clock skew allowed"  0 skew         --max-age 24
 run_check_case "max-age with no backups"           1 none         --max-age 24
 run_check_case "max-age=HOURS form"                0 good         --max-age=1
 run_check_case "verify and max-age together"       0 good         --verify --max-age 24
