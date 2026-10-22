@@ -76,9 +76,10 @@ Start with the defaults:
 Each target prints one line:
 
 - `WOULD <target> <size> (<n> files)`: what a real run would delete.
-  The preview lists files only. A real run also removes the empty
-  directories left under the selected targets, which the preview does not
-  count or list.
+  The count covers files only, and the preview names no files or
+  directories. A real run also removes every empty directory under each
+  selected target, including directories that were already empty,
+  whatever their age or `-Days`. The preview does not count or list them.
 - `SKIP <target> (needs elevation - run as Administrator)` or
   `SKIP <target> (not found)`: the target is left out.
 
