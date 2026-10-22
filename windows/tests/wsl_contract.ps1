@@ -621,6 +621,42 @@ try {
         $left.Count -eq 2
     ) ($left -join "`n")
 
+    # A failure after the earlier pair has been set aside must put it back.
+    # The stand-in export plants a non-empty directory where the earlier
+    # sidecar is to be set aside, with a child named like the sidecar. The
+    # earlier tar has been moved aside by then, and the sidecar's move
+    # lands on that child, which a real filesystem refuses, so the
+    # rollback has work to do.
+    [IO.File]::WriteAllText($backupOut, $pairTar)
+    [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
+    function wsl.exe {
+        [IO.File]::WriteAllText([string]$args[2], 'unfinished export')
+        $planted = '{0}.sha256' -f (([string]$args[2]) -replace '\.partial$', '.old')
+        $blocker = Join-Path $planted 'Ubuntu_2026-10-21_1830.tar.sha256'
+        New-Item -ItemType Directory -Path (Join-Path $blocker 'x') -Force | Out-Null
+        $global:LASTEXITCODE = 0
+    }
+    $backedUp = Invoke-DistroBackup -Name 'Ubuntu' -Out $backupOut 2>$null 6>$null
+    function wsl.exe {
+        [IO.File]::WriteAllText([string]$args[2], 'new export')
+        $global:LASTEXITCODE = 0
+    }
+    $leftover = @(Get-ChildItem -LiteralPath $backupDir -Force | ForEach-Object { $_.Name } | Sort-Object)
+    $plantedDirs = @(Get-ChildItem -LiteralPath $backupDir -Force -Directory)
+    Test-Case 'a failure after the earlier pair was set aside returns false' ($backedUp -eq $false)
+    Test-Case 'and puts the earlier tar and sidecar back with their content' (
+        [IO.File]::ReadAllText($backupOut) -eq $pairTar -and
+        [IO.File]::ReadAllText("$backupOut.sha256") -eq $pairSide
+    ) ($leftover -join "`n")
+    Test-Case 'and leaves no temporary file but the directory the test planted' (
+        $plantedDirs.Count -eq 1 -and $leftover.Count -eq 3 -and
+        @($leftover | Where-Object { $_ -match '\.partial' }).Count -eq 0 -and
+        @(Get-ChildItem -LiteralPath $backupDir -Force -File | Where-Object { $_.Name -match '\.old' }).Count -eq 0
+    ) ($leftover -join "`n")
+    foreach ($dir in $plantedDirs) { Remove-Item -LiteralPath $dir.FullName -Recurse -Force }
+    [IO.File]::WriteAllText($backupOut, $pairTar)
+    [IO.File]::WriteAllText("$backupOut.sha256", $pairSide)
+
     # A read-only earlier sidecar: whether the platform lets it be replaced
     # or not, the tar and its sidecar must agree afterwards and the call
     # must return normally.
