@@ -302,15 +302,21 @@ Test-Case 'a networkingMode WSL does not define is reported, with the NAT fallba
     @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -cmatch 'not nat, mirrored, virtioproxy or none.*falls back to NAT' }).Count -eq 1
 ) (Format-Finding $found)
 
+# Each key goes under the section the audit expects it in (general for
+# instanceIdleTimeout, experimental for initialAutoProxyTimeout), otherwise
+# the 'belongs in [...]' finding hides the whole-number check.
+$numericSection = @{ instanceIdleTimeout = 'general'; initialAutoProxyTimeout = 'experimental' }
 foreach ($case in @(
         @('vmIdleTimeout', '60000', 0), @('vmIdleTimeout', '0', 0), @('vmIdleTimeout', '-1', 0), @('vmIdleTimeout', '-2', 1), @('vmIdleTimeout', '1m', 1),
         @('instanceIdleTimeout', '-1', 0), @('instanceIdleTimeout', '-2', 1), @('initialAutoProxyTimeout', '-1', 1),
         @('vmIdleTimeout', '1.5', 1), @('vmIdleTimeout', '', 1),
         @('maxCrashDumpCount', '10', 0), @('maxCrashDumpCount', '-1', 0), @('maxCrashDumpCount', '-2', 1), @('maxCrashDumpCount', 'many', 1))) {
     $key, $val, $bad = $case
-    $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n$key=$val"
-    Test-Case "$key=$val is $(if ($bad) { 'reported as not a whole number' } else { 'accepted' })" (
-        @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq "[wsl2] $key (line 3)" -and $_.Message -match 'not a whole number' }).Count -eq $bad
+    $section = if ($numericSection.ContainsKey($key)) { $numericSection[$key] } else { 'wsl2' }
+    $found = Get-WslConfigFinding "[$section]`n$key=$val"
+    Test-Case "[$section] $key=$val is $(if ($bad) { 'reported as not a whole number' } else { 'accepted' })" (
+        @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq "[$section] $key (line 2)" -and $_.Message -match 'not a whole number' }).Count -eq $bad -and
+        @($found | Where-Object { $_.Message -match 'belongs in' }).Count -eq 0
     ) (Format-Finding $found)
 }
 $found = Get-WslConfigFinding "[general]`ninstanceIdleTimeout=soon`n[wsl2]`nmemory=8GB`n[experimental]`ninitialAutoProxyTimeout=1s"
