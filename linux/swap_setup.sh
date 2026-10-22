@@ -361,9 +361,18 @@ change_preflight() {
 # can be steered through a planted symlink. Refuse a parent directory that
 # anyone but its owner can write to (sticky or not: /tmp is no place for a
 # swapfile), a parent owned by neither root nor the user running this, and a
-# path with a symlink in any component.
+# path with a symlink in any component. The symlink scan runs first: stat of
+# a symlinked parent reports the link (mode 777), not the directory.
 unsafe_path_check() {
   local path="$1" dir="$2" info owner mode cur
+  cur="$path"
+  while [[ -n "$cur" && "$cur" != "/" && "$cur" != "." ]]; do
+    if [[ -L "$cur" ]]; then
+      err "$cur is a symlink; refusing a --path that goes through one"
+      return 1
+    fi
+    cur="$(dirname -- "$cur")"
+  done
   info="$(stat -c '%u %a' -- "$dir" 2>/dev/null)" || info=""
   owner="${info%% *}"
   mode="${info##* }"
@@ -379,14 +388,6 @@ unsafe_path_check() {
     err "$dir is writable by users other than its owner (mode $mode); refusing to put a swapfile there"
     return 1
   fi
-  cur="$path"
-  while [[ -n "$cur" && "$cur" != "/" && "$cur" != "." ]]; do
-    if [[ -L "$cur" ]]; then
-      err "$cur is a symlink; refusing a --path that goes through one"
-      return 1
-    fi
-    cur="$(dirname -- "$cur")"
-  done
   return 0
 }
 
