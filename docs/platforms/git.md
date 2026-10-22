@@ -3,8 +3,10 @@
 ## What it covers
 
 Git identity and repository reports, commit, sync and branch-cleanup helpers,
-repository hooks, and four Python diagnostics for SSH, signing, remotes and
-ignore rules.
+repository hooks, and read-only Python diagnostics (the `*_doctor.py` scripts)
+for SSH, signing, remotes, ignore rules, repository health, committed
+secrets, hooks and submodules, plus a driver that runs them across many
+repositories.
 
 ## Requirements
 
@@ -45,6 +47,11 @@ ignore rules.
 | `git_signing_doctor.py` | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
 | `git_remote_doctor.py` | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |
 | `git_ignore_doctor.py` | Explain why a path is or is not ignored. | <span class="stage stage-report">read-only</span> |
+| `git_health_doctor.py` | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
+| `git_secrets_doctor.py` | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
+| `git_hooks_doctor.py` | Why a hook does not run. | <span class="stage stage-report">read-only</span> |
+| `git_submodule_doctor.py` | Submodule mapping, state, URLs and drift. | <span class="stage stage-report">read-only</span> |
+| `git_fleet_doctor.py` | Every doctor across many repositories, one table. | <span class="stage stage-report">read-only</span> |
 | `git_aliases.sh`, `git_aliases.zsh` | Aliases for the helpers; sourced, not executed. | n/a |
 
 <!-- markdownlint-enable MD033 -->
@@ -59,6 +66,7 @@ All paths are under `git/`.
     ./git/git_whoami.sh
     ./git/git_whoami.sh --expect-email work@example.com
     ./git/git_ssh_doctor.py --host github.com
+    ./git/git_ignore_doctor.py --json
     ./git/git_hooks_install.sh status
     ./git/git_commitlint.sh --base origin/main
     ./git/git_diff_branch.sh --base origin/main --name-only --path k8s/ --require-changes
@@ -106,7 +114,18 @@ All paths are under `git/`.
   read-only `git ls-remote --tags`.
 - The repository README calls the doctors read-only, but
   `git_signing_doctor.py --test-sign` creates one real signature and
-  `git_ssh_doctor.py --test-auth` attempts SSH authentication.
+  `git_ssh_doctor.py --test-auth` attempts SSH authentication. Those
+  attempts use `StrictHostKeyChecking=accept-new` and so record an unknown
+  host key; the doctor checks known_hosts before any of them, and
+  `--require-known-host` turns an unknown key into a failure, also under
+  `StrictHostKeyChecking accept-new`.
+- `git_signing_doctor.py --verify-recent N` makes git verify the signatures
+  of the last `N` existing commits, which runs gpg or ssh-keygen once per
+  signed commit; it judges only your own commits unless `--all-authors`.
+- `git_remote_doctor.py --probe` contacts each remote with one
+  non-interactive `git ls-remote` and names why a failing one is
+  unreachable. It never prompts, stops after `--probe-timeout` seconds, and
+  tests the fetch side only.
 - `git_hooks_install.sh --commit-msg` enforces Conventional Commits and is off
   by default.
 - `git_hooks_install.sh --pre-push` is off by default too. Once installed it
@@ -119,6 +138,10 @@ All paths are under `git/`.
   and fast-forwards the checked-out branch, and holds any checkout with a
   detached `HEAD`, no upstream, an upstream gone from the remote, modified
   tracked files or a diverged branch.
+- Every `*_doctor.py` except `git_fleet_doctor.py` takes `--json`: one JSON
+  object with the exit code and each finding's level, section and message,
+  redacted like the text report. The shape is versioned (`schema` 1); keys
+  may be added, never renamed.
 
 ## Repository
 

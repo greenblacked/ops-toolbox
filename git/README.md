@@ -39,6 +39,11 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 - [`git_signing_doctor.py`](#git_signing_doctorpy)
 - [`git_remote_doctor.py`](#git_remote_doctorpy)
 - [`git_ignore_doctor.py`](#git_ignore_doctorpy)
+- [`git_health_doctor.py`](#git_health_doctorpy)
+- [`git_secrets_doctor.py`](#git_secrets_doctorpy)
+- [`git_hooks_doctor.py`](#git_hooks_doctorpy)
+- [`git_submodule_doctor.py`](#git_submodule_doctorpy)
+- [`git_fleet_doctor.py`](#git_fleet_doctorpy)
 - [Tests](#tests)
 - [Quick reference (copy-paste)](#quick-reference-copy-paste)
 
@@ -49,7 +54,7 @@ Writing one? These scripts use `set -euo pipefail` — except `git_whoami.sh`, w
 | **Bash** | 3.2 or newer (`/bin/bash` on macOS is enough). |
 | **Git** | Recent Git 2.x (scripts use `git switch`, `for-each-ref` formats, etc.). `git_merge_check.sh` needs Git 2.38 or newer for `git merge-tree --write-tree`, and exits `2` on anything older. |
 | **zsh** | Optional; only needed if you `source git_aliases.zsh`. Bash users source `git_aliases.sh` instead. |
-| **Python 3.9+** | Optional; only for the four `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
+| **Python 3.9+** | Optional; only for the `*_doctor.py` diagnostics. Standard library only — the macOS system interpreter is enough. |
 | **Docker** | Optional; only for running the test suite (`git/tests/run.sh`). |
 
 ## Quick start
@@ -106,6 +111,11 @@ the [aliases](#aliases) give each one a short name.
 | `git_signing_doctor.py` | Diagnose signing backends; `--quiet` supports CI probes. |
 | `git_remote_doctor.py` | Diagnose remote URLs/rewrites/credentials; `--quiet` supports CI probes. |
 | `git_ignore_doctor.py` | Explain why a path is ignored or is not; with no argument, find tracked files a rule claims. |
+| `git_health_doctor.py` | Stale locks, a gc.log blocking automatic gc, object bloat, maintenance and clone shape; `--fsck` is opt-in. |
+| `git_secrets_doctor.py` | Committed credentials: credential-shaped names, key and token formats in content, and with `--history` files deleted but still in history. |
+| `git_hooks_doctor.py` | Why a hook does not run: `core.hooksPath`, exec bit, CRLF shebang, misnamed hooks, hook managers committed but not activated. |
+| `git_submodule_doctor.py` | Submodule mapping, initialisation, URLs that only work on one machine, and `.git/config` drift. |
+| `git_fleet_doctor.py` | Run every doctor across the repositories under one or more roots and print one table of verdicts. |
 | `tests/` | Docker-based checks (Shellcheck, `bash -n`, integration scenarios). |
 
 ## Exit codes (conventions)
@@ -122,6 +132,22 @@ Across these scripts, exit statuses are used consistently where it helps automat
 | `5` | `gacp.sh` only: push requested from a detached HEAD. |
 
 Scripts that do not need the full table may use a smaller subset (for example `git_whoami.sh` only cares about `2` for missing `git`).
+
+**Doctor output for scripts.** Every `*_doctor.py` except
+`git_fleet_doctor.py` (which drives the others) takes `--json` and prints one
+JSON object instead of the report, with the same exit code as a text run.
+For `git_ignore_doctor.py secrets.txt`, with the other events left out:
+
+```json
+{"events": [{"level": "fail", "message": "not ignored — the file is tracked, so ignore rules do not apply", "section": "secrets.txt"}], "exit_code": 1, "problems": 1, "schema": 1, "tool": "git_ignore_doctor.py"}
+```
+
+Each event is one line of the report: `level` is `ok`, `warn`, `fail`, `info`
+or `detail` (a table row or list entry), `section` is the heading it sat
+under, and `problems` counts the `fail` events. Every line is recorded after
+the doctor's own redaction, so the JSON never holds more than the text did.
+The shape is `schema` 1: keys and levels may be added, none is renamed.
+`--json` and `--quiet` together are a usage error (exit `3`).
 
 ---
 
@@ -921,6 +947,9 @@ their `held` lines, and every other checkout prints
 fetched, so whether it is behind cannot be known yet. `--update` writes into
 the existing checkouts, so preview it first.
 
+Once they are cloned, `./git/git_fleet_doctor.py ~/src` checks them all at
+once.
+
 ---
 
 ## `git_bundle_backup.sh`
@@ -995,8 +1024,9 @@ Answers the question `Permission denied (publickey)` refuses to: *which* of the 
 ```bash
 ./git/git_ssh_doctor.py                  # check this repo's SSH remotes
 ./git/git_ssh_doctor.py --host github.com
-./git/git_ssh_doctor.py --test-auth      # try every key, report which one works
+./git/git_ssh_doctor.py --test-auth      # connect: try ssh, then every key, report which works
 ./git/git_ssh_doctor.py --quiet --host github.com
+./git/git_ssh_doctor.py --require-known-host --host github.com   # CI preflight
 ```
 
 The effective configuration comes from **`ssh -G`** — OpenSSH resolving its own config, rather than a second implementation that can disagree with it. On top of that it reports what `ssh -G` cannot explain:
@@ -1005,16 +1035,46 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
 - **`Include` globs that match nothing.**
 - **Keys with permissions ssh will refuse** (group- or world-readable).
 - **An empty agent**, and which configured identity files do not exist on disk.
+- **Whether the host key is already trusted.** The number-one "works on my
+  laptop, fails in the pipeline" error is `Host key verification failed`: a
+  headless run cannot answer the yes/no prompt. Before any authentication
+  attempt, the doctor asks `ssh-keygen -F` whether the key for the host and
+  port ssh will dial is in the `UserKnownHostsFile` and `GlobalKnownHostsFile`
+  that `ssh -G` reports, honouring a non-22 port (`[host]:2222`; an explicit
+  port in an `ssh://` remote URL is the one used for this check and the
+  probe), a `HostKeyAlias` and hashed entries. Only the file name is printed,
+  never the entry. An unknown key is a warning with the `ssh-keyscan` and
+  `ssh-keygen -lf` steps that pin it after checking the fingerprint against
+  the one the provider publishes; `StrictHostKeyChecking no` is a warning of
+  its own. With `--require-known-host` an unknown key fails the host instead,
+  also where `StrictHostKeyChecking accept-new` or `no` would trust it on
+  first use, and authentication is not attempted, since it would record the
+  key. Without `ssh-keygen` the requirement fails closed (`cannot check:
+  ssh-keygen not found`). An effective `KnownHostsCommand` is reported as
+  `host key source: KnownHostsCommand (not checked)` and never run, so an
+  absent file entry does not fail the requirement. With the requirement set
+  every authentication attempt runs with `StrictHostKeyChecking=yes` (never
+  `accept-new`), `UpdateHostKeys=no` and `CheckHostIP=no`, so none of a key a
+  `KnownHostsCommand` does not supply, an extra key for a known host or an IP
+  address entry for a known hostname is written to known_hosts. A *changed*
+  host key can only be seen by connecting; `git_remote_doctor.py --probe`
+  names that one.
 
-With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure.
+**Offline by default.** Without `--test-auth` the doctor never opens a connection: it reports the effective configuration, the keys, the agent and the known_hosts state, then says authentication was not attempted. A host with no existing key and an empty agent still fails.
+
+With **`--test-auth`** it authenticates the way git would, as the first user that applies: a `-l` or `-o User=` in the effective ssh command (the first one wins, as in ssh, and the user is the one `ssh -G` reports for those options), then the user from the remote URL such as `ssh://deploy@host` or `deploy@host:path` or from `--host deploy@host`, then a `User` that ssh config sets for the host, then `git`. Where `ssh -G` supplies the user from ssh config, one equal to the local account counts as not configured, because `ssh -G` always reports a user. If that authentication fails, it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason. With `--require-known-host` they instead use `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no` and write nothing.
+
+**`GIT_SSH_COMMAND` and `core.sshCommand`.** For a repository's remotes the doctor follows git's precedence (`GIT_SSH_COMMAND`, then the repository-effective `core.sshCommand`, then `GIT_SSH`). When the command is `ssh` it keeps the `-i`, `-F`, `-p`, `-o` and `-l` options (and plain flags such as `-4`) and applies them to `ssh -G` and to the `--test-auth` attempt; the host key policy the doctor sets is not loosened by a `-o` in the command. Any other program, or an option it cannot interpret, is reported as `custom SSH command, not inspected` rather than guessed at, and the run then exits `1` (a recorded failure under `--require-known-host`) because nothing was verified. `--host` names a host directly, so it ignores these.
 
 Read-only throughout: it never edits a config file, loads anything into the agent, or writes a key. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
-**Exit code `1`** if any checked host fails to authenticate.
+**Exit code `1`** if any checked host has no usable key or (with `--test-auth`) fails to authenticate, or with `--require-known-host` has a host key that is not in known_hosts, or when the repository's `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` is a custom (non-`ssh`) command, or an `ssh` command with options the doctor cannot read (for example `-J`), that was not inspected.
 
 `--quiet` suppresses the report but preserves the verdict exit code. It does
-not imply `--test-auth`, so a quiet CI probe remains offline unless that
-network test was explicitly requested too.
+not imply `--test-auth`, and no authentication happens without it, so a quiet
+CI probe makes no connection unless that test was explicitly requested too. `--json` prints the same report as
+one JSON object (see [Exit codes](#exit-codes-conventions)); it does not imply
+`--test-auth` either.
 
 ---
 
@@ -1028,11 +1088,34 @@ backend to produce one real signature in a temporary directory.
 ./git/git_signing_doctor.py
 ./git/git_signing_doctor.py --test-sign
 ./git/git_signing_doctor.py --quiet
+./git/git_signing_doctor.py --verify-recent 50   # git's verdict on your last 50 commits
 ```
+
+**Signing key.** `gpg.format` decides how `user.signingkey` is read. With
+`openpgp` (or unset) any string is a valid GnuPG selector: a key id, a
+fingerprint, a `<fingerprint>!` forced subkey, an email address or a user-id
+fragment, so only a literal SSH public key (`ssh-ed25519 AAAA...`) is
+flagged there. With `ssh` the value is a key path or a `key::` literal, and
+a GPG key id is the mismatch that gets reported.
+
+**`--verify-recent N`** answers the question people actually ask: why do my
+recent commits show Unverified? It reads git's own verdict (`%G?`) for the
+last `N` commits and prints one line of counts (`last 50 commits (yours): 47
+good, 2 unsigned, 1 expired key`), then names every commit with a bad
+signature, a revoked or expired key or signature, or one git cannot check
+(missing public key, no `gpg.ssh.allowedSignersFile`, no gpg or ssh-keygen).
+Unsigned commits fail only when `commit.gpgsign` is on. A good signature
+whose signer address differs from the committer address is a warning,
+because that mismatch is the usual reason a forge shows Unverified. Only your
+own commits (author email equal to `user.email`) are judged unless you pass
+`--all-authors`. `N` above 5000 is capped. Verification is local: git runs
+gpg or ssh-keygen against public keys, nothing is written, and nothing is
+fetched unless your `gpg.conf` turns on `auto-key-retrieve`.
 
 `--quiet` prints nothing and preserves exit `0`/`1`, making the diagnostic safe
 to use as a preflight check without parsing colored text. It does not turn on
-`--test-sign`.
+`--test-sign`. `--json` keeps the findings as well as the exit code, one JSON
+object per run.
 
 ---
 
@@ -1045,21 +1128,42 @@ The third read-only diagnostic, and the layer the other two step over: the URL g
 ./git/git_remote_doctor.py --remote origin
 ./git/git_remote_doctor.py --url https://github.com/owner/repo.git
 ./git/git_remote_doctor.py --quiet --remote origin
+./git/git_remote_doctor.py --probe         # also try one ls-remote per remote
 ```
 
 Three things decide both, and none of them is visible in `git remote -v`:
 
 - **The URL.** A fetch URL over ssh with a push URL over https is why a pull is silent and a push prompts. `git://` is unauthenticated and read-only, so a push over it can never work. And in scp-like syntax the part after the colon is a *path*, not a port — `git@host:2222/owner/repo.git` asks for a repository called `2222/owner/repo.git`, and the error says it does not exist, which is true.
 - **`insteadOf` rewrites.** `git remote -v` prints what is in the config file, not what git dials. A `url.<base>.insteadOf` can send every fetch to a mirror, and `pushInsteadOf` can send pushes somewhere else again with no `remote.pushurl` set anywhere. Longest match wins, and git applies one rewrite rather than a chain — a rewrite whose result matches another pattern looks like a chain and behaves like a dead end, so it is reported.
-- **Credential helpers.** `credential.helper` is multi-valued and *accumulates* across scopes, unlike almost every other key, and an empty value discards everything configured before it — the documented way to ignore a system-wide helper, and the undocumented way to lose your keychain by pasting a config snippet. Helpers are resolved against git's exec path as well as `PATH`, because `git-credential-store` lives in `/usr/lib/git-core` and reporting it missing would be a false alarm on almost every machine.
+- **Credential helpers.** `credential.helper` is multi-valued and *accumulates* across scopes, unlike almost every other key, and an empty value discards everything configured before it — the documented way to ignore a system-wide helper, and the undocumented way to lose your keychain by pasting a config snippet. Helpers are resolved against git's exec path as well as `PATH`, because `git-credential-store` lives in `/usr/lib/git-core` and reporting it missing would be a false alarm on almost every machine. A URL-scoped `credential.<url>.helper` counts toward every HTTP remote under its `<url>` (scheme, host, port, user and path prefix, as git matches them), so a helper configured for one host only is not reported as missing, while an HTTP remote that matches no helper at all is.
 
 Anything it prints is redacted first: `https://x-access-token:TOKEN@github.com/` is a normal thing to find in a rewrite base, and a diagnostic whose output gets pasted into an issue must not be what leaks it.
 
-**Exit codes:** `1` problems found, `2` `git config` unavailable, `4` no remotes here and no `--url` given.
+**`--probe`** answers the question the static report cannot: does a fetch
+actually work from here, with the credentials this machine has? It runs one
+`git ls-remote --heads` per remote (or per `--remote`) and per `--url`, and
+when one fails it names the cause from git's and ssh's own message — `dns`,
+`network`, `timeout`, `ssh-auth`, `hostkey-unknown`, `hostkey-changed`,
+`http-auth`, `not-found`, `tls` or `proxy` — with the next command to run or
+the sibling doctor to ask (`git_ssh_doctor.py --host HOST` for a refused key).
+It is a CI preflight as much as a diagnosis. Nothing can prompt: stdin is
+`/dev/null`, terminal prompts and askpass are off and ssh gets no terminal, so
+a key that needs a typed passphrase is reported as `ssh-auth` unless the agent
+holds it. The remote is dialled exactly as `git fetch` would dial it, with
+`insteadOf` and `core.sshCommand` applied, and git's error lines are redacted
+before they are printed. Each probe stops after `--probe-timeout` seconds
+(default 20). Only the fetch side is tested; `git push --dry-run <remote>`
+exercises the push side. Opt-in because it contacts the remote, which can
+count against rate limits or trip an IP allow-list; `--quiet` does not imply
+it.
+
+**Exit codes:** `1` problems found (with `--probe`, each unreachable remote is one), `2` `git config` unavailable, `3` bad usage (`--probe-timeout` not a positive whole number), `4` no remotes here and no `--url` given (nothing is probed).
 
 `--quiet` suppresses all diagnostic text while keeping those exit codes. URL
 redaction is still applied internally before any report is produced; quiet
-mode never exposes embedded credentials.
+mode never exposes embedded credentials. `--json` records each line after that
+redaction, so a token in a URL or a password in a shell credential helper is
+no more visible in the JSON than in the text.
 
 ---
 
@@ -1087,11 +1191,290 @@ A negation is a match like any other to `check-ignore`, so a path whose deciding
 
 Read-only: it never edits an ignore file, the index, or config. Requires `python3` (any 3.9+; the macOS system interpreter is fine) and no third-party packages.
 
-**Exit codes:** `1` problems found, `2` not inside a Git repository, `3` a path outside the repository.
+**Exit codes:** `1` problems found, `2` not inside a Git repository, `3` a path outside the repository, `4` n/a: a bare
+repository has no work tree to check.
 
 A git that cannot answer is a problem, not a clean result. `check-ignore` exits `1` when nothing matched, which is an answer; anything else is reported with git's own message and exits `1`, because an empty result and "no rule matches this path" are the same value and a diagnostic must not confuse them. The no-argument scan raises its timeout with the size of the repository for the same reason — the call most likely to expire is the one whose empty result would read as an all-clear.
 
-`--quiet` suppresses the report and preserves the verdict exit code.
+`--quiet` suppresses the report and preserves the verdict exit code. `--json`
+prints it as one JSON object instead; the claimed paths are `detail` events.
+
+---
+
+## `git_health_doctor.py`
+
+For the incidents that arrive as "`index.lock` exists", "git got slow" or
+"the disk keeps filling up", on a laptop clone or a build agent's cache. It
+looks at the repository itself rather than at what it connects to.
+
+```bash
+./git/git_health_doctor.py                  # this repository
+./git/git_health_doctor.py --lock-age 30    # call a lock stale after 30 minutes
+./git/git_health_doctor.py --fsck           # also check object connectivity
+./git/git_health_doctor.py --quiet          # verdict through the exit code only
+```
+
+- **Locks.** `rm .git/index.lock` is the usual advice and the wrong one while
+  a git process still holds the lock. A `*.lock` in the git directory (or
+  under `refs/`) is called stale only when it is older than `--lock-age`
+  minutes (default 10) **and** no `git` process is running in this
+  repository or one of its worktrees; the `rm` is printed, never run. On
+  Linux the working directory of each `git` process (and its `GIT_DIR`, where
+  readable, and the `--git-dir` and `--work-tree` options on its command
+  line) says which repository it is in (the live working directory already
+  reflects any `-C`), so an unrelated git elsewhere on the machine does not
+  hide a stale lock. Where only `ps` can be read, or a
+  process cannot be placed, the verdict drops to a warning that says a git
+  process is running somewhere and cannot be tied to the lock; if neither
+  `ps` nor `/proc` can be read it drops to a warning instead of guessing.
+- **A failed automatic gc.** When `git gc --auto` fails it leaves `gc.log`
+  behind, and while that file is there automatic gc does not run again until
+  it is older than `gc.logExpiry` (a day by default; `N.days`, `N.weeks`,
+  `N.hours`, `now` and `never` are understood, anything else is treated as
+  never), so loose objects pile up with nothing said after the first
+  warning. A log older than that is noted, not failed. The doctor quotes the
+  first lines of the log. `gc.auto=0`
+  (automatic gc disabled) is reported as a warning.
+- **Objects.** Loose objects above `gc.auto` (6700 by default), packs above
+  `gc.autoPackLimit` (50), and garbage an interrupted gc or fetch left in
+  `objects/pack`, from `git count-objects -v`. A repository over 500 MiB
+  packed is pointed at `git_size_report.sh`.
+- **Maintenance.** Above 100 MiB packed, whether the repository is registered
+  for `git maintenance start` and has a commit-graph; `maintenance.auto=false`
+  is reported because it stops git tidying up after commands.
+- **Clone shape.** Shallow and partial (promisor) clones, which change what
+  `git log` and `git blame` can see.
+
+`--fsck` adds `git fsck --connectivity-only`, opt-in because it reads every
+object; it writes nothing and stops after ten minutes. Linked worktrees,
+submodules and bare mirrors work: every path is asked of git rather than
+assumed to be `.git/`.
+
+Read-only: it stats files, reads at most three lines of `gc.log`, and never
+removes a lock or runs gc, prune or repack; it prints those commands with the
+condition that makes each one safe.
+
+**Exit codes:** `0` no fail-level finding, `1` a stale lock, a `gc.log`, an
+fsck failure or a git command that could not answer, `2` not inside a Git
+repository, `3` bad usage (`--lock-age` not a positive whole number). Warnings
+never change the exit code. `--quiet` prints nothing and keeps the code;
+`--json` prints the report as one JSON object.
+
+---
+
+## `git_secrets_doctor.py`
+
+`git_hooks_install.sh --token-scan` guards the next commit and
+`git_ignore_doctor.py` finds tracked files an ignore rule claims. This answers
+the question an inherited repository raises: is anything in here that should
+never have been committed, and was something committed once and then deleted?
+
+```bash
+./git/git_secrets_doctor.py                        # names and content at HEAD
+./git/git_secrets_doctor.py --history              # also every path ever added
+./git/git_secrets_doctor.py --allow 'tests/fixtures/*'
+./git/git_secrets_doctor.py --no-content --quiet   # names only, verdict only
+```
+
+- **Tracked names.** `.env` (and `.env.production`), `id_rsa`/`id_ed25519`,
+  `*.pem`, `*.key`, `*.p12`, `terraform.tfstate`, `.git-credentials`,
+  `.netrc`, `.aws/credentials`, `.docker/config.json`, kubeconfig files and
+  `.htpasswd` fail; `.npmrc`, `.pypirc`, `terraform.tfvars`,
+  `credentials.json`, `service-account*.json` and `secrets.yml` warn, because
+  they often but not always carry a secret. A name ending in `.example`,
+  `.sample`, `.template`, `.dist`, `.tpl` or `.tmpl` is a placeholder and
+  passes, so `.env.example` is fine.
+  Names are read from HEAD and from the index, so a file taken out with
+  `git rm --cached` is still reported until that removal is committed.
+- **Content at HEAD.** Private key blocks and GitHub, GitLab, Slack and Stripe
+  live tokens fail; an AWS access key id warns, since the id alone is not the
+  secret. The search is `git grep -l`, which returns file names only, so a
+  matched secret never reaches this report, a log, the JSON or an issue
+  someone pastes it into. `--no-content` skips it on a huge monorepo.
+- **History** (`--history`). The name rules over every path added on any ref
+  in the last `--history-limit` commits (default 20000). A file that is gone
+  from the tree but still in history is still in every clone, which is the
+  case where deleting it did not end the exposure.
+
+`--allow GLOB` (repeatable) leaves out a documented fixture; the glob is
+matched against the repository-relative path and `*` crosses directories.
+
+The advice stops at what is safe to print: rotate the credential first, then
+`git rm --cached -- <path>` and an ignore rule (`git_ignore_doctor.py <path>`
+checks it works). Removing a file does not remove it from history, and
+rewriting history is a separate, deliberate decision this tool never makes.
+
+Read-only: it opens no file in the working tree and works through
+`git ls-files`, `git grep`, `git log` and `git ls-tree`, from the repository
+root whatever directory it is started in.
+
+**Exit codes:** `0` nothing at fail level, `1` a fail-level finding or a git
+command that could not answer, `2` not inside a Git repository, `3` bad usage
+(`--history-limit` not a positive whole number), `4` n/a: a bare repository
+has no work tree, so nothing is scanned, not even `--history` (run it from a
+clone). Warnings never change the exit code. `--quiet` and `--json` work as in the other doctors.
+
+---
+
+## `git_hooks_doctor.py`
+
+Hooks fail silently. `git_hooks_install.sh` installs one guard and reports on
+it; this diagnoses any repository's hook setup.
+
+```bash
+./git/git_hooks_doctor.py
+./git/git_hooks_doctor.py --quiet
+```
+
+- **`core.hooksPath`.** Which directory hooks actually run from, and where
+  the setting came from. One pointing at a directory that does not exist
+  fails: git then runs no hooks at all and says nothing. A global or system
+  `core.hooksPath` that shadows hooks in this repository's own `.git/hooks`
+  is a warning that names them. A relative path is read against the work
+  tree root for client hooks, but against `$GIT_DIR` for the hooks a push
+  runs (`pre-receive`, `update`, `post-receive`, `post-update`,
+  `push-to-checkout`, `proc-receive`, `reference-transaction`), as git
+  does. The report names both locations and checks the exec bit and shebang
+  of the receive-side hooks under `$GIT_DIR`. A push to the main
+  repository's path runs them with the common git dir as `$GIT_DIR`; a push
+  to a linked worktree's path runs them with that worktree's private
+  `.git/worktrees/<name>` directory instead, so in a linked worktree both
+  receive-side locations are named, each labelled with the push target it
+  applies to. A missing `$GIT_DIR` directory is information only, since
+  most work trees never receive pushes.
+- **Each hook.** One without the exec bit fails (git skips it). The first
+  line is checked: a carriage return at its end (a CRLF checkout, where the
+  kernel looks for an interpreter called `sh` plus a carriage return) fails
+  with a repair that keeps a `.bak`, as does an interpreter that is not
+  there, absolute or through `env`; no shebang at all is a warning. An
+  `env` shebang with more than one word after it and no `-S` (or
+  `--split-string`) fails too: Linux hands everything after `env` over as
+  one word, so `#!/usr/bin/env python3 -u` looks for a program called
+  `python3 -u`. The repair is the same line with `-S`. A direct interpreter
+  given more than one argument (`#!/usr/bin/python3 -u -B`) is a warning for
+  the same reason: Linux passes the arguments as one word, so the
+  interpreter sees the single option `-u -B`. Use one option, or
+  `#!/usr/bin/env -S python3 -u -B`. Every repair command
+  the doctor prints (`chmod +x`, the `.bak` rewrite, `mkdir -p`) quotes the
+  path for the shell, so it can be pasted as it is even when the path holds
+  a space.
+- **Names.** `pre-commit.sh`, `precommit` or `pre_commit` never run; the
+  doctor says which hook each was probably meant to be. A `.bak`,
+  `.disabled` or `.orig` copy is noted as deliberately disabled.
+- **Hook managers committed but not activated**, which is every fresh clone
+  and every CI runner: `.pre-commit-config.yaml` without the framework
+  installed (and the note that `pre-commit install` refuses while
+  `core.hooksPath` is set), `.husky/` without `core.hooksPath` pointing at
+  it, `.githooks/` with `core.hooksPath` unset, and a lefthook config without
+  `lefthook install`.
+
+Read-only: it reads at most the first line of each hook (and the start of an
+active one, to recognise the manager that wrote it), so a secret inside a hook
+is never printed, and it never chmods, rewrites line endings, edits
+`core.hooksPath` or runs a hook. Locations are asked of git, so linked
+worktrees, submodules and bare repositories work.
+
+**Exit codes:** `0` no fail-level finding, `1` a fail-level finding, `2` not
+inside a Git repository, `3` bad usage, `4` nothing to diagnose (only sample
+hooks, no hook manager, no `core.hooksPath`). `--quiet` and `--json` work as
+in the other doctors.
+
+---
+
+## `git_submodule_doctor.py`
+
+Submodule breakage is the most opaque checkout failure in CI. This explains
+each kind and prints the repair.
+
+```bash
+./git/git_submodule_doctor.py
+./git/git_submodule_doctor.py --quiet
+```
+
+- **Mapping.** A gitlink in the index with no `.gitmodules` entry fails:
+  `git submodule update` stops with "no submodule mapping found". A
+  `.gitmodules` entry with no gitlink is stale and warns.
+- **State**, from `git submodule status`: a submodule not initialised (a clone
+  made without `--recurse-submodules`), one checked out at a different commit
+  than the superproject records (the everyday `modified: lib (new commits)`
+  after a pull), and a merge conflict in the pointer, which fails.
+- **URLs.** A local path or `file://` URL only works on the machine that
+  wrote it, and `git://` is unauthenticated and read-only; both fail.
+  `http://` warns. An ssh URL is noted, because every machine that clones it
+  needs a key (a CI runner needs a deploy key, or an `insteadOf` to https). A
+  relative URL with no remote at all (the branch's remote, then `origin`)
+  resolves against the repository's own directory, which works on this
+  machine only, and warns.
+- **Drift.** A URL changed in `.gitmodules` while `.git/config` still dials
+  the old one, until `git submodule sync --recursive`. A relative URL
+  (`../new.git`) is first resolved the way git does, against the URL of the
+  branch's remote (else `origin`; with no remote, the repository's own path;
+  the remote URL is read raw, before any `insteadOf`), and compared with
+  `.git/config`. When it cannot be resolved the doctor says it did not
+  compare, rather than reporting nothing.
+
+Read-only: it runs `git ls-files`, `git config` reads (including the raw
+`remote.<r>.url`, before any `insteadOf` rewrite) and `git submodule status`,
+which neither fetches nor recurses, from the repository root whatever
+directory it is started in, and never runs `git submodule update`, `sync`
+or `init`. URLs are printed with any password blanked, because a
+CI-written `.gitmodules` sometimes carries a token.
+
+**Exit codes:** `0` no fail-level finding, `1` a fail-level finding or a git
+command that could not answer, `2` not inside a Git repository, `3` bad
+usage, `4` no submodules and no `.gitmodules`, or a bare repository (n/a: no work
+tree). `--quiet` and `--json` work as
+in the other doctors.
+
+---
+
+## `git_fleet_doctor.py`
+
+The doctors answer one repository at a time. With forty clones (from
+`clone-repos.sh`, a build agent's workspace, a mirror farm) the question is
+which of them have a problem, on one screen, as a CI step or a weekly sweep.
+
+```bash
+./git/git_fleet_doctor.py ~/src                          # every repository under ~/src
+./git/git_fleet_doctor.py --only ignore --only secrets ~/src
+./git/git_fleet_doctor.py --details --exclude 'archive/*' ~/src /srv/mirrors
+```
+
+```text
+repo  health  hooks  ignore  remote  secrets  signing  submodule
+api   ok      n/a    ok      ok      FAIL     ok       n/a
+cli   ok      ok     ok      ok      ok       ok       n/a
+web   ok      ok     FAIL    ok      ok       ok       n/a
+3 repo(s): 1 clean, 2 with findings, 0 errors
+```
+
+It finds every directory holding a `.git` entry (a directory, or a file for
+a worktree or submodule) up to `--depth` levels below each root (default 3),
+without descending into a repository it found, into `node_modules`, or
+through a symlinked directory. `--exclude GLOB` (repeatable) skips paths
+relative to the root. It then runs each `git_*_doctor.py` beside it in
+`--quiet` mode in each repository, `--jobs` repositories at a time (default 4,
+at most 16), each doctor bounded by `--timeout` seconds (default 60).
+`--only NAME` (repeatable) picks doctors by short name. A cell reads `ok`,
+`FAIL`, `n/a` (the doctor's exit `4`, nothing to check; the secrets,
+submodule and ignore doctors answer it in a bare repository, which has no
+work tree), `ERR` (the doctor
+itself did not run: exit `2`, `3` or a crash, so a usage bug is never read
+as a finding) or `TIME`. `--details` re-runs each `FAIL` or `ERR` cell
+without `--quiet` and prints its report under the row.
+
+Offline and read-only: every doctor it drives is read-only, it passes them
+nothing but `--quiet` (never `--probe`, `--test-auth`, `--test-sign` or
+`--fsck`), and their stdin is `/dev/null`. `git_ssh_doctor.py` is left out
+unless `--only ssh` names it, because its default run attempts
+authentication. Doctors are found beside the script, so one added later is
+picked up with no change here; copied into `~/bin`, it needs the doctors
+copied beside it (it falls back to finding them on `PATH`).
+
+**Exit codes:** `0` every cell `ok` or `n/a`, `1` at least one `FAIL`, `2`
+a doctor could not run or timed out, or no doctor was found, `3` bad usage
+(no root, an unknown `--only`, `--jobs` outside 1 to 16), `4` no repository
+found. `--quiet` prints nothing and keeps the code.
 
 ---
 
@@ -1103,7 +1486,7 @@ From the **repository root** (so the repo mounts into the container as `/repo`):
 ./git/tests/run.sh
 ```
 
-This builds a small Debian image, runs **Shellcheck** (severity error), **`bash -n`**, `--help` on each script, and integration tests for profiles, `gacp`, status, cleanup/prune filters, stale/size report scoping, recent branches, sync/restore, repo paths, branch diff, undo/revert, amend, hooks, quiet doctor verdicts, and the two portable templates. Python 3 is present only to execute the standard-library doctor/template smoke tests.
+This builds a small Debian image, runs **Shellcheck** (severity error), **`bash -n`**, `--help` on each script, and integration tests for profiles, `gacp`, status, cleanup/prune filters, stale/size report scoping, recent branches, sync/restore, repo paths, branch diff, undo/revert, amend, hooks, quiet and JSON doctor verdicts, and the two portable templates. Python 3 is present only to execute the standard-library doctor/template smoke tests.
 
 **Prerequisites:** Docker and Docker Compose v2 (`docker compose`).
 
@@ -1143,5 +1526,12 @@ cd "$(./git/git_repo_root.sh)"
 ./git/clone-repos.sh --update --dir ~/src repos.txt
 ./git/git_bundle_backup.sh --keep 7 --dry-run
 ./git/git_remote_doctor.py --quiet
+./git/git_remote_doctor.py --probe --probe-timeout 10
+./git/git_ignore_doctor.py --json
+./git/git_health_doctor.py --lock-age 30
+./git/git_secrets_doctor.py --history
+./git/git_hooks_doctor.py
+./git/git_submodule_doctor.py
+./git/git_fleet_doctor.py --details ~/src
 source ./git/git_aliases.zsh   # or: . ./git/git_aliases.sh
 ```
