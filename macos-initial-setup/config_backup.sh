@@ -522,6 +522,51 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Which principal, if any, does an extended ACL on directory $1 let list or
+# change it? macOS `ls -leLd` lists the entries under the mode line ("0:
+# user:bob allow list,add_file"). Only an allow entry counts, and the owner's
+# own entry, root and wheel are not foreign. An entry marked only_inherit
+# governs children, not the directory, and is ignored. $2 picks the rights:
+#   change  rights that modify the directory or let it be renamed away
+#           (write, append, delete, add_file, add_subdirectory,
+#           delete_child, writeattr, writeextattr, writesecurity, chown)
+#   rename  the subset that lets a parent's child be swapped (add_file,
+#           add_subdirectory, delete_child, write, append, writesecurity,
+#           chown), used for ancestors of --dest
+#   list    the list right alone (read access, only noted)
+# Where ls has no -e (GNU ls) or the directory has no ACL the answer is no,
+# silently. Prints the principal.
+dir_acl_grant() {
+  local listing
+  listing="$(ls -leLd -- "$1" 2>/dev/null)" || return 1
+  awk -v kind="$2" '
+    NR == 1 { owner = $3; next }
+    /^[[:space:]]*[0-9]+: / {
+      line = $0
+      sub(/^[[:space:]]*[0-9]+: /, "", line)
+      i = index(line, " allow ")
+      if (i == 0) next
+      subject = substr(line, 1, i - 1)
+      sub(/ inherited$/, "", subject)
+      if (subject == ("user:" owner) || subject == "user:root" || subject == "group:wheel") next
+      n = split(substr(line, i + 7), perm, /[ ,]+/)
+      hit = 0; inh = 0
+      for (k = 1; k <= n; k++) {
+        if (perm[k] == "only_inherit") inh = 1
+        if (kind == "change" && perm[k] ~ /^(write|append|delete|add_file|add_subdirectory|delete_child|writeattr|writeextattr|writesecurity|chown)$/) hit = 1
+        if (kind == "rename" && perm[k] ~ /^(write|append|add_file|add_subdirectory|delete_child|writesecurity|chown)$/) hit = 1
+        if (kind == "list" && perm[k] == "list") hit = 1
+      }
+      if (hit && !inh) {
+        print subject
+        found = 1
+        exit
+      }
+    }
+    END { exit !found }
+  ' <<<"$listing"
+}
+
 # Every existing ancestor of the physical --dest must belong to root or this
 # user and not be writable by group or other, unless it is sticky (like /tmp):
 # anyone who can write to an ancestor can rename the destination away and put
@@ -558,6 +603,10 @@ while [[ "$anc" != "/" && "$anc" == */* ]]; do
     err "refusing --dest $DEST: $anc (mode $a_mode) lets other users write to it and rename the destination"
     exit 3
   fi
+  if a_who="$(dir_acl_grant "$anc" rename)"; then
+    err "refusing --dest $DEST: an ACL entry on $anc for $a_who lets another principal rename the destination away (chmod -N $anc, or pick another directory)"
+    exit 3
+  fi
 done
 
 if [[ ! -d "$DEST" ]]; then
@@ -578,39 +627,6 @@ if [[ ! "$dest_mode" =~ ^[0-7]{3,4}$ ]]; then
   dest_mode=""
 fi
 
-# Does an extended ACL on directory $1 let anyone but its owner (or root)
-# list it or change its contents? macOS `ls -led` lists the entries under
-# the mode line ("0: user:bob allow list,add_file"). Only an allow entry
-# counts, with one of the rights that read or modify the directory: list, add_file, add_subdirectory, delete_child, write, append,
-# delete, writeattr, writeextattr, writesecurity, chown. The owner's own
-# entry, root and wheel are not foreign. Where ls has no -e (GNU ls) or the
-# directory has no ACL the answer is no, silently. Prints the principal.
-dest_acl_grant() {
-  local listing
-  listing="$(ls -led -- "$1" 2>/dev/null)" || return 1
-  awk '
-    NR == 1 { owner = $3; next }
-    /^[[:space:]]*[0-9]+: / {
-      line = $0
-      sub(/^[[:space:]]*[0-9]+: /, "", line)
-      i = index(line, " allow ")
-      if (i == 0) next
-      subject = substr(line, 1, i - 1)
-      sub(/ inherited$/, "", subject)
-      if (subject == ("user:" owner) || subject == "user:root" || subject == "group:wheel") next
-      n = split(substr(line, i + 7), perm, /[ ,]+/)
-      for (k = 1; k <= n; k++) {
-        if (perm[k] ~ /^(list|write|append|delete|add_file|add_subdirectory|delete_child|writeattr|writeextattr|writesecurity|chown)$/) {
-          print subject
-          found = 1
-          exit
-        }
-      }
-    }
-    END { exit !found }
-  ' <<<"$listing"
-}
-
 # Another user who can write to --dest can plant or swap files in it. Refuse a
 # group- or other-writable --dest, except a sticky one (like /tmp) that this
 # user owns, where others cannot remove or rename what we create.
@@ -629,9 +645,13 @@ if [[ -n "$dest_mode" ]]; then
   fi
 fi
 
-if acl_who="$(dest_acl_grant "$DEST")"; then
-  err "refusing --dest $DEST: an ACL entry for $acl_who lets another principal list or change it (chmod -N, or pick another directory)"
+if acl_who="$(dir_acl_grant "$DEST" change)"; then
+  err "refusing --dest $DEST: an ACL entry for $acl_who lets another principal change it (chmod -N, or pick another directory)"
   exit 3
+fi
+# A list-only grant is read access, like a world-readable 755: noted, not refused.
+if acl_who="$(dir_acl_grant "$DEST" list)"; then
+  warn "$DEST has an ACL entry for $acl_who that lets another principal list it; the archive itself is 0600"
 fi
 
 # mktemp creates the file exclusively (O_EXCL) with an unpredictable name and

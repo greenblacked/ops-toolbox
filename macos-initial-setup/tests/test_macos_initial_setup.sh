@@ -4008,7 +4008,8 @@ section "config_backup: refusals and previews"
 # nothing at all: not the archive, not the destination directory, not a log.
 # The snapshot compares the whole scratch HOME and TMPDIR before and after.
 CB="$M/config_backup.sh"
-cb="$(mktemp -d)"
+# Physical, as config_backup reports it (macOS: /var is /private/var).
+cb="$(cd -P "$(mktemp -d)" && pwd -P)"
 mkdir -p "$cb/bin" "$cb/home/.ssh" "$cb/home/.aws" "$cb/home/.config/git" "$cb/tmp"
 printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$cb/bin/uname"
 chmod +x "$cb/bin/uname"
@@ -4320,11 +4321,13 @@ assert_eq "a --dest under a sticky ancestor owned by the user -> 0" "0" "$rc"
 chmod 755 "$cb/anc"
 
 # A 755 --dest is not enough when an extended ACL lets another principal list
-# or change it: `ls -led` is stubbed (GNU ls has no -e, which stays silent).
+# or change it: `ls -leLd` is stubbed (GNU ls has no -e, which stays silent).
 cat > "$cb/bin/ls" <<'LS_EOF'
 #!/bin/sh
 for a in "$@"; do last="$a"; done
-if [ "$1" = "-led" ] && [ "$last" = "${FAKE_ACL_PATH:-}" ]; then
+# -leLd names a directory: compare physical paths (macOS /var is /private/var).
+phys() { printf '%s/%s' "$(cd -P "$(dirname "$1")" && pwd -P)" "$(basename "$1")"; }
+if [ "$1" = "-leLd" ] && [ -n "${FAKE_ACL_PATH:-}" ] && [ "$(phys "$last")" = "$(phys "$FAKE_ACL_PATH")" ]; then
   printf '%s\n' "drwxr-xr-x+ 2 me staff 64 Oct  1 00:00 $last"
   printf '%b' "$FAKE_ACL"
   exit 0
@@ -4335,7 +4338,7 @@ chmod +x "$cb/bin/ls"
 adest="$cb/acl-dest"
 mkdir -p "$adest"
 chmod 755 "$adest"
-for entry in ' 0: user:mallory allow add_file\n' ' 0: group:staff allow list\n' \
+for entry in ' 0: user:mallory allow add_file\n' \
   ' 0: user:bob allow delete_child\n' ' 0: user:bob inherited allow write\n' \
   ' 0: user:bob allow read,delete\n'; do
   out="$(FAKE_ACL_PATH="$adest" FAKE_ACL="$entry" cbrun --yes --dest "$adest")"; rc=$?
@@ -4345,7 +4348,33 @@ for entry in ' 0: user:mallory allow add_file\n' ' 0: group:staff allow list\n' 
 done
 out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:me allow list,add_file,delete_child\n 1: user:root allow write\n 2: user:bob deny add_file\n 3: user:bob allow read,readattr\n' cbrun --yes --dest "$adest")"; rc=$?
 assert_eq "an ACL for the owner, root, a deny or read-only rights is accepted -> 0" "0" "$rc"
-rm -f "$adest"/config-*.tar.gz "$cb/bin/ls"
+rm -f "$adest"/config-*.tar.gz
+# An ACL entry that only grants list is read access, like a 755 --dest: a note.
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: group:staff allow list\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "a list-only ACL on --dest is accepted -> 0" "0" "$rc"
+assert_contains "a list-only ACL on --dest is noted" "$out" "$adest has an ACL entry for group:staff that lets another principal list it"
+rm -f "$adest"/config-*.tar.gz
+# only_inherit entries govern children, not the directory itself.
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:mallory allow add_file,only_inherit\n 1: group:staff allow list,file_inherit,only_inherit\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "an only_inherit ACL entry is not a grant on --dest -> 0" "0" "$rc"
+assert_not_contains "an only_inherit list entry is not even noted" "$out" "ACL entry"
+rm -f "$adest"/config-*.tar.gz
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:mallory allow add_file,file_inherit\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "an inheritable (not only_inherit) grant still counts -> 3" "3" "$rc"
+# An ACL on an ancestor that lets someone add or delete children can rename
+# --dest away, just as a group-writable ancestor can.
+mkdir -p "$cb/aclanc/sub"
+chmod 755 "$cb/aclanc" "$cb/aclanc/sub"
+for entry in ' 0: user:mallory allow add_subdirectory\n' ' 0: user:bob allow delete_child\n' \
+  ' 0: group:staff allow write\n'; do
+  out="$(FAKE_ACL_PATH="$cb/aclanc" FAKE_ACL="$entry" cbrun --yes --dest "$cb/aclanc/sub/out")"; rc=$?
+  assert_eq "a --dest under an ancestor with an ACL rename grant is refused -> 3 ($entry)" "3" "$rc"
+  assert_contains "the ancestor ACL refusal names the ancestor and principal" "$out" "an ACL entry on $cb/aclanc for"
+  assert_eq "nothing is created under an ACL-refused ancestor" "0" "$(find "$cb/aclanc/sub" -mindepth 1 | wc -l | tr -d ' ')"
+done
+out="$(FAKE_ACL_PATH="$cb/aclanc" FAKE_ACL=' 0: group:staff allow list,readattr\n 1: user:bob allow add_subdirectory,only_inherit\n' cbrun --yes --dest "$cb/aclanc/sub/out")"; rc=$?
+assert_eq "list-only and only_inherit ACLs on an ancestor are accepted -> 0" "0" "$rc"
+rm -rf "$cb/aclanc" "$cb/bin/ls"
 out="$(cbrun --yes --dest "$adest")"; rc=$?
 assert_eq "a --dest without ACL support stays accepted -> 0" "0" "$rc"
 rm -rf "$cb"
