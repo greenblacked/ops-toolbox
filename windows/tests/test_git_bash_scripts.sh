@@ -414,6 +414,26 @@ else
   err "--restore did not keep the pre-restore .bashrc as a new backup (found '$saved')"
 fi
 
+# A rollback whose stamp is already taken must not overwrite that set: a date
+# shim pins "now" to the stamp of an existing set, and the rollback save takes
+# a -1 suffix, then -2 on the next run, which list and restore still read.
+h="$(new_backup_home)"
+mkdir -p "$SCRATCH/fixeddate"
+shim "$SCRATCH/fixeddate/date" 'echo 20260301-000000'
+out="$(PATH="$SCRATCH/fixeddate:$PATH" HOME="$h" "$INSTALL" --home "$h" --restore 20260101-000000 2>&1)"
+rc=$?
+assert_eq "--restore into a taken stamp -> 0" 0 "$rc"
+assert_eq "--restore never overwrites the set that holds its stamp" ".bashrc from 20260301-000000" "$(cat "$h/.bashrc.backup-20260301-000000")"
+assert_eq "--restore saves the replaced file under a -1 stamp" "current .bashrc" "$(cat "$h/.bashrc.backup-20260301-000000-1")"
+out="$(PATH="$SCRATCH/fixeddate:$PATH" HOME="$h" "$INSTALL" --home "$h" --restore 20260201-000000 2>&1)"
+assert_eq "a second rollback saves under a -2 stamp" ".bashrc from 20260101-000000" "$(cat "$h/.bashrc.backup-20260301-000000-2")"
+assert_eq "and still keeps the -1 set" "current .bashrc" "$(cat "$h/.bashrc.backup-20260301-000000-1")"
+run_install "$h" --list-backups
+assert_contains "--list-backups lists a suffixed set" "$out" "20260301-000000-2  .bashrc"
+run_install "$h" --restore 20260301-000000-1
+assert_eq "--restore reads a suffixed stamp -> 0" 0 "$rc"
+assert_eq "--restore of a suffixed stamp puts that set back" "current .bashrc" "$(cat "$h/.bashrc")"
+
 h="$(new_backup_home)"
 run_install "$h" --restore 20260101-000000
 assert_eq "--restore STAMP -> 0" 0 "$rc"

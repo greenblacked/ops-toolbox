@@ -87,6 +87,8 @@ those two checks in front of it.
 
 - **Backups are timestamped and share one stamp per run**, so a set taken
   together is obvious from the names: `.bashrc.backup-20250131-142530`.
+  A `--restore` whose stamp is already taken saves under `-1`, `-2` ...
+  suffixed stamps instead of overwriting a set.
 - **A file that already matches the source is left alone.** Re-running is a
   no-op, not three new copies of identical files.
 - **CRLF is refused, not fixed.** The script prints the `sed` command that

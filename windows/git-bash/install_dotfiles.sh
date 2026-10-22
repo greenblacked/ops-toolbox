@@ -220,7 +220,7 @@ backup_stamps() {
       [[ -e "$f" || -L "$f" ]] || continue
       [[ -d "$f" && ! -L "$f" ]] && continue
       stamp="${f##*.backup-}"
-      [[ "$stamp" =~ ^[0-9]{8}-[0-9]{6}$ ]] || continue
+      [[ "$stamp" =~ ^[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]] || continue
       printf '%s\n' "$stamp"
     done
   done | sort -ru
@@ -286,12 +286,16 @@ if [[ -n "$RESTORE_STAMP" ]]; then
     exit 3
   fi
 
-  # The files being replaced are saved under this run's stamp. Restoring a set
-  # taken this same second would save over the very files being restored.
-  if [[ "$STAMP" == "$stamp" ]] && (( DRY_RUN == 0 )); then
-    sleep 1
-    STAMP="$(date +%Y%m%d-%H%M%S)"
-  fi
+  # The files being replaced are saved under this run's stamp. If a set with
+  # that stamp already exists (restoring a set taken this same second, or an
+  # earlier rollback in the same second), saving would overwrite it, so the
+  # stamp takes a -1, -2 ... suffix until no managed backup carries it.
+  base_stamp="$STAMP"
+  suffix=0
+  while [[ -n "$(backup_set_files "$STAMP")" ]]; do
+    suffix=$((suffix + 1))
+    STAMP="$base_stamp-$suffix"
+  done
   if (( DRY_RUN == 1 )); then
     info "dry run - nothing will be written"
   fi
