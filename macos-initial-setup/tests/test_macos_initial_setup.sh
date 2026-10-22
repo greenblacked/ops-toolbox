@@ -2501,6 +2501,9 @@ assert_contains "the directory fix is printed" "$out" "chmod 700 $sshd_dir"
 out="$(sshdoc --only dir --fail-on warn)"; rc=$?
 assert_eq "a 755 ~/.ssh fails under --fail-on warn -> 1" "1" "$rc"
 for dm in 775 777 770 757 2775 1777; do
+  # GNU chmod keeps a directory's setgid bit on a numeric mode: clear the
+  # special bits first so each iteration starts from a plain mode.
+  chmod u-s,g-s,-t "$sshd_dir"
   chmod "$dm" "$sshd_dir"
   out="$(sshdoc --only dir)"; rc=$?
   assert_eq "a $dm ~/.ssh fails -> 1" "1" "$rc"
@@ -2516,6 +2519,7 @@ for dm in 775 777 770 757 2775 1777; do
     *) assert_eq "a $dm ~/.ssh is called writable" "$want" "$out" ;;
   esac
 done
+chmod u-s,g-s,-t "$sshd_dir"
 chmod 2700 "$sshd_dir"
 out="$(sshdoc --only dir)"; rc=$?
 assert_eq "a setgid 2700 ~/.ssh is private -> 0" "0" "$rc"
