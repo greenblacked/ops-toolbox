@@ -932,7 +932,8 @@ class SchedulerHealthTestCase(unittest.TestCase):
         assigns = router_doctor.assigns_global
         self.assertTrue(assigns(':global TgBotToken "x"', "TgBotToken"))
         self.assertTrue(assigns(":global TgBotToken 12", "TgBotToken"))
-        self.assertTrue(assigns(':set TgBotToken "x"', "TgBotToken"))
+        self.assertFalse(assigns(':set TgBotToken "x"', "TgBotToken"))
+        self.assertTrue(assigns(':global TgBotToken; :set TgBotToken "x"', "TgBotToken"))
         self.assertTrue(assigns(":global  TgBotToken $v", "TgBotToken"))
         self.assertFalse(assigns(":put $TgBotToken", "TgBotToken"))
         self.assertFalse(assigns(":global TgBotToken;", "TgBotToken"))
