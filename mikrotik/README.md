@@ -1111,7 +1111,9 @@ scheduler. (An earlier design had the router hash each script; RouterOS 7.24
 rejects every `:convert` spelling tried for that. The comparison is an inline
 string comparison, which needs no hash.) The scripts go in
 batches of about 24 KB of escaped text per ssh command. A paste that kept or
-dropped the trailing newline, or stored CRLF line ends, counts as the same.
+dropped the trailing newline, or stored CRLF line ends, counts as the same,
+and so does a file with a tab where the router's copy has four spaces, since
+RouterOS stores a tab in a script source as four spaces.
 A script that differs is a `warn` naming the file (edited in place or out of
 date) and the fix line says to paste the file body into
 *System > Scripts > NAME > Source*. Thresholds you tuned in the router's copy
