@@ -318,9 +318,13 @@ fi
 # linux-image-6.12.107+deb12-amd64 pairs with linux-headers-6.12.107+deb12-common,
 # so +debNN ends the base (6.12.107+deb12). Backports use a bare +bpo:
 # linux-image-6.12.12+bpo-amd64 pairs with linux-headers-6.12.12+bpo-common,
-# so +bpo ends the base (6.12.12+bpo).
+# so +bpo ends the base (6.12.12+bpo). The older Debian names keep the ABI
+# number and add the release after it: linux-image-6.1.0-0.deb11.13-amd64
+# pairs with linux-headers-6.1.0-0.deb11.13-common, and
+# linux-image-5.10.0-0.bpo.4-amd64 with linux-headers-5.10.0-0.bpo.4-common,
+# so those bases are 6.1.0-0.deb11.13 and 5.10.0-0.bpo.4.
 base_of() {
-  local re='^[0-9]+(\.[0-9]+)*(\+deb[0-9]+|\+bpo|-[0-9]+)'
+  local re='^[0-9]+(\.[0-9]+)*(\+deb[0-9]+|\+bpo|-[0-9]+(\.(deb|bpo)[0-9]*(\.[0-9]+)*)?)'
   [[ "$1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[0]}"
 }
 

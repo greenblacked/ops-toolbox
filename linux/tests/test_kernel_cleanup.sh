@@ -307,6 +307,26 @@ assert_contains 'a +bpo old image goes' "$purge_line" 'linux-image-6.12.12+bpo-a
 assert_contains 'the +bpo common headers of a removed base go' "$purge_line" 'linux-headers-6.12.12+bpo-common'
 assert_not_contains 'the +bpo common headers of the running base stay' "$purge_line" 'linux-headers-6.12.20+bpo-common'
 
+# Old-style Debian point and backport kernels keep an ABI number and add the
+# release after it: 6.1.0-0.deb11.13-amd64 pairs with
+# linux-headers-6.1.0-0.deb11.13-common, not with a base of 6.1.0-0.
+printf '%s\t%s\t%s\n' \
+  linux-image-6.1.0-0.deb11.13-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-0.deb11.13-common 'install ok installed' 80000 \
+  linux-image-6.1.0-0.deb11.21-amd64 'install ok installed' 300000 \
+  linux-headers-6.1.0-0.deb11.21-common 'install ok installed' 80000 \
+  linux-image-5.10.0-0.bpo.4-amd64 'install ok installed' 300000 \
+  linux-headers-5.10.0-0.bpo.4-common 'install ok installed' 80000 \
+  > "$fixture/dpkg.rows"
+run_kc debian --dry-run --release 6.1.0-0.deb11.21-amd64 --keep 1
+assert_eq 'debian 0.debNN.N names dry run exits 0' 0 "$rc"
+purge_line="$(grep 'apt-get purge' <<<"$out")"
+assert_contains 'a 0.deb old image goes' "$purge_line" 'linux-image-6.1.0-0.deb11.13-amd64'
+assert_contains 'the 0.deb common headers of a removed base go' "$purge_line" 'linux-headers-6.1.0-0.deb11.13-common'
+assert_not_contains 'the 0.deb common headers of the running base stay' "$purge_line" 'linux-headers-6.1.0-0.deb11.21-common'
+assert_contains 'a 0.bpo.N image goes' "$purge_line" 'linux-image-5.10.0-0.bpo.4-amd64'
+assert_contains 'the 0.bpo.N common headers of a removed base go' "$purge_line" 'linux-headers-5.10.0-0.bpo.4-common'
+
 # Two-part Debian flavours share the base of the plain flavour: with
 # 6.1.0-9-cloud-amd64 kept (running), removing 6.1.0-9-amd64 must leave the
 # common headers the kept flavour's headers depend on.
