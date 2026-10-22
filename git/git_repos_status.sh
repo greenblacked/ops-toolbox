@@ -133,6 +133,8 @@ case "$ONLY" in
 esac
 
 (( ${#DIRS[@]} > 0 )) || DIRS=(".")
+# 10# so a value written with a leading zero (08) is not read as octal.
+DEPTH=$((10#$DEPTH))
 
 # Dry-run lines go to stderr under --porcelain so stdout stays rows only.
 dry_say() {

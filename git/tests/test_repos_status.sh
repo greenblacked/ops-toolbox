@@ -88,6 +88,11 @@ assert_eq "$rc" 3 '--dir without a value -> 3'
 assert_contains "$out" '--dir requires a value' '--dir without a value explains itself'
 out="$("$REPOS_STATUS" --dir "$parent" --depth abc 2>&1)"; rc=$?
 assert_eq "$rc" 3 '--depth abc -> 3'
+out="$("$REPOS_STATUS" --dir "$parent" --depth 08 --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 '--depth 08 is decimal, not an octal error'
+assert_contains "$out" "$parent/deep/nested" '--depth 08 reaches eight levels'
+out="$("$REPOS_STATUS" --dir "$parent" --depth=08 --porcelain 2>&1)"; rc=$?
+assert_eq "$rc" 0 '--depth=08 is decimal, not an octal error'
 out="$("$REPOS_STATUS" --dir "$parent" --only bogus 2>&1)"; rc=$?
 assert_eq "$rc" 3 '--only bogus -> 3'
 out="$("$REPOS_STATUS" --help 2>&1)"; rc=$?
