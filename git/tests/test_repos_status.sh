@@ -143,8 +143,12 @@ assert_eq "$rc" 0 'a plain run still exits 0 with an unreadable index'
 assert_contains "$out" 'status-failed' 'a failing git status is reported as status-failed'
 "$REPOS_STATUS" --dir "$parent/corrupt" --strict >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 1 '--strict exits 1 when git status cannot be read'
-out="$("$REPOS_STATUS" --dir "$parent/corrupt" --only dirty --porcelain 2>&1)"
-assert_contains "$out" 'status-failed' '--only dirty keeps a checkout whose status failed'
+for filter in dirty ahead behind unpushed stash; do
+  out="$("$REPOS_STATUS" --dir "$parent/corrupt" --only "$filter" --porcelain 2>&1)"
+  assert_contains "$out" 'status-failed' "--only $filter keeps a checkout whose status failed"
+  "$REPOS_STATUS" --dir "$parent/corrupt" --only "$filter" --strict >/dev/null 2>&1; rc=$?
+  assert_eq "$rc" 1 "--only $filter --strict exits 1 when git status cannot be read"
+done
 rm -rf "$parent/corrupt"
 
 section "an unreadable checkout is kept under every --only filter"

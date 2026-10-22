@@ -41,8 +41,9 @@ Options:
   --depth N       How many directory levels below DIR to search (default: 2)
   --only STATE    Only show repositories that are dirty, ahead, behind, have
                   unpushed commits, or have a stash. Rows that could not be
-                  checked (failed fetch, stash list or upstream walk, or an
-                  unreadable repository) are kept under every filter
+                  checked (failed git status, fetch, stash list or upstream
+                  walk, or an unreadable repository) are kept under every
+                  filter.
   --fetch         Run 'git fetch --prune --quiet' in each repository first.
                   Network; it updates remote-tracking refs and nothing else.
                   A failed fetch counts as work at risk.
@@ -331,11 +332,12 @@ inspect_repo() {
   fi
 
   # A row that could not be checked is kept under every filter: an
-  # unreadable checkout, a failed fetch, upstream walk or stash list. No
-  # filter can say such a row is clear, and --strict must still fail on it.
-  if [[ -n "$ONLY" ]] && (( unreadable == 0 && fetch_failed == 0 && walk_failed == 0 && stash_failed == 0 )); then
+  # unreadable checkout, a failed git status, fetch, upstream walk or stash
+  # list. No filter can say such a row is clear, and --strict must still
+  # fail on it.
+  if [[ -n "$ONLY" ]] && (( unreadable == 0 && status_failed == 0 && fetch_failed == 0 && walk_failed == 0 && stash_failed == 0 )); then
     case "$ONLY" in
-      dirty)    (( changed > 0 || status_failed == 1 )) || keep=0 ;;
+      dirty)    (( changed > 0 )) || keep=0 ;;
       ahead)    (( ahead > 0 )) || keep=0 ;;
       behind)   (( behind > 0 )) || keep=0 ;;
       unpushed) (( unpushed > 0 )) || keep=0 ;;
