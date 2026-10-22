@@ -118,6 +118,14 @@ assert_eq 'excluding the only source -> 1' 1 "$rc"
 assert_contains 'excluding the only source says nothing is left' "$out" 'leave nothing to back up'
 assert_eq 'excluding the only source leaves no archive or staging' '' "$(ls -A "$dest")"
 
+# Excluding everything inside the source still leaves the source directory
+# itself as a member. A directory is not data, so this fails too.
+new_dest
+run_backup --yes --exclude "${src#/}/*"
+assert_eq 'excluding all contents of the source -> 1' 1 "$rc"
+assert_contains 'a bare directory member is not data' "$out" 'leave nothing to back up'
+assert_eq 'excluding all contents leaves no archive or staging' '' "$(ls -A "$dest")"
+
 new_dest
 out="$("$BACKUP" --dry-run --exclude-secrets --paths /etc --dest "$dest" 2>&1)"; rc=$?
 assert_eq '--exclude-secrets --dry-run exits 0' 0 "$rc"

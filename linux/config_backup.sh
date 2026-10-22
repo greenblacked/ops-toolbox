@@ -751,7 +751,9 @@ fi
 # empty archive. At least one listed member is required: every included file
 # or directory should contribute one. The exclusion manifest is metadata, not
 # data: exclusions that cover every source would otherwise leave an archive
-# holding only .config_backup/excludes, published as if it were a backup.
+# holding only .config_backup/excludes, published as if it were a backup. A
+# directory member (name ending in /) is not data either: --exclude 'etc/*'
+# still leaves etc/ itself, with nothing inside it.
 if ! gzip -t -- "$staged_archive" || ! staged_members="$(tar -tzf "$staged_archive")" \
    || [[ -z "$staged_members" ]]; then
   err "staged archive failed validation; previous archives preserved"
@@ -761,6 +763,7 @@ data_found=0
 while IFS= read -r member; do
   case "$member" in
     .config_backup|.config_backup/|.config_backup/*) ;;
+    */) ;;
     *) data_found=1; break ;;
   esac
 done <<<"$staged_members"

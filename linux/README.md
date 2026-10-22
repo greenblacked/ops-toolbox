@@ -861,9 +861,10 @@ under a name it does not list are still archived. Without it, a default run
 still carries every secret in `/etc`. An excluded path is not a missing one, so
 it never makes a `*.partial.tar.gz`, and an unreadable file that is excluded no
 longer turns a non-root run into a partial one. If the patterns leave nothing
-at all, or only the exclusion record below, the staged archive fails
-validation, nothing is published and the run exits `1`. `--dry-run` prints
-each `would exclude:` line, and both flags are refused with `--list`.
+at all, or only the exclusion record below and bare directory entries, the
+staged archive fails validation, nothing is published and the run exits `1`.
+`--dry-run` prints each `would exclude:` line, and both flags are refused with
+`--list`.
 
 The exclusions are recorded in the archive, as a small member
 `.config_backup/excludes` (two `#` header lines, one of them saying whether
