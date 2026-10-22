@@ -734,15 +734,16 @@ assert_contains "--backups --only <deleted unit> --installed-only lists the back
 run_with_path "$scratch/bin-oldtool" --restore --dry-run --only oldtool --installed-only >/dev/null 2>&1; rc=$?
 assert_rc "--restore --only <deleted unit> --installed-only exits 0" 0 "$rc"
 # The preflight only counts: a backup that is not ours is reported once.
-mkdir -p "$IH/.config/othertool"
-printf 'theirs\n' > "$IH/.config/othertool/y.backup-20200101-000000"
+# oldtool is selected (its tool is on PATH) but y is not tracked, not a link
+# into the repo and not in the ledger, so the backup of y is not ours.
+printf 'theirs\n' > "$IH/.config/oldtool/y.backup-20200101-000000"
 out="$(run_with_path "$scratch/bin-oldtool" --backups --installed-only 2>&1)"
-n="$(printf '%s\n' "$out" | grep -c 'not ours, skipped: .*othertool/y.backup-20200101-000000')"
+n="$(printf '%s\n' "$out" | grep -c 'not ours, skipped: .*oldtool/y.backup-20200101-000000')"
 if [[ "$n" == 1 ]]; then ok "--installed-only reports a backup that is not ours once"; else err "--installed-only reported a foreign backup $n times, expected 1"; fi
 # An exported STRAY_QUIET must not silence the notice of a real run.
 out="$(STRAY_QUIET=1 run_with_path "$scratch/bin-oldtool" --backups --installed-only 2>&1)"
-assert_contains "an exported STRAY_QUIET does not hide the not-ours notice" "$out" "othertool/y.backup-20200101-000000"
-rm -f "$IH/.config/othertool/y.backup-20200101-000000"; rmdir "$IH/.config/othertool"
+assert_contains "an exported STRAY_QUIET does not hide the not-ours notice" "$out" "oldtool/y.backup-20200101-000000"
+rm -f "$IH/.config/oldtool/y.backup-20200101-000000"
 run_with_path "$scratch/bin-none" --backups --only oldtool --installed-only >/dev/null 2>&1; rc=$?
 assert_rc "--backups --only <deleted unit> --installed-only without its tool exits 4" 4 "$rc"
 rm "$IH/.config/oldtool/x" "$IH/.config/oldtool/x.backup-20200101-000000"; rmdir "$IH/.config/oldtool"
