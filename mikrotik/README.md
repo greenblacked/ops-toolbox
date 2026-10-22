@@ -923,7 +923,8 @@ them for lookup keys and modes (`:local key ("ipsec-" . $addr)`,
 (`:global key "abc"`), never for an expression or a variable. Script fields
 are `source`, `script`, `on-event`, `on-alarm`, `up-script`,
 `down-script`, `test-script`, `lease-script`, `on-master`, `on-backup`,
-`on-fault`, `on-alert` and `do`, and any other field whose name ends in `-script` or starts with `on-`.
+`on-fault`, `on-alert` and `do`, and any other field whose name ends in
+`-script` or starts with `on-`.
 Names are compared with `_` and `-` removed and case ignored, so `api_key`,
 `api-key` and `API_KEY` all count as `apikey`; the variable name may itself
 be quoted, as in `:global "api-token" "x"`. The scan also covers the fields

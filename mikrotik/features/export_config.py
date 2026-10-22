@@ -92,9 +92,10 @@ _BY_ROUTEROS = re.compile(r"^#\s*(?:model|software id|serial number).*$", re.IGN
 # whether a match inside a commented-out script line is skipped. Only the
 # secret-assigned pattern skips them; a token and a show-sensitive field
 # value are secrets wherever they sit, commented out or not, because a
-# commented line is still in git history. A secret-named assignment in a commented-out line is
-# not reported here as a leak; the second pass (find_unverifiable) reports it
-# as a commented assignment with a literal, and --commit refuses it.
+# commented line is still in git history. A secret-named assignment in a
+# commented-out line is not reported here as a leak; the second pass
+# (find_unverifiable) reports it as a commented assignment with a literal,
+# and --commit refuses it.
 _LEAK_PATTERNS = (
     # A Telegram bot token by its shape, wherever it appears - including inside
     # a hand-built https://api.telegram.org/bot<token>/ URL.
