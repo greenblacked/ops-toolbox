@@ -844,6 +844,11 @@ file) and writes nothing. `--keep 0` disables rotation. Archives land in
 `~/ops-toolbox-backups` unless `--dest` says otherwise. `--paths` must be
 absolute; `/` is refused.
 
+An archive never crosses into another filesystem mounted below a path (tar
+`--one-file-system`), the same boundary `--diff` uses for its new-file scan
+(`find -xdev`), so a nested mount is neither archived nor compared. Name the
+mount in `--paths` to include it.
+
 The archive is created mode `0600`, whatever umask the caller had. The default
 source is `/etc`, and a run that can read all of it is a run with `shadow`, the
 sshd host keys and `sudoers` in the tarball. `--dest` keeps the mode it already

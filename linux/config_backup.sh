@@ -21,7 +21,9 @@
 # with are stored in it as the member .config_backup/excludes (one pattern per
 # line after two header lines), so --diff can leave the same files out of its
 # new-file scan; --exclude and --exclude-secrets on --diff add to that set. An
-# archive without the member is compared as before.
+# archive without the member is compared as before. Neither the archive nor the
+# new-file scan crosses into another filesystem mounted below a path (tar
+# --one-file-system, find -xdev); name such a mount in --paths to include it.
 #
 # --exclude and --exclude-secrets make an archive you can hand to somebody:
 # tar exclusion patterns, matched against member names relative to /, passed
@@ -101,6 +103,8 @@ Options:
   --diff [FILE]      Compare FILE (or the newest archive) with the live --paths;
                      read-only, no --yes; exit 1 when anything differs
   --paths LIST       Comma-separated absolute paths (repeatable; default: /etc)
+                     Mounts nested below a path are not entered (tar
+                     --one-file-system); list a mount as its own path
   --dest DIR         Directory for archives (default: ~/ops-toolbox-backups)
   --keep N           Complete and partial archives to retain separately (default: $KEEP; 0 = keep all)
   --prefix NAME      Filename prefix (default: $PREFIX)
@@ -738,10 +742,13 @@ if (( ${#EXCLUDES[@]} > 0 )); then
   manifest_args=(-C "$manifest_dir" .config_backup)
 fi
 
-# -C / keeps member names relative to the filesystem root. A tar warning can
+# -C / keeps member names relative to the filesystem root. --one-file-system
+# keeps the archive on the filesystem of each --paths entry, the same boundary
+# the --diff new-file scan (find -xdev) stops at, so a nested mount is left out
+# of both and never reported as NEW. A tar warning can
 # produce a useful partial copy, but neither an exit code nor a nonempty file
 # proves the gzip stream and tar members are readable.
-tar -czf "$staged_archive" ${tar_excludes[@]+"${tar_excludes[@]}"} -C / "${rels[@]}" ${manifest_args[@]+"${manifest_args[@]}"}
+tar -czf "$staged_archive" --one-file-system ${tar_excludes[@]+"${tar_excludes[@]}"} -C / "${rels[@]}" ${manifest_args[@]+"${manifest_args[@]}"}
 tar_rc=$?
 if (( tar_rc > 1 )); then
   err "tar failed (exit $tar_rc); previous archives preserved"

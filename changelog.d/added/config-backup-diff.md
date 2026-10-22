@@ -5,4 +5,5 @@
   would restore one file, printed and never run. It is read-only, like
   `--list`, and needs no `--yes`. It exits `1` when anything differs, so
   the back-up, edit, compare step of a runbook can also run from cron as
-  a drift check.
+  a drift check. Archives stop at a nested mount (tar `--one-file-system`,
+  matching the `find -xdev` scan), so name such a mount in `--paths`.
