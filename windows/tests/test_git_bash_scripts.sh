@@ -689,7 +689,9 @@ run_ctx AWS_CONFIG_FILE="$ctx_root/aws/config" AWS_PROFILE=nosuch
 assert_contains "a named profile with no region shows none" "$out" "aws     nosuch"$'\n'
 
 run_ctx DOCKER_HOST=tcp://prod-docker:2376
-assert_contains "DOCKER_HOST overrides the saved Docker context" "$out" "docker  tcp://prod-docker:2376  (DOCKER_HOST)"
+assert_contains "DOCKER_HOST overrides the saved Docker context and is marked when it looks like prod" "$out" "docker  tcp://prod-docker:2376!  (DOCKER_HOST)"
+run_ctx DOCKER_HOST=tcp://build-docker:2376
+assert_contains "a non-prod DOCKER_HOST is shown without the mark" "$out" "docker  tcp://build-docker:2376  (DOCKER_HOST)"
 run_ctx DOCKER_HOST=tcp://prod-docker:2376 DOCKER_CONTEXT=staging
 assert_contains "DOCKER_CONTEXT stays above DOCKER_HOST" "$out" "docker  staging  (DOCKER_CONTEXT)"
 assert_not_contains "and DOCKER_HOST is then not shown" "$out" "prod-docker"
