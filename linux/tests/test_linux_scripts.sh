@@ -675,6 +675,9 @@ grade_sshd() {  # sshd_config lines -> the ssh group's output
 }
 # The verdict line for a setting and its hint, which is half of the assertion.
 line_for() { grep -A1 -F -- "$1" <<<"$2" || true; }
+# Only the [pass] lines that name $1: unlike line_for, the context line after
+# a match (often an unrelated check's [pass]) cannot leak in.
+pass_line_for() { grep -F -- '[pass]' <<<"$2" | grep -F -- "$1" || true; }
 out="$(grade_sshd 'MaxAuthTries 3')"
 assert_contains "hardening_audit passes MaxAuthTries 3" "$(line_for MaxAuthTries "$out")" "[pass]"
 out="$(grade_sshd 'MaxAuthTries 10')"
@@ -725,12 +728,12 @@ assert_contains "hardening_audit does not pass ChannelTimeout session:*=0" "$(li
 out="$(grade_sshd 'ChannelTimeout session:*=1800')"
 assert_contains "hardening_audit passes ChannelTimeout session:*=1800" "$(line_for ChannelTimeout "$out")" "[pass]"
 out="$(grade_sshd 'Match user sftp' 'ChannelTimeout session=30m')"
-assert_not_contains "hardening_audit does not pass a ChannelTimeout set only inside Match" "$(line_for ChannelTimeout "$out")" "[pass]"
+assert_eq "hardening_audit does not pass a ChannelTimeout set only inside Match" "" "$(pass_line_for ChannelTimeout "$out")"
 assert_contains "hardening_audit warns on a ChannelTimeout set only inside Match" "$(line_for ChannelTimeout "$out")" "[warn]"
 out="$(grade_sshd 'Match all' 'ChannelTimeout session=30m')"
-assert_contains "hardening_audit passes ChannelTimeout under Match all" "$(line_for ChannelTimeout "$out")" "[pass]"
+assert_contains "hardening_audit passes ChannelTimeout under Match all" "$(pass_line_for ChannelTimeout "$out")" "[pass]"
 out="$(grade_sshd 'ChannelTimeout session=30m' 'Match user sftp' 'ChannelTimeout session=0')"
-assert_contains "hardening_audit grades the global ChannelTimeout, not the Match one" "$(line_for ChannelTimeout "$out")" "[pass]"
+assert_contains "hardening_audit grades the global ChannelTimeout, not the Match one" "$(pass_line_for ChannelTimeout "$out")" "session=30m"
 out="$(grade_sshd 'HostbasedAuthentication yes')"
 assert_contains "hardening_audit fails HostbasedAuthentication yes" "$(line_for HostbasedAuthentication "$out")" "[FAIL]"
 out="$(grade_sshd 'IgnoreRhosts no')"
