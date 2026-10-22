@@ -48,8 +48,9 @@ Options:
                      run, or already archived in dest-dir when the router
                      sent none, pairs them. A partner whose transfer failed
                      (not "no such file") is not replaced by the archived
-                     one. A rejected partner fails the pair. Rejected files are never published; an archived
-                     copy of the same name stays as it was
+                     one. A rejected partner fails the pair. Rejected files
+                     are never published; an archived copy of the same name
+                     stays as it was
   --max-age HOURS    Fail unless a backup-*.backup pulled in this run was made
                      by the router within the last HOURS hours (a whole
                      number, 1 or more); other routers' files in dest-dir

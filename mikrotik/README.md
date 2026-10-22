@@ -1217,13 +1217,14 @@ deleted or renamed.
   `.rsc` must open with the RouterOS export header (`# <date> by RouterOS
   <version>`), and each `backup-X.backup` must have its `backup-X.rsc` pulled
   in the same run (or already in the destination when the router sent none),
-  and the reverse. Files that pass are published and files that fail are not,
-  so a zero-byte re-pull of an archived name leaves the archived copy intact
-  and the run exits 1. Each problem is printed as
-  `verify: <file>: <reason>` on stderr, followed by `verify: N file(s)
-  checked, M problem(s)`. A run that pulled nothing has nothing to check and
-  passes; a run whose transfer already failed is still checked, so nothing
-  unchecked is published.
+  and the reverse. A partner whose transfer failed (anything but "no such
+  file") is not replaced by the archived copy, so the pair is not accepted on
+  an older partner's word. Files that pass are published and files that fail
+  are not, so a zero-byte re-pull of an archived name leaves the archived copy
+  intact and the run exits 1. Each problem is printed as `verify: <file>:
+  <reason>` on stderr, followed by `verify: N file(s) checked, M problem(s)`.
+  A run that pulled nothing has nothing to check and passes; a run whose
+  transfer already failed is still checked, so nothing unchecked is published.
 - `--max-age HOURS` fails unless a `backup-*.backup` pulled in this run was
   made by the router within the last HOURS hours (a whole number from 1).
   Files other routers left in a shared destination do not count. The run can
