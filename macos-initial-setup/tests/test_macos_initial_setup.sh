@@ -56,6 +56,7 @@ unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
 # aim a run at the real ~/.kube, ~/.aws or Docker daemon instead of the
 # fixtures, and a set token would add a warning no fixture asked for.
 unset KUBECONFIG AWS_PROFILE AWS_DEFAULT_PROFILE AWS_CONFIG_FILE AWS_ACCESS_KEY_ID \
+  AWS_REGION AWS_DEFAULT_REGION \
   CLOUDSDK_ACTIVE_CONFIG_NAME DOCKER_CONTEXT DOCKER_HOST TF_WORKSPACE \
   GH_CONFIG_DIR XDG_CONFIG_HOME GH_TOKEN GITHUB_TOKEN \
   CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT CLOUDSDK_COMPUTE_REGION
@@ -2335,6 +2336,10 @@ printf '[acme-dev]\naws_access_key_id = AKIACANARYKEYID\naws_secret_access_key =
   > "$oc/home/.aws/credentials"
 printf 'prod-eu\n' > "$oc/tf/.terraform/environment"
 
+# A CI or developer shell often exports AWS_REGION / AWS_DEFAULT_REGION, which
+# would replace the profile's region these cases read; the cases that want one
+# set it in their own subshell.
+unset AWS_REGION AWS_DEFAULT_REGION
 ops() {
   AWS_PROFILE=acme-dev HOME="$oc/home" TMPDIR="$oc/tmp" \
     PATH="$oc/bin:/usr/bin:/bin" "$OPS" "$@" 2>&1

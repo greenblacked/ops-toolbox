@@ -1631,8 +1631,9 @@ write terminal escapes.
 
 `--warn-on` takes comma-separated, case-insensitive substrings and matches
 them against every value printed: context, namespace, cluster, gcloud
-configuration, project and account, AWS profile, role and account id,
-Terraform workspace, Docker context and endpoint, and GitHub host and user.
+configuration, project and account, AWS profile, region (the effective
+one, the profile's own when no environment variable replaces it), role and
+account id, Terraform workspace, Docker context and endpoint, and GitHub host and user.
 A match turns that row into a `[warn]` naming the pattern and exits `1`.
 An expired SSO login is a warning too, but it changes the exit code only
 under `--strict`, so a lapsed login never blocks an unrelated command.
