@@ -268,13 +268,14 @@ function Get-SshClientFinding {
         Id = 'first-client'; Level = 'info'
         Message = ('ssh resolves to {0} ({1})' -f $Clients[0], $kinds[0]); Fix = ''
     }
-    # What git runs, by git's own precedence: GIT_SSH_COMMAND, then GIT_SSH,
-    # then core.sshCommand. Only the winning one counts.
+    # What git runs, by git's own precedence: GIT_SSH_COMMAND, then
+    # core.sshCommand, then GIT_SSH (read only when neither of the others is
+    # set). Only the winning one counts.
     $source = ''
     $chosen = ''
     if ($GitSshCommandEnv) { $source = 'GIT_SSH_COMMAND'; $chosen = $GitSshCommandEnv }
-    elseif ($GitSshEnv) { $source = 'GIT_SSH'; $chosen = $GitSshEnv }
     elseif ($GitSshCommand) { $source = 'core.sshCommand'; $chosen = $GitSshCommand }
+    elseif ($GitSshEnv) { $source = 'GIT_SSH'; $chosen = $GitSshEnv }
 
     if ($source) {
         if ($source -eq 'core.sshCommand') {
