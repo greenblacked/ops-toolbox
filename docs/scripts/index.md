@@ -131,8 +131,15 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/print_schedulers.sh` | MikroTik | Host: print `/system scheduler` commands. | prints only; `--dry-run` accepted |
 | `mikrotik/features/print_startup.sh` | MikroTik | Host: print the startup script that sets the globals at boot. | prints only; `--dry-run` accepted |
 | `mikrotik/features/pull_router_backups.sh` | MikroTik | Host: pull backups over SFTP/SCP. | `--dry-run` |
-| `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, events and PVCs. | <span class="stage stage-report">read-only</span> |
-| `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, OOM kills, events and PVCs. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_workload_diag.sh` | Kubernetes | Triage stuck rollouts, autoscalers and failed Jobs. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_cert_expiry.sh` | Kubernetes | Report expired and expiring TLS certificates. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_drain_preflight.sh` | Kubernetes | Check what would block a node drain. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_node_capacity.sh` | Kubernetes | Requests against allocatable per node. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_workload_audit.sh` | Kubernetes | Audit workload pod templates for production readiness. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_rbac_audit.sh` | Kubernetes | Review RBAC bindings and roles. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks, from release channel to network policy. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_pod_cleanup.sh` | Kubernetes | Delete dead Failed or Succeeded pods by name. | `--dry-run` is the default; `--yes` applies |
 | `k8s-toolbox/build.sh` | Kubernetes | Build the toolbox image with buildx. | `--dry-run` |
 | `k8s-toolbox/run.sh` | Kubernetes | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
 | `k8s-toolbox/debug_pod.sh` | Kubernetes | Attach an ephemeral debug container to a pod. | `--dry-run` |

@@ -18,4 +18,12 @@ fi
 rc=0
 "$HERE/test_k8s_toolbox.sh" "$@" || rc=1
 "$HERE/test_pod_diag.sh" || rc=1
+"$HERE/test_workload_diag.sh" || rc=1
+"$HERE/test_cert_expiry.sh" || rc=1
+"$HERE/test_drain_preflight.sh" || rc=1
+"$HERE/test_node_capacity.sh" || rc=1
+"$HERE/test_workload_audit.sh" || rc=1
+"$HERE/test_gke_doctor.sh" || rc=1
+"$HERE/test_rbac_audit.sh" || rc=1
+"$HERE/test_pod_cleanup.sh" || rc=1
 exit "$rc"

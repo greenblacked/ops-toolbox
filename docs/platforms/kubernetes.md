@@ -11,6 +11,9 @@ only.
 
 - Bash on the host.
 - `kubectl` for triage and debug; `gcloud` for `gke_cluster_doctor.sh`.
+- `python3` for the read-only `kubectl_*` reports and six of the GKE
+  doctor's checks, and `openssl` for `kubectl_cert_expiry.sh`, which only
+  parses certificates from stdin.
 - Docker with buildx for `build.sh` and `run.sh`. Both exit 2 without Docker,
   except under `--dry-run`.
 - Credentials for any cluster you query.
@@ -21,8 +24,15 @@ only.
 
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `kubectl_pod_diag.sh` | Triage unhealthy pods, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
-| `gke_cluster_doctor.sh` | GKE health checks; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_pod_diag.sh` | Triage unhealthy pods, restarts and OOM kills, Warning events and unbound PVCs. | <span class="stage stage-report">read-only</span> |
+| `kubectl_workload_diag.sh` | Triage stuck rollouts, DaemonSets, autoscalers and failed Jobs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_cert_expiry.sh` | Expired and expiring TLS certificates in Secrets; `--warn-days`, `--cert-manager`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_drain_preflight.sh` | What would block or hurt draining a node; prints the drain command, never runs it. | <span class="stage stage-report">read-only</span> |
+| `kubectl_node_capacity.sh` | Requests against allocatable per node, and Unschedulable pods; `--threshold`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_workload_audit.sh` | Audit pod templates: requests, probes, image tags, security, PDBs; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_rbac_audit.sh` | RBAC review: cluster-admin, wildcards, default ServiceAccounts, dangling bindings, Secret readers; `--only`. | <span class="stage stage-report">read-only</span> |
+| `gke_cluster_doctor.sh` | GKE health checks: channel, skew, Workload Identity, node auto-repair, maintenance window, authorized networks, logging, shielded nodes, network policy; `--list-checks`, `--only`. | <span class="stage stage-report">read-only</span> |
+| `kubectl_pod_cleanup.sh` | Delete Failed (optionally Succeeded) pods past a grace period, by name. | `--dry-run` (default), `--yes` |
 | `build.sh` | Build the toolbox or debug image with buildx. | `--dry-run` |
 | `run.sh` | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
 | `debug_pod.sh` | Attach an ephemeral debug container with `kubectl debug`. | `--dry-run` |
@@ -39,6 +49,13 @@ All paths are under `k8s-toolbox/`.
     ```bash
     ./k8s-toolbox/kubectl_pod_diag.sh --namespace prod
     ./k8s-toolbox/kubectl_pod_diag.sh --context staging -n api
+    ./k8s-toolbox/kubectl_pod_diag.sh --since 6h --restarts 10
+    ./k8s-toolbox/kubectl_workload_diag.sh --namespace prod --only deployments,hpa
+    ./k8s-toolbox/kubectl_cert_expiry.sh --warn-days 14 --cert-manager
+    ./k8s-toolbox/kubectl_drain_preflight.sh --node gke-pool-1-abcd
+    ./k8s-toolbox/kubectl_node_capacity.sh --threshold 70
+    ./k8s-toolbox/kubectl_workload_audit.sh --namespace prod --only resources,security
+    ./k8s-toolbox/kubectl_rbac_audit.sh --only cluster-admin,secrets
     ./k8s-toolbox/gke_cluster_doctor.sh --list-checks
     ./k8s-toolbox/gke_cluster_doctor.sh --project P --cluster C --location europe-west1
     ```
@@ -48,6 +65,7 @@ All paths are under `k8s-toolbox/`.
     ```bash
     ./k8s-toolbox/build.sh --dry-run
     ./k8s-toolbox/debug_pod.sh --pod api-7d9f8 --dry-run
+    ./k8s-toolbox/kubectl_pod_cleanup.sh --namespace batch --older-than 2h
     ```
 
 === "Apply"
@@ -55,17 +73,30 @@ All paths are under `k8s-toolbox/`.
     ```bash
     ./k8s-toolbox/build.sh
     ./k8s-toolbox/debug_pod.sh --pod api-7d9f8 --namespace prod
+    ./k8s-toolbox/kubectl_pod_cleanup.sh --namespace batch --older-than 2h --yes
     ```
 
 ## Limitations and caveats
 
 !!! warning "Check your kube context"
-    `kubectl_pod_diag.sh` and `debug_pod.sh` use the current kube context unless
-    you pass `--context`. Check it before running.
+    The `kubectl_*` scripts and `debug_pod.sh` use the current kube context
+    unless you pass `--context`. Check it before running;
+    `kubectl_pod_cleanup.sh` prints it before it deletes anything.
+
+!!! report "kubectl_drain_preflight.sh never cordons"
+    It prints `kubectl cordon` and `kubectl drain` with the flags the node
+    needs, and runs neither. When a query fails it exits 1 with no verdict
+    and no command, rather than call a node safe on half the data.
 
 !!! apply "debug_pod.sh changes a live pod"
     It adds an ephemeral container to an existing pod; it does not create a
     new pod.
+
+!!! apply "kubectl_pod_cleanup.sh --yes deletes pods"
+    Without `--yes` it only previews. With it, it deletes the Failed (and,
+    with `--include-succeeded`, Succeeded) pods the preview listed, one by
+    name, after printing the context. `--max` (200 by default) refuses a
+    larger batch before the first delete.
 
 - A multi-arch `build.sh --push` is pushed, not loaded locally.
 - Toolchain versions are pinned in `versions.env`. The Dockerfile and
