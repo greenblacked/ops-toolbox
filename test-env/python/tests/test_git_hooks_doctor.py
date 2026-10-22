@@ -218,6 +218,15 @@ class HooksPathFindingsTestCase(unittest.TestCase):
         self.assertIn("reference-transaction", message)
         self.assertIn("mkdir -p /r/.git/hooks", fix)
 
+    def test_a_missing_receive_side_directory_keeps_the_shadow_warning(self):
+        findings = doctor.hooks_path_findings(
+            ".githooks", "~/.gitconfig", "global", "/r", ["pre-commit"],
+            lambda p: p == "/r/.githooks", "/r/.git"
+        )
+        self.assertEqual([level for level, _, _ in findings], ["info", "warn"])
+        self.assertIn("never run", findings[1][1])
+        self.assertIn("pre-commit", findings[1][1])
+
     def test_an_absolute_path_has_one_location(self):
         seen = []
 
