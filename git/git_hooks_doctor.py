@@ -599,7 +599,7 @@ def run_report(args):
         looks_in = "; ".join(
             "%s%s" % (shorten(server_dir), " for a %s" % label if label else "")
             for label, server_dir in locations)
-        for name, path in hooks:
+        for name, _path in hooks:
             if name in RECEIVE_HOOKS:
                 if name == "reference-transaction":
                     info("%s in %s runs here for local ref updates only; for a push "
