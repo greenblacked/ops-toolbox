@@ -172,6 +172,17 @@ assert_eq "$rc" 3 'unknown flag -> 3'
 git init -q -b main "$scratch/unborn" || err 'create unborn repository'
 run_in "$scratch/unborn" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" 4 'a repository with no commits -> 4'
+out="$(run_in "$scratch/unborn" 2>&1)"
+assert_contains "$out" 'HEAD has no commits yet' 'an empty repository says HEAD has no commits'
+# A bare repository whose HEAD names an unborn branch (HEAD points at
+# refs/heads/unborn-head, refs only under main): explicit names must not
+# need HEAD.
+git clone -q --bare "$repo" "$scratch/bare.git" || err 'create bare repository'
+git -C "$scratch/bare.git" symbolic-ref HEAD refs/heads/unborn-head || err 'unborn bare HEAD'
+run_in "$scratch/bare.git" --into main clean-add >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 0 'a bare repository with an unborn HEAD checks explicit names'
+run_in "$scratch/bare.git" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 4 'a bare repository with an unborn HEAD and no names -> 4'
 
 section "nothing is touched"
 printf 'a\nlocal edit\nc\n' >"$repo/file.txt" || err 'dirty the worktree'

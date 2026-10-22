@@ -102,17 +102,14 @@ if ! git rev-parse --git-dir >/dev/null 2>&1; then
   exit 2
 fi
 
-if ! git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-  printf "HEAD has no commits yet; there is nothing to merge\n" >&2
-  exit 4
-fi
-
-# A self-merge is clean on 2.38 and later and a usage error (129) before it.
-# Failing closed here is the point: an old git would otherwise have every
-# branch reported as an error, which reads as a conflict forecast.
-if ! git merge-tree --write-tree --name-only HEAD HEAD >/dev/null 2>&1; then
-  err "git 2.38 or newer is required for merge-tree --write-tree"
-  exit 2
+# Only the default path reads HEAD; an explicit base and branch work in a
+# bare repository whose HEAD names an unborn branch. Checked before the base
+# is resolved, so an empty repository gets this clearer message.
+if (( ${#BRANCHES[@]} == 0 && ALL_LOCAL == 0 )); then
+  if ! git rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
+    printf "HEAD has no commits yet; there is nothing to merge\n" >&2
+    exit 4
+  fi
 fi
 
 # Resolved the way git_sync_default.sh resolves the default branch, then
@@ -148,6 +145,15 @@ resolve() {
 if ! base_sha="$(resolve "$BASE")"; then
   printf "base not found: %s\n" "$BASE" >&2
   exit 4
+fi
+
+# A self-merge is clean on 2.38 and later and a usage error (129) before it.
+# Failing closed here is the point: an old git would otherwise have every
+# branch reported as an error, which reads as a conflict forecast. The probe
+# uses the resolved base, so it does not depend on HEAD.
+if ! git merge-tree --write-tree --name-only "$base_sha" "$base_sha" >/dev/null 2>&1; then
+  err "git 2.38 or newer is required for merge-tree --write-tree"
+  exit 2
 fi
 
 if (( ALL_LOCAL == 1 )); then
