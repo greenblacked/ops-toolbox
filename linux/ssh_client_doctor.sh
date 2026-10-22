@@ -449,9 +449,18 @@ if want known_hosts; then
         if (host !~ /^\|1\|/) unhashed++
         if (type ~ /^ssh-dss/) dss++
         if (marker == "" && host !~ /^\|1\|/) {
-          k = host " " type
-          if (!(k in first)) first[k] = blob
-          else if (first[k] != blob && !(k in told)) { told[k] = 1; print "CONFLICT", host, type }
+          # The host field is a comma-separated alias list; every alias is
+          # its own key. Negated patterns are not hosts, [host]:22 is host,
+          # and host names compare case-insensitively.
+          n = split(host, alias, ",")
+          for (a = 1; a <= n; a++) {
+            h1 = tolower(alias[a])
+            if (h1 == "" || h1 ~ /^!/) continue
+            if (h1 ~ /^\[.*\]:22$/) h1 = substr(h1, 2, length(h1) - 5)
+            k = h1 " " type
+            if (!(k in first)) first[k] = blob
+            else if (first[k] != blob && !(k in told)) { told[k] = 1; print "CONFLICT", h1, type }
+          }
         }
       }
       END { printf "STATS %d %d %d %d\n", total, unhashed, dss, revoked }')"

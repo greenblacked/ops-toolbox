@@ -2462,6 +2462,28 @@ out="$("$SSHDOC" --ssh-dir "$keys_dir" --only known_hosts 2>&1)"; rc=$?
 assert_contains "ssh_client_doctor fails an ssh-dss host key" "$out" "[FAIL]"
 assert_eq "ssh_client_doctor ssh-dss host key -> 1" "1" "$rc"
 
+# The host field is an alias list: a.example,b.example and a.example must
+# clash when the keys differ, and [host]:22 is the plain host.
+kh_dir="$(mktemp -d)"
+chmod 700 "$kh_dir"
+printf '%s\n' 'a.example,b.example ssh-ed25519 AAAA1' 'a.example ssh-ed25519 AAAA2' \
+  'c.example ssh-ed25519 AAAA3' 'C.example,!d.example ssh-ed25519 AAAA3' \
+  '[e.example]:22 ssh-ed25519 AAAA5' 'e.example ssh-ed25519 AAAA6' \
+  '[f.example]:2222 ssh-ed25519 AAAA7' 'f.example ssh-ed25519 AAAA8' > "$kh_dir/known_hosts"
+chmod 644 "$kh_dir/known_hosts"
+out="$("$SSHDOC" --ssh-dir "$kh_dir" --only known_hosts 2>&1)"
+assert_contains "ssh_client_doctor expands known_hosts aliases before comparing" \
+  "$out" "host a.example has conflicting ssh-ed25519 keys"
+assert_contains "ssh_client_doctor treats [host]:22 as the plain host" \
+  "$out" "host e.example has conflicting ssh-ed25519 keys"
+assert_not_contains "ssh_client_doctor does not conflict an alias that only one line lists" \
+  "$out" "host b.example"
+assert_not_contains "ssh_client_doctor compares host names case-insensitively without false clashes" \
+  "$out" "host c.example"
+assert_not_contains "ssh_client_doctor keeps [host]:2222 apart from the plain host" \
+  "$out" "host f.example"
+rm -rf "$kh_dir"
+
 printf '%s\n' 'ssh-ed25519 AAAAdup one@example' 'from="10.0.0.1" ssh-ed25519 AAAAdup again@example' \
   'ssh-ed25519 AAAAother other@example' > "$keys_dir/authorized_keys"
 chmod 600 "$keys_dir/authorized_keys"
