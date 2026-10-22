@@ -1111,6 +1111,12 @@ if (-not $netDoctor) {
             @{ Label = 'a PAC script only'
                Observed = @{ WinInetEnabled = $false; AutoConfigUrl = 'http://wpad/proxy.pac' }
                Expect = @('pac:info') }
+            @{ Label = 'an environment proxy, WinINET off, a PAC script set'
+               Observed = @{ WinInetEnabled = $false; HttpProxy = 'http://proxy:8080'; AutoConfigUrl = 'http://wpad/proxy.pac'; NoProxy = 'localhost' }
+               Expect = @('env-with-pac:info', 'pac:info') }
+            @{ Label = 'an environment proxy, WinINET off, a PAC script with a password'
+               Observed = @{ WinInetEnabled = $false; HttpsProxy = 'http://proxy:8080'; AutoConfigUrl = 'http://u:s3cret@wpad/proxy.pac'; NoProxy = 'localhost' }
+               Expect = @('env-with-pac:info', 'pac:info') }
             @{ Label = 'nothing configured'
                Observed = @{ WinInetEnabled = $false }
                Expect = @() }
@@ -1123,6 +1129,13 @@ if (-not $netDoctor) {
             } else {
                 Test-Fail ("{0}: got [{1}], expected [{2}]" -f $case.Label, ($got -join ' '), ($want -join ' '))
             }
+        }
+        $pacCase = @(Get-ProxyFinding -Observed @{ WinInetEnabled = $false; HttpProxy = 'http://proxy:8080'; AutoConfigUrl = 'http://u:s3cret@wpad/proxy.pac'; NoProxy = 'localhost' } |
+            Where-Object { $_.Id -eq 'env-with-pac' })
+        if ($pacCase.Count -eq 1 -and $pacCase[0].Message -like '*http://wpad/proxy.pac*' -and $pacCase[0].Message -notlike '*s3cret*' -and $pacCase[0].Message -notlike '*direct*') {
+            Test-Ok 'the PAC finding names the PAC URL without its credentials and does not claim a direct connection'
+        } else {
+            Test-Fail 'the PAC finding must name the PAC URL, hide its credentials and not claim a direct connection'
         }
     }
 }

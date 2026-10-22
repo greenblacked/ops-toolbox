@@ -5,4 +5,6 @@
   counts as a mismatch) against `HTTP_PROXY` and git's `http.proxy`, the
   hosts file, and the process behind each listening port. `-Probe HOST` asks
   every configured DNS server separately and makes one TCP connection; proxy
-  passwords are masked before anything is printed.
+  passwords are masked before anything is printed. With a PAC script
+  configured, an environment proxy and WinINET off is reported as undetermined, naming the
+  PAC URL, rather than as browsers connecting directly.

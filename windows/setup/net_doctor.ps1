@@ -258,7 +258,23 @@ function Get-ProxyFinding {
     }
 
     $findings = @()
-    if ($envProxy -and -not $inetOn) {
+    if ($envProxy -and -not $inetOn -and $Observed['AutoConfigUrl']) {
+        # A PAC script is enough to proxy browsers with ProxyEnable off, and
+        # this script does not evaluate it: it cannot say they connect
+        # directly. The URL is shown without any user:password part.
+        $pacShown = [string]$Observed['AutoConfigUrl']
+        $pacSchemeEnd = $pacShown.IndexOf('://')
+        $pacAt = $pacShown.LastIndexOf('@')
+        if ($pacAt -ge 0) {
+            $pacHead = ''
+            if ($pacSchemeEnd -ge 0 -and $pacSchemeEnd -lt $pacAt) { $pacHead = $pacShown.Substring(0, $pacSchemeEnd + 3) }
+            $pacShown = $pacHead + $pacShown.Substring($pacAt + 1)
+        }
+        $findings += [pscustomobject]@{
+            Id = 'env-with-pac'; Level = 'info'
+            Message = "HTTP(S)_PROXY is set, the WinINET proxy is off and a PAC script ($pacShown) is configured: whether browsers use a proxy depends on the PAC script, which is not evaluated here"
+        }
+    } elseif ($envProxy -and -not $inetOn) {
         $findings += [pscustomobject]@{
             Id = 'env-without-wininet'; Level = 'warn'
             Message = 'HTTP(S)_PROXY is set but the WinINET proxy is off: curl, git and pip use the proxy, browsers and Windows itself do not'
