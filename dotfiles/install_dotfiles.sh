@@ -1048,7 +1048,8 @@ do_prune() {
 # --only is validated against every unit above, so --only kitty on a server
 # is a valid request that selects nothing. That, and a machine with none of
 # the tools, is a domain no-op rather than a quiet success. With --prune the
-# orphan links of a wholly deleted unit count as selected too, found by the
+# orphan links of a wholly deleted unit count as selected too (and, with
+# --backups/--restore, the stray backups of one), found by the
 # same orphans() that --prune removes them with. This sits after the helpers
 # because orphans() needs them.
 installed_only_preflight() {
@@ -1057,6 +1058,10 @@ installed_only_preflight() {
     selected "$f" && { any=1; break; }
   done
   if (( any == 0 && PRUNE )) && [[ -n "$(orphans)" ]]; then
+    any=1
+  fi
+  # --backups/--restore may name the unit of a stray backup the same way.
+  if (( any == 0 && (BACKUPS || RESTORE) )) && [[ -n "$(stray_backup_originals)" ]]; then
     any=1
   fi
   if (( any == 0 )); then

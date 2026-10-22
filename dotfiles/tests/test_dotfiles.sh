@@ -722,6 +722,21 @@ run_with_path "$scratch/bin-none" --prune --only foo --installed-only --dry-run 
 assert_rc "--prune --only <deleted unit> --installed-only without its tool exits 4" 4 "$rc"
 rm "$IH/.foo/config"; rmdir "$IH/.foo"
 
+# --backups/--restore --only UNIT --installed-only on a wholly deleted unit:
+# its stray backup counts as selected, so the tool being on PATH is enough.
+make_bin "$scratch/bin-oldtool" oldtool
+mkdir -p "$IH/.config/oldtool"
+printf 'kept\n' > "$IH/.config/oldtool/x.backup-20200101-000000"
+ln -s "$D/config/oldtool/x" "$IH/.config/oldtool/x"
+out="$(run_with_path "$scratch/bin-oldtool" --backups --only oldtool --installed-only 2>&1)"; rc=$?
+assert_rc "--backups --only <deleted unit> --installed-only exits 0" 0 "$rc"
+assert_contains "--backups --only <deleted unit> --installed-only lists the backup" "$out" "x.backup-20200101-000000"
+run_with_path "$scratch/bin-oldtool" --restore --dry-run --only oldtool --installed-only >/dev/null 2>&1; rc=$?
+assert_rc "--restore --only <deleted unit> --installed-only exits 0" 0 "$rc"
+run_with_path "$scratch/bin-none" --backups --only oldtool --installed-only >/dev/null 2>&1; rc=$?
+assert_rc "--backups --only <deleted unit> --installed-only without its tool exits 4" 4 "$rc"
+rm "$IH/.config/oldtool/x" "$IH/.config/oldtool/x.backup-20200101-000000"; rmdir "$IH/.config/oldtool"
+
 out="$(run_with_path "$scratch/bin-batcat" --list --installed-only 2>&1)"; rc=$?
 assert_rc "--installed-only finds bat as batcat" 0 "$rc"
 assert_contains "batcat selects the bat unit" "$(list_units "$out")" "bat "
