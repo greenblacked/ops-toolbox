@@ -49,13 +49,18 @@ _pus_git_alias() {
 _pus_git_alias gacp     gacp.sh
 _pus_git_alias gamend   git_amend_last.sh
 _pus_git_alias gundo    git_undo_last_commit.sh
+_pus_git_alias glint    git_commitlint.sh
+_pus_git_alias gnotes   git_release_notes.sh
 
 # --- looking around --------------------------------------------------------
 _pus_git_alias gsum     git_status_summary.sh
 _pus_git_alias gdiffb   git_diff_branch.sh
+_pus_git_alias gmcheck  git_merge_check.sh
 _pus_git_alias grecent  git_recent_branches.sh
 _pus_git_alias groot    git_repo_root.sh
 _pus_git_alias gwho     git_whoami.sh
+_pus_git_alias grepos   git_repos_status.sh
+_pus_git_alias gunpushed git_unpushed.sh
 
 # --- housekeeping ----------------------------------------------------------
 _pus_git_alias gsync    git_sync_default.sh
@@ -65,6 +70,7 @@ _pus_git_alias gclone   clone-repos.sh
 _pus_git_alias gstale   git_stale_branches.sh
 _pus_git_alias gsize    git_size_report.sh
 _pus_git_alias ghooks   git_hooks_install.sh
+_pus_git_alias gbundle  git_bundle_backup.sh
 
 # --- identity and diagnostics ----------------------------------------------
 _pus_git_alias gprofile set_git_profile.sh

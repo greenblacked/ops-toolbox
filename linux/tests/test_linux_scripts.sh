@@ -39,7 +39,11 @@ rmdir "$tmp_probe"
 # bites: disk_cleanup.sh deleted its thumbnails even when --home pointed the run
 # at a scratch profile, so running this suite on a desktop Linux box emptied the
 # developer's real cache. Every test that needs one of these supplies it itself.
-unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME
+unset OS_RELEASE RESOLV_CONF XDG_CACHE_HOME XDG_CONFIG_HOME AUTH_LOG DOCKER_DAEMON_JSON
+unset PROC_DIR FSTAB SYS_CLASS_NET PROC_NET_BONDING
+# ssh_client_doctor.sh asks the agent SSH_AUTH_SOCK names; a developer's live
+# agent must not answer for the fixtures.
+unset SSH_AUTH_SOCK
 # SYSTEMD_ANALYZE_CMD names a binary stay_fresh_timer.sh executes to verify the
 # units it writes. Exported, it aims that execution at whatever the host says,
 # which is the worst of this class: not a path the run reads, a command the run
@@ -458,6 +462,17 @@ fi
 rc=$?
 assert_eq "packages.sh --file rejects the next flag as a path -> 3" "3" "$rc"
 
+# holds and orphans against the real package database answer with names only,
+# whatever this image happens to hold; the stubbed suite below pins the parsing
+# for all three managers.
+out="$("$L/packages.sh" holds 2>/dev/null)"; rc=$?
+assert_eq "packages.sh holds exits 0 on a real $EXPECT_PKG_MGR database" "0" "$rc"
+assert_eq "packages.sh holds prints a sorted, unique list" "$out" "$(printf '%s\n' "$out" | LC_ALL=C sort -u | awk 'NF')"
+out="$("$L/packages.sh" orphans 2>/dev/null)"; rc=$?
+assert_eq "packages.sh orphans exits 0 on a real $EXPECT_PKG_MGR database" "0" "$rc"
+bash "$L/tests/test_packages_holds_orphans.sh"
+assert_eq "packages.sh holds and orphans suite exits 0" "0" "$?"
+
 section "aliases are sourceable, and guarded"
 if bash -c ". $L/bash_aliases.sh" >/dev/null 2>&1; then
   ok "bash_aliases.sh sources cleanly"
@@ -512,6 +527,8 @@ assert_contains "toolbox-help lists schedule-report" "$out" "schedule-report"
 assert_contains "toolbox-help lists tls-expiry" "$out" "tls-expiry"
 assert_contains "toolbox-help lists config-backup" "$out" "config-backup"
 assert_contains "toolbox-help lists ssh-client-doctor" "$out" "ssh-client-doctor"
+assert_contains "toolbox-help lists kernel-cleanup" "$out" "kernel-cleanup"
+assert_contains "toolbox-help lists swap-setup" "$out" "swap-setup"
 
 section "stay_fresh degrades rather than failing when a tool is absent"
 # journald is not present in these containers. That must be a note, not a
@@ -660,6 +677,112 @@ else
 fi
 rm -rf "$audit_ssh"
 
+# The sshd settings past the first three, graded from a fixture sshd_config
+# through the same ETC_SSH seam. No tester image installs openssh-server, so
+# this is the file-fallback path; an sshd on PATH without host keys fails -T
+# and falls back to the same file.
+sshd_fx="$(mktemp -d)"
+grade_sshd() {  # sshd_config lines -> the ssh group's output
+  printf '%s\n' "$@" > "$sshd_fx/sshd_config"
+  ETC_SSH="$sshd_fx" "$L/hardening_audit.sh" --only ssh 2>&1
+}
+# The verdict line for a setting and its hint, which is half of the assertion.
+line_for() { grep -A1 -F -- "$1" <<<"$2" || true; }
+# Only the [pass] lines that name $1: unlike line_for, the context line after
+# a match (often an unrelated check's [pass]) cannot leak in.
+pass_line_for() { grep -F -- '[pass]' <<<"$2" | grep -F -- "$1" || true; }
+out="$(grade_sshd 'MaxAuthTries 3')"
+assert_contains "hardening_audit passes MaxAuthTries 3" "$(line_for MaxAuthTries "$out")" "[pass]"
+out="$(grade_sshd 'MaxAuthTries 10')"
+assert_contains "hardening_audit warns on MaxAuthTries 10" "$(line_for MaxAuthTries "$out")" "[warn]"
+assert_contains "hardening_audit prints the MaxAuthTries line to add" "$(line_for MaxAuthTries "$out")" "MaxAuthTries 4"
+out="$(grade_sshd '# nothing set')"
+assert_contains "hardening_audit grades an unset MaxAuthTries by its default" "$(line_for MaxAuthTries "$out")" "default"
+assert_contains "hardening_audit warns on the default MaxAuthTries" "$(line_for MaxAuthTries "$out")" "[warn]"
+out="$(grade_sshd 'X11Forwarding yes')"
+assert_contains "hardening_audit warns on X11Forwarding yes" "$(line_for X11Forwarding "$out")" "[warn]"
+out="$(grade_sshd 'PermitUserEnvironment yes')"; rc=$?
+assert_contains "hardening_audit fails PermitUserEnvironment yes" "$(line_for PermitUserEnvironment "$out")" "[FAIL]"
+assert_eq "hardening_audit --only ssh exits 1 on PermitUserEnvironment yes" "1" "$rc"
+out="$(grade_sshd 'PermitUserEnvironment no')"; rc=$?
+assert_eq "hardening_audit --only ssh exits 0 with nothing at FAIL" "0" "$rc"
+out="$(grade_sshd 'LoginGraceTime 0')"
+assert_contains "hardening_audit fails an unlimited LoginGraceTime" "$(line_for LoginGraceTime "$out")" "[FAIL]"
+out="$(grade_sshd 'LoginGraceTime 1m')"
+assert_contains "hardening_audit reads LoginGraceTime 1m as 60s and passes it" "$(line_for LoginGraceTime "$out")" "[pass]"
+out="$(grade_sshd 'LoginGraceTime 5m')"
+assert_contains "hardening_audit warns on LoginGraceTime 5m" "$(line_for LoginGraceTime "$out")" "[warn]"
+out="$(grade_sshd 'ClientAliveInterval 300' 'ClientAliveCountMax 2')"
+assert_contains "hardening_audit passes a 300x2 idle window" "$(line_for ClientAliveInterval "$out")" "[pass]"
+out="$(grade_sshd 'ClientAliveInterval 300' 'ClientAliveCountMax 3')"
+assert_contains "hardening_audit passes a 300x3 (900s) idle window" "$(line_for ClientAliveInterval "$out")" "[pass]"
+out="$(grade_sshd 'ClientAliveInterval 300')"
+assert_contains "hardening_audit uses ClientAliveCountMax 3 when unset" "$(line_for ClientAliveInterval "$out")" "[pass]"
+out="$(grade_sshd 'ClientAliveInterval 300' 'ClientAliveCountMax 100')"
+assert_contains "hardening_audit warns on a 300x100 (30000s) idle window" "$(line_for ClientAliveInterval "$out")" "[warn]"
+assert_contains "hardening_audit names interval, count and window" "$(line_for ClientAliveInterval "$out")" "30000s"
+out="$(grade_sshd 'ClientAliveInterval 0' 'ClientAliveCountMax 2')"
+assert_contains "hardening_audit warns ClientAliveInterval 0 is not enforced" "$(line_for ClientAliveInterval "$out")" "not enforced"
+assert_contains "hardening_audit calls ClientAlive a liveness check" "$(line_for ClientAliveInterval "$(grade_sshd 'ClientAliveInterval 300' 'ClientAliveCountMax 2')")" "not an idle limit"
+out="$(grade_sshd 'ClientAliveInterval 300')"
+assert_contains "hardening_audit reports an unset ChannelTimeout" "$(line_for ChannelTimeout "$out")" "[info]"
+assert_contains "hardening_audit says unset ChannelTimeout leaves idle sessions open" "$(line_for ChannelTimeout "$out")" "never closed"
+out="$(grade_sshd 'ChannelTimeout session=30m')"
+assert_contains "hardening_audit passes ChannelTimeout session=30m" "$(line_for ChannelTimeout "$out")" "[pass]"
+out="$(grade_sshd 'ChannelTimeout global=5m session=30m')"
+assert_contains "hardening_audit finds session among several ChannelTimeout entries" "$(line_for ChannelTimeout "$out")" "[pass]"
+out="$(grade_sshd 'ChannelTimeout agent-connection=5m')"
+assert_contains "hardening_audit notes a ChannelTimeout without a session entry" "$(line_for ChannelTimeout "$out")" "no session entry"
+out="$(grade_sshd 'ChannelTimeout session=0')"
+assert_contains "hardening_audit does not pass ChannelTimeout session=0" "$(line_for ChannelTimeout "$out")" "[info]"
+assert_contains "hardening_audit says session=0 leaves idle sessions open" "$(line_for ChannelTimeout "$out")" "not bounded"
+out="$(grade_sshd 'ChannelTimeout session:*=0')"
+assert_contains "hardening_audit does not pass ChannelTimeout session:*=0" "$(line_for ChannelTimeout "$out")" "[info]"
+out="$(grade_sshd 'ChannelTimeout session:*=1800')"
+assert_contains "hardening_audit passes ChannelTimeout session:*=1800" "$(line_for ChannelTimeout "$out")" "[pass]"
+out="$(grade_sshd 'Match user sftp' 'ChannelTimeout session=30m')"
+assert_eq "hardening_audit does not pass a ChannelTimeout set only inside Match" "" "$(pass_line_for ChannelTimeout "$out")"
+assert_contains "hardening_audit warns on a ChannelTimeout set only inside Match" "$(line_for ChannelTimeout "$out")" "[warn]"
+out="$(grade_sshd 'Match all' 'ChannelTimeout session=30m')"
+assert_contains "hardening_audit passes ChannelTimeout under Match all" "$(pass_line_for ChannelTimeout "$out")" "[pass]"
+out="$(grade_sshd 'ChannelTimeout session=30m' 'Match user sftp' 'ChannelTimeout session=0')"
+assert_contains "hardening_audit grades the global ChannelTimeout, not the Match one" "$(pass_line_for ChannelTimeout "$out")" "session=30m"
+out="$(grade_sshd 'HostbasedAuthentication yes')"
+assert_contains "hardening_audit fails HostbasedAuthentication yes" "$(line_for HostbasedAuthentication "$out")" "[FAIL]"
+out="$(grade_sshd 'IgnoreRhosts no')"
+assert_contains "hardening_audit fails IgnoreRhosts no" "$(line_for IgnoreRhosts "$out")" "[FAIL]"
+
+# Algorithm lists are graded only from sshd -T. A stub sshd answers -T with a
+# list holding one weak and one strong name of each kind; a failing -T must be
+# exactly one skip, not one per list.
+sshd_stub="$(mktemp -d)"
+cat > "$sshd_stub/sshd" <<'STUB'
+#!/usr/bin/env bash
+[[ -e "${0%/*}/t-fails" ]] && exit 1
+if [[ "${1:-}" == "-T" ]]; then
+  printf '%s\n' 'ciphers aes128-cbc,aes256-gcm@openssh.com' 'macs hmac-sha1,hmac-sha2-256-etm@openssh.com' \
+    'kexalgorithms curve25519-sha256' 'hostkeyalgorithms ssh-ed25519'
+fi
+exit 0
+STUB
+chmod +x "$sshd_stub/sshd"
+printf '# nothing set\n' > "$sshd_fx/sshd_config"
+out="$(PATH="$sshd_stub:$PATH" ETC_SSH="$sshd_fx" "$L/hardening_audit.sh" --only ssh 2>&1)"
+cipher_line="$(line_for 'weak ciphers' "$out")"
+assert_contains "hardening_audit names a weak cipher" "$cipher_line" "aes128-cbc"
+assert_not_contains "hardening_audit leaves a strong cipher out of the weak list" "$cipher_line" "aes256-gcm"
+assert_contains "hardening_audit prints the removal syntax" "$cipher_line" "Ciphers -aes128-cbc"
+assert_contains "hardening_audit names a weak MAC" "$(line_for 'weak MACs' "$out")" "hmac-sha1"
+assert_contains "hardening_audit passes a strong key exchange list" "$out" "no weak key exchange offered"
+: > "$sshd_stub/t-fails"
+out="$(PATH="$sshd_stub:$PATH" ETC_SSH="$sshd_fx" "$L/hardening_audit.sh" --only ssh 2>&1)"
+assert_eq "hardening_audit skips the algorithms once when sshd -T fails" "1" \
+  "$(grep -c 'effective sshd algorithms need root' <<<"$out")"
+assert_contains "hardening_audit still grades the file when sshd -T fails" "$out" "MaxAuthTries not set"
+assert_eq "hardening_audit --list-groups is unchanged" "ssh accounts network files updates kernel" \
+  "$("$L/hardening_audit.sh" --list-groups | tr '\n' ' ' | sed 's/ $//')"
+rm -rf "$sshd_fx" "$sshd_stub"
+
 # A container has no firewall and no sshd, so a clean exit here proves absent
 # tooling is reported rather than treated as a crash.
 if [[ "$rc" == "0" || "$rc" == "1" ]]; then
@@ -736,6 +859,9 @@ assert_contains "system_doctor reports memory pressure" "$out" "== memory =="
 assert_contains "system_doctor reports clock sync" "$out" "== time =="
 assert_contains "system_doctor reports journal" "$out" "== journal =="
 assert_contains "system_doctor reports sessions" "$out" "== sessions =="
+# The pressure probes against the container's real /proc: whatever this kernel
+# exposes, a missing or unreadable file has to degrade to a skip.
+assert_contains "system_doctor reports pressure against the real /proc" "$out" "== pressure =="
 if grep -qE 'OOM kill' <<<"$out"; then
   ok "system_doctor reports OOM kills this boot"
 else
@@ -778,7 +904,8 @@ else
 fi
 assert_contains "system_doctor --quiet still summarises" "$out" "== summary =="
 
-for bad in "--min-free 101" "--min-free notanumber" "--min-memory 101" "--min-memory notanumber"; do
+for bad in "--min-free 101" "--min-free notanumber" "--min-memory 101" "--min-memory notanumber" \
+           "--max-psi abc" "--max-psi 150" "--max-psi 100.5"; do
   # shellcheck disable=SC2086  # the pair is meant to split into two arguments
   "$L/system_doctor.sh" $bad >/dev/null 2>&1
   rc=$?
@@ -808,6 +935,307 @@ assert_eq "system_doctor with pending upgrades exits 0" "0" "$rc"
 assert_contains "system_doctor counts the pending upgrades" "$out" "2 pending upgrade(s)"
 assert_contains "system_doctor prints the hint beside the count" "$out" "preview: stay_fresh.sh --dry-run"
 rm -rf "$doctor_stub"
+
+# The storage section's faults cannot be produced in a container: nothing here
+# can remount a filesystem read-only, lose an fstab mount or degrade an md
+# array. PROC_DIR and FSTAB hand the parsers fixture files instead. The NFS
+# line is there to prove --skip-remote-mounts keeps the probe from running.
+storage_fx="$(mktemp -d)"
+printf '%s\n' '/dev/sda1 /data ext4 ro,relatime 0 0' '/dev/sda2 /ok ext4 rw,relatime,errors=remount-ro 0 0' \
+  '/dev/loop0 /snap/core squashfs ro,nodev,relatime 0 0' '/dev/sde1 /sysroot xfs ro,relatime 0 0' \
+  '/dev/sdf1 /vol ext4 ro,relatime 0 0' '/dev/sdh1 /bindro ext4 ro,relatime,errors=remount-ro 0 0' '/dev/sdg1 /fstab-ro ext4 ro,relatime,errors=remount-ro 0 0' 'srv:/x /mnt/nfs nfs4 rw,relatime 0 0' > "$storage_fx/mounts"
+printf '%s\n' '# /etc/fstab fixture' '/dev/sda1 /data ext4 defaults 0 2' '/dev/sda2 /ok ext4 defaults 0 2' '/dev/sdg1 /fstab-ro ext4 ro 0 2' '/dev/sdb1 /srv ext4 defaults 0 2' \
+  '/dev/sdc1 /opt ext4 defaults,nofail 0 2' '/dev/sdd1 /mnt/x ext4 noauto 0 0' '/swapfile none swap sw 0 0' > "$storage_fx/fstab"
+printf '%s\n' 'Personalities : [raid1]' 'md0 : active raid1 sdb1[1] sda1[0]' '      1000 blocks [2/1] [U_]' '' \
+  'unused devices: <none>' > "$storage_fx/mdstat"
+# smartctl is a stub so the SMART branch is reachable at all; it records argv
+# so the run is proved to have only asked for health.
+storage_stub="$(mktemp -d)"
+cat > "$storage_stub/smartctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${0%/*}/argv.log"
+case " $* " in
+  *" --scan "*) printf '/dev/sda -d scsi # /dev/sda, SCSI device\n' ;;
+  *" -H "*)     printf 'SMART overall-health self-assessment test result: FAILED!\n' ;;
+esac
+exit 0
+STUB
+chmod +x "$storage_stub/smartctl"
+run_storage() {
+  PROC_DIR="$storage_fx" FSTAB="$storage_fx/fstab" PATH="$storage_stub:$PATH" \
+    "$L/system_doctor.sh" --skip-containers --skip-units --skip-remote-mounts "$@" 2>&1
+}
+out="$(run_storage)"; rc=$?
+assert_eq "system_doctor with storage faults still exits 0" "0" "$rc"
+assert_contains "system_doctor has a storage section" "$out" "== storage =="
+assert_contains "system_doctor reports a read-only remount" "$out" "/data is mounted read-only (ext4)"
+assert_not_contains "system_doctor ignores read-only-by-design squashfs" "$out" "/snap/core is mounted read-only"
+assert_not_contains "system_doctor ignores the ostree /sysroot" "$out" "/sysroot is mounted read-only"
+assert_not_contains "system_doctor ignores a ro mount with no fstab entry" "$out" "/vol is mounted read-only"
+assert_not_contains "system_doctor ignores a mount fstab declares ro" "$out" "/fstab-ro is mounted read-only"
+assert_not_contains "system_doctor ignores a ro bind with errors=remount-ro and no fstab entry" "$out" "/bindro is mounted read-only"
+assert_not_contains "system_doctor reads errors=remount-ro as an option, not a state" "$out" "/ok is mounted read-only"
+assert_contains "system_doctor warns on an fstab mount that is missing" \
+  "$(grep -F 'fstab entry /srv ' <<<"$out" || true)" "[warn]"
+assert_contains "system_doctor only notes a missing nofail mount" \
+  "$(grep -F 'fstab entry /opt ' <<<"$out" || true)" "[info]"
+assert_not_contains "system_doctor skips noauto fstab entries" "$out" "fstab entry /mnt/x"
+assert_not_contains "system_doctor skips swap fstab entries" "$out" "fstab entry none"
+assert_contains "system_doctor reports a degraded md array" "$out" "md array md0 is degraded ([2/1] [U_])"
+real_df="$(command -v df)"
+df_stub="$(mktemp -d)"
+cat > "$df_stub/df" <<STUB
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "\${0%/*}/argv.log"
+exec "$real_df" "\$@"
+STUB
+chmod +x "$df_stub/df"
+PATH="$df_stub:$PATH" PROC_DIR="$storage_fx" FSTAB="$storage_fx/fstab" \
+  "$L/system_doctor.sh" --skip-containers --skip-units --skip-smart --skip-remote-mounts >/dev/null 2>&1
+assert_contains "system_doctor --skip-remote-mounts passes -l to df" "$(cat "$df_stub/argv.log")" "-Pk -l /"
+assert_contains "system_doctor --skip-remote-mounts passes -l to the inode df" "$(cat "$df_stub/argv.log")" "-Pi -l /"
+assert_eq "system_doctor --skip-remote-mounts leaves no df unrestricted" "0" \
+  "$(grep -c -e '^-Pk /' -e '^-Pk *$' "$df_stub/argv.log" || true)"
+rm -rf "$df_stub"
+assert_contains "system_doctor leaves remote mounts alone with --skip-remote-mounts" "$out" "/mnt/nfs (nfs4) not probed (--skip-remote-mounts)"
+if [[ "$(id -u)" == "0" ]]; then
+  assert_contains "system_doctor reports a disk failing its own SMART check" "$out" "SMART overall health FAILED on /dev/sda"
+  if grep -qE -- '(^| )(-t|--test|-s|--smart|-X|--abort)( |$)' "$storage_stub/argv.log" 2>/dev/null; then
+    err "system_doctor asked smartctl for more than a health check"
+  else
+    ok "system_doctor only asks smartctl for health"
+  fi
+else
+  assert_contains "system_doctor says SMART needs root" "$out" "SMART needs root"
+fi
+out="$(run_storage --skip-smart)"; rc=$?
+assert_eq "system_doctor accepts --skip-smart" "0" "$rc"
+assert_contains "system_doctor --skip-smart says so" "$out" "SMART health (--skip-smart)"
+out="$(run_storage --quiet)"
+assert_contains "system_doctor --quiet keeps storage warnings" "$out" "/data is mounted read-only"
+
+printf '%s\n' '/dev/sda1 /data ext4 rw,relatime 0 0' '/dev/sda2 /ok ext4 rw,relatime 0 0' '/dev/sdg1 /fstab-ro ext4 ro,relatime 0 0' \
+  '/dev/sdb1 /srv ext4 rw 0 0' '/dev/sdc1 /opt ext4 rw 0 0' > "$storage_fx/mounts"
+printf '%s\n' 'md0 : active raid1 sdb1[1] sda1[0]' '      1000 blocks [2/2] [UU]' > "$storage_fx/mdstat"
+out="$(run_storage --skip-smart)"
+assert_contains "system_doctor says when nothing is read-only" "$out" "no real filesystem is mounted read-only"
+assert_contains "system_doctor says when every fstab entry is mounted" "$out" "every fstab entry is mounted (5 checked)"
+assert_contains "system_doctor reports a healthy md array" "$out" "md array md0 is healthy ([2/2] [UU])"
+# With fstab absent or empty there is no evidence of a remount: a ro mount
+# carrying errors=remount-ro is a policy, not an error, and a ro bind mount
+# is taken as intentional. The first mount lines must not be read as fstab
+# entries.
+printf '%s\n' '/dev/sda1 /data ext4 ro,relatime,errors=remount-ro 0 0' '/dev/sdf1 /vol ext4 ro,relatime 0 0' > "$storage_fx/mounts"
+: > "$storage_fx/fstab-empty"
+for fstab_case in "$storage_fx/fstab-absent" "$storage_fx/fstab-empty"; do
+  out="$(PROC_DIR="$storage_fx" FSTAB="$fstab_case" PATH="$storage_stub:$PATH" \
+    "$L/system_doctor.sh" --skip-containers --skip-units --skip-remote-mounts --skip-smart 2>&1)"
+  assert_not_contains "system_doctor does not read errors=remount-ro as a remount with fstab ${fstab_case##*/}" "$out" "/data is mounted read-only"
+  assert_not_contains "system_doctor ignores a bare ro mount with fstab ${fstab_case##*/}" "$out" "/vol is mounted read-only"
+done
+rm -rf "$storage_fx" "$storage_stub"
+
+# Pressure and limits. A fixture procfs holds quiet PSI files, file handles,
+# conntrack counters, thread limits and a loadavg; each case below rewrites
+# one file into the state that should warn.
+press_fx="$(mktemp -d)"
+mkdir -p "$press_fx/pressure" "$press_fx/sys/fs" "$press_fx/sys/net/netfilter" "$press_fx/sys/kernel"
+write_quiet_pressure() {
+  mkdir -p "$press_fx/pressure"
+  printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$press_fx/pressure/cpu"
+  for r in memory io; do
+    printf 'some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$press_fx/pressure/$r"
+  done
+  printf '1000\t0\t100000\n' > "$press_fx/sys/fs/file-nr"
+  printf '10\n' > "$press_fx/sys/net/netfilter/nf_conntrack_count"
+  printf '100000\n' > "$press_fx/sys/net/netfilter/nf_conntrack_max"
+  printf '100000\n' > "$press_fx/sys/kernel/threads-max"
+  printf '4194304\n' > "$press_fx/sys/kernel/pid_max"
+  printf '0.10 0.10 0.10 1/200 123\n' > "$press_fx/loadavg"
+}
+run_pressure() {
+  PROC_DIR="$press_fx" "$L/system_doctor.sh" --skip-containers --skip-units --skip-smart "$@" 2>&1
+}
+write_quiet_pressure
+out="$(run_pressure)"; rc=$?
+assert_eq "system_doctor with quiet pressure exits 0" "0" "$rc"
+assert_contains "system_doctor has a pressure section" "$out" "== pressure =="
+assert_not_contains "system_doctor raises no stall on quiet PSI" "$out" "pressure: tasks stalled"
+assert_contains "system_doctor reports file handles" "$out" "file handles 1% used"
+
+printf 'some avg10=0.00 avg60=35.50 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n' > "$press_fx/pressure/memory"
+out="$(run_pressure)"; rc=$?
+assert_eq "system_doctor with memory stalls still exits 0" "0" "$rc"
+assert_contains "system_doctor warns on memory pressure" "$(grep -F 'memory pressure' <<<"$out" || true)" "[warn]"
+assert_contains "system_doctor prints the stall percentage" "$out" "35.5"
+out="$(run_pressure --max-psi 50)"
+assert_not_contains "system_doctor honours --max-psi" "$out" "memory pressure: tasks stalled"
+
+write_quiet_pressure
+printf '90000\t0\t100000\n' > "$press_fx/sys/fs/file-nr"
+printf '95000\n' > "$press_fx/sys/net/netfilter/nf_conntrack_count"
+printf '0.10 0.10 0.10 1/90000 123\n' > "$press_fx/loadavg"
+out="$(run_pressure)"
+assert_contains "system_doctor warns on file handles" "$out" "file handles 90% used"
+assert_contains "system_doctor warns on a filling conntrack table" "$out" "connection tracking table 95% full"
+assert_contains "system_doctor warns on thread headroom" "$out" "kernel.threads-max"
+
+rm -rf "$press_fx/pressure"
+out="$(run_pressure)"; rc=$?
+assert_eq "system_doctor without PSI exits 0" "0" "$rc"
+assert_contains "system_doctor says the kernel has no PSI" "$out" "kernel has no PSI"
+
+# Process states come from one ps call. A stub ps answers that call with a
+# dozen zombies and six tasks in D state; any other ps call gets nothing.
+ps_stub="$(mktemp -d)"
+cat > "$ps_stub/ps" <<'STUB'
+#!/usr/bin/env bash
+case " $* " in
+  *" stat=,pid=,comm= "*)
+    i=0
+    while (( i < 12 )); do printf 'Z    %s defunct\n' "$((100 + i))"; i=$((i + 1)); done
+    i=0
+    while (( i < 6 )); do printf 'D    %s jbd2\n' "$((200 + i))"; i=$((i + 1)); done
+    printf 'Ss   1 init\n'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$ps_stub/ps"
+write_quiet_pressure
+out="$(PATH="$ps_stub:$PATH" run_pressure)"; rc=$?
+assert_eq "system_doctor with stuck processes exits 0" "0" "$rc"
+assert_contains "system_doctor warns on zombies" "$out" "12 zombie process(es)"
+assert_contains "system_doctor warns on uninterruptible sleep" "$out" "6 process(es) in uninterruptible sleep"
+assert_contains "system_doctor names a stuck process" "$out" "200 jbd2"
+rm -rf "$press_fx" "$ps_stub"
+
+section "container_doctor.sh"
+CDOC="$L/container_doctor.sh"
+scratch_home="$(mktemp -d)"
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$CDOC" 2>&1)"; rc=$?
+assert_eq "container_doctor exits 0 with almost nothing installed" "0" "$rc"
+assert_contains "container_doctor prints a summary" "$out" "== summary =="
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "container_doctor wrote nothing"
+else
+  err "container_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+for bad in "--engine nosuch" "--restart-threshold 0" "--log-warn-mb abc" "--fail-on sometimes" "--only nosuch" "--bogus"; do
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$CDOC" $bad >/dev/null 2>&1
+  rc=$?
+  assert_eq "container_doctor rejects $bad -> 3" "3" "$rc"
+done
+"$CDOC" --only , >/dev/null 2>&1; rc=$?
+assert_eq "container_doctor --only empty selection -> 4" "4" "$rc"
+cdoc_groups="$("$CDOC" --list-groups)"
+for g in state security resources logs images; do
+  assert_contains "container_doctor lists group $g" "$cdoc_groups" "$g"
+done
+
+# No tester image runs a container engine, so a stub docker ahead of PATH
+# answers with fixture rows in the shape the inspect template asks for, and
+# records every argv it is given. c1 is in a restart loop; c2 was OOM-killed,
+# runs privileged with the engine socket mounted and an uncapped json-file log
+# that is already 600 MiB (a sparse file); c3 is healthy, limited and capped.
+cdoc_stub="$(mktemp -d)"
+cat > "$cdoc_stub/docker" <<'STUB'
+#!/usr/bin/env bash
+here="${0%/*}"
+printf '%s\n' "$*" >> "$here/argv.log"
+case "$1" in
+  info)    [[ -e "$here/info-fails" ]] && exit 1; exit 0 ;;
+  version) exit 0 ;;
+  ps)      if [[ -f "$here/ps.txt" ]]; then cat "$here/ps.txt"; else printf 'c1\nc2\nc3\n'; fi ;;
+  inspect)
+    for last in "$@"; do :; done
+    [[ -f "$here/$last.row" ]] && cat "$here/$last.row"
+    ;;
+  images)  printf 'aaa111\nbbb222\n' ;;
+  system)
+    printf 'TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\n'
+    printf 'Images          4         2         1.2GB     800MB (66%%)\n'
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$cdoc_stub/docker"
+cdoc_log="$cdoc_stub/c2-json.log"
+truncate -s 600M "$cdoc_log"
+tab=$'\t'
+printf '%s\n' "/web${tab}running${tab}0${tab}9${tab}false${tab}-${tab}false${tab}bridge${tab}268435456${tab}always${tab}0${tab}-${tab}json-file${tab}{\"max-size\":\"10m\"}${tab}-${tab}nginx:1.27${tab}-" > "$cdoc_stub/c1.row"
+printf '%s\n' "/worker${tab}exited${tab}137${tab}0${tab}true${tab}-${tab}true${tab}bridge${tab}0${tab}no${tab}0${tab}-${tab}json-file${tab}{}${tab}$cdoc_log${tab}worker:latest${tab}-,/var/run/docker.sock" > "$cdoc_stub/c2.row"
+printf '%s\n' "/db${tab}running${tab}0${tab}0${tab}false${tab}healthy${tab}false${tab}bridge${tab}536870912${tab}unless-stopped${tab}0${tab}postgres${tab}json-file${tab}{\"max-file\":\"3\",\"max-size\":\"10m\"}${tab}-${tab}postgres:16${tab}-,/srv/db" > "$cdoc_stub/c3.row"
+printf '{ "log-driver": "json-file" }\n' > "$cdoc_stub/daemon-uncapped.json"
+printf '{ "log-driver": "json-file", "log-opts": { "max-size": "10m" } }\n' > "$cdoc_stub/daemon-capped.json"
+
+# on-failure:N that used up its N restarts stays down. c4 gave up (3 of 3),
+# c5 still has retries left, c6 is on-failure with no maximum (unlimited),
+# c7 exited cleanly.
+printf 'c4\nc5\nc6\nc7\n' > "$cdoc_stub/ps.txt"
+for spec in "c4:3:3:1" "c5:1:3:1" "c6:50:0:1" "c7:3:3:0"; do
+  IFS=: read -r cn cr cm ce <<< "$spec"
+  printf '%s\n' "/$cn${tab}exited${tab}$ce${tab}$cr${tab}false${tab}-${tab}false${tab}bridge${tab}268435456${tab}on-failure${tab}$cm${tab}-${tab}json-file${tab}{\"max-size\":\"10m\"}${tab}-${tab}app:1${tab}-" > "$cdoc_stub/$cn.row"
+done
+out="$(PATH="$cdoc_stub:$PATH" "$CDOC" --only state 2>&1)"
+assert_contains "container_doctor flags an on-failure container that used up its retries" "$out" "c4 exited with code 1 after 3 of 3 allowed restart(s)"
+assert_not_contains "container_doctor leaves an on-failure container with retries left" "$out" "c5 exited"
+assert_not_contains "container_doctor treats on-failure with no maximum as unlimited" "$out" "c6 exited"
+assert_not_contains "container_doctor leaves a clean on-failure exit alone" "$out" "c7 exited"
+rm -f "$cdoc_stub/ps.txt" "$cdoc_stub"/c[4-7].row
+
+out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" 2>&1)"; rc=$?
+assert_eq "container_doctor reads rather than gates by default" "0" "$rc"
+assert_contains "container_doctor flags the restart loop" "$out" "web is restarting"
+assert_contains "container_doctor fails an OOM-killed container" "$out" "worker was OOM-killed"
+assert_contains "container_doctor grades OOM as [FAIL]" "$out" "[FAIL]"
+assert_contains "container_doctor fails an engine socket mount" "$out" "docker.sock"
+assert_contains "container_doctor warns on a privileged container" "$out" "worker runs privileged"
+assert_contains "container_doctor warns on an uncapped json-file log" "$out" "unbounded"
+assert_contains "container_doctor sizes a log past --log-warn-mb" "$out" "worker log is 600M"
+assert_contains "container_doctor counts dangling images" "$out" "2 dangling image(s)"
+assert_contains "container_doctor counts latest-tagged images" "$out" "worker"
+assert_not_contains "container_doctor leaves the healthy container alone" "$out" "db is restarting"
+
+out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-capped.json" "$CDOC" --only logs 2>&1)"
+# A daemon.json max-size reaches only containers created after it was set:
+# c2 (worker, uncapped in its own LogConfig) is still unbounded, c1 and c3 are not.
+assert_contains "container_doctor still flags an uncapped existing container under a capped daemon.json" "$out" "unbounded json-file log: worker"
+assert_not_contains "container_doctor does not flag a capped container as unbounded" "$out" "unbounded json-file log: web"
+assert_contains "container_doctor says the daemon cap predates the container" "$out" "predate it"
+assert_not_contains "container_doctor --only logs leaves state out" "$out" "== state =="
+
+PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --fail-on fail >/dev/null 2>&1; rc=$?
+assert_eq "container_doctor --fail-on fail exits 1 on a FAIL" "1" "$rc"
+PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --fail-on never >/dev/null 2>&1; rc=$?
+assert_eq "container_doctor --fail-on never stays 0" "0" "$rc"
+
+cdoc_argv="$(cat "$cdoc_stub/argv.log" 2>/dev/null || true)"
+assert_contains "container_doctor inspected the containers" "$cdoc_argv" "inspect"
+if grep -qE '^(rm|rmi|stop|kill|prune|exec|run|start|restart|update|create|commit|cp|pause|system prune|image prune|volume|network) ' <<<"$cdoc_argv"; then
+  err "container_doctor ran an engine verb that changes something"
+else
+  ok "container_doctor ran only read-only engine verbs"
+fi
+
+: > "$cdoc_stub/info-fails"
+out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --engine docker 2>&1)"; rc=$?
+assert_eq "container_doctor with an unreachable daemon exits 0" "0" "$rc"
+assert_contains "container_doctor says the daemon is not reachable" "$out" "not reachable"
+
+# No engine at all: PATH holds only the tools the script reads with.
+cdoc_bin="$(mktemp -d)"
+for tool in bash awk sort grep head tr sed stat wc cat uname id; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ "$tool_path" == /* ]] && ln -s "$tool_path" "$cdoc_bin/$tool"
+done
+out="$(PATH="$cdoc_bin" "$CDOC" 2>&1)"; rc=$?
+assert_eq "container_doctor without an engine exits 0" "0" "$rc"
+assert_contains "container_doctor skips when no engine is installed" "$out" "neither docker nor podman is installed"
+rm -rf "$cdoc_stub" "$cdoc_bin"
 
 section "install_aliases.sh"
 # The whole point of this script is that a second run does not append a
@@ -1073,6 +1501,29 @@ assert_eq "disk_cleanup empties a relocated Trash" "" \
 assert_not_contains "disk_cleanup counts what a relocated trash freed" "$out" "freed at least 0B"
 rm -rf "$trash_home" "$trash_tmp" "$other_disk"
 
+# Rotated logs and the journal size cap, against scratch log directories and a
+# stubbed journalctl so no run reaches /var/log or a real journal.
+bash "$L/tests/test_disk_cleanup_logs.sh"
+assert_eq "disk_cleanup logs suite exits 0" 0 "$?"
+
+# Unused images and disabled snap revisions, against stubbed docker, podman
+# and snap: no container engine or snapd is reached.
+bash "$L/tests/test_disk_cleanup_images.sh"
+assert_eq "disk_cleanup images suite exits 0" 0 "$?"
+
+section "kernel_cleanup.sh"
+# The package tools are stubbed in the suite below, so no container ever lists
+# or removes a real kernel; it drives apt, dnf and pacman from any one image.
+bash "$L/tests/test_kernel_cleanup.sh"
+assert_eq "kernel_cleanup suite exits 0" 0 "$?"
+
+section "swap_setup.sh"
+# A fixture fstab and stubbed swap tools: nothing here formats, enables or
+# disables real swap. The create and remove round trip needs root, which the
+# tester containers have.
+bash "$L/tests/test_swap_setup.sh"
+assert_eq "swap_setup suite exits 0" 0 "$?"
+
 section "net_doctor.sh"
 NET="$L/net_doctor.sh"
 scratch_home="$(mktemp -d)"
@@ -1110,6 +1561,354 @@ else
 fi
 assert_contains "net_doctor --quiet still summarises" "$out" "== summary =="
 
+# The links section reads sysfs, and a container has no NIC worth grading. A
+# fake /sys/class/net holds a physical eth0 (it has a device link) and a
+# veth0 (it does not); each case rewrites one eth0 file into a fault.
+links_fx="$(mktemp -d)"
+links_bond="$(mktemp -d)"
+mkdir -p "$links_fx/eth0/statistics" "$links_fx/eth0/device" "$links_fx/veth0/statistics"
+write_clean_link() {
+  printf 'up\n' > "$links_fx/eth0/operstate"
+  printf '1000\n' > "$links_fx/eth0/speed"
+  printf 'full\n' > "$links_fx/eth0/duplex"
+  printf '2\n' > "$links_fx/eth0/carrier_changes"
+  printf '1500\n' > "$links_fx/eth0/mtu"
+  printf '02:00:00:00:00:01\n' > "$links_fx/eth0/address"
+  for c in rx_errors tx_errors rx_dropped tx_dropped rx_crc_errors rx_fifo_errors collisions; do
+    printf '0\n' > "$links_fx/eth0/statistics/$c"
+  done
+  printf '1000\n' > "$links_fx/eth0/statistics/rx_packets"
+  printf '1000\n' > "$links_fx/eth0/statistics/tx_packets"
+  printf 'up\n' > "$links_fx/veth0/operstate"
+  printf '9000\n' > "$links_fx/veth0/statistics/rx_errors"
+  rm -f "$links_bond/bond0"
+}
+run_links() {
+  SYS_CLASS_NET="$links_fx" PROC_NET_BONDING="$links_bond" "$NET" "$@" 2>&1
+}
+write_clean_link
+out="$(run_links)"; rc=$?
+assert_eq "net_doctor with a clean link exits 0" "0" "$rc"
+assert_contains "net_doctor has a links section" "$out" "== links =="
+assert_contains "net_doctor reports the negotiated speed" "$out" "eth0 1000 Mb/s full duplex"
+assert_contains "net_doctor reports a clean error count" "$out" "eth0: 0 errors or drops"
+assert_not_contains "net_doctor does not grade a virtual interface" "$out" "veth0 has"
+assert_contains "net_doctor counts the virtual interface instead" "$out" "1 virtual interface(s) not graded"
+
+printf '5000\n' > "$links_fx/eth0/statistics/rx_errors"
+printf '1000000\n' > "$links_fx/eth0/statistics/rx_packets"
+out="$(run_links)"; rc=$?
+assert_eq "net_doctor with link errors still exits 0" "0" "$rc"
+assert_contains "net_doctor warns on errors past 0.1%" \
+  "$(grep -F 'errors or drops' <<<"$out" || true)" "[warn]"
+out="$(run_links --quiet)"
+assert_contains "net_doctor --quiet keeps the link warning" "$out" "eth0 has 5000 RX/TX errors or drops"
+if grep -q '\[ ok \]' <<<"$out"; then
+  err "net_doctor --quiet still printed [ ok ] lines with links"
+else
+  ok "net_doctor --quiet drops the healthy link lines"
+fi
+
+write_clean_link
+printf '50\n' > "$links_fx/eth0/statistics/rx_errors"
+printf '100\n' > "$links_fx/eth0/statistics/rx_packets"
+printf '0\n' > "$links_fx/eth0/statistics/tx_packets"
+out="$(run_links)"
+assert_not_contains "net_doctor ignores a handful of errors below the floor" "$out" "eth0 has 50 RX/TX errors"
+
+write_clean_link
+printf 'half\n' > "$links_fx/eth0/duplex"
+out="$(run_links)"
+assert_contains "net_doctor warns on half duplex" "$out" "half duplex on eth0"
+write_clean_link
+printf '100\n' > "$links_fx/eth0/speed"
+out="$(run_links)"
+assert_contains "net_doctor warns on a 100 Mb/s link" "$out" "eth0 negotiated 100 Mb/s"
+write_clean_link
+printf '25\n' > "$links_fx/eth0/carrier_changes"
+out="$(run_links)"
+assert_contains "net_doctor warns on carrier flaps" "$out" "eth0 carrier changed 25 times"
+
+write_clean_link
+printf '%s\n' 'Bonding Mode: fault-tolerance (active-backup)' 'Currently Active Slave: eth0' 'MII Status: up' '' \
+  'Slave Interface: eth0' 'MII Status: up' '' 'Slave Interface: eth1' 'MII Status: down' > "$links_bond/bond0"
+out="$(run_links)"
+assert_contains "net_doctor warns on a bond slave that is down" "$out" "bond0 slave eth1 is down"
+
+write_clean_link
+out="$(run_links --skip-links)"
+assert_not_contains "net_doctor --skip-links leaves the section out" "$out" "eth0 1000 Mb/s"
+assert_contains "net_doctor --skip-links says so" "$out" "(--skip-links)"
+
+# The gateway's neighbour state needs ip, which the tester images lack: a stub
+# answers the default route and the neighbour lookup, and nothing else.
+links_stub="$(mktemp -d)"
+cat > "$links_stub/ip" <<'STUB'
+#!/usr/bin/env bash
+state="FAILED"
+[[ -e "${0%/*}/reachable" ]] && state="REACHABLE"
+case " $* " in
+  *" -4 route show default "*) printf 'default via 10.0.0.1 dev eth0 proto dhcp metric 100\n' ;;
+  *" neigh show to 10.0.0.1 dev eth0 "*) printf '10.0.0.1 lladdr aa:bb:cc:dd:ee:ff %s\n' "$state" ;;
+esac
+exit 0
+STUB
+chmod +x "$links_stub/ip"
+out="$(PATH="$links_stub:$PATH" run_links)"; rc=$?
+assert_eq "net_doctor with an unanswered gateway exits 0" "0" "$rc"
+assert_contains "net_doctor warns when the gateway does not answer ARP" "$out" "default gateway 10.0.0.1 does not answer ARP"
+: > "$links_stub/reachable"
+out="$(PATH="$links_stub:$PATH" run_links)"
+assert_contains "net_doctor passes a reachable gateway" "$out" "gateway 10.0.0.1 neighbour state REACHABLE"
+rm -rf "$links_fx" "$links_bond" "$links_stub"
+
+section "listen_audit.sh"
+LISTEN="$L/listen_audit.sh"
+# The tester images have no iproute2, so ss is a stub ahead of PATH printing a
+# real `ss -tulnp` header and rows: sshd on both stacks (one row once folded),
+# nginx on [::], postgres and a resolver stub on loopback, and a python3 that
+# nobody expected.
+listen_stub="$(mktemp -d)"
+cat > "$listen_stub/ss" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process'
+printf '%s\n' 'tcp   LISTEN 0      128          0.0.0.0:22         0.0.0.0:*     users:(("sshd",pid=1,fd=3))'
+printf '%s\n' 'tcp   LISTEN 0      128             [::]:22            [::]:*     users:(("sshd",pid=1,fd=4))'
+printf '%s\n' 'tcp   LISTEN 0      511             [::]:443           [::]:*     users:(("nginx",pid=2,fd=6))'
+printf '%s\n' 'tcp   LISTEN 0      4096       127.0.0.1:5432       0.0.0.0:*     users:(("postgres",pid=3,fd=5))'
+printf '%s\n' 'udp   UNCONN 0      0      127.0.0.53%lo:53         0.0.0.0:*'
+printf '%s\n' 'tcp   LISTEN 0      5            0.0.0.0:9000       0.0.0.0:*     users:(("python3",pid=4,fd=3))'
+STUB
+chmod +x "$listen_stub/ss"
+scratch_home="$(mktemp -d)"
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" PATH="$listen_stub:$PATH" "$LISTEN" 2>&1)"; rc=$?
+assert_eq "listen_audit without a baseline is a report and exits 0" "0" "$rc"
+assert_contains "listen_audit names the sshd owner" "$out" "sshd"
+assert_contains "listen_audit names the nginx owner" "$out" "nginx"
+assert_contains "listen_audit lists the loopback postgres port" "$out" "5432"
+assert_contains "listen_audit marks loopback scope" "$out" "loopback"
+assert_contains "listen_audit counts public and loopback listeners" "$out" "5 listener(s): 3 public, 2 loopback"
+out="$(PATH="$listen_stub:$PATH" "$LISTEN" --public-only 2>&1)"
+assert_not_contains "listen_audit --public-only hides loopback rows" "$out" "5432"
+
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" PATH="$listen_stub:$PATH" "$LISTEN" --print 2>&1)"; rc=$?
+assert_eq "listen_audit --print exits 0" "0" "$rc"
+assert_contains "listen_audit --print writes sshd as proto/port/process" "$out" "tcp/22/sshd"
+assert_contains "listen_audit --print writes nginx as proto/port/process" "$out" "tcp/443/nginx"
+assert_not_contains "listen_audit --print carries no pids" "$out" "pid="
+assert_not_contains "listen_audit --print leaves loopback out" "$out" "5432"
+assert_not_contains "listen_audit --print carries no date" "$out" "$(date +%Y)"
+assert_eq "listen_audit folds the IPv4/IPv6 sshd twins" "1" "$(grep -c '^tcp/22/sshd$' <<<"$out")"
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "listen_audit wrote nothing, --print included"
+else
+  err "listen_audit wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+listen_base="$(mktemp -d)"
+printf '# expected\ntcp/22/sshd\n\ntcp/443/nginx\ntcp/3000/node  # gone\n' > "$listen_base/drifted"
+out="$(PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/drifted" 2>&1)"; rc=$?
+assert_eq "listen_audit fails on a listener the baseline lacks" "1" "$rc"
+assert_contains "listen_audit names the new listener" "$out" "NEW listener tcp/9000"
+assert_contains "listen_audit warns on an expected listener that is gone" "$out" "expected listener tcp/3000"
+
+# Gone alone is a warning: the default --fail-on new passes it, any does not.
+printf 'tcp/22/sshd\ntcp/443/nginx\ntcp/9000/python3\ntcp/3000/node\n' > "$listen_base/gone-only"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/gone-only" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit passes a gone listener under --fail-on new" "0" "$rc"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/gone-only" --fail-on any >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --fail-on any fails on a gone listener" "1" "$rc"
+
+printf 'tcp/22/sshd\ntcp/443/nginx\ntcp/9000/python3\n' > "$listen_base/matching"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/matching" --fail-on any >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit passes a matching baseline" "0" "$rc"
+printf 'tcp/22/sshd\ntcp/443/*\ntcp/9000-9100/*\n' > "$listen_base/wildcard"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/wildcard" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit matches * processes and port ranges" "0" "$rc"
+
+# A public entry is not satisfied by the same port rebound to loopback.
+rebind_stub="$(mktemp -d)"
+cat > "$rebind_stub/ss" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' 'Netid State  Recv-Q Send-Q Local Address:Port  Peer Address:Port Process'
+printf '%s\n' 'tcp   LISTEN 0      511        127.0.0.1:80         0.0.0.0:*     users:(("nginx",pid=2,fd=6))'
+STUB
+chmod +x "$rebind_stub/ss"
+printf 'tcp/80/nginx\n' > "$listen_base/public80"
+out="$(PATH="$rebind_stub:$PATH" "$LISTEN" --baseline "$listen_base/public80" --fail-on any 2>&1)"; rc=$?
+assert_eq "listen_audit: a loopback rebind does not satisfy a public entry" "1" "$rc"
+assert_contains "listen_audit reports the rebound entry as gone" "$out" "expected listener tcp/80"
+PATH="$rebind_stub:$PATH" "$LISTEN" --baseline "$listen_base/public80" --all --fail-on any >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --all lets the loopback listener satisfy the entry" "0" "$rc"
+rm -rf "$rebind_stub"
+
+PATH="$listen_stub:$PATH" "$LISTEN" --allow 22,443,9000 >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --allow covering every public port -> 0" "0" "$rc"
+PATH="$listen_stub:$PATH" "$LISTEN" --allow 22 >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --allow missing ports -> 1" "1" "$rc"
+
+for bad in "--baseline /nonexistent" "--allow 99999" "--allow abc" "--fail-on sometimes" "--bogus"; do
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  PATH="$listen_stub:$PATH" "$LISTEN" $bad >/dev/null 2>&1
+  rc=$?
+  assert_eq "listen_audit rejects $bad -> 3" "3" "$rc"
+done
+printf 'tcp/notaport/sshd\n' > "$listen_base/bad"
+PATH="$listen_stub:$PATH" "$LISTEN" --baseline "$listen_base/bad" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit rejects a baseline line with a bad port -> 3" "3" "$rc"
+
+# No ss at all: a wrong environment, not a usage error, and --help still works.
+listen_bin="$(mktemp -d)"
+for tool in bash awk sort grep tr sed cat uname; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ "$tool_path" == /* ]] && ln -s "$tool_path" "$listen_bin/$tool"
+done
+PATH="$listen_bin" "$LISTEN" >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit without ss -> 2" "2" "$rc"
+PATH="$listen_bin" "$LISTEN" --help >/dev/null 2>&1; rc=$?
+assert_eq "listen_audit --help works without ss" "0" "$rc"
+rm -rf "$listen_stub" "$listen_base" "$listen_bin"
+
+section "log_triage.sh"
+TRIAGE="$L/log_triage.sh"
+scratch_home="$(mktemp -d)"
+out="$(HOME="$scratch_home" TMPDIR="$scratch_home" "$TRIAGE" 2>&1)"; rc=$?
+assert_eq "log_triage exits 0 with almost nothing installed" "0" "$rc"
+assert_contains "log_triage prints a summary" "$out" "== summary =="
+assert_contains "log_triage has a kernel section" "$out" "== kernel =="
+assert_contains "log_triage has an auth section" "$out" "== auth =="
+if [[ -z "$(ls -A "$scratch_home" 2>/dev/null)" ]]; then
+  ok "log_triage wrote nothing"
+else
+  err "log_triage wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
+fi
+rm -rf "$scratch_home"
+
+out="$("$TRIAGE" --quiet 2>&1)"
+if grep -q '\[ ok \]' <<<"$out"; then
+  err "log_triage --quiet still printed [ ok ] lines"
+else
+  ok "log_triage --quiet drops the healthy lines"
+fi
+assert_contains "log_triage --quiet still summarises" "$out" "== summary =="
+
+triage_sections="$("$TRIAGE" --list-sections)"
+for s in kernel units auth repeats; do
+  assert_contains "log_triage lists section $s" "$triage_sections" "$s"
+done
+for bad in "--only nosuch" "--top 0" "--top abc" "--fail-on sometimes" "--bogus"; do
+  # shellcheck disable=SC2086  # the pair is meant to split into two arguments
+  "$TRIAGE" $bad >/dev/null 2>&1
+  rc=$?
+  assert_eq "log_triage rejects $bad -> 3" "3" "$rc"
+done
+"$TRIAGE" --only , >/dev/null 2>&1; rc=$?
+assert_eq "log_triage --only empty selection -> 4" "4" "$rc"
+# --since is passed to journalctl, so anything that could be read as one of its
+# options, or that a shell would expand, is refused before a journal is read.
+"$TRIAGE" --since '-n 5' >/dev/null 2>&1; rc=$?
+assert_eq "log_triage refuses a --since that starts with a dash -> 3" "3" "$rc"
+# shellcheck disable=SC2016  # the literal $(id) is the point
+"$TRIAGE" --since '$(id)' >/dev/null 2>&1; rc=$?
+assert_eq "log_triage refuses a --since with shell syntax -> 3" "3" "$rc"
+
+# A container has no journal, so the parsers would never see a line. A stub
+# journalctl ahead of PATH answers each read with fixture lines in the real
+# `-o short` shape and records its argv, which is also how the run is proved
+# read-only: nothing but reads ever reaches it.
+triage_stub="$(mktemp -d)"
+cat > "$triage_stub/journalctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${0%/*}/argv.log"
+case " $* " in
+  *" -k "*)
+    printf 'Oct 21 10:00:00 host kernel: Out of memory: Killed process 42 (java)\n'
+    printf 'Oct 21 10:00:01 host kernel: EXT4-fs error (device sda1): ext4_find_entry: reading directory\n'
+    ;;
+  *" -p "*)
+    i=0
+    while (( i < 60 )); do
+      printf 'Oct 21 10:00:02 host nginx[1]: upstream timed out\n'
+      i=$((i + 1))
+    done
+    for n in 17 18 19; do
+      printf 'Oct 21 10:00:03 host app[2]: boom %s\n' "$n"
+    done
+    ;;
+  *" -u ssh "*)
+    i=0
+    while (( i < 30 )); do
+      printf 'Oct 21 10:00:04 host sshd[9]: Failed password for invalid user admin from 203.0.113.9 port 4242 ssh2\n'
+      i=$((i + 1))
+    done
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$triage_stub/journalctl"
+out="$(PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" 2>&1)"; rc=$?
+assert_eq "log_triage with findings still exits 0 by default" "0" "$rc"
+assert_contains "log_triage counts OOM kernel messages" "$out" "OOM message(s)"
+assert_contains "log_triage counts filesystem kernel messages" "$out" "filesystem message(s)"
+assert_contains "log_triage ranks the noisiest identifier" "$out" "nginx"
+assert_contains "log_triage warns on an identifier past 50 error lines" "$out" "nginx logged 60 error line(s)"
+assert_contains "log_triage folds numbers in repeated messages" "$out" "boom N"
+assert_contains "log_triage groups failed logins by source" "$out" "203.0.113.9"
+assert_contains "log_triage names invalid users, not whole lines" "$out" "admin"
+assert_contains "log_triage warns on brute force" "$out" "[warn]"
+PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --fail-on warn >/dev/null 2>&1; rc=$?
+assert_eq "log_triage --fail-on warn exits 1 on findings" "1" "$rc"
+out="$(PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --only auth 2>&1)"
+assert_not_contains "log_triage --only auth leaves the kernel out" "$out" "== kernel =="
+argv_log="$(cat "$triage_stub/argv.log" 2>/dev/null || true)"
+assert_contains "log_triage read the kernel log through journalctl" "$argv_log" "-k"
+if grep -qE -- '--vacuum|--rotate|--flush|--sync|--relinquish' <<<"$argv_log"; then
+  err "log_triage passed a journal-changing option to journalctl"
+else
+  ok "log_triage only ever reads the journal"
+fi
+
+# The file-only path: no journalctl on PATH at all, and the auth log named in
+# AUTH_LOG. The PATH holds only the tools the script reads with, so a
+# journalctl on the image cannot answer instead.
+triage_bin="$(mktemp -d)"
+for tool in bash awk sort uniq grep head tr sed date cat uname id wc; do
+  tool_path="$(command -v "$tool" 2>/dev/null || true)"
+  [[ "$tool_path" == /* ]] && ln -s "$tool_path" "$triage_bin/$tool"
+done
+triage_log="$triage_stub/auth.log"
+i=0
+while (( i < 12 )); do
+  printf 'Oct 21 10:00:05 host sshd[9]: Failed password for root from 198.51.100.7 port 5555 ssh2\n' >> "$triage_log"
+  i=$((i + 1))
+done
+printf 'Oct 21 10:00:06 host sshd[9]: Accepted publickey for ops from 192.0.2.1 port 22 ssh2\n' >> "$triage_log"
+out="$(PATH="$triage_bin" AUTH_LOG="$triage_log" "$TRIAGE" 2>&1)"; rc=$?
+assert_eq "log_triage with only an auth log exits 0" "0" "$rc"
+assert_contains "log_triage reads the named auth log" "$out" "auth.log"
+assert_contains "log_triage ranks the auth log's sources" "$out" "198.51.100.7"
+assert_contains "log_triage warns at ten failures from one source" "$out" "[warn]"
+assert_contains "log_triage counts accepted logins" "$out" "1 accepted SSH login(s)"
+assert_contains "log_triage skips the kernel without a journal or dmesg" "$out" "neither journalctl nor dmesg"
+
+# A journalctl that rejects the read (the probe, which has no --since, still
+# answers) must not turn into "no failed logins": the auth section warns that
+# the source is unreadable and does not claim zero.
+printf '#!/usr/bin/env bash\ncase " $* " in *" --since "*) exit 1 ;; esac\nexit 0\n' > "$triage_stub/journalctl"
+out="$(PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --only auth 2>&1)"; rc=$?
+if grep -q 'journal not readable' <<<"$out"; then
+  ok "log_triage failing-journalctl auth test skipped (journal not readable for this user)"
+else
+  assert_contains "log_triage warns when journalctl fails on the auth read" "$out" "journalctl failed reading auth lines"
+  assert_not_contains "log_triage does not claim zero failed logins on a failed read" "$out" "no failed SSH logins"
+  assert_not_contains "log_triage does not claim zero failed sudo on a failed read" "$out" "no failed sudo"
+  assert_eq "log_triage failed journal read exits 0 by default" "0" "$rc"
+  PATH="$triage_stub:$PATH" AUTH_LOG=/nonexistent "$TRIAGE" --only auth --fail-on warn >/dev/null 2>&1; rc=$?
+  assert_eq "log_triage --fail-on warn exits 1 on a failed journal read" "1" "$rc"
+fi
+rm -rf "$triage_stub" "$triage_bin"
+
 section "schedule_report.sh"
 SCHED="$L/schedule_report.sh"
 scratch_home="$(mktemp -d)"
@@ -1136,6 +1935,11 @@ else
   ok "schedule_report --quiet drops the healthy lines"
 fi
 assert_contains "schedule_report --quiet still summarises" "$out" "== summary =="
+
+# --failed, --strict and --cron-dir against a stubbed systemctl and crontab and
+# a fixture cron directory; the host's systemd and cron are never asked.
+bash "$L/tests/test_schedule_report_failed.sh"
+assert_eq "schedule_report --failed suite exits 0" "0" "$?"
 
 section "sysctl_defaults.sh"
 SYSCTL="$L/sysctl_defaults.sh"
@@ -1217,6 +2021,26 @@ else
   err "sysctl_defaults --revert did not restore max_user_watches"
 fi
 
+# A backup that cannot be written stops --apply before anything changes: no
+# drop-in (not even its directory) and no live value.
+sysctl_nobackup_d="$sysctl_root/never-created.d"
+out="$(
+  SYSCTL_D="$sysctl_nobackup_d" PROC_SYS="$sysctl_root/proc" TMPDIR="$sysctl_root/tmp" \
+    "$SYSCTL" --apply --only inotify --backup-file "$sysctl_root/no-such-dir/backup.txt" 2>&1
+)"; rc=$?
+assert_eq "sysctl_defaults --apply with an unwritable --backup-file exits nonzero" "1" "$rc"
+assert_contains "sysctl_defaults names the backup it could not write" "$out" "cannot write the backup"
+if [[ -e "$sysctl_nobackup_d" || -e "$sysctl_root/no-such-dir" ]]; then
+  err "sysctl_defaults wrote a drop-in or directory without a backup"
+else
+  ok "sysctl_defaults wrote no drop-in without a backup"
+fi
+if [[ "$(cat "$sysctl_root/proc/fs/inotify/max_user_watches")" == "8192" ]]; then
+  ok "sysctl_defaults changed no live value without a backup"
+else
+  err "sysctl_defaults changed a live value without a backup"
+fi
+
 # --revert used to feed every key in the backup straight to write_live, and
 # picked its backup by globbing a world-writable TMPDIR. Between them, any
 # local user could leave a file for root to find and set a sysctl of their
@@ -1255,6 +2079,202 @@ assert_contains "sysctl_defaults refuses sysctl(8) under a PROC_SYS override" \
 
 rm -rf "$sysctl_root"
 
+# --check is the report as a gate. It reads the same fake procfs and sysctl.d,
+# needs no root, and writes nothing, so every state below is built by hand
+# between runs and the digest proves the runs themselves changed nothing.
+check_root="$(mktemp -d)"
+mkdir -p "$check_root/proc/fs/inotify" "$check_root/proc/vm" "$check_root/sysctl.d" "$check_root/tmp"
+printf '8192\n' > "$check_root/proc/fs/inotify/max_user_watches"
+printf '128\n' > "$check_root/proc/fs/inotify/max_user_instances"
+printf '16384\n' > "$check_root/proc/fs/inotify/max_queued_events"
+printf '60\n' > "$check_root/proc/vm/swappiness"
+check_dropin="$check_root/sysctl.d/99-ops-toolbox.conf"
+run_check() {
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      "$SYSCTL" --check "$@" 2>&1
+  )"
+  rc=$?
+}
+check_digest() {
+  find "$check_root" -type f -exec sha256sum {} + | LC_ALL=C sort
+}
+
+SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+  "$SYSCTL" --apply --backup-file "$check_root/tmp/backup.txt" >/dev/null 2>&1 \
+  || err "sysctl_defaults --apply against the check fixture exited $? - every --check below starts from the wrong state"
+
+before="$(check_digest)"
+run_check
+assert_eq "sysctl_defaults --check after --apply exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check marks a key OK" "$out" "OK          vm.swappiness = 10"
+assert_contains "sysctl_defaults --check summarises" "$out" "4 ok, 0 drift, 0 unpersisted, 0 stale, 0 shadowed, 0 skipped"
+assert_eq "sysctl_defaults --check writes nothing" "$before" "$(check_digest)"
+
+printf '60\n' > "$check_root/proc/vm/swappiness"
+before="$(check_digest)"
+run_check
+assert_eq "sysctl_defaults --check with a drifted value -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check names the drift" "$out" "DRIFT"
+assert_contains "sysctl_defaults --check names the drifted key" "$(grep DRIFT <<<"$out")" "vm.swappiness = 60 (want 10)"
+assert_eq "sysctl_defaults --check on drift writes nothing" "$before" "$(check_digest)"
+printf '10\n' > "$check_root/proc/vm/swappiness"
+
+mv "$check_dropin" "$check_root/tmp/dropin.saved"
+run_check
+assert_eq "sysctl_defaults --check without the drop-in -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls a live-only value UNPERSISTED" "$out" "UNPERSISTED"
+assert_contains "sysctl_defaults --check prints the fix" "$out" "--apply"
+printf 'vm.swappiness = 10\n' > "$check_root/sysctl.d/60-other.conf"
+run_check --only vm
+assert_eq "sysctl_defaults --check accepts a value another file persists" "0" "$rc"
+assert_contains "sysctl_defaults --check names the persisting file" "$out" "persisted by $check_root/sysctl.d/60-other.conf"
+printf 'vm.swappiness = 20\n' > "$check_root/sysctl.d/60-other.conf"
+run_check --only vm
+assert_eq "sysctl_defaults --check with another file setting a different value -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check still calls that UNPERSISTED" "$out" "UNPERSISTED"
+rm -f "$check_root/sysctl.d/60-other.conf"
+mv "$check_root/tmp/dropin.saved" "$check_dropin"
+
+sed -i 's/^vm.swappiness = 10$/vm.swappiness = 30/' "$check_dropin"
+run_check
+assert_eq "sysctl_defaults --check with a stale drop-in -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls the drop-in STALE" "$(grep STALE <<<"$out")" "vm.swappiness"
+sed -i 's/^vm.swappiness = 30$/vm.swappiness = 10/' "$check_dropin"
+
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+printf 'vm.swappiness = 5\n' > "$check_root/sysctl.d/10-early.conf"
+run_check
+assert_eq "sysctl_defaults --check with a later override -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check calls it SHADOWED" "$out" "SHADOWED"
+assert_contains "sysctl_defaults --check names the shadowing file" "$(grep SHADOWED <<<"$out")" "99-zz.conf"
+assert_not_contains "sysctl_defaults --check ignores a file read before ours" "$out" "10-early.conf"
+rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/sysctl.d/10-early.conf"
+
+# systemd-sysctl precedence across directories: the first directory holding a
+# basename wins, and a symlink to /dev/null masks the name below it.
+mkdir -p "$check_root/run.d" "$check_root/lib.d"
+extra_dirs="$check_root/run.d:$check_root/lib.d"
+printf 'vm.swappiness = 60\n' > "$check_root/lib.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check sees a later override in a lower directory -> 1" "1" "$rc"
+assert_contains "sysctl_defaults --check names the lower-directory file" "$(grep SHADOWED <<<"$out")" "lib.d/99-zz.conf"
+run_check
+assert_eq "sysctl_defaults --check ignores the extra directories by default" "0" "$rc"
+printf 'vm.swappiness = 10\n' > "$check_root/run.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check lets a higher directory replace a same-name file" "0" "$rc"
+rm -f "$check_root/run.d/99-zz.conf"
+ln -s /dev/null "$check_root/run.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check honours a /dev/null mask in a higher directory" "0" "$rc"
+rm -f "$check_root/run.d/99-zz.conf"
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check sees the same-name file in sysctl.d" "1" "$rc"
+rm -f "$check_root/sysctl.d/99-zz.conf"
+ln -s /dev/null "$check_root/sysctl.d/99-zz.conf"
+SYSCTL_EXTRA_DIRS="$extra_dirs" run_check
+assert_eq "sysctl_defaults --check honours a /dev/null mask in sysctl.d" "0" "$rc"
+rm -f "$check_root/sysctl.d/99-zz.conf" "$check_root/lib.d/99-zz.conf"
+rmdir "$check_root/run.d" "$check_root/lib.d"
+
+run_check --only vm
+assert_eq "sysctl_defaults --check --only vm exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check --only vm checks swappiness" "$out" "vm.swappiness"
+assert_not_contains "sysctl_defaults --check --only vm leaves inotify alone" "$out" "fs.inotify"
+
+run_check --apply
+assert_eq "sysctl_defaults --check with --apply -> 3" "3" "$rc"
+run_check --revert
+assert_eq "sysctl_defaults --check with --revert -> 3" "3" "$rc"
+run_check --backup-file "$check_root/tmp/other.txt"
+assert_eq "sysctl_defaults --check with --backup-file -> 3" "3" "$rc"
+
+# A later-sorting file this user cannot read (0600, run as non-root) may
+# override any key, and its contents are unknown: every key whose verdict
+# would be OK is a SKIP naming the file instead. Root reads everything, so
+# there the case runs as nobody via setpriv; where the file stays readable
+# it is skipped with a printed line.
+printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/99-zz.conf"
+chmod 000 "$check_root/sysctl.d/99-zz.conf"
+sysctl_runner=()
+sysctl_can=1
+if [[ "$(id -u)" == 0 ]]; then
+  sysctl_can=0
+  if command -v setpriv >/dev/null 2>&1; then
+    chmod 755 "$check_root" "$check_root/sysctl.d" "$check_root/proc" "$check_root/proc/vm" \
+      "$check_root/proc/fs" "$check_root/proc/fs/inotify" "$check_root/tmp"
+    sysctl_runner=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+    if "${sysctl_runner[@]}" test -r "$SYSCTL" && ! "${sysctl_runner[@]}" test -r "$check_root/sysctl.d/99-zz.conf"; then
+      sysctl_can=1
+    fi
+  fi
+elif [[ -r "$check_root/sysctl.d/99-zz.conf" ]]; then
+  sysctl_can=0
+fi
+if (( sysctl_can )); then
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check with an unreadable later file exits 0" "0" "$rc"
+  assert_not_contains "sysctl_defaults --check never calls a key OK beside an unreadable later file" "$out" "OK  "
+  assert_contains "sysctl_defaults --check names the unreadable file" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/99-zz.conf"
+  assert_eq "sysctl_defaults --check skips every key beside an unreadable later file" "4" "$(grep -c SKIP <<<"$out")"
+  assert_contains "sysctl_defaults --check counts them as skipped" "$out" "0 ok, 0 drift, 0 unpersisted, 0 stale, 0 shadowed, 4 skipped"
+else
+  ok "sysctl_defaults unreadable later-file check skipped (the file stays readable: root without setpriv)"
+fi
+chmod 644 "$check_root/sysctl.d/99-zz.conf"
+rm -f "$check_root/sysctl.d/99-zz.conf"
+if (( sysctl_can )); then
+  # The file that matters is the one read after the file that sets the key,
+  # not only after our drop-in: 10-a.conf sets it, an unreadable 50-b.conf
+  # (read before ours) could still override it, and ours does not set it.
+  mv "$check_dropin" "$check_root/tmp/dropin.saved"
+  printf 'vm.swappiness = 10\n' > "$check_root/sysctl.d/10-a.conf"
+  printf 'vm.swappiness = 60\n' > "$check_root/sysctl.d/50-b.conf"
+  chmod 000 "$check_root/sysctl.d/50-b.conf"
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check --only vm 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check beside a middle unreadable file exits 0" "0" "$rc"
+  assert_contains "sysctl_defaults --check cannot call a key OK past a middle unreadable file" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/50-b.conf"
+  assert_not_contains "sysctl_defaults --check does not call that key OK" "$out" "OK  "
+  printf 'vm.swappiness = 20\n' > "$check_root/sysctl.d/10-a.conf"
+  out="$(
+    SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/proc" TMPDIR="$check_root/tmp" \
+      ${sysctl_runner[@]+"${sysctl_runner[@]}"} "$SYSCTL" --check --only vm 2>&1
+  )"; rc=$?
+  assert_eq "sysctl_defaults --check exits 0 when UNPERSISTED is undecidable" "0" "$rc"
+  assert_not_contains "sysctl_defaults --check holds UNPERSISTED back when a file could fix it" "$out" "UNPERSISTED"
+  assert_contains "sysctl_defaults --check skips that key instead" "$(grep SKIP <<<"$out")" "$check_root/sysctl.d/50-b.conf"
+  chmod 644 "$check_root/sysctl.d/50-b.conf"
+  rm -f "$check_root/sysctl.d/10-a.conf" "$check_root/sysctl.d/50-b.conf"
+  mv "$check_root/tmp/dropin.saved" "$check_dropin"
+fi
+
+# An unreadable key is a SKIP, never a false OK or a false failure; the rest
+# still decide the exit code.
+rm -f "$check_root/proc/fs/inotify/max_queued_events"
+run_check
+assert_eq "sysctl_defaults --check with one unreadable key exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check skips the unreadable key" "$(grep SKIP <<<"$out")" "fs.inotify.max_queued_events"
+printf '60\n' > "$check_root/proc/vm/swappiness"
+run_check
+assert_eq "sysctl_defaults --check still fails on drift beside a SKIP" "1" "$rc"
+
+mkdir -p "$check_root/empty-proc"
+out="$(
+  SYSCTL_D="$check_root/sysctl.d" PROC_SYS="$check_root/empty-proc" TMPDIR="$check_root/tmp" \
+    "$SYSCTL" --check 2>&1
+)"; rc=$?
+assert_eq "sysctl_defaults --check with nothing readable exits 0" "0" "$rc"
+assert_contains "sysctl_defaults --check says nothing was readable" "$out" "nothing to check"
+rm -rf "$check_root"
+
 section "tls_expiry.sh"
 TLS="$L/tls_expiry.sh"
 "$TLS" >/dev/null 2>&1; rc=$?
@@ -1268,6 +2288,19 @@ assert_eq "tls_expiry rejects --fail-on nope -> 3" "3" "$rc"
 
 "$TLS" --file --days 7 >/dev/null 2>&1; rc=$?
 assert_eq "tls_expiry --file rejects the next flag as a path -> 3" "3" "$rc"
+
+# The --deep family's usage errors, like the ones above, are answered before
+# the openssl preflight, so they hold on an image without openssl.
+"$TLS" --hosts-file /nonexistent >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects an unreadable --hosts-file -> 3" "3" "$rc"
+"$TLS" --hosts-file >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry --hosts-file without a value -> 3" "3" "$rc"
+"$TLS" --min-key-bits 12 --file /dev/null >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects --min-key-bits 12 -> 3" "3" "$rc"
+"$TLS" --check-host --file /dev/null >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry --check-host without a value -> 3" "3" "$rc"
+"$TLS" --deep >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry --deep with no target -> 3" "3" "$rc"
 
 # openssl is not in the tester image on purpose (see tester/Dockerfile): a
 # missing binary must be exit 2, not a crash, and --help already ran above.
@@ -1311,6 +2344,187 @@ else
   assert_contains "tls_expiry glob expands a.pem" "$out" "a.pem"
   assert_contains "tls_expiry glob expands b.pem" "$out" "b.pem"
   rm -rf "$globdir"
+
+  # --check-host against a SAN. -addext needs OpenSSL 1.1.1; an older one
+  # cannot build the fixture, which is said rather than passed silently.
+  san="$(mktemp --suffix=.pem)"
+  san_key="$(mktemp)"
+  if openssl req -x509 -newkey rsa:2048 -keyout "$san_key" -out "$san" -days 3650 -nodes \
+       -subj "/CN=san.test" -addext "subjectAltName=DNS:valid.test" >/dev/null 2>&1; then
+    out="$("$TLS" --file "$san" --check-host valid.test 2>&1)"; rc=$?
+    assert_eq "tls_expiry --check-host on a covered name exits 0" "0" "$rc"
+    assert_contains "tls_expiry says the certificate covers the name" "$out" "covers valid.test"
+    out="$("$TLS" --file "$san" --check-host other.test 2>&1)"; rc=$?
+    assert_eq "tls_expiry --check-host on another name exits 1" "1" "$rc"
+    assert_contains "tls_expiry says the certificate does not cover it" "$out" "does not cover other.test"
+  else
+    ok "tls_expiry --check-host skipped (openssl too old for -addext)"
+  fi
+  rm -f "$san" "$san_key"
+
+  # The fixtures above are self-signed, which --deep reports as a warning:
+  # a default run still passes, --fail-on warn does not.
+  out="$("$TLS" --file "$valid" --deep 2>&1)"; rc=$?
+  assert_eq "tls_expiry --deep on a self-signed leaf exits 0 by default" "0" "$rc"
+  assert_contains "tls_expiry --deep warns on a self-signed leaf" \
+    "$(grep -F 'self-signed' <<<"$out" || true)" "[warn]"
+  assert_contains "tls_expiry --deep grades key strength" "$out" "strength: 2048 bit RSA"
+  "$TLS" --file "$valid" --deep --fail-on warn >/dev/null 2>&1; rc=$?
+  assert_eq "tls_expiry --deep --fail-on warn exits 1 on a self-signed leaf" "1" "$rc"
+
+  # Some crypto policies refuse to make a 1024-bit key at all; that is a
+  # skipped fixture, not a failed check.
+  weak="$(mktemp --suffix=.pem)"
+  weak_key="$(mktemp)"
+  if openssl req -x509 -newkey rsa:1024 -keyout "$weak_key" -out "$weak" -days 3650 -nodes \
+       -subj "/CN=weak.test" >/dev/null 2>&1 && [[ -s "$weak" ]]; then
+    out="$("$TLS" --file "$weak" --deep 2>&1)"; rc=$?
+    assert_eq "tls_expiry --deep fails a 1024-bit key" "1" "$rc"
+    assert_contains "tls_expiry names the key-size minimum" "$out" "minimum 2048"
+    "$TLS" --file "$weak" --deep --min-key-bits 1024 >/dev/null 2>&1; rc=$?
+    assert_eq "tls_expiry --min-key-bits 1024 accepts it" "0" "$rc"
+  else
+    ok "tls_expiry weak-key check skipped (this openssl refuses rsa:1024)"
+  fi
+  rm -f "$weak" "$weak_key"
+
+  # A hosts file: a comment and a blank line are not targets, and the one real
+  # entry is a closed port, so exactly one host is tried and warned about.
+  hosts_dir="$(mktemp -d)"
+  printf '# endpoints\n\nlocalhost:1\n' > "$hosts_dir/hosts"
+  out="$("$TLS" --hosts-file "$hosts_dir/hosts" 2>&1)"; rc=$?
+  assert_eq "tls_expiry --hosts-file with an unreachable host exits 0" "0" "$rc"
+  assert_contains "tls_expiry reads the hosts file entry" "$out" "localhost:1"
+  assert_contains "tls_expiry warns on an unreachable host" "$out" "could not fetch a leaf certificate"
+  assert_eq "tls_expiry tries exactly one target from the hosts file" "1" "$(grep -c '\[warn\]' <<<"$out")"
+  rm -rf "$hosts_dir"
+
+  # Bracketed IPv6 targets parse as an address, with and without a port; an
+  # unbracketed one is refused rather than split at its last colon.
+  out="$("$TLS" --host '[::1]:1' 2>&1)"; rc=$?
+  assert_contains "tls_expiry parses [IPv6]:PORT" "$out" "[::1]:1: could not fetch a leaf certificate"
+  assert_contains "tls_expiry connects to the bracketed IPv6 target" "$out" "-connect [::1]:1 "
+  out="$("$TLS" --host '[::1]' 2>&1)"; rc=$?
+  assert_contains "tls_expiry defaults a bare [IPv6] to port 443" "$out" "-connect [::1]:443 "
+  assert_eq "tls_expiry accepts a bare [IPv6] (no 'host must be' error)" "0" "$(grep -c 'host must be' <<<"$out")"
+  out="$("$TLS" --host '2001:db8::1' 2>&1)"; rc=$?
+  assert_eq "tls_expiry refuses an unbracketed IPv6 -> 1" "1" "$rc"
+  assert_contains "tls_expiry explains that IPv6 needs brackets" "$out" "needs brackets"
+
+  "$TLS" --cafile /nonexistent --host localhost:1 >/dev/null 2>&1; rc=$?
+  assert_eq "tls_expiry rejects an unreadable --cafile -> 3" "3" "$rc"
+
+  # Verify codes 20 and 21 are ambiguous: a missing intermediate and a private
+  # root this machine does not have look the same to s_client. A stub openssl
+  # answers s_client with a canned handshake (and hands everything else to the
+  # real one); the chain is a private root, an intermediate and a leaf.
+  chain_dir="$(mktemp -d)"
+  chain_real="$(command -v openssl)"
+  if (
+    cd "$chain_dir" || exit 1
+    printf 'basicConstraints=CA:TRUE\n' > ca.ext
+    printf 'subjectAltName=DNS:leaf.test\n' > leaf.ext
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout root.key -out root.pem -days 3650 -subj "/CN=Chain Root" &&
+    openssl req -newkey rsa:2048 -nodes -keyout int.key -out int.csr -subj "/CN=Chain Intermediate" &&
+    openssl x509 -req -in int.csr -CA root.pem -CAkey root.key -CAcreateserial -days 3650 -extfile ca.ext -out int.pem &&
+    openssl req -newkey rsa:2048 -nodes -keyout leaf.key -out leaf.csr -subj "/CN=leaf.test" &&
+    openssl x509 -req -in leaf.csr -CA int.pem -CAkey int.key -CAcreateserial -days 3650 -extfile leaf.ext -out leaf.pem
+  ) >/dev/null 2>&1 && [[ -s "$chain_dir/leaf.pem" ]]; then
+    mkdir -p "$chain_dir/bin"
+    cat > "$chain_dir/bin/openssl" <<STUB
+#!/usr/bin/env bash
+if [[ "\${1:-}" == s_client ]]; then
+  cat "$chain_dir/handshake"
+  exit 0
+fi
+exec "$chain_real" "\$@"
+STUB
+    chmod +x "$chain_dir/bin/openssl"
+
+    # Only the leaf was sent and its issuer is not in the store: provable.
+    { cat "$chain_dir/leaf.pem"; printf 'Verify return code: 21 (unable to verify the first certificate)\n'; } > "$chain_dir/handshake"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep 2>&1)"; rc=$?
+    assert_contains "tls_expiry fails a chain with no CA certificate sent" "$out" "incomplete chain"
+    assert_contains "tls_expiry suggests fullchain.pem for it" "$out" "fullchain.pem"
+    assert_eq "tls_expiry --deep fails a provably incomplete chain -> 1" "1" "$rc"
+
+    # The intermediate was sent; what is absent is the private root. That is a
+    # trust problem on this machine, not a missing intermediate.
+    { cat "$chain_dir/leaf.pem" "$chain_dir/int.pem"; printf 'Verify return code: 20 (unable to get local issuer certificate)\n'; } > "$chain_dir/handshake"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep 2>&1)"; rc=$?
+    assert_contains "tls_expiry reports an untrusted issuer neutrally" "$out" "issuer not trusted locally: private CA or missing intermediate"
+    assert_contains "tls_expiry suggests --cafile for it" "$out" "--cafile"
+    assert_not_contains "tls_expiry does not claim a missing intermediate for it" "$out" "incomplete chain"
+    assert_not_contains "tls_expiry does not suggest fullchain.pem for it" "$out" "fullchain.pem"
+    assert_eq "tls_expiry --deep with an untrusted private root exits 0" "0" "$rc"
+    PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --fail-on warn >/dev/null 2>&1; rc=$?
+    assert_eq "tls_expiry --deep --fail-on warn exits 1 for it" "1" "$rc"
+
+    # --cafile means the private root replaces system trust. A recording stub
+    # lists the -no-CApath/-no-CAstore options in its help (or not), so what
+    # reaches s_client and verify, and what the output admits, is asserted.
+    cat > "$chain_dir/bin/openssl" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$chain_dir/argv.log"
+case "\${1:-} \${2:-}" in
+  "s_client -help"|"verify -help") cat "$chain_dir/help"; exit 1 ;;
+esac
+[[ "\${1:-}" == version ]] && { cat "$chain_dir/version"; exit 0; }
+if [[ "\${1:-}" == s_client ]]; then
+  cat "$chain_dir/handshake"
+  exit 0
+fi
+exec "$chain_real" "\$@"
+STUB
+    chmod +x "$chain_dir/bin/openssl"
+    # Leaf only: the probe (openssl verify) runs only when the last certificate
+    # sent is not a CA, so the verify arguments can be asserted.
+    { cat "$chain_dir/leaf.pem"; printf 'Verify return code: 21 (unable to verify the first certificate)\n'; } > "$chain_dir/handshake"
+
+    printf 'OpenSSL 3.0.13 30 Jan 2024\n' > "$chain_dir/version"
+    printf 'usage: -CAfile -no-CApath -no-CAstore -no-CAfile\n' > "$chain_dir/help"
+    : > "$chain_dir/argv.log"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_contains "tls_expiry --cafile drops system dirs for s_client" \
+      "$(grep '^s_client' "$chain_dir/argv.log")" "-CAfile $chain_dir/root.pem -no-CApath -no-CAstore"
+    assert_contains "tls_expiry --cafile drops system dirs for verify too" \
+      "$(grep '^verify -CAfile' "$chain_dir/argv.log")" "-CAfile $chain_dir/root.pem -no-CApath -no-CAstore"
+    assert_not_contains "tls_expiry --cafile says nothing of system trust when it can drop it" "$out" "system trust sources may still apply"
+
+    printf 'OpenSSL 3.0.13 30 Jan 2024\n' > "$chain_dir/version"
+    printf 'usage: -CAfile -no-CApath\n' > "$chain_dir/help"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_contains "tls_expiry --cafile admits system trust may apply on 3.x without -no-CAstore" \
+      "$out" "system trust sources may still apply"
+
+    printf 'OpenSSL 1.1.1w  11 Sep 2023\n' > "$chain_dir/version"
+    printf 'usage: -CAfile -no-CApath\n' > "$chain_dir/help"
+    : > "$chain_dir/argv.log"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_not_contains "tls_expiry --cafile needs no -no-CAstore on a build without stores" "$out" "system trust sources may still apply"
+    assert_not_contains "tls_expiry --cafile does not pass an option the build lacks" \
+      "$(grep '^s_client' "$chain_dir/argv.log")" "-no-CAstore"
+    assert_contains "tls_expiry --cafile still drops the directory for verify without stores" \
+      "$(grep '^verify -CAfile' "$chain_dir/argv.log")" "-no-CApath"
+    assert_not_contains "tls_expiry --cafile does not pass verify an option the build lacks" \
+      "$(grep '^verify -CAfile' "$chain_dir/argv.log")" "-no-CAstore"
+
+    printf 'OpenSSL 1.0.2k-fips  26 Jan 2017\n' > "$chain_dir/version"
+    printf 'usage: -CAfile\n' > "$chain_dir/help"
+    : > "$chain_dir/argv.log"
+    out="$(PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep --cafile "$chain_dir/root.pem" 2>&1)"
+    assert_contains "tls_expiry --cafile admits system trust may apply without -no-CApath" "$out" "system trust sources may still apply"
+    assert_not_contains "tls_expiry --cafile passes no unsupported option" \
+      "$(grep '^s_client' "$chain_dir/argv.log")" "-no-CApath"
+
+    # Without --cafile nothing is probed or added.
+    : > "$chain_dir/argv.log"
+    PATH="$chain_dir/bin:$PATH" "$TLS" --host leaf.test --deep >/dev/null 2>&1
+    assert_not_contains "tls_expiry without --cafile adds no trust options" "$(cat "$chain_dir/argv.log")" "-no-CA"
+  else
+    ok "tls_expiry chain checks skipped (this openssl cannot build the fixture chain)"
+  fi
+  rm -rf "$chain_dir"
 
   scratch_home="$(mktemp -d)"
   HOME="$scratch_home" TMPDIR="$scratch_home" "$TLS" --file "$valid" >/dev/null 2>&1
@@ -1406,6 +2620,10 @@ rm -rf "$src" "$dest"
 
 bash "$L/tests/test_config_backup.sh"
 assert_eq "config_backup publication regression suite exits 0" "0" "$?"
+bash "$L/tests/test_config_backup_diff.sh"
+assert_eq "config_backup --diff suite exits 0" "0" "$?"
+bash "$L/tests/test_config_backup_exclude.sh"
+assert_eq "config_backup --exclude suite exits 0" "0" "$?"
 
 section "ssh_client_doctor.sh"
 SSHDOC="$L/ssh_client_doctor.sh"
@@ -1462,6 +2680,235 @@ else
   err "ssh_client_doctor wrote into HOME/TMPDIR: $(ls -A "$scratch_home" | tr '\n' ' ')"
 fi
 rm -rf "$scratch_home" "$good"
+
+# The keys, known_hosts, authorized_keys, risks and agent groups. The tester
+# images have no openssh-client, so ssh-keygen and ssh-add are stubs: -y
+# succeeds (no passphrase) only for a key whose name says "plain", -l reports
+# a 2048-bit RSA key for *rsa* files and Ed25519 otherwise, and ssh-add says
+# no agent answered.
+sshdoc_stub="$(mktemp -d)"
+cat > "$sshdoc_stub/ssh-keygen" <<'STUB'
+#!/usr/bin/env bash
+for last in "$@"; do :; done
+last="${last##*/}"
+case " $* " in
+  *" -y "*) [[ "$last" == *plain* ]] && exit 0; exit 1 ;;
+  *" -l "*)
+    case "$last" in
+      *unreadable*) exit 1 ;;
+      *rsa*) printf '2048 SHA256:abc comment (RSA)\n' ;;
+      *)     printf '256 SHA256:def comment (ED25519)\n' ;;
+    esac
+    ;;
+esac
+exit 0
+STUB
+cat > "$sshdoc_stub/ssh-add" <<'STUB'
+#!/usr/bin/env bash
+exit 2
+STUB
+chmod +x "$sshdoc_stub/ssh-keygen" "$sshdoc_stub/ssh-add"
+keys_dir="$(mktemp -d)"
+chmod 700 "$keys_dir"
+for k in id_rsa_plain id_ed25519; do
+  printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'not-a-real-key' '-----END OPENSSH PRIVATE KEY-----' > "$keys_dir/$k"
+  chmod 600 "$keys_dir/$k"
+  printf 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAItest %s\n' "$k" > "$keys_dir/$k.pub"
+done
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys 2>&1)"; rc=$?
+assert_eq "ssh_client_doctor keys group warns but does not fail" "0" "$rc"
+assert_contains "ssh_client_doctor warns on a key with no passphrase" \
+  "$(grep -F 'id_rsa_plain has no passphrase' <<<"$out" || true)" "[warn]"
+assert_contains "ssh_client_doctor warns on a 2048-bit RSA key" "$out" "id_rsa_plain is a 2048-bit RSA key"
+assert_contains "ssh_client_doctor passes an Ed25519 key" \
+  "$(grep -F 'id_ed25519 is an ED25519 key' <<<"$out" || true)" "[pass]"
+assert_contains "ssh_client_doctor passes a protected key" "$out" "id_ed25519 is passphrase-protected"
+assert_not_contains "ssh_client_doctor --only keys leaves the directory group out" "$out" "== directory =="
+# No .pub beside the key: type and size come from ssh-keygen -l on the
+# private file. When that fails too, the check is skipped with a line.
+nopub_dir="$(mktemp -d)"
+chmod 700 "$nopub_dir"
+for k in id_rsa_nopub id_unreadable; do
+  printf '%s\n' '-----BEGIN OPENSSH PRIVATE KEY-----' 'not-a-real-key' '-----END OPENSSH PRIVATE KEY-----' > "$nopub_dir/$k"
+  chmod 600 "$nopub_dir/$k"
+done
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$nopub_dir" --only keys 2>&1)"
+assert_contains "ssh_client_doctor grades a key with no .pub from the private file" \
+  "$(grep -F 'id_rsa_nopub is a' <<<"$out" || true)" "2048-bit RSA key"
+assert_contains "ssh_client_doctor skips type and size when ssh-keygen -l fails" \
+  "$(grep -F 'id_unreadable' <<<"$out" | grep -F 'not checked' || true)" "[skip]"
+rm -rf "$nopub_dir"
+touch -d '3 years ago' "$keys_dir/id_ed25519"
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys --max-key-age 1 2>&1)"
+assert_contains "ssh_client_doctor warns on an old key" "$out" "consider rotating"
+out="$(PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$keys_dir" --only keys --max-key-age 0 2>&1)"
+assert_not_contains "ssh_client_doctor --max-key-age 0 turns the age check off" "$out" "consider rotating"
+
+printf '%s\n' 'example.com ssh-ed25519 AAAA1' 'example.com ssh-ed25519 AAAA2' \
+  '|1|c2FsdA==|aGFzaA== ssh-ed25519 AAAA3' > "$keys_dir/known_hosts"
+chmod 644 "$keys_dir/known_hosts"
+out="$("$SSHDOC" --ssh-dir "$keys_dir" --only known_hosts 2>&1)"; rc=$?
+assert_eq "ssh_client_doctor known_hosts conflicts warn, not fail" "0" "$rc"
+assert_contains "ssh_client_doctor warns on conflicting host keys" "$out" "host example.com has conflicting ssh-ed25519 keys"
+assert_contains "ssh_client_doctor counts only the plain entries as unhashed" "$out" "2 of 3 entries are unhashed"
+printf '%s\n' 'old.example.com ssh-dss AAAA4' >> "$keys_dir/known_hosts"
+out="$("$SSHDOC" --ssh-dir "$keys_dir" --only known_hosts 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor fails an ssh-dss host key" "$out" "[FAIL]"
+assert_eq "ssh_client_doctor ssh-dss host key -> 1" "1" "$rc"
+
+# The host field is an alias list: a.example,b.example and a.example must
+# clash when the keys differ, and [host]:22 is the plain host.
+kh_dir="$(mktemp -d)"
+chmod 700 "$kh_dir"
+printf '%s\n' 'a.example,b.example ssh-ed25519 AAAA1' 'a.example ssh-ed25519 AAAA2' \
+  'c.example ssh-ed25519 AAAA3' 'C.example,!d.example ssh-ed25519 AAAA3' \
+  '!d.example ssh-ed25519 AAAA9' 'g.example ssh-ed25519 AAAA10' 'G.EXAMPLE ssh-ed25519 AAAA11' \
+  '[e.example]:22 ssh-ed25519 AAAA5' 'e.example ssh-ed25519 AAAA6' \
+  '[f.example]:2222 ssh-ed25519 AAAA7' 'f.example ssh-ed25519 AAAA8' > "$kh_dir/known_hosts"
+chmod 644 "$kh_dir/known_hosts"
+out="$("$SSHDOC" --ssh-dir "$kh_dir" --only known_hosts 2>&1)"
+assert_contains "ssh_client_doctor expands known_hosts aliases before comparing" \
+  "$out" "host a.example has conflicting ssh-ed25519 keys"
+assert_contains "ssh_client_doctor treats [host]:22 as the plain host" \
+  "$out" "host e.example has conflicting ssh-ed25519 keys"
+assert_not_contains "ssh_client_doctor does not conflict an alias that only one line lists" \
+  "$out" "host b.example"
+assert_not_contains "ssh_client_doctor compares host names case-insensitively without false clashes" \
+  "$out" "host c.example"
+assert_contains "ssh_client_doctor folds host name case when keys differ" \
+  "$out" "host g.example has conflicting ssh-ed25519 keys"
+assert_not_contains "ssh_client_doctor skips a negated !pattern alias" \
+  "$out" "!d.example"
+assert_not_contains "ssh_client_doctor keeps [host]:2222 apart from the plain host" \
+  "$out" "host f.example"
+rm -rf "$kh_dir"
+
+printf '%s\n' 'ssh-ed25519 AAAAdup one@example' 'from="10.0.0.1" ssh-ed25519 AAAAdup again@example' \
+  'ssh-ed25519 AAAAother other@example' > "$keys_dir/authorized_keys"
+chmod 600 "$keys_dir/authorized_keys"
+out="$("$SSHDOC" --ssh-dir "$keys_dir" --only authorized_keys 2>&1)"
+assert_contains "ssh_client_doctor warns on a duplicate authorized key" "$out" "1 duplicate key line(s)"
+assert_contains "ssh_client_doctor counts keys with no options" "$out" "2 of 3 key(s) carry no options"
+
+risky_dir="$(mktemp -d)"
+chmod 700 "$risky_dir"
+printf '%s\n' 'Host *' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+chmod 600 "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor fails StrictHostKeyChecking no for every host" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+assert_contains "ssh_client_doctor names the config line" "$out" "line 2, Host *"
+assert_contains "ssh_client_doctor warns on ForwardAgent for every host" \
+  "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+assert_eq "ssh_client_doctor Host * without host key checking -> 1" "1" "$rc"
+printf '%s\n' 'Host build-*' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor leaves a per-host exception ungraded" "$out" "[FAIL]"
+assert_eq "ssh_client_doctor per-host exception -> 0" "0" "$rc"
+# A negated pattern carves hosts out, so Host * !pattern is not global.
+printf '%s\n' 'Host * !trusted.example' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor does not grade Host * with a negation as global" "$out" "[FAIL]"
+assert_not_contains "ssh_client_doctor does not warn on Host * with a negation" "$out" "[warn]"
+assert_contains "ssh_client_doctor says all hosts except the negated one" "$out" "for all hosts except !trusted.example"
+assert_eq "ssh_client_doctor Host * with a negation -> 0" "0" "$rc"
+# Match host * (only non-excluding patterns, any case) is global like Match all.
+for match_line in 'Match host *' 'MATCH HOST *'; do
+  printf '%s\n' "$match_line" '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+  out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+  assert_contains "ssh_client_doctor grades StrictHostKeyChecking no under '$match_line' as global" \
+    "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+  assert_contains "ssh_client_doctor warns on ForwardAgent under '$match_line'" \
+    "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+  assert_eq "ssh_client_doctor '$match_line' without host key checking -> 1" "1" "$rc"
+done
+printf '%s\n' 'Match host *,!bastion' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor does not grade Match host *,!bastion as global" "$out" "[FAIL]"
+assert_not_contains "ssh_client_doctor does not warn on Match host *,!bastion" "$out" "[warn]"
+assert_eq "ssh_client_doctor Match host *,!bastion -> 0" "0" "$rc"
+# OpenSSH boolean aliases (false/off = no, true = yes) grade like the
+# canonical word.
+for shk_alias in false Off FALSE; do
+  printf '%s\n' 'Host *' "  StrictHostKeyChecking $shk_alias" > "$risky_dir/config"
+  out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+  assert_contains "ssh_client_doctor grades StrictHostKeyChecking $shk_alias like no" \
+    "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+done
+printf '%s\n' 'Host *' '  ForwardAgent TRUE' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_contains "ssh_client_doctor grades ForwardAgent true like yes" \
+  "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+# off is valid only for StrictHostKeyChecking; ForwardAgent on is not yes.
+printf '%s\n' 'Host *' '  ForwardAgent on' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_not_contains "ssh_client_doctor does not read ForwardAgent on as yes" "$out" "[warn]"
+# First value wins: an earlier block that sets the keyword narrows a later
+# Host * value to the hosts that block does not match.
+printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' '  ForwardAgent no' \
+  'Host *' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_not_contains "ssh_client_doctor does not fail a Host * value an earlier block overrides" "$out" "[FAIL]"
+assert_not_contains "ssh_client_doctor does not warn on an overridden Host * ForwardAgent" "$out" "[warn]"
+assert_contains "ssh_client_doctor says Host * applies to hosts not matched earlier" "$out" "for hosts not matched by an earlier block that sets it"
+assert_eq "ssh_client_doctor Host * after an earlier same keyword -> 0" "0" "$rc"
+printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' \
+  'Host *' '  ForwardAgent yes' '  StrictHostKeyChecking no' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor still warns on a Host * keyword no earlier block sets" \
+  "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
+assert_not_contains "ssh_client_doctor still spares the keyword an earlier block set" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+# The same unsafe value earlier and under Host *: every host gets it, so it
+# stays universal. A different earlier value demotes it (tested above).
+printf '%s\n' 'Host build-*' '  StrictHostKeyChecking no' '  ForwardAgent yes' \
+  'Host *' '  StrictHostKeyChecking no' '  ForwardAgent yes' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
+assert_contains "ssh_client_doctor still fails Host * when an earlier block has the same unsafe value" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" | grep -F 'for every host' || true)" "[FAIL]"
+assert_contains "ssh_client_doctor still warns ForwardAgent for every host after the same value" \
+  "$(grep -F 'ForwardAgent' <<<"$out" | grep -F 'for every host' || true)" "[warn]"
+assert_not_contains "ssh_client_doctor does not say everything is fine when every host is weakened" \
+  "$out" "no config setting weakens every connection"
+assert_eq "ssh_client_doctor same-value Host * after an earlier block -> 1" "1" "$rc"
+
+# An end-of-line comment is not part of the value; a quoted # is.
+printf '%s\n' 'Host *' '  StrictHostKeyChecking no # legacy' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_contains "ssh_client_doctor strips an end-of-line comment before grading" \
+  "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+printf '%s\n' 'Host *' '  StrictHostKeyChecking "no # not a comment"' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_not_contains "ssh_client_doctor keeps a quoted # in the value" "$out" "[FAIL]"
+
+# Ciphers list modifiers: - removes, + and ^ add to the defaults, none replaces.
+for cipher_case in 'Ciphers -aes128-cbc,3des-cbc:0' 'Ciphers +aes128-cbc:1' 'Ciphers ^aes128-cbc,aes256-gcm@openssh.com:1' \
+  'Ciphers aes128-cbc,aes256-ctr:1' 'Ciphers aes256-gcm@openssh.com:0' 'Ciphers +aes256-ctr:0'; do
+  cipher_line="${cipher_case%:*}"
+  cipher_want="${cipher_case##*:}"
+  printf '%s\n' 'Host *' "  $cipher_line" > "$risky_dir/config"
+  out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+  if [[ "$cipher_want" == 1 ]]; then
+    assert_contains "ssh_client_doctor warns on '$cipher_line'" "$out" "Ciphers enables CBC"
+  else
+    assert_not_contains "ssh_client_doctor leaves '$cipher_line' alone" "$out" "Ciphers enables CBC"
+  fi
+done
+
+out="$(SSH_AUTH_SOCK=/nonexistent PATH="$sshdoc_stub:$PATH" "$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
+assert_contains "ssh_client_doctor warns on a dead agent socket" "$out" "dead agent"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only agent 2>&1)"
+assert_contains "ssh_client_doctor skips the agent when none is set" "$out" "SSH_AUTH_SOCK is not set"
+
+sshdoc_groups="$("$SSHDOC" --list-groups)"
+for g in directory files config keys known_hosts authorized_keys risks agent; do
+  assert_contains "ssh_client_doctor lists group $g" "$sshdoc_groups" "$g"
+done
+"$SSHDOC" --only bogus >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects an unknown group -> 3" "3" "$rc"
+"$SSHDOC" --max-key-age soon >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects --max-key-age soon -> 3" "3" "$rc"
+rm -rf "$sshdoc_stub" "$keys_dir" "$risky_dir"
 
 section "status.sh"
 status_sections="$("$L/status.sh" --list-sections)"

@@ -231,6 +231,22 @@ done
 assert_eq 'concurrent retention leaves one complete generation' 1 "$(count_archives)"
 assert_clean
 
+# The archive must stay on each path's filesystem, the boundary the --diff
+# new-file scan (find -xdev) stops at; otherwise files on a nested mount are
+# archived but never compared. A recording tar checks the create flags.
+mkdir "$fixture/rec-bin" || exit 1
+cat > "$fixture/rec-bin/tar" <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == -czf ]] && printf '%s\n' "$@" > "$REC_FILE"
+exec "$REAL_TAR" "$@"
+STUB
+chmod +x "$fixture/rec-bin/tar"
+new_dest
+REC_FILE="$fixture/rec-args" PATH="$fixture/rec-bin:$PATH" REAL_TAR="$REAL_TAR" \
+  "$BACKUP" --yes --paths "$fixture/src" --dest "$dest" > "$fixture/output" 2>&1
+assert_eq 'the recording create run succeeds' 0 "$?"
+assert_eq 'tar create stays on one filesystem' 1 "$(grep -cx -e '--one-file-system' "$fixture/rec-args")"
+
 if (( checks == 0 || failures > 0 )); then
   printf '%s of %s config backup checks failed\n' "$failures" "$checks" >&2
   exit 1

@@ -31,13 +31,20 @@ Silicon and Intel. **Shell:** `bash` for scripts (`#!/usr/bin/env bash`),
 - [Quick start](#quick-start)
 - [`install_apps.sh`](#install_appssh)
 - [`install_devtools.sh`](#install_devtoolssh)
+- [`toolchain_check.sh`](#toolchain_checksh)
 - [`stay_fresh.sh`](#stay_freshsh)
 - [`v1_stay_fresh.sh`](#v1_stay_freshsh)
 - [`brewfile.sh`](#brewfilesh)
+- [`config_backup.sh`](#config_backupsh)
 - [`macos_defaults.sh`](#macos_defaultssh)
 - [`status.sh`](#statussh)
 - [`workstation_doctor.sh`](#workstation_doctorsh)
 - [`hardening_audit.sh`](#hardening_auditsh)
+- [`ops_context.sh`](#ops_contextsh)
+- [`net_doctor.sh`](#net_doctorsh)
+- [`tls_expiry.sh`](#tls_expirysh)
+- [`schedule_report.sh`](#schedule_reportsh)
+- [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [`launchd/stay_fresh_agent.sh`](#launchdstay_fresh_agentsh)
 - [`zsh_aliases.zsh`](#zsh_aliaseszsh)
 - [What this changes on your machine](#what-this-changes-on-your-machine)
@@ -66,6 +73,7 @@ For returning users. Every command is idempotent.
 ./status.sh                              # one screen: fit to work on? what next?
 ./workstation_doctor.sh                  # is this Mac well?
 ./hardening_audit.sh                     # is this Mac safe?
+./ops_context.sh --warn-on prod          # which cluster, profile, workspace am I on?
 ```
 
 After linking `zsh_aliases.zsh`, the same three are available as
@@ -77,13 +85,20 @@ After linking `zsh_aliases.zsh`, the same three are available as
 | --- | --- |
 | `install_apps.sh` | Day-one workstation apps, Homebrew casks/formulae, platform CLIs, and Google Cloud SDK. |
 | `install_devtools.sh` | Language and infrastructure toolchains: Python, Terraform, Go, Helm, and version managers. |
+| `toolchain_check.sh` | Read-only: are the Python, Terraform, Go and Node versions this checkout pins installed, and are they the ones that run? |
 | `stay_fresh.sh` | Recurring maintenance: cleanup, updates, cache pruning, and version reporting. |
 | `v1_stay_fresh.sh` | Legacy minimal maintenance flow kept for reference and simple one-off runs. Deprecated: it runs only under `--legacy-run`. |
 | `brewfile.sh` | Capture this machine's Homebrew state into a versioned `Brewfile`, and restore it on another machine. |
+| `config_backup.sh` | Dated, verified, rotated archive of the non-secret dotfiles and tool config (`~/.zshrc`, `~/.gitconfig`, `~/.ssh/config`, `~/.aws/config`, LaunchAgents) before an upgrade or a wipe. |
 | `macos_defaults.sh` | Read-only preference drift report by default; explicitly apply selected settings or revert a validated backup. |
 | `status.sh` | One-screen verdict: is this machine well enough to work on, and what should I run next? Read-only, no log, no sudo. |
 | `workstation_doctor.sh` | Read-only health report: is this Mac **well**? Security posture, disk, CLT, Homebrew, SSH, Time Machine, LaunchAgents. |
-| `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper — each finding with its fix. |
+| `hardening_audit.sh` | Read-only security audit: is this Mac **safe**? Sharing, firewall, updates, FileVault, SIP, Gatekeeper, credential files at rest — each finding with its fix. |
+| `ops_context.sh` | Read-only: which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login is this shell pointed at? `--warn-on prod` turns it into a pre-flight guard. |
+| `net_doctor.sh` | Read-only "the network is wrong" report: interfaces, default route, split DNS, the system proxy against the shell's, VPN tunnels, `/etc/hosts` overrides, listeners, and an opt-in `--probe`. |
+| `tls_expiry.sh` | Read-only certificate expiry check for PEM files, hosts, and (`--keychain`) the client and identity certificates in the Keychain; exit `1` on an expired certificate, or inside `--days` with `--fail-on warn`. |
+| `schedule_report.sh` | Read-only inventory of what fires when you are not looking: launchd agents and daemons with schedules decoded, crontab and `at` jobs; flags missing programs and writable plists. |
+| `ssh_client_doctor.sh` | Read-only check of `~/.ssh`: directory and key modes, DSA and short RSA keys, keys with no passphrase, missing `IdentityFile` paths and risky options under `Host *`, `Match all` or `Match host *`. |
 | `launchd/stay_fresh_agent.sh` | Install a LaunchAgent so `stay_fresh.sh` runs on a schedule instead of when you remember. |
 | `lib/workspace_scan.py` | Classifier used by `stay_fresh.sh` to decide which editor `workspaceStorage` entries are dead. Not run directly. |
 | `lib/npx_cache.py` | Classifier for old npx cache entries; used by deep cleanup and the age-limited presets. Keeps entries when activity or cache ownership is uncertain. |
@@ -104,10 +119,17 @@ than memorizing flags.
 | **Bootstrap** | `install_devtools.sh` | Once per machine (+ version bumps) | `~/.pyenv`, `~/.goenv`, `$(brew --prefix)/bin`, optionally `~/.zshrc` |
 | **Ambient** | `zsh_aliases.zsh` | Sourced on every interactive shell (after wiring into `~/.zshrc`) | Your shell only — no disk writes |
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | Caches, Homebrew, Docker, Xcode, toolchains |
+| **Configure** | `config_backup.sh` | Before an OS upgrade, a wipe or a risky dotfile edit | Writes one archive to `~/ops-toolbox-backups` (and rotates older ones there) only with `--yes` |
 | **Configure** | `macos_defaults.sh` | Once, then after major macOS upgrades | Finder, Dock, keyboard and screenshot preferences; read-only unless `--apply`/`--revert` |
 | **Diagnose** | `status.sh` | Whenever you sit down at the machine | Nothing — it only reads |
 | **Diagnose** | `workstation_doctor.sh` | After bootstrap, or when something feels wrong | Nothing — it only reads |
-| **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | Nothing — it only reads |
+| **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything, credentials included | Nothing — it only reads |
+| **Diagnose** | `toolchain_check.sh` | After cloning a repository, or when a shim says a version is missing | Nothing — it only reads |
+| **Diagnose** | `ops_context.sh` | Before any command that changes infrastructure | Nothing — it only reads |
+| **Diagnose** | `net_doctor.sh` | When git, brew or kubectl cannot reach something, especially after joining a VPN | Nothing — it only reads |
+| **Diagnose** | `tls_expiry.sh` | Weekly from a scheduler, or before a VPN or mTLS client certificate lapses | Nothing — it only reads |
+| **Diagnose** | `schedule_report.sh` | After installing or removing an app that runs in the background | Nothing — it only reads |
+| **Diagnose** | `ssh_client_doctor.sh` | When ssh says `Permission denied (publickey)`, or after copying keys to a new Mac | Nothing — it only reads |
 | **Legacy** | `v1_stay_fresh.sh` | On demand, behind `--legacy-run` | Minimal subset of the above; no skip flags and no dry run |
 
 The two bootstrap scripts are independent — you can run either one
@@ -431,6 +453,73 @@ your shell configuration yourself.
 | `1` | One or more installs failed. |
 | `2` | Preflight checks failed, or a non-interactive real run omitted `--yes`. |
 | `3` | Invalid arguments. |
+
+---
+
+## `toolchain_check.sh`
+
+`install_devtools.sh` installs the version managers; this answers whether a
+given checkout's pins resolve to something they have. It reads the pin files
+in one directory, asks the managers what is installed, and prints per tool
+whether the pin is installed, missing (with the command that installs it), or
+installed but not the binary that actually runs.
+
+```bash
+./toolchain_check.sh                     # the current directory
+./toolchain_check.sh ~/src/infra         # or: --dir ~/src/infra
+./toolchain_check.sh --strict            # an inactive pin fails too
+./toolchain_check.sh --list-pins         # which files it reads
+```
+
+```text
+[ ok ] python     3.12.5   (.python-version, pyenv 3.12.5)
+[warn] terraform  1.9.5 not installed   fix: tfenv install 1.9.5   or: ./install_devtools.sh --only terraform --terraform-version 1.9.5
+[ ok ] go         >= 1.22   (go.mod, goenv 1.23.2)
+```
+
+| Tool | Pin files, first match wins | Installed according to |
+| --- | --- | --- |
+| `python` | `.python-version`, `.tool-versions` | `pyenv versions --bare`; `3.12` is met by `3.12.5` |
+| `terraform` | `.terraform-version`, `.tool-versions` | `tfenv list`, else `tenv tf list` |
+| `go` | `.go-version`, `go.mod` (`toolchain` exactly, else the `go` line as a minimum), `.tool-versions` (`golang`) | `goenv versions --bare`; a minimum is compared numerically, so `1.10` is newer than `1.9`; a prerelease ranks `alpha` < `beta` < `pre` < `rc`, by its number (`rc1` < `rc2`), and below its release, so `1.22rc1` does not meet `1.22` |
+| `node` | `.nvmrc`, `.node-version`, `.tool-versions` (`nodejs`) | the major version of `node --version` |
+
+When `mise` is on `PATH`, `mise where TOOL@VERSION` answers first. A
+`.tool-versions` line or a `.python-version` file (one version per line or
+separated by spaces, `#` comments allowed) can list several versions; each one
+is checked and only the missing ones are named. A pin found in a second file is noted, not
+checked. `system`, `latest`, `lts/*` and anything that is not a plain version
+number are notes too.
+
+**Read-only, and a pin file is data.** Nothing is installed, and no pin file
+is sourced or evaluated: a value that is not a plain version number is
+reported as such and never pasted into a printed command, so a hostile pin
+cannot smuggle shell syntax into a fix you copy. The active-version probes
+(`python --version`, `terraform version`, `go version`, `node --version`, run
+from the directory) happen only for a pin that is already installed, with the
+managers' auto-install switches off, Terraform's update check disabled and
+`GOTOOLCHAIN=local`, so no probe downloads anything. The directory is not
+searched recursively and no project code runs.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `DIR`, `--dir DIR` | Directory holding the pin files (default: the current directory). |
+| `--strict` | Exit `1` on any warning, including a pin that is installed but not active. |
+| `--quiet` | Print only warnings. |
+| `--list-pins` | Print the pin file names it reads and exit. Works anywhere. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Every pin is satisfied. An installed pin that is not active is a warning only. |
+| `1` | A pinned version is not installed, or its manager is missing; with `--strict`, any warning. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments, or the directory does not exist. |
+| `4` | No pin file in the directory. |
 
 ---
 
@@ -1158,6 +1247,95 @@ reconciliation, so review the preview before applying it. If `--dry-run` and
 
 ---
 
+## `config_backup.sh`
+
+`brewfile.sh` records the software and `macos_defaults.sh` the preferences.
+The rest of "rebuild this laptop in an hour" is the dotfiles and tool
+configuration, and this keeps a dated copy of them: the macOS counterpart of
+[`linux/config_backup.sh`](../linux/config_backup.sh), aimed at the home
+directory instead of `/etc`. It is a copy you can keep, not a restore tool,
+and it never writes into the paths it archives.
+
+```bash
+./config_backup.sh --dry-run                 # what would be archived and rotated
+./config_backup.sh --yes                     # write ~/ops-toolbox-backups/config-YYYYmmdd-HHMMSS.tar.gz
+./config_backup.sh --list                    # members of the newest archive
+./config_backup.sh --yes --paths "$HOME/.config/nvim,$HOME/.kube/kubie.yaml" --keep 14
+```
+
+Default sources, each archived only if it exists: `~/.zshrc`, `~/.zprofile`,
+`~/.zshenv`, `~/.bash_profile`, `~/.bashrc`, `~/.gitconfig`,
+`~/.gitignore_global`, `~/.config/git`, `~/.ssh/config`, `~/.aws/config`,
+`~/.terraformrc`, `~/.tool-versions`, `~/.config/starship.toml` and
+`~/Library/LaunchAgents`. `--paths` replaces them with absolute paths under
+`$HOME`; a path outside it, with a `..` component, or `$HOME` itself is
+refused.
+
+**Secrets stay out by default.** A path that is, contains, or lies inside a
+credential store is refused with exit `3`: anything in `~/.ssh` except
+`config`, `known_hosts*` and `*.pub` (and `~/.ssh` as a whole),
+`~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`,
+`~/.npmrc`, `~/.git-credentials`, `~/.config/git/credentials`, the GitHub CLI
+`hosts.yml`, `~/.terraform.d/credentials.tfrc.json`, `~/.pypirc`, gcloud's
+`~/.config/gcloud/application_default_credentials.json`, `credentials.db` and
+`legacy_credentials/`, a `~/.terraformrc` with a `credentials` block, a
+`~/.aws/config` with static keys, `~/Library/Keychains` and `~/.gnupg`. A
+default run leaves `~/.config/git/credentials` out of `~/.config/git` and
+skips a `~/.terraformrc` that has a `credentials` block and a `~/.aws/config`
+with static keys (`aws_access_key_id`, `aws_secret_access_key` or
+`aws_session_token`), saying so. `--include-secrets` lifts that and warns that
+the archive now holds secrets. Each `--paths` entry is checked by its
+written name and by where it really points (folder components and a final
+symlink are resolved), so an alias such as `~/alias` onto `~/.aws` is refused
+like `~/.aws`, and a link that cannot be resolved is refused. Either way
+the archive is created `0600`; a `--dest` the script creates is `0700`,
+while an existing one keeps its mode and is reported when group- or
+world-accessible.
+
+How a run writes: a `--dest` that group or other users can write to is refused
+(exit `3`; a sticky one owned by you, like `/tmp`, is accepted), and so is one
+below an ancestor directory that is not owned by root or you, or that group or
+other users can write to unless it is sticky, since anyone who can write to an
+ancestor can rename `--dest` away and put their own directory in its place.
+A `--dest`, or an ancestor of it, whose extended ACL (`ls -le`) has an allow
+entry for anyone but its owner, root or wheel that lets them change it (for an
+ancestor: add or delete children, so `--dest` can be renamed away) is refused
+too (exit `3`; fix: `chmod -N DIR`). An entry that only grants `list` is read
+access like a `755` directory and is noted, not refused, and an entry marked
+`only_inherit` is ignored, since it governs children rather than the directory.
+The archive is built as a hidden temporary file in `--dest`, created
+exclusively with `mktemp` under an unpredictable name, so a symlink planted in
+`--dest` is never followed. `tar` runs under `umask 077` (with
+`COPYFILE_DISABLE=1`, so macOS `tar` adds no `._` AppleDouble members, and
+`.DS_Store` excluded), and the result is checked with `tar -tzf` for at least
+one member, then published with `mv -n`, which never replaces a file. A failed
+run removes its temporary file and keeps every earlier archive. Rotation then
+removes the oldest `PREFIX-YYYYmmdd-HHMMSS.tar.gz` files beyond `--keep`,
+printing each one, and touches nothing else in `--dest`; it runs only after
+the new archive is published, and `--dry-run` lists what it would remove. A
+dry run writes nothing at all, not even the destination directory, and
+previews on any machine.
+
+| Flag | Purpose |
+| --- | --- |
+| `--dry-run` | Print the archive, its sources and the rotation victims; write nothing. |
+| `--yes`, `-y` | Required for a run that writes. |
+| `--list [FILE]` | List the members of `FILE`, or of the newest archive in `--dest`. |
+| `--paths LIST` | Comma-separated absolute paths under `$HOME`, instead of the default sources. |
+| `--dest DIR` | Directory for archives (default `~/ops-toolbox-backups`); must not be inside an archived source. |
+| `--keep N` | Archives to keep, newest first (default `7`; `0` keeps all). |
+| `--prefix NAME` | Filename prefix (default `config`): letters, digits, `.`, `_`, `-`. |
+| `--include-secrets` | Allow credential paths, with a warning. |
+| `-h`, `--help` | Show the built-in help. |
+
+**Exit codes:** `0` archive written, listed or previewed · `1` tar,
+verification, publication or rotation failed · `2` preflight failed (not
+macOS, `HOME` unset, or no `tar`) for a real run · `3` bad arguments, a
+refused path or `--dest`, or a real run without `--yes` · `4` nothing to
+archive, or no archive to list.
+
+---
+
 ## `macos_defaults.sh`
 
 Reports macOS preference drift without changing anything. The built-in settings
@@ -1208,10 +1386,18 @@ the glance before you start.
 ./status.sh                       # every section
 ./status.sh --only disk,brew      # just those two
 ./status.sh --list-sections       # what can be asked for
+./status.sh --json                # the same verdicts, for a parser
 ./status.sh --help
 ```
 
 Sections: `os`, `disk`, `brew`, `git`, `agent`, `security`.
+
+| Flag | Purpose |
+| --- | --- |
+| `--only LIST` | Only the named sections (see `--list-sections`). |
+| `--json` | Print one JSON object instead of the report; the exit code is unchanged. |
+| `--list-sections` | Print the section ids and exit. |
+| `-h`, `--help` | Show the built-in help. |
 
 `--help` and `--list-sections` answer before any preflight, so they work off
 macOS. A warning exits 1 and names the script to run next, which is what makes
@@ -1314,6 +1500,7 @@ decide.
 ./hardening_audit.sh --only firewall,disk,lock  # a subset
 ./hardening_audit.sh --quiet                # warnings and failures only
 ./hardening_audit.sh --fail-on warn         # exit 1 on a warning too
+./hardening_audit.sh --only secrets         # credential files only
 sudo ./hardening_audit.sh                   # a few probes read more as root
 ```
 
@@ -1328,11 +1515,20 @@ sudo ./hardening_audit.sh                   # a few probes read more as root
 | `lock` | Whether a password is required immediately after display sleep or the screen saver; an unlocked delay is graded. |
 | `sip` | System Integrity Protection, including a partially-disabled custom configuration. |
 | `gatekeeper` | Whether assessments are enabled. |
+| `secrets` | Credential files at rest: `~/.aws/credentials`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, the GitHub CLI `hosts.yml`, Terraform Cloud and gcloud application-default credentials. Readable by every local user fails, by the group warns, and so does a `600` file whose extended ACL (`ls -le`) has an allow entry granting `read` to anyone but the owner (fix: `chmod -N FILE`; an `only_inherit` entry is ignored). Static AWS keys, base64 registry passwords and `identitytoken` / `registrytoken` values (also those left beside a `credsStore`), a literal npm token, a `.netrc` password, `~/.git-credentials` and `credential.helper store` warn. |
 
 The `sharing` checks ask `netstat` which ports are listening rather than
 `systemsetup`, which needs root: an audit you have to `sudo` is an audit nobody
 runs. Loopback-only listeners are ignored, so an ssh tunnel endpoint on
 `127.0.0.1` is not reported as File Sharing being switched on.
+
+The `secrets` group names the file and the kind of finding and **never prints
+a value**: its content checks are `grep -q` with the output discarded, so only
+a yes or a no leaves them. A symlinked credential file is checked at its
+target and reported under its name in the home directory. A Docker
+`config.json` that uses a credential store and holds no legacy `auth`,
+`identitytoken` or `registrytoken` entry, or an `.npmrc` whose token comes
+from `${NPM_TOKEN}`, holds no secret, so its mode is not graded.
 
 ### Options
 
@@ -1341,6 +1537,7 @@ runs. Loopback-only listeners are ignored, so an ssh tunnel endpoint on
 | `--only GROUPS` | Comma-separated subset (see `--list-groups`). |
 | `--fail-on LEVEL` | Exit `1` on `fail` (default) or on `warn` and above. |
 | `--quiet` | Print only warnings and failures. |
+| `--json` | Print one JSON object instead of the report; the exit code is unchanged. |
 | `--list-groups` | Print the group names and exit. |
 | `-h`, `--help` | Show the built-in help. |
 
@@ -1356,6 +1553,362 @@ print.
 | `0` | Nothing at or above the failure threshold. |
 | `1` | One or more findings at or above `--fail-on`. |
 | `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments. |
+
+### Machine-readable output
+
+`status.sh --json` and `hardening_audit.sh --json` print the verdicts the
+report would have printed as one JSON object on stdout, followed by a newline
+and nothing else: no colour, no headings, no hints. That is what an MDM
+extension attribute (Jamf, Kandji, Intune), a `node_exporter` textfile
+collector, a cron mailer or a CI gate can consume without scraping. Neither
+script needs `jq` or `python`; strings are escaped with `sed` and `tr`, so a
+probe answer containing quotes or control characters still produces valid
+JSON. Errors still go to stderr, and the exit code keeps its meaning: read
+`$?` as well as the document.
+
+```text
+{"schema":1,"script":"status.sh","host":"mbp","generated":"2026-10-21T09:15:02Z","ok":false,
+ "sections":[{"id":"disk","verdict":"warn","message":"14G free on / — under 20G"}]}
+
+{"schema":1,"script":"hardening_audit.sh","host":"mbp","generated":"2026-10-21T09:15:04Z",
+ "fail_on":"fail","summary":{"pass":11,"warn":2,"fail":1,"skip":1},"needs_root_hint":true,
+ "findings":[{"group":"lock","verdict":"fail","check":"screen lock password requirement is off",
+ "fix":"System Settings > Lock Screen > Require password after screen saver begins or display is turned off"}]}
+```
+
+`schema` is bumped only when a field changes meaning or disappears. A status
+`verdict` is `ok`, `warn` or `info`; an audit `verdict` is `pass`, `warn`,
+`fail` or `skip`, and `fix` is `null` for a pass. With `--quiet`, pass and
+skip records are left out of `findings` while `summary` still counts every
+check. `--list-sections` and `--list-groups` stay plain text.
+
+---
+
+## `ops_context.sh`
+
+The classic infrastructure outage is the right command against the wrong
+cluster, project, AWS profile, Terraform workspace or Docker daemon.
+`zsh_aliases.zsh` has switchers for some of these; this prints all of them on
+one screen, and `--warn-on` turns the answer into a guard a runbook can put in
+front of a command:
+
+```bash
+./ops_context.sh                                   # every tool
+./ops_context.sh --only kube,aws                   # a subset
+./ops_context.sh --warn-on prod,live               # exit 1 if any value matches
+./ops_context.sh --warn-on prod --quiet && terraform apply
+./ops_context.sh --dir ~/src/infra/envs/eu         # that directory's workspace
+./ops_context.sh --list-tools
+```
+
+```text
+[ ok ] kube       gke_acme_staging  ns=payments
+[ ok ] gcloud     config=default project=acme-staging account=me@example.com
+[ ok ] aws        profile=acme-dev region=eu-west-1 account=111122223333
+[warn] aws        sso session expired at 2026-10-20T18:02:11Z  fix: aws sso login --profile acme-dev
+[info] terraform  no Terraform directory here (.)
+[ ok ] docker     context=orbstack  unix:///Users/me/.orbstack/run/docker.sock
+[ ok ] gh         github.com as me
+```
+
+| Tool | Where the answer comes from |
+| --- | --- |
+| `kube` | `kubectl config current-context`, and the namespace and cluster of that context. `KUBECONFIG` is honoured because `kubectl` honours it. |
+| `gcloud` | Files only: `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config`, then `configurations/config_NAME` under `CLOUDSDK_CONFIG` (default `~/.config/gcloud`). `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT` and `CLOUDSDK_COMPUTE_REGION` override the file values, are marked `(env)`, and are what `--warn-on` is matched against. The CLI is never started. |
+| `aws` | `AWS_PROFILE`, `AWS_DEFAULT_PROFILE` or `default`, and that stanza of `~/.aws/config` (`AWS_CONFIG_FILE`). The region is the effective one: `AWS_REGION`, then `AWS_DEFAULT_REGION`, then the profile's `region`; an environment value is marked `(env AWS_REGION)` or `(env AWS_DEFAULT_REGION)` and is what `--warn-on` is matched against. For an SSO profile, the expiry of the newest cached login. |
+| `terraform` | `TF_WORKSPACE`, else `.terraform/environment` in `--dir`, else `default`; reported only where `--dir` holds `.terraform/` or `*.tf`. |
+| `docker` | `DOCKER_CONTEXT` (which the Docker CLI lets override `DOCKER_HOST`), else `DOCKER_HOST`, else `docker context show`, and the endpoint of that context. With both variables set the context's endpoint is reported and `DOCKER_HOST` is noted as ignored, except for the built-in `default` context, whose endpoint is `DOCKER_HOST` itself; `--warn-on` is matched against the effective endpoint. Anything but a local `unix://` socket is a warning. |
+| `gh` | Host names and `user:` lines of `hosts.yml` under `GH_CONFIG_DIR` (default `~/.config/gh`). |
+
+Everything is local: config files, and CLI subcommands that answer from those
+files. **It never opens `~/.aws/credentials` and never prints a secret.**
+When `AWS_ACCESS_KEY_ID`, `GH_TOKEN` or `GITHUB_TOKEN` is set, the warning
+names the variable, because each one silently overrides the profile or login
+printed above it, and the value stays where it is. Values read from config
+files are printed with control characters stripped, so a context name cannot
+write terminal escapes.
+
+`--warn-on` takes comma-separated, case-insensitive substrings and matches
+them against every value printed: context, namespace, cluster, gcloud
+configuration, project and account, AWS profile, region (the effective
+one, the profile's own when no environment variable replaces it), role and
+account id, Terraform workspace, Docker context and endpoint, and GitHub host and user.
+A match turns that row into a `[warn]` naming the pattern and exits `1`.
+An expired SSO login is a warning too, but it changes the exit code only
+under `--strict`, so a lapsed login never blocks an unrelated command.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--only TOOLS` | Comma-separated subset (see `--list-tools`). |
+| `--warn-on PATTERNS` | Comma-separated, case-insensitive substrings; a value containing one is a warning and exits `1`. |
+| `--dir DIR` | Where to look up the Terraform workspace (default: the current directory). |
+| `--strict` | Exit `1` on any warning, not only on a `--warn-on` match. |
+| `--quiet` | Print only warnings: silent means safe to continue. |
+| `--list-tools` | Print the tool ids and exit. Works anywhere, without `HOME`. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report printed and no `--warn-on` pattern matched. |
+| `1` | A `--warn-on` pattern matched, or `--strict` and any warning. |
+| `2` | Preflight failed — not macOS, or `HOME` is not set. |
+| `3` | Invalid arguments — an unknown flag or tool, a missing value, a `--dir` that is not a directory. |
+| `4` | `--only` selected nothing. |
+
+---
+
+## `net_doctor.sh`
+
+When `git`, `brew` or `kubectl` cannot reach something on a laptop that moves
+between office, home, VPN, Tailscale and WARP, the cause is usually DNS
+scoping, a system proxy the terminal does not use, a stale `/etc/hosts` line
+or a missing default route. This is the macOS half of
+[`linux/net_doctor.sh`](../linux/net_doctor.sh), read from `scutil`,
+`route`, `ifconfig`, `lsof` and `dscacheutil`.
+
+```bash
+./net_doctor.sh                              # the whole report
+./net_doctor.sh --probe github.com           # plus DNS and TCP/443 to one host
+./net_doctor.sh --probe registry.corp.example:5000
+./net_doctor.sh --skip-listen --quiet        # warnings and the summary only
+./net_doctor.sh --strict                     # exit 1 on any warning
+```
+
+| Section | What it reports |
+| --- | --- |
+| `interfaces` | Interfaces with an IPv4 address or an active link, from `ifconfig -a`; none active is a warning. |
+| `routes` | The default IPv4 gateway and interface (`route -n get default`); none is a warning. IPv6 is reported, not graded. |
+| `dns` | The primary resolver and search domains from `scutil --dns`; every resolver that takes only one domain (split DNS, which is how a VPN routes its names); the scoped count; and whether this Mac's own hostname resolves, because `sudo` and `git` stall for seconds when it does not. |
+| `proxy` | The system HTTP, HTTPS and automatic (PAC) proxy from `scutil --proxy` against `https_proxy`, `http_proxy` and `all_proxy` in the shell. A system proxy the shell does not set is a warning: browsers use it, `curl`, `git`, `brew` and `kubectl` do not. The export line is printed. |
+| `vpn` | Connected VPN services (`scutil --nc list`) and `utun` tunnels holding an IPv4 address, which is how Tailscale, WARP and IKEv2 clients show up. |
+| `hosts` | Every `/etc/hosts` line beyond the stock `localhost` and `broadcasthost` entries, listed (up to ten) but not judged. |
+| `listen` | This user's listening TCP sockets (`lsof -nP -iTCP -sTCP:LISTEN`), up to fifteen, each marked loopback or reachable from the network. |
+| `probe` | Only with `--probe`: one `dscacheutil` lookup and one `nc -z` connection, five seconds at most, with the command to repeat it by hand. |
+
+Read-only and local by default: `--probe` is the only network traffic. No
+`sudo`, no log file, and no change to a resolver or a proxy; every fix is
+printed. The shell's proxy variables are named, never printed, because a proxy
+URL can carry a password. A missing tool is a `skip`, not a failure. For
+firewall posture, see [`hardening_audit.sh`](#hardening_auditsh).
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--probe HOST[:PORT]` | Resolve `HOST` and try one TCP connection to `PORT` (default `443`). |
+| `--skip-listen` | Do not list listening sockets (and do not run `lsof`). |
+| `--hosts-file PATH` | Hosts file to read (default: `/etc/hosts`). |
+| `--strict` | Exit `1` when the report has any warning. |
+| `--quiet` | Print only warnings and the summary. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report ran; warnings do not change this. |
+| `1` | `--strict` was given and the report has a warning. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments, including a probe host that is not a name or an IPv4 address, or a port outside 1-65535. |
+
+---
+
+## `tls_expiry.sh`
+
+The certificates that cause outages are the ones nobody pages on: an internal
+CA leaf, an ingress certificate behind a corporate name, and the mTLS or VPN
+client identity sitting in the login Keychain. This is the macOS half of
+[`linux/tls_expiry.sh`](../linux/tls_expiry.sh), with the same flags,
+verdicts and exit codes, plus `--keychain`.
+
+```bash
+./tls_expiry.sh --file ~/certs/ingress.pem
+./tls_expiry.sh --file "$HOME/certs/*.pem"         # a quoted glob is expanded
+./tls_expiry.sh --host grafana.corp.example --host registry.corp.example:5000
+./tls_expiry.sh --keychain --days 21               # client and identity certificates
+./tls_expiry.sh --host example.com --fail-on warn  # exit 1 inside the window too
+```
+
+| Target | What is graded |
+| --- | --- |
+| `--file PATH` | The first certificate in each PEM. A directory is refused rather than walked, so a CA bundle directory is never paged on. |
+| `--host HOST[:PORT]` | The leaf the server presents (`openssl s_client` with SNI), fetched once with a ten-second cap. `https://` and a path are stripped. |
+| `--keychain` | The client identities (a certificate with its private key, as `security find-identity -p ssl-client` lists them) in the login keychain and, when readable, `/Library/Keychains/System.keychain`, matched to their certificates by SHA-1 fingerprint. Roots, intermediates and other certificates that merely sit in the keychain are counted, not graded, so an unrelated expired one never fails the run. Never `/System/Library/Keychains`. |
+
+The verdict comes from `openssl x509 -checkend`, so it needs no date parsing:
+expired is `FAIL`, inside `--days` (default `30`) is `warn`. The day count
+in the message uses BSD `date -j`. `--keychain` reads public certificates
+only (`security find-identity` and `security find-certificate -p`): no
+private key is requested, so no Keychain unlock prompt can appear. A host must
+be a host name or an IPv4 address and a port `1`-`65535`; anything else is
+refused before it reaches `openssl`. Certificates are held in shell
+variables and passed on stdin, so nothing is written to disk.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--file PATH` | PEM to inspect; repeatable and comma-separable. |
+| `--host HOST[:PORT]` | Host to fetch the leaf from (default port `443`); repeatable. |
+| `--keychain` | Grade the Keychain client identities; other certificates are not graded. |
+| `--days N` | Warn this many days before expiry, `0`-`3650` (default `30`). |
+| `--fail-on LEVEL` | Exit `1` on `expired` (default), on `warn` and above, or `never`. |
+| `--quiet` | Print only warnings and failures. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing at or above the failure threshold. |
+| `1` | One or more certificates at or above `--fail-on`. |
+| `2` | Preflight failed — not macOS, or no `openssl` on `PATH`. |
+| `3` | Invalid arguments, including no target at all. Checked before the preflight. |
+
+---
+
+## `schedule_report.sh`
+
+What will fire when you are not looking? A developer Mac collects launchd jobs
+from installers (VPN clients, sync agents, Docker and OrbStack helpers), old
+cron lines and forgotten `at` jobs. This lists every one with its schedule in
+words, and flags the jobs worth a second look. The macOS half of
+[`linux/schedule_report.sh`](../linux/schedule_report.sh).
+
+```bash
+./schedule_report.sh                         # every section
+./schedule_report.sh --only launchd-user     # just ~/Library/LaunchAgents
+./schedule_report.sh --include-apple         # com.apple.* jobs too
+./schedule_report.sh --loaded                # mark each user agent loaded or not
+./schedule_report.sh --strict                # exit 1 on any warning
+```
+
+```text
+[info] com.example.backup   Mon 10:30   /usr/local/bin/backup
+[info] com.example.sync   every 3600s, at load   /Applications/Sync.app/Contents/MacOS/agent
+[warn] com.vendor.vpn-helper runs /Library/PrivilegedHelperTools/vpn-helper, which no longer exists
+```
+
+| Section | Source |
+| --- | --- |
+| `launchd-user` | `~/Library/LaunchAgents` |
+| `launchd-agents` | `/Library/LaunchAgents` |
+| `launchd-daemons` | `/Library/LaunchDaemons` |
+| `crontab` | `crontab -l`, comments and `NAME=value` lines left out, up to twenty entries |
+| `at` | `atq` |
+
+Each plist is read through `plutil -convert xml1 -o -`, so binary plists work
+too, and its schedule is rendered as `Mon 10:30`, `daily 03:00`,
+`every 3600s`, `at load`, `keep-alive`, `on path change` or `unscheduled`. A
+key `StartCalendarInterval` leaves out is a wildcard and shows as `**`.
+`com.apple.*` jobs are counted and hidden unless `--include-apple`.
+
+| Finding | Level |
+| --- | --- |
+| The job's program (an absolute `Program` or first `ProgramArguments`) does not exist | `warn`, with `stay_fresh.sh --prune-orphan-agents` for user agents and the `launchctl bootout` command for the others |
+| The plist, or the program it runs, is writable by its group or by everyone | `warn`, with `chmod go-w`: anyone who can edit either decides what runs as that user, or as root for a daemon |
+| The plist, or the program it runs, has an extended ACL (`ls -le`) with an allow entry for anyone but its owner, root or wheel that grants `write`, `append`, `delete`, `add_file`, `add_subdirectory`, `delete_child`, `writeattr`, `writeextattr`, `writesecurity` or `chown`; a parent directory with such an entry is named like a writable one; a symlinked program is judged by its target, and an `only_inherit` entry (children only) is ignored | `warn`, with `chmod -N`. Checked on macOS only |
+| A LaunchDaemon plist, or the program it runs, is not owned by root | `warn`, with `sudo chown root:wheel`: a user-owned file is code that user can edit and launchd runs as root, whatever its mode |
+| The plist, or the program it runs, sits under a directory that its group or everyone can write without the sticky bit (or, for a daemon on the live system, one a non-root user owns) | `warn`, naming the directory: the file could be swapped before launchd runs it. Every parent up to `/` is checked, for the path as written (a symlinked component or file can be repointed) and again for where it resolves |
+| `KeepAlive` with no `ThrottleInterval` | `info`: the job restarts whenever it exits |
+| `Disabled` set in the plist | noted on the row |
+
+**Strictly read-only.** Nothing is loaded, unloaded or edited: `plutil` only
+prints a plist, and the one `launchctl` call (`print`, behind `--loaded`)
+changes nothing. Removing a job stays with
+[`stay_fresh.sh`](#stay_freshsh)'s explicit `--prune-orphan-agents`. Plist and
+cron text is printed with control characters stripped and is never evaluated.
+`/Library/LaunchDaemons` is world-readable, so no `sudo` is needed.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--only SECTIONS` | Comma-separated subset (see `--list-sections`). |
+| `--list-sections` | Print the section ids and exit. |
+| `--include-apple` | Also list `com.apple.*` jobs. |
+| `--loaded` | Mark each user agent `[loaded]` or `[not loaded]` (one `launchctl print` per job). |
+| `--root DIR` | Where `/Library` is looked up (default `/`). |
+| `--strict` | Exit `1` when the report has any warning. |
+| `--quiet` | Print only warnings and the summary. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | The report ran; warnings do not change this. |
+| `1` | `--strict` was given and the report has a warning. |
+| `2` | Preflight failed — not macOS. |
+| `3` | Invalid arguments, including an unknown section or a `--root` that is not a directory. |
+
+---
+
+## `ssh_client_doctor.sh`
+
+`ssh` refuses a key with `Permission denied (publickey)` and names the reason
+only at `-v`: a private key is `644`, an
+`IdentityFile` points at a path that is gone. This is the macOS half of
+[`linux/ssh_client_doctor.sh`](../linux/ssh_client_doctor.sh), with the same
+flags, verdicts and exit codes, plus the checks a Mac adds: key strength, a
+private key with no passphrase, and the Keychain options.
+
+```bash
+./ssh_client_doctor.sh                       # every group, on ~/.ssh
+./ssh_client_doctor.sh --only keys,config    # a subset
+./ssh_client_doctor.sh --fail-on warn        # exit 1 on a warning too
+./ssh_client_doctor.sh --ssh-dir /Volumes/Backup/me/.ssh
+./ssh_client_doctor.sh --list-groups
+```
+
+| Group | Checks |
+| --- | --- |
+| `dir` | `~/.ssh` is not writable by group or other (a failure, `chmod 700`); group or other read or search access (`755`) is a hardening warning, because `ssh` still uses `600` keys there. |
+| `files` | Private keys, by name or by their `BEGIN ... PRIVATE KEY` header (dot-prefixed files such as `.deploy_key` included), are `600`; `config`, `known_hosts` and `authorized_keys` are not group- or world-writable (`644` is fine). |
+| `keys` | From each private key alone (its public half from `ssh-keygen -y -P ""`, or, for an encrypted OpenSSH-format key, a symlink to it with no `.pub` beside the link, both in a private scratch directory; no key bytes are copied), not from a `.pub` that can be stale: DSA fails, RSA under 3072 bits warns. A `.pub` whose fingerprint differs from its private key's warns, and the `.pub` is only used for the key type, reported as unverified, when the private key cannot be read. A private key that `ssh-keygen` opens with an empty passphrase warns, with `ssh-keygen -p` and `ssh-add --apple-use-keychain` as the fix. Skipped without `ssh-keygen`. |
+| `config` | `IdentityFile` paths that do not exist, and a private-key `IdentityFile` target outside `~/.ssh` that is group- or world-accessible; `ForwardAgent yes`, `StrictHostKeyChecking no` and `UserKnownHostsFile /dev/null` before any `Host` line, under `Host *`, `Match all` or `Match host *` (no exclusions), where they apply to every server (the same lines under one named host are only noted; OpenSSH keeps the first value it obtains, so such a line that follows an earlier value of the same option in a block for every host is noted as ignored, not warned); and a passphrase-protected key with neither `UseKeychain` nor `AddKeysToAgent` set, which since macOS Sierra means the agent forgets it at every reboot. |
+
+It never changes a mode: every fix is printed, not run. The passphrase test
+runs `ssh-keygen -y -P "" -f KEY` with stdin from `/dev/null` and all output
+discarded, so it cannot prompt and no key material reaches the terminal; a key
+whose mode is too open is not tested, because `ssh-keygen` refuses to read it.
+`~/.ssh/config` is read line by line: `Include` is followed in order (relative
+paths against `~/.ssh`, `~/`, double-quoted words and globs; at most 8 levels
+and 256 files, a file already being read is skipped), so the first value
+across included files wins as it does in `ssh`. The Host or Match block an
+`Include` sits in resumes after it, and a file included inside a named block is
+not counted as global. An `Include` that cannot be
+resolved here (an environment variable, a `%` token, `~user`, an unterminated
+quote or a bound hit) is noted in the output, and the values set there are not
+considered, so a warning may then be too strict. `Match` is not evaluated
+(apart from `Match all` and `Match host *`), and
+[`git/git_ssh_doctor.py`](../git/git_ssh_doctor.py) is the tool that asks
+`ssh -G` for the effective configuration. A missing `--ssh-dir` is a single
+`skip`, not a failure.
+
+### Options
+
+| Flag | Purpose |
+| --- | --- |
+| `--ssh-dir DIR` | Directory to inspect (default: `~/.ssh`). |
+| `--only GROUPS` | Comma-separated subset (see `--list-groups`). |
+| `--fail-on LEVEL` | Exit `1` on `fail` (default) or on `warn` and above. |
+| `--quiet` | Print only warnings and failures. |
+| `--list-groups` | Print the group names and exit. |
+| `-h`, `--help` | Show the built-in help. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| `0` | Nothing at or above the failure threshold. |
+| `1` | One or more findings at or above `--fail-on`. |
+| `2` | Preflight failed — not macOS, `HOME` unset without `--ssh-dir`, or `--ssh-dir` is not a directory. |
 | `3` | Invalid arguments. |
 
 ---
@@ -1654,6 +2207,14 @@ Homebrew / `pyenv` / `goenv` commands.
 - `cleanup` changes nothing by default; `cleanup --force` uninstalls packages
   outside the selected Brewfile and reconciles Homebrew's Bundle trust state.
 
+### `config_backup.sh`
+
+- `--dry-run` and `--list` write nothing.
+- `--yes` writes one archive, mode `0600`, to
+  `~/ops-toolbox-backups/config-YYYYmmdd-HHMMSS.tar.gz` (or `--dest`),
+  creating that directory `0700` if it is missing, and then removes archives
+  of its own name pattern beyond `--keep`. Nothing it archives is modified.
+
 ### `macos_defaults.sh`
 
 - The default report, `--list-groups`, and every `--dry-run` are read-only.
@@ -1782,6 +2343,24 @@ Homebrew / `pyenv` / `goenv` commands.
 - Affects interactive shells only. Sourcing the file adds aliases and
   functions to the current shell; it does not write anything to disk
   and does not modify system files.
+
+### Read-only reports
+
+- `ops_context.sh` reads local config files and asks `kubectl` and `docker`
+  for their current context. It writes nothing, starts no network
+  connection, and never opens `~/.aws/credentials`.
+- `toolchain_check.sh` reads pin files and asks version managers and
+  binaries for their versions. It never installs anything and never
+  evaluates a pin file.
+- `net_doctor.sh` reads interface, route, DNS, proxy and socket state. Its
+  only network traffic is an explicit `--probe`.
+- `tls_expiry.sh` reads the PEMs it is given and the public certificates
+  in the Keychain. Its only network traffic is one TLS handshake per
+  `--host`.
+- `schedule_report.sh` reads launchd plists, the crontab and the `at`
+  queue. It never loads, unloads or edits a job.
+- `ssh_client_doctor.sh` reads `~/.ssh` and asks `ssh-keygen` about each key
+  without printing it. It never changes a mode; every fix is printed.
 
 ### Privileged operations
 

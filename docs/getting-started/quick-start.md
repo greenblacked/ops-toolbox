@@ -17,7 +17,9 @@ otherwise.
 
 ## 2. Run a report
 
-Reports are read-only. Pick the one for your platform.
+Reports are read-only. Pick the one for your platform. On your first visit
+from a computer, the tab for its operating system (macOS, Linux or Windows)
+opens by itself; pick another and the site remembers that instead.
 
 === "macOS"
 
@@ -86,6 +88,16 @@ Every script that writes has its own preview. For example:
 
 Run the same command without the preview flag, or with the script's consent
 flag (`--yes` for Bash, `-Yes` for PowerShell) where it asks for one.
+
+Before you apply:
+
+- [ ] I read the report output
+- [ ] I ran the preview and read every line
+- [ ] I know how to undo it (the script can revert its change, or I have a backup)
+
+Ticks are kept in this browser only, for this page, so a reload does not
+lose your place. Nothing is shared or synced; **Reset checklist** clears
+them.
 
 ## Next
 
