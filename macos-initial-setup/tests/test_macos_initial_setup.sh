@@ -2742,6 +2742,28 @@ printf 'Match host example.com\n  ForwardAgent yes\n' > "$sshd_dir/config"
 out="$(sshdoc --only config)"
 assert_contains "a Match with another criterion is only noted" "$out" "ForwardAgent yes under Match host example.com"
 
+# OpenSSH keeps the first value it obtains for a directive: a risky global
+# value after an earlier global one for the same directive is never used,
+# and one before it is.
+printf 'Host *\n  ForwardAgent no\n  StrictHostKeyChecking yes\n  UserKnownHostsFile ~/.ssh/known_hosts\nMatch all\n  ForwardAgent yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_not_contains "a risky Match all value after a safe Host * one does not warn" "$out" "[warn]"
+assert_contains "the shadowed ForwardAgent is noted as ignored" "$out" "ForwardAgent yes under Match all is ignored: an earlier global ForwardAgent wins"
+assert_contains "the shadowed StrictHostKeyChecking is noted as ignored" "$out" "StrictHostKeyChecking no under Match all is ignored"
+assert_contains "the shadowed UserKnownHostsFile is noted as ignored" "$out" "UserKnownHostsFile /dev/null under Match all is ignored"
+printf 'ForwardAgent no\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_not_contains "a risky Host * value after a safe value before any Host does not warn" "$out" "[warn]"
+printf 'Match all\n  ForwardAgent yes\nHost *\n  ForwardAgent no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a risky Match all value before a safe Host * one warns" "$out" "[warn] ForwardAgent yes applies to every host (Match all)"
+printf 'Host *\n  ForwardAgent yes\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_eq "two risky global values warn once, for the first" "1" "$(grep -c '\[warn\].*ForwardAgent yes applies' <<<"$out" | tr -d ' ')"
+printf 'Host bastion\n  ForwardAgent no\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a safe value under one named host does not shadow a global risky one" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+
 chmod 666 "$sshd_dir/config"
 out="$(sshdoc --only files)"
 assert_contains "a world-writable config is a warning with its fix" "$out" "chmod 600 $sshd_dir/config"

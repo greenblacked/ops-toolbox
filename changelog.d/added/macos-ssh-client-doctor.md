@@ -13,3 +13,7 @@
   material, and prints the `chmod` or `ssh-keygen` command for each
   finding. Modes are read through symlinks, so a link to a `0600` key or a
   symlinked `--ssh-dir` is graded by its target, not as `0777`.
+  OpenSSH uses the first value it obtains for an option, so a risky
+  `ForwardAgent`, `StrictHostKeyChecking` or `UserKnownHostsFile` in a
+  block for every host that comes after an earlier such value is noted as
+  ignored instead of warned.

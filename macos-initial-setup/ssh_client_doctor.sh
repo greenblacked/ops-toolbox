@@ -470,6 +470,11 @@ if want config; then
     has_keychain=0
     protected_identity=""
     include_noted=0
+    # OpenSSH keeps the first value it obtains for a directive, so a risky
+    # global value that comes after an earlier global value of the same
+    # directive is never used. The directives graded below are recorded in
+    # file order the first time a block that applies to every host sets one.
+    seen_globals=" "
     while IFS= read -r line || [[ -n "$line" ]]; do
       line="${line%$'\r'}"
       trimmed="${line#"${line%%[![:space:]]*}"}"
@@ -486,6 +491,17 @@ if want config; then
       key_lc="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
       val_lc="$(printf '%s' "$rest" | tr '[:upper:]' '[:lower:]')"
       shown="$(clean "$rest")"
+      shadowed=0
+      case "$key_lc" in
+        forwardagent|stricthostkeychecking|userknownhostsfile)
+          if (( all_hosts )); then
+            case "$seen_globals" in
+              *" $key_lc "*) shadowed=1 ;;
+              *) seen_globals="$seen_globals$key_lc " ;;
+            esac
+          fi
+          ;;
+      esac
       case "$key_lc" in
         host)
           all_hosts=0
@@ -520,7 +536,9 @@ if want config; then
           ;;
         forwardagent)
           if [[ "$val_lc" == "yes" ]]; then
-            if (( all_hosts )); then
+            if (( all_hosts && shadowed )); then
+              info "ForwardAgent yes under $host_label is ignored: an earlier global ForwardAgent wins (OpenSSH uses the first value)"
+            elif (( all_hosts )); then
               warn "ForwardAgent yes applies to every host ($host_label)" \
                    "anyone with root on any server you reach can use your keys; set it under the one Host that needs it"
             else
@@ -530,7 +548,9 @@ if want config; then
           ;;
         stricthostkeychecking)
           if [[ "$val_lc" == "no" ]]; then
-            if (( all_hosts )); then
+            if (( all_hosts && shadowed )); then
+              info "StrictHostKeyChecking no under $host_label is ignored: an earlier global StrictHostKeyChecking wins (OpenSSH uses the first value)"
+            elif (( all_hosts )); then
               warn "StrictHostKeyChecking no applies to every host ($host_label)" \
                    "host keys are never verified, so a man in the middle is accepted; set it under the one Host that needs it"
             else
@@ -540,7 +560,9 @@ if want config; then
           ;;
         userknownhostsfile)
           if [[ "$rest" == "/dev/null" ]]; then
-            if (( all_hosts )); then
+            if (( all_hosts && shadowed )); then
+              info "UserKnownHostsFile /dev/null under $host_label is ignored: an earlier global UserKnownHostsFile wins (OpenSSH uses the first value)"
+            elif (( all_hosts )); then
               warn "UserKnownHostsFile /dev/null applies to every host ($host_label)" \
                    "no host key is ever remembered, so none is ever checked; set it under the one Host that needs it"
             else
