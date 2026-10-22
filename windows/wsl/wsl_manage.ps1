@@ -466,13 +466,14 @@ function Test-DistroFact {
 }
 
 # The .tar files under $Directory that this script's backup action wrote:
-# <distro>_<yyyy-MM-dd>_<HHmm>.tar. Anything else in the folder is somebody
-# else's file and is never a candidate for deletion.
+# <distro>_<yyyy-MM-dd>_<HHmm>.tar, or with a -N before .tar when that minute
+# was taken (see Get-UniqueBackupOutPath). Anything else in the folder is
+# somebody else's file and is never a candidate for deletion.
 function Get-BackupFile {
     param([string]$Directory, [string]$Name)
     Get-ChildItem -Path $Directory -Filter '*.tar' -File -ErrorAction SilentlyContinue |
         ForEach-Object {
-            if ($_.Name -match '^(?<distro>.+)_\d{4}-\d{2}-\d{2}_\d{4}\.tar$') {
+            if ($_.Name -match '^(?<distro>.+)_\d{4}-\d{2}-\d{2}_\d{4}(-\d+)?\.tar$') {
                 [PSCustomObject]@{
                     Distro = $Matches['distro']
                     File   = $_
@@ -507,6 +508,26 @@ function Get-BackupOutPath {
         [string]$Stamp
     )
     [IO.Path]::Combine((ConvertTo-DriveRootPath $Dir), ('{0}_{1}.tar' -f $Name, $Stamp))
+}
+
+# Like Get-BackupOutPath, but never a path that is already taken, by the tar
+# or by its .sha256 sidecar: when the minute stamp is in use, -1, -2 ... goes
+# before .tar (Name_yyyy-MM-dd_HHmm-1.tar), which Get-BackupFile still reads.
+# $null when 99 are taken. Nothing is created or overwritten.
+function Get-UniqueBackupOutPath {
+    param(
+        [string]$Dir,
+        [string]$Name,
+        [string]$Stamp
+    )
+    for ($i = 0; $i -le 99; $i++) {
+        $suffix = if ($i -eq 0) { $Stamp } else { '{0}-{1}' -f $Stamp, $i }
+        $candidate = Get-BackupOutPath -Dir $Dir -Name $Name -Stamp $suffix
+        if (-not (Test-Path -LiteralPath $candidate) -and -not (Test-Path -LiteralPath "$candidate.sha256")) {
+            return $candidate
+        }
+    }
+    return $null
 }
 
 # What 'backup -All' would do, one row {Name, Out, Bytes, Verb, Reason} per
@@ -1525,15 +1546,23 @@ switch ($Action) {
             }
 
             if ($imported -and $KeepTar) {
-                $dated = Get-BackupOutPath -Dir $destRoot -Name $source.Name -Stamp (Get-Date -Format 'yyyy-MM-dd_HHmm')
-                if (Test-Path -LiteralPath $dated) {
-                    Write-Host "Not keeping the export: $dated already exists." -ForegroundColor Yellow
+                $dated = Get-UniqueBackupOutPath -Dir $destRoot -Name $source.Name -Stamp (Get-Date -Format 'yyyy-MM-dd_HHmm')
+                # From here the staging tar is kept unless the move succeeds:
+                # it is the only copy of the backup that was asked for.
+                $kept = $true
+                if (-not $dated) {
+                    Write-Error "Could not pick a free backup name in $destRoot; the export is kept at $staging" -ErrorAction Continue
+                    $rc = 1
                 } else {
-                    Move-Item -LiteralPath $staging -Destination $dated
-                    $hash = (Get-FileHash -LiteralPath $dated -Algorithm SHA256).Hash.ToLowerInvariant()
-                    Set-Content -LiteralPath "$dated.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($dated))"
-                    $kept = $true
-                    Write-Host "Kept the export as a backup: $dated (with a .sha256 sidecar)."
+                    try {
+                        Move-Item -LiteralPath $staging -Destination $dated -ErrorAction Stop
+                        $hash = (Get-FileHash -LiteralPath $dated -Algorithm SHA256).Hash.ToLowerInvariant()
+                        Set-Content -LiteralPath "$dated.sha256" -Encoding ascii -Value "$hash  $([IO.Path]::GetFileName($dated))"
+                        Write-Host "Kept the export as a backup: $dated (with a .sha256 sidecar)."
+                    } catch {
+                        Write-Error "Could not keep the export as $dated ($($_.Exception.Message)); any export left over is at $staging" -ErrorAction Continue
+                        $rc = 1
+                    }
                 }
             }
         } finally {

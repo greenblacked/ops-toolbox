@@ -462,7 +462,7 @@ try {
 Write-Section 'wsl_manage backup -All and previews'
 Test-Surface -Action @('backup', 'compact', 'sparse', 'shutdown') -Parameter @('All', 'DryRun')
 
-Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'ConvertTo-DriveRootPath', 'Get-BackupOutPath', 'Get-BackupPlan')
+Import-ScriptFunction -Path $wslScript -Name @('Format-Size', 'ConvertTo-DriveRootPath', 'Get-BackupOutPath', 'Get-UniqueBackupOutPath', 'Get-BackupPlan')
 
 function Get-TestDistro {
     param([string]$Name, [long]$VhdxSize)
@@ -773,7 +773,7 @@ foreach ($a in @('backups', 'prune-backups', 'clone')) {
     Test-Case "the $a branch builds no path under -DestDir with Join-Path" ([string]$clauseText[$a] -notmatch 'Join-Path\s+\$(DestDir|destRoot)') ([string]$clauseText[$a]).Substring(0, [math]::Min(200, ([string]$clauseText[$a]).Length))
 }
 Test-Case 'the clone branch builds its paths under -DestDir with Path.Combine or Get-BackupOutPath' (
-    [string]$clauseText['clone'] -match 'Combine\(\$destRoot' -and [string]$clauseText['clone'] -match 'Get-BackupOutPath\s+-Dir\s+\$destRoot'
+    [string]$clauseText['clone'] -match 'Combine\(\$destRoot' -and [string]$clauseText['clone'] -match 'Get-(Unique)?BackupOutPath\s+-Dir\s+\$destRoot'
 )
 
 # --------------------------------------------------------------------------
@@ -921,7 +921,38 @@ try {
     Remove-Item -Path $stagingDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# -KeepTar must never lose the requested backup to a name that is taken:
+# the next free -N name is used, sidecars count as taken, and the parser
+# behind prune-backups and backups still reads the result.
+$uniqueDir = Initialize-ScratchDirectory 'wslunique_'
+try {
+    $uStamp = '2026-10-21_1830'
+    $first = Get-UniqueBackupOutPath -Dir $uniqueDir -Name 'Ubuntu' -Stamp $uStamp
+    Test-Case 'Get-UniqueBackupOutPath keeps the plain name while it is free' ((Split-Path -Leaf $first) -ceq 'Ubuntu_2026-10-21_1830.tar') $first
+    [IO.File]::WriteAllText($first, 'one')
+    $second = Get-UniqueBackupOutPath -Dir $uniqueDir -Name 'Ubuntu' -Stamp $uStamp
+    Test-Case 'Get-UniqueBackupOutPath appends -1 when the stamp is taken' ((Split-Path -Leaf $second) -ceq 'Ubuntu_2026-10-21_1830-1.tar') $second
+    [IO.File]::WriteAllText("$second.sha256", 'orphan sidecar')
+    $third = Get-UniqueBackupOutPath -Dir $uniqueDir -Name 'Ubuntu' -Stamp $uStamp
+    Test-Case 'Get-UniqueBackupOutPath counts a lone sidecar as taken (-2)' ((Split-Path -Leaf $third) -ceq 'Ubuntu_2026-10-21_1830-2.tar') $third
+    [IO.File]::WriteAllText($third, 'three')
+    $seen = @(Get-BackupFile -Directory $uniqueDir -Name 'Ubuntu' | ForEach-Object { $_.File.Name } | Sort-Object)
+    Test-Case 'Get-BackupFile reads the -N names as backups of the same distro' (
+        $seen.Count -eq 2 -and $seen[0] -ceq 'Ubuntu_2026-10-21_1830-2.tar' -and $seen[1] -ceq 'Ubuntu_2026-10-21_1830.tar'
+    ) ($seen -join ', ')
+    Test-Case 'the original tar was not touched' ([IO.File]::ReadAllText($first) -ceq 'one')
+} finally {
+    Remove-Item -Path $uniqueDir -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $cloneClause = [string]$clauseText['clone']
+Test-Case 'the clone branch picks a free name for -KeepTar and never skips the keep' (
+    $cloneClause -cmatch 'Get-UniqueBackupOutPath\s+-Dir\s+\$destRoot' -and $cloneClause -cnotmatch 'Not keeping the export'
+) $cloneClause.Substring(0, [math]::Min(200, $cloneClause.Length))
+Test-Case 'the clone branch fails and keeps the staging tar when -KeepTar cannot move it' (
+    $cloneClause -cmatch 'Move-Item\s+-LiteralPath\s+\$staging[^\r\n]*-ErrorAction\s+Stop' -and
+    $cloneClause -cmatch '(?s)\$kept\s*=\s*\$true.*?-not\s+\$dated.*?\$rc\s*=\s*1.*?catch\s*\{.*?\$rc\s*=\s*1'
+) $cloneClause.Substring(0, [math]::Min(200, $cloneClause.Length))
 $tries = @()
 if ($actionSwitch) {
     $cloneAst = @($actionSwitch.Clauses | Where-Object { [string]$_.Item1.Value -eq 'clone' }) | Select-Object -First 1

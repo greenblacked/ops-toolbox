@@ -271,7 +271,10 @@ delete the tar. `clone` is all of that in one step:
 5. Deletes the staging tar, in a `finally` block, so a failure or Ctrl+C does
    not leave a full copy of the distro behind. `-KeepTar` instead renames it
    to `<Distro>_<date>.tar` with a `.sha256` sidecar, a normal backup that
-   `verify-backup`, `backups` and `restore` work with.
+   `verify-backup`, `backups` and `restore` work with. If that minute's name
+   is taken it never overwrites: it uses `<Distro>_<date>-1.tar` (then `-2`
+   and so on), and if the export cannot be kept it stays as the dot-named
+   staging file, its path is printed and clone exits `1`.
 
 Everything that can refuse is checked before the export: the source must be
 registered, `-NewName` must be given, free and different from the source,

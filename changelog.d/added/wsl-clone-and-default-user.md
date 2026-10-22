@@ -3,8 +3,10 @@
   exports to a staging tar that can never be mistaken for a backup, imports
   it, gives the copy the source's default user, and deletes the staging tar
   in a `finally` block (`-KeepTar` keeps it as a dated backup with its
-  sidecar). The source is never touched, nothing is ever unregistered, every
-  refusal comes before the slow export, and `-DryRun` prints each step.
+  sidecar, under a `-1`, `-2` name when that minute is taken, never
+  overwriting one). The source is never touched, nothing is ever
+  unregistered, every refusal comes before the slow export, and `-DryRun`
+  prints each step.
   `restore -DefaultUser NAME` closes the gap that made a restored distro boot
   as root: after the import it adds the `[user]` section to `/etc/wsl.conf`,
   terminates the distro so the file is read, and confirms the result; a name
