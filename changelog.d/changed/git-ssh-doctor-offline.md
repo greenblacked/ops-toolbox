@@ -5,12 +5,6 @@
   the flag it now reports the configuration and says authentication was not
   attempted; `--test-auth` authenticates as git would and then tries each
   discovered key.
-- `git_ssh_doctor.py` authenticates as the user git would use: the one in
-  the remote URL (`ssh://deploy@host`, `deploy@host:path`) or in
-  `--host deploy@host`, else a `User` set in ssh config for the host, else
-  `git`, instead of probing the local account name. It also follows
-  `GIT_SSH_COMMAND` and `core.sshCommand` for a repository's remotes,
-  applying their `-i`, `-F`, `-p`, `-o` and `-l` options to `ssh -G` and the
-  attempt. Any other command is reported as a custom SSH command that was
-  not inspected, and the run exits 1 (a failure under
-  `--require-known-host`) since nothing was checked.
+- `git_ssh_doctor.py` exits 1 (a failure under `--require-known-host`)
+  when the effective ssh command is a custom program or an ssh command
+  with options it cannot read (such as `-J`), since nothing was checked.
