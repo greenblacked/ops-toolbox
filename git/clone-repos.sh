@@ -70,8 +70,9 @@ File format:
 
 With --update, a checkout that is already there is fetched and fast-forwarded
 on the branch it has checked out. It is held, and left exactly as it is, when
-HEAD is detached, the branch has no upstream, tracked files are modified, or
-the branch has diverged from its upstream. Nothing is ever merged, stashed or
+HEAD is detached, the branch has no upstream, its upstream is gone from the
+remote, tracked files are modified, or the branch has diverged from its
+upstream. Nothing is ever merged, stashed or
 switched, and a held checkout does not fail the run.
 
 Examples:

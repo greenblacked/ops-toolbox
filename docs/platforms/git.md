@@ -117,7 +117,8 @@ All paths are under `git/`.
   in the output directory; without `--yes` it only lists them.
 - `clone-repos.sh --update` writes to checkouts that already exist: it fetches
   and fast-forwards the checked-out branch, and holds any checkout with a
-  detached `HEAD`, no upstream, modified tracked files or a diverged branch.
+  detached `HEAD`, no upstream, an upstream gone from the remote, modified
+  tracked files or a diverged branch.
 
 ## Repository
 

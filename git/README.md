@@ -906,7 +906,7 @@ up to date with its unpushed count.
 | --- | --- |
 | `updated (+N commit(s)): PATH` | Fetched and fast-forwarded. |
 | `up to date: PATH` | Nothing new upstream (`(N unpushed commit(s))` when it is ahead). |
-| `held (detached HEAD)`, `held (no upstream)`, `held (upstream gone)`, `held (uncommitted changes)`, `held (cannot read git status)`, `held (diverged, +A/-B)` | Left alone; reconcile it yourself. `upstream gone` means the pruning fetch removed the branch's remote-tracking ref. |
+| `held (detached HEAD)`, `held (no upstream)`, `held (upstream gone)`, `held (uncommitted changes)`, `held (cannot read git status)`, `held (diverged, +A/-B)` | Left alone; reconcile it yourself. `upstream gone` means the branch's upstream no longer exists on the remote (its remote-tracking ref was pruned, or was already gone before the run). |
 | `fetch failed: PATH`, `fast-forward failed: PATH` | Counted as failed. |
 
 The summary becomes `cloned N, updated U, up to date C, held H, failed F`.
