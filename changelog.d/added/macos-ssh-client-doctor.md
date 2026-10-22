@@ -17,3 +17,9 @@
   `ForwardAgent`, `StrictHostKeyChecking` or `UserKnownHostsFile` in a
   block for every host that comes after an earlier such value is noted as
   ignored instead of warned.
+  `Include` is followed in order (bounded in depth and number of files),
+  so a value set in an included file counts as the first value too, while
+  the Host or Match block the `Include` sits in resumes after it and a
+  file included inside a named block never counts as global; an
+  `Include` it cannot resolve (variable, `%` token, `~user`) is noted and
+  the result may then over-warn.

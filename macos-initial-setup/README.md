@@ -1873,8 +1873,16 @@ It never changes a mode: every fix is printed, not run. The passphrase test
 runs `ssh-keygen -y -P "" -f KEY` with stdin from `/dev/null` and all output
 discarded, so it cannot prompt and no key material reaches the terminal; a key
 whose mode is too open is not tested, because `ssh-keygen` refuses to read it.
-`~/.ssh/config` is read line by line: `Include` is not followed and `Match`
-is not evaluated (apart from `Match all` and `Match host *`), and
+`~/.ssh/config` is read line by line: `Include` is followed in order (relative
+paths against `~/.ssh`, `~/`, double-quoted words and globs; at most 8 levels
+and 256 files, a file already being read is skipped), so the first value
+across included files wins as it does in `ssh`. The Host or Match block an
+`Include` sits in resumes after it, and a file included inside a named block is
+not counted as global. An `Include` that cannot be
+resolved here (an environment variable, a `%` token, `~user`, an unterminated
+quote or a bound hit) is noted in the output, and the values set there are not
+considered, so a warning may then be too strict. `Match` is not evaluated
+(apart from `Match all` and `Match host *`), and
 [`git/git_ssh_doctor.py`](../git/git_ssh_doctor.py) is the tool that asks
 `ssh -G` for the effective configuration. A missing `--ssh-dir` is a single
 `skip`, not a failure.

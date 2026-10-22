@@ -2764,6 +2764,55 @@ printf 'Host bastion\n  ForwardAgent no\nHost *\n  ForwardAgent yes\n' > "$sshd_
 out="$(sshdoc --only config)"
 assert_contains "a safe value under one named host does not shadow a global risky one" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
 
+# Include is followed in order (relative paths against the ssh directory,
+# ~/ against HOME, double quotes, globs), so the first value across the
+# included files wins as it does in ssh.
+mkdir -p "$sshd_dir/conf.d" "$sshd_dir/with space"
+printf 'Host *\n  ForwardAgent no\n' > "$sshd_dir/conf.d/10-safe.conf"
+printf 'Host *\n  ForwardAgent yes\n  IdentityFile ~/.ssh/gone-in-include\n' > "$sshd_dir/conf.d/20-risky.conf"
+printf 'Include conf.d/*.conf\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_not_contains "a safe value in an Included file shadows a later risky one" "$out" "[warn] ForwardAgent"
+assert_contains "the shadowed ForwardAgent is noted as ignored" "$out" "ForwardAgent yes under Host * is ignored: an earlier global ForwardAgent wins"
+assert_contains "an IdentityFile in an Included file is checked" "$out" "IdentityFile ~/.ssh/gone-in-include does not exist"
+printf 'ForwardAgent yes\nInclude conf.d/10-safe.conf\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a risky value before the Include is the first and warns" "$out" "[warn] ForwardAgent yes applies to every host"
+printf 'Include conf.d/20-risky.conf\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a risky global value in an Included file warns" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+printf 'Host *\n  ForwardAgent no\n' > "$sshd_dir/with space/safe"
+printf 'Include "with space/safe" "~/.ssh/conf.d/20-risky.conf"\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a quoted path with a space and a ~/ path are followed" "$out" "ForwardAgent yes under Host * is ignored"
+printf 'Include config\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_eq "an Include cycle ends -> 0" "0" "$rc"
+assert_contains "the value after an Include cycle is still graded" "$out" "[warn] ForwardAgent yes applies to every host"
+printf 'Include $HOME/.ssh/conf.d/10-safe.conf\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "an Include with a variable is noted as not followed" "$out" "an Include could not be followed here"
+printf 'Include nosuch/*\nHost *\n  ForwardAgent no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_eq "an Include that matches nothing is ignored -> 0" "0" "$rc"
+assert_not_contains "an Include that matches nothing is not a warning" "$out" "[warn]"
+# The block an Include sits in resumes after it, and an included file is read
+# only within that block, so its lines do not count as global values.
+printf 'Host foo\n  User x\n' > "$sshd_dir/conf.d/host-foo.conf"
+printf 'Host *\nInclude conf.d/host-foo.conf\nForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a Host line in an Included file does not end the enclosing Host *" "$out" "[warn] ForwardAgent yes applies to every host"
+printf 'Host bastion\nInclude conf.d/10-safe.conf\nHost *\nForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a safe global in a file included under a named Host does not shadow a later risky one" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+assert_not_contains "that later risky value is not called ignored" "$out" "ForwardAgent yes under Host * is ignored"
+# A config line that looks like an Include marker is not one.
+printf 'Host bastion\n=INCLUDE-BEGIN\nHost *\n=INCLUDE-END\nForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a line spelled like an Include marker does not move the block" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+rm -rf "$sshd_dir/conf.d" "$sshd_dir/with space"
+printf 'Host bastion\n  HostName bastion.example\n' > "$sshd_dir/config"
+
 chmod 666 "$sshd_dir/config"
 out="$(sshdoc --only files)"
 assert_contains "a world-writable config is a warning with its fix" "$out" "chmod 600 $sshd_dir/config"

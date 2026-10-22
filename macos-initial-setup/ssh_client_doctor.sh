@@ -14,9 +14,9 @@
 # ssh -G about one git remote. None of them looks at ~/.ssh itself.
 #
 # This script does not reimplement ssh_config. It reads ~/.ssh/config line by
-# line, never follows Include and never evaluates Match (beyond the global
-# Match all and Match host *); ssh -G (and git/git_ssh_doctor.py) is the
-# tool for the effective configuration.
+# line, follows Include (in order, bounded) but never evaluates Match (beyond
+# the global Match all and Match host *); ssh -G (and git/git_ssh_doctor.py)
+# is the tool for the effective configuration.
 #
 # It never changes a mode: every fix is printed, not run. ssh-keygen is asked
 # about private keys with stdin from /dev/null, an empty -P so it can never
@@ -62,7 +62,7 @@ usage() {
 ssh_client_doctor.sh - read-only OpenSSH client directory check for macOS
 
 Reports permission, key and ~/.ssh/config problems, each with the command
-that fixes it. Changes nothing. Does not evaluate Include or Match; use
+that fixes it. Changes nothing. Follows Include but does not evaluate Match; use
 git/git_ssh_doctor.py (ssh -G) for the effective configuration.
 
 Usage:
@@ -454,6 +454,108 @@ if want keys; then
   fi
 fi
 
+# Include handling. OpenSSH keeps the first value it obtains for a directive
+# across the whole configuration, Included files included, so the lines of
+# every Include are spliced into the stream in place (relative paths against
+# the ssh directory, "~/" against HOME, double-quoted words, globs in lexical
+# order, a file named twice read twice, as ssh does). Depth is bounded, a file
+# already being read is skipped, and at most 256 files are read in all. An
+# Include that cannot be resolved here (an environment variable or %-token,
+# ~user, an unterminated quote, or a bound hit) is left in the stream as it
+# is and noted, because the values it sets are then not considered.
+FLAT=""
+FLAT_STACK=$'\n'
+FLAT_FILES=0
+INC_TOKENS=()
+
+# Splits the arguments of an Include line into INC_TOKENS, honouring double
+# quotes. Returns 1 for an unterminated quote.
+include_tokens() {
+  local str="$1" c cur="" inq=0 have=0 i
+  INC_TOKENS=()
+  for (( i = 0; i < ${#str}; i++ )); do
+    c="${str:i:1}"
+    if (( inq )); then
+      if [[ "$c" == '"' ]]; then inq=0; else cur="$cur$c"; fi
+    elif [[ "$c" == '"' ]]; then
+      inq=1; have=1
+    elif [[ "$c" == [[:space:]] ]]; then
+      if (( have )); then INC_TOKENS+=("$cur"); cur=""; have=0; fi
+    else
+      cur="$cur$c"; have=1
+    fi
+  done
+  (( inq )) && return 1
+  (( have )) && INC_TOKENS+=("$cur")
+  return 0
+}
+
+# Appends the lines of file $1 to FLAT, replacing each Include it holds by
+# the lines of the files it names. $2 is the depth of $1.
+flatten_file() {
+  local file="$1" depth="$2" line trimmed key key_lc rest tok pat m real ok t
+  local -a toks
+  real="$(cd -P -- "$(dirname -- "$file")" 2>/dev/null && pwd -P)/$(basename -- "$file")"
+  case "$FLAT_STACK" in *$'\n'"$real"$'\n'*) return 0 ;; esac
+  FLAT_FILES=$((FLAT_FILES + 1))
+  FLAT_STACK="$FLAT_STACK$real"$'\n'
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    trimmed="${line#"${line%%[![:space:]]*}"}"
+    # A line starting with "=" has no keyword (OpenSSH rejects it); dropping
+    # it keeps it from posing as an Include marker below.
+    case "$trimmed" in ''|\#*|=*) continue ;; esac
+    key="${trimmed%%[[:space:]=]*}"
+    key_lc="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$key_lc" != include ]]; then
+      FLAT="$FLAT$line"$'\n'
+      continue
+    fi
+    rest="${trimmed#"$key"}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    rest="${rest#=}"
+    rest="${rest#"${rest%%[![:space:]]*}"}"
+    ok=1
+    (( depth >= 8 || FLAT_FILES >= 256 )) && ok=0
+    include_tokens "$rest" || ok=0
+    toks=()
+    for t in ${INC_TOKENS[@]+"${INC_TOKENS[@]}"}; do toks+=("$t"); done
+    (( ${#toks[@]} > 0 )) || ok=0
+    for tok in ${toks[@]+"${toks[@]}"}; do
+      case "$tok" in
+        *'$'*|*%*|"~"|"~"[!/]*) ok=0 ;;
+      esac
+    done
+    if (( ok == 0 )); then
+      FLAT="$FLAT$line"$'\n'
+      continue
+    fi
+    for tok in "${toks[@]}"; do
+      # shellcheck disable=SC2088  # a literal ~ in the config is matched, not expanded
+      case "$tok" in
+        "~/"*) pat="${HOME:-}/${tok#\~/}" ;;
+        /*)    pat="$tok" ;;
+        *)     pat="$SSH_DIR/$tok" ;;
+      esac
+      while IFS= read -r m; do
+        [[ -n "$m" && -f "$m" && -r "$m" ]] || continue
+        if (( FLAT_FILES >= 256 )); then
+          FLAT="$FLAT$line"$'\n'
+          break
+        fi
+        # Markers tell the reader where an included file starts and ends, so
+        # it can restore the Host or Match block the Include sits in. They
+        # are printable lines starting with "=", which no ssh_config line
+        # can (flatten_file drops such lines), so they cannot collide.
+        FLAT="$FLAT=INCLUDE-BEGIN"$'\n'
+        flatten_file "$m" $((depth + 1))
+        FLAT="$FLAT=INCLUDE-END"$'\n'
+      done < <(compgen -G "$pat" 2>/dev/null)
+    done
+  done < "$file"
+  FLAT_STACK="${FLAT_STACK%"$real"$'\n'}"
+}
+
 # --- config ------------------------------------------------------------------
 # Options before the first Host line, and under a Host line whose patterns
 # include a bare *, or in a Match whose only criterion is all (or host *),
@@ -465,6 +567,10 @@ if want config; then
   if [[ ! -f "$config" ]]; then
     skip "no config file (OpenSSH defaults apply)"
   else
+    FLAT=""
+    FLAT_STACK=$'\n'
+    FLAT_FILES=0
+    flatten_file "$config" 0
     all_hosts=1
     host_label="(before any Host line)"
     has_keychain=0
@@ -475,11 +581,41 @@ if want config; then
     # directive is never used. The directives graded below are recorded in
     # file order the first time a block that applies to every host sets one.
     seen_globals=" "
+    # A file included from inside a Host or Match block is read by OpenSSH
+    # only within that block, and the block resumes after it. inc_* is the
+    # stack of enclosing states; inc_mute counts the included files whose
+    # lines must not count as global.
+    inc_sp=0
+    inc_mute=0
+    inc_all=()
+    inc_label=()
+    inc_muted=()
     while IFS= read -r line || [[ -n "$line" ]]; do
       line="${line%$'\r'}"
       trimmed="${line#"${line%%[![:space:]]*}"}"
       case "$trimmed" in
         ''|\#*) continue ;;
+        '=INCLUDE-BEGIN')
+          inc_all[inc_sp]="$all_hosts"
+          inc_label[inc_sp]="$host_label"
+          if (( all_hosts && inc_mute == 0 )); then
+            inc_muted[inc_sp]=0
+          else
+            inc_muted[inc_sp]=1
+            inc_mute=$((inc_mute + 1))
+          fi
+          inc_sp=$((inc_sp + 1))
+          continue
+          ;;
+        '=INCLUDE-END')
+          if (( inc_sp > 0 )); then
+            inc_sp=$((inc_sp - 1))
+            all_hosts="${inc_all[inc_sp]}"
+            host_label="${inc_label[inc_sp]}"
+            (( inc_muted[inc_sp] )) && inc_mute=$((inc_mute - 1))
+          fi
+          continue
+          ;;
       esac
       # Both "Key value" and "Key=value" are ssh_config syntax.
       key="${trimmed%%[[:space:]=]*}"
@@ -492,9 +628,11 @@ if want config; then
       val_lc="$(printf '%s' "$rest" | tr '[:upper:]' '[:lower:]')"
       shown="$(clean "$rest")"
       shadowed=0
+      is_global=$all_hosts
+      (( inc_mute )) && is_global=0
       case "$key_lc" in
         forwardagent|stricthostkeychecking|userknownhostsfile)
-          if (( all_hosts )); then
+          if (( is_global )); then
             case "$seen_globals" in
               *" $key_lc "*) shadowed=1 ;;
               *) seen_globals="$seen_globals$key_lc " ;;
@@ -527,7 +665,7 @@ if want config; then
           ;;
         include)
           if (( include_noted == 0 )); then
-            info "Include is not followed here; git/git_ssh_doctor.py asks ssh -G for the effective config"
+            info "an Include could not be followed here (variable, %-token, ~user, quote or bound); values it sets are not considered, so a warning may be too strict: git/git_ssh_doctor.py asks ssh -G for the effective config"
             include_noted=1
           fi
           ;;
@@ -536,9 +674,9 @@ if want config; then
           ;;
         forwardagent)
           if [[ "$val_lc" == "yes" ]]; then
-            if (( all_hosts && shadowed )); then
+            if (( is_global && shadowed )); then
               info "ForwardAgent yes under $host_label is ignored: an earlier global ForwardAgent wins (OpenSSH uses the first value)"
-            elif (( all_hosts )); then
+            elif (( is_global )); then
               warn "ForwardAgent yes applies to every host ($host_label)" \
                    "anyone with root on any server you reach can use your keys; set it under the one Host that needs it"
             else
@@ -548,9 +686,9 @@ if want config; then
           ;;
         stricthostkeychecking)
           if [[ "$val_lc" == "no" ]]; then
-            if (( all_hosts && shadowed )); then
+            if (( is_global && shadowed )); then
               info "StrictHostKeyChecking no under $host_label is ignored: an earlier global StrictHostKeyChecking wins (OpenSSH uses the first value)"
-            elif (( all_hosts )); then
+            elif (( is_global )); then
               warn "StrictHostKeyChecking no applies to every host ($host_label)" \
                    "host keys are never verified, so a man in the middle is accepted; set it under the one Host that needs it"
             else
@@ -560,9 +698,9 @@ if want config; then
           ;;
         userknownhostsfile)
           if [[ "$rest" == "/dev/null" ]]; then
-            if (( all_hosts && shadowed )); then
+            if (( is_global && shadowed )); then
               info "UserKnownHostsFile /dev/null under $host_label is ignored: an earlier global UserKnownHostsFile wins (OpenSSH uses the first value)"
-            elif (( all_hosts )); then
+            elif (( is_global )); then
               warn "UserKnownHostsFile /dev/null applies to every host ($host_label)" \
                    "no host key is ever remembered, so none is ever checked; set it under the one Host that needs it"
             else
@@ -610,7 +748,7 @@ if want config; then
           fi
           ;;
       esac
-    done < "$config"
+    done <<< "$FLAT"
     if [[ -n "$protected_identity" ]] && (( has_keychain == 0 )); then
       info "$protected_identity has a passphrase and the config sets neither UseKeychain nor AddKeysToAgent"
       info "since macOS Sierra the agent forgets keys at reboot; add 'UseKeychain yes' and 'AddKeysToAgent yes' under Host *"
