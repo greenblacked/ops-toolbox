@@ -8,3 +8,5 @@
   and exit code are unchanged.
   A cron file that cannot be read is a warning and is never counted as
   checked.
+  A `--cron-dir` that cannot be listed is likewise a warning, counted
+  as unreadable, instead of an empty directory whose jobs all resolve.

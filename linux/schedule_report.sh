@@ -255,6 +255,7 @@ failed_timers() {
 CRON_OK=0
 CRON_BAD=0
 CRON_UNREADABLE=0
+CRON_DIR_UNREADABLE=0
 check_cron_lines() {
   local src="$1" has_user="$2"
   local line idx cmd
@@ -294,25 +295,50 @@ if (( FAILED )); then
     check_cron_lines "user crontab" 0 <<<"$cron_out"
   fi
   if [[ -d "$CRON_DIR" ]]; then
-    while IFS= read -r -d '' f; do
-      [[ -n "$f" ]] || continue
-      case "$(basename "$f")" in
-        .placeholder|*.dpkg-*|*.rpm*) continue ;;
-      esac
-      # An unreadable file (a 0600 drop-in seen by a non-root user) would
-      # fail the redirection below before any line is judged.
-      if [[ ! -r "$f" ]]; then
-        warn "cron: cannot read $f; its jobs were not checked" \
-          "run as root, or fix the file's permissions"
-        CRON_UNREADABLE=$((CRON_UNREADABLE + 1))
-        continue
+    # find's status must not vanish into a process substitution: a directory
+    # that cannot be listed (no x or r bit for this user) would otherwise
+    # look empty and every cron command would be claimed to resolve. The
+    # listing goes to a scratch file so the loop below still runs in this
+    # shell and its counters survive.
+    cron_list="$(mktemp "${TMPDIR:-/tmp}/schedule_report.XXXXXX")" || cron_list=""
+    if [[ -z "$cron_list" ]]; then
+      skip "cannot create a scratch file; $CRON_DIR not checked"
+      CRON_DIR_UNREADABLE=$((CRON_DIR_UNREADABLE + 1))
+    else
+      find "$CRON_DIR" -maxdepth 1 -type f -print0 >"$cron_list" 2>/dev/null
+      cron_find_rc=$?
+      if (( cron_find_rc != 0 )); then
+        warn "cron: cannot fully read directory $CRON_DIR (find exit $cron_find_rc); some jobs were not checked" \
+          "run as root, or fix the directory's permissions"
+        CRON_DIR_UNREADABLE=$((CRON_DIR_UNREADABLE + 1))
       fi
-      # shellcheck disable=SC2094  # the path is only a label; the file is only read
-      check_cron_lines "$f" 1 < "$f"
-    done < <(find "$CRON_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+      while IFS= read -r -d '' f; do
+        [[ -n "$f" ]] || continue
+        case "$(basename "$f")" in
+          .placeholder|*.dpkg-*|*.rpm*) continue ;;
+        esac
+        # An unreadable file (a 0600 drop-in seen by a non-root user) would
+        # fail the redirection below before any line is judged.
+        if [[ ! -r "$f" ]]; then
+          warn "cron: cannot read $f; its jobs were not checked" \
+            "run as root, or fix the file's permissions"
+          CRON_UNREADABLE=$((CRON_UNREADABLE + 1))
+          continue
+        fi
+        # shellcheck disable=SC2094  # the path is only a label; the file is only read
+        check_cron_lines "$f" 1 < "$f"
+      done < "$cron_list"
+      rm -f -- "$cron_list"
+    fi
   fi
-  if (( CRON_UNREADABLE > 0 )); then
-    skip "$CRON_UNREADABLE cron file(s) unreadable, not checked; $CRON_OK command path(s) found in the rest"
+  if (( CRON_UNREADABLE > 0 || CRON_DIR_UNREADABLE > 0 )); then
+    cron_what=""
+    (( CRON_UNREADABLE > 0 )) && cron_what="$CRON_UNREADABLE cron file(s) unreadable, not checked"
+    if (( CRON_DIR_UNREADABLE > 0 )); then
+      [[ -n "$cron_what" ]] && cron_what="$cron_what; "
+      cron_what="${cron_what}cron directory $CRON_DIR unreadable, not fully checked"
+    fi
+    skip "$cron_what; $CRON_OK command path(s) found in the rest"
   elif (( CRON_BAD == 0 )); then
     ok "$CRON_OK cron command path(s) resolve"
   fi

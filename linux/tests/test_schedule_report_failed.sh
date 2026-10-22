@@ -169,6 +169,38 @@ else
   printf '[skip] unreadable cron file checks: the file stays readable (root without setpriv)\n'
 fi
 
+# A cron directory that cannot be traversed (mode 000) must not look empty.
+# Same user rules as the unreadable file above; the case skips where the
+# directory stays listable.
+noaccess="$fixture/noaccess.d"
+mkdir -p "$noaccess" || exit 1
+cp "$fixture/cron.d/ok" "$noaccess/ok"
+chmod 000 "$noaccess"
+dir_runner=()
+can_dir=1
+if [[ "$(id -u)" == 0 ]]; then
+  can_dir=0
+  if command -v setpriv >/dev/null 2>&1; then
+    dir_runner=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+    if "${dir_runner[@]}" test -r "$SCHED" && ! "${dir_runner[@]}" test -x "$noaccess"; then
+      can_dir=1
+    fi
+  fi
+elif [[ -x "$noaccess" ]]; then
+  can_dir=0
+fi
+if (( can_dir )); then
+  out="$(PATH="$fixture/bin:$PATH" ${dir_runner[@]+"${dir_runner[@]}"} "$SCHED" --failed --strict --cron-dir "$noaccess" 2>&1)"
+  rc=$?
+  assert_contains 'an untraversable cron directory is a warning' "$out" "cannot fully read directory $noaccess"
+  assert_not_contains 'an untraversable cron directory never prints "all resolve"' "$out" 'path(s) resolve'
+  assert_contains 'the unreadable directory is counted' "$out" "cron directory $noaccess unreadable"
+  assert_eq 'an untraversable cron directory fails --strict' 1 "$rc"
+else
+  printf '[skip] untraversable cron directory checks: the directory stays listable (root without setpriv)\n'
+fi
+chmod 755 "$noaccess"
+
 run_sr --failed --cron-dir
 assert_eq '--cron-dir with no value -> 3' 3 "$rc"
 run_sr --failed "--cron-dir=$fixture/cron.d"

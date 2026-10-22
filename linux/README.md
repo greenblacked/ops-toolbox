@@ -505,9 +505,11 @@ user field in `cron.d`), and warns when that is an absolute path that is not an
 executable file: the job an upgrade quietly orphaned. A cron file that cannot
 be read (a `0600` drop-in seen by a non-root user) is a warning, and the
 summary line then says how many files were skipped instead of claiming that
-every path resolves. Comments, blank lines and `NAME=value` lines are not
-jobs, and a word without a slash is not judged, since it may be a builtin or a
-`PATH` lookup. Nothing is run, sourced, started, stopped or reset.
+every path resolves. A cron directory that cannot be listed is the same: a
+warning and a skipped, counted directory, never an empty one. Comments, blank
+lines and `NAME=value` lines are not jobs, and a word without a slash is not
+judged, since it may be a builtin or a `PATH` lookup. Nothing is run,
+sourced, started, stopped or reset.
 
 `--strict` exits `1` when any warning was printed, with or without `--failed`,
 so lingering being off counts too. `--cron-dir DIR` replaces `/etc/cron.d` for
