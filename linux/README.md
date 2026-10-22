@@ -143,7 +143,9 @@ stderr), so they pipe like `list`. Empty output means none. `holds` reads
 `/etc/dnf/dnf.conf`, or `IgnorePkg` in `/etc/pacman.conf`. `orphans` reads
 `apt-get -s autoremove` (a simulation), `dnf repoquery --unneeded` or
 `pacman -Qdtq`, whose exit `1` with no output means none. A failing package
-tool is exit `1`.
+tool is exit `1`. For dnf, a failed `versionlock list` counts as the plugin
+being absent only when `dnf versionlock --help` fails too; otherwise it is a
+real error and `holds` exits `1` instead of reporting no locks.
 
 Aliases:
 

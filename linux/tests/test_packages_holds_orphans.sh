@@ -60,7 +60,13 @@ cat > "$fixture/bin/dnf" <<'STUB'
 #!/usr/bin/env bash
 case "${1:-}" in
   versionlock)
-    if [[ -f "$STUB_DIR/versionlock.out" ]]; then
+    if [[ -f "$STUB_DIR/versionlock.out" || -n "${VERSIONLOCK_LIST_RC:-}" ]]; then
+      # The plugin is installed: its help works, and a listing can fail.
+      [[ "${2:-}" == --help ]] && exit 0
+      if [[ -n "${VERSIONLOCK_LIST_RC:-}" ]]; then
+        printf 'Error: Failed to download metadata for repo "updates"\n' >&2
+        exit "$VERSIONLOCK_LIST_RC"
+      fi
       cat "$STUB_DIR/versionlock.out"
       exit 0
     fi
@@ -146,6 +152,13 @@ assert_eq 'dnf holds with versionlock exits 0' 0 "$rc"
 assert_contains 'a dnf 4 lock is named' "$out" 'nginx'
 assert_contains 'a dnf 5 lock is named' "$out" 'curl'
 assert_eq 'an excluded version is not a hold' '' "$(grep -x badpkg <<<"$out")"
+# A listing that fails with the plugin installed is a real error, not "no
+# locks": exit 1, the cause on stderr, nothing on stdout.
+VERSIONLOCK_LIST_RC=1 run_pk fedora holds
+assert_eq 'a failing dnf versionlock list -> 1' 1 "$rc"
+assert_contains 'the listing failure is reported on stderr' "$errout" 'dnf versionlock list failed (exit 1)'
+assert_contains 'the listing failure carries dnf'"'"'s message' "$errout" 'Failed to download metadata'
+assert_eq 'a failing dnf versionlock list prints nothing on stdout' '' "$out"
 rm -f "$fixture/versionlock.out"
 
 run_pk arch orphans

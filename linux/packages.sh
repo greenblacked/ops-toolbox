@@ -214,9 +214,16 @@ list_holds() {
       ;;
     dnf)
       # The versionlock plugin is optional. Without it there are no locks to
-      # read, which is a note for stderr rather than a failure.
-      if locks="$(dnf versionlock list -q 2>/dev/null)"; then
+      # read, which is a note for stderr rather than a failure. A failing
+      # listing is only "plugin absent" when the plugin's own help fails
+      # too; with the plugin present, a failure (a broken repo cache, a
+      # locked database) is a real error and must not read as "no locks".
+      locks="$(dnf versionlock list -q 2>&1)"; rc=$?
+      if (( rc == 0 )); then
         locks="$(versionlock_names <<<"$locks")"
+      elif dnf versionlock --help >/dev/null 2>&1; then
+        err "dnf versionlock list failed (exit $rc): $(head -n 3 <<<"$locks" | tr '\n' ' ')"
+        return 1
       else
         info "dnf versionlock is not available; reading exclude= in /etc/dnf/dnf.conf only" >&2
         locks=""
