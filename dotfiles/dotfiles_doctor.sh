@@ -524,7 +524,9 @@ passwd_home() {
 # Splits $1 into SSH_ARGS the way OpenSSH's argv_split does for a config
 # line: whitespace separates, "..." and '...' group, a backslash escapes
 # the next character, an unquoted # at the start of a word ends the line.
-# Returns 1 on an unbalanced quote or a trailing backslash. Bash 3.2 safe.
+# Returns 1 on an unbalanced quote, a trailing backslash, or an unquoted
+# backslash before anything but a space, quote or backslash (the escapes
+# argv_split recognises). Bash 3.2 safe.
 SSH_ARGS=()
 ssh_split_args() {
   local s="$1" i=0 n ch q="" cur="" have=0 bs=$'\\'
@@ -555,7 +557,14 @@ ssh_split_args() {
         "$bs")
           i=$((i + 1))
           (( i < n )) || return 1
-          cur="$cur${s:i:1}"; have=1
+          ch="${s:i:1}"
+          # OpenSSH keeps the backslash before any other character; this
+          # splitter cannot tell what it would pass on, so fail closed.
+          case "$ch" in
+            ' ' | '"' | "'" | "$bs") ;;
+            *) return 1 ;;
+          esac
+          cur="$cur$ch"; have=1
           ;;
         '#')
           if (( have )); then cur="$cur#"; else break; fi

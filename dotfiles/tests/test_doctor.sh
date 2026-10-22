@@ -513,6 +513,9 @@ if command -v ssh >/dev/null 2>&1; then
   out="$(run_doctor --platform linux 2>&1)"; rc=$?
   assert_contains "an Include with an unbalanced quote skips ssh -G" "$out" "config uses Match exec"
   if [[ -e "$marker" ]]; then err "the doctor ran a Match exec behind an unbalanced quote"; else ok "no Match exec behind an unbalanced quote ran"; fi
+  printf 'Include /p/a\\b.conf\n' > "$H/.ssh/config"
+  out="$(run_doctor --platform linux 2>&1)"; rc=$?
+  assert_contains "an Include with an unknown backslash escape skips ssh -G" "$out" "config uses Match exec"
   printf 'Include %%d/exec.conf\n' > "$H/.ssh/config"
   out="$(run_doctor --platform linux 2>&1)"; rc=$?
   assert_contains "an Include with an unexpanded token skips ssh -G" "$out" "config uses Match exec"
