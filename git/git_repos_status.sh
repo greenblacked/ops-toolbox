@@ -44,9 +44,10 @@ Options:
                   checked (failed git status, fetch, stash list or upstream
                   walk, or an unreadable repository) are kept under every
                   filter.
-  --fetch         Run 'git fetch --prune --quiet' in each repository first.
+  --fetch         Run 'git fetch --all --prune --quiet' in each repository first,
+                  so every remote is refreshed and pruned, not only the default.
                   Network; it updates remote-tracking refs and nothing else.
-                  A failed fetch counts as work at risk.
+                  A failure on any remote counts as work at risk.
   --dry-run       Print the fetch each repository would get and report from
                   the refs already on disk; changes nothing. With --porcelain
                   the dry-run lines go to stderr, so stdout stays rows only
@@ -220,15 +221,17 @@ inspect_repo() {
     [[ -n "$(git -C "$repo" remote 2>/dev/null || true)" ]] && has_remote=1
     if (( has_remote == 1 )); then
       if (( DRY_RUN == 1 )); then
-        dry_say "dry-run: would run: git -C $repo fetch --prune --quiet"
+        dry_say "dry-run: would run: git -C $repo fetch --all --prune --quiet"
       elif (( FETCH == 1 )); then
         # No terminal prompt: one repository asking for a password would
         # otherwise stall the whole sweep.
         # --prune drops remote-tracking refs for branches deleted on the
         # remote; otherwise a stale ref makes formerly pushed commits look
-        # pushed. A failed fetch leaves the refs unverified, so it counts as
+        # pushed. --all covers every remote, so a branch pushed to and then
+        # deleted on a secondary remote is pruned too. A failure on any
+        # remote leaves the refs unverified, so it counts as
         # work at risk below.
-        if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --prune --quiet >/dev/null 2>&1; then
+        if ! GIT_TERMINAL_PROMPT=0 git -C "$repo" fetch --all --prune --quiet >/dev/null 2>&1; then
           fetch_failed=1
           add_note "fetch-failed"
         fi

@@ -180,7 +180,7 @@ tree_before="$(find "$parent" | sort)"
 refs_before="$(git --git-dir="$origin" for-each-ref)"
 out="$("$REPOS_STATUS" --dir "$parent" --dry-run 2>&1)"; rc=$?
 assert_eq "$rc" 0 '--dry-run exits 0'
-assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --prune --quiet" '--dry-run names the fetch it would run'
+assert_contains "$out" "dry-run: would run: git -C $parent/clean fetch --all --prune --quiet" '--dry-run names the fetch it would run'
 assert_contains "$out" 'dry-run complete; no changes written' '--dry-run closes with the summary line'
 assert_eq "$(find "$parent" | sort)" "$tree_before" '--dry-run creates and removes no file'
 out="$("$REPOS_STATUS" --dir "$parent" --dry-run --porcelain 2>/dev/null)"
@@ -280,6 +280,34 @@ for filter in dirty ahead behind unpushed stash; do
   assert_eq "$rc" 1 "--only $filter --strict exits 1 when git stash list fails"
 done
 rm -rf "$parent/badstash"
+
+section "--fetch prunes every remote"
+second="$scratch/second.git"
+git init -q --bare "$second" || err 'create the secondary remote'
+clone_into "$parent/multi" &&
+  git -C "$parent/multi" remote add backup "$second" &&
+  git -C "$parent/multi" switch -q -c side &&
+  printf 'side\n' >"$parent/multi/side.txt" &&
+  git -C "$parent/multi" add side.txt &&
+  git -C "$parent/multi" commit -q -m side &&
+  git -C "$parent/multi" push -q -u backup side || err 'push side to the secondary remote'
+git --git-dir="$second" branch -D side >/dev/null 2>&1 || err 'delete side on the secondary remote'
+out="$("$REPOS_STATUS" --dir "$parent/multi" --porcelain 2>&1)"
+assert_contains "$out" $'\tside\tbackup/side\t0\t0\t0\t0\t0\t' 'without --fetch the stale secondary ref hides the commit'
+out="$("$REPOS_STATUS" --dir "$parent/multi" --fetch --porcelain 2>&1)"
+assert_contains "$out" $'\tside\t\t0\t0\t0\t0\t1\t' '--fetch prunes the secondary remote so the commit is unpushed'
+"$REPOS_STATUS" --dir "$parent/multi" --fetch --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict --fetch exits 1 for a branch deleted on a secondary remote'
+rm -rf "$parent/multi" "$second"
+
+section "--fetch failure on a secondary remote"
+clone_into "$parent/halfbroken" &&
+  git -C "$parent/halfbroken" remote add backup "$scratch/does-not-exist.git" || err 'add a broken secondary remote'
+out="$("$REPOS_STATUS" --dir "$parent/halfbroken" --fetch --porcelain 2>&1)"
+assert_contains "$out" 'fetch-failed' 'a failing secondary remote is noted as fetch-failed'
+"$REPOS_STATUS" --dir "$parent/halfbroken" --fetch --strict >/dev/null 2>&1; rc=$?
+assert_eq "$rc" 1 '--strict --fetch exits 1 when only the secondary remote fails'
+rm -rf "$parent/halfbroken"
 
 section "--fetch failure is work at risk"
 clone_into "$parent/unreach" || err 'clone unreachable fixture'
