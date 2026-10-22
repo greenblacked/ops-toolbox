@@ -9,4 +9,6 @@
   `CLOUDSDK_COMPUTE_REGION` override the gcloud file values, are marked
   `(env)` and are what `--warn-on` sees. It never opens
   `~/.aws/credentials`, names token variables without printing them, and
-  flags an expired AWS SSO login and a remote Docker daemon.
+  flags an expired AWS SSO login and a remote Docker daemon. With both
+  `DOCKER_CONTEXT` and `DOCKER_HOST` set it reports the context, which the
+  Docker CLI lets win, and `--warn-on` is matched against that endpoint.

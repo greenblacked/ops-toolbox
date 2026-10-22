@@ -1611,7 +1611,7 @@ front of a command:
 | `gcloud` | Files only: `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config`, then `configurations/config_NAME` under `CLOUDSDK_CONFIG` (default `~/.config/gcloud`). `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT` and `CLOUDSDK_COMPUTE_REGION` override the file values, are marked `(env)`, and are what `--warn-on` is matched against. The CLI is never started. |
 | `aws` | `AWS_PROFILE`, `AWS_DEFAULT_PROFILE` or `default`, and that stanza of `~/.aws/config` (`AWS_CONFIG_FILE`). For an SSO profile, the expiry of the newest cached login. |
 | `terraform` | `TF_WORKSPACE`, else `.terraform/environment` in `--dir`, else `default`; reported only where `--dir` holds `.terraform/` or `*.tf`. |
-| `docker` | `DOCKER_HOST`, `DOCKER_CONTEXT` or `docker context show`, and that context's endpoint. Anything but a local `unix://` socket is a warning. |
+| `docker` | `DOCKER_CONTEXT` (which the Docker CLI lets override `DOCKER_HOST`), else `DOCKER_HOST`, else `docker context show`, and the endpoint of that context. With both variables set the context's endpoint is reported and `DOCKER_HOST` is noted as ignored; `--warn-on` is matched against the effective endpoint. Anything but a local `unix://` socket is a warning. |
 | `gh` | Host names and `user:` lines of `hosts.yml` under `GH_CONFIG_DIR` (default `~/.config/gh`). |
 
 Everything is local: config files, and CLI subcommands that answer from those

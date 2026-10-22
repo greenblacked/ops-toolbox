@@ -457,9 +457,15 @@ fi
 
 # --- docker ------------------------------------------------------------------
 # A context whose endpoint is not a local socket sends `docker system prune`
-# and friends to somebody else's daemon. DOCKER_HOST overrides any context.
+# and friends to somebody else's daemon. The Docker CLI documents that
+# DOCKER_CONTEXT overrides DOCKER_HOST, so with both set the context's
+# endpoint is the effective target and DOCKER_HOST is ignored.
 if want docker; then
-  if [[ -n "${DOCKER_HOST:-}" ]]; then
+  dnote=""
+  if [[ -n "${DOCKER_CONTEXT:-}" && -n "${DOCKER_HOST:-}" ]]; then
+    dnote="  (DOCKER_HOST=$(clean "$DOCKER_HOST") is ignored: DOCKER_CONTEXT overrides it)"
+  fi
+  if [[ -z "${DOCKER_CONTEXT:-}" && -n "${DOCKER_HOST:-}" ]]; then
     dhost="$(clean "$DOCKER_HOST")"
     case "$dhost" in
       unix://*) judge docker ok "DOCKER_HOST=$dhost" "$dhost" ;;
@@ -477,9 +483,9 @@ if want docker; then
       dhost="$(clean "$(docker context inspect "$dctx" --format '{{ (index .Endpoints "docker").Host }}' 2>/dev/null)")"
       case "$dhost" in
         unix://*|"")
-          judge docker ok "context=$dctx${dhost:+  $dhost}" "$dctx" "$dhost" ;;
+          judge docker ok "context=$dctx${dhost:+  $dhost}$dnote" "$dctx" "$dhost" ;;
         *)
-          judge docker warn "remote Docker daemon: context=$dctx  $dhost" "$dctx" "$dhost" ;;
+          judge docker warn "remote Docker daemon: context=$dctx  $dhost$dnote" "$dctx" "$dhost" ;;
       esac
     fi
   fi

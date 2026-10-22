@@ -2411,6 +2411,22 @@ out="$(export FAKE_DOCKER_ENDPOINT=tcp://10.0.0.5:2376; ops --only docker)"; rc=
 assert_contains "ops_context warns about a remote Docker daemon" "$out" "remote"
 assert_eq "a remote Docker daemon alone does not change the exit code" "0" "$rc"
 
+# DOCKER_CONTEXT overrides DOCKER_HOST (Docker CLI documentation): with both
+# set, the context's endpoint is the effective target and the host is noted
+# as ignored. --warn-on is matched against the effective context only.
+out="$(export DOCKER_CONTEXT=prod-cluster DOCKER_HOST=unix:///tmp/local.sock \
+  FAKE_DOCKER_ENDPOINT=tcp://10.0.0.5:2376; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "DOCKER_CONTEXT=prod-cluster beside a local DOCKER_HOST, --warn-on prod -> 1" "1" "$rc"
+assert_contains "the DOCKER_CONTEXT target is reported" "$out" "context=prod-cluster"
+assert_contains "the context's remote endpoint is reported" "$out" "tcp://10.0.0.5:2376"
+assert_contains "the ignored DOCKER_HOST is noted" "$out" "is ignored"
+out="$(export DOCKER_CONTEXT=laptop DOCKER_HOST=tcp://prod-host:2376; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "a remote DOCKER_HOST that DOCKER_CONTEXT overrides does not trip --warn-on -> 0" "0" "$rc"
+assert_contains "the local context is reported, not the overridden host" "$out" "context=laptop"
+assert_not_contains "the overridden host is not called a remote daemon" "$out" "remote Docker daemon"
+out="$(export DOCKER_HOST=tcp://prod-host:2376; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "DOCKER_HOST alone still matches --warn-on -> 1" "1" "$rc"
+
 mv "$oc/bin/kubectl" "$oc/kubectl.off"
 out="$(ops --only kube)"; rc=$?
 assert_eq "ops_context without kubectl exits 0" "0" "$rc"
