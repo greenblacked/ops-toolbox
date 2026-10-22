@@ -630,9 +630,10 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   headless run cannot answer the yes/no prompt. Before any authentication
   attempt, the doctor asks `ssh-keygen -F` whether the key for the host and
   port ssh will dial is in the `UserKnownHostsFile` and `GlobalKnownHostsFile`
-  that `ssh -G` reports, honouring a non-22 port (`[host]:2222`), a
-  `HostKeyAlias` and hashed entries. Only the file name is printed, never the
-  entry. An unknown key is a warning with the `ssh-keyscan` and
+  that `ssh -G` reports, honouring a non-22 port (`[host]:2222`; an explicit
+  port in an `ssh://` remote URL is the one used for this check and the
+  probe), a `HostKeyAlias` and hashed entries. Only the file name is printed,
+  never the entry. An unknown key is a warning with the `ssh-keyscan` and
   `ssh-keygen -lf` steps that pin it after checking the fingerprint against
   the one the provider publishes; `StrictHostKeyChecking no` is a warning of
   its own. With `--require-known-host` an unknown key fails the host instead,
@@ -643,11 +644,11 @@ The effective configuration comes from **`ssh -G`** — OpenSSH resolving its ow
   `host key source: KnownHostsCommand (not checked)` and never run, so an
   absent file entry does not fail the requirement. With the requirement set
   every authentication attempt runs with `StrictHostKeyChecking=yes` (never
-  `accept-new`), `UpdateHostKeys=no` and `CheckHostIP=no`, so none of a key
-  a `KnownHostsCommand` does not supply, an extra key for a known host or
-  an IP address entry for a known hostname is written to known_hosts.
-  A *changed* host key can only be seen by connecting;
-  `git_remote_doctor.py --probe` names that one.
+  `accept-new`), `UpdateHostKeys=no` and `CheckHostIP=no`, so none of a key a
+  `KnownHostsCommand` does not supply, an extra key for a known host or an IP
+  address entry for a known hostname is written to known_hosts. A *changed*
+  host key can only be seen by connecting; `git_remote_doctor.py --probe`
+  names that one.
 
 With **`--test-auth`** it tries each discovered private key against the host and prints the `Host` block or `ssh-add` command that fixes the failure. Authentication attempts use `StrictHostKeyChecking=accept-new`, so they record a host key that was not there yet; the known_hosts check above runs first for that reason. With `--require-known-host` they instead use `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no` and write nothing.
 
