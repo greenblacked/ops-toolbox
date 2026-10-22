@@ -6,6 +6,8 @@ set -uo pipefail
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 SW="$REPO_ROOT/linux/swap_setup.sh"
 fixture="$(mktemp -d)" || exit 1
+# The physical path: the script refuses a --path with a symlink in it.
+fixture="$(cd "$fixture" && pwd -P)" || exit 1
 trap 'rm -rf -- "$fixture"' EXIT
 mkdir -p "$fixture/bin" "$fixture/statbin" || exit 1
 STUB_DIR="$fixture"
@@ -243,6 +245,45 @@ assert_contains 'the active swap is named' "$out" '/dev/fixture2'
 run_sw --create --size 128M --dry-run --force
 assert_eq '--force adds a swapfile beside active swap' 0 "$rc"
 : > "$fixture/active"
+
+# A root-run fallocate / mkswap must not be steerable through a planted link:
+# a parent others can write to, and any symlink in the path, are refused.
+for mode in 777 770 702 1777; do
+  mkdir -p "$fixture/open"
+  chmod "$mode" "$fixture/open"
+  run_sw --create --size 128M --dry-run --path "$fixture/open/swapfile"
+  assert_eq "a parent with mode $mode is refused -> 2" 2 "$rc"
+  assert_contains "mode $mode refusal says why" "$out" 'writable by users other than its owner'
+  rm -rf -- "$fixture/open"
+done
+mkdir -p "$fixture/real"
+chmod 700 "$fixture/real"
+ln -s "$fixture/real" "$fixture/linkdir"
+run_sw --create --size 128M --dry-run --path "$fixture/linkdir/swapfile"
+assert_eq 'a symlinked parent component is refused -> 2' 2 "$rc"
+assert_contains 'the symlinked component is named' "$out" 'is a symlink'
+ln -s "$fixture/real/target" "$fixture/linkfile"
+run_sw --create --size 128M --dry-run --path "$fixture/linkfile"
+assert_eq 'a symlink at the path itself is refused -> 4' 4 "$rc"
+assert_eq 'the symlink target was not created' 0 "$([[ -e "$fixture/real/target" ]] && printf 1 || printf 0)"
+run_sw --create --size 128M --dry-run --path "$fixture/real/swapfile"
+assert_eq 'a private real directory is accepted' 0 "$rc"
+rm -rf -- "$fixture/real" "$fixture/linkdir" "$fixture/linkfile"
+if [[ "$(id -u)" == 0 ]]; then
+  # A swapfile that turns into something else mid-run is not formatted.
+  : > "$fixture/calls"
+  cat > "$fixture/bin/fallocate" <<'STUB'
+#!/usr/bin/env bash
+printf 'fallocate %s\n' "$*" >> "$STUB_DIR/calls"
+rm -f -- "${@: -1}"
+ln -s /dev/null "${@: -1}"
+STUB
+  chmod +x "$fixture/bin/fallocate"
+  run_sw --create --size 128M --yes
+  assert_eq 'a swapfile replaced by a link is not used -> 1' 1 "$rc"
+  assert_not_contains 'mkswap never ran on the replaced file' "$(cat "$fixture/calls")" 'mkswap'
+  assert_eq 'nothing is left at the path' 0 "$([[ -e "$swapfile" || -L "$swapfile" ]] && printf 1 || printf 0)"
+fi
 
 out="$(PATH="$fixture/statbin:$fixture/bin:$PATH" "$SW" --path "$swapfile" --fstab "$fstab" \
   --create --size 128M --dry-run 2>&1)"; rc=$?

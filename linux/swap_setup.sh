@@ -354,6 +354,47 @@ change_preflight() {
   fi
 }
 
+# A root-run fallocate / chmod / mkswap on a path someone else can write to
+# can be steered through a planted symlink. Refuse a parent directory that
+# anyone but its owner can write to (sticky or not: /tmp is no place for a
+# swapfile), a parent owned by neither root nor the user running this, and a
+# path with a symlink in any component.
+unsafe_path_check() {
+  local path="$1" dir="$2" info owner mode cur
+  info="$(stat -c '%u %a' -- "$dir" 2>/dev/null)" || info=""
+  owner="${info%% *}"
+  mode="${info##* }"
+  if ! [[ "$owner" =~ ^[0-9]+$ && "$mode" =~ ^[0-7]+$ ]]; then
+    err "cannot inspect $dir"
+    return 1
+  fi
+  if [[ "$owner" != "0" && "$owner" != "$(id -u)" ]]; then
+    err "$dir is owned by uid $owner, not root; refusing to put a swapfile there"
+    return 1
+  fi
+  if (( (8#$mode & 8#022) != 0 )); then
+    err "$dir is writable by users other than its owner (mode $mode); refusing to put a swapfile there"
+    return 1
+  fi
+  cur="$path"
+  while [[ -n "$cur" && "$cur" != "/" && "$cur" != "." ]]; do
+    if [[ -L "$cur" ]]; then
+      err "$cur is a symlink; refusing a --path that goes through one"
+      return 1
+    fi
+    cur="$(dirname -- "$cur")"
+  done
+  return 0
+}
+
+# The file this run created, still a regular file with one link, owned by
+# whoever runs this (root, for a real run).
+swapfile_is_sane() {
+  local info
+  info="$(stat -c '%F|%u|%h' -- "$SWAP_PATH" 2>/dev/null)" || return 1
+  [[ "$info" == regular*file"|$(id -u)|1" ]]
+}
+
 # --- create ----------------------------------------------------------------
 create() {
   local dir fstype avail_kib need_kib created=0 active line
@@ -378,6 +419,9 @@ create() {
   dir="$(dirname "$SWAP_PATH")"
   if [[ ! -d "$dir" ]]; then
     err "no directory $dir"
+    exit 2
+  fi
+  if ! unsafe_path_check "$SWAP_PATH" "$dir"; then
     exit 2
   fi
   # Swapfiles need a filesystem that maps file blocks directly. These either
@@ -408,20 +452,39 @@ create() {
   umask 077
   if (( DRY_RUN == 1 )); then
     run_step "allocate $SIZE" fallocate -l "$SIZE" "$SWAP_PATH"
-  elif have fallocate && fallocate -l "$SIZE" "$SWAP_PATH" 2>/dev/null; then
-    created=1
-    ok "allocate $SIZE"
   else
-    # fallocate is missing, or the filesystem does not support it (ext3,
-    # some XFS setups). dd writes every block, which is slower but works.
-    rm -f -- "$SWAP_PATH"
+    # Create the file exclusively (noclobber opens with O_EXCL, which never
+    # follows a link), then work on it only while it stays a regular,
+    # single-link file of ours. The parent is already known not to be
+    # writable by anyone else, so nobody can swap it under us in between.
+    if ! ( set -C; : > "$SWAP_PATH" ) 2>/dev/null; then
+      err "cannot create $SWAP_PATH exclusively"
+      exit 1
+    fi
     created=1
-    run_step "allocate $SIZE with dd" dd if=/dev/zero of="$SWAP_PATH" bs=1M count="$SIZE_MIB" status=none || {
+    if ! swapfile_is_sane; then
+      err "$SWAP_PATH is not a regular, single-link file owned by this user"
+      exit 1
+    fi
+    if have fallocate && fallocate -l "$SIZE" "$SWAP_PATH" 2>/dev/null; then
+      ok "allocate $SIZE"
+    else
+      # fallocate is missing, or the filesystem does not support it (ext3,
+      # some XFS setups). dd writes every block, which is slower but works.
+      # conv=notrunc: the file is already ours; never re-create it by path.
+      run_step "allocate $SIZE with dd" dd if=/dev/zero of="$SWAP_PATH" bs=1M count="$SIZE_MIB" conv=notrunc status=none || {
+        rm -f -- "$SWAP_PATH"
+        exit 1
+      }
+    fi
+    if ! swapfile_is_sane; then
+      err "$SWAP_PATH changed while it was being prepared; removing it"
       rm -f -- "$SWAP_PATH"
       exit 1
-    }
+    fi
   fi
   if ! run_step "restrict to mode 600" chmod 600 "$SWAP_PATH" \
+    || ! { (( DRY_RUN == 1 )) || swapfile_is_sane; } \
     || ! run_step "format as swap" mkswap "$SWAP_PATH" \
     || ! run_step "enable" swapon "$SWAP_PATH"; then
     if (( created == 1 )); then
