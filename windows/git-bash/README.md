@@ -246,11 +246,13 @@ under `# ---` section headers. By category:
   `AWS_PROFILE` set and no `AWS_REGION`, the region of its `[profile NAME]`
   section), the
   gcloud project (`CLOUDSDK_CORE_PROJECT`, else the project of the
-  configuration `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config` names), the
-  Terraform workspace (`TF_WORKSPACE`, else `.terraform/environment` in the
-  current directory, `default` when `.terraform/` has no such file), the
+  configuration `CLOUDSDK_ACTIVE_CONFIG_NAME` or `active_config` names, read
+  from `CLOUDSDK_CONFIG` or `%APPDATA%\gcloud`), the Terraform workspace
+  (`TF_WORKSPACE`, else `environment` in `TF_DATA_DIR` or `.terraform` of the
+  current directory, `default` when that directory has no such file), the
   Docker context (`DOCKER_CONTEXT`, else `DOCKER_HOST`, else the saved
-  context), and the Git branch with its origin host. Run it before `tfaa`, `tfda` or
+  context in `DOCKER_CONFIG` or `~/.docker`), and the Git branch with its
+  origin host. Run it before `tfaa`, `tfda` or
   `kdelete`, which act on whatever these point at. A value that looks like
   production (`prod`, `production` or `prd`, any case) ends in `!`, in red on
   a terminal; the `!` stays when colour is off (`NO_COLOR`, `ctx --plain`, or

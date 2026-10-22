@@ -589,7 +589,7 @@ section "ctx"
 unset AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID TF_WORKSPACE \
   KUBECONFIG CTX_DANGER_PATTERN APPDATA DOCKER_CONTEXT AWS_CONFIG_FILE \
   AWS_SHARED_CREDENTIALS_FILE DOCKER_HOST CLOUDSDK_ACTIVE_CONFIG_NAME \
-  CLOUDSDK_CORE_PROJECT
+  CLOUDSDK_CORE_PROJECT CLOUDSDK_CONFIG DOCKER_CONFIG TF_DATA_DIR
 
 ctx_root="$(mktemp -d "$SCRATCH/ctx.XXXXXX")"
 mkdir -p "$ctx_root/home/.docker" "$ctx_root/work/.terraform" \
@@ -625,6 +625,7 @@ run_ctx() {
     -u AWS_ACCESS_KEY_ID -u TF_WORKSPACE -u KUBECONFIG -u CTX_DANGER_PATTERN \
     -u DOCKER_CONTEXT -u NO_COLOR -u CTX_STUBS -u AWS_CONFIG_FILE -u AWS_SHARED_CREDENTIALS_FILE \
     -u DOCKER_HOST -u CLOUDSDK_ACTIVE_CONFIG_NAME -u CLOUDSDK_CORE_PROJECT \
+    -u CLOUDSDK_CONFIG -u DOCKER_CONFIG -u TF_DATA_DIR \
     HOME="$ctx_root/home" APPDATA="$ctx_root/appdata" PATH="$ctx_root/bin:$PATH" \
     ${assigns[@]+"${assigns[@]}"} "${BASH:-bash}" -c '
       kubectl() {
@@ -729,6 +730,29 @@ assert_not_contains "and the file project is not shown" "$out" "acme-prod"
 
 run_ctx TF_WORKSPACE=Production-EU
 assert_contains "TF_WORKSPACE wins over .terraform/environment, matched in any case" "$out" "tf      Production-EU!  (TF_WORKSPACE)"
+
+# The tools' own config-directory overrides move where ctx reads from.
+mkdir -p "$ctx_root/gcfg/configurations" "$ctx_root/dockercfg" \
+  "$ctx_root/tfdata" "$ctx_root/tfempty"
+printf 'main\n' > "$ctx_root/gcfg/active_config"
+printf '[core]\nproject = cfg-dir-proj\n' > "$ctx_root/gcfg/configurations/config_main"
+run_ctx CLOUDSDK_CONFIG="$ctx_root/gcfg"
+assert_contains "CLOUDSDK_CONFIG is the gcloud config directory read" "$out" "gcloud  cfg-dir-proj"$'\n'
+assert_not_contains "and the APPDATA project is then not shown" "$out" "acme-prod"
+printf '{"currentContext": "colima"}\n' > "$ctx_root/dockercfg/config.json"
+run_ctx DOCKER_CONFIG="$ctx_root/dockercfg"
+assert_contains "DOCKER_CONFIG is the directory the saved Docker context is read from" "$out" "docker  colima"$'\n'
+assert_not_contains "and the home .docker context is then not shown" "$out" "desktop-linux"
+printf 'staging2' > "$ctx_root/tfdata/environment"
+run_ctx TF_DATA_DIR="$ctx_root/tfdata"
+assert_contains "TF_DATA_DIR holds the environment file read" "$out" "tf      staging2  ("
+assert_not_contains "and .terraform/environment is then not read" "$out" "tf      prod"
+run_ctx TF_DATA_DIR="$ctx_root/tfempty"
+assert_contains "a TF_DATA_DIR with no environment file is on default" "$out" "tf      default  (default)"
+run_ctx TF_DATA_DIR="$ctx_root/nosuchdir"
+assert_not_contains "a TF_DATA_DIR that does not exist shows no workspace" "$out" "tf      "
+run_ctx TF_DATA_DIR=
+assert_contains "an empty TF_DATA_DIR falls back to .terraform" "$out" "tf      prod!  (.terraform/environment)"
 
 run_ctx AWS_ACCESS_KEY_ID=AKIAFAKE
 assert_contains "exported AWS keys are named as such" "$out" "static-keys"
