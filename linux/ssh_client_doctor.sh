@@ -600,6 +600,16 @@ if want risks; then
       fi
       key_lc="$(lower "$key")"
       val_lc="$(lower "$rest")"
+      # OpenSSH reads true/on as yes and false/off as no for these keywords,
+      # so grade the canonical word rather than the spelling.
+      case "$key_lc" in
+        stricthostkeychecking|forwardagent|forwardx11|forwardx11trusted|passwordauthentication|identitiesonly|hashknownhosts)
+          case "$val_lc" in
+            false|off) val_lc="no" ;;
+            true|on) val_lc="yes" ;;
+          esac
+          ;;
+      esac
       case "$key_lc" in
         host)
           scope="Host $rest"
@@ -658,7 +668,7 @@ if want risks; then
       case "$key_lc" in
         stricthostkeychecking)
           case "$val_lc" in
-            no|off)
+            no)
               if (( line_all )); then
                 fail "StrictHostKeyChecking $rest for every host ($where)" "host keys are never verified, so any server can claim to be any host: use 'StrictHostKeyChecking accept-new'"
               else

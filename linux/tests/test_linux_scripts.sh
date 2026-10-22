@@ -969,6 +969,20 @@ assert_contains "system_doctor only notes a missing nofail mount" \
 assert_not_contains "system_doctor skips noauto fstab entries" "$out" "fstab entry /mnt/x"
 assert_not_contains "system_doctor skips swap fstab entries" "$out" "fstab entry none"
 assert_contains "system_doctor reports a degraded md array" "$out" "md array md0 is degraded ([2/1] [U_])"
+real_df="$(command -v df)"
+df_stub="$(mktemp -d)"
+cat > "$df_stub/df" <<STUB
+#!/usr/bin/env bash
+printf '%s\\n' "\$*" >> "\${0%/*}/argv.log"
+exec "$real_df" "\$@"
+STUB
+chmod +x "$df_stub/df"
+PATH="$df_stub:$PATH" PROC_DIR="$storage_fx" FSTAB="$storage_fx/fstab" \
+  "$L/system_doctor.sh" --skip-containers --skip-units --skip-smart --skip-remote-mounts >/dev/null 2>&1
+assert_contains "system_doctor --skip-remote-mounts passes -l to df" "$(cat "$df_stub/argv.log")" "-Pk -l /"
+assert_eq "system_doctor --skip-remote-mounts leaves no df unrestricted" "0" \
+  "$(grep -c -e '^-Pk /' -e '^-Pk *$' "$df_stub/argv.log" || true)"
+rm -rf "$df_stub"
 assert_contains "system_doctor leaves remote mounts alone with --skip-remote-mounts" "$out" "/mnt/nfs (nfs4) not probed (--skip-remote-mounts)"
 if [[ "$(id -u)" == "0" ]]; then
   assert_contains "system_doctor reports a disk failing its own SMART check" "$out" "SMART overall health FAILED on /dev/sda"
@@ -2551,6 +2565,18 @@ out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"; rc=$?
 assert_not_contains "ssh_client_doctor does not grade Match host *,!bastion as global" "$out" "[FAIL]"
 assert_not_contains "ssh_client_doctor does not warn on Match host *,!bastion" "$out" "[warn]"
 assert_eq "ssh_client_doctor Match host *,!bastion -> 0" "0" "$rc"
+# OpenSSH boolean aliases (false/off = no, true/on = yes) grade like the
+# canonical word.
+for shk_alias in false Off FALSE; do
+  printf '%s\n' 'Host *' "  StrictHostKeyChecking $shk_alias" > "$risky_dir/config"
+  out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+  assert_contains "ssh_client_doctor grades StrictHostKeyChecking $shk_alias like no" \
+    "$(grep -F 'StrictHostKeyChecking' <<<"$out" || true)" "[FAIL]"
+done
+printf '%s\n' 'Host *' '  ForwardAgent TRUE' > "$risky_dir/config"
+out="$("$SSHDOC" --ssh-dir "$risky_dir" --only risks 2>&1)"
+assert_contains "ssh_client_doctor grades ForwardAgent true like yes" \
+  "$(grep -F 'ForwardAgent' <<<"$out" || true)" "[warn]"
 # First value wins: an earlier block that sets the keyword narrows a later
 # Host * value to the hosts that block does not match.
 printf '%s\n' 'Host trusted.example' '  StrictHostKeyChecking yes' '  ForwardAgent no' \
