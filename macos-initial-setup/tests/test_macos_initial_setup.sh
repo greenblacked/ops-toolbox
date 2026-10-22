@@ -2567,14 +2567,18 @@ mkdir -p "$sd/home/keys"
 cp "$sshd_dir/id_ed25519" "$sd/home/keys/deploy"
 chmod 644 "$sd/home/keys/deploy"
 cp "$sshd_dir/config" "$sd/config.bak"
-printf 'Host ci\n  IdentityFile ~/keys/deploy\n' >> "$sshd_dir/config"
+# Only this block: the doctor names the first protected identity, so any
+# other Host block with a key would mask the "has a passphrase" advice.
+printf 'Host ci\n  IdentityFile ~/keys/deploy\n' > "$sshd_dir/config"
+chmod 600 "$sshd_dir/config"
 out="$(sshdoc --only config)"; rc=$?
 assert_eq "a 644 IdentityFile outside ~/.ssh fails -> 1" "1" "$rc"
 assert_contains "the IdentityFile fix is printed" "$out" "chmod 600 $sd/home/keys/deploy"
 assert_contains "a loose IdentityFile key is not probed for a passphrase" "$out" \
   "passphrase not checked: permissions too open"
+loose_advice='~/keys/deploy has a passphrase'
 assert_not_contains "a loose IdentityFile key gets no keychain advice" "$out" \
-  "~/keys/deploy has a passphrase"
+  "$loose_advice"
 cp "$sd/config.bak" "$sshd_dir/config"
 rm -rf "$sd/home/keys" "$sd/config.bak"
 chmod 600 "$sshd_dir/config"
