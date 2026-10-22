@@ -292,6 +292,21 @@ assert_contains 'old-style common headers go beside +deb names' "$purge_line" 'l
 assert_not_contains 'the +deb common headers of the running base stay' "$purge_line" 'linux-headers-6.12.107+deb12-common'
 assert_not_contains 'the headers metapackage stays beside +deb names' "$purge_line" 'linux-headers-amd64'
 
+# Debian backports carry a bare +bpo: 6.12.12+bpo-amd64 pairs with
+# linux-headers-6.12.12+bpo-common.
+printf '%s\t%s\t%s\n' \
+  linux-image-6.12.12+bpo-amd64 'install ok installed' 300000 \
+  linux-headers-6.12.12+bpo-common 'install ok installed' 80000 \
+  linux-image-6.12.20+bpo-amd64 'install ok installed' 300000 \
+  linux-headers-6.12.20+bpo-common 'install ok installed' 80000 \
+  > "$fixture/dpkg.rows"
+run_kc debian --dry-run --release 6.12.20+bpo-amd64 --keep 1
+assert_eq 'debian +bpo names dry run exits 0' 0 "$rc"
+purge_line="$(grep 'apt-get purge' <<<"$out")"
+assert_contains 'a +bpo old image goes' "$purge_line" 'linux-image-6.12.12+bpo-amd64'
+assert_contains 'the +bpo common headers of a removed base go' "$purge_line" 'linux-headers-6.12.12+bpo-common'
+assert_not_contains 'the +bpo common headers of the running base stay' "$purge_line" 'linux-headers-6.12.20+bpo-common'
+
 # Two-part Debian flavours share the base of the plain flavour: with
 # 6.1.0-9-cloud-amd64 kept (running), removing 6.1.0-9-amd64 must leave the
 # common headers the kept flavour's headers depend on.
