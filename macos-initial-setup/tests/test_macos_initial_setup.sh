@@ -4192,6 +4192,36 @@ chmod 1777 "$cb/anc"
 out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
 assert_eq "a --dest under a sticky ancestor owned by the user -> 0" "0" "$rc"
 chmod 755 "$cb/anc"
+
+# A 755 --dest is not enough when an extended ACL lets another principal list
+# or change it: `ls -led` is stubbed (GNU ls has no -e, which stays silent).
+cat > "$cb/bin/ls" <<'LS_EOF'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+if [ "$1" = "-led" ] && [ "$last" = "${FAKE_ACL_PATH:-}" ]; then
+  printf '%s\n' "drwxr-xr-x+ 2 me staff 64 Oct  1 00:00 $last"
+  printf '%b' "$FAKE_ACL"
+  exit 0
+fi
+exec /bin/ls "$@"
+LS_EOF
+chmod +x "$cb/bin/ls"
+adest="$cb/acl-dest"
+mkdir -p "$adest"
+chmod 755 "$adest"
+for entry in ' 0: user:mallory allow add_file\n' ' 0: group:staff allow list\n' \
+  ' 0: user:bob allow delete_child\n' ' 0: user:bob inherited allow write\n' \
+  ' 0: user:bob allow read,delete\n'; do
+  out="$(FAKE_ACL_PATH="$adest" FAKE_ACL="$entry" cbrun --yes --dest "$adest")"; rc=$?
+  assert_eq "a --dest whose ACL grants another principal access is refused -> 3 ($entry)" "3" "$rc"
+  assert_contains "the ACL refusal names the directory and the principal" "$out" "refusing --dest $adest: an ACL entry for"
+  assert_eq "nothing is written into an ACL-refused --dest" "0" "$(find "$adest" -mindepth 1 | wc -l | tr -d ' ')"
+done
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:me allow list,add_file,delete_child\n 1: user:root allow write\n 2: user:bob deny add_file\n 3: user:bob allow read,readattr\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "an ACL for the owner, root, a deny or read-only rights is accepted -> 0" "0" "$rc"
+rm -f "$adest"/config-*.tar.gz "$cb/bin/ls"
+out="$(cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "a --dest without ACL support stays accepted -> 0" "0" "$rc"
 rm -rf "$cb"
 
 end_section

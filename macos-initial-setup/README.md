@@ -1296,6 +1296,9 @@ How a run writes: a `--dest` that group or other users can write to is refused
 below an ancestor directory that is not owned by root or you, or that group or
 other users can write to unless it is sticky, since anyone who can write to an
 ancestor can rename `--dest` away and put their own directory in its place.
+A `--dest` whose extended ACL (`ls -le`) has an allow entry for anyone but its
+owner, root or wheel that lets them list it or change its contents is refused
+too (exit `3`; fix: `chmod -N DIR`).
 The archive is built as a hidden temporary file in `--dest`, created
 exclusively with `mktemp` under an unpredictable name, so a symlink planted in
 `--dest` is never followed. `tar` runs under `umask 077` (with

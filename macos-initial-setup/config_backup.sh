@@ -578,6 +578,39 @@ if [[ ! "$dest_mode" =~ ^[0-7]{3,4}$ ]]; then
   dest_mode=""
 fi
 
+# Does an extended ACL on directory $1 let anyone but its owner (or root)
+# list it or change its contents? macOS `ls -led` lists the entries under
+# the mode line ("0: user:bob allow list,add_file"). Only an allow entry
+# counts, with one of the rights that read or modify the directory: list, add_file, add_subdirectory, delete_child, write, append,
+# delete, writeattr, writeextattr, writesecurity, chown. The owner's own
+# entry, root and wheel are not foreign. Where ls has no -e (GNU ls) or the
+# directory has no ACL the answer is no, silently. Prints the principal.
+dest_acl_grant() {
+  local listing
+  listing="$(ls -led -- "$1" 2>/dev/null)" || return 1
+  awk '
+    NR == 1 { owner = $3; next }
+    /^[[:space:]]*[0-9]+: / {
+      line = $0
+      sub(/^[[:space:]]*[0-9]+: /, "", line)
+      i = index(line, " allow ")
+      if (i == 0) next
+      subject = substr(line, 1, i - 1)
+      sub(/ inherited$/, "", subject)
+      if (subject == ("user:" owner) || subject == "user:root" || subject == "group:wheel") next
+      n = split(substr(line, i + 7), perm, /[ ,]+/)
+      for (k = 1; k <= n; k++) {
+        if (perm[k] ~ /^(list|write|append|delete|add_file|add_subdirectory|delete_child|writeattr|writeextattr|writesecurity|chown)$/) {
+          print subject
+          found = 1
+          exit
+        }
+      }
+    }
+    END { exit !found }
+  ' <<<"$listing"
+}
+
 # Another user who can write to --dest can plant or swap files in it. Refuse a
 # group- or other-writable --dest, except a sticky one (like /tmp) that this
 # user owns, where others cannot remove or rename what we create.
@@ -594,6 +627,11 @@ if [[ -n "$dest_mode" ]]; then
   if [[ "${dest_mode: -2}" != "00" ]]; then
     warn "$DEST is mode $dest_mode, readable by others; the archive itself is 0600"
   fi
+fi
+
+if acl_who="$(dest_acl_grant "$DEST")"; then
+  err "refusing --dest $DEST: an ACL entry for $acl_who lets another principal list or change it (chmod -N, or pick another directory)"
+  exit 3
 fi
 
 # mktemp creates the file exclusively (O_EXCL) with an unpredictable name and

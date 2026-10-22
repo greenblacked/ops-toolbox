@@ -18,3 +18,6 @@
   `--dest` that reaches a source through a symlink is refused too, and a
   `--paths` entry is judged by where it really points as well as by its
   name, so an alias folder onto `~/.aws` does not hide credentials.
+  A `--dest` whose extended ACL (`ls -le`) has an allow entry that lets
+  anyone but its owner, root or wheel list it or change its contents is
+  refused before anything is written (fix: `chmod -N DIR`).
