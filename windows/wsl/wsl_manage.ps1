@@ -644,6 +644,7 @@ function Invoke-DistroBackup {
             # does not stop the other, and the message names exactly what is
             # still out of place and where it is kept.
             $stuck = @()
+            $earlierStuck = $false
             try {
                 if ($hadTar -and (Test-Path -LiteralPath $keepTar)) {
                     Move-Item -LiteralPath $keepTar -Destination $Out -Force -ErrorAction Stop
@@ -651,7 +652,7 @@ function Invoke-DistroBackup {
                     Remove-Item -LiteralPath $Out -Force -ErrorAction Stop
                 }
             } catch {
-                if ($hadTar) { $stuck += "the earlier tar is kept as $keepTar (it belongs at $Out)" }
+                if ($hadTar) { $earlierStuck = $true; $stuck += "the earlier tar is kept as $keepTar (it belongs at $Out)" }
                 else { $stuck += "the new tar could not be removed from $Out" }
             }
             try {
@@ -661,11 +662,11 @@ function Invoke-DistroBackup {
                     Remove-Item -LiteralPath $side -Force -ErrorAction Stop
                 }
             } catch {
-                if ($hadSide) { $stuck += "the earlier sidecar is kept as $keepSide (it belongs at $side)" }
+                if ($hadSide) { $earlierStuck = $true; $stuck += "the earlier sidecar is kept as $keepSide (it belongs at $side)" }
                 else { $stuck += "the new sidecar could not be removed from $side" }
             }
             if ($stuck.Count -gt 0) {
-                $lead = if ($hadTar -or $hadSide) { 'The earlier backup could not be fully put back: ' } else { 'The new backup could not be cleaned up: ' }
+                $lead = if ($earlierStuck) { 'The earlier backup could not be fully put back: ' } else { 'The new backup could not be cleaned up: ' }
                 Write-Error ($lead + ($stuck -join '; ')) -ErrorAction Continue
             }
             return $false
