@@ -915,9 +915,8 @@ value, quoted or a bare word, in a script or an `on-event` (the variable
 name may itself be quoted, as in `:global "api-token" "x"`); and the fields
 RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
 `private-key=`, `secret=`, `psk=`, `preshared-key=` (WireGuard peers), the
-WPA pre-shared keys,
-`authentication-key=`, `encryption-key=`). Empty values, variables and
-expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`), `<redacted>`,
+WPA pre-shared keys, `authentication-key=`, `encryption-key=`). Empty values,
+variables and expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`), `<redacted>`,
 the exact placeholder assignments the package ships
 (`TgBotToken "<paste bot token>"`,
 `RouterBackupPassword "<paste backup password>"` and the helper's
@@ -1202,9 +1201,9 @@ contacting the router or creating the destination.
 Reaching the router is not the same as having a backup that restores, and two
 opt-in checks cover the rest. `--max-age` only reads the destination
 directory. `--verify` runs on the files in a staging directory before anything
-is copied into the destination, so a file that fails is reported and never published: an
-archived copy of the same name is kept as it was and is never deleted or
-renamed.
+is copied into the destination, so a file that fails is reported and never
+published: an archived copy of the same name is kept as it was and is never
+deleted or renamed.
 
 - `--verify` checks what this run pulled. Each file must be non-empty, each
   `.rsc` must open with the RouterOS export header (`# <date> by RouterOS
@@ -1216,7 +1215,7 @@ renamed.
   `verify: <file>: <reason>` on stderr, followed by `verify: N file(s)
   checked, M problem(s)`. A run that pulled nothing has nothing to check and
   passes; a run whose transfer already failed is still checked, so nothing
-unchecked is published.
+  unchecked is published.
 - `--max-age HOURS` fails unless a `backup-*.backup` pulled in this run was
   made by the router within the last HOURS hours (a whole number from 1).
   Files other routers left in a shared destination do not count. The run can
