@@ -1170,7 +1170,11 @@ assert_contains "container_doctor counts latest-tagged images" "$out" "worker"
 assert_not_contains "container_doctor leaves the healthy container alone" "$out" "db is restarting"
 
 out="$(PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-capped.json" "$CDOC" --only logs 2>&1)"
-assert_not_contains "container_doctor honours a daemon-wide max-size" "$out" "unbounded"
+# A daemon.json max-size reaches only containers created after it was set:
+# c2 (worker, uncapped in its own LogConfig) is still unbounded, c1 and c3 are not.
+assert_contains "container_doctor still flags an uncapped existing container under a capped daemon.json" "$out" "unbounded json-file log: worker"
+assert_not_contains "container_doctor does not flag a capped container as unbounded" "$out" "unbounded json-file log: web"
+assert_contains "container_doctor says the daemon cap predates the container" "$out" "predate it"
 assert_not_contains "container_doctor --only logs leaves state out" "$out" "== state =="
 
 PATH="$cdoc_stub:$PATH" DOCKER_DAEMON_JSON="$cdoc_stub/daemon-uncapped.json" "$CDOC" --fail-on fail >/dev/null 2>&1; rc=$?

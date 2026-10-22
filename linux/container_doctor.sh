@@ -393,8 +393,10 @@ fi
 # --- logs ------------------------------------------------------------------
 if want logs && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
   group "logs"
-  # The daemon default applies to containers created after it was set, and a
-  # container's own log-opt wins over it. Only grepped, never written.
+  # Each container is judged by its own inspected LogConfig. The daemon default
+  # reaches only containers created after it was set, so a max-size in
+  # daemon.json says nothing about one that already exists. Only grepped,
+  # never written.
   daemon_capped=0
   if [[ "$ENGINE" == "docker" && -r "$DAEMON_JSON" ]] && grep -q '"max-size"' "$DAEMON_JSON" 2>/dev/null; then
     daemon_capped=1
@@ -408,7 +410,7 @@ if want logs && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
     [[ -n "$name" ]] || continue
     name="${name#/}"
     name="${name:0:64}"
-    if [[ "$logtype" == "json-file" && "$logcfg" != *'"max-size"'* ]] && (( daemon_capped == 0 )); then
+    if [[ "$logtype" == "json-file" && "$logcfg" != *'"max-size"'* ]]; then
       unbounded="$unbounded$name"$'\n'
     fi
     [[ "$logpath" == "-" || -z "$logpath" ]] && continue
@@ -425,8 +427,13 @@ if want logs && [[ -n "$ENGINE" && -n "$ROWS" ]]; then
     fi
   done <<< "$(each_row)"
   if [[ -n "$unbounded" ]]; then
+    if (( daemon_capped )); then
+      log_hint="$DAEMON_JSON already caps new containers; these predate it, so recreate them"
+    else
+      log_hint="add to $DAEMON_JSON, then recreate them: \"log-opts\": {\"max-size\": \"10m\", \"max-file\": \"3\"}"
+    fi
     warn "$(grep -c . <<<"$unbounded") container(s) write an unbounded json-file log: $(first_five <<<"$unbounded")" \
-      "add to $DAEMON_JSON, then recreate them: \"log-opts\": {\"max-size\": \"10m\", \"max-file\": \"3\"}"
+      "$log_hint"
   else
     pass "no json-file log without a size cap"
   fi
