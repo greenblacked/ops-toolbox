@@ -26,6 +26,10 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "mikrotik", "features"))
 
 import export_config  # noqa: E402
 
+NOT_A_VARIABLE = (
+    "secret-named value is not a variable, placeholder or <redacted>"
+)
+
 # Shape of a real RouterOS 7 export.
 EXPORT_TEMPLATE = """\
 # {date} by RouterOS 7.22
@@ -784,7 +788,6 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
         for stmt in (':set Password "$other hunter2"', ':set Password ($a . "hunter2")',
                      ":set Password [:pick $a 0", ":set Password $a-hunter2",
                      ':global ApiToken {"hunter2"}', ":global ApiToken {1;2}",
-                     ':set Password "[:pick $a 0 4] hunter2"',
                      # A bare word inside brackets is a literal in RouterOS.
                      ":global ApiToken [:tostr hunter2]",
                      ":set Password [:pick s3cretvalue 0 8]",
@@ -793,25 +796,56 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
                      ":set Password [:tostr {hunter2}]",
                      ":set Password [:tostr [:tostr hunter2]]",
                      ":set Password [:pick $a 0 4 hunter2]",
-                     # Accepted fail-closed false positive: `value` and `x` are
-                     # bare words, and so is `name` here.
                      ":set Password [/system script environment get [find name=x] value]",
                      ":set Password $[/system/identity/get name]"):
             text = "/x\n%s\n" % stmt
-            self.assertEqual(len(export_config.find_unverifiable(text)), 1, stmt)
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, NOT_A_VARIABLE)], stmt)
 
-    def test_expressions_that_hold_no_literal_are_verifiable(self):
+    def test_a_quoted_string_around_an_expression_is_a_leak_not_unverifiable(self):
+        # A quoted value that does not start with $ is a plain string.
+        text = '/x\n:set Password "[:pick $a 0 4] hunter2"\n'
+        self.assertEqual(export_config.find_leaks(text),
+                         [(2, "secret assigned in a script")])
+        self.assertEqual(export_config.find_unverifiable(text), [])
+
+    def test_only_variables_placeholders_and_redacted_are_verifiable(self):
+        # The structural rule: a secret-named variable may be empty, a lone
+        # variable reference, <redacted> or a shipped placeholder, and
+        # nothing else.
         for stmt in (":set BackupPassword $RouterBackupPassword;",
-                     ":set Password [:pick $a 0 4]", ":set Password ($a . $b)",
-                     ':set Password "$other"', ':set Password "[:pick $a 0 4]"',
-                     ":global TgBotToken;", ":global ApiToken {}",
-                     ":set Password $[/system/identity/get $name]",
-                     ":set Password [:tostr [:pick $a 0 4]]",
-                     ':global Password ""'):
-            self.assertEqual(export_config.find_unverifiable("/x\n%s\n" % stmt), [],
-                             stmt)
+                     ':set Password "$other"', ':set Password $"my var"',
+                     ":global TgBotToken;", ":set ApiToken", ':global Password ""',
+                     ":set Password <redacted>", ':set Password "<redacted>"',
+                     ':global TgBotToken "<paste bot token>"',
+                     ':local BotToken "token"', "{ :set ApiToken $other }"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text), [], stmt)
+            self.assertEqual(export_config.find_leaks(text), [], stmt)
         self.assertEqual(export_config.find_unverifiable(
             'add name=s source=":set Password \\$other;"\n'), [])
+
+    def test_computed_values_for_a_secret_name_are_findings(self):
+        # Fail closed (Serhii's rule): an operator, bracket, paren, brace,
+        # number or command result next to the value could assemble a
+        # secret, so none of it is checked piece by piece any more. These
+        # were accepted by the earlier token allowlist.
+        for stmt in (":set Password [:pick $a 0 4]", ":set Password ($a . $b)",
+                     ":set Password ($a + 1)", ':set Password "$[:pick $a 0 999]"',
+                     ":set Password $[/system/identity/get $name]",
+                     ":set Password [:tostr [:pick $a 0 4]]",
+                     ":global ApiToken {}",
+                     ":set PSK (123 . 456 . 78)", ":set PSK [:tostr (1 . 2 . 3)]",
+                     ':set PSK "$[:tostr (123 . 456)]"'):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, NOT_A_VARIABLE)], stmt)
+            self.assert_commit_blocked(text, NOT_A_VARIABLE)
+        # A name that is not secret keeps every expression.
+        for stmt in (":set Counter [:pick $a 0 4]", ":set Host ($a . $b)",
+                     ":set Total {}", ":set Hostname $[/system/identity/get name]"):
+            self.assertEqual(export_config.find_unverifiable("/x\n%s\n" % stmt), [],
+                             stmt)
 
     def test_a_secret_literal_is_a_leak_not_an_unverifiable_finding(self):
         for stmt in (':global ApiPassword "abc123"', ":global ApiPassword abc123",
@@ -916,19 +950,12 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
                      ":set ApiToken (123.4)"):
             text = "/x\n%s\n" % stmt
             self.assertEqual(export_config.find_unverifiable(text),
-                             [(2, "expression value that may hold a literal")], stmt)
-            self.assert_commit_blocked(text, "expression value that may hold a literal")
+                             [(2, NOT_A_VARIABLE)], stmt)
+            self.assert_commit_blocked(text, NOT_A_VARIABLE)
         export_form = '/x\nadd name=s source=":set WifiPassword [:tostr 12345678]"\n'
         self.assertEqual(export_config.find_unverifiable(export_form),
-                         [(2, "expression value that may hold a literal")])
-        self.assert_commit_blocked(export_form, "expression value that may hold a literal")
-
-    def test_small_numbers_in_an_expression_are_still_accepted(self):
-        for stmt in (":set ApiToken [:pick $a 0 4]", ":set ApiToken ($a + 1)",
-                     ':set ApiToken "$[:pick $a 0 999]"'):
-            text = "/x\n%s\n" % stmt
-            self.assertEqual(export_config.find_unverifiable(text), [], stmt)
-            self.assertEqual(export_config.find_leaks(text), [], stmt)
+                         [(2, NOT_A_VARIABLE)])
+        self.assert_commit_blocked(export_form, NOT_A_VARIABLE)
 
     def test_a_quoted_value_starting_with_a_bracket_is_a_literal_string(self):
         # Only a leading $ makes a quoted value an expression in RouterOS.
@@ -1004,8 +1031,107 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
     def test_a_commit_is_blocked_by_an_expression_with_a_bare_word(self):
         text = "/x\n:global ApiToken [:tostr hunter2]\n"
         self.assertEqual(export_config.find_unverifiable(text),
-                         [(2, "expression value that may hold a literal")])
-        self.assert_commit_blocked(text, "expression value that may hold a literal")
+                         [(2, NOT_A_VARIABLE)])
+        self.assert_commit_blocked(text, NOT_A_VARIABLE)
+
+    def test_secret_names_match_whatever_the_separator(self):
+        for name in ("api_key", "api-key", "API_KEY", "ApiKey", "apikey",
+                     "secret_key", "access_key", "private_key", "client_secret",
+                     "pre_shared_key", "psk", "wpa_key", "wpa2-key", "pass_phrase",
+                     "pass-word", "to_ken", "PIN", "sim_pin", "SimPin", "wifi-pin"):
+            for quoted in ('"%s"' % name, name):
+                text = '/x\n:global %s "hunter2xyz"\n' % quoted
+                self.assertEqual(export_config.find_leaks(text),
+                                 [(2, "secret assigned in a script")], quoted)
+                self.assertNotIn("hunter2xyz", export_config.redact_secrets(text))
+                self.assert_leak_blocks_commit(text)
+        export_form = '/x\nadd name=s source=":set \\"api-key\\" \\"hunter2xyz\\""\n'
+        self.assertEqual(export_config.find_leaks(export_form),
+                         [(2, "secret assigned in a script")])
+
+    def test_a_pin_is_a_word_of_its_own_not_a_substring(self):
+        for name in ("mapping", "spinner", "shipping", "Pinned"):
+            text = "/x\n:set %s hunter2xyz\n" % name
+            self.assertEqual(export_config.find_leaks(text), [], name)
+            self.assertEqual(export_config.find_unverifiable(text), [], name)
+
+    def test_keywords_without_a_colon_start_a_statement(self):
+        for text in ('/x\nglobal ApiToken "hunter2xyz"\n',
+                     "/x\nlocal ApiToken hunter2xyz\n",
+                     "/x\n  set api_key hunter2xyz\n",
+                     '/x\n:log info x; global ApiToken "hunter2xyz"\n',
+                     '/x\n{ set Password "hunter2xyz" }\n',
+                     '/x\n:foreach i in={1} do={set Password hunter2xyz}\n',
+                     '/x\nadd name=s source="global ApiToken \\"hunter2xyz\\""\n',
+                     '/x\nadd name=s on-event="set Password \\"hunter2xyz\\""\n',
+                     '/x\nadd name=s source=":log info x\\r\\nglobal ApiToken '
+                     '\\"hunter2xyz\\""\n',
+                     '/x\nadd name=s source=":log info x\\nset ApiToken hunter2xyz"\n'):
+            self.assertEqual(export_config.find_leaks(text),
+                             [(2, "secret assigned in a script")], text)
+            self.assertNotIn("hunter2xyz", export_config.redact_secrets(text))
+            self.assert_leak_blocks_commit(text)
+        for text in ("/x\nglobal ApiToken $x[:pick $a 0 4]\n",
+                     "/x\nset Password (1 . 2)\n",
+                     '/x\n:log info x; global ApiToken "unbalanced\n'):
+            self.assertEqual(len(export_config.find_unverifiable(text)), 1, text)
+            self.assert_commit_blocked(text, "", False)
+
+    def test_a_word_that_merely_contains_a_keyword_is_not_one(self):
+        for text in ("/x\nreset ApiToken hunter2xyz\n",
+                     "/x\nobject.set ApiToken hunter2xyz\n",
+                     "/x\n:log info global ApiToken hunter2xyz\n",
+                     '/x\nadd name=s comment="set Password hunter2xyz"\n',
+                     "/x\n# please set the token\n"):
+            self.assertEqual(export_config.find_leaks(text), [], text)
+            self.assertEqual(export_config.find_unverifiable(text), [], text)
+
+    def test_menu_set_lines_are_not_mistaken_for_assignments(self):
+        export = (
+            "/interface ethernet\n"
+            "set [ find default-name=ether1 ] name=wan\n"
+            "/system identity\n"
+            "set name=router\n"
+            "/ip service\n"
+            "set telnet disabled=yes\n"
+            "set api-ssl certificate=cert1\n"
+            "/user settings\n"
+            "set minimum-categories=0\n"
+        )
+        self.assertEqual(export_config.find_leaks(export), [])
+        self.assertEqual(export_config.find_unverifiable(export), [])
+        self.assert_commit_proceeds(export)
+
+    def test_a_commented_colonless_assignment_is_reported_like_a_colon_one(self):
+        for text in ('/x\n# global ApiToken "hunter2xyz"\n',
+                     "/x\n#set Password hunter2xyz\n",
+                     '/x\nadd name=s source="# set ApiToken \\"hunter2xyz\\""\n'):
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "commented assignment with a literal")], text)
+
+    def test_a_commented_secret_with_an_unreadable_name_is_reported(self):
+        # The name cannot be parsed, but the raw text names a secret and a
+        # value follows: a disabled line is still in git history.
+        for stmt in ('# :set "Api\\54oken" "hunter2xyz"',
+                     '# :global "api:token" "hunter2xyz"',
+                     "# :set ApiToken(hunter2xyz)",
+                     "# :set Api$Token hunter2xyz"):
+            text = "/x\n%s\n" % stmt
+            self.assertEqual(export_config.find_unverifiable(text),
+                             [(2, "commented assignment with a literal")], stmt)
+            self.assert_commit_blocked(text, "commented assignment with a literal")
+        export_form = ('/x\nadd name=s source="# :set \\"api:token\\" '
+                       '\\"hunter2xyz\\"\\r\\n:log info x"\n')
+        self.assertEqual(export_config.find_unverifiable(export_form),
+                         [(2, "commented assignment with a literal")])
+        # Prose and unreadable names that name nothing secret stay quiet, and
+        # a comment ends at its line break.
+        for stmt in ("# :set (see the docs) later", '# :global "a:b" "x"',
+                     "# use :set to change a value"):
+            self.assertEqual(export_config.find_unverifiable("/x\n%s\n" % stmt), [], stmt)
+        after_break = ('/x\nadd name=s source="# :set (a)\\r\\n'
+                       ':log info \\"password\\""\n')
+        self.assertEqual(export_config.find_unverifiable(after_break), [])
 
     def test_the_leaky_export_has_nothing_unverifiable(self):
         self.assertEqual(export_config.find_unverifiable(LEAKY_EXPORT), [])
@@ -1055,7 +1181,8 @@ class UnverifiableAssignmentTestCase(unittest.TestCase):
 
 SECRET_WORD = "hunter2xyz"
 SECRET_NUMBER = "12345678"
-_KEYWORDS = (":global", ":local", ":set", ":GLOBAL", ":global\t")
+# The last two have no colon: they count where they start a statement.
+_KEYWORDS = (":global", ":local", ":set", ":GLOBAL", ":global\t", "global", "set")
 _CONTAINERS = (
     "plain", "after-semicolon", "in-block", "in-do-block", "after-comment-string",
     "export-source", "export-on-event", "export-after-comment-string",
@@ -1067,7 +1194,9 @@ def _name_forms(export):
     quote = '\\"' if export else '"'
     return (("ApiToken", "ApiToken"), ("BACKUP_PASSWORD", "BACKUP_PASSWORD"),
             ("my_secret_key", "my_secret_key"),
-            ("quoted-name", quote + "api-token" + quote))
+            ("quoted-name", quote + "api-token" + quote),
+            ("API_KEY", "API_KEY"),
+            ("quoted-api-key", quote + "api-key" + quote))
 
 
 def _value_forms(export):
@@ -1093,6 +1222,14 @@ def _value_forms(export):
             ('"$[:tostr %s]"' % kind, quote + dollar + "[:tostr %s]" % literal + quote),
             ('"(%s)"' % kind, quote + "(" + literal + ")" + quote),
         ]
+    # Expressions that assemble a value from pieces none of which is a word.
+    forms += [
+        ("(123 . 456 . 78)", "(123 . 456 . 78)"),
+        ("[:tostr (1 . 2 . 3)]", "[:tostr (1 . 2 . 3)]"),
+        ('"$[:tostr (123 . 456)]"',
+         quote + dollar + "[:tostr (123 . 456)]" + quote),
+        ("[:pick $a 0 4]", "[:pick $a 0 4]"),
+    ]
     return forms
 
 
@@ -1149,12 +1286,14 @@ CLEAN_ASSIGNMENTS = (
     ("bare redacted", ":set ApiToken <redacted>"),
     ("variable", ":set ApiToken $other"),
     ("quoted variable", ':set ApiToken "$other"'),
-    ("pick with small numbers", ":set ApiToken [:pick $a 0 4]"),
-    ("quoted pick with small numbers", ':set ApiToken "$[:pick $a 0 4]"'),
-    ("arithmetic on a variable", ":set ApiToken ($a + 1)"),
+    ("quoted variable name", ':set ApiToken $"my var"'),
+    ("colonless variable", "global ApiToken $other"),
+    ("colonless placeholder", 'global TgBotToken "<paste bot token>"'),
+    ("colonless non-secret name", "set Hostname hunter2xyz"),
     ("empty quoted value", ':set ApiToken ""'),
     ("empty value", ":set ApiToken"),
-    ("empty array", ":set ApiToken {}"),
+    ("api_key variable", ":set api_key $other"),
+    ("non-secret name with an expression", ":set Counter ($a . $b)"),
     ("variable in a block", "{ :set ApiToken $other }"),
     ("commented non-secret name", "# :set Hostname hunter2xyz"),
     ("commented placeholder", '# :global TgBotToken "<paste bot token>"'),
@@ -1179,7 +1318,8 @@ class GeneratedSecretVariantsTestCase(unittest.TestCase):
 
     def test_every_assignment_variant_is_found_and_blocks_commit(self):
         cases = list(generated_secret_cases())
-        self.assertGreaterEqual(len(cases), 3700)
+        # 11 containers x 7 keywords x 6 names x 21 values.
+        self.assertEqual(len(cases), 9702)
         out, errout = io.StringIO(), io.StringIO()
         fetch = mock.Mock()
         git = mock.Mock(return_value=(0, "", ""))
@@ -1209,8 +1349,9 @@ class GeneratedSecretVariantsTestCase(unittest.TestCase):
 
     def test_the_clean_variants_produce_no_finding(self):
         self.assertGreaterEqual(len(CLEAN_ASSIGNMENTS), 20)
+        self.assertEqual(len(CLEAN_ASSIGNMENTS), len(dict(CLEAN_ASSIGNMENTS)))
         for label, statement in CLEAN_ASSIGNMENTS:
-            export = "/system script\\n%s\\n" % statement
+            export = "/system script\n%s\n" % statement
             with self.subTest(label):
                 self.assertEqual(export_config.find_leaks(export), [])
                 self.assertEqual(export_config.find_unverifiable(export), [])

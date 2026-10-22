@@ -36,9 +36,11 @@ a guard against the known shapes, not proof that an export is clean.
 
 It fails closed. A :global, :local or :set whose name or value the scan cannot
 fully tokenize (an unbalanced quote, an escape it does not know, a name it
-cannot extract, an expression it cannot show to hold no literal) is reported
-as unverifiable, and --commit refuses it with the line number and the reason,
-exit 1, whatever else is given. There is no option to skip that check.
+cannot extract) is reported as unverifiable, and so is a secret-named variable
+given anything but nothing, a lone $variable, <redacted> or a shipped
+placeholder. --commit refuses it with the line number and the reason, exit 1,
+whatever else is given. There is no option to skip that check. The keywords
+may lack their colon where they start a statement.
 
 Exit codes:
 
@@ -108,10 +110,15 @@ _LEAK_PATTERNS = (
     # starts with { is an array and one that starts with $, [ or ( is an
     # expression, and none of them is a literal. The variable name may itself
     # be quoted (`:global "api-token" "x"`, escaped inside an export), which is
-    # how RouterOS spells a name with a hyphen.
+    # how RouterOS spells a name with a hyphen. The pattern takes any name;
+    # _is_secret_name decides whether it is a secret one, the same way for
+    # this pass and for find_unverifiable. The keyword may lack its colon
+    # (`global x "y"`) where it starts a statement (_statement_start).
     ("secret assigned in a script", True, re.compile(
-        r'(?i):(?:global|local|set)\s+(?:\\?")?(?P<name>[A-Za-z0-9_-]*'
-        r'(?:token|password|secret|apikey|passphrase|psk)[A-Za-z0-9_-]*)(?:\\?")?\s+'
+        r'(?i)(?P<keyword>:(?:global|local|set)|'
+        r'(?:(?<![A-Za-z0-9_.$:-])|(?<=\\[nr]))(?:global|local|set))'
+        r'(?![A-Za-z0-9_-])\s+'
+        r'(?:\\?")?(?P<name>[A-Za-z0-9_-]+)(?:\\?")?\s+'
         r'(?:\\?"'
         r'(?P<value>(?:\\\\(?:\\\\|\\"|\\[^"\\]|[^"\\])|\\[^"\\]|[^"\\])+)\\?"'
         r'|(?P<bare>(?!\{)[^\s;\\"}\])]+))'
@@ -289,11 +296,61 @@ def _in_script_comment(line, index):
 
 _FIELD_EXPRESSION = re.compile(r'\$(?:[A-Za-z_\[("]|\\")')
 
+# What makes a variable name secret. Matched on the name with every _ and -
+# removed and lower-cased, so api_key, api-key, API_KEY and ApiKey are one
+# spelling; a name is not safe because of how it is separated.
+_SECRET_WORDS = (
+    "token", "password", "passwd", "secret", "apikey", "passphrase", "psk",
+    "privatekey", "accesskey", "sharedkey", "wpakey", "wpa2key", "pincode",
+)
+# A PIN is too short to match inside a word (mapping, spinner), so it counts
+# only as a word of its own: pin, Pin, SimPin, wifi_pin, WIFI-PIN.
+_NAME_WORDS = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|[0-9]+")
+
+
+def _is_secret_name(name, loose=False):
+    """Whether a variable name (or, loose, any text) names a secret."""
+    squashed = re.sub(r"[^a-z0-9]" if loose else r"[_-]", "", name.lower())
+    if any(word in squashed for word in _SECRET_WORDS):
+        return True
+    return any(word.lower() == "pin" for word in _NAME_WORDS.findall(name))
+
+
+def _statement_start(line, index):
+    """Whether the keyword at line[index] starts a statement: at the start of
+    the line, after `;` or `{` (so also after `do={`), at the opening quote of
+    a script field, after a line-break escape inside one, or as the first word
+    of a commented-out line."""
+    before = line[:index].rstrip(" \t")
+    if not before:
+        return True
+    last = before[-1]
+    if last in ";{#":
+        return True
+    field = _export_field_start(line, index)
+    if field is None:
+        return False
+    if not line[field:index].strip(" \t"):
+        return True
+    if last in "nr" and before[-2:-1] == "\\":
+        run = len(before) - 1 - len(before[:-1].rstrip("\\"))
+        return run % 2 == 1
+    return False
+
 
 def _leak_spans(line):
     """(kind, start, end) of every secret value on one logical line."""
     for kind, skip_comments, pattern in _LEAK_PATTERNS:
-        for match in pattern.finditer(line):
+        named = "name" in pattern.groupindex
+        position = 0
+        while True:
+            match = pattern.search(line, position)
+            if match is None:
+                break
+            # A name-based pattern takes any name and filters afterwards, so
+            # step one character: a match for a harmless assignment must not
+            # swallow the secret one that starts inside it.
+            position = match.start() + 1 if named else match.end()
             group = next((g for g in ("quoted", "value", "bare")
                           if g in pattern.groupindex and match.group(g) is not None),
                          None)
@@ -302,9 +359,14 @@ def _leak_spans(line):
             value = match.group(group)
             if value == REDACTED:
                 continue
-            if "name" in pattern.groupindex and \
-                    (match.group("name"), value) in _PLACEHOLDER_ASSIGNMENTS:
-                continue
+            if named:
+                if not _is_secret_name(match.group("name")):
+                    continue
+                if not match.group("keyword").startswith(":") and \
+                        not _statement_start(line, match.start()):
+                    continue
+                if (match.group("name"), value) in _PLACEHOLDER_ASSIGNMENTS:
+                    continue
             if kind == "sensitive field":
                 # A field value is plain text: `\$` there is a literal dollar
                 # in the secret, so only an unescaped `$name`, `$[...]`,
@@ -371,11 +433,14 @@ def redact_secrets(text):
 # nothing about the text it skipped. So a second pass reads every :global,
 # :local and :set the way the router would, and anything it cannot tokenize
 # with confidence is "unverifiable": a name it cannot extract, an unbalanced
-# quote, an escape it does not know, an expression it cannot show to hold no
-# literal, a value the patterns above did not classify. --commit refuses an
+# quote, an escape it does not know, a secret-named value that is not exactly
+# a variable, a placeholder or <redacted> (no expression is trusted), a value
+# the patterns above did not classify. --commit refuses an
 # export with one; there is no option to skip the check.
-_ASSIGN_KEYWORD = re.compile(r"(?i):(?:global|local|set)(?![A-Za-z0-9_-])")
-_SECRET_NAME = re.compile(r"(?i)token|password|secret|apikey|passphrase|psk")
+_ASSIGN_KEYWORD = re.compile(
+    r"(?i):(?:global|local|set)(?![A-Za-z0-9_-])"
+    r"|(?:(?<![A-Za-z0-9_.$:-])|(?<=\\[nr]))(?:global|local|set)(?![A-Za-z0-9_-])"
+)
 _PLAIN_NAME = re.compile(r"[A-Za-z0-9_-]+")
 _QUOTED_NAME = re.compile(r'[A-Za-z0-9_. -]+')
 _VAR_REF = re.compile(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|"[^"\\]*")')
@@ -435,83 +500,7 @@ def _decode_export_layer(text):
     return chars, escaped, None
 
 
-_NUMBER = re.compile(r"[0-9]+(?:\.[0-9]+)*(?![A-Za-z0-9_])")
-# A number can be the secret itself (`(12345678)`, `[:tostr 12345678]`), so
-# inside an expression only a short plain integer counts as an index or a
-# count, like the 0 and 4 of `[:pick $a 0 4]`. Dots and colons make it an
-# address or a long code, which is unverifiable.
-_SMALL_NUMBER = re.compile(r"[0-9]{1,3}")
-_OPERATOR = re.compile(r"[-+*/%<>=!&|^~.,]+")
-_COMMAND_WORD = re.compile(r":[A-Za-z][A-Za-z0-9-]*(?![A-Za-z0-9_-])")
-_PATH_WORD = re.compile(r"/[A-Za-z0-9_/-]*(?![A-Za-z0-9_])")
-_KEY = re.compile(r"[A-Za-z][A-Za-z0-9_-]*=(?!=)")
-_CLOSERS = {"[": "]", "(": ")", "{": "}"}
-
-
-def _balanced_end(s, index):
-    """Index just past the bracket expression that opens at s[index], or None
-    when it never closes or cannot be shown to hold no literal.
-
-    A bare word inside brackets is a literal in RouterOS (`[:tostr hunter2]`),
-    so every token must be one that cannot carry a value: a $variable, a
-    nested group, a number, an operator, a /path or :command word where a
-    command starts, or a key= prefix. Any other word, any quote (apart from
-    the one in $"name") and any backslash fail closed. A number longer than
-    three digits, or with a dot, could be the secret and fails closed too.
-    """
-    stack = [_CLOSERS[s[index]]]
-    position, command = index + 1, True
-    while position < len(s):
-        ch = s[position]
-        if ch in " \t\r\n":
-            position += 1
-        elif ch == stack[-1]:
-            stack.pop()
-            position += 1
-            if not stack:
-                return position
-            command = False
-        elif ch in ")]}":
-            return None
-        elif ch == "$":
-            ref = _VAR_REF.match(s, position)
-            if ref:
-                position, command = ref.end(), False
-            elif s[position + 1:position + 2] in ("[", "(", "{"):
-                position += 1
-            else:
-                return None
-        elif ch in _CLOSERS:
-            stack.append(_CLOSERS[ch])
-            position, command = position + 1, True
-        elif ch == ";":
-            position, command = position + 1, True
-        else:
-            for pattern, needs_command in ((_COMMAND_WORD, True), (_PATH_WORD, True),
-                                           (_KEY, False), (_NUMBER, False),
-                                           (_OPERATOR, False)):
-                token = pattern.match(s, position)
-                if token and pattern is _NUMBER and \
-                        not _SMALL_NUMBER.fullmatch(token.group()):
-                    token = None
-                if token and (command or not needs_command):
-                    position, command = token.end(), False
-                    break
-            else:
-                return None
-    return None
-
-
-def _expression_end(s, index):
-    """Index just past the variable reference or bracket expression at
-    s[index] that holds no literal, or None when that cannot be shown."""
-    match = _VAR_REF.match(s, index)
-    if match:
-        return match.end()
-    start = index + 1 if s[index:index + 1] == "$" else index
-    if s[start:start + 1] in ("[", "("):
-        return _balanced_end(s, start)
-    return None
+_NOT_A_VARIABLE = "secret-named value is not a variable, placeholder or <redacted>"
 
 
 def _check_assignment(rest, export_layer):
@@ -549,7 +538,7 @@ def _check_assignment(rest, export_layer):
         name, index = match.group(), match.end()
     if index < size and s[index] not in _BOUNDARY:
         return "unexpected character after the variable name", False
-    if not _SECRET_NAME.search(name):
+    if not _is_secret_name(name):
         return None, False
 
     index = skip(index)
@@ -582,25 +571,25 @@ def _check_assignment(rest, export_layer):
         if content == "" or content == REDACTED or \
                 (name, content) in _PLACEHOLDER_ASSIGNMENTS:
             return None, False
-        # Only a leading $ makes a quoted value an expression; "[x]" and
-        # "(x)" are plain strings in RouterOS, so they are literals.
+        # Only a lone variable reference is acceptable; "[x]" and "(x)" are
+        # plain strings in RouterOS, so they are literals, and anything else
+        # that starts with $ is an expression the scan does not evaluate.
+        if _VAR_REF.fullmatch(content):
+            return None, False
         if content[0] == "$":
-            stop = _expression_end(content, 0)
-            if stop is None or stop != len(content):
-                return "expression value that may hold a literal", False
-            return None, False
+            return _NOT_A_VARIABLE, False
         return None, True
-    if first == "{":
-        if s[index + 1:index + 2] == "}":
-            return None, False
-        return "array value that may hold a literal", False
     if not export_layer and s[index:index + 2] == "\\$":
         index += 1
         first = "$"
-    if first == "$" or first in "[(":
-        stop = _expression_end(s, index)
-        if stop is None or (stop < size and s[stop] not in _BOUNDARY):
-            return "expression value that may hold a literal", False
+    if first in "{$[(":
+        # Structural rule: a variable reference with nothing else is the only
+        # expression a secret-named variable may be given. A bracket, a
+        # paren, a brace, a number or an operator next to it is not.
+        match = _VAR_REF.match(s, index)
+        if first != "$" or not match or \
+                (match.end() < size and s[match.end()] not in _BOUNDARY):
+            return _NOT_A_VARIABLE, False
         return None, False
     end = index
     while end < size and s[end] not in " \t\r\n;\"})]":
@@ -627,23 +616,62 @@ _NAME_REASONS = frozenset((
 ))
 
 
+_HEX_ESCAPE = re.compile(r"\\+([0-9A-Fa-f]{2})")
+
+
+def _comment_text(rest, export_layer):
+    """The raw text of a commented-out statement: rest up to the line-break
+    escape that ends the comment, when it sits in an export field."""
+    if export_layer:
+        position = 0
+        while position < len(rest):
+            if rest[position] == "\\":
+                if rest[position + 1:position + 2] in ("n", "r"):
+                    return rest[:position]
+                position += 2
+            else:
+                position += 1
+    return rest
+
+
+def _raw_names_a_secret(rest, export_layer):
+    """Whether the raw text of a commented statement, hex escapes decoded and
+    every separator ignored, names a secret. Used when the name could not be
+    parsed: `# :set "Api\\54oken" "x"` is not worth parsing to know it is
+    ApiToken."""
+    text = _HEX_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)),
+                           _comment_text(rest, export_layer))
+    return _is_secret_name(text, loose=True)
+
+
 def _unverifiable_reasons(line):
     """Why a logical line holds an assignment the scan cannot verify."""
     reasons = []
     literals = 0
     for match in _ASSIGN_KEYWORD.finditer(line):
+        colonless = not match.group().startswith(":")
+        if colonless and not _statement_start(line, match.start()):
+            continue
         commented = _in_script_comment(line, match.start())
         rest = line[match.end():]
         export_layer = _export_field_start(line, match.start()) is not None \
             or '\\"' in rest
         reason, literal = _check_assignment(rest, export_layer)
+        if reason in _NAME_REASONS and colonless and not commented and \
+                match.group().lower() == "set" and not line[:match.start()].strip():
+            # A `set [ find ... ] name=x` or `set name=x` that opens an export
+            # line is a menu command, not an assignment; the sensitive-field
+            # pattern covers its password=, secret= and the like.
+            continue
         if commented:
             # Fail closed: a real secret left in a commented-out line is still
             # in git history. A secret-named variable given a literal, or a
             # value the scan cannot read, counts; a name that is not secret,
             # a placeholder, <redacted> and a plain $variable stay quiet, as
-            # does prose that only looks like a statement.
-            if literal or (reason and reason not in _NAME_REASONS):
+            # does prose that only looks like a statement. A name that could
+            # not be parsed counts when the raw text names a secret.
+            if literal or (reason and reason not in _NAME_REASONS) or \
+                    (reason in _NAME_REASONS and _raw_names_a_secret(rest, export_layer)):
                 reason = "commented assignment with a literal"
                 if reason not in reasons:
                     reasons.append(reason)

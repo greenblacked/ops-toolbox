@@ -909,20 +909,27 @@ history. Three flags deal with that:
   and does not show as a change.
 
 What counts as a secret: a Telegram bot token by its shape, wherever it
-appears; a `:global`, `:local` or `:set` whose name contains `token`,
-`password`, `secret`, `apikey`, `passphrase` or `psk` and is given a literal
-value, quoted or a bare word, in a script or an `on-event` (the variable
-name may itself be quoted, as in `:global "api-token" "x"`); and the fields
+appears; a `:global`, `:local` or `:set` (the colon is optional where the
+keyword starts a statement: at the start of a line, after `;` or `{`, or at
+the start of a script field) whose name contains `token`, `password`,
+`passwd`, `secret`, `apikey`, `passphrase`, `psk`, `privatekey`, `accesskey`,
+`sharedkey`, `wpakey` or `pincode`, or has `pin` as a word of its own, and is
+given a literal value, quoted or a bare word, in a script or an `on-event`.
+Names are compared with `_` and `-` removed and case ignored, so `api_key`,
+`api-key` and `API_KEY` all count as `apikey`; the variable name may itself
+be quoted, as in `:global "api-token" "x"`. The scan also covers the fields
 RouterOS prints only under `show-sensitive` (`password=`, `passphrase=`,
 `private-key=`, `secret=`, `psk=`, `preshared-key=` (WireGuard peers), the
 WPA pre-shared keys, `authentication-key=`, `encryption-key=`). Empty values,
-variables and expressions (`$Password`, `[...]`, `(...)`), arrays (`{...}`),
-`<redacted>`, the exact placeholder assignments the package ships
+`$variables` (`$Password`), `<redacted>` and the exact placeholder assignments
+the package ships
 (`TgBotToken "<paste bot token>"`, `RouterBackupPassword "<paste backup
 password>"` and the helper's `BotToken "token"`) are skipped. A quoted
 value that starts with `[` or `(` (`"[abc]"`) is a plain string in RouterOS,
 so it is a literal and is reported.
-Any other value is reported, even one in angle brackets. A finding names the
+Any other value is reported, even one in angle brackets. An expression
+(`[...]`, `(...)`, `{...}`, `$[...]`) is not a literal the first pass can
+point at, so the second pass reports it as unverifiable (below). A finding names the
 line and the kind, never the value.
 This is a guard against the known shapes, not proof that an export is clean:
 it can miss a secret stored under a name it does not recognise.
@@ -932,20 +939,26 @@ it can miss a secret stored under a name it does not recognise.
 the scan cannot fully read is reported as *unverifiable*, not passed: an
 unbalanced quote, an escape RouterOS does not define, a quote that is not
 escaped inside the exported field, a variable name it cannot extract, or an
-expression value it cannot show to hold no literal (`"$x text"`,
-`($a . "text")`, an unclosed `[...]`, an array with elements). Inside
-`[...]`, `(...)` and `{...}` only `$variables`, numbers, operators, nested
-groups, a `/path` or `:command` word where a command starts, and `key=` before
-one of those count as safe, and a number counts only up to three digits with
-no dot (`[:pick $a 0 4]`; `(12345678)` and `10.20.30.40` do not); any other
-bare word is a literal in RouterOS
-(`[:tostr hunter2]`), so `[/system script environment get [find name=x] value]`
-is reported too. That is an accepted false positive: the scan fails closed.
+value that is not exactly one of the few shapes known to hold no secret.
+For a secret-named variable the value is accepted only when it is empty (or
+absent), a lone variable reference (`$Password`, `$"my var"`, also quoted as
+`"$Password"`), `<redacted>`, or one of the exact placeholder pairs above.
+Everything else is reported as `secret-named value is not a variable,
+placeholder or <redacted>`, whatever it contains: `[:pick $a 0 4]`,
+`($a . $b)`, `(123 . 456 . 78)`, `$[:tostr (1 . 2)]`, `{}`, a number, a
+`/path` result. The scan used to look inside brackets and allow short
+numbers and operators; every such rule was a way to assemble a secret from
+pieces (`(123 . 456 . 78)` is a pre-shared key), so none is left. Names that
+are not secret are not checked this way. That is an accepted false positive:
+the scan fails closed.
 A commented-out assignment is checked too: a secret-named variable given a
 literal in a `#` line (`# :set ApiToken "realtoken"`, or after `\r\n#` inside
 a `source=`) is still in git history, so it is reported as `commented
-assignment with a literal` and `--commit` refuses it. Placeholders,
-`<redacted>`, variables and names that are not secret stay quiet in a comment.
+assignment with a literal` and `--commit` refuses it. So is a commented
+statement whose variable name cannot be read (`# :set "api:token" "x"`,
+`# :set ApiToken(x)`) when its raw text, hex escapes decoded and separators
+ignored, names a secret. Placeholders, `<redacted>`, variables and names that
+are not secret stay quiet in a comment.
 A `:global` or `:set` glued to the next character (`:global"Name" ...`,
 `:set(...)`) is read as well. `--commit`
 refuses an export with one: exit `1` (the same code as a leak), nothing
