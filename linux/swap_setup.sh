@@ -22,8 +22,9 @@
 # Exit codes:
 #   0   report printed, or the change was made
 #   1   a step failed, or there is not enough free space
-#   2   preflight failed (not Linux, not root, mkswap/swapon missing, or a
-#       filesystem that cannot hold a swapfile)
+#   2   preflight failed (not Linux, not root, mkswap/swapon missing, a
+#       filesystem that cannot hold a swapfile, or an unsafe path: a parent
+#       others can write to, or a symlink in the path)
 #   3   bad CLI arguments, or a change requested without --yes
 #   4   nothing to do (the file exists, swap is already active without
 #       --force, or nothing to remove)
@@ -80,8 +81,8 @@ Options:
   --help, -h       Show this help
 
 Exit codes: 0 done or report printed, 1 a step failed or not enough space,
-2 not Linux / not root / tools missing / unsupported filesystem, 3 usage,
-4 nothing to do (file exists, swap already active, nothing to remove)
+2 not Linux / not root / tools missing / unsupported filesystem / unsafe
+path, 3 usage, 4 nothing to do (file exists, swap already active, nothing to remove)
 EOF
 }
 
@@ -165,7 +166,9 @@ case "$swap_resolved" in
     exit 3
     ;;
 esac
-SWAP_PATH="$swap_resolved"
+# Tidy the spelling ('//', '.', '..') without following links, so the symlink
+# check in create() still sees every component the caller gave.
+SWAP_PATH="$(realpath -m -s -- "$SWAP_PATH" 2>/dev/null || printf '%s' "$SWAP_PATH")"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
   err "this script targets Linux"
