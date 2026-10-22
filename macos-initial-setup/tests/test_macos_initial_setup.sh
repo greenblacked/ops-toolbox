@@ -3883,12 +3883,20 @@ out="$(FAKE_OWNER_PATH="$sr/root/usr/local/bin/djob" sched --only launchd-agents
 assert_not_contains "the root-owner rule is for daemons only" "$out" "root does not own"
 rm -f "$sr/bin/stat"
 
-# ACL grants count as write access. `ls -led` is stubbed (GNU ls has no -e,
+# ACL grants count as write access. `ls -leLd` is stubbed (GNU ls has no -e,
 # which must stay silent), and only a path named in FAKE_ACL_PATH has entries.
+# -L follows a symlink, so the stub answers for what the argument resolves to.
 cat > "$sr/bin/ls" <<'LS_EOF'
 #!/bin/sh
 for a in "$@"; do last="$a"; done
-if [ "$1" = "-led" ] && [ "$last" = "${FAKE_ACL_PATH:-}" ]; then
+# What a path names after -L: follow a link, then make the directory physical.
+phys() { printf '%s/%s' "$(cd "$(dirname "$1")" && pwd -P)" "$(basename "$1")"; }
+real() {
+  p="$1"
+  [ -L "$p" ] && p="$(readlink "$p")"
+  phys "$p"
+}
+if [ "$1" = "-leLd" ] && [ -n "${FAKE_ACL_PATH:-}" ] && [ "$(real "$last")" = "$(phys "$FAKE_ACL_PATH")" ]; then
   printf '%s\n' "-rwxr-xr-x+ 1 me staff 10 Oct  1 00:00 $last"
   printf '%b' "$FAKE_ACL"
   exit 0
@@ -3917,6 +3925,19 @@ out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:me allow write\n 1: user:root al
 assert_not_contains "the owner, root, deny entries and read rights are not grants" "$out" "ACL entry"
 out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory inherited allow chown\n' sched --only launchd-user)"
 assert_contains "an inherited chown grant counts" "$out" "which an ACL entry lets another user change"
+# A symlinked program is judged by its target: an allow-write ACE on the
+# target counts, one on the link alone does not.
+ln -s "$jobp" "$sr/wdir/inner/joblink"
+write_plist "$ua/com.example.acl.plist" "	<key>Label</key>
+	<string>com.example.acl</string>
+	<key>Program</key>
+	<string>$sr/wdir/inner/joblink</string>"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory allow write\n' sched --only launchd-user)"
+assert_contains "a symlinked program whose target has an ACL write grant is a warning" "$out" \
+  "com.example.acl runs $sr/wdir/inner/joblink, which an ACL entry lets another user change"
+out="$(FAKE_ACL_PATH="$sr/wdir/inner/joblink" FAKE_ACL=' 0: user:mallory allow write\n' sched --only launchd-user)"
+assert_not_contains "an ACL on the link alone does not make the target writable" "$out" "which an ACL entry lets another user change"
+rm -f "$sr/wdir/inner/joblink"
 rm -f "$sr/bin/ls" "$ua/com.example.acl.plist" "$dplist"
 
 out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?

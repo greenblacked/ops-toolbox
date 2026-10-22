@@ -189,7 +189,8 @@ foreign_writable() {
 }
 
 # Does an extended ACL on $1 give anyone but its owner (or root) a right to
-# change it? macOS `ls -led` lists the entries under the mode line ("0:
+# change it? macOS `ls -leLd` (following a symlink to what it names, as
+# foreign_writable and file_uid do) lists the entries under the mode line ("0:
 # user:bob allow write,delete"). Only an allow entry counts, with one of the
 # rights that modify a file or a directory's contents (write, append,
 # delete, add_file, add_subdirectory, delete_child, writeattr, writeextattr,
@@ -199,7 +200,7 @@ foreign_writable() {
 acl_foreign_grant() {
   [[ "$(uname -s)" == "Darwin" ]] || return 1
   local listing
-  listing="$(ls -led -- "$1" 2>/dev/null)" || return 1
+  listing="$(ls -leLd -- "$1" 2>/dev/null)" || return 1
   awk '
     NR == 1 { owner = $3; next }
     /^[[:space:]]*[0-9]+: / {
