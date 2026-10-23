@@ -21,13 +21,20 @@ a LaunchAgent that schedules the maintenance run.
 
 | Script | Purpose | Preview |
 | --- | --- | --- |
-| `status.sh` | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | <span class="stage stage-report">read-only</span> |
+| `status.sh` | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP; `--json` for a parser. | <span class="stage stage-report">read-only</span> |
 | `workstation_doctor.sh` | Long read-only health report. | <span class="stage stage-report">read-only</span> |
-| `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding, including credential files at rest (`--only secrets`); `--json` for MDM and CI. | <span class="stage stage-report">read-only</span> |
+| `ops_context.sh` | Which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login this shell is pointed at; `--warn-on prod` exits 1 on a match. | <span class="stage stage-report">read-only</span> |
+| `net_doctor.sh` | Interfaces, default route, split DNS, system proxy against the shell, VPN tunnels, `/etc/hosts` overrides, listeners; opt-in `--probe`. | <span class="stage stage-report">read-only</span> |
+| `tls_expiry.sh` | Certificate expiry for PEM files, hosts and (`--keychain`) Keychain client certificates; exit 1 on an expired certificate, or inside `--days` with `--fail-on warn`. | <span class="stage stage-report">read-only</span> |
+| `schedule_report.sh` | launchd agents and daemons with schedules decoded, crontab and `at` jobs; flags missing programs and writable plists. | <span class="stage stage-report">read-only</span> |
+| `ssh_client_doctor.sh` | `~/.ssh` modes, weak and unencrypted keys, missing `IdentityFile` paths, risky `Host *` options. | <span class="stage stage-report">read-only</span> |
 | `install_apps.sh` | Homebrew casks, CLI formulae and Google Cloud SDK; `--profile core`, `platform` or `full`. | `--dry-run` |
 | `install_devtools.sh` | Python (pyenv), Terraform, Go (goenv), Helm; `--setup-shell` wires `~/.zshrc`. | `--dry-run` |
+| `toolchain_check.sh` | Are the Python, Terraform, Go and Node versions a checkout pins installed and active? | <span class="stage stage-report">read-only</span> |
 | `stay_fresh.sh` | Recurring housekeeping and upgrades; presets `--quick`, `--reports`, `--full`, `--old-only`. | `--dry-run` |
 | `brewfile.sh` | `dump`, `check`, `install`, `diff` and `cleanup` of the Homebrew state. | `--dry-run` on `install`; `cleanup` previews unless `--force` |
+| `config_backup.sh` | Dated, verified, rotated archive of the non-secret dotfiles and tool config; credential paths refused unless `--include-secrets`. | `--dry-run`; a real run needs `--yes` |
 | `macos_defaults.sh` | Report `defaults` values against the desired set; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
 | `launchd/stay_fresh_agent.sh` | `install`, `uninstall`, `status`, `run-now`, `logs` for a scheduled LaunchAgent. | `--dry-run` on `install` and `uninstall` |
 | `zsh_aliases.zsh` | Optional zsh aliases, sourced rather than run. | n/a |
@@ -45,6 +52,7 @@ All paths are under `macos-initial-setup/`.
     ./macos-initial-setup/status.sh
     ./macos-initial-setup/workstation_doctor.sh --skip-brew-doctor
     ./macos-initial-setup/macos_defaults.sh
+    ./macos-initial-setup/ops_context.sh --warn-on prod,live
     ```
 
 === "Preview"
@@ -54,6 +62,7 @@ All paths are under `macos-initial-setup/`.
     ./macos-initial-setup/install_devtools.sh --dry-run --verbose
     ./macos-initial-setup/stay_fresh.sh --dry-run
     ./macos-initial-setup/macos_defaults.sh --apply --dry-run
+    ./macos-initial-setup/config_backup.sh --dry-run
     ```
 
 === "Apply"

@@ -22,6 +22,1283 @@ existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
+### Added
+
+- `git/clone-repos.sh` gains `--update`: a checkout from the list that is
+  already there is fetched and fast-forwarded on its current branch instead
+  of skipped, so one command brings the whole list up to date. A checkout
+  with a detached HEAD, no upstream, modified tracked files, a `git status`
+  that cannot be read or a diverged branch is held and reported, never merged
+  into, stashed or switched, and a held checkout does not fail the run.
+  The fetch prunes, so a branch whose upstream was deleted on the remote is
+  held as `upstream gone` instead of reading as up to date.
+
+- `linux/config_backup.sh --diff` compares the newest archive, or a named
+  one, with the live tree and lists each file as `CHANGED` (with tar's
+  reason), `GONE`, `NEW` or `SKIP` (unreadable, or a subtree the new-file
+  scan could not enter), then a one-line summary and the command that
+  would restore one file, printed and never run. It is read-only, like
+  `--list`, and needs no `--yes`. It exits `1` when anything differs, so
+  the back-up, edit, compare step of a runbook can also run from cron as
+  a drift check. Archives stop at a nested mount (tar `--one-file-system`,
+  matching the `find -xdev` scan), so name such a mount in `--paths`.
+
+- `linux/config_backup.sh` takes `--exclude` (repeatable tar globs relative
+  to `/`) and `--exclude-secrets`, a short fixed list: shadow and gshadow,
+  opasswd, the SSH host private keys, `/etc/ssl/private` and the distro's
+  `passwd-` style backup copies. That makes an archive you can attach to a
+  ticket or hand to a colleague, and a non-root run whose only unreadable
+  files are excluded is no longer partial. The list is deliberately narrow
+  and documented as not making an archive safe to publish.
+  The exclusions are recorded in the archive (`.config_backup/excludes`), so
+  a later `--diff` leaves the same files out of its new-file scan instead of
+  listing each as `NEW`; `--exclude` and `--exclude-secrets` are also
+  accepted on `--diff`, and older archives without the record compare as
+  before.
+  Exclusions that cover every source now fail the run (exit `1`, nothing
+  published) instead of publishing an archive holding only that record or
+  bare directory entries. When no `--exclude` was given, the message says
+  the sources contain no files to back up instead of blaming exclusions;
+  the `--exclude-secrets` patterns count as exclusions.
+
+- `mikrotik/features/conntrack_watch.lua` warns before the connection-tracking
+  table fills, the classic way a router stays up while new connections are
+  dropped, and says when it has recovered. It reads the two counts the router
+  already keeps, alerts only when the state changes, retries a send that
+  failed, and changes nothing on the router. It skips with a log line when the
+  maximum cannot be read, and it runs on RouterOS 7.24 from the start.
+  `print_schedulers.sh` schedules it every five minutes.
+
+- `linux/disk_cleanup.sh --include-docker-images` removes tagged container
+  images that no container uses and that were created more than `--days` ago
+  (creation time, not pull time), through docker and podman, while
+  `--include-docker` still prunes only dangling images.
+  `--include-snap-revisions` removes the snap revisions snapd keeps marked
+  disabled, never the active one. Neither ever prunes volumes, both preview
+  with `--dry-run` (the image preview also shows `docker system df`), and the
+  snap step is skipped under `--no-sudo`. A failing `snap list` (snapd
+  down) is a warning and a non-zero exit, not "no disabled revisions".
+
+- `linux/disk_cleanup.sh --include-logs` removes rotated logs older than
+  `--days` under `/var/log`, or the directories `--log-dir` names: a file
+  qualifies only when its name proves it was rotated (compressed, numbered,
+  `.old` or dated), so an active log, the login records and the journal are
+  never touched. `--journal-max-size` caps the journal by size on top of the
+  age vacuum of `--include-journal`. Both preview with `--dry-run`.
+
+- A missing page on the documentation site now suggests where to go. The
+  404 page turns the words of the address into a search of the site's own
+  index and links the three best matching pages, so an old or mistyped link
+  to a renamed page is one click from the right one, with no redirect list
+  to maintain. A link below them opens the site search with the same words.
+  It reads only the site's own search index, and without JavaScript the
+  page is the same as before.
+  Its script, search index and home link use site-root URLs, so they
+  resolve the same for a miss at any depth such as /runbooks/missing/.
+
+- The documentation site's footer shows which commit it was built from,
+  "Build 6a88b2e" linked to that commit, and stage's footer adds "Preview
+  build", so a reader can tell stage from production and compare a page
+  with their clone. It reads the `version.txt` every deploy already
+  publishes, uses its content only when it is a full commit SHA, and stays
+  empty when there is none, as under a local preview.
+
+- The documentation site's Quick start opens the tab for the reader's
+  operating system (macOS, Linux or Windows) on their first visit, so the
+  first command they copy is the right one. It acts once per browser, never
+  overrides a tab the reader already picked, and leaves phones and tablets
+  on the first tab rather than guess from a user agent that claims Linux or
+  Mac.
+
+- Steps on the documentation site can be a checklist. A Markdown task list
+  (`- [ ] Step`) renders boxes that tick, keep their ticks across a reload
+  in that browser, and show "Checklist: 3 of 7 steps done" with a Reset
+  button, so a runbook interrupted halfway is picked up where it was left.
+  Nothing leaves the browser. The boxes now reach 3:1 contrast at rest,
+  use the accent colour when ticked instead of a fixed green, show a focus
+  ring, and are named after their step for screen readers. The Quick start
+  carries a three-step "Before you apply" checklist.
+
+- The documentation site's search finds scripts, paths and flags by any part
+  of their name. Terms used to split only at spaces and hyphens, so
+  `disk_cleanup.sh` was one word that "cleanup" never found; they now also
+  split at underscores, slashes, dots, brackets and camelCase, so "dry run"
+  finds the pages about dry runs and "bot token" finds `TgBotToken`. Version
+  numbers such as 7.24.6 stay whole. A `?q=` link opens the search with its
+  term already typed.
+
+- Long tables on the documentation site, such as the 97-row script
+  overview, have a "Filter rows" box above them. Typing narrows the table to
+  the rows that contain every word typed, in any case and order ("linux
+  doctor", "dry run"), with a spoken count of what is shown, and Escape
+  clears it. A `?filter=` link opens a page already filtered. Rows are only
+  hidden, so find, copy and print still see the whole table, and without
+  JavaScript the table is unchanged. It is the site's first page script: a
+  small file with no framework and no requests to another origin.
+
+- `dotfiles/install_dotfiles.sh` gained `--backups`, which lists the
+  `NAME.backup-STAMP` files `--force` set aside, and `--restore`, which moves
+  the newest (or the one `--stamp` names) back into place, so trying the
+  dotfiles and changing your mind no longer means a hand-typed `mv` per
+  file. A restore acts only where the path is empty or holds the installer's
+  own link or an identical copy; a changed file is left in place with exit 4,
+  and no backup is ever deleted.
+
+- `dotfiles/install_dotfiles.sh` gained `--diff`: for each file `--status`
+  reports as `DRIFT`, `CONFLICT` or `FOREIGN` it prints a unified diff of the
+  tracked source against what is on disk, so the edit k9s, `aws configure` or
+  `docker login` made to a copied config can be folded back by hand.
+  Credential values are printed as `<redacted>`, nothing is written, and the
+  exit code is 4 when anything differs.
+
+- `dotfiles/dotfiles_doctor.sh` checks that the eleven credential files the
+  dotfiles package never tracks (`~/.aws/credentials`, `~/.kube/config`, gh
+  `hosts.yml`, docker auths, the Terraform login token, `~/.netrc`, argocd,
+  jfrog, gcloud and Azure tokens) are private: writable by group or other
+  fails, readable warns, and the `chmod 600` is printed rather than run. It
+  only stats them, so their contents never reach the report.
+
+- `dotfiles/dotfiles_doctor.sh` checks the exports four configs depend on:
+  `RIPGREP_CONFIG_PATH` and `GITLEAKS_CONFIG` must be set and lead to a file,
+  and on macOS `XDG_CONFIG_HOME` must name the directory the configs went into
+  for k9s and Homebrew to read them. Each is checked only when its tool is on
+  `PATH`, and a missing one is reported with the `export` line to add instead
+  of rg and gitleaks silently falling back to their defaults. `--platform`
+  overrides the detection.
+
+- `dotfiles/dotfiles_doctor.sh` checks the untracked overlays the ssh and git
+  configs rely on: that `known_hosts` holds no plaintext host while
+  `~/.ssh/config` turns `HashKnownHosts` on, that no ControlMaster socket
+  from a killed master is left in `~/.ssh`, that a commit identity is set
+  through `config.local`, and that no `~/.gitconfig` silently overrides the
+  tracked git config. The ssh config is read as text and ssh is never run
+  (`ssh -G` would execute `Match exec` lines). Host names and identity
+  values are never printed, and every fix is printed rather than run.
+
+- `dotfiles/dotfiles_doctor.sh` is a read-only health report for the configs
+  `install_dotfiles.sh` put in place. Its first check finds a credential that
+  a tool wrote through a link into the tracked repository (`npm login` into
+  `~/.npmrc`, a token in a pip index URL, a password in a git url rewrite),
+  and names the file and the line, never the value, before anyone runs
+  `git add`. It works copied alone into `~/bin`, where the link check is
+  skipped.
+
+- `dotfiles/install_dotfiles.sh --only` takes a group as well as a unit:
+  `--only @server` installs what a jump host needs (git, ssh, gnupg and the
+  command-line tools, no GUI terminal, no k9s, no Homebrew), and `@shell`,
+  `@terminal`, `@git`, `@access`, `@k8s`, `@cloud`, `@scanners` and
+  `@packages` cover the rest by role. `--groups` prints the table. An unknown
+  group, or one naming a unit that is gone, exits 3 before anything is
+  written.
+
+- `dotfiles/install_dotfiles.sh --installed-only` limits any mode to the
+  units whose tool is on `PATH`, so a fresh laptop or a minimal server gets
+  the configs it can use without anyone knowing the unit names, `--status`
+  stops reporting `MISSING` for tools that are not there, and a later run
+  picks up a tool installed since. It looks commands up with `command -v`
+  and runs none, composes with `--only` and groups, and exits 4 when nothing
+  is left to select.
+
+- `dotfiles/install_dotfiles.sh --status` reports an `ORPHAN` line for each
+  link into the dotfiles folder at a path no tracked file installs to, which
+  is what renaming or deleting a config used to leave behind for good, and
+  `--prune` removes those links. It removes only links whose text points into
+  the folder, never a regular file, a directory or a `.backup-*` link,
+  scans a bounded depth (including hidden directories at the top of the home,
+  so a deleted source directory is still found), and previews with `--dry-run`.
+
+- `mikrotik/features/export_config.py --diff --summary` prints how many lines
+  were added and removed in each RouterOS menu instead of the unified diff, so
+  "what kind of change happened" can go into a ticket, a chat or an alert
+  without the rule bodies, comments and addresses the full diff carries. A
+  menu whose rules only changed order is listed too. Exit codes and the
+  promise to write nothing are the same as `--diff` alone.
+
+- `mikrotik/features/export_config.py` finds secrets in an export and can
+  redact them. Plain `/export` does not hide script sources or scheduler
+  `on-event` bodies, and the install steps put the Telegram bot token in a
+  startup script, so `--commit` could put a live token into git history.
+  `--scan-secrets` reports each finding by line and kind, never the value,
+  and exits 1 when there is one; `--scan-file` does the same for a stored
+  export with no ssh; `--redact-secrets` replaces each value with
+  `<redacted>` before anything is printed, diffed or written. One behaviour
+  changes: `--commit` now refuses an export that holds a secret unless
+  `--redact-secrets` is given, and the other modes warn on stderr.
+  A quoted field value that never closes is treated as a secret to the end
+  of the line, and a value that starts with an escaped `\$` in a field is a
+  literal dollar in the secret, not a variable reference. A field value
+  that is a RouterOS expression (`$name`, `$[...]`, `$(...)`, `$"name"`) is still
+  not reported.
+  The scan also catches script variables with underscores in the name
+  (`BACKUP_PASSWORD`, `CF_API_TOKEN`), and `--redact-secrets --diff`
+  redacts the stored export too, so an old secret never prints on a
+  removed line.
+  An unquoted literal (`:global ApiPassword abc123`) is found and redacted
+  like a quoted one. Only the exact placeholder assignments the package
+  ships are exempt, plus `<redacted>`; a value such as
+  `"<production-secret>"` is reported.
+  A bare literal stops at a closing `}`, `]` or `)`, so
+  `do={:set password abc}` redacts only `abc`, and an array value
+  (`{"a";"b"}`) is not reported as a literal.
+  A quoted variable name (`:global "api-token" "x"`, escaped inside an
+  export) is recognised, and `preshared-key=` on a WireGuard peer is
+  treated as a secret field.
+
+- `git/git_bundle_backup.sh` writes one timestamped file holding every ref
+  of a repository, proves it with `git bundle verify` before moving it into
+  place, and prints the restore commands, so a backup before a history
+  rewrite, a migration or deleting a clone is a single step that cannot leave
+  a half-written file behind. `--keep` lists the older bundles of the same
+  name beyond the newest N and deletes them only with `--yes`.
+
+- `git/git_commitlint.sh` lints every commit message a pull request adds,
+  so the Conventional Commit rule the local commit-msg hook enforces also
+  holds in CI, where `git commit --no-verify` cannot skip it. Beyond the
+  subject pattern it reports subjects over `--max-subject`, a missing blank
+  line before the body, unsquashed fixup commits, and messages matching a
+  `--forbid` pattern; every problem of every commit is listed, and merge
+  commits are left alone.
+
+- `git/git_diff_branch.sh` answers "did anything under this path change on
+  this branch?" for CI and deploy pipelines. `--name-only` and
+  `--name-status` print the changed paths in a form scripts can read instead
+  of scraping the diffstat, `--path` limits every mode to a pathspec and is
+  repeatable, and `--require-changes` exits 4 when nothing under that filter
+  changed. A remote-tracking base such as `origin/main` is now accepted, so
+  a fresh CI checkout with no local `main` works.
+
+- `git_ssh_doctor.py`, `git_signing_doctor.py`, `git_remote_doctor.py` and
+  `git_ignore_doctor.py` take `--json`. Each prints one JSON object with the
+  exit code and every finding (level, section, message), so CI can keep the
+  diagnosis that `--quiet` throws away and attach it to a job summary. Exit
+  codes are unchanged, every line is recorded after the doctor's redaction so
+  a token in a URL never reaches the JSON, and `--json` with `--quiet` is a
+  usage error.
+
+- `git/git_fleet_doctor.py` runs every `git_*_doctor.py` beside it across
+  the repositories under one or more roots and prints one table of verdicts
+  with an overall exit code, for a workspace of many clones or a weekly CI
+  sweep. It runs the doctors offline with `--quiet` (the SSH doctor, whose
+  default run attempts authentication, only when named with `--only`),
+  bounds the work with `--depth`, `--timeout` and `--jobs`, and with
+  `--details` prints the report of each failing doctor under its row.
+  Bare and mirror repositories are found too.
+- In a bare or mirror repository the secrets, submodule and ignore
+  doctors exit `4` (nothing to check) instead of `2`, so the fleet
+  doctor shows `n/a` rather than `ERR` for them.
+
+- `git/git_health_doctor.py` diagnoses a repository that is locked, slow or
+  growing: a `*.lock` left by a killed command (called stale only when it is
+  old and no git process is running in that repository, with the `rm` printed
+  rather than run),
+  a `gc.log` that has silently stopped automatic gc (until it is older
+  than `gc.logExpiry`), loose objects and packs
+  above the gc thresholds, garbage in `objects/pack`, missing background
+  maintenance or commit-graph on a large repository, and shallow or partial
+  clones. `--fsck` adds an opt-in connectivity check. It works in linked
+  worktrees and bare mirrors, exits `1` on a fail-level finding, and takes
+  `--quiet` and `--json` like the other doctors.
+
+- `git/git_hooks_doctor.py` explains why a git hook does not run: a
+  `core.hooksPath` that points nowhere (so git runs no hooks and says
+  nothing; a relative path is read from the work tree root for client
+  hooks and from `$GIT_DIR` for the hooks a push runs, which differs
+  between a push to the main path and a push to a linked worktree's
+  path; every location is reported) or that shadows the repository's own
+  hooks from global config, a hook without the exec bit, a CRLF or
+  missing interpreter in the shebang (including an `env` shebang with
+  several words and no `-S`, which Linux cannot run, and a direct
+  interpreter given several arguments, which Linux passes as one), a
+  misnamed hook file (a .sh suffix, a missing hyphen), and a committed
+  `.pre-commit-config.yaml`, `.husky/`, `.githooks/` or lefthook config
+  that was never activated in this clone. It reads only the start of
+  each hook and prints every repair, with paths shell-quoted, instead of
+  making it. It takes `--quiet` and `--json` like the other doctors.
+
+- `git/git_hooks_install.sh` gains an opt-in pre-push hook with
+  `--pre-push`: it refuses any push to `main` or `master` (or the branches
+  named with `--protect`), naming a deletion or a force push as such, and any
+  push carrying `fixup!`, `squash!`, `amend!` or `WIP` commits that were meant
+  to be squashed first. A default install is unchanged, a foreign pre-push
+  hook is backed up only with `--force` and restored on uninstall, and one
+  push can be let through with `git push --no-verify`.
+  For a new branch the check compares with what the remote advertises,
+  not with possibly stale remote-tracking refs.
+
+- `git/git_merge_check.sh` forecasts whether branches still merge cleanly
+  into a base without checking anything out: it runs the real three-way merge
+  in memory with `git merge-tree --write-tree` and reports each branch as
+  clean, conflicting (with the paths), already merged, a fast-forward, or not
+  mergeable at all. It works with a dirty tree and in a bare repository, and
+  `--all-local` checks every local branch for rot against `main` in one run.
+  It needs Git 2.38 or newer and says so instead of guessing on older Git.
+
+- `git/git_release_notes.sh` turns the commits since the last tag into
+  release notes grouped by Conventional Commit type, breaking changes first,
+  as text or with `--format` markdown ready to paste into a release or a
+  change ticket. Subjects that follow no convention land under Other rather
+  than disappearing, merge commits are left out, and `--next-version` prints
+  the semver bump the commits imply. A `--from` that is not an ancestor of
+  `--to` is refused instead of listing the whole history.
+
+- `git_remote_doctor.py --probe` checks that each remote can actually be
+  fetched from with the credentials this machine has, by running one
+  non-interactive `git ls-remote --heads` per remote and `--url`. A failure is
+  named as one cause (DNS, network, timeout, ssh key, unknown or changed host
+  key, HTTP token, repository not found, TLS or proxy) with the next command
+  to run, so "Could not read from remote repository" stops being the whole
+  diagnosis. Nothing can prompt, git's error lines are redacted before they
+  are printed, each probe is bounded by `--probe-timeout`, and the default
+  run stays offline.
+
+- `git/git_repos_status.sh` reports every checkout under one or more
+  directories on one screen: branch, ahead and behind, changed paths, stashes
+  and commits that no remote has, with a summary of how many hold work that
+  exists only on this machine. `--strict` exits 1 while any of it does, which
+  makes the report a safe-to-wipe gate before re-imaging a laptop, and
+  `--fetch` refreshes (and prunes) the remote-tracking refs of every remote
+  first, each fetched by name so `skipFetchAll` cannot hide one; a fetch
+  failing on any remote counts as work at risk, and so does a history walk
+  that fails (a missing or unreadable object), noted `walk-failed`, and a
+  stash list that fails (a damaged `refs/stash`), noted `stash-failed`. A row
+  that could not be checked (also a failed `git status`, noted
+  `status-failed`, or an `unreadable` checkout) is kept under every `--only`
+  filter, so none can hide it from `--strict`.
+
+- `git/git_secrets_doctor.py` audits what a repository has already
+  committed: tracked files with credential-shaped names (`.env`, private
+  keys, Terraform state, `.git-credentials`, kubeconfig and more, with
+  `.env.example`-style placeholders exempt; read from HEAD and the index,
+  so a `git rm --cached` not yet committed still counts), tracked content
+  matching a private key block or a known token format, and with
+  `--history` files that were deleted from the tree but are still in
+  history, where the credential has to be rotated. Content is searched
+  with `git grep -l`, so a matched secret is never printed; `--allow`
+  leaves out documented fixtures and `--no-content` skips the content
+  search on very large trees. It takes `--quiet` and `--json` like the
+  other doctors.
+
+- `git_signing_doctor.py --verify-recent N` audits the signatures on the
+  last `N` commits, the question behind "why do my commits show
+  Unverified?". It reads git's own verdict for each commit, prints the
+  counts, and names every bad, revoked, expired or unverifiable signature,
+  every unsigned commit when `commit.gpgsign` is on, and every good signature
+  whose signer address differs from the committer address. It judges your
+  own commits unless `--all-authors` is given.
+
+- `git_ssh_doctor.py` now checks whether each host's key is already in
+  known_hosts before it tries to authenticate, the cause of "Host key
+  verification failed" on a runner that cannot answer the prompt. The lookup
+  honours custom known_hosts files, non-22 ports, `HostKeyAlias` and hashed
+  entries, and prints the `ssh-keyscan` and fingerprint check that pin the
+  key. `StrictHostKeyChecking no` is reported as a risk. An unknown key is a
+  warning, or a failure with `--require-known-host` for a CI preflight, also
+  when `StrictHostKeyChecking accept-new` would record it on first use.
+  `--require-known-host` fails closed when `ssh-keygen` is missing, and an
+  effective `KnownHostsCommand` is reported as not checked (never run)
+  instead of failing the requirement on the file scan alone.
+  With `--require-known-host` the authentication attempt uses
+  `StrictHostKeyChecking=yes`, `UpdateHostKeys=no` and `CheckHostIP=no`, so
+  it does not write to known_hosts, and a missing `ssh-keygen` is reported
+  as an unchecked key rather than an unknown one.
+  A port in an `ssh://` remote URL is kept: it goes to `ssh -G -p PORT`, to
+  the authentication attempt and to the `[host]:port` known_hosts lookup,
+  as git passes it to ssh.
+
+- `git/git_submodule_doctor.py` explains submodule failures before they
+  reach CI: a gitlink with no `.gitmodules` entry ("no submodule mapping
+  found"), a stale entry, a submodule not initialised or checked out at a
+  different commit than the superproject records, a merge conflict in the
+  pointer, a URL that is a path on one machine or uses `git://` or
+  `http://`, an ssh URL that needs a deploy key on every runner, and a
+  `.git/config` still dialling an old URL until `git submodule sync`, also
+  behind a relative URL, which is resolved against the remote as git does.
+  It prints each repair, runs none, and blanks passwords in the URLs it
+  shows. It takes `--quiet` and `--json` like the other doctors.
+
+- `git/git_unpushed.sh` answers "what would I lose if this clone
+  disappeared?" in one report: commits on no remote, branches with no
+  upstream, stashes, uncommitted and untracked files, and with `--tags` the
+  local tags the remote does not have or has at a different object.
+  `--remote` narrows what counts as pushed to one remote, and `--strict`
+  exits 1 while anything exists only on this machine, so a decommission
+  script can refuse to delete a clone that still holds work. A remote that
+  lists no peeled `NAME^{}` line for an annotated tag is compared on the tag
+  object alone, so a matching tag is not reported.
+  A check that could not run (`git status` failing, or `--tags` unable to
+  reach the remote) prints `incomplete: could not check ...` instead of
+  claiming nothing exists only on this machine.
+
+- `k8s-toolbox/gke_cluster_doctor.sh` has six more checks, each with the
+  `gcloud` command that fixes it: node auto-repair and auto-upgrade
+  (`nodepool-mgmt`), a maintenance window (`maintenance`), master authorized
+  networks and an open `0.0.0.0/0` block (`authnets`), system and workload
+  logging and monitoring (`observability`), shielded nodes (`shielded`), and
+  network policy or Dataplane V2 (`dataplane`). They share one JSON describe
+  read with `python3`; without it they are skipped with a warning and the
+  original four still run. A new suite runs all ten checks against a stubbed
+  `gcloud`, which no test did before.
+
+- `macos-initial-setup/hardening_audit.sh` has a `secrets` group for the
+  credentials a DevOps laptop keeps on disk: AWS, kubeconfig, Docker,
+  `.netrc`, `.npmrc`, `.pypirc`, `.git-credentials`, the GitHub CLI,
+  Terraform Cloud and gcloud application-default credentials. A file
+  readable by every local user fails and one readable by its group warns,
+  each with the `chmod 600` that fixes it. A `600` file whose extended
+  ACL lets another user read it warns with `chmod -N`. Static AWS keys,
+  base64 registry passwords and `identitytoken` / `registrytoken` values
+  (even beside a credential store), a literal npm token, a `.netrc`
+  password and `credential.helper store` are warnings. It names files
+  and never prints a value.
+
+- `macos-initial-setup/status.sh` and `macos-initial-setup/hardening_audit.sh`
+  take `--json`. Stdout then carries one versioned JSON object with the same
+  verdicts the report prints (sections for the status, findings with their
+  group, check and fix plus a summary for the audit) and nothing else, so an
+  MDM extension attribute, a fleet check or a CI gate can read it without
+  scraping coloured text. The exit codes are unchanged, the human report is
+  byte for byte the same without the flag, and no `jq` or `python` is
+  needed.
+
+- `linux/kernel_cleanup.sh` removes old kernel packages, the usual reason a
+  full `/boot` makes an apt or dnf upgrade fail, which `apt-get autoremove`
+  does not reliably fix. It keeps the running kernel, the newest `--keep`
+  kernels besides it (default 2) and the newest installed one, never leaves
+  fewer than two installed, and refuses rather than guesses when it cannot
+  tell which kernel is running. On apt it purges each old release's image,
+  modules and headers (including the common flavour-less headers package,
+  `linux-headers-<base>` on Ubuntu or `linux-headers-<base>-common` on
+  Debian, once no kept release shares its ABI version, whatever its flavour) in one call; on dnf it
+  removes the versioned kernel packages; pacman needs nothing. `--list` shows the plan read-only,
+  `--dry-run` previews the removal and a real run needs `--yes`. It never
+  autoremoves, reboots or edits the bootloader. A failing package query
+  (dpkg-query, rpm) stops it with exit 2 instead of reporting nothing to
+  remove.
+
+- `k8s-toolbox/kubectl_cert_expiry.sh` reports expired and expiring TLS
+  certificates in `kubernetes.io/tls` Secrets, soonest first, so "which
+  certificate expires next" has an answer before it becomes an outage.
+  `--warn-days` sets the window (30 by default) and `--cert-manager` also
+  reads cert-manager Certificates, including any whose `Ready` condition is
+  False. A missing or unreadable `tls.crt` is a finding, the private key is
+  never read, printed or passed to `openssl`, and exit `4` means nothing
+  expires within the window, so it can run from cron.
+
+- `k8s-toolbox/kubectl_drain_preflight.sh` answers "can I drain this
+  node?" before anything is cordoned. It reports what makes a drain hang
+  or refuse (a PodDisruptionBudget allowing no disruption, a pod under two
+  budgets, a pod with no controller, no other Ready node to move to) and
+  what a drain quietly costs (lost `emptyDir` data, PVC-bound pods,
+  StatefulSet order). It also reports a pod whose `nodeSelector` or
+  required `nodeAffinity`, or whose PVC's PersistentVolume `nodeAffinity`
+  (a local volume), no other Ready schedulable node satisfies. It then
+  prints the `kubectl cordon` and `kubectl drain` commands with only the
+  flags the node needs. It runs neither, exits `4` when there is nothing
+  to report, never claims the node is safe because placement of evicted
+  pods (taints, resources, topology) is not simulated, and gives no
+  verdict at all when a query fails.
+
+- `k8s-toolbox/kubectl_node_capacity.sh` sets each node's CPU, memory and
+  pod requests against its allocatable, which is what decides whether a pod
+  can be scheduled and what `kubectl top` cannot show. Requests are added up
+  the way the scheduler does it, init and sidecar containers and pod
+  overhead included, and every quantity form the API writes is parsed
+  exactly. Nodes at or above `--threshold` (85% by default) or NotReady are
+  findings, Unschedulable pods are listed with the scheduler's message, and
+  no metrics-server is needed.
+
+- `k8s-toolbox/kubectl_pod_cleanup.sh` clears the Evicted, OutOfcpu and
+  failed Job pods that pile up by the thousand, without the wrong-context
+  one-liner. It previews by default: the context, every candidate with its
+  reason and age, and the exact `kubectl delete` it would run. Only
+  `--yes` deletes, and then only those pods, one by one by name, never with
+  `--force`, and it re-reads each pod just before the delete and sends the
+  delete with a uid precondition, so a pod recreated under the same name is
+  skipped (409), never deleted; `--dry-run` always wins. `--older-than` (a day by default) keeps
+  recent failures for the post-mortem, `--include-succeeded` adds finished
+  pods, and `--max` (200) refuses a larger batch before the first delete.
+
+- `k8s-toolbox/kubectl_rbac_audit.sh` answers the access-review
+  questions without anyone pasting a `kubectl | jq` pipeline: who is
+  bound to cluster-admin, which roles use a `*` in verbs, resources, API
+  groups or URLs, or escalate, bind or impersonate, which bindings hand
+  rights to a default ServiceAccount, which point at a role that no
+  longer exists, and which bound roles can read Secrets. Rows are
+  labelled `[risk]` or `[advice]`, each comes with a printed next step,
+  system objects and the built-in roles are skipped unless
+  `--include-system` (except the `system:serviceaccounts` and
+  `system:serviceaccounts:<ns>` groups, which are judged by default),
+  and it reads RBAC objects only, never a Secret or a token.
+
+- `k8s-toolbox/kubectl_workload_audit.sh` audits the pod templates of every
+  Deployment, StatefulSet, DaemonSet and CronJob for what incident reviews
+  keep finding by hand: missing requests or memory limits, no readiness
+  probe, untagged or `latest` images, privileged, host-namespace or hostPath
+  pods, containers that may run as root, single-replica Deployments and
+  replicated workloads no PodDisruptionBudget covers. Findings are labelled
+  `[risk]` or `[advice]`, each check prints a fix and never runs it, and
+  `--list-checks` and `--only` take the same check ids as the GKE doctor's
+  (an empty selection is a usage error here), and `--include-system` and
+  `--limit` widen or cap the report.
+
+- `k8s-toolbox/kubectl_workload_diag.sh` is the read-only second half of the
+  pod triage. It reports what `kubectl_pod_diag.sh` cannot see while every
+  pod that exists is healthy: Deployments past their progress deadline,
+  paused or short of available replicas, StatefulSets stuck mid-update,
+  DaemonSets with unavailable or misscheduled pods, autoscalers that cannot
+  read metrics or sit at `maxReplicas`, and failed Jobs. Each finding is
+  followed by the `kubectl rollout status` or `kubectl describe` command to
+  run next, printed and never executed. `--list-checks` and `--only` pick the
+  checks, and it exits `4` when every check ran and found nothing.
+
+- `linux/container_doctor.sh` grades Docker or Podman containers instead of
+  counting them: restart loops, OOM kills, unhealthy healthchecks and failed
+  exits with no restart policy or with `on-failure:N` retries used up;
+  privileged containers and engine socket mounts; running containers with no
+  memory limit; `json-file` logs with no `max-size` and logs past
+  `--log-warn-mb`; dangling images and floating tags. It runs only read-only
+  engine verbs, each under a timeout, prints every fix instead of applying it,
+  and reads rather than gates unless `--fail-on` says otherwise. Each
+  container's log cap is read from its own inspected log config; a `max-size`
+  in `daemon.json` applies only to containers created after it was set, so it
+  does not clear existing ones.
+
+- `linux/system_doctor.sh --skip-remote-mounts` now also runs the disk
+  section's `df` local-only (`-l`), so a stale NFS, CIFS or sshfs mount
+  cannot hang it; remote filesystems are then not checked for being
+  full. `linux/ssh_client_doctor.sh` reads `true` and `false` like `yes`
+  and `no` for the boolean keywords, and `off` too for
+  `StrictHostKeyChecking` alone, so `StrictHostKeyChecking false` is
+  graded like `no`.
+
+- `linux/system_doctor.sh` has a pressure section that reads the kernel's
+  stall information for CPU, memory and I/O instead of trusting load
+  average, and warns past `--max-psi` percent of the last minute. It also
+  reports file-handle use, a filling connection tracking table, thread and
+  PID headroom, and zombie or uninterruptible processes, and names the top
+  memory and CPU consumers when a stall was found. Every probe skips when
+  its file is missing, and the script still never exits 1.
+
+- `linux/system_doctor.sh` has a storage section for the failures `df` does
+  not show: a real filesystem mounted read-only although fstab says
+  read-write (not a mount fstab declares ro, a `:ro` bind with no fstab
+  entry, `errors=remount-ro` alone, or the ostree `/sysroot`), an fstab entry
+  that is not mounted (a note when it is `nofail`), a degraded md array, a
+  disk whose SMART health is FAILED (as root), and an NFS, CIFS or sshfs
+  mount that does not answer a five-second `stat`. `--skip-remote-mounts`
+  and `--skip-smart` leave those probes out. It stays read-only and still
+  never exits 1.
+
+- `linux/hardening_audit.sh` grades a dozen more sshd settings in its `ssh`
+  group: `MaxAuthTries`, X11, agent and TCP forwarding, `LoginGraceTime`, the
+  client-alive connection-liveness window (interval times count, which drops
+  unresponsive clients, not idle users), `ChannelTimeout` as the idle bound
+  (OpenSSH 9.2+, reported as info when unset), `PermitUserEnvironment`,
+  host-based auth, `IgnoreRhosts`, public-key auth and tunnels, each against
+  the OpenSSH default when it is not set. As root it also reads the effective
+  cipher, MAC, key exchange and host key lists from `sshd -T` and names the
+  weak ones, with the removal line to add. The group names, flags and exit
+  codes are unchanged. Without `sshd -T`, the raw `sshd_config` fallback reads
+  only global values (before any `Match`, or under `Match all`); a value that
+  appears only inside a `Match` block is never graded as a pass.
+
+- `linux/listen_audit.sh` says which process owns each listening port and
+  whether it answers on loopback or to the network, folding IPv4/IPv6 twins
+  into one row. `--print` writes the public listeners to stdout as a stable,
+  dateless baseline, and `--baseline` or `--allow` compares the live set with
+  it, so a new listener exits 1 from cron and an expected one that is gone
+  is a warning (`--fail-on any` fails on that too). It runs only `ss` and
+  never writes the baseline itself.
+  A public entry is not satisfied by the same port rebound to loopback
+  unless `--all` is given.
+
+- `linux/log_triage.sh` reports what has been going wrong in the logs over a
+  `--since` window: the kernel's OOM kills, crashes, storage and filesystem
+  errors, hung tasks and hardware errors counted by class, the identifiers
+  with the most error-level lines, failed SSH logins grouped by source with
+  accepted logins and failed sudo, and the most repeated messages with
+  numbers folded. It is read-only, bounds what each section prints, strips
+  control characters from log text before printing it, never prints a
+  password, and refuses a `--since` that journalctl could read as an option.
+  `--fail-on warn` makes findings exit 1.
+
+- `linux/net_doctor.sh` has a links section that explains a slow or flaky
+  network from sysfs: error and drop counters past 0.1% of a NIC's packets,
+  half duplex or a 100 Mb/s link, carrier flaps, a bond with a slave down,
+  an uplink MTU below 1500, and a default gateway that no longer answers
+  ARP. Virtual interfaces are counted, not graded, and `--skip-links` leaves
+  the section out. It reads files and `ip neigh` only.
+
+- `linux/ssh_client_doctor.sh` grades whether ssh should use what is in
+  `~/.ssh`, not only whether it can: private keys with no passphrase, DSA
+  and short RSA keys, keys older than `--max-key-age` days, unhashed or
+  conflicting known_hosts entries (aliases in the host field are
+  expanded), duplicate authorized_keys lines, a `Host *` block that turns
+  off host key checking or forwards the agent everywhere, and an
+  `SSH_AUTH_SOCK` that points at a dead agent. `--only` and
+  `--list-groups` select groups. It stays read-only: the passphrase
+  probe cannot prompt and key material is never printed. An unquoted
+  end-of-line `# comment` is dropped before a config value is graded, so
+  `StrictHostKeyChecking no # legacy` is still caught. A `Ciphers` line
+  is read with its list modifier: `-` removes names, so only `+`, `^` or
+  a plain list that names CBC or arcfour is flagged.
+
+- `linux/tls_expiry.sh` checks the other half of a certificate outage, a
+  certificate that is valid but wrong. `--check-host` fails when the
+  certificate does not cover a name, and `--deep` adds the name check for
+  each host, the chain as the handshake verified it (a provably missing
+  intermediate fails, an issuer that is merely not trusted locally or a
+  self-signed one warns, and `--cafile` supplies a private root and replaces
+  system trust, passing `-no-CApath` and `-no-CAstore` to the handshake and
+  the verify probe where openssl supports them and saying so when it
+  cannot), the key size against `--min-key-bits` and MD5 or SHA-1
+  signatures. `--hosts-file` reads a list of endpoints. The chain comes
+  from the handshake the expiry check already makes, and default runs
+  behave as before. An IPv6 target is written in brackets, with or without
+  a port; an unbracketed one is refused.
+
+- `macos-initial-setup/config_backup.sh` keeps a dated, verified and rotated
+  archive of a Mac's non-secret dotfiles and tool configuration (`.zshrc`,
+  `.gitconfig`, `.ssh/config`, `.aws/config`, LaunchAgents and the like) in
+  `~/ops-toolbox-backups`, the macOS counterpart of
+  `linux/config_backup.sh`. Paths that hold credentials (any non-config,
+  non-public-key file under `~/.ssh`, the git credential store,
+  `~/.terraform.d/credentials.tfrc.json`, `~/.pypirc`, gcloud's
+  application-default credentials, `credentials.db` and
+  `legacy_credentials/`, a `~/.terraformrc` with a `credentials` block, a
+  `~/.aws/config` with `aws_access_key_id`, `aws_secret_access_key` or
+  `aws_session_token`) are refused unless `--include-secrets` and left out
+  of a default run, the archive is private to its owner (a `--dest` it
+  creates is `0700`, and one other users can write to is refused, as is one
+  below an ancestor directory that is not owned by root or you, or that
+  other users can write to unless it is sticky; the temporary archive is
+  made exclusively with `mktemp`), a dry run writes nothing, a real run
+  needs `--yes`, and rotation only removes its own older archives. A
+  `--dest` that reaches a source through a symlink is refused too, and a
+  `--paths` entry is judged by where it really points as well as by its
+  name, so an alias folder onto `~/.aws` does not hide credentials.
+  A `--dest`, or an ancestor of it, whose extended ACL (`ls -le`) has an
+  allow entry that lets anyone but its owner, root or wheel change it (or,
+  for an ancestor, add or delete children) is refused before anything is
+  written (fix: `chmod -N DIR`). A `list`-only entry is noted like a `755`
+  directory, and an `only_inherit` entry is ignored.
+
+- `macos-initial-setup/net_doctor.sh` is the macOS counterpart of
+  `linux/net_doctor.sh` for the moment the network is wrong: interfaces, the
+  default route, the primary resolver and every split-DNS resolver a VPN
+  installs, whether the Mac's own hostname resolves, a system proxy that
+  browsers use and `curl`, `git` and `brew` do not, connected VPN services
+  and tunnels, `/etc/hosts` overrides and listening sockets. It changes
+  nothing, names proxy variables without printing them, and contacts the
+  network only for an explicit `--probe HOST[:PORT]`, which also follows
+  an IPv6-only (AAAA) answer.
+
+- `macos-initial-setup/schedule_report.sh` is the macOS counterpart of
+  `linux/schedule_report.sh`: it lists the launchd jobs in
+  `~/Library/LaunchAgents`, `/Library/LaunchAgents` and
+  `/Library/LaunchDaemons` with their schedules in words (`Mon 10:30`,
+  `every 3600s`, `keep-alive`), plus the user crontab and queued `at` jobs.
+  It warns when a job's program no longer exists and when a plist or the
+  program it runs can be written by other users, and changes nothing:
+  removal stays with `stay_fresh.sh`'s explicit opt-in.
+  It also warns, naming the directory, when a plist or its program sits
+  under a directory that its group or every user can write without the
+  sticky bit (and, for a daemon, one a non-root user owns), since the file
+  could be swapped before launchd runs it.
+  The check follows symlinks both ways: it walks the path as written and
+  the path it resolves to, so a symlinked component or program cannot hide
+  an unsafe directory.
+  It also warns when an extended ACL (`ls -le`) lets another user change
+  a plist, its program (judged on what a symlink points at) or a parent
+  directory, and, for a LaunchDaemon, when
+  the plist or its program is not owned by root, since a user-owned file
+  is code that user can edit and launchd runs as root.
+
+- `macos-initial-setup/ssh_client_doctor.sh` is the macOS counterpart of
+  `linux/ssh_client_doctor.sh`: it checks the modes of `~/.ssh` (a
+  group- or other-writable directory fails, read access only warns) and
+  its keys, grades DSA and short RSA keys from the private key itself
+  (warning when a `.pub` beside it does not match), finds private keys
+  that open with no passphrase (dot-prefixed ones such as `.deploy_key`
+  and `IdentityFile` targets outside `~/.ssh` included; a key with loose
+  permissions is reported as not checked, with no keychain advice), names
+  `IdentityFile` paths that do not exist, and warns when
+  `ForwardAgent yes`, `StrictHostKeyChecking no` or
+  `UserKnownHostsFile /dev/null` applies to every host (`Host *`,
+  `Match all` or `Match host *`). It changes nothing, never prints key
+  material, and prints the `chmod` or `ssh-keygen` command for each
+  finding. Modes are read through symlinks, so a link to a `0600` key or a
+  symlinked `--ssh-dir` is graded by its target, not as `0777`.
+  OpenSSH uses the first value it obtains for an option, so a risky
+  `ForwardAgent`, `StrictHostKeyChecking` or `UserKnownHostsFile` in a
+  block for every host that comes after an earlier such value is noted as
+  ignored instead of warned.
+  `Include` is followed in order (bounded in depth and number of files),
+  so a value set in an included file counts as the first value too, while
+  the Host or Match block the `Include` sits in resumes after it and a
+  file included inside a named block never counts as global; an
+  `Include` it cannot resolve (variable, `%` token, `~user`) is noted and
+  the result may then over-warn.
+
+- `macos-initial-setup/tls_expiry.sh` is the macOS counterpart of
+  `linux/tls_expiry.sh`: it grades PEM files and the leaf a host presents,
+  failing an expired certificate and warning inside the `--days` window,
+  without GNU date or `timeout`. `--keychain` grades the client identities in
+  the login and System keychains (matched by SHA-1 fingerprint, so
+  unrelated expired certificates do not fail the run), reading public
+  certificates only so no unlock prompt appears.
+  Exit 1 at or above `--fail-on` makes it a runbook and scheduler check.
+
+- `macos-initial-setup/ops_context.sh` prints on one screen which Kubernetes
+  context and namespace, gcloud configuration, AWS profile, Terraform
+  workspace, Docker context and GitHub CLI login the current shell is
+  pointed at, from local files only. A `--warn-on prod,live` pattern that
+  matches any of them is a warning and exits 1, so
+  `ops_context.sh --warn-on prod --quiet && terraform apply` is a one-line
+  pre-flight against running the right command in the wrong place.
+  `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_CORE_ACCOUNT` and
+  `CLOUDSDK_COMPUTE_REGION` override the gcloud file values, are marked
+  `(env)` and are what `--warn-on` sees. It never opens
+  `~/.aws/credentials`, names token variables without printing them, and
+  flags an expired AWS SSO login and a remote Docker daemon. With both
+  `DOCKER_CONTEXT` and `DOCKER_HOST` set it reports the context, which the
+  Docker CLI lets win, and `--warn-on` is matched against that endpoint;
+  the built-in `default` context uses `DOCKER_HOST` as its endpoint.
+  The AWS region reported is the effective one (`AWS_REGION`, then
+  `AWS_DEFAULT_REGION`, then the profile's), marked with its source, and
+  `--warn-on` is matched against it.
+
+- `linux/packages.sh` has two read-only commands for the questions asked
+  before maintenance. `holds` lists held, version-locked or ignored packages
+  (`apt-mark showhold`, dnf versionlock and `exclude=`, pacman `IgnorePkg`),
+  the ones an upgrade skips. `orphans` lists what autoremove would remove
+  (`apt-get -s autoremove`, `dnf repoquery --unneeded`, `pacman -Qdtq`).
+  Both print sorted names only on stdout, so they pipe like `list`, and
+  need no sudo.
+  On dnf, a versionlock listing that fails while the plugin is installed
+  is an error (exit `1`), not an empty list of locks.
+
+- `k8s-toolbox/kubectl_pod_diag.sh` reports restart loops and recent OOM
+  kills in containers, restartable init-container sidecars included, that are
+  Running and Ready again. Before, a container
+  OOMKilled five minutes earlier, or one restarting all week, left the run
+  saying the cluster looked quiet. The new section reuses the pod listing,
+  names the container's memory limit, prints the `kubectl logs --previous`
+  command to run next, and never repeats a container the unhealthy-pods
+  section already reported. `--restarts` sets the threshold (5 by default)
+  and `--since` now bounds the OOM lookback as well as the events.
+
+- `mikrotik/features/print_startup.sh` prints the startup script that
+  declares the RouterOS globals again at every boot, and its
+  `start-time=startup` scheduler entry. Globals are cleared by a reboot, and
+  that script used to be written by hand from notes spread across the README,
+  which is how a token set by hand quietly stopped working after the next
+  restart. The output has placeholders for the secrets, so it is safe to keep;
+  `--only` adds a script's settings at their defaults, and `--from-env` fills
+  the secrets from environment variables rather than the command line. No
+  name it prints has an underscore, so it runs on RouterOS 7.24.
+
+- `mikrotik/features/pull_router_backups.sh` can check that what it pulled is
+  usable and recent. `--verify` fails the run on an empty file, an `.rsc`
+  without the RouterOS export header, or a `.backup` without its `.rsc`, and
+  `--max-age HOURS` fails it when the newest `backup-*.backup` it pulled is
+  older than that (files other routers left in a shared destination do not
+  count). The script used to exit 0 for all of those, including a
+  router whose backup scheduler had died and left one stale pair to be pulled
+  again every night. Both checks are off unless asked for. `--verify`
+  runs in the staging directory and publishes only the files that pass,
+  so a rejected re-pull (a zero-byte file, say) never replaces an archived
+  copy of the same name; the run exits 1 and the earlier copy is kept.
+  `--max-age` also rejects a backup stamped more than 5 minutes in the
+  future (a router clock running ahead), which would otherwise look fresh.
+  When one extension's transfer fails (a permission or transport error, not
+  the "no such file" result), the other extension's file is not paired with
+  an archived copy of the missing one: it is rejected and the archived pair
+  stays coherent.
+
+- `mikrotik/features/router_doctor.py --drift` says which installed scripts
+  differ from the files in this checkout, so a router still running an old or
+  hand-edited copy is visible without opening each script in Winbox. The file
+  is sent into the router as a string literal in an inline block and the
+  router compares it with each script's source, answering only same, changed
+  or missing, so no script source, and no token pasted into one, crosses the
+  wire and nothing is written to the router. A difference is a warning naming
+  the file to paste; the JSON output carries only the verdict per script. A
+  CHR test runs the comparison, with quotes, dollars, backslashes and
+  newlines in the source, on the pinned RouterOS release. A tab in a file is
+  compared as four spaces, which is how RouterOS keeps it.
+
+- `mikrotik/features/router_doctor.py` audits a whole fleet from one hosts
+  file with `--hosts-file`, so checking ten routers is one run and one exit
+  code rather than ten. Each router gets its usual report under its own
+  heading, followed by a summary table; JSON output wraps the per-router
+  reports with a summary. The run exits with the worst router: unreachable,
+  then probe failed, then findings, and 4 only when every router is clean. A
+  bad line in the file is reported with its line number before any router is
+  contacted.
+
+- `mikrotik/features/router_doctor.py` checks whether the schedulers it
+  finds actually run. A disabled entry used to count as scheduled. An
+  enabled entry still at `run-count` 0 long after its first run was due,
+  which is what a policy too narrow for the script looks like, went
+  unreported. That is judged from its `start-date`, `start-time` and
+  interval against the router's clock, not from the router's uptime, so a
+  scheduler created minutes ago is not accused. A start that does not show
+  when the entry was added (`start-date` 1970, which RouterOS fills in when
+  only `start-time` is given, or a start before the last boot) is reported
+  as not judged.
+  `TgBotToken` set by hand with nothing to set it again at boot passed as
+  healthy until the next reboot cleared it. All three are now warnings. They
+  are judged only on what the router returned, and the search for a startup
+  script that assigns the token (`:global NAME value`, or `:global NAME`
+  before `:set NAME value`; not a mere mention or read, and a scheduler must
+  run the script, not only share its name; `:execute NAME` and a bare
+  name among other statements do not count) finds its candidates on the
+  router and judges them locally, so no script source is read over ssh.
+
+- `mikrotik/features/router_doctor.py` now asks the router which RouterOS
+  release it runs and says whether each installed script can run on it. On
+  7.24 or later a script that declares an underscored `:global` or `:local`
+  never gets past the parser and logs nothing, so the doctor used to call
+  such a router healthy. Each one is now a `fail` when a scheduler runs it
+  and a `warn` when nothing does, naming `backup_update_check` as the
+  replacement for `update_check`. Routers on 7.23 get one line listing what
+  will stop running after the upgrade. JSON output gains `routeros_version`
+  and `incompatible_scripts`.
+
+- The Runbooks section has a runbook for commits that fail to sign or show
+  as Unverified. It reads each section of `git_signing_doctor.py`, keeps the
+  real signature behind its opt-in `--test-sign`, and points out that the
+  usual causes of Unverified are warnings that leave the exit code at `0`.
+  It points at `git_ssh_doctor.py` for transport authentication, which is a
+  separate mechanism.
+
+- The Runbooks section has a runbook for `Permission denied (publickey)` on
+  a Git remote. It pairs `git_ssh_doctor.py`, which asks OpenSSH what it
+  will really offer and catches an `Include` that matches only directories,
+  with `ssh_client_doctor.sh` for the modes and missing key files under
+  `~/.ssh`. It says that the doctor makes one real connection per host even
+  without `--test-auth`, that it tests `git@HOST` on the configured port
+  (so a remote with another user or an explicit port needs a manual
+  `ssh -v -T -p PORT user@host`), and that the scripts print fixes but
+  never apply them.
+
+- The Runbooks section has a runbook for undoing the last Git commit. A
+  decision table picks between the reset modes of `git_undo_last_commit.sh`
+  for work that is only local, its `--revert` for work that is already
+  pushed, and `git_amend_last.sh` for a commit that only needs a fix. It
+  previews each form with `--dry-run`, keeps `--hard` behind its `--force`
+  gate, and says what the reflog can and cannot bring back.
+
+- The Runbooks section has a Kubernetes runbook for unhealthy pods. It walks
+  `kubectl_pod_diag.sh` and `debug_pod.sh` from a read-only triage to an
+  ephemeral debug container, previewed with `--dry-run` first, and says
+  which exit code means findings and which means the cluster looks quiet.
+
+- The Runbooks section has a runbook for an IDE or file watcher that hits
+  the inotify limit. It raises only the inotify group of
+  `sysctl_defaults.sh`, previews with `--dry-run`, keeps the backup in a
+  named `--backup-file` that survives a reboot, and reverts with
+  `--revert --revert-from FILE`. It warns that `--only` rewrites the whole
+  drop-in and that `--revert-from` alone does not revert.
+
+- The Runbooks section has a runbook for a Linux host that cannot reach the
+  network or resolve names. It reads the `net_doctor.sh` sections in order,
+  quotes each warning it can print, and maps them to the link, DNS or a
+  firewall, with `hardening_audit.sh` for the local firewall posture. It
+  warns that `net_doctor.sh` exits `0` whenever the report printed, so the
+  warnings, not the exit code, carry the verdict.
+
+- The Runbooks section has a runbook for a TLS certificate that is expired
+  or about to expire. It checks files and hosts with `tls_expiry.sh`, uses
+  `net_doctor.sh` to tell a network fault from a bad certificate, and warns
+  that a host that cannot be fetched is only a warning, so the default
+  `--fail-on expired` still exits `0`; a check that must notice it needs
+  `--fail-on warn`.
+  It also says a `[pass]` covers expiry only and lists the `openssl` checks
+  for hostname, chain, `notBefore` and key match.
+
+- The Runbooks section has a runbook for a Windows PC low on C: drive space,
+  the counterpart of the Linux one. It reports with `status.ps1` and
+  `workstation_doctor.ps1`, previews `clean_disk_c.ps1` with `-DryRun`,
+  lists what each default target and each opt-in really removes, and warns
+  that the exit code does not report a failed target, so the `CLEAN` and
+  `SKIP` lines need reading.
+
+- The Runbooks section has a runbook for a WSL2 virtual disk that keeps
+  growing. It measures with the `df` action of `wsl_manage.ps1`, then backs
+  up, verifies the backup and only then compacts or switches to sparse
+  mode. It warns that `compact` shuts down every distro and that neither
+  `compact` nor `sparse` has a dry run, and it covers recovery from the
+  backup.
+
+- `linux/schedule_report.sh --failed` answers "which scheduled thing is
+  broken?": it warns about each timer whose service failed on its last run,
+  with the `journalctl` command to read why, and about each cron job whose
+  command path no longer exists or is not executable. A `systemctl` that
+  cannot answer is a skip. `--strict` exits `1` when any warning was
+  printed, so the report can gate cron or CI, and `--cron-dir` points both
+  cron checks at another directory. With none of the new flags the output
+  and exit code are unchanged.
+  A cron file that cannot be read is a warning and is never counted as
+  checked.
+  A `--cron-dir` that cannot be listed is likewise a warning, counted
+  as unreadable, instead of an empty directory whose jobs all resolve.
+
+- `linux/swap_setup.sh` reports active swap, the swap lines in fstab,
+  `vm.swappiness`, RAM and a suggested size, and with `--create` or
+  `--remove` adds or takes away a swapfile and its fstab line. It previews
+  every step with `--dry-run`, needs `--yes` and root to change anything,
+  never reuses an existing file, creates it exclusively and re-checks it
+  before formatting, refuses a directory others can write to and any
+  symlink in the path, rejects a `--path` that would not survive
+  as an fstab field (whitespace, backslash), or touches a partition, refuses filesystems
+  that cannot hold a swapfile, and edits fstab only after a timestamped
+  backup and through an atomic rename, removing only the line it added.
+  A symlinked `--fstab` keeps its link: the backup and the temporary file
+  sit beside the target, which is what gets replaced.
+  It is the missing step between the `system_doctor.sh` swap line and
+  `sysctl_defaults.sh`.
+
+- `linux/sysctl_defaults.sh --check` turns the report into a gate for
+  cron, CI image builds and post-provision checks. Each managed key is
+  `OK`, `DRIFT` (the live value is wrong), `UNPERSISTED` (set live, and
+  no boot-time config sets it), `STALE` (the drop-in holds another
+  value), `SHADOWED` (a later drop-in or `/etc/sysctl.conf` overrides
+  it, and is named) or `SKIP` (unreadable). It is read-only, needs no
+  root, honours `--only`, and exits `1` on anything but `OK` and `SKIP`.
+  The drop-in directories follow systemd's precedence: the first
+  directory holding a file name wins and a `/dev/null` symlink masks it.
+  A config file it cannot read turns the keys that would be `OK` or
+  `UNPERSISTED` into `SKIP` naming that file when it is read after the
+  file that last sets the key, since it may override them.
+  No setting was added.
+
+- `macos-initial-setup/toolchain_check.sh` reads a checkout's pin files
+  (`.python-version`, `.terraform-version`, `.go-version`, `go.mod`,
+  `.tool-versions`, `.nvmrc`, `.node-version`) and reports, per tool, whether
+  the pinned version is installed in pyenv, tfenv or tenv, goenv, mise or on
+  `PATH`, with the install command when it is not, and whether it is the
+  binary that actually runs. It installs nothing, never evaluates a pin
+  file, and exits 1 on a missing version and 4 when there is no pin, so it
+  works as a pre-commit or Makefile guard.
+  A prerelease (`rc`, `beta`, `alpha`, `pre`) counts as older than the same
+  release, and `rc1` is older than `rc2`, so Go `1.22rc1` does not meet a
+  `1.22` or `1.22rc2` minimum.
+  A `.python-version` that lists several versions (one per line or
+  separated by spaces, with `#` comments) has every one of them checked,
+  not only the first.
+
+- `windows/cleanup/clean_disk_c.ps1` has three more opt-in targets.
+  `-IncludeCrashDumps` removes `MEMORY.DMP`, minidumps, live kernel reports,
+  the WER report archive and per-user crash dumps; `-IncludeLogs` removes
+  CBS, DISM and setup logs older than `-Days`; `-IncludeComponentStore` runs
+  Windows' own `Dism.exe /Online /Cleanup-Image /StartComponentCleanup`,
+  never with the flag that makes installed updates permanent. All three go
+  through the existing `-DryRun` preview and `-Yes` gate, skip without
+  elevation where they need it, and the preview never starts DISM. A
+  failed DISM run makes the script exit 1 after the summary.
+  `disk_usage.ps1` now points its crash-dump and log rows at them.
+
+- `windows/setup/dev_env_doctor.ps1` checks the Windows settings that break
+  a developer toolchain while the machine itself looks healthy: long paths
+  off in Windows or in git, `core.autocrlf=true` putting CRLF into shell
+  scripts that then fail in Linux containers, symbolic links against
+  Developer Mode, a missing credential helper, virtualization off in
+  firmware, a stopped time service or (with `-CheckTime`) a skewed clock,
+  `HOME` differing from `USERPROFILE`, and the current docker context. It is
+  read-only and prints the fix for each warning.
+
+- `windows/cleanup/disk_usage.ps1` reports what is filling `C:` before
+  anything is deleted: the hibernation and page files, `Windows.old`, the
+  component store, Docker data, every WSL distro's disk and the usual
+  developer caches, each with the tool that gives the space back. Rows that
+  `clean_disk_c.ps1` can reach end in the exact preview and cleanup command
+  lines; a WSL disk points at `wsl_manage.ps1`. `tree` shows the largest
+  folders under any path. It is read-only, never follows a junction or
+  symbolic link (a OneDrive placeholder or Files On-Demand folder is not
+  one, and counts), counts a sparse, compressed or placeholder file at
+  the space it occupies rather than its logical size, and says when a
+  size is a lower bound because a folder could not be read. Sizes are
+  apparent: a file with several hard links counts once per link, and the
+  report says so.
+
+- `windows/setup/workstation_doctor.ps1` takes `-Only` and `-ListSections`
+  like `status.ps1`, and has four more sections after the original five,
+  which keep their order: `hardware` (physical disk health, free space on
+  the other fixed volumes, TPM and Secure Boot), `uptime` (with the reminder
+  that Fast Startup means only a restart resets it), `updates` (the age of
+  the newest installed update, a disabled Windows Update service) and
+  `memory`. `-MaxUptimeDays` and `-MaxPatchAgeDays` set the two new
+  thresholds; it is still read-only and warnings still exit `0`.
+
+- `windows/setup/hardening_audit.ps1` grades a Windows machine's security
+  posture with the verdicts, `-FailOn` and exit codes of
+  `linux/hardening_audit.sh`: firewall profiles, SMBv1, LLMNR, Remote Desktop
+  and Network Level Authentication, WinRM `TrustedHosts`, the OpenSSH server,
+  UAC, autologon and a clear-text `DefaultPassword`, the Guest account,
+  broad principals among the local Administrators, Secure Boot, the TPM, LSA
+  protection, virtualization-based security, Defender, script block logging,
+  patch age and a pending restart (servicing and Update flags, queued file
+  renames, a pending computer rename). It prints the fix under every
+  finding and never applies one; checks that need elevation are skipped,
+  not failed, without it.
+  It follows `Include` lines in `sshd_config` as sshd does, first value
+  wins, and reports a setting it could not read as not judged rather than
+  as a pass.
+  A `Match` block that turns `PasswordAuthentication` or
+  `PermitEmptyPasswords` on for some users is a warning naming its
+  criteria, not a pass.
+
+- `windows/setup/net_doctor.ps1` is a read-only network report for Windows,
+  the counterpart of `linux/net_doctor.sh`: adapters and what kind each one
+  is, the default gateway (with a warning when Wi-Fi and a VPN both carry
+  one), DNS servers, the WinINET proxy (a protocol named on one side only
+  counts as a mismatch) against `HTTP_PROXY` and git's `http.proxy` (global,
+  else system scope), the hosts file, and the process behind each listening
+  port. `-Probe HOST` asks every configured DNS server separately and tries
+  each resolved address in turn for one TCP connection; proxy passwords are
+  masked before anything is printed. With a PAC script configured, an
+  environment proxy and WinINET off is reported as undetermined, naming the
+  PAC URL, rather than as browsers connecting directly.
+
+- `windows/setup/path_doctor.ps1` reports what is wrong with the Windows
+  PATH, read raw from the registry: duplicate, dead, relative and quoted
+  entries (a quoted or `%VARIABLE%` entry never makes a later plain copy of
+  the same folder a duplicate, in the report as in `clean`), a `REG_SZ`
+  value whose `%VARIABLES%` never expand, a value long enough for `setx` to
+  truncate, and the Microsoft Store `python.exe` alias or Git's MSYS
+  `find.exe` answering ahead of the real one. `clean` removes only empty,
+  repeated and missing entries from the user PATH (an entry it cannot judge,
+  such as a quoted one, never makes a later usable copy of the same folder a
+  duplicate): it refuses without `-Yes`, previews with `-DryRun`, writes a
+  backup first, keeps the value's registry kind and reads it back to verify.
+
+- `windows/setup/ssh_client_doctor.ps1` checks the OpenSSH client side of a
+  Windows account, the counterpart of `linux/ssh_client_doctor.sh` with the
+  same verdicts and exit codes. It catches the Windows-only reasons a key
+  is refused: an access list that lets anyone but you, SYSTEM and
+  Administrators read it, an owner other than you, SYSTEM or
+  Administrators (with the `icacls /setowner` fix), an `ssh-agent`
+  service that is still Disabled, and Git's bundled ssh that cannot see
+  the keys in the Windows agent, whether by default (even when its
+  own ssh is the only client found) or because
+  `GIT_SSH_COMMAND`, `core.sshCommand` or `GIT_SSH` (the first one set,
+  as git decides) pins it. It reports that git and ssh agree on the
+  agent's client only when that client is positively Windows OpenSSH, and
+  otherwise says agent use is not verified for it. It reads only the first
+  line of each key, prints no key material, and prints the `icacls` or
+  `git config` fix instead of applying it. A `core.sshCommand` set only
+  in the system-wide git config is graded too.
+
+- `windows/setup/tls_expiry.ps1` checks certificate expiry on Windows with
+  the exit codes of `linux/tls_expiry.sh`: PEM, CRT, CER or DER files, the
+  leaf a TLS endpoint presents, and the Personal certificate stores of the
+  user and the machine, where client-authentication, code-signing, RDP and
+  WinRM certificates live. Trust-anchor stores are never scanned. Endpoints
+  are read with a validation callback scoped to that one connection, so an
+  expired or mismatched certificate is still reported, and no private key
+  is ever read.
+
+- The documentation site's Worker sets caching per file. Material's bundle,
+  stylesheets and search worker carry a content hash in their names, so they
+  are now cached for a year instead of being revalidated on every page view,
+  which makes repeat visits and page changes faster. Fonts are cached for a
+  week and images for a day. `version.txt`, which the deploy checks read to
+  tell a new deploy from the old one, is marked never to be cached. Pages and
+  the search index keep revalidating, so a deploy still shows at once, and a
+  missing file is never cached.
+
+- The documentation site sends a narrow Content-Security-Policy, a
+  Permissions-Policy, Cross-Origin-Opener-Policy,
+  X-Permitted-Cross-Domain-Policies and, over https, Strict-Transport-Security
+  for its own host. The policy restricts only what the theme never does
+  inline (base URLs, form targets, framing and plugins), so it blocks base-tag
+  injection, form hijacking and clickjacking without touching Material's
+  inline scripts and styles; the tests fail if a script or style directive is
+  ever added. The three headers it sent before are unchanged.
+
+- The documentation site answers `/robots.txt` and
+  `/.well-known/security.txt` instead of a 404. Production's robots file
+  points crawlers at the sitemap MkDocs already builds; stage's allows
+  crawling but names no sitemap, so its noindex header keeps working. The
+  security file (RFC 9116) points researchers at the private advisory form
+  that `SECURITY.md` describes. The Worker writes them only when the site
+  ships no file of that name, so a real file always wins.
+
+### Changed
+
+- `git_ssh_doctor.py` makes no connection unless `--test-auth` is given.
+  Before, the default run and `--quiet` still tried one authentication,
+  which uses the network and may record a host key under `accept-new`,
+  against the README's promise that a quiet CI probe stays offline. Without
+  the flag it now reports the configuration and says authentication was not
+  attempted; `--test-auth` authenticates as git would and then tries each
+  discovered key.
+- `git_ssh_doctor.py` exits 1 (a failure under `--require-known-host`)
+  when the effective ssh command is a custom program or an ssh command
+  with options it cannot read (such as `-J`), since nothing was checked.
+
+### Fixed
+
+- `dotfiles/install_dotfiles.sh --force` no longer overwrites a backup made
+  in the same second: the second one is named `.backup-STAMP-1` (then `-2`,
+  ...), and `--backups`, `--restore` and `--stamp` understand the suffix.
+
+- `dotfiles/install_dotfiles.sh` `--backups` and `--restore` now also find
+  `NAME.backup-STAMP` files beside a path that no tracked file installs to
+  any more, such as a config renamed or deleted after `--force` backed it
+  up. They were invisible because both modes started from today's files.
+  Only backups that are ours count: the path is a link into the folder or
+  belongs to a unit with a tracked file; any other is reported as not ours
+  and skipped, so a bare `--restore` never touches another tool's backup.
+
+- `dotfiles/dotfiles_doctor.sh` no longer reads a file because a link's
+  text starts with the repository path: a target that climbs out with `..`
+  or whose chain resolves outside the folder is skipped instead of being
+  scanned for credentials.
+
+- `dotfiles/dotfiles_doctor.sh` now runs the credential scan on a link
+  that a renamed install target left behind while it still points at an
+  existing file in the repository; only dangling ones were skipped
+  before, with a warning.
+
+- `dotfiles/dotfiles_doctor.sh` now warns about dangling links into the
+  repository for configs that were renamed or deleted, which the loop over
+  the current sources never reached.
+
+- `dotfiles/install_dotfiles.sh --backups` and `--restore` with
+  `--only UNIT --installed-only` now accept the unit of a stray backup when
+  its tool is on PATH, as `--prune` does for an orphan link, instead of
+  exiting 4 with "no selected unit has its tool on PATH".
+  The "not ours, skipped" notices for other backups are printed
+  once, not again by the `--installed-only` check.
+
+- `dotfiles/install_dotfiles.sh` follows a link's whole chain before
+  trusting it, not only its directory: an alias inside the folder that is
+  itself a link to a file outside is reported as a foreign link and
+  `--diff` does not print that file. Chains and loops are bounded.
+
+- `dotfiles/install_dotfiles.sh` no longer treats a link as its own because
+  its text starts with the repository path: a target that climbs out with
+  `..` or resolves outside the folder is reported as a foreign link and
+  `--diff` names it instead of printing the file it leads to.
+
+- `dotfiles/install_dotfiles.sh --prune --only UNIT --installed-only` no
+  longer exits 4 when UNIT's source directory was wholly deleted and its
+  tool is on `PATH`; the unit's orphan links now count as selected.
+
+- `dotfiles/install_dotfiles.sh --prune --only UNIT` accepts the unit of a
+  wholly deleted source directory when an orphan link of that unit exists,
+  as bare `--prune` already finds it, instead of exiting 3.
+
+- `dotfiles/install_dotfiles.sh --restore` of a deleted unit's newest backup
+  no longer strands the older ones: afterwards `--backups --only UNIT` still
+  lists them and `--restore --stamp` can bring one back. The installer
+  remembers the path in `~/.dotfiles-restored` until the last backup is
+  restored.
+
+- `mikrotik/features/export_config.py` no longer commits what its secret
+  scan cannot read. The scan was a set of patterns, so a script line the
+  patterns skipped (an unbalanced quote, an unknown escape, a quote inside
+  the field, a `$`, `[...]` or array value that might hold a literal, a
+  variable name it could not extract) passed as clean. Every `:global`,
+  `:local` and `:set` is now also tokenized on its own, and one that cannot
+  be read with confidence is reported as unverifiable. `--commit` refuses
+  it with the line number and the reason and exits 1, like a leak, and
+  `--redact-secrets` does not override it. There is no option to skip the
+  check. Print-only output still warns and redacts, and `--scan-secrets`
+  and `--scan-file` list unverifiable lines and exit 1.
+  A bare word inside `[...]`, `(...)` or `{...}` counts as a possible
+  literal, a backslash-n in a plain script is no longer taken for a line
+  break, and `:global`/`:set` glued to a quote or bracket is still read.
+
+- `mikrotik/features/export_config.py`: the secret scan closes three more
+  gaps. A number inside an expression is no longer taken for harmless
+  (`:set WifiPassword (12345678)`, `[:tostr 12345678]`,
+  `:set ApiToken (10.20.30.40.50.60)` are unverifiable; only up to three
+  digits with no dot, as in `[:pick $a 0 4]`, passes), and a quoted value
+  starting with `[` or `(` is a literal string, not an expression. A plain
+  string that ends in `=` (`"a="`) is no longer read as an open export
+  field, so a later backslash-n and `#` cannot hide an assignment. A
+  commented-out assignment of a literal to a secret-named variable is now
+  reported as `commented assignment with a literal` and blocks `--commit`;
+  placeholders, `<redacted>` and variables in comments stay quiet.
+
+- `mikrotik/features/export_config.py`: the secret scan covers more script
+  fields and more ways of writing a secret. Any field named `*-script` or
+  `on-*` (netwatch `up-script`, `down-script` and `test-script`, dhcp-server
+  `lease-script`, vrrp `on-master`, `on-backup` and `on-fault`) is read as
+  script text, not only `source` and `on-event`. A `password=`, `secret=`,
+  `psk=` or other show-sensitive field written inside a script with escaped
+  quotes (`password=\"...\"`, as in `/ppp secret add`, `/tool fetch` and
+  `/tool e-mail send`) is found and redacted; an escaped variable
+  (`\$pw`) is not a value. The name list gains `pass`, `pwd` and `cred`
+  as words (`bypass` and `compass` stay clean), `credential`, `bearer` and
+  `hmac`, and `key` and `auth` as words that count only given a plain
+  literal.
+
+- `mikrotik/features/export_config.py`: the secret scan now decides a
+  secret-named variable's value by shape, not by an allowlist of tokens.
+  The allowlist kept leaking (`(123 . 456 . 78)` joined short numbers into
+  a pre-shared key). A `:global`, `:local` or `:set` of a secret-named
+  variable is accepted only when its value is empty, a lone `$variable`,
+  `<redacted>` or a shipped placeholder; any expression, bracket, paren,
+  brace, number, concatenation or command result is reported and blocks
+  `--commit`. `[:pick $a 0 4]` and `$[/system/identity/get $name]`, which
+  used to pass, are now findings. Variables with other names are not
+  affected.
+- `mikrotik/features/export_config.py`: secret names match whatever the
+  separator, so `api_key`, `api-key` and `API_KEY` count like `apikey`, and
+  `private_key`, `access_key`, `pre_shared_key`, `wpa_key` and a `pin` word
+  are covered too. `global`, `local` and `set` without the colon are read
+  where they start a statement. A commented-out assignment whose name
+  cannot be parsed is reported when its raw text names a secret
+  (`# :set "api:token" "x"`).
+
+- `git_ssh_doctor.py` shows the user from a `-l` or `-o User=` option of
+  the effective ssh command (the first one wins, as in ssh) in its
+  "resolves to" line, the authentication attempt and the suggested `User`
+  line, and its `--host` help mentions the `user@host` form.
+
+- `git_ssh_doctor.py` authenticates as the user git would use, instead of
+  always `git`: a `-l` or `-o User=` in the effective ssh command (the
+  first one wins), else the user in the remote URL (`ssh://deploy@host`,
+  `deploy@host:path`) or in `--host deploy@host`, else a `User` from ssh
+  config unless it equals the local account, else `git`. It also follows
+  `GIT_SSH_COMMAND` and `core.sshCommand` for a repository's remotes,
+  applying their `-i`, `-F`, `-p`, `-o` and `-l` options to `ssh -G` and
+  the attempt, and reports a custom program or an ssh command with
+  options it cannot read (such as `-J`) as a custom SSH command that was
+  not inspected.
+- `git_remote_doctor.py` counts URL-scoped `credential.<url>.helper` entries
+  when it checks the credential helpers of an HTTP remote, so a helper
+  configured for one host is no longer reported as missing.
+- `git_signing_doctor.py` reads `user.signingkey` according to `gpg.format`:
+  under `openpgp` an email, user id or `<fingerprint>!` forced subkey is a
+  valid GnuPG selector and is no longer called an SSH key path.
+  A mismatch message names the configured `gpg.format` (such as `x509`)
+  instead of always saying `openpgp`.
+
+- `git_signing_doctor.py` gives advice that fits `gpg.format` when the value
+  is an SSH public key: under `x509` it suggests a certificate ID or
+  fingerprint that gpgsm accepts instead of a GPG key id.
+
+- `k8s-toolbox/gke_cluster_doctor.sh` pairs every node pool with its own
+  version in the skew check. `gcloud` joins the pool names and the versions
+  with `;` inside two tab-separated columns, and splitting the whole line on
+  `;` gave a two-pool cluster a pool reported with its neighbour's version
+  and a version reported as a pool, so real skew could pass unnoticed.
+
+- `linux/sysctl_defaults.sh --apply` now stops with exit `1` when the backup
+  cannot be written, for instance a `--backup-file` under a directory that
+  does not exist. Before, the redirection error was printed and ignored, and
+  the drop-in and the live values were changed with nothing to revert to.
+  The backup is written and checked first, and nothing else is touched
+  unless it exists and is not empty.
+
 ## [0.1.4] - 2026-10-19
 
 ### Added

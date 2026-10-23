@@ -4,12 +4,19 @@
   plus a link to the credits page. config.copyright is printed as-is, so a
   relative href cannot live in mkdocs.yml; the url filter resolves
   'credits/' against the current page, so it works at every depth.
+
+  .rpt-build is the build stamp: assets/javascripts/rpt-build-stamp.js reads
+  version.txt (the deployed commit, written by every deploy) and shows
+  "Build 6a88b2e" linked to that commit on config.repo_url, with "Preview
+  build" in front when the page is served with X-Robots-Tag: noindex. It
+  stays hidden without JavaScript or without a version.txt (mkdocs serve).
 #}
 <div class="md-copyright">
   {% if config.copyright %}
     <div class="md-copyright__highlight">
       {{ config.copyright }}
       &middot; <a href="{{ 'credits/' | url }}">Credits</a>
+      <span class="rpt-build" hidden data-repo="{{ config.repo_url }}" data-src="{{ 'version.txt' | url }}"></span>
     </div>
   {% endif %}
 </div>

@@ -19,6 +19,13 @@ TIMEOUT=10
 PORT=22
 IDENTITY=""
 DRY_RUN=0
+VERIFY=0
+# Empty means the freshness check is off, which keeps an existing cron line
+# behaving exactly as it did.
+MAX_AGE=""
+# --max-age: how far ahead of this machine's clock a pulled file's timestamp
+# may be before it is rejected as "in the future" (router clock ahead).
+FUTURE_SKEW_MINUTES=5
 
 usage() {
   cat <<'EOF'
@@ -34,15 +41,31 @@ Options:
   --timeout SECONDS  SSH connect timeout (default: 10)
   --port PORT        SSH port (default: 22)
   --identity FILE    SSH private key (also enables IdentitiesOnly)
+  --verify           Check the pulled files in staging before publishing:
+                     no empty file, each .rsc starts with the RouterOS
+                     export header, and every .backup has its .rsc (and the
+                     reverse). A partner pulled and accepted in the same
+                     run, or already archived in dest-dir when the router
+                     sent none, pairs them. A partner whose transfer failed
+                     (not "no such file") is not replaced by the archived
+                     one. A rejected partner fails the pair. Rejected files
+                     are never published; an archived copy of the same name
+                     stays as it was
+  --max-age HOURS    Fail unless a backup-*.backup pulled in this run was made
+                     by the router within the last HOURS hours (a whole
+                     number, 1 or more); other routers' files in dest-dir
+                     do not count
   --dry-run          Preview the probe and transfers; contact nothing, write nothing
   -h, --help         Show this help
 
 Example:
   pull_router_backups.sh admin@192.168.88.1 ~/Archive/mikrotik-backups
+  pull_router_backups.sh --verify --max-age 26 admin@192.168.88.1 ~/Archive/mikrotik-backups
 
-Exit codes: 0 success (files pulled, or the router has no backups yet),
-1 reached the router but the transfer failed, 2 could not reach the router,
-3 usage
+Exit codes: 0 success (files pulled, or the router has no backups yet, and
+every requested check passed), 1 reached the router but the transfer failed,
+or a --verify or --max-age check failed (with --max-age, a router with no
+backups yet is 1), 2 could not reach the router, 3 usage
 EOF
 }
 
@@ -68,6 +91,9 @@ while (( $# > 0 )); do
     --port=*)    PORT="${1#*=}"; require_value "--port" "$PORT" ;;
     --identity)  require_value "$1" "${2:-}"; shift; IDENTITY="$1" ;;
     --identity=*) IDENTITY="${1#*=}"; require_value "--identity" "$IDENTITY" ;;
+    --verify)    VERIFY=1 ;;
+    --max-age)   require_value "$1" "${2:-}"; shift; MAX_AGE="$1" ;;
+    --max-age=*) MAX_AGE="${1#*=}"; require_value "--max-age" "$MAX_AGE" ;;
     --dry-run)   DRY_RUN=1 ;;
     -*)
       printf 'unknown option: %s\n\n' "$1" >&2
@@ -96,6 +122,21 @@ esac
 if (( ${#PORT} > 5 )) || (( 10#$PORT < 1 || 10#$PORT > 65535 )); then
   printf -- "--port requires a whole number from 1 to 65535, got: %s\n" "$PORT" >&2
   exit 3
+fi
+
+if [[ -n "$MAX_AGE" ]]; then
+  case "$MAX_AGE" in
+    *[!0-9]*)
+      printf -- "--max-age requires a whole number of hours, got: %s\n" "$MAX_AGE" >&2
+      exit 3
+      ;;
+  esac
+  # Length first, as for --port: an oversized value must not wrap in Bash
+  # arithmetic, and five digits is already eleven years.
+  if (( ${#MAX_AGE} > 5 )) || (( 10#$MAX_AGE < 1 )); then
+    printf -- "--max-age requires a whole number of hours, got: %s\n" "$MAX_AGE" >&2
+    exit 3
+  fi
 fi
 
 if (( ${#ARGS[@]} == 0 )); then
@@ -128,6 +169,13 @@ if (( DRY_RUN == 1 )); then
   print_cmd ssh "${SSH_OPTS[@]}" "$R" ':put "ok"'
   print_cmd scp "${SSH_OPTS[@]}" -p "$R:backup-*.backup" "$D/"
   print_cmd scp "${SSH_OPTS[@]}" -p "$R:backup-*.rsc" "$D/"
+  if (( VERIFY == 1 )); then
+    printf 'dry-run: would verify the pulled files (non-empty, export header, backup/rsc pairs)\n'
+  fi
+  if [[ -n "$MAX_AGE" ]]; then
+    printf 'dry-run: would require a pulled backup-*.backup newer than %s hour(s)\n' \
+      "$((10#$MAX_AGE))"
+  fi
   printf 'dry-run complete; no changes written\n'
   exit 0
 fi
@@ -175,21 +223,29 @@ fi
 
 # Stage each extension independently. A failed scp may leave truncated files;
 # none of that attempt is allowed to replace an existing good generation.
-got=0
 failed=0
+# What this run pulled into the staging directory, in order, and what it
+# published into $D (for --max-age). Bash 3.2 has no mapfile and treats an
+# empty array as unset under -u, so they are read back below with the
+# ${arr[@]+...} guard, and the candidate count is kept in a plain variable.
+cand_file=()
+cand_name=()
+ncand=0
+pulled=()
+# 1 for an extension whose transfer failed for a reason other than the
+# recognised "no such file" result: its absence from this run says nothing
+# about the router having no such file.
+xfer_failed_backup=0
+xfer_failed_rsc=0
 for ext in backup rsc; do
   mkdir "$stage/$ext"
   : >"$scp_err"
   if scp "${SSH_OPTS[@]}" -p "$R:backup-*.$ext" "$stage/$ext/" 2>"$scp_err"; then
     for file in "$stage/$ext"/backup-*.$ext; do
       [[ -f "$file" && ! -L "$file" ]] || continue
-      name="${file##*/}"
-      if [[ -d "$D/$name" ]] || ! mv -f "$file" "$D/$name"; then
-        printf 'could not publish %s into %s\n' "$name" "$D" >&2
-        failed=1
-      else
-        got=1
-      fi
+      cand_file+=("$file")
+      cand_name+=("${file##*/}")
+      ncand=$((ncand + 1))
     done
   else
     transfer_rc=$?
@@ -210,8 +266,125 @@ for ext in backup rsc; do
       printf 'reached %s but could not pull backup-*.%s\n' "$R" "$ext" >&2
       sed 's/^/  /' "$scp_err" >&2
       failed=1
+      if [[ "$ext" == backup ]]; then xfer_failed_backup=1; else xfer_failed_rsc=1; fi
     fi
   fi
+done
+
+# Reaching the router and copying files is not the same as having a backup
+# that restores.
+#
+# --verify runs in the staging directory, before anything is published: a
+# file that fails is reported and never copied into $D, so a rejected pull (a
+# zero-byte file, an error page) cannot replace a good archived copy of the
+# same name. The files that pass are still published and the run exits 1.
+# Each file must be non-empty, an .rsc must open with the export header, and a
+# .backup / .rsc must have its partner: pulled and accepted in this run, or,
+# when the router sent no partner, already in $D. A partner pulled in this run
+# and rejected does not count, whatever an older run left in $D. An archived
+# partner is reused only when the companion transfer reported the recognised
+# "no such file" result: if it failed for any other reason (permission,
+# transport) the archived file is not vouched for, the staged file is
+# rejected and the archived pair stays as it was.
+cand_ok=()
+i=0
+while (( i < ncand )); do
+  cand_ok+=(1)
+  i=$((i + 1))
+done
+if (( VERIFY == 1 )); then
+  checked=0
+  problems=0
+  i=0
+  while (( i < ncand )); do
+    checked=$((checked + 1))
+    name="${cand_name[$i]}"
+    file="${cand_file[$i]}"
+    if [[ ! -s "$file" ]]; then
+      printf 'verify: %s: empty file\n' "$name" >&2
+      problems=$((problems + 1))
+      cand_ok[i]=0
+    elif [[ "$name" == *.rsc ]]; then
+      # /export opens with "# <date> by RouterOS <version>". Anything else
+      # is not an export: an error page, a truncated write, the wrong file.
+      first=""
+      IFS= read -r first <"$file" || true
+      if [[ "$first" != \#* || "$first" != *RouterOS* ]]; then
+        printf 'verify: %s: first line is not a RouterOS export header\n' "$name" >&2
+        problems=$((problems + 1))
+        cand_ok[i]=0
+      fi
+    fi
+    i=$((i + 1))
+  done
+  # Pairing, judged on the individual results above so the order of the
+  # files does not matter.
+  cand_pair=()
+  i=0
+  while (( i < ncand )); do
+    cand_pair+=("${cand_ok[i]}")
+    i=$((i + 1))
+  done
+  i=0
+  while (( i < ncand )); do
+    if [[ "${cand_ok[i]}" == 1 ]]; then
+      name="${cand_name[$i]}"
+      case "$name" in
+        *.rsc) partner="${name%.rsc}.backup" ;;
+        *) partner="${name%.backup}.rsc" ;;
+      esac
+      found=-1
+      j=0
+      while (( j < ncand )); do
+        if [[ "${cand_name[$j]}" == "$partner" ]]; then found=$j; break; fi
+        j=$((j + 1))
+      done
+      if (( found >= 0 )); then
+        if [[ "${cand_ok[$found]}" != 1 ]]; then
+          printf 'verify: %s: its %s was rejected\n' "$name" "$partner" >&2
+          problems=$((problems + 1))
+          cand_pair[i]=0
+        fi
+      elif [[ "$partner" == *.rsc && "$xfer_failed_rsc" == 1 ]] ||
+           [[ "$partner" == *.backup && "$xfer_failed_backup" == 1 ]]; then
+        printf 'verify: %s: transferring its %s failed; not pairing it with the archived copy\n' \
+          "$name" "$partner" >&2
+        problems=$((problems + 1))
+        cand_pair[i]=0
+      elif [[ ! -f "$D/$partner" ]]; then
+        printf 'verify: %s: no matching %s in %s\n' "$name" "$partner" "$D" >&2
+        problems=$((problems + 1))
+        cand_pair[i]=0
+      fi
+    fi
+    i=$((i + 1))
+  done
+  i=0
+  while (( i < ncand )); do
+    cand_ok[i]="${cand_pair[i]}"
+    i=$((i + 1))
+  done
+  printf 'verify: %d file(s) checked, %d problem(s)\n' "$checked" "$problems" >&2
+  if (( problems > 0 )); then
+    failed=1
+  fi
+fi
+
+# Publish what passed. Without --verify that is everything.
+got=0
+i=0
+while (( i < ncand )); do
+  if [[ "${cand_ok[i]}" == 1 ]]; then
+    name="${cand_name[$i]}"
+    if [[ -d "$D/$name" ]] || ! mv -f "${cand_file[$i]}" "$D/$name"; then
+      printf 'could not publish %s into %s\n' "$name" "$D" >&2
+      failed=1
+    else
+      got=1
+      pulled+=("$name")
+    fi
+  fi
+  i=$((i + 1))
 done
 
 if (( got )); then
@@ -219,4 +392,48 @@ if (( got )); then
 elif (( failed == 0 )); then
   printf 'No backup-*.backup / backup-*.rsc on %s yet — nothing to pull.\n' "$R" >&2
 fi
+
+# --max-age: the run can succeed every night while the router's own backup
+# scheduler has died, re-pulling the one stale pair RemovePrevious left. scp
+# -p keeps the router's timestamps, so the mtime of a file this run pulled is
+# the age of a backup this router made. Only this run's files count: a
+# destination shared by several routers also holds their backup-*.backup, and
+# one router's fresh backup must not vouch for another's dead scheduler.
+# find -mmin works on GNU and BSD alike. find -mmin -N also matches a mtime in
+# the future, so a stale generation stamped by a router clock that runs ahead
+# would pass: a file more than FUTURE_SKEW_MINUTES ahead of now is rejected,
+# using find -newer against a reference file touched to now + the skew (GNU
+# date -d, BSD date -v; touch -t takes local time on both).
+if [[ -n "$MAX_AGE" ]]; then
+  minutes=$((10#$MAX_AGE * 60))
+  recent=""
+  future_ref=""
+  future_stamp="$(date -d "+${FUTURE_SKEW_MINUTES} minutes" +%Y%m%d%H%M.%S 2>/dev/null \
+    || date -v"+${FUTURE_SKEW_MINUTES}M" +%Y%m%d%H%M.%S 2>/dev/null || true)"
+  if [[ -n "$future_stamp" ]]; then
+    future_ref="$(mktemp)"
+    trap 'rm -f "$probe_err" "$scp_err" "$future_ref"; rm -rf "$stage"' EXIT
+    touch -t "$future_stamp" "$future_ref" 2>/dev/null || future_ref=""
+  fi
+  if [[ -z "$future_ref" ]]; then
+    printf 'warning: cannot compute a reference time; not checking for future timestamps\n' >&2
+  fi
+  for name in ${pulled[@]+"${pulled[@]}"}; do
+    [[ "$name" == *.backup ]] || continue
+    if [[ -n "$future_ref" && -n "$(find "$D/$name" -maxdepth 0 -type f -newer "$future_ref" 2>/dev/null || true)" ]]; then
+      printf '%s: timestamp in the future (router clock ahead?)\n' "$name" >&2
+      continue
+    fi
+    if [[ -n "$(find "$D/$name" -maxdepth 0 -type f -mmin "-$minutes" 2>/dev/null || true)" ]]; then
+      recent="$name"
+      break
+    fi
+  done
+  if [[ -z "$recent" ]]; then
+    printf 'no backup-*.backup pulled from %s in this run is newer than %s hour(s) (or none was pulled)\n' \
+      "$R" "$((10#$MAX_AGE))" >&2
+    failed=1
+  fi
+fi
+
 exit "$failed"

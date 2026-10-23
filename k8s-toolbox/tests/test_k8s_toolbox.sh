@@ -155,6 +155,28 @@ missing_value_cases=(
   "kubectl_pod_diag.sh --namespace"
   "kubectl_pod_diag.sh --context"
   "kubectl_pod_diag.sh --since"
+  "kubectl_pod_diag.sh --restarts"
+  "kubectl_workload_diag.sh --namespace"
+  "kubectl_workload_diag.sh --context"
+  "kubectl_workload_diag.sh --only"
+  "kubectl_cert_expiry.sh --warn-days"
+  "kubectl_cert_expiry.sh --namespace"
+  "kubectl_cert_expiry.sh --context"
+  "kubectl_drain_preflight.sh --node"
+  "kubectl_drain_preflight.sh --context"
+  "kubectl_node_capacity.sh --threshold"
+  "kubectl_node_capacity.sh --context"
+  "kubectl_workload_audit.sh --namespace"
+  "kubectl_workload_audit.sh --context"
+  "kubectl_workload_audit.sh --only"
+  "kubectl_workload_audit.sh --limit"
+  "kubectl_rbac_audit.sh --namespace"
+  "kubectl_rbac_audit.sh --context"
+  "kubectl_rbac_audit.sh --only"
+  "kubectl_pod_cleanup.sh --older-than"
+  "kubectl_pod_cleanup.sh --max"
+  "kubectl_pod_cleanup.sh --namespace"
+  "kubectl_pod_cleanup.sh --context"
   "gke_cluster_doctor.sh --project"
   "gke_cluster_doctor.sh --cluster"
   "gke_cluster_doctor.sh --location"
@@ -182,7 +204,7 @@ assert_rc "build.sh --variant foo" 3 "$?"
 # --------------------------------------------------------------------------
 head_ "gke_cluster_doctor.sh before gcloud"
 checks="$("$K/gke_cluster_doctor.sh" --list-checks)"
-for check in channel skew identity network; do
+for check in channel skew identity network nodepool-mgmt maintenance authnets observability shielded dataplane; do
   if [[ "$checks" == *"$check"* ]]; then
     ok "gke_cluster_doctor lists check $check"
   else
@@ -201,6 +223,57 @@ if ! command -v gcloud >/dev/null 2>&1; then
 else
   ok "gke_cluster_doctor no-gcloud path skipped (gcloud is on PATH)"
 fi
+
+# gcloud's value() joins a repeated field with ';' inside each tab-separated
+# column. The skew check once split the whole line on ';', which paired the
+# second pool with the first pool's version.
+gcloud_bin="$(mktemp -d)"
+cat > "$gcloud_bin/gcloud" <<'MOCK_GCLOUD'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"value(currentMasterVersion)"*) printf '1.30.5-gke.1\n' ;;
+  *"value(nodePools.name,nodePools.version)"*) printf 'pool-a;pool-b\t1.30.5-gke.1;1.29.8-gke.2\n' ;;
+  *) printf '\n' ;;
+esac
+MOCK_GCLOUD
+chmod +x "$gcloud_bin/gcloud"
+out="$(PATH="$gcloud_bin:$PATH" guard "$K/gke_cluster_doctor.sh" --only skew \
+  --project p --cluster c --location europe-west1 2>&1)"
+rc=$?
+if (( rc == 0 )) &&
+   [[ "$out" == *"node pool pool-a is 1.30.5-gke.1"* &&
+      "$out" == *"node pool pool-b is 1.29.8-gke.2 (control plane 1.30.5-gke.1)"* &&
+      "$out" != *"node pool 1.29"* ]]; then
+  ok "gke_cluster_doctor.sh pairs each node pool with its own version"
+else
+  err "gke_cluster_doctor.sh mispaired node pools and versions (exit $rc): $out"
+fi
+rm -rf "$gcloud_bin"
+
+# --------------------------------------------------------------------------
+head_ "kubectl check selection before kubectl"
+# Same contract as the GKE doctor's ids, except that an empty selection is a
+# usage error: for these scripts exit 4 already means "ran and found nothing".
+for case_ in \
+  "kubectl_workload_diag.sh deployments statefulsets daemonsets hpa jobs" \
+  "kubectl_workload_audit.sh resources probes image-tag security availability" \
+  "kubectl_rbac_audit.sh cluster-admin wildcard default-sa dangling secrets"
+do
+  script="${case_%% *}"
+  checks="$(guard "$K/$script" --list-checks 2>/dev/null)"
+  for check in ${case_#* }; do
+    if [[ "$checks" == *"$check"* ]]; then
+      ok "$script lists check $check"
+    else
+      err "$script --list-checks missing $check"
+    fi
+  done
+  guard "$K/$script" --only nosuch >/dev/null 2>&1
+  assert_rc "$script unknown --only" 3 "$?"
+  guard "$K/$script" --only , >/dev/null 2>&1
+  assert_rc "$script --only empty selection" 3 "$?"
+done
 
 # --------------------------------------------------------------------------
 head_ "a dry run writes nothing"
@@ -249,6 +322,10 @@ dry_run_case "build.sh" "$K/build.sh" --dry-run --tag k8s-toolbox:test
 dry_run_case "build.sh --variant debug" "$K/build.sh" --dry-run --variant debug
 dry_run_case "run.sh"   "$K/run.sh"   --dry-run --tag k8s-toolbox:test --no-kubeconfig
 dry_run_case "debug_pod.sh" "$K/debug_pod.sh" --dry-run --pod demo --namespace demo-ns
+# A context that cannot exist, so a developer's own KUBECONFIG is never read:
+# the preview falls back to printing its listing command, offline.
+dry_run_case "kubectl_pod_cleanup.sh" "$K/kubectl_pod_cleanup.sh" --dry-run \
+  --context dry-run-probe-missing-context
 
 gcloud_fixture="$(mktemp -d)"
 dry_run_case "run.sh gcloud auth" "$K/run.sh" --dry-run --no-kubeconfig --gcloud-config "$gcloud_fixture"
@@ -326,6 +403,10 @@ fi
 
 guard "$K/kubectl_pod_diag.sh" --since yesterday >/dev/null 2>&1
 assert_rc "kubectl_pod_diag.sh rejects invalid --since" 3 "$?"
+for restarts in 0 abc -3 2.5; do
+  guard "$K/kubectl_pod_diag.sh" --restarts "$restarts" >/dev/null 2>&1
+  assert_rc "kubectl_pod_diag.sh rejects --restarts $restarts" 3 "$?"
+done
 
 # Exercise the valid lookback path with a fake cluster: a 30-minute window
 # must include the recent warning and exclude the two-hour-old warning, while

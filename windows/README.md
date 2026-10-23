@@ -8,7 +8,7 @@ full details.
 
 Editing a `.ps1` here? The static suite does not cover PowerShell at all —
 [`tests/contract.ps1`](tests/contract.ps1) is the only place these contracts are
-checked, and on Linux five of the seven stop at an `$IsWindows` guard,
+checked, and on Linux most of them stop at an `$IsWindows` guard,
 `wsl_manage.ps1` at its `wsl.exe` probe, and `clean_disk_c.ps1 -DryRun` throws
 at script scope before it reads `-DryRun` — which is why the "a dry run writes
 nothing" check skips it there. Its later sections work around that: they strip
@@ -23,9 +23,9 @@ gate is checked directly because it answers before the throwing line.
 | --- | --- |
 | [`git-bash/`](git-bash/) | `.bashrc` / `.bash_profile` / `.aliases` for Git Bash (MSYS2) — persistent shared `ssh-agent`, Git-aware prompt, PATH hygiene, and ~190 aliases (Git, GitLab CLI, Docker, Kubernetes, Terraform, WSL, Windows commands). `install_dotfiles.sh` copies them into `$HOME` with a backup, and refuses anything carrying CRLF line endings. |
 | [`wsl/`](wsl/) | `wsl_manage.ps1` — list distros with real disk usage, `df` for allocated-vs-used, dated `.tar` backups and the `restore` that brings one back, `prune-backups` retention over the export folder, shrink ballooned VHDX disks (compact/sparse), terminate one distro or shut all of WSL down. |
-| [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, and Docker. `-DryRun` first; deleting needs `-Yes`. |
-| [`setup/`](setup/) | `winget_configure.ps1` — build a machine from [`configuration.winget`](setup/configuration.winget), a curated declarative list (`validate` / `show` / `test` / `apply`). `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `list` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy. `choco_bootstrap.ps1` — five verbs over a Chocolatey `packages.config`, the same set with `install` in place of `import`, for machines managed with choco rather than winget. |
-| [`tests/`](tests/) | Contract checks over every script here and in [`../templates/`](../templates/): parse, comment-based help, preview-before-changing, that documented flags exist, and that a `-DryRun` writes nothing. |
+| [`cleanup/`](cleanup/) | `clean_disk_c.ps1` — free space on C: safely (temp files, caches, WER, thumbnails), with opt-in flags for Recycle Bin, Windows Update cache, dev caches, Docker, crash dumps, old servicing logs and the component store. `-DryRun` first; deleting needs `-Yes`. `disk_usage.ps1` — the read-only report that comes first: what is filling C: (hibernation and page files, Windows.old, WinSxS, Docker, WSL disks, dev caches) and which tool gives each back. |
+| [`setup/`](setup/) | `winget_configure.ps1` — build a machine from [`configuration.winget`](setup/configuration.winget), a curated declarative list (`validate` / `show` / `test` / `apply`). `winget_bootstrap.ps1` — capture the installed package list to a versioned JSON file and restore it on another machine (`export` / `list` / `check` / `import` / `diff`, mirroring `brewfile.sh`), with `winget-packages.example.json` showing the format. `stay_fresh.ps1` — recurring maintenance: winget upgrades, `wsl --update`, pending-reboot report. `workstation_doctor.ps1` — read-only health report: BitLocker, Defender, pending reboot, disk, WSL, execution policy, physical disk health and other volumes, uptime, patch age, memory, with a section selector. `net_doctor.ps1` — read-only network report: adapters, default routes, DNS, the WinINET proxy against `HTTP_PROXY`, the hosts file, listening ports, and an opt-in probe of one host. `tls_expiry.ps1` — read-only certificate expiry check with exit codes, over PEM/CER files, TLS endpoints and the personal certificate stores. `hardening_audit.ps1` — read-only security audit with exit codes (firewall, SMBv1, RDP and NLA, UAC, autologon, Secure Boot and TPM, LSA protection, Defender, logging, patch age), printing the fix for each finding. `path_doctor.ps1` — PATH report (duplicates, dead and relative entries, REG_SZ values that never expand, length limits, shadowed commands such as the Store python alias) and a backed-up, previewable clean of the user PATH. `dev_env_doctor.ps1` — read-only toolchain check: long paths, git line endings and symlinks, virtualization, clock skew, HOME against USERPROFILE, docker context. `ssh_client_doctor.ps1` — read-only OpenSSH client check: private-key access lists, the ssh-agent service, Git's bundled ssh against the Windows one, and IdentityFile paths. `choco_bootstrap.ps1` — five verbs over a Chocolatey `packages.config`, the same set with `install` in place of `import`, for machines managed with choco rather than winget. |
+| [`tests/`](tests/) | Contract checks over every script here and in [`../templates/`](../templates/): parse, comment-based help, preview-before-changing, that documented flags exist, that a `-DryRun` writes nothing, that a report-only script calls no state-changing cmdlet, and the grading logic of the read-only reports against fixtures. |
 
 ## Requirements
 
@@ -50,6 +50,9 @@ refuses to run them at all, see [Execution policy note](#execution-policy-note).
 .\setup\status.ps1
 .\setup\workstation_doctor.ps1
 
+# What is filling C:, and which tool gives each item back:
+.\cleanup\disk_usage.ps1
+
 # See what cleanup would delete, without deleting anything:
 .\cleanup\clean_disk_c.ps1 -DryRun
 
@@ -69,6 +72,10 @@ refuses to run them at all, see [Execution policy note](#execution-policy-note).
 # The recurring maintenance run, previewed then performed:
 .\setup\stay_fresh.ps1 -DryRun
 .\setup\stay_fresh.ps1 -Yes
+
+# Tidy the user PATH, previewed then performed:
+.\setup\path_doctor.ps1 clean -DryRun
+.\setup\path_doctor.ps1 clean -Yes
 
 # Free space on C:, previewed then performed:
 .\cleanup\clean_disk_c.ps1 -DryRun

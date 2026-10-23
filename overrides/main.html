@@ -4,9 +4,23 @@
   (the SVG). These add a 32px PNG fallback, a typed SVG link declared last so
   browsers that pick the last icon get the SVG, and the iOS home-screen icon.
   Files are in docs/assets/images/.
+
+  Also loads the theme's page scripts from overrides/assets/javascripts/
+  (MkDocs publishes them at assets/javascripts/). They come after Material's
+  bundle, which they need for its document$ page-load stream, and are
+  deferred, so they never block rendering. Each is plain ES5, makes no
+  request to another origin, and leaves the page as it was when JavaScript
+  is off.
 #}
 {% block extrahead %}
   <link rel="icon" type="image/png" sizes="32x32" href="{{ 'assets/images/favicon-32.png' | url }}">
   <link rel="icon" type="image/svg+xml" href="{{ 'assets/images/favicon.svg' | url }}">
   <link rel="apple-touch-icon" sizes="180x180" href="{{ 'assets/images/apple-touch-icon.png' | url }}">
+{% endblock %}
+{% block scripts %}
+  {{ super() }}
+  <script src="{{ 'assets/javascripts/rpt-table-filter.js' | url }}" defer></script>
+  <script src="{{ 'assets/javascripts/rpt-checklist.js' | url }}" defer></script>
+  <script src="{{ 'assets/javascripts/rpt-build-stamp.js' | url }}" defer></script>
+  <script src="{{ 'assets/javascripts/rpt-os-tab.js' | url }}" defer></script>
 {% endblock %}

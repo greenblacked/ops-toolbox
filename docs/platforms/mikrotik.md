@@ -32,9 +32,11 @@ full table.
 | `features/backup.lua` | Dated backup and export. | none (no flags) |
 | `features/security_check.lua` | Read-only hardening audit sent to Telegram. | <span class="stage stage-report">read-only</span> |
 | `features/health_check.lua` | CPU, RAM, disk, temperature watchdog. | none (no flags) |
+| `features/conntrack_watch.lua` | Warn before the connection-tracking table fills. | none (no flags) |
 | `features/export_config.py` | Host: export over SSH, diff, optional git commit. | `--stdout` or `--diff` |
 | `features/router_doctor.py` | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `features/print_schedulers.sh` | Host: print scheduler commands. | prints only; contacts no router |
+| `features/print_startup.sh` | Host: print the startup script that sets the globals at boot. | prints only; contacts no router |
 | `features/pull_router_backups.sh` | Host: pull backups over SFTP/SCP. | `--dry-run` |
 
 <!-- markdownlint-enable MD033 -->
@@ -48,23 +50,44 @@ the host tools to inspect.
 
     ```bash
     ./mikrotik/features/router_doctor.py --host 192.168.88.1
+    ./mikrotik/features/router_doctor.py --hosts-file ~/routers.txt
+    ./mikrotik/features/router_doctor.py --host router.lan --drift
     ./mikrotik/features/export_config.py --host router.lan --diff
+    ./mikrotik/features/export_config.py --host router.lan --diff --summary
+    ./mikrotik/features/export_config.py --host router.lan --scan-secrets
+    ./mikrotik/features/export_config.py --scan-file mikrotik/config-history/router.lan.rsc
     ```
+
+    `router_doctor.py` also reads the RouterOS version and fails each
+    installed, scheduled script that 7.24 refuses to run. It warns about
+    disabled schedulers, enabled ones that have never fired, and Telegram
+    globals that no startup scheduler sets again after a reboot. `--drift`
+    compares each installed script with the file in this checkout on the
+    router itself, which answers same or changed, so no script source is
+    fetched.
 
 === "Preview"
 
     ```bash
     ./mikrotik/features/print_schedulers.sh
     ./mikrotik/features/print_schedulers.sh --include-notify-boot
+    ./mikrotik/features/print_startup.sh --only backup --only stay_fresh
     ./mikrotik/features/pull_router_backups.sh --dry-run admin@router.lan ~/Archive/mikrotik-backups
+    ./mikrotik/features/pull_router_backups.sh --dry-run --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
     ```
 
 === "Apply"
 
     ```bash
     ./mikrotik/features/pull_router_backups.sh admin@router.lan ~/Archive/mikrotik-backups
+    ./mikrotik/features/pull_router_backups.sh --verify --max-age 26 admin@router.lan ~/Archive/mikrotik-backups
     ./mikrotik/features/export_config.py --host router.lan --commit
     ```
+
+    `--verify` checks the pulled files (non-empty, export header, each
+    `.backup` with its `.rsc`) and `--max-age` fails when the newest backup
+    pulled in that run is older than the hours given, so a cron job notices
+    a router whose own backup scheduler stopped.
 
     Installing a router script means pasting its `.lua` file into
     `/system script` with the policy above. The file name becomes the script
@@ -73,7 +96,7 @@ the host tools to inspect.
 ## Limitations and caveats
 
 !!! danger "Half the scripts do not run on RouterOS 7.24"
-    On 7.24, 14 of the 28 `.lua` scripts do not run: their underscored
+    On 7.24, 14 of the 29 `.lua` scripts do not run: their underscored
     `:global` or `:local` names stop the parser, and nothing is logged.
     Check the per-script compatibility table in the
     [MikroTik README](https://github.com/greenblacked/ops-toolbox/blob/master/mikrotik/README.md#scripts-overview)
@@ -87,7 +110,19 @@ the host tools to inspect.
 
 !!! warning "Never commit secrets"
     Do not combine `export_config.py --show-sensitive` with `--commit`.
-    Secrets must not enter git history.
+    Secrets must not enter git history. Plain `/export` still includes
+    script sources and scheduler `on-event` bodies, where a startup script
+    keeps `TgBotToken`. `--commit` now refuses an export that holds a secret
+    unless you add `--redact-secrets`, and `--scan-file` audits an export
+    that is already stored.
+    The scan fails closed: a `:global`, `:local` or `:set` it cannot fully
+    read (an unbalanced quote, an unknown escape) blocks `--commit` with the
+    line and the reason, and nothing overrides that. For a secret-named
+    variable (`token`, `password`, `api_key`, `psk` and the like, whatever
+    the separators) the value must be empty, a lone `$variable`,
+    `<redacted>` or a shipped placeholder; any expression, number or
+    concatenation (`[:pick $a 0 4]`, `(123 . 456 . 78)`) is refused. The
+    keywords count without their colon where they start a statement.
 
 - Choose one of `update_check`, `backup_update_check` or `stay_fresh`. They do
   one job three ways and must not run together.

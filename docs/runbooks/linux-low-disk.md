@@ -133,7 +133,7 @@ Or, with the groups you chose in the preview:
 ```
 
 Add `--no-sudo` to skip every step that needs root. Exit codes: `0` success,
-`1` one or more deletions failed, `2` preflight failed (not Linux, or
+`1` one or more deletions or steps failed, `2` preflight failed (not Linux, or
 `$HOME` unset), `3` bad arguments (including a real run without `--yes`).
 
 Exit `0` does not mean every group you asked for ran. A group that is

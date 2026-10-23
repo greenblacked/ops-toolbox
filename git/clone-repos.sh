@@ -4,7 +4,9 @@
 # occupied destination is reported and left alone, and a failure on one line
 # never stops the rest. Useful for standing up a workstation from a list of
 # the repositories you actually work in, and for the mirror of that: writing
-# the list once and never cloning by hand again.
+# the list once and never cloning by hand again. With --update, a checkout
+# that is already there is fetched and fast-forwarded instead of skipped, and
+# one holding local work is held rather than merged into.
 #
 # File format:
 #   - one repository URL (or local path) per line
@@ -13,8 +15,10 @@
 #   - blank lines and lines starting with # are ignored
 #
 # Exit codes:
-#   0   every listed repository was cloned or was already there
-#   1   one or more repositories failed (bad line, occupied path, clone error)
+#   0   every listed repository was cloned or was already there (with
+#       --update: updated, already current, or held for local work)
+#   1   one or more repositories failed (bad line, occupied path, clone error,
+#       and with --update a failed fetch or fast-forward)
 #   2   preflight failed (list file unreadable, git missing, --dir unusable)
 #   3   bad CLI arguments
 #   4   the list has no entries
@@ -37,6 +41,7 @@ debug() { (( VERBOSE )) && printf "%s[dbg ]%s %s\n" "$C_DIM" "$C_RESET" "$*"; re
 # --- defaults --------------------------------------------------------------
 DRY_RUN=0
 VERBOSE=0
+UPDATE=0
 DEST_DIR="."
 LIST_FILE="repos.txt"
 
@@ -45,7 +50,7 @@ usage() {
 clone-repos.sh - clone every git repository listed in a text file
 
 Usage:
-  $(basename "$0") [--dry-run] [--verbose] [--dir DIR] [FILE]
+  $(basename "$0") [--dry-run] [--verbose] [--update] [--dir DIR] [FILE]
 
 Arguments:
   FILE               List of repositories, one per line (default: repos.txt)
@@ -53,6 +58,7 @@ Arguments:
 Options:
   -n, --dry-run      Print the clones that would run; write nothing
   -v, --verbose      Also print each line as it is read and each decision made
+  -u, --update       Fetch and fast-forward checkouts that already exist
   -d, --dir DIR      Parent directory for the clones (default: current directory)
   -h, --help         Show this help
 
@@ -62,9 +68,17 @@ File format:
     is absolute; the default is the repository name taken from the URL
   - blank lines and lines starting with # are ignored
 
+With --update, a checkout that is already there is fetched and fast-forwarded
+on the branch it has checked out. It is held, and left exactly as it is, when
+HEAD is detached, the branch has no upstream, its upstream is gone from the
+remote, tracked files are modified, or the branch has diverged from its
+upstream. Nothing is ever merged, stashed or
+switched, and a held checkout does not fail the run.
+
 Examples:
   $(basename "$0") --dry-run repos.txt
   $(basename "$0") --dir ~/src repos.txt
+  $(basename "$0") --update --dir ~/src repos.txt
 
 Exit codes: 0 success, 1 a repository failed, 2 preflight, 3 usage, 4 nothing to do
 EOF
@@ -90,6 +104,7 @@ while (( $# > 0 )); do
     -h|--help)    usage; exit 0 ;;
     -n|--dry-run) DRY_RUN=1 ;;
     -v|--verbose) VERBOSE=1 ;;
+    -u|--update)  UPDATE=1 ;;
     -d|--dir)     require_value "$1" "${2:-}"; DEST_DIR="$2"; shift ;;
     --dir=*)      DEST_DIR="${1#*=}"; require_value "--dir" "$DEST_DIR" ;;
     --)           shift; break ;;
@@ -187,6 +202,99 @@ repo_name_from_url() {
   printf '%s' "$name"
 }
 
+# A branch whose upstream is configured but whose remote-tracking ref is gone
+# (deleted on the remote and pruned) is told apart from one that never had an
+# upstream. Both are held; neither is merged into.
+upstream_missing() {
+  local dest="$1" branch
+  branch="$(git -C "$dest" branch --show-current 2>/dev/null || true)"
+  if [[ -n "$branch" ]] && git -C "$dest" config --get "branch.$branch.merge" >/dev/null 2>&1; then
+    warn "held (upstream gone): $dest"
+  else
+    warn "held (no upstream): $dest"
+  fi
+  held=$((held + 1))
+}
+
+# --update for one existing checkout. The local checks come first and run
+# under --dry-run too, because they only read; the fetch and the merge go
+# through run(). Every refusal is a visible "held" line, never a repair: a
+# checkout with local work is the user's to reconcile, not this script's.
+update_checkout() {
+  local dest="$1" counts ahead behind status_out
+  if [[ -z "$(git -C "$dest" branch --show-current 2>/dev/null || true)" ]]; then
+    warn "held (detached HEAD): $dest"
+    held=$((held + 1))
+    return 0
+  fi
+  if ! git -C "$dest" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' >/dev/null 2>&1; then
+    upstream_missing "$dest"
+    return 0
+  fi
+  # Untracked files do not block: a fast-forward that would overwrite one
+  # fails on its own and is reported below. --no-optional-locks keeps status
+  # from refreshing the index on disk, so a dry run writes nothing here.
+  # The output is captured with its exit code: a failing status (corrupt or
+  # unreadable index) must not read as a clean tree and let a merge run.
+  if ! status_out="$(git --no-optional-locks -C "$dest" status --porcelain=v1 --untracked-files=no 2>/dev/null)"; then
+    warn "held (cannot read git status): $dest"
+    held=$((held + 1))
+    return 0
+  fi
+  if [[ -n "$status_out" ]]; then
+    warn "held (uncommitted changes): $dest"
+    held=$((held + 1))
+    return 0
+  fi
+
+  # Nothing is fetched in a dry run, so whether the checkout is behind is
+  # unknowable; both steps are previewed and counted as an update to make.
+  if (( DRY_RUN == 1 )); then
+    run git -C "$dest" fetch --prune --quiet
+    run git -C "$dest" merge --ff-only --quiet '@{upstream}'
+    updated=$((updated + 1))
+    return 0
+  fi
+
+  if ! run git -C "$dest" fetch --prune --quiet; then
+    err "fetch failed: $dest"
+    failed=$((failed + 1))
+    return 0
+  fi
+  # --prune above removed a remote-tracking ref whose branch was deleted
+  # upstream; without it the stale ref would read as "up to date".
+  if ! git -C "$dest" rev-parse --verify --quiet '@{upstream}^{commit}' >/dev/null 2>&1; then
+    upstream_missing "$dest"
+    return 0
+  fi
+  if ! counts="$(git -C "$dest" rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"; then
+    err "cannot compare with the upstream: $dest"
+    failed=$((failed + 1))
+    return 0
+  fi
+  behind="${counts%%	*}"
+  ahead="${counts##*	}"
+
+  if (( behind == 0 )); then
+    if (( ahead > 0 )); then
+      ok "up to date ($ahead unpushed commit(s)): $dest"
+    else
+      ok "up to date: $dest"
+    fi
+    current=$((current + 1))
+  elif (( ahead > 0 )); then
+    warn "held (diverged, +$ahead/-$behind): $dest"
+    held=$((held + 1))
+  elif run git -C "$dest" merge --ff-only --quiet '@{upstream}'; then
+    ok "updated (+$behind commit(s)): $dest"
+    updated=$((updated + 1))
+  else
+    err "fast-forward failed: $dest"
+    failed=$((failed + 1))
+  fi
+  return 0
+}
+
 # A scheme, an scp-style user@host:path, or a filesystem path. Anything else
 # is a typo in the list rather than something to hand to git.
 looks_like_git_url() {
@@ -203,6 +311,9 @@ debug "git: $(command -v git)"
 cloned=0
 skipped=0
 failed=0
+updated=0
+current=0
+held=0
 line_no=0
 entries=0
 
@@ -252,8 +363,12 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
 
   if [[ -e "$dest_path" ]]; then
     if [[ -d "$dest_path/.git" || -f "$dest_path/.git" ]]; then
-      ok "already cloned: $dest_path"
-      skipped=$((skipped + 1))
+      if (( UPDATE == 1 )); then
+        update_checkout "$dest_path"
+      else
+        ok "already cloned: $dest_path"
+        skipped=$((skipped + 1))
+      fi
       continue
     fi
     if [[ -d "$dest_path" ]] && is_empty_dir "$dest_path"; then
@@ -293,7 +408,14 @@ if (( entries == 0 )); then
   exit 4
 fi
 
-if (( DRY_RUN == 1 )); then
+if (( UPDATE == 1 )); then
+  if (( DRY_RUN == 1 )); then
+    info "would clone $cloned, would update $updated, held $held, failed $failed"
+    printf "dry-run complete; no changes written\n"
+  else
+    info "cloned $cloned, updated $updated, up to date $current, held $held, failed $failed"
+  fi
+elif (( DRY_RUN == 1 )); then
   info "would clone $cloned, already present $skipped, failed $failed"
   printf "dry-run complete; no changes written\n"
 else

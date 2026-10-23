@@ -59,6 +59,33 @@ authoritative list of flags.
 ./macos-initial-setup/stay_fresh.sh --help
 ```
 
+## Find a script
+
+Press `/` or `s` on any page of this site to put the cursor in the search
+box. Type any part of a name: `cleanup` finds `disk_cleanup.sh`, `dry run`
+finds the pages that document `--dry-run`, and `tg token` finds the
+`TgBotToken` global. Search splits names at underscores, slashes, dots,
+hyphens and capital letters, so you do not need the whole name or its
+folder. Version numbers such as `7.24.6` stay whole.
+
+A link with `?q=` opens the search with its term already typed, for example
+<https://ops.szolotov.com/?q=disk+cleanup>. Runbooks and other pages can
+link to a search that way.
+
+Long tables, such as the [script overview](../scripts/index.md), have a
+**Filter rows** box above them. Type words from the row you want, in any
+order (`linux doctor`, `dry run`, `read-only`), and only the rows that
+contain all of them stay; Escape clears the box. A link with `?filter=`
+opens a page with the table already filtered, for example
+<https://ops.szolotov.com/scripts/?filter=linux+doctor>. Filtered rows are
+only hidden, so printing the page still prints the whole table.
+
+Where a page shows the same step for several systems in tabs, the tab you
+pick is remembered and opened on every page with the same tabs. On your
+first visit to such a page the site opens the tab for the system your
+browser reports (macOS, Linux or Windows); on a phone or tablet it leaves
+the first tab open.
+
 ## Shell versions
 
 The Bash scripts in `git/`, `macos-initial-setup/`, `linux/` and `dotfiles/`
