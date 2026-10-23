@@ -230,8 +230,13 @@ at 2am rather than after:
    then terminates the distro so the file is read at the next start, and
    confirms with `id -un` that it now starts as `NAME` (exit `1` if not, which
    usually means the user does not exist inside that tar). A `[user]` section
-   that already sets `default=` is left alone; one without it is not edited,
-   and the line to add is printed instead. `NAME` is checked before anything
+   whose `default=` already names `NAME` (compared exactly, since Linux user
+   names are case-sensitive) is left alone. When it names someone else, that
+   the `default=` line in `[user]` is changed to `NAME` (a comment on that
+   line is dropped), the rest of the file is kept, and the old
+   value is printed; if the rewrite fails the restore exits `1`. A `[user]`
+   section without `default=` is not edited, and the line to add is printed
+   instead. `NAME` is checked before anything
    is read or imported (lowercase letters, digits, `_` and `-`, at most 32
    characters; anything else exits `3`), so a typo does not cost a long import.
    Without `-DefaultUser`, a successful restore prints the same steps to do by
