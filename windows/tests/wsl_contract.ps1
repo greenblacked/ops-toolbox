@@ -286,7 +286,7 @@ Test-Case 'the ignored-section message names all three sections WSL reads' (
     @($found | Where-Object { $_.Message -match '\[general\], \[wsl2\] and \[experimental\]' }).Count -eq 1
 ) (Format-Finding $found)
 
-foreach ($mode in 'nat', 'mirrored', 'virtioproxy', 'none', 'Mirrored') {
+foreach ($mode in 'nat', 'mirrored', 'consomme', 'virtioproxy', 'none', 'Mirrored', 'Consomme') {
     $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nnetworkingMode=$mode"
     Test-Case "networkingMode=$mode is accepted" (
         @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0
@@ -299,7 +299,42 @@ Test-Case 'the deprecated networkingMode=bridged is info, not a warning' (
 ) (Format-Finding $found)
 $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nnetworkingMode=mirroed"
 Test-Case 'a networkingMode WSL does not define is reported, with the NAT fallback' (
-    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -cmatch 'not nat, mirrored, virtioproxy or none.*falls back to NAT' }).Count -eq 1
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] networkingMode (line 3)' -and $_.Message -cmatch 'not nat, mirrored, consomme, virtioproxy or none.*falls back to NAT' }).Count -eq 1
+) (Format-Finding $found)
+
+# [wsl2] keys added to the table later: recognised, so never reported as
+# unrecognised or misplaced, and typed only where the name settles it.
+foreach ($newKey in @(@('virtiofs', 'true'), @('kernelDebugPort', '5005'), @('gpuSupport', 'true'),
+        @('systemDistro', 'C:/wsl/system.vhdx'), @('telemetry', 'false'), @('kernelBootTimeout', '30000'))) {
+    $key, $val = $newKey
+    $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n$key=$val"
+    Test-Case "[wsl2] $key is a recognised key" (
+        @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0 -and
+        @($found | Where-Object { $_.Message -match 'unrecognised|belongs in' }).Count -eq 0
+    ) (Format-Finding $found)
+}
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`nvirtiofs=whatever`ntelemetry=maybe"
+Test-Case 'virtiofs and telemetry are recognised without a value check' (
+    @($found | Where-Object { $_.Level -eq 'warn' }).Count -eq 0
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`ngpuSupport=yes"
+Test-Case 'gpuSupport that is not true or false is reported' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq '[wsl2] gpuSupport (line 3)' -and $_.Message -match 'not true or false' }).Count -eq 1
+) (Format-Finding $found)
+foreach ($case in @(@('kernelDebugPort', 'abc'), @('kernelDebugPort', '-1'), @('kernelBootTimeout', 'soon'), @('kernelBootTimeout', '-5'))) {
+    $key, $val = $case
+    $found = Get-WslConfigFinding "[wsl2]`nmemory=8GB`n$key=$val"
+    Test-Case "[wsl2] $key=$val is reported as not a whole number" (
+        @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -eq "[wsl2] $key (line 3)" -and $_.Message -match 'not a whole number' }).Count -eq 1
+    ) (Format-Finding $found)
+}
+$found = Get-WslConfigFinding "[wsl2]`nmemory=4GB`nsystemDistro=C:\\Users\\x\\s.vhdx"
+Test-Case 'doubled backslashes in systemDistro= are not reported' (
+    @($found | Where-Object { $_.Message -match 'doubled' }).Count -eq 0
+) (Format-Finding $found)
+$found = Get-WslConfigFinding "[wsl2]`nmemory=4GB`nsystemDistro=C:\Users\x\s.vhdx"
+Test-Case 'single backslashes in systemDistro= are reported' (
+    @($found | Where-Object { $_.Level -eq 'warn' -and $_.Check -like '*systemDistro*' -and $_.Message -match 'doubled' }).Count -eq 1
 ) (Format-Finding $found)
 
 # Each key goes under the section the audit expects it in (general for
@@ -442,6 +477,10 @@ try {
     $cleanFile = Join-Path $fixtures 'clean.wslconfig'
     [IO.File]::WriteAllText($badFile, "[wsl2]`nmemry=8GB`n")
     [IO.File]::WriteAllText($cleanFile, $cleanConfig)
+    foreach ($mode in 'consomme', 'virtioproxy', 'Consomme', 'consome') {
+        $name = if ($mode -eq 'consome') { 'unknown' } else { $mode }
+        [IO.File]::WriteAllText((Join-Path $fixtures "mode_$name.wslconfig"), "[wsl2]`nmemory=8GB`nnetworkingMode=$mode`n[experimental]`nautoMemoryReclaim=gradual`nsparseVhd=true`n")
+    }
     $before = @(Get-TreeSnapshot $fixtures)
 
     $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', $badFile)
@@ -453,6 +492,13 @@ try {
 
     $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', $cleanFile, '-Strict')
     Test-Case 'wslconfig -Strict exits 0 on a clean file' ($run.ExitCode -eq 0) "exit $($run.ExitCode)`n$($run.Output)"
+
+    foreach ($mode in 'consomme', 'virtioproxy', 'Consomme') {
+        $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', (Join-Path $fixtures "mode_$mode.wslconfig"), '-Strict')
+        Test-Case "wslconfig -Strict exits 0 with networkingMode=$mode" ($run.ExitCode -eq 0) "exit $($run.ExitCode)`n$($run.Output)"
+    }
+    $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', (Join-Path $fixtures 'mode_unknown.wslconfig'), '-Strict')
+    Test-Case 'wslconfig -Strict exits 1 with an unknown networkingMode' ($run.ExitCode -eq 1) "exit $($run.ExitCode)`n$($run.Output)"
 
     $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', (Join-Path $fixtures 'missing.wslconfig'))
     Test-Case 'wslconfig -ConfigFile <missing> exits 3' ($run.ExitCode -eq 3) "exit $($run.ExitCode)`n$($run.Output)"

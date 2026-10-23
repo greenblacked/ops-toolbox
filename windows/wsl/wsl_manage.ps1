@@ -939,7 +939,8 @@ function Test-WslConfig {
                            'localhostForwarding', 'kernelCommandLine', 'safeMode', 'nestedVirtualization',
                            'vmIdleTimeout', 'guiApplications', 'debugConsole', 'maxCrashDumpCount',
                            'networkingMode', 'firewall', 'dnsTunneling', 'autoProxy', 'defaultVhdSize',
-                           'dnsProxy', 'pageReporting')
+                           'dnsProxy', 'pageReporting', 'virtiofs', 'kernelDebugPort', 'gpuSupport',
+                           'systemDistro', 'telemetry', 'kernelBootTimeout')
         'experimental' = @('autoMemoryReclaim', 'sparseVhd', 'bestEffortDnsParsing',
                            'initialAutoProxyTimeout', 'ignoredPorts', 'hostAddressLoopback',
                            'useWindowsDnsCache')
@@ -1024,7 +1025,7 @@ function Test-WslConfig {
     # anything else, so 'yes', '1' or 'ture' is reported rather than assumed
     # to work. Case does not matter; the check is -match, which ignores it.
     $booleanKeys = @('localhostForwarding', 'nestedVirtualization', 'guiApplications', 'debugConsole',
-                     'safeMode', 'firewall', 'dnsTunneling', 'autoProxy', 'dnsProxy', 'pageReporting',
+                     'safeMode', 'firewall', 'dnsTunneling', 'autoProxy', 'dnsProxy', 'pageReporting', 'gpuSupport',
                      'sparseVhd', 'bestEffortDnsParsing', 'hostAddressLoopback', 'useWindowsDnsCache')
     $notBoolean = @{}
     foreach ($boolKey in $booleanKeys) {
@@ -1038,7 +1039,7 @@ function Test-WslConfig {
 
     # WSL reads these as INI strings, so a single backslash is an escape and
     # 'C:\Users\me\bzImage' arrives mangled. Doubled, or forward slashes, work.
-    foreach ($pathKey in @('kernel', 'swapFile', 'kernelModules', 'distributionInstallPath')) {
+    foreach ($pathKey in @('kernel', 'swapFile', 'kernelModules', 'distributionInstallPath', 'systemDistro')) {
         if (-not $values.ContainsKey($pathKey)) { continue }
         $e = $values[$pathKey]
         if ($e.Value -match '(?<!\\)\\(?!\\)') {
@@ -1074,10 +1075,12 @@ function Test-WslConfig {
     # Whole-number settings other than processors (checked above). Digits are
     # matched as [0-9] so a non-ASCII digit does not pass. maxCrashDumpCount
     # allows -1 (keep every dump); the two idle timeouts allow -1 too (never
-    # shut down); the other millisecond timeout does not go below 0.
+    # shut down); the other millisecond timeout does not go below 0, and
+    # neither does kernelBootTimeout or the kernelDebugPort number.
     $integerKeys = @{
         'vmIdleTimeout' = -1; 'maxCrashDumpCount' = -1
         'instanceIdleTimeout' = -1; 'initialAutoProxyTimeout' = 0
+        'kernelDebugPort' = 0; 'kernelBootTimeout' = 0
     }
     foreach ($intKey in @($integerKeys.Keys | Sort-Object)) {
         if (-not $values.ContainsKey($intKey)) { continue }
@@ -1091,15 +1094,16 @@ function Test-WslConfig {
         }
     }
 
-    # Microsoft documents four current networking modes and the deprecated
+    # Microsoft documents four current networking modes (consomme, which
+    # replaces the former name virtioproxy, still accepted) and the deprecated
     # bridged. An unknown value makes WSL fall back to NAT, so it is reported
     # rather than assumed to work. The checks are -match, which ignores case.
     if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -match '^bridged$') {
         $e = $values['networkingMode']
-        $findings += [PSCustomObject]@{ Level = 'info'; Check = (Get-Label $e); Message = "'$($e.Value)' is deprecated; use nat, mirrored, virtioproxy or none" }
-    } elseif ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -notmatch '^(nat|mirrored|virtioproxy|none)$') {
+        $findings += [PSCustomObject]@{ Level = 'info'; Check = (Get-Label $e); Message = "'$($e.Value)' is deprecated; use nat, mirrored, consomme, virtioproxy or none" }
+    } elseif ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -notmatch '^(nat|mirrored|consomme|virtioproxy|none)$') {
         $e = $values['networkingMode']
-        $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not nat, mirrored, virtioproxy or none; WSL falls back to NAT" }
+        $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not nat, mirrored, consomme, virtioproxy or none; WSL falls back to NAT" }
     }
     if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -eq 'mirrored' -and
         $values.ContainsKey('localhostForwarding')) {
