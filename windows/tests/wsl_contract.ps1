@@ -1119,8 +1119,8 @@ if ($onWindows) {
 Write-Section 'wsl_manage clone and restore -DefaultUser'
 Test-Surface -Action @('clone', 'restore') -Parameter @('NewName', 'DefaultUser', 'KeepTar')
 
-Import-ScriptFunction -Path $wslScript -Name @('Test-WslUserName', 'Get-WslConfUserPlan', 'ConvertFrom-PasswdLine',
-    'Get-CloneStagingName', 'Get-BackupFile')
+Import-ScriptFunction -Path $wslScript -Name @('Test-WslUserName', 'Get-WslConfUserPlan', 'Get-WslConfDefaultUser',
+    'Invoke-DefaultUserStep', 'Format-WslOutput', 'ConvertFrom-PasswdLine', 'Get-CloneStagingName', 'Get-BackupFile')
 
 foreach ($name in @('alice', 'dev_01', 'a-b', '_svc')) {
     Test-Case "Test-WslUserName accepts '$name'" (Test-WslUserName $name)
@@ -1141,6 +1141,71 @@ $planCases = @(
 foreach ($case in $planCases) {
     $got = Get-WslConfUserPlan -Existing $case.Text
     Test-Case "Get-WslConfUserPlan: $($case.Label) -> $($case.Expect)" ($got -eq $case.Expect) "got '$got'"
+}
+
+# With the wanted user, a [user] default= is satisfied only by an exact match.
+$userPlanCases = @(
+    @{ Text = "[user]`ndefault=alice`n";  User = 'alice'; Expect = 'present'; Label = 'the same default user' }
+    @{ Text = "[user]`ndefault=alice`n";  User = 'bob';   Expect = 'update';  Label = 'another default user' }
+    @{ Text = "[user]`ndefault=Alice`n";  User = 'alice'; Expect = 'update';  Label = 'a default user that differs only in case' }
+    @{ Text = "[boot]`nsystemd=true`n[user]`r`ndefault = alice`r`n"; User = 'bob'; Expect = 'update'; Label = 'CRLF text and spaces around =' }
+    @{ Text = "[user]`n# nothing`n";      User = 'bob';   Expect = 'manual';  Label = 'a [user] section with no default=' }
+    @{ Text = '';                         User = 'bob';   Expect = 'append';  Label = 'no /etc/wsl.conf' }
+)
+foreach ($case in $userPlanCases) {
+    $got = Get-WslConfUserPlan -Existing $case.Text -User $case.User
+    Test-Case "Get-WslConfUserPlan -User $($case.User): $($case.Label) -> $($case.Expect)" ($got -eq $case.Expect) "got '$got'"
+}
+Test-Case 'Get-WslConfDefaultUser reads the [user] default' ((Get-WslConfDefaultUser "[boot]`ndefault=x`n[user]`ndefault=alice`n") -ceq 'alice')
+Test-Case 'Get-WslConfDefaultUser of no default is $null' ($null -eq (Get-WslConfDefaultUser "[user]`n"))
+
+# Invoke-DefaultUserStep against a stand-in wsl.exe that records what it is
+# asked to do. A tar that already names another default user must end with the
+# requested one, and a failed rewrite must be reported as a failure.
+function Invoke-DefaultUserScenario {
+    param([string]$Conf, [string]$User, [int]$SedExit = 0, [string]$Who = $User)
+    $script:duCalls = [System.Collections.Generic.List[string]]::new()
+    $script:duConf = $Conf
+    $script:duSedExit = $SedExit
+    $script:duWho = $Who
+    function script:wsl.exe {
+        $script:duCalls.Add(($args -join ' '))
+        $global:LASTEXITCODE = 0
+        if ($args[-1] -like 'cat /etc/wsl.conf*') { return $script:duConf -split "`n" }
+        if ($args[-1] -like 'sed -i*' -or $args[-1] -like 'printf*') { $global:LASTEXITCODE = $script:duSedExit; return }
+        if ($args -contains 'id') { return $script:duWho }
+    }
+    $rc = Invoke-DefaultUserStep -Name 'Ubuntu-restored' -User $User 2>$null 6>$null
+    return $rc
+}
+try {
+    $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'alice'
+    Test-Case 'DefaultUser step: existing default equals the request -> success, nothing written' (
+        $rc -eq $true -and @($script:duCalls | Where-Object { $_ -match 'sed -i|printf|--terminate' }).Count -eq 0
+    ) ($script:duCalls -join "`n")
+
+    $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob'
+    $sedCalls = @($script:duCalls | Where-Object { $_ -match 'sed -i' })
+    Test-Case 'DefaultUser step: existing default differs -> rewritten to the request, terminated, success' (
+        $rc -eq $true -and $sedCalls.Count -eq 1 -and $sedCalls[0] -match 'default=bob' -and $sedCalls[0] -notmatch 'printf' -and
+        @($script:duCalls | Where-Object { $_ -match '--terminate' }).Count -eq 1
+    ) ($script:duCalls -join "`n")
+
+    $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob' -SedExit 1
+    Test-Case 'DefaultUser step: a failed rewrite returns failure and does not terminate' (
+        $rc -eq $false -and @($script:duCalls | Where-Object { $_ -match '--terminate' }).Count -eq 0
+    ) ($script:duCalls -join "`n")
+
+    $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob' -Who 'alice'
+    Test-Case 'DefaultUser step: still booting as another user after the rewrite returns failure' ($rc -eq $false)
+
+    $rc = Invoke-DefaultUserScenario -Conf '' -User 'bob'
+    Test-Case 'DefaultUser step: no wsl.conf -> appended as before, success' (
+        $rc -eq $true -and @($script:duCalls | Where-Object { $_ -match 'printf' }).Count -eq 1 -and
+        @($script:duCalls | Where-Object { $_ -match 'sed -i' }).Count -eq 0
+    ) ($script:duCalls -join "`n")
+} finally {
+    Remove-Item -LiteralPath Function:\wsl.exe -ErrorAction SilentlyContinue
 }
 
 Test-Case 'ConvertFrom-PasswdLine reads the user name' (

@@ -107,9 +107,10 @@
         read, not moved, so keep it somewhere with room for a second copy.
       * The restored distro boots as root. WSL records the default user inside
         the distro and --import does not carry it over. -DefaultUser NAME
-        appends a [user] section naming it to /etc/wsl.conf and terminates the
-        distro once so it is read; without it, the successful restore prints
-        those steps for you to do by hand.
+        appends a [user] section naming it to /etc/wsl.conf (or, when the tar's
+        [user] default= names someone else, changes that line to NAME) and
+        terminates the distro once so it is read; without it, the successful
+        restore prints those steps for you to do by hand.
 #>
 [CmdletBinding()]
 param(
@@ -704,25 +705,41 @@ function Test-WslUserName {
     return ($Name -cmatch '^[a-z_][a-z0-9_-]{0,31}$')
 }
 
-# What to do with /etc/wsl.conf to set a default user, given its current text:
-#   append   no [user] section yet: append one.
-#   present  a [user] section already sets default=: leave it alone.
-#   manual   a [user] section without default=: print the line to add rather
-#            than guess at editing someone's INI file in place.
-function Get-WslConfUserPlan {
+# The first default= value in the [user] section of /etc/wsl.conf text, or
+# $null when there is none.
+function Get-WslConfDefaultUser {
     param([string]$Existing)
     $inUser = $false
-    $hasUser = $false
     foreach ($raw in ($Existing -split "`n")) {
         $line = $raw.Trim()
         if ($line -match '^\[(?<name>[^\]]*)\]') {
             $inUser = ($Matches['name'].Trim() -eq 'user')
-            if ($inUser) { $hasUser = $true }
             continue
         }
-        if ($inUser -and $line -match '^default\s*=\s*\S') { return 'present' }
+        if ($inUser -and $line -match '^default\s*=\s*(?<value>\S+)') { return $Matches['value'] }
     }
-    if ($hasUser) { return 'manual' }
+    return $null
+}
+
+# What to do with /etc/wsl.conf to set a default user, given its current text:
+#   append   no [user] section yet: append one.
+#   present  a [user] section already sets default= to the wanted user (or,
+#            when no -User is given, to anyone): leave it alone.
+#   update   a [user] section sets default= to a different user than -User:
+#            rewrite that line. The comparison is exact, because Linux user
+#            names are case-sensitive.
+#   manual   a [user] section without default=: print the line to add rather
+#            than guess at editing someone's INI file in place.
+function Get-WslConfUserPlan {
+    param([string]$Existing, [string]$User)
+    $current = Get-WslConfDefaultUser -Existing $Existing
+    if ($null -ne $current) {
+        if ($PSBoundParameters.ContainsKey('User') -and $current -cne $User) { return 'update' }
+        return 'present'
+    }
+    foreach ($raw in ($Existing -split "`n")) {
+        if ($raw.Trim() -match '^\[(?<name>[^\]]*)\]' -and $Matches['name'].Trim() -eq 'user') { return 'manual' }
+    }
     return 'append'
 }
 
@@ -743,9 +760,10 @@ function Get-CloneStagingName {
 }
 
 # Make $User the default user of distro $Name through /etc/wsl.conf, then
-# terminate it so the file is read at the next start, and confirm. Returns
-# $false only when a step failed; a [user] section that needs a hand edit is
-# printed and is not a failure.
+# terminate it so the file is read at the next start, and confirm. A default=
+# line that already names another user is rewritten to $User. Returns $false
+# only when a step failed; a [user] section that needs a hand edit is printed
+# and is not a failure.
 function Invoke-DefaultUserStep {
     param(
         [string]$Name,
@@ -756,9 +774,10 @@ function Invoke-DefaultUserStep {
     # command's stderr into a terminating error under 'Stop'. Every wsl.exe
     # call here is captured for the reason Format-WslOutput gives.
     $existing = wsl.exe -d $Name -u root --exec sh -c 'cat /etc/wsl.conf 2>/dev/null; true'
-    $plan = Get-WslConfUserPlan -Existing ($existing -join "`n")
+    $existingText = $existing -join "`n"
+    $plan = Get-WslConfUserPlan -Existing $existingText -User $User
     if ($plan -eq 'present') {
-        Write-Host "/etc/wsl.conf in '$Name' already names a default user; left as it is." -ForegroundColor Yellow
+        Write-Host "/etc/wsl.conf in '$Name' already names $User as the default user; left as it is." -ForegroundColor Yellow
         return $true
     }
     if ($plan -eq 'manual') {
@@ -768,10 +787,23 @@ function Invoke-DefaultUserStep {
         return $true
     }
     # $User passed Test-WslUserName, so it needs no quoting inside sh -c.
-    $said = Format-WslOutput (wsl.exe -d $Name -u root --exec sh -c "printf '\n[user]\ndefault=$User\n' >> /etc/wsl.conf")
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Could not append to /etc/wsl.conf in '$Name' (exit $LASTEXITCODE) $said" -ErrorAction Continue
-        return $false
+    if ($plan -eq 'update') {
+        # Rewrite default= inside the [user] section only (up to the next
+        # section header), keeping any trailing CR and the rest of the file.
+        $old = Get-WslConfDefaultUser -Existing $existingText
+        $sed = "/^[[:space:]]*\[[[:space:]]*user[[:space:]]*\]/,/^[[:space:]]*\[/ s/^[[:space:]]*default[[:space:]]*=[^[:cntrl:]]*/default=$User/"
+        $said = Format-WslOutput (wsl.exe -d $Name -u root --exec sh -c "sed -i '$sed' /etc/wsl.conf")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Could not update the default user in /etc/wsl.conf in '$Name' (exit $LASTEXITCODE) $said" -ErrorAction Continue
+            return $false
+        }
+        Write-Host "/etc/wsl.conf in '$Name': default user changed from $old to $User." -ForegroundColor Yellow
+    } else {
+        $said = Format-WslOutput (wsl.exe -d $Name -u root --exec sh -c "printf '\n[user]\ndefault=$User\n' >> /etc/wsl.conf")
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Could not append to /etc/wsl.conf in '$Name' (exit $LASTEXITCODE) $said" -ErrorAction Continue
+            return $false
+        }
     }
     $said = Format-WslOutput (wsl.exe --terminate $Name)
     if ($LASTEXITCODE -ne 0) {
