@@ -22,6 +22,157 @@ existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-23
+
+### Added
+
+- The Git Bash aliases have `ctx`, a one-line-per-tool answer to "where will
+  the next command land": the Kubernetes context and namespace, the AWS
+  profile and region, the gcloud project, the Terraform workspace, the Docker
+  context, and the Git branch with its origin host. The same file defines
+  `tfaa`, `tfda` and `kdelete`, and nothing showed which cluster, account or
+  workspace they would hit. A value that looks like production is marked
+  with a trailing `!`, in red on a terminal, and the pattern is yours to set
+  in `CTX_DANGER_PATTERN`. With no `AWS_PROFILE` and no exported keys it
+  shows the `[default]` profile of the AWS shared files and its region; a
+  named `AWS_PROFILE` without `AWS_REGION` gets the region of its
+  `[profile NAME]` section. It honours the overrides the tools honour:
+  `CLOUDSDK_CORE_PROJECT`, `CLOUDSDK_ACTIVE_CONFIG_NAME` and
+  `CLOUDSDK_CONFIG` for gcloud, `TF_WORKSPACE` and `TF_DATA_DIR` (and
+  `default` for an initialised directory with no environment file) for
+  Terraform, and `DOCKER_HOST` and `DOCKER_CONFIG` for Docker.
+  It prints names only; exported AWS keys show as `static-keys`, never
+  their value. No existing alias changed.
+
+- `windows/git-bash/install_dotfiles.sh --diff` shows exactly what an install
+  would overwrite. `--status` said DRIFT and nothing more, so telling your own
+  useful edits from an outdated copy meant running `diff` by hand against paths
+  inside the checkout. Each drifted file now gets a unified diff labelled
+  `installed:` and `repo:`, where a `-` line is something of yours the install
+  would remove. It writes nothing and exits like `--status`: 0 when everything
+  matches, 4 when anything is missing or different.
+
+- `windows/git-bash/install_dotfiles.sh` can now undo itself. Every install
+  left `<name>.backup-<stamp>` files in `$HOME` with no way back but finding
+  the right stamp and copying three files by hand while the shell was already
+  broken, and the backups piled up forever. `--list-backups` shows the sets
+  newest first (a `-10` suffix counts as newer than `-9`),
+  `--restore STAMP` (or `latest`) puts one back after saving
+  what it replaces as a new set (under a `-1`, `-2` ... suffixed stamp when
+  the current second's is taken, never over an existing set), so a rollback
+  is itself undoable, and keeps a symlinked dotfile a symlink (a destination
+  that is a directory is skipped and the command exits 1 once the rest of
+  the set is back);
+  `--prune-backups N` deletes all but the newest sets, previewing unless
+  `--yes` is given. Only files this script named are touched, and none of
+  the three needs the source files.
+
+- `windows/git-bash/gitbash_doctor.sh` is a read-only doctor for the Git Bash
+  environment around the dotfiles, for the quiet failures that each cost an
+  hour the first time: a dotfile saved with CRLF or that no longer parses, a
+  `~/.ssh/agent.env` pointing at an agent that is gone, Windows' OpenSSH
+  client ahead of Git's so the agent's keys are invisible, a `HOME` under
+  OneDrive or with a space in it, long paths off in Git and in the registry,
+  no credential helper, a private key with no passphrase or one that is
+  malformed rather than protected, `safe.directory = *`, and the Microsoft
+  Store `python` stub on `PATH`. Each finding comes with the command that
+  fixes it; nothing is changed and no key material is printed. A probe whose
+  tool is absent is skipped, so it also runs on Linux. With `--source`, a
+  managed file missing from the source directory is a failure (exit 1), so
+  an incomplete source cannot pass as a clean one.
+  The global Git settings are read from both `~/.gitconfig` and the XDG file
+  (`$XDG_CONFIG_HOME/git/config`, default `~/.config/git/config`; with
+  `--home`, always `<home>/.config/git/config`), with `~/.gitconfig`
+  winning, as Git itself resolves them. When several credential helpers
+  are configured, all are listed in the order Git runs them: system file
+  first, then the XDG file, then `~/.gitconfig`, with an empty
+  `helper =` line dropping the ones before it, and a bare `helper` key
+  with no `=`, which Git rejects, left out and warned about by file.
+  `include.path` entries in those files are followed, and one such as
+  `~/x` resolves under `--home`, since `HOME` is set to the inspected home
+  for the Git lookups, not under the caller's home.
+
+- `windows/wsl/wsl_manage.ps1 backup -All` exports every registered distro
+  under one timestamp, the "export everything" step before a reinstall or an
+  upgrade that used to be a loop written by hand. Docker Desktop's own
+  distros are skipped, a running distro whose measured use will not fit on
+  the destination drive (counting the exports already admitted
+  in the same run) is refused before anything is written (a stopped one
+  is never started to measure it), one failed export does not stop the rest
+  and never deletes a backup of the same name from an earlier run (exports
+  are written to a temporary file and moved into place on success, with
+  the new sidecar, and the earlier tar and sidecar restored if either
+  cannot be replaced), and every tar gets the same `.sha256` sidecar a
+  single backup writes.
+  `-DryRun` now previews `backup`, `compact`, `sparse` and `shutdown` as well:
+  the plan with sizes, the running distros a shutdown would stop, and, for
+  `compact`, whether the shell is elevated, without calling `wsl --export`,
+  `wsl --shutdown`, `wsl --manage` or diskpart.
+- `backup -DestDir D:` (a bare drive) now means the drive root `D:\`, not the
+  drive-relative current directory, for both a single distro and `-All`, which
+  now build the output path the same way.
+  `backups`, `prune-backups` and `clone` read it the same way: `-DestDir` is
+  normalised once, and the clone staging file and a kept export are built
+  with the same path code as a backup.
+
+- `windows/wsl/wsl_manage.ps1 backups` answers the question a runbook asks
+  before a risky change: what WSL backups are there, are they intact, and is
+  the newest one recent enough. It lists the dated exports under `-DestDir`
+  newest first per distro, with size, age and whether the `.sha256` sidecar
+  is present; `-Verify` hashes every tar against its sidecar and reports a
+  missing, malformed or mismatched one, so a truncated export is found the
+  day it happens rather than at the restore; `-MaxAgeDays` flags a distro
+  whose newest backup is too old, and exits 1 for a scheduled check. It only
+  reads, needs no WSL, and `verify-backup` and `restore` now share its
+  checksum code with unchanged messages.
+
+- `windows/wsl/wsl_manage.ps1 clone` copies a distro under a new name, the
+  safest place to try a distro upgrade or a script you do not trust yet. It
+  exports to a staging tar that can never be mistaken for a backup, imports
+  it, gives the copy the source's default user, and deletes the staging tar
+  in a `finally` block (`-KeepTar` keeps it as a dated backup with its
+  sidecar, under a `-1`, `-2` name when that minute is taken, never
+  overwriting one). The source is never touched, nothing is ever
+  unregistered, every refusal comes before the slow export, and `-DryRun`
+  prints each step.
+  `restore -DefaultUser NAME` closes the gap that made a restored distro boot
+  as root: after the import it adds the `[user]` section to `/etc/wsl.conf`,
+  terminates the distro so the file is read, and confirms the result. A
+  `[user]` `default=` that already names the same user is left alone; one that
+  names another user (a tar that came with its own `wsl.conf`) is changed to
+  the requested name, and a failed rewrite is reported as a failure; a name
+  that is not a valid Linux user is refused before anything is imported.
+
+- `windows/wsl/wsl_manage.ps1 doctor` checks each running distro for the
+  handful of known reasons a WSL environment turns "weird" and prints the fix
+  for each: a distro left on WSL1, where docker and kind cannot run, a default
+  user of root after an import, no systemd, a root filesystem at 85 or 95
+  percent, a clock that drifted while Windows slept (TLS and cloud API
+  signatures fail), DNS that does not resolve behind a VPN, and a `PATH` full
+  of `/mnt/c` entries. It only reads, gives every command inside a distro a
+  15-second limit so a wedged one cannot hang the report, and starts a stopped
+  distro only with `-Force`.
+
+- `windows/wsl/wsl_manage.ps1` has a `wslconfig` action that audits
+  `%USERPROFILE%\.wslconfig`, the usual reason the WSL2 VM eats RAM while
+  Docker, k3s or a build runs. WSL starts without complaint when the file is
+  missing, has no memory cap, or holds keys it silently ignores: a key in the
+  wrong section, `[wsl]` where `[wsl2]` is meant, a misspelt name, single
+  backslashes in a `kernel`, `kernelModules`, `swapFile` or
+  `distributionInstallPath` path, a true/false key such as `sparseVhd` set to
+  `1` or `yes`. The audit names each with its line number, compares the cap
+  with the installed RAM and processors, and never edits the file. It needs no
+  WSL and no elevation, so it also runs where WSL is absent; `-Strict` turns a
+  warning into exit 1, and `-Template` prints a commented starter file without
+  writing one. It also warns on a `networkingMode` outside nat, mirrored,
+  consomme (formerly virtioproxy, still accepted), virtioproxy and none (WSL
+  falls back to NAT; the deprecated bridged is only noted). It checks
+  `gpuSupport` as true or false, `kernelDebugPort` (also at most 65535) and
+  `kernelBootTimeout` as whole numbers of 0 or more, and `systemDistro` in the
+  backslash check. It also warns on a timeout or `maxCrashDumpCount` that is not a whole number
+  (-1 is allowed for the idle timeouts and the dump count). A size too large
+  for 64 bits is reported as not a size.
+
 ## [0.2.0] - 2026-10-23
 
 ### Added
