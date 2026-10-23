@@ -10,12 +10,27 @@
 # temp files the current user owns. Everything else is behind an --include-*
 # flag, because those have side effects you should choose knowingly.
 #
+# --include-logs removes only logs whose name proves they were rotated
+# (compressed, numbered, .old or dated) and that are older than --days, under
+# /var/log or --log-dir. An active log is never matched, login records (wtmp,
+# btmp, lastlog, faillog, utmp) never are, and the journal is left to
+# journalctl, which --journal-max-size can also cap by size.
+#
+# --include-docker-images goes further than --include-docker: it removes
+# tagged images no container uses and that were created more than --days ago.
+# Docker's until filter reads an image's creation time, not when it was pulled
+# or last used, so an old image pulled today can go at once. The engine refuses
+# to remove an image a container references, and volumes are never passed to
+# any prune. Re-pulling is a cost, not a loss, which is why it is its own
+# flag. --include-snap-revisions removes the revisions snapd keeps marked
+# disabled, never the active one.
+#
 # A dry run writes nothing. A real run requires --yes, the same gate
 # install_devtools.sh uses for anything that changes the machine.
 #
 # Exit codes:
 #   0   success
-#   1   one or more deletions failed
+#   1   one or more deletions or steps failed (snap list included)
 #   2   preflight failed (not Linux)
 #   3   bad CLI arguments
 set -u
@@ -34,9 +49,15 @@ INCLUDE_JOURNAL=0
 INCLUDE_PKG_CACHE=0
 INCLUDE_DEV_CACHES=0
 INCLUDE_DOCKER=0
+INCLUDE_DOCKER_IMAGES=0
+INCLUDE_SNAP_REVISIONS=0
 INCLUDE_COREDUMPS=0
 COREDUMP_DIR=""
 COREDUMP_OVERRIDE=0
+INCLUDE_LOGS=0
+LOG_DIRS=()
+LOG_OVERRIDE=0
+JOURNAL_MAX_SIZE=""
 
 if [[ -t 1 ]] && [[ "${NO_COLOR:-}" == "" ]]; then
   C_RESET=$'\033[0m'; C_BOLD=$'\033[1m'; C_DIM=$'\033[2m'
@@ -77,14 +98,27 @@ Options:
   --no-sudo              Skip every step that needs root
   --include-trash        Empty ~/.local/share/Trash
   --include-journal      journalctl --vacuum-time matching --days (needs root)
+  --journal-max-size SZ  With --include-journal, also journalctl --vacuum-size=SZ
+                         (SZ like 500M or 2G)
   --include-pkg-cache    apt-get clean / dnf clean / pacman -Sc (needs root)
   --include-dev-caches   pip, npm, yarn, go module caches
   --include-docker       docker/podman system prune -f (volumes untouched)
+  --include-docker-images
+                         docker/podman image prune -a for unused images created
+                         more than --days ago (creation time, not pull time, so a
+                         freshly pulled old image can go); never prunes volumes
+  --include-snap-revisions
+                         snap remove each disabled revision (needs root)
   --include-coredumps    Age-filtered files in systemd-coredump and apport dirs
   --coredump-dir DIR     Replace the default coredump list (needs --include-coredumps)
+  --include-logs         Rotated logs older than --days under /var/log: *.gz, *.xz,
+                         *.bz2, *.zst, *.N, *.old and dated (logrotate dateext)
+                         names; never an active log, wtmp/btmp/lastlog or the journal
+  --log-dir DIR          Replace the default log directory (repeatable;
+                         needs --include-logs)
   --help, -h             Show this help
 
-Exit codes: 0 success, 1 one or more deletions failed, 2 not Linux, 3 usage
+Exit codes: 0 success, 1 one or more deletions or steps failed, 2 not Linux, 3 usage
 EOF
 }
 
@@ -130,9 +164,16 @@ while (( $# > 0 )); do
     --include-pkg-cache)   INCLUDE_PKG_CACHE=1 ;;
     --include-dev-caches)  INCLUDE_DEV_CACHES=1 ;;
     --include-docker)      INCLUDE_DOCKER=1 ;;
+    --include-docker-images) INCLUDE_DOCKER_IMAGES=1 ;;
+    --include-snap-revisions) INCLUDE_SNAP_REVISIONS=1 ;;
     --include-coredumps)   INCLUDE_COREDUMPS=1 ;;
     --coredump-dir)        require_value "$1" "${2:-}"; COREDUMP_DIR="$2"; COREDUMP_OVERRIDE=1; shift ;;
     --coredump-dir=*)      COREDUMP_DIR="${1#*=}"; require_value "--coredump-dir" "$COREDUMP_DIR"; COREDUMP_OVERRIDE=1 ;;
+    --include-logs)        INCLUDE_LOGS=1 ;;
+    --log-dir)             require_value "$1" "${2:-}"; LOG_DIRS+=("$2"); LOG_OVERRIDE=1; shift ;;
+    --log-dir=*)           require_value "--log-dir" "${1#*=}"; LOG_DIRS+=("${1#*=}"); LOG_OVERRIDE=1 ;;
+    --journal-max-size)    require_value "$1" "${2:-}"; JOURNAL_MAX_SIZE="$2"; shift ;;
+    --journal-max-size=*)  JOURNAL_MAX_SIZE="${1#*=}"; require_value "--journal-max-size" "$JOURNAL_MAX_SIZE" ;;
     -h|--help)             usage; exit 0 ;;
     *)
       err "unknown argument: $1"
@@ -146,6 +187,23 @@ done
 if ! [[ "$DAYS" =~ ^[0-9]+$ ]] || (( DAYS > 3650 )); then
   err "--days must be an integer between 0 and 3650, got: $DAYS"
   exit 3
+fi
+
+# A modifier without the group it modifies would be a silent no-op, and a
+# caller who typed it believes it ran.
+if (( LOG_OVERRIDE == 1 && INCLUDE_LOGS == 0 )); then
+  err "--log-dir needs --include-logs"
+  exit 3
+fi
+if [[ -n "$JOURNAL_MAX_SIZE" ]]; then
+  if (( INCLUDE_JOURNAL == 0 )); then
+    err "--journal-max-size needs --include-journal"
+    exit 3
+  fi
+  if ! [[ "$JOURNAL_MAX_SIZE" =~ ^[1-9][0-9]*[KMGT]?$ ]]; then
+    err "--journal-max-size must look like 500M or 2G, got: $JOURNAL_MAX_SIZE"
+    exit 3
+  fi
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -175,6 +233,21 @@ if (( COREDUMP_OVERRIDE == 1 )); then
     exit 3
   fi
   COREDUMP_DIR="$coredump_resolved"
+fi
+
+# The same resolved-path guard for --log-dir, which walks and deletes with the
+# same sudo retry. -xdev keeps the walk on that one filesystem as well.
+if (( LOG_OVERRIDE == 1 )); then
+  resolved_logs=()
+  for log_dir in "${LOG_DIRS[@]}"; do
+    log_resolved="$(realpath -m -- "$log_dir" 2>/dev/null || printf '%s' "$log_dir")"
+    if [[ "$log_resolved" == "/" ]]; then
+      err "--log-dir refuses / (resolved from '$log_dir')"
+      exit 3
+    fi
+    resolved_logs+=("$log_resolved")
+  done
+  LOG_DIRS=("${resolved_logs[@]}")
 fi
 
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -340,6 +413,100 @@ clean_aged_dir() {
 
   if (( count == 0 )); then
     info "nothing older than ${DAYS}d in $dir"
+  else
+    info "$count file(s) in $dir ($(human_bytes "$bytes"))"
+  fi
+}
+
+# Rotated logs only: a name has to prove the file was rotated (compressed,
+# numbered, .old, or logrotate's dateext) before its age is even looked at, so
+# an active syslog, messages or app.log is never a candidate. Login records are
+# kept whatever they are called, and anything under a directory named journal
+# or private is pruned: journald's files belong to journalctl, and private/ is
+# root-only by design. Symlinks are not followed; only regular files match.
+log_candidates() {
+  local dir="$1"
+  local finder=(find)
+  # Walk the tree as root only when probe_log_walk found escalation working:
+  # a readable /var/log can still hold unreadable subdirectories (apache2,
+  # say), and an unprivileged find would drop them silently.
+  if (( LOG_WALK_ROOT == 1 )); then
+    finder=("$SUDO" find)
+  fi
+  "${finder[@]}" "$dir" -xdev \
+    \( -type d \( -name journal -o -name private \) -prune \) -o \
+    \( -type f \
+       ! -name 'wtmp*' ! -name 'btmp*' ! -name 'lastlog*' ! -name 'faillog*' ! -name 'utmp*' \
+       \( -name '*.gz' -o -name '*.xz' -o -name '*.bz2' -o -name '*.zst' \
+          -o -name '*.[0-9]' -o -name '*.[0-9][0-9]' -o -name '*.old' \
+          -o -name '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' -o \( -name '*.log-[0-9]*' ! -name '*.log-*[!0-9]*' \) \) \
+       -print0 \) 2>/dev/null
+}
+
+# SUDO="sudo" only says the binary exists, not that it will escalate: with no
+# TTY password, no sudoers entry or under cron, `sudo find` fails silently and
+# the scan would report nothing. Probe once, non-interactively (so --dry-run
+# never prompts), and walk as root only if that works. Called before the walk,
+# not inside it, because log_candidates runs in a process substitution and
+# could neither cache the result nor warn once.
+LOG_WALK_ROOT=0
+LOG_WALK_PROBED=0
+probe_log_walk() {
+  (( LOG_WALK_PROBED == 0 )) || return 0
+  LOG_WALK_PROBED=1
+  [[ -n "$SUDO" && "$SUDO" != "skip" ]] || return 0
+  if "$SUDO" -n true >/dev/null 2>&1; then
+    LOG_WALK_ROOT=1
+  else
+    warn "sudo is not usable without a password; walking logs unprivileged, unreadable subdirectories are skipped"
+  fi
+}
+
+# clean_aged_dir's stat, sudo retry and size accounting, over log_candidates.
+# Under --no-sudo a file whose directory this run cannot write is counted as
+# skipped rather than failed: it was never this run's to remove.
+clean_log_dir() {
+  local dir="$1"
+  local count=0
+  local bytes=0
+  local skipped=0
+  [[ -d "$dir" ]] || { info "no directory: $dir"; return 0; }
+
+  if [[ ! -r "$dir" && "$SUDO" == "skip" ]]; then
+    warn "skipped (needs root): $dir"
+    return 0
+  fi
+
+  probe_log_walk
+
+  while IFS= read -r -d '' path; do
+    [[ -n "$path" ]] || continue
+    local mtime size
+    mtime="$(stat -c '%Y' "$path" 2>/dev/null || printf '')"
+    size="$(stat -c '%s' "$path" 2>/dev/null || printf '')"
+    if [[ -z "$mtime" || -z "$size" ]] && [[ -n "$SUDO" && "$SUDO" != "skip" ]]; then
+      mtime="$("$SUDO" stat -c '%Y' "$path" 2>/dev/null || printf '')"
+      size="$("$SUDO" stat -c '%s' "$path" 2>/dev/null || printf '')"
+    fi
+    [[ "$mtime" =~ ^[0-9]+$ ]] || continue
+    [[ "$size" =~ ^[0-9]+$ ]] || size=0
+    if (( DAYS > 0 && mtime > CUTOFF )); then
+      continue
+    fi
+    if [[ "$SUDO" == "skip" && ! -w "$(dirname "$path")" ]]; then
+      skipped=$((skipped + 1))
+      continue
+    fi
+    delete_file_maybe_root "$path" "$size"
+    count=$((count + 1))
+    bytes=$((bytes + size))
+  done < <(log_candidates "$dir")
+
+  if (( skipped > 0 )); then
+    warn "skipped (needs root): $skipped rotated log(s) in $dir"
+  fi
+  if (( count == 0 )); then
+    info "no rotated logs older than ${DAYS}d in $dir"
   else
     info "$count file(s) in $dir ($(human_bytes "$bytes"))"
   fi
@@ -540,6 +707,11 @@ if (( INCLUDE_JOURNAL == 1 )); then
       warn "  including the logs describing what filled the disk"
     fi
     run_root "vacuum journal to ${DAYS}d" journalctl --vacuum-time="${DAYS}d"
+    # journald's own vacuum is the only thing that deletes journal files; the
+    # size was validated before anything ran.
+    if [[ -n "$JOURNAL_MAX_SIZE" ]]; then
+      run_root "cap journal at $JOURNAL_MAX_SIZE" journalctl --vacuum-size="$JOURNAL_MAX_SIZE"
+    fi
   else
     warn "journalctl not present — skipping (normal in a container)"
   fi
@@ -641,6 +813,96 @@ else
   info "skipped: containers (pass --include-docker)"
 fi
 
+# --- container images ------------------------------------------------------
+# Tagged images no container uses, created more than --days ago (docker's
+# until filter reads creation time, not pull or last-use time). image prune
+# never takes volumes and the engine will not remove an image a container
+# references, so the worst case is a re-pull. The dry run shows `system df`,
+# which only reads, so the sizes are on screen before anything is removed.
+prune_images() {
+  local engine="$1"
+  local args=(image prune -a -f)
+  local label="every unused image; volumes untouched"
+  if (( DAYS > 0 )); then
+    args+=(--filter "until=$((DAYS * 24))h")
+    label="unused images created over ${DAYS}d ago (creation time, not pull time); volumes untouched"
+  fi
+  if (( DRY_RUN == 1 )); then
+    printf "  %s(dry-run)%s %s %s %s[%s]%s\n" "$C_DIM" "$C_RESET" "$engine" "${args[*]}" "$C_DIM" "$label" "$C_RESET"
+    "$engine" system df 2>/dev/null | sed 's/^/    /'
+    return 0
+  fi
+  if "$engine" "${args[@]}" >/dev/null 2>&1; then
+    ok "$engine: removed $label"
+  else
+    err "$engine image prune failed"
+    FAIL_COUNT=$((FAIL_COUNT + 1))
+  fi
+}
+
+if (( INCLUDE_DOCKER_IMAGES == 1 )); then
+  step "container images"
+  if (( DAYS == 0 )); then
+    warn "--days 0 with --include-docker-images removes every unused image,"
+    warn "  however recently it was pulled"
+  else
+    info "--days filters on image creation time, not pull time: an old image pulled today can be removed"
+  fi
+  if have docker && docker info >/dev/null 2>&1; then
+    prune_images docker
+  else
+    warn "docker not running — skipping"
+  fi
+  # The invoking user's store only: rootless and rootful podman keep separate
+  # image stores, and this run cleans the one it can see.
+  if have podman; then
+    prune_images podman
+  fi
+else
+  info "skipped: container images (pass --include-docker-images)"
+fi
+
+# --- snap revisions --------------------------------------------------------
+# snapd keeps the previous revision of every snap, marked disabled, for
+# rollback. Only rows whose Notes column says disabled are candidates, so the
+# active revision is never named; each removal goes through run_root, which
+# --no-sudo skips and --dry-run previews.
+if (( INCLUDE_SNAP_REVISIONS == 1 )); then
+  step "snap revisions"
+  if have snap; then
+    # The listing's own status matters: with snapd down it prints nothing,
+    # which must not read as "no disabled revisions".
+    snap_listing=""
+    snap_list_ok=1
+    snap_listing="$(LC_ALL=C snap list --all 2>/dev/null)" || snap_list_ok=0
+    if (( snap_list_ok == 0 )); then
+      warn "snap list --all failed (is snapd running?) - snap revisions not checked"
+      FAIL_COUNT=$((FAIL_COUNT + 1))
+      snap_revs=""
+    else
+      snap_revs="$(awk 'NR > 1 && $NF ~ /disabled/ { print $1, $3 }' <<<"$snap_listing")"
+    fi
+    snap_count=0
+    while read -r snap_name snap_rev; do
+      [[ -n "$snap_name" ]] || continue
+      # Snap names and revisions have a fixed alphabet; anything else is a
+      # parse surprise, not a command argument.
+      [[ "$snap_name" =~ ^[a-z0-9][a-z0-9-]*$ && "$snap_rev" =~ ^x?[0-9]+$ ]] || continue
+      snap_count=$((snap_count + 1))
+      # stdin is the list being read; nothing run here may consume it.
+      run_root "remove snap $snap_name revision $snap_rev" snap remove "$snap_name" --revision="$snap_rev" < /dev/null
+    done <<< "$snap_revs"
+    if (( snap_count == 0 && snap_list_ok == 1 )); then
+      info "no disabled snap revisions"
+    fi
+    info "to keep fewer from now on: sudo snap set system refresh.retain=2"
+  else
+    info "snap not installed - skipping"
+  fi
+else
+  info "skipped: snap revisions (pass --include-snap-revisions)"
+fi
+
 # --- coredumps -------------------------------------------------------------
 # systemd-coredump and apport leave files that are safe to delete once they
 # are old enough to have been collected. The default directories are skipped
@@ -665,6 +927,28 @@ else
   info "skipped: coredumps (pass --include-coredumps)"
 fi
 
+# --- logs ------------------------------------------------------------------
+# Rotated logs are the usual space hog on a server that is not journald-only.
+# Same gate as coredumps: opt-in, age-filtered, and previewed by --dry-run.
+if (( INCLUDE_LOGS == 1 )); then
+  step "logs"
+  log_dirs=()
+  if (( LOG_OVERRIDE == 1 )); then
+    log_dirs=("${LOG_DIRS[@]}")
+  else
+    log_dirs+=("/var/log")
+  fi
+  seen_logs=""
+  for dir in "${log_dirs[@]}"; do
+    [[ -n "$dir" ]] || continue
+    case " $seen_logs " in *" $dir "*) continue ;; esac
+    seen_logs="$seen_logs $dir"
+    clean_log_dir "$dir"
+  done
+else
+  info "skipped: logs (pass --include-logs)"
+fi
+
 # --- report ----------------------------------------------------------------
 step "report"
 if have df; then
@@ -675,11 +959,15 @@ printf "\n"
 if (( DRY_RUN == 1 )); then
   info "would free at least $(human_bytes "$WOULD_BYTES") in total"
   printf "dry-run complete; no changes written\n"
+  if (( FAIL_COUNT > 0 )); then
+    err "$FAIL_COUNT step(s) failed"
+    exit 1
+  fi
   exit 0
 fi
 info "freed at least $(human_bytes "$FREED_BYTES") in total"
 if (( FAIL_COUNT > 0 )); then
-  err "$FAIL_COUNT deletion(s) failed"
+  err "$FAIL_COUNT deletion(s) or step(s) failed"
   exit 1
 fi
 ok "done"

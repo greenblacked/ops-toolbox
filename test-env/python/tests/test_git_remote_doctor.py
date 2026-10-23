@@ -8,6 +8,9 @@ as a string, which is why they can be tested at all.
 
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
@@ -456,6 +459,317 @@ class NeedsCredentialsTestCase(unittest.TestCase):
 
     def test_ssh_only_does_not(self):
         self.assertFalse(doctor.needs_credentials(["ssh", "scp", "local"]))
+
+
+class RenderJsonTestCase(unittest.TestCase):
+    """--json: the same report as data.
+
+    EVENTS and SECTION are module state the printers write to, so each test
+    starts from an empty list and puts both back afterwards.
+    """
+
+    def setUp(self):
+        self._events = list(doctor.EVENTS)
+        self._section = doctor.SECTION
+        doctor.EVENTS.clear()
+        doctor.SECTION = ""
+
+    def tearDown(self):
+        doctor.EVENTS[:] = self._events
+        doctor.SECTION = self._section
+
+    def quietly(self, fn, *args):
+        with contextlib.redirect_stdout(io.StringIO()):
+            fn(*args)
+
+    def test_shape(self):
+        data = json.loads(doctor.render_json("x_doctor.py", [("ok", "s", "m")], 0))
+        self.assertEqual(
+            sorted(data), ["events", "exit_code", "problems", "schema", "tool"]
+        )
+        self.assertEqual(data["tool"], "x_doctor.py")
+        self.assertEqual(data["schema"], 1)
+        self.assertEqual(data["exit_code"], 0)
+        self.assertEqual(
+            data["events"], [{"level": "ok", "section": "s", "message": "m"}]
+        )
+
+    def test_problems_counts_only_fail_events(self):
+        events = [
+            ("fail", "a", "one"),
+            ("warn", "a", "two"),
+            ("info", "a", "three"),
+            ("detail", "b", "four"),
+            ("fail", "b", "five"),
+        ]
+        data = json.loads(doctor.render_json("t", events, 1))
+        self.assertEqual(data["problems"], 2)
+        self.assertEqual(data["exit_code"], 1)
+
+    def test_empty_events(self):
+        data = json.loads(doctor.render_json("t", [], 0))
+        self.assertEqual(data["events"], [])
+        self.assertEqual(data["problems"], 0)
+
+    def test_unicode_message_survives(self):
+        message = "not ignored — the file is tracked"
+        data = json.loads(doctor.render_json("t", [("fail", "s", message)], 1))
+        self.assertEqual(data["events"][0]["message"], message)
+
+    def test_output_is_one_line(self):
+        out = doctor.render_json("t", [("info", "s", "a\nb")], 0)
+        self.assertNotIn("\n", out)
+
+    def test_ansi_is_not_in_the_message(self):
+        self.quietly(doctor.raw, "        \x1b[2mpath\x1b[0m  (rule)")
+        self.assertEqual(doctor.EVENTS, [("detail", "", "path  (rule)")])
+        self.assertNotIn("\x1b", doctor.EVENTS[0][2])
+
+    def test_head_sets_the_section_of_following_events(self):
+        self.quietly(doctor.head, "remotes")
+        self.quietly(doctor.bad, "broken")
+        self.quietly(doctor.info, "fix: something")
+        self.assertEqual(
+            doctor.EVENTS,
+            [("fail", "remotes", "broken"), ("info", "remotes", "fix: something")],
+        )
+
+    def test_printers_record_their_level(self):
+        for fn, level in ((doctor.ok, "ok"), (doctor.warn, "warn"),
+                          (doctor.bad, "fail"), (doctor.info, "info")):
+            self.quietly(fn, "m")
+            self.assertEqual(doctor.EVENTS[-1][0], level)
+
+
+class JsonRedactionTestCase(unittest.TestCase):
+    """--json must never say more than the text report did.
+
+    Redaction happens before a line reaches a printer, and the printers are
+    what record, so a secret the text hides cannot surface in the JSON. Both
+    leak paths the text report already guards are driven through here.
+    """
+
+    def setUp(self):
+        self._events = list(doctor.EVENTS)
+        doctor.EVENTS.clear()
+
+    def tearDown(self):
+        doctor.EVENTS[:] = self._events
+
+    def rendered(self):
+        return doctor.render_json("git_remote_doctor.py", doctor.EVENTS, 0)
+
+    def test_token_in_a_url_is_not_in_the_json(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            doctor.report_url("fetch", "https://user:s3cretpw@example.com/r.git",
+                              [], push=False)
+        out = self.rendered()
+        self.assertNotIn("s3cretpw", out)
+        self.assertIn("user:***@example.com", out)
+
+    def test_shell_helper_password_is_not_in_the_json(self):
+        entries = {"credential.helper": [
+            ("!f() { echo password=hunter2hunter2; }; f", "file:/x/config", "global"),
+        ]}
+        with contextlib.redirect_stdout(io.StringIO()):
+            doctor.diagnose_credentials(entries, [], "", "")
+        out = self.rendered()
+        self.assertNotIn("hunter2hunter2", out)
+        self.assertIn("password=***", out)
+
+
+class ScopedCredentialHelperTestCase(unittest.TestCase):
+    """credential.<url>.helper counts toward the helpers a URL gets."""
+
+    SHELL = "!f() { :; }; f"
+
+    def diagnose(self, entries, urls):
+        parts = [doctor.parse_url(u) for u in urls]
+        with contextlib.redirect_stdout(io.StringIO()):
+            return doctor.diagnose_credentials(entries, parts, "", "")
+
+    def test_scoped_only_helper_passes_for_a_matching_url(self):
+        entries = {"credential.https://github.com.helper": [
+            (self.SHELL, "file:/x/config", "global")]}
+        self.assertEqual(
+            self.diagnose(entries, ["https://github.com/o/r.git"]), 0)
+
+    def test_scoped_helper_does_not_cover_another_host(self):
+        entries = {"credential.https://github.com.helper": [
+            (self.SHELL, "file:/x/config", "global")]}
+        self.assertEqual(
+            self.diagnose(entries, ["https://gitlab.com/o/r.git"]), 1)
+
+    def test_no_helper_at_all_is_still_a_problem(self):
+        self.assertEqual(self.diagnose({}, ["https://github.com/o/r.git"]), 1)
+
+    def test_url_matching_rules(self):
+        match = doctor.credential_url_matches
+        url = doctor.parse_url("https://user@example.com:443/team/repo.git")
+        self.assertTrue(match("https://example.com", url))
+        self.assertTrue(match("https://EXAMPLE.com/team", url))
+        self.assertTrue(match("https://user@example.com", url))
+        self.assertFalse(match("https://other@example.com", url))
+        self.assertFalse(match("https://example.com/tea", url))
+        self.assertFalse(match("http://example.com", url))
+        self.assertFalse(match("https://example.com:8443", url))
+        self.assertFalse(match("https://*.example.com", url))
+        self.assertTrue(match("https://*.example.com", doctor.parse_url(
+            "https://git.example.com/r")))
+
+    def test_empty_scoped_value_resets_the_list(self):
+        entries = {
+            "credential.helper": [(self.SHELL, "file:/x/config", "global")],
+            "credential.https://a.example.helper": [("", "file:/x/config", "local")],
+        }
+        helpers, _ = doctor.effective_credential_helpers(
+            entries, doctor.parse_url("https://a.example/r"))
+        self.assertEqual(helpers, [])
+
+
+class ClassifyRemoteErrorTestCase(unittest.TestCase):
+    """--probe: one named cause per failure, from git's and ssh's own words.
+
+    The fixtures are the messages git and OpenSSH print, so a reworded
+    pattern that stops matching them fails here rather than in someone's CI.
+    """
+
+    def cause(self, stderr, host=""):
+        return doctor.classify_remote_error(stderr, host)[0]
+
+    def test_dns_over_ssh(self):
+        self.assertEqual(self.cause(
+            "ssh: Could not resolve hostname github.invalid: Name or service not known\n"
+            "fatal: Could not read from remote repository."), "dns")
+
+    def test_dns_over_https(self):
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h.invalid/r.git/': Could not resolve host: "
+            "h.invalid"), "dns")
+
+    def test_ssh_publickey_names_the_ssh_doctor_for_the_host(self):
+        cause, hint = doctor.classify_remote_error(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository.", "github.com")
+        self.assertEqual(cause, "ssh-auth")
+        self.assertIn("git_ssh_doctor.py --host github.com", hint)
+
+    def test_unknown_host_key(self):
+        cause, hint = doctor.classify_remote_error(
+            "Host key verification failed.\n"
+            "fatal: Could not read from remote repository.", "git.example.com")
+        self.assertEqual(cause, "hostkey-unknown")
+        self.assertIn("ssh-keyscan -t ed25519 git.example.com", hint)
+        self.assertIn("verify the fingerprint", hint)
+
+    def test_changed_host_key_beats_the_verification_failure_it_also_prints(self):
+        cause, hint = doctor.classify_remote_error(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n"
+            "Host key verification failed.", "h")
+        self.assertEqual(cause, "hostkey-changed")
+        self.assertIn("ssh-keygen -R h", hint)
+
+    def test_tls(self):
+        cause, hint = doctor.classify_remote_error(
+            "fatal: unable to access 'https://x.example/r.git/': SSL certificate problem: "
+            "unable to get local issuer certificate")
+        self.assertEqual(cause, "tls")
+        # sslVerify=false is named only as what not to do.
+        self.assertIn("not a fix", hint)
+
+    def test_http_auth_without_a_prompt(self):
+        self.assertEqual(self.cause(
+            "fatal: could not read Username for 'https://github.com': terminal prompts "
+            "disabled"), "http-auth")
+
+    def test_http_403(self):
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h/r.git/': The requested URL returned error: "
+            "403"), "http-auth")
+
+    def test_repository_not_found(self):
+        self.assertEqual(self.cause(
+            "remote: Repository not found.\nfatal: repository 'https://h/o/r.git/' not found"),
+            "not-found")
+
+    def test_local_path_that_is_not_a_repository(self):
+        self.assertEqual(self.cause(
+            "fatal: '/nonexistent' does not appear to be a git repository\n"
+            "fatal: Could not read from remote repository."), "not-found")
+
+    def test_connection_refused(self):
+        self.assertEqual(self.cause(
+            "ssh: connect to host h port 22: Connection refused"), "network")
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://127.0.0.1:1/r.git/': Failed to connect to "
+            "127.0.0.1 port 1 after 0 ms: Couldn't connect to server"), "network")
+
+    def test_timeout(self):
+        self.assertEqual(self.cause(
+            "ssh: connect to host h port 22: Connection timed out"), "timeout")
+        self.assertEqual(self.cause("timed out after 20s"), "timeout")
+
+    def test_proxy(self):
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h/': CONNECT tunnel failed, response 403"),
+            "proxy")
+        self.assertEqual(self.cause(
+            "fatal: unable to access 'https://h/': Received HTTP code 407 from proxy after "
+            "CONNECT"), "proxy")
+
+    def test_dns_beats_the_generic_could_not_read_suffix(self):
+        # Every ssh failure ends with this line, so on its own it names nothing.
+        self.assertEqual(self.cause(
+            "fatal: Could not read from remote repository.\n\n"
+            "Please make sure you have the correct access rights\n"
+            "and the repository exists."), "other")
+
+    def test_empty_and_unknown_text_is_other(self):
+        self.assertEqual(self.cause(""), "other")
+        self.assertEqual(self.cause("something nobody has seen before"), "other")
+
+    def test_matching_is_case_insensitive(self):
+        self.assertEqual(self.cause("GIT@H: PERMISSION DENIED (PUBLICKEY)."), "ssh-auth")
+
+    def test_a_missing_host_still_gives_a_readable_hint(self):
+        _, hint = doctor.classify_remote_error("Host key verification failed.")
+        self.assertIn("<host>", hint)
+
+
+class RedactTextTestCase(unittest.TestCase):
+    """--probe prints git's stderr, and git repeats the URL it dialled."""
+
+    def test_userinfo_password_is_blanked(self):
+        self.assertEqual(
+            doctor.redact_text("https://user:s3cretpw@host/r.git"),
+            "https://user:***@host/r.git",
+        )
+
+    def test_password_inside_a_quoted_error_line(self):
+        out = doctor.redact_text(
+            "fatal: unable to access 'https://user:s3cretpw@host/r.git/': Failed")
+        self.assertNotIn("s3cretpw", out)
+        self.assertIn("https://user:***@host/r.git/", out)
+
+    def test_url_without_password_is_untouched(self):
+        self.assertEqual(
+            doctor.redact_text("https://user@host/r.git"), "https://user@host/r.git"
+        )
+
+    def test_multiple_urls_on_one_line(self):
+        out = doctor.redact_text("a https://u:pw1@h/x and https://v:pw2@k/y b")
+        self.assertEqual(out, "a https://u:***@h/x and https://v:***@k/y b")
+
+    def test_a_bare_token_as_userinfo_is_blanked(self):
+        out = doctor.redact_text("https://ghp_abcdefghijklmnopqrstuvwxyz0123@github.com/o/r")
+        self.assertNotIn("ghp_abcdefghijklmnopqrstuvwxyz0123", out)
+
+    def test_text_without_a_url_is_unchanged(self):
+        self.assertEqual(
+            doctor.redact_text("plain text, no url\nsecond line"),
+            "plain text, no url\nsecond line",
+        )
 
 
 if __name__ == "__main__":

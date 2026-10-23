@@ -355,6 +355,156 @@ else
   fi
 fi
 
+# --- the startup script is printed, not hand-written ------------------------
+# print_startup.sh prints the script that declares the globals again at every
+# boot, and its start-time=startup scheduler entry. What has to hold: the
+# output is pasteable as it stands, it carries no secret unless --from-env is
+# asked for, every setting it offers is one the script it names really
+# declares, and nothing it declares has the underscore 7.24 refuses.
+#
+# The three secrets are pinned for every call below: the script reads them
+# from the environment, and a developer's exported token must not reach a
+# test that asserts placeholders.
+unset TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID ROUTER_BACKUP_PASSWORD
+# The static suite discovers command-line scripts from the git index, mode
+# 100755, and holds them to --help, the exit-3 contract and the dry run; the
+# executable bit is checked here so the two cannot silently disagree.
+STARTUP="$(sfile print_startup.sh)"
+if [[ ! -x "$STARTUP" ]]; then
+  err "expected an executable at $STARTUP"
+else
+  NO_COLOR=1 "$STARTUP" --help >/dev/null 2>&1
+  rc=$?
+  if (( rc == 0 )); then ok "print_startup.sh --help exits 0 before anything else"; else err "print_startup.sh --help exited $rc"; fi
+  NO_COLOR=1 "$STARTUP" --definitely-not-a-flag >/dev/null 2>&1
+  rc=$?
+  if (( rc == 3 )); then ok "print_startup.sh unknown flag -> 3"; else err "print_startup.sh unknown flag exited $rc, expected 3"; fi
+  NO_COLOR=1 "$STARTUP" stray >/dev/null 2>&1
+  rc=$?
+  if (( rc == 3 )); then ok "print_startup.sh unexpected positional -> 3"; else err "print_startup.sh unexpected positional exited $rc, expected 3"; fi
+
+  startup_out="$(NO_COLOR=1 "$STARTUP")"
+  rc=$?
+  if (( rc == 0 )) \
+     && grep -q '^/system script add name=startup policy=read,write,policy,test,sensitive,ftp source={$' <<<"$startup_out" \
+     && grep -q '^/system scheduler add name=startup start-time=startup ' <<<"$startup_out" \
+     && grep -qF 'on-event="/system script run startup"' <<<"$startup_out"; then
+    ok "default output has the startup script add and a start-time=startup scheduler"
+  else
+    err "print_startup.sh default output lacks the script add or its startup scheduler (exit $rc)"
+  fi
+  if grep -qF ':global TgBotToken "<paste bot token>";' <<<"$startup_out" \
+     && grep -qF ':global TgChatId "<paste chat id>";' <<<"$startup_out" \
+     && ! grep -qE '[0-9]{6,}:[A-Za-z0-9_-]{30,}' <<<"$startup_out"; then
+    ok "default output contains no real-looking secret and uses placeholders"
+  else
+    err "print_startup.sh default output must use placeholders and hold no token"
+  fi
+
+  # Every setting in the table is declared by the script it is listed under.
+  # The table is read from the file itself, so a row added later is checked
+  # by the commit that adds it.
+  knob_rows=0
+  knob_bad=0
+  while read -r knob_script knob_name _; do
+    [[ -n "$knob_script" ]] || continue
+    knob_rows=$((knob_rows + 1))
+    knob_file="$(sfile "$knob_script.lua")" || { err "print_startup.sh lists $knob_script, which is not a script under mikrotik/"; knob_bad=$((knob_bad + 1)); continue; }
+    if ! grep -qE "^[[:space:]]*:global +$knob_name([^A-Za-z0-9]|\$)" "$knob_file"; then
+      err "print_startup.sh offers $knob_name for $knob_script, which does not declare it"
+      knob_bad=$((knob_bad + 1))
+    fi
+  done < <(awk '/<<.KNOBS.$/ { inside = 1; next } /^KNOBS$/ { inside = 0 } inside' "$STARTUP")
+  if (( knob_rows == 0 )); then
+    err "read no rows from print_startup.sh's settings table - this check has stopped checking"
+  elif (( knob_bad == 0 )); then
+    ok "every :global in the knob table appears in the script it is attributed to ($knob_rows rows)"
+  fi
+
+  # Every --only, all at once: no line it prints may declare an underscored
+  # name, commented or not, because pasting it would recreate the 7.24 trap.
+  all_only=()
+  while IFS= read -r listed; do
+    [[ -n "$listed" ]] && all_only+=(--only "$listed")
+  done < <(NO_COLOR=1 "$STARTUP" --list)
+  full_out="$(NO_COLOR=1 "$STARTUP" ${all_only[@]+"${all_only[@]}"})"
+  if (( ${#all_only[@]} == 0 )); then
+    err "print_startup.sh --list returned nothing to select"
+  elif grep -qE '^[#[:space:]]*:global +[A-Za-z0-9]*_' <<<"$full_out"; then
+    err "print_startup.sh emits an underscored :global, which RouterOS 7.24 refuses"
+  else
+    ok "no emitted :global name contains an underscore ($(( ${#all_only[@]} / 2 )) scripts selected)"
+  fi
+
+  only_out="$(NO_COLOR=1 "$STARTUP" --only stay_fresh)"
+  if grep -qF '# :global StayFreshDryRun false;' <<<"$only_out" \
+     && ! grep -qE '^:global StayFresh' <<<"$only_out"; then
+    ok "--only stay_fresh adds StayFreshDryRun as a comment"
+  else
+    err "print_startup.sh --only stay_fresh must list StayFreshDryRun commented out"
+  fi
+  # A quoted default with spaces in it must survive the table's parsing whole,
+  # and its note must not swallow the end of the value.
+  backup_out="$(NO_COLOR=1 "$STARTUP" --only backup)"
+  if grep -qxF '# :global RouterBackupPassword "<paste backup password>";' <<<"$backup_out" \
+     && grep -qxF '# RouterBackupPassword: encrypts the binary backup; leave unset for none' <<<"$backup_out"; then
+    ok "--only backup prints the RouterBackupPassword placeholder intact"
+  else
+    err "print_startup.sh --only backup split the quoted RouterBackupPassword placeholder"
+  fi
+  NO_COLOR=1 "$STARTUP" --only nosuch >/dev/null 2>&1
+  rc=$?
+  if (( rc == 3 )); then ok "print_startup.sh --only nosuch -> 3"; else err "print_startup.sh --only nosuch exited $rc, expected 3"; fi
+  listed="$(NO_COLOR=1 "$STARTUP" --list)"
+  rc=$?
+  if (( rc == 0 )) && grep -qx 'stay_fresh' <<<"$listed"; then
+    ok "print_startup.sh --list exits 0 and includes stay_fresh"
+  else
+    err "print_startup.sh --list exited $rc or omitted stay_fresh"
+  fi
+  NO_COLOR=1 "$STARTUP" --policy READ,write >/dev/null 2>&1
+  rc=$?
+  if (( rc == 3 )); then ok "print_startup.sh --policy with uppercase -> 3"; else err "print_startup.sh --policy READ,write exited $rc, expected 3"; fi
+
+  env_err="$(NO_COLOR=1 TELEGRAM_CHAT_ID=4242 "$STARTUP" --from-env 2>&1 >/dev/null)"
+  rc=$?
+  if (( rc == 3 )) && [[ "$env_err" == *TELEGRAM_BOT_TOKEN* && "$env_err" != *4242* ]]; then
+    ok "--from-env without TELEGRAM_BOT_TOKEN -> 3 and stderr has no value"
+  else
+    err "--from-env without TELEGRAM_BOT_TOKEN exited $rc, or echoed a value: $env_err"
+  fi
+  env_err="$(NO_COLOR=1 TELEGRAM_BOT_TOKEN='12345678:quote"inside' TELEGRAM_CHAT_ID=4242 \
+    "$STARTUP" --from-env 2>&1 >/dev/null)"
+  rc=$?
+  if (( rc == 3 )) && [[ "$env_err" != *'quote"inside'* ]]; then
+    ok "--from-env with a value containing a double quote -> 3"
+  else
+    err "--from-env accepted a double quote, or echoed the value (exit $rc)"
+  fi
+  env_out="$(NO_COLOR=1 TELEGRAM_BOT_TOKEN=111111:pu-ut-not-a-token TELEGRAM_CHAT_ID=4242 \
+    ROUTER_BACKUP_PASSWORD=pu-ut-backup "$STARTUP" --from-env --only backup)"
+  rc=$?
+  if (( rc == 0 )) \
+     && grep -qF ':global TgBotToken "111111:pu-ut-not-a-token";' <<<"$env_out" \
+     && grep -qF ':global TgChatId "4242";' <<<"$env_out" \
+     && grep -qF ':global RouterBackupPassword "pu-ut-backup";' <<<"$env_out"; then
+    ok "--from-env with valid values prints them in the :global lines"
+  else
+    err "print_startup.sh --from-env did not print the environment's values (exit $rc)"
+  fi
+
+  dry_out="$(NO_COLOR=1 "$STARTUP" --dry-run)"
+  rc=$?
+  dry_tail="${dry_out#"$startup_out"}"
+  if (( rc == 0 )) && [[ "$dry_out" == "$startup_out"* ]] \
+     && [[ "$dry_tail" == $'\n\n# --dry-run:'* ]] \
+     && [[ "${dry_tail#$'\n\n'}" != *$'\n'* ]]; then
+    ok "--dry-run output equals default output plus the closing comment"
+  else
+    err "print_startup.sh --dry-run must print the default output and one closing comment (exit $rc)"
+  fi
+fi
+
 # --- blocking scripts keep their fail-safe floor ---------------------------
 # CONTRIBUTING.md: any script that deletes or blocks needs a floor, and that
 # floor should be its first test. The behavioural tests live in the CHR suite;
@@ -377,6 +527,14 @@ if grep -q 'MAC_ALLOWLIST empty' "$(sfile mac_allowlist_dhcp.lua)" \
   ok "mac_allowlist_dhcp.lua refuses an empty allowlist"
 else
   err "mac_allowlist_dhcp.lua is missing its empty-allowlist fail-safe"
+fi
+# conntrack_watch.lua divides by max-entries. An unreadable or zero maximum has
+# to stop the run with a log line, not end it in a division nobody sees fail.
+if grep -q 'max-entries unavailable' "$(sfile conntrack_watch.lua)" \
+   && grep -qF '($maxEntries <= 0)' "$(sfile conntrack_watch.lua)"; then
+  ok "conntrack_watch.lua skips when max-entries is unreadable or zero"
+else
+  err "conntrack_watch.lua is missing its max-entries fail-safe"
 fi
 
 # --- HTTPS fetches verify TLS certificates ---------------------------------

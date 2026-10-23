@@ -16,6 +16,13 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `macos-initial-setup/status.sh` | macOS | One-screen verdict: OS, disk, Homebrew, git identity, agent, FileVault, SIP. | <span class="stage stage-report">read-only</span> |
 | `macos-initial-setup/workstation_doctor.sh` | macOS | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `macos-initial-setup/hardening_audit.sh` | macOS | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/ops_context.sh` | macOS | Which Kubernetes context, gcloud project, AWS profile, Terraform workspace, Docker daemon and GitHub login this shell is pointed at. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/toolchain_check.sh` | macOS | Are the Python, Terraform, Go and Node versions a checkout pins installed and active? | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/net_doctor.sh` | macOS | Interfaces, default route, split DNS, system proxy against the shell, VPN tunnels, listeners. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/tls_expiry.sh` | macOS | Certificate expiry for PEM files, hosts and Keychain certificates within `--days`. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/schedule_report.sh` | macOS | Inventory of launchd agents and daemons, crontab and `at` jobs. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/ssh_client_doctor.sh` | macOS | `~/.ssh` permissions, weak keys and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
+| `macos-initial-setup/config_backup.sh` | macOS | Dated, verified, rotated archive of dotfiles and tool config. | `--dry-run` |
 | `macos-initial-setup/install_apps.sh` | macOS | Install Homebrew casks, CLI formulae and the Google Cloud SDK. | `--dry-run` |
 | `macos-initial-setup/install_devtools.sh` | macOS | Install Python, Terraform, Go and Helm toolchains. | `--dry-run` |
 | `macos-initial-setup/stay_fresh.sh` | macOS | Recurring housekeeping, upgrades and reports. | `--dry-run` |
@@ -27,49 +34,72 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `linux/status.sh` | Linux | One-screen verdict: distro, disk, packages, reboot, timer, git identity. | <span class="stage stage-report">read-only</span> |
 | `linux/system_doctor.sh` | Linux | Long read-only health report. | <span class="stage stage-report">read-only</span> |
 | `linux/net_doctor.sh` | Linux | Interfaces, routes, DNS, sockets; optional `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `linux/listen_audit.sh` | Linux | Who owns each listening port; baseline drift check. | <span class="stage stage-report">read-only</span> |
 | `linux/hardening_audit.sh` | Linux | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
 | `linux/ssh_client_doctor.sh` | Linux | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
 | `linux/tls_expiry.sh` | Linux | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
-| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`. | <span class="stage stage-report">read-only</span> |
-| `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert` |
+| `linux/container_doctor.sh` | Linux | Grade Docker/Podman containers: state, security, logs. | <span class="stage stage-report">read-only</span> |
+| `linux/log_triage.sh` | Linux | What went wrong in the logs: kernel, units, auth, repeats. | <span class="stage stage-report">read-only</span> |
+| `linux/schedule_report.sh` | Linux | Inventory of systemd timers, crontab and `cron.d`; `--failed` finds broken ones. | <span class="stage stage-report">read-only</span> |
+| `linux/sysctl_defaults.sh` | Linux | Report sysctl values; `--check` gates on drift; `--apply` writes, `--revert` restores. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
+| `linux/swap_setup.sh` | Linux | Report swap; create or remove a swapfile and its fstab line. | `--dry-run` with `--create` or `--remove` |
 | `linux/stay_fresh.sh` | Linux | Package upgrade, journal vacuum, caches, containers. | `--dry-run` |
 | `linux/install_devtools.sh` | Linux | Install CLIs, Python, Go, Terraform, Helm. | `--dry-run` |
-| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras. | `--dry-run` |
-| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation. | `--dry-run` |
-| `linux/packages.sh` | Linux | List, dump, check, diff, install the package set. | `--dry-run` (install) |
+| `linux/disk_cleanup.sh` | Linux | Free disk space: temp files, caches, opt-in extras such as rotated logs, a journal size cap, unused images and old snap revisions. | `--dry-run` |
+| `linux/kernel_cleanup.sh` | Linux | Remove old kernel packages, keeping the running one plus N. | `--dry-run`; `--list` is read-only |
+| `linux/config_backup.sh` | Linux | Dated tar of `/etc` or `--paths`, with rotation and exclusions; `--diff` against the live tree. | `--dry-run`; `--diff` is read-only |
+| `linux/packages.sh` | Linux | List, dump, check, diff, install the package set; list holds and orphans. | `--dry-run` (install) |
 | `linux/install_aliases.sh` | Linux | Add a marked alias block to `~/.bashrc`. | `--dry-run` |
 | `linux/bash_aliases.sh` | Linux | Bash aliases; sourced. | n/a (sourced) |
 | `linux/systemd/stay_fresh_timer.sh` | Linux | Install and manage a systemd user timer. | `--dry-run` (install); `--print-only` |
 | `linux/cloud-init/kali-vm-init.yaml` | Linux | cloud-init user-data for a Kali VM (not a script). | n/a; validate with `cloud-init schema` |
 | `windows/setup/status.ps1` | Windows | One-screen verdict: OS, disk, winget, WSL, reboot, git identity. | <span class="stage stage-report">read-only</span> |
-| `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/workstation_doctor.ps1` | Windows | BitLocker, Defender, reboot flags, disk, WSL, execution policy, disk health, uptime, patch age, memory. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/net_doctor.ps1` | Windows | Adapters, routes, DNS, proxy, hosts file, listening ports; optional `-Probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/tls_expiry.ps1` | Windows | Certificate expiry for files, TLS endpoints and the personal stores. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/hardening_audit.ps1` | Windows | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/dev_env_doctor.ps1` | Windows | Long paths, git line endings and symlinks, virtualization, clock skew, `HOME`, docker context. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/ssh_client_doctor.ps1` | Windows | Key access lists, `ssh-agent` service, Git's bundled ssh, `IdentityFile` paths. | <span class="stage stage-report">read-only</span> |
+| `windows/setup/path_doctor.ps1` | Windows | PATH report and shadowed commands; `clean` tidies the user PATH with a backup. | `-DryRun` (clean); `-Yes` to write |
 | `windows/setup/stay_fresh.ps1` | Windows | winget upgrade, `wsl --update`, reboot and disk report. | `-DryRun` |
 | `windows/setup/winget_bootstrap.ps1` | Windows | Export, list, check, import, diff the winget package set. | `-DryRun` (import) |
 | `windows/setup/choco_bootstrap.ps1` | Windows | Export, list, check, install, diff Chocolatey packages. | `-DryRun` (install) |
 | `windows/setup/winget_configure.ps1` | Windows | Validate, show, test, apply `configuration.winget`. | `-DryRun` (apply) |
-| `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; deletes only with `-Yes`. | `-DryRun` |
+| `windows/cleanup/clean_disk_c.ps1` | Windows | Free space on `C:`; opt-in crash dumps, servicing logs and component store; deletes only with `-Yes`. | `-DryRun` |
+| `windows/cleanup/disk_usage.ps1` | Windows | What fills `C:` and which tool gives each item back; `tree` for one folder. | <span class="stage stage-report">read-only</span> |
 | `windows/wsl/wsl_manage.ps1` | Windows | WSL2 list, backup, restore, prune, compact and more. | `-DryRun` (restore, prune-backups, terminate) |
 | `windows/git-bash/install_dotfiles.sh` | Windows | Copy Git Bash dotfiles into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
 | `git/git_whoami.sh` | Git | Effective Git name and email. | <span class="stage stage-report">read-only</span> |
 | `git/git_status_summary.sh` | Git | Compact branch and dirty-count summary. | <span class="stage stage-report">read-only</span> |
 | `git/git_repo_root.sh` | Git | Print the worktree root or git dir. | <span class="stage stage-report">read-only</span> |
-| `git/git_diff_branch.sh` | Git | Diff from the merge base to `HEAD`. | <span class="stage stage-report">read-only</span> |
+| `git/git_diff_branch.sh` | Git | Diff from the merge base to `HEAD`; changed-file modes for CI. | <span class="stage stage-report">read-only</span> |
+| `git/git_merge_check.sh` | Git | Forecast merge conflicts with no checkout. | <span class="stage stage-report">read-only</span> |
 | `git/git_recent_branches.sh` | Git | List recent branches; `--switch N` checks one out. | none; `--switch` writes `HEAD` |
 | `git/git_stale_branches.sh` | Git | Report old branches and their state. | <span class="stage stage-report">read-only</span> |
 | `git/git_size_report.sh` | Git | Repository size and largest blobs. | <span class="stage stage-report">read-only</span> |
+| `git/git_commitlint.sh` | Git | Lint every commit message in a range, for CI. | <span class="stage stage-report">read-only</span> |
+| `git/git_release_notes.sh` | Git | Release notes since the last tag, and the next version. | <span class="stage stage-report">read-only</span> |
+| `git/git_repos_status.sh` | Git | Status of every checkout under a directory. | <span class="stage stage-report">read-only</span> |
+| `git/git_unpushed.sh` | Git | Everything in a repository that exists only locally. | <span class="stage stage-report">read-only</span> |
 | `git/gacp.sh` | Git | Add all, commit and push. | `--dry-run` |
 | `git/set_git_profile.sh` | Git | Set or save Git author identity profiles. | `--dry-run` |
 | `git/git_sync_default.sh` | Git | Fetch and fast-forward the default branch. | `--dry-run` |
 | `git/git_cleanup_merged.sh` | Git | Delete local branches merged into a base. | `--dry-run` |
 | `git/git_prune_gone.sh` | Git | Delete local branches whose upstream is gone. | `--dry-run` |
+| `git/git_bundle_backup.sh` | Git | Verified, timestamped bundle of every ref. | `--dry-run` |
 | `git/git_undo_last_commit.sh` | Git | Move `HEAD` back one commit or revert it. | `--dry-run` |
 | `git/git_amend_last.sh` | Git | Amend the last commit. | `--dry-run` |
-| `git/git_hooks_install.sh` | Git | Install, check, remove pre-commit guards. | `--dry-run` (install, uninstall) |
-| `git/clone-repos.sh` | Git | Clone every URL in a list file. | `--dry-run` |
+| `git/git_hooks_install.sh` | Git | Install, check, remove pre-commit guards; opt-in commit-msg and pre-push hooks. | `--dry-run` (install, uninstall) |
+| `git/clone-repos.sh` | Git | Clone every URL in a list file; `--update` fast-forwards existing checkouts. | `--dry-run` |
 | `git/git_ssh_doctor.py` | Git | Diagnose git-over-SSH auth. | <span class="stage stage-report">read-only</span> |
 | `git/git_signing_doctor.py` | Git | Diagnose commit-signing failures. | <span class="stage stage-report">read-only</span> |
 | `git/git_remote_doctor.py` | Git | Diagnose remote URLs and credential helpers. | <span class="stage stage-report">read-only</span> |
 | `git/git_ignore_doctor.py` | Git | Explain why a path is or is not ignored. | <span class="stage stage-report">read-only</span> |
+| `git/git_health_doctor.py` | Git | Stale locks, a blocked automatic gc, object bloat. | <span class="stage stage-report">read-only</span> |
+| `git/git_secrets_doctor.py` | Git | Committed credentials in names, content and history. | <span class="stage stage-report">read-only</span> |
+| `git/git_hooks_doctor.py` | Git | Why a hook does not run. | <span class="stage stage-report">read-only</span> |
+| `git/git_submodule_doctor.py` | Git | Submodule mapping, state, URLs and drift. | <span class="stage stage-report">read-only</span> |
+| `git/git_fleet_doctor.py` | Git | Every doctor across many repositories, one table. | <span class="stage stage-report">read-only</span> |
 | `git/git_aliases.sh` | Git | Bash aliases for the helpers; sourced. | n/a (sourced) |
 | `git/git_aliases.zsh` | Git | zsh aliases for the helpers; sourced. | n/a (sourced) |
 | `mikrotik/core/tg_send.lua` | MikroTik | Telegram text helper used by alerting scripts. | n/a (RouterOS script, no flags) |
@@ -82,6 +112,7 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/stay_fresh.lua` | MikroTik | Back up, update RouterOS and firmware; reboots. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/update_check.lua` | MikroTik | Back up, then notify of an update (retired on 7.24). | n/a (RouterOS script, no flags) |
 | `mikrotik/features/health_check.lua` | MikroTik | CPU, RAM, disk, temperature watchdog. | n/a (RouterOS script, no flags) |
+| `mikrotik/features/conntrack_watch.lua` | MikroTik | Warn before the connection-tracking table fills. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/security_check.lua` | MikroTik | Hardening audit; reports findings only. | <span class="stage stage-report">read-only</span> |
 | `mikrotik/features/cert_expiry_watch.lua` | MikroTik | Warn before a certificate expires. | n/a (RouterOS script, no flags) |
 | `mikrotik/features/netwatch_notify.lua` | MikroTik | Telegram alerts from netwatch events. | n/a (RouterOS script, no flags) |
@@ -103,13 +134,22 @@ the script only inspects state, and "n/a" means no preview applies. Check
 | `mikrotik/features/export_config.py` | MikroTik | Host: export `/export` over SSH, diff, optional git commit. | `--stdout` or `--diff` |
 | `mikrotik/features/router_doctor.py` | MikroTik | Host: audit installed, scheduled and configured scripts. | <span class="stage stage-report">read-only</span> |
 | `mikrotik/features/print_schedulers.sh` | MikroTik | Host: print `/system scheduler` commands. | prints only; `--dry-run` accepted |
+| `mikrotik/features/print_startup.sh` | MikroTik | Host: print the startup script that sets the globals at boot. | prints only; `--dry-run` accepted |
 | `mikrotik/features/pull_router_backups.sh` | MikroTik | Host: pull backups over SFTP/SCP. | `--dry-run` |
-| `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, events and PVCs. | <span class="stage stage-report">read-only</span> |
-| `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_pod_diag.sh` | Kubernetes | Triage unhealthy pods, OOM kills, events and PVCs. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_workload_diag.sh` | Kubernetes | Triage stuck rollouts, autoscalers and failed Jobs. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_cert_expiry.sh` | Kubernetes | Report expired and expiring TLS certificates. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_drain_preflight.sh` | Kubernetes | Check what would block a node drain. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_node_capacity.sh` | Kubernetes | Requests against allocatable per node. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_workload_audit.sh` | Kubernetes | Audit workload pod templates for production readiness. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_rbac_audit.sh` | Kubernetes | Review RBAC bindings and roles. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/gke_cluster_doctor.sh` | Kubernetes | GKE cluster health checks, from release channel to network policy. | <span class="stage stage-report">read-only</span> |
+| `k8s-toolbox/kubectl_pod_cleanup.sh` | Kubernetes | Delete dead Failed or Succeeded pods by name. | `--dry-run` is the default; `--yes` applies |
 | `k8s-toolbox/build.sh` | Kubernetes | Build the toolbox image with buildx. | `--dry-run` |
 | `k8s-toolbox/run.sh` | Kubernetes | Run the image with `~/.kube` mounted read-only. | `--dry-run` |
 | `k8s-toolbox/debug_pod.sh` | Kubernetes | Attach an ephemeral debug container to a pod. | `--dry-run` |
-| `dotfiles/install_dotfiles.sh` | Dotfiles | Link or copy tracked configs; report drift. | `--dry-run`; `--list`, `--status` are read-only |
+| `dotfiles/install_dotfiles.sh` | Dotfiles | Link or copy tracked configs; report drift. | `--dry-run` (also `--prune`, `--restore`); `--list`, `--status`, `--diff`, `--groups`, `--backups` are read-only |
+| `dotfiles/dotfiles_doctor.sh` | Dotfiles | Read-only health report for the installed configs. | <span class="stage stage-report">read-only</span> |
 
 <!-- markdownlint-enable MD033 -->
 

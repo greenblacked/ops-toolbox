@@ -8,8 +8,16 @@
 # Tests).
 set -uo pipefail
 
+# The ssh doctor honours GIT_SSH and GIT_SSH_COMMAND, so a value inherited from
+# the host must not aim the run. A test that needs one sets it for that command.
+unset GIT_SSH GIT_SSH_COMMAND
+
 REPO_ROOT="${REPO_ROOT:-/repo}"
 G="$REPO_ROOT/git"
+# The pre-push hook git_hooks_install.sh writes skips every check when this is
+# 1. Exported in the shell that runs the suite, it would turn each refusal
+# asserted below into a pass; it is set for exactly one push further down.
+unset GIT_ALLOW_PROTECTED_PUSH
 GACP="$G/gacp.sh"
 SET="$G/set_git_profile.sh"
 WHO="$G/git_whoami.sh"
@@ -26,10 +34,21 @@ PRUNE="$G/git_prune_gone.sh"
 STALE="$G/git_stale_branches.sh"
 SIZE="$G/git_size_report.sh"
 CLONE="$G/clone-repos.sh"
+REPOS_STATUS="$G/git_repos_status.sh"
+UNPUSHED="$G/git_unpushed.sh"
+MERGE_CHECK="$G/git_merge_check.sh"
+COMMITLINT="$G/git_commitlint.sh"
+RELEASE_NOTES="$G/git_release_notes.sh"
+BUNDLE_BACKUP="$G/git_bundle_backup.sh"
 SSH_DOCTOR="$G/git_ssh_doctor.py"
 SIGNING_DOCTOR="$G/git_signing_doctor.py"
 REMOTE_DOCTOR="$G/git_remote_doctor.py"
 IGNORE_DOCTOR="$G/git_ignore_doctor.py"
+HEALTH_DOCTOR="$G/git_health_doctor.py"
+SECRETS_DOCTOR="$G/git_secrets_doctor.py"
+HOOKS_DOCTOR="$G/git_hooks_doctor.py"
+FLEET_DOCTOR="$G/git_fleet_doctor.py"
+SUBMODULE_DOCTOR="$G/git_submodule_doctor.py"
 BASH_TEMPLATE="$REPO_ROOT/templates/new_script.sh"
 PY_TEMPLATE="$REPO_ROOT/templates/new_helper.py"
 
@@ -246,6 +265,12 @@ fi
 alias_out="$(bash -c ". '$G/git_aliases.sh'; alias" 2>/dev/null)"
 assert_contains "$alias_out" "$G/gacp.sh" "git_aliases.sh points gacp at the script beside it"
 assert_contains "$alias_out" "$G/git_stale_branches.sh" "git_aliases.sh covers the other helpers"
+assert_contains "$alias_out" "grepos='$REPOS_STATUS'" "git_aliases.sh defines grepos"
+assert_contains "$alias_out" "gunpushed='$UNPUSHED'" "git_aliases.sh defines gunpushed"
+assert_contains "$alias_out" "gmcheck='$MERGE_CHECK'" "git_aliases.sh defines gmcheck"
+assert_contains "$alias_out" "glint='$COMMITLINT'" "git_aliases.sh defines glint"
+assert_contains "$alias_out" "gnotes='$RELEASE_NOTES'" "git_aliases.sh defines gnotes"
+assert_contains "$alias_out" "gbundle='$BUNDLE_BACKUP'" "git_aliases.sh defines gbundle"
 
 # The guard is the point of the file: copied somewhere the scripts are not,
 # and with nothing of that name on PATH, it must define no aliases at all
@@ -658,6 +683,91 @@ git -C "$repo" add local.txt
 out="$(cd "$repo" && "$DIFFBR" --stat --base main --working-tree)"
 assert_contains "$out" "local.txt" "git_diff_branch --working-tree includes staged work"
 
+section "diff branch changed files"
+# A branch that adds k8s/a.yaml, modifies file.txt, and adds docs/b.md only to
+# delete it again, so the doc is absent from the net change.
+repo="$(new_repo)"
+printf "stable\n" >"$repo/extra.txt"
+git -C "$repo" add extra.txt
+git -C "$repo" commit -q -m "a file the branch leaves alone"
+git -C "$repo" switch -q -c feature
+mkdir -p "$repo/k8s" "$repo/docs"
+printf "kind: ConfigMap\n" >"$repo/k8s/a.yaml"
+printf "doc\n" >"$repo/docs/b.md"
+printf "changed\n" >>"$repo/file.txt"
+git -C "$repo" add k8s/a.yaml docs/b.md file.txt
+git -C "$repo" commit -q -m "feature work" ||
+  err "the feature commit exited $? — every changed-file assertion below would read an empty branch"
+git -C "$repo" rm -q docs/b.md
+git -C "$repo" commit -q -m "drop the doc again"
+
+out="$(cd "$repo" && "$DIFFBR" --base main)"
+# The diffstat pads names to the longest one, so match the column loosely.
+if grep -Eq -- 'file\.txt +\|' <<<"$out" && grep -Fq -- "2 files changed" <<<"$out"; then
+  ok "git_diff_branch still defaults to a diffstat"
+else
+  err "git_diff_branch still defaults to a diffstat: got: $out"
+fi
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
+assert_contains "$out" "k8s/a.yaml" "--name-only lists an added file"
+assert_contains "$out" "file.txt" "--name-only lists a modified file"
+assert_not_contains "$out" "docs/b.md" "--name-only leaves out a file added and deleted on the branch"
+assert_not_contains "$out" "|" "--name-only prints no diffstat"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-status)"
+assert_contains "$out" $'A\tk8s/a.yaml' "--name-status marks an added file A"
+assert_contains "$out" $'M\tfile.txt' "--name-status marks a modified file M"
+
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/)"
+assert_contains "$out" "k8s/a.yaml" "--path keeps the matching file"
+assert_not_contains "$out" "file.txt" "--path drops everything outside it"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path=k8s/)"
+assert_eq "$out" "k8s/a.yaml" "--path= equals form is accepted"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/ --path file.txt)"
+assert_contains "$out" "k8s/a.yaml" "two --path values: the first is kept"
+assert_contains "$out" "file.txt" "two --path values: the second is kept too"
+out="$(cd "$repo" && "$DIFFBR" --base main --stat --path k8s/)"
+assert_contains "$out" "k8s/a.yaml" "--stat --path keeps the matching file"
+assert_not_contains "$out" "file.txt" "--stat --path filters the stat too"
+(cd "$repo" && "$DIFFBR" --base main --path) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--path without a value -> 3"
+
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only --path docs/ --require-changes 2>/dev/null)"; rc=$?
+assert_eq "$rc" "4" "--require-changes with nothing under the path -> 4"
+assert_eq "$out" "" "--require-changes with nothing to show prints nothing on stdout"
+(cd "$repo" && "$DIFFBR" --base main --name-only --path k8s/ --require-changes) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "--require-changes with a change under the path -> 0"
+(cd "$repo" && "$DIFFBR" --base main --name-only --path docs/) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "an empty filtered diff without --require-changes still exits 0"
+
+printf "edited\n" >>"$repo/extra.txt"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-only)"
+assert_not_contains "$out" "extra.txt" "--name-only leaves out an unstaged edit by default"
+out="$(cd "$repo" && "$DIFFBR" --base main --working-tree --name-only)"
+assert_contains "$out" "extra.txt" "--working-tree --name-only includes an unstaged tracked edit"
+git -C "$repo" checkout -q -- extra.txt
+
+git -C "$repo" switch -q -c removal main
+git -C "$repo" rm -q file.txt
+git -C "$repo" commit -q -m "remove file.txt"
+out="$(cd "$repo" && "$DIFFBR" --base main --name-status)"
+assert_contains "$out" $'D\tfile.txt' "--name-status marks a deleted file D"
+
+# A fresh CI-style clone has origin/main and no local main.
+diff_origin="$(mktemp -d /tmp/git-diffbr-origin.XXXXXX)/origin.git"
+diff_clone="$(mktemp -d /tmp/git-diffbr-clone.XXXXXX)"
+rmdir "$diff_clone"
+git init -q --bare -b main "$diff_origin"
+git -C "$repo" push -q "$diff_origin" main feature ||
+  err "pushing to the bare origin exited $? — the clone below would have nothing to compare"
+git clone -q --branch feature "$diff_origin" "$diff_clone"
+out="$(cd "$diff_clone" && "$DIFFBR" --base origin/main --name-only 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a remote-tracking --base is accepted"
+assert_contains "$out" "k8s/a.yaml" "a remote-tracking --base diffs against the merge base"
+(cd "$diff_clone" && "$DIFFBR" --base nope --name-only) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "a base that is neither local nor remote-tracking -> 4"
+(cd "$diff_clone" && "$DIFFBR" --name-only) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "the default base is still inferred from local branches only"
+
 section "undo last commit"
 repo="$(new_repo)"
 printf "second\n" >>"$repo/file.txt"
@@ -771,6 +881,30 @@ fi
 section "prune durable recovery contracts"
 out="$(bash "$G/tests/test_prune_gone.sh" 2>&1)"; rc=$?
 assert_eq "$rc" "0" "prune recovery contract suite succeeds: $out"
+
+section "git_repos_status.sh"
+out="$(bash "$G/tests/test_repos_status.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "repos status suite succeeds: $out"
+
+section "git_unpushed.sh"
+out="$(bash "$G/tests/test_unpushed.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "unpushed suite succeeds: $out"
+
+section "git_merge_check.sh"
+out="$(bash "$G/tests/test_merge_check.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "merge check suite succeeds: $out"
+
+section "git_commitlint.sh"
+out="$(bash "$G/tests/test_commitlint.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "commitlint suite succeeds: $out"
+
+section "git_release_notes.sh"
+out="$(bash "$G/tests/test_release_notes.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "release notes suite succeeds: $out"
+
+section "git_bundle_backup.sh"
+out="$(bash "$G/tests/test_bundle_backup.sh" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "bundle backup suite succeeds: $out"
 
 section "stale branch state filter"
 repo="$(new_repo)"
@@ -931,6 +1065,557 @@ mkdir -p "$cwd_repo/a/b/logs" && printf 'l\n' >"$cwd_repo/a/b/logs/x"
 out="$(cd "$cwd_repo" && "$IGNORE_DOCTOR" a/b/logs/x 2>&1)"
 assert_contains "$out" "ignored by" "ignore doctor reports the **/ match"
 assert_not_contains "$out" "anchors it to" "ignore doctor does not call a leading **/ anchored"
+
+section "doctor --json"
+# One JSON object on stdout carrying the same exit code as the text run, so CI
+# can keep the diagnosis that --quiet throws away. Each doctor is driven the
+# offline way the quiet section above drives it. Comes after that section
+# because it reuses its claimed_repo and empty_ssh fixtures.
+json_verdict() {
+  # $1 is the exit code the run returned; the doctor's stdout is on stdin.
+  python3 -c 'import json, sys
+d = json.load(sys.stdin)
+assert d["tool"].endswith("_doctor.py"), d["tool"]
+assert d["schema"] == 1, d["schema"]
+assert isinstance(d["events"], list)
+assert d["exit_code"] == int(sys.argv[1]), (d["exit_code"], sys.argv[1])' "$1"
+}
+
+repo="$(new_repo)"
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --json --url git@example.com:owner/repo.git)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "remote doctor --json is one object carrying exit $rc"; else err "remote doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "remote doctor --json prints exactly one line"
+
+out="$(cd "$repo" && "$IGNORE_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "ignore doctor --json is one object carrying exit $rc"; else err "ignore doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "ignore doctor --json prints exactly one line"
+
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "signing doctor --json is one object carrying exit $rc"; else err "signing doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "signing doctor --json prints exactly one line"
+
+out="$(cd "$repo" && "$SSH_DOCTOR" --json --ssh-dir "$empty_ssh" --host example.invalid)"; rc=$?
+assert_eq "$rc" "1" "ssh doctor --json keeps the failed verdict"
+if json_verdict "$rc" <<<"$out"; then ok "ssh doctor --json is one object carrying exit $rc"; else err "ssh doctor --json is not a verdict: $out"; fi
+assert_eq "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1" "ssh doctor --json prints exactly one line"
+
+# The claimed file is named by a converted table row rather than a level
+# helper; a JSON report that dropped those rows would carry the verdict and
+# lose the diagnosis.
+out="$(cd "$claimed_repo" && "$IGNORE_DOCTOR" --json)"; rc=$?
+assert_eq "$rc" "1" "ignore doctor --json keeps the failing exit code"
+if json_verdict 1 <<<"$out"; then ok "ignore doctor --json reports exit_code 1"; else err "ignore doctor --json on a claimed file: $out"; fi
+assert_contains "$out" "secrets.txt" "ignore doctor --json names the tracked file"
+assert_contains "$out" "git rm --cached" "ignore doctor --json carries the repair"
+
+# Redaction happens before anything is recorded, so the JSON cannot say more
+# than the text did.
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --json --url 'https://user:s3cretpw@example.com/r.git')"
+assert_not_contains "$out" "s3cretpw" "remote doctor --json never carries a URL password"
+helper_repo="$(new_repo)"
+git -C "$helper_repo" config credential.helper '!f() { echo password=hunter2hunter2; }; f'
+out="$(cd "$helper_repo" && "$REMOTE_DOCTOR" --json --url https://example.com/r.git)"
+assert_not_contains "$out" "hunter2hunter2" "remote doctor --json never carries a helper's password"
+
+# --json and --quiet ask for opposite things; picking one silently would hide
+# the mistake, so the pair is a usage error on every doctor.
+json_doctors=0
+for f in "${py_doctors[@]}"; do
+  rel="${f#"$G/"}"
+  out="$(cd "$repo" && "$f" --json --quiet 2>/dev/null)"; rc=$?
+  assert_eq "$rc" "3" "$rel --json --quiet -> exit 3"
+  assert_eq "$out" "" "$rel --json --quiet prints nothing on stdout"
+  json_doctors=$((json_doctors + 1))
+done
+if (( json_doctors == 0 )); then err "the --json --quiet loop ran over no doctor"; fi
+
+section "health doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "0" "health doctor is healthy on a fresh repository"
+assert_eq "$out" "" "health doctor --quiet suppresses its report"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"
+assert_contains "$out" "== objects ==" "health doctor reports the object counts"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "health doctor --json is one object carrying exit $rc"; else err "health doctor --json is not a verdict: $out"; fi
+
+# The lock a killed command leaves behind. Two hours old with no git process
+# running is the stale case, and the doctor must name the rm without running
+# it: the same lock under a live rebase is the one thing not to delete.
+touch -d '2 hours ago' "$repo/.git/index.lock"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "health doctor fails on a stale index.lock"
+assert_contains "$out" "index.lock" "health doctor names the lock"
+assert_contains "$out" "rm --" "health doctor prints the removal"
+if [[ -e "$repo/.git/index.lock" ]]; then
+  ok "health doctor did not remove the lock"
+else
+  err "health doctor removed the lock it was meant to report"
+fi
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --lock-age 99999 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a lock younger than --lock-age is not stale"
+assert_contains "$out" "mid-flight" "a young lock is reported as a command in progress"
+rm -f "$repo/.git/index.lock"
+
+# gc.log is what stops automatic gc for a day after one failure, silently
+# after the first warning.
+printf 'warning: There are too many unreachable loose objects\n' >"$repo/.git/gc.log"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "health doctor fails while gc.log blocks automatic gc"
+assert_contains "$out" "gc.log" "health doctor names gc.log"
+assert_contains "$out" "too many unreachable loose objects" "health doctor quotes the log"
+# A gc.log older than gc.logExpiry no longer blocks automatic gc.
+touch -t 200001010000 "$repo/.git/gc.log"
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "an expired gc.log does not fail the health doctor"
+assert_contains "$out" "older than gc.logExpiry" "health doctor says the gc.log expired"
+git -C "$repo" config gc.logExpiry never
+(cd "$repo" && "$HEALTH_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "gc.logExpiry=never keeps an old gc.log blocking"
+git -C "$repo" config --unset gc.logExpiry
+rm -f "$repo/.git/gc.log"
+(cd "$repo" && "$HEALTH_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "0" "removing gc.log clears the verdict"
+
+git -C "$repo" config gc.auto 0
+out="$(cd "$repo" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "disabled automatic gc is a warning, not a failure"
+assert_contains "$out" "disabled" "health doctor reports disabled automatic gc"
+git -C "$repo" config --unset gc.auto
+
+out="$(cd "$repo" && "$HEALTH_DOCTOR" --fsck 2>&1)"; rc=$?
+assert_eq "$rc" "0" "--fsck passes on an intact repository"
+assert_contains "$out" "== fsck ==" "--fsck adds the connectivity check"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$HEALTH_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "health doctor outside a repository -> exit 2"
+for lock_age in abc 0; do
+  (cd "$repo" && "$HEALTH_DOCTOR" --lock-age "$lock_age" >/dev/null 2>&1); rc=$?
+  assert_eq "$rc" "3" "health doctor --lock-age $lock_age -> exit 3"
+done
+(cd "$repo" && "$HEALTH_DOCTOR" --lock-age=abc >/dev/null 2>&1); rc=$?
+assert_eq "$rc" "3" "health doctor --lock-age=abc -> exit 3"
+
+# A linked worktree keeps its index.lock in its own git dir, not the common
+# one, and .git there is a file; both paths are asked of git.
+wt_repo="$(new_repo)"
+wt_path="$(mktemp -d /tmp/git-doctor-health-wt.XXXXXX)"; rmdir "$wt_path"
+git -C "$wt_repo" worktree add -q "$wt_path" -b health-wt 2>/dev/null
+wt_git_dir="$(git -C "$wt_path" rev-parse --absolute-git-dir)"
+touch -d '2 hours ago' "$wt_git_dir/index.lock"
+out="$(cd "$wt_path" && "$HEALTH_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "health doctor in a linked worktree fails on its stale lock"
+assert_contains "$out" "$wt_git_dir/index.lock" "health doctor finds the lock in the worktree's git dir"
+
+section "remote doctor --probe"
+# A bare repository on disk is a remote that needs no network, so the probe's
+# reachable path runs here. The default run must stay offline: --probe is the
+# only thing that contacts a remote.
+repo="$(new_repo)"
+probe_bare="$(mktemp -d /tmp/git-doctor-bare.XXXXXX)"
+git init -q --bare -b main "$probe_bare"
+git -C "$repo" remote add origin "$probe_bare"
+git -C "$repo" push -q origin main ||
+  err "pushing to the probe fixture exited $? — an empty remote is reachable with no branches"
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --probe 2>&1)"; rc=$?
+assert_eq "$rc" "0" "remote doctor --probe passes for a reachable remote"
+assert_contains "$out" "origin reachable: 1 branch(es)" "remote doctor --probe counts the remote's branches"
+assert_contains "$out" "push side is not tested" "remote doctor --probe says what it did not test"
+
+out="$(cd "$repo" && "$REMOTE_DOCTOR" 2>&1)"
+assert_not_contains "$out" "reachab" "remote doctor without --probe contacts nothing"
+
+git -C "$repo" remote add dead "file:///nonexistent-$$-remote"
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --probe 2>&1)"; rc=$?
+assert_eq "$rc" "1" "remote doctor --probe fails for an unreachable remote"
+assert_contains "$out" "dead unreachable" "remote doctor --probe names the unreachable remote"
+assert_contains "$out" "fix:" "remote doctor --probe prints the next step"
+
+out="$(cd "$repo" && "$REMOTE_DOCTOR" --probe --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "1" "remote doctor --probe --quiet keeps the failing exit code"
+assert_eq "$out" "" "remote doctor --probe --quiet prints nothing"
+
+for probe_timeout in 0 abc; do
+  (cd "$repo" && "$REMOTE_DOCTOR" --probe --probe-timeout "$probe_timeout" >/dev/null 2>&1); rc=$?
+  assert_eq "$rc" "3" "remote doctor --probe-timeout $probe_timeout -> exit 3"
+done
+
+# git repeats the URL it dialled in its error, password included; the probe
+# prints that line, so it has to be redacted first. Port 1 refuses at once.
+leak_repo="$(new_repo)"
+out="$(cd "$leak_repo" && "$REMOTE_DOCTOR" --probe --probe-timeout 5 \
+  --url 'https://user:s3cretpw@127.0.0.1:1/r.git' 2>&1)"; rc=$?
+assert_eq "$rc" "1" "remote doctor --probe fails for a refused connection"
+assert_not_contains "$out" "s3cretpw" "remote doctor --probe never prints a URL password"
+
+section "secrets doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$SECRETS_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "0" "secrets doctor is clean on a fresh repository"
+assert_eq "$out" "" "secrets doctor --quiet suppresses its report"
+out="$(cd "$repo" && "$SECRETS_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "secrets doctor --json is one object carrying exit $rc"; else err "secrets doctor --json is not a verdict: $out"; fi
+
+# A placeholder is what a repository should commit instead.
+printf 'KEY=\n' >"$repo/.env.example"
+git -C "$repo" add .env.example && git -C "$repo" commit -qm "env template" >/dev/null
+(cd "$repo" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor passes a committed .env.example"
+
+env_repo="$(new_repo)"
+printf 'K=v\n' >"$env_repo/.env"
+git -C "$env_repo" add -f .env && git -C "$env_repo" commit -qm "a committed env file" >/dev/null
+out="$(cd "$env_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor fails on a committed .env"
+assert_contains "$out" ".env" "secrets doctor names the file"
+assert_contains "$out" "env-file" "secrets doctor names the rule"
+assert_not_contains "$out" "K=v" "secrets doctor never prints the file's content"
+
+# Content is matched with git grep -l, so the report carries the path and the
+# rule and never the key. The header is assembled here so this file is not
+# itself a private key to a scanner.
+key_repo="$(new_repo)"
+printf -- '-----BEGIN %s PRIVATE KEY-----\nxyz\n' OPENSSH >"$key_repo/notes.txt"
+git -C "$key_repo" add notes.txt && git -C "$key_repo" commit -qm "notes" >/dev/null
+out="$(cd "$key_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor fails on a committed private key block"
+assert_contains "$out" "private-key-block" "secrets doctor names the content rule"
+assert_contains "$out" "notes.txt" "secrets doctor names the file holding the key"
+assert_not_contains "$out" "OPENSSH PRIVATE" "secrets doctor never prints the matched text"
+(cd "$key_repo" && "$SECRETS_DOCTOR" --no-content --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor --no-content skips the content passes"
+(cd "$key_repo" && "$SECRETS_DOCTOR" --allow 'notes.txt' --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor --allow leaves a documented fixture out"
+mkdir -p "$key_repo/sub"
+(cd "$key_repo/sub" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "secrets doctor from a subdirectory still searches the whole tree"
+
+# Deleting a committed file does not remove it from any clone. Only --history
+# looks, and that is the case where the credential has to be rotated.
+hist_repo="$(new_repo)"
+printf '{}\n' >"$hist_repo/terraform.tfstate"
+git -C "$hist_repo" add terraform.tfstate && git -C "$hist_repo" commit -qm "state" >/dev/null
+git -C "$hist_repo" rm -q terraform.tfstate && git -C "$hist_repo" commit -qm "remove state" >/dev/null
+(cd "$hist_repo" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "0" "secrets doctor without --history judges the tree only"
+out="$(cd "$hist_repo" && "$SECRETS_DOCTOR" --history 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor --history fails on a state file deleted from the tree"
+assert_contains "$out" "still in history" "secrets doctor --history says the file is still in history"
+
+# `git rm --cached` empties the index but the file stays in HEAD until the
+# removal is committed, so the names pass has to read HEAD as well.
+rmc_repo="$(new_repo)"
+printf 'K=v\n' >"$rmc_repo/.env"
+git -C "$rmc_repo" add -f .env && git -C "$rmc_repo" commit -qm "env" >/dev/null
+git -C "$rmc_repo" rm -q --cached .env
+out="$(cd "$rmc_repo" && "$SECRETS_DOCTOR" --no-content 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor still fails a .env removed with rm --cached but not committed"
+assert_contains "$out" "env-file" "secrets doctor names the rule for the uncommitted removal"
+# A repository with no commit yet has no HEAD to read; the index still counts.
+unborn_repo="$(mktemp -d /tmp/git-doctor-unborn.XXXXXX)"
+git -C "$unborn_repo" init -q
+printf 'K=v\n' >"$unborn_repo/.env"
+git -C "$unborn_repo" add -f .env
+out="$(cd "$unborn_repo" && "$SECRETS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "secrets doctor reads the index of a repository with no commits"
+assert_contains "$out" "env-file" "secrets doctor names the rule for the staged file in a repository with no commits"
+rm -rf "$unborn_repo"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$SECRETS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "secrets doctor outside a repository -> exit 2"
+(cd "$repo" && "$SECRETS_DOCTOR" --history --history-limit 0 >/dev/null 2>&1); rc=$?
+assert_eq "$rc" "3" "secrets doctor --history-limit 0 -> exit 3"
+
+section "signing doctor --verify-recent"
+# This image has no gpg, so the base checks already fail and the commits are
+# unsigned: git reports N for each. The verdict is 0 or 1 for the same reason
+# the quiet section above allows both.
+repo="$(new_repo)"
+for n in 2 3; do
+  printf '%s\n' "$n" >>"$repo/file.txt"
+  git -C "$repo" commit -qam "change $n" >/dev/null
+done
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent 3 2>&1)"; rc=$?
+if [[ "$rc" -eq 0 || "$rc" -eq 1 ]]; then
+  ok "signing doctor --verify-recent returns a diagnostic verdict"
+else
+  err "signing doctor --verify-recent returned unexpected exit $rc: $out"
+fi
+assert_contains "$out" "== recent commits ==" "signing doctor --verify-recent adds its section"
+assert_contains "$out" "last 3 commits (yours): 3 unsigned" "signing doctor --verify-recent counts the unsigned commits"
+assert_not_contains "$out" "is not signed" "unsigned commits are not a failure while commit.gpgsign is off"
+
+git -C "$repo" config commit.gpgsign true
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent 3 2>&1)"; rc=$?
+assert_eq "$rc" "1" "signing doctor --verify-recent fails unsigned commits once signing is on"
+assert_contains "$out" "is not signed, but commit.gpgsign is on" "signing doctor names each unsigned commit"
+git -C "$repo" config --unset commit.gpgsign
+
+for verify_n in 0 abc; do
+  (cd "$repo" && "$SIGNING_DOCTOR" --verify-recent "$verify_n" >/dev/null 2>&1); rc=$?
+  assert_eq "$rc" "3" "signing doctor --verify-recent $verify_n -> exit 3"
+done
+(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent=2 >/dev/null 2>&1); rc=$?
+if [[ "$rc" -ne 3 ]]; then ok "signing doctor accepts --verify-recent=2"; else err "signing doctor rejected --verify-recent=2"; fi
+out="$(cd "$repo" && "$SIGNING_DOCTOR" 2>&1)"
+assert_not_contains "$out" "recent commits" "signing doctor without --verify-recent looks at no commit"
+
+# -n counts the user's own commits: teammates' commits on top must not hide them.
+for n in 1 2 3; do
+  printf '%s\n' "mate $n" >>"$repo/file.txt"
+  git -C "$repo" -c user.name=Mate -c user.email=mate@example.com commit -qam "mate $n" >/dev/null
+done
+out="$(cd "$repo" && "$SIGNING_DOCTOR" --verify-recent 2 2>&1)"
+assert_contains "$out" "last 2 commits (yours): 2 unsigned" "signing doctor --verify-recent counts your commits under teammates' commits"
+
+section "ssh doctor --require-known-host"
+# This image has no OpenSSH, so the known_hosts lookup itself is covered by the
+# unit tests; here the flag must parse, be documented, and leave the verdict
+# and the quiet contract exactly as they were.
+out="$("$SSH_DOCTOR" --help 2>&1)"
+assert_contains "$out" "--require-known-host" "ssh doctor --help documents --require-known-host"
+out="$(cd "$repo" && "$SSH_DOCTOR" --quiet --require-known-host --ssh-dir "$empty_ssh" \
+  --host example.invalid 2>&1)"; rc=$?
+assert_eq "$rc" "1" "ssh doctor --require-known-host keeps the failed verdict"
+assert_eq "$out" "" "ssh doctor --require-known-host --quiet prints nothing"
+
+section "hooks doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "4" "hooks doctor with only sample hooks -> exit 4"
+assert_contains "$out" "no active hooks" "hooks doctor says there is nothing active"
+
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+chmod -x "$repo/.git/hooks/pre-commit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a hook without the exec bit"
+assert_contains "$out" "chmod +x" "hooks doctor prints the chmod"
+if [[ -x "$repo/.git/hooks/pre-commit" ]]; then
+  err "hooks doctor changed the hook's mode"
+else
+  ok "hooks doctor left the hook's mode alone"
+fi
+# A hooks directory with a space: the printed chmod must be shell-quoted.
+mkdir -p "$repo/my hooks"
+printf '#!/bin/sh\nexit 0\n' >"$repo/my hooks/pre-commit"
+chmod -x "$repo/my hooks/pre-commit"
+git -C "$repo" config core.hooksPath "$repo/my hooks"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a spaced hooks path without the exec bit"
+assert_contains "$out" "chmod +x '$repo/my hooks/pre-commit'" "hooks doctor shell-quotes the chmod path"
+git -C "$repo" config --unset core.hooksPath
+rm -rf "$repo/my hooks"
+chmod +x "$repo/.git/hooks/pre-commit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "hooks doctor passes an executable hook with a good shebang"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "0" "hooks doctor --quiet keeps the exit code"
+assert_eq "$out" "" "hooks doctor --quiet prints nothing"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "hooks doctor --json is one object carrying exit $rc"; else err "hooks doctor --json is not a verdict: $out"; fi
+
+# A CRLF checkout turns the interpreter into "sh\r".
+printf '#!/bin/sh\r\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a CRLF shebang"
+assert_contains "$out" "carriage return" "hooks doctor names the carriage return"
+(cd "$repo" && "$HOOKS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "1" "hooks doctor --quiet keeps the failing exit code"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-commit"
+
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/precommit"
+chmod +x "$repo/.git/hooks/precommit"
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"
+assert_contains "$out" "did you mean pre-commit" "hooks doctor names the hook a misnamed file was meant to be"
+
+git -C "$repo" config core.hooksPath /nonexistent-hooks
+out="$(cd "$repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "hooks doctor fails a core.hooksPath that does not exist"
+assert_contains "$out" "does not exist" "hooks doctor says the hooks directory is missing"
+git -C "$repo" config --unset core.hooksPath
+
+gh_repo="$(new_repo)"
+mkdir -p "$gh_repo/.githooks"
+out="$(cd "$gh_repo" && "$HOOKS_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "tracked but inactive hooks are a warning, not a failure"
+assert_contains "$out" "git config core.hooksPath .githooks" "hooks doctor prints the activation"
+
+# A global hooksPath shadows every repository's own .git/hooks.
+home="$(new_home)"
+mkdir -p "$home/hooks"
+run_with_home "$home" git config --global core.hooksPath "$home/hooks"
+out="$(cd "$repo" && run_with_home "$home" "$HOOKS_DOCTOR" 2>&1)"
+assert_contains "$out" "never run" "hooks doctor reports local hooks a global hooksPath shadows"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$HOOKS_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "hooks doctor outside a repository -> exit 2"
+
+section "fleet doctor"
+# Two copies under one root: a clean repository and the claimed-file fixture
+# from the quiet section, so one row fails and the other does not.
+fleet_root="$(mktemp -d /tmp/git-doctor-fleet.XXXXXX)"
+fleet_clean="$(new_repo)"
+cp -R "$fleet_clean" "$fleet_root/clean" || err "copying the clean fixture exited $?"
+cp -R "$claimed_repo" "$fleet_root/claimed" || err "copying the claimed fixture exited $?"
+fleet_before="$(find "$fleet_root" -printf '%p %T@ %s\n' | sort)"
+
+home="$(new_home)"
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only ignore "$fleet_root" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "fleet doctor fails when one repository has a finding"
+assert_contains "$out" "FAIL" "fleet doctor marks the failing cell"
+assert_contains "$out" "ok" "fleet doctor marks the clean cell"
+assert_contains "$out" "2 repo(s)" "fleet doctor counts the repositories"
+assert_eq "$(find "$fleet_root" -printf '%p %T@ %s\n' | sort)" "$fleet_before" \
+  "fleet doctor wrote nothing in the repositories it swept"
+
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only ignore --details "$fleet_root" 2>&1)"
+assert_contains "$out" "secrets.txt" "fleet doctor --details shows the failing doctor's report"
+assert_contains "$out" "git rm --cached" "fleet doctor --details carries the repair"
+
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only ignore --quiet "$fleet_root" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "fleet doctor --quiet keeps the exit code"
+assert_eq "$out" "" "fleet doctor --quiet prints nothing"
+
+"$FLEET_DOCTOR" --only nosuch "$fleet_root" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor --only with an unknown doctor -> exit 3"
+"$FLEET_DOCTOR" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor without a root -> exit 3"
+"$FLEET_DOCTOR" --jobs 0 "$fleet_root" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor --jobs 0 -> exit 3"
+"$FLEET_DOCTOR" --depth abc "$fleet_root" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "fleet doctor --depth abc -> exit 3"
+fleet_empty="$(mktemp -d /tmp/git-doctor-fleet-empty.XXXXXX)"
+"$FLEET_DOCTOR" --only ignore "$fleet_empty" >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "fleet doctor with no repository under the root -> exit 4"
+
+section "submodule doctor"
+repo="$(new_repo)"
+out="$(cd "$repo" && "$SUBMODULE_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "4" "submodule doctor without submodules -> exit 4"
+assert_contains "$out" "no submodules" "submodule doctor says there is nothing to check"
+
+# A real superproject, built offline: the submodule's URL is a path on this
+# machine, which is exactly what a clone anywhere else cannot reach.
+sm_sub="$(new_repo)"
+sm_sup="$(new_repo)"
+git -C "$sm_sup" -c protocol.file.allow=always submodule add -q "$sm_sub" lib >/dev/null 2>&1 ||
+  err "submodule add exited $? — the superproject below has no submodule to diagnose"
+git -C "$sm_sup" commit -qm "add lib" >/dev/null
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "submodule doctor fails a submodule URL that is a local path"
+assert_contains "$out" "one machine" "submodule doctor says why a local path is a problem"
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" --quiet 2>&1)"; rc=$?
+assert_eq "$rc" "1" "submodule doctor --quiet keeps the exit code"
+assert_eq "$out" "" "submodule doctor --quiet prints nothing"
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" --json)"; rc=$?
+if json_verdict "$rc" <<<"$out"; then ok "submodule doctor --json is one object carrying exit $rc"; else err "submodule doctor --json is not a verdict: $out"; fi
+
+sm_clone="$(mktemp -d /tmp/git-doctor-sm-clone.XXXXXX)/clone"
+git clone -q "$sm_sup" "$sm_clone" 2>/dev/null
+out="$(cd "$sm_clone" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "not initialised" "submodule doctor reports a clone made without --recurse-submodules"
+assert_contains "$out" "git submodule update --init --recursive" "submodule doctor prints the initialisation"
+
+git -C "$sm_sup" config -f .gitmodules submodule.lib.url https://example.com/lib.git
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "git submodule sync" "submodule doctor reports .git/config still dialling the old URL"
+
+git -C "$sm_sup" config -f .gitmodules --remove-section submodule.lib
+git -C "$sm_sup" add .gitmodules && git -C "$sm_sup" commit -qm "drop the mapping" >/dev/null
+out="$(cd "$sm_sup" && "$SUBMODULE_DOCTOR" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "submodule doctor fails a gitlink with no .gitmodules entry"
+assert_contains "$out" "no submodule mapping" "submodule doctor names git's own error"
+
+outside="$(mktemp -d /tmp/git-doctor-outside.XXXXXX)"
+(cd "$outside" && "$SUBMODULE_DOCTOR" --quiet); rc=$?
+assert_eq "$rc" "2" "submodule doctor outside a repository -> exit 2"
+
+# A stale mapping whose name holds a space: the printed repair is pasted into
+# a shell, so the section name has to arrive as one quoted word.
+sm_space="$(new_repo)"
+git -C "$sm_space" config -f .gitmodules "submodule.my lib.path" "vendor/gone"
+git -C "$sm_space" config -f .gitmodules "submodule.my lib.url" "https://example.com/lib.git"
+out="$(cd "$sm_space" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "--remove-section 'submodule.my lib'" \
+  "submodule doctor quotes a stale entry's section name with a space"
+
+# A relative .gitmodules URL is resolved the way git does, against the default
+# remote's URL, and compared with what .git/config holds. The gitlink is made
+# with update-index so no clone or network is needed.
+sm_rel="$(new_repo)"
+git -C "$sm_rel" remote add origin https://example.com/org/super.git
+git -C "$sm_rel" update-index --add --cacheinfo "160000,$(git -C "$sm_rel" rev-parse HEAD),lib"
+git -C "$sm_rel" config -f .gitmodules submodule.lib.path lib
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../old.git
+git -C "$sm_rel" config submodule.lib.url https://example.com/org/old.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_not_contains "$out" "still dials" "submodule doctor accepts a relative URL that resolves to .git/config"
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../new.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "still dials https://example.com/org/old.git" "submodule doctor reports drift behind a relative URL"
+assert_contains "$out" "https://example.com/org/new.git" "submodule doctor shows where the relative URL resolves"
+assert_contains "$out" "git submodule sync" "submodule doctor prints the sync for relative drift"
+# A remote URL with no slash is a bare path: git prefixes "./" and resolves
+# "../new.git" to "new.git", so the drift is still reported.
+git -C "$sm_rel" remote set-url origin superrepo
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "still dials https://example.com/org/old.git" "submodule doctor resolves a relative URL against a slashless remote"
+assert_contains "$out" "resolves to new.git" "submodule doctor shows git's resolution for a slashless remote"
+assert_not_contains "$out" "not compared" "submodule doctor compares against a slashless remote"
+# A remote path with a slash but no leading "./" gets the same prefix.
+git -C "$sm_rel" remote set-url origin foo/super
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../../x.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to x.git" "submodule doctor prefixes ./ to a remote path like foo/super"
+assert_not_contains "$out" "not compared" "submodule doctor compares against a remote path like foo/super"
+# git drops a leading "./" from the result however the remote spelled it.
+git -C "$sm_rel" remote set-url origin ./foo/super
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../x.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to foo/x.git" "submodule doctor drops ./ from a ./foo/super resolution"
+# git cuts an scp-style remote at its last colon.
+git -C "$sm_rel" remote set-url origin git@host:a:b
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../../x.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to git@host:x.git" "submodule doctor cuts an scp-style remote at the last colon"
+# git strips a trailing "/" from the submodule URL before resolving it.
+git -C "$sm_rel" remote set-url origin https://example.com/org/super.git
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../x.git/
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "resolves to https://example.com/org/x.git" "submodule doctor resolves a URL with a trailing slash"
+assert_not_contains "$out" "org/x.git/" "submodule doctor drops the trailing slash of a relative URL"
+# git resolves against the raw remote.<name>.url, not the insteadOf rewrite.
+git -C "$sm_rel" remote set-url origin https://example.com/org/super.git
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../old.git
+git -C "$sm_rel" config url.https://mirror.example/.insteadOf https://example.com/
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_not_contains "$out" "still dials" "submodule doctor ignores url.*.insteadOf when resolving a relative URL"
+# A relative URL with nothing left to strip still cannot be resolved.
+git -C "$sm_rel" config --unset url.https://mirror.example/.insteadOf
+git -C "$sm_rel" remote set-url origin superrepo
+git -C "$sm_rel" config -f .gitmodules submodule.lib.url ../../new.git
+out="$(cd "$sm_rel" && "$SUBMODULE_DOCTOR" 2>&1)"
+assert_contains "$out" "not compared" "submodule doctor says when a relative URL cannot be resolved"
+assert_not_contains "$out" "still dials" "submodule doctor does not guess drift it cannot resolve"
+
+# Work-tree doctors report n/a (exit 4) in a bare repository, which has no
+# work tree and no toplevel, and the fleet shows n/a rather than ERR.
+bare_root="$(mktemp -d /tmp/git-doctor-bare.XXXXXX)"
+git clone -q --bare "$(new_repo)" "$bare_root/mirror.git"
+for doctor in "$SECRETS_DOCTOR" "$SUBMODULE_DOCTOR" "$IGNORE_DOCTOR"; do
+  out="$(cd "$bare_root/mirror.git" && "$doctor" 2>&1)"; rc=$?
+  assert_eq "$rc" "4" "$(basename "$doctor") in a bare repository -> exit 4"
+  assert_contains "$out" "bare repository" "$(basename "$doctor") says why it has nothing to check"
+done
+out="$(cd "$bare_root/mirror.git" && "$SECRETS_DOCTOR" --history 2>&1)"
+assert_contains "$out" "--history is not scanned" "secrets doctor says --history needs a clone"
+out="$(run_with_home "$home" "$FLEET_DOCTOR" --only secrets --only submodule --only ignore "$bare_root" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "fleet doctor over a bare clone exits 0"
+assert_contains "$out" "n/a" "fleet doctor marks work-tree doctors n/a for a bare clone"
+assert_not_contains "$out" "ERR " "fleet doctor shows no ERR cell for a bare clone"
 
 section "templates model the new automation controls"
 empty_path="$(mktemp -d /tmp/helper-empty-path.XXXXXX)"
@@ -1161,6 +1846,193 @@ else
   ok "the refused install wrote nothing"
 fi
 
+section "the optional pre-push hook"
+# Opt-in like commit-msg: whether a branch takes direct pushes is a team
+# decision. Real pushes to a bare remote run the hook the way git runs it.
+assert_contains "$("$HOOKS" --help)" "--pre-push" "--help documents --pre-push"
+
+push_origin="$(mktemp -d /tmp/git-prepush-origin.XXXXXX)/origin.git"
+repo="$(new_repo)"
+git init -q --bare -b main "$push_origin"
+git -C "$repo" remote add origin "$push_origin"
+git -C "$repo" push -q -u origin main ||
+  err "the initial push exited $? — every ref comparison below starts from an empty remote"
+(cd "$repo" && "$HOOKS" install) >/dev/null ||
+  err "plain install exited $? — an install that wrote nothing also leaves pre-push alone"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "a plain install wrote a pre-push hook"
+else
+  ok "a plain install leaves pre-push alone"
+fi
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push --dry-run 2>&1)"
+assert_contains "$out" "pre-push (protected: main master, wip and fixup guard)" \
+  "install --pre-push --dry-run previews the hook and its protected set"
+assert_contains "$out" "no changes written" "install --pre-push --dry-run says so"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "install --pre-push --dry-run wrote a hook"
+else
+  ok "install --pre-push --dry-run wrote nothing"
+fi
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push 2>&1)"
+assert_contains "$out" "installed pre-push hook" "install --pre-push reports the hook"
+if [[ -x "$repo/.git/hooks/pre-push" ]]; then
+  ok "install --pre-push wrote an executable hook"
+else
+  err "install --pre-push left no executable hook"
+fi
+assert_not_contains "$(cat "$repo/.git/hooks/pre-push")" "$HOOKS" \
+  "the installed pre-push hook does not reference the installer's path"
+out="$(cd "$repo" && "$HOOKS" status 2>&1)"
+assert_contains "$out" "pre-push hook installed and current" "status reports pre-push"
+
+git -C "$repo" switch -q -c feature/x
+git -C "$repo" commit -q --allow-empty -m "feat: normal work"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "a normal push to a feature branch goes through"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x 2>/dev/null)" \
+  "$(git -C "$repo" rev-parse HEAD)" "the feature branch reached the remote"
+feature_tip="$(git -C "$repo" rev-parse HEAD)"
+
+git -C "$repo" commit -q --allow-empty -m "fixup! feat: normal work"
+out="$(git -C "$repo" push origin feature/x 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a fixup! commit is refused"; else err "a fixup! commit was pushed"; fi
+assert_contains "$out" "unfinished commit" "the refusal names the unfinished commit"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$feature_tip" \
+  "a refused fixup! push leaves the remote branch alone"
+git -C "$repo" reset -q --hard HEAD~1
+
+git -C "$repo" commit -q --allow-empty -m "WIP: spike"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+if (( rc != 0 )); then ok "a WIP commit is refused"; else err "a WIP commit was pushed"; fi
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/feature/x)" "$feature_tip" \
+  "a refused WIP push leaves the remote branch alone"
+git -C "$repo" reset -q --hard HEAD~1
+
+for wip_subject in "WIP-spike" "WIP/test" "wip(tidy)"; do
+  git -C "$repo" commit -q --allow-empty -m "$wip_subject"
+  git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+  if (( rc != 0 )); then ok "a '$wip_subject' commit is refused"; else err "a '$wip_subject' commit was pushed"; fi
+  git -C "$repo" reset -q --hard HEAD~1
+done
+git -C "$repo" commit -q --allow-empty -m "WIPE the cache"
+git -C "$repo" push -q origin feature/x >/dev/null 2>&1; rc=$?
+if (( rc == 0 )); then ok "a subject that merely starts with the letters WIP is allowed"; else err "WIPE was refused"; fi
+feature_tip="$(git -C "$repo" rev-parse HEAD)"
+
+# A new branch is compared with what the remote advertises, not with
+# remote-tracking refs: a stale one that still holds an unfinished commit
+# (never pushed, or deleted on the remote) must not hide it.
+git -C "$repo" switch -q -c stale-src main
+git -C "$repo" commit -q --allow-empty -m "WIP: stale spike"
+stale_sha="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-ref refs/remotes/origin/stale-src "$stale_sha"
+git -C "$repo" switch -q -c fresh-branch
+git -C "$repo" commit -q --allow-empty -m "feat: fresh work"
+out="$(git -C "$repo" push origin fresh-branch 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a WIP commit hidden by a stale remote-tracking ref is refused on a new branch"; else err "a stale remote-tracking ref let a WIP commit through"; fi
+assert_contains "$out" "unfinished commit" "the stale-ref refusal names the unfinished commit"
+if git --git-dir="$push_origin" rev-parse -q --verify refs/heads/fresh-branch >/dev/null; then
+  err "the refused new branch reached the remote"
+else
+  ok "the refused new branch did not reach the remote"
+fi
+# Once the remote really has the commit, it is not this push's business.
+git -C "$repo" push -q --no-verify origin stale-src >/dev/null 2>&1 || err "park the WIP commit on the remote"
+git -C "$repo" push -q origin fresh-branch >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "a new branch on top of a commit the remote already has goes through"
+git -C "$repo" switch -q feature/x
+git -C "$repo" branch -q -D fresh-branch stale-src
+git -C "$repo" update-ref -d refs/remotes/origin/stale-src
+
+git -C "$repo" switch -q main
+main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
+git -C "$repo" commit -q --allow-empty -m "feat: straight onto main"
+out="$(git -C "$repo" push origin main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a push to main is refused"; else err "a push to main went through"; fi
+assert_contains "$out" "direct pushes to the protected branch main are blocked" \
+  "the refusal says main is protected"
+assert_contains "$out" "git push --no-verify" "the refusal names the bypass"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused push leaves main on the remote alone"
+
+GIT_ALLOW_PROTECTED_PUSH=1 git -C "$repo" push -q origin main >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "GIT_ALLOW_PROTECTED_PUSH=1 lets one push to main through"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" \
+  "$(git -C "$repo" rev-parse main)" "the bypassed push reached the remote"
+main_tip="$(git --git-dir="$push_origin" rev-parse refs/heads/main)"
+
+out="$(git -C "$repo" push origin :main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "deleting main is refused"; else err "main was deleted"; fi
+assert_contains "$out" "deleting the protected branch main is blocked" "the refusal names the deletion"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused deletion leaves main on the remote"
+
+git -C "$repo" reset -q --hard HEAD~1
+git -C "$repo" commit -q --allow-empty -m "fix: rewritten history"
+out="$(git -C "$repo" push --force origin main 2>&1)"; rc=$?
+if (( rc != 0 )); then ok "a force push to main is refused"; else err "a force push to main went through"; fi
+assert_contains "$out" "non-fast-forward" "the refusal names the force push"
+assert_eq "$(git --git-dir="$push_origin" rev-parse refs/heads/main)" "$main_tip" \
+  "a refused force push leaves main on the remote alone"
+
+out="$(cd "$repo" && "$HOOKS" install --pre-push --protect release 2>&1)"
+assert_contains "$out" "protected: release" "--protect replaces the protected set"
+git -C "$repo" reset -q --hard origin/main
+git -C "$repo" commit -q --allow-empty -m "feat: main is open now"
+git -C "$repo" push -q origin main >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "0" "with --protect release a push to main goes through"
+git -C "$repo" push -q origin main:release >/dev/null 2>&1; rc=$?
+if (( rc != 0 )); then ok "with --protect release a push to release is refused"; else err "a push to release went through"; fi
+if git --git-dir="$push_origin" show-ref --verify --quiet refs/heads/release; then
+  err "the refused push created release on the remote"
+else
+  ok "the refused push did not create release on the remote"
+fi
+
+(cd "$repo" && "$HOOKS" install --protect release) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect without --pre-push -> 3"
+(cd "$repo" && "$HOOKS" install --pre-push --protect 'a b') >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect with a space in the name -> 3"
+(cd "$repo" && "$HOOKS" install --pre-push --protect) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "3" "--protect without a value -> 3"
+
+out="$(cd "$repo" && "$HOOKS" uninstall 2>&1)"; rc=$?
+assert_eq "$rc" "0" "uninstall removes our hooks -> 0"
+assert_contains "$out" "removed the pre-push hook" "uninstall removes the pre-push hook"
+if [[ -e "$repo/.git/hooks/pre-push" ]]; then
+  err "uninstall left the pre-push hook behind"
+else
+  ok "uninstall leaves no pre-push hook"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null 2>&1; rc=$?
+assert_eq "$rc" "4" "a second uninstall with nothing left -> 4"
+
+# A pre-push hook somebody else wrote stops the install before anything is
+# written, is backed up only with --force, and comes back on uninstall.
+repo="$(new_repo)"
+printf '#!/bin/sh\nexit 0\n' >"$repo/.git/hooks/pre-push"
+chmod +x "$repo/.git/hooks/pre-push"
+out="$(cd "$repo" && "$HOOKS" install --pre-push 2>&1)"; rc=$?
+assert_eq "$rc" "1" "a foreign pre-push hook refuses the install -> 1"
+assert_contains "$(cat "$repo/.git/hooks/pre-push")" "exit 0" "the foreign pre-push hook is left untouched"
+if [[ -e "$repo/.git/hooks/pre-commit" ]]; then
+  err "the refused install still wrote the pre-commit hook"
+else
+  ok "the refused install wrote nothing"
+fi
+(cd "$repo" && "$HOOKS" install --pre-push --force) >/dev/null ||
+  err "install --pre-push --force exited $? — the backup asserted next is judged by what is on disk"
+if [[ -f "$repo/.git/hooks/pre-push.hooks-install-backup" ]]; then
+  ok "--force backs the foreign pre-push hook up"
+else
+  err "--force did not back the foreign pre-push hook up"
+fi
+(cd "$repo" && "$HOOKS" uninstall) >/dev/null ||
+  err "uninstall exited $? — the hook it was meant to restore is judged only by what is on disk afterwards"
+assert_contains "$(cat "$repo/.git/hooks/pre-push")" "exit 0" "uninstall restores the foreign pre-push hook"
+
 section "clone-repos.sh"
 # A bare repository stands in for the remote; the list mixes a default
 # destination, a nested one, and a line that is not a URL at all.
@@ -1221,6 +2093,107 @@ fi
 printf '# only comments\n\n' >"$clone_dest/empty.txt"
 "$CLONE" --dry-run "$clone_dest/empty.txt" >/dev/null 2>&1; rc=$?
 assert_eq "$rc" "4" "an empty list exits 4"
+
+section "clone-repos.sh --update"
+# The same bare remote and the two checkouts cloned above, with a list that
+# holds only the two good lines so the exit code speaks for the updates alone.
+update_list="$clone_dest/update.txt"
+clone_up="$clone_dest/out/upstream"
+clone_nested="$clone_dest/out/nested/second"
+printf '%s\n%s   nested/second\n' "$clone_remote" "$clone_remote" >"$update_list"
+git -C "$clone_up" config user.name "Test User"
+git -C "$clone_up" config user.email "test@example.com"
+push_seed() {
+  printf '%s\n' "$1" >>"$clone_seed/file.txt"
+  git -C "$clone_seed" commit -q -am "$1" &&
+    git -C "$clone_seed" push -q origin main ||
+    err "pushing '$1' from the seed exited $? — every update below would find nothing to fetch"
+}
+push_seed two
+
+refs_up="$(git -C "$clone_up" for-each-ref)"
+# An old mtime on an unchanged tracked file leaves the index stale, which a
+# plain `git status` would refresh and write back to disk.
+touch -t 200101010000 "$clone_up/file.txt"
+index_up="$(cksum <"$clone_up/.git/index")"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" --dry-run 2>&1)"; rc=$?
+assert_eq "$rc" "0" "clone --update --dry-run exits 0"
+assert_contains "$out" "dry-run: would run: git -C $clone_up fetch --prune --quiet" "--update --dry-run previews the pruning fetch"
+assert_contains "$out" "dry-run: would run: git -C $clone_up merge --ff-only --quiet @{upstream}" "--update --dry-run previews the fast-forward"
+assert_contains "$out" "dry-run complete; no changes written" "--update --dry-run closes with the summary line"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD~1)" "--update --dry-run leaves HEAD behind"
+assert_eq "$(git -C "$clone_up" for-each-ref)" "$refs_up" "--update --dry-run fetches nothing"
+assert_eq "$(cksum <"$clone_up/.git/index")" "$index_up" "--update --dry-run leaves the index file untouched"
+
+out="$("$CLONE" -u --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "clone -u exits 0"
+assert_contains "$out" "updated (+1 commit(s)): $clone_up" "-u fast-forwards the default destination"
+assert_contains "$out" "updated (+1 commit(s)): $clone_nested" "-u fast-forwards the nested destination"
+assert_contains "$out" "updated 2" "the summary counts both updates"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$(git -C "$clone_seed" rev-parse HEAD)" "the updated checkout is at the remote's tip"
+
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_contains "$out" "up to date: $clone_up" "a second --update finds nothing to do"
+assert_contains "$out" "updated 0" "a second --update counts no updates"
+
+out="$("$CLONE" --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "already cloned: $clone_up" "without --update an existing checkout is still only skipped"
+assert_contains "$out" "already present 2" "without --update the summary keeps its shape"
+
+printf 'local edit\n' >>"$clone_up/file.txt"
+push_seed three
+up_head="$(git -C "$clone_up" rev-parse HEAD)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a held checkout does not fail the run"
+assert_contains "$out" "held (uncommitted changes): $clone_up" "a modified tracked file holds the checkout"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a held checkout keeps its HEAD"
+assert_contains "$(cat "$clone_up/file.txt")" "local edit" "a held checkout keeps its edit"
+assert_contains "$out" "updated (+1 commit(s)): $clone_nested" "the other checkout is still updated"
+git -C "$clone_up" checkout -q -- file.txt
+
+git -C "$clone_up" switch -q --detach
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (detached HEAD): $clone_up" "a detached HEAD holds the checkout"
+git -C "$clone_up" switch -q main
+
+git -C "$clone_up" branch -q --unset-upstream
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (no upstream): $clone_up" "a branch with no upstream holds the checkout"
+git -C "$clone_up" branch -q --set-upstream-to=origin/main main
+
+git -C "$clone_up" commit -q --allow-empty -m "local only" ||
+  err "the local commit exited $? — without it the checkout is behind, not diverged"
+push_seed four
+up_head="$(git -C "$clone_up" rev-parse HEAD)"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"
+assert_contains "$out" "held (diverged, +1/-2): $clone_up" "a diverged branch is held, not merged"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "a diverged checkout keeps its HEAD"
+
+cp "$clone_up/.git/index" "$clone_dest/index.bak" || err "save the index before corrupting it"
+printf 'not an index\n' >"$clone_up/.git/index" || err "corrupt the index"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a checkout with an unreadable index is held, not failed"
+assert_contains "$out" "held (cannot read git status): $clone_up" "a failing git status holds the checkout"
+assert_eq "$(git -C "$clone_up" rev-parse HEAD)" "$up_head" "an unreadable-index checkout keeps its HEAD"
+cp "$clone_dest/index.bak" "$clone_up/.git/index" || err "restore the index"
+
+# An upstream deleted on the remote: the pruning fetch drops the stale
+# remote-tracking ref, so the branch is held rather than read as up to date.
+git -C "$clone_seed" push -q origin main:topic || err "push the topic branch"
+git -C "$clone_up" fetch -q origin || err "fetch the topic branch"
+git -C "$clone_up" switch -q -c topic --track origin/topic || err "track the topic branch"
+git -C "$clone_seed" push -q origin --delete topic || err "delete the topic branch upstream"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "0" "a deleted upstream holds the checkout without failing the run"
+assert_contains "$out" "held (upstream gone): $clone_up" "a deleted upstream is reported, not read as up to date"
+assert_eq "$(git -C "$clone_up" rev-parse --verify --quiet refs/remotes/origin/topic || true)" "" "the stale remote-tracking ref is pruned"
+git -C "$clone_up" switch -q main
+git -C "$clone_up" branch -q -D topic
+
+git -C "$clone_nested" remote set-url origin "$clone_dest/does-not-exist.git"
+out="$("$CLONE" --update --dir "$clone_dest/out" "$update_list" 2>&1)"; rc=$?
+assert_eq "$rc" "1" "a failed fetch fails the run"
+assert_contains "$out" "fetch failed: $clone_nested" "a failed fetch names the checkout"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of

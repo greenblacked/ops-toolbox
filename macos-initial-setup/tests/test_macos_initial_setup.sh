@@ -50,6 +50,20 @@ unset CPPFLAGS LDFLAGS
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+# ops_context.sh reports which cluster, project, profile, workspace and daemon
+# these point at, and names the token variables when they are set. A
+# developer's shell usually has some of them exported; inherited, they would
+# aim a run at the real ~/.kube, ~/.aws or Docker daemon instead of the
+# fixtures, and a set token would add a warning no fixture asked for.
+unset KUBECONFIG AWS_PROFILE AWS_DEFAULT_PROFILE AWS_CONFIG_FILE AWS_ACCESS_KEY_ID \
+  AWS_REGION AWS_DEFAULT_REGION \
+  CLOUDSDK_ACTIVE_CONFIG_NAME DOCKER_CONTEXT DOCKER_HOST TF_WORKSPACE \
+  GH_CONFIG_DIR XDG_CONFIG_HOME GH_TOKEN GITHUB_TOKEN \
+  CLOUDSDK_CORE_PROJECT CLOUDSDK_CORE_ACCOUNT CLOUDSDK_COMPUTE_REGION
+# net_doctor.sh compares the system proxy with these and names the ones that
+# are set. A proxy exported in a developer's shell, or in CI, would turn the
+# fixtures' "no proxy anywhere" case into a different report.
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY all_proxy ALL_PROXY NO_PROXY no_proxy
 
 failures=0
 # Counted so the run can prove it asserted something. Without `-e` a suite that
@@ -289,6 +303,11 @@ preflight_args() {
   case "${1##*/}" in
     brewfile.sh)         printf '%s\n' "check" ;;
     stay_fresh_agent.sh) printf '%s\n' "status" ;;
+    # Exit 3 without a target is correct; one host reaches the macOS guard.
+    tls_expiry.sh)       printf '%s\n' "--host example.test" ;;
+    # A bare run is refused for want of --yes (exit 3) before the platform is
+    # looked at; --yes reaches the macOS guard, which stops it before any write.
+    config_backup.sh)    printf '%s\n' "--yes" ;;
     *)                   printf '%s\n' "" ;;
   esac
 }
@@ -2058,7 +2077,7 @@ AUDIT="$M/hardening_audit.sh"
 if [[ -x "$AUDIT" ]]; then
   groups_out="$("$AUDIT" --list-groups 2>&1)"; rc=$?
   assert_eq "hardening_audit --list-groups exits 0" "0" "$rc"
-  for g in sharing firewall updates disk lock sip gatekeeper; do
+  for g in sharing firewall updates disk lock sip gatekeeper secrets; do
     assert_contains "hardening_audit lists the $g group" "$groups_out" "$g"
   done
 
@@ -2116,8 +2135,8 @@ if [[ -f "$scanner" ]]; then
     printf '{"folder": "file://%s/project"}' "$scan_tmp" >"$scan_tmp/ws/live/workspace.json"
     printf '{"folder": "vscode-remote://ssh-remote+host/project"}' \
       >"$scan_tmp/ws/remote/workspace.json"
-    if python3 "$scanner" "$scan_tmp/ws" --volumes-dir "$scan_tmp/vol" \
-         | tr '\0' '\n' | grep -qx "stale"; then
+    scan_out="$(python3 "$scanner" "$scan_tmp/ws" --volumes-dir "$scan_tmp/vol" | tr '\0' '\n')"
+    if grep -qx "stale" <<<"$scan_out"; then
       ok "lib/workspace_scan.py emits NUL-delimited fields"
     else
       err "lib/workspace_scan.py output shape changed"
@@ -2248,6 +2267,2126 @@ for pkg in gh sops age k6 fzf; do
 done
 out="$(env -u HOME "$M/install_apps.sh" --list-casks 2>&1)"; rc=$?
 assert_eq "install_apps --list-casks works with HOME unset" "0" "$rc"
+
+
+section "ops_context: selection flags answer before preflight"
+# The tool list and every refusal have to answer on a machine that is not the
+# Mac, the same contract --help and status.sh --list-sections keep.
+OPS="$M/ops_context.sh"
+out="$("$OPS" --list-tools 2>&1)"; rc=$?
+assert_eq "ops_context --list-tools exits 0" "0" "$rc"
+for t in kube gcloud aws terraform docker gh; do
+  if grep -qxF -- "$t" <<<"$out"; then
+    ok "ops_context lists the $t tool"
+  else
+    err "ops_context --list-tools does not list $t"
+  fi
+done
+out="$(env -u HOME "$OPS" --list-tools 2>&1)"; rc=$?
+assert_eq "ops_context --list-tools works with HOME unset" "0" "$rc"
+"$OPS" --only nosuch >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects an unknown --only tool -> 3" "3" "$rc"
+"$OPS" --only >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects --only without a value -> 3" "3" "$rc"
+"$OPS" --warn-on >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects --warn-on without a value -> 3" "3" "$rc"
+"$OPS" --dir /nonexistent/ops-context-dir >/dev/null 2>&1; rc=$?
+assert_eq "ops_context rejects a --dir that is not a directory -> 3" "3" "$rc"
+
+section "ops_context: reads local config, never credentials"
+# Every tool the script asks is faked, uname included, because this file also
+# runs on a real Mac where /usr/bin holds the real ones. The fixture
+# ~/.aws/credentials and the SSO cache carry canary strings that must never
+# reach the output: the script names files and variables, not secrets.
+oc="$(mktemp -d)"
+mkdir -p "$oc/bin" "$oc/home/.config/gcloud/configurations" \
+  "$oc/home/.aws/sso/cache" "$oc/tmp" "$oc/empty" "$oc/tf/.terraform"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$oc/bin/uname"
+cat > "$oc/bin/kubectl" <<'KUBECTL_EOF'
+#!/bin/sh
+case "$*" in
+  "config current-context") echo gke_acme_prod ;;
+  *namespace*)              echo payments ;;
+  *cluster*)                echo gke_acme_prod ;;
+  *)                        exit 1 ;;
+esac
+KUBECTL_EOF
+cat > "$oc/bin/docker" <<'DOCKER_EOF'
+#!/bin/sh
+case "$1 $2" in
+  "context show")    echo orbstack ;;
+  "context inspect") echo "${FAKE_DOCKER_ENDPOINT:-unix:///var/run/docker.sock}" ;;
+  *)                 exit 1 ;;
+esac
+DOCKER_EOF
+chmod +x "$oc/bin/"*
+printf 'default\n' > "$oc/home/.config/gcloud/active_config"
+printf '[core]\naccount = dev@example.com\nproject = acme-sandbox-42\n\n[compute]\nregion = europe-west1\n' \
+  > "$oc/home/.config/gcloud/configurations/config_default"
+printf '[default]\nregion = us-east-1\n\n[profile acme-dev]\nsso_session = acme\nsso_account_id = 111122223333\nregion = eu-west-1\n' \
+  > "$oc/home/.aws/config"
+printf '{"startUrl": "https://acme.example/start", "accessToken": "CANARY_SSO_TOKEN", "expiresAt": "2000-01-01T00:00:00Z"}\n' \
+  > "$oc/home/.aws/sso/cache/token.json"
+printf '[sso-session acme]\nsso_start_url = https://acme.example/start\nsso_region = eu-west-1\n' \
+  >> "$oc/home/.aws/config"
+sleep 1
+printf '{"startUrl": "https://other.example/start", "accessToken": "CANARY_SSO_OTHER", "expiresAt": "2999-01-01T00:00:00Z"}\n' \
+  > "$oc/home/.aws/sso/cache/other.json"
+printf '[acme-dev]\naws_access_key_id = AKIACANARYKEYID\naws_secret_access_key = CANARY_SECRET_KEY\n' \
+  > "$oc/home/.aws/credentials"
+printf 'prod-eu\n' > "$oc/tf/.terraform/environment"
+
+# A CI or developer shell often exports AWS_REGION / AWS_DEFAULT_REGION, which
+# would replace the profile's region these cases read; the cases that want one
+# set it in their own subshell.
+unset AWS_REGION AWS_DEFAULT_REGION
+ops() {
+  AWS_PROFILE=acme-dev HOME="$oc/home" TMPDIR="$oc/tmp" \
+    PATH="$oc/bin:/usr/bin:/bin" "$OPS" "$@" 2>&1
+}
+
+out="$(ops --dir "$oc/empty")"; rc=$?
+assert_eq "ops_context default run exits 0 (an expired SSO login is a warning only)" "0" "$rc"
+assert_contains "ops_context names the kube context" "$out" "gke_acme_prod"
+assert_contains "ops_context names the kube namespace" "$out" "ns=payments"
+assert_contains "ops_context names the gcloud project" "$out" "acme-sandbox-42"
+assert_contains "ops_context names the aws profile" "$out" "profile=acme-dev"
+assert_contains "ops_context reads the profile's region" "$out" "region=eu-west-1"
+assert_contains "ops_context names the docker context" "$out" "context=orbstack"
+assert_contains "ops_context reports an expired SSO session" "$out" "expired"
+assert_not_contains "ops_context ignores a newer login of another start URL" "$out" "2999"
+assert_contains "ops_context prints the SSO login fix" "$out" "aws sso login --profile acme-dev"
+assert_contains "ops_context reports no Terraform directory" "$out" "no Terraform directory here"
+for canary in CANARY_SECRET_KEY AKIACANARYKEYID CANARY_SSO_TOKEN; do
+  assert_not_contains "ops_context never prints $canary" "$out" "$canary"
+done
+
+ops --dir "$oc/empty" --strict >/dev/null; rc=$?
+assert_eq "ops_context --strict exits 1 on the expired SSO warning" "1" "$rc"
+
+out="$(ops --dir "$oc/empty" --warn-on PROD)"; rc=$?
+assert_eq "ops_context --warn-on matches case-insensitively -> 1" "1" "$rc"
+assert_contains "ops_context names the pattern that matched" "$out" 'matches "prod"'
+assert_contains "ops_context turns the matching row into a warning" "$out" "[warn] kube"
+
+ops --dir "$oc/empty" --warn-on staging >/dev/null; rc=$?
+assert_eq "ops_context --warn-on with no match -> 0" "0" "$rc"
+ops --dir "$oc/empty" --warn-on=prod >/dev/null; rc=$?
+assert_eq "ops_context accepts --warn-on=PATTERN" "1" "$rc"
+# CLOUDSDK_* variables override the configuration file, and are what
+# --warn-on is matched against.
+out="$(CLOUDSDK_CORE_PROJECT=prod-x ops --only gcloud --dir "$oc/empty" --warn-on prod)"; rc=$?
+assert_eq "ops_context --warn-on prod with CLOUDSDK_CORE_PROJECT=prod-x -> 1" "1" "$rc"
+assert_contains "the env project is shown and labelled" "$out" "project=prod-x (env)"
+assert_not_contains "the file project is overridden" "$out" "acme-sandbox-42"
+out="$(CLOUDSDK_CORE_ACCOUNT=ops@example.com CLOUDSDK_COMPUTE_REGION=us-east1 \
+  ops --only gcloud --dir "$oc/empty")"
+assert_contains "the env account is labelled" "$out" "account=ops@example.com (env)"
+assert_contains "the env region is labelled" "$out" "region=us-east1 (env)"
+assert_contains "the file project stays when not overridden" "$out" "project=acme-sandbox-42 "
+CLOUDSDK_CORE_PROJECT=sandbox-y ops --only gcloud --dir "$oc/empty" --warn-on acme >/dev/null; rc=$?
+assert_eq "a file value that the env overrides no longer matches --warn-on -> 0" "0" "$rc"
+
+out="$(ops --dir "$oc/empty" --warn-on prod --quiet)"
+assert_contains "ops_context --quiet keeps the warning" "$out" "[warn] kube"
+assert_not_contains "ops_context --quiet drops ok rows" "$out" "[ ok ]"
+assert_not_contains "ops_context --quiet drops info rows" "$out" "[info]"
+assert_not_contains "ops_context --quiet drops the gcloud row" "$out" "acme-sandbox-42"
+
+out="$(ops --only=aws)"; rc=$?
+assert_eq "ops_context accepts --only=TOOL" "0" "$rc"
+assert_contains "ops_context --only aws reports aws" "$out" "profile=acme-dev"
+assert_not_contains "ops_context --only aws skips kube" "$out" "gke_acme_prod"
+
+out="$(ops --only terraform --dir "$oc/tf")"; rc=$?
+assert_eq "ops_context reports a Terraform workspace -> 0" "0" "$rc"
+assert_contains "ops_context reads .terraform/environment" "$out" "workspace=prod-eu"
+ops --only terraform --dir "$oc/tf" --warn-on prod >/dev/null; rc=$?
+assert_eq "ops_context --warn-on matches the Terraform workspace -> 1" "1" "$rc"
+
+out="$(export AWS_ACCESS_KEY_ID=AKIAFAKE; ops --only aws)"
+assert_contains "ops_context names AWS_ACCESS_KEY_ID when it is set" "$out" "AWS_ACCESS_KEY_ID"
+assert_not_contains "ops_context never prints the key itself" "$out" "AKIAFAKE"
+
+# The region a command uses: AWS_REGION, then AWS_DEFAULT_REGION, then the
+# profile's. The row shows that one with its source, and --warn-on matches it
+# (the profile's own eu-west-1 is replaced, so it no longer matches).
+out="$(ops --only aws)"
+assert_not_contains "no region variable leaves the profile region unmarked" "$out" "(env"
+out="$(export AWS_DEFAULT_REGION=us-prod-1; ops --only aws)"
+assert_contains "AWS_DEFAULT_REGION overrides the profile region, marked" "$out" "region=us-prod-1 (env AWS_DEFAULT_REGION)"
+assert_not_contains "the overridden profile region is not shown" "$out" "region=eu-west-1"
+out="$(export AWS_DEFAULT_REGION=us-prod-1 AWS_REGION=ap-south-9; ops --only aws)"
+assert_contains "AWS_REGION overrides AWS_DEFAULT_REGION, marked" "$out" "region=ap-south-9 (env AWS_REGION)"
+assert_not_contains "the overridden AWS_DEFAULT_REGION is not shown" "$out" "us-prod-1"
+(export AWS_REGION=eu-prod-2; ops --only aws --warn-on prod >/dev/null); rc=$?
+assert_eq "--warn-on matches the effective AWS_REGION -> 1" "1" "$rc"
+(export AWS_REGION=eu-central-1; ops --only aws --warn-on west >/dev/null); rc=$?
+assert_eq "--warn-on does not match the profile region AWS_REGION replaced -> 0" "0" "$rc"
+(ops --only aws --warn-on west >/dev/null); rc=$?
+assert_eq "--warn-on matches the profile region when no variable is set -> 1" "1" "$rc"
+
+out="$(export GH_TOKEN=ghp_CANARYTOKEN; ops --only gh)"
+assert_contains "ops_context names GH_TOKEN when it is set" "$out" "GH_TOKEN"
+assert_not_contains "ops_context never prints the GitHub token" "$out" "ghp_CANARYTOKEN"
+
+out="$(export FAKE_DOCKER_ENDPOINT=tcp://10.0.0.5:2376; ops --only docker)"; rc=$?
+assert_contains "ops_context warns about a remote Docker daemon" "$out" "remote"
+assert_eq "a remote Docker daemon alone does not change the exit code" "0" "$rc"
+
+# DOCKER_CONTEXT overrides DOCKER_HOST (Docker CLI documentation): with both
+# set, the context's endpoint is the effective target and the host is noted
+# as ignored. --warn-on is matched against the effective context only.
+out="$(export DOCKER_CONTEXT=prod-cluster DOCKER_HOST=unix:///tmp/local.sock \
+  FAKE_DOCKER_ENDPOINT=tcp://10.0.0.5:2376; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "DOCKER_CONTEXT=prod-cluster beside a local DOCKER_HOST, --warn-on prod -> 1" "1" "$rc"
+assert_contains "the DOCKER_CONTEXT target is reported" "$out" "context=prod-cluster"
+assert_contains "the context's remote endpoint is reported" "$out" "tcp://10.0.0.5:2376"
+assert_contains "the ignored DOCKER_HOST is noted" "$out" "is ignored"
+out="$(export DOCKER_CONTEXT=laptop DOCKER_HOST=tcp://prod-host:2376; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "a remote DOCKER_HOST that DOCKER_CONTEXT overrides does not trip --warn-on -> 0" "0" "$rc"
+assert_contains "the local context is reported, not the overridden host" "$out" "context=laptop"
+assert_not_contains "the overridden host is not called a remote daemon" "$out" "remote Docker daemon"
+out="$(export DOCKER_HOST=tcp://prod-host:2376; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "DOCKER_HOST alone still matches --warn-on -> 1" "1" "$rc"
+# The built-in `default` context takes its endpoint from DOCKER_HOST, so that
+# host is the effective target: it is reported, matched, and not "ignored".
+out="$(export DOCKER_CONTEXT=default DOCKER_HOST=tcp://prod-host:2376 \
+  FAKE_DOCKER_ENDPOINT=unix:///var/run/docker.sock; ops --only docker --warn-on prod)"; rc=$?
+assert_eq "DOCKER_CONTEXT=default with a remote DOCKER_HOST matches --warn-on -> 1" "1" "$rc"
+assert_contains "the DOCKER_HOST endpoint is reported for the default context" "$out" "tcp://prod-host:2376"
+assert_contains "the default context is named" "$out" "context=default"
+assert_not_contains "DOCKER_HOST is not called ignored under the default context" "$out" "is ignored"
+
+mv "$oc/bin/kubectl" "$oc/kubectl.off"
+out="$(ops --only kube)"; rc=$?
+assert_eq "ops_context without kubectl exits 0" "0" "$rc"
+assert_contains "ops_context reports a missing kubectl as info" "$out" "[info] kube"
+mv "$oc/kubectl.off" "$oc/bin/kubectl"
+
+printf '%s\n' '#!/bin/sh' "printf 'gke_\\033[31mred\\n'" > "$oc/bin/kubectl"
+out="$(ops --only kube)"
+assert_not_contains "ops_context strips terminal escapes from config values" "$out" $'\033'
+rm -rf "$oc"
+
+
+section "ssh_client_doctor: groups and flags answer before preflight"
+SSHDOC="$M/ssh_client_doctor.sh"
+out="$("$SSHDOC" --list-groups 2>&1)"; rc=$?
+assert_eq "ssh_client_doctor --list-groups exits 0" "0" "$rc"
+for g in dir files keys config; do
+  if grep -qxF -- "$g" <<<"$out"; then
+    ok "ssh_client_doctor lists the $g group"
+  else
+    err "ssh_client_doctor --list-groups does not list $g"
+  fi
+done
+"$SSHDOC" --only nosuch >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects an unknown group -> 3" "3" "$rc"
+"$SSHDOC" --fail-on sometimes >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects a bad --fail-on -> 3" "3" "$rc"
+"$SSHDOC" --ssh-dir >/dev/null 2>&1; rc=$?
+assert_eq "ssh_client_doctor rejects --ssh-dir without a value -> 3" "3" "$rc"
+
+section "ssh_client_doctor: modes, keys and Host * risks"
+# Modes are set with chmod and read back through the real stat, BSD on a Mac
+# and GNU here, so the same fixture means the same thing on both runners.
+# ssh-keygen is faked after the real one. -l on a private key prefers
+# KEY.pub when it exists (so a stale .pub answers for the key), otherwise it
+# prints the "FP: " line in the private file, and it fails when there is none
+# (an unreadable key); -l on a public file prints it. -y succeeds only for a
+# key carrying the NOPASSPHRASE marker, which is how a real key without a
+# passphrase answers, and prints that key's public half (its "FP: " line).
+# Every fixture key body carries SECRETBODY, which must never reach the
+# output.
+sd="$(mktemp -d)"
+mkdir -p "$sd/bin" "$sd/home/.ssh" "$sd/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sd/bin/uname"
+cat > "$sd/bin/ssh-keygen" <<'KEYGEN_EOF'
+#!/bin/sh
+mode=""; file=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -y) mode=y ;;
+    -l) mode=l ;;
+    -P) shift ;;
+    -f) shift; file="$1" ;;
+  esac
+  shift
+done
+case "$mode" in
+  y) grep -q NOPASSPHRASE "$file" || exit 1
+     grep '^FP: ' "$file" | sed 's/^FP: //' ;;
+  l) if grep -q 'BEGIN OPENSSH PRIVATE KEY' "$file" 2>/dev/null; then
+       if [ -f "$file.pub" ]; then
+         cat "$file.pub"
+       else
+         grep '^FP: ' "$file" | sed 's/^FP: //' | grep .
+       fi
+     else
+       cat "$file"
+     fi ;;
+  *) exit 1 ;;
+esac
+KEYGEN_EOF
+chmod +x "$sd/bin/"*
+ssh_home="$sd/home"
+sshd_dir="$sd/home/.ssh"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 256 SHA256:fixture me@example (ED25519)\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/id_ed25519"
+printf '256 SHA256:fixture me@example (ED25519)\n' > "$sshd_dir/id_ed25519.pub"
+printf 'Host bastion\n  HostName bastion.example\n  IdentityFile ~/.ssh/id_ed25519\n' \
+  > "$sshd_dir/config"
+chmod 700 "$sshd_dir"
+chmod 600 "$sshd_dir/id_ed25519" "$sshd_dir/config"
+chmod 644 "$sshd_dir/id_ed25519.pub"
+
+sshdoc() {
+  HOME="$ssh_home" TMPDIR="$sd/tmp" PATH="$sd/bin:/usr/bin:/bin" "$SSHDOC" "$@" 2>&1
+}
+
+out="$(sshdoc)"; rc=$?
+assert_eq "ssh_client_doctor passes a clean ~/.ssh -> 0" "0" "$rc"
+assert_contains "ssh_client_doctor prints pass rows" "$out" "[pass]"
+assert_contains "ssh_client_doctor grades the key type" "$out" "ED25519 256"
+assert_contains "ssh_client_doctor reports the passphrase" "$out" "passphrase-protected"
+assert_not_contains "ssh_client_doctor never prints key material" "$out" "SECRETBODY"
+out="$(sshdoc --ssh-dir="$sshd_dir")"; rc=$?
+assert_eq "ssh_client_doctor accepts --ssh-dir=DIR" "0" "$rc"
+
+# A symlinked key or ~/.ssh is graded by its target's mode: a link itself is
+# always 777 and must not be reported as an open key.
+mkdir -p "$sd/linkreal"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 256 SHA256:linked me@example (ED25519)\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sd/linkreal/id_linked"
+chmod 600 "$sd/linkreal/id_linked"
+ln -s "$sd/linkreal/id_linked" "$sshd_dir/id_linked"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a symlink to a 0600 key passes -> 0" "0" "$rc"
+assert_contains "the symlinked key is graded by its target mode" "$out" "id_linked mode 600"
+assert_not_contains "the symlinked key is not reported as 777" "$out" "mode 777"
+chmod 644 "$sd/linkreal/id_linked"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a symlink to a 0644 key still fails -> 1" "1" "$rc"
+assert_contains "the symlinked key's loose target mode is reported" "$out" "id_linked mode 644"
+rm -f "$sshd_dir/id_linked"
+ln -s "$sshd_dir" "$sd/ssh-link"
+out="$(sshdoc --only dir --ssh-dir "$sd/ssh-link")"; rc=$?
+assert_eq "a symlinked --ssh-dir to a 0700 directory passes -> 0" "0" "$rc"
+assert_contains "the symlinked directory shows its target mode" "$out" "mode 700"
+assert_not_contains "the symlinked directory is not reported as 777" "$out" "mode 777"
+rm -f "$sd/ssh-link"
+
+chmod 755 "$sshd_dir"
+out="$(sshdoc --only dir)"; rc=$?
+assert_eq "a 755 ~/.ssh is only a warning -> 0" "0" "$rc"
+assert_contains "a 755 ~/.ssh is a hardening warning" "$out" "[warn] $sshd_dir mode 755"
+assert_contains "the directory fix is printed" "$out" "chmod 700 $sshd_dir"
+out="$(sshdoc --only dir --fail-on warn)"; rc=$?
+assert_eq "a 755 ~/.ssh fails under --fail-on warn -> 1" "1" "$rc"
+for dm in 775 777 770 757 2775 1777; do
+  # GNU chmod keeps a directory's setgid bit on a numeric mode: clear the
+  # special bits first so each iteration starts from a plain mode.
+  chmod u-s,g-s,-t "$sshd_dir"
+  chmod "$dm" "$sshd_dir"
+  out="$(sshdoc --only dir)"; rc=$?
+  assert_eq "a $dm ~/.ssh fails -> 1" "1" "$rc"
+  # BSD stat drops the setgid/sticky digit (2775 reads 775), GNU stat keeps
+  # it, so the verdict is matched with either spelling of the mode.
+  want="[FAIL] $sshd_dir mode $dm is writable by group or other"
+  want3="[FAIL] $sshd_dir mode ${dm#?} is writable by group or other"
+  case "$dm" in
+    ???) want3="$want" ;;
+  esac
+  case "$out" in
+    *"$want"*|*"$want3"*) assert_eq "a $dm ~/.ssh is called writable" "ok" "ok" ;;
+    *) assert_eq "a $dm ~/.ssh is called writable" "$want" "$out" ;;
+  esac
+done
+chmod u-s,g-s,-t "$sshd_dir"
+chmod 2700 "$sshd_dir"
+out="$(sshdoc --only dir)"; rc=$?
+assert_eq "a setgid 2700 ~/.ssh is private -> 0" "0" "$rc"
+case "$out" in
+  *"[pass] $sshd_dir mode 2700"*|*"[pass] $sshd_dir mode 700"*)
+    assert_eq "a 2700 ~/.ssh passes" "ok" "ok" ;;
+  *) assert_eq "a 2700 ~/.ssh passes" "[pass] $sshd_dir mode 2700" "$out" ;;
+esac
+chmod 700 "$sshd_dir"
+
+chmod 644 "$sshd_dir/id_ed25519"
+out="$(sshdoc --only files,keys)"; rc=$?
+assert_eq "a 644 private key fails -> 1" "1" "$rc"
+assert_contains "the key fix is printed" "$out" "chmod 600 $sshd_dir/id_ed25519"
+assert_contains "the passphrase is not judged while the mode is wrong" "$out" "passphrase not checked"
+chmod 600 "$sshd_dir/id_ed25519"
+
+# A dot-prefixed key is still a private key.
+cp "$sshd_dir/id_ed25519" "$sshd_dir/.deploy_key"
+chmod 644 "$sshd_dir/.deploy_key"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a 644 ~/.ssh/.deploy_key fails -> 1" "1" "$rc"
+assert_contains "the dot-prefixed key fix is printed" "$out" "chmod 600 $sshd_dir/.deploy_key"
+chmod 600 "$sshd_dir/.deploy_key"
+out="$(sshdoc --only files)"; rc=$?
+assert_eq "a 600 ~/.ssh/.deploy_key passes -> 0" "0" "$rc"
+rm -f "$sshd_dir/.deploy_key"
+
+# An IdentityFile target outside ~/.ssh is graded too.
+mkdir -p "$sd/home/keys"
+cp "$sshd_dir/id_ed25519" "$sd/home/keys/deploy"
+chmod 644 "$sd/home/keys/deploy"
+cp "$sshd_dir/config" "$sd/config.bak"
+# Only this block: the doctor names the first protected identity, so any
+# other Host block with a key would mask the "has a passphrase" advice.
+printf 'Host ci\n  IdentityFile ~/keys/deploy\n' > "$sshd_dir/config"
+chmod 600 "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_eq "a 644 IdentityFile outside ~/.ssh fails -> 1" "1" "$rc"
+assert_contains "the IdentityFile fix is printed" "$out" "chmod 600 $sd/home/keys/deploy"
+assert_contains "a loose IdentityFile key is not probed for a passphrase" "$out" \
+  "passphrase not checked: permissions too open"
+loose_advice='~/keys/deploy has a passphrase'
+assert_not_contains "a loose IdentityFile key gets no keychain advice" "$out" \
+  "$loose_advice"
+cp "$sd/config.bak" "$sshd_dir/config"
+rm -rf "$sd/home/keys" "$sd/config.bak"
+chmod 600 "$sshd_dir/config"
+
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 1024 SHA256:rsafixture me@example (RSA)\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/id_rsa"
+printf '1024 SHA256:rsafixture me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
+chmod 600 "$sshd_dir/id_rsa"
+out="$(sshdoc --only keys)"; rc=$?
+assert_eq "a 1024-bit RSA key is a warning only -> 0" "0" "$rc"
+assert_contains "the short RSA key is named" "$out" "1024-bit RSA"
+sshdoc --only keys --fail-on warn >/dev/null; rc=$?
+assert_eq "a short RSA key fails under --fail-on warn -> 1" "1" "$rc"
+assert_not_contains "a matching .pub raises no mismatch" "$out" "does not match"
+
+# A stale .pub that claims a strong key must not hide a weak private key.
+printf '4096 SHA256:otherkey me@example (RSA)\n' > "$sshd_dir/id_rsa.pub"
+out="$(sshdoc --only keys)"; rc=$?
+assert_contains "the weak private key is graded, not the stale .pub" "$out" "1024-bit RSA"
+assert_not_contains "the stale .pub's strength is not trusted" "$out" "RSA 4096"
+assert_contains "a .pub that differs from its private key is a warning" "$out" \
+  "[warn] id_rsa.pub does not match id_rsa"
+# Without a readable private key the .pub is the fallback, and says so.
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/id_rsa"
+chmod 600 "$sshd_dir/id_rsa"
+out="$(sshdoc --only keys)"
+assert_contains "an unreadable private key falls back to the .pub" "$out" "type from id_rsa.pub, unverified"
+assert_not_contains "the fallback raises no mismatch" "$out" "does not match"
+rm -f "$sshd_dir/id_rsa" "$sshd_dir/id_rsa.pub"
+
+# A relative --ssh-dir with an encrypted key and no .pub is still graded
+# (the link made for it must not dangle).
+mkdir -p "$sd/rel/keys"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSECRETBODY\nFP: 256 SHA256:relfixture me@example (ED25519)\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sd/rel/keys/enc_key"
+chmod 700 "$sd/rel/keys"
+chmod 600 "$sd/rel/keys/enc_key"
+out="$(cd "$sd/rel" && sshdoc --only keys --ssh-dir keys)"
+assert_contains "a relative --ssh-dir still grades an encrypted key without a .pub" \
+  "$out" "ED25519 256"
+assert_not_contains "the relative-dir key is not left unverified" "$out" "unverified"
+rm -rf "$sd/rel"
+
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nNOPASSPHRASE SECRETBODY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$sshd_dir/deploy_key"
+chmod 600 "$sshd_dir/deploy_key"
+out="$(sshdoc --only keys)"; rc=$?
+assert_contains "a key found by its header and opening with no passphrase is a warning" \
+  "$out" "unencrypted private key: deploy_key"
+assert_contains "the Keychain-backed fix is printed" "$out" "ssh-add --apple-use-keychain"
+assert_not_contains "the unencrypted key's body is never printed" "$out" "SECRETBODY"
+rm -f "$sshd_dir/deploy_key"
+
+printf 'Host bastion\n  ForwardAgent yes\n  IdentityFile ~/.ssh/gone\n' > "$sshd_dir/config"
+chmod 600 "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_contains "a missing IdentityFile is named" "$out" "IdentityFile ~/.ssh/gone does not exist"
+if grep -q '\[warn\].*ForwardAgent' <<<"$out"; then
+  err "ForwardAgent under one named Host is graded as a warning"
+else
+  ok "ForwardAgent under one named Host is not a warning"
+fi
+assert_contains "ForwardAgent under one named Host is still noted" "$out" "ForwardAgent yes under Host bastion"
+
+printf 'Host *\n  ForwardAgent yes\n  StrictHostKeyChecking no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+if grep -q '\[warn\].*ForwardAgent yes applies to every host' <<<"$out"; then
+  ok "ForwardAgent yes under Host * is a warning"
+else
+  err "ForwardAgent yes under Host * was not graded as a warning: $out"
+fi
+if grep -q '\[warn\].*StrictHostKeyChecking no applies to every host' <<<"$out"; then
+  ok "StrictHostKeyChecking no under Host * is a warning"
+else
+  err "StrictHostKeyChecking no under Host * was not graded as a warning: $out"
+fi
+assert_eq "warnings alone keep the default threshold -> 0" "0" "$rc"
+
+printf 'Match all\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_contains "ForwardAgent yes under Match all applies to every host" "$out" "[warn] ForwardAgent yes applies to every host (Match all)"
+assert_eq "a Match all warning alone keeps the default threshold -> 0" "0" "$rc"
+out="$(sshdoc --only config --fail-on warn)"; rc=$?
+assert_eq "ForwardAgent yes under Match all fails --fail-on warn -> 1" "1" "$rc"
+printf 'Match ALL\n  StrictHostKeyChecking no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "Match ALL is matched case-insensitively" "$out" "StrictHostKeyChecking no applies to every host (Match ALL)"
+printf 'Match HOST *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "Match host * is global and case-insensitive" "$out" "[warn] ForwardAgent yes applies to every host (Match HOST *)"
+printf 'Match host *,!example.com\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "Match host with an exclusion is only noted" "$out" "ForwardAgent yes under Match host *,!example.com"
+printf 'Match host example.com\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a Match with another criterion is only noted" "$out" "ForwardAgent yes under Match host example.com"
+
+# OpenSSH keeps the first value it obtains for a directive: a risky global
+# value after an earlier global one for the same directive is never used,
+# and one before it is.
+printf 'Host *\n  ForwardAgent no\n  StrictHostKeyChecking yes\n  UserKnownHostsFile ~/.ssh/known_hosts\nMatch all\n  ForwardAgent yes\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_not_contains "a risky Match all value after a safe Host * one does not warn" "$out" "[warn]"
+assert_contains "the shadowed ForwardAgent is noted as ignored" "$out" "ForwardAgent yes under Match all is ignored: an earlier global ForwardAgent wins"
+assert_contains "the shadowed StrictHostKeyChecking is noted as ignored" "$out" "StrictHostKeyChecking no under Match all is ignored"
+assert_contains "the shadowed UserKnownHostsFile is noted as ignored" "$out" "UserKnownHostsFile /dev/null under Match all is ignored"
+printf 'ForwardAgent no\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_not_contains "a risky Host * value after a safe value before any Host does not warn" "$out" "[warn]"
+printf 'Match all\n  ForwardAgent yes\nHost *\n  ForwardAgent no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a risky Match all value before a safe Host * one warns" "$out" "[warn] ForwardAgent yes applies to every host (Match all)"
+printf 'Host *\n  ForwardAgent yes\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_eq "two risky global values warn once, for the first" "1" "$(grep -c '\[warn\].*ForwardAgent yes applies' <<<"$out" | tr -d ' ')"
+printf 'Host bastion\n  ForwardAgent no\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a safe value under one named host does not shadow a global risky one" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+
+# Include is followed in order (relative paths against the ssh directory,
+# ~/ against HOME, double quotes, globs), so the first value across the
+# included files wins as it does in ssh.
+mkdir -p "$sshd_dir/conf.d" "$sshd_dir/with space"
+printf 'Host *\n  ForwardAgent no\n' > "$sshd_dir/conf.d/10-safe.conf"
+printf 'Host *\n  ForwardAgent yes\n  IdentityFile ~/.ssh/gone-in-include\n' > "$sshd_dir/conf.d/20-risky.conf"
+printf 'Include conf.d/*.conf\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_not_contains "a safe value in an Included file shadows a later risky one" "$out" "[warn] ForwardAgent"
+assert_contains "the shadowed ForwardAgent is noted as ignored" "$out" "ForwardAgent yes under Host * is ignored: an earlier global ForwardAgent wins"
+assert_contains "an IdentityFile in an Included file is checked" "$out" "IdentityFile ~/.ssh/gone-in-include does not exist"
+printf 'ForwardAgent yes\nInclude conf.d/10-safe.conf\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a risky value before the Include is the first and warns" "$out" "[warn] ForwardAgent yes applies to every host"
+printf 'Include conf.d/20-risky.conf\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a risky global value in an Included file warns" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+printf 'Host *\n  ForwardAgent no\n' > "$sshd_dir/with space/safe"
+printf 'Include "with space/safe" "~/.ssh/conf.d/20-risky.conf"\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a quoted path with a space and a ~/ path are followed" "$out" "ForwardAgent yes under Host * is ignored"
+printf 'Include config\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_eq "an Include cycle ends -> 0" "0" "$rc"
+assert_contains "the value after an Include cycle is still graded" "$out" "[warn] ForwardAgent yes applies to every host"
+printf 'Include $HOME/.ssh/conf.d/10-safe.conf\nHost *\n  ForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "an Include with a variable is noted as not followed" "$out" "an Include could not be followed here"
+printf 'Include nosuch/*\nHost *\n  ForwardAgent no\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"; rc=$?
+assert_eq "an Include that matches nothing is ignored -> 0" "0" "$rc"
+assert_not_contains "an Include that matches nothing is not a warning" "$out" "[warn]"
+# The block an Include sits in resumes after it, and an included file is read
+# only within that block, so its lines do not count as global values.
+printf 'Host foo\n  User x\n' > "$sshd_dir/conf.d/host-foo.conf"
+printf 'Host *\nInclude conf.d/host-foo.conf\nForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a Host line in an Included file does not end the enclosing Host *" "$out" "[warn] ForwardAgent yes applies to every host"
+printf 'Host bastion\nInclude conf.d/10-safe.conf\nHost *\nForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a safe global in a file included under a named Host does not shadow a later risky one" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+assert_not_contains "that later risky value is not called ignored" "$out" "ForwardAgent yes under Host * is ignored"
+# A config line that looks like an Include marker is not one.
+printf 'Host bastion\n=INCLUDE-BEGIN\nHost *\n=INCLUDE-END\nForwardAgent yes\n' > "$sshd_dir/config"
+out="$(sshdoc --only config)"
+assert_contains "a line spelled like an Include marker does not move the block" "$out" "[warn] ForwardAgent yes applies to every host (Host *)"
+rm -rf "$sshd_dir/conf.d" "$sshd_dir/with space"
+printf 'Host bastion\n  HostName bastion.example\n' > "$sshd_dir/config"
+
+chmod 666 "$sshd_dir/config"
+out="$(sshdoc --only files)"
+assert_contains "a world-writable config is a warning with its fix" "$out" "chmod 600 $sshd_dir/config"
+chmod 600 "$sshd_dir/config"
+
+out="$(sshdoc --ssh-dir "$sd/nosuch")"; rc=$?
+assert_eq "an absent --ssh-dir is a skip, not a failure -> 0" "0" "$rc"
+assert_contains "an absent --ssh-dir prints a skip row" "$out" "[skip]"
+out="$(sshdoc --ssh-dir "$sshd_dir/config")"; rc=$?
+assert_eq "an --ssh-dir that is a file is refused -> 2" "2" "$rc"
+rm -rf "$sd"
+
+
+section "hardening_audit: the secrets group reads modes and never prints values"
+# Fixtures carry canary secrets; the group names files and classes of finding
+# and must never echo a value. Modes are set with chmod and read through the
+# real stat on both runners. git is faked for credential.helper, uname for the
+# preflight; nothing else in this group shells out.
+sec="$(mktemp -d)"
+mkdir -p "$sec/bin" "$sec/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sec/bin/uname"
+cat > "$sec/bin/git" <<'GIT_EOF'
+#!/bin/sh
+if [ "$1 $2 $3" = "config --global credential.helper" ]; then
+  [ -n "${FAKE_GIT_HELPER:-}" ] || exit 1
+  echo "$FAKE_GIT_HELPER"
+  exit 0
+fi
+exit 1
+GIT_EOF
+chmod +x "$sec/bin/"*
+
+# A fresh HOME per case, so one fixture's finding cannot satisfy another's.
+sec_home() {
+  rm -rf "${sec:?}/home"
+  mkdir -p "$sec/home"
+}
+audit_secrets() {
+  HOME="$sec/home" TMPDIR="$sec/tmp" PATH="$sec/bin:/usr/bin:/bin" \
+    "$AUDIT" --only secrets "$@" 2>&1
+}
+
+sec_home
+mkdir -p "$sec/home/.aws"
+printf '[default]\naws_access_key_id = AKIACANARY\naws_secret_access_key = CANARY_AWS_SECRET\n' \
+  > "$sec/home/.aws/credentials"
+chmod 644 "$sec/home/.aws/credentials"
+out="$(audit_secrets)"; rc=$?
+assert_eq "an other-readable AWS credentials file fails -> 1" "1" "$rc"
+assert_contains "the permission fix is printed" "$out" "chmod 600 $sec/home/.aws/credentials"
+assert_contains "the finding is a FAIL" "$out" "[FAIL] AWS credentials is readable by every local user"
+assert_not_contains "the AWS secret is never printed" "$out" "CANARY_AWS_SECRET"
+assert_not_contains "the AWS key id is never printed" "$out" "AKIACANARY"
+
+chmod 600 "$sec/home/.aws/credentials"
+# Mode 600 is not enough when an extended ACL lets someone else read: `ls -le`
+# is stubbed (GNU ls has no -e, which must be silent).
+cat > "$sec/bin/ls" <<'LS_EOF'
+#!/bin/sh
+if [ "$1" = "-leLd" ] && [ -n "${FAKE_LS_ACL:-}" ]; then
+  printf '%s\n' "-rw-------+ 1 me staff 10 Oct  1 00:00 $3"
+  printf '%b' "$FAKE_LS_ACL"
+  exit 0
+fi
+exec /bin/ls "$@"
+LS_EOF
+chmod +x "$sec/bin/ls"
+out="$(FAKE_LS_ACL=' 0: user:mallory allow read,write\n' audit_secrets)"; rc=$?
+assert_contains "an ACL granting another user read is a warning" "$out" "[warn] AWS credentials has an ACL entry that lets another user read it"
+assert_contains "the ACL fix is printed" "$out" "chmod -N $sec/home/.aws/credentials"
+assert_not_contains "an ACL-readable file is not called private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: group:staff allow read\n' audit_secrets)"
+assert_contains "an ACL granting a group read is a warning" "$out" "ACL entry that lets another user read it"
+out="$(FAKE_LS_ACL=' 0: user:me allow read,write\n' audit_secrets)"
+assert_contains "an ACL entry for the owner is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:me inherited allow read\n' audit_secrets)"
+assert_contains "an inherited ACL entry for the owner is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:mallory inherited allow read\n' audit_secrets)"
+assert_contains "an inherited ACL entry for another user is a warning" "$out" "ACL entry that lets another user read it"
+out="$(FAKE_LS_ACL=' 0: user:mallory deny read\n 1: user:bob allow readattr,write\n' audit_secrets)"
+assert_contains "a deny entry or a non-read right is private" "$out" "AWS credentials is private to its owner"
+out="$(FAKE_LS_ACL=' 0: user:mallory allow read,file_inherit,only_inherit\n' audit_secrets)"
+assert_contains "an only_inherit read entry does not govern the file itself" "$out" "AWS credentials is private to its owner"
+out="$(audit_secrets)"
+assert_contains "ls without ACL support stays silent" "$out" "AWS credentials is private to its owner"
+rm -f "$sec/bin/ls"
+out="$(audit_secrets)"; rc=$?
+assert_eq "a private AWS credentials file with static keys only warns -> 0" "0" "$rc"
+assert_contains "static AWS keys are a warning" "$out" "long-lived static AWS keys on disk"
+audit_secrets --fail-on warn >/dev/null; rc=$?
+assert_eq "static AWS keys fail under --fail-on warn -> 1" "1" "$rc"
+
+sec_home
+mkdir -p "$sec/home/.docker"
+printf '{"auths": {"registry.example": {"auth": "Q0FOQVJZ"}}}\n' > "$sec/home/.docker/config.json"
+chmod 600 "$sec/home/.docker/config.json"
+out="$(audit_secrets)"
+assert_contains "base64 registry credentials are a warning" "$out" "registry credentials are base64 text"
+assert_contains "the credsStore fix is printed" "$out" '"credsStore": "osxkeychain"'
+assert_not_contains "the registry credential is never printed" "$out" "Q0FOQVJZ"
+printf '{"auths": {"registry.example": {}}, "credsStore": "osxkeychain"}\n' > "$sec/home/.docker/config.json"
+chmod 644 "$sec/home/.docker/config.json"
+out="$(audit_secrets)"; rc=$?
+assert_contains "a Docker config with credsStore passes" "$out" "Docker config uses a credential store"
+assert_eq "a 644 Docker config holding no secret is not a failure -> 0" "0" "$rc"
+# A credsStore does not clear legacy auth entries left in the same file.
+printf '{"auths": {"registry.example": {"auth": "Q0FOQVJZ"}}, "credsStore": "osxkeychain"}\n' > "$sec/home/.docker/config.json"
+chmod 644 "$sec/home/.docker/config.json"
+out="$(audit_secrets)"; rc=$?
+assert_eq "a 644 Docker config with credsStore and a legacy auth fails -> 1" "1" "$rc"
+assert_contains "the mode of a Docker config with a legacy auth is graded" "$out" "[FAIL] Docker config.json is readable by every local user"
+assert_contains "the leftover legacy auth is called out" "$out" "legacy registry credentials remain in config.json"
+assert_not_contains "a legacy auth next to credsStore is not a pass" "$out" "Docker config uses a credential store"
+assert_not_contains "the legacy registry credential is never printed" "$out" "Q0FOQVJZ"
+
+# Token-based logins keep the secret in identitytoken / registrytoken.
+for tokkey in identitytoken registrytoken; do
+  printf '{"auths": {"registry.example": {"%s": "TOKCANARY"}}, "credsStore": "osxkeychain"}\n' \
+    "$tokkey" > "$sec/home/.docker/config.json"
+  chmod 644 "$sec/home/.docker/config.json"
+  out="$(audit_secrets)"; rc=$?
+  assert_eq "a 644 Docker config with a $tokkey fails -> 1" "1" "$rc"
+  assert_contains "a $tokkey is graded as a secret" "$out" "[FAIL] Docker config.json is readable by every local user"
+  assert_contains "a $tokkey is called out" "$out" "legacy registry credentials remain in config.json"
+  assert_not_contains "the $tokkey value is never printed" "$out" "TOKCANARY"
+done
+printf '{"auths": {"registry.example": {"identitytoken": ""}}, "credsStore": "osxkeychain"}\n' \
+  > "$sec/home/.docker/config.json"
+out="$(audit_secrets)"; rc=$?
+assert_eq "a 644 Docker config with an empty identitytoken is not a failure -> 0" "0" "$rc"
+
+sec_home
+printf '//registry.npmjs.org/:_authToken=npm_CANARY\n' > "$sec/home/.npmrc"
+chmod 600 "$sec/home/.npmrc"
+out="$(audit_secrets)"
+assert_contains "a literal npm token is a warning" "$out" "literal npm token"
+assert_not_contains "the npm token is never printed" "$out" "npm_CANARY"
+# shellcheck disable=SC2016  # the literal ${...} is the fixture
+printf '//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n' > "$sec/home/.npmrc"
+out="$(audit_secrets)"
+assert_contains "an npm token read from the environment passes" "$out" "holds no literal npm token"
+
+sec_home
+printf 'https://user:CANARY_GIT_PASSWORD@git.example\n' > "$sec/home/.git-credentials"
+chmod 600 "$sec/home/.git-credentials"
+out="$(audit_secrets)"
+assert_contains "a ~/.git-credentials file is a warning" "$out" "plaintext git credentials"
+assert_not_contains "the git password is never printed" "$out" "CANARY_GIT_PASSWORD"
+
+sec_home
+out="$(FAKE_GIT_HELPER=store audit_secrets)"
+assert_contains "credential.helper store is a warning" "$out" "credential.helper store"
+out="$(FAKE_GIT_HELPER=osxkeychain audit_secrets)"
+assert_contains "credential.helper osxkeychain passes" "$out" "git keeps credentials in the Keychain"
+
+out="$(audit_secrets)"; rc=$?
+assert_eq "a home with no credential files -> 0" "0" "$rc"
+assert_contains "a home with no credential files says so" "$out" "no credential files found in the usual places"
+
+out="$(env -u HOME TMPDIR="$sec/tmp" PATH="$sec/bin:/usr/bin:/bin" "$AUDIT" --only secrets 2>&1)"; rc=$?
+assert_eq "the secrets group without HOME -> 0" "0" "$rc"
+assert_contains "the secrets group without HOME is a skip" "$out" "HOME is not set"
+
+mkdir -p "$sec/home/.kube"
+printf 'apiVersion: v1\n' > "$sec/home/.kube/config"
+chmod 600 "$sec/home/.kube/config"
+out="$(audit_secrets --quiet)"
+assert_not_contains "--quiet drops pass rows from the secrets group" "$out" "[pass]"
+assert_contains "--quiet still prints the summary" "$out" "== summary =="
+rm -rf "$sec"
+
+section "toolchain_check: --list-pins and argument validation answer before preflight"
+TC="$M/toolchain_check.sh"
+out="$("$TC" --list-pins 2>&1)"; rc=$?
+assert_eq "toolchain_check --list-pins exits 0" "0" "$rc"
+for pin in .python-version .terraform-version .go-version go.mod .tool-versions .nvmrc .node-version; do
+  if grep -qxF -- "$pin" <<<"$out"; then
+    ok "toolchain_check lists $pin"
+  else
+    err "toolchain_check --list-pins does not list $pin"
+  fi
+done
+"$TC" /nonexistent/toolchain-dir >/dev/null 2>&1; rc=$?
+assert_eq "toolchain_check rejects a missing DIR -> 3" "3" "$rc"
+"$TC" --dir >/dev/null 2>&1; rc=$?
+assert_eq "toolchain_check rejects --dir without a value -> 3" "3" "$rc"
+"$TC" "$M" "$M/tests" >/dev/null 2>&1; rc=$?
+assert_eq "toolchain_check rejects a second directory -> 3" "3" "$rc"
+
+section "toolchain_check: pins against faked version managers"
+# Every manager and binary is a shell script answering from an environment
+# variable, uname included, so the same fixtures hold on a real Mac where
+# /usr/bin has its own tools. Each case gets its own directory of pin files.
+tc="$(mktemp -d)"
+mkdir -p "$tc/bin" "$tc/home" "$tc/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$tc/bin/uname"
+cat > "$tc/bin/pyenv" <<'PYENV_EOF'
+#!/bin/sh
+[ "$*" = "versions --bare" ] || exit 1
+for v in ${FAKE_PYENV_VERSIONS:-}; do echo "$v"; done
+PYENV_EOF
+cat > "$tc/bin/goenv" <<'GOENV_EOF'
+#!/bin/sh
+[ "$*" = "versions --bare" ] || exit 1
+for v in ${FAKE_GOENV_VERSIONS:-}; do echo "$v"; done
+GOENV_EOF
+cat > "$tc/bin/tfenv" <<'TFENV_EOF'
+#!/bin/sh
+[ "$*" = "list" ] || exit 1
+printf '%s\n' "${FAKE_TFENV_LIST:-}" | tr '|' '\n'
+TFENV_EOF
+cat > "$tc/bin/python" <<'PYTHON_EOF'
+#!/bin/sh
+echo "Python ${FAKE_PYTHON_ACTIVE:-3.12.5}"
+PYTHON_EOF
+cat > "$tc/bin/terraform" <<'TERRAFORM_EOF'
+#!/bin/sh
+echo "Terraform v${FAKE_TF_ACTIVE:-1.9.5}"
+echo "on darwin_arm64"
+TERRAFORM_EOF
+cat > "$tc/bin/go" <<'GO_EOF'
+#!/bin/sh
+echo "go version go${FAKE_GO_ACTIVE:-1.23.2} darwin/arm64"
+GO_EOF
+cat > "$tc/bin/node" <<'NODE_EOF'
+#!/bin/sh
+echo "v${FAKE_NODE_ACTIVE:-20.11.1}"
+NODE_EOF
+chmod +x "$tc/bin/"*
+
+tcrun() {
+  HOME="$tc/home" TMPDIR="$tc/tmp" PATH="$tc/bin:/usr/bin:/bin" "$TC" "$@" 2>&1
+}
+pindir() {
+  mkdir -p "$tc/$1"
+  printf '%s' "$tc/$1"
+}
+
+d="$(pindir py-exact)"
+printf '3.12.5\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.11.9 3.12.5" tcrun "$d")"; rc=$?
+assert_eq "an installed, active Python pin -> 0" "0" "$rc"
+assert_contains "the Python pin is reported with its source" "$out" "(.python-version, pyenv 3.12.5)"
+out="$(FAKE_PYENV_VERSIONS="3.11.9 3.12.5" tcrun --dir="$d")"; rc=$?
+assert_eq "toolchain_check accepts --dir=DIR" "0" "$rc"
+
+d="$(pindir py-prefix)"
+printf '3.12\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a 3.12 pin is met by 3.12.5 -> 0" "0" "$rc"
+
+# pyenv lets .python-version list several versions, one per line or
+# separated by spaces, with comments: every one is checked.
+d="$(pindir py-multi)"
+printf '# interpreters\n3.12.5\n3.11.9 # legacy\n\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.11.9 3.12.5" tcrun "$d")"; rc=$?
+assert_eq "two installed Python versions -> 0" "0" "$rc"
+assert_contains "the first listed version is reported" "$out" "(.python-version, pyenv 3.12.5)"
+assert_contains "the second listed version is reported" "$out" "(.python-version, pyenv 3.11.9)"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a second listed Python version that is missing -> 1" "1" "$rc"
+assert_contains "the missing second version is named" "$out" "3.11.9 not installed"
+printf '3.12.5 3.10.4\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a space-separated second version that is missing -> 1" "1" "$rc"
+assert_contains "the missing space-separated version is named" "$out" "3.10.4 not installed"
+
+d="$(pindir py-crlf)"
+printf '3.12.5\r\n' > "$d/.python-version"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" tcrun "$d")"; rc=$?
+assert_eq "a CRLF-terminated pin file is read -> 0" "0" "$rc"
+
+d="$(pindir tf-missing)"
+printf '1.9.5\n' > "$d/.terraform-version"
+out="$(FAKE_TFENV_LIST="* 1.7.0 (set by /x/.terraform-version)" FAKE_TF_ACTIVE=1.7.0 tcrun "$d")"; rc=$?
+assert_eq "a Terraform pin that is not installed -> 1" "1" "$rc"
+assert_contains "the tfenv fix is printed" "$out" "tfenv install 1.9.5"
+assert_contains "the install_devtools.sh fix is printed" "$out" \
+  "install_devtools.sh --only terraform --terraform-version 1.9.5"
+
+out="$(FAKE_TFENV_LIST="  1.9.5|* 1.7.0 (set by /x/.terraform-version)" FAKE_TF_ACTIVE=1.7.0 tcrun "$d")"; rc=$?
+assert_eq "an installed but inactive pin is a warning only -> 0" "0" "$rc"
+assert_contains "the inactive pin names the active version" "$out" "the active binary is 1.7.0"
+FAKE_TFENV_LIST="  1.9.5|* 1.7.0 (set by /x/.terraform-version)" FAKE_TF_ACTIVE=1.7.0 \
+  tcrun "$d" --strict >/dev/null; rc=$?
+assert_eq "an inactive pin fails under --strict -> 1" "1" "$rc"
+
+d="$(pindir go-min)"
+printf 'module example.test/x\n\ngo 1.22\n' > "$d/go.mod"
+out="$(FAKE_GOENV_VERSIONS="1.23.2" FAKE_GO_ACTIVE=1.23.2 tcrun "$d")"; rc=$?
+assert_eq "go.mod's go line is a minimum met by 1.23.2 -> 0" "0" "$rc"
+assert_contains "the go minimum is shown as one" "$out" ">= 1.22"
+out="$(FAKE_GOENV_VERSIONS="1.21.0" FAKE_GO_ACTIVE=1.21.0 tcrun "$d")"; rc=$?
+assert_eq "go.mod's minimum not met by 1.21.0 -> 1" "1" "$rc"
+printf 'module example.test/x\n\ngo 1.10\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.9.7" FAKE_GO_ACTIVE=1.9.7 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.9.7 does not meet a 1.10 minimum (numeric compare) -> 1" "1" "$rc"
+printf 'module example.test/x\n\ngo 1.9\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.10.1" FAKE_GO_ACTIVE=1.10.1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.10.1 meets a 1.9 minimum (numeric compare) -> 0" "0" "$rc"
+printf 'module example.test/x\n\ngo 1.22\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.22rc1" FAKE_GO_ACTIVE=1.22rc1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc1 does not meet a 1.22 minimum (prerelease is older) -> 1" "1" "$rc"
+printf 'module example.test/x\n\ngo 1.22.0\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.22rc1" FAKE_GO_ACTIVE=1.22rc1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc1 does not meet a 1.22.0 minimum -> 1" "1" "$rc"
+FAKE_GOENV_VERSIONS="1.22.0" FAKE_GO_ACTIVE=1.22.0 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22.0 meets a 1.22.0 minimum -> 0" "0" "$rc"
+printf 'module example.test/x\n\ngo 1.21\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.22rc1" FAKE_GO_ACTIVE=1.22rc1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc1 meets a 1.21 minimum -> 0" "0" "$rc"
+printf 'module example.test/x\n\ngo 1.22rc2\n' > "$d/go.mod"
+FAKE_GOENV_VERSIONS="1.22rc1" FAKE_GO_ACTIVE=1.22rc1 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc1 does not meet a 1.22rc2 minimum (rc1 is older) -> 1" "1" "$rc"
+FAKE_GOENV_VERSIONS="1.22rc2" FAKE_GO_ACTIVE=1.22rc2 tcrun "$d" >/dev/null; rc=$?
+assert_eq "1.22rc2 meets a 1.22rc2 minimum -> 0" "0" "$rc"
+
+d="$(pindir tool-versions)"
+printf '# toolchain for this repo\npython 3.12.5 3.10.4  # two interpreters\nterraform 1.7.0\n' \
+  > "$d/.tool-versions"
+out="$(FAKE_PYENV_VERSIONS="3.12.5" FAKE_TFENV_LIST="1.7.0" FAKE_TF_ACTIVE=1.7.0 tcrun "$d")"; rc=$?
+assert_eq "one missing version of two in .tool-versions -> 1" "1" "$rc"
+assert_contains "the missing version is named" "$out" "3.10.4 not installed"
+assert_not_contains "the installed version is not reported missing" "$out" "3.12.5 not installed"
+assert_contains "terraform from .tool-versions is checked too" "$out" "(.tool-versions, tfenv 1.7.0)"
+
+d="$(pindir hostile)"
+# shellcheck disable=SC2016  # the literal $( ) is the fixture
+printf '$(touch PWNED)\n' > "$d/.python-version"
+printf '1.0;rm\n' > "$d/.terraform-version"
+out="$(cd "$d" && FAKE_PYENV_VERSIONS="3.12.5" FAKE_TFENV_LIST="1.7.0" tcrun "$d")"; rc=$?
+assert_eq "pins that are not versions are notes, not failures -> 0" "0" "$rc"
+assert_contains "a hostile pin is reported as not a version" "$out" "not a plain version number"
+assert_not_contains "a hostile pin never reaches a printed command" "$out" "1.0;rm"
+assert_not_contains "a hostile pin never reaches an install hint" "$out" "install 1.0"
+if [[ -e "$d/PWNED" || -e "$tc/PWNED" ]]; then
+  err "a pin file was evaluated: PWNED exists"
+else
+  ok "a pin file is read as data, never evaluated"
+fi
+
+d="$(pindir system)"
+printf 'system\n' > "$d/.python-version"
+out="$(tcrun "$d")"; rc=$?
+assert_eq "a 'system' pin -> 0" "0" "$rc"
+assert_contains "a 'system' pin is a note" "$out" "names no version"
+
+d="$(pindir node)"
+printf 'v20\n' > "$d/.nvmrc"
+out="$(FAKE_NODE_ACTIVE=20.11.1 tcrun "$d")"; rc=$?
+assert_eq "a Node major pin met by the active node -> 0" "0" "$rc"
+FAKE_NODE_ACTIVE=18.19.0 tcrun "$d" >/dev/null; rc=$?
+assert_eq "a Node major pin not met -> 1" "1" "$rc"
+
+d="$(pindir no-pyenv)"
+printf '3.12.5\n' > "$d/.python-version"
+mv "$tc/bin/pyenv" "$tc/pyenv.off"
+out="$(tcrun "$d")"; rc=$?
+assert_eq "a Python pin without pyenv -> 1" "1" "$rc"
+assert_contains "a missing pyenv points at install_devtools.sh" "$out" "./install_devtools.sh --only python"
+mv "$tc/pyenv.off" "$tc/bin/pyenv"
+
+d="$(pindir empty)"
+tcrun "$d" >/dev/null; rc=$?
+assert_eq "a directory with no pin file -> 4" "4" "$rc"
+rm -rf "$tc"
+
+section "net_doctor: argument validation answers before preflight"
+NETDOC="$M/net_doctor.sh"
+"$NETDOC" --probe >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects --probe without a value -> 3" "3" "$rc"
+"$NETDOC" --probe=host.example:99999 >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects a port above 65535 -> 3" "3" "$rc"
+"$NETDOC" --probe 'a;b' >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects a probe host that is not a name -> 3" "3" "$rc"
+"$NETDOC" --hosts-file >/dev/null 2>&1; rc=$?
+assert_eq "net_doctor rejects --hosts-file without a value -> 3" "3" "$rc"
+
+section "net_doctor: parses scutil, route, ifconfig and hosts fixtures"
+# Every system tool is a fake that prints a captured fixture, uname included,
+# because this file also runs on a real Mac where /sbin and /usr/sbin hold the
+# real ones. lsof records that it was called, so --skip-listen can be shown
+# not to run it.
+nd="$(mktemp -d)"
+mkdir -p "$nd/bin" "$nd/home" "$nd/tmp" "$nd/fx"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$nd/bin/uname"
+printf '%s\n' '#!/bin/sh' 'echo fake-mac.local' > "$nd/bin/hostname"
+cat > "$nd/fx/dns.txt" <<'DNS_EOF'
+DNS configuration
+
+resolver #1
+  search domain[0] : home.example
+  nameserver[0] : 192.168.1.1
+  if_index : 6 (en0)
+  flags    : Request A records
+  reach    : 0x00020002 (Reachable,Directly Reachable Address)
+
+resolver #2
+  domain   : corp.example
+  nameserver[0] : 10.0.0.53
+  flags    : Request A records
+  reach    : 0x00000002 (Reachable)
+
+resolver #3
+  domain   : local
+  options  : mdns
+  timeout  : 5
+  flags    : Request A records
+  reach    : 0x00000000 (Not Reachable)
+
+DNS configuration (for scoped queries)
+
+resolver #1
+  nameserver[0] : 192.168.1.1
+  if_index : 6 (en0)
+  flags    : Scoped, Request A records
+DNS_EOF
+cat > "$nd/fx/proxy_on.txt" <<'PROXY_EOF'
+<dictionary> {
+  ExceptionsList : <array> {
+    0 : *.local
+  }
+  HTTPEnable : 1
+  HTTPPort : 3128
+  HTTPProxy : proxy.corp.example
+  HTTPSEnable : 1
+  HTTPSPort : 3128
+  HTTPSProxy : proxy.corp.example
+}
+PROXY_EOF
+cat > "$nd/fx/proxy_off.txt" <<'PROXY_EOF'
+<dictionary> {
+  HTTPEnable : 0
+  HTTPSEnable : 0
+}
+PROXY_EOF
+cat > "$nd/fx/route.txt" <<'ROUTE_EOF'
+   route to: default
+destination: default
+       mask: default
+    gateway: 192.168.1.1
+  interface: en0
+      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
+ROUTE_EOF
+cat > "$nd/fx/ifconfig.txt" <<'IFCONFIG_EOF'
+lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384
+	inet 127.0.0.1 netmask 0xff000000
+en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500
+	ether aa:bb:cc:dd:ee:ff
+	inet 192.168.1.23 netmask 0xffffff00 broadcast 192.168.1.255
+	status: active
+utun3: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1280
+	inet 100.101.102.103 --> 100.101.102.103 netmask 0xffffffff
+IFCONFIG_EOF
+cat > "$nd/fx/lsof.txt" <<'LSOF_EOF'
+COMMAND   PID USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+postgres  501 me      7u  IPv4 0x0000000000000001      0t0  TCP 127.0.0.1:5432 (LISTEN)
+rapportd  512 me      4u  IPv4 0x0000000000000002      0t0  TCP *:49152 (LISTEN)
+LSOF_EOF
+cat > "$nd/bin/scutil" <<'SCUTIL_EOF'
+#!/bin/sh
+case "$*" in
+  "--dns")     cat "$FAKE_NET/dns.txt" ;;
+  "--proxy")   cat "$FAKE_NET/proxy_${FAKE_PROXY:-off}.txt" ;;
+  "--nc list") echo 'Available network connection services in the current set (*=enabled):'
+               echo '* (Connected)      0000-1111 PPP --> L2TP       "Corp VPN"   [PPP/L2TP]' ;;
+  *)           exit 1 ;;
+esac
+SCUTIL_EOF
+cat > "$nd/bin/route" <<'ROUTE_EOF'
+#!/bin/sh
+case "$*" in
+  "-n get default")
+    if [ "${FAKE_NO_ROUTE:-0}" = 1 ]; then
+      echo "route: writing to routing socket: not in table" >&2
+      exit 1
+    fi
+    cat "$FAKE_NET/route.txt" ;;
+  *) exit 1 ;;
+esac
+ROUTE_EOF
+cat > "$nd/bin/ifconfig" <<'IFCONFIG_EOF'
+#!/bin/sh
+cat "$FAKE_NET/ifconfig.txt"
+IFCONFIG_EOF
+cat > "$nd/bin/lsof" <<'LSOF_EOF'
+#!/bin/sh
+echo called >> "$FAKE_NET/lsof.calls"
+cat "$FAKE_NET/lsof.txt"
+LSOF_EOF
+cat > "$nd/bin/dscacheutil" <<'DSCACHE_EOF'
+#!/bin/sh
+case "$5" in
+  fake-mac.local|example.test) printf 'name: %s\nip_address: 192.0.2.10\n\n' "$5" ;;
+  v6only.test) printf 'name: %s\nipv6_address: 2001:db8::10\n\n' "$5" ;;
+esac
+exit 0
+DSCACHE_EOF
+cat > "$nd/bin/nc" <<'NC_EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_NET/nc.args"
+exit "${FAKE_NC_RC:-0}"
+NC_EOF
+chmod +x "$nd/bin/"*
+printf '##\n# Host Database\n##\n127.0.0.1\tlocalhost\n255.255.255.255\tbroadcasthost\n::1             localhost\n10.1.2.3 grafana.corp.example\n' \
+  > "$nd/fx/hosts"
+
+netdoc() {
+  FAKE_NET="$nd/fx" HOME="$nd/home" TMPDIR="$nd/tmp" PATH="$nd/bin:/usr/bin:/bin" \
+    "$NETDOC" --hosts-file "$nd/fx/hosts" "$@" 2>&1
+}
+
+out="$(netdoc)"; rc=$?
+assert_eq "net_doctor default run -> 0" "0" "$rc"
+for heading in "== interfaces ==" "== routes ==" "== dns ==" "== proxy ==" "== vpn ==" "== hosts ==" "== listen =="; do
+  assert_contains "net_doctor prints $heading" "$out" "$heading"
+done
+assert_contains "net_doctor reads the default gateway" "$out" "default via 192.168.1.1 dev en0"
+assert_contains "net_doctor reads the primary resolver" "$out" "primary resolver: 192.168.1.1"
+assert_contains "net_doctor reports split DNS" "$out" "split DNS: corp.example goes to 10.0.0.53"
+assert_not_contains "net_doctor leaves the mDNS resolver out" "$out" "split DNS: local"
+assert_contains "net_doctor reports a connected VPN service" "$out" "VPN service connected: Corp VPN"
+assert_contains "net_doctor reports a tunnel" "$out" "tunnel utun3 100.101.102.103"
+assert_contains "net_doctor counts the custom hosts entry" "$out" "1 custom entry"
+assert_contains "net_doctor lists the custom hosts entry" "$out" "10.1.2.3 grafana.corp.example"
+assert_not_contains "net_doctor does not list stock hosts lines" "$out" "broadcasthost"
+assert_contains "net_doctor marks a listener reachable from the network" "$out" "rapportd:49152"
+assert_contains "net_doctor resolves its own hostname" "$out" "hostname fake-mac.local resolves"
+assert_contains "net_doctor points at the firewall audit" "$out" "hardening_audit.sh"
+
+out="$(FAKE_NO_ROUTE=1 netdoc)"; rc=$?
+assert_contains "a missing default route is a warning" "$out" "no default IPv4 route"
+assert_eq "a missing default route does not change the exit code -> 0" "0" "$rc"
+FAKE_NO_ROUTE=1 netdoc --strict >/dev/null; rc=$?
+assert_eq "a missing default route fails under --strict -> 1" "1" "$rc"
+
+out="$(FAKE_PROXY=on netdoc --skip-listen)"
+assert_contains "a system proxy unknown to the shell is a warning naming curl" "$out" "curl/git/brew/kubectl do not"
+assert_contains "the proxy export line is printed" "$out" "export https_proxy=http://proxy.corp.example:3128"
+out="$(export https_proxy=http://user:CANARY_PROXY_PASS@proxy.corp.example:3128; FAKE_PROXY=on netdoc --skip-listen)"
+assert_not_contains "a proxy the shell already sets is not a warning" "$out" "curl/git/brew/kubectl do not"
+assert_not_contains "a proxy variable's value is never printed" "$out" "CANARY_PROXY_PASS"
+assert_contains "the proxy variable is named" "$out" "https_proxy"
+
+rm -f "$nd/fx/lsof.calls"
+out="$(netdoc --skip-listen)"
+if [[ -e "$nd/fx/lsof.calls" ]]; then
+  err "--skip-listen still ran lsof"
+else
+  ok "--skip-listen does not run lsof"
+fi
+assert_contains "--skip-listen says so" "$out" "--skip-listen"
+
+out="$(FAKE_NC_RC=1 netdoc --skip-listen --probe example.test)"; rc=$?
+assert_contains "a probe with no TCP path is a warning naming nc" "$out" "nc -vz -G 5 192.0.2.10 443"
+assert_eq "a failed probe does not change the exit code -> 0" "0" "$rc"
+out="$(netdoc --skip-listen --probe=example.test:8443)"; rc=$?
+assert_eq "net_doctor accepts --probe=HOST:PORT" "0" "$rc"
+assert_contains "the probe uses the given port" "$out" "192.0.2.10:8443 accepted a TCP connection"
+
+rm -f "$nd/fx/nc.args"
+out="$(netdoc --skip-listen --probe v6only.test)"; rc=$?
+assert_eq "a probe of an AAAA-only name -> 0" "0" "$rc"
+assert_contains "an AAAA-only name resolves from ipv6_address" "$out" "v6only.test resolves to 2001:db8::10"
+assert_contains "the IPv6 address is probed" "$out" "2001:db8::10:443 accepted a TCP connection"
+assert_contains "nc is told to use IPv6" "$(cat "$nd/fx/nc.args" 2>/dev/null)" "-6 -z -G 5 2001:db8::10 443"
+out="$(FAKE_NC_RC=1 netdoc --skip-listen --probe v6only.test)"
+assert_contains "a failed IPv6 probe prints the matching nc command" "$out" "nc -6 -vz -G 5 2001:db8::10 443"
+rm -f "$nd/fx/nc.args"
+
+out="$(netdoc --quiet)"
+assert_not_contains "--quiet drops ok rows" "$out" "[ ok ]"
+assert_contains "--quiet keeps the summary" "$out" "== summary =="
+
+scratch_files="$(find "$nd/home" "$nd/tmp" -type f | wc -l | tr -d ' ')"
+assert_eq "net_doctor writes nothing under HOME or TMPDIR" "0" "$scratch_files"
+rm -rf "$nd"
+
+section "tls_expiry: validation precedes preflight"
+TLSX="$M/tls_expiry.sh"
+"$TLSX" >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry with no target -> 3" "3" "$rc"
+"$TLSX" --host example.test --days abc >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a non-numeric --days -> 3" "3" "$rc"
+"$TLSX" --host example.test --days 99999 >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects --days above 3650 -> 3" "3" "$rc"
+"$TLSX" --host example.test --fail-on sometimes >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a bad --fail-on -> 3" "3" "$rc"
+"$TLSX" --host=example.test:99a >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a non-numeric port -> 3" "3" "$rc"
+"$TLSX" --host 'a;b' >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a host that is not a name -> 3" "3" "$rc"
+"$TLSX" --host=-oProxyCommand >/dev/null 2>&1; rc=$?
+assert_eq "tls_expiry rejects a host that starts with a dash -> 3" "3" "$rc"
+
+section "tls_expiry: grades certificates from fixtures"
+# openssl and security are faked so the same assertions hold on the Linux
+# image (which has no openssl) and on a Mac (whose /usr/bin/openssl is
+# LibreSSL). A fixture "certificate" is text between the PEM markers with
+# STATE=, CN= and ISSUER= lines; the fake answers -checkend, -enddate,
+# -subject and -issuer from them the way the real tool would for such a
+# certificate. The verdict logic under test is the script's, not openssl's.
+tl="$(mktemp -d)"
+mkdir -p "$tl/bin" "$tl/home/Library/Keychains" "$tl/tmp" "$tl/certs" "$tl/fx"
+: > "$tl/home/Library/Keychains/login.keychain-db"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$tl/bin/uname"
+cat > "$tl/bin/openssl" <<'OPENSSL_EOF'
+#!/bin/sh
+if [ "$1" = "s_client" ]; then
+  echo "$*" >> "$FAKE_TLS/s_client.calls"
+  host=""
+  while [ $# -gt 0 ]; do
+    [ "$1" = "-servername" ] && host="$2"
+    shift
+  done
+  [ "$host" = "example.test" ] || exit 1
+  cat "$FAKE_TLS/host.pem"
+  exit 0
+fi
+[ "$1" = "x509" ] || exit 1
+shift
+in=""; mode="pem"; arg=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -in) shift; in="$1" ;;
+    -enddate|-subject|-issuer|-fingerprint) mode="${1#-}" ;;
+    -checkend) mode="checkend"; shift; arg="$1" ;;
+  esac
+  shift
+done
+if [ -n "$in" ]; then body="$(cat "$in" 2>/dev/null)"; else body="$(cat)"; fi
+case "$body" in *"BEGIN CERTIFICATE"*) ;; *) exit 1 ;; esac
+first="$(printf '%s\n' "$body" | awk '/BEGIN CERTIFICATE/ { p = 1 } p { print } /END CERTIFICATE/ { if (p) exit }')"
+state="$(printf '%s\n' "$first" | sed -n 's/^STATE=//p')"
+cn="$(printf '%s\n' "$first" | sed -n 's/^CN=//p')"
+issuer="$(printf '%s\n' "$first" | sed -n 's/^ISSUER=//p')"
+case "$mode" in
+  pem)      printf '%s\n' "$first" ;;
+  subject)  echo "subject=CN = $cn" ;;
+  issuer)   echo "issuer=CN = $issuer" ;;
+  fingerprint) echo "SHA1 Fingerprint=$(printf '%s\n' "$first" | sed -n 's/^FP=//p')" ;;
+  enddate)
+    if [ "$state" = "EXPIRED" ]; then
+      echo "notAfter=Jan  1 00:00:00 2000 GMT"
+    else
+      echo "notAfter=Dec 31 23:59:59 2099 GMT"
+    fi ;;
+  checkend)
+    case "$state" in
+      EXPIRED) exit 1 ;;
+      SOON)    [ "$arg" = "0" ] || exit 1 ;;
+    esac ;;
+esac
+exit 0
+OPENSSL_EOF
+cat > "$tl/bin/security" <<'SECURITY_EOF'
+#!/bin/sh
+case "$*" in
+  find-identity*login.keychain-db) cat "$FAKE_TLS/identities.txt" 2>/dev/null ;;
+  *login.keychain-db) cat "$FAKE_TLS/keychain.pem" ;;
+esac
+exit 0
+SECURITY_EOF
+chmod +x "$tl/bin/"*
+
+fake_cert() {
+  printf -- '-----BEGIN CERTIFICATE-----\nSTATE=%s\nCN=%s\nISSUER=%s\nFP=%s\n-----END CERTIFICATE-----\n' "$1" "$2" "$3" "${4:-}"
+}
+fake_cert VALID valid.example "Example CA" > "$tl/fx/valid.pem"
+fake_cert EXPIRED expired.example "Example CA" > "$tl/fx/expired.pem"
+fake_cert SOON soon.example "Example CA" > "$tl/fx/soon.pem"
+fake_cert VALID host.example.test "Example CA" > "$tl/fx/host.pem"
+fake_cert VALID first.example "Example CA" > "$tl/certs/a.pem"
+fake_cert VALID second.example "Example CA" > "$tl/certs/b.pem"
+fp_client="AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD"
+fp_stale="11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11:11"
+fp_root="22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22:22"
+{ fake_cert VALID client.example "Example CA" "$fp_client"
+  fake_cert EXPIRED stale-unrelated.example "Example CA" "$fp_stale"
+  fake_cert VALID "Example Root" "Example Root" "$fp_root"; } \
+  > "$tl/fx/keychain.pem"
+printf '  1) %s "client.example"\n     1 valid identities found\n' "$(printf '%s' "$fp_client" | tr -d ':' | tr 'A-F' 'a-f')" \
+  > "$tl/fx/identities.txt"
+printf 'not a certificate\n' > "$tl/fx/notpem.txt"
+
+tlsx() {
+  FAKE_TLS="$tl/fx" HOME="$tl/home" TMPDIR="$tl/tmp" PATH="$tl/bin:/usr/bin:/bin" "$TLSX" "$@" 2>&1
+}
+
+out="$(tlsx --file "$tl/fx/valid.pem")"; rc=$?
+assert_eq "a valid certificate -> 0" "0" "$rc"
+assert_contains "a valid certificate passes with its CN" "$out" "[pass] $tl/fx/valid.pem (CN=valid.example)"
+out="$(tlsx --file "$tl/fx/valid.pem" --days=7)"; rc=$?
+assert_eq "tls_expiry accepts --days=N" "0" "$rc"
+
+out="$(tlsx --file "$tl/fx/expired.pem")"; rc=$?
+assert_eq "an expired certificate fails -> 1" "1" "$rc"
+assert_contains "an expired certificate is a FAIL" "$out" "[FAIL] $tl/fx/expired.pem (CN=expired.example) expired"
+
+out="$(tlsx --file "$tl/fx/soon.pem")"; rc=$?
+assert_eq "a certificate inside the window warns only -> 0" "0" "$rc"
+assert_contains "a certificate inside the window is a warning" "$out" "[warn] $tl/fx/soon.pem"
+tlsx --file "$tl/fx/soon.pem" --fail-on warn >/dev/null; rc=$?
+assert_eq "inside the window fails under --fail-on warn -> 1" "1" "$rc"
+tlsx --file "$tl/fx/expired.pem" --fail-on never >/dev/null; rc=$?
+assert_eq "--fail-on never always exits 0" "0" "$rc"
+
+out="$(tlsx --file "$tl/fx/notpem.txt")"; rc=$?
+assert_eq "a file that is not a PEM fails -> 1" "1" "$rc"
+assert_contains "a file that is not a PEM says so" "$out" "not a readable X.509 PEM"
+out="$(tlsx --file "$tl/certs")"
+assert_contains "a directory is refused, not walked" "$out" "does not walk"
+
+out="$(tlsx --file "$tl/certs/*.pem")"; rc=$?
+assert_eq "a quoted glob over two valid certificates -> 0" "0" "$rc"
+assert_contains "the glob grades the first certificate" "$out" "first.example"
+assert_contains "the glob grades the second certificate" "$out" "second.example"
+
+out="$(tlsx --host https://example.test/path)"; rc=$?
+assert_eq "a host with a valid leaf -> 0" "0" "$rc"
+assert_contains "the host leaf is graded" "$out" "host.example.test"
+s_client_args="$(cat "$tl/fx/s_client.calls" 2>/dev/null)"
+assert_contains "the host is fetched with SNI" "$s_client_args" "-servername example.test"
+assert_contains "the host is fetched on the default port" "$s_client_args" "-connect example.test:443"
+out="$(tlsx --host unreachable.test:8443)"; rc=$?
+assert_contains "an unreachable host is a warning" "$out" "could not fetch a leaf certificate"
+assert_eq "an unreachable host alone does not fail -> 0" "0" "$rc"
+
+out="$(tlsx --keychain)"; rc=$?
+assert_eq "a keychain with a valid client certificate -> 0" "0" "$rc"
+assert_contains "the keychain leaf is graded" "$out" "client.example (login keychain)"
+assert_contains "certificates that are not client identities are counted" "$out" "2 other certificate(s) not graded"
+assert_not_contains "the self-signed root is never graded" "$out" "Example Root (login keychain)"
+assert_not_contains "an unrelated expired certificate is never graded" "$out" "stale-unrelated.example"
+assert_eq "an unrelated expired certificate does not fail --keychain -> 0" "0" "$rc"
+# An identity whose own certificate has expired is still graded and fails.
+{ fake_cert EXPIRED client.example "Example CA" "$fp_client"
+  fake_cert VALID "Example Root" "Example Root" "$fp_root"; } > "$tl/fx/keychain.pem"
+out="$(tlsx --keychain)"; rc=$?
+assert_eq "an expired client identity fails --keychain -> 1" "1" "$rc"
+assert_contains "the expired identity is a FAIL" "$out" "[FAIL] client.example (login keychain)"
+# No identities listed: nothing is graded, even though certificates exist.
+rm -f "$tl/fx/identities.txt"
+out="$(tlsx --keychain)"; rc=$?
+assert_eq "a keychain with no client identity -> 0" "0" "$rc"
+assert_contains "no identity says so" "$out" "no client identities to grade"
+rm -rf "$tl"
+
+section "status.sh and hardening_audit.sh --json are valid, pure and unchanged in human mode"
+# Stdout purity is the contract a consumer depends on: one JSON object and a
+# newline, nothing before or after it, no colour, whatever the exit code. The
+# human report must keep its exact lines, because people and the assertions
+# above read them. Escaping is the injection boundary, so a probe answer
+# carrying quotes and a backslash has to come out as valid JSON.
+js="$(mktemp -d)"
+mkdir -p "$js/bin" "$js/home" "$js/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$js/bin/uname"
+printf '%s\n' '#!/bin/sh' 'echo "FileVault is On."' > "$js/bin/fdesetup"
+cat > "$js/bin/csrutil" <<'CSRUTIL_EOF'
+#!/bin/sh
+case "${CSRUTIL_MODE:-enabled}" in
+  enabled) echo "System Integrity Protection status: enabled." ;;
+  *)       echo "System Integrity Protection status: unknown (Custom Configuration)." ;;
+esac
+CSRUTIL_EOF
+cat > "$js/bin/sysadminctl" <<'SYSADMINCTL_EOF'
+#!/bin/sh
+printf '%s\n' "${LOCK_STATE:-screenLock delay is immediate}"
+SYSADMINCTL_EOF
+chmod +x "$js/bin/"*
+
+json_first_last() {
+  local s="$1"
+  printf '%s%s' "${s%"${s#?}"}" "${s#"${s%?}"}"
+}
+
+out="$(CSRUTIL_MODE=enabled HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$M/status.sh" --only security 2>&1)"
+assert_contains "status.sh human mode keeps its padded FileVault line" "$out" "[ ok ] security  FileVault on"
+assert_contains "status.sh human mode keeps its padded SIP line" "$out" "[ ok ] security  SIP enabled"
+assert_contains "status.sh human mode keeps its heading" "$out" "=== status ==="
+
+CSRUTIL_MODE=custom HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$M/status.sh" --only security >/dev/null 2>&1
+human_rc=$?
+status_json="$(CSRUTIL_MODE=custom HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$M/status.sh" --only security --json 2>/dev/null)"
+rc=$?
+assert_eq "status.sh --json keeps the human exit code" "$human_rc" "$rc"
+assert_eq "status.sh --json exits 1 on a warning" "1" "$rc"
+assert_eq "status.sh --json stdout is one object and nothing else" "{}" "$(json_first_last "$status_json")"
+assert_eq "status.sh --json prints one line" "1" "$(printf '%s\n' "$status_json" | wc -l | tr -d ' ')"
+assert_contains "status.sh --json carries the schema version" "$status_json" '"schema":1'
+assert_contains "status.sh --json names the section" "$status_json" '"id":"security"'
+assert_contains "status.sh --json grades the custom SIP configuration" "$status_json" '"verdict":"warn"'
+assert_contains "status.sh --json reports ok false" "$status_json" '"ok":false'
+assert_not_contains "status.sh --json has no colour" "$status_json" $'\033'
+assert_not_contains "status.sh --json has no human rows" "$status_json" "[warn]"
+assert_not_contains "status.sh --json has no next hint" "$status_json" "next"
+
+audit_json="$(LOCK_STATE='screenLock is off' HOME="$js/home" TMPDIR="$js/tmp" \
+  PATH="$js/bin:/usr/bin:/bin" "$AUDIT" --only lock --json 2>/dev/null)"
+rc=$?
+assert_eq "hardening_audit --json keeps exit 1 on a failure" "1" "$rc"
+assert_eq "hardening_audit --json stdout is one object and nothing else" "{}" "$(json_first_last "$audit_json")"
+assert_contains "hardening_audit --json grades the finding" "$audit_json" '"verdict":"fail"'
+assert_contains "hardening_audit --json names the group" "$audit_json" '"group":"lock"'
+assert_contains "hardening_audit --json carries the fix" "$audit_json" '"fix":"System Settings > Lock Screen'
+assert_contains "hardening_audit --json counts what it recorded" "$audit_json" \
+  '"summary":{"pass":0,"warn":0,"fail":1,"skip":0}'
+assert_contains "hardening_audit --json names its threshold" "$audit_json" '"fail_on":"fail"'
+assert_not_contains "hardening_audit --json has no group heading" "$audit_json" "== lock =="
+assert_not_contains "hardening_audit --json has no summary heading" "$audit_json" "== summary =="
+
+out="$(LOCK_STATE='screenLock is off' HOME="$js/home" TMPDIR="$js/tmp" \
+  PATH="$js/bin:/usr/bin:/bin" "$AUDIT" --only lock 2>&1)"
+assert_contains "hardening_audit human mode keeps its FAIL row" "$out" "  [FAIL] screen lock password requirement is off"
+
+hostile='screenLock delay is "5" \ min'
+escaped_json="$(LOCK_STATE="$hostile" HOME="$js/home" TMPDIR="$js/tmp" \
+  PATH="$js/bin:/usr/bin:/bin" "$AUDIT" --only lock --json 2>/dev/null)"
+assert_contains "quotes and a backslash in a probe answer are escaped" "$escaped_json" '\"5\" \\ min'
+
+quiet_json="$(HOME="$js/home" TMPDIR="$js/tmp" PATH="$js/bin:/usr/bin:/bin" \
+  "$AUDIT" --only lock --json --quiet 2>/dev/null)"
+assert_contains "--json --quiet drops pass records" "$quiet_json" '"findings":[]'
+assert_contains "--json --quiet keeps the full count" "$quiet_json" '"pass":1'
+
+if command -v python3 >/dev/null 2>&1; then
+  for doc_name in status_json audit_json escaped_json quiet_json; do
+    case "$doc_name" in
+      status_json)  doc="$status_json" ;;
+      audit_json)   doc="$audit_json" ;;
+      escaped_json) doc="$escaped_json" ;;
+      *)            doc="$quiet_json" ;;
+    esac
+    if python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["schema"] == 1' <<<"$doc" 2>/dev/null; then
+      ok "$doc_name parses as JSON with schema 1"
+    else
+      err "$doc_name is not valid JSON: $doc"
+    fi
+  done
+else
+  ok "python3 absent in this image — JSON parse check skipped"
+fi
+
+out="$("$AUDIT" --json --list-groups 2>/dev/null)"
+assert_not_contains "--list-groups stays plain text under --json" "$out" "{"
+out="$("$M/status.sh" --json --list-sections 2>/dev/null)"
+assert_not_contains "--list-sections stays plain text under --json" "$out" "{"
+out="$("$AUDIT" --only nosuch --json 2>/dev/null)"; rc=$?
+assert_eq "an argument error under --json still exits 3" "3" "$rc"
+assert_eq "an argument error under --json writes nothing to stdout" "" "$out"
+out="$("$M/status.sh" --only nosuch --json 2>/dev/null)"; rc=$?
+assert_eq "status.sh argument error under --json exits 3" "3" "$rc"
+assert_eq "status.sh argument error under --json writes nothing to stdout" "" "$out"
+rm -rf "$js"
+
+section "schedule_report: section flags answer before preflight"
+SCHED="$M/schedule_report.sh"
+out="$("$SCHED" --list-sections 2>&1)"; rc=$?
+assert_eq "schedule_report --list-sections exits 0" "0" "$rc"
+for s in launchd-user launchd-agents launchd-daemons crontab at; do
+  if grep -qxF -- "$s" <<<"$out"; then
+    ok "schedule_report lists the $s section"
+  else
+    err "schedule_report --list-sections does not list $s"
+  fi
+done
+"$SCHED" --only nosuch >/dev/null 2>&1; rc=$?
+assert_eq "schedule_report rejects an unknown section -> 3" "3" "$rc"
+"$SCHED" --root /nonexistent/schedule-root >/dev/null 2>&1; rc=$?
+assert_eq "schedule_report rejects a --root that is not a directory -> 3" "3" "$rc"
+
+section "schedule_report: decodes plists, flags unsafe jobs"
+# plutil is faked to print the file it is given, so the fixtures are
+# hand-written XML plists - the form plutil -convert xml1 prints. crontab,
+# atq and launchctl are faked too, uname included, because this file also
+# runs on a real Mac. launchctl records every call: without --loaded the
+# report must never run it.
+sr="$(mktemp -d)"
+srp="$(cd -P "$sr" && pwd -P)"
+mkdir -p "$sr/bin" "$sr/home/Library/LaunchAgents" "$sr/tmp" \
+  "$sr/root/Library/LaunchAgents" "$sr/root/Library/LaunchDaemons" "$sr/fx"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$sr/bin/uname"
+cat > "$sr/bin/plutil" <<'PLUTIL_EOF'
+#!/bin/sh
+[ "$1 $2 $3 $4" = "-convert xml1 -o -" ] || exit 1
+cat "$5"
+PLUTIL_EOF
+cat > "$sr/bin/crontab" <<'CRONTAB_EOF'
+#!/bin/sh
+[ "$1" = "-l" ] || exit 1
+if [ "${FAKE_NO_CRONTAB:-0}" = 1 ]; then
+  echo "crontab: no crontab for me" >&2
+  exit 1
+fi
+cat "$FAKE_SCHED/crontab.txt"
+CRONTAB_EOF
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$sr/bin/atq"
+cat > "$sr/bin/launchctl" <<'LAUNCHCTL_EOF'
+#!/bin/sh
+echo "$*" >> "$FAKE_SCHED/launchctl.calls"
+exit 0
+LAUNCHCTL_EOF
+chmod +x "$sr/bin/"*
+
+plist_head='<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>'
+plist_tail='</dict>
+</plist>'
+write_plist() {
+  printf '%s\n%s\n%s\n' "$plist_head" "$2" "$plist_tail" > "$1"
+}
+ua="$sr/home/Library/LaunchAgents"
+write_plist "$ua/com.example.backup.plist" '	<key>Label</key>
+	<string>com.example.backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>true</string>
+	</array>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>1</integer>
+		<key>Hour</key>
+		<integer>10</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>'
+write_plist "$ua/com.example.poll.plist" '	<key>Label</key>
+	<string>com.example.poll</string>
+	<key>Program</key>
+	<string>/bin/sh</string>
+	<key>StartInterval</key>
+	<integer>3600</integer>'
+write_plist "$ua/com.example.daemonish.plist" '	<key>Label</key>
+	<string>com.example.daemonish</string>
+	<key>Program</key>
+	<string>/bin/sh</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>'
+write_plist "$sr/root/Library/LaunchAgents/com.example.gone.plist" '	<key>Label</key>
+	<string>com.example.gone</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/nonexistent/vpn-helper</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>'
+write_plist "$sr/root/Library/LaunchDaemons/com.example.nightly.plist" '	<key>Label</key>
+	<string>com.example.nightly</string>
+	<key>Program</key>
+	<string>/bin/sh</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>'
+write_plist "$sr/root/Library/LaunchDaemons/com.apple.fixture.plist" '	<key>Label</key>
+	<string>com.apple.fixture</string>
+	<key>Program</key>
+	<string>/bin/sh</string>'
+printf '# nightly jobs\nMAILTO=""\n0 3 * * * /usr/local/bin/backup\n*/15 * * * * /usr/local/bin/sync\n' \
+  > "$sr/fx/crontab.txt"
+
+sched() {
+  FAKE_SCHED="$sr/fx" HOME="$sr/home" TMPDIR="$sr/tmp" PATH="$sr/bin:/usr/bin:/bin" \
+    "$SCHED" --root "$sr/root" "$@" 2>&1
+}
+
+out="$(sched)"; rc=$?
+assert_eq "schedule_report default run -> 0" "0" "$rc"
+assert_contains "a weekly calendar job is decoded" "$out" "com.example.backup   Mon 10:30   /bin/sh"
+assert_contains "a StartInterval job is decoded" "$out" "com.example.poll   every 3600s"
+assert_contains "a RunAtLoad and KeepAlive job is keep-alive" "$out" "com.example.daemonish   keep-alive"
+assert_contains "a daily daemon is decoded" "$out" "com.example.nightly   daily 03:00"
+assert_contains "a job whose program is gone is a warning naming the path" "$out" \
+  "[warn] com.example.gone runs /nonexistent/vpn-helper, which no longer exists"
+assert_not_contains "com.apple jobs are hidden by default" "$out" "com.apple.fixture   "
+assert_contains "hidden com.apple jobs are counted" "$out" "1 com.apple.* job(s) not shown"
+assert_contains "the crontab entries are counted" "$out" "2 cron entries"
+assert_not_contains "a crontab comment is not listed" "$out" "nightly jobs"
+assert_not_contains "a crontab variable is not counted as a job" "$out" "MAILTO"
+assert_contains "an empty at queue says so" "$out" "no queued at jobs"
+if [[ -e "$sr/fx/launchctl.calls" ]]; then
+  err "schedule_report ran launchctl without --loaded"
+else
+  ok "schedule_report never runs launchctl without --loaded"
+fi
+
+sched --strict >/dev/null; rc=$?
+assert_eq "a missing program fails under --strict -> 1" "1" "$rc"
+
+out="$(sched --include-apple --only launchd-daemons)"
+assert_contains "--include-apple lists com.apple jobs" "$out" "com.apple.fixture"
+out="$(sched --root="$sr/root" --only=launchd-agents)"
+assert_contains "--root=DIR and --only=SECTION are accepted" "$out" "com.example.gone"
+assert_not_contains "--only limits the report to its sections" "$out" "com.example.backup"
+
+chmod 666 "$ua/com.example.poll.plist"
+out="$(sched --only launchd-user)"
+assert_contains "a world-writable plist is a warning with its fix" "$out" "chmod go-w $ua/com.example.poll.plist"
+chmod 644 "$ua/com.example.poll.plist"
+
+esc_label="$(printf 'com.example.\033[31mred')"
+write_plist "$ua/com.example.esc.plist" "	<key>Label</key>
+	<string>$esc_label</string>
+	<key>Program</key>
+	<string>/bin/sh</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "a hostile label cannot write terminal escapes" "$out" $'\033'
+assert_contains "the sanitised label is still shown" "$out" "com.example.[31mred"
+rm -f "$ua/com.example.esc.plist"
+
+out="$(sched --only launchd-user --loaded)"
+assert_contains "--loaded marks each user agent" "$out" "[loaded]"
+assert_contains "--loaded asks launchctl about the user's domain" "$(cat "$sr/fx/launchctl.calls" 2>/dev/null)" "print gui/"
+rm -f "$sr/fx/launchctl.calls"
+
+# A program in a directory its group or everyone can write can be swapped
+# before launchd runs it, however safe the file's own mode is.
+mkdir -p "$sr/wdir/inner"
+printf '#!/bin/sh\nexit 0\n' > "$sr/wdir/inner/job"
+chmod 755 "$sr/wdir/inner/job"
+write_plist "$ua/com.example.wdir.plist" "	<key>Label</key>
+	<string>com.example.wdir</string>
+	<key>Program</key>
+	<string>$sr/wdir/inner/job</string>"
+chmod 755 "$sr/wdir" "$sr/wdir/inner"
+out="$(sched --only launchd-user)"
+assert_not_contains "a program in a private directory is not flagged for it" "$out" "which sits under"
+chmod 775 "$sr/wdir"
+out="$(sched --only launchd-user)"
+assert_contains "a program under a group-writable parent names that directory" "$out" \
+  "com.example.wdir runs $sr/wdir/inner/job, which sits under $sr/wdir, which another user can modify"
+chmod 777 "$sr/wdir"; chmod 1777 "$sr/wdir"
+out="$(sched --only launchd-user)"
+assert_not_contains "a sticky world-writable parent is not flagged" "$out" "which sits under"
+chmod 755 "$sr/wdir"
+chmod 777 "$sr/home/Library"
+out="$(sched --only launchd-user)"
+assert_contains "a plist under a writable ancestor names that directory" "$out" \
+  "com.example.wdir.plist sits under $sr/home/Library, which another user can modify"
+chmod 755 "$sr/home/Library"
+rm -f "$ua/com.example.wdir.plist"
+
+# Symlinks do not hide an unsafe directory: the path as written is walked as
+# well as the one it resolves to.
+mkdir -p "$sr/ldir" "$sr/safe/inner"
+printf '#!/bin/sh\nexit 0\n' > "$sr/safe/inner/job"
+chmod 755 "$sr/ldir" "$sr/safe" "$sr/safe/inner" "$sr/safe/inner/job"
+ln -s "$sr/safe" "$sr/ldir/comp"
+write_plist "$ua/com.example.lnk.plist" "	<key>Label</key>
+	<string>com.example.lnk</string>
+	<key>Program</key>
+	<string>$sr/ldir/comp/inner/job</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "a symlinked component in a private directory is not flagged" "$out" "which sits under"
+chmod 775 "$sr/ldir"
+out="$(sched --only launchd-user)"
+assert_contains "a symlinked component in a writable directory names that directory" "$out" \
+  "com.example.lnk runs $sr/ldir/comp/inner/job, which sits under $sr/ldir, which another user can modify"
+chmod 755 "$sr/ldir"
+rm -f "$sr/ldir/comp"
+ln -s "$sr/wdir/inner/job" "$sr/ldir/job-link"
+write_plist "$ua/com.example.lnk.plist" "	<key>Label</key>
+	<string>com.example.lnk</string>
+	<key>Program</key>
+	<string>$sr/ldir/job-link</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "a symlinked program with a private target directory is not flagged" "$out" "which sits under"
+chmod 775 "$sr/wdir"
+out="$(sched --only launchd-user)"
+assert_contains "a symlinked program is checked where it points" "$out" \
+  "com.example.lnk runs $sr/ldir/job-link, which sits under $srp/wdir, which another user can modify"
+chmod 755 "$sr/wdir"
+rm -f "$ua/com.example.lnk.plist" "$sr/ldir/job-link"
+
+# A daemon runs as root, so the plist and the executable must be root's own:
+# a 0644 or 0755 file a normal user owns is code that user can edit. The
+# owner is faked with a stat stub (under --root the reference owner is the
+# owner of the root directory); a path outside --root is not judged.
+mkdir -p "$sr/root/usr/local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$sr/root/usr/local/bin/djob"
+chmod 755 "$sr/root/usr/local/bin/djob"
+dplist="$sr/root/Library/LaunchDaemons/com.example.djob.plist"
+write_plist "$dplist" "	<key>Label</key>
+	<string>com.example.djob</string>
+	<key>Program</key>
+	<string>$sr/root/usr/local/bin/djob</string>"
+cat > "$sr/bin/stat" <<'STAT_EOF'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+case " $* " in
+  *" %u "*) if [ "$last" = "${FAKE_OWNER_PATH:-}" ]; then echo 4242; exit 0; fi ;;
+esac
+exec /usr/bin/stat "$@"
+STAT_EOF
+chmod +x "$sr/bin/stat"
+out="$(sched --only launchd-daemons)"
+assert_not_contains "a daemon whose plist and program share the root's owner is quiet" "$out" "root does not own"
+out="$(FAKE_OWNER_PATH="$dplist" sched --only launchd-daemons)"
+assert_contains "a daemon plist root does not own is a warning with its fix" "$out" \
+  "$dplist is a LaunchDaemon that root does not own"
+assert_contains "the daemon plist owner fix is printed" "$out" "sudo chown root:wheel $dplist"
+out="$(FAKE_OWNER_PATH="$sr/root/usr/local/bin/djob" sched --only launchd-daemons)"
+assert_contains "a daemon program root does not own is a warning" "$out" \
+  "com.example.djob runs $sr/root/usr/local/bin/djob as root, but root does not own it"
+out="$(FAKE_OWNER_PATH="$sr/root/usr/local/bin/djob" sched --only launchd-agents)"
+assert_not_contains "the root-owner rule is for daemons only" "$out" "root does not own"
+rm -f "$sr/bin/stat"
+
+# ACL grants count as write access. `ls -leLd` is stubbed (GNU ls has no -e,
+# which must stay silent), and only a path named in FAKE_ACL_PATH has entries.
+# -L follows a symlink, so the stub answers for what the argument resolves to.
+cat > "$sr/bin/ls" <<'LS_EOF'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+# What a path names after -L: follow a link, then make the directory physical.
+phys() { printf '%s/%s' "$(cd "$(dirname "$1")" && pwd -P)" "$(basename "$1")"; }
+real() {
+  p="$1"
+  [ -L "$p" ] && p="$(readlink "$p")"
+  phys "$p"
+}
+if [ "$1" = "-leLd" ] && [ -n "${FAKE_ACL_PATH:-}" ] && [ "$(real "$last")" = "$(phys "$FAKE_ACL_PATH")" ]; then
+  printf '%s\n' "-rwxr-xr-x+ 1 me staff 10 Oct  1 00:00 $last"
+  printf '%b' "$FAKE_ACL"
+  exit 0
+fi
+exec /bin/ls "$@"
+LS_EOF
+chmod +x "$sr/bin/ls"
+jobp="$sr/wdir/inner/job"
+write_plist "$ua/com.example.acl.plist" "	<key>Label</key>
+	<string>com.example.acl</string>
+	<key>Program</key>
+	<string>$jobp</string>"
+out="$(sched --only launchd-user)"
+assert_not_contains "no ACL entry means no ACL warning" "$out" "ACL entry"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory allow write,append\n' sched --only launchd-user)"
+assert_contains "a program with an ACL write grant is a warning" "$out" \
+  "com.example.acl runs $jobp, which an ACL entry lets another user change"
+assert_contains "the program ACL fix is printed" "$out" "chmod -N $jobp"
+out="$(FAKE_ACL_PATH="$ua/com.example.acl.plist" FAKE_ACL=' 0: group:staff allow read,delete\n' sched --only launchd-user)"
+assert_contains "a plist with an ACL delete grant is a warning" "$out" \
+  "$ua/com.example.acl.plist has an ACL entry that lets another user change it"
+out="$(FAKE_ACL_PATH="$sr/wdir" FAKE_ACL=' 0: user:mallory allow add_file,delete_child\n' sched --only launchd-user)"
+assert_contains "an ancestor directory with an ACL grant is named" "$out" \
+  "com.example.acl runs $jobp, which sits under $sr/wdir, which another user can modify"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:me allow write\n 1: user:root allow write\n 2: group:everyone deny write\n 3: user:bob allow read,readattr,execute\n' sched --only launchd-user)"
+assert_not_contains "the owner, root, deny entries and read rights are not grants" "$out" "ACL entry"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory inherited allow chown\n' sched --only launchd-user)"
+assert_contains "an inherited chown grant counts" "$out" "which an ACL entry lets another user change"
+# A symlinked program is judged by its target: an allow-write ACE on the
+# target counts, one on the link alone does not.
+ln -s "$jobp" "$sr/wdir/inner/joblink"
+write_plist "$ua/com.example.acl.plist" "	<key>Label</key>
+	<string>com.example.acl</string>
+	<key>Program</key>
+	<string>$sr/wdir/inner/joblink</string>"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory allow write\n' sched --only launchd-user)"
+assert_contains "a symlinked program whose target has an ACL write grant is a warning" "$out" \
+  "com.example.acl runs $sr/wdir/inner/joblink, which an ACL entry lets another user change"
+out="$(FAKE_ACL_PATH="$sr/wdir/inner/joblink" FAKE_ACL=' 0: user:mallory allow write\n' sched --only launchd-user)"
+assert_not_contains "an ACL on the link alone does not make the target writable" "$out" "which an ACL entry lets another user change"
+rm -f "$sr/wdir/inner/joblink"
+out="$(FAKE_ACL_PATH="$jobp" FAKE_ACL=' 0: user:mallory allow write,only_inherit\n' sched --only launchd-user)"
+assert_not_contains "an only_inherit ACL entry does not govern the object itself" "$out" "ACL entry"
+rm -f "$sr/bin/ls" "$ua/com.example.acl.plist" "$dplist"
+
+out="$(FAKE_NO_CRONTAB=1 sched --only crontab)"; rc=$?
+assert_eq "no crontab is not a failure -> 0" "0" "$rc"
+assert_contains "no crontab is a skip row" "$out" "no crontab for this user"
+
+empty_root="$sr/empty-root"
+mkdir -p "$empty_root/Library/LaunchAgents"
+out="$(sched --root "$empty_root" --only launchd-agents,launchd-daemons)"
+assert_contains "an empty LaunchAgents directory is a skip row" "$out" "no plists in $empty_root/Library/LaunchAgents"
+assert_contains "a missing LaunchDaemons directory is a skip row" "$out" "$empty_root/Library/LaunchDaemons does not exist"
+
+scratch_files="$(find "$sr/home" "$sr/tmp" -type f ! -name '*.plist' | wc -l | tr -d ' ')"
+assert_eq "schedule_report writes nothing under HOME or TMPDIR" "0" "$scratch_files"
+rm -rf "$sr"
+
+section "config_backup: refusals and previews"
+# Every refusal happens before anything is written, and a preview writes
+# nothing at all: not the archive, not the destination directory, not a log.
+# The snapshot compares the whole scratch HOME and TMPDIR before and after.
+CB="$M/config_backup.sh"
+# Physical, as config_backup reports it (macOS: /var is /private/var).
+cb="$(cd -P "$(mktemp -d)" && pwd -P)"
+mkdir -p "$cb/bin" "$cb/home/.ssh" "$cb/home/.aws" "$cb/home/.config/git" "$cb/tmp"
+printf '%s\n' '#!/bin/sh' 'echo Darwin' > "$cb/bin/uname"
+chmod +x "$cb/bin/uname"
+printf 'export EDITOR=vim\n' > "$cb/home/.zshrc"
+printf '[user]\n  name = Fixture\n' > "$cb/home/.gitconfig"
+printf 'Host *\n  AddKeysToAgent yes\n' > "$cb/home/.ssh/config"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_KEY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$cb/home/.ssh/id_ed25519"
+printf '[default]\naws_secret_access_key = CANARY_AWS\n' > "$cb/home/.aws/credentials"
+printf '*.swp\n' > "$cb/home/.config/git/ignore"
+printf 'https://user:CANARY_GIT_PASS@example.com\n' > "$cb/home/.config/git/credentials"
+printf 'credentials "app.terraform.io" {\n  token = "CANARY_TF_TOKEN"\n}\n' > "$cb/home/.terraformrc"
+mkdir -p "$cb/home/.terraform.d"
+printf '{"credentials":{"app.terraform.io":{"token":"CANARY_TF_LOGIN"}}}\n' \
+  > "$cb/home/.terraform.d/credentials.tfrc.json"
+printf '[pypi]\npassword = CANARY_PYPIRC\n' > "$cb/home/.pypirc"
+mkdir -p "$cb/home/.config/gcloud/legacy_credentials/me@example.com"
+printf '{"client_secret":"CANARY_GCLOUD_ADC"}\n' \
+  > "$cb/home/.config/gcloud/application_default_credentials.json"
+printf 'CANARY_GCLOUD_DB\n' > "$cb/home/.config/gcloud/credentials.db"
+printf '{"private_key":"CANARY_GCLOUD_LEGACY"}\n' \
+  > "$cb/home/.config/gcloud/legacy_credentials/me@example.com/adc.json"
+mkdir -p "$cb/home/.ssh/keys"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nCANARY_DEPLOY\n-----END OPENSSH PRIVATE KEY-----\n' \
+  > "$cb/home/.ssh/deploy_key"
+printf 'ssh-ed25519 AAAA pub\n' > "$cb/home/.ssh/deploy_key.pub"
+printf 'finder\n' > "$cb/home/.config/git/.DS_Store"
+
+cbrun() {
+  HOME="$cb/home" TMPDIR="$cb/tmp" PATH="$cb/bin:/usr/bin:/bin" "$CB" "$@" 2>&1
+}
+cb_snapshot() {
+  find "$cb/home" "$cb/tmp" | sort
+}
+
+before="$(cb_snapshot)"
+out="$(cbrun)"; rc=$?
+assert_eq "a real run without --yes is refused -> 3" "3" "$rc"
+assert_contains "the refusal names --yes and --dry-run" "$out" \
+  "refusing to write an archive without --yes; preview with --dry-run"
+cbrun --dry-run --keep abc >/dev/null; rc=$?
+assert_eq "a non-numeric --keep is refused -> 3" "3" "$rc"
+cbrun --dry-run --prefix 'a/b' >/dev/null; rc=$?
+assert_eq "a --prefix with a slash is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run --paths /etc/hosts)"; rc=$?
+assert_eq "a path outside HOME is refused -> 3" "3" "$rc"
+assert_contains "the refused path is named" "$out" "/etc/hosts"
+cbrun --dry-run --paths "$cb/home/../x" >/dev/null; rc=$?
+assert_eq "a path with a .. component is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home" >/dev/null; rc=$?
+assert_eq "the home directory itself is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run --paths "$cb/home/.aws/credentials")"; rc=$?
+assert_eq "a credentials file is refused -> 3" "3" "$rc"
+assert_contains "the refusal says it holds credentials" "$out" "holds credentials (use --include-secrets to override)"
+cbrun --dry-run --paths "$cb/home/.ssh" >/dev/null; rc=$?
+assert_eq "the whole .ssh directory is refused, it holds the private keys -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.ssh/deploy_key" >/dev/null; rc=$?
+assert_eq "a private key with a free-form name under .ssh is refused -> 3" "3" "$rc"
+
+# A symlink must not launder a secret: tar stores the file behind an alias
+# directory by content, so the physical path is judged as well as the written
+# one (a symlinked folder component, and a symlink as the last component).
+ln -s "$cb/home/.aws" "$cb/home/alias"
+out="$(cbrun --dry-run --paths "$cb/home/alias/credentials")"; rc=$?
+assert_eq "an alias directory onto ~/.aws does not hide credentials -> 3" "3" "$rc"
+assert_contains "the alias refusal says it holds credentials" "$out" "holds credentials (use --include-secrets to override)"
+cbrun --dry-run --paths "$cb/home/alias" >/dev/null; rc=$?
+assert_eq "the alias directory itself is refused -> 3" "3" "$rc"
+cbrun --dry-run --include-secrets --paths "$cb/home/alias/credentials" >/dev/null; rc=$?
+assert_eq "--include-secrets accepts the alias path -> 0" "0" "$rc"
+ln -s ".aws/credentials" "$cb/home/credlink"
+cbrun --dry-run --paths "$cb/home/credlink" >/dev/null; rc=$?
+assert_eq "a relative symlink to a credentials file is refused -> 3" "3" "$rc"
+ln -s "$cb/home/.ssh" "$cb/home/sshalias"
+cbrun --dry-run --paths "$cb/home/sshalias/deploy_key" >/dev/null; rc=$?
+assert_eq "an alias onto ~/.ssh does not hide a private key -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/sshalias/config" >/dev/null; rc=$?
+assert_eq "an alias onto ~/.ssh still allows the client config -> 0" "0" "$rc"
+ln -s "$cb/home/alias/credentials" "$cb/home/chain1"
+ln -s "$cb/home/chain1" "$cb/home/chain2"
+cbrun --dry-run --paths "$cb/home/chain2" >/dev/null; rc=$?
+assert_eq "a chain of symlinks to credentials is refused -> 3" "3" "$rc"
+ln -s "$cb/home/loop2" "$cb/home/loop1"
+ln -s "$cb/home/loop1" "$cb/home/loop2"
+cbrun --dry-run --paths "$cb/home/loop1" >/dev/null; rc=$?
+assert_eq "a symlink loop cannot be resolved and is refused -> 3" "3" "$rc"
+mkdir -p "$cb/home/plain"
+printf 'notes\n' > "$cb/home/plain/n.txt"
+ln -s "$cb/home/plain" "$cb/home/plainlink"
+cbrun --dry-run --paths "$cb/home/plainlink/n.txt" >/dev/null; rc=$?
+assert_eq "an alias onto a harmless folder is accepted -> 0" "0" "$rc"
+rm -f "$cb/home/alias" "$cb/home/credlink" "$cb/home/sshalias" "$cb/home/chain1" \
+  "$cb/home/chain2" "$cb/home/loop1" "$cb/home/loop2" "$cb/home/plainlink"
+rm -rf "$cb/home/plain"
+cbrun --dry-run --paths "$cb/home/.ssh/keys" >/dev/null; rc=$?
+assert_eq "a sub-folder of .ssh is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.ssh/deploy_key.pub" >/dev/null; rc=$?
+assert_eq "a public key under .ssh is accepted -> 0" "0" "$rc"
+cbrun --dry-run --paths "$cb/home/.config/git/credentials" >/dev/null; rc=$?
+assert_eq "the git credential store is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.terraformrc" >/dev/null; rc=$?
+assert_eq "a .terraformrc with a credentials block is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.terraform.d" >/dev/null; rc=$?
+assert_eq "~/.terraform.d holding terraform login credentials is refused -> 3" "3" "$rc"
+cbrun --dry-run --paths "$cb/home/.terraform.d/credentials.tfrc.json" >/dev/null; rc=$?
+assert_eq "the terraform login credentials file is refused -> 3" "3" "$rc"
+out="$(cbrun --dry-run --paths "$cb/home/.terraform.d")"
+assert_not_contains "a refused terraform.d never prints the login token" "$out" "CANARY_TF_LOGIN"
+for f in .pypirc .config/gcloud/application_default_credentials.json \
+  .config/gcloud/credentials.db .config/gcloud/legacy_credentials \
+  .config/gcloud; do
+  out="$(cbrun --dry-run --paths "$cb/home/$f")"; rc=$?
+  assert_eq "~/$f is refused -> 3" "3" "$rc"
+  assert_not_contains "a refused ~/$f never prints its secret" "$out" "CANARY_"
+done
+out="$(cbrun --dry-run)"
+assert_not_contains "a default preview skips a .terraformrc with credentials" "$out" "would archive ~/.terraformrc"
+assert_not_contains "a default preview never prints the Terraform token" "$out" "CANARY_TF_TOKEN"
+printf '[profile dev]\nregion = eu-west-1\n  AWS_Secret_Access_Key = CANARY_AWS_CFG\n' \
+  > "$cb/home/.aws/config"
+out="$(cbrun --dry-run)"; rc=$?
+assert_eq "a default preview with static keys in .aws/config -> 0" "0" "$rc"
+assert_not_contains "a default preview skips an .aws/config with static keys" "$out" "would archive ~/.aws/config"
+assert_contains "the skipped .aws/config is announced" "$out" "skipped ~/.aws/config"
+assert_not_contains "the preview never prints the AWS config key" "$out" "CANARY_AWS_CFG"
+cbrun --dry-run --paths "$cb/home/.aws/config" >/dev/null; rc=$?
+assert_eq "an .aws/config with static keys is refused by --paths -> 3" "3" "$rc"
+cbrun --dry-run --include-secrets --paths "$cb/home/.aws/config" >/dev/null; rc=$?
+assert_eq "--include-secrets accepts an .aws/config with static keys -> 0" "0" "$rc"
+printf '[profile dev]\nAWS_SESSION_TOKEN=CANARY_AWS_TOK\n' > "$cb/home/.aws/config"
+out="$(cbrun --dry-run)"
+assert_not_contains "a session token in .aws/config is skipped too" "$out" "would archive ~/.aws/config"
+printf '[profile dev]\nregion = eu-west-1\nsso_session = corp\n' > "$cb/home/.aws/config"
+out="$(cbrun --dry-run)"
+assert_contains "a keyless .aws/config is still archived" "$out" "would archive ~/.aws/config"
+rm -f "$cb/home/.aws/config"
+out="$(cbrun --dry-run --include-secrets --paths "$cb/home/.aws/credentials")"; rc=$?
+assert_eq "--include-secrets accepts a credentials path -> 0" "0" "$rc"
+assert_contains "--include-secrets warns that the archive holds secrets" "$out" "[warn] --include-secrets"
+# A source without credentials, so the --dest containment check is what
+# refuses (a credential source would be refused for its secrets first).
+mkdir -p "$cb/home/Documents/notes"
+printf 'plain\n' > "$cb/home/Documents/notes/todo.txt"
+out="$(cbrun --dry-run --dest "$cb/home/Documents/notes/backups" --paths "$cb/home/Documents/notes")"; rc=$?
+assert_eq "a --dest inside an archived source is refused -> 3" "3" "$rc"
+assert_contains "the lexical refusal names the source" "$out" "is inside ~/Documents/notes"
+ln -s "$cb/home/Documents/notes" "$cb/dest-link"
+out="$(cbrun --dry-run --dest "$cb/dest-link/backups" --paths "$cb/home/Documents/notes")"; rc=$?
+assert_eq "a symlinked --dest that lands inside a source is refused -> 3" "3" "$rc"
+assert_contains "the symlinked refusal names the source" "$out" "is inside ~/Documents/notes"
+out="$(cbrun --dry-run --dest "$cb/dest-link" --paths "$cb/home/Documents/notes")"; rc=$?
+assert_eq "an existing symlinked --dest inside a source is refused -> 3" "3" "$rc"
+assert_contains "the existing symlink refusal names the source" "$out" "is inside ~/Documents/notes"
+rm -f "$cb/dest-link"
+rm -rf "$cb/home/Documents"
+
+out="$(cbrun --dry-run)"; rc=$?
+assert_eq "config_backup --dry-run -> 0" "0" "$rc"
+assert_contains "the preview names the archive it would create" "$out" "(dry-run) would create"
+if grep -qE "would create .*/ops-toolbox-backups/config-[0-9]{8}-[0-9]{6}\.tar\.gz" <<<"$out"; then
+  ok "the preview names a dated archive in the default destination"
+else
+  err "the preview did not name config-YYYYmmdd-HHMMSS.tar.gz: $out"
+fi
+assert_contains "the preview lists a default source" "$out" "(dry-run) would archive ~/.zshrc"
+assert_not_contains "the preview never lists a private key" "$out" "id_ed25519"
+assert_not_contains "the preview never lists AWS credentials" "$out" ".aws/credentials"
+assert_contains "the preview ends with the package's closing line" "$out" "dry-run complete; no changes written"
+out="$(cbrun --dry-run --keep=2 --dest="$cb/tmp/elsewhere")"; rc=$?
+assert_eq "--keep=N and --dest=DIR are accepted" "0" "$rc"
+after="$(cb_snapshot)"
+assert_eq "refusals and previews wrote nothing, the destination included" "$before" "$after"
+
+section "config_backup: archives, verifies and rotates"
+dest="$cb/home/ops-toolbox-backups"
+out="$(cbrun --yes)"; rc=$?
+assert_eq "config_backup --yes -> 0" "0" "$rc"
+archives="$(find "$dest" -name 'config-*.tar.gz' -type f | wc -l | tr -d ' ')"
+assert_eq "exactly one archive was written" "1" "$archives"
+archive="$(find "$dest" -name 'config-*.tar.gz' -type f | head -n 1)"
+archive_mode="$(stat -f '%Lp' "$archive" 2>/dev/null)"
+[[ "$archive_mode" =~ ^[0-7]{3,4}$ ]] || archive_mode="$(stat -c '%a' "$archive" 2>/dev/null)"
+assert_eq "the archive is private to its owner" "600" "$archive_mode"
+listing="$(tar -tzf "$archive" 2>/dev/null)"
+assert_contains "the archive holds ~/.zshrc" "$listing" ".zshrc"
+assert_contains "the archive holds ~/.gitconfig" "$listing" ".gitconfig"
+assert_contains "the archive holds ~/.ssh/config" "$listing" ".ssh/config"
+assert_not_contains "the archive never holds a private key" "$listing" "id_ed25519"
+assert_not_contains "the archive never holds AWS credentials" "$listing" "credentials"
+assert_not_contains "the archive never holds the git credential store" "$listing" ".config/git/credentials"
+assert_contains "the archive still holds the rest of ~/.config/git" "$listing" ".config/git/ignore"
+assert_not_contains "the archive leaves a .terraformrc with credentials out" "$listing" ".terraformrc"
+assert_not_contains "the archive never holds a free-form private key" "$listing" "deploy_key"
+assert_not_contains "the archive leaves .DS_Store out" "$listing" ".DS_Store"
+tmp_left="$(find "$dest" -name '.config_backup.*' | wc -l | tr -d ' ')"
+assert_eq "no temporary file is left behind" "0" "$tmp_left"
+
+out="$(cbrun --list)"; rc=$?
+assert_eq "--list of the newest archive -> 0" "0" "$rc"
+assert_contains "--list prints the members" "$out" ".zshrc"
+
+rm -f "$dest"/config-*.tar.gz
+for old in 20200101-000000 20200201-000000 20200301-000000; do
+  printf 'old\n' > "$dest/config-$old.tar.gz"
+done
+printf 'keep me\n' > "$dest/notes.txt"
+out="$(cbrun --dry-run --keep 2)"
+assert_contains "the preview names the rotation victims" "$out" "(dry-run) would remove $dest/config-20200101-000000.tar.gz"
+assert_contains "the preview names every victim" "$out" "(dry-run) would remove $dest/config-20200201-000000.tar.gz"
+if [[ -f "$dest/config-20200101-000000.tar.gz" ]]; then
+  ok "the preview removed nothing"
+else
+  err "--dry-run deleted a rotation victim"
+fi
+out="$(cbrun --yes --keep 2)"; rc=$?
+assert_eq "a run with rotation -> 0" "0" "$rc"
+left="$(find "$dest" -name 'config-*.tar.gz' -type f | wc -l | tr -d ' ')"
+assert_eq "--keep 2 leaves the two newest archives" "2" "$left"
+if [[ -f "$dest/config-20200301-000000.tar.gz" && ! -e "$dest/config-20200101-000000.tar.gz" \
+      && ! -e "$dest/config-20200201-000000.tar.gz" ]]; then
+  ok "rotation removed the oldest archives and kept the newest old one"
+else
+  err "rotation removed the wrong archives: $(find "$dest" -type f)"
+fi
+assert_eq "rotation never touches other files" "keep me" "$(cat "$dest/notes.txt" 2>/dev/null)"
+
+rm -rf "$dest"
+out="$(cbrun --list)"; rc=$?
+assert_eq "--list with no archive -> 4" "4" "$rc"
+
+empty_home="$cb/empty-home"
+mkdir -p "$empty_home"
+HOME="$empty_home" TMPDIR="$cb/tmp" PATH="$cb/bin:/usr/bin:/bin" "$CB" --yes >/dev/null 2>&1; rc=$?
+assert_eq "a home with none of the default sources -> 4" "4" "$rc"
+
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$cb/bin/tar"
+chmod +x "$cb/bin/tar"
+out="$(cbrun --yes)"; rc=$?
+assert_eq "a failing tar -> 1" "1" "$rc"
+left="$(find "$dest" -type f 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "a failed run leaves no temporary or published archive" "0" "$left"
+rm -f "$cb/bin/tar"
+
+# The temporary archive is created exclusively with an unpredictable name, so
+# a symlink planted at the old timestamp-and-PID name is never followed and
+# the file it points at is never truncated. date is fixed so the old name's
+# stamp is known; the PID is guessed over a range above this shell's.
+mkdir -p "$dest"
+chmod 700 "$dest"
+printf '%s\n' '#!/bin/sh' 'echo 20300101-000000' > "$cb/bin/date"
+chmod +x "$cb/bin/date"
+printf 'precious\n' > "$cb/victim"
+pid=$$
+while (( pid < $$ + 600 )); do
+  ln -s "$cb/victim" "$dest/.config-20300101-000000.tmp.$pid"
+  pid=$((pid + 1))
+done
+# tar is wrapped to record where it was told to write.
+cat > "$cb/bin/tar" <<TAR_EOF
+#!/bin/sh
+case "\$1" in -czf) printf '%s\n' "\$2" > "$cb/tar.target" ;; esac
+exec /usr/bin/tar "\$@"
+TAR_EOF
+chmod +x "$cb/bin/tar"
+out="$(cbrun --yes)"; rc=$?
+assert_eq "a run with planted symlinks at the old temp names -> 0" "0" "$rc"
+assert_eq "a planted symlink's target is never truncated" "precious" "$(cat "$cb/victim" 2>/dev/null)"
+tar_target="$(cat "$cb/tar.target" 2>/dev/null)"
+case "${tar_target##*/}" in
+  .config_backup.??????) ok "tar writes to an mktemp-style temporary name" ;;
+  *) err "tar wrote to an unexpected temporary name: $tar_target" ;;
+esac
+assert_eq "the new archive exists" "1" "$(find "$dest" -name 'config-*.tar.gz' -type f | wc -l | tr -d ' ')"
+find "$dest" -maxdepth 1 -type l -name '.config-20300101-000000.tmp.*' -exec rm -f {} +
+rm -f "$cb/bin/tar" "$cb/bin/date" "$cb/tar.target" "$dest"/config-*.tar.gz
+
+# A --dest that other users can write to is refused before anything is written.
+wdest="$cb/world-writable"
+mkdir -p "$wdest"
+chmod 777 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a world-writable --dest is refused -> 3" "3" "$rc"
+assert_contains "the refusal names the directory" "$out" "refusing --dest $wdest"
+assert_eq "nothing is written into a refused --dest" "0" "$(find "$wdest" -mindepth 1 | wc -l | tr -d ' ')"
+chmod 770 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a group-writable --dest is refused -> 3" "3" "$rc"
+chmod 755 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a 755 --dest is accepted -> 0" "0" "$rc"
+rm -f "$wdest"/config-*.tar.gz
+chmod 1777 "$wdest"
+out="$(cbrun --yes --dest "$wdest")"; rc=$?
+assert_eq "a sticky world-writable --dest owned by the user is accepted -> 0" "0" "$rc"
+rm -f "$wdest"/config-*.tar.gz
+# A writable, non-sticky ancestor lets its owner swap the destination.
+mkdir -p "$cb/anc/sub"
+chmod 777 "$cb/anc"
+out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
+assert_eq "a --dest under a world-writable ancestor is refused -> 3" "3" "$rc"
+assert_contains "the refusal names the offending ancestor" "$out" "$cb/anc "
+assert_eq "nothing is created under a bad ancestor" "0" "$(find "$cb/anc/sub" -mindepth 1 | wc -l | tr -d ' ')"
+chmod 775 "$cb/anc"
+out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
+assert_eq "a --dest under a group-writable ancestor is refused -> 3" "3" "$rc"
+chmod 1777 "$cb/anc"
+out="$(cbrun --yes --dest "$cb/anc/sub/out")"; rc=$?
+assert_eq "a --dest under a sticky ancestor owned by the user -> 0" "0" "$rc"
+chmod 755 "$cb/anc"
+
+# A 755 --dest is not enough when an extended ACL lets another principal list
+# or change it: `ls -leLd` is stubbed (GNU ls has no -e, which stays silent).
+cat > "$cb/bin/ls" <<'LS_EOF'
+#!/bin/sh
+for a in "$@"; do last="$a"; done
+# -leLd names a directory: compare physical paths (macOS /var is /private/var).
+phys() { printf '%s/%s' "$(cd -P "$(dirname "$1")" && pwd -P)" "$(basename "$1")"; }
+if [ "$1" = "-leLd" ] && [ -n "${FAKE_ACL_PATH:-}" ] && [ "$(phys "$last")" = "$(phys "$FAKE_ACL_PATH")" ]; then
+  printf '%s\n' "drwxr-xr-x+ 2 me staff 64 Oct  1 00:00 $last"
+  printf '%b' "$FAKE_ACL"
+  exit 0
+fi
+exec /bin/ls "$@"
+LS_EOF
+chmod +x "$cb/bin/ls"
+adest="$cb/acl-dest"
+mkdir -p "$adest"
+chmod 755 "$adest"
+for entry in ' 0: user:mallory allow add_file\n' \
+  ' 0: user:bob allow delete_child\n' ' 0: user:bob inherited allow write\n' \
+  ' 0: user:bob allow read,delete\n'; do
+  out="$(FAKE_ACL_PATH="$adest" FAKE_ACL="$entry" cbrun --yes --dest "$adest")"; rc=$?
+  assert_eq "a --dest whose ACL grants another principal access is refused -> 3 ($entry)" "3" "$rc"
+  assert_contains "the ACL refusal names the directory and the principal" "$out" "refusing --dest $adest: an ACL entry for"
+  assert_eq "nothing is written into an ACL-refused --dest" "0" "$(find "$adest" -mindepth 1 | wc -l | tr -d ' ')"
+done
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:me allow list,add_file,delete_child\n 1: user:root allow write\n 2: user:bob deny add_file\n 3: user:bob allow read,readattr\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "an ACL for the owner, root, a deny or read-only rights is accepted -> 0" "0" "$rc"
+rm -f "$adest"/config-*.tar.gz
+# An ACL entry that only grants list is read access, like a 755 --dest: a note.
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: group:staff allow list\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "a list-only ACL on --dest is accepted -> 0" "0" "$rc"
+assert_contains "a list-only ACL on --dest is noted" "$out" "$adest has an ACL entry for group:staff that lets another principal list it"
+rm -f "$adest"/config-*.tar.gz
+# only_inherit entries govern children, not the directory itself.
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:mallory allow add_file,only_inherit\n 1: group:staff allow list,file_inherit,only_inherit\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "an only_inherit ACL entry is not a grant on --dest -> 0" "0" "$rc"
+assert_not_contains "an only_inherit list entry is not even noted" "$out" "ACL entry"
+rm -f "$adest"/config-*.tar.gz
+out="$(FAKE_ACL_PATH="$adest" FAKE_ACL=' 0: user:mallory allow add_file,file_inherit\n' cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "an inheritable (not only_inherit) grant still counts -> 3" "3" "$rc"
+# An ACL on an ancestor that lets someone add or delete children can rename
+# --dest away, just as a group-writable ancestor can.
+mkdir -p "$cb/aclanc/sub"
+chmod 755 "$cb/aclanc" "$cb/aclanc/sub"
+for entry in ' 0: user:mallory allow add_subdirectory\n' ' 0: user:bob allow delete_child\n' \
+  ' 0: group:staff allow write\n'; do
+  out="$(FAKE_ACL_PATH="$cb/aclanc" FAKE_ACL="$entry" cbrun --yes --dest "$cb/aclanc/sub/out")"; rc=$?
+  assert_eq "a --dest under an ancestor with an ACL rename grant is refused -> 3 ($entry)" "3" "$rc"
+  assert_contains "the ancestor ACL refusal names the ancestor and principal" "$out" "an ACL entry on $cb/aclanc for"
+  assert_eq "nothing is created under an ACL-refused ancestor" "0" "$(find "$cb/aclanc/sub" -mindepth 1 | wc -l | tr -d ' ')"
+done
+out="$(FAKE_ACL_PATH="$cb/aclanc" FAKE_ACL=' 0: group:staff allow list,readattr\n 1: user:bob allow add_subdirectory,only_inherit\n' cbrun --yes --dest "$cb/aclanc/sub/out")"; rc=$?
+assert_eq "list-only and only_inherit ACLs on an ancestor are accepted -> 0" "0" "$rc"
+rm -rf "$cb/aclanc" "$cb/bin/ls"
+out="$(cbrun --yes --dest "$adest")"; rc=$?
+assert_eq "a --dest without ACL support stays accepted -> 0" "0" "$rc"
+rm -rf "$cb"
 
 end_section
 # The file's own floor: it reached this line having opened sections, each of

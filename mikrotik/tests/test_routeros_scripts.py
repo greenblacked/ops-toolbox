@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import os
 import pathlib
 import re
@@ -1718,3 +1719,317 @@ def test_rogue_dns_invalid_connection_get_probe(
         _remove_by_name(script_resource, name)
         _unset_global(api, probe)
         _unset_global(api, complete)
+
+
+# --- router_doctor.py --drift ----------------------------------------------
+#
+# --drift compares on the router: the expected source (the file in this
+# checkout) is a string literal inside an inline block of :local, :if and
+# :put, and the router answers same, changed or missing per script, so no
+# source leaves it. Nothing offline can check that the command survives
+# RouterOS's own parser, so this builds the very command router_doctor sends,
+# with a scratch script as the subject, and runs it on the pinned release. The
+# only change is that :put (which a scheduler-run script has nowhere to show)
+# becomes a :set of a scratch global that the test reads back; only one
+# branch of the block runs, so the global holds the one answer.
+#
+# One case per kind of character the escaper emits, so a failure names the
+# escape: plain ASCII (no escape), \" and \\, \$, a raw ?, \t and \n, and
+# \XX hex for a non-ASCII byte. Each subject holds only its own class (no
+# stray $, quote or trailing newline), and ends in plain ASCII. The "changed"
+# and "shorter" checks alter or cut the last two bytes of the subject.
+DRIFT_SUBJECTS = {
+    "plain": ":put 1;",
+    "quote-backslash": ':put "a\\"b\\\\c";',
+    "dollar": "# cost $5 ok",
+    "question": "# is it ok? yes",
+    "newline": ":put 1;\n:put 2;",
+    "tab": ":put 1;\t:put 2;",
+    "non-ascii": "# caf\u00e9 ok",
+}
+
+
+def _router_doctor_module() -> Any:
+    path = MIKROTIK_DIR / "features" / "router_doctor.py"
+    spec = importlib.util.spec_from_file_location("router_doctor_under_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _drift_answer(api: Any, script_resource: Any, name: str, expected: bytes) -> str:
+    module = _router_doctor_module()
+    command = module.drift_commands({name: expected})[0][1]
+    assert command.count(":put (") == 4 and command.count(':put "DRF:') == 1, command
+    runner = "pu_ut_drift_run"
+    for g in ("PuDriftOut", "PuDriftDone"):
+        _unset_global(api, g)
+    source = (
+        ":global PuDriftOut;\n:global PuDriftDone;\n"
+        + command.replace(":put (", ":set PuDriftOut (").replace(
+            ':put "DRF:', ':set PuDriftOut "DRF:'
+        )
+        + '\n:set PuDriftDone "yes";\n'
+    )
+    _add_script(script_resource, runner, source)
+    try:
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "PuDriftDone") == "yes", timeout=30.0
+        )
+        return _read_global(api, "PuDriftOut")
+    finally:
+        _remove_by_name(script_resource, runner)
+        for g in ("PuDriftOut", "PuDriftDone"):
+            _unset_global(api, g)
+
+
+def _stored_source(script_resource: Any, name: str) -> bytes | None:
+    """The source RouterOS holds for a script, as raw bytes (None if absent)."""
+    for row in script_resource.get():
+        if _row_str(row, "name") == name:
+            value = row.get("source", row.get(b"source", b""))
+            return value if isinstance(value, bytes) else str(value).encode("utf-8")
+    return None
+
+
+@pytest.mark.parametrize("kind", sorted(DRIFT_SUBJECTS))
+def test_drift_comparison_runs_on_the_pinned_routeros(
+    api: Any, script_resource: Any, kind: str
+) -> None:
+    subject = "pu_ut_drift_subject"
+    text = DRIFT_SUBJECTS[kind]
+    raw = text.encode("utf-8")
+    try:
+        _add_script(script_resource, subject, text)
+        same = _drift_answer(api, script_resource, subject, raw)
+        # same length, last two bytes different
+        modified = _drift_answer(api, script_resource, subject, raw[:-2] + b"XX")
+        # a prefix of the source (two bytes short) is a difference too
+        shorter = _drift_answer(api, script_resource, subject, raw[:-2])
+        stored = _stored_source(script_resource, subject)
+    finally:
+        _remove_by_name(script_resource, subject)
+    # On a mismatch show the bytes RouterOS kept, so a failure says whether
+    # the router altered the subject or the expected literal is wrong.
+    assert same == f"DRF:{subject}|same", (kind, same, "stored:", stored, "sent:", raw)
+    assert modified == f"DRF:{subject}|changed", (kind, modified)
+    assert shorter == f"DRF:{subject}|changed", (kind, shorter)
+
+
+def test_drift_comparison_reports_a_missing_script(
+    api: Any, script_resource: Any
+) -> None:
+    answer = _drift_answer(
+        api, script_resource, "pu_ut_drift_absent", DRIFT_SUBJECTS["plain"].encode()
+    )
+    assert answer == "DRF:pu_ut_drift_absent|missing", answer
+
+
+# --- router_doctor.py probe ------------------------------------------------
+#
+# The probe is one RouterOS command that router_doctor sends over ssh and
+# parses on this side. Nothing offline shows that RouterOS accepts it, nor
+# that it answers with the records parse_report expects, so this runs the very
+# text on the pinned release against a fixture script and scheduler. Only one
+# change is made to it: :put (a script run by the scheduler has nowhere to
+# show it) becomes :log info, and the test reads the lines back from /log.
+PROBE_SUBJECT = "pu_ut_probe_subject"
+PROBE_SCHEDULER = "pu_ut_probe_sched"
+PROBE_TAGS = ("SCR:", "SCH:", "SCX:", "ENV:", "CTL:", "UPT:", "CLK:", "EVT:", "VER:")
+
+
+def _probe_log_lines(api: Any) -> list[str]:
+    rows = list(api.get_binary_resource("/log").get())
+    return [m for m in (_row_str(r, "message") for r in rows) if m.startswith(PROBE_TAGS)]
+
+
+def test_router_doctor_probe_parses_and_describes_the_fixture(
+    api: Any, script_resource: Any
+) -> None:
+    module = _router_doctor_module()
+    assert module.PROBE.count(":put (") >= 9, "the probe no longer prints with :put ("
+    runner = "pu_ut_probe_run"
+    sched = api.get_binary_resource("/system/scheduler")
+    _unset_global(api, "PuProbeDone")
+    source = (
+        ":global PuProbeDone;\n"
+        + module.PROBE.replace(":put (", ":log info (")
+        + '\n:set PuProbeDone "yes";\n'
+    )
+    on_event = f"/system script run {PROBE_SUBJECT}"
+    try:
+        _add_script(script_resource, PROBE_SUBJECT, ':global TgBotToken "x";\n')
+        _remove_by_name(sched, PROBE_SCHEDULER)
+        sched.call(
+            "add",
+            {
+                "name": PROBE_SCHEDULER.encode(),
+                "on-event": on_event.encode(),
+                "interval": b"1h",
+                "disabled": b"yes",
+            },
+        )
+        _add_script(script_resource, runner, source)
+        _run_via_scheduler(
+            api, runner, lambda: _read_global(api, "PuProbeDone") == "yes", timeout=60.0
+        )
+        lines = _probe_log_lines(api)
+    finally:
+        _remove_by_name(script_resource, runner)
+        _remove_by_name(script_resource, PROBE_SUBJECT)
+        _remove_by_name(sched, PROBE_SCHEDULER)
+        _unset_global(api, "PuProbeDone")
+    scripts, schedulers, env = module.parse_report("\n".join(lines))
+    assert PROBE_SUBJECT in scripts, lines
+    mine = [s for s in schedulers if s["name"] == PROBE_SCHEDULER]
+    assert mine, lines
+    entry = mine[0]
+    assert entry["on_event"] == on_event, entry
+    assert entry["interval"], entry
+    assert entry["disabled"] is True and entry["run_count"] == 0, entry
+    assert module.VERSION_KEY in env and module.UPTIME_KEY in env, env
+    assert module.CLOCK_KEY in env, env
+    # The fixture script assigns TgBotToken, so the router described it and
+    # parse_report decided it restores the global.
+    assert env.get(module.DECLARES_KEY, {}).get("TgBotToken") == [PROBE_SUBJECT], (
+        lines,
+        env,
+    )
+    assert module.invokes_script(entry["on_event"], PROBE_SUBJECT)
+
+
+# --- conntrack_watch.lua ----------------------------------------------------
+#
+# Written without an underscored name, so unlike most of the watchers it runs
+# on the 7.24 CHR. It goes through tg_send_new, the helper the stub below takes
+# the place of. The CHR's connection-tracking table is nearly empty, which is
+# what makes "healthy" the baseline; a threshold of 0 is how the tests make the
+# same table count as full. The script is always run straight from the
+# scheduler entry, as on a router: a wrapper that called it with
+# `/system script run` never reported back on the 7.24 CHR (60s, nothing in
+# the log). The likely root cause: conntrack_watch returns with a top-level
+# :return, which also ends the caller when the script is run through
+# /system script run from a wrapper, so the wrapper never reached its marker.
+# A quiet run has no effect of its own, so each test waits on the last global
+# the script writes before it returns, or, for a run that writes nothing, on
+# the scheduler entry's run-count.
+CONNTRACK_GLOBALS = (
+    "ConntrackWarnPercent",
+    "ConntrackLast",
+    "ConntrackDeliveredState",
+    "ConntrackSendError",
+    "PuTgLastMessage",
+    "OpsToolboxPaused",
+)
+
+
+def _set_global_now(api: Any, statement: bytes) -> None:
+    # The same way an operator would set it: a :global, typed once.
+    api.get_binary_resource("/").call("execute", {"script": statement})
+
+
+@contextlib.contextmanager
+def _conntrack_watch_installed(api: Any, script_resource: Any):
+    src = script_path("conntrack_watch.lua").read_text(encoding="utf-8")
+    for name in CONNTRACK_GLOBALS:
+        _unset_global(api, name)
+    try:
+        _add_script(script_resource, "tg_send_new", TG_SEND_NEW_STUB_SOURCE)
+        _add_script(script_resource, "conntrack_watch", src)
+        yield
+    finally:
+        _remove_by_name(script_resource, "conntrack_watch")
+        _remove_by_name(script_resource, "tg_send_new")
+        for name in CONNTRACK_GLOBALS:
+            _unset_global(api, name)
+
+
+def _scheduler_run_count(api: Any) -> int:
+    for row in api.get_binary_resource("/system/scheduler").get():
+        if _row_str(row, "name") == SCHEDULER_NAME:
+            return int(_row_str(row, "run-count") or "0")
+    return 0
+
+
+def _run_conntrack_watch_once(api: Any, done=None) -> None:
+    """Run conntrack_watch once from the scheduler and wait until it has returned.
+
+    `done` reads the last global the run writes. Without one (a paused run
+    writes nothing) the wait is the entry's run-count plus a short settle,
+    since the script returns within moments of starting.
+    """
+    if done is None:
+        _run_via_scheduler(
+            api, "conntrack_watch", lambda: _scheduler_run_count(api) >= 1,
+            timeout=60.0, interval="20s",
+        )
+        time.sleep(3)
+        return
+    _run_via_scheduler(api, "conntrack_watch", done, timeout=60.0, interval="20s")
+    time.sleep(3)
+
+
+def test_conntrack_watch_baseline_is_silent_when_healthy(
+    api: Any, script_resource: Any
+) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _run_conntrack_watch_once(
+            api, lambda: _read_global(api, "ConntrackDeliveredState") == "ok"
+        )
+        assert _read_global(api, "PuTgLastMessage") == "", (
+            "a healthy first run must be the silent baseline"
+        )
+        assert _read_global(api, "ConntrackLast") == "ok", (
+            "conntrack_watch did not record a state: max-entries or total-entries "
+            "may not be readable under these names on this release.\n"
+            + "\n".join(_recent_log_lines(api, 40))
+        )
+
+
+def test_conntrack_watch_alerts_when_the_threshold_is_crossed(
+    api: Any, script_resource: Any
+) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _set_global_now(api, b":global ConntrackWarnPercent 0")
+        _run_via_scheduler(
+            api,
+            "conntrack_watch",
+            lambda: _read_global(api, "PuTgLastMessage") != "",
+            timeout=60.0,
+            interval="20s",
+        )
+        message = _read_global(api, "PuTgLastMessage")
+        assert "percent full" in message, f"no percentage in: {message!r}"
+        assert "warning at 0 percent" in message, f"no threshold in: {message!r}"
+        assert " of " in message and " entries" in message, f"no counts in: {message!r}"
+        assert _read_global(api, "ConntrackLast") == "high"
+        assert _read_global(api, "ConntrackDeliveredState") == "high"
+        assert _read_global(api, "ConntrackSendError") == ""
+
+
+def test_conntrack_watch_is_silent_on_a_second_run_in_the_same_state(
+    api: Any, script_resource: Any
+) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _set_global_now(api, b":global ConntrackWarnPercent 0")
+        _run_conntrack_watch_once(
+            api, lambda: _read_global(api, "ConntrackDeliveredState") == "high"
+        )
+        assert _read_global(api, "PuTgLastMessage") != "", "the first high run must alert"
+        _unset_global(api, "PuTgLastMessage")
+        _unset_global(api, "ConntrackLast")
+        _run_conntrack_watch_once(api, lambda: _read_global(api, "ConntrackLast") == "high")
+        assert _read_global(api, "ConntrackLast") == "high", "the second run did not complete"
+        assert _read_global(api, "PuTgLastMessage") == "", (
+            "an unchanged state must not alert again"
+        )
+
+
+def test_conntrack_watch_honours_the_pause(api: Any, script_resource: Any) -> None:
+    with _conntrack_watch_installed(api, script_resource):
+        _set_global_now(api, b":global ConntrackWarnPercent 0")
+        _set_global_now(api, b":global OpsToolboxPaused true")
+        _run_conntrack_watch_once(api)
+        assert _read_global(api, "PuTgLastMessage") == "", "a paused run must not alert"
+        assert _read_global(api, "ConntrackLast") == "", "a paused run must not record state"

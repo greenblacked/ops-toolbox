@@ -221,7 +221,11 @@ jobs:
           emit powershell    '(\.ps1|\.psm1|\.psd1)$'
           emit markdown      '(\.md$|markdownlint)'
           emit yaml          '(\.ya?ml|\.winget)$'
-          emit python        '(\.py$|^pyproject\.toml$|^test-env/python/)'
+          # The python suite also drives the docs site's Worker and page
+          # scripts under node (test_docs_worker.py, test_docs_site.py) and
+          # reads mkdocs.yml and two docs files, so a change to any of those
+          # alone has to wake it; the docs workflow only builds the site.
+          emit python        '(\.py$|^pyproject\.toml$|^test-env/python/|^worker/|^overrides/|^mkdocs\.yml$|^docs/stylesheets/theme/rpt-theme\.css$|^docs/getting-started/quick-start\.md$)'
           emit workflow      '^\.github/workflows/.*\.ya?ml$'
           emit dockerfile    '(^|/)Dockerfile$'
           emit manifests     '^(k8s-toolbox/(examples|debug)/|linux/cloud-init/).*\.ya?ml$'
@@ -748,7 +752,14 @@ jobs:
     name: Test / macos native
     needs: changes
     runs-on: macos-15
-    timeout-minutes: 15
+    # 30 minutes, about twice the run it has to fit. Measured on dev run
+    # 39866799041: the contracts step took 5m27s and the no-Docker suites
+    # were still going at 9m27s when the old 15 minute limit cancelled the
+    # job. On PR #112 run 39863716947 the suites finished (static 425s,
+    # k8s 99s, dotfiles 3s) and the limit hit during cleanup. The suites
+    # grew with the linux, mikrotik, git and dotfiles work, so a full run
+    # is now about 15 to 16 minutes.
+    timeout-minutes: 30
     steps:
       # Checked out for either gate: the parse check below runs on changes to
       # git/ and linux/, which the macOS suites deliberately ignore.
@@ -1111,7 +1122,7 @@ jobs:
       - name: Report skip
         if: needs.changes.outputs.python != 'true'
         run: |
-          printf '### `run-tests.sh python`\n\nSkipped — no Python changed.\n' \
+          printf '### `run-tests.sh python`\n\nSkipped — nothing the python suite tests changed.\n' \
             >> "$GITHUB_STEP_SUMMARY"
 
   # Repository-wide convention checks: the --help and unknown-flag contracts,

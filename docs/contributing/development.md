@@ -85,6 +85,15 @@ The Roadmap and Changelog pages are filled from `ROADMAP.md` and `CHANGELOG.md`
 at build time by a hook in `docs/hooks/`, so edit those root files, not the
 pages.
 
+Search uses a custom `separator` on the `search` plugin in `mkdocs.yml`.
+Material's default splits terms only at spaces and hyphens, so a script name
+such as `disk_cleanup.sh` was a single term that `cleanup` never found. The
+separator also splits at underscores, slashes, dots (but not the dots inside a
+version number such as `7.24.6`), brackets and camelCase, and the search box
+splits the query the same way. `test-env/python/tests/test_docs_site.py` pins
+the splits, and checks under node that the pattern is a valid JavaScript
+regular expression, because the search worker compiles it in the browser.
+
 Symlinks under `docs/` are refused: MkDocs follows them and copies what they
 point at into the site, so a link to a file outside `docs/` would publish it.
 The docs workflow fails the build job before installing anything if it finds
@@ -162,6 +171,61 @@ live system:
 The other kinds keep their meaning: `note` and `info` are blue, `warning` and
 `danger` are red, and `tip` and `example` are neutral.
 
+#### Page scripts
+
+The site's own JavaScript lives in `overrides/assets/javascripts/`. MkDocs
+copies every non-template file of `theme.custom_dir` into the site, so the
+files are published at `assets/javascripts/`, and `overrides/main.html`
+loads them after Material's bundle with `defer`. They are small ES5 files
+with no framework and no build step, they make no request to another
+origin, and a page without JavaScript looks as it did before them. Each
+exports its pure functions for `test-env/python/tests/test_docs_site.py`,
+which also refuses HTML parsing APIs, `eval` and requests to another origin
+in every file of the folder.
+
+- `rpt-table-filter.js` puts a **Filter rows** box above every Markdown
+  table with 15 or more body rows, and reads a `?filter=` link.
+- `rpt-checklist.js` turns Markdown task lists into checklists that keep
+  their ticks across a reload. See below.
+- `rpt-os-tab.js` opens the visitor's OS tab, once per browser, on the
+  first page whose content tabs are labelled `macOS`, `Linux` or `Windows`
+  (the Quick start). It never overrides a tab the reader already chose, and
+  it leaves phones and tablets on the first tab. The labels are matched by
+  their text, so renaming one of those tabs turns the feature off for it;
+  `test_docs_site.py` fails if the Quick start's labels change.
+- `rpt-404.js` runs on the 404 page only (`overrides/404.html` loads it).
+  It splits the missing address into words (`/runbooks/linux-low-disk-old/`
+  gives `runbooks linux low disk old`), reads the site's own
+  `search/search_index.json` (same origin, no credentials), and lists the
+  three pages whose titles and addresses match the most words, a title
+  match counting three times an address match. Below them is a link that
+  opens the search with those words, through Material's `?q=` parameter.
+  Renamed pages need no redirect list for this to work. Without
+  JavaScript, or when the index cannot be read, the page keeps its three
+  steps, plus the search link in the second case.
+
+#### Checklists
+
+A runbook, or any page with steps to work through, can make them a
+checklist with Markdown task-list syntax (`pymdownx.tasklist` is enabled
+with `clickable_checkbox`):
+
+```markdown
+- [ ] Run the report and read the output
+- [ ] Run the preview and read every line
+- [ ] Apply
+```
+
+The boxes toggle without JavaScript. With it, each box is named after its
+step for screen readers, a click on the step text ticks it, and a
+"Checklist: 1 of 3 steps done" line with a **Reset checklist** button
+appears above the first list. What is stored, in the reader's browser only:
+one `localStorage` entry per page, `rpt.checklist.v1:` plus the page path,
+holding the position and the first 60 characters of each ticked step.
+Nothing is sent anywhere, and blocked storage only means the ticks are not
+kept. A step written `- [x]` starts ticked. Reword or insert steps freely:
+a changed step loses its tick, it never moves to another step.
+
 ### Preview locally
 
 ```bash
@@ -198,7 +262,11 @@ CI runs the same strict build on every pull request that touches the site:
 .venv/bin/mkdocs build --strict
 ```
 
-The build writes `site/`, which is ignored by Git.
+The build writes `site/`, which is ignored by Git. The Worker under `worker/`
+and the page scripts under `overrides/` are tested by the python suite
+(`test_docs_worker.py`, `test_docs_site.py`), and CI runs that suite whenever
+`worker/`, `overrides/`, `mkdocs.yml` or a docs file those tests read changes,
+not only when Python does.
 
 ### Deploy
 

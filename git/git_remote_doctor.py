@@ -20,12 +20,20 @@ Three things rewrite or resolve that, none of them visible in `git remote -v`:
                       list, which is how one line in a repository's config
                       silently disables the keychain helper set globally.
 
-Read-only. It prints commands to run; it never edits config, contacts a remote,
-or reads the contents of a credential file.
+Read-only. It prints commands to run; it never edits config or reads the
+contents of a credential file, and it contacts a remote only when asked to:
+
+  --probe             one non-interactive `git ls-remote --heads` per remote,
+                      to say whether a fetch works with the credentials this
+                      machine has, and if not, which of a dozen causes it is
+                      (DNS, firewall, timeout, ssh key, host key, token,
+                      repository not found, TLS, proxy) and what to run next.
 
     ./git_remote_doctor.py                 # diagnose this repository's remotes
     ./git_remote_doctor.py --remote origin
     ./git_remote_doctor.py --url https://github.com/owner/repo.git
+    ./git_remote_doctor.py --probe         # also try one ls-remote per remote
+    ./git_remote_doctor.py --json          # the same verdict as one JSON object
 """
 
 from __future__ import annotations
@@ -33,8 +41,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import os
 import re
+import signal
 import stat
 import subprocess
 import sys
@@ -47,24 +57,68 @@ if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
     C_RED, C_GREEN, C_YELLOW = "\033[31m", "\033[32m", "\033[33m"
 
 
+# Every line the report prints is also recorded here, as (level, section,
+# text), so --json can hand the same verdict to a script. Recording happens in
+# the printers, after whatever redaction the caller applied, so the JSON never
+# says more than the text did. Copied, not shared, like Usage3Parser below.
+EVENTS = []
+SECTION = ""
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def record(level, text):
+    EVENTS.append((level, SECTION, _ANSI.sub("", text)))
+
+
 def ok(msg):
     print("%s[ ok ]%s %s" % (C_GREEN, C_RESET, msg))
+    record("ok", msg)
 
 
 def warn(msg):
     print("%s[warn]%s %s" % (C_YELLOW, C_RESET, msg))
+    record("warn", msg)
 
 
 def bad(msg):
     print("%s[fail]%s %s" % (C_RED, C_RESET, msg))
+    record("fail", msg)
 
 
 def info(msg):
     print("%s[info]%s %s" % (C_DIM, C_RESET, msg))
+    record("info", msg)
 
 
 def head(msg):
+    global SECTION
+    SECTION = msg
     print("\n%s== %s ==%s" % (C_BOLD, msg, C_RESET))
+
+
+def raw(text, level="detail"):
+    """Print a report line exactly as given, and record it without its indent
+    or colour. For the table rows and lists the level helpers do not cover."""
+    print(text)
+    record(level, _ANSI.sub("", text).strip())
+
+
+def render_json(tool, events, rc):
+    """The report as one JSON object.
+
+    schema 1 is a promise about shape: keys and levels may be added, none is
+    ever renamed. `problems` counts the fail-level events.
+    """
+    return json.dumps({
+        "tool": tool,
+        "schema": 1,
+        "exit_code": rc,
+        "problems": sum(1 for event in events if event[0] == "fail"),
+        "events": [
+            {"level": level, "section": section, "message": message}
+            for level, section, message in events
+        ],
+    }, sort_keys=True)
 
 
 def shorten(path):
@@ -389,6 +443,17 @@ def apply_rewrites(url, rewrites, push=False):
     return _longest_match(url, [r for r in rewrites if r[2] == "insteadOf"])
 
 
+def _apply_helper_values(values, helpers, resets):
+    """Fold one key's (value, origin, scope) entries into helpers and resets."""
+    for value, origin, scope in values:
+        if value.strip() == "":
+            resets.append((origin, scope, len(helpers)))
+            helpers = []
+        else:
+            helpers.append((value, origin, scope))
+    return helpers
+
+
 def credential_helpers(entries, key="credential.helper"):
     """(helpers, resets) for a multi-valued credential.helper.
 
@@ -397,14 +462,67 @@ def credential_helpers(entries, key="credential.helper"):
     configured before it — the documented way to ignore a system-wide helper,
     and the undocumented way to lose your keychain by copying a config snippet.
     """
-    helpers = []
     resets = []
-    for value, origin, scope in entries.get(key.lower(), []):
-        if value.strip() == "":
-            resets.append((origin, scope, len(helpers)))
-            helpers = []
-        else:
-            helpers.append((value, origin, scope))
+    helpers = _apply_helper_values(entries.get(key.lower(), []), [], resets)
+    return helpers, resets
+
+
+_DEFAULT_PORTS = {"http": "80", "https": "443"}
+
+
+def _norm_port(parts):
+    return parts["port"] or _DEFAULT_PORTS.get(parts["scheme"], "")
+
+
+def credential_url_matches(pattern, parts):
+    """Does a credential.<pattern>.helper section apply to this remote?
+
+    Follows git's URL matching: scheme and port must agree (default ports
+    are filled in), the host matches case-insensitively with an optional
+    leading `*.` wildcard (one label), a user in the pattern must equal the URL's, and the
+    pattern path must be a prefix of the URL path on a segment boundary.
+    """
+    pat = parse_url(pattern)
+    if "://" not in pattern or pat["kind"] not in ("https", "http"):
+        return False
+    if pat["scheme"] != parts["scheme"] or _norm_port(pat) != _norm_port(parts):
+        return False
+    phost, host = pat["host"].lower(), parts["host"].lower()
+    if phost.startswith("*."):
+        if host.partition(".")[2] != phost[2:]:
+            return False
+    elif phost != host:
+        return False
+    if pat["user"] and pat["user"].split(":")[0] != parts["user"].split(":")[0]:
+        return False
+    ppath = pat["path"].strip("/")
+    path = parts["path"].strip("/")
+    return not ppath or path == ppath or path.startswith(ppath + "/")
+
+
+def scoped_credential_keys(entries):
+    """[(url_pattern, key)] for every credential.<url>.helper in the config."""
+    found = []
+    for key in sorted(entries):
+        if (key.startswith("credential.") and key.endswith(".helper")
+                and key != "credential.helper"):
+            found.append((key[len("credential."):-len(".helper")], key))
+    return found
+
+
+def effective_credential_helpers(entries, parts):
+    """(helpers, resets) git would consult for one HTTP remote.
+
+    The unscoped credential.helper values come first, then every URL-scoped
+    credential.<url>.helper whose URL matches. git interleaves them in config
+    order; the order across keys is not kept by parse_git_config, so unscoped
+    first is the approximation, exact whenever only one kind is present.
+    """
+    resets = []
+    helpers = _apply_helper_values(entries.get("credential.helper", []), [], resets)
+    for pattern, key in scoped_credential_keys(entries):
+        if credential_url_matches(pattern, parts):
+            helpers = _apply_helper_values(entries[key], helpers, resets)
     return helpers, resets
 
 
@@ -477,6 +595,88 @@ def needs_credentials(url_kinds):
     return any(kind in ("https", "http") for kind in url_kinds)
 
 
+# The causes a probe can fail with, most specific first. Every ssh failure
+# ends in "Could not read from remote repository", so that line alone names
+# nothing and matches nothing here. A changed host key also prints "Host key
+# verification failed", which is why it is tried before the unknown one.
+_REMOTE_CAUSES = (
+    ("hostkey-changed", (r"remote host identification has changed",),
+     "ssh-keygen -R {host}, only after confirming the change is legitimate (a "
+     "key rotation the provider announced); a changed key is also what a "
+     "man-in-the-middle looks like"),
+    ("hostkey-unknown", (r"host key verification failed",),
+     "ssh-keyscan -t ed25519 {host}, verify the fingerprint against the one the "
+     "provider publishes, then append it to ~/.ssh/known_hosts; a "
+     "non-interactive run cannot answer the yes/no prompt"),
+    ("ssh-auth", (r"permission denied \(publickey",),
+     "run git_ssh_doctor.py --host {host}; this runner offers no key the "
+     "server accepts"),
+    ("tls", (r"ssl certificate problem", r"server certificate verification failed",
+             r"unable to get local issuer certificate", r"certificate verify failed"),
+     "point http.sslCAInfo at the CA bundle that signs this server (often a "
+     "corporate proxy's CA); http.sslVerify=false hides a man-in-the-middle and "
+     "is not a fix"),
+    ("proxy", (r"connect tunnel failed", r"could not resolve proxy",
+               r"from proxy after connect"),
+     "check http.proxy and the https_proxy / HTTPS_PROXY variables this run "
+     "inherits"),
+    ("dns", (r"could not resolve host", r"name or service not known",
+             r"nodename nor servname", r"temporary failure in name resolution"),
+     "{host} does not resolve from here: check the spelling, the VPN, or the "
+     "resolver this runner uses"),
+    ("network", (r"connection refused", r"no route to host", r"network is unreachable",
+                 r"failed to connect to", r"couldn't connect to server"),
+     "{host} refused or could not be reached: a firewall, a VPN, or the port "
+     "(ssh 22, https 443)"),
+    ("timeout", (r"timed out",),
+     "no answer before the timeout: a firewall dropping packets, or a proxy "
+     "this runner must use (http.proxy / https_proxy)"),
+    ("http-auth", (r"terminal prompts disabled", r"could not read username",
+                   r"could not read password", r"authentication failed",
+                   r"returned error: 401", r"returned error: 403"),
+     "see the credential helpers above: no helper answered, or the token has "
+     "expired or lacks the scope this repository needs"),
+    ("not-found", (r"repository not found", r"does not appear to be a git repository",
+                   r"returned error: 404", r"repository '[^']*' not found"),
+     "check the path; a private repository answers 404 to a missing or wrong "
+     "token, so check the credentials as well"),
+    ("proxy", (r"proxy",),
+     "check http.proxy and the https_proxy / HTTPS_PROXY variables this run "
+     "inherits"),
+)
+
+
+def classify_remote_error(stderr, host=""):
+    """Name why `git ls-remote` failed: (cause, hint).
+
+    cause is one of dns, network, timeout, ssh-auth, hostkey-unknown,
+    hostkey-changed, http-auth, not-found, tls, proxy or other, matched on
+    git's and ssh's own wording, case-insensitively.
+    """
+    text = (stderr or "").lower()
+    for cause, patterns, hint in _REMOTE_CAUSES:
+        if any(re.search(pattern, text) for pattern in patterns):
+            return cause, hint.replace("{host}", host or "<host>")
+    return "other", "read git's own message above"
+
+
+_USERINFO_PASSWORD = re.compile(r"(\w+://[^/\s:@]+):[^@/\s]+@")
+
+
+def redact_text(text):
+    """Blank URL passwords and token-like userinfo out of free text.
+
+    git echoes the URL it dialled in its error lines, token included, so a
+    probe's stderr is redacted line by line before any of it is printed.
+    """
+    lines = []
+    for line in (text or "").splitlines():
+        line = _USERINFO_PASSWORD.sub(r"\1:***@", line)
+        lines.append(" ".join(redact_url(word) if "://" in word else word
+                              for word in line.split(" ")))
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # Diagnostics
 # --------------------------------------------------------------------------
@@ -494,17 +694,54 @@ def git_exec_path():
     return out.strip() if rc == 0 else ""
 
 
+def probe_remote(target, timeout):
+    """Run one `git ls-remote --heads` against a remote name or URL.
+
+    Returns (rc, stdout, stderr); a timeout is rc 255. Nothing can prompt:
+    stdin is /dev/null, terminal prompts and every askpass are off, and the
+    new session has no controlling terminal for ssh to open. The remote is
+    passed as given, so insteadOf and core.sshCommand apply exactly as they do
+    for a real fetch; overriding either would make the probe test something
+    else. On a timeout the whole process group goes, ssh included.
+    """
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="never",
+               GIT_ASKPASS="", SSH_ASKPASS_REQUIRE="never")
+    try:
+        proc = subprocess.Popen(
+            ["git", "ls-remote", "--heads", target],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return 255, "", str(exc)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        return 255, "", "timed out after %ds" % timeout
+    return (
+        proc.returncode,
+        out.decode("utf-8", "replace"),
+        err.decode("utf-8", "replace"),
+    )
+
+
 def report_url(label, url, rewrites, push):
     """Print one URL, its rewrite and its problems. Returns the problem count."""
     parts = parse_url(url)
     dialled, pattern, base = apply_rewrites(url, rewrites, push=push)
-    print("        %-6s %s" % (label, redact_url(url)))
+    raw("        %-6s %s" % (label, redact_url(url)))
 
     if pattern is not None:
         kind = "pushInsteadOf" if push and _matched_push(url, rewrites) else "insteadOf"
-        print("        %-6s %s  %s(rewritten by url.%s.%s = %s)%s"
-              % ("dials", redact_url(dialled), C_DIM, redact_url(base), kind,
-                 redact_url(pattern), C_RESET))
+        raw("        %-6s %s  %s(rewritten by url.%s.%s = %s)%s"
+            % ("dials", redact_url(dialled), C_DIM, redact_url(base), kind,
+               redact_url(pattern), C_RESET))
         # Everything below judges the URL git will actually dial, not the one
         # in the config file. Judging the latter is how a rewrite hides a
         # problem instead of causing one.
@@ -541,7 +778,7 @@ def diagnose_remotes(remotes, rewrites, wanted):
 
     for name in names:
         entry = remotes[name]
-        print("  %s%s%s" % (C_BOLD, name, C_RESET))
+        raw("  %s%s%s" % (C_BOLD, name, C_RESET))
         for url in entry["fetch"]:
             problems += report_url("fetch", url, rewrites, push=False)
             dialled_parts.append(parse_url(apply_rewrites(url, rewrites)[0]))
@@ -593,7 +830,7 @@ def diagnose_rewrites(rewrites):
 
     problems = 0
     for base, pattern, kind in sorted(rewrites, key=lambda r: (r[2], r[1])):
-        print("        %-13s %s  ->  %s" % (kind, redact_url(pattern), redact_url(base)))
+        raw("        %-13s %s  ->  %s" % (kind, redact_url(pattern), redact_url(base)))
 
     # git rewrites once. A base that is itself matched by another pattern looks
     # like a chain and behaves like a dead end.
@@ -621,6 +858,37 @@ def diagnose_rewrites(rewrites):
     return problems
 
 
+def _check_helper(value, origin, scope, path_env, exec_path):
+    """Report one helper; returns the number of problems found."""
+    problems = 0
+    kind, resolved, problem = classify_helper(value, path_env, exec_path)
+    origin = shorten(origin.replace("file:", ""))
+    shown = redact_helper(value)
+    raw("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
+    if problem:
+        bad(problem)
+        info("this is what a keychain helper copied between an old machine "
+             "and a new one looks like")
+        problems += 1
+    elif kind == "shell":
+        info("a shell command, run through /bin/sh; nothing here to resolve")
+    elif resolved:
+        ok("resolves to %s" % shorten(resolved))
+
+    if value.split()[0] == "store":
+        for path in (os.path.join(HOME, ".git-credentials"),
+                     os.path.join(os.environ.get("XDG_CONFIG_HOME",
+                                                 os.path.join(HOME, ".config")),
+                                  "git", "credentials")):
+            mode = credential_file_problem(path)
+            if mode:
+                bad("%s is mode %s — it holds passwords in clear text"
+                    % (shorten(path), mode))
+                info("fix: chmod 600 %s" % shorten(path))
+                problems += 1
+    return problems
+
+
 def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
     head("credential helpers")
     problems = 0
@@ -637,7 +905,20 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
             info("an empty credential.helper in %s (%s) resets the list"
                  % (shorten(origin.replace("file:", "")), scope))
 
-    if not helpers:
+    # What git consults per HTTP remote: the unscoped list plus every
+    # credential.<url>.helper whose URL matches. A helper configured only for
+    # one host is a working setup, not a missing one.
+    per_url = [(p, effective_credential_helpers(entries, p)[0]) for p in http_urls]
+    unserved = [p for p, hs in per_url if not hs]
+    scoped_used = []
+    seen = set((v, o) for v, o, _ in helpers)
+    for _, hs in per_url:
+        for value, origin, scope in hs:
+            if (value, origin) not in seen:
+                seen.add((value, origin))
+                scoped_used.append((value, origin, scope))
+
+    if not helpers and not scoped_used:
         if http_urls:
             bad("no credential helper configured, and %d URL(s) here are HTTP"
                 % len(http_urls))
@@ -654,50 +935,54 @@ def diagnose_credentials(entries, dialled_parts, path_env, exec_path):
             problems += 1
         else:
             info("no credential helper configured; no HTTP remote needs one")
-        return problems
+    else:
+        for value, origin, scope in helpers + scoped_used:
+            problems += _check_helper(value, origin, scope, path_env, exec_path)
 
-    for value, origin, scope in helpers:
-        kind, resolved, problem = classify_helper(value, path_env, exec_path)
-        origin = shorten(origin.replace("file:", ""))
-        shown = redact_helper(value)
-        print("        %-24s %s(%s, %s)%s" % (shown, C_DIM, scope, origin, C_RESET))
-        if problem:
-            bad(problem)
-            info("this is what a keychain helper copied between an old machine "
-                 "and a new one looks like")
+        if unserved:
+            bad("%d HTTP URL(s) here match no credential helper: %s"
+                % (len(unserved), ", ".join(redact_url(p["url"]) for p in unserved)))
+            info("a URL-scoped credential.<url>.helper covers only URLs under "
+                 "its <url>; add credential.helper for the rest")
             problems += 1
-        elif kind == "shell":
-            info("a shell command, run through /bin/sh; nothing here to resolve")
-        elif resolved:
-            ok("resolves to %s" % shorten(resolved))
 
-        if value.split()[0] == "store":
-            for path in (os.path.join(HOME, ".git-credentials"),
-                         os.path.join(os.environ.get("XDG_CONFIG_HOME",
-                                                     os.path.join(HOME, ".config")),
-                                      "git", "credentials")):
-                mode = credential_file_problem(path)
-                if mode:
-                    bad("%s is mode %s — it holds passwords in clear text"
-                        % (shorten(path), mode))
-                    info("fix: chmod 600 %s" % shorten(path))
-                    problems += 1
+        if helpers and not http_urls:
+            info("no HTTP remote here, so none of these helpers is consulted; ssh "
+                 "authentication is git_ssh_doctor.py's department")
 
-    if helpers and not http_urls:
-        info("no HTTP remote here, so none of these helpers is consulted; ssh "
-             "authentication is git_ssh_doctor.py's department")
-
-    scoped = sorted(k for k in entries
-                    if k.startswith("credential.") and k.endswith(".helper")
-                    and k != "credential.helper")
-    for key in scoped:
+    for pattern, key in scoped_credential_keys(entries):
         # Looked up directly rather than through effective(): the middle of
         # this key is a URL, and a URL is case-sensitive.
         value = entries[key][-1][0]
-        url = key[len("credential."):-len(".helper")]
         info("credential.%s.helper = %s applies only to URLs under %s"
-             % (redact_url(url), redact_helper(value), redact_url(url)))
+             % (redact_url(pattern), redact_helper(value), redact_url(pattern)))
 
+    return problems
+
+
+def diagnose_reachability(targets, rewrites, timeout):
+    """Probe each (label, target, url) and name the cause of any failure."""
+    head("reachability")
+    problems = 0
+    for label, target, url in targets:
+        rc, out, err = probe_remote(target, timeout)
+        if rc == 0:
+            branches = [line for line in out.splitlines() if line.strip()]
+            if branches:
+                ok("%s reachable: %d branch(es)" % (label, len(branches)))
+            else:
+                warn("%s reachable but has no branches" % label)
+            continue
+        host = parse_url(apply_rewrites(url, rewrites)[0])["host"] if url else ""
+        cause, hint = classify_remote_error(err, host)
+        bad("%s unreachable: %s" % (label, cause))
+        # Redacted before printing: git repeats the URL it dialled, token and
+        # all, in its own error line.
+        for line in [ln for ln in redact_text(err).splitlines() if ln.strip()][:3]:
+            info("    %s" % line.strip())
+        info("fix: %s" % hint)
+        problems += 1
+    info("push side is not tested; git push --dry-run <remote> exercises it")
     return problems
 
 
@@ -728,7 +1013,7 @@ def run_report(args):
     if args.url:
         head("urls")
         for url in args.url:
-            print("  %s%s%s" % (C_BOLD, redact_url(url), C_RESET))
+            raw("  %s%s%s" % (C_BOLD, redact_url(url), C_RESET))
             problems += report_url("fetch", url, rewrites, push=False)
             dialled_parts.append(parse_url(apply_rewrites(url, rewrites)[0]))
 
@@ -736,6 +1021,14 @@ def run_report(args):
     problems += diagnose_credentials(
         entries, dialled_parts, os.environ.get("PATH", ""), git_exec_path()
     )
+
+    if args.probe:
+        names = sorted(remotes)
+        if args.remote:
+            names = [n for n in names if n in args.remote]
+        targets = [(n, n, (remotes[n]["fetch"] or [""])[0]) for n in names]
+        targets += [(redact_url(u), u, u) for u in args.url]
+        problems += diagnose_reachability(targets, rewrites, args.probe_timeout)
 
     print()
     if problems:
@@ -766,6 +1059,16 @@ class Usage3Parser(argparse.ArgumentParser):
         self.exit(3, "%s: error: %s\n" % (self.prog, message))
 
 
+def positive_int(value):
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("%r is not a whole number" % value) from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be a positive number, not %d" % number)
+    return number
+
+
 def main(argv=None):
     parser = Usage3Parser(
         description="Diagnose git remote URLs, insteadOf rewrites and credential helpers."
@@ -774,13 +1077,27 @@ def main(argv=None):
                         help="remote to check (repeatable); defaults to all of them")
     parser.add_argument("--url", action="append", default=[],
                         help="diagnose an arbitrary URL (repeatable), no repository needed")
-    parser.add_argument("--quiet", action="store_true",
+    parser.add_argument("--probe", action="store_true",
+                        help="also run one non-interactive git ls-remote per remote and "
+                             "URL, and name the cause of a failure (contacts the remote)")
+    parser.add_argument("--probe-timeout", type=positive_int, default=20, metavar="SECONDS",
+                        help="seconds each --probe may take (default: 20)")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")
+    output.add_argument("--json", action="store_true",
+                        help="print one JSON object (exit code and every finding) "
+                             "instead of the report")
     args = parser.parse_args(argv)
 
     if args.quiet:
         with contextlib.redirect_stdout(io.StringIO()):
             return run_report(args)
+    if args.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = run_report(args)
+        print(render_json(os.path.basename(__file__), EVENTS, rc))
+        return rc
     return run_report(args)
 
 

@@ -7,9 +7,9 @@ Bootstrap and maintenance for a Linux machine — the counterpart of
 rather than a Mac.
 
 **Targets:** Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`) and Arch (`pacman`).
-The three scripts that install packages — `stay_fresh.sh`,
-`install_devtools.sh`, `packages.sh` — exit `2` on anything else and say what
-they detected, the same way the macOS scripts exit `2` off macOS. The two that
+The four scripts that install or remove packages — `stay_fresh.sh`,
+`install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh` — exit `2` on
+anything else and say what they detected, the same way the macOS scripts exit `2` off macOS. The two that
 read rather than install carry on: `disk_cleanup.sh` warns and skips package
 caches, `system_doctor.sh` prints a `skip` line and reports everything else.
 Every script exits `2` off Linux.
@@ -35,9 +35,14 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 - [`install_aliases.sh`](#install_aliasessh)
 - [`schedule_report.sh`](#schedule_reportsh)
 - [`disk_cleanup.sh`](#disk_cleanupsh)
+- [`kernel_cleanup.sh`](#kernel_cleanupsh)
 - [`net_doctor.sh`](#net_doctorsh)
+- [`listen_audit.sh`](#listen_auditsh)
 - [`sysctl_defaults.sh`](#sysctl_defaultssh)
+- [`swap_setup.sh`](#swap_setupsh)
 - [`tls_expiry.sh`](#tls_expirysh)
+- [`log_triage.sh`](#log_triagesh)
+- [`container_doctor.sh`](#container_doctorsh)
 - [`config_backup.sh`](#config_backupsh)
 - [`ssh_client_doctor.sh`](#ssh_client_doctorsh)
 - [Scoped runs and kernel checks](#scoped-runs-and-kernel-checks)
@@ -48,17 +53,22 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | --- | --- |
 | [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
-| [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps; never volumes |
+| [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps/rotated logs/unused images/old snaps; never volumes |
+| [`kernel_cleanup.sh`](kernel_cleanup.sh) | Remove old kernel packages; keeps the running kernel plus the newest `--keep` |
 | [`status.sh`](status.sh) | One-screen verdict. Selectable sections via `--only` / `--list-sections`. |
 | [`system_doctor.sh`](system_doctor.sh) | Read-only health report: disk, memory, clock, reboot, services, firewall, containers, load, taint |
-| [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, DNS, listening sockets |
-| [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd, accounts, network, file modes, host keys, updates, kernel controls |
-| [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes and IdentityFile paths; not `ssh -G` |
-| [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames |
+| [`net_doctor.sh`](net_doctor.sh) | Read-only network report: interfaces, default IPv4/IPv6 route, link errors and negotiation, DNS, listening sockets |
+| [`listen_audit.sh`](listen_audit.sh) | Read-only listening-port owners and scope; `--print` a baseline, `--baseline` to catch drift |
+| [`hardening_audit.sh`](hardening_audit.sh) | Read-only security audit: sshd settings and algorithms, accounts, network, file modes, host keys, updates, kernel controls |
+| [`ssh_client_doctor.sh`](ssh_client_doctor.sh) | Read-only `~/.ssh` modes, IdentityFile paths, key strength, known_hosts, authorized_keys, risky config, agent; not `ssh -G` |
+| [`tls_expiry.sh`](tls_expiry.sh) | Read-only leaf certificate expiry for named PEMs and hostnames; `--deep` name, chain and key checks |
+| [`container_doctor.sh`](container_doctor.sh) | Read-only Docker/Podman grading: restart loops, OOM kills, socket mounts, uncapped logs |
+| [`log_triage.sh`](log_triage.sh) | Read-only log summary since `--since`: kernel distress, noisiest identifiers, failed logins, repeats |
 | [`sysctl_defaults.sh`](sysctl_defaults.sh) | Report/apply/revert a short sysctl list (inotify watches, swappiness) |
-| [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set |
+| [`swap_setup.sh`](swap_setup.sh) | Report swap; `--create` or `--remove` a swapfile and its fstab line |
+| [`packages.sh`](packages.sh) | Capture and restore the explicitly-installed package set; list holds and autoremove orphans |
 | [`config_backup.sh`](config_backup.sh) | Dated tar of selected paths (default `/etc`); never a restore |
-| [`schedule_report.sh`](schedule_report.sh) | Read-only inventory of systemd timers and cron jobs |
+| [`schedule_report.sh`](schedule_report.sh) | Read-only inventory of systemd timers and cron jobs; `--failed` finds the broken ones |
 | [`cloud-init/kali-vm-init.yaml`](cloud-init/kali-vm-init.yaml) | First-boot configuration for a Kali red/blue lab VM; see the [runbook](cloud-init/README.md) |
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
 | [`install_aliases.sh`](install_aliases.sh) | Install or remove the `bash_aliases.sh` source block in `~/.bashrc` |
@@ -70,7 +80,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | Requirement | Notes |
 | --- | --- |
 | **Linux** | Every script here exits `2` on anything else. |
-| **One of `apt`, `dnf` or `pacman`** | Only the five scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Three of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other nine never ask. |
+| **One of `apt`, `dnf` or `pacman`** | Only the six scripts that read `/etc/os-release` care — see [Distro detection](#distro-detection). Four of them (`stay_fresh.sh`, `install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh`) exit `2` on a distribution they do not know; `disk_cleanup.sh` warns and skips package caches, and `system_doctor.sh` prints a `skip` line. The other thirteen never ask. |
 | **Bash 3.2 or newer** | These scripts are held to the same Bash 3.2 floor as the macOS package, so they also run on a box with an old `/bin/bash`. |
 | **`sudo`, or root** | Optional. Steps that need root are skipped with a warning when `sudo` is missing, and `--no-sudo` skips them deliberately. Running as root needs neither. |
 | **A systemd user manager** | Only for [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh), which exits `2` without one. `install --print-only` still prints the units anywhere. |
@@ -90,11 +100,13 @@ Everything that changes the machine previews first:
 ./stay_fresh.sh --dry-run
 ./install_devtools.sh --dry-run
 ./disk_cleanup.sh --dry-run
+./kernel_cleanup.sh --dry-run
 ./config_backup.sh --dry-run
 
 ./stay_fresh.sh --yes
 ./install_devtools.sh --yes --setup-shell
 ./disk_cleanup.sh --yes
+./kernel_cleanup.sh --yes
 ./config_backup.sh --yes
 
 # Run just the named groups:
@@ -108,6 +120,8 @@ Capture what a machine has, commit it, rebuild elsewhere:
 ./packages.sh dump          # writes packages.<manager>.txt
 ./packages.sh list          # stable inventory on stdout; writes nothing
 ./packages.sh diff          # what has drifted since
+./packages.sh holds         # held, version-locked or ignored: what upgrades skip
+./packages.sh orphans       # what autoremove would remove, before it does
 ./packages.sh install --dry-run
 ./packages.sh install --yes
 ```
@@ -118,12 +132,29 @@ Read the machine without touching it:
 ./status.sh                 # one-screen verdict
 ./system_doctor.sh          # is this machine well?
 ./net_doctor.sh             # is this machine reachable?
+./listen_audit.sh           # who owns each listening port?
 ./hardening_audit.sh        # is this machine safe?
 ./ssh_client_doctor.sh      # is ~/.ssh something ssh will actually use?
 ./tls_expiry.sh --file /etc/ssl/private/example.pem
+./log_triage.sh             # what has been going wrong lately?
+./container_doctor.sh       # which container is misbehaving or filling the disk?
 ./sysctl_defaults.sh        # current vs desired sysctl values
+./swap_setup.sh             # active swap, fstab entries, a suggested size
 ./schedule_report.sh        # what is scheduled to run?
 ```
+
+`holds` and `orphans` answer the two questions before maintenance: why did the
+upgrade skip nginx, and what will autoremove delete? Both are read-only, need
+no `sudo`, and print bare package names, one per line and sorted, with nothing
+else on stdout (a note, such as dnf's versionlock plugin being absent, goes to
+stderr), so they pipe like `list`. Empty output means none. `holds` reads
+`apt-mark showhold`, dnf's versionlock list plus `exclude=` in
+`/etc/dnf/dnf.conf`, or `IgnorePkg` in `/etc/pacman.conf`. `orphans` reads
+`apt-get -s autoremove` (a simulation), `dnf repoquery --unneeded` or
+`pacman -Qdtq`, whose exit `1` with no output means none. A failing package
+tool is exit `1`. For dnf, a failed `versionlock list` counts as the plugin
+being absent only when `dnf versionlock --help` fails too; otherwise it is a
+real error and `holds` exits `1` instead of reporting no locks.
 
 Aliases:
 
@@ -145,22 +176,27 @@ distinct slot — understanding which slot matters more than memorizing flags.
 | **Ambient** | `bash_aliases.sh` | Sourced on every interactive shell | your shell only — no disk writes |
 | **Recurring** | `stay_fresh.sh` | Weekly / on demand | packages, journal, caches, containers (never volumes) |
 | **Recurring** | `systemd/stay_fresh_timer.sh` | Install once, then it fires | user systemd units that run `stay_fresh.sh --yes --no-sudo` |
-| **Space** | `disk_cleanup.sh` | When `/` is full | age-filtered temp; opt-in trash/journal/caches/coredumps; never volumes |
+| **Space** | `disk_cleanup.sh` | When `/` is full | age-filtered temp; opt-in trash/journal/caches/coredumps/rotated logs; never volumes |
+| **Space** | `kernel_cleanup.sh` | When `/boot` is full or an upgrade fails for space | old kernel packages; keeps the running one plus `--keep`; never autoremoves |
 | **Copy** | `config_backup.sh` | Before editing `/etc` or upgrading | a dated tar under `--dest`; never writes back |
 | **Copy** | `packages.sh` | After a machine looks the way you want | a package list you can commit and restore |
-| **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
+| **Configure** | `sysctl_defaults.sh` | Once, then after a new IDE exhausts inotify; `--check` from cron | `/etc/sysctl.d/99-ops-toolbox.conf`; read-only unless `--apply`/`--revert` |
+| **Configure** | `swap_setup.sh` | Once on a box with no swap, before the first OOM kill | a swapfile and one marked `/etc/fstab` line; read-only unless `--create`/`--remove` |
 | **Diagnose** | `status.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `system_doctor.sh` | After bootstrap, or when something feels wrong | nothing — it only reads |
 | **Diagnose** | `net_doctor.sh` | When "the network is wrong" | nothing — it only reads |
-| **Diagnose** | `schedule_report.sh` | When something ran at 3am | nothing — it only reads |
+| **Diagnose** | `listen_audit.sh` | From cron against a committed baseline, or after an install | nothing — it only reads |
+| **Diagnose** | `schedule_report.sh` | When something ran at 3am, or `--failed` when something did not | nothing — it only reads |
 | **Diagnose** | `hardening_audit.sh` | Before trusting a machine with anything | nothing — it only reads |
 | **Diagnose** | `ssh_client_doctor.sh` | When `Permission denied (publickey)` and the key is on disk | nothing — it only reads |
 | **Diagnose** | `tls_expiry.sh` | Monthly, or from cron | nothing — it only reads |
+| **Diagnose** | `container_doctor.sh` | When a container host pages, or `/var/lib/docker` fills | nothing — it only reads |
+| **Diagnose** | `log_triage.sh` | After an incident, or on a box you have just been handed | nothing — it only reads |
 
 `stay_fresh.sh` assumes a supported package manager but degrades if optional
 tools (docker, snap, journalctl) are missing. The diagnose scripts never
 change the machine; `hardening_audit.sh` is the one whose exit code can gate
-a pipeline.
+a pipeline by default, and `schedule_report.sh --strict` joins it on request.
 
 ## Kali VM bootstrap
 
@@ -241,12 +277,12 @@ half lives in `install_devtools.sh` and GUI apps are left to you.
 
 ## Distro detection
 
-The five scripts that need a package manager — `disk_cleanup.sh`,
-`install_devtools.sh`, `packages.sh`, `stay_fresh.sh`, `system_doctor.sh` —
-read `/etc/os-release` and map `ID`/`ID_LIKE` onto one. The other nine never
-ask. The lookup is duplicated in each script rather than shared, for the
-reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a script has to work when
-copied on its own onto a box.
+The six scripts that need a package manager — `disk_cleanup.sh`,
+`install_devtools.sh`, `kernel_cleanup.sh`, `packages.sh`, `stay_fresh.sh`,
+`system_doctor.sh` — read `/etc/os-release` and map `ID`/`ID_LIKE` onto one.
+The other thirteen never ask. The lookup is duplicated in each script rather
+than shared, for the reason in [`CONTRIBUTING.md`](../CONTRIBUTING.md): a
+script has to work when copied on its own onto a box.
 
 It honours an `OS_RELEASE` override, which exists purely so the failure path is
 testable — a container cannot pretend to be Gentoo, so without that seam the
@@ -293,7 +329,7 @@ want:
 | Question | Is this machine **well**? | Is this machine **safe**? |
 | Output | A narrative report | Graded findings, each with its fix |
 | Firewall | Says which one is in charge | Grades "none" as a finding |
-| sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords |
+| sshd | Says whether it is installed and running | Grades `PermitRootLogin`, password auth, empty passwords, auth tries, forwarding, timeouts and weak algorithms |
 | Exit code | Never `1` — findings are to be read. Still `2` off Linux and `3` on bad usage | `1` at or above `--fail-on`, so it can gate a pipeline |
 
 The counterpart on the other side of the repository is
@@ -327,8 +363,11 @@ prints; there is no `--apply`.
 ./system_doctor.sh --quiet               # only the warnings
 ./system_doctor.sh --min-free 25         # warn below 25% free on /
 ./system_doctor.sh --min-memory 20       # warn below 20% available RAM
+./system_doctor.sh --max-psi 25          # warn when tasks stall over 25% of a minute
 ./system_doctor.sh --skip-containers     # don't wait on a wedged daemon
 ./system_doctor.sh --skip-units          # don't run 'systemctl --failed'
+./system_doctor.sh --skip-remote-mounts  # don't probe NFS/CIFS/sshfs mounts
+./system_doctor.sh --skip-smart          # don't ask smartctl for disk health
 sudo ./system_doctor.sh                  # firewall rules need root to read
 ```
 
@@ -339,15 +378,20 @@ whether the kernel is tainted),
 **packages** (which manager owns the box, how old its index is, and how many
 upgrades are pending — from the local index, no network),
 **disk** (free space and *inodes* on `/`, other block-device mounts below the
-threshold, and coredump file counts), **updates** (reboot pending), **services** (sshd,
+threshold, and coredump file counts), **storage** (filesystems the kernel
+remounted read-only, fstab mounts that are not mounted, degraded md arrays,
+SMART health as root, and network mounts that no longer answer within five
+seconds), **updates** (reboot pending), **services** (sshd,
 `systemctl --failed`, and processes still running old libraries), **journal**
 (error-level lines since boot, capped), **network** (which host
 firewall is active, global IPv4 and IPv6 addresses), **containers** (docker/podman counts,
 plus `system df` when the daemon answers — listed, never pruned), **load**
-(one-minute average per core), and **memory** (available RAM, swap
-pressure, and OOM kills this boot).
+(one-minute average per core), **pressure** (CPU, memory and I/O stall time
+from `/proc/pressure`, file handles, the connection tracking table, thread and
+PID headroom, and zombie or uninterruptible processes), and **memory**
+(available RAM, swap pressure, and OOM kills this boot).
 
-Three of those exist because the ordinary tools hide them:
+Five of those exist because the ordinary tools hide them:
 
 - **Inodes.** A filesystem out of inodes looks completely healthy in `df -h`,
   and "no space left on device" with gigabytes free is a confusing hour the
@@ -357,6 +401,29 @@ Three of those exist because the ordinary tools hide them:
 - **A container engine that is installed but unreachable.** A stopped daemon
   and a user who is not in the `docker` group both look exactly like "no
   Docker here" until you try to use it.
+- **A read-only remount, a missing mount, a degraded array.** After an I/O
+  error the kernel remounts the filesystem read-only and everything keeps
+  working until the next write; an fstab mount that failed at boot leaves its
+  data on the root filesystem; an md array runs on one disk without a word.
+  None of that shows in `df`. A mount that fstab declares `ro`, a bind mounted
+  `:ro` and the ostree `/sysroot` are read-only on purpose and are not
+  flagged. The evidence is fstab saying read-write while the live mount is
+  read-only; the `errors=remount-ro` option is a policy, not an error, so a
+  read-only mount with no fstab entry is not flagged. A hung NFS or CIFS
+  mount blocks `df` itself, so each one is probed with a five-second `stat`
+  that `--skip-remote-mounts` turns off. That flag also keeps the disk
+  section's `df` local (`-l`), so a full remote filesystem is not reported
+  with it either. `PROC_DIR` and `FSTAB` point the
+  section at other files; the tests use them.
+- **Stalls, not load.** Load average counts tasks waiting on disk as busy and
+  never sees a memory stall, so it is high on an idle box with a slow disk and
+  low on one that is thrashing. Pressure stall information (Linux 4.20+) is the
+  kernel's direct answer: the share of the last minute in which tasks waited
+  for CPU, memory or I/O. It warns at `--max-psi` (10%) of the minute, or half
+  that when every task stalled. Exhausted file handles, a full conntrack table
+  (packets dropped without a word), thread or PID exhaustion and a pile of
+  processes in D state are the other "everything is slow, errors are random"
+  causes, and each is one line here.
 
 Warnings do not change the exit code — it is `0` unless the machine is not
 Linux (`2`) or you mistyped a flag (`3`). Something that fails a pipeline is
@@ -460,10 +527,40 @@ none of these.
 ```bash
 ./schedule_report.sh
 ./schedule_report.sh --quiet
+./schedule_report.sh --failed                 # which scheduled thing is broken?
+./schedule_report.sh --failed --strict        # the same, as a gate: exit 1 on a warning
+./schedule_report.sh --failed --cron-dir /srv/cron.d
 ```
 
-Warnings do not change the exit code. For the stay_fresh timer itself,
+Without `--strict`, warnings do not change the exit code, and with none of the
+new flags the output is exactly what it was. For the stay_fresh timer itself,
 use [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh) `status`.
+
+`--failed` adds a `failed` group after `cron.d`, for the 3am question: which
+scheduled thing is broken? A timer whose service failed on its last run looks
+perfectly normal in `list-timers`, so for the system and the user manager it
+maps each timer to the unit it activates (`systemctl show -p Unit`) and warns
+when that unit is in `systemctl list-units --state=failed`, with
+`journalctl -u SERVICE -n 50 --no-pager` (`--user` for user units) as the fix.
+A `systemctl` that cannot answer, as in a container, is a `skip`, never a
+warning. For cron it reads the user crontab and every file in the cron
+directory (skipping `.placeholder`, `*.dpkg-*` and `*.rpm*`), takes the first
+word of each job's command (after five time fields or an `@keyword`, plus the
+user field in `cron.d`), and warns when that is an absolute path that is not an
+executable file: the job an upgrade quietly orphaned. A cron file that cannot
+be read (a `0600` drop-in seen by a non-root user) is a warning, and the
+summary line then says how many files were skipped instead of claiming that
+every path resolves. A cron directory that cannot be listed is the same: a
+warning and a skipped, counted directory, never an empty one. Comments, blank
+lines and `NAME=value` lines are not jobs, and a word without a slash is not
+judged, since it may be a builtin or a `PATH` lookup. Nothing is run,
+sourced, started, stopped or reset.
+
+`--strict` exits `1` when any warning was printed, with or without `--failed`,
+so lingering being off counts too. `--cron-dir DIR` replaces `/etc/cron.d` for
+both the `cron.d` group and the check, which is also how the tests point it at
+a fixture. Exit codes: `0` report printed, `1` `--strict` and at least one
+warning, `2` not Linux, `3` bad usage.
 
 ## `disk_cleanup.sh`
 
@@ -479,6 +576,10 @@ behind an `--include-*` flag:
 ./disk_cleanup.sh --dry-run --include-trash --include-dev-caches
 ./disk_cleanup.sh --yes --include-journal --include-pkg-cache --no-sudo
 ./disk_cleanup.sh --dry-run --include-coredumps
+./disk_cleanup.sh --dry-run --include-logs --days 14
+./disk_cleanup.sh --dry-run --include-docker-images --days 30
+sudo ./disk_cleanup.sh --yes --include-snap-revisions
+sudo ./disk_cleanup.sh --yes --include-journal --journal-max-size 500M
 ```
 
 A real run requires `--yes`, the same gate `install_devtools.sh` uses.
@@ -498,6 +599,101 @@ user-owned targets at a home directory other than the caller's, and an
 effect: that variable describes the caller's cache, and honouring both at once
 deleted files outside the directory `--home` named.
 
+`--include-logs` removes rotated logs older than `--days` under `/var/log`, the
+usual space hog on a server that is not journald-only. A file qualifies only when
+its name proves it was rotated: `*.gz`, `*.xz`, `*.bz2`, `*.zst`, a numeric
+suffix (`*.1` to `*.99`), `*.old`, logrotate's `dateext` (`syslog-20260101`) or
+`*.log-<digits>` (digits only, so `service.log-2-current` stays). An active
+`*.log`, `syslog` or `messages` never matches, and neither do numbered active
+logs such as `Xorg.0.log`. Login records (`wtmp`, `btmp`, `lastlog`, `faillog`,
+`utmp` and their rotations) are never touched, anything below a directory
+named `journal` or `private` is pruned from the walk, symlinks are not
+followed and `-xdev` keeps it on one filesystem. Nothing is truncated.
+`--days 0` drops the age filter but not the name filter. `--log-dir DIR`
+replaces `/var/log` (repeatable, `/` refused in every spelling) and needs
+`--include-logs`. Root-owned logs go through the same `sudo` retry as
+coredumps; under `--no-sudo` a log in a directory this run cannot write is
+counted as skipped, not failed. As a non-root user the walk runs under `sudo`
+only if `sudo -n true` succeeds (checked once, never prompting, so `--dry-run`
+stays silent); otherwise it walks unprivileged, warns that unreadable
+subdirectories were skipped, and still reports every log it can read.
+
+`--journal-max-size SZ` adds `journalctl --vacuum-size=SZ` after the age vacuum
+of `--include-journal`, for when you think in "cap it at 500M" rather than in
+days. `SZ` is a number with an optional `K`, `M`, `G` or `T`; anything else, or
+the flag without `--include-journal`, is exit `3`. journald's own vacuum is the
+only thing that deletes journal files.
+
+`--include-docker-images` is for CI runners and build hosts, where the space
+goes to tagged images created long ago and no longer used. `--include-docker`
+removes only dangling images, stopped containers and build cache; this runs
+`docker image prune -a -f --filter until=<days*24>h` when `docker info` answers,
+and the same through `podman` when it is installed, so only images created
+more than `--days` ago with no container referencing them go (the engine
+refuses the rest). The `until` filter reads an image's creation time, not when
+it was pulled or last used: an old image pulled today is still eligible, and
+nothing here spares a fresh pull.
+`--days 0` drops the `until` filter, with a warning. The dry run prints the
+command and the read-only `docker system df` beneath it. Volumes are never
+passed to any prune; re-pulling an image is a cost, not a loss, which is why
+this is its own flag. Podman keeps separate rootless and rootful image stores,
+and the run cleans only the store of the user running it, the same caveat the
+low-disk runbook carries for `--include-docker`.
+
+`--include-snap-revisions` removes the revisions snapd keeps marked `disabled`
+in `snap list --all`, one `snap remove NAME --revision=REV` each through the same
+root handling as the journal (skipped under `--no-sudo`, previewed by
+`--dry-run`). The active revision is never named. Without `snap` it says so and
+carries on; afterwards it suggests `snap set system refresh.retain=2` as text.
+
+## `kernel_cleanup.sh`
+
+A `/boot` full of old kernels is the classic reason an upgrade fails half-way
+through, and `apt-get autoremove` is not a reliable pruner: a kernel installed
+by hand, or marked manual by an installer, is never auto-removable. This names
+the old kernels and removes them deliberately.
+
+```bash
+./kernel_cleanup.sh --list                 # running / keep / remove, read-only
+./kernel_cleanup.sh --dry-run              # the exact removal, written nowhere
+sudo ./kernel_cleanup.sh --yes
+./kernel_cleanup.sh --dry-run --keep 1     # keep only one besides the running kernel
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--list` | Table of installed kernels marked `running`, `keep` or `remove`, then `df -h /boot` when `/boot` is its own filesystem. Read-only; needs no `--yes`. |
+| `--keep N` | Newest kernels to keep besides the running one, `1` to `20` (default `2`). `0` is refused. |
+| `--dry-run` | Print the removal command and the space it would free; write nothing. |
+| `--yes`, `-y` | Required for a run that removes anything. |
+| `--no-sudo` | Skip the removal with a warning instead of escalating. |
+| `--release VER` | Treat `VER` as the running kernel instead of `uname -r`. For a chroot, and the seam the tests use. |
+
+The keep set is the running kernel, the newest `--keep` kernels besides it and
+the newest installed one, and at least two kernels always stay installed: when
+the running kernel is not an installed package and `--keep 1` leaves only the
+newest, the next-newest is kept too, with a warning. Releases are ordered by
+version (`sort -V`), so `6.1.0-9` sorts before `6.1.0-10`. Only versioned
+packages are candidates; metapackages such as `linux-image-amd64`,
+`linux-image-generic` or an unversioned `kernel` never match. When `uname -r`
+names a kernel that is not installed — a container or a chroot — the script
+says so and keeps the newest instead. It refuses (exit `2`) rather than
+guesses when it cannot determine the running release at all.
+
+On apt each old release expands to whichever of `linux-image-REL`,
+`linux-image-unsigned-REL`, `linux-modules-REL`, `linux-modules-extra-REL` and
+`linux-headers-REL` are installed, removed in one `apt-get purge --yes`. On dnf
+the versioned `kernel`, `kernel-core`, `kernel-modules`, `kernel-modules-core`,
+`kernel-modules-extra` and `kernel-devel` packages go in one `dnf remove -y`.
+pacman keeps one copy of each kernel package, so the script says there is
+nothing to prune and exits `0`. It never runs autoremove, never reboots and never
+edits the bootloader: the package manager's own removal hooks update GRUB and
+the initramfs. No log file is written.
+
+Exit codes: `0` done or nothing to remove, `1` the removal failed, `2` not Linux,
+an unsupported distribution, the package tool missing or failing, or the running
+kernel unknown, `3` bad usage or a real run without `--yes`.
+
 ## `net_doctor.sh`
 
 `system_doctor.sh` already says which host firewall is in charge and lists
@@ -513,12 +709,75 @@ connectivity probe.
 ./net_doctor.sh --quiet
 ./net_doctor.sh --probe example.com
 ./net_doctor.sh --skip-listen
+./net_doctor.sh --skip-links
 ```
+
+The **links** section is what makes "the network is slow or flaky" concrete,
+read from sysfs with no extra tool or privilege. For each physical NIC (one
+with a device behind it; veth, bridges, tunnels and WireGuard are counted and
+left alone) it warns when errors and drops exceed 0.1% of the packets since
+boot and number at least 100, so a quiet link's handful never fires; on a
+link that is up it warns on half duplex and on a speed of 100 Mb/s or less,
+and it warns on ten or more carrier changes. It also reports a bond with a
+slave down or no active slave, the uplink's MTU when it is below 1500, and the
+default gateway's neighbour entry, warning when ARP or ND to it has failed.
+`ethtool` appears only in the hints. `SYS_CLASS_NET` and `PROC_NET_BONDING`
+point it at other directories; the tests use them.
 
 It changes nothing, and warnings do not change the exit code — a missing
 default route is something to read, not a gate. `--probe` is off by
 default so a container with no uplink does not hang the report. Use
-`hardening_audit.sh --only network` when you want findings.
+`hardening_audit.sh --only network` when you want findings, and
+`listen_audit.sh` when you want to know which process owns each port.
+
+## `listen_audit.sh`
+
+`net_doctor.sh` prints the raw `ss -tuln` table and `hardening_audit.sh` counts
+the sockets bound to every interface. This answers the questions after that:
+which process owns each port, whether it answers on loopback or to the
+network, and whether the set has changed since you last looked.
+
+```bash
+./listen_audit.sh                              # the table
+./listen_audit.sh --public-only
+sudo ./listen_audit.sh                         # process names of other users' sockets need root
+sudo ./listen_audit.sh --print > /etc/listeners.baseline
+sudo ./listen_audit.sh --baseline /etc/listeners.baseline
+./listen_audit.sh --allow 22,80,443            # no file: these ports, any process
+./listen_audit.sh --baseline FILE --fail-on any
+```
+
+The table has one row per listener: protocol, port, scope (`loopback`,
+`wildcard`, or `other` for a specific address), the owning process and the
+addresses it is bound to. IPv4 and IPv6 twins of the same socket are folded
+into one row. Without root a process ss cannot see is shown as `?`.
+
+`--print` writes the public listeners (all of them with `--all`) as a
+baseline, one `proto/port/process` per line, sorted, with no pids, addresses
+or date, so the same machine prints the same bytes and a diff means a change.
+It goes to stdout; the script never writes the file. A baseline line may use
+a port range (`tcp/8000-8100/*`), `*` as the process to match any, and `#`
+comments.
+
+`--baseline FILE` and `--allow PORTS` compare the live public listeners
+(every listener with `--all`) with what is expected. A listener nothing
+covers is a `NEW listener` FAIL; a single-port baseline entry that nothing
+answers is an `expected listener ... is not listening` warning. Loopback
+listeners satisfy neither side without `--all`, so a service rebound from
+`0.0.0.0` to `127.0.0.1` reads as gone. When a process
+name is hidden, that row is matched on protocol and port only. Both options
+together apply both.
+
+`--fail-on new` (the default once a baseline or allow-list is given) exits `1`
+on a new listener, `any` also on a gone one, `never` not at all. Without
+either option the script is a report and exits `0`. Exit codes: `0` no drift
+at or above `--fail-on`, `1` drift, `2` not Linux or `ss` missing (usage errors
+are answered first), `3` usage, an unreadable `--baseline`, a bad line in it,
+or a bad `--allow` port.
+
+The only command it runs is `ss -tulnp`. The baseline file is read line by
+line and never evaluated, and process names are stripped of control
+characters before they are printed.
 
 ## `sysctl_defaults.sh`
 
@@ -535,6 +794,8 @@ RAM. Kernel networking tweaks and container-host `max_map_count` stay out.
 ```bash
 ./sysctl_defaults.sh
 ./sysctl_defaults.sh --only inotify
+./sysctl_defaults.sh --check                       # exit 1 unless live and persisted match
+./sysctl_defaults.sh --check --only inotify || echo drift
 ./sysctl_defaults.sh --apply --dry-run
 sudo ./sysctl_defaults.sh --apply
 sudo ./sysctl_defaults.sh --revert
@@ -546,10 +807,105 @@ sudo ./sysctl_defaults.sh --revert-from /root/sysctl.before
 and `--revert-from PATH` restores from a named one instead of the last apply's.
 Both exist so a revert can be run from a machine image or a runbook that keeps
 the backup alongside its own state.
+The backup is written, and checked to exist and be non-empty, before anything
+else: if it cannot be written (a missing or unwritable directory, a full disk)
+`--apply` exits `1` with the drop-in directory, the drop-in and every live
+value untouched.
 
 `SYSCTL_D` and `PROC_SYS` are honoured so the apply path is testable
 without writing into `/etc`. `--apply` without root exits `2`; preview
 with `--dry-run` instead.
+
+The report always exits `0`, so it cannot gate anything. `--check` can: it is
+read-only, needs no root, honours `--only`, and gives each managed key one word,
+the first that applies:
+
+| Word | Meaning |
+| --- | --- |
+| `SKIP` | The live value is unreadable, or a config file that could override the key is (see below). Never a pass or a failure. |
+| `DRIFT` | The live value is not the desired one. |
+| `UNPERSISTED` | Live is right, but `99-ops-toolbox.conf` does not set the key and no other `sysctl.d` file or `/etc/sysctl.conf` sets it to the wanted value, so the next reboot returns it to the default (a `sysctl -w` by hand). A value another file persists counts as `OK`. |
+| `STALE` | The drop-in sets a different value than this script wants. |
+| `SHADOWED` | A `*.conf` read after ours (a name that sorts later, such as `99-zz.conf`, or `/etc/sysctl.conf`) sets the key to something else; the file is named. |
+| `OK` | Live, persisted (by the drop-in or another file) and effective all match. |
+
+A `*.conf` file this user cannot read (a `0600` drop-in seen by a non-root
+user) sets nothing as far as `--check` can tell, and its contents are unknown.
+Only a file read after the one that decides a key can change the verdict, so
+a key that would be `OK` or `UNPERSISTED` is a `SKIP` naming the unreadable
+file when one is read after the file that last sets the key (when no file
+sets it, any unreadable file counts). Run as root to get a verdict. Such a
+`SKIP` does not fail `--check`.
+
+`UNPERSISTED` and `STALE` print `sudo ./sysctl_defaults.sh --apply` as the fix,
+as text. A summary line counts each word. `--check` exits `1` on any `DRIFT`,
+`UNPERSISTED`, `STALE` or `SHADOWED`, and `0` otherwise, including when every
+key was unreadable (it says so). It is a separate mode: with `--apply`,
+`--revert`, `--backup-file` or `--revert-from` it is exit `3`, and `--dry-run`
+is accepted and ignored as for the report. Against the real `/etc/sysctl.d` it
+also reads the other systemd-sysctl directories (`/run`, `/usr/local/lib`,
+`/usr/lib`, `/lib`) and `/etc/sysctl.conf`, with systemd's precedence: the
+first directory holding a file name wins, and a symlink to `/dev/null` masks
+that name below it. Under a `SYSCTL_D` override it reads only that directory,
+so the tests stay hermetic, unless `SYSCTL_EXTRA_DIRS` (colon-separated, highest
+precedence first) names more. Use it from cron or a CI image
+build: `./sysctl_defaults.sh --check --only inotify || echo drift`.
+
+## `swap_setup.sh`
+
+Cloud droplets and fresh VMs often ship with no swap, and the first OOM kill
+sends someone to a half-remembered `fallocate`, `mkswap`, `swapon` and fstab
+recipe. `system_doctor.sh` says swap is missing and `sysctl_defaults.sh` tunes
+`vm.swappiness`; this is the step between them.
+
+```bash
+./swap_setup.sh                                   # report only
+./swap_setup.sh --create --dry-run                # every step, run nowhere
+sudo ./swap_setup.sh --create --size 4G --yes     # /swapfile, enabled and in fstab
+sudo ./swap_setup.sh --remove --yes
+```
+
+With no mode flag it is a read-only report: active swap, the swap lines in
+fstab, `vm.swappiness`, total RAM and a suggested size (twice RAM up to 2G,
+equal to RAM up to 8G, then 4G). No swap at all is reported, not failed.
+
+| Option | Meaning |
+| --- | --- |
+| `--create` | `fallocate` (or `dd` where that fails), `chmod 600`, `mkswap`, `swapon`, then one fstab line |
+| `--remove` | `swapoff`, drop the fstab line this script added, delete the file |
+| `--size SIZE` | `128M` to `64G`, like `512M` or `4G` (default `2G`); `--create` only |
+| `--path FILE` | Absolute swapfile path (default `/swapfile`); never `/`, `/proc`, `/sys` or `/dev`, and no whitespace, control characters or backslashes (exit 3), since the path is an fstab field; `--create` refuses a parent directory others can write to, or any symlink in the path (exit 2), and a symlink at the path itself (exit 4) |
+| `--fstab FILE` | The fstab to read and edit (default `/etc/fstab`) |
+| `--force` | `--create` even though swap is already active |
+| `--dry-run` | Print every step; write nothing |
+| `--yes`, `-y` | Required for `--create` or `--remove` to change anything |
+
+`--create` refuses an existing file (it never reuses or overwrites one), a
+machine that already has active swap unless `--force`, and a directory on
+`tmpfs`, `ramfs`, NFS, CIFS or ZFS; on btrfs it points at
+`btrfs filesystem mkswapfile`. It needs the size plus 10% free. The file is mode
+`600` from the moment it exists, because swap holds memory pages, and if any step
+before `swapon` fails the file it just created is removed. The fstab line is
+`FILE none swap sw 0 0 # ops-toolbox swapfile`; it is written only when no line
+already names the file, after a copy to `FSTAB.ops-toolbox.<timestamp>.bak`
+(an existing backup is never overwritten), into a temporary file beside fstab
+that is renamed over it, so a crash leaves the old fstab or the new one. If
+`--fstab` is a symlink, the link is kept and its target is replaced; the backup
+is named after the target (`TARGET.ops-toolbox.<timestamp>.bak`, not after the
+link) and the temporary file sits beside the target too.
+
+`--remove` accepts only a regular file that is active or in fstab, and removes
+only the exact line `--create` wrote; a line somebody else wrote for the same
+file is reported and left alone, with the file. It never enables swap on a device
+or partition and never sets `vm.swappiness`.
+
+Exit codes: `0` done or report printed, `1` a step failed or not enough space,
+`2` not Linux, not root (preview with `--dry-run`), `mkswap`/`swapon` missing,
+an unsupported filesystem, a parent directory writable by others or owned by
+another user, or a symlink in the path, `3` bad usage or a change without
+`--yes`, `4` nothing to do: the file exists (a symlink at the path counts),
+swap is already active, nothing to remove, or
+the fstab line is not this script's.
 
 ## `tls_expiry.sh`
 
@@ -566,12 +922,133 @@ Name every PEM or hostname you actually serve:
 ./tls_expiry.sh --file '/etc/letsencrypt/live/*/fullchain.pem'
 ./tls_expiry.sh --host example.com --host example.com:8443
 ./tls_expiry.sh --file ./leaf.pem --days 14 --fail-on warn
+./tls_expiry.sh --hosts-file /etc/tls-endpoints.txt --deep
+./tls_expiry.sh --file ./leaf.pem --check-host www.example.com
 ```
 
 `--fail-on expired` (the default) exits `1` only when a cert is already dead;
 `--fail-on warn` also fails inside the window, so a cron job can page before
 clients do. Missing `openssl` is exit `2`; `--help` and a missing `--file`
 still work without it.
+
+Expiry is half of a certificate outage; the other half is a certificate that
+is valid and wrong. `--check-host NAME` fails when the certificate does not
+cover `NAME` (`-checkhost`, or `-checkip` for an address). `--deep` adds the
+rest: the name check for every `--host` target (its own name unless
+`--check-host` overrides it), the chain as the handshake verified it against
+the system trust store (a self-signed one warns; an expired one is the expiry
+check's finding and is not counted twice). When no issuer is found, the chain
+fails as incomplete ("serve fullchain.pem") only when that is provable: the
+server sent no CA certificate at all and the issuer of the last certificate it
+sent is not in the trust store. Otherwise, for example when the intermediate
+was sent and the private root is simply not on this machine, it warns "issuer
+not trusted locally: private CA or missing intermediate"; `--cafile FILE`
+supplies that root and replaces system trust: both the handshake
+(`openssl s_client`) and the missing-intermediate probe (`openssl verify`)
+are given `-no-CApath` and `-no-CAstore` when the local openssl lists them
+(`-no-CAstore` is OpenSSL 3.0+). When this openssl cannot drop its default
+trust sources, the output says system trust sources may still apply.
+The checks also cover a self-signed issuer on a `--file` target, the
+key size against `--min-key-bits` (2048), the EC curve, and MD5 or SHA-1
+signatures.
+The chain comes from the same single handshake the expiry check makes.
+`--hosts-file FILE` reads one `HOST[:PORT]` per line, with `#` comments; an
+unreadable file is exit `3` before anything else runs. An IPv6 address is
+written in brackets, `[2001:db8::1]` or `[2001:db8::1]:8443` (port 443 when
+omitted); an unbracketed one is refused as ambiguous.
+
+With the default `--fail-on expired`, a FAIL from these checks (wrong name,
+provably missing intermediate, short key, weak signature) exits `1` too, and a
+warning (self-signed, issuer not trusted locally, unusual curve) exits `1`
+only with `--fail-on warn`.
+
+## `container_doctor.sh`
+
+`system_doctor.sh` counts containers and prints `system df`. The things that
+page somebody are not in that count: a container in a restart loop, one the
+kernel OOM-killed, an unhealthy healthcheck, a `json-file` log with no size cap
+filling `/var/lib/docker`, a privileged container, or one with the engine
+socket mounted, which is root on the host by another name. This grades them,
+one `inspect` per container, and prints the command to look closer or the
+change to make.
+
+```bash
+./container_doctor.sh                       # docker, or podman if docker does not answer
+./container_doctor.sh --engine podman
+./container_doctor.sh --only state,logs
+./container_doctor.sh --restart-threshold 5 --log-warn-mb 1024
+sudo ./container_doctor.sh                  # log files under /var/lib/docker need root to size
+./container_doctor.sh --fail-on fail        # exit 1 on any FAIL, for cron or CI
+```
+
+| Group | Graded |
+| --- | --- |
+| `state` | restarting, or at least `--restart-threshold` restarts (warn); OOM-killed (FAIL); unhealthy healthcheck (FAIL); exited non-zero with no restart policy, or under `on-failure:N` with its N restarts used up (warn) |
+| `security` | privileged (warn); `docker.sock` or `podman.sock` mounted (FAIL); host network and containers with no `USER` (info) |
+| `resources` | running containers with no memory limit (info, up to five named) |
+| `logs` | `json-file` with no `max-size` in that container's own `LogConfig` (warn; a `daemon.json` cap reaches only containers created after it was set); a log at or above `--log-warn-mb` MiB (FAIL) |
+| `images` | dangling images and the `system df` image row (info); containers on `latest` or an untagged image (info) |
+
+It changes nothing. The engine verbs it runs are `info`, `version`, `ps`,
+`inspect`, `images` and `system df`, each under `timeout 10` when timeout(1)
+exists, so a wedged daemon cannot hang it. Fixes such as the `daemon.json`
+`log-opts` block are printed, never written; the daemon file is only read
+(`DOCKER_DAEMON_JSON` points the check at another file). Container names and
+image strings have control characters stripped before they are printed.
+Neither engine installed is a `skip`; installed but not answering is a `warn`
+with the two usual causes. Cleaning up is a separate, previewed step:
+`disk_cleanup.sh --dry-run --include-docker`.
+
+`--fail-on` defaults to `never`, so like `system_doctor.sh` it reads rather
+than gates. Exit codes: `0` report printed, `1` findings at or above
+`--fail-on`, `2` not Linux, `3` usage, `4` `--only` selected nothing.
+
+## `log_triage.sh`
+
+`system_doctor.sh` says whether the machine is well now, and shows at most
+twenty raw error lines since boot. This is the history question that comes
+next: what has been breaking, who is knocking, and what the kernel complained
+about, grouped over a window instead of dumped.
+
+```bash
+./log_triage.sh                          # the last 24 hours
+./log_triage.sh --since "2 days ago" --top 10
+./log_triage.sh --only kernel,auth
+./log_triage.sh --list-sections
+sudo ./log_triage.sh                     # the system journal needs root or the adm/systemd-journal group
+./log_triage.sh --fail-on warn           # exit 1 when anything warned
+```
+
+Four sections, each selectable with `--only`:
+
+- **kernel** counts the kernel's own distress signals by class (OOM kills,
+  segfaults and protection faults, storage I/O errors, filesystem errors and
+  read-only remounts, hung tasks and soft lockups, machine-check and EDAC
+  hardware errors, link drops), shows the first line of each and prints the
+  `journalctl -k -g` that lists the rest. Without a readable journal it falls
+  back to `dmesg`, which covers everything since boot.
+- **units** ranks the syslog identifiers that logged the most error-level
+  lines, and warns on any with fifty or more.
+- **auth** counts failed SSH logins, groups them by source address, names the
+  first three invalid user names tried, counts accepted logins and failed
+  `sudo`, and warns at twenty failures or ten from one address. It reads the
+  journal (`ssh` and `sshd` units, the `sudo` identifier) and falls back to
+  `/var/log/auth.log` or `/var/log/secure` when the journal holds none, since
+  rsyslog copies the same lines into both. `AUTH_LOG` names a file to read as
+  well.
+- **repeats** lists the most repeated warning-level messages, with hex and
+  digit runs folded so a message with a changing counter counts as one.
+
+It writes nothing and runs nothing but `journalctl`, `dmesg` and text tools.
+Every section prints a bounded number of lines whatever the log holds, log
+text has its control characters stripped before it is printed, and
+authentication lines are reduced to counts, addresses and names: a password
+never reaches the report. `--since` takes what `journalctl --since` reads,
+held to letters, digits, spaces and `: . + -` and refused when it starts with
+a dash, so it can never become a journalctl option.
+
+Exit codes: `0` report printed (warnings do not change it), `1` warnings with
+`--fail-on warn`, `2` not Linux, `3` usage, `4` `--only` selected nothing.
 
 ## `config_backup.sh`
 
@@ -584,8 +1061,11 @@ copy, not a restore: it never writes back into the paths it archives.
 ./config_backup.sh --dry-run
 ./config_backup.sh --yes
 ./config_backup.sh --list
+./config_backup.sh --diff                  # what changed under /etc since the newest archive
 ./config_backup.sh --yes --paths /etc/ssh,/etc/nginx --dest ~/ops-toolbox-backups --keep 5
 ./config_backup.sh --yes --prefix nginx-pre-upgrade
+./config_backup.sh --yes --exclude-secrets --prefix shareable
+./config_backup.sh --yes --paths /etc/nginx --exclude '*.key' --exclude 'etc/nginx/ssl'
 ```
 
 `--prefix NAME` replaces `config` in the archive name, which is what `--keep`
@@ -596,10 +1076,55 @@ file) and writes nothing. `--keep 0` disables rotation. Archives land in
 `~/ops-toolbox-backups` unless `--dest` says otherwise. `--paths` must be
 absolute; `/` is refused.
 
+An archive never crosses into another filesystem mounted below a path (tar
+`--one-file-system`), the same boundary `--diff` uses for its new-file scan
+(`find -xdev`), so a nested mount is neither archived nor compared. Name the
+mount in `--paths` to include it.
+
 The archive is created mode `0600`, whatever umask the caller had. The default
 source is `/etc`, and a run that can read all of it is a run with `shadow`, the
 sshd host keys and `sudoers` in the tarball. `--dest` keeps the mode it already
 has: the secret is the file, not the directory holding it.
+
+`--exclude PATTERN` (repeatable) and `--exclude-secrets` leave members out, for
+an archive you mean to attach to a ticket, hand to a colleague or keep on a
+shared disk. Patterns are GNU tar exclusion globs matched against the member
+name, which is relative to `/` because the script runs `tar -C /`:
+`etc/ssl/private`, `etc/shadow*`, `*.key`. A `*` also matches `/`, and a
+pattern can match from any `/` in the name, not only the start. Each pattern is
+one `--exclude=` argument to tar, never a string handed to a shell. An empty
+pattern, one with a newline and one with a leading `/` (it would silently match
+nothing) are exit `3`. `--exclude-secrets` adds a fixed list:
+
+| Pattern | Why |
+| --- | --- |
+| `etc/shadow*`, `etc/gshadow*` | password and group password hashes |
+| `etc/security/opasswd` | previous password hashes |
+| `etc/ssh/ssh_host_*_key` | SSH host private keys (the `.pub` files stay) |
+| `etc/ssl/private` | TLS private keys |
+| `etc/*-` | the distribution's `passwd-`, `shadow-`, `group-` backup copies |
+
+It stays that short on purpose, so nobody believes it makes an archive safe to
+publish: application secrets, `*.key` files elsewhere, `sudoers` and anything
+under a name it does not list are still archived. Without it, a default run
+still carries every secret in `/etc`. An excluded path is not a missing one, so
+it never makes a `*.partial.tar.gz`, and an unreadable file that is excluded no
+longer turns a non-root run into a partial one. If the patterns leave nothing
+at all, or only the exclusion record below and bare directory entries, the
+staged archive fails validation, nothing is published and the run exits `1`.
+The `--exclude-secrets` patterns count as exclusions here, so the message
+blames "the exclusions" for either flag; only a run with neither says the
+sources contain no files to back up.
+`--dry-run` prints each `would exclude:` line, and both flags are refused with
+`--list`.
+
+The exclusions are recorded in the archive, as a small member
+`.config_backup/excludes` (two `#` header lines, one of them saying whether
+`--exclude-secrets` was on, then one pattern per line, the preset expanded), so
+`--diff` can leave the same files out of its new-file scan. An archive made
+with no exclusions has no such member. A pattern that would also match the
+member itself (for example `*config_backup*`) fails the run, and a pattern
+starting with `#` followed by a space is exit `3`.
 
 Each run creates a private staging directory in `--dest`, validates the gzip
 stream and a nonempty tar member listing, and publishes a unique timestamped
@@ -620,6 +1145,43 @@ a partial run rotates only partial archives, preserving every complete copy.
 `--keep 0` retains all generations. `--list` includes both kinds, with the
 filename identifying a partial backup.
 
+`--diff [FILE]` answers "what did I, a package or a configuration tool change
+since the last backup?" It compares FILE, or the newest `PREFIX-*.tar.gz` in
+`--dest`, with the live tree using GNU `tar --diff`, which extracts nothing, and
+prints one line per finding:
+
+```text
+[info] comparing /root/ops-toolbox-backups/config-20261021-101500-AbC123.tar.gz with the live tree
+  CHANGED /etc/ssh/sshd_config (Mod time differs, Size differs)
+  GONE    /etc/foo.conf
+  NEW     /etc/bar.conf
+  SKIP    /etc/shadow (unreadable; rerun with sudo)
+1 changed, 1 gone, 1 new, 1 skipped
+[info] restore one file with: tar -xzf /root/ops-toolbox-backups/config-20261021-101500-AbC123.tar.gz -C / etc/ssh/sshd_config
+```
+
+`CHANGED` carries tar's reasons (size, contents, mode, owner, symlink target or
+mtime), `GONE` is in the archive but not on disk, `NEW` is on disk under
+`--paths` but not in the archive, and `SKIP` could not be read, or is a subtree
+the new-file scan could not enter (so `NEW` may be incomplete). A `SKIP` makes
+the run exit `1` and never counts as clean. A directory whose only change is
+its mtime is left out: adding or deleting a file changes its parent's, which
+the `NEW` or `GONE` line already says. `--paths` narrows the comparison
+(default `/etc`; `/` is refused), and the newest archive is picked within
+`--prefix`, so an archive written under another prefix needs `--prefix` too.
+The restore command is printed, never run, which keeps this a copy and not a
+restore. `--diff` needs no `--yes`, never creates `--dest`, staging, locks or
+logs, and refuses `--list`, `--yes` and `--dry-run` alongside it (exit `3`). It
+exits `0` when nothing differs and `1` when something does, or when a file
+could not be compared, so it also works as a cron-able drift gate:
+`./config_backup.sh --diff || mail -s drift root`.
+
+An archive made with `--exclude` or `--exclude-secrets` records them (see
+above), and `--diff` applies them to the live scan: a file the backup left out
+is not reported as `NEW`. `--exclude` and `--exclude-secrets` on `--diff` are
+added to the recorded set, for a pattern you want ignored from now on. An
+archive from before the manifest existed is compared as it always was.
+
 ## `ssh_client_doctor.sh`
 
 `hardening_audit.sh` grades **sshd**.
@@ -627,13 +1189,32 @@ filename identifying a partial backup.
 remote will not accept a key. Neither looks at `~/.ssh` itself: a directory
 that is group-readable, a private key at `644`, or an `IdentityFile` that
 points at a path that does not exist. Those are the three reasons ssh refuses
-a key with a message that names none of them.
+a key with a message that names none of them. Past whether ssh will use a key
+is whether it should, and the later groups grade that too.
 
 ```bash
 ./ssh_client_doctor.sh
 ./ssh_client_doctor.sh --quiet
 ./ssh_client_doctor.sh --fail-on warn
+./ssh_client_doctor.sh --only keys,risks
+./ssh_client_doctor.sh --max-key-age 365
+./ssh_client_doctor.sh --list-groups
 ```
+
+| Group | Graded |
+| --- | --- |
+| `directory`, `files`, `config` | the modes and missing `IdentityFile` paths above |
+| `keys` | a private key with no passphrase (warn), DSA (FAIL), RSA under 3072 bits (warn) or under 2048 (FAIL), ECDSA (info), keys older than `--max-key-age` days (730; `0` turns it off), the same key in two files (info) |
+| `known_hosts` | unhashed entries (info, with `ssh-keygen -H`), `ssh-dss` host keys (FAIL), one host with two different keys of the same type (warn), `@revoked` lines (info) |
+| `authorized_keys` | duplicate keys (warn), `ssh-dss` keys (FAIL), keys with no `from=`, `command=` or `restrict` (info) |
+| `risks` | `StrictHostKeyChecking no` for every host (FAIL); `UserKnownHostsFile /dev/null`, `ForwardAgent`, `ForwardX11` or `PasswordAuthentication yes` for every host (warn); `Protocol 1` and CBC or arcfour ciphers (warn); several global `IdentityFile` lines without `IdentitiesOnly yes` (info). `Match all` and `Match host *` count as every host. A setting under a narrower `Host` or `Match` (including `Host *` with a `!pattern`, or a `Host *` value for a keyword an earlier block already sets, since OpenSSH keeps the first value) is noted, not graded, and each finding names its config line |
+| `agent` | whether `SSH_AUTH_SOCK` reaches a live agent (a dead one warns) and how many keys it offers (more than five warns) |
+
+The passphrase check runs `ssh-keygen -y -P ''` with stdin closed, which
+derives the public key to `/dev/null` and fails on an encrypted key, so it
+can never prompt; type and size come from `ssh-keygen -l` on the private
+file (the `.pub` beside it is the fallback; both failing is a `skip`), and `ssh-add -l` only lists the agent. Key material is never
+printed. Without `ssh-keygen` the `keys` group is one `skip`.
 
 `--ssh-dir DIR` is the seam the tests use, and the way to inspect an
 alternate config directory. This script does not reimplement `ssh_config`
@@ -661,6 +1242,29 @@ upgrades are configured but the stamp is missing or older than 14 days:
 ./hardening_audit.sh --only files,updates
 ```
 
+The `ssh` group grades the settings an sshd audit asks about beyond root
+login and passwords: `MaxAuthTries` (above 4 warns), `X11Forwarding`,
+`AllowAgentForwarding` and `AllowTcpForwarding` (warn when on, which is
+intentional on a bastion), `LoginGraceTime` (`0` fails, above 60 seconds
+warns), `ClientAliveInterval` times `ClientAliveCountMax` as a
+connection-liveness check (count 3 when unset; it drops a client that
+stops answering probes, not an idle user; a window over 900 seconds, an
+interval of `0` or a count of `0` warns), `ChannelTimeout` for the idle
+bound (OpenSSH 9.2+; an `info` line when none is set, none covers
+`session`, or `session=0` turns it off; a pass for e.g.
+`ChannelTimeout session=30m`), `PermitUserEnvironment yes`,
+`HostbasedAuthentication yes` and `IgnoreRhosts no` (each a FAIL),
+`PubkeyAuthentication no` and a `PermitTunnel` other than `no` (warn). A
+setting that is not set is graded by the OpenSSH default, and none of the
+FAIL-level ones is at its default on OpenSSH 8 or 9. Weak ciphers, MACs
+and key exchange (CBC and arcfour ciphers, MD5 and SHA-1 MACs, SHA-1
+Diffie-Hellman) warn and `ssh-dss` host keys fail, graded only from
+`sshd -T`, so they need root; without it they are one `skip`. Each hint
+prints the line to add, with the `-name` removal syntax for algorithm
+lists (OpenSSH 7.5+). `sshd -T` is read without `-C`, so `Match` blocks
+are not evaluated: a setting overridden for one user or address is graded
+by its global value.
+
 These remain findings rather than automatic fixes: a container or deliberately
 permissive development host can validly differ from a server baseline.
 
@@ -669,10 +1273,10 @@ permissive development host can validly differ from a server baseline.
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on` |
+| `1` | One or more steps failed, or a graded report (`hardening_audit.sh`, `tls_expiry.sh`, `ssh_client_doctor.sh`) found something at or above `--fail-on`, or `config_backup.sh --diff` found a difference, or `sysctl_defaults.sh --check` found a key not in place, or `schedule_report.sh --strict` printed a warning |
 | `2` | Preflight failed — unsupported distribution, not Linux, or no systemd user manager for the timer |
-| `3` | Invalid usage, or an install was requested without `--yes` |
-| `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove |
+| `3` | Invalid usage, or an install or removal was requested without `--yes` |
+| `4` | `install_aliases.sh --status` found the block missing or drifted, or `--uninstall` found no block to remove; `swap_setup.sh` had nothing to do |
 
 `system_doctor.sh` never returns `1`: it reports, and what it finds is for you
 to read rather than for a pipeline to act on.
@@ -694,12 +1298,20 @@ requesting an install without `--yes` refuses, that a missing optional tool
 degrades to a warning instead of a failure, that `install_aliases.sh` is
 idempotent and that its dry run writes nothing, that `disk_cleanup.sh`
 honours `--days` against real files (and `--include-coredumps` against
-`--coredump-dir`), that `sysctl_defaults.sh` can apply
+`--coredump-dir`), that `kernel_cleanup.sh` never names the running or the
+newest kernel across stubbed apt, dnf and pacman, that `swap_setup.sh` creates
+and removes a swapfile against a fixture fstab with stubbed swap tools, that
+`sysctl_defaults.sh` can apply
 and revert against a fake procfs without touching `/etc`, that
 `config_backup.sh` writes a tar of `--paths` into `--dest` and honours
 `--keep`, that `ssh_client_doctor.sh` grades modes under `--ssh-dir`, and
 that `tls_expiry.sh` treats a committed expired PEM as a failure when
-`openssl` is present (and as exit `2` when it is not).
+`openssl` is present (and as exit `2` when it is not), and that
+`log_triage.sh` parses a stub journal and auth log without ever passing
+journalctl anything but reads, that `container_doctor.sh` grades a stub
+engine's containers while running only read-only engine verbs, and that
+`listen_audit.sh` folds a stub `ss` table into owners and reports baseline
+drift with the documented exit codes.
 
 Discovery is by `find`, two levels deep, so `systemd/` is covered as well.
 A container has no user manager, so the timer can only be exercised through

@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# schedule_report.sh --failed, --strict and --cron-dir against a stubbed
+# systemctl and crontab and a fixture cron directory: nothing here asks the
+# host's systemd or cron, and nothing is started, stopped or reset.
+set -uo pipefail
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
+SCHED="$REPO_ROOT/linux/schedule_report.sh"
+fixture="$(mktemp -d)" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+mkdir -p "$fixture/bin" "$fixture/cron.d" "$fixture/clean.d" || exit 1
+STUB_DIR="$fixture"
+export STUB_DIR
+checks=0
+failures=0
+assert_eq() {
+  checks=$((checks + 1))
+  if [[ "$2" == "$3" ]]; then
+    printf '[ ok ] %s\n' "$1"
+  else
+    printf '[fail] %s (expected %s, got %s)\n' "$1" "$2" "$3" >&2
+    failures=$((failures + 1))
+  fi
+}
+assert_contains() {
+  checks=$((checks + 1))
+  if [[ "$2" == *"$3"* ]]; then
+    printf '[ ok ] %s\n' "$1"
+  else
+    printf '[fail] %s (missing %s)\n' "$1" "$3" >&2
+    printf '%s\n' "$2" | head -20 >&2
+    failures=$((failures + 1))
+  fi
+}
+assert_not_contains() {
+  checks=$((checks + 1))
+  if [[ "$2" == *"$3"* ]]; then
+    printf '[fail] %s (unexpected %s)\n' "$1" "$3" >&2
+    printf '%s\n' "$2" | head -20 >&2
+    failures=$((failures + 1))
+  else
+    printf '[ ok ] %s\n' "$1"
+  fi
+}
+
+# An executable every distro has, by absolute path: `command -v true` would
+# answer with the builtin.
+TRUE_BIN="$(type -P true)"
+
+# The system manager reports one failed service and the timer that runs it;
+# the user manager reports nothing. SYSTEMCTL_RC makes every call fail, the
+# way systemctl does in a container with no systemd.
+cat > "$fixture/bin/systemctl" <<'STUB'
+#!/usr/bin/env bash
+[[ -n "${SYSTEMCTL_RC:-}" ]] && exit "$SYSTEMCTL_RC"
+user=0
+if [[ "${1:-}" == --user ]]; then
+  user=1
+  shift
+fi
+case "${1:-}" in
+  list-units)
+    (( user )) && exit 0
+    case "$*" in
+      *--state=failed*) cat "$STUB_DIR/failed.out" ;;
+      *--type=timer*)   cat "$STUB_DIR/timers.out" ;;
+    esac
+    exit 0
+    ;;
+  show)
+    timer="${*: -1}"
+    printf '%s\n' "${timer%.timer}.service"
+    exit 0
+    ;;
+esac
+exit 1
+STUB
+cat > "$fixture/bin/crontab" <<'STUB'
+#!/usr/bin/env bash
+[[ "${1:-}" == -l ]] && cat "$STUB_DIR/crontab.out"
+STUB
+# Lingering on, so a host that does run a user manager adds no warning of its
+# own to the --strict checks below.
+cat > "$fixture/bin/loginctl" <<'STUB'
+#!/usr/bin/env bash
+printf 'yes\n'
+STUB
+chmod +x "$fixture/bin/systemctl" "$fixture/bin/crontab" "$fixture/bin/loginctl"
+
+printf 'backup.service loaded failed failed Nightly backup\n' > "$fixture/failed.out"
+printf 'backup.timer loaded active waiting Nightly backup timer\n' > "$fixture/timers.out"
+printf '# nightly report\n30 2 * * * %s\n' "$TRUE_BIN" > "$fixture/crontab.out"
+printf 'MAILTO=root\n# a comment\n17 3 * * * root /nonexistent/backup.sh\n' > "$fixture/cron.d/job"
+printf 'SHELL=/bin/sh\n5 4 * * * root %s\n@daily root %s --quiet\n' "$TRUE_BIN" "$TRUE_BIN" > "$fixture/cron.d/ok"
+printf '17 3 * * * root /nonexistent/old.sh\n' > "$fixture/cron.d/job.dpkg-old"
+: > "$fixture/cron.d/.placeholder"
+cp "$fixture/cron.d/ok" "$fixture/clean.d/ok"
+
+run_sr() {
+  out="$(PATH="$fixture/bin:$PATH" "$SCHED" "$@" 2>&1)"
+  rc=$?
+}
+
+run_sr
+assert_eq 'plain run exits 0' 0 "$rc"
+assert_not_contains 'plain run has no failed group' "$out" '== failed =='
+plain="$out"
+run_sr --cron-dir /etc/cron.d
+assert_eq 'the default --cron-dir changes nothing' "$plain" "$out"
+
+run_sr --failed --cron-dir "$fixture/cron.d"
+assert_eq '--failed exits 0 without --strict' 0 "$rc"
+assert_contains '--failed adds its group' "$out" '== failed =='
+assert_contains 'the failed timer is named' "$out" 'backup.timer'
+assert_contains 'its failed service is named' "$out" 'its service backup.service failed'
+assert_contains 'the journal command is the fix' "$out" 'journalctl -u backup.service -n 50 --no-pager'
+assert_contains 'a missing cron command is reported' "$out" '/nonexistent/backup.sh does not exist or is not executable'
+assert_eq 'exactly one cron warning (env lines, comments and dpkg leftovers are not jobs)' 1 \
+  "$(grep -c 'does not exist or is not executable' <<<"$out")"
+assert_not_contains 'an executable cron command is not reported' "$out" "$TRUE_BIN does not exist"
+assert_contains 'the user manager reports nothing failed' "$out" 'no failed timer-activated services (user)'
+
+run_sr --failed --strict --cron-dir "$fixture/cron.d"
+assert_eq '--failed --strict with findings -> 1' 1 "$rc"
+
+: > "$fixture/failed.out"
+run_sr --failed --strict --cron-dir "$fixture/clean.d"
+assert_eq 'a healthy machine passes --failed --strict' 0 "$rc"
+assert_contains 'healthy timers are ok' "$out" 'no failed timer-activated services (system)'
+assert_contains 'healthy cron paths are ok' "$out" '3 cron command path(s) resolve'
+
+SYSTEMCTL_RC=1 run_sr --failed --strict --cron-dir "$fixture/clean.d"
+assert_eq 'a systemctl that cannot answer is not a failure, even with --strict' 0 "$rc"
+assert_contains 'a systemctl that cannot answer is a skip' "$out" 'list-units unavailable'
+
+# An unreadable drop-in (mode 000) must not be taken for a clean one: it is a
+# counted warning and "all resolve" is not claimed. Root reads everything, so
+# there the check runs as nobody via setpriv when that works. Wherever the
+# file is still readable after the chmod, the case is skipped with a printed
+# line instead of asserting.
+unreadable="$fixture/unreadable.d"
+mkdir -p "$unreadable" || exit 1
+cp "$fixture/cron.d/ok" "$unreadable/ok"
+printf '5 4 * * * root %s\n' "$TRUE_BIN" > "$unreadable/locked"
+chmod 000 "$unreadable/locked"
+runner=()
+can_check=1
+if [[ "$(id -u)" == 0 ]]; then
+  can_check=0
+  if command -v setpriv >/dev/null 2>&1; then
+    chmod 0755 "$fixture" "$fixture/bin" "$unreadable"
+    chmod 0644 "$fixture/crontab.out" "$unreadable/ok"
+    runner=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+    if "${runner[@]}" test -r "$SCHED" && ! "${runner[@]}" test -r "$unreadable/locked"; then
+      can_check=1
+    fi
+  fi
+elif [[ -r "$unreadable/locked" ]]; then
+  can_check=0
+fi
+if (( can_check )); then
+  out="$(PATH="$fixture/bin:$PATH" ${runner[@]+"${runner[@]}"} "$SCHED" --failed --strict --cron-dir "$unreadable" 2>&1)"
+  rc=$?
+  assert_contains 'an unreadable cron file is a warning' "$out" "cannot read $unreadable/locked"
+  assert_not_contains 'an unreadable cron file never prints "all resolve"' "$out" 'path(s) resolve'
+  assert_contains 'the skipped file is counted' "$out" '1 cron file(s) unreadable'
+  assert_eq 'an unreadable cron file fails --strict' 1 "$rc"
+else
+  printf '[skip] unreadable cron file checks: the file stays readable (root without setpriv)\n'
+fi
+
+# A cron directory that cannot be traversed (mode 000) must not look empty.
+# Same user rules as the unreadable file above; the case skips where the
+# directory stays listable.
+noaccess="$fixture/noaccess.d"
+mkdir -p "$noaccess" || exit 1
+cp "$fixture/cron.d/ok" "$noaccess/ok"
+chmod 000 "$noaccess"
+dir_runner=()
+can_dir=1
+if [[ "$(id -u)" == 0 ]]; then
+  can_dir=0
+  if command -v setpriv >/dev/null 2>&1; then
+    dir_runner=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+    if "${dir_runner[@]}" test -r "$SCHED" && ! "${dir_runner[@]}" test -x "$noaccess"; then
+      can_dir=1
+    fi
+  fi
+elif [[ -x "$noaccess" ]]; then
+  can_dir=0
+fi
+if (( can_dir )); then
+  out="$(PATH="$fixture/bin:$PATH" ${dir_runner[@]+"${dir_runner[@]}"} "$SCHED" --failed --strict --cron-dir "$noaccess" 2>&1)"
+  rc=$?
+  assert_contains 'an untraversable cron directory is a warning' "$out" "cannot fully read directory $noaccess"
+  assert_not_contains 'an untraversable cron directory never prints "all resolve"' "$out" 'path(s) resolve'
+  assert_contains 'the unreadable directory is counted' "$out" "cron directory $noaccess unreadable"
+  assert_eq 'an untraversable cron directory fails --strict' 1 "$rc"
+  # The inventory pass (no --failed) walks the same directory and must not
+  # report an untraversable one as "no distro cron drop-ins".
+  out="$(PATH="$fixture/bin:$PATH" ${dir_runner[@]+"${dir_runner[@]}"} "$SCHED" --strict --cron-dir "$noaccess" 2>&1)"
+  rc=$?
+  assert_contains 'the inventory warns about an untraversable cron directory' "$out" "cannot fully read directory $noaccess"
+  assert_eq 'the inventory of an untraversable cron directory fails --strict' 1 "$rc"
+else
+  printf '[skip] untraversable cron directory checks: the directory stays listable (root without setpriv)\n'
+fi
+chmod 755 "$noaccess"
+
+run_sr --failed --cron-dir
+assert_eq '--cron-dir with no value -> 3' 3 "$rc"
+run_sr --failed "--cron-dir=$fixture/cron.d"
+assert_eq '--cron-dir=DIR exits 0' 0 "$rc"
+assert_contains '--cron-dir=DIR is read' "$out" '/nonexistent/backup.sh'
+
+# --strict without --failed still applies to the warnings the report already
+# has (lingering off, where there is a user manager to ask): exit 1 exactly
+# when a warning was printed.
+run_sr --strict --cron-dir "$fixture/clean.d"
+if grep -q '\[warn\]' <<<"$out"; then
+  assert_eq '--strict alone with a warning -> 1' 1 "$rc"
+else
+  assert_eq '--strict alone on a clean machine -> 0' 0 "$rc"
+fi
+
+if (( checks == 0 || failures > 0 )); then
+  printf '%s of %s schedule report checks failed\n' "$failures" "$checks" >&2
+  exit 1
+fi
+printf '=== all %s schedule report checks passed ===\n' "$checks"

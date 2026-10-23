@@ -3,9 +3,10 @@
 ## What it covers
 
 Debian/Ubuntu, Fedora/RHEL and Arch: read-only system, network, TLS,
-SSH-client, schedule and hardening reports; recurring maintenance and disk
-cleanup; developer tool installs; config backups; package-set capture; sysctl
-defaults; a systemd user timer; and a Kali cloud-init profile.
+SSH-client, schedule and hardening reports; recurring maintenance, disk
+cleanup and old-kernel removal; developer tool installs; config backups;
+package-set capture; sysctl defaults; swapfile setup; a systemd user timer;
+and a Kali cloud-init profile.
 
 ## Requirements
 
@@ -25,17 +26,22 @@ defaults; a systemd user timer; and a Kali cloud-init profile.
 | --- | --- | --- |
 | `status.sh` | One-screen verdict; `--only` selects sections. | <span class="stage stage-report">read-only</span> |
 | `system_doctor.sh` | Long health report. | <span class="stage stage-report">read-only</span> |
-| `net_doctor.sh` | Interfaces, routes, DNS, listening sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
-| `hardening_audit.sh` | Security audit with the fix for each finding. | <span class="stage stage-report">read-only</span> |
-| `ssh_client_doctor.sh` | `~/.ssh` permissions and `IdentityFile` problems. | <span class="stage stage-report">read-only</span> |
-| `tls_expiry.sh` | Certificate expiry within `--days`. | <span class="stage stage-report">read-only</span> |
-| `schedule_report.sh` | systemd timers, user crontab, `cron.d`. | <span class="stage stage-report">read-only</span> |
-| `sysctl_defaults.sh` | Report sysctl values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert` |
+| `net_doctor.sh` | Interfaces, routes, link errors, DNS, sockets; `--probe HOST`. | <span class="stage stage-report">read-only</span> |
+| `listen_audit.sh` | Listening-port owners and scope; `--baseline` drift for cron. | <span class="stage stage-report">read-only</span> |
+| `hardening_audit.sh` | Security audit with the fix for each finding, sshd algorithms included. | <span class="stage stage-report">read-only</span> |
+| `ssh_client_doctor.sh` | `~/.ssh` modes, keys, known_hosts, risky config, agent. | <span class="stage stage-report">read-only</span> |
+| `tls_expiry.sh` | Certificate expiry within `--days`; `--deep` name, chain and key checks. | <span class="stage stage-report">read-only</span> |
+| `container_doctor.sh` | Restart loops, OOM kills, socket mounts, uncapped container logs. | <span class="stage stage-report">read-only</span> |
+| `log_triage.sh` | Kernel distress, noisiest units, failed logins and repeats since `--since`. | <span class="stage stage-report">read-only</span> |
+| `schedule_report.sh` | systemd timers, user crontab, `cron.d`; `--failed` flags failed timer services and missing cron commands, `--strict` exits 1 on a warning. | <span class="stage stage-report">read-only</span> |
+| `sysctl_defaults.sh` | Report sysctl values; `--check` exits 1 on drift, unpersisted, stale or shadowed values; `--apply`, `--revert`. | `--dry-run` with `--apply` or `--revert`; `--check` is read-only |
+| `swap_setup.sh` | Report swap; `--create` or `--remove` a swapfile and its marked fstab line. | `--dry-run` with `--create` or `--remove` |
 | `stay_fresh.sh` | Package upgrade and autoremove, journal vacuum, caches, containers. | `--dry-run` |
 | `install_devtools.sh` | CLIs, Python, Go, Terraform, Helm via mise or the distro. | `--dry-run` |
-| `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal, package cache, docker. | `--dry-run` |
-| `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation. | `--dry-run` |
-| `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set. | `--dry-run` on `install` |
+| `disk_cleanup.sh` | Temp files, thumbnails; opt-in trash, journal (by age or `--journal-max-size`), package cache, docker, rotated logs under `/var/log`, unused container images, disabled snap revisions. | `--dry-run` |
+| `kernel_cleanup.sh` | Old kernel packages; keeps the running kernel plus the newest `--keep`. `--list` shows the plan. | `--dry-run` |
+| `config_backup.sh` | Dated tar of `--paths` (default `/etc`) with rotation; `--exclude`, `--exclude-secrets`; `--diff` shows what changed since. | `--dry-run`; `--diff` is read-only |
+| `packages.sh` | `list`, `dump`, `check`, `diff`, `install` of the explicit package set; `holds` and `orphans` list held and autoremovable packages. | `--dry-run` on `install`; `holds`, `orphans` are read-only |
 | `install_aliases.sh` | Add a marked block to `~/.bashrc`; `--status`, `--uninstall`. | `--dry-run` |
 | `systemd/stay_fresh_timer.sh` | systemd user timer for `stay_fresh.sh`. | `--dry-run` on `install`; `--print-only` |
 | `cloud-init/kali-vm-init.yaml` | cloud-init user-data for a Kali VM. Not a script. | validate with `cloud-init schema` |
@@ -53,6 +59,7 @@ All paths are under `linux/`.
     ./linux/status.sh --only disk,git
     ./linux/system_doctor.sh --quiet
     sudo ./linux/system_doctor.sh
+    ./linux/sysctl_defaults.sh --check --only inotify
     ```
 
 === "Preview"
@@ -60,8 +67,10 @@ All paths are under `linux/`.
     ```bash
     ./linux/stay_fresh.sh --dry-run --only caches,containers
     ./linux/disk_cleanup.sh --dry-run
+    ./linux/kernel_cleanup.sh --dry-run --keep 1
     sudo ./linux/sysctl_defaults.sh --apply --dry-run
     ./linux/config_backup.sh --dry-run
+    ./linux/config_backup.sh --diff
     ```
 
 === "Apply"
@@ -85,6 +94,9 @@ All paths are under `linux/`.
 !!! danger "Backups contain secrets"
     `config_backup.sh` copies `/etc` by default, including `shadow`, `sudoers`
     and SSH host keys. Archives are mode 0600. Store them accordingly.
+    `--exclude-secrets` leaves out a short, fixed list (shadow, host private
+    keys, `/etc/ssl/private` and a few more) and `--exclude PATTERN` adds your
+    own; neither makes an archive safe to publish.
 
 !!! apply "sysctl changes are live"
     `sysctl_defaults.sh --apply` writes `/etc/sysctl.d/99-ops-toolbox.conf` and

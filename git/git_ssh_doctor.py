@@ -9,17 +9,24 @@ may simply never be reached because the config file declaring it was never read.
 Effective configuration comes from `ssh -G`, which is OpenSSH resolving its own
 config — reimplementing that parser would only introduce a second opinion. This
 script adds what `ssh -G` cannot tell you: *why* a key you believe you
-configured is absent from the result. The most common cause, and the one that
+configured is absent from the result, and whether the host key a headless run
+will be shown is already trusted. The most common cause, and the one that
 prompted this script, is an Include whose glob matches directories. ssh skips
 those silently, so a config file one level deeper is never read and no error is
 ever printed.
+
+Offline by default: only --test-auth makes a connection. When diagnosing a
+repository's remotes it honours GIT_SSH_COMMAND / core.sshCommand (the -i, -F,
+-p, -o and -l of an ssh-compatible command) and the user a remote URL names.
 
 Read-only. It prints commands to run; it never edits config, touches the agent,
 or writes a key.
 
     ./git_ssh_doctor.py                 # diagnose remotes of the current repo
     ./git_ssh_doctor.py --host github.com
-    ./git_ssh_doctor.py --test-auth     # also try candidate keys against the host
+    ./git_ssh_doctor.py --test-auth     # connect: try ssh, then each candidate key
+    ./git_ssh_doctor.py --require-known-host   # CI: an unknown host key fails
+    ./git_ssh_doctor.py --json          # the same verdict as one JSON object
 """
 
 from __future__ import annotations
@@ -28,8 +35,11 @@ import argparse
 import contextlib
 import glob
 import io
+import json
 import os
 import re
+import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -56,24 +66,68 @@ if sys.stdout.isatty() and not os.environ.get("NO_COLOR"):
     C_RED, C_GREEN, C_YELLOW = "\033[31m", "\033[32m", "\033[33m"
 
 
+# Every line the report prints is also recorded here, as (level, section,
+# text), so --json can hand the same verdict to a script. Recording happens in
+# the printers, after whatever redaction the caller applied, so the JSON never
+# says more than the text did. Copied, not shared, like Usage3Parser below.
+EVENTS = []
+SECTION = ""
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def record(level, text):
+    EVENTS.append((level, SECTION, _ANSI.sub("", text)))
+
+
 def ok(msg):
     print("%s[ ok ]%s %s" % (C_GREEN, C_RESET, msg))
+    record("ok", msg)
 
 
 def warn(msg):
     print("%s[warn]%s %s" % (C_YELLOW, C_RESET, msg))
+    record("warn", msg)
 
 
 def bad(msg):
     print("%s[fail]%s %s" % (C_RED, C_RESET, msg))
+    record("fail", msg)
 
 
 def info(msg):
     print("%s[info]%s %s" % (C_DIM, C_RESET, msg))
+    record("info", msg)
 
 
 def head(msg):
+    global SECTION
+    SECTION = msg
     print("\n%s== %s ==%s" % (C_BOLD, msg, C_RESET))
+
+
+def raw(text, level="detail"):
+    """Print a report line exactly as given, and record it without its indent
+    or colour. For the table rows and lists the level helpers do not cover."""
+    print(text)
+    record(level, _ANSI.sub("", text).strip())
+
+
+def render_json(tool, events, rc):
+    """The report as one JSON object.
+
+    schema 1 is a promise about shape: keys and levels may be added, none is
+    ever renamed. `problems` counts the fail-level events.
+    """
+    return json.dumps({
+        "tool": tool,
+        "schema": 1,
+        "exit_code": rc,
+        "problems": sum(1 for event in events if event[0] == "fail"),
+        "events": [
+            {"level": level, "section": section, "message": message}
+            for level, section, message in events
+        ],
+    }, sort_keys=True)
 
 
 def run(cmd, timeout=15):
@@ -95,7 +149,10 @@ def run(cmd, timeout=15):
 # git remotes
 # --------------------------------------------------------------------------
 def git_remote_hosts():
-    """SSH hosts used by the current repository's remotes, as {host: [urls]}."""
+    """SSH targets used by the current repository's remotes, as
+    {(host, port, user): [urls]}. port is "" unless an ssh:// URL names one;
+    user is "" unless the URL spells one out (git then dials user@host, which
+    wins over any User in ssh_config)."""
     rc, out, _ = run(["git", "remote", "-v"])
     if rc != 0:
         return {}
@@ -105,22 +162,53 @@ def git_remote_hosts():
         if len(parts) < 2:
             continue
         url = parts[1]
-        host = ssh_host_of(url)
-        if host:
-            hosts.setdefault(host, [])
-            if url not in hosts[host]:
-                hosts[host].append(url)
+        target = ssh_target_of(url)
+        if target:
+            target = target + (ssh_user_of(url),)
+            hosts.setdefault(target, [])
+            if url not in hosts[target]:
+                hosts[target].append(url)
     return hosts
 
 
 def ssh_host_of(url):
     """Extract the host from an SSH git URL, or None if it is not SSH."""
+    target = ssh_target_of(url)
+    return target[0] if target else None
+
+
+def ssh_user_of(url):
+    """The user an SSH git URL spells out (ssh://user@host, user@host:path),
+    or "" when it names none."""
+    if url.startswith("ssh://"):
+        authority = url[len("ssh://") :].split("/", 1)[0]
+        return authority.rsplit("@", 1)[0] if "@" in authority else ""
+    if "://" in url or ":" not in url:
+        return ""
+    left = url.split(":", 1)[0]
+    return left.rsplit("@", 1)[0] if "@" in left else ""
+
+
+def ssh_target_of(url):
+    """(host, port) of an SSH git URL, or None if it is not SSH.
+
+    port is "" unless an ssh:// URL names one (ssh://git@host:2222/repo):
+    git passes it to ssh as -p, so it overrides any Port in ssh_config. An
+    scp-like URL cannot carry a port.
+    """
     if url.startswith("ssh://"):
         rest = url[len("ssh://") :]
         rest = rest.split("/", 1)[0]
         if "@" in rest:
-            rest = rest.split("@", 1)[1]
-        return rest.split(":", 1)[0] or None
+            rest = rest.rsplit("@", 1)[1]
+        if rest.startswith("["):
+            host, _, tail = rest[1:].partition("]")
+            port = tail[1:] if tail.startswith(":") else ""
+        else:
+            host, _, port = rest.partition(":")
+        if port and not port.isdigit():
+            port = ""
+        return (host, port) if host else None
     # scp-like: [user@]host:path — but not a local path or an https URL.
     if "://" in url:
         return None
@@ -129,8 +217,78 @@ def ssh_host_of(url):
         if "@" in left:
             left = left.split("@", 1)[1]
         if left and not left.startswith("/") and not os.path.exists(url.split(":")[0]):
-            return left
+            return (left, "")
     return None
+
+
+# --------------------------------------------------------------------------
+# GIT_SSH_COMMAND / core.sshCommand
+# --------------------------------------------------------------------------
+_SSH_ARG_OPTIONS = "iFpol"
+_SSH_PLAIN_FLAGS = "46AaCKkNqTtVvXxYy"
+
+
+def parse_ssh_command(command, program_only=False):
+    """The ssh options in a GIT_SSH_COMMAND-style string, or None.
+
+    None means this is not an ssh-compatible command the doctor can reason
+    about: another program, an unparsable string, or an option it does not
+    know the arity of. Guessing there would diagnose the wrong connection.
+    Kept: -i, -F, -p, -o and -l (value attached or separate) and the plain
+    flags in _SSH_PLAIN_FLAGS. program_only is for GIT_SSH, a program path
+    that takes no arguments.
+    """
+    if program_only:
+        tokens = [command]
+    else:
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return None
+    if not tokens:
+        return None
+    program = os.path.basename(tokens[0]).lower()
+    if program.endswith(".exe"):
+        program = program[:-4]
+    if program != "ssh":
+        return None
+    opts = []
+    i = 1
+    while i < len(tokens):
+        token = tokens[i]
+        if len(token) < 2 or not token.startswith("-"):
+            return None
+        letter = token[1]
+        if letter in _SSH_ARG_OPTIONS:
+            if len(token) > 2:
+                opts += [token[:2], token[2:]]
+            elif i + 1 < len(tokens):
+                opts += [token, tokens[i + 1]]
+                i += 1
+            else:
+                return None
+        elif all(c in _SSH_PLAIN_FLAGS for c in token[1:]):
+            opts.append(token)
+        else:
+            return None
+        i += 1
+    return opts
+
+
+def configured_ssh_command():
+    """(source, command, program_only) git uses to reach ssh remotes, or
+    ("", "", False) for plain `ssh`. Git's precedence: GIT_SSH_COMMAND, then
+    core.sshCommand (repository-effective), then GIT_SSH."""
+    env = os.environ.get("GIT_SSH_COMMAND", "")
+    if env.strip():
+        return "GIT_SSH_COMMAND", env, False
+    rc, out, _ = run(["git", "config", "core.sshCommand"])
+    if rc == 0 and out.strip():
+        return "core.sshCommand", out.strip(), False
+    legacy = os.environ.get("GIT_SSH", "")
+    if legacy.strip():
+        return "GIT_SSH", legacy, True
+    return "", "", False
 
 
 # --------------------------------------------------------------------------
@@ -237,29 +395,281 @@ def agent_identities():
 # --------------------------------------------------------------------------
 # effective config per host
 # --------------------------------------------------------------------------
-def effective_config(host):
-    rc, out, err = run(["ssh", "-G", host])
-    if rc != 0:
-        return None, err
+# `ssh -G` keys whose value is a list. identityfile arrives one line per file;
+# the known-hosts keys arrive as one line of space-separated paths.
+_PATH_LIST_KEYS = ("userknownhostsfile", "globalknownhostsfile")
+
+
+def _split_paths(value):
+    try:
+        return shlex.split(value)
+    except ValueError:
+        return value.split()
+
+
+def parse_ssh_g(text):
+    """Parse `ssh -G host` output into {key: value}.
+
+    Keys are lower-cased and the first occurrence wins, as ssh's own does.
+    identityfile collects every line in order; the known-hosts keys are split
+    into their paths, a quoted path with a space staying one entry.
+    """
     cfg = {"identityfile": []}
-    for line in out.splitlines():
+    for line in (text or "").splitlines():
         if " " not in line:
             continue
         key, value = line.split(" ", 1)
         key = key.lower()
+        if not key:
+            continue
         if key == "identityfile":
             cfg["identityfile"].append(value)
+        elif key in _PATH_LIST_KEYS:
+            cfg.setdefault(key, _split_paths(value))
         else:
             cfg.setdefault(key, value)
-    return cfg, ""
+    return cfg
 
 
-def try_auth(host, user="git", key=None, timeout=20):
-    """Attempt a non-interactive auth. Returns (authenticated, detail)."""
+def known_hosts_spec(hostname, port, hostkeyalias=""):
+    """The name `ssh-keygen -F` has to be asked for, as ssh writes it.
+
+    A HostKeyAlias replaces the host outright. A non-default port is part of
+    the name, `[host]:port`, and forgetting that makes every host on port
+    2222 look unknown.
+    """
+    if hostkeyalias and hostkeyalias.lower() != "none":
+        return hostkeyalias
+    if str(port) in ("", "22"):
+        return hostname
+    return "[%s]:%s" % (hostname, port)
+
+
+def normalise_strict(value):
+    """StrictHostKeyChecking as one of yes, no, ask or accept-new.
+
+    `ssh -G` prints true/false for yes/no, and the config also accepts off.
+    """
+    value = (value or "ask").strip().lower()
+    if value in ("true", "yes"):
+        return "yes"
+    if value in ("false", "no", "off"):
+        return "no"
+    return value
+
+
+def host_key_findings(host, port, strict, found_in, files_checked, hashed, require=False,
+                      alias=""):
+    """[(level, message, fix)] for one host's known_hosts state.
+
+    host is the HostName ssh dials. Without `require` an unknown key is a
+    warning, so nobody's exit code changes; with it (a CI preflight) it is a
+    failure, under accept-new and StrictHostKeyChecking no as well, since
+    those trust whatever key the first connection presents. With a
+    HostKeyAlias the fix records the key under the alias, the name ssh looks up.
+    """
+    strict = normalise_strict(strict)
+    port = str(port or "22")
+    where = host if port == "22" else "%s port %s" % (host, port)
+    findings = []
+    if strict == "no":
+        findings.append((
+            "warn",
+            "StrictHostKeyChecking is off for %s: the host key is never verified, so "
+            "a man-in-the-middle is not detected" % where,
+            "remove StrictHostKeyChecking no from the Host block and pin the key "
+            "instead",
+        ))
+    if found_in:
+        findings.append(("info", "host key present in %s" % ", ".join(found_in), None))
+        if hashed:
+            findings.append(("info", "stored hashed (HashKnownHosts), so the file "
+                                     "does not name the host in clear", None))
+        return findings
+    checked = ", ".join(files_checked) or "any known_hosts file"
+    if strict in ("no", "accept-new"):
+        if not require:
+            if strict == "accept-new":
+                findings.append((
+                    "info",
+                    "host key for %s is not recorded; accept-new will record it on "
+                    "first use, which is acceptable for a workstation, pin it for CI"
+                    % where,
+                    None,
+                ))
+            return findings
+        message = ("host key for %s is not in %s: %s trusts whatever key the first "
+                   "connection presents, so it is not pinned"
+                   % (where, checked, "accept-new" if strict == "accept-new"
+                      else "StrictHostKeyChecking no"))
+    else:
+        message = ("host key for %s is not in %s: the first connection stops to ask, "
+                   "and a non-interactive run (CI, cron, BatchMode) fails with Host key "
+                   "verification failed" % (where, checked))
+    use_alias = bool(alias) and alias.lower() != "none"
+    record = ("awk -v a=%s '{$1=a; print}' /tmp/hostkey" % shlex.quote(alias)
+              if use_alias else "cat /tmp/hostkey")
+    findings.append((
+        "fail" if require else "warn",
+        message,
+        "ssh-keyscan -t ed25519 -p %s %s > /tmp/hostkey; ssh-keygen -lf /tmp/hostkey"
+        "   # compare with the fingerprint the provider publishes, then: "
+        "%s >> ~/.ssh/known_hosts" % (port, host, record),
+    ))
+    return findings
+
+
+def effective_config(host, port="", ssh_opts=()):
+    """`ssh -G` for host. The options of a GIT_SSH_COMMAND / core.sshCommand
+    come first and a port from the remote URL goes in as -p after them, the
+    order git builds its command in, so the first -p wins as it does for git."""
+    rc, out, err = run(["ssh", "-G"] + list(ssh_opts)
+                       + (["-p", port] if port else []) + [host])
+    if rc != 0:
+        return None, err
+    return parse_ssh_g(out), ""
+
+
+_DEFAULT_KNOWN_HOSTS = {
+    "userknownhostsfile": ["~/.ssh/known_hosts", "~/.ssh/known_hosts2"],
+    "globalknownhostsfile": ["/etc/ssh/ssh_known_hosts", "/etc/ssh/ssh_known_hosts2"],
+}
+
+
+def known_hosts_files(cfg):
+    """Every known_hosts file ssh consults for this host, user files first."""
+    files = []
+    for key in ("userknownhostsfile", "globalknownhostsfile"):
+        for path in cfg.get(key) or _DEFAULT_KNOWN_HOSTS[key]:
+            if path.lower() != "none":
+                files.append(os.path.expanduser(path))
+    return files
+
+
+def check_host_key(host, cfg, require):
+    """Report whether this host's key is already trusted.
+
+    Returns (passed, found). Only the file a key was found in is printed:
+    `ssh-keygen -F` prints the matching known_hosts line itself, and that
+    stays captured so no entry lands in a log.
+    """
+    hostname = cfg.get("hostname", host)
+    port = cfg.get("port", "22")
+    spec = known_hosts_spec(hostname, port, cfg.get("hostkeyalias", ""))
+    if shutil.which("ssh-keygen") is None:
+        if require:
+            bad("cannot check: ssh-keygen not found on PATH, so --require-known-host "
+                "cannot confirm the host key for %s" % hostname)
+            return False, False
+        info("ssh-keygen is not on PATH, so known_hosts cannot be checked")
+        return True, True
+
+    files = known_hosts_files(cfg)
+    found_in = []
+    hashed = False
+    for path in [p for p in files if os.path.isfile(p)]:
+        rc, out, _ = run(["ssh-keygen", "-F", spec, "-f", path])
+        if rc == 0:
+            found_in.append(shorten(path))
+            hashed = hashed or any(line.startswith("|1|") for line in out.splitlines())
+        elif rc != 1:
+            info("ssh-keygen -F could not read %s (exit %d)" % (shorten(path), rc))
+
+    # A KnownHostsCommand supplies keys ssh asks for at connect time. It is
+    # never run here, so an absent file entry proves nothing.
+    kh_cmd = (cfg.get("knownhostscommand") or "").strip()
+    if kh_cmd and kh_cmd.lower() != "none" and not found_in:
+        info("host key source: KnownHostsCommand (not checked)")
+        if normalise_strict(cfg.get("stricthostkeychecking", "ask")) == "no":
+            warn("StrictHostKeyChecking is off for %s: the host key is never "
+                 "verified, so a man-in-the-middle is not detected" % hostname)
+        return True, False
+
+    passed = True
+    for level, message, fix in host_key_findings(
+        hostname, port, cfg.get("stricthostkeychecking", "ask"), found_in,
+        [shorten(p) for p in files], hashed, require,
+        cfg.get("hostkeyalias", ""),
+    ):
+        if level == "fail":
+            bad(message)
+            passed = False
+        elif level == "warn":
+            warn(message)
+        else:
+            info(message)
+        if fix:
+            info("fix: %s" % fix)
+    return passed, bool(found_in)
+
+
+def local_accounts():
+    """Names the local account goes by, as ssh -G would report it when no
+    User is configured."""
+    names = set()
+    try:
+        import pwd
+        names.add(pwd.getpwuid(os.getuid()).pw_name)
+    except (ImportError, KeyError, AttributeError, OSError):
+        pass
+    for var in ("USER", "LOGNAME", "USERNAME"):
+        if os.environ.get(var):
+            names.add(os.environ[var])
+    return names
+
+
+def configured_user(cfg):
+    """The User ssh config sets for a host, or "" when ssh -G only reports
+    the local account (a User spelled the same as the local account cannot
+    be told apart from none, and then falls back to git)."""
+    user = cfg.get("user") or ""
+    return "" if user in local_accounts() else user
+
+
+def ssh_opts_set_user(ssh_opts):
+    """True when the effective ssh command sets the login user itself, with
+    -l or with -o User=... (any case, also "User x"). ssh keeps the first
+    value it is given for the user, and the command's options come before
+    the user@host git appends, so such an option beats the user of the URL
+    and a User in ssh config; ssh -G, which receives the same options,
+    reports the one that wins."""
+    opts = list(ssh_opts)
+    i = 0
+    while i < len(opts):
+        opt = opts[i]
+        if opt == "-l":
+            return True
+        if opt == "-o" and i + 1 < len(opts) and re.match(
+                r"\s*user\s*(=|\s)", opts[i + 1], re.IGNORECASE):
+            return True
+        # an option that takes a value: skip the value too
+        i += 2 if len(opt) == 2 and opt[1] in _SSH_ARG_OPTIONS else 1
+    return False
+
+
+def try_auth(host, user="git", key=None, timeout=20, strict="accept-new", port="",
+             ssh_opts=()):
+    """Attempt a non-interactive auth. Returns (authenticated, detail).
+
+    `strict` is the StrictHostKeyChecking value for the attempt: accept-new
+    records an unknown key on success. yes does not record one, and also
+    passes UpdateHostKeys=no and CheckHostIP=no, since ssh would otherwise
+    add further host keys (UpdateHostKeys) or an IP address entry for a
+    known hostname (CheckHostIP, on by default before OpenSSH 8.5 or set in
+    ssh_config) to known_hosts after a successful login. ssh_opts are the
+    options of a GIT_SSH_COMMAND / core.sshCommand; they follow the doctor's
+    own -o flags, and ssh keeps the first value of an option, so they cannot
+    loosen the host key policy chosen here.
+    """
     cmd = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o",
-           "StrictHostKeyChecking=accept-new"]
+           "StrictHostKeyChecking=%s" % strict]
+    if strict == "yes":
+        cmd += ["-o", "UpdateHostKeys=no", "-o", "CheckHostIP=no"]
     if key:
         cmd += ["-o", "IdentitiesOnly=yes", "-i", key]
+    cmd += list(ssh_opts)
+    if port:
+        cmd += ["-p", port]
     cmd += ["-T", "%s@%s" % (user, host)]
     rc, out, err = run(cmd, timeout=timeout)
     blob = (out + err).strip()
@@ -277,17 +687,33 @@ def try_auth(host, user="git", key=None, timeout=20):
 
 
 # --------------------------------------------------------------------------
-def diagnose_host(host, keys, agent, test_auth):
-    head("host: %s" % host)
-    cfg, err = effective_config(host)
+def diagnose_host(host, keys, agent, test_auth, require_known_host=False, port="",
+                  user="", ssh_opts=()):
+    label = "%s port %s" % (host, port) if port else host
+    head("host: %s" % label)
+    cfg, err = effective_config(host, port, ssh_opts)
     if cfg is None:
-        bad("ssh -G %s failed: %s" % (host, err.strip()[:200]))
+        bad("ssh -G %s failed: %s" % (label, err.strip()[:200]))
         return False
 
     configured = [os.path.expanduser(p) for p in cfg.get("identityfile", [])]
     existing = [p for p in configured if os.path.exists(p)]
 
-    info("resolves to %s@%s:%s" % (cfg.get("user", "?"), cfg.get("hostname", host),
+    # The user ssh will log in as. The probe and git both run
+    # `ssh <command options> ... user@host`, and ssh keeps the first user it
+    # is given. When the effective ssh command sets one (-l or -o User), it
+    # comes first and wins over the user the remote URL (or --host
+    # user@host) spells out and over ssh config; ssh -G got the same
+    # options, so its user is the answer, even if it spells the local
+    # account. Otherwise the URL user, then a User set in ssh config, else
+    # "git"; ssh -G always reports a user, the local account when none is
+    # configured, so a config value equal to the local account is taken as
+    # "none configured".
+    if ssh_opts_set_user(ssh_opts):
+        user = cfg.get("user") or "git"
+    else:
+        user = user or configured_user(cfg) or "git"
+    info("resolves to %s@%s:%s" % (user, cfg.get("hostname", host),
                                    cfg.get("port", "22")))
 
     if not configured:
@@ -298,7 +724,7 @@ def diagnose_host(host, keys, agent, test_auth):
     else:
         bad("ssh will offer %d identity file(s), none of which exist:" % len(configured))
         for p in configured:
-            print("        %s" % shorten(p))
+            raw("        %s" % shorten(p))
         info("these are OpenSSH's built-in defaults — no Host block matched %s" % host)
 
     if agent:
@@ -306,24 +732,49 @@ def diagnose_host(host, keys, agent, test_auth):
     else:
         warn("ssh-agent holds no identities")
 
-    if existing or agent:
-        authed, detail = try_auth(host)
+    # Before any authentication attempt: try_auth connects with
+    # StrictHostKeyChecking=accept-new, which records an unknown key on its
+    # first success, so checked afterwards this could never fire twice.
+    # With --require-known-host it uses yes plus UpdateHostKeys=no and
+    # CheckHostIP=no instead, so the attempt neither records an unknown key
+    # nor adds extra host keys or an IP address entry for a known host.
+    strict = "yes" if require_known_host else "accept-new"
+    trusted, found = check_host_key(host, cfg, require_known_host)
+    if not trusted:
+        if shutil.which("ssh-keygen") is None:
+            info("authentication not attempted: the host key could not be checked")
+        else:
+            info("authentication not attempted: it would record the unknown host key")
+        return False
+
+    has_identity = bool(existing or agent)
+    if not has_identity:
+        bad("nothing to authenticate with: no existing configured key, empty agent")
+
+    # Every authentication attempt connects to the host, and accept-new may
+    # write its key to known_hosts, so none runs unless asked for.
+    if not test_auth:
+        info("authentication not attempted: it contacts the host; re-run with "
+             "--test-auth to try it and to find which of your %d key(s) the host "
+             "accepts" % len(keys))
+        return has_identity
+
+    if has_identity:
+        authed, detail = try_auth(host, user=user, strict=strict, port=port,
+                                  ssh_opts=ssh_opts)
+        if not found and not require_known_host:
+            info("note: --test-auth records new host keys (accept-new); "
+                 "this check ran first")
         if authed:
             ok("authentication succeeds: %s" % detail)
             return True
         bad("authentication fails: %s" % detail)
-    else:
-        bad("nothing to authenticate with: no existing configured key, empty agent")
 
-    if not test_auth:
-        info("re-run with --test-auth to find which of your %d key(s) this host accepts"
-             % len(keys))
-        return False
-
-    head("testing %d discovered key(s) against %s" % (len(keys), host))
+    head("testing %d discovered key(s) against %s" % (len(keys), label))
     winners = []
     for key in keys:
-        authed, detail = try_auth(host, key=key)
+        authed, detail = try_auth(host, user=user, key=key, strict=strict, port=port,
+                                  ssh_opts=ssh_opts)
         if authed:
             ok("%s -> %s" % (shorten(key), detail))
             winners.append(key)
@@ -331,27 +782,30 @@ def diagnose_host(host, keys, agent, test_auth):
             info("%s -> %s" % (shorten(key), detail))
 
     if winners:
-        suggest_fix(host, winners[0])
+        suggest_fix(host, winners[0], port, user)
     else:
-        bad("none of the discovered keys authenticate to %s" % host)
+        bad("none of the discovered keys authenticate to %s" % label)
         info("the key for this host may not be in ~/.ssh, or is not registered with "
              "the remote account")
     return bool(winners)
 
 
-def suggest_fix(host, key):
+def suggest_fix(host, key, port="", user="git"):
     head("fix")
-    print("A key that authenticates exists but ssh never offers it. Either:\n")
-    print("  %s1. Declare it for this host%s" % (C_BOLD, C_RESET))
-    print("     Append to %s:\n" % os.path.join(SSH_DIR, "config"))
-    print("       Host %s" % host)
-    print("         HostName %s" % host)
-    print("         User git")
-    print("         IdentityFile %s" % key)
-    print("         IdentitiesOnly yes\n")
-    print("  %s2. Or load it into the agent%s" % (C_BOLD, C_RESET))
-    print("     ssh-add --apple-use-keychain %s\n" % key)
-    print("  %sVerify with%s  ssh -T git@%s" % (C_DIM, C_RESET, host))
+    raw("A key that authenticates exists but ssh never offers it. Either:\n")
+    raw("  %s1. Declare it for this host%s" % (C_BOLD, C_RESET))
+    raw("     Append to %s:\n" % os.path.join(SSH_DIR, "config"))
+    raw("       Host %s" % host)
+    raw("         HostName %s" % host)
+    raw("         User %s" % user)
+    if port:
+        raw("         Port %s" % port)
+    raw("         IdentityFile %s" % key)
+    raw("         IdentitiesOnly yes\n")
+    raw("  %s2. Or load it into the agent%s" % (C_BOLD, C_RESET))
+    raw("     ssh-add --apple-use-keychain %s\n" % key)
+    raw("  %sVerify with%s  ssh %s-T %s@%s"
+        % (C_DIM, C_RESET, "-p %s " % port if port else "", user, host))
 
 
 def shorten(path):
@@ -368,7 +822,7 @@ def run_report(args):
         loaded, problems = parse_includes(config_path)
         ok("loaded %d config file(s)" % len(loaded))
         for path in loaded:
-            print("        %s" % shorten(path))
+            raw("        %s" % shorten(path))
 
     for pattern, kind, detail in problems:
         if kind == "directories":
@@ -389,19 +843,47 @@ def run_report(args):
                 bad("%s has mode %s — ssh will refuse it (chmod 600)" %
                     (shorten(key), problem))
             else:
-                print("        %s" % shorten(key))
+                raw("        %s" % shorten(key))
     else:
         warn("no private keys found under %s" % shorten(args.ssh_dir))
 
     agent = agent_identities()
 
-    hosts = list(dict.fromkeys(args.host)) or sorted(git_remote_hosts())
+    ssh_opts = ()
+    if args.host:
+        hosts = []
+        for spec in dict.fromkeys(args.host):
+            user, _, name = spec.rpartition("@")
+            hosts.append((name, "", user))
+    else:
+        hosts = sorted(git_remote_hosts())
+        if hosts:
+            source, command, program_only = configured_ssh_command()
+            if source:
+                parsed = parse_ssh_command(command, program_only)
+                head("ssh command")
+                if parsed is None:
+                    message = ("%s is a custom SSH command, not inspected; the "
+                               "host checks would describe plain ssh, not what "
+                               "git runs" % source)
+                    # Nothing was verified, so the run cannot pass: warn-level
+                    # exit 1, and a recorded failure under --require-known-host.
+                    if args.require_known_host:
+                        bad(message)
+                    else:
+                        warn(message)
+                    return 1
+                ssh_opts = tuple(parsed)
+                info("%s runs ssh%s" % (source, " " + " ".join(
+                    shlex.quote(o) for o in parsed) if parsed else ""))
     if not hosts:
         head("hosts")
         warn("no SSH remotes in this repository and no --host given")
         return 1
 
-    results = [diagnose_host(h, keys, agent, args.test_auth) for h in hosts]
+    results = [diagnose_host(h, keys, agent, args.test_auth, args.require_known_host, p,
+                             user=u, ssh_opts=ssh_opts)
+               for h, p, u in hosts]
     return 0 if all(results) else 1
 
 
@@ -431,17 +913,31 @@ def main(argv=None):
         description="Diagnose git-over-SSH authentication failures."
     )
     parser.add_argument("--host", action="append", default=[],
-                        help="host to check (repeatable); defaults to this repo's remotes")
+                        help="host to check, as host or user@host (repeatable); "
+                             "defaults to this repo's remotes")
     parser.add_argument("--test-auth", action="store_true",
-                        help="try each discovered key against the host")
-    parser.add_argument("--quiet", action="store_true",
+                        help="authenticate to the host (the only option that connects "
+                             "to it), then try each discovered key if that fails")
+    parser.add_argument("--require-known-host", action="store_true",
+                        help="fail when the host key is not in known_hosts, even under "
+                             "accept-new (CI preflight)")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--quiet", action="store_true",
                         help="print nothing; communicate the verdict through the exit code")
+    output.add_argument("--json", action="store_true",
+                        help="print one JSON object (exit code and every finding) "
+                             "instead of the report")
     parser.add_argument("--ssh-dir", default=SSH_DIR, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     if args.quiet:
         with contextlib.redirect_stdout(io.StringIO()):
             return run_report(args)
+    if args.json:
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = run_report(args)
+        print(render_json(os.path.basename(__file__), EVENTS, rc))
+        return rc
     return run_report(args)
 
 
