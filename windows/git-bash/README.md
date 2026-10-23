@@ -12,6 +12,7 @@ config, and secrets/local tweaks stay out of the committed files.
 
 - [What's here](#whats-here)
 - [Install](#install)
+- [`gitbash_doctor.sh`](#gitbash_doctorsh)
 - [Applying changes after editing](#applying-changes-after-editing)
 - [What's in `.aliases`](#whats-in-aliases)
 - [Key differences from a minimal SSH-agent-only `.bashrc`](#key-differences-from-a-minimal-ssh-agent-only-bashrc)
@@ -27,7 +28,8 @@ config, and secrets/local tweaks stay out of the committed files.
 | `.bashrc` | Default working directory, history, prompt (with Git branch), PATH dedup, persistent `ssh-agent` with fingerprint-checked key loading, editor/pager defaults. Sources `.aliases` near the end. |
 | `.bash_profile` | Sources `.bashrc`. Required because Git Bash opens new windows as **login** shells, which read `.bash_profile`/`.profile`, not `.bashrc`, by default. |
 | `.aliases` | ~190 aliases and functions: Git, GitLab CLI (`glab`), Docker, Kubernetes, Terraform, Windows-style commands, navigation, safer file ops. Kept separate so it can be edited or swapped out without touching shell/environment setup in `.bashrc`. |
-| `install_dotfiles.sh` | Copies the three files above into `$HOME`, backing up what was there and refusing to install anything with CRLF line endings. |
+| `install_dotfiles.sh` | Copies the three files above into `$HOME`, backing up what was there and refusing to install anything with CRLF line endings. Lists, restores and prunes those backups. |
+| `gitbash_doctor.sh` | Read-only check of the Git Bash environment around those files: CRLF or broken dotfiles, a stale `ssh-agent`, the wrong `ssh` on `PATH`, a OneDrive or spaced `HOME`, long paths, missing Git settings, the Store `python` stub. |
 
 ## Install
 
@@ -39,6 +41,7 @@ the environment).
 # From a Git Bash window, in a checkout of this repository:
 ./windows/git-bash/install_dotfiles.sh --dry-run
 ./windows/git-bash/install_dotfiles.sh --status
+./windows/git-bash/install_dotfiles.sh --diff
 ./windows/git-bash/install_dotfiles.sh
 ```
 
@@ -51,7 +54,10 @@ cp windows/git-bash/.bashrc windows/git-bash/.bash_profile windows/git-bash/.ali
 If you already have a `~/.bashrc`, `~/.bash_profile`, or `~/.aliases`, diff
 first and merge by hand instead of overwriting — in particular, keep
 anything you have under a "local overrides" section, or move it into
-`~/.bashrc.local` (see below). The script keeps a timestamped backup of
+`~/.bashrc.local` (see below). `install_dotfiles.sh --diff` is that diff: a
+`-` line is something of yours the install would remove, a `+` line what it
+would add. It prints to the terminal only, and your files can hold tokens,
+which is one more reason they belong in `~/.bashrc.local`. The script keeps a timestamped backup of
 anything it replaces, but a backup is not a merge.
 
 Then open a new Git Bash window (or `source ~/.bash_profile` in the current
@@ -69,13 +75,20 @@ those two checks in front of it.
 | --- | --- |
 | `--dry-run` | Print what would be copied and backed up; write nothing |
 | `--status` | Print `MATCH`, `DRIFT`, or `MISSING` per target; exit `4` on drift |
+| `--diff` | The same report plus a unified diff (`installed:` against `repo:`) for each drifted target; writes nothing; exit `4` on drift |
 | `--force` | Install even when a source file has CRLF line endings |
 | `--source DIR` | Copy from `DIR` instead of the folder holding the script |
 | `--home DIR` | Copy into `DIR` instead of `$HOME` |
+| `--list-backups` | List the backup sets in the target directory, newest first; write nothing; exit `4` when there are none |
+| `--restore STAMP` | Put back one backup set (a stamp from `--list-backups`, or `latest`), saving the files it replaces as a new set first; `--dry-run` previews it |
+| `--prune-backups N` | Delete every backup set but the newest `N`; only previews unless `--yes` is given |
+| `--yes` | Confirm the deletion `--prune-backups` previews |
 | `-h`, `--help` | Show the help |
 
 - **Backups are timestamped and share one stamp per run**, so a set taken
   together is obvious from the names: `.bashrc.backup-20250131-142530`.
+  A `--restore` whose stamp is already taken saves under `-1`, `-2` ...
+  suffixed stamps instead of overwriting a set.
 - **A file that already matches the source is left alone.** Re-running is a
   no-op, not three new copies of identical files.
 - **CRLF is refused, not fixed.** The script prints the `sed` command that
@@ -90,9 +103,83 @@ those two checks in front of it.
 - **`--source` is for the copied-alone case.** Dropped into `~/bin` on its own,
   the script has no dotfiles next to it; point `--source` at a checkout.
 
-Exit codes: `0` success/current, `1` CRLF line endings in a source file, `2`
-wrong environment (no source files, or no target directory), `3` usage, `4`
-`--status` found at least one missing or different target.
+#### Rolling back
+
+Every install leaves `<name>.backup-<stamp>` files in `$HOME`, and a bad
+`.bashrc` is easiest to undo from a shell that still works, so the way back is
+one command rather than three `cp` lines typed into a broken prompt:
+
+```bash
+./windows/git-bash/install_dotfiles.sh --list-backups
+./windows/git-bash/install_dotfiles.sh --restore latest --dry-run
+./windows/git-bash/install_dotfiles.sh --restore 20250131-142530
+./windows/git-bash/install_dotfiles.sh --prune-backups 3 --yes
+```
+
+`--list-backups` prints one line per set, such as
+`20250131-142530  .bashrc .aliases`, naming the files that set holds.
+`--restore` first saves each file it is about to replace as a new backup set,
+so a rollback can itself be rolled back (`--restore latest` again), leaves a
+file that already matches alone, skips a destination that is a directory and
+exits `1` after the rest of the set is back, and puts a backed-up symlink
+back as a symlink rather than writing through it. `--prune-backups N`
+keeps the newest `N` sets and deletes the rest, and only with `--yes`;
+without it, or with `--dry-run`, it prints the `rm` it would run. Only
+files named exactly
+`<.bashrc|.bash_profile|.aliases>.backup-<YYYYmmdd-HHMMSS>` directly in the
+target directory are ever listed, restored or deleted; something like
+`.bashrc.backup-notes` is left alone. None of the three needs the source
+files, so they work from a copy of the script with no checkout beside it.
+They are separate modes: combining two, or `--status` with one, exits `3`.
+
+Exit codes: `0` success/current, `1` CRLF line endings in a source file, or
+a `--restore` that skipped a file because its destination is a directory
+(the rest of the set is still restored), `2` wrong environment (no source
+files, no target directory, or no `diff` on `PATH` for `--diff`), `3`
+usage, `4` `--status` or `--diff` found at least one missing or different
+target, or there are no backups to list or restore.
+
+## `gitbash_doctor.sh`
+
+Git Bash goes wrong in a few quiet, repeatable ways, and each one costs an hour
+the first time: a dotfile saved with CRLF, an `agent.env` left pointing at an
+agent that died with the last reboot, Windows' own OpenSSH ahead of Git's so
+`ssh` cannot see the agent's keys, a `HOME` under OneDrive. `--status` above
+only says whether the dotfiles match. This looks at the machine around them,
+prints the command that fixes each finding, and changes nothing.
+
+```bash
+./windows/git-bash/gitbash_doctor.sh
+./windows/git-bash/gitbash_doctor.sh --source ./windows/git-bash --fail-on warn
+```
+
+| Option | Effect |
+| --- | --- |
+| `--home DIR` | Inspect `DIR` instead of `$HOME` |
+| `--source DIR` | Also compare the dotfiles with a checkout of this folder; a difference is a warning. Off by default: the script does not guess where the checkout is |
+| `--ssh-key FILE` | The private key to check (default `~/.ssh/id_ed25519`, the one `.bashrc` loads) |
+| `--fail-on warn\|fail` | Exit `1` on failures only (default) or on warnings too |
+| `--quiet` | Print only warnings and failures |
+| `-h`, `--help` | Show the help |
+
+| Section | Checks |
+| --- | --- |
+| dotfiles | `.bashrc`, `.bash_profile`, `.aliases` present (fail), free of CR (fail, with the `sed` that fixes it) and parsing with `bash -n` (fail); `~/.bashrc.local` parses (fail), since `.bashrc` sources it on every start; with `--source`, a managed file the checkout lacks (fail, so an incomplete source cannot pass) and drift from the checkout (warn) |
+| home | The Windows form of `HOME` from `cygpath -w`: a space or a non-ASCII character (warn), a OneDrive folder (warn: slow Git and SSH, and `~/.ssh` may be replicated) |
+| ssh | `~/.ssh/agent.env` naming a process that is not running (warn; the next `.bashrc` start replaces it); `ssh-add -l` read the way `.bashrc` reads it, `2` meaning no agent (warn); the key and its `.pub` present (warn); a key that `ssh-keygen -y` opens with an empty passphrase (warn); a key `ssh-keygen -y` cannot open for any other reason than a passphrase, such as a malformed or unreadable file (fail; a key counts as protected only when `ssh-keygen` reports an incorrect passphrase or the file itself is marked encrypted); `ssh` resolving to `System32\OpenSSH` (warn: Windows' client cannot see this agent) |
+| git | From `~/.gitconfig` and `$XDG_CONFIG_HOME/git/config` (default `~/.config/git/config`; `~/.gitconfig` wins, as in Git): `core.longpaths` not `true` (warn), no `credential.helper` (warn; helpers are listed in the order Git collects them, system file, then the XDG file, then `~/.gitconfig`, an empty `helper =` resets the list so far, and a bare `helper` with no `=`, which Git rejects, is left out and reported as a warning naming the file; with `--home` the XDG file is `<home>/.config/git/config` and an ambient `XDG_CONFIG_HOME` is ignored; `include.path` entries are followed, and one such as `~/x` resolves under `--home`, because `HOME` is set to the inspected home for the Git lookups), `safe.directory = *` (warn: it disables the ownership check), `user.name` or `user.email` unset (warn), `core.autocrlf = true` (info). The system Git config is consulted only for `core.longpaths` and `credential.helper`, which Git for Windows' installer can put there. Then `LongPathsEnabled` in the registry through `reg.exe query` (warn when it is not `1`) |
+| path | Duplicate `PATH` entries (warn; `.bashrc`'s `dedup_path` should leave none), entries that are not a directory (info), `python` or `python3` resolving to a `WindowsApps` alias stub (warn) |
+| tools | Whether `docker`, `kubectl`, `terraform` and `glab` are installed (info). `.aliases` defines each block only when its tool is there, so this explains a missing alias |
+
+A probe whose tool is missing (`cygpath`, `reg.exe`, `ssh-keygen` off Windows)
+is reported as `skip`, so the script also runs on Linux. It reads files and
+runs `bash -n`, `cmp`, `kill -0`, `ssh-add -l`, `ssh-keygen -y`,
+`git config --get`, `reg.exe query`, `cygpath` and `command -v`; it writes
+nothing, starts or kills no agent, and never prints key material. There is no
+`--dry-run` because there is nothing to preview.
+
+Exit codes: `0` no finding at or above `--fail-on`, `1` one or more, `2` wrong
+environment (`--home` or `--source` is not a directory), `3` usage.
 
 ## Applying changes after editing
 
@@ -153,6 +240,26 @@ under `# ---` section headers. By category:
 - **Docker / Kubernetes / Terraform** — `d*`/`dc*`, `k`/`kg*`/`kd*`, `tf*`;
   `kns` prints the current Kubernetes namespace and `kns NAME` changes it for
   the current context.
+- **Where am I pointed?** — `ctx` prints one line per tool that is
+  configured: the Kubernetes context and namespace, the AWS profile and
+  region (with no `AWS_PROFILE` or exported keys, the `[default]` profile
+  of `~/.aws/config` or `~/.aws/credentials`, honouring `AWS_CONFIG_FILE`
+  and `AWS_SHARED_CREDENTIALS_FILE`, with the region from its `region` key;
+  with `AWS_PROFILE` set and no `AWS_REGION`, the region of its
+  `[profile NAME]` section), the gcloud project (`CLOUDSDK_CORE_PROJECT`,
+  else the project of the configuration `CLOUDSDK_ACTIVE_CONFIG_NAME` or
+  `active_config` names, read from `CLOUDSDK_CONFIG` or
+  `%APPDATA%\gcloud`), the Terraform workspace (`TF_WORKSPACE`, else
+  `environment` in `TF_DATA_DIR` or `.terraform` of the current directory,
+  `default` when that directory has no such file), the Docker context
+  (`DOCKER_CONTEXT`, else `DOCKER_HOST`, else the saved context in
+  `DOCKER_CONFIG` or `~/.docker`), and the Git branch with its origin host.
+  Run it before `tfaa`, `tfda` or `kdelete`, which act on whatever these
+  point at. A value that looks like production (`prod`, `production` or
+  `prd`, any case) ends in `!`, in red on a terminal; the `!` stays when
+  colour is off (`NO_COLOR`, `ctx --plain`, or output piped to a log). It
+  prints names only: exported AWS keys show as the word `static-keys`,
+  never their value.
 - **SSH** — `sshkeys`, `sshadd`/`sshremove` (reuse `$SSH_KEY` from
   `.bashrc`), `sshtestgithub`/`sshtestgitlab`.
 - **Windows networking** — `ipconfig`, `flushdns`, `ports`, `listening`,
@@ -234,6 +341,13 @@ Put host-specific PATH entries, work-only aliases, tokens, or anything else
 you don't want in version control into `~/.bashrc.local` — `.bashrc` sources
 it automatically at the end if it exists, and it's plain `$HOME`, so it never
 gets committed here.
+
+That is also where to tell `ctx` what production looks like on your
+accounts, as an extended regular expression matched in any case:
+
+```bash
+export CTX_DANGER_PATTERN='prod|prd|live|-p[0-9]+$'
+```
 
 ## Requirements
 

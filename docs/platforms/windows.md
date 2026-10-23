@@ -6,16 +6,20 @@ Windows 10/11 with PowerShell 5.1 or 7 for the `.ps1` scripts, and Git Bash for
 the dotfiles installer: winget and Chocolatey capture and restore, workstation
 status and health, network diagnosis, winget upgrades with WSL update, a `C:`
 disk usage report and disk cleanup, WSL2 backup, restore and compaction, and a
-Git Bash dotfiles installer.
+Git Bash dotfiles installer with a read-only doctor for the environment around
+it. The Git Bash aliases include `ctx`, which prints the Kubernetes, AWS,
+gcloud, Terraform, Docker and Git targets the next command will hit and marks
+anything that looks like production.
 
 ## Requirements
 
 - Windows 10 or 11; PowerShell 5.1 or 7.
 - winget (WinGet 1.6+ for `winget_configure.ps1` `apply` and `test`).
 - Chocolatey is optional and is not installed by these scripts.
-- WSL2 for `wsl_manage.ps1`.
+- WSL2 for `wsl_manage.ps1`, except `verify-backup`, `backups` and
+  `wslconfig`, which only read files.
 - Elevation for `compact` and some cleanup targets.
-- Git Bash for `install_dotfiles.sh`.
+- Git Bash for `install_dotfiles.sh` and `gitbash_doctor.sh`.
 
 ## Main scripts
 
@@ -37,8 +41,9 @@ Git Bash dotfiles installer.
 | `setup/winget_configure.ps1` | `validate`, `show`, `test`, `apply` of `configuration.winget`. | `-DryRun` on `apply` |
 | `cleanup/disk_usage.ps1` | What fills `C:` (hibernation and page files, `Windows.old`, `WinSxS`, Docker, WSL disks, dev caches) and the tool that gives each back; `tree` for one folder. | <span class="stage stage-report">read-only</span> |
 | `cleanup/clean_disk_c.ps1` | Free space on `C:`; opt-in Recycle Bin, Update cache, dev caches, docker, crash dumps, servicing logs, component store. | `-DryRun`; `-Yes` to delete |
-| `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `restore`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`. | `-DryRun` on `restore`, `prune-backups`, `terminate` |
-| `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups. | `--dry-run`; `--status` is read-only |
+| `wsl/wsl_manage.ps1` | `list`, `df`, `backup`, `verify-backup`, `backups` (inventory, `-Verify`, `-MaxAgeDays`), `restore`, `prune-backups`, `clone`, `compact`, `sparse`, `terminate`, `shutdown`, `doctor` (per-distro health), `wslconfig` (audit `.wslconfig`). | `-DryRun` on `backup` (`-All` for every distro), `restore`, `clone`, `prune-backups`, `compact`, `sparse`, `terminate`, `shutdown`; `backups`, `doctor` and `wslconfig` are read-only |
+| `git-bash/install_dotfiles.sh` | Copy `.bashrc`, `.bash_profile`, `.aliases` into `$HOME` with backups; `--restore` and `--prune-backups` roll back and clean up. | `--dry-run` (install, `--restore`, `--prune-backups`); `--status`, `--diff` and `--list-backups` are read-only |
+| `git-bash/gitbash_doctor.sh` | Git Bash health: CRLF or broken dotfiles, stale `ssh-agent`, Windows OpenSSH on `PATH`, OneDrive `HOME`, long paths, Git settings, Store `python` stub. | <span class="stage stage-report">read-only</span> |
 
 <!-- markdownlint-enable MD033 -->
 
@@ -61,6 +66,13 @@ All paths are under `windows/`.
     .\windows\setup\winget_bootstrap.ps1 diff
     .\windows\cleanup\disk_usage.ps1
     .\windows\cleanup\disk_usage.ps1 tree -Path $env:USERPROFILE -Depth 2
+    .\windows\wsl\wsl_manage.ps1 doctor
+    .\windows\wsl\wsl_manage.ps1 wslconfig
+    .\windows\wsl\wsl_manage.ps1 backups -DestDir D:\Backups -Verify -MaxAgeDays 7
+    ```
+
+    ```bash
+    ./windows/git-bash/gitbash_doctor.sh
     ```
 
 === "Preview"
@@ -72,6 +84,8 @@ All paths are under `windows/`.
     .\windows\cleanup\clean_disk_c.ps1 -DryRun -IncludeCrashDumps -IncludeLogs -IncludeComponentStore
     .\windows\setup\winget_configure.ps1 apply -DryRun
     .\windows\wsl\wsl_manage.ps1 prune-backups -DestDir D:\Backups -KeepDays 30 -KeepLast 2 -DryRun
+    .\windows\wsl\wsl_manage.ps1 backup -All -DestDir D:\Backups -DryRun
+    .\windows\wsl\wsl_manage.ps1 compact -Distro Ubuntu -DryRun
     ```
 
 === "Apply"
@@ -105,7 +119,10 @@ All paths are under `windows/`.
     Changing the policy is your decision, not the scripts'.
 
 - `wsl_manage.ps1 restore` imports a new distro and never overwrites an
-  existing one. `compact` needs elevation and shuts WSL down first.
+  existing one; `-DefaultUser` sets the user it boots as, which `--import`
+  does not carry over. `clone` copies a distro under a new name the same way
+  and never touches the source. `compact` needs elevation and shuts WSL down
+  first.
 - Several probes are best-effort: `Get-BitLockerVolume` is missing on Home
   editions, and `Get-MpComputerStatus` is absent where another antivirus
   product replaced Defender.
