@@ -12,12 +12,18 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$HERE/../.." && pwd)"
 
+# gitbash_doctor.sh locates the global git config through XDG_CONFIG_HOME, so a
+# host that exports it would aim every doctor run at its own config. Unset it
+# here; the cases that need it set it explicitly on the invocation.
+unset XDG_CONFIG_HOME
+
 echo "=== Running Windows Git Bash contract checks ==="
 # "${BASH:-bash}", not "bash". These files target Git Bash, so the right
 # interpreter is whichever shell is running this suite — on windows-2025 that
 # is Git Bash itself. A bare `bash` resolves through PATH and need not be it.
 "${BASH:-bash}" -n \
   "$REPO_ROOT/windows/git-bash/install_dotfiles.sh" \
+  "$REPO_ROOT/windows/git-bash/gitbash_doctor.sh" \
   "$REPO_ROOT/windows/git-bash/.aliases" \
   "$REPO_ROOT/windows/git-bash/.bashrc" \
   "$REPO_ROOT/windows/git-bash/.bash_profile"
@@ -71,6 +77,11 @@ if [[ "$namespace_out" != $'team-a\nconfig set-context --current --namespace=tea
 fi
 echo "[ ok ] Git Bash status and namespace helpers"
 
+# The fixture-driven checks: scratch homes, shims for the Windows tools. Same
+# interpreter as above, for the same reason.
+echo "=== Running Git Bash script checks ==="
+"${BASH:-bash}" "$HERE/test_git_bash_scripts.sh"
+
 if ! command -v pwsh >/dev/null 2>&1; then
   # Degrades the same way test-env/python/run.sh does for a missing ruff: say
   # what is skipped and how to get it, and do not fail the run.
@@ -80,5 +91,12 @@ if ! command -v pwsh >/dev/null 2>&1; then
   exit 0
 fi
 
+# Both files always run, and the suite fails if either does. They are separate
+# so the checks every script shares and the ones wsl_manage.ps1 alone carries
+# can change without editing each other.
+rc=0
 echo "=== Running Windows contract checks ==="
-exec pwsh -NoProfile -File "$HERE/contract.ps1"
+pwsh -NoProfile -File "$HERE/contract.ps1" || rc=1
+echo "=== Running wsl_manage.ps1 contract checks ==="
+pwsh -NoProfile -File "$HERE/wsl_contract.ps1" || rc=1
+exit "$rc"

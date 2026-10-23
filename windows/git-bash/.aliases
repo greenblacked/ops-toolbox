@@ -501,6 +501,212 @@ alias tfo='terraform output'
 alias tfsl='terraform state list'
 
 # ---------------------------------------------------------------------------
+# Where am I pointed?
+# ---------------------------------------------------------------------------
+# ctx: where the next kubectl, aws, gcloud, terraform, docker or git command
+# will land, one line per tool that is configured and nothing for the rest:
+#
+#   kube    prod-eu / payments!
+#   aws     prod-admin!  (eu-west-1)
+#   tf      prod!  (.terraform/environment)
+#
+# tfaa, tfda and kdelete above act on whatever these point at. A value
+# matching CTX_DANGER_PATTERN (an extended regex, any case; default
+# prod|production|prd) gets a trailing '!', in red on a terminal unless
+# NO_COLOR is set or --plain is given, so the warning survives in a log too.
+# Names only: profile, project and context names, never a key or a token;
+# exported AWS keys show as the word static-keys. Reads variables and small
+# config files (with sed and cygpath); the only tools it asks are kubectl
+# config view and git.
+# Usage: ctx [--plain]
+__ctx_print() {
+    # __ctx_print LABEL VALUE EXTRA PATTERN RED RESET
+    local shown
+    # nocasematch in a subshell, so the caller's shell options are untouched.
+    if ( shopt -s nocasematch; [[ $2 =~ $4 ]] ); then
+        shown="$5$2!$6"
+    else
+        shown="$2"
+    fi
+    printf '%-7s %s%s\n' "$1" "$shown" "${3:+  $3}"
+}
+
+# __ctx_ini FILE SECTION [KEY]: read an INI file the way the AWS files are
+# written. Without KEY, exit 0 when [SECTION] exists. With KEY, print its
+# value and exit 0, or print nothing and exit 1. Never writes, never echoes
+# any other key, so a credentials file is only ever asked about a region.
+__ctx_ini() {
+    [ -r "$1" ] || return 1
+    awk -v want="$2" -v key="${3:-}" '
+        { line = $0; sub(/\r$/, "", line); gsub(/^[ \t]+|[ \t]+$/, "", line) }
+        line ~ /^\[.*\]$/ {
+            sec = substr(line, 2, length(line) - 2)
+            gsub(/^[ \t]+|[ \t]+$/, "", sec)
+            inside = (sec == want)
+            if (inside) found = 1
+            next
+        }
+        inside && key != "" {
+            i = index(line, "=")
+            if (i > 0) {
+                k = substr(line, 1, i - 1)
+                gsub(/[ \t]+$/, "", k)
+                if (k == key) {
+                    v = substr(line, i + 1)
+                    gsub(/^[ \t]+/, "", v)
+                    print v
+                    got = 1
+                    exit
+                }
+            }
+        }
+        END { exit (key == "" ? !found : !got) }
+    ' "$1"
+}
+
+ctx() {
+    local plain=0 printed=0 pattern red='' reset=''
+    local aws_cfg aws_cred aws_section
+    local kube_ctx kube_ns aws_profile aws_region aws_extra gc_dir gc_name gc_project
+    local tf_ws tf_dir tf_from docker_ctx docker_from branch url host
+    [ "${1:-}" = "--plain" ] && plain=1
+    pattern="${CTX_DANGER_PATTERN:-prod|production|prd}"
+    if [ "$plain" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+        red=$'\033[1;31m'
+        reset=$'\033[0m'
+    fi
+
+    if command -v kubectl >/dev/null 2>&1; then
+        kube_ctx="$(kubectl config view --minify --output='jsonpath={.current-context}' 2>/dev/null)"
+        if [ -n "$kube_ctx" ]; then
+            kube_ns="$(kubectl config view --minify --output='jsonpath={..namespace}' 2>/dev/null)"
+            __ctx_print kube "$kube_ctx / ${kube_ns:-default}" '' "$pattern" "$red" "$reset"
+            printed=$((printed + 1))
+        fi
+    fi
+
+    aws_profile="${AWS_PROFILE:-}"
+    aws_region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
+    aws_cfg="${AWS_CONFIG_FILE:-$HOME/.aws/config}"
+    aws_cred="${AWS_SHARED_CREDENTIALS_FILE:-$HOME/.aws/credentials}"
+    # No profile and no exported keys: the AWS CLI and SDKs fall back to the
+    # [default] profile of the shared files, so show that one.
+    if [ -z "$aws_profile" ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+        if __ctx_ini "$aws_cfg" default || __ctx_ini "$aws_cred" default; then
+            aws_profile=default
+        fi
+    fi
+    # No region in the environment: read it for the profile in use. The config
+    # file names a profile [profile NAME] (only default is bare); the
+    # credentials file uses [NAME] and rarely holds a region.
+    if [ -n "$aws_profile" ] && [ -z "$aws_region" ]; then
+        if [ "$aws_profile" = default ]; then
+            aws_section=default
+        else
+            aws_section="profile $aws_profile"
+        fi
+        aws_region="$(__ctx_ini "$aws_cfg" "$aws_section" region || __ctx_ini "$aws_cred" "$aws_profile" region)"
+    fi
+    aws_extra="${aws_region:+($aws_region)}"
+    # Whether keys are exported, never what they are.
+    if [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+        aws_extra="${aws_extra:+$aws_extra  }static-keys"
+    fi
+    if [ -n "$aws_profile" ] || [ -n "${AWS_ACCESS_KEY_ID:-}" ]; then
+        __ctx_print aws "${aws_profile:-(no profile)}" "$aws_extra" "$pattern" "$red" "$reset"
+        printed=$((printed + 1))
+    fi
+
+    gc_dir=''
+    if [ -n "${CLOUDSDK_CONFIG:-}" ]; then
+        # CLOUDSDK_CONFIG is the config directory itself, often a Windows path.
+        gc_dir="$CLOUDSDK_CONFIG"
+        if command -v cygpath >/dev/null 2>&1; then
+            gc_dir="$(cygpath -u "$CLOUDSDK_CONFIG" 2>/dev/null || printf '%s' "$CLOUDSDK_CONFIG")"
+        fi
+    elif [ -n "${APPDATA:-}" ] && command -v cygpath >/dev/null 2>&1; then
+        gc_dir="$(cygpath -u "$APPDATA" 2>/dev/null)/gcloud"
+    fi
+    if [ -n "$gc_dir" ]; then
+        # CLOUDSDK_ACTIVE_CONFIG_NAME picks the configuration to read instead
+        # of the one active_config names; CLOUDSDK_CORE_PROJECT overrides the
+        # project whatever the file says.
+        gc_name="${CLOUDSDK_ACTIVE_CONFIG_NAME:-}"
+        if [ -z "$gc_name" ] && [ -f "$gc_dir/active_config" ]; then
+            read -r gc_name < "$gc_dir/active_config"
+        fi
+        gc_project="${CLOUDSDK_CORE_PROJECT:-}"
+        if [ -z "$gc_project" ] && [ -n "$gc_name" ] && [ -f "$gc_dir/configurations/config_$gc_name" ]; then
+            gc_project="$(sed -n 's/^[[:space:]]*project[[:space:]]*=[[:space:]]*//p' "$gc_dir/configurations/config_$gc_name")"
+            gc_project="${gc_project%%$'\n'*}"
+        fi
+        if [ -n "$gc_project" ]; then
+            __ctx_print gcloud "$gc_project" '' "$pattern" "$red" "$reset"
+            printed=$((printed + 1))
+        elif [ -n "$gc_name" ]; then
+            __ctx_print gcloud "$gc_name" '(configuration, no project)' "$pattern" "$red" "$reset"
+            printed=$((printed + 1))
+        fi
+    fi
+
+    tf_ws="${TF_WORKSPACE:-}"
+    tf_from='(TF_WORKSPACE)'
+    # TF_DATA_DIR, when set and non-empty, replaces .terraform as the data dir.
+    tf_dir="${TF_DATA_DIR:-.terraform}"
+    if [ -z "$tf_ws" ] && [ -d "$tf_dir" ]; then
+        # An initialised directory with no environment file is on "default".
+        tf_ws=default
+        tf_from='(default)'
+        if [ -f "$tf_dir/environment" ]; then
+            tf_from="($tf_dir/environment)"
+            read -r tf_ws < "$tf_dir/environment"
+            tf_ws="${tf_ws:-default}"
+        fi
+    fi
+    if [ -n "$tf_ws" ]; then
+        __ctx_print tf "$tf_ws" "$tf_from" "$pattern" "$red" "$reset"
+        printed=$((printed + 1))
+    fi
+
+    docker_ctx="${DOCKER_CONTEXT:-}"
+    docker_from='(DOCKER_CONTEXT)'
+    # DOCKER_HOST overrides the context saved in config.json, so name it.
+    if [ -z "$docker_ctx" ] && [ -n "${DOCKER_HOST:-}" ]; then
+        docker_ctx="$DOCKER_HOST"
+        docker_from='(DOCKER_HOST)'
+    elif [ -z "$docker_ctx" ] && [ -f "${DOCKER_CONFIG:-$HOME/.docker}/config.json" ]; then
+        docker_ctx="$(sed -n 's/.*"currentContext"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "${DOCKER_CONFIG:-$HOME/.docker}/config.json")"
+        docker_ctx="${docker_ctx%%$'\n'*}"
+        docker_ctx="${docker_ctx:-default}"
+        docker_from=''
+    fi
+    if [ -n "$docker_ctx" ]; then
+        __ctx_print docker "$docker_ctx" "$docker_from" "$pattern" "$red" "$reset"
+        printed=$((printed + 1))
+    fi
+
+    if branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && [ -n "$branch" ]; then
+        url="$(git config --get remote.origin.url 2>/dev/null)"
+        url="${url%.git}"
+        host=''
+        # The same ssh-to-https reading glopen does, by parameter expansion.
+        if [[ $url == git@*:* ]]; then
+            host="${url#git@}"
+            host="${host%%:*}"
+        elif [[ $url == *://* ]]; then
+            host="${url#*://}"
+            host="${host#*@}"
+            host="${host%%/*}"
+            host="${host%%:*}"
+        fi
+        __ctx_print git "$branch" "${host:+origin=$host}" "$pattern" "$red" "$reset"
+        printed=$((printed + 1))
+    fi
+
+    [ "$printed" -gt 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # SSH
 # ---------------------------------------------------------------------------
 alias sshkeys='ssh-add -l'
