@@ -1147,6 +1147,8 @@ foreach ($case in $planCases) {
 $userPlanCases = @(
     @{ Text = "[user]`ndefault=alice`n";  User = 'alice'; Expect = 'present'; Label = 'the same default user' }
     @{ Text = "[user]`ndefault=alice`n";  User = 'bob';   Expect = 'update';  Label = 'another default user' }
+    @{ Text = "[User]`ndefault=alice`n";  User = 'bob';   Expect = 'append';  Label = 'a section name that differs only in case' }
+    @{ Text = "[user]`nDefault=alice`n";  User = 'bob';   Expect = 'manual';  Label = 'a key that differs only in case' }
     @{ Text = "[user]`ndefault=Alice`n";  User = 'alice'; Expect = 'update';  Label = 'a default user that differs only in case' }
     @{ Text = "[boot]`nsystemd=true`n[user]`r`ndefault = alice`r`n"; User = 'bob'; Expect = 'update'; Label = 'CRLF text and spaces around =' }
     @{ Text = "[user]`n# nothing`n";      User = 'bob';   Expect = 'manual';  Label = 'a [user] section with no default=' }
@@ -1163,16 +1165,23 @@ Test-Case 'Get-WslConfDefaultUser of no default is $null' ($null -eq (Get-WslCon
 # asked to do. A tar that already names another default user must end with the
 # requested one, and a failed rewrite must be reported as a failure.
 function Invoke-DefaultUserScenario {
-    param([string]$Conf, [string]$User, [int]$SedExit = 0, [string]$Who = $User)
+    param([string]$Conf, [string]$User, [int]$SedExit = 0, [string]$Who = $User, [switch]$SedNoop)
     $script:duCalls = [System.Collections.Generic.List[string]]::new()
     $script:duConf = $Conf
     $script:duSedExit = $SedExit
     $script:duWho = $Who
+    $script:duSedNoop = [bool]$SedNoop
     function script:wsl.exe {
         $script:duCalls.Add(($args -join ' '))
         $global:LASTEXITCODE = 0
         if ($args[-1] -like 'cat /etc/wsl.conf*') { return $script:duConf -split "`n" }
-        if ($args[-1] -like 'sed -i*' -or $args[-1] -like 'printf*') { $global:LASTEXITCODE = $script:duSedExit; return }
+        if ($args[-1] -like 'sed -i*' -or $args[-1] -like 'printf*') {
+            $global:LASTEXITCODE = $script:duSedExit
+            if ($args[-1] -like 'sed -i*' -and -not $script:duSedNoop -and $args[-1] -match 'default=([a-z0-9_-]+)/') {
+                $script:duConf = $script:duConf -replace '(?m)^default=.*$', "default=$($Matches[1])"
+            }
+            return
+        }
         if ($args -contains 'id') { return $script:duWho }
     }
     $rc = Invoke-DefaultUserStep -Name 'Ubuntu-restored' -User $User 2>$null 6>$null
@@ -1187,13 +1196,23 @@ try {
     $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob'
     $sedCalls = @($script:duCalls | Where-Object { $_ -match 'sed -i' })
     Test-Case 'DefaultUser step: existing default differs -> rewritten to the request, terminated, success' (
-        $rc -eq $true -and $sedCalls.Count -eq 1 -and $sedCalls[0] -match 'default=bob' -and $sedCalls[0] -notmatch 'printf' -and
+        $rc -eq $true -and $sedCalls.Count -eq 1 -and $sedCalls[0] -match 'default=bob' -and $sedCalls[0] -match 'user\[\[:space:\]\]\*\\\]/,/' -and $sedCalls[0] -notmatch 'printf' -and
         @($script:duCalls | Where-Object { $_ -match '--terminate' }).Count -eq 1
     ) ($script:duCalls -join "`n")
 
     $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob' -SedExit 1
     Test-Case 'DefaultUser step: a failed rewrite returns failure and does not terminate' (
         $rc -eq $false -and @($script:duCalls | Where-Object { $_ -match '--terminate' }).Count -eq 0
+    ) ($script:duCalls -join "`n")
+
+    $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob' -SedNoop
+    Test-Case 'DefaultUser step: a rewrite that changed nothing returns failure and does not terminate' (
+        $rc -eq $false -and @($script:duCalls | Where-Object { $_ -match '--terminate' }).Count -eq 0
+    ) ($script:duCalls -join "`n")
+
+    $rc = Invoke-DefaultUserScenario -Conf "[User]`ndefault=alice`n" -User 'bob'
+    Test-Case 'DefaultUser step: a [User] section is not rewritten by sed (case-sensitive)' (
+        @($script:duCalls | Where-Object { $_ -match 'sed -i' }).Count -eq 0
     ) ($script:duCalls -join "`n")
 
     $rc = Invoke-DefaultUserScenario -Conf "[user]`ndefault=alice`n" -User 'bob' -Who 'alice'

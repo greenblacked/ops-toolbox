@@ -713,10 +713,10 @@ function Get-WslConfDefaultUser {
     foreach ($raw in ($Existing -split "`n")) {
         $line = $raw.Trim()
         if ($line -match '^\[(?<name>[^\]]*)\]') {
-            $inUser = ($Matches['name'].Trim() -eq 'user')
+            $inUser = ($Matches['name'].Trim() -ceq 'user')
             continue
         }
-        if ($inUser -and $line -match '^default\s*=\s*(?<value>\S+)') { return $Matches['value'] }
+        if ($inUser -and $line -cmatch '^default\s*=\s*(?<value>\S+)') { return $Matches['value'] }
     }
     return $null
 }
@@ -738,7 +738,7 @@ function Get-WslConfUserPlan {
         return 'present'
     }
     foreach ($raw in ($Existing -split "`n")) {
-        if ($raw.Trim() -match '^\[(?<name>[^\]]*)\]' -and $Matches['name'].Trim() -eq 'user') { return 'manual' }
+        if ($raw.Trim() -match '^\[(?<name>[^\]]*)\]' -and $Matches['name'].Trim() -ceq 'user') { return 'manual' }
     }
     return 'append'
 }
@@ -795,6 +795,12 @@ function Invoke-DefaultUserStep {
         $said = Format-WslOutput (wsl.exe -d $Name -u root --exec sh -c "sed -i '$sed' /etc/wsl.conf")
         if ($LASTEXITCODE -ne 0) {
             Write-Error "Could not update the default user in /etc/wsl.conf in '$Name' (exit $LASTEXITCODE) $said" -ErrorAction Continue
+            return $false
+        }
+        # sed exits 0 when nothing matched, so read the file back before claiming a change.
+        $after = (wsl.exe -d $Name -u root --exec sh -c 'cat /etc/wsl.conf 2>/dev/null; true') -join "`n"
+        if ((Get-WslConfDefaultUser -Existing $after) -cne $User) {
+            Write-Error "rewrite of default= in /etc/wsl.conf in '$Name' did not take effect" -ErrorAction Continue
             return $false
         }
         Write-Host "/etc/wsl.conf in '$Name': default user changed from $old to $User." -ForegroundColor Yellow

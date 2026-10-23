@@ -232,7 +232,8 @@ at 2am rather than after:
    usually means the user does not exist inside that tar). A `[user]` section
    whose `default=` already names `NAME` (compared exactly, since Linux user
    names are case-sensitive) is left alone. When it names someone else, that
-   one line is changed to `NAME`, the rest of the file is kept, and the old
+   the `default=` line in `[user]` is changed to `NAME` (a comment on that
+   line is dropped), the rest of the file is kept, and the old
    value is printed; if the rewrite fails the restore exits `1`. A `[user]`
    section without `default=` is not edited, and the line to add is printed
    instead. `NAME` is checked before anything
