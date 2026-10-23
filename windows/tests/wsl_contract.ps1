@@ -478,7 +478,8 @@ try {
     [IO.File]::WriteAllText($badFile, "[wsl2]`nmemry=8GB`n")
     [IO.File]::WriteAllText($cleanFile, $cleanConfig)
     foreach ($mode in 'consomme', 'virtioproxy', 'Consomme', 'consome') {
-        $name = if ($mode -eq 'consome') { 'unknown' } else { $mode }
+        # Case-sensitive: 'consomme' and 'Consomme' must not share a file name on NTFS.
+        $name = switch -CaseSensitive ($mode) { 'consome' { 'unknown' } 'Consomme' { 'consomme_upper' } default { $mode } }
         [IO.File]::WriteAllText((Join-Path $fixtures "mode_$name.wslconfig"), "[wsl2]`nmemory=8GB`nnetworkingMode=$mode`n[experimental]`nautoMemoryReclaim=gradual`nsparseVhd=true`n")
     }
     $before = @(Get-TreeSnapshot $fixtures)
@@ -494,7 +495,8 @@ try {
     Test-Case 'wslconfig -Strict exits 0 on a clean file' ($run.ExitCode -eq 0) "exit $($run.ExitCode)`n$($run.Output)"
 
     foreach ($mode in 'consomme', 'virtioproxy', 'Consomme') {
-        $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', (Join-Path $fixtures "mode_$mode.wslconfig"), '-Strict')
+        $name = switch -CaseSensitive ($mode) { 'Consomme' { 'consomme_upper' } default { $mode } }
+        $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', (Join-Path $fixtures "mode_$name.wslconfig"), '-Strict')
         Test-Case "wslconfig -Strict exits 0 with networkingMode=$mode" ($run.ExitCode -eq 0) "exit $($run.ExitCode)`n$($run.Output)"
     }
     $run = Invoke-WslManage -Arguments @('wslconfig', '-ConfigFile', (Join-Path $fixtures 'mode_unknown.wslconfig'), '-Strict')

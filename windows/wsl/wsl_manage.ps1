@@ -1094,8 +1094,19 @@ function Test-WslConfig {
         }
     }
 
-    # Microsoft documents four current networking modes (consomme, which
-    # replaces the former name virtioproxy, still accepted) and the deprecated
+    # kernelDebugPort is a TCP port, so it also has an upper bound of 65535.
+    if ($values.ContainsKey('kernelDebugPort')) {
+        $e = $values['kernelDebugPort']
+        $port = [long]0
+        if ($e.Value -match '^[0-9]{1,18}$' -and
+            [long]::TryParse($e.Value, [System.Globalization.NumberStyles]::None, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$port) -and
+            $port -gt 65535) {
+            $findings += [PSCustomObject]@{ Level = 'warn'; Check = (Get-Label $e); Message = "'$($e.Value)' is not a TCP port (0 to 65535)" }
+        }
+    }
+
+    # Microsoft documents four current networking modes (nat, mirrored,
+    # consomme - formerly virtioproxy, still accepted - and none) and the deprecated
     # bridged. An unknown value makes WSL fall back to NAT, so it is reported
     # rather than assumed to work. The checks are -match, which ignores case.
     if ($values.ContainsKey('networkingMode') -and $values['networkingMode'].Value -match '^bridged$') {
