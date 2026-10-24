@@ -283,6 +283,8 @@ jobs:
           git add \
             mikrotik/tests/routeros-version.env \
             README.md mikrotik/README.md mikrotik/tests/README.md \
+            docs/platforms/mikrotik.md docs/contributing/testing.md \
+            docs/platforms/routeros-compatibility.md \
             .github/workflows/chr.yml CHANGELOG.md
           git commit -m "deps(mikrotik): test against RouterOS ${TARGET_VERSION}"
 
