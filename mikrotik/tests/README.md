@@ -221,8 +221,9 @@ The `RouterOS version check` GitHub Actions workflow checks the official
 stable feed every six hours (01:19, 07:19, 13:19 and 19:19 UTC) and can also
 be started manually. Scheduled workflows run from `master`, but both scheduled
 and manually requested bumps use `dev` as their baseline. Manual check-only
-runs validate the selected ref. A candidate is tested only when a newer stable release has no
-open version-bump PR or recorded failure issue; normal polls do not boot CHR.
+runs validate the selected ref. Normal bump runs only boot CHR for a newer
+release with no open version-bump PR or recorded failure issue; ordinary
+polls do not start an unnecessary VM.
 A failing candidate opens a `RouterOS VERSION CHR compatibility failure` issue
 with the workflow link and the test summary. Close that issue to allow
 another scheduled attempt, or run `check_only` manually to retest without
