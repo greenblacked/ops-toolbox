@@ -7,7 +7,8 @@ FROM alpine:3.24.2
 ARG ROUTEROS_VERSION
 ARG ROUTEROS_SHA256
 
-RUN test -n "$ROUTEROS_VERSION"
+RUN test -n "$ROUTEROS_VERSION" \
+    && echo "$ROUTEROS_SHA256" | grep -Eq '^[0-9a-f]{64}$'
 
 EXPOSE 22 23 80 443 8728 8729 8291 5900
 
@@ -30,13 +31,7 @@ RUN set -eux; \
       rm -f "chr-${ROUTEROS_VERSION}.vdi.zip"; \
     done; \
     test -s "chr-${ROUTEROS_VERSION}.vdi.zip"; \
-    if [ -n "$ROUTEROS_SHA256" ]; then \
-      echo "${ROUTEROS_SHA256}  chr-${ROUTEROS_VERSION}.vdi.zip" | sha256sum -c -; \
-    else \
-      echo "WARNING: ROUTEROS_SHA256 is not recorded, so this image is unverified."; \
-      echo "WARNING: it boots as a kernel with the repository mounted."; \
-      echo "WARNING: record it with: mikrotik/tests/routeros_version.py record-hash"; \
-    fi
+    echo "${ROUTEROS_SHA256}  chr-${ROUTEROS_VERSION}.vdi.zip" | sha256sum -c -
 
 RUN unzip -q "chr-${ROUTEROS_VERSION}.vdi.zip" \
     && rm -f "chr-${ROUTEROS_VERSION}.vdi.zip" \

@@ -56,6 +56,16 @@ From anywhere in the repo:
 ./mikrotik/tests/run.sh
 ```
 
+The suite only permits Docker service `chr:8728` with the explicit lab flag,
+a matching CHR/x86_64 identity and QEMU NIC MAC, the expected version, and
+no existing scripts or test backup files. It checks these conditions **before
+its first write**. Reused or manually populated VMs fail closed; discard the
+Docker volume and start a fresh lab. Do not point the tester at a physical
+router or a production CHR instance.
+
+The CHR Dockerfile also refuses to build without a valid SHA-256 digest,
+even when invoked outside the wrapper.
+
 That builds both images, brings `chr` up, waits for the API healthcheck,
 runs `pytest` inside `tester`, and tears the stack down. To pass extra args
 to pytest:
