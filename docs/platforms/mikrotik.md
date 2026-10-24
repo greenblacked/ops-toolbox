@@ -5,7 +5,10 @@
 RouterOS 7.x scripts for backups, Wi-Fi PSK rotation, watchdogs, DHCP and
 firewall drift, security audit and Telegram alerts, plus host-side Python and
 Bash tools for config export, scheduler generation, router audit and backup
-pull. The integration suite boots RouterOS CHR 7.24.5.
+pull. The canonical integration pin is RouterOS CHR 7.24.5. An isolated 7.25
+candidate passed its CHR suite on October 24, 2026. This does not establish
+hardware readiness. See the [RouterOS compatibility report](routeros-compatibility.md)
+for the version pin, run link and hAP ax2 validation limits.
 
 ## Requirements
 
