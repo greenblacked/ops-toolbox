@@ -1,7 +1,159 @@
-/* Ops Toolbox: site-specific styles.
+/* Site-specific task-first homepage. Portable rpt-theme.css is unchanged. */
 
-   The design itself (tokens, header, navigation, code, stage pills, stage
-   admonitions, hero and cards, 404, print) is the portable theme in
-   theme/rpt-theme.css, which mkdocs.yml loads first. This file loads after it
-   and holds only what is specific to this site. There is nothing yet; add
-   rules here rather than in the theme so the theme stays reusable. */
+.rpt-home-search {
+  margin: 1rem 0 0.8rem;
+  max-width: 32rem;
+}
+
+.md-typeset .rpt-search-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.7rem 0.9rem;
+  color: var(--rpt-text);
+  background: var(--rpt-surface);
+  border: 1px solid var(--rpt-control-border);
+  border-radius: 0.4rem;
+  font: inherit;
+  font-size: 0.78rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.md-typeset .rpt-search-trigger:hover {
+  border-color: var(--rpt-accent);
+  background: var(--rpt-accent-tint);
+}
+
+.md-typeset .rpt-search-trigger:focus-visible,
+.md-typeset .rpt-task-link:focus-visible,
+.md-typeset .rpt-platform-links a:focus-visible {
+  outline: 3px solid var(--rpt-accent);
+  outline-offset: 3px;
+}
+
+.rpt-search-icon {
+  font-size: 1.2rem;
+  line-height: 1;
+}
+
+.rpt-search-hint {
+  margin-left: auto;
+  white-space: nowrap;
+  color: var(--rpt-muted);
+  font-size: 0.65rem;
+}
+
+.rpt-task-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+  margin: 0.9rem 0 1.5rem;
+}
+
+.md-typeset a.rpt-task-link {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.85rem 0.95rem;
+  color: var(--rpt-text);
+  text-decoration: none;
+  background-color: var(--rpt-surface);
+  border: 1px solid var(--rpt-border);
+  border-radius: 0.35rem;
+}
+
+.md-typeset a.rpt-task-link:hover {
+  border-color: var(--rpt-accent);
+}
+
+.rpt-task-link strong {
+  font-size: 0.9rem;
+  line-height: 1.3;
+}
+
+.rpt-task-link span:last-child {
+  color: var(--rpt-muted);
+  font-size: 0.73rem;
+  line-height: 1.5;
+}
+
+.rpt-task-eyebrow {
+  color: var(--rpt-accent);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+}
+
+.rpt-platform-links {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin: 0.7rem 0 1.7rem;
+}
+
+.md-typeset .rpt-platform-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.3rem;
+  padding: 0.4rem 0.65rem;
+  color: var(--rpt-text);
+  background-color: var(--rpt-surface);
+  border: 1px solid var(--rpt-border);
+  border-radius: 0.3rem;
+  font-size: 0.73rem;
+  text-decoration: none;
+}
+
+.md-typeset .rpt-platform-links a:hover {
+  border-color: var(--rpt-accent);
+  color: var(--rpt-accent);
+}
+
+.md-typeset .rpt-command-meta {
+  margin-top: 0.65rem;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--rpt-border);
+  color: var(--rpt-muted);
+  font-size: 0.69rem;
+  line-height: 1.65;
+}
+
+.rpt-command-meta strong {
+  color: var(--rpt-text);
+}
+
+.rpt-command-meta code {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 44.99em) {
+  .rpt-task-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .rpt-search-hint {
+    display: none;
+  }
+
+  .md-typeset .rpt-search-trigger {
+    font-size: 0.75rem;
+  }
+}
+
+@media (forced-colors: active) {
+  .md-typeset .rpt-search-trigger,
+  .md-typeset a.rpt-task-link,
+  .md-typeset .rpt-platform-links a {
+    border: 1px solid CanvasText;
+    color: CanvasText;
+  }
+}
+
+@media print {
+  .rpt-home-search { display: none; }
+}
