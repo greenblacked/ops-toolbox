@@ -214,13 +214,14 @@ available. Its `check` command does not modify files:
 ```bash
 python3 mikrotik/tests/routeros_version.py check
 python3 mikrotik/tests/routeros_version.py check --channel long-term
-python3 mikrotik/tests/routeros_version.py check --version 7.24.5
+python3 mikrotik/tests/routeros_version.py check --version 7.25
 ```
 
 The `RouterOS version check` GitHub Actions workflow checks the official
 stable feed every six hours (01:19, 07:19, 13:19 and 19:19 UTC) and can also
-be started manually. Scheduled workflows run from `master`, but check and bump
-against `dev`. A candidate is tested only when a newer stable release has no
+be started manually. Scheduled workflows run from `master`, but both scheduled
+and manually requested bumps use `dev` as their baseline. Manual check-only
+runs validate the selected ref. A candidate is tested only when a newer stable release has no
 open version-bump PR or recorded failure issue; normal polls do not boot CHR.
 A failing candidate opens a `RouterOS VERSION CHR compatibility failure` issue
 with the workflow link and the test summary. Close that issue to allow
