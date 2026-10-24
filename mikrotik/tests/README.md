@@ -217,9 +217,21 @@ python3 mikrotik/tests/routeros_version.py check --channel long-term
 python3 mikrotik/tests/routeros_version.py check --version 7.25
 ```
 
-The `RouterOS version check` GitHub Actions workflow runs every Monday and
-Thursday at 04:19 UTC and can also be started manually. When it finds a newer
-stable release it boots that candidate in Docker first. Only a passing candidate is
+The `RouterOS version check` GitHub Actions workflow checks the official
+stable feed every six hours (01:19, 07:19, 13:19 and 19:19 UTC) and can also
+be started manually. Scheduled workflows run from `master`, but both scheduled
+and manually requested bumps use `dev` as their baseline. Manual check-only
+runs validate the selected ref. Normal bump runs only boot CHR for a newer
+release with no open version-bump PR or recorded failure issue; ordinary
+polls do not start an unnecessary VM.
+A failing candidate opens a `RouterOS VERSION CHR compatibility failure` issue
+with the workflow link and the test summary. Close that issue to allow
+another scheduled attempt, or run `check_only` manually to retest without
+changing files. CHR success is a script/API compatibility result, **not**
+a hardware-safe-upgrade verdict for any specific router.
+
+When the workflow finds a newer stable release it boots that candidate in
+Docker first. Only a passing candidate is
 written to `routeros-version.env`, propagated through the documentation, and
 proposed in a `deps/routeros-VERSION` pull request. `check_only` runs the same
 test without creating a branch or pull request. The canonical pin follows the
