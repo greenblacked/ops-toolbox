@@ -97,7 +97,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24+, 13 of these 29 scripts still contain invalid unquoted underscore variable names.** That release
+> **On RouterOS 7.24, 13 of these 29 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
