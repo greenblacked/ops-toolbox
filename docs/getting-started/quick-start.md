@@ -1,11 +1,15 @@
 # Quick start
 
-<!-- markdownlint-disable MD046 -->
+<!-- markdownlint-disable MD033 MD046 -->
 
 This page gets you from nothing to a first report on your platform. Nothing
 here installs software or changes settings.
 
 ## 1. Get the code
+
+**Requires:** Git and a shell. Cloning writes a new local folder; it does not
+modify system settings. To undo just the clone, remove that folder only after
+checking that you have no work in it.
 
 ```bash
 git clone https://github.com/greenblacked/ops-toolbox.git
@@ -16,6 +20,10 @@ All commands in these docs run from the repository root unless stated
 otherwise.
 
 ## 2. Run a report
+
+<span class="stage stage-report">Read-only</span> **Requires:** the selected
+platform's shell and any tool documented by that script. **Changes:** none
+for the example commands below. **Rollback:** not needed.
 
 Reports are read-only. Pick the one for your platform. On your first visit
 from a computer, the tab for its operating system (macOS, Linux or Windows)
@@ -68,6 +76,11 @@ opens by itself; pick another and the site remembers that instead.
 
 ## 3. Preview a change
 
+<span class="stage stage-preview">Dry run</span> **Requires:** the script and
+its host-platform dependencies. **Changes:** no system settings for the
+commands below, but some probes can still read external state. **Rollback:**
+not needed. Dry-run coverage varies by script.
+
 Every script that writes has its own preview. For example:
 
 ```bash
@@ -86,8 +99,27 @@ Every script that writes has its own preview. For example:
 
 ## 4. Apply
 
-Run the same command without the preview flag, or with the script's consent
-flag (`--yes` for Bash, `-Yes` for PowerShell) where it asks for one.
+<span class="stage stage-apply">Changes state</span> An apply may install
+packages, change configuration or delete files depending on the script.
+Only run it after reviewing its exact effects and recovery steps.
+
+For a concrete reversible macOS example, from `macos-initial-setup/`:
+
+```bash
+./macos_defaults.sh --apply --dry-run
+./macos_defaults.sh --apply
+```
+
+If you need to restore the previous settings later, run this separately:
+
+```bash
+./macos_defaults.sh --revert
+```
+
+**Requires:** macOS and a completed preview. **Changes:** user defaults;
+the script saves previous values. **Rollback:** `--revert`. Other scripts
+may have no automatic rollback, so check their full guide rather than
+assuming this pattern applies everywhere.
 
 Before you apply:
 
@@ -101,6 +133,12 @@ them.
 
 ## Next
 
+Need a particular tool rather than a platform walkthrough? Use the
+[search on the homepage](../index.md) or the
+[full script inventory](../scripts/index.md).
+
 - [Philosophy](philosophy.md) explains the report, preview, apply model.
 - [Installation and usage](usage.md) covers working from a clone and copying scripts into `~/bin`, including the few that need their package folder.
 - The [script overview](../scripts/index.md) lists every main script.
+
+<!-- markdownlint-enable MD033 MD046 -->
