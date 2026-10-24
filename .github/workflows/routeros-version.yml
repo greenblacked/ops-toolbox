@@ -1,21 +1,20 @@
 name: RouterOS version check
 
-# Check MikroTik's official release feed twice a week and on demand. A release
-# is recorded only after the real CHR image boots and the integration suite
-# passes; automation opens a pull request and never writes to master directly.
+# Check MikroTik's stable feed every six hours and on demand. A changed release
+# triggers CHR once, then either a tested bump PR or a failure issue. The issue
+# prevents expensive automatic retries until an operator closes it. Never
+# modify dev/master directly; hardware safety review is still required.
 #
 # Scheduled runs test and bump from dev, so dev must exist before the next
 # scheduled run. A manual run tests the ref it was started on; the bump pull
 # request still targets dev.
 on:
   schedule:
-    # Monday and Thursday at 04:19 UTC. The odd minute is deliberate, for the
-    # same reason chr.yml uses 03:37 — GitHub queues scheduled workflows and the
-    # top of the hour is heavily contended. This workflow was written with
-    # '0 3 * * 1,4' and its first run fired at 05:37, 2h37m late. A different
-    # minute from chr.yml's keeps the two out of the same queue slot, and 04:19
-    # is late enough that the nightly CHR suite has normally finished.
-    - cron: '19 4 * * 1,4'
+    # Lightweight stable-feed check four times daily at offset minutes.
+    # CHR boots only when a newer version has no open bump PR/failure issue.
+    # Scheduled workflows run from default branch (master), so changes to
+    # this file become active only after merging it into master.
+    - cron: '19 1,7,13,19 * * *'
   workflow_dispatch:
     inputs:
       channel:
@@ -60,6 +59,8 @@ jobs:
       contents: write
       # Opens (and updates) the pull request that proposes the bump.
       pull-requests: write
+      # Record a failed candidate once, instead of losing its test evidence.
+      issues: write
     env:
       RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
       REQUESTED_VERSION: ${{ inputs.version || '' }}
@@ -105,13 +106,38 @@ jobs:
             echo "Existing pull request: $url"
           fi
 
+      - name: Check for existing failed candidate
+        id: recorded_failure
+        if: >-
+          steps.release.outputs.update_available == 'true' &&
+          inputs.check_only != true &&
+          steps.existing.outputs.url == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -euo pipefail
+          title="RouterOS ${TARGET_VERSION} CHR compatibility failure"
+          issues="$(gh issue list --state open --limit 100 --json title,url)"
+          url="$(printf '%s' "$issues" | TARGET_TITLE="$title" python3 -c '
+          import json, os, sys
+          title = os.environ["TARGET_TITLE"]
+          print(next((item["url"] for item in json.load(sys.stdin) if item["title"] == title), ""))
+          ')"
+          if [ -n "$url" ]; then
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+            echo "Candidate already failed; see $url (close issue to retry)."
+          fi
+
       # /dev/kvm is crw-rw---- root:kvm and the runner user is not in that
       # group, so run.sh's readable-and-writable test fails and CHR boots under
       # TCG. See chr.yml for the longer version of why that went unnoticed.
       - name: Enable KVM access
         if: >-
           (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
-          steps.existing.outputs.url == ''
+          steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == ''
         run: |
           if [ -e /dev/kvm ]; then
             sudo chmod 0666 /dev/kvm
@@ -124,7 +150,8 @@ jobs:
         id: candidate
         if: >-
           (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
-          steps.existing.outputs.url == ''
+          steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == ''
         shell: bash
         env:
           ROUTEROS_VERSION: ${{ steps.release.outputs.latest }}
@@ -165,6 +192,40 @@ jobs:
             printf '```text\n%s\n```\n\n' "$summary"
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
+
+      - name: Record a failed release-candidate test
+        if: >-
+          failure() &&
+          steps.candidate.outcome == 'failure' &&
+          inputs.check_only != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -euo pipefail
+          title="RouterOS ${TARGET_VERSION} CHR compatibility failure"
+          body="$RUNNER_TEMP/routeros-candidate-failure.md"
+          {
+            echo "The official stable feed reported RouterOS ${TARGET_VERSION}."
+            echo
+            echo "The candidate could not pass the repository CHR compatibility test."
+            echo "This is **not** evidence of an hAP ax2 hardware regression."
+            echo
+            echo "- [Failed workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo "- Baseline remains unchanged; do not promote this version."
+            echo "- Close this issue to allow the next scheduled run to retry,"
+            echo "  or run check-only manually for an immediate recheck."
+            if [ -f "$RUNNER_TEMP/mikrotik-version.log" ]; then
+              echo
+              echo '### Last test output (truncated)'
+              echo '~~~text'
+              tail -n 50 "$RUNNER_TEMP/mikrotik-version.log" | head -c 12000
+              echo
+              echo '~~~'
+            fi
+          } > "$body"
+          gh issue create --title "$title" --body-file "$body"
 
       - name: Bump version and documentation
         if: >-
@@ -283,6 +344,8 @@ jobs:
               printf '\nExisting pull request: %s\n' '${{ steps.existing.outputs.url }}'
             elif [ -n '${{ steps.pull_request.outputs.url }}' ]; then
               printf '\nCreated pull request: %s\n' '${{ steps.pull_request.outputs.url }}'
+            elif [ -n '${{ steps.recorded_failure.outputs.url }}' ]; then
+              printf '\\nPreviously failed candidate: %s\\n' '${{ steps.recorded_failure.outputs.url }}'
             elif [ '${{ inputs.check_only }}' = 'true' ]; then
               printf '\nCheck-only mode: no repository changes were made.\n'
             fi
