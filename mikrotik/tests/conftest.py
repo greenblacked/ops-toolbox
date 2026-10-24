@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 import routeros_api
+from lab_guard import assert_disposable_chr, validate_lab_environment
 from routeros_api import exceptions as ros_exc
 
 # Test-owned scripts on the router. Anything matching this prefix is fair game to
@@ -24,6 +25,8 @@ TG_SEND_STUB_SOURCE = (
 
 
 def _connect_pool() -> routeros_api.RouterOsApiPool:
+    # Reject a non-lab destination before opening even a read-only connection.
+    validate_lab_environment(os.environ)
     host = os.environ.get("ROUTEROS_HOST", "127.0.0.1")
     port = int(os.environ.get("ROUTEROS_PORT", "8728"))
     user = os.environ.get("ROUTEROS_USER", "admin")
@@ -189,7 +192,8 @@ def _remove_globals(api: Any, names) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def _clean_router_state(api: Any) -> Iterator[None]:
-    """Wipe any leftover test scripts/globals and install the tg_send stub for the session."""
+    """Only modify an identified, fresh QEMU CHR. Never clean an unknown router."""
+    assert_disposable_chr(api)
     _remove_named_scripts(
         api,
         lambda n: n.startswith(TEST_SCRIPT_PREFIX)
