@@ -50,8 +50,10 @@ def assert_disposable_chr(api: Any, env: Mapping[str, str] | None = None) -> Non
     if len(resources) != 1:
         raise UnsafeLabTarget("cannot identify the RouterOS system resource")
     info = resources[0]
-    if _value(info, "board-name").strip().upper() != "CHR":
-        raise UnsafeLabTarget(f"target board is not CHR: {_value(info, 'board-name')!r}")
+    board = _value(info, "board-name").strip()
+    # QEMU exposes the emulated PC model in the CHR board-name field.
+    if board != "CHR" and not board.startswith("CHR QEMU "):
+        raise UnsafeLabTarget(f"target board is not QEMU CHR: {board!r}")
     if _value(info, "architecture-name").strip().lower() != "x86_64":
         raise UnsafeLabTarget("target architecture is not x86_64 CHR")
     version = _value(info, "version").strip()
