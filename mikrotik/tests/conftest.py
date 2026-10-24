@@ -8,9 +8,8 @@ from typing import Any
 
 import pytest
 import routeros_api
-from routeros_api import exceptions as ros_exc
-
 from lab_guard import assert_disposable_chr, validate_lab_environment
+from routeros_api import exceptions as ros_exc
 
 # Test-owned scripts on the router. Anything matching this prefix is fair game to
 # remove — the tests own the namespace.
