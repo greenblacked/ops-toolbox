@@ -332,21 +332,30 @@ jobs:
       - name: Summarise release check
         if: always()
         shell: bash
+        env:
+          RESULT_CHANNEL: ${{ steps.release.outputs.channel }}
+          RESULT_CURRENT: ${{ steps.release.outputs.current }}
+          RESULT_LATEST: ${{ steps.release.outputs.latest }}
+          RESULT_UPDATE_AVAILABLE: ${{ steps.release.outputs.update_available }}
+          EXISTING_PR_URL: ${{ steps.existing.outputs.url }}
+          CREATED_PR_URL: ${{ steps.pull_request.outputs.url }}
+          PREVIOUS_FAILURE_URL: ${{ steps.recorded_failure.outputs.url }}
+          CHECK_ONLY_REQUESTED: ${{ inputs.check_only }}
         run: |
           {
             printf '### RouterOS release check\n\n'
             printf '| item | value |\n| --- | --- |\n'
-            printf '| channel | `%s` |\n' '${{ steps.release.outputs.channel }}'
-            printf '| pinned | `%s` |\n' '${{ steps.release.outputs.current }}'
-            printf '| candidate | `%s` |\n' '${{ steps.release.outputs.latest }}'
-            printf '| update available | `%s` |\n' '${{ steps.release.outputs.update_available }}'
-            if [ -n '${{ steps.existing.outputs.url }}' ]; then
-              printf '\nExisting pull request: %s\n' '${{ steps.existing.outputs.url }}'
-            elif [ -n '${{ steps.pull_request.outputs.url }}' ]; then
-              printf '\nCreated pull request: %s\n' '${{ steps.pull_request.outputs.url }}'
-            elif [ -n '${{ steps.recorded_failure.outputs.url }}' ]; then
-              printf '\nPreviously failed candidate: %s\n' '${{ steps.recorded_failure.outputs.url }}'
-            elif [ '${{ inputs.check_only }}' = 'true' ]; then
+            printf '| channel | `%s` |\n' "$RESULT_CHANNEL"
+            printf '| pinned | `%s` |\n' "$RESULT_CURRENT"
+            printf '| candidate | `%s` |\n' "$RESULT_LATEST"
+            printf '| update available | `%s` |\n' "$RESULT_UPDATE_AVAILABLE"
+            if [ -n "$EXISTING_PR_URL" ]; then
+              printf '\nExisting pull request: %s\n' "$EXISTING_PR_URL"
+            elif [ -n "$CREATED_PR_URL" ]; then
+              printf '\nCreated pull request: %s\n' "$CREATED_PR_URL"
+            elif [ -n "$PREVIOUS_FAILURE_URL" ]; then
+              printf '\nPreviously failed candidate: %s\n' "$PREVIOUS_FAILURE_URL"
+            elif [ "$CHECK_ONLY_REQUESTED" = 'true' ]; then
               printf '\nCheck-only mode: no repository changes were made.\n'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
