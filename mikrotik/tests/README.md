@@ -223,11 +223,13 @@ be started manually. Scheduled workflows run from `master`, but check and bump
 against `dev`. A candidate is tested only when a newer stable release has no
 open version-bump PR or recorded failure issue; normal polls do not boot CHR.
 A failing candidate opens a `RouterOS VERSION CHR compatibility failure` issue
-with the workflow link and a short log excerpt. Close that issue to allow
+with the workflow link and the test summary. Close that issue to allow
 another scheduled attempt, or run `check_only` manually to retest without
 changing files. CHR success is a script/API compatibility result, **not**
-a hardware-safe-upgrade verdict for any specific router. When it finds a newer
-stable release it boots that candidate in Docker first. Only a passing candidate is
+a hardware-safe-upgrade verdict for any specific router.
+
+When the workflow finds a newer stable release it boots that candidate in
+Docker first. Only a passing candidate is
 written to `routeros-version.env`, propagated through the documentation, and
 proposed in a `deps/routeros-VERSION` pull request. `check_only` runs the same
 test without creating a branch or pull request. The canonical pin follows the
