@@ -231,6 +231,8 @@ jobs:
         if: >-
           steps.release.outputs.update_available == 'true' &&
           steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == '' &&
+          steps.candidate.outcome == 'success' &&
           inputs.check_only != true
         env:
           TARGET_VERSION: ${{ steps.release.outputs.latest }}
@@ -240,17 +242,19 @@ jobs:
           # Pin the digest the candidate test actually ran against. Recomputing
           # here would re-download, and a republished artifact would pin bytes
           # nothing has booted.
-          if [ -n "$TESTED_DIGEST" ]; then
-            python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION" --digest "$TESTED_DIGEST"
-          else
-            python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION"
+          if [ -z "$TESTED_DIGEST" ]; then
+            echo "refusing RouterOS bump without the successfully tested archive digest" >&2
+            exit 1
           fi
+          python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION" --digest "$TESTED_DIGEST"
 
       - name: Commit bump branch
         id: commit
         if: >-
           steps.release.outputs.update_available == 'true' &&
           steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == '' &&
+          steps.candidate.outcome == 'success' &&
           inputs.check_only != true
         shell: bash
         env:
