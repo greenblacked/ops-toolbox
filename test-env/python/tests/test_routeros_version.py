@@ -24,6 +24,21 @@ SPEC.loader.exec_module(routeros_version)
 DIGEST = "a" * 64
 
 
+def write_documentation_fixture(root: Path, version: str) -> None:
+    """Produce both regular version claims and an immutable test snapshot."""
+    for relative in routeros_version.DOCUMENTATION_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if relative == Path("docs/platforms/routeros-compatibility.md"):
+            path.write_text(
+                f"| Canonical integration version | **{version}** (pin) |\\n"
+                "| Historical candidate | RouterOS 7.20 passed |\\n",
+                encoding="utf-8",
+            )
+        else:
+            path.write_text(f"tested on RouterOS {version}\\n", encoding="utf-8")
+
+
 class RouterOSVersionTests(unittest.TestCase):
     def test_parse_stable_release_feed(self) -> None:
         payload = b"""<?xml version='1.0'?>
@@ -94,10 +109,7 @@ class RouterOSVersionTests(unittest.TestCase):
             version_file = root / "mikrotik/tests/routeros-version.env"
             version_file.parent.mkdir(parents=True)
             version_file.write_text("# canonical\nROUTEROS_VERSION=7.22\n", encoding="utf-8")
-            for relative in routeros_version.DOCUMENTATION_FILES:
-                path = root / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("tested on RouterOS 7.22\n", encoding="utf-8")
+            write_documentation_fixture(root, "7.22")
             (root / "CHANGELOG.md").write_text(
                 "# Changelog\n\n## [Unreleased]\n\n### Changed\n\n- Existing.\n",
                 encoding="utf-8",
@@ -108,10 +120,31 @@ class RouterOSVersionTests(unittest.TestCase):
             self.assertIn("ROUTEROS_VERSION=7.23.3", version_file.read_text())
             for relative in routeros_version.DOCUMENTATION_FILES:
                 text = (root / relative).read_text(encoding="utf-8")
-                self.assertIn("RouterOS 7.23.3", text)
+                if relative == Path("docs/platforms/routeros-compatibility.md"):
+                    self.assertIn("| Canonical integration version | **7.23.3** ", text)
+                    self.assertIn("RouterOS 7.20 passed", text)
+                else:
+                    self.assertIn("RouterOS 7.23.3", text)
                 self.assertNotIn("7.22", text)
             changelog = (root / "CHANGELOG.md").read_text(encoding="utf-8")
             self.assertIn("bumped from 7.22 to 7.23.3", changelog)
+
+    def test_compatibility_pin_bump_preserves_dated_test_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            doc = root / "docs/platforms/routeros-compatibility.md"
+            doc.parent.mkdir(parents=True)
+            doc.write_text(
+                "| Canonical integration version | **7.24.5** (pin) |\\n"
+                "| Candidate tested | RouterOS 7.24.5 stable on 2026-10-24 |\\n",
+                encoding="utf-8",
+            )
+            routeros_version._replace_documented_version(
+                root, "7.24.5", "7.25", files=[Path("docs/platforms/routeros-compatibility.md")]
+            )
+            updated = doc.read_text(encoding="utf-8")
+            self.assertIn("| Canonical integration version | **7.25** ", updated)
+            self.assertIn("RouterOS 7.24.5 stable on 2026-10-24", updated)
 
     def test_bump_rejects_same_or_older_version(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -225,10 +258,7 @@ class RouterOSVersionTests(unittest.TestCase):
                 "ROUTEROS_VERSION=7.22\nROUTEROS_SHA256=" + ("b" * 64) + "\n",
                 encoding="utf-8",
             )
-            for relative in routeros_version.DOCUMENTATION_FILES:
-                path = root / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("RouterOS 7.22\n", encoding="utf-8")
+            write_documentation_fixture(root, "7.22")
             (root / "CHANGELOG.md").write_text(
                 "## [Unreleased]\n\n### Changed\n\n", encoding="utf-8"
             )
@@ -293,10 +323,7 @@ class RecordHashCliTests(unittest.TestCase):
                 "ROUTEROS_VERSION=7.22\nROUTEROS_SHA256=" + ("b" * 64) + "\n",
                 encoding="utf-8",
             )
-            for relative in routeros_version.DOCUMENTATION_FILES:
-                path = root / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("RouterOS 7.22\n", encoding="utf-8")
+            write_documentation_fixture(root, "7.22")
             (root / "CHANGELOG.md").write_text(
                 "## [Unreleased]\n\n### Changed\n\n", encoding="utf-8"
             )
