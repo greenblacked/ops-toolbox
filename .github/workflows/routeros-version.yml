@@ -345,7 +345,7 @@ jobs:
             elif [ -n '${{ steps.pull_request.outputs.url }}' ]; then
               printf '\nCreated pull request: %s\n' '${{ steps.pull_request.outputs.url }}'
             elif [ -n '${{ steps.recorded_failure.outputs.url }}' ]; then
-              printf '\\nPreviously failed candidate: %s\\n' '${{ steps.recorded_failure.outputs.url }}'
+              printf '\nPreviously failed candidate: %s\n' '${{ steps.recorded_failure.outputs.url }}'
             elif [ '${{ inputs.check_only }}' = 'true' ]; then
               printf '\nCheck-only mode: no repository changes were made.\n'
             fi
