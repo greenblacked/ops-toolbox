@@ -1,5 +1,7 @@
 # Quick start
 
+<!-- markdownlint-disable MD033 -->
+
 <!-- markdownlint-disable MD046 -->
 
 This page gets you from nothing to a first report on your platform. Nothing
@@ -136,3 +138,5 @@ Need a particular tool rather than a platform walkthrough? Use the
 - [Philosophy](philosophy.md) explains the report, preview, apply model.
 - [Installation and usage](usage.md) covers working from a clone and copying scripts into `~/bin`, including the few that need their package folder.
 - The [script overview](../scripts/index.md) lists every main script.
+
+<!-- markdownlint-enable MD033 -->
