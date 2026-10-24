@@ -30,7 +30,6 @@ RUN set -eux; \
       rm -f "chr-${ROUTEROS_VERSION}.vdi.zip"; \
     done; \
     test -s "chr-${ROUTEROS_VERSION}.vdi.zip"; \
-    sha256sum "chr-${ROUTEROS_VERSION}.vdi.zip"; \
     if [ -n "$ROUTEROS_SHA256" ]; then \
       echo "${ROUTEROS_SHA256}  chr-${ROUTEROS_VERSION}.vdi.zip" | sha256sum -c -; \
     else \
