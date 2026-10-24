@@ -218,9 +218,9 @@ jobs:
             echo "  or run check-only manually for an immediate recheck."
             if [ -f "$RUNNER_TEMP/mikrotik-version.log" ]; then
               echo
-              echo '### Last test output (truncated)'
+              echo '### Test suite summary'
               echo '~~~text'
-              tail -n 50 "$RUNNER_TEMP/mikrotik-version.log" | head -c 12000
+              awk '/^=== summary ===$/{p=1} p' "$RUNNER_TEMP/mikrotik-version.log" | head -n 15
               echo
               echo '~~~'
             fi
