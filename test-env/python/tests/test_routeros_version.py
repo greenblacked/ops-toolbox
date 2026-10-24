@@ -31,12 +31,12 @@ def write_documentation_fixture(root: Path, version: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if relative == Path("docs/platforms/routeros-compatibility.md"):
             path.write_text(
-                f"| Canonical integration version | **{version}** (pin) |\\n"
-                "| Historical candidate | RouterOS 7.20 passed |\\n",
+                f"| Canonical integration version | **{version}** (pin) |\n"
+                "| Historical candidate | RouterOS 7.20 passed |\n",
                 encoding="utf-8",
             )
         else:
-            path.write_text(f"tested on RouterOS {version}\\n", encoding="utf-8")
+            path.write_text(f"tested on RouterOS {version}\n", encoding="utf-8")
 
 
 class RouterOSVersionTests(unittest.TestCase):
@@ -135,8 +135,8 @@ class RouterOSVersionTests(unittest.TestCase):
             doc = root / "docs/platforms/routeros-compatibility.md"
             doc.parent.mkdir(parents=True)
             doc.write_text(
-                "| Canonical integration version | **7.24.5** (pin) |\\n"
-                "| Candidate tested | RouterOS 7.24.5 stable on 2026-10-24 |\\n",
+                "| Canonical integration version | **7.24.5** (pin) |\n"
+                "| Candidate tested | RouterOS 7.24.5 stable on 2026-10-24 |\n",
                 encoding="utf-8",
             )
             routeros_version._replace_documented_version(
