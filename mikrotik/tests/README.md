@@ -144,10 +144,14 @@ docker compose down -v
    escape: the text is posted URL-encoded, so a bare `%` is a defect that
    otherwise only shows up as a mangled Telegram message.
 
-Items 4 and 5 are written and **currently xfail**, because RouterOS 7.25 CHR
-will not execute either script. Every path refuses a `:global` whose name
-contains an underscore — which `backup.lua` and `update_check.lua` both have —
-reporting "expected end of command" pointing at the underscore:
+Some execution paths remain **expected failures** on RouterOS 7.25 because
+they reference unquoted globals or locals containing underscores.
+MikroTik's [scripting manual](https://help.mikrotik.com/docs/spaces/ROS/pages/47579229/Scripting)
+requires variable names containing non-alphanumeric characters to be quoted.
+Script installation can succeed even when execution fails. In particular,
+the legacy `update_check.lua` retains invalid identifiers; `backup.lua`
+has already been migrated to CamelCase globals. Run the tests for exact
+current outcomes rather than assuming every historical xfail persists:
 
 | path | result |
 | --- | --- |
@@ -164,9 +168,9 @@ intersection of its own policy and the scheduler entry's, and empty intersects
 to empty. Fixing that turned "not enough permissions" into the parse refusal
 underneath.
 
-The tests are kept rather than deleted, and non-strict to match the rest of the
-suite: if a later RouterOS accepts these names they start passing and the
-coverage arrives with them. Until then, `add → remove` is the ceiling for these
+The tests are kept rather than deleted, and their expected-failure markers
+are strict: a formerly failing case that unexpectedly passes now fails CI
+until its source, behavior and compatibility documentation are reviewed. Until then, `add → remove` is the ceiling for these
 two scripts, and it is worth being clear about what that does and does not
 prove — RouterOS accepts the source; nothing here has run it.
 
