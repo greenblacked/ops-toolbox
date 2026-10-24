@@ -5,14 +5,13 @@
 RouterOS 7.x scripts for backups, Wi-Fi PSK rotation, watchdogs, DHCP and
 firewall drift, security audit and Telegram alerts, plus host-side Python and
 Bash tools for config export, scheduler generation, router audit and backup
-pull. The canonical integration pin is RouterOS CHR 7.24.5. An isolated 7.25
-candidate passed its CHR suite on October 24, 2026. This does not establish
-hardware readiness. See the [RouterOS compatibility report](routeros-compatibility.md)
-for the version pin, run link and hAP ax2 validation limits.
+pull. The canonical CHR integration pin is RouterOS 7.25.
+For dated test evidence and hardware-validation limits, see the
+[RouterOS compatibility report](routeros-compatibility.md).
 
 ## Requirements
 
-- RouterOS 7.x. The CHR suite pins 7.24.5. `change_WIFI_pw.lua` needs 7.13+
+- RouterOS 7.x. The CHR suite pins 7.25. `change_WIFI_pw.lua` needs 7.13+
   only for the WiFiWave2 (`wifi`) path, and `pull_router_backups.sh` needs the RouterOS 7+ SFTP server.
 - Script policy `read,write,policy,test,sensitive,ftp`.
 - A Telegram bot token and chat id, set as the `TgBotToken` / `TgChatId`

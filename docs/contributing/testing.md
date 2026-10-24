@@ -25,7 +25,7 @@ platforms present on your machine.
 | `static` | Bash and git | Repo-wide conventions, pin age, doc citations. No network. |
 | `lint` | Pinned linters | The linters CI's Lint job runs. `LINT_FETCH=1` downloads pinned binaries. |
 | `windows` | `pwsh` | PowerShell contract checks; skipped without `pwsh`. |
-| `mikrotik` | Docker, QEMU | Boots RouterOS CHR 7.24.5 and runs every `.lua` over the API. Not in the default selection. |
+| `mikrotik` | Docker, QEMU | Boots RouterOS CHR 7.25 and runs every `.lua` over the API. Not in the default selection. |
 
 !!! note "Documentation changes"
     A docs-only change runs the `static` and `lint` suites. On a pull request
