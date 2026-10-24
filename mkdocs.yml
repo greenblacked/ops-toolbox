@@ -155,6 +155,7 @@ nav:
       - Windows: platforms/windows.md
       - Git: platforms/git.md
       - MikroTik: platforms/mikrotik.md
+      - RouterOS compatibility: platforms/routeros-compatibility.md
       - Kubernetes: platforms/kubernetes.md
       - Dotfiles: platforms/dotfiles.md
   - Scripts:
