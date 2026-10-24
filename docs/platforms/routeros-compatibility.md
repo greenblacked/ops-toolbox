@@ -8,7 +8,7 @@ device-specific upgrade readiness.
 
 | Signal | Recorded result |
 | --- | --- |
-| Canonical integration version | **7.24.5** (`mikrotik/tests/routeros-version.env` on `dev`/`master`) |
+| Canonical integration version | **7.25** (`mikrotik/tests/routeros-version.env` in this revision) |
 | Most recent candidate tested here | **RouterOS 7.25 stable** |
 | Candidate test date | October 24, 2026 |
 | CHR integration result | **71 passed, 10 expected failures, 7 warnings**, no unexpected failures |

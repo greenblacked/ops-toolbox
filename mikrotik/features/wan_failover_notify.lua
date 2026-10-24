@@ -7,7 +7,7 @@
 #
 # Schedule via /system scheduler with interval=1m.
 #
-# State is held in :global WAN_LAST_STATE so consecutive runs stay quiet while
+# State is held in :global WanLastState so consecutive runs stay quiet while
 # the WAN remains in the same state. The global is reset on reboot, which means
 # the first run after boot sends a baseline notification - that is intentional.
 
@@ -18,7 +18,7 @@
 :local DeviceName   [/system identity get name];
 :local WanInterface "ether1";
 
-:global WAN_LAST_STATE;
+:global WanLastState;
 
 :local nowKey "";
 :do {
@@ -34,14 +34,14 @@
     :return "";
 }
 
-:if ($nowKey = $WAN_LAST_STATE) do={
+:if ($nowKey = $WanLastState) do={
     :return "";
 }
 
 :local emoji "\F0\9F\94\B4";
 :if ($nowKey = "internet") do={ :set emoji "\F0\9F\9F\A2"; }
 
-:local prevDisplay $WAN_LAST_STATE;
+:local prevDisplay $WanLastState;
 :if ([:len $prevDisplay] = 0) do={ :set prevDisplay "unknown"; }
 
 :local MessageText ("\F0\9F\8C\90 <b>" . $DeviceName . ":</b> WAN " . $emoji . \
@@ -56,4 +56,4 @@
     :log error "wan_failover: tg_send unavailable";
 }
 
-:set WAN_LAST_STATE $nowKey;
+:set WanLastState $nowKey;

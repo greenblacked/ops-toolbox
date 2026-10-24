@@ -1,12 +1,12 @@
-# MikroTik script tests (RouterOS 7.24.5)
+# MikroTik script tests (RouterOS 7.25)
 
-[Ops Toolbox](../../README.md) / **MikroTik script tests (RouterOS 7.24.5)**
+[Ops Toolbox](../../README.md) / **MikroTik script tests (RouterOS 7.25)**
 
-Integration tests that run **real RouterOS CHR 7.24.5** in QEMU inside Docker and
+Integration tests that run **real RouterOS CHR 7.25** in QEMU inside Docker and
 exercise every `*.lua` in the package — `../core/` and `../features/` alike.
 Two services run side by side:
 
-- `chr` — Alpine + QEMU + the official CHR 7.24.5 disk (talks to host on
+- `chr` — Alpine + QEMU + the official CHR 7.25 disk (talks to host on
   `127.0.0.1:8728` for ad‑hoc inspection).
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
@@ -56,6 +56,16 @@ From anywhere in the repo:
 ./mikrotik/tests/run.sh
 ```
 
+The suite only permits Docker service `chr:8728` with the explicit lab flag,
+a matching CHR/x86_64 identity and QEMU NIC MAC, the expected version, and
+no existing scripts or test backup files. It checks these conditions **before
+its first write**. Reused or manually populated VMs fail closed; discard the
+Docker volume and start a fresh lab. Do not point the tester at a physical
+router or a production CHR instance.
+
+The CHR Dockerfile also refuses to build without a valid SHA-256 digest,
+even when invoked outside the wrapper.
+
 That builds both images, brings `chr` up, waits for the API healthcheck,
 runs `pytest` inside `tester`, and tears the stack down. To pass extra args
 to pytest:
@@ -69,7 +79,7 @@ without changing tracked files, override it for one run — and override the
 digest with it:
 
 ```bash
-ROUTEROS_VERSION=7.24.5 \
+ROUTEROS_VERSION=7.25 \
 ROUTEROS_SHA256=<digest of that image> ./mikrotik/tests/run.sh
 ```
 
@@ -125,7 +135,7 @@ docker compose down -v
    release (a patch suffix is accepted only when the requested version omits it).
 2. **Source acceptance** — every `.lua` under `mikrotik/` is added as a
    `/system script` and removed. RouterOS rejects malformed source at `add`
-   time, so this catches syntax issues against the live 7.24.5 parser.
+   time, so this catches syntax issues against the live 7.25 parser.
 3. **Safe execution** — `wan_failover_notify`, `health_check`, and
    `detect_internet` are loaded under their production names and executed.
    `tg_send` is replaced with a **stub** for the test session that records
@@ -144,10 +154,14 @@ docker compose down -v
    escape: the text is posted URL-encoded, so a bare `%` is a defect that
    otherwise only shows up as a mangled Telegram message.
 
-Items 4 and 5 are written and **currently xfail**, because RouterOS 7.24.5 CHR
-will not execute either script. Every path refuses a `:global` whose name
-contains an underscore — which `backup.lua` and `update_check.lua` both have —
-reporting "expected end of command" pointing at the underscore:
+Some execution paths remain **expected failures** on RouterOS 7.25 because
+they reference unquoted globals or locals containing underscores.
+MikroTik's [scripting manual](https://help.mikrotik.com/docs/spaces/ROS/pages/47579229/Scripting)
+requires variable names containing non-alphanumeric characters to be quoted.
+Script installation can succeed even when execution fails. In particular,
+the legacy `update_check.lua` retains invalid identifiers; `backup.lua`
+has already been migrated to CamelCase globals. Run the tests for exact
+current outcomes rather than assuming every historical xfail persists:
 
 | path | result |
 | --- | --- |
@@ -164,9 +178,9 @@ intersection of its own policy and the scheduler entry's, and empty intersects
 to empty. Fixing that turned "not enough permissions" into the parse refusal
 underneath.
 
-The tests are kept rather than deleted, and non-strict to match the rest of the
-suite: if a later RouterOS accepts these names they start passing and the
-coverage arrives with them. Until then, `add → remove` is the ceiling for these
+The tests are kept rather than deleted, and their expected-failure markers
+are strict: a formerly failing case that unexpectedly passes now fails CI
+until its source, behavior and compatibility documentation are reviewed. Until then, `add → remove` is the ceiling for these
 two scripts, and it is worth being clear about what that does and does not
 prove — RouterOS accepts the source; nothing here has run it.
 
@@ -214,12 +228,24 @@ available. Its `check` command does not modify files:
 ```bash
 python3 mikrotik/tests/routeros_version.py check
 python3 mikrotik/tests/routeros_version.py check --channel long-term
-python3 mikrotik/tests/routeros_version.py check --version 7.24.5
+python3 mikrotik/tests/routeros_version.py check --version 7.25
 ```
 
-The `RouterOS version check` GitHub Actions workflow runs every Monday and
-Thursday at 04:19 UTC and can also be started manually. When it finds a newer
-stable release it boots that candidate in Docker first. Only a passing candidate is
+The `RouterOS version check` GitHub Actions workflow checks the official
+stable feed every six hours (01:19, 07:19, 13:19 and 19:19 UTC) and can also
+be started manually. Scheduled workflows run from `master`, but both scheduled
+and manually requested bumps use `dev` as their baseline. Manual check-only
+runs validate the selected ref. Normal bump runs only boot CHR for a newer
+release with no open version-bump PR or recorded failure issue; ordinary
+polls do not start an unnecessary VM.
+A failing candidate opens a `RouterOS VERSION CHR compatibility failure` issue
+with the workflow link and the test summary. Close that issue to allow
+another scheduled attempt, or run `check_only` manually to retest without
+changing files. CHR success is a script/API compatibility result, **not**
+a hardware-safe-upgrade verdict for any specific router.
+
+When the workflow finds a newer stable release it boots that candidate in
+Docker first. Only a passing candidate is
 written to `routeros-version.env`, propagated through the documentation, and
 proposed in a `deps/routeros-VERSION` pull request. `check_only` runs the same
 test without creating a branch or pull request. The canonical pin follows the

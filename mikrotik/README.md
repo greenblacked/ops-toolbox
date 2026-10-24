@@ -2,7 +2,7 @@
 
 [Ops Toolbox](../README.md) / **MikroTik RouterOS scripts**
 
-A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.24.5**)
+A small collection of RouterOS 7.x scripts (verified against **RouterOS 7.25**)
 for backups, WiFi rotation, monitoring and Telegram notifications. All scripts
 live in `/system script` on the router and are run either manually or from
 `/system scheduler`.
@@ -48,14 +48,14 @@ pinned CHR version and its digest are bumped.
 - [Installation](#installation)
 - [Script details](#script-details)
 - [Security action surface](#security-action-surface)
-- [Docker integration tests (CHR 7.24.5)](#docker-integration-tests-chr-7245)
-- [RouterOS 7.24.5 notes & gotchas](#routeros-7245-notes--gotchas)
+- [Docker integration tests (CHR 7.25)](#docker-integration-tests-chr-725)
+- [RouterOS 7.25 notes & gotchas](#routeros-725-notes--gotchas)
 
 ## Requirements
 
 | Requirement | Notes |
 | --- | --- |
-| **A router running RouterOS 7.x** | Verified against **RouterOS 7.24.5**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
+| **A router running RouterOS 7.x** | Verified against **RouterOS 7.25**, the version the integration suite pins in [`tests/routeros-version.env`](tests/routeros-version.env). Individual scripts note narrower floors where they have one — `change_WIFI_pw.lua` needs RouterOS 7.13+ for the WiFiWave2 path, `pull_router_backups.sh` needs the RouterOS 7+ SFTP server. |
 | **Script policy** `read,write,policy,test,sensitive,ftp` | The policy set every `/system script` entry here is created with. `policy` is what lets a script read another script's source, `sensitive` covers the secrets, `ftp` covers `/tool fetch`. |
 | **A Telegram bot token and chat ID** | Needed by `tg_send.lua`, and so by every script that alerts. Set them once as the `TgBotToken` / `TgChatId` globals rather than editing each script. (RouterOS 7.24 refuses an underscored `:global`, so the older `TG_BOT_TOKEN` / `TG_CHAT_ID` spelling is read by nothing — see the migration note below.) |
 | **Bash 3.2 or newer** | Host-side only, for `print_schedulers.sh` and `pull_router_backups.sh`. The `/bin/bash` that ships on macOS is enough. |
@@ -97,7 +97,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 14 of these 29 scripts do not run at all.** That release
+> **On RouterOS 7.24, 13 of these 29 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
@@ -108,10 +108,11 @@ their values, so no token crosses the wire.
 > `backup_update_check.lua`, `cert_expiry_watch.lua`, `change_WIFI_pw.lua`,
 > `conntrack_watch.lua`, `detect_internet.lua`, `health_check.lua`,
 > `netwatch_notify.lua`, `reboot-and-flush.lua`, `security_check.lua`,
+> `wan_failover_notify.lua`,
 > `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
 >
 > **Migrated source; targeted CHR coverage:** `rogue_dns_check.lua`.
-> Its variable names avoid the 7.24 parser restriction. The pinned 7.24.5 tests
+> Its variable names avoid the 7.24 parser restriction. The pinned 7.25 tests
 > cover scheduler permissions, local DNS observations, and stub acknowledgements.
 > Those checks do not verify real Telegram delivery, address-list enforcement,
 > or compatibility with an operator's installed firmware.
@@ -121,7 +122,7 @@ their values, so no token crosses the wire.
 > `dhcp_lease_watch.lua`, `firewall_drift.lua`, `firewall_drift_baseline.lua`,
 > `latency_monitor.lua`, `mac_allowlist_dhcp.lua`,
 > `traffic_quota.lua`, `update_check.lua`, `vpn_health.lua`,
-> `wan_failover_notify.lua`, `wan_link_flap_notify.lua`,
+> `wan_link_flap_notify.lua`,
 > `wireless_client_watch.lua`.
 >
 > `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`,
@@ -138,7 +139,7 @@ their values, so no token crosses the wire.
 > upgrade happens to appear, which reads as covered and is not.
 >
 > The remaining fourteen have no replacement yet; the integration suite marks
-> each of them `xfail` on the 7.24.5 CHR rather than pretending they pass.
+> each of them `xfail` on the 7.25 CHR rather than pretending they pass.
 
 | File                                         | Purpose                                                                 |
 | -------------------------------------------- | ----------------------------------------------------------------------- |
@@ -650,9 +651,13 @@ heartbeat while planned work rules out a reboot.
 
 Polls the WAN interface's built-in `detect-internet-state` property and sends
 a Telegram message **only on transitions** (e.g. `internet → no-link`). State
-is held in `:global WAN_LAST_STATE` so consecutive runs stay quiet while the
+is held in `:global WanLastState` so consecutive runs stay quiet while the
 state is unchanged. The global resets on reboot, which means the first run
 after boot sends a single baseline notification.
+
+On upgrade from an older version of this script, `WAN_LAST_STATE` is no longer
+read. The new `WanLastState` global starts empty, so expect one initial
+baseline notification. Existing scheduler entries keep the same script name.
 
 Requires detect-internet to be enabled on the interface — run
 `detect_internet.lua` once, or run:
@@ -1340,9 +1345,9 @@ To re-baseline the firewall drift detector after an intentional change,
 either run `/system script run firewall_drift_baseline` from the terminal or
 schedule it manually before applying the change.
 
-## Docker integration tests (CHR 7.24.5)
+## Docker integration tests (CHR 7.25)
 
-To validate all scripts on **real RouterOS 7.24.5** inside Docker (QEMU + official CHR
+To validate all scripts on **real RouterOS 7.25** inside Docker (QEMU + official CHR
 image), use [`tests/README.md`](tests/README.md) and from the repo root run
 `./mikrotik/tests/run.sh`. This is the closest practical “emulation” of your router:
 MikroTik does not ship a standalone script interpreter, so the tests talk to a live
@@ -1359,7 +1364,7 @@ The macOS setup scripts in this repo have a **separate** lightweight Docker
 harness (syntax + ShellCheck only, no Homebrew) — see
 [`macos-initial-setup/README.md`](../macos-initial-setup/README.md#development-docker-checks).
 
-## RouterOS 7.24.5 notes & gotchas
+## RouterOS 7.25 notes & gotchas
 
 - RouterOS scripts use `/` for paths and `:` for built-in commands
   (`:local`, `:if`, `:foreach`). `:interface ...` is **not** valid syntax —

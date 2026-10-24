@@ -1,21 +1,20 @@
 name: RouterOS version check
 
-# Check MikroTik's official release feed twice a week and on demand. A release
-# is recorded only after the real CHR image boots and the integration suite
-# passes; automation opens a pull request and never writes to master directly.
+# Check MikroTik's stable feed every six hours and on demand. A changed release
+# triggers CHR once, then either a tested bump PR or a failure issue. The issue
+# prevents expensive automatic retries until an operator closes it. Never
+# modify dev/master directly; hardware safety review is still required.
 #
-# Scheduled runs test and bump from dev, so dev must exist before the next
-# scheduled run. A manual run tests the ref it was started on; the bump pull
-# request still targets dev.
+# Scheduled runs and manual bump requests both use dev as their baseline.
+# Manual check-only runs validate the selected ref without proposing a PR.
+# The dev branch must exist for scheduled or manual bump requests.
 on:
   schedule:
-    # Monday and Thursday at 04:19 UTC. The odd minute is deliberate, for the
-    # same reason chr.yml uses 03:37 — GitHub queues scheduled workflows and the
-    # top of the hour is heavily contended. This workflow was written with
-    # '0 3 * * 1,4' and its first run fired at 05:37, 2h37m late. A different
-    # minute from chr.yml's keeps the two out of the same queue slot, and 04:19
-    # is late enough that the nightly CHR suite has normally finished.
-    - cron: '19 4 * * 1,4'
+    # Lightweight stable-feed check four times daily at offset minutes.
+    # CHR boots only when a newer version has no open bump PR/failure issue.
+    # Scheduled workflows run from default branch (master), so changes to
+    # this file become active only after merging it into master.
+    - cron: '19 1,7,13,19 * * *'
   workflow_dispatch:
     inputs:
       channel:
@@ -60,6 +59,8 @@ jobs:
       contents: write
       # Opens (and updates) the pull request that proposes the bump.
       pull-requests: write
+      # Record a failed candidate once, instead of losing its test evidence.
+      issues: write
     env:
       RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
       REQUESTED_VERSION: ${{ inputs.version || '' }}
@@ -68,11 +69,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Scheduled runs branch the bump from dev; a manual run tests (and
-          # branches from) the ref it was started on. The bump pull request
-          # always targets dev (--base dev below), like every other change;
-          # see CONTRIBUTING.md, "Branches and pull requests".
-          ref: ${{ github.event_name == 'schedule' && 'dev' || github.ref }}
+          # Both scheduled and manual bump runs base changes on dev, which is
+          # also the pull request target. Only check-only uses the chosen ref.
+          # This prevents a manual run on stale master from reverting dev work.
+          ref: ${{ inputs.check_only == true && github.ref || 'dev' }}
           fetch-depth: 0
 
       - name: Resolve candidate release
@@ -105,13 +105,38 @@ jobs:
             echo "Existing pull request: $url"
           fi
 
+      - name: Check for existing failed candidate
+        id: recorded_failure
+        if: >-
+          steps.release.outputs.update_available == 'true' &&
+          inputs.check_only != true &&
+          steps.existing.outputs.url == ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -euo pipefail
+          title="RouterOS ${TARGET_VERSION} CHR compatibility failure"
+          issues="$(gh issue list --state open --limit 100 --json title,url)"
+          url="$(printf '%s' "$issues" | TARGET_TITLE="$title" python3 -c '
+          import json, os, sys
+          title = os.environ["TARGET_TITLE"]
+          print(next((item["url"] for item in json.load(sys.stdin) if item["title"] == title), ""))
+          ')"
+          if [ -n "$url" ]; then
+            echo "url=$url" >> "$GITHUB_OUTPUT"
+            echo "Candidate already failed; see $url (close issue to retry)."
+          fi
+
       # /dev/kvm is crw-rw---- root:kvm and the runner user is not in that
       # group, so run.sh's readable-and-writable test fails and CHR boots under
       # TCG. See chr.yml for the longer version of why that went unnoticed.
       - name: Enable KVM access
         if: >-
           (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
-          steps.existing.outputs.url == ''
+          steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == ''
         run: |
           if [ -e /dev/kvm ]; then
             sudo chmod 0666 /dev/kvm
@@ -124,7 +149,8 @@ jobs:
         id: candidate
         if: >-
           (steps.release.outputs.update_available == 'true' || inputs.check_only == true) &&
-          steps.existing.outputs.url == ''
+          steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == ''
         shell: bash
         env:
           ROUTEROS_VERSION: ${{ steps.release.outputs.latest }}
@@ -166,10 +192,46 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$rc"
 
+      - name: Record a failed release-candidate test
+        if: >-
+          failure() &&
+          steps.candidate.outcome == 'failure' &&
+          inputs.check_only != true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_VERSION: ${{ steps.release.outputs.latest }}
+        run: |
+          set -euo pipefail
+          title="RouterOS ${TARGET_VERSION} CHR compatibility failure"
+          body="$RUNNER_TEMP/routeros-candidate-failure.md"
+          {
+            echo "The official stable feed reported RouterOS ${TARGET_VERSION}."
+            echo
+            echo "The candidate could not pass the repository CHR compatibility test."
+            echo "This is **not** evidence of an hAP ax2 hardware regression."
+            echo
+            echo "- [Failed workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo "- Baseline remains unchanged; do not promote this version."
+            echo "- Close this issue to allow the next scheduled run to retry,"
+            echo "  or run check-only manually for an immediate recheck."
+            if [ -f "$RUNNER_TEMP/mikrotik-version.log" ]; then
+              echo
+              echo '### Test suite summary'
+              echo '~~~text'
+              awk '/^=== summary ===$/{p=1} p' "$RUNNER_TEMP/mikrotik-version.log" | head -n 15
+              echo
+              echo '~~~'
+            fi
+          } > "$body"
+          gh issue create --title "$title" --body-file "$body"
+
       - name: Bump version and documentation
         if: >-
           steps.release.outputs.update_available == 'true' &&
           steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == '' &&
+          steps.candidate.outcome == 'success' &&
           inputs.check_only != true
         env:
           TARGET_VERSION: ${{ steps.release.outputs.latest }}
@@ -179,17 +241,19 @@ jobs:
           # Pin the digest the candidate test actually ran against. Recomputing
           # here would re-download, and a republished artifact would pin bytes
           # nothing has booted.
-          if [ -n "$TESTED_DIGEST" ]; then
-            python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION" --digest "$TESTED_DIGEST"
-          else
-            python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION"
+          if [ -z "$TESTED_DIGEST" ]; then
+            echo "refusing RouterOS bump without the successfully tested archive digest" >&2
+            exit 1
           fi
+          python3 mikrotik/tests/routeros_version.py bump "$TARGET_VERSION" --digest "$TESTED_DIGEST"
 
       - name: Commit bump branch
         id: commit
         if: >-
           steps.release.outputs.update_available == 'true' &&
           steps.existing.outputs.url == '' &&
+          steps.recorded_failure.outputs.url == '' &&
+          steps.candidate.outcome == 'success' &&
           inputs.check_only != true
         shell: bash
         env:
@@ -218,6 +282,8 @@ jobs:
           git add \
             mikrotik/tests/routeros-version.env \
             README.md mikrotik/README.md mikrotik/tests/README.md \
+            docs/platforms/mikrotik.md docs/contributing/testing.md \
+            docs/platforms/routeros-compatibility.md \
             .github/workflows/chr.yml CHANGELOG.md
           git commit -m "deps(mikrotik): test against RouterOS ${TARGET_VERSION}"
 
@@ -231,16 +297,21 @@ jobs:
           fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
-      # Events created by GITHUB_TOKEN do not recursively start workflows.
-      # Dispatch CI explicitly so the bot branch still receives the repository's
-      # ordinary lint and test checks before it is merged.
-      - name: Dispatch standard CI for bump branch
+      # PRs created by GITHUB_TOKEN do not fire pull_request workflows. Start
+      # CI, security and CHR against the exact bump branch explicitly. Docs
+      # and branch-name PR checks still need verifying before manual merge;
+      # none of these jobs auto-merge or touch physical hardware.
+      - name: Dispatch validation checks for bump branch
         if: steps.commit.outcome == 'success'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           BUMP_BRANCH: ${{ steps.commit.outputs.branch }}
-        run: gh workflow run ci.yml --ref "$BUMP_BRANCH"
+        run: |
+          set -euo pipefail
+          gh workflow run ci.yml --ref "$BUMP_BRANCH"
+          gh workflow run security.yml --ref "$BUMP_BRANCH"
+          gh workflow run chr.yml --ref "$BUMP_BRANCH"
 
       - name: Open bump pull request
         id: pull_request
@@ -271,19 +342,30 @@ jobs:
       - name: Summarise release check
         if: always()
         shell: bash
+        env:
+          RESULT_CHANNEL: ${{ steps.release.outputs.channel }}
+          RESULT_CURRENT: ${{ steps.release.outputs.current }}
+          RESULT_LATEST: ${{ steps.release.outputs.latest }}
+          RESULT_UPDATE_AVAILABLE: ${{ steps.release.outputs.update_available }}
+          EXISTING_PR_URL: ${{ steps.existing.outputs.url }}
+          CREATED_PR_URL: ${{ steps.pull_request.outputs.url }}
+          PREVIOUS_FAILURE_URL: ${{ steps.recorded_failure.outputs.url }}
+          CHECK_ONLY_REQUESTED: ${{ inputs.check_only }}
         run: |
           {
             printf '### RouterOS release check\n\n'
             printf '| item | value |\n| --- | --- |\n'
-            printf '| channel | `%s` |\n' '${{ steps.release.outputs.channel }}'
-            printf '| pinned | `%s` |\n' '${{ steps.release.outputs.current }}'
-            printf '| candidate | `%s` |\n' '${{ steps.release.outputs.latest }}'
-            printf '| update available | `%s` |\n' '${{ steps.release.outputs.update_available }}'
-            if [ -n '${{ steps.existing.outputs.url }}' ]; then
-              printf '\nExisting pull request: %s\n' '${{ steps.existing.outputs.url }}'
-            elif [ -n '${{ steps.pull_request.outputs.url }}' ]; then
-              printf '\nCreated pull request: %s\n' '${{ steps.pull_request.outputs.url }}'
-            elif [ '${{ inputs.check_only }}' = 'true' ]; then
+            printf '| channel | `%s` |\n' "$RESULT_CHANNEL"
+            printf '| pinned | `%s` |\n' "$RESULT_CURRENT"
+            printf '| candidate | `%s` |\n' "$RESULT_LATEST"
+            printf '| update available | `%s` |\n' "$RESULT_UPDATE_AVAILABLE"
+            if [ -n "$EXISTING_PR_URL" ]; then
+              printf '\nExisting pull request: %s\n' "$EXISTING_PR_URL"
+            elif [ -n "$CREATED_PR_URL" ]; then
+              printf '\nCreated pull request: %s\n' "$CREATED_PR_URL"
+            elif [ -n "$PREVIOUS_FAILURE_URL" ]; then
+              printf '\nPreviously failed candidate: %s\n' "$PREVIOUS_FAILURE_URL"
+            elif [ "$CHECK_ONLY_REQUESTED" = 'true' ]; then
               printf '\nCheck-only mode: no repository changes were made.\n'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
