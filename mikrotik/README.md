@@ -97,7 +97,7 @@ their values, so no token crosses the wire.
 
 ## Scripts overview
 
-> **On RouterOS 7.24, 14 of these 29 scripts do not run at all.** That release
+> **On RouterOS 7.24, 13 of these 29 scripts do not run at all.** That release
 > refuses to execute a script declaring a `:global` or `:local` whose name
 > contains an underscore — it stops in the parser, so the script logs nothing
 > and a scheduler entry that fires looks exactly like one with nothing to
@@ -108,6 +108,7 @@ their values, so no token crosses the wire.
 > `backup_update_check.lua`, `cert_expiry_watch.lua`, `change_WIFI_pw.lua`,
 > `conntrack_watch.lua`, `detect_internet.lua`, `health_check.lua`,
 > `netwatch_notify.lua`, `reboot-and-flush.lua`, `security_check.lua`,
+> `wan_failover_notify.lua`,
 > `stay_fresh.lua`, `tg_send.lua`, `wireguard_watch.lua`.
 >
 > **Migrated source; targeted CHR coverage:** `rogue_dns_check.lua`.
@@ -121,7 +122,7 @@ their values, so no token crosses the wire.
 > `dhcp_lease_watch.lua`, `firewall_drift.lua`, `firewall_drift_baseline.lua`,
 > `latency_monitor.lua`, `mac_allowlist_dhcp.lua`,
 > `traffic_quota.lua`, `update_check.lua`, `vpn_health.lua`,
-> `wan_failover_notify.lua`, `wan_link_flap_notify.lua`,
+> `wan_link_flap_notify.lua`,
 > `wireless_client_watch.lua`.
 >
 > `backup_update_check.lua` is the 7.24 replacement for `update_check.lua`,
@@ -650,9 +651,13 @@ heartbeat while planned work rules out a reboot.
 
 Polls the WAN interface's built-in `detect-internet-state` property and sends
 a Telegram message **only on transitions** (e.g. `internet → no-link`). State
-is held in `:global WAN_LAST_STATE` so consecutive runs stay quiet while the
+is held in `:global WanLastState` so consecutive runs stay quiet while the
 state is unchanged. The global resets on reboot, which means the first run
 after boot sends a single baseline notification.
+
+On upgrade from an older version of this script, `WAN_LAST_STATE` is no longer
+read. The new `WanLastState` global starts empty, so expect one initial
+baseline notification. Existing scheduler entries keep the same script name.
 
 Requires detect-internet to be enabled on the interface — run
 `detect_internet.lua` once, or run:
