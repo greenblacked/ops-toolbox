@@ -17,9 +17,12 @@ MikroTik's [7.25 stable changelog](https://forum.mikrotik.com/t/7-25-stable-is-r
 (2026-10-23 release, 2026-10-22 notes) includes fixes for SAE cached PMKs,
 `wifi-qcom` roaming, bridge forwarding and IPv6 snooping, and DNS. A
 [CAPsMAN + reselect-interval user report](https://forum.mikrotik.com/t/7-25-stable-is-released/273987/7)
-describes dynamic Wi-Fi interfaces being recreated after upgrading an ax3
-CAPsMAN setup; removing `reselect-interval` restored operation in that
-configuration. This is not confirmation of an hAP ax2 defect.
+describes dynamic Wi-Fi interfaces being recreated in CAPsMAN deployments,
+including one with an hAP ax2 as a managed CAP; removing `reselect-interval`
+restored operation in reported configurations. This is a credible
+configuration-specific regression, not proof that a standalone hAP ax2
+is affected. Additional reports of IPv6 DHCPv6 prefix/source-selection
+problems in 7.25 warrant verification if IPv6 is enabled.
 
 Hardware reference: [MikroTik hAP ax2 manual](https://manual.mikrotik.com/hardware/hap-ax-2/).
 
