@@ -550,7 +550,11 @@ flatten_file() {
         FLAT="$FLAT=INCLUDE-BEGIN"$'\n'
         flatten_file "$m" $((depth + 1))
         FLAT="$FLAT=INCLUDE-END"$'\n'
-      done < <(compgen -G "$pat" 2>/dev/null)
+      # compgen -G returns matches in whatever order the filesystem hands
+      # them back, not sorted; ssh expands Include globs with glob(3), which
+      # sorts them. Sort in the C locale so the first value wins here as it
+      # does in ssh on any filesystem.
+      done < <(compgen -G "$pat" 2>/dev/null | LC_ALL=C sort)
     done
   done < "$file"
   FLAT_STACK="${FLAT_STACK%"$real"$'\n'}"
