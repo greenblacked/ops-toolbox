@@ -4787,6 +4787,38 @@ except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
 PYPLIST
 }
 
+# Whether launchd's service DOMAIN/LABEL was loaded from exactly PLIST.
+# `launchctl bootout DOMAIN/LABEL` goes by label alone, and a stale plist can
+# carry the label of a live service loaded from another file (a vendor's
+# current plist, an Apple daemon); booting that out would stop the live one.
+# Returns 0 when PLIST is the loaded file, 1 when nothing is loaded under the
+# label, 2 when it is loaded from somewhere else. Any arguments after PLIST are
+# a command prefix (sudo -n) for the system domain.
+# Usage: launchd_loaded_from DOMAIN LABEL PLIST [PREFIX...]
+launchd_loaded_from() {
+  local domain="$1" label="$2" plist="$3" out
+  shift 3
+  out="$("$@" launchctl print "$domain/$label" 2>/dev/null)" || return 1
+  awk -v p="$plist" '{ sub(/^[ \t]+/, "") } $0 == "path = " p { found=1 } END { exit !found }' <<<"$out" \
+    && return 0
+  return 2
+}
+
+# Unload LABEL from DOMAIN only when launchd loaded it from PLIST. The plist is
+# removed by the caller either way: it is orphaned whoever else uses the label.
+# Usage: bootout_orphan DOMAIN LABEL PLIST [PREFIX...]
+bootout_orphan() {
+  local domain="$1" label="$2" plist="$3" rc=0
+  shift 3
+  launchd_loaded_from "$domain" "$label" "$plist" "$@" || rc=$?
+  case "$rc" in
+    0) "$@" launchctl bootout "$domain/$label" >>"$LOG_SINK" 2>&1 || true ;;
+    2) printf "  %s%s is loaded from another file; left running, only %s is removed%s\n" \
+         "$C_DIM" "$label" "${plist/#$HOME/$HOME_TILDE}" "$C_RESET" ;;
+  esac
+  return 0
+}
+
 # Every tool that ever installed a background helper left a plist behind, and
 # uninstalling the tool rarely removes it; launchd then retries a program that
 # is gone at every login and logs the failure forever. Reported by default.
@@ -4876,9 +4908,9 @@ PYSTAT
     if (( DRY_RUN )); then
       printf "  %s(dry-run) launchctl bootout gui/%s/%s%s\n" "$C_DIM" "$(id -u)" "$label" "$C_RESET"
     else
-      # Unloading a job that is not loaded fails, and that is fine: the
-      # plist goes either way.
-      launchctl bootout "gui/$(id -u)/$label" >>"$LOG_SINK" 2>&1 || true
+      # Only a job loaded from this very file is unloaded; the plist goes
+      # either way.
+      bootout_orphan "gui/$(id -u)" "$label" "$f"
     fi
   done
   clear_paths "orphaned LaunchAgents" entry "${user_orphans[@]}"
@@ -4898,9 +4930,18 @@ PYSTAT
 prune_system_orphans() {
   local n="$1"; shift
   local -a plists=("${@:1:$n}") labels=("${@:$(( n + 1 )):$n}")
-  local i domain removed=0
-  if (( PRUNE_ORPHAN_AGENTS == 0 || USE_SUDO == 0 || SUDO_AVAILABLE == 0 )) \
-     || { (( DRY_RUN == 0 )) && ! have_tty; }; then
+  local i domain removed=0 can_remove=0
+  # A real run needs the credential the preflight obtained. A dry run never
+  # preflights, so it previews what a real run would do: one that would
+  # preflight (NEEDS_SUDO) on this terminal.
+  if (( PRUNE_ORPHAN_AGENTS && USE_SUDO )) && have_tty; then
+    if (( DRY_RUN )); then
+      (( NEEDS_SUDO )) && can_remove=1
+    else
+      (( SUDO_AVAILABLE )) && can_remove=1
+    fi
+  fi
+  if (( can_remove == 0 )); then
     printf "  %ssystem-level plists need sudo on an interactive run; if nothing needs them:%s\n" "$C_DIM" "$C_RESET"
     for (( i = 0; i < n; i++ )); do
       domain="system"
@@ -4917,8 +4958,7 @@ prune_system_orphans() {
         "$C_DIM" "$domain" "${labels[$i]}" "${plists[$i]}" "$C_RESET"
       continue
     fi
-    # Not loaded is fine: the plist goes either way.
-    sudo -n launchctl bootout "$domain/${labels[$i]}" >>"$LOG_SINK" 2>&1 || true
+    bootout_orphan "$domain" "${labels[$i]}" "${plists[$i]}" sudo -n
     if sudo -n rm -f -- "${plists[$i]}" >>"$LOG_SINK" 2>&1 && [[ ! -e "${plists[$i]}" ]]; then
       removed=$(( removed + 1 ))
       ORPHAN_AGENTS=$(( ORPHAN_AGENTS - 1 ))
@@ -6075,6 +6115,8 @@ if (( UI_TERMINAL )); then
     if (( ORPHAN_AGENTS > 0 )); then
       if (( PRUNE_ORPHAN_AGENTS )); then
         ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) left; the step output above says why"
+      elif (( PRUNE_ORPHAN_AGENTS_AUTO == 0 )); then
+        ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) kept (--no-prune-orphan-agents)"
       else
         ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) found; run from a terminal to remove them"
       fi

@@ -2965,8 +2965,30 @@ agents_env() {
     > /Library/LaunchDaemons/com.gone.daemon.plist
   printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/bin/ls</string></dict></plist>' \
     > /Library/LaunchAgents/com.ok.system.plist
-  mkbin "$d/bin/launchctl" 'echo "launchctl $*" >> "$CALLS"; exit 0'
+  # `print DOMAIN/LABEL` answers like launchd: the plist the service was
+  # loaded from, found by label as a filename here, or LAUNCHCTL_LOADED_FROM
+  # to stand for a live service that shares the label but came from elsewhere.
+  # Prints are not recorded, so "nothing unloaded" still means no bootout.
+  mkbin "$d/bin/launchctl" 'if [ "${1:-}" = print ]; then' \
+    '  label="${2##*/}"' \
+    '  for f in "$HOME/Library/LaunchAgents/$label.plist" "/Library/LaunchAgents/$label.plist" "/Library/LaunchDaemons/$label.plist"; do' \
+    '    if [ -e "$f" ] || [ -L "$f" ]; then printf "\tpath = %s\n" "${LAUNCHCTL_LOADED_FROM:-$f}"; exit 0; fi' \
+    '  done; exit 113' \
+    'fi' \
+    'echo "launchctl $*" >> "$CALLS"; exit 0'
   printf '%s' "$d"
+}
+# The interactive tests need to see whether a root command went through
+# `sudo -n` (never prompts) or plain sudo (may prompt). The shared fake drops
+# the -n; this one keeps it in the record.
+sudo_n_recording() {
+  mkbin "$1/bin/sudo" 'case "${1:-}" in' \
+    '  -v) echo "sudo -v" >> "$CALLS"; exit 0 ;;' \
+    '  -n) shift; case "${1:-}" in true) exit 0 ;; -v) echo "sudo -n -v" >> "$CALLS"; exit 0 ;; esac' \
+    '      echo "sudo -n $*" >> "$CALLS"; exec "$@" ;;' \
+    'esac' \
+    'echo "sudo $*" >> "$CALLS"' \
+    'exec "$@"'
 }
 d="$(agents_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
@@ -3011,7 +3033,7 @@ rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 # through sudo -n so no second password prompt is raised. A program on an
 # unmounted external volume looks missing and is kept. --no-prune-orphan-agents
 # keeps everything.
-d="$(agents_env)"; : > "$d/calls"
+d="$(agents_env)"; : > "$d/calls"; sudo_n_recording "$d"
 printf '%s\n' '<plist version="1.0"><dict><key>Label</key><string>com.ext.helper</string>' \
   '<key>Program</key><string>/Volumes/External/helper</string></dict></plist>' \
   > "$d/home/Library/LaunchAgents/com.ext.helper.plist"
@@ -3019,12 +3041,41 @@ out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics)"; rc=$?
 assert_eq "interactive orphan cleanup succeeds" "0" "$rc"
 assert_called "an interactive run unloads a user orphan" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
 assert_gone   "an interactive run removes a user orphan" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
-assert_called "the system orphan is unloaded under sudo -n" "$d/calls" "sudo launchctl bootout system/com.gone.daemon"
+assert_called "the system orphan is unloaded under sudo -n" "$d/calls" "sudo -n launchctl bootout system/com.gone.daemon"
+assert_called "the system orphan is removed under sudo -n" "$d/calls" "sudo -n rm -f -- /Library/LaunchDaemons/com.gone.daemon.plist"
+if grep -q '^sudo launchctl\|^sudo rm' "$d/calls"; then
+  err "no orphan command goes through a sudo that may prompt"
+else ok "no orphan command goes through a sudo that may prompt"; fi
 assert_gone   "the system orphan is removed with sudo" /Library/LaunchDaemons/com.gone.daemon.plist
 assert_exists "a program on an external volume is not taken as gone" "$d/home/Library/LaunchAgents/com.ext.helper.plist"
 assert_contains "the external one is named as kept" "$out" "on an external volume, kept"
 assert_exists "a live system plist stays" /Library/LaunchAgents/com.ok.system.plist
-assert_not_contains "nothing is left for the summary" "$out" "orphaned launch agent(s) found"
+assert_not_contains "nothing is left for the summary" "$out" "orphaned launch agent(s)"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# A stale plist whose Label is also a live service loaded from another file
+# (a vendor's current plist, an Apple daemon). bootout goes by label, so
+# unloading it would stop the live service. The stale file still goes.
+d="$(agents_env)"; : > "$d/calls"; sudo_n_recording "$d"
+export LAUNCHCTL_LOADED_FROM=/System/Library/LaunchDaemons/live.plist
+out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics)"; rc=$?
+unset LAUNCHCTL_LOADED_FROM
+assert_eq "a label shared with a live service does not fail the run" "0" "$rc"
+assert_not_called "a live user service sharing the label is not unloaded" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
+assert_not_called "a live system service sharing the label is not unloaded" "$d/calls" "launchctl bootout system/com.gone.daemon"
+assert_contains "the run says the live service was left running" "$out" "com.gone.daemon is loaded from another file; left running"
+assert_gone "the stale user plist is still removed" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_gone "the stale system plist is still removed" /Library/LaunchDaemons/com.gone.daemon.plist
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# A dry run on a terminal previews the system-level removal a real run with
+# sudo would make, rather than printing the read-only hint.
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf_tty "$d" --dry-run --only launch-agents,diagnostics)"; rc=$?
+assert_contains "a dry run previews the system orphan's removal" "$out" \
+  "(dry-run) sudo launchctl bootout system/com.gone.daemon; sudo rm -f /Library/LaunchDaemons/com.gone.daemon.plist"
+assert_exists "the dry run removes nothing" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_not_called "the dry run unloads nothing" "$d/calls" "launchctl bootout"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 
 d="$(agents_env)"; : > "$d/calls"
@@ -3041,7 +3092,7 @@ out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics --no-prune-orphan-
 assert_exists "--no-prune-orphan-agents keeps the user orphan" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
 assert_exists "--no-prune-orphan-agents keeps the system orphan" /Library/LaunchDaemons/com.gone.daemon.plist
 assert_not_called "--no-prune-orphan-agents unloads nothing" "$d/calls" "launchctl bootout"
-assert_contains "the summary says how to remove them" "$out" "3 orphaned launch agent(s) found; run from a terminal"
+assert_contains "the summary names the flag that kept them" "$out" "3 orphaned launch agent(s) kept (--no-prune-orphan-agents)"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
 
 # ===========================================================================
@@ -3612,7 +3663,7 @@ mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
   '  "outdated --cask") [ -e "$HOME/alacritty-done" ] || echo alacritty; echo unetbootin; echo oldie ;;' \
   'esac; exit 0'
 out="$(run_sf_tty "$d" --yes --only brew)"; rc=$?
-assert_called "the bulk cask upgrade runs first" "$d/calls" "brew upgrade --cask --yes"
+assert_eq "the bulk cask upgrade runs once, unnamed" "1" "$(grep -cx 'brew upgrade --cask --yes' "$d/calls")"
 assert_called "a leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes alacritty"
 assert_called "a failing leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes unetbootin"
 assert_not_called "a disabled cask is not retried" "$d/calls" "brew upgrade --cask --yes oldie"
