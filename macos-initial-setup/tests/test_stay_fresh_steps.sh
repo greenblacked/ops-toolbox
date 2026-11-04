@@ -46,6 +46,9 @@ unset KREW_ROOT
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+# stay_fresh.sh names the terminal app that needs Full Disk Access from these.
+# Inherited from a developer's terminal, the Trash guidance names that app.
+unset TERM_PROGRAM __CFBundleIdentifier
 
 failures=0
 # Counted so the run can prove it asserted something. Without `-e` a suite that
@@ -2928,7 +2931,7 @@ assert_contains "a Downloads folder with nothing old says so" "$out" "nothing in
 rm -rf "$d"
 
 # ===========================================================================
-section "launch-agents (orphaned plists reported; user-level removed only on request)"
+section "launch-agents (orphaned plists reported; removed on a terminal or on request)"
 agents_env() {
   local d; d="$(new_env)"
   local la="$d/home/Library/LaunchAgents"
@@ -3002,6 +3005,75 @@ assert_exists "the uninspected binary plist stays"     "$d/home/Library/LaunchAg
 assert_exists "a system-level orphan is never removed" /Library/LaunchDaemons/com.gone.daemon.plist
 assert_not_called "system-level plists are never unloaded" "$d/calls" "system/com.gone.daemon"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# On a terminal the orphans go without --prune-orphan-agents. The system-level
+# one goes too once sudo is authenticated (diagnostics brings the preflight),
+# through sudo -n so no second password prompt is raised. A program on an
+# unmounted external volume looks missing and is kept. --no-prune-orphan-agents
+# keeps everything.
+d="$(agents_env)"; : > "$d/calls"
+printf '%s\n' '<plist version="1.0"><dict><key>Label</key><string>com.ext.helper</string>' \
+  '<key>Program</key><string>/Volumes/External/helper</string></dict></plist>' \
+  > "$d/home/Library/LaunchAgents/com.ext.helper.plist"
+out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics)"; rc=$?
+assert_eq "interactive orphan cleanup succeeds" "0" "$rc"
+assert_called "an interactive run unloads a user orphan" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
+assert_gone   "an interactive run removes a user orphan" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_called "the system orphan is unloaded under sudo -n" "$d/calls" "sudo launchctl bootout system/com.gone.daemon"
+assert_gone   "the system orphan is removed with sudo" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_exists "a program on an external volume is not taken as gone" "$d/home/Library/LaunchAgents/com.ext.helper.plist"
+assert_contains "the external one is named as kept" "$out" "on an external volume, kept"
+assert_exists "a live system plist stays" /Library/LaunchAgents/com.ok.system.plist
+assert_not_contains "nothing is left for the summary" "$out" "orphaned launch agent(s) found"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only launch-agents)"; rc=$?
+assert_gone   "without sudo the user orphan still goes" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_exists "without an authenticated sudo the system orphan stays" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_contains "and its command is printed" "$out" \
+  "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
+assert_contains "the summary counts only what is left" "$out" "1 orphaned launch agent(s) left"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics --no-prune-orphan-agents)"; rc=$?
+assert_exists "--no-prune-orphan-agents keeps the user orphan" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_exists "--no-prune-orphan-agents keeps the system orphan" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_not_called "--no-prune-orphan-agents unloads nothing" "$d/calls" "launchctl bootout"
+assert_contains "the summary says how to remove them" "$out" "3 orphaned launch agent(s) found; run from a terminal"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# ===========================================================================
+section "trash (Full Disk Access: open the pane on a terminal, explain headless)"
+# The privacy controls answer find with EPERM on ~/.Trash itself, and Finder
+# refuses too (Automation not allowed). Root in a container cannot be denied,
+# so find and osascript are faked into that state.
+trash_fda_env() {
+  local d; d="$(new_env)"
+  mkdir -p "$d/home/.Trash"; : > "$d/home/.Trash/junk"
+  mkbin "$d/bin/find" 'for a in "$@"; do' \
+    '  if [ "$a" = -delete ] && [ "${1%/}" = "$HOME/.Trash" ]; then echo "find: $1: Operation not permitted" >&2; exit 1; fi' \
+    'done' 'exec /usr/bin/find "$@"'
+  mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 1'
+  mkbin "$d/bin/open" 'echo "open $*" >> "$CALLS"; exit 0'
+  printf '%s' "$d"
+}
+d="$(trash_fda_env)"; : > "$d/calls"
+out="$(TERM_PROGRAM=Apple_Terminal run_sf_tty "$d" --yes --only trash)"; rc=$?
+assert_eq "a protected Trash is not a failure" "0" "$rc"
+assert_called "Finder is asked first" "$d/calls" "osascript -e tell application \"Finder\" to empty the trash"
+assert_called "the Full Disk Access pane is opened" "$d/calls" \
+  "open x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+assert_contains "the app to turn on is named" "$out" "Full Disk Access: turn on Terminal"
+assert_contains "the summary says the pane was opened" "$out" \
+  "Trash cleanup needs Full Disk Access for Terminal; System Settings was opened at that pane"
+: > "$d/calls"
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_not_called "a headless run opens nothing" "$d/calls" "open x-apple"
+assert_contains "a headless run explains the /bin/bash trade-off" "$out" \
+  "Full Disk Access for /bin/bash, which would extend it to every bash script"
+rm -rf "$d"
 
 # A symlinked plist. The path guard refused every symlink, so --prune-orphan-agents
 # booted the job out and then left the link on disk: the orphan returned at the
