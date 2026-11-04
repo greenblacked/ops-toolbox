@@ -124,7 +124,7 @@ triggers and gates; their current definitions are the source of truth.
 
 CI uses a `macos-15` runner for native macOS checks and a `windows-2025`
 runner with `pwsh` for Windows contracts; Linux package tests run in Debian,
-Fedora and Arch containers. The
+Fedora, Rocky and Arch containers. The
 [macOS test guide](macos-initial-setup/README.md#development-docker-checks)
 also describes Linux container checks that do not run Homebrew on macOS.
 These checks do not exercise every advertised OS release or Windows

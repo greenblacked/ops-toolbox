@@ -2,9 +2,10 @@
 # execute them rather than only parsing them — behavioural coverage the macOS
 # suite structurally cannot have.
 #
-# Three services, one per package manager. run.sh starts only `debian` by
+# Four services: debian (apt), fedora and rocky (dnf, one Fedora-family and
+# one EL), arch (pacman). run.sh starts only `debian` by
 # default so the suite stays fast enough for the default selection; set
-# LINUX_DISTROS=all to add fedora and arch.
+# LINUX_DISTROS=all to add fedora, rocky and arch.
 
 name: pretty-useful-linux-scripts
 
@@ -33,6 +34,22 @@ services:
         BASE_IMAGE: "fedora:41"
     image: pretty-useful-linux-tester-fedora:1
     container_name: pretty-useful-linux-fedora
+    environment:
+      REPO_ROOT: /repo
+      EXPECT_PKG_MGR: dnf
+    volumes:
+      - ../../:/repo:ro
+    working_dir: /repo
+    command: ["/bin/bash", "/repo/linux/tests/test_linux_scripts.sh"]
+
+  rocky:
+    build:
+      context: ./tester
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: "rockylinux/rockylinux:9.8@sha256:8101994123cf3d0a8fee517bee7f39e555c7d92bd2d9eb3303cc988a0eeed00f"
+    image: pretty-useful-linux-tester-rocky:1
+    container_name: pretty-useful-linux-rocky
     environment:
       REPO_ROOT: /repo
       EXPECT_PKG_MGR: dnf

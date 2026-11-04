@@ -18,7 +18,7 @@ platforms present on your machine.
 | --- | --- | --- |
 | `git` | Docker with Compose v2 | ShellCheck, `bash -n`, `--help`, integration tests for the Git helpers. |
 | `macos` | Docker with Compose v2 | Static checks, `--help`, exit codes, and `stay_fresh.sh` with host commands faked. Cannot run Homebrew. |
-| `linux` | Docker | Scripts run for real in Debian; `LINUX_DISTROS=all` adds Fedora and Arch. |
+| `linux` | Docker | Scripts run for real in Debian; `LINUX_DISTROS=all` adds Fedora, Rocky and Arch. |
 | `k8s` | Bash only | Script contracts with stubbed `kubectl`; `K8S_IMAGE_SMOKE=1` builds the image. |
 | `dotfiles` | Bash and git | The installer against a scratch home directory. |
 | `python` | Host `python3` | Standard library `unittest`, plus `ruff` if installed. |
@@ -55,7 +55,7 @@ The workflows in `.github/workflows/`:
   site and deploys it with wrangler (see [Deployment](deployment.md)).
 
 In short, CI covers shell syntax and lint, `--help` and exit-code contracts,
-dry-run behavior, Linux package tests in Debian, Fedora and Arch containers,
+dry-run behavior, Linux package tests in Debian, Fedora, Rocky and Arch containers,
 macOS native checks, Windows contracts, Python unit tests and RouterOS CHR
 integration.
 
@@ -65,7 +65,7 @@ integration.
     These are not exercised by CI. Test them on the target before relying on
     them.
 
-- Every advertised OS release. Only the `macos-15` runner and the three Linux
+- Every advertised OS release. Only the `macos-15` runner and the four Linux
   containers run.
 - Windows PowerShell 5.1. CI runs PowerShell 7.
 - Real Homebrew installs, cask upgrades, and macOS defaults protected by SIP

@@ -2,11 +2,11 @@
 # Build the tester images and run the linux/ script checks in Docker.
 #
 # Only the debian service runs by default so the suite stays fast enough for
-# the default selection. LINUX_DISTROS=all adds fedora and arch; a
+# the default selection. LINUX_DISTROS=all adds fedora, rocky and arch; a
 # space-separated list picks specific ones.
 #
 #   ./run.sh                      # debian
-#   LINUX_DISTROS=all ./run.sh    # debian fedora arch
+#   LINUX_DISTROS=all ./run.sh    # debian fedora rocky arch
 #   LINUX_DISTROS="arch" ./run.sh
 set -euo pipefail
 
@@ -25,7 +25,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 case "${LINUX_DISTROS:-debian}" in
-  all) services="debian fedora arch" ;;
+  all) services="debian fedora rocky arch" ;;
   *)   services="${LINUX_DISTROS:-debian}" ;;
 esac
 

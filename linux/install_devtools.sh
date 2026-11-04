@@ -33,6 +33,7 @@ SKIP_GO=0
 SKIP_TERRAFORM=0
 SKIP_HELM=0
 SKIP_CLIS=0
+NO_EPEL=0
 QUIET_FAIL=0
 
 LOG_DIR="${TMPDIR:-/tmp}"
@@ -58,7 +59,7 @@ install_devtools.sh - install developer toolchains on Linux
 
 Usage:
   $(basename "$0") [--dry-run] [--yes] [--verbose] [--manager mise|distro]
-                          [--setup-shell] [--only GROUPS | --skip-* ...]
+                          [--setup-shell] [--no-epel] [--only GROUPS | --skip-* ...]
 
 Options:
   --manager NAME    mise (default) or distro. mise manages Python/Go/Terraform/
@@ -76,6 +77,13 @@ Options:
   --skip-terraform  Skip Terraform
   --skip-helm       Skip Helm
   --skip-clis       Skip the DevOps CLIs (git, jq, ripgrep, ...)
+  --no-epel         On Rocky, Alma and CentOS the clis group installs
+                    epel-release and enables CRB first, which persistently adds
+                    third-party repositories to the machine (ripgrep, fd-find,
+                    btop, nload and ncdu live there). This flag skips that step;
+                    the tools it would have provided are then reported as not
+                    installed. Other EL rebuilds (Oracle Linux, RHEL) never get
+                    EPEL from this script.
   --help, -h        Show this help
 
 Log file: ${LOG_DIR}/linux_install_devtools-<timestamp>.log
@@ -110,6 +118,12 @@ detect_pkg_mgr() {
   esac
 }
 
+os_id() {
+  local os_release="${OS_RELEASE:-/etc/os-release}"
+  [[ -r "$os_release" ]] || return 0
+  sed -n 's/^ID=//p' "$os_release" | tr -d '"' | head -n 1
+}
+
 while (( $# > 0 )); do
   case "$1" in
     --dry-run)        DRY_RUN=1 ;;
@@ -126,6 +140,7 @@ while (( $# > 0 )); do
     --skip-terraform) SKIP_TERRAFORM=1; SKIP_USED=1 ;;
     --skip-helm)      SKIP_HELM=1; SKIP_USED=1 ;;
     --skip-clis)      SKIP_CLIS=1; SKIP_USED=1 ;;
+    --no-epel)        NO_EPEL=1 ;;
     -h|--help)        usage; exit 0 ;;
     *)
       err "unknown argument: $1"
@@ -257,6 +272,24 @@ optional_install() {
 # --- base CLIs -------------------------------------------------------------
 if (( SKIP_CLIS == 0 )); then
   step "DevOps CLIs"
+  case "$PKG_MGR" in
+    dnf)
+      # On Rocky, Alma and CentOS, ripgrep, fd-find, btop, nload and ncdu are in
+      # EPEL, not BaseOS/AppStream. (mc is in AppStream and iotop in BaseOS on
+      # EL9.) `crb enable` ships with epel-release. This persistently adds
+      # third-party repositories, so --no-epel opts out. RHEL and the other EL
+      # rebuilds are left alone: EPEL there is the administrator's call.
+      if (( NO_EPEL == 0 )); then
+        case "$(os_id)" in
+          rocky|almalinux|centos)
+            pkg_install epel-release
+            run_cmd "enable CRB" $SUDO crb enable
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
   # Only distro-base packages go in the core batch, so one unavailable package
   # cannot sink the rest. curl is skipped when a curl is already on PATH:
   # Rocky, Alma and UBI images ship curl-minimal, which conflicts with curl and

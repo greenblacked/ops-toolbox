@@ -6,7 +6,7 @@ Bootstrap and maintenance for a Linux machine — the counterpart of
 [`macos-initial-setup/`](../macos-initial-setup/), for servers and workstations
 rather than a Mac.
 
-**Targets:** Debian/Ubuntu (`apt`), Fedora/RHEL (`dnf`) and Arch (`pacman`).
+**Targets:** Debian/Ubuntu (`apt`), Fedora/RHEL/Rocky (`dnf`) and Arch (`pacman`).
 The four scripts that install or remove packages — `stay_fresh.sh`,
 `install_devtools.sh`, `packages.sh`, `kernel_cleanup.sh` — exit `2` on
 anything else and say what they detected, the same way the macOS scripts exit `2` off macOS. The two that
@@ -73,7 +73,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | [`bash_aliases.sh`](bash_aliases.sh) | Guarded aliases and helpers, sourced from `~/.bashrc` |
 | [`install_aliases.sh`](install_aliases.sh) | Install or remove the `bash_aliases.sh` source block in `~/.bashrc` |
 | [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh) | Install a user timer so `stay_fresh.sh` runs on a schedule |
-| [`tests/`](tests/) | Docker checks that **run** the scripts, across all three distros |
+| [`tests/`](tests/) | Docker checks that **run** the scripts, across all four distros |
 
 ## Requirements
 
@@ -85,7 +85,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 | **`sudo`, or root** | Optional. Steps that need root are skipped with a warning when `sudo` is missing, and `--no-sudo` skips them deliberately. Running as root needs neither. |
 | **A systemd user manager** | Only for [`systemd/stay_fresh_timer.sh`](systemd/stay_fresh_timer.sh), which exits `2` without one. `install --print-only` still prints the units anywhere. |
 | **`openssl`** | Only for [`tls_expiry.sh`](tls_expiry.sh), which exits `2` without it. |
-| **Docker** | Only to run the suite in [`tests/`](tests/), which runs the scripts inside real Debian, Fedora and Arch containers. |
+| **Docker** | Only to run the suite in [`tests/`](tests/), which runs the scripts inside real Debian, Fedora, Rocky and Arch containers. |
 
 Optional tools are handled the same way throughout: a missing one is recorded
 and skipped, not fatal. That is why these scripts use `set -u` and
@@ -274,6 +274,16 @@ mirroring — the same app may be a distro package, a flatpak, a snap or a
 tarball, and the right answer depends on your desktop. A curated list here
 would be three namespaces of churn for little benefit, so the CLI and toolchain
 half lives in `install_devtools.sh` and GUI apps are left to you.
+
+**On Rocky, Alma and CentOS the script enables EPEL first.** `ripgrep`, `fd-find`,
+`btop`, `nload` and `ncdu` are in EPEL, not BaseOS/AppStream (on EL9 `mc` is in
+AppStream and `iotop` in BaseOS), so the script installs `epel-release` and runs
+`crb enable` before the CLIs. That persistently adds third-party repositories to
+the machine; `--no-epel` skips the step, and the EPEL-only tools are then
+reported as not installed. The distribution is read from `ID` in
+`/etc/os-release` (`OS_RELEASE` overrides it for tests). RHEL and other EL
+rebuilds such as Oracle Linux get no EPEL from this script: enable it yourself
+if you want those tools.
 
 **Terminal tools are installed one at a time, and `nmtui` is never forced.**
 The core batch holds distro-base packages only (`git`, `jq`, `unzip`, and `curl`
@@ -1299,7 +1309,7 @@ to read rather than for a pipeline to act on.
 
 ```bash
 ./tests/run.sh                     # debian only, the default
-LINUX_DISTROS=all ./tests/run.sh   # debian + fedora + arch
+LINUX_DISTROS=all ./tests/run.sh   # debian + fedora + rocky + arch
 ./run-tests.sh linux               # from the repository root
 ```
 
@@ -1332,5 +1342,8 @@ A container has no user manager, so the timer can only be exercised through
 `--print-only` — which is precisely why that flag exists: on the images that
 ship `systemd-analyze`, printing the units also verifies them.
 
-Image tags are pinned. Arch is rolling and Fedora moves quickly; an unpinned
-base would let an upstream change redden an unrelated pull request.
+Image tags are pinned, and the Arch and Rocky images by digest as well (Rocky is
+`rockylinux/rockylinux:9.8`; the unqualified `rockylinux:9` official image is
+deprecated and frozen). Arch is rolling, Fedora moves quickly and Rocky ships
+minor releases; an unpinned base would let an upstream change redden an
+unrelated pull request.

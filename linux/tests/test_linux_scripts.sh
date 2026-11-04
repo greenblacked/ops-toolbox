@@ -359,6 +359,32 @@ assert_contains "install_devtools says why nmtui was skipped on dnf" "$out" "nmt
 assert_not_contains "install_devtools never installs NetworkManager itself on dnf" "$out" "dnf install -y NetworkManager "
 rm -rf "$opt_dir"
 
+section "install_devtools enables EPEL on EL, not on Fedora"
+# ripgrep, fd-find and the optional tools (nload, ncdu, btop...) are EPEL
+# packages on Rocky/Alma/CentOS, so the dnf installs fail there unless
+# epel-release (and CRB) come first. Fedora ships them itself and must not be given EPEL.
+el_fixture="$(mktemp -d)"
+printf 'ID="rocky"\nID_LIKE="rhel centos fedora"\n' > "$el_fixture/os-rocky"
+printf 'ID=fedora\n' > "$el_fixture/os-fedora"
+out="$(OS_RELEASE="$el_fixture/os-rocky" "$L/install_devtools.sh" --dry-run --only clis 2>&1)"
+assert_contains "install_devtools on rocky uses dnf" "$out" "package manager: dnf"
+assert_contains "install_devtools on rocky installs epel-release" "$out" "dnf install -y epel-release"
+assert_contains "install_devtools on rocky enables CRB" "$out" "crb enable"
+assert_contains "install_devtools on rocky installs the core CLIs" "$out" "install git jq unzip"
+epel_pos="${out%%epel-release*}"
+cli_pos="${out%%ripgrep*}"
+if (( ${#epel_pos} < ${#cli_pos} )); then ok "install_devtools on rocky installs epel-release before the CLIs"; else err "install_devtools on rocky installs epel-release after the CLIs"; fi
+nload_pos="${out%%install nload*}"
+if (( ${#epel_pos} < ${#nload_pos} )); then ok "install_devtools on rocky installs nload after epel-release"; else err "install_devtools on rocky installs nload before epel-release"; fi
+out="$(OS_RELEASE="$el_fixture/os-fedora" "$L/install_devtools.sh" --dry-run --only clis 2>&1)"
+assert_not_contains "install_devtools on fedora skips epel-release" "$out" "epel-release"
+assert_contains "install_devtools on fedora installs the core CLIs" "$out" "install git jq unzip"
+out="$(OS_RELEASE="$el_fixture/os-rocky" "$L/install_devtools.sh" --dry-run --only clis --no-epel 2>&1)"
+assert_not_contains "install_devtools --no-epel skips epel-release" "$out" "epel-release"
+assert_not_contains "install_devtools --no-epel skips CRB" "$out" "crb enable"
+assert_contains "install_devtools --no-epel still installs the rest" "$out" "install git jq unzip"
+rm -rf "$el_fixture"
+
 out="$("$L/stay_fresh.sh" --dry-run --only caches 2>&1)"
 assert_contains "stay_fresh --only skips unselected steps" "$out" "skipped: packages"
 assert_contains "stay_fresh --only runs selected step" "$out" "== user caches =="
