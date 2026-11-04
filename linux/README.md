@@ -51,7 +51,7 @@ dying on it, and they must stay Bash 3.2-clean like the macOS package.
 
 | File | Purpose |
 | --- | --- |
-| [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs |
+| [`install_devtools.sh`](install_devtools.sh) | Install Python, Go, Terraform, Helm and the DevOps CLIs (`git`, `curl`, `jq`, `unzip`, plus `ripgrep`, `fd`, `mc`, `iotop`, `nload`, `ncdu`, `btop` and, where safe, `nmtui`) |
 | [`stay_fresh.sh`](stay_fresh.sh) | Recurring maintenance: upgrades, journal, caches, containers |
 | [`disk_cleanup.sh`](disk_cleanup.sh) | Free space now: age-filtered temp, opt-in trash/journal/caches/coredumps/rotated logs/unused images/old snaps; never volumes |
 | [`kernel_cleanup.sh`](kernel_cleanup.sh) | Remove old kernel packages; keeps the running kernel plus the newest `--keep` |
@@ -274,6 +274,20 @@ mirroring — the same app may be a distro package, a flatpak, a snap or a
 tarball, and the right answer depends on your desktop. A curated list here
 would be three namespaces of churn for little benefit, so the CLI and toolchain
 half lives in `install_devtools.sh` and GUI apps are left to you.
+
+**Terminal tools are installed one at a time, and `nmtui` is never forced.**
+The core batch holds distro-base packages only (`git`, `jq`, `unzip`, and `curl`
+only when none is installed, since Rocky's `curl-minimal` conflicts with it).
+`ripgrep`, `fd`, `mc`, `iotop`, `nload`, `ncdu` and `btop` are conveniences, so each is its own
+install: a package missing on your release (`btop` on an older Debian) costs a
+warning, not the other tools or the exit code. `iotop` is `iotop-c` on Fedora
+and the EL family, with the classic package as the fallback. `nmtui` is the
+text frontend to NetworkManager, and installing NetworkManager on a server run
+by `ifupdown`, netplan or `systemd-networkd` can take over its interfaces and
+drop your SSH session. So on dnf hosts the script installs `NetworkManager-tui`
+only when NetworkManager is already installed, and on apt and pacman, where
+`nmtui` ships inside NetworkManager itself, it only reports whether `nmtui` is
+there.
 
 ## Distro detection
 
