@@ -29,7 +29,8 @@
 #     --prune-downloads-days N)
 #   - report LaunchAgents and LaunchDaemons whose program no longer exists
 #     (remove the user-level ones only with --prune-orphan-agents)
-#   - Homebrew: update, upgrade formulae, cleanup -s, autoremove; casks opt-in
+#   - Homebrew: update, upgrade formulae, cleanup -s, autoremove; casks on an
+#     interactive run with sudo, leftovers retried one by one
 #   - refresh dev toolchains (helm plugins, krew plugins, gcloud components)
 #     installed by install_apps.sh / install_devtools.sh
 #   - report pending macOS and App Store updates (read-only; never installs)
@@ -52,7 +53,8 @@
 #                   [--skip-usercaches] [--skip-appcaches]
 #                   [--skip-aicaches]
 #                   [--skip-workspacestorage] [--skip-trash]
-#                   [--skip-brew] [--brew-casks] [--brew-greedy] [--skip-devcaches]
+#                   [--skip-brew] [--brew-casks] [--no-brew-casks] [--brew-greedy]
+#                   [--skip-devcaches]
 #                   [--cleanup-old-gems] [--prune-build-caches] [--fail-on-warn]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-krew]
 #                   [--skip-gcloud]
@@ -462,6 +464,11 @@ DRY_ESTIMATE_B=0
 TRASH_PROTECTED=0
 BREW_GREEDY=0
 BREW_CASKS=0
+# Cask upgrades turn on by themselves in an interactive run that may use sudo.
+# --brew-casks / --no-brew-casks fix the choice either way.
+BREW_CASKS_AUTO=1
+# Why casks were not upgraded, for the summary hint. Empty when they ran.
+BREW_CASKS_SKIP_REASON=""
 BREW_PREFIX_TEXT=""
 BREW_PREFLIGHT_INCOMPLETE=0
 CLEANUP_OLD_GEMS=0
@@ -837,9 +844,12 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          Don't prune stale VS Code workspace storage
   --skip-trash           Don't empty ~/.Trash
   --skip-brew            Don't run Homebrew maintenance (see Notes)
-  --brew-casks           Also upgrade casks (interactive; installers may prompt
-                         for a password even after sudo preflight)
-  --brew-greedy          With --brew-casks, include 'auto_updates true' /
+  --brew-casks           Upgrade casks even when the run would not pick it on
+                         its own (installers may prompt for a password even
+                         after sudo preflight). An interactive run with sudo
+                         already upgrades casks, plus any left over afterwards
+  --no-brew-casks        Never upgrade casks; only list the outdated ones
+  --brew-greedy          When casks are upgraded, include 'auto_updates true' /
                          'version :latest' casks
   --skip-devcaches       Don't clean npm/yarn/pnpm/pip/uv/go/kubectl/terraform
                          caches, stale gcloud logs, or unused pre-commit repos
@@ -978,11 +988,13 @@ ${C_BOLD}Notes:${C_RESET}
   anything itself, because a macOS update can reboot the machine.
 
   Homebrew: runs brew update; brew upgrade --formula; brew cleanup -s;
-  brew autoremove; brew doctor only when --verbose. Casks are listed but not
-  upgraded unless --brew-casks or --full is explicit. Cask installers may still
-  prompt for a password after sudo preflight, so run interactively; --no-sudo,
-  unavailable sudo, and runs without a terminal skip cask upgrades. A skipped
-  cask upgrade during --full is a warning, not a silent omission.
+  brew autoremove; brew doctor only when --verbose. An interactive run with
+  sudo upgrades casks automatically, then upgrades each cask still reported by
+  'brew outdated --cask' one by one; --no-brew-casks lists them instead. Cask
+  installers may still prompt for a password after sudo preflight; --no-sudo,
+  unavailable sudo, and runs without a terminal (the LaunchAgent) skip cask
+  upgrades. A skipped cask upgrade during --full is a warning, not a silent
+  omission.
 
 Log file: $LOG_FILE
 EOF
@@ -1019,7 +1031,8 @@ while (( $# > 0 )); do
     --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1; EXPLICIT_SKIP=1 ;;
     --skip-trash)      SKIP_TRASH=1; EXPLICIT_SKIP=1 ;;
     --skip-brew)       SKIP_BREW=1; EXPLICIT_SKIP=1 ;;
-    --brew-casks)      BREW_CASKS=1 ;;
+    --brew-casks)      BREW_CASKS=1; BREW_CASKS_AUTO=0 ;;
+    --no-brew-casks)   BREW_CASKS=0; BREW_CASKS_AUTO=0 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
     --skip-devcaches)  SKIP_DEVCACHES=1; EXPLICIT_SKIP=1 ;;
     --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
@@ -1264,9 +1277,9 @@ if (( OLD_ONLY )); then
   PRUNE_SYSTEM_LOGS=1
   if (( FULL )); then
     ONLY_STEPS="$ONLY_STEPS,brew,helm-plugins,krew,gcloud,versions,os-updates"
-    # --full is the explicit opt-in that master otherwise requires via
-    # --brew-casks. A scheduled or --no-sudo run still skips the upgrades.
-    BREW_CASKS=1
+    # --full opts into cask upgrades unless --no-brew-casks said otherwise.
+    # A scheduled or --no-sudo run still skips the upgrades.
+    (( BREW_CASKS == 0 && BREW_CASKS_AUTO == 0 )) || BREW_CASKS=1
     BREW_GREEDY=1
   fi
 fi
@@ -2710,7 +2723,13 @@ BREW_CASKS_SUDO_PREFLIGHT=0
 (( SKIP_SYSCACHES   == 0 )) && NEEDS_SUDO=1
 (( SKIP_DIAGNOSTICS == 0 )) && NEEDS_SUDO=1
 (( SKIP_SNAPSHOTS == 0 && THIN_SNAPSHOTS )) && NEEDS_SUDO=1
-# Explicit interactive cask upgrades can run an installer that needs sudo.
+# An interactive run that may use sudo upgrades casks without --brew-casks.
+# A headless run (the LaunchAgent) has nobody to answer an installer, so it
+# stays on listing them.
+if (( BREW_CASKS_AUTO && BREW_CASKS == 0 && USE_SUDO && SKIP_BREW == 0 )) && have_tty; then
+  BREW_CASKS=1
+fi
+# Interactive cask upgrades can run an installer that needs sudo.
 # Authenticate once before entering the brew step, including --only brew.
 # A headless run never starts casks and must not request a password for them.
 if (( SKIP_BREW == 0 && BREW_CASKS && USE_SUDO )) && { (( DRY_RUN )) || have_tty; }; then
@@ -4951,8 +4970,12 @@ step_brew() {
   # leave brew free to request credentials later in the step. --full opts in,
   # but a skip during that cycle is a warning rather than a quiet omission.
   local cask_skip=""
-  if (( BREW_CASKS == 0 )); then
-    cask_skip="skipping cask upgrades by default; pass --brew-casks to include them"
+  if (( BREW_CASKS == 0 && BREW_CASKS_AUTO == 0 )); then
+    cask_skip="skipping cask upgrades: --no-brew-casks was passed"
+  elif (( BREW_CASKS == 0 && USE_SUDO == 0 )); then
+    cask_skip="skipping cask upgrades: --no-sudo was passed"
+  elif (( BREW_CASKS == 0 )); then
+    cask_skip="skipping cask upgrades: no controlling terminal for possible password prompts; run interactively to upgrade them"
   elif (( USE_SUDO == 0 )); then
     cask_skip="skipping cask upgrades: --no-sudo was passed"
   elif (( DRY_RUN == 0 && BREW_CASKS_SUDO_PREFLIGHT && SUDO_AVAILABLE == 0 )); then
@@ -4964,6 +4987,7 @@ step_brew() {
   elif (( DRY_RUN == 0 )) && ! sudo -n -v >/dev/null 2>&1; then
     cask_skip="skipping cask upgrades: sudo credential expired during Homebrew maintenance"
   fi
+  BREW_CASKS_SKIP_REASON="${cask_skip#skipping cask upgrades: }"
   if [[ -n "$cask_skip" ]]; then
     if (( FULL )); then
       warn_step "$cask_skip; full update cycle is incomplete (interactive terminal and sudo required)"
@@ -5049,6 +5073,35 @@ step_brew() {
   local -a outdated_opts=(--cask --quiet)
   (( BREW_GREEDY )) && outdated_opts+=(--greedy)
   if capture_cmd "brew outdated --cask" brew outdated "${outdated_opts[@]}"; then
+    # Anything the bulk upgrade left behind (a download that failed, an
+    # installer that bailed, a cask the bulk pass stopped short of) gets one
+    # more try, one cask at a time, so a single bad cask cannot hold the rest
+    # back. Only where cask upgrades were allowed to run at all, and never a
+    # cask Homebrew itself has disabled.
+    if (( DRY_RUN == 0 )) && [[ -z "$cask_skip" && -n "$CAPTURED" ]]; then
+      local leftover cask retried=0
+      leftover="$CAPTURED"
+      if [[ -n "${disabled:-}" ]]; then
+        leftover="$(grep -vxF -f <(sed 's/: .*$//' <<<"$disabled") <<<"$leftover" || true)"
+      fi
+      local -a cask_retry_opts=()
+      (( BREW_GREEDY )) && cask_retry_opts+=(--greedy)
+      while IFS= read -r cask; do
+        [[ -n "$cask" ]] || continue
+        retried=$(( retried + 1 ))
+        run_cmd_tty "brew upgrade --cask $cask" brew upgrade --cask \
+          ${cask_retry_opts[@]+"${cask_retry_opts[@]}"} \
+          ${brew_yes[@]+"${brew_yes[@]}"} "$cask" \
+          || warn "'brew upgrade --cask $cask' had issues"
+      done <<<"$leftover"
+      if (( retried )); then
+        info "upgraded leftover outdated casks individually: $retried attempted"
+        if ! capture_cmd "brew outdated --cask" brew outdated "${outdated_opts[@]}"; then
+          warn_step "cannot verify remaining outdated Homebrew casks; update status is incomplete"
+          CAPTURED=""
+        fi
+      fi
+    fi
     if (( DRY_RUN == 0 )) && [[ -n "$CAPTURED" ]]; then
       CASKS_OUTDATED="$(grep -c . <<<"$CAPTURED" || true)"
       (( FULL )) && warn_step "$CASKS_OUTDATED cask(s) remain outdated; full update cycle is incomplete"
@@ -5871,7 +5924,13 @@ if (( UI_TERMINAL )); then
         ui_text 4 "$C_DIM" "- Inspect the affected step output above"
       fi
     fi
-    (( CASKS_OUTDATED > 0 )) && ui_text 4 "$C_YELLOW" "- $CASKS_OUTDATED cask(s) remain outdated; review with brew outdated --cask"
+    if (( CASKS_OUTDATED > 0 )); then
+      if [[ -n "$BREW_CASKS_SKIP_REASON" ]]; then
+        ui_text 4 "$C_YELLOW" "- $CASKS_OUTDATED cask(s) remain outdated (not upgraded: $BREW_CASKS_SKIP_REASON); review with brew outdated --cask"
+      else
+        ui_text 4 "$C_YELLOW" "- $CASKS_OUTDATED cask(s) remain outdated after the automatic upgrade; review with brew outdated --cask"
+      fi
+    fi
     (( OS_UPDATES_PENDING > 0 )) && ui_text 4 "$C_YELLOW" "- $OS_UPDATES_PENDING OS/App Store update(s) are pending"
     (( SNAPSHOTS_FOUND > 0 )) && ui_text 4 "$C_YELLOW" "- $SNAPSHOTS_FOUND local snapshot(s)$( (( SNAPSHOTS_THINNED )) && printf ' thinned' || printf ' kept; use --thin-snapshots to remove')"
     (( TRASH_PROTECTED > 0 )) && ui_text 4 "$C_YELLOW" "- Trash cleanup needs Full Disk Access"
