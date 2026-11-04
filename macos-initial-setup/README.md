@@ -675,8 +675,12 @@ In the order they run:
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
 8. Empty `~/.Trash`. The Trash sits behind the privacy controls: a terminal
    or agent without Full Disk Access cannot list it. An interactive run then
-   asks Finder to empty it; a scheduled run says what to grant instead.
-   Neither is a warning. Every other mounted volume's Trash is emptied too,
+   asks Finder to empty it, and if Finder is refused too, opens System
+   Settings at Privacy & Security → Full Disk Access and names the app to
+   turn on (Terminal, iTerm, VS Code, Warp, …). No script can flip that
+   switch itself; macOS keeps it for a person. A scheduled run explains that
+   it would need Full Disk Access for `/bin/bash` and why that is a poor
+   trade. Neither is a warning. Every other mounted volume's Trash is emptied too,
    except network shares (SMB, NFS, AFP, WebDAV), which are named and
    skipped: a share whose server went away blocks `find` for as long as the
    kernel retries, and a scheduled run has nobody to interrupt it.
@@ -718,10 +722,13 @@ In the order they run:
     first `ProgramArguments` entry, or the script an interpreter is handed)
     no longer exists. Every tool that ever installed a background helper left
     one, and uninstalling the tool rarely removes it; launchd then retries a
-    program that is gone at every login. Reported only;
-    `--prune-orphan-agents` unloads and removes the user-level ones. The
-    system-level ones are never touched, and the `sudo` command to remove
-    them is printed. Binary plists, and XML that Python's parser rejects but
+    program that is gone at every login. An interactive run unloads and
+    removes them: the user-level ones always, the system-level ones when
+    `sudo` is already authenticated (through `sudo -n`, so no extra prompt).
+    Otherwise the `sudo` command is printed. A headless run only reports,
+    unless `--prune-orphan-agents` is given for the user-level ones;
+    `--no-prune-orphan-agents` keeps them all. A program under `/Volumes` is
+    never taken as gone, because an unmounted disk looks the same. Binary plists, and XML that Python's parser rejects but
     Apple's accepts, are inspected through `plutil` on macOS. A plist that
     neither parser can read is left in place, without a traceback.
 15. Update and upgrade Homebrew formulae, then run `cleanup -s` and
@@ -830,7 +837,7 @@ last ten rows.
 ./stay_fresh.sh --quick           # user-level cleanup only: no sudo, no brew, no reports
 ./stay_fresh.sh --reports         # the read-only subset: versions, OS updates, snapshots, downloads, launch agents, disk report
 ./stay_fresh.sh --prune-downloads-days 180 --dry-run # list what an old-downloads prune would remove
-./stay_fresh.sh --prune-orphan-agents               # also remove orphaned user LaunchAgents
+./stay_fresh.sh --prune-orphan-agents               # remove orphaned user LaunchAgents even without a terminal
 ./stay_fresh.sh --prune-build-caches # also clear Gradle caches; Maven local artifacts stay
 ./stay_fresh.sh --deep-clean         # add Conda and guarded old npx cleanup
 ./stay_fresh.sh --cache-report       # measure developer caches; change nothing
@@ -1003,7 +1010,8 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-downloads` | Skip the old-downloads report (step 13). |
 | `--prune-downloads-days N` | Remove top-level `~/Downloads` entries untouched for positive integer `N` days (step 13); off by default, the report only names them. |
 | `--skip-launch-agents` | Skip the orphaned-launch-agent report (step 14). |
-| `--prune-orphan-agents` | Unload and remove orphaned plists under `~/Library/LaunchAgents` (step 14); system-level ones are only ever reported. |
+| `--prune-orphan-agents` | Unload and remove orphaned plists under `~/Library/LaunchAgents` (step 14) even without a terminal. An interactive run already does this, and removes the system-level ones too when `sudo` is authenticated. |
+| `--no-prune-orphan-agents` | Only report orphaned plists (step 14), never remove them, not even on a terminal. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
 | `--skip-krew` | Skip krew plugin updates (step 18). |
 | `--skip-gcloud` | Skip `gcloud components update`. |
@@ -1826,7 +1834,7 @@ key `StartCalendarInterval` leaves out is a wildcard and shows as `**`.
 **Strictly read-only.** Nothing is loaded, unloaded or edited: `plutil` only
 prints a plist, and the one `launchctl` call (`print`, behind `--loaded`)
 changes nothing. Removing a job stays with
-[`stay_fresh.sh`](#stay_freshsh)'s explicit `--prune-orphan-agents`. Plist and
+[`stay_fresh.sh`](#stay_freshsh), which does it on an interactive run or with `--prune-orphan-agents`. Plist and
 cron text is printed with control characters stripped and is never evaluated.
 `/Library/LaunchDaemons` is world-readable, so no `sudo` is needed.
 
@@ -2264,7 +2272,9 @@ Homebrew / `pyenv` / `goenv` commands.
   Remote workspaces, unreadable entries, and paths on an unmounted volume or
   in unmaterialised `~/Library/CloudStorage` are left alone.
 - Empties `~/.Trash`, through Finder when the shell lacks Full Disk Access
-  and a person is present to answer the prompt.
+  and a person is present to answer the prompt. If Finder is refused too, it
+  opens the Full Disk Access pane in System Settings; it never changes
+  privacy settings itself.
 - Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `bun`, `pip`, `uv`,
   `go`), the contents of `~/.kube/cache`, `~/.minikube/cache` and Terraform's
   plugin cache, gcloud log directories older than a week, and unused
@@ -2321,8 +2331,10 @@ Homebrew / `pyenv` / `goenv` commands.
 - Clears `~/.gradle/caches` and `~/.m2/repository` only with
   `--prune-build-caches`.
 - Reports old entries in `~/Downloads` and orphaned launchd plists; removes
-  the former only with `--prune-downloads-days N` and the user-level latter
-  only with `--prune-orphan-agents`. System-level plists are never touched.
+  the former only with `--prune-downloads-days N`. Orphaned plists are
+  removed on an interactive run (system-level ones only with `sudo` already
+  authenticated) or with `--prune-orphan-agents`; `--no-prune-orphan-agents`
+  keeps them.
 - Empties the per-user Trash of every mounted volume (`/Volumes/*/.Trashes/<uid>`),
   not only `~/.Trash`.
 - Deletes local Time Machine snapshots only with `--thin-snapshots`; by
