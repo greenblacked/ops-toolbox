@@ -81,8 +81,8 @@ All paths are under `macos-initial-setup/`.
     expects `stay_fresh.sh` one directory above it.
 
 !!! warning "Scheduled runs skip root steps"
-    Cask upgrades (`--brew-casks`) need an interactive terminal and may ask
-    for a password. The LaunchAgent always runs with `--no-sudo --yes`, so
+    Cask upgrades run automatically only in an interactive terminal and may
+    ask for a password; `--no-brew-casks` turns them off. The LaunchAgent always runs with `--no-sudo --yes`, so
     root steps are skipped on schedule.
 
 !!! warning "Defaults can change between releases"

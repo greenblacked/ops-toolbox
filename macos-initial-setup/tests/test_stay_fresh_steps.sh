@@ -1351,8 +1351,8 @@ assert_called "brew step upgrades formulae" "$d/calls" "brew upgrade --formula"
 assert_called "brew step runs a scrub cleanup" "$d/calls" "brew cleanup -s"
 assert_called "brew step autoremoves"  "$d/calls" "brew autoremove"
 assert_called "brew step disables nested auto-update" "$d/calls" "env HOMEBREW_NO_AUTO_UPDATE=1"
-assert_contains "default skips cask upgrades explicitly" "$out" \
-  "skipping cask upgrades by default; pass --brew-casks"
+assert_contains "a terminal-less default skips cask upgrades and says why" "$out" \
+  "skipping cask upgrades: no controlling terminal"
 assert_not_called "no cask upgrade is attempted without a terminal" "$d/calls" \
   "brew upgrade --cask"
 assert_not_called "default brew-only run does not request sudo" "$d/calls" "sudo -v"
@@ -1382,16 +1382,24 @@ assert_not_called "greedy alone does not upgrade casks" "$d/calls" "brew upgrade
 assert_called "greedy alone still reports self-updating casks" "$d/calls" "brew outdated --cask --quiet --greedy"
 rm -rf "$d"
 
-# On a terminal, opt-in requests sudo once before the Homebrew step. Even
-# with --only brew there are no other privileged steps to trigger preflight.
+# On a terminal, cask upgrades are on by default and request sudo once before
+# the Homebrew step. Even with --only brew there are no other privileged steps
+# to trigger preflight. --no-brew-casks turns them back off.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
   'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
   'exit 0'
 out="$(run_sf_tty "$d" --yes --only brew)"; rc=$?
 assert_eq "terminal brew default succeeds" "0" "$rc"
-assert_not_called "terminal default does not request sudo" "$d/calls" "sudo -v"
-assert_not_called "terminal default does not upgrade casks" "$d/calls" "brew upgrade --cask"
+assert_eq "terminal default preflights sudo exactly once" "1" "$(grep -c '^sudo -v$' "$d/calls")"
+assert_called "terminal default upgrades casks" "$d/calls" "brew upgrade --cask"
+assert_not_called "terminal default does not add greedy" "$d/calls" "brew upgrade --cask --greedy"
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only brew --no-brew-casks)"; rc=$?
+assert_eq "terminal --no-brew-casks succeeds" "0" "$rc"
+assert_not_called "--no-brew-casks does not request sudo" "$d/calls" "sudo -v"
+assert_not_called "--no-brew-casks does not upgrade casks" "$d/calls" "brew upgrade --cask"
+assert_contains "--no-brew-casks explains the skip" "$out" "--no-brew-casks was passed"
 : > "$d/calls"
 out="$(run_sf_tty "$d" --yes --only brew --brew-casks)"; rc=$?
 assert_eq "terminal plain cask opt-in succeeds" "0" "$rc"
@@ -3511,6 +3519,39 @@ assert_contains "outdated casks are named" "$out" "2 cask(s) still outdated:"
 assert_contains "the manual cask command is given" "$out" "brew upgrade --cask alacritty unetbootin"
 assert_contains "the verdict carries the brew facts" "$out" "brew upgraded 2; 2 cask(s) still outdated"
 assert_contains "history records the upgrade count" "$(cut -f10 "$d/home/Library/Logs/stay_fresh/history.tsv")" "2"
+rm -rf "$d"
+
+# Casks still outdated after the bulk upgrade are retried one by one on an
+# interactive run. A cask that upgrades drops off the list; one that keeps
+# failing is still reported, with the summary saying the automatic upgrade
+# already ran. A cask Homebrew has disabled is not retried.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; --repository) echo "$HOME/brewrepo" ;; esac' \
+  'last=""; for a in "$@"; do last="$a"; done' \
+  'case "${1:-} ${2:-}" in' \
+  '  "upgrade --help") echo "--yes" ;;' \
+  '  "upgrade --cask") case "$last" in' \
+  '      alacritty) touch "$HOME/alacritty-done" ;;' \
+  '      unetbootin) echo "Error: download failed"; exit 1 ;;' \
+  '      --yes|--cask|--greedy) echo "Warning: Not upgrading oldie, it is disabled because it does not pass the macOS Gatekeeper check!" ;;' \
+  '    esac ;;' \
+  '  "outdated --cask") [ -e "$HOME/alacritty-done" ] || echo alacritty; echo unetbootin; echo oldie ;;' \
+  'esac; exit 0'
+out="$(run_sf_tty "$d" --yes --only brew)"; rc=$?
+assert_called "the bulk cask upgrade runs first" "$d/calls" "brew upgrade --cask --yes"
+assert_called "a leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes alacritty"
+assert_called "a failing leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes unetbootin"
+assert_not_called "a disabled cask is not retried" "$d/calls" "brew upgrade --cask --yes oldie"
+assert_contains "the retry pass is reported" "$out" "upgraded leftover outdated casks individually: 2 attempted"
+assert_contains "only the casks still outdated are counted" "$out" "2 cask(s) still outdated: unetbootin oldie"
+assert_contains "the summary says the automatic upgrade already ran" "$out" \
+  "2 cask(s) remain outdated after the automatic upgrade"
+: > "$d/calls"; rm -f "$d/home/alacritty-done"
+out="$(run_sf_tty "$d" --yes --only brew --no-brew-casks)"; rc=$?
+assert_not_called "--no-brew-casks does not retry leftovers" "$d/calls" "brew upgrade --cask"
+assert_contains "--no-brew-casks names the reason in the summary" "$out" \
+  "3 cask(s) remain outdated (not upgraded: --no-brew-casks was passed)"
 rm -rf "$d"
 
 # A brew service in "error" state is a daemon launchd gave up restarting;
