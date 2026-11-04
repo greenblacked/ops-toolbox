@@ -5142,28 +5142,6 @@ step_brew() {
     fi
   fi
 
-  # A printed "Upgrading" line precedes the work and can be followed by a
-  # failure. Count only an added installed version of an existing package.
-  # Compare before cleanup, which may remove old versions without upgrading.
-  if (( DRY_RUN == 0 )); then
-    if (( versions_known )) && versions_after="$(brew_version_inventory)"; then
-      BREW_UPGRADED_NAMES="$(printf '%s\n' "$versions_before" '__AFTER__' "$versions_after" | awk '
-        $0 == "__AFTER__" { after=1; next }
-        NF < 2 { next }
-        !after { known[$1]=1; for(i=2;i<=NF;i++) old[$1 SUBSEP $i]=1; next }
-        known[$1] { for(i=2;i<=NF;i++) if (!(($1 SUBSEP $i) in old)) changed[$1]=1 }
-        END { for (name in changed) print name }' | sort | paste -sd ' ' -)"
-      if [[ -n "$BREW_UPGRADED_NAMES" ]]; then
-        BREW_UPGRADED="$(wc -w <<<"$BREW_UPGRADED_NAMES" | tr -d ' ')"
-        ok "upgraded $BREW_UPGRADED package(s): $BREW_UPGRADED_NAMES (installed versions verified)"
-      else
-        info "no installed Homebrew version changes verified"
-      fi
-    else
-      warn_step "Homebrew upgrade count unavailable: installed versions could not be compared"
-    fi
-  fi
-
   if (( FULL && DRY_RUN == 0 )); then
     local remaining_formulae pins formula
     if capture_cmd "brew outdated --formula" brew outdated --formula --quiet; then
@@ -5231,6 +5209,30 @@ step_brew() {
     fi
   elif (( DRY_RUN == 0 )); then
     warn_step "cannot verify remaining outdated Homebrew casks; update status is incomplete"
+  fi
+
+  # A printed "Upgrading" line precedes the work and can be followed by a
+  # failure. Count only an added installed version of an existing package.
+  # Compare before cleanup, which may remove old versions without upgrading,
+  # and after the leftover cask pass above, so a cask that only upgraded on
+  # its retry is counted too.
+  if (( DRY_RUN == 0 )); then
+    if (( versions_known )) && versions_after="$(brew_version_inventory)"; then
+      BREW_UPGRADED_NAMES="$(printf '%s\n' "$versions_before" '__AFTER__' "$versions_after" | awk '
+        $0 == "__AFTER__" { after=1; next }
+        NF < 2 { next }
+        !after { known[$1]=1; for(i=2;i<=NF;i++) old[$1 SUBSEP $i]=1; next }
+        known[$1] { for(i=2;i<=NF;i++) if (!(($1 SUBSEP $i) in old)) changed[$1]=1 }
+        END { for (name in changed) print name }' | sort | paste -sd ' ' -)"
+      if [[ -n "$BREW_UPGRADED_NAMES" ]]; then
+        BREW_UPGRADED="$(wc -w <<<"$BREW_UPGRADED_NAMES" | tr -d ' ')"
+        ok "upgraded $BREW_UPGRADED package(s): $BREW_UPGRADED_NAMES (installed versions verified)"
+      else
+        info "no installed Homebrew version changes verified"
+      fi
+    else
+      warn_step "Homebrew upgrade count unavailable: installed versions could not be compared"
+    fi
   fi
 
   RUN_CMD_FILTER='^Warning: Skipping .*most recent version .* not installed$' \

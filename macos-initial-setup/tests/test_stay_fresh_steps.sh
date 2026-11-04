@@ -3603,6 +3603,7 @@ mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
   'last=""; for a in "$@"; do last="$a"; done' \
   'case "${1:-} ${2:-}" in' \
   '  "upgrade --help") echo "--yes" ;;' \
+  '  "list --versions") if [ "$3" = --cask ]; then if [ -e "$HOME/alacritty-done" ]; then echo "alacritty 2"; else echo "alacritty 1"; fi; fi ;;' \
   '  "upgrade --cask") case "$last" in' \
   '      alacritty) touch "$HOME/alacritty-done" ;;' \
   '      unetbootin) echo "Error: download failed"; exit 1 ;;' \
@@ -3616,6 +3617,8 @@ assert_called "a leftover cask is retried by name" "$d/calls" "brew upgrade --ca
 assert_called "a failing leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes unetbootin"
 assert_not_called "a disabled cask is not retried" "$d/calls" "brew upgrade --cask --yes oldie"
 assert_contains "the retry pass is reported" "$out" "upgraded leftover outdated casks individually: 2 attempted"
+assert_contains "a cask upgraded only on its retry is counted as verified" "$out" \
+  "upgraded 1 package(s): cask:alacritty (installed versions verified)"
 assert_contains "only the casks still outdated are counted" "$out" "2 cask(s) still outdated: unetbootin oldie"
 assert_contains "the summary says the automatic upgrade already ran" "$out" \
   "2 cask(s) remain outdated after the automatic upgrade"
