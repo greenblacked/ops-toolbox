@@ -6,6 +6,7 @@ import contextlib
 import hashlib
 import importlib.util
 import io
+import re
 import socket
 import tempfile
 import threading
@@ -747,6 +748,119 @@ class BumpablePathsTests(unittest.TestCase):
             [],
             f"{naming} name RouterOS {pinned}; the bump would have to rewrite "
             "them and its push would be rejected",
+        )
+
+
+class WatcherWorkflowTests(unittest.TestCase):
+    """Properties of routeros-version.yml that no linter states.
+
+    Text checks only: this suite imports nothing outside the standard library,
+    so there is no YAML parser to lean on. Each assertion names the incident
+    it keeps from coming back. Shell line continuations and runs of blanks are
+    collapsed first, so re-wrapping a command does not break a check.
+    """
+
+    WORKFLOW = REPO_ROOT / ".github" / "workflows" / "routeros-version.yml"
+
+    def text(self) -> str:
+        raw = self.WORKFLOW.read_text(encoding="utf-8")
+        return re.sub(r"(?<=\S)[ \t]+", " ", re.sub(r"\\\n\s*", " ", raw))
+
+    def jobs(self) -> dict[str, str]:
+        body = self.text().split("\njobs:\n", 1)[1]
+        parts = re.split(r"^  ([a-z][a-z0-9-]*):\n", body, flags=re.M)
+        return dict(zip(parts[1::2], parts[2::2]))
+
+    def test_dev_code_never_runs_with_actions_write(self) -> None:
+        # The test job checks out dev and runs its scripts. A token able to
+        # dispatch workflows must not be in the same job as that code.
+        jobs = self.jobs()
+        for name, text in jobs.items():
+            if "uses: actions/checkout" in text:
+                self.assertIsNone(
+                    re.search(r"^\s+actions:\s*write\b", text, re.M),
+                    f"{name} checks out code",
+                )
+        dispatching = [n for n, t in jobs.items() if "gh workflow run" in t]
+        self.assertEqual(dispatching, ["dispatch-validation"])
+        dispatch = jobs["dispatch-validation"]
+        self.assertRegex(dispatch, r"(?m)^\s+actions:\s*write\b")
+        self.assertNotIn("uses:", dispatch, "the dispatch job checks out nothing")
+        self.assertIn("needs: check-test-and-propose", dispatch)
+
+    def test_dispatch_job_is_wired_to_the_bump_branch_safely(self) -> None:
+        jobs = self.jobs()
+        # The branch leaves the test job as an output of the commit step ...
+        self.assertRegex(
+            jobs["check-test-and-propose"],
+            r"outputs:\s+branch: \$\{\{ steps\.commit\.outputs\.branch \}\}",
+        )
+        dispatch = jobs["dispatch-validation"]
+        # ... reaches the dispatch job through env, never inside run: ...
+        self.assertIn(
+            "BUMP_BRANCH: ${{ needs.check-test-and-propose.outputs.branch }}",
+            dispatch,
+        )
+        self.assertIn("GH_REPO: ${{ github.repository }}", dispatch)
+        # ... runs even if opening the PR failed, but not on a cancelled run ...
+        self.assertRegex(
+            dispatch,
+            r"if: \$\{\{ !cancelled\(\) && "
+            r"needs\.check-test-and-propose\.outputs\.branch != '' \}\}",
+        )
+        # ... and is checked against the shape of a version before use. The
+        # pattern must stay the one routeros_version.VERSION_RE accepts.
+        self.assertIn(
+            r"=~ ^deps/routeros-[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]",
+            dispatch,
+        )
+        self.assertEqual(
+            routeros_version.VERSION_RE.pattern,
+            r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$",
+            "update the branch check in dispatch-validation to match",
+        )
+        run = dispatch.split("run: |", 1)[1]
+        self.assertNotIn("${{", run, "no expression interpolation inside run:")
+
+    def test_a_closed_bump_pull_request_is_not_regenerated(self) -> None:
+        # Looking only at open pull requests re-tested and re-opened a bump
+        # every six hours after a maintainer had closed it.
+        text = self.text()
+        match = re.search(r"gh pr list [^\n]*", text)
+        self.assertIsNotNone(match)
+        self.assertIn("--state all", match.group(0))
+        self.assertNotIn("--state open", match.group(0))
+        # A pull request from a fork's same-named branch must not count.
+        self.assertIn("isCrossRepository", match.group(0))
+        self.assertIn(".isCrossRepository == false", text)
+
+    def test_failure_issue_lookup_counts_only_the_bots_labelled_issues(self) -> None:
+        # A title alone let anyone open a lookalike issue and switch the bump
+        # off. The issue is labelled when filed and only that kind counts.
+        text = self.text()
+        match = re.search(r"gh issue list [^\n]*", text)
+        self.assertIsNotNone(match)
+        command = match.group(0)
+        self.assertIn('--label "$FAILURE_LABEL"', command)
+        self.assertIn("--state open", command)
+        self.assertIn("author", command.split("--json", 1)[1])
+        self.assertNotIn("--search", command, "search index lags; filter locally")
+        self.assertIn('"app/github-actions"', text)
+        self.assertIn('item["title"] == title', text)
+
+    def test_recording_a_failure_survives_label_trouble(self) -> None:
+        # The failure issue is the only record of the test evidence, so a label
+        # that cannot be created or applied must not stop it being filed.
+        text = self.text()
+        create = re.search(r"gh label create [^\n]*(?:\n[^\n]*)?", text)
+        self.assertIsNotNone(create)
+        self.assertNotIn("--force", create.group(0), "do not overwrite edits")
+        self.assertIn("::warning::could not create label", text)
+        self.assertIn('gh issue create --title "$title" --body-file "$body" --label', text)
+        self.assertRegex(
+            text,
+            r'gh issue create --title "\$title" --body-file "\$body"\n',
+            "a fallback creates the issue without the label",
         )
 
 

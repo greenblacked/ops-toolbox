@@ -1354,9 +1354,17 @@ MikroTik does not ship a standalone script interpreter, so the tests talk to a l
 CH instance over the API.
 
 The tested version is stored once in `tests/routeros-version.env`. GitHub checks
-MikroTik's official release feed every Monday and Thursday, tests a newer CHR
+MikroTik's official release feed every six hours, tests a newer CHR
 image before changing files, and opens a version/documentation bump pull request
-only after the complete integration suite passes. See
+only after the complete integration suite passes. A version that already has a
+bump pull request, open, merged or closed, is not tested or proposed again, so
+closing a bump pull request without merging it declines that version. To bring
+it back, reopen the pull request (use *Restore branch* first if the branch was
+deleted) and rebase or merge `dev` into it, because it is still based on the
+`dev` of the day it was opened; or let the next release supersede it. The
+watcher cannot regenerate a declined version, not even from a manual
+`workflow_dispatch` with `version` set, and deleting the branch does not help,
+because the check looks at pull requests, not branches. See
 [`tests/README.md`](tests/README.md#release-checks-and-version-bumps) for local
 candidate testing and the manual workflow controls.
 

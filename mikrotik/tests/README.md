@@ -236,10 +236,20 @@ stable feed every six hours (01:19, 07:19, 13:19 and 19:19 UTC) and can also
 be started manually. Scheduled workflows run from `master`, but both scheduled
 and manually requested bumps use `dev` as their baseline. Manual check-only
 runs validate the selected ref. Normal bump runs only boot CHR for a newer
-release with no open version-bump PR or recorded failure issue; ordinary
-polls do not start an unnecessary VM.
+release with no version-bump PR (open, merged or closed) and no recorded
+failure issue; ordinary polls do not start an unnecessary VM. A bump PR that a
+maintainer closed without merging therefore stays declined, and the watcher
+cannot regenerate it, not even from a manual `workflow_dispatch` with `version`
+set, because the existing-PR check skips it. To bring that version back, reopen
+the PR (restore its branch first if it was deleted) and rebase or merge `dev`
+into it, since it is still based on the old `dev`; or let the next release
+supersede it. The next release has a new branch name and is picked up
+normally.
 A failing candidate opens a `RouterOS VERSION CHR compatibility failure` issue
-with the workflow link and the test summary. Close that issue to allow
+with the workflow link and the test summary, labelled
+`routeros-candidate-failure`. Only an open issue with that label, filed by the
+Actions bot, counts as a recorded failure, so an issue anyone else opens with
+the same title does not suppress the bump. Close that issue to allow
 another scheduled attempt, or run `check_only` manually to retest without
 changing files. CHR success is a script/API compatibility result, **not**
 a hardware-safe-upgrade verdict for any specific router.
