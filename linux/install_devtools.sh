@@ -33,6 +33,8 @@ SKIP_GO=0
 SKIP_TERRAFORM=0
 SKIP_HELM=0
 SKIP_CLIS=0
+NO_EPEL=0
+QUIET_FAIL=0
 
 LOG_DIR="${TMPDIR:-/tmp}"
 LOG_FILE="$LOG_DIR/linux_install_devtools-$(date +%Y%m%d-%H%M%S).log"
@@ -57,7 +59,7 @@ install_devtools.sh - install developer toolchains on Linux
 
 Usage:
   $(basename "$0") [--dry-run] [--yes] [--verbose] [--manager mise|distro]
-                          [--setup-shell] [--only GROUPS | --skip-* ...]
+                          [--setup-shell] [--no-epel] [--only GROUPS | --skip-* ...]
 
 Options:
   --manager NAME    mise (default) or distro. mise manages Python/Go/Terraform/
@@ -75,6 +77,13 @@ Options:
   --skip-terraform  Skip Terraform
   --skip-helm       Skip Helm
   --skip-clis       Skip the DevOps CLIs (git, jq, ripgrep, ...)
+  --no-epel         On Rocky, Alma and CentOS the clis group installs
+                    epel-release and enables CRB first, which persistently adds
+                    third-party repositories to the machine (ripgrep, fd-find,
+                    btop, nload and ncdu live there). This flag skips that step;
+                    the tools it would have provided are then reported as not
+                    installed. Other EL rebuilds (Oracle Linux, RHEL) never get
+                    EPEL from this script.
   --help, -h        Show this help
 
 Log file: ${LOG_DIR}/linux_install_devtools-<timestamp>.log
@@ -109,6 +118,12 @@ detect_pkg_mgr() {
   esac
 }
 
+os_id() {
+  local os_release="${OS_RELEASE:-/etc/os-release}"
+  [[ -r "$os_release" ]] || return 0
+  sed -n 's/^ID=//p' "$os_release" | tr -d '"' | head -n 1
+}
+
 while (( $# > 0 )); do
   case "$1" in
     --dry-run)        DRY_RUN=1 ;;
@@ -125,6 +140,7 @@ while (( $# > 0 )); do
     --skip-terraform) SKIP_TERRAFORM=1; SKIP_USED=1 ;;
     --skip-helm)      SKIP_HELM=1; SKIP_USED=1 ;;
     --skip-clis)      SKIP_CLIS=1; SKIP_USED=1 ;;
+    --no-epel)        NO_EPEL=1 ;;
     -h|--help)        usage; exit 0 ;;
     *)
       err "unknown argument: $1"
@@ -208,7 +224,13 @@ run_cmd() {
     rc=$?
   fi
   if (( rc != 0 )); then
-    err "$label failed (exit $rc; see $LOG_FILE)"
+    if (( QUIET_FAIL == 1 )); then
+      # An optional install may have a fallback candidate; the caller decides
+      # whether this is worth a message. The log keeps the record.
+      echo "# [$label] failed (exit $rc)" >> "$LOG_FILE"
+    else
+      err "$label failed (exit $rc; see $LOG_FILE)"
+    fi
     FAIL_COUNT=$((FAIL_COUNT + 1))
   fi
   return 0
@@ -227,13 +249,94 @@ if (( ASSUME_YES == 0 )) && (( DRY_RUN == 0 )); then
   exit 3
 fi
 
+# Optional tools are installed one at a time so a package missing on this
+# release (btop on an older Debian, say) costs a warning, not the whole batch.
+# Arguments: tool name, then one or more package names tried in order until one
+# installs. run_cmd counts a failure as a failed step; here it is demoted to a
+# warning because nothing else depends on these.
+optional_install() {
+  local tool="$1" pkg before; shift
+  for pkg in "$@"; do
+    before=$FAIL_COUNT
+    QUIET_FAIL=1
+    pkg_install "$pkg"
+    QUIET_FAIL=0
+    if (( FAIL_COUNT == before )); then
+      return 0
+    fi
+    FAIL_COUNT=$before
+  done
+  warn "optional tool not installed: $tool (no package among: $*)"
+}
+
 # --- base CLIs -------------------------------------------------------------
 if (( SKIP_CLIS == 0 )); then
   step "DevOps CLIs"
   case "$PKG_MGR" in
-    apt)    pkg_install git curl jq unzip ripgrep fd-find ;;
-    dnf)    pkg_install git curl jq unzip ripgrep fd-find ;;
-    pacman) pkg_install git curl jq unzip ripgrep fd ;;
+    dnf)
+      # On Rocky, Alma and CentOS, ripgrep, fd-find, btop, nload and ncdu are in
+      # EPEL, not BaseOS/AppStream. (mc is in AppStream and iotop in BaseOS on
+      # EL9.) `crb enable` ships with epel-release. This persistently adds
+      # third-party repositories, so --no-epel opts out. RHEL and the other EL
+      # rebuilds are left alone: EPEL there is the administrator's call.
+      if (( NO_EPEL == 0 )); then
+        case "$(os_id)" in
+          rocky|almalinux|centos)
+            pkg_install epel-release
+            run_cmd "enable CRB" $SUDO crb enable
+            ;;
+        esac
+      fi
+      ;;
+  esac
+
+  # Only distro-base packages go in the core batch, so one unavailable package
+  # cannot sink the rest. curl is skipped when a curl is already on PATH:
+  # Rocky, Alma and UBI images ship curl-minimal, which conflicts with curl and
+  # would abort the whole transaction.
+  core=(git jq unzip)
+  have curl || core+=(curl)
+  pkg_install "${core[@]}"
+
+  # Terminal tools for a box you are logged into. Installed individually; see
+  # optional_install. iotop is iotop-c on Fedora and EL (the C rewrite), with
+  # the classic package as the fallback.
+  optional_install ripgrep ripgrep
+  case "$PKG_MGR" in
+    pacman) optional_install fd fd ;;
+    *)      optional_install fd-find fd-find ;;
+  esac
+  optional_install mc mc
+  case "$PKG_MGR" in
+    dnf) optional_install iotop iotop-c iotop ;;
+    *)   optional_install iotop iotop ;;
+  esac
+  optional_install nload nload
+  optional_install ncdu ncdu
+  optional_install btop btop
+
+  # nmtui is the text frontend to NetworkManager. Installing NetworkManager just
+  # to get it can take over interfaces on a host run by ifupdown, netplan or
+  # systemd-networkd and cut the connection you are using, so this script never
+  # installs NetworkManager. On Fedora and EL it is the default stack and nmtui
+  # is the small NetworkManager-tui package, installed only once NetworkManager
+  # is there. On Debian, Ubuntu and Arch nmtui ships inside NetworkManager
+  # itself, so there is nothing safe to install.
+  case "$PKG_MGR" in
+    dnf)
+      if have rpm && rpm -q NetworkManager >/dev/null 2>&1; then
+        optional_install nmtui NetworkManager-tui
+      else
+        info "nmtui not installed: NetworkManager is not on this host, and this script does not add it"
+      fi
+      ;;
+    *)
+      if have nmtui; then
+        ok "nmtui already installed"
+      else
+        info "nmtui not installed: it ships with NetworkManager, which this script does not add"
+      fi
+      ;;
   esac
 else
   info "skipped: CLIs"

@@ -291,6 +291,100 @@ out="$("$L/install_devtools.sh" --dry-run --only clis --setup-shell 2>&1)"
 assert_contains "install_devtools --setup-shell still installs its mise prerequisite" "$out" "install mise"
 assert_contains "install_devtools --setup-shell remains effective with only clis" "$out" "would append"
 
+section "install_devtools optional tools and nmtui"
+# mc, iotop, nload, ncdu and btop go in one at a time: a package missing on this
+# release must cost a warning, not the other tools. nmtui must never pull in
+# NetworkManager.
+opt_dir="$(mktemp -d)"
+mkdir -p "$opt_dir/bin"
+cat > "$opt_dir/bin/apt-get" <<'STUB'
+#!/usr/bin/env bash
+echo "apt-get $*" >> "$STUB_LOG"
+case "$*" in *btop*) exit 100 ;; esac
+exit 0
+STUB
+chmod +x "$opt_dir/bin/apt-get"
+# Not root: the script prefixes sudo, whose secure_path would bypass the stub
+# and run the real package manager on the host. A sudo that just execs keeps the
+# stub in charge.
+printf '#!/usr/bin/env bash\nexec "$@"\n' > "$opt_dir/bin/sudo"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$opt_dir/bin/curl"
+chmod +x "$opt_dir/bin/sudo" "$opt_dir/bin/curl"
+printf 'ID=debian\n' > "$opt_dir/os-debian"
+out="$(PATH="$opt_dir/bin:$PATH" STUB_LOG="$opt_dir/calls" TMPDIR="$opt_dir" OS_RELEASE="$opt_dir/os-debian" "$L/install_devtools.sh" --yes --only clis 2>&1)"
+rc=$?
+calls="$(cat "$opt_dir/calls" 2>/dev/null)"
+assert_eq "install_devtools exits 0 when only an optional tool is missing" "0" "$rc"
+assert_contains "install_devtools warns about the missing optional tool" "$out" "optional tool not installed: btop"
+assert_contains "install_devtools still installs mc" "$calls" "install --yes mc"
+assert_contains "install_devtools still installs iotop" "$calls" "install --yes iotop"
+assert_contains "install_devtools still installs nload" "$calls" "install --yes nload"
+assert_contains "install_devtools still installs ncdu after a failed optional tool" "$calls" "install --yes ncdu"
+assert_not_contains "install_devtools never installs NetworkManager on apt" "$calls" "network-manager"
+assert_contains "install_devtools keeps the core batch to distro-base packages" "$calls" "install --yes git jq unzip"
+assert_not_contains "install_devtools leaves curl alone when one is on PATH" "$calls" "unzip curl"
+assert_contains "install_devtools installs ripgrep as an optional tool" "$calls" "install --yes ripgrep"
+
+# Fallback chain: iotop-c fails, iotop installs, and the first failure is not
+# reported as an error. nload has no candidate that installs: a warning, exit 0.
+cat > "$opt_dir/bin/dnf" <<'STUB'
+#!/usr/bin/env bash
+echo "dnf $*" >> "$STUB_LOG"
+case "$*" in *iotop-c*|*nload*) exit 1 ;; esac
+exit 0
+STUB
+printf '#!/usr/bin/env bash\nexit 1\n' > "$opt_dir/bin/rpm"
+chmod +x "$opt_dir/bin/dnf" "$opt_dir/bin/rpm"
+printf 'ID=fedora\n' > "$opt_dir/os-fedora"
+: > "$opt_dir/calls"
+out="$(PATH="$opt_dir/bin:$PATH" STUB_LOG="$opt_dir/calls" TMPDIR="$opt_dir" OS_RELEASE="$opt_dir/os-fedora" "$L/install_devtools.sh" --yes --only clis 2>&1)"
+rc=$?
+calls="$(cat "$opt_dir/calls" 2>/dev/null)"
+assert_eq "install_devtools exits 0 through a fallback and a missing optional tool" "0" "$rc"
+if grep -qx 'dnf install -y iotop' <<<"$calls"; then ok "install_devtools falls back to iotop when iotop-c fails"; else err "install_devtools did not fall back to iotop"; fi
+assert_not_contains "install_devtools prints no error for a failed fallback candidate" "$out" "failed (exit"
+assert_contains "install_devtools warns when no candidate installs" "$out" "optional tool not installed: nload"
+assert_not_contains "install_devtools does not install epel-release on fedora" "$calls" "epel-release"
+
+printf 'ID=fedora\n' > "$opt_dir/os-fedora"
+mkdir -p "$opt_dir/rpm-yes" "$opt_dir/rpm-no"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$opt_dir/rpm-yes/rpm"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$opt_dir/rpm-no/rpm"
+chmod +x "$opt_dir/rpm-yes/rpm" "$opt_dir/rpm-no/rpm"
+out="$(PATH="$opt_dir/rpm-yes:$PATH" OS_RELEASE="$opt_dir/os-fedora" "$L/install_devtools.sh" --dry-run --only clis 2>&1)"
+assert_contains "install_devtools installs NetworkManager-tui when NetworkManager is present" "$out" "dnf install -y NetworkManager-tui"
+out="$(PATH="$opt_dir/rpm-no:$PATH" OS_RELEASE="$opt_dir/os-fedora" "$L/install_devtools.sh" --dry-run --only clis 2>&1)"
+assert_not_contains "install_devtools skips NetworkManager-tui without NetworkManager" "$out" "NetworkManager-tui"
+assert_contains "install_devtools says why nmtui was skipped on dnf" "$out" "nmtui not installed: NetworkManager is not on this host"
+assert_not_contains "install_devtools never installs NetworkManager itself on dnf" "$out" "dnf install -y NetworkManager "
+rm -rf "$opt_dir"
+
+section "install_devtools enables EPEL on EL, not on Fedora"
+# ripgrep, fd-find and the optional tools (nload, ncdu, btop...) are EPEL
+# packages on Rocky/Alma/CentOS, so the dnf installs fail there unless
+# epel-release (and CRB) come first. Fedora ships them itself and must not be given EPEL.
+el_fixture="$(mktemp -d)"
+printf 'ID="rocky"\nID_LIKE="rhel centos fedora"\n' > "$el_fixture/os-rocky"
+printf 'ID=fedora\n' > "$el_fixture/os-fedora"
+out="$(OS_RELEASE="$el_fixture/os-rocky" "$L/install_devtools.sh" --dry-run --only clis 2>&1)"
+assert_contains "install_devtools on rocky uses dnf" "$out" "package manager: dnf"
+assert_contains "install_devtools on rocky installs epel-release" "$out" "dnf install -y epel-release"
+assert_contains "install_devtools on rocky enables CRB" "$out" "crb enable"
+assert_contains "install_devtools on rocky installs the core CLIs" "$out" "install git jq unzip"
+epel_pos="${out%%epel-release*}"
+cli_pos="${out%%ripgrep*}"
+if (( ${#epel_pos} < ${#cli_pos} )); then ok "install_devtools on rocky installs epel-release before the CLIs"; else err "install_devtools on rocky installs epel-release after the CLIs"; fi
+nload_pos="${out%%install nload*}"
+if (( ${#epel_pos} < ${#nload_pos} )); then ok "install_devtools on rocky installs nload after epel-release"; else err "install_devtools on rocky installs nload before epel-release"; fi
+out="$(OS_RELEASE="$el_fixture/os-fedora" "$L/install_devtools.sh" --dry-run --only clis 2>&1)"
+assert_not_contains "install_devtools on fedora skips epel-release" "$out" "epel-release"
+assert_contains "install_devtools on fedora installs the core CLIs" "$out" "install git jq unzip"
+out="$(OS_RELEASE="$el_fixture/os-rocky" "$L/install_devtools.sh" --dry-run --only clis --no-epel 2>&1)"
+assert_not_contains "install_devtools --no-epel skips epel-release" "$out" "epel-release"
+assert_not_contains "install_devtools --no-epel skips CRB" "$out" "crb enable"
+assert_contains "install_devtools --no-epel still installs the rest" "$out" "install git jq unzip"
+rm -rf "$el_fixture"
+
 out="$("$L/stay_fresh.sh" --dry-run --only caches 2>&1)"
 assert_contains "stay_fresh --only skips unselected steps" "$out" "skipped: packages"
 assert_contains "stay_fresh --only runs selected step" "$out" "== user caches =="

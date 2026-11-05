@@ -110,8 +110,8 @@ All paths are under `linux/`.
 - On OrbStack, the `kali:current` image did not include cloud-init when
   checked on 2026-08-12, so the documented `orbctl create` command times out.
   Use an image that ships cloud-init.
-- Tests run for real in Debian by default; `LINUX_DISTROS=all` adds Fedora and
-  Arch. Real hardware kernel and sysctl effects are not covered.
+- Tests run for real in Debian by default; `LINUX_DISTROS=all` adds Fedora,
+  Rocky and Arch. Real hardware kernel and sysctl effects are not covered.
 
 ## Repository
 
