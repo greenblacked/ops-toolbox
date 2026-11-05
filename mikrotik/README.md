@@ -1354,7 +1354,7 @@ MikroTik does not ship a standalone script interpreter, so the tests talk to a l
 CH instance over the API.
 
 The tested version is stored once in `tests/routeros-version.env`. GitHub checks
-MikroTik's official release feed every Monday and Thursday, tests a newer CHR
+MikroTik's official release feed every six hours, tests a newer CHR
 image before changing files, and opens a version/documentation bump pull request
 only after the complete integration suite passes. See
 [`tests/README.md`](tests/README.md#release-checks-and-version-bumps) for local

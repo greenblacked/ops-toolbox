@@ -42,7 +42,7 @@ on:
     # routeros-version.yml's crons give (the top of the hour is heavily
     # contended and a round schedule lands hours late) — and a time that does
     # not share a slot with chr.yml (daily 03:37), routeros-version.yml
-    # (Mon/Thu 04:19) or k8s-image-smoke.yml (Mon 04:17).
+    # (every six hours at :19) or k8s-image-smoke.yml (Mon 04:17).
     - cron: '41 5 * * 1'
   workflow_dispatch: {}
 
