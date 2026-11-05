@@ -1,12 +1,12 @@
-# MikroTik script tests (RouterOS 7.25)
+# MikroTik script tests (RouterOS 7.25.1)
 
-[Ops Toolbox](../../README.md) / **MikroTik script tests (RouterOS 7.25)**
+[Ops Toolbox](../../README.md) / **MikroTik script tests (RouterOS 7.25.1)**
 
-Integration tests that run **real RouterOS CHR 7.25** in QEMU inside Docker and
+Integration tests that run **real RouterOS CHR 7.25.1** in QEMU inside Docker and
 exercise every `*.lua` in the package — `../core/` and `../features/` alike.
 Two services run side by side:
 
-- `chr` — Alpine + QEMU + the official CHR 7.25 disk (talks to host on
+- `chr` — Alpine + QEMU + the official CHR 7.25.1 disk (talks to host on
   `127.0.0.1:8728` for ad‑hoc inspection).
 - `tester` — Python + `RouterOS-api` + `pytest`. Talks to `chr` on the Docker
   network and runs the test suite. **No host Python is required.**
@@ -79,7 +79,7 @@ without changing tracked files, override it for one run — and override the
 digest with it:
 
 ```bash
-ROUTEROS_VERSION=7.25 \
+ROUTEROS_VERSION=7.25.1 \
 ROUTEROS_SHA256=<digest of that image> ./mikrotik/tests/run.sh
 ```
 
@@ -135,7 +135,7 @@ docker compose down -v
    release (a patch suffix is accepted only when the requested version omits it).
 2. **Source acceptance** — every `.lua` under `mikrotik/` is added as a
    `/system script` and removed. RouterOS rejects malformed source at `add`
-   time, so this catches syntax issues against the live 7.25 parser.
+   time, so this catches syntax issues against the live 7.25.1 parser.
 3. **Safe execution** — `wan_failover_notify`, `health_check`, and
    `detect_internet` are loaded under their production names and executed.
    `tg_send` is replaced with a **stub** for the test session that records
@@ -154,7 +154,7 @@ docker compose down -v
    escape: the text is posted URL-encoded, so a bare `%` is a defect that
    otherwise only shows up as a mangled Telegram message.
 
-Some execution paths remain **expected failures** on RouterOS 7.25 because
+Some execution paths remain **expected failures** on RouterOS 7.25.1 because
 they reference unquoted globals or locals containing underscores.
 MikroTik's [scripting manual](https://help.mikrotik.com/docs/spaces/ROS/pages/47579229/Scripting)
 requires variable names containing non-alphanumeric characters to be quoted.
@@ -228,7 +228,7 @@ available. Its `check` command does not modify files:
 ```bash
 python3 mikrotik/tests/routeros_version.py check
 python3 mikrotik/tests/routeros_version.py check --channel long-term
-python3 mikrotik/tests/routeros_version.py check --version 7.25
+python3 mikrotik/tests/routeros_version.py check --version 7.25.1
 ```
 
 The `RouterOS version check` GitHub Actions workflow checks the official
