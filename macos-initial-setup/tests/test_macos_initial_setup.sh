@@ -50,6 +50,9 @@ unset CPPFLAGS LDFLAGS
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+# stay_fresh.sh names the terminal app that needs Full Disk Access from these.
+# Inherited from a developer's terminal, the Trash guidance names that app.
+unset TERM_PROGRAM __CFBundleIdentifier
 # ops_context.sh reports which cluster, project, profile, workspace and daemon
 # these point at, and names the token variables when they are set. A
 # developer's shell usually has some of them exported; inherited, they would

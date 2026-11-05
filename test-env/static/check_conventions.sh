@@ -38,6 +38,9 @@ unset KREW_ROOT
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+# stay_fresh.sh names the terminal app that needs Full Disk Access from these.
+# Inherited from a developer's terminal, the Trash guidance names that app.
+unset TERM_PROGRAM __CFBundleIdentifier
 
 failures=0
 checked=0
