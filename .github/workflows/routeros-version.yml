@@ -2,8 +2,9 @@ name: RouterOS version check
 
 # Check MikroTik's stable feed every six hours and on demand. A changed release
 # triggers CHR once, then either a tested bump PR or a failure issue. The issue
-# prevents expensive automatic retries until an operator closes it. Never
-# modify dev/master directly; hardware safety review is still required.
+# prevents expensive automatic retries until an operator closes it, and a bump
+# PR that was closed without merging is never regenerated. Never modify
+# dev/master directly; hardware safety review is still required.
 #
 # Scheduled runs and manual bump requests both use dev as their baseline.
 # Manual check-only runs validate the selected ref without proposing a PR.
@@ -11,7 +12,8 @@ name: RouterOS version check
 on:
   schedule:
     # Lightweight stable-feed check four times daily at offset minutes.
-    # CHR boots only when a newer version has no open bump PR/failure issue.
+    # CHR boots only when a newer version has no bump PR (open, merged or
+    # closed) and no open failure issue.
     # Scheduled workflows run from default branch (master), so changes to
     # this file become active only after merging it into master.
     - cron: '19 1,7,13,19 * * *'
@@ -35,12 +37,12 @@ on:
         default: false
         type: boolean
 
-# Nothing here needs a repository-wide grant: the only job commits a branch,
-# opens a pull request and dispatches CI, and holding those three scopes at
-# the top level would hand them to any job added to this workflow later with
-# no review able to tell. Least privilege lives on the job instead, so a
-# future job here starts with nothing rather than inheriting three write
-# scopes it never asked for.
+# Nothing here needs a repository-wide grant: one job commits a branch, opens
+# a pull request and files the failure issue, another dispatches CI, and
+# holding those scopes at the top level would hand them to any job added to
+# this workflow later with no review able to tell. Least privilege lives on
+# the job instead, so a future job here starts with nothing rather than
+# inheriting write scopes it never asked for.
 permissions: {}
 
 concurrency:
@@ -52,9 +54,11 @@ jobs:
     name: Check, test, and propose RouterOS bump
     runs-on: ubuntu-24.04
     timeout-minutes: 50
+    # The bump branch, empty when nothing was pushed. The dispatch job below
+    # reads it, so no step that runs checked-out dev code needs `actions: write`.
+    outputs:
+      branch: ${{ steps.commit.outputs.branch }}
     permissions:
-      # Dispatches the CHR suite against the bump branch.
-      actions: write
       # Commits the version bump to a branch this job creates.
       contents: write
       # Opens (and updates) the pull request that proposes the bump.
@@ -65,6 +69,9 @@ jobs:
       RELEASE_CHANNEL: ${{ inputs.channel || 'stable' }}
       REQUESTED_VERSION: ${{ inputs.version || '' }}
       CHECK_ONLY: ${{ inputs.check_only == true }}
+      # Marks the issues this workflow files, so the dedupe below cannot be
+      # steered by an unrelated issue that merely shares a title.
+      FAILURE_LABEL: routeros-candidate-failure
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -99,10 +106,20 @@ jobs:
         run: |
           set -euo pipefail
           branch="deps/routeros-${TARGET_VERSION}"
-          url="$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // ""')"
-          if [ -n "$url" ]; then
+          # --state all, not open: a bump PR that a maintainer closed without
+          # merging is a decision, and a merged one is done. Either way the
+          # next poll must not re-test the version and open the PR again.
+          # --head matches the branch name alone, so a pull request from a
+          # fork's branch of the same name is ignored (isCrossRepository).
+          found="$(gh pr list --state all --head "$branch" \
+            --json url,state,isCrossRepository \
+            --jq '[.[] | select(.isCrossRepository == false)] | .[0] // empty | "\(.url) \(.state)"')"
+          if [ -n "$found" ]; then
+            url="${found%% *}"
+            state="${found##* }"
             echo "url=$url" >> "$GITHUB_OUTPUT"
-            echo "Existing pull request: $url"
+            echo "state=$state" >> "$GITHUB_OUTPUT"
+            echo "Skipping RouterOS ${TARGET_VERSION}: pull request $url is already $state."
           fi
 
       - name: Check for existing failed candidate
@@ -118,11 +135,22 @@ jobs:
         run: |
           set -euo pipefail
           title="RouterOS ${TARGET_VERSION} CHR compatibility failure"
-          issues="$(gh issue list --state open --limit 100 --json title,url)"
+          # Only an issue this workflow filed counts: it carries the label and
+          # the Actions bot as author. The repository is public, so a title
+          # alone would let anyone open a lookalike issue and switch the bump
+          # off. The label narrows the list to the few issues this workflow
+          # filed, so the 100-item window is not the newest 100 open issues
+          # of the repository; the exact title and the author are checked
+          # here. No title search: the search index lags behind new issues
+          # and has its own rate limit.
+          issues="$(gh issue list --state open --label "$FAILURE_LABEL" \
+            --limit 100 --json title,url,author)"
           url="$(printf '%s' "$issues" | TARGET_TITLE="$title" python3 -c '
           import json, os, sys
           title = os.environ["TARGET_TITLE"]
-          print(next((item["url"] for item in json.load(sys.stdin) if item["title"] == title), ""))
+          bots = ("app/github-actions", "github-actions")
+          print(next((item["url"] for item in json.load(sys.stdin)
+                      if item["title"] == title and (item.get("author") or {}).get("login") in bots), ""))
           ')"
           if [ -n "$url" ]; then
             echo "url=$url" >> "$GITHUB_OUTPUT"
@@ -224,7 +252,20 @@ jobs:
               echo '~~~'
             fi
           } > "$body"
-          gh issue create --title "$title" --body-file "$body"
+          # The label is what the lookup above counts, but the test evidence
+          # matters more than the label: neither step may stop the issue from
+          # being filed. Create the label only when it is missing, so a
+          # description or colour edited by hand is not overwritten.
+          labels="$(gh label list --search "$FAILURE_LABEL" --json name --jq '.[].name' || true)"
+          if ! printf '%s\n' "$labels" | grep -Fxq "$FAILURE_LABEL"; then
+            gh label create "$FAILURE_LABEL" --color B60205 \
+              --description "RouterOS release candidate that failed the CHR test" \
+              || echo "::warning::could not create label $FAILURE_LABEL"
+          fi
+          if ! gh issue create --title "$title" --body-file "$body" --label "$FAILURE_LABEL"; then
+            echo "::warning::could not label the issue $FAILURE_LABEL; label it by hand or the next poll retests this version"
+            gh issue create --title "$title" --body-file "$body"
+          fi
 
       - name: Bump version and documentation
         if: >-
@@ -284,7 +325,7 @@ jobs:
             README.md mikrotik/README.md mikrotik/tests/README.md \
             docs/platforms/mikrotik.md docs/contributing/testing.md \
             docs/platforms/routeros-compatibility.md \
-            .github/workflows/chr.yml CHANGELOG.md
+            CHANGELOG.md
           git commit -m "deps(mikrotik): test against RouterOS ${TARGET_VERSION}"
 
           if [ -n "$remote_sha" ]; then
@@ -296,22 +337,6 @@ jobs:
             git push --set-upstream origin "$branch"
           fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
-      # PRs created by GITHUB_TOKEN do not fire pull_request workflows. Start
-      # CI, security and CHR against the exact bump branch explicitly. Docs
-      # and branch-name PR checks still need verifying before manual merge;
-      # none of these jobs auto-merge or touch physical hardware.
-      - name: Dispatch validation checks for bump branch
-        if: steps.commit.outcome == 'success'
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUMP_BRANCH: ${{ steps.commit.outputs.branch }}
-        run: |
-          set -euo pipefail
-          gh workflow run ci.yml --ref "$BUMP_BRANCH"
-          gh workflow run security.yml --ref "$BUMP_BRANCH"
-          gh workflow run chr.yml --ref "$BUMP_BRANCH"
 
       - name: Open bump pull request
         id: pull_request
@@ -348,6 +373,7 @@ jobs:
           RESULT_LATEST: ${{ steps.release.outputs.latest }}
           RESULT_UPDATE_AVAILABLE: ${{ steps.release.outputs.update_available }}
           EXISTING_PR_URL: ${{ steps.existing.outputs.url }}
+          EXISTING_PR_STATE: ${{ steps.existing.outputs.state }}
           CREATED_PR_URL: ${{ steps.pull_request.outputs.url }}
           PREVIOUS_FAILURE_URL: ${{ steps.recorded_failure.outputs.url }}
           CHECK_ONLY_REQUESTED: ${{ inputs.check_only }}
@@ -360,7 +386,7 @@ jobs:
             printf '| candidate | `%s` |\n' "$RESULT_LATEST"
             printf '| update available | `%s` |\n' "$RESULT_UPDATE_AVAILABLE"
             if [ -n "$EXISTING_PR_URL" ]; then
-              printf '\nExisting pull request: %s\n' "$EXISTING_PR_URL"
+              printf '\nExisting pull request (%s), not regenerated: %s\n' "$EXISTING_PR_STATE" "$EXISTING_PR_URL"
             elif [ -n "$CREATED_PR_URL" ]; then
               printf '\nCreated pull request: %s\n' "$CREATED_PR_URL"
             elif [ -n "$PREVIOUS_FAILURE_URL" ]; then
@@ -369,3 +395,48 @@ jobs:
               printf '\nCheck-only mode: no repository changes were made.\n'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # PRs created by GITHUB_TOKEN do not fire pull_request workflows. Start CI,
+  # security and CHR against the exact bump branch explicitly. Docs and
+  # branch-name PR checks still need verifying before manual merge; none of
+  # these jobs auto-merge or touch physical hardware.
+  #
+  # This is its own job so that the dispatch scope, `actions: write`, is not
+  # held by the job that runs routeros_version.py and run-tests.sh from the
+  # dev tree. That job still has `contents: write`, `pull-requests: write` and
+  # `issues: write`, and its checkout keeps credentials for the push step, so
+  # this does not isolate it; it only removes the ability to dispatch
+  # arbitrary workflows from it. This job checks out nothing and only runs
+  # `gh`, and the one value it takes from the job above is validated before
+  # use.
+  dispatch-validation:
+    name: Dispatch validation checks for bump branch
+    needs: check-test-and-propose
+    # !cancelled() rather than success(): the branch is pushed before the pull
+    # request is opened, and checks were dispatched even if opening it failed.
+    if: ${{ !cancelled() && needs.check-test-and-propose.outputs.branch != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      # Dispatches the CI, security and CHR workflows. Nothing else.
+      actions: write
+    steps:
+      - name: Dispatch validation checks for bump branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BUMP_BRANCH: ${{ needs.check-test-and-propose.outputs.branch }}
+        run: |
+          set -euo pipefail
+          # The branch name was produced by code from dev. Accept only the
+          # shape the commit step builds, so a bad value cannot point the
+          # dispatch at some other ref.
+          # Mirrors VERSION_RE in mikrotik/tests/routeros_version.py.
+          if ! [[ "$BUMP_BRANCH" =~ ^deps/routeros-[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "refusing to dispatch for unexpected branch name: $BUMP_BRANCH" >&2
+            exit 1
+          fi
+          gh workflow run ci.yml --ref "$BUMP_BRANCH"
+          gh workflow run security.yml --ref "$BUMP_BRANCH"
+          gh workflow run chr.yml --ref "$BUMP_BRANCH"
