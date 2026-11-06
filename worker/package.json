@@ -7,6 +7,6 @@
   "license": "MIT",
   "engines": { "node": ">=22" },
   "devDependencies": {
-    "wrangler": "4.151.1"
+    "wrangler": "4.158.0"
   }
 }
