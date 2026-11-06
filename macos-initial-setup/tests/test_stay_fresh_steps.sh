@@ -46,6 +46,9 @@ unset KREW_ROOT
 unset STAY_FRESH_LOCK_DIR STAY_FRESH_NOTIFY STAY_FRESH_NOTIFY_TIMEOUT \
   STAY_FRESH_NOTIFY_WHEN STAY_FRESH_SLACK_WEBHOOK STAY_FRESH_STEP_TIMEOUT \
   STAY_FRESH_TG_BOT_TOKEN STAY_FRESH_TG_CHAT_ID
+# stay_fresh.sh names the terminal app that needs Full Disk Access from these.
+# Inherited from a developer's terminal, the Trash guidance names that app.
+unset TERM_PROGRAM __CFBundleIdentifier
 
 failures=0
 # Counted so the run can prove it asserted something. Without `-e` a suite that
@@ -1351,8 +1354,8 @@ assert_called "brew step upgrades formulae" "$d/calls" "brew upgrade --formula"
 assert_called "brew step runs a scrub cleanup" "$d/calls" "brew cleanup -s"
 assert_called "brew step autoremoves"  "$d/calls" "brew autoremove"
 assert_called "brew step disables nested auto-update" "$d/calls" "env HOMEBREW_NO_AUTO_UPDATE=1"
-assert_contains "default skips cask upgrades explicitly" "$out" \
-  "skipping cask upgrades by default; pass --brew-casks"
+assert_contains "a terminal-less default skips cask upgrades and says why" "$out" \
+  "skipping cask upgrades: no controlling terminal"
 assert_not_called "no cask upgrade is attempted without a terminal" "$d/calls" \
   "brew upgrade --cask"
 assert_not_called "default brew-only run does not request sudo" "$d/calls" "sudo -v"
@@ -1382,16 +1385,24 @@ assert_not_called "greedy alone does not upgrade casks" "$d/calls" "brew upgrade
 assert_called "greedy alone still reports self-updating casks" "$d/calls" "brew outdated --cask --quiet --greedy"
 rm -rf "$d"
 
-# On a terminal, opt-in requests sudo once before the Homebrew step. Even
-# with --only brew there are no other privileged steps to trigger preflight.
+# On a terminal, cask upgrades are on by default and request sudo once before
+# the Homebrew step. Even with --only brew there are no other privileged steps
+# to trigger preflight. --no-brew-casks turns them back off.
 d="$(new_env)"; : > "$d/calls"
 mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
   'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; esac' \
   'exit 0'
 out="$(run_sf_tty "$d" --yes --only brew)"; rc=$?
 assert_eq "terminal brew default succeeds" "0" "$rc"
-assert_not_called "terminal default does not request sudo" "$d/calls" "sudo -v"
-assert_not_called "terminal default does not upgrade casks" "$d/calls" "brew upgrade --cask"
+assert_eq "terminal default preflights sudo exactly once" "1" "$(grep -c '^sudo -v$' "$d/calls")"
+assert_called "terminal default upgrades casks" "$d/calls" "brew upgrade --cask"
+assert_not_called "terminal default does not add greedy" "$d/calls" "brew upgrade --cask --greedy"
+: > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only brew --no-brew-casks)"; rc=$?
+assert_eq "terminal --no-brew-casks succeeds" "0" "$rc"
+assert_not_called "--no-brew-casks does not request sudo" "$d/calls" "sudo -v"
+assert_not_called "--no-brew-casks does not upgrade casks" "$d/calls" "brew upgrade --cask"
+assert_contains "--no-brew-casks explains the skip" "$out" "--no-brew-casks was passed"
 : > "$d/calls"
 out="$(run_sf_tty "$d" --yes --only brew --brew-casks)"; rc=$?
 assert_eq "terminal plain cask opt-in succeeds" "0" "$rc"
@@ -2920,7 +2931,7 @@ assert_contains "a Downloads folder with nothing old says so" "$out" "nothing in
 rm -rf "$d"
 
 # ===========================================================================
-section "launch-agents (orphaned plists reported; user-level removed only on request)"
+section "launch-agents (orphaned plists reported; removed on a terminal or on request)"
 agents_env() {
   local d; d="$(new_env)"
   local la="$d/home/Library/LaunchAgents"
@@ -2954,8 +2965,30 @@ agents_env() {
     > /Library/LaunchDaemons/com.gone.daemon.plist
   printf '%s\n' '<plist version="1.0"><dict><key>Program</key><string>/bin/ls</string></dict></plist>' \
     > /Library/LaunchAgents/com.ok.system.plist
-  mkbin "$d/bin/launchctl" 'echo "launchctl $*" >> "$CALLS"; exit 0'
+  # `print DOMAIN/LABEL` answers like launchd: the plist the service was
+  # loaded from, found by label as a filename here, or LAUNCHCTL_LOADED_FROM
+  # to stand for a live service that shares the label but came from elsewhere.
+  # Prints are not recorded, so "nothing unloaded" still means no bootout.
+  mkbin "$d/bin/launchctl" 'if [ "${1:-}" = print ]; then' \
+    '  label="${2##*/}"' \
+    '  for f in "$HOME/Library/LaunchAgents/$label.plist" "/Library/LaunchAgents/$label.plist" "/Library/LaunchDaemons/$label.plist"; do' \
+    '    if [ -e "$f" ] || [ -L "$f" ]; then printf "\tpath = %s\n" "${LAUNCHCTL_LOADED_FROM:-$f}"; exit 0; fi' \
+    '  done; exit 113' \
+    'fi' \
+    'echo "launchctl $*" >> "$CALLS"; exit 0'
   printf '%s' "$d"
+}
+# The interactive tests need to see whether a root command went through
+# `sudo -n` (never prompts) or plain sudo (may prompt). The shared fake drops
+# the -n; this one keeps it in the record.
+sudo_n_recording() {
+  mkbin "$1/bin/sudo" 'case "${1:-}" in' \
+    '  -v) echo "sudo -v" >> "$CALLS"; exit 0 ;;' \
+    '  -n) shift; case "${1:-}" in true) exit 0 ;; -v) echo "sudo -n -v" >> "$CALLS"; exit 0 ;; esac' \
+    '      echo "sudo -n $*" >> "$CALLS"; exec "$@" ;;' \
+    'esac' \
+    'echo "sudo $*" >> "$CALLS"' \
+    'exec "$@"'
 }
 d="$(agents_env)"; : > "$d/calls"
 out="$(run_sf "$d" --yes --only launch-agents)"; rc=$?
@@ -2994,6 +3027,104 @@ assert_exists "the uninspected binary plist stays"     "$d/home/Library/LaunchAg
 assert_exists "a system-level orphan is never removed" /Library/LaunchDaemons/com.gone.daemon.plist
 assert_not_called "system-level plists are never unloaded" "$d/calls" "system/com.gone.daemon"
 rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# On a terminal the orphans go without --prune-orphan-agents. The system-level
+# one goes too once sudo is authenticated (diagnostics brings the preflight),
+# through sudo -n so no second password prompt is raised. A program on an
+# unmounted external volume looks missing and is kept. --no-prune-orphan-agents
+# keeps everything.
+d="$(agents_env)"; : > "$d/calls"; sudo_n_recording "$d"
+printf '%s\n' '<plist version="1.0"><dict><key>Label</key><string>com.ext.helper</string>' \
+  '<key>Program</key><string>/Volumes/External/helper</string></dict></plist>' \
+  > "$d/home/Library/LaunchAgents/com.ext.helper.plist"
+out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics)"; rc=$?
+assert_eq "interactive orphan cleanup succeeds" "0" "$rc"
+assert_called "an interactive run unloads a user orphan" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
+assert_gone   "an interactive run removes a user orphan" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_called "the system orphan is unloaded under sudo -n" "$d/calls" "sudo -n launchctl bootout system/com.gone.daemon"
+assert_called "the system orphan is removed under sudo -n" "$d/calls" "sudo -n rm -f -- /Library/LaunchDaemons/com.gone.daemon.plist"
+if grep -q '^sudo launchctl\|^sudo rm' "$d/calls"; then
+  err "no orphan command goes through a sudo that may prompt"
+else ok "no orphan command goes through a sudo that may prompt"; fi
+assert_gone   "the system orphan is removed with sudo" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_exists "a program on an external volume is not taken as gone" "$d/home/Library/LaunchAgents/com.ext.helper.plist"
+assert_contains "the external one is named as kept" "$out" "on an external volume, kept"
+assert_exists "a live system plist stays" /Library/LaunchAgents/com.ok.system.plist
+assert_not_contains "nothing is left for the summary" "$out" "orphaned launch agent(s)"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# A stale plist whose Label is also a live service loaded from another file
+# (a vendor's current plist, an Apple daemon). bootout goes by label, so
+# unloading it would stop the live service. The stale file still goes.
+d="$(agents_env)"; : > "$d/calls"; sudo_n_recording "$d"
+export LAUNCHCTL_LOADED_FROM=/System/Library/LaunchDaemons/live.plist
+out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics)"; rc=$?
+unset LAUNCHCTL_LOADED_FROM
+assert_eq "a label shared with a live service does not fail the run" "0" "$rc"
+assert_not_called "a live user service sharing the label is not unloaded" "$d/calls" "launchctl bootout gui/501/com.gone.helper"
+assert_not_called "a live system service sharing the label is not unloaded" "$d/calls" "launchctl bootout system/com.gone.daemon"
+assert_contains "the run says the live service was left running" "$out" "com.gone.daemon is loaded from another file; left running"
+assert_gone "the stale user plist is still removed" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_gone "the stale system plist is still removed" /Library/LaunchDaemons/com.gone.daemon.plist
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# A dry run on a terminal previews the system-level removal a real run with
+# sudo would make, rather than printing the read-only hint.
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf_tty "$d" --dry-run --only launch-agents,diagnostics)"; rc=$?
+assert_contains "a dry run previews the system orphan's removal" "$out" \
+  "(dry-run) sudo launchctl bootout system/com.gone.daemon; sudo rm -f /Library/LaunchDaemons/com.gone.daemon.plist"
+assert_exists "the dry run removes nothing" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_not_called "the dry run unloads nothing" "$d/calls" "launchctl bootout"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only launch-agents)"; rc=$?
+assert_gone   "without sudo the user orphan still goes" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_exists "without an authenticated sudo the system orphan stays" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_contains "and its command is printed" "$out" \
+  "sudo launchctl bootout system/com.gone.daemon; sudo rm -f '/Library/LaunchDaemons/com.gone.daemon.plist'"
+assert_contains "the summary counts only what is left" "$out" "1 orphaned launch agent(s) left"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+d="$(agents_env)"; : > "$d/calls"
+out="$(run_sf_tty "$d" --yes --only launch-agents,diagnostics --no-prune-orphan-agents)"; rc=$?
+assert_exists "--no-prune-orphan-agents keeps the user orphan" "$d/home/Library/LaunchAgents/com.gone.helper.plist"
+assert_exists "--no-prune-orphan-agents keeps the system orphan" /Library/LaunchDaemons/com.gone.daemon.plist
+assert_not_called "--no-prune-orphan-agents unloads nothing" "$d/calls" "launchctl bootout"
+assert_contains "the summary names the flag that kept them" "$out" "3 orphaned launch agent(s) kept (--no-prune-orphan-agents)"
+rm -rf /Library/LaunchAgents /Library/LaunchDaemons "$d"
+
+# ===========================================================================
+section "trash (Full Disk Access: open the pane on a terminal, explain headless)"
+# The privacy controls answer find with EPERM on ~/.Trash itself, and Finder
+# refuses too (Automation not allowed). Root in a container cannot be denied,
+# so find and osascript are faked into that state.
+trash_fda_env() {
+  local d; d="$(new_env)"
+  mkdir -p "$d/home/.Trash"; : > "$d/home/.Trash/junk"
+  mkbin "$d/bin/find" 'for a in "$@"; do' \
+    '  if [ "$a" = -delete ] && [ "${1%/}" = "$HOME/.Trash" ]; then echo "find: $1: Operation not permitted" >&2; exit 1; fi' \
+    'done' 'exec /usr/bin/find "$@"'
+  mkbin "$d/bin/osascript" 'echo "osascript $*" >> "$CALLS"; exit 1'
+  mkbin "$d/bin/open" 'echo "open $*" >> "$CALLS"; exit 0'
+  printf '%s' "$d"
+}
+d="$(trash_fda_env)"; : > "$d/calls"
+out="$(TERM_PROGRAM=Apple_Terminal run_sf_tty "$d" --yes --only trash)"; rc=$?
+assert_eq "a protected Trash is not a failure" "0" "$rc"
+assert_called "Finder is asked first" "$d/calls" "osascript -e tell application \"Finder\" to empty the trash"
+assert_called "the Full Disk Access pane is opened" "$d/calls" \
+  "open x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+assert_contains "the app to turn on is named" "$out" "Full Disk Access: turn on Terminal"
+assert_contains "the summary says the pane was opened" "$out" \
+  "Trash cleanup needs Full Disk Access for Terminal; System Settings was opened at that pane"
+: > "$d/calls"
+out="$(run_sf "$d" --yes --only trash)"; rc=$?
+assert_not_called "a headless run opens nothing" "$d/calls" "open x-apple"
+assert_contains "a headless run explains the /bin/bash trade-off" "$out" \
+  "Full Disk Access for /bin/bash, which would extend it to every bash script"
+rm -rf "$d"
 
 # A symlinked plist. The path guard refused every symlink, so --prune-orphan-agents
 # booted the job out and then left the link on disk: the orphan returned at the
@@ -3511,6 +3642,42 @@ assert_contains "outdated casks are named" "$out" "2 cask(s) still outdated:"
 assert_contains "the manual cask command is given" "$out" "brew upgrade --cask alacritty unetbootin"
 assert_contains "the verdict carries the brew facts" "$out" "brew upgraded 2; 2 cask(s) still outdated"
 assert_contains "history records the upgrade count" "$(cut -f10 "$d/home/Library/Logs/stay_fresh/history.tsv")" "2"
+rm -rf "$d"
+
+# Casks still outdated after the bulk upgrade are retried one by one on an
+# interactive run. A cask that upgrades drops off the list; one that keeps
+# failing is still reported, with the summary saying the automatic upgrade
+# already ran. A cask Homebrew has disabled is not retried.
+d="$(new_env)"; : > "$d/calls"
+mkbin "$d/bin/brew" 'echo "brew $*" >> "$CALLS"' \
+  'case "${1:-}" in --version) echo "Homebrew 4.0.0" ;; --prefix) echo /opt/homebrew ;; --repository) echo "$HOME/brewrepo" ;; esac' \
+  'last=""; for a in "$@"; do last="$a"; done' \
+  'case "${1:-} ${2:-}" in' \
+  '  "upgrade --help") echo "--yes" ;;' \
+  '  "list --versions") if [ "$3" = --cask ]; then if [ -e "$HOME/alacritty-done" ]; then echo "alacritty 2"; else echo "alacritty 1"; fi; fi ;;' \
+  '  "upgrade --cask") case "$last" in' \
+  '      alacritty) touch "$HOME/alacritty-done" ;;' \
+  '      unetbootin) echo "Error: download failed"; exit 1 ;;' \
+  '      --yes|--cask|--greedy) echo "Warning: Not upgrading oldie, it is disabled because it does not pass the macOS Gatekeeper check!" ;;' \
+  '    esac ;;' \
+  '  "outdated --cask") [ -e "$HOME/alacritty-done" ] || echo alacritty; echo unetbootin; echo oldie ;;' \
+  'esac; exit 0'
+out="$(run_sf_tty "$d" --yes --only brew)"; rc=$?
+assert_eq "the bulk cask upgrade runs once, unnamed" "1" "$(grep -cx 'brew upgrade --cask --yes' "$d/calls")"
+assert_called "a leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes alacritty"
+assert_called "a failing leftover cask is retried by name" "$d/calls" "brew upgrade --cask --yes unetbootin"
+assert_not_called "a disabled cask is not retried" "$d/calls" "brew upgrade --cask --yes oldie"
+assert_contains "the retry pass is reported" "$out" "upgraded leftover outdated casks individually: 2 attempted"
+assert_contains "a cask upgraded only on its retry is counted as verified" "$out" \
+  "upgraded 1 package(s): cask:alacritty (installed versions verified)"
+assert_contains "only the casks still outdated are counted" "$out" "2 cask(s) still outdated: unetbootin oldie"
+assert_contains "the summary says the automatic upgrade already ran" "$out" \
+  "2 cask(s) remain outdated after the automatic upgrade"
+: > "$d/calls"; rm -f "$d/home/alacritty-done"
+out="$(run_sf_tty "$d" --yes --only brew --no-brew-casks)"; rc=$?
+assert_not_called "--no-brew-casks does not retry leftovers" "$d/calls" "brew upgrade --cask"
+assert_contains "--no-brew-casks names the reason in the summary" "$out" \
+  "3 cask(s) remain outdated (not upgraded: --no-brew-casks was passed)"
 rm -rf "$d"
 
 # A brew service in "error" state is a daemon launchd gave up restarting;

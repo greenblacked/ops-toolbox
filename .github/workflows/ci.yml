@@ -289,12 +289,13 @@ jobs:
               linux)
                 # Keep the historical `Test / linux` name for the Debian
                 # fixture so an existing required-check rule continues to
-                # report. Fedora and Arch run as separate jobs: failures
-                # identify the affected package manager immediately, and the
-                # three images build in parallel.
+                # report. Fedora, Rocky and Arch run as separate jobs: failures
+                # identify the affected distribution immediately, and the
+                # four images build in parallel.
                 matrix="$(jq -c --arg c "$changed" '. + [
                   {check_name: "linux",          suite: "linux", linux_distro: "debian", changed: $c},
                   {check_name: "linux (fedora)", suite: "linux", linux_distro: "fedora", changed: $c},
+                  {check_name: "linux (rocky)",  suite: "linux", linux_distro: "rocky",  changed: $c},
                   {check_name: "linux (arch)",   suite: "linux", linux_distro: "arch",   changed: $c}
                 ]' <<< "$matrix")"
                 ;;
@@ -983,7 +984,7 @@ jobs:
       fail-fast: false
       matrix:
         # Built by the Detect changes job from `run-tests.sh --list`: one
-        # entry per suite (three for linux, one per distribution), each with
+        # entry per suite (four for linux, one per distribution), each with
         # its own `changed` verdict. `changed` is read by the step-level `if`
         # below, which keeps the job reporting success when there is nothing
         # to do. The windows entry needs pwsh, which the ubuntu image ships
@@ -1059,7 +1060,7 @@ jobs:
       # these scripts target.
       - name: Set up Python 3.9
         if: needs.changes.outputs.python == 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.9'
 

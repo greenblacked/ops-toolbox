@@ -67,7 +67,7 @@ fixtures. The main collections are:
 | [`macos-initial-setup/`](macos-initial-setup/) | App and tool setup, maintenance, workstation reports and preferences. |
 | [`windows/`](windows/) | [Git Bash configuration](windows/git-bash/README.md), [WSL management](windows/wsl/README.md), [disk cleanup](windows/cleanup/README.md) and [workstation setup](windows/setup/README.md). |
 | [`linux/`](linux/) | Workstation and server reports, package/tool setup, maintenance, backups and [cloud-init](linux/cloud-init/README.md). |
-| [`mikrotik/`](mikrotik/) | RouterOS scripts for backups, connectivity, updates, health checks and notifications; current CHR integration pin: RouterOS 7.24.5. |
+| [`mikrotik/`](mikrotik/) | RouterOS scripts for backups, connectivity, updates, health checks and notifications; current CHR integration pin: RouterOS 7.25.1. |
 | [`k8s-toolbox/`](k8s-toolbox/) | A Debian-based, GKE-oriented CLI image, build/run helpers and cluster diagnostics. |
 | [`dotfiles/`](dotfiles/) | Tool configuration and a per-file link/copy installer with drift reporting. |
 
@@ -124,7 +124,7 @@ triggers and gates; their current definitions are the source of truth.
 
 CI uses a `macos-15` runner for native macOS checks and a `windows-2025`
 runner with `pwsh` for Windows contracts; Linux package tests run in Debian,
-Fedora and Arch containers. The
+Fedora, Rocky and Arch containers. The
 [macOS test guide](macos-initial-setup/README.md#development-docker-checks)
 also describes Linux container checks that do not run Homebrew on macOS.
 These checks do not exercise every advertised OS release or Windows

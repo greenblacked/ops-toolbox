@@ -698,7 +698,7 @@ an issue.
       after every release.
 - [ ] **Workflow pull requests.** Enable *Settings → Actions → General →
       Workflow permissions → Allow GitHub Actions to create and approve pull
-      requests*. The twice-weekly RouterOS version workflow needs this to open
+      requests*. The scheduled RouterOS version workflow needs this to open
       its tested `deps/routeros-VERSION` bump PR; it still cannot bypass branch
       protection or write directly to `master`.
 - [ ] **Labels.** At minimum `good first issue` and `help wanted` — GitHub

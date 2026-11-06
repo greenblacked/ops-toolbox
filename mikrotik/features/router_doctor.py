@@ -237,7 +237,6 @@ UNDERSCORED_FALLBACK = (
     "traffic_quota",
     "update_check",
     "vpn_health",
-    "wan_failover_notify",
     "wan_link_flap_notify",
     "wireless_client_watch",
 )

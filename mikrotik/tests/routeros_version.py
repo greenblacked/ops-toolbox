@@ -36,6 +36,9 @@ DOCUMENTATION_FILES = (
     Path("README.md"),
     Path("mikrotik/README.md"),
     Path("mikrotik/tests/README.md"),
+    Path("docs/platforms/mikrotik.md"),
+    Path("docs/contributing/testing.md"),
+    Path("docs/platforms/routeros-compatibility.md"),
 )
 VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+(?:\.[0-9]+)?$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -357,6 +360,18 @@ def _replace_documented_version(
     for relative in files:
         path = repo_root / relative
         text = path.read_text(encoding="utf-8")
+        # The compatibility page preserves dated candidate-test evidence. Only
+        # advance its canonical pin row; do not rewrite historical test results,
+        # versioned branch names or links when subsequent releases arrive.
+        if relative == Path("docs/platforms/routeros-compatibility.md"):
+            old_marker = f"| Canonical integration version | **{current}** "
+            new_marker = f"| Canonical integration version | **{target}** "
+            if text.count(old_marker) != 1:
+                raise ReleaseError(
+                    f"expected exactly one canonical pin for {current!r} in {relative}"
+                )
+            updates.append((path, text.replace(old_marker, new_marker, 1)))
+            continue
         if not pattern.search(text):
             raise ReleaseError(f"expected {current!r} in {relative}; refusing partial bump")
         protected = tuple(match.span() for match in historical.finditer(text))

@@ -150,7 +150,7 @@ code looks the way it does.
 | **Live line** | While a step runs, `stay_fresh.sh` rewrites one line on the terminal with the step, its position and how long it has been going, so a slow step is distinguishable from a hung one. It is drawn on a terminal only — written to `/dev/tty`, never into the log or a pipe — and appears only once a step passes a second, so the quick ones do not flicker. It pauses for a command that must read the tty (Homebrew cask `sudo`, a pkg installer) so a password prompt is not erased. `--no-progress`, or `STAY_FRESH_PROGRESS=0`, turns it off. |
 | **Logged** | The four long-running scripts — `install_apps.sh`, `install_devtools.sh`, `stay_fresh.sh`, `workstation_doctor.sh` — write a timestamped log to `$TMPDIR`. `--verbose` also streams to the terminal. `brewfile.sh`, `hardening_audit.sh`, `macos_defaults.sh`, `status.sh` and `v1_stay_fresh.sh` write none. |
 | **No hidden writes** | Shell rc files are modified only when you pass `--setup-shell`. Every such block is bracketed by markers so it can be found and removed. |
-| **Explicit changes** | `stay_fresh.sh` has a skip flag for every step and requires `--brew-casks` for cask upgrades. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
+| **Explicit changes** | `stay_fresh.sh` has a skip flag for every step; cask upgrades run only in an interactive terminal with sudo, and `--no-brew-casks` turns them off. `install_apps.sh` honors `--only`/`--skip` for casks, `--skip-cli-ops` / `--skip-formulae` for CLI brew packages, and gcloud component flags. |
 | **Sudo only when needed** | Scripts request `sudo` once at startup, keep it warm for the run, and release it on exit. Running as `root` is refused. |
 
 ## Requirements
@@ -675,8 +675,12 @@ In the order they run:
    [`lib/workspace_scan.py`](lib/workspace_scan.py), not by the shell.
 8. Empty `~/.Trash`. The Trash sits behind the privacy controls: a terminal
    or agent without Full Disk Access cannot list it. An interactive run then
-   asks Finder to empty it; a scheduled run says what to grant instead.
-   Neither is a warning. Every other mounted volume's Trash is emptied too,
+   asks Finder to empty it, and if Finder is refused too, opens System
+   Settings at Privacy & Security → Full Disk Access and names the app to
+   turn on (Terminal, iTerm, VS Code, Warp, …). No script can flip that
+   switch itself; macOS keeps it for a person. A scheduled run explains that
+   it would need Full Disk Access for `/bin/bash` and why that is a poor
+   trade. Neither is a warning. Every other mounted volume's Trash is emptied too,
    except network shares (SMB, NFS, AFP, WebDAV), which are named and
    skipped: a share whose server went away blocks `find` for as long as the
    kernel retries, and a scheduled run has nobody to interrupt it.
@@ -718,15 +722,21 @@ In the order they run:
     first `ProgramArguments` entry, or the script an interpreter is handed)
     no longer exists. Every tool that ever installed a background helper left
     one, and uninstalling the tool rarely removes it; launchd then retries a
-    program that is gone at every login. Reported only;
-    `--prune-orphan-agents` unloads and removes the user-level ones. The
-    system-level ones are never touched, and the `sudo` command to remove
-    them is printed. Binary plists, and XML that Python's parser rejects but
+    program that is gone at every login. An interactive run unloads and
+    removes them: the user-level ones always, the system-level ones when
+    `sudo` is already authenticated (through `sudo -n`, so no extra prompt).
+    Otherwise the `sudo` command is printed. A headless run only reports,
+    unless `--prune-orphan-agents` is given for the user-level ones;
+    `--no-prune-orphan-agents` keeps them all. A program under `/Volumes` is
+    never taken as gone, because an unmounted disk looks the same. Binary plists, and XML that Python's parser rejects but
     Apple's accepts, are inspected through `plutil` on macOS. A plist that
     neither parser can read is left in place, without a traceback.
 15. Update and upgrade Homebrew formulae, then run `cleanup -s` and
-    `autoremove`. Cask upgrades require an explicit interactive `--brew-casks`
-    or `--full` run; the default only lists outdated casks. A stale
+    `autoremove`. An interactive run with sudo upgrades casks, then retries
+    each cask `brew outdated --cask` still reports, one at a time, so one bad
+    installer cannot hold the rest back (casks Homebrew has disabled are left
+    alone). A run without a terminal (the LaunchAgent), with `--no-sudo` or
+    with `--no-brew-casks` only lists outdated casks. A stale
     git lock in the Homebrew repository makes `brew update` print "Already
     up-to-date" and exit 0 with the taps untouched, so the upgrade runs on
     the previous index; a lock older than five minutes with no git process
@@ -812,8 +822,9 @@ last ten rows.
 ./stay_fresh.sh                   # interactive, full run
 ./stay_fresh.sh --dry-run         # preview the plan
 ./stay_fresh.sh --yes --verbose   # non-interactive; stream output live
-./stay_fresh.sh --brew-casks      # upgrade casks interactively; installers may request a password
-./stay_fresh.sh --brew-casks --brew-greedy # include :latest / auto_updates casks
+./stay_fresh.sh                   # on a terminal, also upgrades casks; installers may request a password
+./stay_fresh.sh --no-brew-casks   # leave casks alone, only list the outdated ones
+./stay_fresh.sh --brew-greedy     # include :latest / auto_updates casks
 ./stay_fresh.sh --no-sudo         # skip every step that requires sudo
 ./stay_fresh.sh --purge-memory     # explicit cold-cache troubleshooting
 ./stay_fresh.sh --only brew,versions
@@ -826,7 +837,7 @@ last ten rows.
 ./stay_fresh.sh --quick           # user-level cleanup only: no sudo, no brew, no reports
 ./stay_fresh.sh --reports         # the read-only subset: versions, OS updates, snapshots, downloads, launch agents, disk report
 ./stay_fresh.sh --prune-downloads-days 180 --dry-run # list what an old-downloads prune would remove
-./stay_fresh.sh --prune-orphan-agents               # also remove orphaned user LaunchAgents
+./stay_fresh.sh --prune-orphan-agents               # remove orphaned user LaunchAgents even without a terminal
 ./stay_fresh.sh --prune-build-caches # also clear Gradle caches; Maven local artifacts stay
 ./stay_fresh.sh --deep-clean         # add Conda and guarded old npx cleanup
 ./stay_fresh.sh --cache-report       # measure developer caches; change nothing
@@ -957,7 +968,8 @@ reported on the terminal with the reason and never fails the run.
 | `--fail-on-warn` | Exit `1` when a step records a real warning; scheduled runs enable this. |
 | `--step-timeout N` | Stop any one command inside a step after `N` seconds and count the step as warned (default `1800`; `0` disables; env `STAY_FRESH_STEP_TIMEOUT`). Interactive commands such as cask upgrades are never limited. |
 | `--no-sudo` | Skip `purge`, DNS flush, system caches, system diagnostics, and Homebrew cask upgrades. |
-| `--brew-casks` | Opt into cask upgrades in an interactive run. Sudo is checked once before the steps, including with `--only brew`; individual installers can still request a password. Skipped with `--no-sudo`, failed sudo preflight, or without a controlling terminal. |
+| `--brew-casks` | Upgrade casks; already the default in an interactive run that may use sudo. Sudo is checked once before the steps, including with `--only brew`; individual installers can still request a password. Casks still outdated after the bulk upgrade are retried one at a time. Skipped with `--no-sudo`, failed sudo preflight, or without a controlling terminal. |
+| `--no-brew-casks` | Never upgrade casks, not even on a terminal; outdated casks are only listed, with the reason in the summary. |
 | `--only STEP1,STEP2` | Run only named stable step ids; use `--list-steps`. Cannot be mixed with individual `--skip-*` flags. |
 | `--quick` | Same as `--only user-caches,app-caches,ai-caches,workspace-storage,trash,user-logs,dev-caches`: everything a user can clear without sudo, Homebrew or the network. Never uses sudo, not even a credential another shell left warm. Cannot be mixed with `--only` or `--skip-*`. |
 | `--reports` | Same as `--only versions,os-updates,snapshots,downloads,launch-agents,disk-report`: the read-only subset. Cannot be mixed with `--only`, `--quick`, `--skip-*`, `--thin-snapshots`, `--prune-downloads-days` or `--prune-orphan-agents`. |
@@ -965,7 +977,7 @@ reported on the terminal with the reason and never fails the run.
 | `--history` | Print the last ten rows of `~/Library/Logs/stay_fresh/history.tsv` and exit. |
 | `--notify MODE` | `none`, `macos`, `telegram`, `slack`, `both` (`macos,telegram`), `auto` (default; env `STAY_FRESH_NOTIFY`), or a comma-separated list of channels. Sent after the summary of a real run, never under `--dry-run`. |
 | `--notify-when WHEN` | `always` (default; env `STAY_FRESH_NOTIFY_WHEN`), `warn` (only a WARN or FAILED run) or `fail` (only a FAILED run). A withheld notification is said on the terminal. |
-| `--brew-greedy` | With `--brew-casks`, also upgrade self-updating casks (`auto_updates true`, `:latest`). Alone, it changes the outdated-cask report but does not start upgrades. |
+| `--brew-greedy` | When casks are upgraded, also upgrade self-updating casks (`auto_updates true`, `:latest`). Alone, it changes the outdated-cask report but does not start upgrades. |
 | `--skip-devtools` | Shorthand for `--skip-helm-plugins --skip-krew --skip-gcloud --skip-versions`. |
 | `--purge-memory` | Opt into `sudo purge` for cold-cache troubleshooting. |
 | `--skip-memory` | Keep purge disabled; compatibility flag matching the default. |
@@ -998,7 +1010,8 @@ reported on the terminal with the reason and never fails the run.
 | `--skip-downloads` | Skip the old-downloads report (step 13). |
 | `--prune-downloads-days N` | Remove top-level `~/Downloads` entries untouched for positive integer `N` days (step 13); off by default, the report only names them. |
 | `--skip-launch-agents` | Skip the orphaned-launch-agent report (step 14). |
-| `--prune-orphan-agents` | Unload and remove orphaned plists under `~/Library/LaunchAgents` (step 14); system-level ones are only ever reported. |
+| `--prune-orphan-agents` | Unload and remove orphaned plists under `~/Library/LaunchAgents` (step 14) even without a terminal. An interactive run already does this, and removes the system-level ones too when `sudo` is authenticated. |
+| `--no-prune-orphan-agents` | Only report orphaned plists (step 14), never remove them, not even on a terminal. |
 | `--skip-helm-plugins` | Skip Helm plugin updates. |
 | `--skip-krew` | Skip krew plugin updates (step 18). |
 | `--skip-gcloud` | Skip `gcloud components update`. |
@@ -1821,7 +1834,7 @@ key `StartCalendarInterval` leaves out is a wildcard and shows as `**`.
 **Strictly read-only.** Nothing is loaded, unloaded or edited: `plutil` only
 prints a plist, and the one `launchctl` call (`print`, behind `--loaded`)
 changes nothing. Removing a job stays with
-[`stay_fresh.sh`](#stay_freshsh)'s explicit `--prune-orphan-agents`. Plist and
+[`stay_fresh.sh`](#stay_freshsh), which does it on an interactive run or with `--prune-orphan-agents`. Plist and
 cron text is printed with control characters stripped and is never evaluated.
 `/Library/LaunchDaemons` is world-readable, so no `sudo` is needed.
 
@@ -1983,8 +1996,8 @@ reports run. Bulk caches, Trash, Docker data and Xcode data remain preserved.
 Cask upgrades are part of that preset, but a LaunchAgent has no sudo and no
 terminal, so the scheduled run skips them and warns. That warning exits
 nonzero under `--fail-on-warn`. Run `stay_fresh.sh --full` in an interactive
-terminal for the cask and root-owned steps, or `stay_fresh.sh --brew-casks`
-when only casks are wanted.
+terminal for the cask and root-owned steps, or `stay_fresh.sh --only brew`
+when only Homebrew and casks are wanted.
 
 Every scheduled run passes `--fail-on-warn`, so incomplete cleanup or a failed
 update produces a non-zero launchd exit status instead of appearing healthy.
@@ -2259,7 +2272,9 @@ Homebrew / `pyenv` / `goenv` commands.
   Remote workspaces, unreadable entries, and paths on an unmounted volume or
   in unmaterialised `~/Library/CloudStorage` are left alone.
 - Empties `~/.Trash`, through Finder when the shell lacks Full Disk Access
-  and a person is present to answer the prompt.
+  and a person is present to answer the prompt. If Finder is refused too, it
+  opens the Full Disk Access pane in System Settings; it never changes
+  privacy settings itself.
 - Clears developer-tool caches (`npm`, `yarn`, `pnpm`, `bun`, `pip`, `uv`,
   `go`), the contents of `~/.kube/cache`, `~/.minikube/cache` and Terraform's
   plugin cache, gcloud log directories older than a week, and unused
@@ -2285,8 +2300,9 @@ Homebrew / `pyenv` / `goenv` commands.
   - Skips pruning entirely when the active Docker context points to a non-local
     daemon (non-`unix://…` host), or when the endpoint cannot be resolved, to
     avoid cleaning a remote engine by mistake.
-- Upgrades Homebrew formulae. Casks require an interactive `--brew-casks` run;
-  add `--brew-greedy` to include self-updating casks.
+- Upgrades Homebrew formulae, and casks in an interactive run with sudo
+  (`--no-brew-casks` to skip); add `--brew-greedy` to include self-updating
+  casks.
 - Updates Helm plugins and `gcloud` components when those tools are
   installed.
 - Refuses to run when `HOME` is unset, empty or not a directory (exit `2`):
@@ -2315,8 +2331,10 @@ Homebrew / `pyenv` / `goenv` commands.
 - Clears `~/.gradle/caches` and `~/.m2/repository` only with
   `--prune-build-caches`.
 - Reports old entries in `~/Downloads` and orphaned launchd plists; removes
-  the former only with `--prune-downloads-days N` and the user-level latter
-  only with `--prune-orphan-agents`. System-level plists are never touched.
+  the former only with `--prune-downloads-days N`. Orphaned plists are
+  removed on an interactive run (system-level ones only with `sudo` already
+  authenticated) or with `--prune-orphan-agents`; `--no-prune-orphan-agents`
+  keeps them.
 - Empties the per-user Trash of every mounted volume (`/Volumes/*/.Trashes/<uid>`),
   not only `~/.Trash`.
 - Deletes local Time Machine snapshots only with `--thin-snapshots`; by

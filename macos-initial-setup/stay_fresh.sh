@@ -28,8 +28,9 @@
 #   - report what sits untouched in ~/Downloads (delete only with
 #     --prune-downloads-days N)
 #   - report LaunchAgents and LaunchDaemons whose program no longer exists
-#     (remove the user-level ones only with --prune-orphan-agents)
-#   - Homebrew: update, upgrade formulae, cleanup -s, autoremove; casks opt-in
+#     (removed on an interactive run; system-level ones only with sudo)
+#   - Homebrew: update, upgrade formulae, cleanup -s, autoremove; casks on an
+#     interactive run with sudo, leftovers retried one by one
 #   - refresh dev toolchains (helm plugins, krew plugins, gcloud components)
 #     installed by install_apps.sh / install_devtools.sh
 #   - report pending macOS and App Store updates (read-only; never installs)
@@ -52,7 +53,8 @@
 #                   [--skip-usercaches] [--skip-appcaches]
 #                   [--skip-aicaches]
 #                   [--skip-workspacestorage] [--skip-trash]
-#                   [--skip-brew] [--brew-casks] [--brew-greedy] [--skip-devcaches]
+#                   [--skip-brew] [--brew-casks] [--no-brew-casks] [--brew-greedy]
+#                   [--skip-devcaches]
 #                   [--cleanup-old-gems] [--prune-build-caches] [--fail-on-warn]
 #                   [--skip-devtools] [--skip-helm-plugins] [--skip-krew]
 #                   [--skip-gcloud]
@@ -62,6 +64,7 @@
 #                   [--force-active-app-caches] [--skip-diagnostics]
 #                   [--skip-user-logs] [--skip-downloads] [--prune-downloads-days N]
 #                   [--skip-launch-agents] [--prune-orphan-agents]
+#                   [--no-prune-orphan-agents]
 #                   [--no-sudo] [--help]
 #
 # Exit codes:
@@ -370,10 +373,12 @@ NPX_CACHE_DAYS=7
 SKIP_DOWNLOADS=0
 DOWNLOADS_OLD_DAYS=90
 PRUNE_DOWNLOADS_DAYS=""
-# launchd plists whose program is gone are reported; the user-level ones are
-# removed only with --prune-orphan-agents. System-level ones are never touched.
+# launchd plists whose program is gone are reported everywhere and removed on
+# an interactive run (or with --prune-orphan-agents). System-level ones are
+# removed only on an interactive run with sudo already authenticated.
 SKIP_LAUNCH_AGENTS=0
 PRUNE_ORPHAN_AGENTS=0
+PRUNE_ORPHAN_AGENTS_AUTO=1
 # /System/Library/Caches holds the dyld shared cache and the kernel caches.
 # Touching it is opt-in even when SIP is off; see the Notes in --help.
 FORCE_SYSTEM_CACHES=0
@@ -460,8 +465,17 @@ BREW_SERVICES_ERROR=0
 # Under --dry-run: the sizes of what the deletions would have removed.
 DRY_ESTIMATE_B=0
 TRASH_PROTECTED=0
+# The app that needs Full Disk Access for the Trash, and whether this run has
+# already opened that System Settings pane (once per run is enough).
+FDA_APP=""
+FDA_PANE_OPENED=0
 BREW_GREEDY=0
 BREW_CASKS=0
+# Cask upgrades turn on by themselves in an interactive run that may use sudo.
+# --brew-casks / --no-brew-casks fix the choice either way.
+BREW_CASKS_AUTO=1
+# Why casks were not upgraded, for the summary hint. Empty when they ran.
+BREW_CASKS_SKIP_REASON=""
 BREW_PREFIX_TEXT=""
 BREW_PREFLIGHT_INCOMPLETE=0
 CLEANUP_OLD_GEMS=0
@@ -704,7 +718,7 @@ xcode|SKIP_XCODE|step_xcode|Xcode extras|clean safe Xcode extras
 diagnostics|SKIP_DIAGNOSTICS|step_diagnostics|Diagnostic / crash reports|remove crash and diagnostic reports
 user-logs|SKIP_USER_LOGS|step_user_logs|Old user logs|remove ~/Library/Logs files older than 30 days
 downloads|SKIP_DOWNLOADS|step_downloads|Old downloads|report ~/Downloads entries untouched for 90 days (delete with --prune-downloads-days)
-launch-agents|SKIP_LAUNCH_AGENTS|step_launch_agents|Orphaned launch agents|report launchd plists whose program is gone (remove with --prune-orphan-agents)
+launch-agents|SKIP_LAUNCH_AGENTS|step_launch_agents|Orphaned launch agents|report launchd plists whose program is gone (removed on an interactive run)
 brew|SKIP_BREW|step_brew|Homebrew update / upgrade / cleanup|update, upgrade and clean Homebrew
 dev-caches|SKIP_DEVCACHES|step_devcaches|Dev-tool caches|clean language and package-manager caches
 helm-plugins|SKIP_HELM_PLUGINS|step_helm_plugins|Helm plugin refresh|update installed Helm plugins
@@ -837,9 +851,12 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          Don't prune stale VS Code workspace storage
   --skip-trash           Don't empty ~/.Trash
   --skip-brew            Don't run Homebrew maintenance (see Notes)
-  --brew-casks           Also upgrade casks (interactive; installers may prompt
-                         for a password even after sudo preflight)
-  --brew-greedy          With --brew-casks, include 'auto_updates true' /
+  --brew-casks           Upgrade casks even when the run would not pick it on
+                         its own (installers may prompt for a password even
+                         after sudo preflight). An interactive run with sudo
+                         already upgrades casks, plus any left over afterwards
+  --no-brew-casks        Never upgrade casks; only list the outdated ones
+  --brew-greedy          When casks are upgraded, include 'auto_updates true' /
                          'version :latest' casks
   --skip-devcaches       Don't clean npm/yarn/pnpm/pip/uv/go/kubectl/terraform
                          caches, stale gcloud logs, or unused pre-commit repos
@@ -882,7 +899,11 @@ ${C_BOLD}Step toggles (skip individual steps):${C_RESET}
                          data (installed builds, app databases, screenshots)
   --skip-launch-agents   Don't report launchd plists whose program is gone
   --prune-orphan-agents  Unload and remove orphaned plists in ~/Library/LaunchAgents
-                         (system-level ones are only ever reported)
+                         even without a terminal. An interactive run already
+                         does this, plus the system-level ones when sudo is
+                         authenticated
+  --no-prune-orphan-agents
+                         Only report orphaned plists, never remove them
   --skip-os-updates      Don't report pending macOS / App Store updates
                          (not part of --skip-devtools)
   --skip-snapshots       Don't list local Time Machine snapshots
@@ -969,20 +990,25 @@ ${C_BOLD}Notes:${C_RESET}
   /Library/LaunchDaemons, and uninstalling the tool rarely removes it; launchd
   then retries a program that is gone at every login. Plists whose Program
   (or first ProgramArguments entry, or the script an interpreter is given)
-  no longer exists are named. --prune-orphan-agents unloads and removes the
-  ones under ~/Library/LaunchAgents; the system-level ones are yours to
-  remove with sudo, and the command is printed.
+  no longer exists are named. An interactive run unloads and removes the
+  ones under ~/Library/LaunchAgents, and the system-level ones too when sudo
+  is authenticated; a headless run does so for the user-level ones only with
+  --prune-orphan-agents and otherwise prints the commands.
+  --no-prune-orphan-agents keeps them all. A program under /Volumes is never
+  taken as gone: an unmounted disk looks the same.
 
   OS updates: softwareupdate --list, and mas outdated where mas is installed.
   Read-only: it names what is pending and how to install it, and never installs
   anything itself, because a macOS update can reboot the machine.
 
   Homebrew: runs brew update; brew upgrade --formula; brew cleanup -s;
-  brew autoremove; brew doctor only when --verbose. Casks are listed but not
-  upgraded unless --brew-casks or --full is explicit. Cask installers may still
-  prompt for a password after sudo preflight, so run interactively; --no-sudo,
-  unavailable sudo, and runs without a terminal skip cask upgrades. A skipped
-  cask upgrade during --full is a warning, not a silent omission.
+  brew autoremove; brew doctor only when --verbose. An interactive run with
+  sudo upgrades casks automatically, then upgrades each cask still reported by
+  'brew outdated --cask' one by one; --no-brew-casks lists them instead. Cask
+  installers may still prompt for a password after sudo preflight; --no-sudo,
+  unavailable sudo, and runs without a terminal (the LaunchAgent) skip cask
+  upgrades. A skipped cask upgrade during --full is a warning, not a silent
+  omission.
 
 Log file: $LOG_FILE
 EOF
@@ -1019,7 +1045,8 @@ while (( $# > 0 )); do
     --skip-workspacestorage) SKIP_WORKSPACESTORAGE=1; EXPLICIT_SKIP=1 ;;
     --skip-trash)      SKIP_TRASH=1; EXPLICIT_SKIP=1 ;;
     --skip-brew)       SKIP_BREW=1; EXPLICIT_SKIP=1 ;;
-    --brew-casks)      BREW_CASKS=1 ;;
+    --brew-casks)      BREW_CASKS=1; BREW_CASKS_AUTO=0 ;;
+    --no-brew-casks)   BREW_CASKS=0; BREW_CASKS_AUTO=0 ;;
     --brew-greedy)     BREW_GREEDY=1 ;;
     --skip-devcaches)  SKIP_DEVCACHES=1; EXPLICIT_SKIP=1 ;;
     --cleanup-old-gems) CLEANUP_OLD_GEMS=1 ;;
@@ -1085,7 +1112,8 @@ while (( $# > 0 )); do
       [[ "$PRUNE_DOWNLOADS_DAYS" =~ ^[1-9][0-9]*$ ]] || { err "--prune-downloads-days must be a positive integer"; exit 3; }
       ;;
     --skip-launch-agents) SKIP_LAUNCH_AGENTS=1; EXPLICIT_SKIP=1 ;;
-    --prune-orphan-agents) PRUNE_ORPHAN_AGENTS=1 ;;
+    --prune-orphan-agents) PRUNE_ORPHAN_AGENTS=1; PRUNE_ORPHAN_AGENTS_AUTO=0 ;;
+    --no-prune-orphan-agents) PRUNE_ORPHAN_AGENTS=0; PRUNE_ORPHAN_AGENTS_AUTO=0 ;;
     --force-system-caches) FORCE_SYSTEM_CACHES=1 ;;
     --prune-unavailable-simulators) PRUNE_UNAVAILABLE_SIMULATORS=1 ;;
     --skip-snapshots)  SKIP_SNAPSHOTS=1; EXPLICIT_SKIP=1 ;;
@@ -1264,9 +1292,9 @@ if (( OLD_ONLY )); then
   PRUNE_SYSTEM_LOGS=1
   if (( FULL )); then
     ONLY_STEPS="$ONLY_STEPS,brew,helm-plugins,krew,gcloud,versions,os-updates"
-    # --full is the explicit opt-in that master otherwise requires via
-    # --brew-casks. A scheduled or --no-sudo run still skips the upgrades.
-    BREW_CASKS=1
+    # --full opts into cask upgrades unless --no-brew-casks said otherwise.
+    # A scheduled or --no-sudo run still skips the upgrades.
+    (( BREW_CASKS == 0 && BREW_CASKS_AUTO == 0 )) || BREW_CASKS=1
     BREW_GREEDY=1
   fi
 fi
@@ -2710,7 +2738,19 @@ BREW_CASKS_SUDO_PREFLIGHT=0
 (( SKIP_SYSCACHES   == 0 )) && NEEDS_SUDO=1
 (( SKIP_DIAGNOSTICS == 0 )) && NEEDS_SUDO=1
 (( SKIP_SNAPSHOTS == 0 && THIN_SNAPSHOTS )) && NEEDS_SUDO=1
-# Explicit interactive cask upgrades can run an installer that needs sudo.
+# An interactive run that may use sudo upgrades casks without --brew-casks.
+# A headless run (the LaunchAgent) has nobody to answer an installer, so it
+# stays on listing them.
+if (( BREW_CASKS_AUTO && BREW_CASKS == 0 && USE_SUDO && SKIP_BREW == 0 )) && have_tty; then
+  BREW_CASKS=1
+fi
+# Likewise orphaned launch agents: someone is at the terminal to see what goes.
+# --reports stays read-only.
+if (( PRUNE_ORPHAN_AGENTS_AUTO && PRUNE_ORPHAN_AGENTS == 0 && REPORTS == 0 \
+      && SKIP_LAUNCH_AGENTS == 0 )) && have_tty; then
+  PRUNE_ORPHAN_AGENTS=1
+fi
+# Interactive cask upgrades can run an installer that needs sudo.
 # Authenticate once before entering the brew step, including --only brew.
 # A headless run never starts casks and must not request a password for them.
 if (( SKIP_BREW == 0 && BREW_CASKS && USE_SUDO )) && { (( DRY_RUN )) || have_tty; }; then
@@ -2926,9 +2966,9 @@ else
 fi
 plan_line "old downloads"                     "$(( 1 - SKIP_DOWNLOADS   ))" "$downloads_plan"
 if (( PRUNE_ORPHAN_AGENTS )); then
-  agents_plan="plists whose program is gone; user-level ones removed, system-level reported"
+  agents_plan="plists whose program is gone; user-level ones removed, system-level with sudo on a terminal"
 else
-  agents_plan="plists whose program is gone; read-only (--prune-orphan-agents removes user-level)"
+  agents_plan="plists whose program is gone; read-only (removed on an interactive run)"
 fi
 plan_line "orphaned launch agents"            "$(( 1 - SKIP_LAUNCH_AGENTS ))" "$agents_plan"
 plan_group "Packages and developer tools"
@@ -3909,6 +3949,51 @@ volume_type_is_network() {
   return 1
 }
 
+# Which app macOS has to trust with the Trash. Full Disk Access is granted to
+# the app that started the shell, not to this script, so name that app.
+fda_app_name() {
+  case "${TERM_PROGRAM:-}" in
+    Apple_Terminal) printf 'Terminal' ;;
+    iTerm.app)      printf 'iTerm' ;;
+    vscode)         printf 'Visual Studio Code (or the VS Code-based editor running this terminal)' ;;
+    WarpTerminal)   printf 'Warp' ;;
+    ghostty)        printf 'Ghostty' ;;
+    WezTerm)        printf 'WezTerm' ;;
+    *)
+      if [[ -n "${__CFBundleIdentifier:-}" ]]; then
+        printf 'the app %s' "$__CFBundleIdentifier"
+      else
+        printf 'the terminal app running this script'
+      fi ;;
+  esac
+}
+
+# Full Disk Access cannot be granted by a script: macOS keeps that switch for a
+# person in System Settings. What the script can do is take the person there.
+# On a terminal, open the pane once and say which app to turn on. Without one
+# (the LaunchAgent), say what would have to be granted and what that costs.
+fda_guidance() {
+  [[ -n "$FDA_APP" ]] || FDA_APP="$(fda_app_name)"
+  if (( FDA_PANE_OPENED )); then
+    return 0
+  fi
+  if (( DRY_RUN == 0 )) && have_tty && command -v open >/dev/null 2>&1 \
+     && open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles" >>"$LOG_SINK" 2>&1; then
+    FDA_PANE_OPENED=1
+    printf "  %sopened System Settings → Privacy & Security → Full Disk Access: turn on %s (add it with + if it is not listed), quit and reopen it, then rerun%s\n" \
+      "$C_YELLOW" "$FDA_APP" "$C_RESET"
+    return 0
+  fi
+  if have_tty; then
+    printf "  %sgrant Full Disk Access to %s: System Settings → Privacy & Security → Full Disk Access, or empty the Trash from Finder%s\n" \
+      "$C_DIM" "$FDA_APP" "$C_RESET"
+  else
+    FDA_APP="/bin/bash (the scheduled agent's interpreter)"
+    printf "  %sthe scheduled run cannot empty ~/.Trash without Full Disk Access for /bin/bash, which would extend it to every bash script; run stay_fresh.sh from a terminal instead, or empty the Trash from Finder%s\n" \
+      "$C_DIM" "$C_RESET"
+  fi
+}
+
 step_trash() {
   local trash="$HOME/.Trash" uid vol vtrash
   if [[ ! -d "$trash" ]]; then
@@ -3931,7 +4016,8 @@ step_trash() {
         fi
         STEP_WARN_COUNT=0
         TRASH_PROTECTED=$(( TRASH_PROTECTED + 1 ))
-        printf "  %s~/.Trash is protected by the privacy controls: grant Full Disk Access to this terminal or the agent (System Settings → Privacy & Security → Full Disk Access), or empty it from Finder%s\n" "$C_DIM" "$C_RESET"
+        printf "  %s~/.Trash is protected by the privacy controls%s\n" "$C_DIM" "$C_RESET"
+        fda_guidance
         ;;
       2) warn_step "Trash cleanup incomplete — protected or recreated entries remain" ;;
     esac
@@ -3977,7 +4063,8 @@ step_trash() {
     case "$TRASH_RC" in
       1)
         TRASH_PROTECTED=$(( TRASH_PROTECTED + 1 ))
-        printf "  %sTrash on %s is protected by the privacy controls; empty it from Finder%s\n" "$C_DIM" "${vol#/Volumes/}" "$C_RESET"
+        printf "  %sTrash on %s is protected by the privacy controls%s\n" "$C_DIM" "${vol#/Volumes/}" "$C_RESET"
+        fda_guidance
         ;;
       2) warn_step "Trash on ${vol#/Volumes/} cleanup incomplete — protected or recreated entries remain" ;;
     esac
@@ -4700,6 +4787,38 @@ except (OSError, ValueError, TypeError, plistlib.InvalidFileException):
 PYPLIST
 }
 
+# Whether launchd's service DOMAIN/LABEL was loaded from exactly PLIST.
+# `launchctl bootout DOMAIN/LABEL` goes by label alone, and a stale plist can
+# carry the label of a live service loaded from another file (a vendor's
+# current plist, an Apple daemon); booting that out would stop the live one.
+# Returns 0 when PLIST is the loaded file, 1 when nothing is loaded under the
+# label, 2 when it is loaded from somewhere else. Any arguments after PLIST are
+# a command prefix (sudo -n) for the system domain.
+# Usage: launchd_loaded_from DOMAIN LABEL PLIST [PREFIX...]
+launchd_loaded_from() {
+  local domain="$1" label="$2" plist="$3" out
+  shift 3
+  out="$("$@" launchctl print "$domain/$label" 2>/dev/null)" || return 1
+  awk -v p="$plist" '{ sub(/^[ \t]+/, "") } $0 == "path = " p { found=1 } END { exit !found }' <<<"$out" \
+    && return 0
+  return 2
+}
+
+# Unload LABEL from DOMAIN only when launchd loaded it from PLIST. The plist is
+# removed by the caller either way: it is orphaned whoever else uses the label.
+# Usage: bootout_orphan DOMAIN LABEL PLIST [PREFIX...]
+bootout_orphan() {
+  local domain="$1" label="$2" plist="$3" rc=0
+  shift 3
+  launchd_loaded_from "$domain" "$label" "$plist" "$@" || rc=$?
+  case "$rc" in
+    0) "$@" launchctl bootout "$domain/$label" >>"$LOG_SINK" 2>&1 || true ;;
+    2) printf "  %s%s is loaded from another file; left running, only %s is removed%s\n" \
+         "$C_DIM" "$label" "${plist/#$HOME/$HOME_TILDE}" "$C_RESET" ;;
+  esac
+  return 0
+}
+
 # Every tool that ever installed a background helper left a plist behind, and
 # uninstalling the tool rarely removes it; launchd then retries a program that
 # is gone at every login and logs the failure forever. Reported by default.
@@ -4707,7 +4826,8 @@ PYPLIST
 # system-level ones belong to root and are only ever named, with the command.
 step_launch_agents() {
   local -a roots=("$HOME/Library/LaunchAgents" "/Library/LaunchAgents" "/Library/LaunchDaemons")
-  local -a user_orphans=() user_labels=() system_orphans=()
+  local -a user_orphans=() user_labels=() system_orphans=() system_labels=()
+  local external_kept=0
   local root f progs prog arg1 target scanned=0 uninspected=0 label i=0
   for root in "${roots[@]}"; do
     [[ -d "$root" ]] || continue
@@ -4741,11 +4861,20 @@ PYSTAT
       else
         command -v "$target" >/dev/null 2>&1 && continue
       fi
+      # A program on an external disk that is not mounted right now is
+      # missing in exactly the same way as one that was uninstalled.
+      if [[ "$target" == /Volumes/* ]]; then
+        external_kept=$(( external_kept + 1 ))
+        printf "  %s%s -> %s (missing; on an external volume, kept)%s\n" \
+          "$C_DIM" "${f/#$HOME/$HOME_TILDE}" "$target" "$C_RESET"
+        continue
+      fi
       if [[ "$root" == "$HOME/Library/LaunchAgents" ]]; then
         user_orphans+=("$f")
         user_labels+=("${label:-$(basename "$f" .plist)}")
       else
         system_orphans+=("$f")
+        system_labels+=("${label:-$(basename "$f" .plist)}")
       fi
       printf "  %s%s%s -> %s (missing)\n" "$C_YELLOW" "${f/#$HOME/$HOME_TILDE}" "$C_RESET" "$target"
     done
@@ -4763,10 +4892,7 @@ PYSTAT
     return 0
   fi
   if (( ${#system_orphans[@]} > 0 )); then
-    printf "  %ssystem-level plists are never removed by this run; if nothing needs them:%s\n" "$C_DIM" "$C_RESET"
-    for f in "${system_orphans[@]}"; do
-      printf "      sudo launchctl bootout system/%s; sudo rm -f '%s'\n" "$(basename "$f" .plist)" "$f"
-    done
+    prune_system_orphans "${#system_orphans[@]}" "${system_orphans[@]}" "${system_labels[@]}"
   fi
   if (( ${#user_orphans[@]} == 0 )); then
     return 0
@@ -4782,12 +4908,66 @@ PYSTAT
     if (( DRY_RUN )); then
       printf "  %s(dry-run) launchctl bootout gui/%s/%s%s\n" "$C_DIM" "$(id -u)" "$label" "$C_RESET"
     else
-      # Unloading a job that is not loaded fails, and that is fine: the
-      # plist goes either way.
-      launchctl bootout "gui/$(id -u)/$label" >>"$LOG_SINK" 2>&1 || true
+      # Only a job loaded from this very file is unloaded; the plist goes
+      # either way.
+      bootout_orphan "gui/$(id -u)" "$label" "$f"
     fi
   done
   clear_paths "orphaned LaunchAgents" entry "${user_orphans[@]}"
+  if (( DRY_RUN == 0 )); then
+    local left=0
+    for f in "${user_orphans[@]}"; do
+      [[ -e "$f" || -L "$f" ]] && left=$(( left + 1 ))
+    done
+    ORPHAN_AGENTS=$(( ORPHAN_AGENTS - ${#user_orphans[@]} + left ))
+  fi
+}
+
+# System-level orphans belong to root. They go only on an interactive run that
+# chose to prune and already holds a sudo credential: sudo -n, so this never
+# raises a password prompt of its own. Anything else prints the commands.
+# Usage: prune_system_orphans COUNT PLIST... LABEL...
+prune_system_orphans() {
+  local n="$1"; shift
+  local -a plists=("${@:1:$n}") labels=("${@:$(( n + 1 )):$n}")
+  local i domain removed=0 can_remove=0
+  # A real run needs the credential the preflight obtained. A dry run never
+  # preflights, so it previews what a real run would do: one that would
+  # preflight (NEEDS_SUDO) on this terminal.
+  if (( PRUNE_ORPHAN_AGENTS && USE_SUDO )) && have_tty; then
+    if (( DRY_RUN )); then
+      (( NEEDS_SUDO )) && can_remove=1
+    else
+      (( SUDO_AVAILABLE )) && can_remove=1
+    fi
+  fi
+  if (( can_remove == 0 )); then
+    printf "  %ssystem-level plists need sudo on an interactive run; if nothing needs them:%s\n" "$C_DIM" "$C_RESET"
+    for (( i = 0; i < n; i++ )); do
+      domain="system"
+      [[ "${plists[$i]}" == /Library/LaunchAgents/* ]] && domain="gui/$(id -u)"
+      printf "      sudo launchctl bootout %s/%s; sudo rm -f '%s'\n" "$domain" "${labels[$i]}" "${plists[$i]}"
+    done
+    return 0
+  fi
+  for (( i = 0; i < n; i++ )); do
+    domain="system"
+    [[ "${plists[$i]}" == /Library/LaunchAgents/* ]] && domain="gui/$(id -u)"
+    if (( DRY_RUN )); then
+      printf "  %s(dry-run) sudo launchctl bootout %s/%s; sudo rm -f %s%s\n" \
+        "$C_DIM" "$domain" "${labels[$i]}" "${plists[$i]}" "$C_RESET"
+      continue
+    fi
+    bootout_orphan "$domain" "${labels[$i]}" "${plists[$i]}" sudo -n
+    if sudo -n rm -f -- "${plists[$i]}" >>"$LOG_SINK" 2>&1 && [[ ! -e "${plists[$i]}" ]]; then
+      removed=$(( removed + 1 ))
+      ORPHAN_AGENTS=$(( ORPHAN_AGENTS - 1 ))
+      printf "  %sremoved %s%s\n" "$C_DIM" "${plists[$i]}" "$C_RESET"
+    else
+      warn_step "could not remove ${plists[$i]}; remove it with: sudo rm -f '${plists[$i]}'"
+    fi
+  done
+  (( DRY_RUN )) || ok "removed $removed system-level orphaned plist(s)"
 }
 
 # Machine-readable version sets, separated by package kind to avoid collisions.
@@ -4951,8 +5131,12 @@ step_brew() {
   # leave brew free to request credentials later in the step. --full opts in,
   # but a skip during that cycle is a warning rather than a quiet omission.
   local cask_skip=""
-  if (( BREW_CASKS == 0 )); then
-    cask_skip="skipping cask upgrades by default; pass --brew-casks to include them"
+  if (( BREW_CASKS == 0 && BREW_CASKS_AUTO == 0 )); then
+    cask_skip="skipping cask upgrades: --no-brew-casks was passed"
+  elif (( BREW_CASKS == 0 && USE_SUDO == 0 )); then
+    cask_skip="skipping cask upgrades: --no-sudo was passed"
+  elif (( BREW_CASKS == 0 )); then
+    cask_skip="skipping cask upgrades: no controlling terminal for possible password prompts; run interactively to upgrade them"
   elif (( USE_SUDO == 0 )); then
     cask_skip="skipping cask upgrades: --no-sudo was passed"
   elif (( DRY_RUN == 0 && BREW_CASKS_SUDO_PREFLIGHT && SUDO_AVAILABLE == 0 )); then
@@ -4964,6 +5148,7 @@ step_brew() {
   elif (( DRY_RUN == 0 )) && ! sudo -n -v >/dev/null 2>&1; then
     cask_skip="skipping cask upgrades: sudo credential expired during Homebrew maintenance"
   fi
+  BREW_CASKS_SKIP_REASON="${cask_skip#skipping cask upgrades: }"
   if [[ -n "$cask_skip" ]]; then
     if (( FULL )); then
       warn_step "$cask_skip; full update cycle is incomplete (interactive terminal and sudo required)"
@@ -4997,28 +5182,6 @@ step_brew() {
     fi
   fi
 
-  # A printed "Upgrading" line precedes the work and can be followed by a
-  # failure. Count only an added installed version of an existing package.
-  # Compare before cleanup, which may remove old versions without upgrading.
-  if (( DRY_RUN == 0 )); then
-    if (( versions_known )) && versions_after="$(brew_version_inventory)"; then
-      BREW_UPGRADED_NAMES="$(printf '%s\n' "$versions_before" '__AFTER__' "$versions_after" | awk '
-        $0 == "__AFTER__" { after=1; next }
-        NF < 2 { next }
-        !after { known[$1]=1; for(i=2;i<=NF;i++) old[$1 SUBSEP $i]=1; next }
-        known[$1] { for(i=2;i<=NF;i++) if (!(($1 SUBSEP $i) in old)) changed[$1]=1 }
-        END { for (name in changed) print name }' | sort | paste -sd ' ' -)"
-      if [[ -n "$BREW_UPGRADED_NAMES" ]]; then
-        BREW_UPGRADED="$(wc -w <<<"$BREW_UPGRADED_NAMES" | tr -d ' ')"
-        ok "upgraded $BREW_UPGRADED package(s): $BREW_UPGRADED_NAMES (installed versions verified)"
-      else
-        info "no installed Homebrew version changes verified"
-      fi
-    else
-      warn_step "Homebrew upgrade count unavailable: installed versions could not be compared"
-    fi
-  fi
-
   if (( FULL && DRY_RUN == 0 )); then
     local remaining_formulae pins formula
     if capture_cmd "brew outdated --formula" brew outdated --formula --quiet; then
@@ -5049,6 +5212,35 @@ step_brew() {
   local -a outdated_opts=(--cask --quiet)
   (( BREW_GREEDY )) && outdated_opts+=(--greedy)
   if capture_cmd "brew outdated --cask" brew outdated "${outdated_opts[@]}"; then
+    # Anything the bulk upgrade left behind (a download that failed, an
+    # installer that bailed, a cask the bulk pass stopped short of) gets one
+    # more try, one cask at a time, so a single bad cask cannot hold the rest
+    # back. Only where cask upgrades were allowed to run at all, and never a
+    # cask Homebrew itself has disabled.
+    if (( DRY_RUN == 0 )) && [[ -z "$cask_skip" && -n "$CAPTURED" ]]; then
+      local leftover cask retried=0
+      leftover="$CAPTURED"
+      if [[ -n "${disabled:-}" ]]; then
+        leftover="$(grep -vxF -f <(sed 's/: .*$//' <<<"$disabled") <<<"$leftover" || true)"
+      fi
+      local -a cask_retry_opts=()
+      (( BREW_GREEDY )) && cask_retry_opts+=(--greedy)
+      while IFS= read -r cask; do
+        [[ -n "$cask" ]] || continue
+        retried=$(( retried + 1 ))
+        run_cmd_tty "brew upgrade --cask $cask" brew upgrade --cask \
+          ${cask_retry_opts[@]+"${cask_retry_opts[@]}"} \
+          ${brew_yes[@]+"${brew_yes[@]}"} "$cask" \
+          || warn "'brew upgrade --cask $cask' had issues"
+      done <<<"$leftover"
+      if (( retried )); then
+        info "upgraded leftover outdated casks individually: $retried attempted"
+        if ! capture_cmd "brew outdated --cask" brew outdated "${outdated_opts[@]}"; then
+          warn_step "cannot verify remaining outdated Homebrew casks; update status is incomplete"
+          CAPTURED=""
+        fi
+      fi
+    fi
     if (( DRY_RUN == 0 )) && [[ -n "$CAPTURED" ]]; then
       CASKS_OUTDATED="$(grep -c . <<<"$CAPTURED" || true)"
       (( FULL )) && warn_step "$CASKS_OUTDATED cask(s) remain outdated; full update cycle is incomplete"
@@ -5057,6 +5249,30 @@ step_brew() {
     fi
   elif (( DRY_RUN == 0 )); then
     warn_step "cannot verify remaining outdated Homebrew casks; update status is incomplete"
+  fi
+
+  # A printed "Upgrading" line precedes the work and can be followed by a
+  # failure. Count only an added installed version of an existing package.
+  # Compare before cleanup, which may remove old versions without upgrading,
+  # and after the leftover cask pass above, so a cask that only upgraded on
+  # its retry is counted too.
+  if (( DRY_RUN == 0 )); then
+    if (( versions_known )) && versions_after="$(brew_version_inventory)"; then
+      BREW_UPGRADED_NAMES="$(printf '%s\n' "$versions_before" '__AFTER__' "$versions_after" | awk '
+        $0 == "__AFTER__" { after=1; next }
+        NF < 2 { next }
+        !after { known[$1]=1; for(i=2;i<=NF;i++) old[$1 SUBSEP $i]=1; next }
+        known[$1] { for(i=2;i<=NF;i++) if (!(($1 SUBSEP $i) in old)) changed[$1]=1 }
+        END { for (name in changed) print name }' | sort | paste -sd ' ' -)"
+      if [[ -n "$BREW_UPGRADED_NAMES" ]]; then
+        BREW_UPGRADED="$(wc -w <<<"$BREW_UPGRADED_NAMES" | tr -d ' ')"
+        ok "upgraded $BREW_UPGRADED package(s): $BREW_UPGRADED_NAMES (installed versions verified)"
+      else
+        info "no installed Homebrew version changes verified"
+      fi
+    else
+      warn_step "Homebrew upgrade count unavailable: installed versions could not be compared"
+    fi
   fi
 
   RUN_CMD_FILTER='^Warning: Skipping .*most recent version .* not installed$' \
@@ -5871,10 +6087,22 @@ if (( UI_TERMINAL )); then
         ui_text 4 "$C_DIM" "- Inspect the affected step output above"
       fi
     fi
-    (( CASKS_OUTDATED > 0 )) && ui_text 4 "$C_YELLOW" "- $CASKS_OUTDATED cask(s) remain outdated; review with brew outdated --cask"
+    if (( CASKS_OUTDATED > 0 )); then
+      if [[ -n "$BREW_CASKS_SKIP_REASON" ]]; then
+        ui_text 4 "$C_YELLOW" "- $CASKS_OUTDATED cask(s) remain outdated (not upgraded: $BREW_CASKS_SKIP_REASON); review with brew outdated --cask"
+      else
+        ui_text 4 "$C_YELLOW" "- $CASKS_OUTDATED cask(s) remain outdated after the automatic upgrade; review with brew outdated --cask"
+      fi
+    fi
     (( OS_UPDATES_PENDING > 0 )) && ui_text 4 "$C_YELLOW" "- $OS_UPDATES_PENDING OS/App Store update(s) are pending"
     (( SNAPSHOTS_FOUND > 0 )) && ui_text 4 "$C_YELLOW" "- $SNAPSHOTS_FOUND local snapshot(s)$( (( SNAPSHOTS_THINNED )) && printf ' thinned' || printf ' kept; use --thin-snapshots to remove')"
-    (( TRASH_PROTECTED > 0 )) && ui_text 4 "$C_YELLOW" "- Trash cleanup needs Full Disk Access"
+    if (( TRASH_PROTECTED > 0 )); then
+      if (( FDA_PANE_OPENED )); then
+        ui_text 4 "$C_YELLOW" "- Trash cleanup needs Full Disk Access for $FDA_APP; System Settings was opened at that pane"
+      else
+        ui_text 4 "$C_YELLOW" "- Trash cleanup needs Full Disk Access${FDA_APP:+ for $FDA_APP}"
+      fi
+    fi
     if (( DOWNLOADS_OLD > 0 )); then
       if (( DRY_RUN && DOWNLOADS_PRUNED )); then
         ui_text 4 "$C_YELLOW" "- $DOWNLOADS_OLD old download(s) would be removed"
@@ -5884,7 +6112,15 @@ if (( UI_TERMINAL )); then
         ui_text 4 "$C_YELLOW" "- $DOWNLOADS_OLD old download(s) kept; use --prune-downloads-days N to remove"
       fi
     fi
-    (( ORPHAN_AGENTS > 0 )) && ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) found"
+    if (( ORPHAN_AGENTS > 0 )); then
+      if (( PRUNE_ORPHAN_AGENTS )); then
+        ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) left; the step output above says why"
+      elif (( PRUNE_ORPHAN_AGENTS_AUTO == 0 )); then
+        ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) kept (--no-prune-orphan-agents)"
+      else
+        ui_text 4 "$C_YELLOW" "- $ORPHAN_AGENTS orphaned launch agent(s) found; run from a terminal to remove them"
+      fi
+    fi
     (( BREW_SERVICES_ERROR > 0 )) && ui_text 4 "$C_YELLOW" "- $BREW_SERVICES_ERROR Homebrew service(s) report errors"
   fi
   (( ${#STEPS_FAIL[@]} > 0 )) && print_group "Failed" "$C_RED" "${STEPS_FAIL[@]}"

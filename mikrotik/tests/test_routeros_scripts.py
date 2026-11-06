@@ -68,10 +68,11 @@ RUNNABLE_SCRIPTS = (
     # test_script_add_remove_roundtrip below.
 )
 
-# RouterOS 7.24.1 CHR: /system/script/run uses a parser that rejects '_' in
-# :local and :global names ("expected end of command" pointing at the
-# underscore). Not a bug in the repo .lua files - the same source is accepted
-# by script add and runs from the scheduler.
+# RouterOS 7.24+ rejects unquoted underscores in :local/:global identifiers
+# at execution time. MikroTik's scripting manual allows letters and digits
+# without quotes; other characters require quoting. Loading script text does
+# not establish that it can execute. Migrate one script and its stored global
+# names at a time, rather than waiting for a firmware parser change.
 #
 # This was previously attributed to QEMU/TCG emulation. That is wrong, and the
 # correction is worth keeping: the identical failure was measured on a runner
@@ -88,10 +89,10 @@ XFAIL_CHR_SYSTEM_SCRIPT_RUN_UNDERSCORE = pytest.mark.xfail(
     reason=(
         f"RouterOS {EXPECT_VER} CHR refuses '_' in :local/:global names at "
         "execution time on every path tried: /system/script/run, :parse, and "
-        "/system scheduler. script add is fine, so the source is stored intact. "
-        "Not a .lua source bug."
+        "/system scheduler. script add stores the source but does not "
+        "establish executability; rename or quote invalid identifiers."
     ),
-    strict=False,
+    strict=True,
 )
 
 

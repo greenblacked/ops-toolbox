@@ -27,5 +27,5 @@ exec qemu-system-x86_64 \
   "${KVM_OPTS[@]}" \
   -drive "file=/routeros/${ROUTEROS_IMAGE},format=qcow2,if=virtio" \
   -netdev "user,id=net0,hostfwd=tcp::22-:22,hostfwd=tcp::23-:23,hostfwd=tcp::80-:80,hostfwd=tcp::443-:443,hostfwd=tcp::8728-:8728,hostfwd=tcp::8729-:8729,hostfwd=tcp::8291-:8291,hostfwd=tcp::5900-:5900" \
-  -device virtio-net-pci,netdev=net0 \
+  -device virtio-net-pci,netdev=net0,mac=52:54:00:5A:02:51 \
   "$@"

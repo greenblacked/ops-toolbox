@@ -108,7 +108,11 @@ For a concrete reversible macOS example, from `macos-initial-setup/`:
 ```bash
 ./macos_defaults.sh --apply --dry-run
 ./macos_defaults.sh --apply
-# To restore backed-up settings if necessary:
+```
+
+If you need to restore the previous settings later, run this separately:
+
+```bash
 ./macos_defaults.sh --revert
 ```
 

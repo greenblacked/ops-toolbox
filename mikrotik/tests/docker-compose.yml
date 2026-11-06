@@ -48,6 +48,9 @@ services:
       chr:
         condition: service_healthy
     environment:
+      # Not sufficient alone: Python also verifies CHR board/arch, version and
+      # the QEMU NIC MAC before making any RouterOS changes.
+      OPSTOOLBOX_CHR_LAB: "isolated-qemu-only"
       ROUTEROS_HOST: "chr"
       ROUTEROS_PORT: "8728"
       ROUTEROS_USER: "${ROUTEROS_USER:-admin}"
