@@ -323,23 +323,35 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        # Step outputs reach the script through env, never pasted into its text.
+        env:
+          F_SHELL: ${{ steps.filter.outputs.shell }}
+          F_POWERSHELL: ${{ steps.filter.outputs.powershell }}
+          F_MARKDOWN: ${{ steps.filter.outputs.markdown }}
+          F_YAML: ${{ steps.filter.outputs.yaml }}
+          F_PYTHON: ${{ steps.filter.outputs.python }}
+          F_WORKFLOW: ${{ steps.filter.outputs.workflow }}
+          F_DOCKERFILE: ${{ steps.filter.outputs.dockerfile }}
+          F_MANIFESTS: ${{ steps.filter.outputs.manifests }}
+          F_COMPOSE: ${{ steps.filter.outputs.compose }}
+          F_MATRIX: ${{ steps.filter.outputs.matrix }}
         run: |
           {
             printf '### Change filters\n\n'
             printf '| filter | runs |\n| --- | --- |\n'
-            printf '| shell | %s |\n'      '${{ steps.filter.outputs.shell }}'
-            printf '| powershell | %s |\n' '${{ steps.filter.outputs.powershell }}'
-            printf '| markdown | %s |\n'   '${{ steps.filter.outputs.markdown }}'
-            printf '| yaml | %s |\n'       '${{ steps.filter.outputs.yaml }}'
-            printf '| python | %s |\n'     '${{ steps.filter.outputs.python }}'
-            printf '| workflow | %s |\n'   '${{ steps.filter.outputs.workflow }}'
-            printf '| Dockerfile | %s |\n' '${{ steps.filter.outputs.dockerfile }}'
-            printf '| manifests | %s |\n'  '${{ steps.filter.outputs.manifests }}'
-            printf '| Compose | %s |\n'    '${{ steps.filter.outputs.compose }}'
+            printf '| shell | %s |\n'      "$F_SHELL"
+            printf '| powershell | %s |\n' "$F_POWERSHELL"
+            printf '| markdown | %s |\n'   "$F_MARKDOWN"
+            printf '| yaml | %s |\n'       "$F_YAML"
+            printf '| python | %s |\n'     "$F_PYTHON"
+            printf '| workflow | %s |\n'   "$F_WORKFLOW"
+            printf '| Dockerfile | %s |\n' "$F_DOCKERFILE"
+            printf '| manifests | %s |\n'  "$F_MANIFESTS"
+            printf '| Compose | %s |\n'    "$F_COMPOSE"
             # One row per suite, from the same matrix the test job runs, so a
             # suite cannot be in the matrix and missing from this table.
             jq -r 'unique_by(.suite)[] | "| \(.suite) suite | \(.changed) |"' \
-              <<< '${{ steps.filter.outputs.matrix }}'
+              <<< "$F_MATRIX"
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
@@ -609,23 +621,34 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        env:
+          C_SHELL: ${{ needs.changes.outputs.shell }}
+          C_WORKFLOW: ${{ needs.changes.outputs.workflow }}
+          C_DOCKERFILE: ${{ needs.changes.outputs.dockerfile }}
+          C_POWERSHELL: ${{ needs.changes.outputs.powershell }}
+          C_YAML: ${{ needs.changes.outputs.yaml }}
+          C_MARKDOWN: ${{ needs.changes.outputs.markdown }}
         run: |
+          shellcheck_ran=false
+          if [ "$C_SHELL" = true ] || [ "$C_WORKFLOW" = true ]; then
+            shellcheck_ran=true
+          fi
           {
             printf '### Lint\n\n'
             printf '| check | ran |\n| --- | --- |\n'
             printf '| bash -n + ShellCheck %s | %s |\n' \
               "$SHELLCHECK_VERSION" \
-              '${{ needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true' }}'
+              "$shellcheck_ran"
             printf '| actionlint %s | %s |\n' \
-              "$ACTIONLINT_VERSION" '${{ needs.changes.outputs.workflow }}'
+              "$ACTIONLINT_VERSION" "$C_WORKFLOW"
             printf '| Hadolint %s | %s |\n' \
-              "$HADOLINT_VERSION" '${{ needs.changes.outputs.dockerfile }}'
+              "$HADOLINT_VERSION" "$C_DOCKERFILE"
             printf '| PSScriptAnalyzer %s | %s |\n' \
-              "$PSSA_VERSION" '${{ needs.changes.outputs.powershell }}'
+              "$PSSA_VERSION" "$C_POWERSHELL"
             printf '| yamllint %s | %s |\n' \
-              "$YAMLLINT_VERSION" '${{ needs.changes.outputs.yaml }}'
+              "$YAMLLINT_VERSION" "$C_YAML"
             printf '| markdownlint-cli2 %s | %s |\n' \
-              "$MARKDOWNLINT_VERSION" '${{ needs.changes.outputs.markdown }}'
+              "$MARKDOWNLINT_VERSION" "$C_MARKDOWN"
             printf '\nRun the same checks locally with `./run-tests.sh lint`.\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -739,14 +762,17 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        env:
+          C_MANIFESTS: ${{ needs.changes.outputs.manifests }}
+          C_COMPOSE: ${{ needs.changes.outputs.compose }}
         run: |
           {
             printf '### Schema validation\n\n'
             printf '| check | ran |\n| --- | --- |\n'
             printf '| kubeconform %s + cloud-init | %s |\n' \
-              "$KUBECONFORM_VERSION" '${{ needs.changes.outputs.manifests }}'
+              "$KUBECONFORM_VERSION" "$C_MANIFESTS"
             printf '| Docker Compose config | %s |\n' \
-              '${{ needs.changes.outputs.compose }}'
+              "$C_COMPOSE"
           } >> "$GITHUB_STEP_SUMMARY"
 
   macos-native:
@@ -961,10 +987,12 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        env:
+          C_SUITE_WINDOWS: ${{ needs.changes.outputs.suite_windows }}
         run: |
           {
             printf '### Native Windows contracts\n\n'
-            if [ '${{ needs.changes.outputs.suite_windows }}' = true ]; then
+            if [ "$C_SUITE_WINDOWS" = true ]; then
               printf 'Ran Git Bash and PowerShell contracts on `windows-2025`.\n'
             else
               printf 'Skipped — no Windows files changed.\n'
