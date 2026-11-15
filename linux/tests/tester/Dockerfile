@@ -17,13 +17,17 @@ FROM ${BASE_IMAGE}
 # installed here is something the tests can no longer prove. Arch's downloader
 # cannot install its seccomp filter under amd64 emulation on Apple Silicon, so
 # only that sandbox layer is disabled; its filesystem sandbox remains active.
+# Arch takes -Syu, never -Sy: the digest pins the base image, not the package
+# repositories, so installing today's packages onto it without upgrading the
+# rest is a partial upgrade. That broke the build when openssl-3 was split out
+# of openssl and its files collided with the base image's older openssl.
 RUN if command -v apt-get >/dev/null 2>&1; then \
       apt-get update && apt-get install --yes --no-install-recommends \
         bash ca-certificates diffutils git procps python3 python3-yaml && rm -rf /var/lib/apt/lists/*; \
     elif command -v dnf >/dev/null 2>&1; then \
       dnf install -y bash ca-certificates diffutils findutils git procps-ng python3 python3-pyyaml && dnf clean all; \
     elif command -v pacman >/dev/null 2>&1; then \
-      pacman -Sy --disable-sandbox-syscalls --noconfirm \
+      pacman -Syu --disable-sandbox-syscalls --noconfirm \
         bash ca-certificates diffutils git procps-ng python python-yaml && \
         pacman -Scc --noconfirm; \
     fi
