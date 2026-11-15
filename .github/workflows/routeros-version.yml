@@ -81,6 +81,9 @@ jobs:
           # This prevents a manual run on stale master from reverting dev work.
           ref: ${{ inputs.check_only == true && github.ref || 'dev' }}
           fetch-depth: 0
+          # No token is left in .git/config. "Commit bump branch" is the only
+          # step that talks to the remote, and it is handed the token itself.
+          persist-credentials: false
 
       - name: Resolve candidate release
         id: release
@@ -298,12 +301,22 @@ jobs:
           inputs.check_only != true
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           TARGET_VERSION: ${{ steps.release.outputs.latest }}
         run: |
           set -euo pipefail
           branch="deps/routeros-${TARGET_VERSION}"
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+
+          # The checkout kept no credentials, so the token is given to this
+          # step's remote calls only, the way actions/checkout would have
+          # configured it, and never written to .git/config.
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          remote_git() {
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"
+          }
 
           # Read the remote tip *before* doing any local work, and pass it to
           # --force-with-lease explicitly. Bare --force-with-lease compares
@@ -314,8 +327,8 @@ jobs:
           # a hand-pushed fix that lands on this branch mid-run aborts the push
           # instead of being silently overwritten.
           remote_sha=""
-          if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
-            git fetch origin "$branch:refs/remotes/origin/$branch"
+          if remote_git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+            remote_git fetch origin "$branch:refs/remotes/origin/$branch"
             remote_sha="$(git rev-parse "refs/remotes/origin/$branch")"
           fi
 
@@ -329,12 +342,12 @@ jobs:
           git commit -m "deps(mikrotik): test against RouterOS ${TARGET_VERSION}"
 
           if [ -n "$remote_sha" ]; then
-            git push --force-with-lease="refs/heads/$branch:$remote_sha" \
+            remote_git push --force-with-lease="refs/heads/$branch:$remote_sha" \
               --set-upstream origin "$branch"
           else
             # The branch did not exist when we looked. A plain push is the
             # right lease here: it is rejected if someone created it meanwhile.
-            git push --set-upstream origin "$branch"
+            remote_git push --set-upstream origin "$branch"
           fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 

@@ -145,6 +145,7 @@ jobs:
           # not have. This repository is small enough that a full clone costs
           # about a second.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Work out what changed
         id: filter
@@ -350,6 +351,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # Which of the six checks this change needs, in the form the suite takes.
       #
@@ -640,6 +643,8 @@ jobs:
           needs.changes.outputs.manifests == 'true' ||
           needs.changes.outputs.compose == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install kubeconform
         if: needs.changes.outputs.manifests == 'true'
@@ -769,6 +774,8 @@ jobs:
           needs.changes.outputs.native_macos == 'true' ||
           needs.changes.outputs.bash32 == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # First, because it takes seconds and everything below it takes minutes.
       #
@@ -935,6 +942,8 @@ jobs:
       - name: Check out repository
         if: needs.changes.outputs.suite_windows == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # Without this the job is four bash -n invocations and a green tick:
       # windows/tests/run.sh prints "pwsh not installed - skipped" and exits 0,
@@ -996,6 +1005,8 @@ jobs:
       - name: Check out repository
         if: matrix.changed == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Require pwsh
         if: matrix.changed == 'true' && matrix.suite == 'windows'
@@ -1053,6 +1064,8 @@ jobs:
       - name: Check out repository
         if: needs.changes.outputs.python == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # 3.9 is what /usr/bin/python3 provides on macOS, and it is the
       # interpreter stay_fresh.sh invokes lib/workspace_scan.py with. Testing on
@@ -1142,6 +1155,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run static suite
         shell: bash
