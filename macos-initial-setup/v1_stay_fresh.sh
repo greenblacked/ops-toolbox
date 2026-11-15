@@ -70,7 +70,7 @@ Steps (in order):
   7.  Clean Homebrew caches                (brew cleanup, drop --cache,
                                             brew tap --repair)
   8.  Terraform update                     (via tfenv)
-  9.  Helm update                          (upstream get-helm-3 installer)
+  9.  Helm update                          (get.helm.sh tarball, sha256 checked)
   10. Python update                        (via pyenv, 3.x only)
   11. Go update                            (via gvm)
   12. gcloud components update
@@ -357,16 +357,62 @@ tf_install() { tfenv install "$1"; }
 tf_use()     { tfenv use "$1"; }
 tf_remove()  { tfenv uninstall "$1"; }
 
-# Helm: no version manager, but upstream ships an installer script that takes
-# a target version. The "use" and "remove" steps are no-ops because the
-# installer overwrites the single binary in-place.
+# Helm: no version manager. Fetch the release tarball for the target version
+# from get.helm.sh, check it against the .sha256sum published beside it, and
+# copy the binary into /usr/local/bin, the same place upstream's get-helm-3
+# installer used. Nothing downloaded is unpacked before the checksum matches,
+# and no installer script is piped into bash from a moving branch. The "use"
+# and "remove" steps are no-ops because the install overwrites the single
+# binary in-place.
 helm_have()    { command -v helm >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; }
 helm_current() { helm version --template '{{.Version}}' 2>/dev/null; }
 helm_latest()  { curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name'; }
-helm_install() {
-  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
-    | bash -s -- --version "$1"
+helm_sha256()  {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
 }
+helm_install() (
+  version=$1
+  if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf "  Refusing unexpected Helm version string: %s\n" "$version"
+    exit 1
+  fi
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  case "$(uname -m)" in
+    arm64|aarch64) arch=arm64 ;;
+    x86_64|amd64)  arch=amd64 ;;
+    *) printf "  Unsupported architecture for Helm: %s\n" "$(uname -m)"; exit 1 ;;
+  esac
+  dest=/usr/local/bin
+  tarball="helm-${version}-${os}-${arch}.tar.gz"
+  url="https://get.helm.sh/${tarball}"
+
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/helm-install.XXXXXX") || exit 1
+  trap 'rm -rf "$tmp"' EXIT
+
+  curl -fsSL -o "$tmp/$tarball" "$url" || exit 1
+  curl -fsSL -o "$tmp/$tarball.sha256sum" "$url.sha256sum" || exit 1
+  expected=$(awk 'NR==1 {print $1}' "$tmp/$tarball.sha256sum")
+  actual=$(helm_sha256 "$tmp/$tarball")
+  case "$expected" in
+    *[!0-9a-f]*|"") printf "  Malformed checksum file for %s\n" "$tarball"; exit 1 ;;
+  esac
+  if [ "${#expected}" -ne 64 ] || [ "$expected" != "$actual" ]; then
+    printf "  Checksum mismatch for %s (expected %s, got %s)\n" "$tarball" "$expected" "$actual"
+    exit 1
+  fi
+
+  tar -xzf "$tmp/$tarball" -C "$tmp" "${os}-${arch}/helm" || exit 1
+  [ -d "$dest" ] || sudo mkdir -p "$dest" || exit 1
+  if [ -w "$dest" ]; then
+    install -m 0755 "$tmp/${os}-${arch}/helm" "$dest/helm"
+  else
+    sudo install -m 0755 "$tmp/${os}-${arch}/helm" "$dest/helm"
+  fi
+)
 helm_use()    { :; }
 helm_remove() { :; }
 
