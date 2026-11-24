@@ -569,6 +569,132 @@ else
 fi
 rm -rf "$v1_scratch"
 
+section "v1_stay_fresh: Helm install verifies a pinned-key signature"
+# The .sha256sum sits beside the tarball on get.helm.sh, so whoever can replace
+# one can replace both and the checksum alone proves nothing about origin. The
+# install therefore also checks the detached .asc against Helm's release keys
+# and accepts only a pinned primary-key fingerprint. helm_install is lifted out
+# of the script and run against stub curl/gpg/install/sudo, so nothing is
+# downloaded and nothing reaches /usr/local/bin. The fake gpg replays the
+# status lines the real one prints with --status-fd, which is the interface the
+# script parses.
+hs="$(mktemp -d)"
+mkdir -p "$hs/bin" "$hs/tmp" "$hs/src/darwin-arm64" "$hs/nogpg"
+sed -n '/^HELM_KEYS_URL=/,/^helm_use()/p' "$M/v1_stay_fresh.sh" > "$hs/helm_fn.sh"
+assert_contains "the Helm install block was extracted" "$(cat "$hs/helm_fn.sh")" "helm_install()"
+helm_pinned="$(awk '/^HELM_RELEASE_KEY_FPRS=/{f=1;next} f&&/^"/{exit} f{print}' "$hs/helm_fn.sh")"
+read -r helm_pinned_first <<<"$helm_pinned"
+helm_pinned_count="$(printf '%s\n' "$helm_pinned" | grep -c '^[0-9A-F]\{40\}$')"
+assert_eq "the pinned Helm key list holds only full 40-hex fingerprints" \
+  "$(printf '%s\n' "$helm_pinned" | grep -c .)" "$helm_pinned_count"
+printf '#!/bin/sh\necho "${FAKE_HELM_VERSION:-v3.99.0}"\n' > "$hs/src/darwin-arm64/helm"
+chmod +x "$hs/src/darwin-arm64/helm"
+tar -czf "$hs/tarball.tgz" -C "$hs/src" darwin-arm64/helm
+if command -v shasum >/dev/null 2>&1; then
+  helm_tar_sum="$(shasum -a 256 "$hs/tarball.tgz" | awk '{print $1}')"
+else
+  helm_tar_sum="$(sha256sum "$hs/tarball.tgz" | awk '{print $1}')"
+fi
+printf '%s  helm-v3.99.0-darwin-arm64.tar.gz\n' "$helm_tar_sum" > "$hs/tarball.sum"
+printf 'signature\n' > "$hs/tarball.asc"
+printf 'keys\n' > "$hs/KEYS"
+printf '%s\n' '#!/bin/sh' \
+  'case "${1:-}" in -s) echo Darwin ;; -m) echo arm64 ;; *) echo Darwin ;; esac' > "$hs/bin/uname"
+printf '%s\n' '#!/bin/sh' \
+  'echo "curlargs $*" >> "$HS/calls"' \
+  'out=; url=' \
+  'while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; -*) ;; *) url="$1" ;; esac; shift; done' \
+  'echo "curl $url" >> "$HS/calls"' \
+  'case "$url" in' \
+  '  */KEYS) cp "$HS/KEYS" "$out" ;;' \
+  '  *.tar.gz.sha256sum) cp "$HS/tarball.sum" "$out" ;;' \
+  '  *.tar.gz.asc) cp "$HS/tarball.asc" "$out" ;;' \
+  '  *.tar.gz) cp "$HS/tarball.tgz" "$out" ;;' \
+  '  *) exit 22 ;;' \
+  'esac' > "$hs/bin/curl"
+# GPG_MODE picks what the fake reports: good, badsig, wrongkey, expired, nokey.
+printf '%s\n' '#!/bin/sh' \
+  'echo "gpg $*" >> "$HS/calls"' \
+  'case " $* " in' \
+  '  *" --import "*) exit 0 ;;' \
+  '  *" --verify "*)' \
+  '    case "$GPG_MODE" in' \
+  '      good)     echo "[GNUPG:] GOODSIG AAAA1111 Helm"; echo "[GNUPG:] VALIDSIG SUBKEY 2025-01-01 1 0 4 0 1 10 00 $GPG_PRIMARY"; exit 0 ;;' \
+  '      wrongkey) echo "[GNUPG:] GOODSIG BBBB2222 Mallory"; echo "[GNUPG:] VALIDSIG SUBKEY 2025-01-01 1 0 4 0 1 10 00 0000000000000000000000000000000000000000"; exit 0 ;;' \
+  '      expired)  echo "[GNUPG:] EXPKEYSIG AAAA1111 Helm"; echo "[GNUPG:] GOODSIG AAAA1111 Helm"; echo "[GNUPG:] VALIDSIG SUBKEY 2025-01-01 1 0 4 0 1 10 00 $GPG_PRIMARY"; exit 0 ;;' \
+  '      nokey)    echo "[GNUPG:] ERRSIG AAAA1111 1 10 00 1 9"; echo "[GNUPG:] NO_PUBKEY AAAA1111"; exit 2 ;;' \
+  '      *)        echo "[GNUPG:] BADSIG AAAA1111 Helm"; exit 1 ;;' \
+  '    esac ;;' \
+  'esac' > "$hs/bin/gpg"
+printf '%s\n' '#!/bin/sh' 'echo "install $*" >> "$HS/calls"; exit 0' > "$hs/bin/install"
+printf '%s\n' '#!/bin/sh' 'echo "sudo $*" >> "$HS/calls"; exit 0' > "$hs/bin/sudo"
+chmod +x "$hs/bin/"*
+# A PATH with every tool helm_install needs except gpg, which the dev machine
+# or CI image may well have: symlink the real ones instead of trusting /usr/bin.
+for t in awk grep tar tr mktemp rm mkdir sed cat head shasum sha256sum; do
+  real="$(command -v "$t" 2>/dev/null || true)"
+  [[ -n "$real" ]] && ln -s "$real" "$hs/nogpg/$t"
+done
+for t in uname curl install sudo; do ln -s "$hs/bin/$t" "$hs/nogpg/$t"; done
+
+helm_bash="$(command -v bash)"
+run_helm_install() { # mode path
+  : > "$hs/calls"
+  HS="$hs" FAKE_HELM_VERSION="${FAKE_HELM_VERSION:-v3.99.0}" GPG_MODE="$1" GPG_PRIMARY="$helm_pinned_first" TMPDIR="$hs/tmp" PATH="$2" \
+    "$helm_bash" -c '. "$1"; helm_install v3.99.0' _ "$hs/helm_fn.sh" 2>&1
+}
+
+out="$(run_helm_install good "$hs/bin:$PATH")"; rc=$?
+assert_eq "a good signature from a pinned key installs Helm" "0" "$rc"
+assert_contains "the signature comes from the GitHub release" "$(cat "$hs/calls")" \
+  "https://github.com/helm/helm/releases/download/v3.99.0/helm-v3.99.0-darwin-arm64.tar.gz.asc"
+assert_not_contains "get.helm.sh is not asked for a signature" "$(cat "$hs/calls")" \
+  "get.helm.sh/helm-v3.99.0-darwin-arm64.tar.gz.asc"
+assert_contains "the tarball still comes from get.helm.sh" "$(cat "$hs/calls")" \
+  "https://get.helm.sh/helm-v3.99.0-darwin-arm64.tar.gz"
+assert_contains "the keys come from the helm repository, not get.helm.sh" "$(cat "$hs/calls")" \
+  "curl https://raw.githubusercontent.com/helm/helm/main/KEYS"
+assert_contains "the install is the stubbed one" "$(cat "$hs/calls")" "install -m 0755"
+assert_contains "downloads are restricted to https" "$(cat "$hs/calls")" \
+  "--proto =https --proto-redir =https"
+assert_contains "verification uses a throwaway keyring" "$(cat "$hs/calls")" "--import"
+
+out="$(FAKE_HELM_VERSION=v3.0.0 run_helm_install good "$hs/bin:$PATH")"; rc=$?
+assert_eq "a signed but older Helm is refused" "1" "$rc"
+assert_contains "the version mismatch is reported" "$out" "reports version v3.0.0, expected v3.99.0"
+assert_not_contains "a rolled-back Helm installs nothing" "$(cat "$hs/calls")" "install -m"
+
+out="$(run_helm_install badsig "$hs/bin:$PATH")"; rc=$?
+assert_eq "a bad signature refuses the install" "1" "$rc"
+assert_contains "a bad signature is reported" "$out" "Signature check failed"
+assert_not_contains "a bad signature installs nothing" "$(cat "$hs/calls")" "install -m"
+
+out="$(run_helm_install wrongkey "$hs/bin:$PATH")"; rc=$?
+assert_eq "a valid signature by an unpinned key refuses the install" "1" "$rc"
+assert_contains "the unpinned fingerprint is named" "$out" "not signed by a pinned Helm release key"
+assert_not_contains "an unpinned key installs nothing" "$(cat "$hs/calls")" "install -m"
+
+out="$(run_helm_install expired "$hs/bin:$PATH")"; rc=$?
+assert_eq "a signature from an expired key refuses the install" "1" "$rc"
+assert_not_contains "an expired key installs nothing" "$(cat "$hs/calls")" "install -m"
+
+out="$(run_helm_install nokey "$hs/bin:$PATH")"; rc=$?
+assert_eq "a signature with no matching public key refuses the install" "1" "$rc"
+assert_not_contains "a missing public key installs nothing" "$(cat "$hs/calls")" "install -m"
+
+out="$(run_helm_install good "$hs/nogpg")"; rc=$?
+assert_eq "a missing gpg refuses the install" "1" "$rc"
+assert_contains "a missing gpg says how to get it" "$out" "brew install gnupg"
+assert_not_contains "a missing gpg downloads nothing" "$(cat "$hs/calls")" "curl "
+assert_not_contains "a missing gpg installs nothing" "$(cat "$hs/calls")" "install -m"
+
+printf '%s  helm-v3.99.0-darwin-arm64.tar.gz\n' "$(printf '0%.0s' $(seq 1 64))" > "$hs/tarball.sum"
+out="$(run_helm_install good "$hs/bin:$PATH")"; rc=$?
+assert_eq "a checksum mismatch still refuses the install" "1" "$rc"
+assert_contains "the checksum mismatch is reported" "$out" "Checksum mismatch"
+assert_not_contains "a checksum mismatch installs nothing" "$(cat "$hs/calls")" "install -m"
+rm -rf "$hs"
+
 # The shared macOS fake. Only the host-identification commands are faked;
 # everything that can mutate is either dry-run or confined to a scratch
 # HOME/TMPDIR below. This is the fixture for the safety contracts, which open
