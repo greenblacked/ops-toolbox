@@ -311,11 +311,17 @@ jobs:
 
           # The checkout kept no credentials, so the token is given to this
           # step's remote calls only, the way actions/checkout would have
-          # configured it, and never written to .git/config.
+          # configured it, and never written to .git/config. It travels in the
+          # environment of the one git process that needs it, not in its
+          # argv: a command line is readable by every process on the runner
+          # (ps, /proc/<pid>/cmdline) and is echoed by GIT_TRACE.
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
           remote_git() {
-            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" "$@"
+            GIT_CONFIG_COUNT=1 \
+              GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" \
+              git "$@"
           }
 
           # Read the remote tip *before* doing any local work, and pass it to
