@@ -279,3 +279,12 @@ MikroTik. Use per [CHR licensing](https://help.mikrotik.com/docs/display/ROS/Clo
 
 The QEMU‑in‑Docker pattern (Alpine + official VDI → qcow2 + user networking)
 follows [tikoci/restraml](https://github.com/tikoci/restraml).
+
+### Release evidence for Orbit
+
+A successful scheduled stable candidate writes `evidence/<version>.json` in its bump PR.
+The file contains only test counts, CHR architecture, the tested source commit, workflow run
+and attempt, UTC timestamp and the archive digest observed by the candidate run. The digest
+is a reproducibility pin, not a separately authenticated vendor signature. The file becomes
+trusted input for Orbit only after review and merge to dev and verification of the successful
+upstream workflow. It is not a physical-device compatibility certificate.
