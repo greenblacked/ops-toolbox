@@ -27,7 +27,9 @@ def collect(version, digest, log, commit, run_id, attempt, tested_at):
         raise ValueError("missing or ambiguous pytest summary")
     counts = {}
     for item in summaries[0].split(", "):
-        match = re.fullmatch(r"(\d+) (passed|xfailed|warnings?|failed|errors?|skipped|xpassed)", item)
+        match = re.fullmatch(
+            r"(\d+) (passed|xfailed|warnings?|failed|errors?|skipped|xpassed)", item
+        )
         if not match:
             raise ValueError("unrecognized pytest summary")
         count, label = match.groups()
