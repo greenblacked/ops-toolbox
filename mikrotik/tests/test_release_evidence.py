@@ -26,6 +26,8 @@ class ReleaseEvidenceTest(unittest.TestCase):
             GOOD.replace("72 passed", "71 passed, 1 xpassed"),
             GOOD.replace("all selected suites passed", ""),
             GOOD.replace("version_matches PASSED", "version_matches FAILED"),
+            GOOD.replace("72 passed", "72 passed, 1 failed, 0 failed"),
+            GOOD.replace("7 warnings", "7 warnings, 0 warning"),
             GOOD + GOOD,
         ):
             with self.subTest(log=log), self.assertRaises(ValueError):

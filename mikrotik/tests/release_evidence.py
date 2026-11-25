@@ -33,7 +33,10 @@ def collect(version, digest, log, commit, run_id, attempt, tested_at):
         if not match:
             raise ValueError("unrecognized pytest summary")
         count, label = match.groups()
-        counts[label.rstrip("s") if label in ("warnings", "errors") else label] = int(count)
+        key = label.rstrip("s") if label in ("warnings", "errors") else label
+        if key in counts:
+            raise ValueError("duplicate pytest summary count")
+        counts[key] = int(count)
     if counts.get("passed", 0) < 1 or any(counts.get(k, 0) for k in ("failed", "error", "xpassed")):
         raise ValueError("unexpected test failures")
     return {
