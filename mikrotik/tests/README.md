@@ -280,7 +280,6 @@ MikroTik. Use per [CHR licensing](https://help.mikrotik.com/docs/display/ROS/Clo
 The QEMU‑in‑Docker pattern (Alpine + official VDI → qcow2 + user networking)
 follows [tikoci/restraml](https://github.com/tikoci/restraml).
 
-
 ### Release evidence for Orbit
 
 A successful scheduled stable candidate writes `evidence/<version>.json` in its bump PR.
