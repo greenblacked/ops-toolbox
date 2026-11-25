@@ -28,7 +28,7 @@ def collect(version, digest, log, commit, run_id, attempt, tested_at):
     counts = {}
     for item in summaries[0].split(", "):
         match = re.fullmatch(
-            r"(\d+) (passed|xfailed|warnings?|failed|errors?|skipped|xpassed)", item
+            r"(\d+) (passed|subtests passed|xfailed|warnings?|failed|errors?|skipped|xpassed)", item
         )
         if not match:
             raise ValueError("unrecognized pytest summary")
@@ -50,6 +50,7 @@ def collect(version, digest, log, commit, run_id, attempt, tested_at):
         "runAttempt": int(attempt),
         "testedAt": tested_at,
         "passed": counts["passed"],
+        "subtestsPassed": counts.get("subtests passed", 0),
         "xfailed": counts.get("xfailed", 0),
         "warnings": counts.get("warning", 0),
         "skipped": counts.get("skipped", 0),
