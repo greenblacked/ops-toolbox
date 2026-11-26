@@ -1,23 +1,21 @@
-/* Site-specific task-first homepage. Portable rpt-theme.css is unchanged. */
+/* Homepage layout and controls. Shared theme tokens live in rpt-theme.css. */
 
 .rpt-home-search {
-  margin: 1rem 0 0.8rem;
+  margin: 1.1rem 0 0.8rem;
   max-width: 32rem;
 }
 
 .md-typeset .rpt-search-trigger {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
+  display: block;
   width: 100%;
-  min-height: 3rem;
+  min-height: 48px;
   padding: 0.7rem 0.9rem;
   color: var(--rpt-text);
   background: var(--rpt-surface);
   border: 1px solid var(--rpt-control-border);
   border-radius: 0.4rem;
   font: inherit;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   text-align: left;
   cursor: pointer;
 }
@@ -27,91 +25,108 @@
   background: var(--rpt-accent-tint);
 }
 
-.md-typeset .rpt-search-trigger:focus-visible,
-.md-typeset .rpt-task-link:focus-visible,
-.md-typeset .rpt-platform-links a:focus-visible {
-  outline: 3px solid var(--rpt-accent);
-  outline-offset: 3px;
-}
-
-.rpt-search-icon {
-  font-size: 1.2rem;
-  line-height: 1;
-}
-
-.rpt-search-hint {
-  margin-left: auto;
-  white-space: nowrap;
-  color: var(--rpt-muted);
-  font-size: 0.65rem;
-}
-
 .rpt-task-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.65rem;
-  margin: 0.9rem 0 1.5rem;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  margin: 0.9rem 0 0.65rem;
 }
 
-.md-typeset a.rpt-task-link {
+.rpt-task-card {
   display: flex;
-  min-width: 0;
   flex-direction: column;
-  gap: 0.25rem;
-  padding: 0.85rem 0.95rem;
-  color: var(--rpt-text);
-  text-decoration: none;
-  background-color: var(--rpt-surface);
+  min-width: 0;
+  padding: 0.9rem 1rem 0.65rem;
+  background: var(--rpt-surface);
   border: 1px solid var(--rpt-border);
-  border-radius: 0.35rem;
+  border-radius: 0.45rem;
 }
 
-.md-typeset a.rpt-task-link:hover {
-  border-color: var(--rpt-accent);
-}
-
-.rpt-task-link strong {
-  font-size: 0.9rem;
+.md-typeset .rpt-task-card h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
   line-height: 1.3;
 }
 
-.rpt-task-link span:last-child {
+.md-typeset .rpt-task-card p {
+  margin: 0;
   color: var(--rpt-muted);
-  font-size: 0.73rem;
-  line-height: 1.5;
+  font-size: 0.8rem;
 }
 
-.rpt-task-eyebrow {
-  color: var(--rpt-accent);
-  font-size: 0.65rem;
-  font-weight: 600;
-  letter-spacing: 0.035em;
-  text-transform: uppercase;
-}
-
-.rpt-platform-links {
+.md-typeset .rpt-task-card p:last-child,
+.md-typeset .rpt-platform-links ul {
   display: flex;
-  gap: 0.4rem;
   flex-wrap: wrap;
-  margin: 0.7rem 0 1.7rem;
+  gap: 0.35rem 0.5rem;
+  max-width: none;
 }
 
+.md-typeset .rpt-task-card p:last-child {
+  margin-top: auto;
+  padding-top: 0.5rem;
+}
+
+.md-typeset .rpt-platform-links ul {
+  margin: 0.7rem 0 1.7rem;
+  padding: 0;
+  list-style: none;
+}
+
+.md-typeset .rpt-platform-links ul li {
+  margin: 0;
+}
+
+.md-typeset .rpt-task-card a,
 .md-typeset .rpt-platform-links a {
   display: inline-flex;
   align-items: center;
-  min-height: 2.3rem;
+  min-height: 44px;
+}
+
+.md-typeset .rpt-task-card a {
+  padding-inline: 0.25rem;
+  text-decoration: underline;
+  text-underline-offset: 0.16em;
+}
+
+.md-typeset .rpt-platform-links a {
   padding: 0.4rem 0.65rem;
   color: var(--rpt-text);
-  background-color: var(--rpt-surface);
-  border: 1px solid var(--rpt-border);
+  background: var(--rpt-surface);
+  border: 1px solid var(--rpt-control-border);
   border-radius: 0.3rem;
-  font-size: 0.73rem;
+  font-size: 0.78rem;
   text-decoration: none;
 }
 
 .md-typeset .rpt-platform-links a:hover {
   border-color: var(--rpt-accent);
-  color: var(--rpt-accent);
+}
+
+.md-typeset .rpt-search-trigger:focus-visible,
+.md-typeset .rpt-task-card a:focus-visible,
+.md-typeset .rpt-platform-links a:focus-visible {
+  outline: 2px solid var(--rpt-accent);
+  outline-offset: 2px;
+}
+
+@media screen and (min-width: 45em) {
+  .rpt-task-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (forced-colors: active) {
+  .md-typeset .rpt-search-trigger:focus-visible,
+  .md-typeset .rpt-task-card a:focus-visible,
+  .md-typeset .rpt-platform-links a:focus-visible {
+    outline-color: Highlight;
+  }
+}
+
+@media print {
+  .rpt-home-search { display: none; }
 }
 
 .md-typeset .rpt-command-meta {
@@ -129,31 +144,4 @@
 
 .rpt-command-meta code {
   overflow-wrap: anywhere;
-}
-
-@media (max-width: 44.99em) {
-  .rpt-task-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .rpt-search-hint {
-    display: none;
-  }
-
-  .md-typeset .rpt-search-trigger {
-    font-size: 0.75rem;
-  }
-}
-
-@media (forced-colors: active) {
-  .md-typeset .rpt-search-trigger,
-  .md-typeset a.rpt-task-link,
-  .md-typeset .rpt-platform-links a {
-    border: 1px solid CanvasText;
-    color: CanvasText;
-  }
-}
-
-@media print {
-  .rpt-home-search { display: none; }
 }
