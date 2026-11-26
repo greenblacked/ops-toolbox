@@ -788,6 +788,30 @@ class WatcherWorkflowTests(unittest.TestCase):
         self.assertNotIn("uses:", dispatch, "the dispatch job checks out nothing")
         self.assertIn("needs: check-test-and-propose", dispatch)
 
+    def test_push_token_travels_in_the_environment_not_in_git_argv(self) -> None:
+        # The first version passed the credential as
+        # `git -c http.https://github.com/.extraheader=...`, which put the
+        # token in the command line of every git process. It now goes through
+        # GIT_CONFIG_* for the one git call that needs it, still masked, and
+        # the checkout keeps persist-credentials off so .git/config holds none.
+        text = self.text()
+        self.assertNotRegex(text, r"git -c [\"']?http\.", "token must not be in argv")
+        self.assertNotRegex(text, r"-c [\"']?http\.[^\n]*extraheader")
+        helper = re.search(r"remote_git\(\) \{(.*?)\n\s*\}", text, re.S)
+        self.assertIsNotNone(helper)
+        body = helper.group(1)
+        self.assertIn("GIT_CONFIG_COUNT=1", body)
+        self.assertIn("GIT_CONFIG_KEY_0=\"http.https://github.com/.extraheader\"", body)
+        self.assertIn('GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"', body)
+        # Scoped to the git process, not exported to the whole step.
+        self.assertNotRegex(text, r"(?m)^\s*export GIT_CONFIG_")
+        self.assertIn('echo "::add-mask::$auth"', text)
+        self.assertNotIn("git config", text.replace("git config user.", ""),
+                         "the token must not be written to .git/config")
+        self.assertIn("persist-credentials: false", text)
+        for verb in ("ls-remote", "fetch", "push"):
+            self.assertRegex(text, rf"remote_git (?:[^\n]*? )?{verb}\b")
+
     def test_dispatch_job_is_wired_to_the_bump_branch_safely(self) -> None:
         jobs = self.jobs()
         # The branch leaves the test job as an output of the commit step ...

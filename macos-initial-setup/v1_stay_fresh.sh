@@ -70,7 +70,8 @@ Steps (in order):
   7.  Clean Homebrew caches                (brew cleanup, drop --cache,
                                             brew tap --repair)
   8.  Terraform update                     (via tfenv)
-  9.  Helm update                          (upstream get-helm-3 installer)
+  9.  Helm update                          (get.helm.sh tarball, sha256 and
+                                            pinned-key GPG signature)
   10. Python update                        (via pyenv, 3.x only)
   11. Go update                            (via gvm)
   12. gcloud components update
@@ -357,16 +358,126 @@ tf_install() { tfenv install "$1"; }
 tf_use()     { tfenv use "$1"; }
 tf_remove()  { tfenv uninstall "$1"; }
 
-# Helm: no version manager, but upstream ships an installer script that takes
-# a target version. The "use" and "remove" steps are no-ops because the
-# installer overwrites the single binary in-place.
+# Helm: no version manager. Fetch the release tarball for the target version
+# from get.helm.sh, check it against the .sha256sum published beside it, check
+# the detached GPG signature (.asc) attached to the GitHub release, and copy the binary
+# into /usr/local/bin, the same place upstream's get-helm-3 installer used.
+# Nothing downloaded is unpacked before both checks pass, and no installer
+# script is piped into bash from a moving branch.
+#
+# The .sha256sum comes from the same origin as the tarball, so on its own it
+# only catches corruption: an attacker who controls get.helm.sh replaces both.
+# The signature is the independent trust root. The release keys are fetched from
+# the helm/helm repository on GitHub (a different origin) into a throwaway
+# keyring, and the signature is accepted only if its primary key fingerprint is
+# one of HELM_RELEASE_KEY_FPRS below, so a substituted KEYS file cannot widen
+# trust. The list is the primary keys of Helm release managers in
+# https://github.com/helm/helm/blob/main/KEYS that have signed releases or are
+# the newest entry there; add a fingerprint only after reading it from that file.
+# Without gpg the install is refused (brew install gnupg) rather than done
+# unsigned. The "use" and "remove" steps are no-ops because the install
+# overwrites the single binary in-place.
+HELM_KEYS_URL="https://raw.githubusercontent.com/helm/helm/main/KEYS"
+HELM_RELEASE_KEY_FPRS="
+672C657BE06B4B30969C4A57461449C25E36B98E
+208DD36ED5BB3745A16743A4C7C6FBB5B91C1155
+7FEC81FACC7FFB2A010ADD13C2D40F4D8196E874
+BF888333D96A1C18E2682AAED79D67C9EC016739
+"
 helm_have()    { command -v helm >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; }
 helm_current() { helm version --template '{{.Version}}' 2>/dev/null; }
 helm_latest()  { curl -fsSL https://api.github.com/repos/helm/helm/releases/latest | jq -r '.tag_name'; }
-helm_install() {
-  curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 \
-    | bash -s -- --version "$1"
+helm_sha256()  {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
 }
+helm_install() (
+  version=$1
+  if ! [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf "  Refusing unexpected Helm version string: %s\n" "$version"
+    exit 1
+  fi
+  os=$(uname -s | tr '[:upper:]' '[:lower:]')
+  case "$(uname -m)" in
+    arm64|aarch64) arch=arm64 ;;
+    x86_64|amd64)  arch=amd64 ;;
+    *) printf "  Unsupported architecture for Helm: %s\n" "$(uname -m)"; exit 1 ;;
+  esac
+  dest=/usr/local/bin
+  tarball="helm-${version}-${os}-${arch}.tar.gz"
+  url="https://get.helm.sh/${tarball}"
+  # get.helm.sh does not carry the .asc: upstream signs after the binaries are
+  # uploaded and attaches the signature to the GitHub release only.
+  sig_url="https://github.com/helm/helm/releases/download/${version}/${tarball}.asc"
+
+  if ! command -v gpg >/dev/null 2>&1; then
+    printf "  gpg not found; refusing to install Helm without verifying its signature (brew install gnupg).\n"
+    exit 1
+  fi
+
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/helm-install.XXXXXX") || exit 1
+  # gpg starts an agent inside the throwaway keyring; stop it before the
+  # directory goes, or it outlives the install holding a deleted socket.
+  trap 'GNUPGHOME="$tmp/gnupg" gpgconf --kill all 2>/dev/null || true; rm -rf "$tmp"' EXIT
+
+  fetch() { # label url dest
+    curl -fsSL --proto '=https' --proto-redir '=https' -o "$3" "$2" || {
+      printf "  Could not download %s from %s\n" "$1" "$2"; return 1
+    }
+  }
+  fetch "the Helm tarball" "$url" "$tmp/$tarball" || exit 1
+  fetch "the Helm checksum" "$url.sha256sum" "$tmp/$tarball.sha256sum" || exit 1
+  expected=$(awk 'NR==1 {print $1}' "$tmp/$tarball.sha256sum")
+  actual=$(helm_sha256 "$tmp/$tarball")
+  case "$expected" in
+    *[!0-9a-f]*|"") printf "  Malformed checksum file for %s\n" "$tarball"; exit 1 ;;
+  esac
+  if [ "${#expected}" -ne 64 ] || [ "$expected" != "$actual" ]; then
+    printf "  Checksum mismatch for %s (expected %s, got %s)\n" "$tarball" "$expected" "$actual"
+    exit 1
+  fi
+
+  fetch "the Helm signature" "$sig_url" "$tmp/$tarball.asc" || exit 1
+  fetch "the Helm release keys" "$HELM_KEYS_URL" "$tmp/KEYS" || exit 1
+  mkdir -m 700 "$tmp/gnupg" || exit 1
+  GNUPGHOME="$tmp/gnupg" gpg --batch --quiet --import "$tmp/KEYS" >/dev/null 2>&1 || {
+    printf "  Could not import Helm release keys\n"; exit 1
+  }
+  status=$(GNUPGHOME="$tmp/gnupg" gpg --batch --status-fd 1 --verify \
+    "$tmp/$tarball.asc" "$tmp/$tarball" 2>/dev/null) || {
+    printf "  Signature check failed for %s\n" "$tarball"; exit 1
+  }
+  # VALIDSIG <signing-fpr> ... <primary-key-fpr>: the last field is the primary
+  # key, which is what the pinned list names even when a subkey signed.
+  primary=$(awk '$2 == "VALIDSIG" {print $NF; exit}' <<<"$status")
+  if ! grep -q '^\[GNUPG:\] GOODSIG ' <<<"$status" \
+    || grep -Eq '^\[GNUPG:\] (EXPKEYSIG|EXPSIG|REVKEYSIG|BADSIG|ERRSIG) ' <<<"$status"; then
+    printf "  No good signature for %s\n" "$tarball"; exit 1
+  fi
+  if [ "${#primary}" -ne 40 ] || ! grep -Fqx "$primary" <<<"$HELM_RELEASE_KEY_FPRS"; then
+    printf "  %s is not signed by a pinned Helm release key (got %s); refusing\n" "$tarball" "${primary:-none}"
+    exit 1
+  fi
+
+  tar -xzf "$tmp/$tarball" -C "$tmp" "${os}-${arch}/helm" || exit 1
+  # A signature proves who signed the file, not which release it is: an old,
+  # genuinely signed tarball would pass every check above. Require the binary
+  # to report the version being installed.
+  got=$("$tmp/${os}-${arch}/helm" version --template '{{.Version}}' 2>/dev/null)
+  if [ "$got" != "$version" ]; then
+    printf "  Downloaded Helm reports version %s, expected %s; refusing\n" "${got:-none}" "$version"
+    exit 1
+  fi
+  [ -d "$dest" ] || sudo mkdir -p "$dest" || exit 1
+  if [ -w "$dest" ]; then
+    install -m 0755 "$tmp/${os}-${arch}/helm" "$dest/helm"
+  else
+    sudo install -m 0755 "$tmp/${os}-${arch}/helm" "$dest/helm"
+  fi
+)
 helm_use()    { :; }
 helm_remove() { :; }
 

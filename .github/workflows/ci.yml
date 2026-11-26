@@ -145,6 +145,7 @@ jobs:
           # not have. This repository is small enough that a full clone costs
           # about a second.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Work out what changed
         id: filter
@@ -323,23 +324,35 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        # Step outputs reach the script through env, never pasted into its text.
+        env:
+          F_SHELL: ${{ steps.filter.outputs.shell }}
+          F_POWERSHELL: ${{ steps.filter.outputs.powershell }}
+          F_MARKDOWN: ${{ steps.filter.outputs.markdown }}
+          F_YAML: ${{ steps.filter.outputs.yaml }}
+          F_PYTHON: ${{ steps.filter.outputs.python }}
+          F_WORKFLOW: ${{ steps.filter.outputs.workflow }}
+          F_DOCKERFILE: ${{ steps.filter.outputs.dockerfile }}
+          F_MANIFESTS: ${{ steps.filter.outputs.manifests }}
+          F_COMPOSE: ${{ steps.filter.outputs.compose }}
+          F_MATRIX: ${{ steps.filter.outputs.matrix }}
         run: |
           {
             printf '### Change filters\n\n'
             printf '| filter | runs |\n| --- | --- |\n'
-            printf '| shell | %s |\n'      '${{ steps.filter.outputs.shell }}'
-            printf '| powershell | %s |\n' '${{ steps.filter.outputs.powershell }}'
-            printf '| markdown | %s |\n'   '${{ steps.filter.outputs.markdown }}'
-            printf '| yaml | %s |\n'       '${{ steps.filter.outputs.yaml }}'
-            printf '| python | %s |\n'     '${{ steps.filter.outputs.python }}'
-            printf '| workflow | %s |\n'   '${{ steps.filter.outputs.workflow }}'
-            printf '| Dockerfile | %s |\n' '${{ steps.filter.outputs.dockerfile }}'
-            printf '| manifests | %s |\n'  '${{ steps.filter.outputs.manifests }}'
-            printf '| Compose | %s |\n'    '${{ steps.filter.outputs.compose }}'
+            printf '| shell | %s |\n'      "$F_SHELL"
+            printf '| powershell | %s |\n' "$F_POWERSHELL"
+            printf '| markdown | %s |\n'   "$F_MARKDOWN"
+            printf '| yaml | %s |\n'       "$F_YAML"
+            printf '| python | %s |\n'     "$F_PYTHON"
+            printf '| workflow | %s |\n'   "$F_WORKFLOW"
+            printf '| Dockerfile | %s |\n' "$F_DOCKERFILE"
+            printf '| manifests | %s |\n'  "$F_MANIFESTS"
+            printf '| Compose | %s |\n'    "$F_COMPOSE"
             # One row per suite, from the same matrix the test job runs, so a
             # suite cannot be in the matrix and missing from this table.
             jq -r 'unique_by(.suite)[] | "| \(.suite) suite | \(.changed) |"' \
-              <<< '${{ steps.filter.outputs.matrix }}'
+              <<< "$F_MATRIX"
           } >> "$GITHUB_STEP_SUMMARY"
 
   lint:
@@ -350,6 +363,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # Which of the six checks this change needs, in the form the suite takes.
       #
@@ -609,23 +624,34 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        env:
+          C_SHELL: ${{ needs.changes.outputs.shell }}
+          C_WORKFLOW: ${{ needs.changes.outputs.workflow }}
+          C_DOCKERFILE: ${{ needs.changes.outputs.dockerfile }}
+          C_POWERSHELL: ${{ needs.changes.outputs.powershell }}
+          C_YAML: ${{ needs.changes.outputs.yaml }}
+          C_MARKDOWN: ${{ needs.changes.outputs.markdown }}
         run: |
+          shellcheck_ran=false
+          if [ "$C_SHELL" = true ] || [ "$C_WORKFLOW" = true ]; then
+            shellcheck_ran=true
+          fi
           {
             printf '### Lint\n\n'
             printf '| check | ran |\n| --- | --- |\n'
             printf '| bash -n + ShellCheck %s | %s |\n' \
               "$SHELLCHECK_VERSION" \
-              '${{ needs.changes.outputs.shell == 'true' || needs.changes.outputs.workflow == 'true' }}'
+              "$shellcheck_ran"
             printf '| actionlint %s | %s |\n' \
-              "$ACTIONLINT_VERSION" '${{ needs.changes.outputs.workflow }}'
+              "$ACTIONLINT_VERSION" "$C_WORKFLOW"
             printf '| Hadolint %s | %s |\n' \
-              "$HADOLINT_VERSION" '${{ needs.changes.outputs.dockerfile }}'
+              "$HADOLINT_VERSION" "$C_DOCKERFILE"
             printf '| PSScriptAnalyzer %s | %s |\n' \
-              "$PSSA_VERSION" '${{ needs.changes.outputs.powershell }}'
+              "$PSSA_VERSION" "$C_POWERSHELL"
             printf '| yamllint %s | %s |\n' \
-              "$YAMLLINT_VERSION" '${{ needs.changes.outputs.yaml }}'
+              "$YAMLLINT_VERSION" "$C_YAML"
             printf '| markdownlint-cli2 %s | %s |\n' \
-              "$MARKDOWNLINT_VERSION" '${{ needs.changes.outputs.markdown }}'
+              "$MARKDOWNLINT_VERSION" "$C_MARKDOWN"
             printf '\nRun the same checks locally with `./run-tests.sh lint`.\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -640,6 +666,8 @@ jobs:
           needs.changes.outputs.manifests == 'true' ||
           needs.changes.outputs.compose == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install kubeconform
         if: needs.changes.outputs.manifests == 'true'
@@ -739,14 +767,17 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        env:
+          C_MANIFESTS: ${{ needs.changes.outputs.manifests }}
+          C_COMPOSE: ${{ needs.changes.outputs.compose }}
         run: |
           {
             printf '### Schema validation\n\n'
             printf '| check | ran |\n| --- | --- |\n'
             printf '| kubeconform %s + cloud-init | %s |\n' \
-              "$KUBECONFORM_VERSION" '${{ needs.changes.outputs.manifests }}'
+              "$KUBECONFORM_VERSION" "$C_MANIFESTS"
             printf '| Docker Compose config | %s |\n' \
-              '${{ needs.changes.outputs.compose }}'
+              "$C_COMPOSE"
           } >> "$GITHUB_STEP_SUMMARY"
 
   macos-native:
@@ -769,6 +800,8 @@ jobs:
           needs.changes.outputs.native_macos == 'true' ||
           needs.changes.outputs.bash32 == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # First, because it takes seconds and everything below it takes minutes.
       #
@@ -935,6 +968,8 @@ jobs:
       - name: Check out repository
         if: needs.changes.outputs.suite_windows == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # Without this the job is four bash -n invocations and a green tick:
       # windows/tests/run.sh prints "pwsh not installed - skipped" and exits 0,
@@ -961,10 +996,12 @@ jobs:
       - name: Summarise
         if: always()
         shell: bash
+        env:
+          C_SUITE_WINDOWS: ${{ needs.changes.outputs.suite_windows }}
         run: |
           {
             printf '### Native Windows contracts\n\n'
-            if [ '${{ needs.changes.outputs.suite_windows }}' = true ]; then
+            if [ "$C_SUITE_WINDOWS" = true ]; then
               printf 'Ran Git Bash and PowerShell contracts on `windows-2025`.\n'
             else
               printf 'Skipped — no Windows files changed.\n'
@@ -996,6 +1033,8 @@ jobs:
       - name: Check out repository
         if: matrix.changed == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Require pwsh
         if: matrix.changed == 'true' && matrix.suite == 'windows'
@@ -1053,6 +1092,8 @@ jobs:
       - name: Check out repository
         if: needs.changes.outputs.python == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       # 3.9 is what /usr/bin/python3 provides on macOS, and it is the
       # interpreter stay_fresh.sh invokes lib/workspace_scan.py with. Testing on
@@ -1142,6 +1183,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run static suite
         shell: bash

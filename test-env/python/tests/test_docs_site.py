@@ -141,6 +141,130 @@ class SearchSeparatorTests(unittest.TestCase):
         self.assertEqual(checked, len(samples))
 
 
+class HomePageTests(unittest.TestCase):
+    HOME = REPO_ROOT / "docs" / "index.md"
+    SCRIPT = SCRIPTS_DIR / "rpt-home-search.js"
+
+    def test_disk_space_routes_to_both_platform_runbooks(self) -> None:
+        home = self.HOME.read_text(encoding="utf-8")
+        disk_card = home.split("### Recover disk space", 1)[-1].split("</div>", 1)[0]
+        self.assertIn("[Linux disk space](runbooks/linux-low-disk.md)", disk_card)
+        self.assertIn("[Windows disk space](runbooks/windows-low-disk.md)", disk_card)
+
+    def test_search_shortcut_is_hidden_before_enhancement(self) -> None:
+        home = self.HOME.read_text(encoding="utf-8")
+        self.assertIn('<div class="rpt-home-search" hidden>', home)
+
+    @unittest.skipUnless(NODE, "node not installed")
+    def test_search_shortcut_lifecycle_and_focus(self) -> None:
+        source = """
+        const fs = require("node:fs");
+        const vm = require("node:vm");
+        let scan, shortcut;
+        const timers = [];
+        const events = [];
+        const keyListeners = new Set();
+        const changeListeners = new Set();
+        const input = { focus() { document.activeElement = this; events.push("input"); } };
+        const search = {
+          hidden: true,
+          querySelector: selector => selector === ".md-search__input" ? input : null
+        };
+        const toggle = {
+          type: "checkbox",
+          checked: false,
+          addEventListener(name, listener) {
+            if (name === "change") changeListeners.add(listener);
+          },
+          removeEventListener(name, listener) {
+            if (name === "change") changeListeners.delete(listener);
+          },
+          click() {
+            this.checked = !this.checked;
+            events.push(this.checked ? "open" : "close");
+            for (const listener of changeListeners) listener();
+          }
+        };
+        const document = {
+          body: {},
+          querySelector(selector) {
+            if (selector === ".rpt-home-search") return shortcut;
+            if (selector === '[data-md-component="search"]') return search;
+            return null;
+          },
+          getElementById: id => id === "__search" ? toggle : null,
+          addEventListener(name, listener, capture) {
+            if (name === "keydown" && capture) keyListeners.add(listener);
+          },
+          removeEventListener(name, listener, capture) {
+            if (name === "keydown" && capture) keyListeners.delete(listener);
+          }
+        };
+        const window = {
+          document$: { subscribe: callback => { scan = callback; } },
+          setTimeout: callback => timers.push(callback)
+        };
+        const newShortcut = () => {
+          const clicks = [];
+          const trigger = {
+            isConnected: true,
+            addEventListener(name, listener) { if (name === "click") clicks.push(listener); },
+            focus() { document.activeElement = this; events.push("shortcut"); }
+          };
+          return {
+            hidden: true, clicks, trigger,
+            querySelector: selector => selector === "[data-rpt-open-search]" ? trigger : null
+          };
+        };
+        const dismiss = key => {
+          for (const listener of keyListeners) listener({ key });
+          toggle.click();
+          document.activeElement = document.body;
+          timers.splice(0).forEach(callback => callback());
+        };
+        vm.runInNewContext(fs.readFileSync(process.env.RPT_SCRIPT, "utf8"), {
+          document, window
+        });
+        scan();
+        shortcut = newShortcut();
+        scan();
+        const hiddenWhenUnavailable = shortcut.hidden;
+        search.hidden = false;
+        scan();
+        scan();
+        const initialBindings = shortcut.clicks.length;
+        shortcut.clicks[0]();
+        dismiss("Escape");
+        shortcut.clicks[0]();
+        dismiss("Tab");
+        shortcut.clicks[0]();
+        shortcut.trigger.isConnected = false;
+        dismiss("Escape");
+        shortcut = newShortcut();
+        search.hidden = true;
+        scan();
+        const replacementHidden = shortcut.hidden;
+        search.hidden = false;
+        scan();
+        process.stdout.write(JSON.stringify({
+          hiddenWhenUnavailable, replacementHidden, initialBindings,
+          enhancedReplacement: !shortcut.hidden && shortcut.clicks.length === 1,
+          remainingListeners: keyListeners.size + changeListeners.size,
+          events
+        }));
+        """
+        result = node_json(source, RPT_SCRIPT=str(self.SCRIPT))
+        self.assertEqual(result, {
+            "hiddenWhenUnavailable": True,
+            "replacementHidden": True,
+            "initialBindings": 1,
+            "enhancedReplacement": True,
+            "remainingListeners": 0,
+            "events": ["open", "input", "close", "shortcut", "open", "input", "close",
+                       "open", "input", "close"],
+        })
+
+
 class TableFilterTests(unittest.TestCase):
     SCRIPT = SCRIPTS_DIR / "rpt-table-filter.js"
 

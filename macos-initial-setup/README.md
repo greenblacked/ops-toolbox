@@ -1178,7 +1178,18 @@ all of that happened anyway was not a guard. New automation should use scoped
 7. Clean Homebrew caches (`brew cleanup --prune=3 -s`, remove
    `brew --cache`, `brew tap --repair`).
 8. Update Terraform via `tfenv`.
-9. Update Helm via the upstream `get-helm-3` installer.
+9. Update Helm from the release tarball on `get.helm.sh`. The tarball is
+   checked against its published `.sha256sum` and against its detached `.asc`
+   GPG signature (fetched from the matching GitHub release, since `get.helm.sh`
+   does not carry it) before the binary is installed. The `.sha256sum` comes
+   from the same host as the tarball, so the signature is the real check: Helm's
+   release keys are read from `helm/helm`'s `KEYS` file on GitHub into a
+   throwaway keyring, and the signature is accepted only when its primary key
+   fingerprint is one of four pinned in the script (`HELM_RELEASE_KEY_FPRS`).
+   The extracted binary must also report the version being installed, so an
+   older signed release cannot be substituted. Without `gpg` (`brew install
+   gnupg`), or on any signature, key, checksum or version failure, nothing is
+   installed and the step reports a warning. There is no opt-out flag.
 10. Update Python via `pyenv` (3.x only).
 11. Update Go via `gvm`.
 12. Run `gcloud components update`.
