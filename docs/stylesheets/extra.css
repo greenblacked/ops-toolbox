@@ -1,28 +1,31 @@
 /* Homepage layout and controls. Shared theme tokens live in rpt-theme.css. */
 
-.rpt-home-search {
-  margin: 1.1rem 0 0.8rem;
-  max-width: 32rem;
+.rpt-home-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
 }
 
 .md-typeset .rpt-search-trigger {
-  display: block;
-  width: 100%;
-  min-height: 48px;
-  padding: 0.7rem 0.9rem;
-  color: var(--rpt-text);
-  background: var(--rpt-surface);
-  border: 1px solid var(--rpt-control-border);
-  border-radius: 0.4rem;
-  font: inherit;
-  font-size: 0.8rem;
-  text-align: left;
   cursor: pointer;
 }
 
-.md-typeset .rpt-search-trigger:hover {
-  border-color: var(--rpt-accent);
-  background: var(--rpt-accent-tint);
+.md-typeset h1.rpt-title:has(+ .rpt-hero) {
+  max-width: 100%;
+  font-size: clamp(1.75rem, 1.3rem + 1.9vw, 2.4rem);
+}
+
+/* Material reuses the primary sidebar as the narrow-screen menu. */
+@media screen and (min-width: 76.25em) {
+  .md-main__inner:has(.rpt-home-actions) > .md-sidebar--primary {
+    display: none;
+  }
+
+  .md-main__inner:has(.rpt-home-actions) > .md-content {
+    max-width: 60rem;
+    margin-inline: auto;
+  }
 }
 
 .rpt-task-grid {

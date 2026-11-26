@@ -4,26 +4,23 @@ hide:
 ---
 
 <!-- markdownlint-disable MD033 -->
-# Find the right script for the job { .rpt-title }
+# Scripts and runbooks { #find-the-right-script-for-the-job .rpt-title }
 
 <div class="rpt-hero" markdown="1">
 
-<div class="rpt-rule" aria-hidden="true"></div>
+<p class="rpt-lede">Maintenance and troubleshooting for macOS, Linux,
+Windows, Git, MikroTik and Kubernetes.</p>
 
-<p class="rpt-lede">Standalone scripts for workstations, servers, Git,
-MikroTik and Kubernetes. Start with a report or a runbook, then preview
-changes before applying them.</p>
-
-<div class="rpt-home-search" hidden>
-  <button type="button" class="rpt-search-trigger" data-rpt-open-search>
-    Search scripts, commands and runbooks
-  </button>
-</div>
-
-<div class="rpt-actions" markdown="1">
+<div class="rpt-actions rpt-home-actions" markdown="1">
 
 [Browse scripts](scripts/index.md){ .md-button .md-button--primary }
 [Quick start](getting-started/quick-start.md){ .md-button }
+
+<div class="rpt-home-search" hidden>
+  <button type="button" class="md-button rpt-search-trigger" data-rpt-open-search>
+    Search docs
+  </button>
+</div>
 
 </div>
 
