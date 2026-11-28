@@ -22,6 +22,10 @@ existed were moved under the v0.1.0 heading by that release.
 
 ## [Unreleased]
 
+### Changed
+
+- RouterOS CHR compatibility was bumped from 7.25.1 to 7.25.2 after the full Docker integration suite passed.
+
 ## [0.4.0] - 2026-11-06
 
 ### Added

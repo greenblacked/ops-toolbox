@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "version": "7.25.2",
+  "channel": "stable",
+  "platform": "chr-x86_64",
+  "archiveSha256": "661040e25440d89917f910196cc85dfd8a919a0e6da941884c5bcf574cfddf63",
+  "testedCommit": "714afccdf0ba716d599dc4aa541c4cfdd3a2b541",
+  "runId": 46127960589,
+  "runAttempt": 1,
+  "testedAt": "2026-11-28T09:03:55Z",
+  "passed": 75,
+  "subtestsPassed": 10,
+  "xfailed": 9,
+  "warnings": 7,
+  "skipped": 0,
+  "unexpectedFailures": 0
+}
